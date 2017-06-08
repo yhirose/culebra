@@ -1,0 +1,6 @@
+[submodule "vendor/cpp-linenoise"]
+	path = vendor/cpp-linenoise
+	url = https://github.com/yhirose/cpp-linenoise
+[submodule "vendor/cpp-peglib"]
+	path = vendor/cpp-peglib
+	url = https://github.com/yhirose/cpp-peglib

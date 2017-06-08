@@ -1,0 +1,20 @@
+Car = {
+  new: fn (miles_per_run) {
+    mut total_miles = 0
+
+    {
+      run: fn (times) {
+          total_miles = total_miles + miles_per_run * times
+      },
+      total: fn () {
+          "走行距離: {total_miles} miles."
+      }
+    }
+  }
+}
+
+car = Car.new(5)
+car.run(1)
+car.run(2)
+
+puts(car.total())

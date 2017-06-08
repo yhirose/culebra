@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.0)
+include_directories(./include)
+include_directories(./vendor/cpp-peglib)
+include_directories(./vendor/cpp-linenoise)
+add_definitions("-std=c++11")
+add_executable(culebra ./src/main.cc)

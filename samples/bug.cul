@@ -1,0 +1,17 @@
+# Cycric reference
+a = {
+  b: 'b',
+  mut c: nil
+}
+#a.c = a
+#puts(a.c)
+puts(a)
+
+# Unintentinal reference to global variable
+mut b = 0
+f = fn () {
+  b = 1
+  puts(b)
+}
+f()
+puts(b)
