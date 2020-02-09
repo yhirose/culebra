@@ -23,12 +23,14 @@ CALL                     <-  PRIMARY (_ (ARGUMENTS / INDEX / DOT))*
 ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
 INDEX                    <-  '[' _ EXPRESSION _ ']'
 DOT                      <-  '.' _ IDENTIFIER
+
 SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
 
 WHILE                    <-  while _ EXPRESSION _ BLOCK
 IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
-PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER / STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
+PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
+                             STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
 FUNCTION                 <-  fn _ PARAMETERS _ BLOCK
 PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
@@ -43,8 +45,8 @@ UNARY_MINUS_OPERATOR     <-  '-'
 UNARY_NOT_OPERATOR       <-  '!'
 MULTIPLICATIVE_OPERATOR  <-  [*/%]
 
-LET                      <-  < ('let' _wd_)? >
-MUTABLE                  <-  < ('mut' _wd_)? >
+LET                      <-  K('let')?
+MUTABLE                  <-  K('mut')?
 
 IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
@@ -53,8 +55,8 @@ OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER _ ':' _ EXPRESSION
 
 ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
-NIL                      <-  < 'nil' _wd_ >
-BOOLEAN                  <-  < ('true' / 'false')  _wd_ >
+NIL                      <-  K('nil')
+BOOLEAN                  <-  K('true' / 'false')
 
 NUMBER                   <-  < [0-9]+ >
 STRING                   <-  ['] < (!['] .)* > [']
@@ -62,26 +64,25 @@ STRING                   <-  ['] < (!['] .)* > [']
 INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
 INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
 
-~debugger                <- 'debugger' _wd_
-~while                   <- 'while' _wd_
-~if                      <- 'if' _wd_
-~else                    <- 'else' _wd_
-~fn                      <- 'fn' _wd_
-~return                  <- 'return' _wd_
+~debugger                <-  K('debugger')
+~while                   <-  K('while')
+~if                      <-  K('if')
+~else                    <-  K('else')
+~fn                      <-  K('fn')
+~return                  <-  K('return')
 
-~_                       <-  (WhiteSpace / End)*
+~_                       <-  (WhiteSpace / EndOfLine)*
 ~_sp_                    <-  SpaceChar*
-~_nl_                    <-  LineComment? End
-~_wd_                    <-  !IdentInitChar
+~_nl_                    <-  LineComment? EndOfLine
 
 WhiteSpace               <-  SpaceChar / Comment
-End                      <-  EndOfLine / EndOfFile
 Comment                  <-  BlockComment / LineComment
 
 SpaceChar                <-  ' ' / '\t'
 EndOfLine                <-  '\r\n' / '\n' / '\r'
-EndOfFile                <-  !.
 IdentInitChar            <-  [a-zA-Z_]
 IdentChar                <-  [a-zA-Z0-9_]
 BlockComment             <-  '/*' (!'*/' .)* '*/'
-LineComment              <-  ('#' / '//') (!End .)* &End
+LineComment              <-  ('#' / '//') (!EndOfLine .)* &EndOfLine
+
+K(S)                     <-  < S > !IdentInitChar # Keyward Macro

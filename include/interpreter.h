@@ -55,8 +55,8 @@ const auto grammar_ = R"(
   UNARY_NOT_OPERATOR       <-  '!'
   MULTIPLICATIVE_OPERATOR  <-  [*/%]
 
-  LET                      <-  < ('let' _wd_)? >
-  MUTABLE                  <-  < ('mut' _wd_)? >
+  LET                      <-  K('let')?
+  MUTABLE                  <-  K('mut')?
 
   IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
@@ -65,8 +65,8 @@ const auto grammar_ = R"(
 
   ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
-  NIL                      <-  < 'nil' _wd_ >
-  BOOLEAN                  <-  < ('true' / 'false')  _wd_ >
+  NIL                      <-  K('nil')
+  BOOLEAN                  <-  K('true' / 'false')
 
   NUMBER                   <-  < [0-9]+ >
   STRING                   <-  ['] < (!['] .)* > [']
@@ -74,29 +74,28 @@ const auto grammar_ = R"(
   INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
   INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
 
-  ~debugger                <- 'debugger' _wd_
-  ~while                   <- 'while' _wd_
-  ~if                      <- 'if' _wd_
-  ~else                    <- 'else' _wd_
-  ~fn                      <- 'fn' _wd_
-  ~return                  <- 'return' _wd_
+  ~debugger                <-  K('debugger')
+  ~while                   <-  K('while')
+  ~if                      <-  K('if')
+  ~else                    <-  K('else')
+  ~fn                      <-  K('fn')
+  ~return                  <-  K('return')
 
-  ~_                       <-  (WhiteSpace / End)*
+  ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
-  ~_nl_                    <-  LineComment? End
-  ~_wd_                    <-  !IdentInitChar
+  ~_nl_                    <-  LineComment? EndOfLine
 
   WhiteSpace               <-  SpaceChar / Comment
-  End                      <-  EndOfLine / EndOfFile
   Comment                  <-  BlockComment / LineComment
 
   SpaceChar                <-  ' ' / '\t'
   EndOfLine                <-  '\r\n' / '\n' / '\r'
-  EndOfFile                <-  !.
   IdentInitChar            <-  [a-zA-Z_]
   IdentChar                <-  [a-zA-Z0-9_]
   BlockComment             <-  '/*' (!'*/' .)* '*/'
-  LineComment              <-  ('#' / '//') (!End .)* &End
+  LineComment              <-  ('#' / '//') (!EndOfLine .)* &EndOfLine
+
+  K(S)                     <-  < S > !IdentInitChar # Keyward Macro
 )";
 
 inline peg::parser& get_parser() {
@@ -186,12 +185,20 @@ struct Value {
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
 
+  template <typename T> T &get() {
+    return peg::any_cast<T>(v);
+  }
+
+  template <typename T> const T &get() const {
+    return peg::any_cast<T>(v);
+  }
+
   bool to_bool() const {
     switch (type) {
       case Bool:
-        return v.get<bool>();
+        return get<bool>();
       case Long:
-        return v.get<long>() != 0;
+        return get<long>() != 0;
       default:
         throw std::runtime_error("type error.");
     }
@@ -199,9 +206,9 @@ struct Value {
 
   long to_long() const {
     switch (type) {
-      // case Bool: return v.get<bool>();
+      // case Bool: return get<bool>();
       case Long:
-        return v.get<long>();
+        return get<long>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -210,7 +217,7 @@ struct Value {
   std::string to_string() const {
     switch (type) {
       case String:
-        return v.get<std::string>();
+        return get<std::string>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -219,7 +226,7 @@ struct Value {
   FunctionValue to_function() const {
     switch (type) {
       case Function:
-        return v.get<FunctionValue>();
+        return get<FunctionValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -228,9 +235,9 @@ struct Value {
   const ObjectValue& to_object() const {
     switch (type) {
       case Object:
-        return v.get<ObjectValue>();
+        return get<ObjectValue>();
       case Array:
-        return v.get<ArrayValue>();
+        return get<ArrayValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -239,7 +246,7 @@ struct Value {
   ObjectValue& to_object() {
     switch (type) {
       case Object:
-        return v.get<ObjectValue>();
+        return get<ObjectValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -248,7 +255,7 @@ struct Value {
   const ArrayValue& to_array() const {
     switch (type) {
       case Array:
-        return v.get<ArrayValue>();
+        return get<ArrayValue>();
       default:
         throw std::runtime_error("type error.");
     }

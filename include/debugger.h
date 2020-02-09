@@ -91,9 +91,9 @@ class CommandLineDebugger {
 
   std::shared_ptr<peg::Ast> find_function_node(const peg::Ast& ast) {
     using namespace peg::udl;
-    auto node = ast.parent;
-    while (node->parent && node->tag != "FUNCTION"_) {
-      node = node->parent;
+    auto node = ast.parent.lock();
+    while (node->parent.lock() && node->tag != "FUNCTION"_) {
+      node = node->parent.lock();
     }
     return node;
   }
