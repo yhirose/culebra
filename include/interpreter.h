@@ -1,6 +1,7 @@
 #pragma once
 
 #include <peglib.h>
+
 #include <map>
 #include <sstream>
 #include <string>
@@ -125,7 +126,7 @@ struct Environment;
 
 struct FunctionValue {
   struct Parameter {
-    std::string name;
+    std::string_view name;
     bool mut;
   };
 
@@ -140,19 +141,19 @@ struct FunctionValue {
 
 struct ObjectValue {
   ObjectValue()
-      : properties(std::make_shared<std::map<std::string, Symbol>>()) {}
-  bool has(const std::string& name) const;
-  const Value& get(const std::string& name) const;
-  void assign(const std::string& name, const Value& val);
-  void initialize(const std::string& name, const Value& val, bool mut);
-  virtual std::map<std::string, Value>& builtins();
+      : properties(std::make_shared<std::map<std::string_view, Symbol>>()) {}
+  bool has(std::string_view name) const;
+  const Value& get(std::string_view name) const;
+  void assign(std::string_view name, const Value& val);
+  void initialize(std::string_view name, const Value& val, bool mut);
+  virtual std::map<std::string_view, Value>& builtins();
 
-  std::shared_ptr<std::map<std::string, Symbol>> properties;
+  std::shared_ptr<std::map<std::string_view, Symbol>> properties;
 };
 
 struct ArrayValue : public ObjectValue {
   ArrayValue() : values(std::make_shared<std::vector<Value>>()) {}
-  std::map<std::string, Value>& builtins() override;
+  std::map<std::string_view, Value>& builtins() override;
 
   std::shared_ptr<std::vector<Value>> values;
 };
@@ -185,12 +186,14 @@ struct Value {
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
 
-  template <typename T> T &get() {
-    return peg::any_cast<T>(v);
+  template <typename T>
+  T& get() {
+    return std::any_cast<T&>(v);
   }
 
-  template <typename T> const T &get() const {
-    return peg::any_cast<T>(v);
+  template <typename T>
+  const T& get() const {
+    return std::any_cast<const T&>(v);
   }
 
   bool to_bool() const {
@@ -391,7 +394,7 @@ struct Value {
   }
 
   Type type;
-  peg::any v;
+  std::any v;
 };
 
 struct Symbol {
@@ -415,56 +418,56 @@ struct Environment {
     }
   }
 
-  bool has(const std::string& s) const {
+  bool has(std::string_view s) const {
     if (dictionary.find(s) != dictionary.end()) {
       return true;
     }
     return outer && outer->has(s);
   }
 
-  const Value& get(const std::string& s) const {
+  const Value& get(std::string_view s) const {
     if (dictionary.find(s) != dictionary.end()) {
       return dictionary.at(s).val;
     } else if (outer) {
       return outer->get(s);
     }
-    std::string msg = "undefined variable '" + s + "'...";
+    std::string msg = "undefined variable '";
+    msg += s;
+    msg += "'...";
     throw std::runtime_error(msg);
   }
 
-  void assign(const std::string& s, const Value& val) {
+  void assign(std::string_view s, Value val) {
     assert(has(s));
     if (dictionary.find(s) != dictionary.end()) {
       auto& sym = dictionary[s];
       if (!sym.mut) {
-        std::string msg = "immutable variable '" + s + "'...";
+        std::string msg = "immutable variable '";
+        msg += s;
+        msg += "'...";
         throw std::runtime_error(msg);
       }
-      sym.val = val;
+      sym.val = std::move(val);
       return;
     }
-    outer->assign(s, val);
+    outer->assign(s, std::move(val));
     return;
   }
 
-  void initialize(const std::string& s, const Value& val, bool mut) {
-    dictionary[s] = Symbol{val, mut};
-  }
-
-  void initialize(const std::string& s, Value&& val, bool mut) {
+  void initialize(std::string_view s, Value val, bool mut) {
     dictionary[s] = Symbol{std::move(val), mut};
   }
 
   size_t level;
   std::shared_ptr<Environment> outer;
-  std::map<std::string, Symbol> dictionary;
+  std::map<std::string_view, Symbol> dictionary;
 };
 
 typedef std::function<void(const peg::Ast& ast, Environment& env,
                            bool force_to_break)>
     Debugger;
 
-inline bool ObjectValue::has(const std::string& name) const {
+inline bool ObjectValue::has(std::string_view name) const {
   if (properties->find(name) == properties->end()) {
     const auto& props = const_cast<ObjectValue*>(this)->builtins();
     return props.find(name) != props.end();
@@ -472,7 +475,7 @@ inline bool ObjectValue::has(const std::string& name) const {
   return true;
 }
 
-inline const Value& ObjectValue::get(const std::string& name) const {
+inline const Value& ObjectValue::get(std::string_view name) const {
   if (properties->find(name) == properties->end()) {
     const auto& props = const_cast<ObjectValue*>(this)->builtins();
     return props.at(name);
@@ -480,25 +483,28 @@ inline const Value& ObjectValue::get(const std::string& name) const {
   return properties->at(name).val;
 }
 
-inline void ObjectValue::assign(const std::string& name, const Value& val) {
+inline void ObjectValue::assign(std::string_view name, const Value& val) {
   assert(has(name));
   auto& sym = properties->at(name);
   if (!sym.mut) {
-    std::string msg = "immutable property '" + name + "'...";
+    std::string msg = "immutable property '";
+    msg += name;
+    msg += "'...";
     throw std::runtime_error(msg);
   }
   sym.val = val;
   return;
 }
 
-inline void ObjectValue::initialize(const std::string& name, const Value& val,
+inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
   (*properties)[name] = Symbol{val, mut};
 }
 
-inline std::map<std::string, Value>& ObjectValue::builtins() {
-  static std::map<std::string, Value> props_ = {
-      {"size",
+inline std::map<std::string_view, Value>& ObjectValue::builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& val = callEnv->get("this");
          long n = val.to_object().properties->size();
@@ -507,21 +513,22 @@ inline std::map<std::string, Value>& ObjectValue::builtins() {
   return props_;
 }
 
-inline std::map<std::string, Value>& ArrayValue::builtins() {
-  static std::map<std::string, Value> props_ = {
-      {"size", Value(FunctionValue({},
-                                   [](std::shared_ptr<Environment> callEnv) {
-                                     const auto& val = callEnv->get("this");
-                                     long n = val.to_array().values->size();
-                                     return Value(n);
-                                   }))},
-      {"push", Value(FunctionValue{{{"arg", false}},
-                                   [](std::shared_ptr<Environment> callEnv) {
-                                     const auto& val = callEnv->get("this");
-                                     const auto& arg = callEnv->get("arg");
-                                     val.to_array().values->push_back(arg);
-                                     return Value();
-                                   }})}};
+inline std::map<std::string_view, Value>& ArrayValue::builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv, Value(FunctionValue({},
+                                     [](std::shared_ptr<Environment> callEnv) {
+                                       const auto& val = callEnv->get("this");
+                                       long n = val.to_array().values->size();
+                                       return Value(n);
+                                     }))},
+      {"push"sv, Value(FunctionValue{{{"arg", false}},
+                                     [](std::shared_ptr<Environment> callEnv) {
+                                       const auto& val = callEnv->get("this");
+                                       const auto& arg = callEnv->get("arg");
+                                       val.to_array().values->push_back(arg);
+                                       return Value();
+                                     }})}};
   return props_;
 }
 
@@ -900,10 +907,11 @@ struct Interpreter {
     return Value(ret);
   }
 
-  bool is_keyword(const std::string& ident) const {
-    static std::set<std::string> keywords = {
-        "nil",    "true",  "false", "mut",  "debugger",
-        "return", "while", "if",    "else", "fn"};
+  bool is_keyword(std::string_view ident) const {
+    using namespace std::literals;
+    static std::set<std::string_view> keywords = {
+        "nil"sv,    "true"sv,  "false"sv, "mut"sv,  "debugger"sv,
+        "return"sv, "while"sv, "if"sv,    "else"sv, "fn"sv};
     return keywords.find(ident) != keywords.end();
   }
 
@@ -1030,7 +1038,7 @@ struct Interpreter {
   };
 
   Value eval_number(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    return Value(stol(ast.token));
+    return Value(ast.token_to_number<long>());
   };
 
   Value eval_interpolated_string(const peg::Ast& ast,

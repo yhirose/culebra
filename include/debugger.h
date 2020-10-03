@@ -99,7 +99,7 @@ class CommandLineDebugger {
   }
 
   void enum_identifiers(const peg::Ast& ast,
-                        std::set<std::string>& references) {
+                        std::set<std::string_view>& references) {
     using namespace peg::udl;
 
     for (auto node : ast.nodes) {
@@ -129,7 +129,7 @@ class CommandLineDebugger {
 
   void print_all(const peg::Ast& ast, Environment& env) {
     auto node = find_function_node(ast);
-    std::set<std::string> references;
+    std::set<std::string_view> references;
     enum_identifiers(*node, references);
     for (const auto& symbol : references) {
       if (env.has(symbol)) {
