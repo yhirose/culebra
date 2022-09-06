@@ -106,9 +106,9 @@ inline peg::parser& get_parser() {
   if (!initialized) {
     initialized = true;
 
-    parser.log = [&](size_t ln, size_t col, const std::string& msg) {
+    parser.set_logger([&](size_t ln, size_t col, const std::string& msg) {
       std::cerr << ln << ":" << col << ": " << msg << std::endl;
-    };
+    });
 
     if (!parser.load_grammar(grammar_)) {
       throw std::logic_error("invalid peg grammar");
@@ -1071,11 +1071,11 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        std::vector<std::string>& msgs) {
   auto& parser = get_parser();
 
-  parser.log = [&](size_t ln, size_t col, const std::string& err_msg) {
+  parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
     std::stringstream ss;
     ss << path << ":" << ln << ":" << col << ": " << err_msg << std::endl;
     msgs.push_back(ss.str());
-  };
+  });
 
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
