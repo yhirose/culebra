@@ -419,14 +419,14 @@ struct Environment {
   }
 
   bool has(std::string_view s) const {
-    if (dictionary.find(s) != dictionary.end()) {
+    if (dictionary.contains(s)) {
       return true;
     }
     return outer && outer->has(s);
   }
 
   const Value& get(std::string_view s) const {
-    if (dictionary.find(s) != dictionary.end()) {
+    if (dictionary.contains(s)) {
       return dictionary.at(s).val;
     } else if (outer) {
       return outer->get(s);
@@ -439,7 +439,7 @@ struct Environment {
 
   void assign(std::string_view s, Value val) {
     assert(has(s));
-    if (dictionary.find(s) != dictionary.end()) {
+    if (dictionary.contains(s)) {
       auto& sym = dictionary[s];
       if (!sym.mut) {
         std::string msg = "immutable variable '";
@@ -468,15 +468,15 @@ typedef std::function<void(const peg::Ast& ast, Environment& env,
     Debugger;
 
 inline bool ObjectValue::has(std::string_view name) const {
-  if (properties->find(name) == properties->end()) {
+  if (!properties->contains(name)) {
     const auto& props = const_cast<ObjectValue*>(this)->builtins();
-    return props.find(name) != props.end();
+    return props.contains(name);
   }
   return true;
 }
 
 inline const Value& ObjectValue::get(std::string_view name) const {
-  if (properties->find(name) == properties->end()) {
+  if (!properties->contains(name)) {
     const auto& props = const_cast<ObjectValue*>(this)->builtins();
     return props.at(name);
   }
@@ -912,7 +912,7 @@ struct Interpreter {
     static std::set<std::string_view> keywords = {
         "nil"sv,    "true"sv,  "false"sv, "mut"sv,  "debugger"sv,
         "return"sv, "while"sv, "if"sv,    "else"sv, "fn"sv};
-    return keywords.find(ident) != keywords.end();
+    return keywords.contains(ident);
   }
 
   Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
