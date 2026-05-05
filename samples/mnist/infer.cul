@@ -1,35 +1,10 @@
-# Culebra port of samples/mnist/infer_pure.py — same nested-loop
-# scalar inference, byte-identical CSV inputs. Runs CYCLES cycles
-# in-process and reports cold (cycle 1) vs warm-mean (cycles 2..K).
+# Tensor port of samples/mnist/infer.cul. Routes the forward pass
+# through the builtin Tensor type (BLAS sgemm + fused linear_sigmoid).
+# Runs CYCLES cycles in-process and reports cold (cycle 1) vs
+# warm-mean (cycles 2..K).
 
 let DIR = 'samples/mnist'
-let N_IN  = 784
-let N_HID = 30
-let N_OUT = 10
 let CYCLES = 3
-
-let load_2d = fn (path) {
-  mut rows = []
-  for line in IO.read(path).split("\n") {
-    if line.size() == 0 { continue }
-    mut row = []
-    for s in line.split(",") {
-      row.push(to_float(s))
-    }
-    rows.push(row)
-  }
-  rows
-}
-
-let load_1d = fn (path) {
-  mut out = []
-  for line in IO.read(path).split("\n") {
-    let s = line.trim()
-    if s.size() == 0 { continue }
-    out.push(to_float(s))
-  }
-  out
-}
 
 let load_int_1d = fn (path) {
   mut out = []
@@ -41,39 +16,7 @@ let load_int_1d = fn (path) {
   out
 }
 
-let sigmoid = fn (z) {
-  1.0 / (1.0 + Math.exp(-z))
-}
-
-let predict = fn (x, W1, b1, W2, b2) {
-  mut a1 = []
-  for i in range(N_HID) {
-    mut s = b1[i]
-    let row = W1[i]
-    for j in range(N_IN) {
-      s = s + row[j] * x[j]
-    }
-    a1.push(sigmoid(s))
-  }
-
-  mut best_v = -1.0
-  mut best_i = 0
-  for i in range(N_OUT) {
-    mut s = b2[i]
-    let row = W2[i]
-    for j in range(N_HID) {
-      s = s + row[j] * a1[j]
-    }
-    let v = sigmoid(s)
-    if v > best_v {
-      best_v = v
-      best_i = i
-    }
-  }
-  best_i
-}
-
-# Sanity: required CSVs must be present
+# Sanity: required CSVs must be present.
 for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
           'test_images.csv', 'test_labels.csv'] {
   if !IO.exists("{DIR}/{f}") {
@@ -83,35 +26,46 @@ for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
 }
 
 let load_t0 = Sys.time()
-let W1 = load_2d("{DIR}/W1.csv")
-let b1 = load_1d("{DIR}/b1.csv")
-let W2 = load_2d("{DIR}/W2.csv")
-let b2 = load_1d("{DIR}/b2.csv")
-let X  = load_2d("{DIR}/test_images.csv")
+let W1 = Tensor.from_csv("{DIR}/W1.csv")             # [30, 784]
+let b1 = Tensor.from_csv("{DIR}/b1.csv")             # [30, 1]
+let W2 = Tensor.from_csv("{DIR}/W2.csv")             # [10, 30]
+let b2 = Tensor.from_csv("{DIR}/b2.csv")             # [10, 1]
+let X  = Tensor.from_csv("{DIR}/test_images.csv")    # [N, 784]
 let y  = load_int_1d("{DIR}/test_labels.csv")
 let t_load = Sys.time() - load_t0
 
-let n = X.size()
-puts("[culebra] loaded N={n} in {t_load}s (W1={W1.size()}x{W1[0].size()}, W2={W2.size()}x{W2[0].size()})")
+let n = X.shape()[0]
+puts("[culebra-tensor] loaded N={n} in {t_load}s (W1=30x784, W2=10x30)")
+
+let Xt = X.transpose()                              # [784, N], zero-copy view
 
 mut times = []
-mut acc = 0.0
 for cycle in range(CYCLES) {
   let t0 = Sys.time()
-  mut correct = 0
-  for k in range(n) {
-    if predict(X[k], W1, b1, W2, b2) == y[k] {
-      correct = correct + 1
-    }
-  }
+  let a1 = W1.linear_sigmoid(Xt, b1)                # [30, N]
+  let a2 = W2.linear_sigmoid(a1, b2)                # [10, N]
+  let preds = a2.argmax(0)                          # [N]
+  Tensor.eval(preds)
   times.push(Sys.time() - t0)
-  acc = to_float(correct) / to_float(n)
 }
+
+# Accuracy: re-run forward pass once outside the timing loop. Matches
+# the post-train pattern in train_bench.cul.
+let a1 = W1.linear_sigmoid(Xt, b1)
+let a2 = W2.linear_sigmoid(a1, b2)
+let preds = a2.argmax(0)
+Tensor.eval(preds)
+let p = preds.to_array()
+mut correct = 0
+for k in range(n) {
+  if to_long(p[k]) == y[k] { correct = correct + 1 }
+}
+let acc = to_float(correct) / to_float(n)
 
 let cold = times[0]
 mut warm_sum = 0.0
 for t in times { warm_sum = warm_sum + t }
 warm_sum = warm_sum - cold
 let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
-puts("[culebra] cold={cold}s warm={warm}s accuracy={acc}")
-print("BENCH label=culebra_infer load={t_load} cold={cold} warm={warm} accuracy={acc}\n")
+puts("[culebra-tensor] cold={cold}s warm={warm}s accuracy={acc}")
+print("BENCH label=culebra_tensor_infer load={t_load} cold={cold} warm={warm} accuracy={acc}\n")

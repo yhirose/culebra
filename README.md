@@ -35,48 +35,73 @@ and trivial code may favor the interpreter.
 
 ### End-to-end: microgpt
 
-[`samples/microgpt`](samples/microgpt/) ports Karpathy's scalar
-autograd microgpt. Apple Silicon, single core, training only
-(mean of 5 runs):
+[`samples/microgpt`](samples/microgpt/) ports Karpathy's autograd
+microgpt as both a scalar `Value` graph and a Tensor port. Apple
+Silicon, training only:
 
-| step | Python  | Culebra `--jit` | ratio (Cul/Py) |
-|-----:|--------:|----------------:|---------------:|
-|   20 |  1.39 s |          1.99 s |          1.43× |
-|  100 |  6.81 s |          5.77 s |          0.85× |
-|  200 | 13.06 s |         10.85 s |          0.83× |
+**Scalar `Value` autograd, 100 training steps** (mean of 5 runs)
+
+| implementation         |   time |  ms/step |
+|------------------------|-------:|---------:|
+| Python                 | 6.81 s |   ~63 ms |
+| Culebra `--jit` scalar | 5.77 s |   ~52 ms |
 
 Below ~50 steps Python wins because Culebra pays ~1 s of JIT
-warmup. Past that, Culebra runs ~17% faster per step. See
-[`samples/microgpt/README.md`](samples/microgpt/README.md) for
-the full breakdown.
+warmup. Past that, Culebra runs ~17% faster per step.
 
-### Pure scalar: MNIST MLP
+**Tensor port, 100 training steps** (single run)
+
+| implementation         |   time |  ms/step |
+|------------------------|-------:|---------:|
+| Culebra `--jit` scalar | 6.21 s |   ~52 ms |
+| Culebra Tensor         | ~1.6 s |  ~3.5 ms |
+
+The Tensor port is **~15× faster per step** than the scalar
+version: thousands of `Value` allocations per step → a few hundred
+`TNode`s per step plus BLAS-routed linear layers. See
+[`samples/microgpt/README.md`](samples/microgpt/README.md) for the
+full breakdown.
+
+### MNIST MLP
 
 [`samples/mnist`](samples/mnist/) trains a 784–30–10 sigmoid MLP on
-MNIST and benchmarks both inference and training. Total wall time,
-mean of 5 runs:
+MNIST and benchmarks across seven implementations: numpy, pure
+Python, PyTorch CPU/MPS, Julia, Culebra `--jit` (scalar), and Culebra
+Tensor. Mean of 3 external runs.
 
-**Inference** (1000 test images)
+**Inference** (warm, 10000 test images)
 
-| implementation   |  time   | ratio (vs pure) |
-|------------------|--------:|----------------:|
-| numpy (BLAS)     |  0.22 s |          0.18×  |
-| pure Python      |  1.20 s |          1.00×  |
-| Culebra `--jit`  |  1.11 s |          0.93×  |
+| implementation       |    time |
+|----------------------|--------:|
+| numpy (BLAS, F64)    | 0.022 s |
+| pure Python          | 10.90 s |
+| PyTorch CPU (F32)    | 0.003 s |
+| PyTorch MPS (F32)    | 0.002 s |
+| Julia (F64)          | 0.007 s |
+| Culebra `--jit`      |  7.41 s |
+| Culebra Tensor (F32) | 0.002 s |
 
-**Training** (1 epoch, mini-batch SGD)
+**Training** (1 epoch, 10000 samples)
 
-| implementation   | N=1000  | N=5000  | N=10000 |
-|------------------|--------:|--------:|--------:|
-| numpy (BLAS)     |  0.24 s |  0.44 s |  0.63 s |
-| pure Python      |  3.97 s | 15.17 s | 28.94 s |
-| Culebra `--jit`  |  7.07 s | 15.39 s | 25.81 s |
+| implementation          |    time |
+|-------------------------|--------:|
+| numpy (BLAS, F64)       | 0.080 s |
+| pure Python (cold¹)     | 27.25 s |
+| PyTorch CPU (F32)       | 0.065 s |
+| PyTorch MPS (F32)       | 0.273 s |
+| Julia (F64)             | 0.075 s |
+| Culebra `--jit` (cold¹) | 19.45 s |
+| Culebra Tensor (F32)    | 0.077 s |
 
-All three agree on predictions (inference accuracy 0.954, training
-0.622 / 0.867 / 0.886). JIT beats pure Python on inference, ties at
-N=5000 training, and pulls 11% ahead by N=10000 — the JIT's fixed
-per-module codegen cost (~3–4 s) takes a few thousand mini-batches
-to amortize. See [`samples/mnist/README.md`](samples/mnist/README.md)
+¹ scalar epochs use `CYCLES=1`; only the cold cycle is reported.
+
+All seven agree on predictions (inference 0.9551, training 0.9079;
+Culebra Tensor lands at 0.9081, FP-epsilon away from the F64
+reference). The Tensor port routes matmul through Apple Accelerate
+/ OpenBLAS and lands in the BLAS-bound cluster — within 1.2× of
+PyTorch CPU on training warm. PyTorch MPS is 3.4× slower than CPU on
+this size: the 30-hidden MLP is too small to amortize GPU launch
+latency. See [`samples/mnist/README.md`](samples/mnist/README.md)
 for the full analysis.
 
 At a glance

@@ -10,11 +10,8 @@ overloading, auto-reflection, `Math.*`, `Random.*`).
 - `microgpt.cul`        — Culebra port, scalar autograd, HOF-idiomatic style.
 - `microgpt_tensor.cul` — Tensor port: same architecture but single-head
                           attention, autograd built on Phase 1 Tensor + TNode.
-                          ~50× faster per step than the scalar version.
-- `tnode.cul`           — Standalone TNode-on-Tensor demo (linear regression).
+                          ~15× faster per step than the scalar version.
 - `names.txt`           — Training data (gitignored). Run `just fetch-names`.
-- `sidebyside.html`     — Static side-by-side viewer of `microgpt.py` / `microgpt.cul`.
-- `build_sidebyside.py` — Regenerator for `sidebyside.html` (re-run after edits).
 
 ## Running
 

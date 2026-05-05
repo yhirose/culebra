@@ -1,9 +1,0 @@
-# Closure captures outer variable: this is the expected behavior.
-# `f()` modifies the enclosing `b` via closure capture.
-mut b = 0
-f = fn () {
-  b = 1
-  puts(b)
-}
-f()
-puts(b)

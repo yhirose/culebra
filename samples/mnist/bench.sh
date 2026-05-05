@@ -57,7 +57,9 @@ bench_cmd() {
   '
 }
 
-echo "=== Inference: 1000 test images, $RUNS external runs ==="
+N_TEST=$(wc -l < samples/mnist/test_labels.csv | tr -d ' ')
+N_TRAIN=$(wc -l < samples/mnist/train_labels.csv | tr -d ' ')
+echo "=== Inference: $N_TEST test images, $RUNS external runs ==="
 echo "(load = CSV read; cold = cycle 1; warm = mean of cycles 2..K within one process)"
 echo
 bench_cmd "numpy"             python3.11 samples/mnist/infer_numpy.py
@@ -65,11 +67,10 @@ bench_cmd "pure Python"       python3    samples/mnist/infer_pure.py
 bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 samples/mnist/infer_torch.py
 bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 samples/mnist/infer_torch.py
 bench_cmd "Julia"             julia samples/mnist/infer.jl
-bench_cmd "Culebra --jit"     ./build/culebra --jit  samples/mnist/infer.cul
-bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/infer_tensor.cul
+bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/infer.cul
 
 echo
-echo "=== Training: 1 epoch, mini-batch SGD, $RUNS external runs ==="
+echo "=== Training: 1 epoch, $N_TRAIN samples, mini-batch SGD, $RUNS external runs ==="
 echo "(hand-coded backprop, identical algorithm across implementations)"
 echo
 bench_cmd "numpy"             python3.11 samples/mnist/train_bench_numpy.py
@@ -77,5 +78,4 @@ bench_cmd "pure Python"       python3    samples/mnist/train_bench_pure.py
 bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 samples/mnist/train_bench_torch.py
 bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 samples/mnist/train_bench_torch.py
 bench_cmd "Julia"             julia samples/mnist/train_bench.jl
-bench_cmd "Culebra --jit"     ./build/culebra --jit  samples/mnist/train_bench.cul
-bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/train_bench_tensor.cul
+bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/train_bench.cul

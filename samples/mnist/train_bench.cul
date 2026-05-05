@@ -1,38 +1,13 @@
-# Culebra training benchmark — port of train_bench_pure.py.
-# CYCLES=1 — pure scalar Culebra training is heavy on N=10000, so we
-# emit cold only and leave warm=nan to keep the BENCH format aligned
-# with the other implementations.
+# Tensor port of samples/mnist/train_bench.cul. Routes BLAS-shaped
+# work through the builtin Tensor type. Runs CYCLES epochs from
+# identical init weights in-process.
 
 let DIR = 'samples/mnist'
-let N_IN  = 784
 let N_HID = 30
 let N_OUT = 10
 let BATCH = 10
 let ETA   = 3.0
-let CYCLES = 1
-
-let load_2d = fn (path) {
-  mut rows = []
-  for line in IO.read(path).split("\n") {
-    if line.size() == 0 { continue }
-    mut row = []
-    for s in line.split(",") {
-      row.push(to_float(s))
-    }
-    rows.push(row)
-  }
-  rows
-}
-
-let load_1d = fn (path) {
-  mut out = []
-  for line in IO.read(path).split("\n") {
-    let s = line.trim()
-    if s.size() == 0 { continue }
-    out.push(to_float(s))
-  }
-  out
-}
+let CYCLES = 2
 
 let load_int_1d = fn (path) {
   mut out = []
@@ -44,109 +19,19 @@ let load_int_1d = fn (path) {
   out
 }
 
-let zeros_1d = fn (n) {
-  mut a = []
-  for i in range(n) { a.push(0.0) }
-  a
-}
-let zeros_2d = fn (rows, cols) {
-  mut m = []
-  for i in range(rows) { m.push(zeros_1d(cols)) }
-  m
-}
-
-let sigmoid = fn (z) { 1.0 / (1.0 + Math.exp(-z)) }
-
-let predict = fn (x, W1, b1, W2, b2) {
-  mut a1 = []
-  for i in range(N_HID) {
-    mut s = b1[i]
-    let row = W1[i]
-    for j in range(N_IN) { s = s + row[j] * x[j] }
-    a1.push(sigmoid(s))
-  }
-  mut best_v = -1.0
-  mut best_i = 0
-  for i in range(N_OUT) {
-    mut s = b2[i]
-    let row = W2[i]
-    for j in range(N_HID) { s = s + row[j] * a1[j] }
-    let v = sigmoid(s)
-    if v > best_v { best_v = v; best_i = i }
-  }
-  best_i
-}
-
-let run_epoch = fn (W1, b1, W2, b2, X, y, n) {
-  let lr = ETA / to_float(BATCH)
-  mut s = 0
-  while s < n {
-    mut gW1 = zeros_2d(N_HID, N_IN)
-    mut gb1 = zeros_1d(N_HID)
-    mut gW2 = zeros_2d(N_OUT, N_HID)
-    mut gb2 = zeros_1d(N_OUT)
-
-    for k in range(BATCH) {
-      let x = X[s + k]
-      let label = y[s + k]
-
-      mut a1 = []
-      for i in range(N_HID) {
-        mut z = b1[i]
-        let row = W1[i]
-        for j in range(N_IN) { z = z + row[j] * x[j] }
-        a1.push(sigmoid(z))
-      }
-      mut a2 = []
-      for i in range(N_OUT) {
-        mut z = b2[i]
-        let row = W2[i]
-        for j in range(N_HID) { z = z + row[j] * a1[j] }
-        a2.push(sigmoid(z))
-      }
-
-      mut d2 = []
-      for i in range(N_OUT) {
-        let t = if i == label { 1.0 } else { 0.0 }
-        d2.push((a2[i] - t) * a2[i] * (1.0 - a2[i]))
-      }
-      mut d1 = []
-      for i in range(N_HID) {
-        mut z = 0.0
-        for kk in range(N_OUT) { z = z + W2[kk][i] * d2[kk] }
-        d1.push(z * a1[i] * (1.0 - a1[i]))
-      }
-
-      for i in range(N_OUT) {
-        gb2[i] = gb2[i] + d2[i]
-        let row = gW2[i]
-        for j in range(N_HID) { row[j] = row[j] + d2[i] * a1[j] }
-      }
-      for i in range(N_HID) {
-        gb1[i] = gb1[i] + d1[i]
-        let row = gW1[i]
-        for j in range(N_IN) { row[j] = row[j] + d1[i] * x[j] }
-      }
+let build_one_hot = fn (labels, k) {
+  mut rows = []
+  for label in labels {
+    mut row = []
+    for j in range(k) {
+      row.push(if j == label { 1.0 } else { 0.0 })
     }
-
-    for i in range(N_OUT) {
-      b2[i] = b2[i] - lr * gb2[i]
-      let row = W2[i]
-      let grow = gW2[i]
-      for j in range(N_HID) { row[j] = row[j] - lr * grow[j] }
-    }
-    for i in range(N_HID) {
-      b1[i] = b1[i] - lr * gb1[i]
-      let row = W1[i]
-      let grow = gW1[i]
-      for j in range(N_IN) { row[j] = row[j] - lr * grow[j] }
-    }
-
-    s = s + BATCH
+    rows.push(row)
   }
+  Tensor.from(rows)
 }
 
-# Sanity: required CSVs must be present
+# Sanity check.
 for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
           'train_images.csv', 'train_labels.csv',
           'test_images.csv',  'test_labels.csv'] {
@@ -157,59 +42,81 @@ for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
 }
 
 let load_t0 = Sys.time()
-let init_W1 = load_2d("{DIR}/init_W1.csv")
-let init_b1 = load_1d("{DIR}/init_b1.csv")
-let init_W2 = load_2d("{DIR}/init_W2.csv")
-let init_b2 = load_1d("{DIR}/init_b2.csv")
-let X  = load_2d("{DIR}/train_images.csv")
+let X  = Tensor.from_csv("{DIR}/train_images.csv") # [N, 784]
+let Xt = Tensor.from_csv("{DIR}/test_images.csv")  # [N_test, 784]
 let y  = load_int_1d("{DIR}/train_labels.csv")
-let Xt = load_2d("{DIR}/test_images.csv")
 let yt = load_int_1d("{DIR}/test_labels.csv")
+let init_W1 = Tensor.from_csv("{DIR}/init_W1.csv") # [30, 784]
+let init_b1 = Tensor.from_csv("{DIR}/init_b1.csv") # [30, 1]
+let init_W2 = Tensor.from_csv("{DIR}/init_W2.csv") # [10, 30]
+let init_b2 = Tensor.from_csv("{DIR}/init_b2.csv") # [10, 1]
 let t_load = Sys.time() - load_t0
 
-let n = X.size()
-puts("[culebra-train] loaded train={n} test={Xt.size()} in {t_load}s")
+let n = X.shape()[0]
+let Y = build_one_hot(y, N_OUT)        # [N, 10]
+puts("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load}s")
 
-let copy_2d = fn (m) {
-  mut r = []
-  for row in m {
-    mut nr = []
-    for v in row { nr.push(v) }
-    r.push(nr)
+let lr = ETA / to_float(BATCH)
+let inv_batch = 1.0 / to_float(BATCH)
+
+let run_epoch = fn (W1, b1, W2, b2) {
+  mut s = 0
+  while s < n {
+    let xb = X.slice(s, s + BATCH).transpose()        # [784, BATCH]
+    let tb = Y.slice(s, s + BATCH).transpose()        # [10,  BATCH]
+
+    let a1 = W1.linear_sigmoid(xb, b1)                # [30, BATCH]
+    let a2 = W2.linear_sigmoid(a1, b2)                # [10, BATCH]
+
+    let d2 = (a2 - tb) * a2 * (Tensor.ones(N_OUT, BATCH) - a2)
+    let d1 = W2.transpose().dot(d2) * a1 * (Tensor.ones(N_HID, BATCH) - a1)
+    Tensor.eval(d2, d1)
+
+    W2 -= d2.dot(a1.transpose()) * lr
+    b2 -= d2.sum(1).reshape([N_OUT, 1]) * lr * inv_batch
+    W1 -= d1.dot(xb.transpose()) * lr
+    b1 -= d1.sum(1).reshape([N_HID, 1]) * lr * inv_batch
+
+    Tensor.eval(W1, b1, W2, b2)
+    s = s + BATCH
   }
-  r
-}
-let copy_1d = fn (a) {
-  mut r = []
-  for v in a { r.push(v) }
-  r
 }
 
+# Cheap stubs so `mut` has an initializer; overwritten at the top of
+# every cycle from the init weights via Tensor.clone() — same shape
+# as numpy's `init_W1.copy()`.
+mut W1 = Tensor.zeros(N_HID, 784)
+mut b1 = Tensor.zeros(N_HID, 1)
+mut W2 = Tensor.zeros(N_OUT, N_HID)
+mut b2 = Tensor.zeros(N_OUT, 1)
 mut times = []
-mut W1 = init_W1
-mut b1 = init_b1
-mut W2 = init_W2
-mut b2 = init_b2
 for cycle in range(CYCLES) {
-  W1 = copy_2d(init_W1)
-  b1 = copy_1d(init_b1)
-  W2 = copy_2d(init_W2)
-  b2 = copy_1d(init_b2)
+  W1 = init_W1.clone()
+  b1 = init_b1.clone()
+  W2 = init_W2.clone()
+  b2 = init_b2.clone()
   let t0 = Sys.time()
-  run_epoch(W1, b1, W2, b2, X, y, n)
+  run_epoch(W1, b1, W2, b2)
   times.push(Sys.time() - t0)
 }
 
+# Inference on the held-out test set.
+let a1 = W1.linear_sigmoid(Xt.transpose(), b1)
+let a2 = W2.linear_sigmoid(a1, b2)
+let preds = a2.argmax(0)
+Tensor.eval(preds)
+
+let p = preds.to_array()
 mut correct = 0
-for k in range(Xt.size()) {
-  if predict(Xt[k], W1, b1, W2, b2) == yt[k] { correct = correct + 1 }
+for k in range(yt.size()) {
+  if to_long(p[k]) == yt[k] { correct = correct + 1 }
 }
-let acc = to_float(correct) / to_float(Xt.size())
+let acc = to_float(correct) / to_float(yt.size())
 
 let cold = times[0]
 mut warm_sum = 0.0
 for t in times { warm_sum = warm_sum + t }
 warm_sum = warm_sum - cold
 let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
-puts("[culebra-train] cold={cold}s warm={warm}s accuracy={acc}")
-print("BENCH label=culebra_train load={t_load} cold={cold} warm={warm} accuracy={acc}\n")
+puts("[culebra-tensor-train] cold={cold}s warm={warm}s accuracy={acc}")
+print("BENCH label=culebra_tensor_train load={t_load} cold={cold} warm={warm} accuracy={acc}\n")
