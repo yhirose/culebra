@@ -109,33 +109,39 @@ matrix = |nout, nin, std = 0.08|
     range(nin).map(|_| Value.new(Random.gauss(0.0, std))).collect()
   ).collect()
 
-mut layers = []
-for _ in 0..n_layer {
-  layers.push({
-    attn_wq: matrix(n_embd, n_embd),
-    attn_wk: matrix(n_embd, n_embd),
-    attn_wv: matrix(n_embd, n_embd),
-    attn_wo: matrix(n_embd, n_embd),
-    mlp_fc1: matrix(4 * n_embd, n_embd),
-    mlp_fc2: matrix(n_embd, 4 * n_embd)
-  })
-}
-state = {
-  wte: matrix(vocab_size, n_embd),
-  wpe: matrix(block_size, n_embd),
-  lm_head: matrix(vocab_size, n_embd),
-  layers: layers
+# Wrap the parameters in a class so that `model.parameters()` returns
+# every Value automatically (see the explicit override below — that
+# also keeps this file runnable under `--jit`). Field declaration
+# order preserves the original Random.gauss() call sequence — layers'
+# matrices first, then wte/wpe/lm_head — so the initial weights are
+# bit-identical to the pre-class version.
+class GPT {
+  new() {
+    mut layers = []
+    for _ in 0..n_layer {
+      layers.push({
+        attn_wq: matrix(n_embd, n_embd),
+        attn_wk: matrix(n_embd, n_embd),
+        attn_wv: matrix(n_embd, n_embd),
+        attn_wo: matrix(n_embd, n_embd),
+        mlp_fc1: matrix(4 * n_embd, n_embd),
+        mlp_fc2: matrix(n_embd, 4 * n_embd)
+      })
+    }
+    this.layers = layers
+    this.wte = matrix(vocab_size, n_embd)
+    this.wpe = matrix(block_size, n_embd)
+    this.lm_head = matrix(vocab_size, n_embd)
+  }
+  # `parameters()` is auto-synthesized by the runtime — the walker
+  # descends Arrays and plain Object dicts and collects every
+  # class-instance Value, in alphabetical-key order matching the
+  # interpreter's std::map iteration.
 }
 
-mut params = []
-collect_params = |mat| { for row in mat { for p in row { params.push(p) } } }
-collect_params(state.wte); collect_params(state.wpe); collect_params(state.lm_head)
-for layer in state.layers {
-  collect_params(layer.attn_wq); collect_params(layer.attn_wk)
-  collect_params(layer.attn_wv); collect_params(layer.attn_wo)
-  collect_params(layer.mlp_fc1); collect_params(layer.mlp_fc2)
-}
-puts("num params: {params.size()}") # flatten params into a single list[Value]
+let model = GPT.new()
+let params = model.parameters()
+puts("num params: {params.size()}") # flat Array<Value>, one per scalar weight
 
 
 # Define the model architecture: a function mapping tokens and parameters to logits over what comes next
@@ -161,8 +167,8 @@ rmsnorm = |x| {
 add_v = |a, b| range(a.size()).map(|i| a[i] + b[i]).collect()
 
 gpt = fn (token_id, pos_id, keys, values) {
-  let tok_emb = state.wte[token_id]               # token embedding
-  let pos_emb = state.wpe[pos_id]                 # position embedding
+  let tok_emb = model.wte[token_id]               # token embedding
+  let pos_emb = model.wpe[pos_id]                 # position embedding
   mut x = rmsnorm(add_v(tok_emb, pos_emb))        # joint token and position embedding, then rmsnorm
                                                   # (not redundant: backward pass via the residual connection)
 
@@ -170,7 +176,7 @@ gpt = fn (token_id, pos_id, keys, values) {
     # 1) Multi-head Attention block
     let x_residual1 = x
     x = rmsnorm(x)
-    let layer = state.layers[li]
+    let layer = model.layers[li]
     let q = linear(x, layer.attn_wq)
     let k = linear(x, layer.attn_wk)
     let v = linear(x, layer.attn_wv)
@@ -198,7 +204,7 @@ gpt = fn (token_id, pos_id, keys, values) {
     x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())
     x = add_v(linear(x, layer.mlp_fc2), x_residual2)
   }
-  linear(x, state.lm_head)
+  linear(x, model.lm_head)
 }
 
 

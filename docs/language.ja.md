@@ -813,6 +813,43 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 — `rhs.__op__(lhs)` は意味的に間違った結果になるためです。これらは
 LHS が dunder を持つ `Object` である必要があります。
 
+### 自動合成される `parameters()`
+
+すべての class インスタンスは、引数なしの `parameters()` メソッドを
+自動的に得ます。これは自身のフィールドから到達可能なすべての class
+インスタンス値をフラットな `Array` として返します。ウォーカーは
+`Array` の要素と、`class:` タグを持たない通常の `Object` の値を
+再帰的に降下し、出会った class インスタンスは leaf として収集して
+それ以上は降下しません。スキップされるもの: `class:` タグそのもの、
+および名前が `_` で始まるフィールド (private/キャッシュ用とみなす)。
+反復順序はキーの辞書順で、両バックエンドとも interp の `std::map`
+順序に揃います。
+
+    class Value { new(x) { this.x = x } }
+    class GPT {
+      new() {
+        this.layers = range(2).map(|_| {
+          W: range(4).map(|_|
+            range(4).map(|_| Value.new(0.0)).collect()
+          ).collect()
+        }).collect()
+        this.wte = range(8).map(|_| Value.new(0.0)).collect()
+      }
+    }
+    let model = GPT.new()
+    model.parameters().size()    # 40 — すべての Value が leaf として収集
+
+class インスタンスは leaf 扱いで、ウォーカーはそこで停止し、内部の
+フィールドへは降下しません。列挙にとって透過的にしたい中間グルーピン
+グには通常の Object dict (`class:` タグなし) を使い、実際にパラメータ
+として扱いたい葉だけを class インスタンスにする、というのが基本パター
+ンです。
+
+ユーザー定義の `parameters` メソッド (同名のプロパティ) があれば、
+それが合成版より優先されます — フィールド walk が意図する列挙と
+異なる場合に有用です。interp と JIT は同じウォーカーで合成しており、
+出力順序も一致します。
+
 ---
 
 ## 11. 関数とクロージャ

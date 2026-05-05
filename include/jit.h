@@ -2178,6 +2178,63 @@ __attribute__((used)) inline int64_t culebra_runtime_object_size(
   return static_cast<int64_t>(obj->prop_size());
 }
 
+// Auto-synthesized `class.parameters()` walker, mirroring the interp
+// helper in interpreter.h::_walk_collect_params. Walks `val`
+// recursively: Arrays are descended element-wise, plain Object dicts
+// (no `class:` tag) are descended into their property values, and
+// class instances are collected as leaves. Scalars are skipped.
+// Property keys starting with '_' are skipped (private/cache fields).
+inline void _jit_walk_collect_params(JitValue v, JitArray* out);
+
+inline void _jit_walk_collect_params_object(JitObject* obj, JitArray* out) {
+  // Match interp ordering (std::map sorted-by-key), and the JIT's own
+  // user-visible Object iteration which sorts before emitting (see
+  // culebra_runtime_object_keys). The Shape's names vector stores
+  // declaration order, so sort an index snapshot first.
+  if (!obj->shape) return;
+  std::vector<size_t> order;
+  order.reserve(obj->shape->names.size());
+  for (size_t i = 0; i < obj->shape->names.size(); i++) order.push_back(i);
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return obj->shape->names[a] < obj->shape->names[b];
+  });
+  for (auto i : order) {
+    std::string_view key(obj->shape->names[i]);
+    if (key == "class") continue;
+    if (!key.empty() && key[0] == '_') continue;
+    _jit_walk_collect_params(obj->slots[i].value, out);
+  }
+}
+
+inline void _jit_walk_collect_params(JitValue v, JitArray* out) {
+  if (v.tag == TAG_ARRAY) {
+    auto* arr = reinterpret_cast<JitArray*>(v.data);
+    for (size_t i = 0; i < arr->size; i++) {
+      _jit_walk_collect_params(arr->items[i], out);
+    }
+  } else if (v.tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    if (obj->has_own("class")) {
+      // Class instance — leaf parameter, collect.
+      culebra_runtime_value_retain(v.tag, v.data);
+      culebra_runtime_array_push(out, v.tag, v.data);
+    } else {
+      // Plain Object dict — recurse into values.
+      _jit_walk_collect_params_object(obj, out);
+    }
+  }
+}
+
+// Entry point invoked from JIT IR for `model.parameters()` when the
+// receiver is a class instance and has no user-defined `parameters`
+// method. Returns a fresh +1 Array of class-instance Values.
+__attribute__((used)) inline JitValue culebra_runtime_class_parameters_walk(
+    JitObject* obj) {
+  auto* result = culebra_runtime_array_new();
+  _jit_walk_collect_params_object(obj, result);
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(result)};
+}
+
 // --- Cell runtime ---
 
 __attribute__((used)) inline JitCell* culebra_runtime_cell_new(int8_t tag,
@@ -3970,6 +4027,8 @@ inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
+inline constexpr auto class_parameters_walk =
+    "culebra_runtime_class_parameters_walk";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto args_slice_to_array =
     "culebra_runtime_args_slice_to_array";
@@ -5477,6 +5536,7 @@ struct JIT {
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(), ptrTy,
                                  builder_.getInt8Ty());
+    module_->getOrInsertFunction(rt::class_parameters_walk, valueType_, ptrTy);
     // User-level throw: stashes tag+data in globals and raises a
     // C++ exception; try/catch landingpads read the globals back.
     module_->getOrInsertFunction(rt::throw_,
@@ -8591,9 +8651,78 @@ struct JIT {
       }
     }
 
+    // Auto-synthesized `parameters()` on class instances. Mirrors the
+    // interp branch in eval_property: when the receiver is a class
+    // instance (Object with `class:` tag) and has no user-defined
+    // `parameters` method, walk its fields and return a flat Array of
+    // class-instance Values. User-defined parameters takes precedence.
+    if (method == "parameters" && argsAst.nodes.empty()) {
+      return compile_class_parameters_call(argsAst, receiver);
+    }
+
     // User-defined method on Object: fetch property, call with this=receiver
     auto methodVal = compile_property_get(receiver, method);
     return compile_function_call(argsAst, methodVal, receiver);
+  }
+
+  // Auto-synthesized `parameters()` on class instances, JIT side. The
+  // runtime-branch picks between (a) the synthesized walker when the
+  // receiver is a class instance with no user-defined `parameters`,
+  // and (b) the original property-get + call path for user overrides
+  // and degenerate cases (non-Object receiver, plain dict). See
+  // _jit_walk_collect_params for the walker semantics.
+  llvm::Value* compile_class_parameters_call(const peg::Ast& argsAst,
+                                             llvm::Value* receiver) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+
+    auto tag = extract_tag(receiver);
+    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT),
+                                       "params.is.obj");
+
+    auto checkBB = llvm::BasicBlock::Create(ctx_, "params.check", fn);
+    auto autoBB = llvm::BasicBlock::Create(ctx_, "params.auto", fn);
+    auto fallbackBB = llvm::BasicBlock::Create(ctx_, "params.fb", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "params.merge", fn);
+
+    builder_.CreateCondBr(isObj, checkBB, fallbackBB);
+
+    // checkBB: receiver is Object — auto-synth iff has `class:` tag and
+    // no user-defined `parameters`.
+    builder_.SetInsertPoint(checkBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto classKey = get_or_create_global_str("class", ".params.ck");
+    auto paramsKey = get_or_create_global_str("parameters", ".params.pk");
+    auto hasClass = emit_object_has(objPtr, classKey, "params.has.class");
+    auto hasUser = emit_object_has(objPtr, paramsKey, "params.has.user");
+    auto useAuto = builder_.CreateAnd(
+        hasClass, builder_.CreateNot(hasUser), "params.use.auto");
+    builder_.CreateCondBr(useAuto, autoBB, fallbackBB);
+
+    // autoBB: call the runtime walker.
+    builder_.SetInsertPoint(autoBB);
+    auto walkResult = emit_call(
+        module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
+                                     ptrTy),
+        {objPtr}, "params.walk");
+    auto autoEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    // fallbackBB: original path. Errors out for non-Object receivers
+    // (compile_property_get's type check), or invokes the user-defined
+    // method, or fails with "expected Function, got Nil" for missing
+    // method on a plain dict — all matching pre-auto-synth behavior.
+    builder_.SetInsertPoint(fallbackBB);
+    auto methodVal = compile_property_get(receiver, "parameters");
+    auto fbResult = compile_function_call(argsAst, methodVal, receiver);
+    auto fbEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "params.result");
+    phi->addIncoming(walkResult, autoEnd);
+    phi->addIncoming(fbResult, fbEnd);
+    return phi;
   }
 
   // Emit the runtime dispatch between a user method (receiver owns a

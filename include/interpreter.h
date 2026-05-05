@@ -2743,6 +2743,53 @@ struct Interpreter {
         }));
   }
 
+  // Recursively flatten `val` into class-instance leaves: Arrays are
+  // descended element-wise, plain Object dicts (no `class:` tag) are
+  // descended into their property values, and class instances are
+  // collected as leaves. Scalars are skipped. Property keys starting
+  // with '_' are skipped (private/cache fields, like microgpt's
+  // `_visited` flag). Used to auto-synthesize `parameters()` for
+  // class instances; see eval_property below.
+  static void _walk_collect_params(const Value& val,
+                                   std::vector<Value>& out) {
+    if (val.type == Value::Array) {
+      for (const auto& elem : *val.to_array().values) {
+        _walk_collect_params(elem, out);
+      }
+    } else if (val.type == Value::Object) {
+      if (class_tag(val)) {
+        out.push_back(val);
+        return;
+      }
+      for (const auto& [key, sym] : *val.to_object().properties) {
+        if (key == "class") continue;
+        if (!key.empty() && key[0] == '_') continue;
+        _walk_collect_params(sym.val, out);
+      }
+    }
+  }
+
+  // Synthesize a parameter-less `parameters()` method on a class
+  // instance. Walks the instance's own properties and returns a flat
+  // Array of every class-instance Value found inside (the instance
+  // itself is not included). User-defined `parameters()` takes
+  // precedence — handled by the existing user-property branch in
+  // eval_property.
+  static Value _synthesize_parameters(const Value& val) {
+    return Value(
+        FunctionValue({}, [val](std::shared_ptr<Environment>) -> Value {
+          ArrayValue result;
+          if (val.type == Value::Object) {
+            for (const auto& [key, sym] : *val.to_object().properties) {
+              if (key == "class") continue;
+              if (!key.empty() && key[0] == '_') continue;
+              _walk_collect_params(sym.val, *result.values);
+            }
+          }
+          return Value(std::move(result));
+        }));
+  }
+
   Value eval_property(const peg::Ast& ast, std::shared_ptr<Environment> env,
                       const Value& val) {
     auto name = ast.token;
@@ -2762,6 +2809,14 @@ struct Interpreter {
         return _wrap_method_with_this(prop, val);
       }
       return prop;
+    }
+
+    // Auto-synthesized `parameters()` on class instances: walks the
+    // instance's fields and returns a flat Array of class-instance
+    // Values. A user-defined `parameters` method takes precedence
+    // (handled by the obj.has(name) branch above).
+    if (name == "parameters" && class_tag(val)) {
+      return _synthesize_parameters(val);
     }
 
     // Duck-typed iterator protocol fallback: any Object/Array that has
@@ -2787,7 +2842,10 @@ struct Interpreter {
       return string_builtins().count(name) > 0;
     }
     if (val.type == Value::Object || val.type == Value::Array) {
-      return val.to_object().has(name);
+      if (val.to_object().has(name)) return true;
+      // Synthesized `parameters()` is available on every class instance
+      // (see eval_property).
+      if (name == "parameters" && class_tag(val)) return true;
     }
     return false;
   }

@@ -847,6 +847,43 @@ Non-commutative operators (`-`, `/`, `%`, `**`, `@`, `<`, `<=`) do
 **not** reflect — `rhs.__op__(lhs)` would compute the wrong answer.
 For those, the LHS must be an Object carrying the dunder.
 
+### Auto-synthesized `parameters()`
+
+Every class instance gains a 0-arg `parameters()` method that returns a
+flat `Array` of every class-instance value reachable from its own
+fields. The walker descends through `Array` elements and plain `Object`
+dicts (no `class:` tag), and collects each class instance it encounters
+as a leaf without recursing into it. Skipped during the walk: the
+`class:` tag itself, and any field whose name starts with `_` (treated
+as private/cache state). Iteration is alphabetical by key, matching the
+interpreter's `std::map` order on both backends.
+
+    class Value { new(x) { this.x = x } }
+    class GPT {
+      new() {
+        this.layers = range(2).map(|_| {
+          W: range(4).map(|_|
+            range(4).map(|_| Value.new(0.0)).collect()
+          ).collect()
+        }).collect()
+        this.wte = range(8).map(|_| Value.new(0.0)).collect()
+      }
+    }
+    let model = GPT.new()
+    model.parameters().size()    # 40 — every Value collected as a leaf
+
+A class instance is a leaf: the walker stops at it rather than
+recursing into its fields. Use plain Object dicts (no `class:` tag)
+for intermediate grouping that should be transparent to the
+enumeration, and reserve class instances for the leaves you want to
+treat as the actual parameters.
+
+A user-defined `parameters` method (any property of that name) takes
+precedence over the synthesized one — useful when the field walk is
+not the intended enumeration. Both the interpreter and the JIT
+synthesize the method through the same walker; output ordering is
+identical.
+
 ---
 
 ## 11. Functions and closures

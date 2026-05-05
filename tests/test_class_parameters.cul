@@ -1,0 +1,123 @@
+# Auto-synthesized class.parameters() — Phase 1 / interp-only.
+#
+# Every class instance gets a built-in `parameters()` method that
+# walks its fields and returns a flat Array of class-instance Values.
+# Arrays of any depth are descended; plain Object dict literals
+# (no class: tag) are descended into; class instances are leaves.
+# Property keys starting with '_' (cache or private fields) are
+# skipped. A user-defined parameters() method takes precedence.
+
+# --- Basic: scalar fields + class-instance fields ---
+
+class V {
+  new(d) { this.data = d; this.grad = 0.0 }
+}
+
+class M1 {
+  new() {
+    this.a = V.new(1.0)
+    this.b = V.new(2.0)
+    this.scalar = 42         # not a class instance — should be skipped
+  }
+}
+
+let m1 = M1.new()
+let p1 = m1.parameters()
+assert(p1.size() == 2)
+# Iteration order is sorted-by-key (std::map): a, b. scalar is Long, skipped.
+assert(p1[0].data == 1.0)
+assert(p1[1].data == 2.0)
+
+# --- Nested Array of class instances ---
+
+class M2 {
+  new() {
+    this.row = [V.new(10.0), V.new(20.0), V.new(30.0)]
+  }
+}
+
+let m2 = M2.new()
+let p2 = m2.parameters()
+assert(p2.size() == 3)
+assert(p2[0].data == 10.0)
+assert(p2[2].data == 30.0)
+
+# --- Array of Array (matrix shape) ---
+
+class M3 {
+  new() {
+    this.W = [[V.new(1.0), V.new(2.0)],
+              [V.new(3.0), V.new(4.0)]]
+  }
+}
+
+let m3 = M3.new()
+let p3 = m3.parameters()
+assert(p3.size() == 4)
+assert(p3[0].data == 1.0)
+assert(p3[3].data == 4.0)
+
+# --- Plain dict literal (no class: tag) is descended ---
+
+class M4 {
+  new() {
+    this.state = { x: V.new(7.0), y: V.new(8.0) }
+  }
+}
+
+let m4 = M4.new()
+let p4 = m4.parameters()
+assert(p4.size() == 2)
+# Sorted by key: x then y.
+assert(p4[0].data == 7.0)
+assert(p4[1].data == 8.0)
+
+# --- Underscore fields are skipped ---
+
+class M5 {
+  new() {
+    this.a = V.new(1.0)
+    this._cache = V.new(99.0)     # leading underscore — skipped
+    this._visited = false         # also skipped
+  }
+}
+
+let m5 = M5.new()
+let p5 = m5.parameters()
+assert(p5.size() == 1)
+assert(p5[0].data == 1.0)
+
+# --- User-defined parameters() takes precedence ---
+
+class M6 {
+  new() {
+    this.a = V.new(100.0)
+    this.b = V.new(200.0)
+  }
+  parameters() { [this.a] }    # explicit override: only `a` is trainable
+}
+
+let m6 = M6.new()
+let p6 = m6.parameters()
+assert(p6.size() == 1)
+assert(p6[0].data == 100.0)
+
+# --- SGD-shaped usage: mutating the leaves through the returned Array ---
+
+class M7 {
+  new() {
+    this.W = [[V.new(0.5), V.new(1.5)]]
+  }
+}
+
+let m7 = M7.new()
+for p in m7.parameters() { p.data = p.data * 2.0 }
+# Re-fetch parameters and check the underlying instances were mutated.
+let after = m7.parameters()
+assert(after[0].data == 1.0)
+assert(after[1].data == 3.0)
+# Original through the field path also sees the mutation (same Values).
+assert(m7.W[0][0].data == 1.0)
+assert(m7.W[0][1].data == 3.0)
+
+puts("test_class_parameters: OK")
