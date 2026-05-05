@@ -12,10 +12,8 @@ if !IO.exists(data_path) {
   Sys.exit(1)
 }
 
-newline = "
-"
 mut docs = []
-for line in IO.read(data_path).split(newline) {
+for line in IO.read(data_path).split("\n") {
   let s = line.trim()
   if s.size() > 0 { docs.push(s) }
 }

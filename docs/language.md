@@ -100,11 +100,14 @@ and only recognized after `:` or `->`.
   bare trailing dot) or an `e`/`E` exponent is a `Float` (IEEE 754
   binary64). Examples: `1.0`, `0.5`, `-2.5` (unary minus applied to
   `2.5`), `1e-5`, `1.5e3`.
-* String: `'...'` (no escapes, no interpolation). Single quote is the
-  terminator; apostrophes inside must be avoided. (No escape syntax
-  yet.)
-* Interpolated string: `"...{expr}..."`. `{expr}` embeds any
-  expression; literal `{` is not expressible.
+* String: `'...'` is a **raw** string — every character between the
+  quotes is taken literally, including backslashes. There is no escape
+  syntax, no interpolation, and apostrophes inside are not expressible.
+* Interpolated string: `"...{expr}..."`. `{expr}` embeds any expression.
+  Recognized escape sequences: `\n` `\r` `\t` `\\` `\"` `\{` (use `\{`
+  to embed a literal `{` without starting an interpolation; raw `}` is
+  fine since it's only special as the interpolation terminator). An
+  unknown `\X` is preserved as the two literal characters `\` and `X`.
 * Boolean: `true`, `false`.
 * Nil: `nil`.
 
@@ -543,24 +546,42 @@ invoked with the receiver as its first argument.
 8. Strings and interpolation
 ----------------------------
 
-### String literals
+### Raw string literals
 
     'hello'
-    'it''s quite'   # not supported: there are currently no escapes
+    'C:\path\to\file'   # backslashes are literal — no escape decoding
+    'a\nb'              # 4 characters: a, \, n, b
 
-Single-quoted strings are taken verbatim between the quotes.
+Single-quoted strings are **raw**: every character is taken verbatim
+between the quotes. There are no escape sequences and no interpolation.
+A literal apostrophe inside a raw string is not expressible — use a
+double-quoted string with `\'` or `\"` if you need quote characters.
 
 ### Interpolated strings
 
     "hello {name}"
     "sum = {a + b}"
     "nested: {if x > 0 { 'pos' } else { 'neg' }}"
+    "line one\nline two"
+    "literal brace: \{ and tab:\there"
 
-A `"..."` string consists of plain text segments and `{expr}`
-segments. Each expression is evaluated, converted to its display form
-(see below), and concatenated with the surrounding text. `{{` and `}}`
-for literal braces are not supported; plan around that or use single
-quotes.
+A `"..."` string consists of plain text segments and `{expr}` segments.
+Each expression is evaluated, converted to its display form (see below),
+and concatenated with the surrounding text.
+
+Escape sequences (in plain-text segments only):
+
+| escape | byte               |
+| ------ | ------------------ |
+| `\n`   | newline (0x0A)     |
+| `\r`   | carriage return    |
+| `\t`   | tab                |
+| `\\`   | backslash          |
+| `\"`   | double quote       |
+| `\{`   | literal `{` (does not start an interpolation) |
+
+A `}` does not need escaping outside of an interpolation. An unknown
+`\X` is preserved unchanged as two characters (`\` and `X`).
 
 ### Display conversion
 
@@ -1736,8 +1757,10 @@ built-ins from §18.
 ---------------------
 
 * No big integers or bignums; `Long` overflow wraps.
-* No string escape sequences; strings are raw between quotes. `{{` /
-  `}}` for literal braces inside `"..."` are not supported.
+* Single-quoted `'...'` strings are raw (no escapes, no interpolation,
+  no embedded apostrophes). Double-quoted `"..."` strings recognize a
+  fixed escape set (`\n \r \t \\ \" \{`); the `{{` / `}}` form for
+  literal braces is not supported.
 * `String` is byte-indexed (`size` / `slice` count bytes); Unicode
   work goes through `code_points()` / `graphemes()` iterators.
 * `Array` and `Object` equality compare by reference, not structural.

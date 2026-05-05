@@ -18,13 +18,13 @@ Wall time of training only (`n_samples=0` to skip inference).
 | Implementation                 | 5 steps | 20 steps | per step | vs. Python |
 |--------------------------------|--------:|---------:|---------:|-----------:|
 | Python (CPython, scalar)       |  0.40 s |   1.48 s |   ~74 ms |         1× |
-| Culebra `--jit` (imperative)   |  1.51 s |   3.94 s |  ~197 ms |      ~2.7× |
-| Culebra `--jit` (HOF / lambda) |  2.11 s |   6.76 s |  ~338 ms |      ~4.6× |
+| Culebra `--jit` (imperative)   |  1.29 s |   2.26 s |  ~113 ms |      ~1.5× |
+| Culebra `--jit` (HOF / lambda) |  1.55 s |   2.92 s |  ~146 ms |      ~2.0× |
 | Culebra interpreter            | 14.0 s  |  55.7 s  | ~2,800 ms |    ~37.6× |
 
 `per step` is from the 20-step run (5-step is JIT-warmup-heavy
 and overstates per-step cost). At steady-state on `--jit`, the
-imperative Culebra port runs scalar microgpt within **2.7× of CPython**.
+imperative Culebra port runs scalar microgpt within **1.5× of CPython**.
 
 The "HOF / lambda" row is `microgpt_hof.cul` — the same algorithm
 written in functional style with `arr.map(|x| ...)` /
@@ -47,11 +47,11 @@ correctness issue.
 | Implementation              | Wall time |
 |-----------------------------|----------:|
 | Python                      |    ~74 s  |
-| Culebra `--jit` imperative  |    ~3.3 min |
-| Culebra `--jit` HOF         |    ~5.6 min |
+| Culebra `--jit` imperative  |    ~1.9 min |
+| Culebra `--jit` HOF         |    ~2.4 min |
 | Culebra interpreter         |    ~46 min |
 
-`--jit` imperative is now within ~2.7× of CPython on this workload —
+`--jit` imperative is now within ~1.5× of CPython on this workload —
 practically usable for actual scalar autograd training runs.
 
 ### Where the speedup came from
@@ -116,8 +116,61 @@ A subsequent JIT-side optimization round narrowed the gap further:
    to JitArray / JitObject / JitCell / JitClosure). Add and remove
    are now O(1) push / swap-pop with no per-call heap allocation.
 
+After the GC round, profiling pointed at the per-instance property
+map next: `_platform_memcmp` (string compares inside std::map find)
+and `culebra_runtime_object_get` together accounted for ~15% of
+self-time. A Python `__slots__`-style hidden-class layout dropped
+that further:
+
+8. **Shape-based JitObject layout.** Replace each instance's
+   per-object property map with a process-interned `Shape*`
+   (V8/SpiderMonkey hidden class) plus a `vector<JitObjectEntry>
+   slots` of values only. Two instances with the same property set
+   share a `Shape` pointer; a transition cache on each `Shape`
+   keeps `transition_add` O(1) on the second (and later) write of
+   the same name. This is the JIT analogue of Python's `__slots__`
+   — fixed-offset attribute access in place of per-instance
+   key/value pairs.
+
+9. **Inline cache for property reads.** Per-callsite IC global
+   `{Shape*, slot_offset}` allocated by the JIT. Fast path is
+   inlined IR — load `obj->shape`, compare with the cached shape,
+   and on hit load `slots.data()[offset].value` directly with no
+   runtime call. Slow path (`culebra_runtime_object_get_ic`) does
+   the lookup and refreshes the IC. Microgpt's `Value` class has
+   a stable shape after construction, so almost every read after
+   the first hits the inline path.
+
+10. **Linear scan over `Shape::names`.** With property reads
+    keying on shape pointer (cached in the IC), the std::map of
+    name → offset on each `Shape` was only consulted on cache
+    miss. For the typical 5–15 properties per shape, a flat scan
+    over the `names` vector beats both std::map and unordered_map
+    on cache traffic.
+
+11. **Pre-reserve 8 slots on first append.** `JitObject::append_slot`
+    was triggering 3–4 reallocations as `std::vector<JitObjectEntry>`
+    doubled (cap 1→2→4→8) during construction. Reserve 8 up front:
+    most JitObjects in this codebase end up with ≤ 8 own properties,
+    so the doubling chain collapses to a single allocation.
+
+12. **Property-write inline cache.** Mirror the read-side IC for
+    `obj.prop = ...`: each call site caches `{expected_shape,
+    result_shape, offset, prop_mut}`. Fast path is a single shape
+    compare in IR; on hit, a tiny helper handles either the update
+    case (overwrite `slots[offset]`) or the transition case (push
+    slot, bump shape). Removes the `find_slot` linear scan and the
+    `transition_add` map lookup from the hot path.
+
+13. **Skip `__ARGS__` Array allocation when unused.** The function
+    prologue used to unconditionally build an Array of overflow args
+    even when the body never referenced `__ARGS__`. New
+    `FuncInfo::uses_args` analysis (set when an `__ARGS__` IDENTIFIER
+    appears) gates the build; otherwise a cheap conditional release
+    of the slab retains replaces it.
+
 The full optimization round took the JIT imperative from ~10× of
-CPython to ~2.7× at steady-state.
+CPython to ~1.5× at steady-state.
 
 Reproduce:
 
@@ -144,18 +197,22 @@ on every backend.
 
 CPython's `__slots__` keeps each `Value` in a fixed-layout C struct
 allocated and freed in tens of nanoseconds. Culebra's `class`-sugar
-Object still goes through the shared property map plus refcount
-plumbing — but after the optimization rounds above (proto delegation,
-generational GC, vector-backed tracker), the gap to CPython is the
-honest ~2.7× shown in the steady-state column rather than the 330–2000×
-we saw before.
+Object now does the same thing structurally: a process-interned
+`Shape` shared across instances, slot offsets resolved at JIT compile
+time via inline caches on both reads and writes, and direct
+`slots.data()[offset].value` access on the fast path. After the full
+set of optimizations above, the gap to CPython is the honest ~1.5×
+shown in the steady-state column rather than the 330–2000× we saw
+before.
 
-`--jit` is ~14× faster than interp on this workload (3.94 s vs 55.7 s
+`--jit` is ~25× faster than interp on this workload (2.26 s vs 55.7 s
 at 20 steps) because the inner arithmetic on `Float` payloads —
 including the `**` peephole for `x**0.5` and the inlined Long fast
-paths for Math — runs as native LLVM IR rather than tree-walked.
-The interpreter has not received the JIT-side optimization rounds
-listed above and remains the proportional figure (~38× of CPython).
+paths for Math — runs as native LLVM IR rather than tree-walked,
+and after the shape + IC rounds property reads and writes in the hot
+path are fixed-offset slot accesses with no runtime dispatch. The
+interpreter has not received the JIT-side optimization rounds listed
+above and remains the proportional figure (~38× of CPython).
 
 ## Conclusion
 
@@ -167,28 +224,31 @@ shuffle/weighted_choice`, `IO.exists`, `**` operator. The full
 language coverage planned in Phases 1–4 is exercised.
 
 **Practically usable**: extrapolated to 1000 steps, `--jit` finishes
-in about ~3.3 minutes (Python ~74 s, ratio ~2.7×); the HOF lambda
-variant in ~5.6 minutes; the interpreter in ~46 minutes. The JIT
+in about ~1.9 minutes (Python ~74 s, ratio ~1.5×); the HOF lambda
+variant in ~2.4 minutes; the interpreter in ~46 minutes. The JIT
 imperative form is genuinely competitive with CPython for scalar
 autograd training.
 
-**Where the remaining JIT time goes** (re-profiled after the most
-recent round on a 500-step `--jit` run):
+**Where the remaining JIT time goes** (re-profiled after the full
+optimization round, sampled on a 100-step `--jit` run):
 
 | Category                                            | Self-time |
 |-----------------------------------------------------|----------:|
-| `_gc().add` (vector push, was hash insert pre-fix)  |       ~5% |
-| `_GcTracker::_do_collect` body                      |       ~4% |
-| Native JIT-compiled code (`<unknown binary>` blocks) |     ~10% |
-| `culebra_runtime_object_get` / `_set`               |       ~5% |
-| `_culebra_value_release_impl` + `value_retain`      |       ~3% |
-| `nanov2_*` (allocator churn)                        |       ~9% |
-| Real interpreter eval helpers (dunder, num ops)     |       ~5% |
-| Other (system, dyld stubs, stdlib)                  |     ~59% |
+| Allocator churn (`operator new`, `nanov2_*`, free)  |     ~8.8% |
+| GC tracker (`add`, `_do_collect`, `enumerate_children`) | ~7.1% |
+| Refcount traffic (`retain`, `release_impl`)         |     ~5.0% |
+| Allocation creators (`array_new`, `build_class_instance`) | ~3.6% |
+| Property write residual (IC fast path call only)    |     ~2.2% |
+| Number arithmetic helpers                           |     ~1.1% |
+| JIT-compiled native code + system stubs             |    ~72.0% |
 
-Most of the per-step cost has shifted out of the GC and into the
-ordinary Object-construction / property-access path. Beyond this
-point, additional speedup requires structural changes — most
+Property reads and writes — formerly the dominant `_platform_memcmp`
+and `culebra_runtime_object_set` lines — are no longer in the top
+profile entries: read and write inline caches both inline the fast
+path in IR with no runtime call. What remains is the fundamental
+cost of the value model: refcount, the cycle collector's
+unavoidable per-allocation registration, and allocator churn. Beyond
+this point, additional speedup requires structural changes — most
 notably a Matrix-based formulation that collapses per-step Object
 count, or a different value representation. Those are open as
 future work; the scalar port is closed at this performance level.

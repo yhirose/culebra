@@ -135,9 +135,16 @@ struct JitObject {
 
   // Append a new property. Caller must ensure `key` is absent;
   // otherwise the shape transition produces a corrupted layout.
+  //
+  // Reserves 8 slots on the first append: most JitObjects in this
+  // codebase end up with ≤ 8 own properties (microgpt's Value class
+  // has 6, plain Object literals 2–5, iterator wrappers 2). The
+  // reserve avoids the std::vector doubling chain (cap 1→2→4→8),
+  // turning 4 small heap allocations into one.
   size_t append_slot(std::string_view key, JitValue value, bool mut) {
     if (!shape) shape = culebra::shape_registry().root();
     shape = culebra::shape_registry().transition_add(shape, key);
+    if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
     return slots.size() - 1;
   }
@@ -188,6 +195,36 @@ struct JitObject {
     slots = std::move(new_slots);
   }
 };
+
+// Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT
+// module global per property-get site; the slow path (object_get_ic)
+// fills it on first miss and on any shape transition. Fast path IR
+// inlines: load obj->shape, compare with cached_shape; on hit, load
+// slots[cached_offset] directly without a runtime call.
+struct JitPropIC {
+  void* shape;     // last-seen Shape* (opaque to JIT IR)
+  uint64_t offset; // slot index into `slots` for that shape
+};
+
+// Per-callsite inline cache for `obj.prop = ...` writes. Two modes:
+//   update    — `expected == result`; `obj.prop` already exists at
+//               slot `offset` and we overwrite it.
+//   transition — `expected != result`; this site appends the new prop,
+//               so `obj` must currently have shape `expected` and we
+//               grow it to `result` (offset is implicit but stored).
+// Fast path IR inlines a single shape compare; on match, it dispatches
+// to a small fast helper (`object_set_fast`) that handles both modes
+// without the `find_slot` linear scan or `transition_add` lookup. On
+// miss, the slow helper (`object_set_ic`) does the full work and fills
+// the IC.
+struct JitPropSetIC {
+  void* expected_shape;  // shape `obj` must have for the fast path
+  void* result_shape;    // shape after this write (== expected for update)
+  uint64_t offset;       // slot to write (slots[offset] for update;
+                         // equals expected->names.size() for transition)
+  uint8_t prop_mut;      // `mut` flag for the new entry (transition only)
+};
+
 
 struct JitCell {
   int64_t refcount;
@@ -1434,6 +1471,18 @@ __attribute__((used)) inline JitArray* culebra_runtime_args_slice_to_array(
   return a;
 }
 
+// When the function body never references `__ARGS__`, the prologue
+// skips building the overflow Array — but the caller still transferred
+// +1 retains on every overflow arg via the slab, so those refs must
+// be released to balance the call. Cheap loop, called only when
+// `n_args > declaredArity`.
+__attribute__((used)) inline void culebra_runtime_release_overflow_args(
+    const JitValue* args, int64_t start, int64_t n) {
+  for (int64_t i = start; i < n; i++) {
+    _culebra_value_release_impl(args[i].tag, args[i].data);
+  }
+}
+
 // Validate the well-known-property contract (see well_known_props.h)
 // for a freshly-bound JIT value: must be a 0-arg Function. The arg's
 // +1 is released before throwing — codegen passes ownership and
@@ -1479,15 +1528,112 @@ __attribute__((used)) inline void culebra_runtime_object_set(
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
-__attribute__((used)) inline void culebra_runtime_object_get(
-    JitObject* obj, const char* key, int8_t* out_tag, int64_t* out_data) {
-  if (auto* entry = _find_property(obj, key)) {
+// Fast path for the property-write IC. Caller (JIT-emitted IR) has
+// already verified `obj->shape == ic->expected_shape`, so this just
+// dispatches on the cached mode:
+//   * update (expected == result): overwrite slots[offset], honoring
+//     the existing entry's mut flag.
+//   * transition (expected != result): grow `slots` by one (the
+//     reserved capacity from append_slot's first-call reserve(8)
+//     usually means no realloc), bump shape to result_shape.
+// `key` is borrowed only for the immutable-error message; never freed.
+__attribute__((used)) inline void culebra_runtime_object_set_fast(
+    JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
+    int64_t data, int64_t line, int64_t col) {
+  if (ic->expected_shape == ic->result_shape) {
+    auto& entry = obj->slots[ic->offset];
+    if (!entry.mut) {
+      _culebra_value_release_impl(tag, data);
+      throw std::runtime_error(std::format(
+          "immutable property '{}' at {}:{}.", key, line, col));
+    }
+    _culebra_value_release_impl(entry.value.tag, entry.value.data);
+    entry.value.tag = tag;
+    entry.value.data = data;
+  } else {
+    if (obj->slots.capacity() == 0) obj->slots.reserve(8);
+    obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
+    obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
+  }
+}
+
+// Slow path for the property-write IC. Performs the full lookup
+// (mirrors `culebra_runtime_object_set`), then refreshes the IC so
+// subsequent writes at this site with the same starting shape hit
+// the fast path. Caches `obj->shape` *as-observed* (including
+// nullptr) so fresh-Object writes can hit the fast path on the
+// second instance — overwriting it with `root()` would mean a
+// permanent miss for objects that always start out with no shape.
+__attribute__((used)) inline void culebra_runtime_object_set_ic(
+    JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  auto* before = obj->shape;
+  auto idx = obj->find_slot(key);
+  if (idx == static_cast<size_t>(-1)) {
+    auto* base = before ? before : culebra::shape_registry().root();
+    auto* result = culebra::shape_registry().transition_add(base, key);
+    ic->expected_shape = before;
+    ic->result_shape = result;
+    ic->offset = result->names.size() - 1;
+    ic->prop_mut = mut ? 1 : 0;
+    if (obj->slots.capacity() == 0) obj->slots.reserve(8);
+    obj->slots.push_back({JitValue{tag, data}, mut});
+    obj->shape = result;
+  } else {
+    auto& entry = obj->slots[idx];
+    if (!entry.mut) {
+      _culebra_value_release_impl(tag, data);
+      throw std::runtime_error(std::format(
+          "immutable property '{}' at {}:{}.", key, line, col));
+    }
+    _culebra_value_release_impl(entry.value.tag, entry.value.data);
+    entry.value.tag = tag;
+    entry.value.data = data;
+    ic->expected_shape = before;
+    ic->result_shape = before;
+    ic->offset = idx;
+    ic->prop_mut = entry.mut ? 1 : 0;
+  }
+  if (std::string_view(key) == "drop") obj->has_drop = true;
+}
+
+// Write `(tag, data)` to the out-params; nil if entry is null.
+inline void _write_value_out(const JitObjectEntry* entry, int8_t* out_tag,
+                              int64_t* out_data) {
+  if (entry) {
     *out_tag = entry->value.tag;
     *out_data = entry->value.data;
-    return;
+  } else {
+    *out_tag = 0;
+    *out_data = 0;
   }
-  *out_tag = 0;
-  *out_data = 0;
+}
+
+__attribute__((used)) inline void culebra_runtime_object_get(
+    JitObject* obj, const char* key, int8_t* out_tag, int64_t* out_data) {
+  _write_value_out(_find_property(obj, key), out_tag, out_data);
+}
+
+// Slow path for the per-callsite IC emitted by compile_property_get.
+// On an own-property hit, refreshes `ic->shape` / `ic->offset` so the
+// next read with the same shape stays on the inlined fast path. Proto
+// hits don't update the cache because the fast path keys on
+// `obj->shape`; caching the proto's offset there would load the wrong
+// slot. `ic` is borrowed; never released.
+__attribute__((used)) inline void culebra_runtime_object_get_ic(
+    JitObject* obj, const char* key, JitPropIC* ic, int8_t* out_tag,
+    int64_t* out_data) {
+  if (obj->shape) {
+    auto idx = obj->shape->offset(key);
+    if (idx != static_cast<size_t>(-1)) {
+      ic->shape = obj->shape;
+      ic->offset = idx;
+      _write_value_out(&obj->slots[idx], out_tag, out_data);
+      return;
+    }
+  }
+  _write_value_out(obj->proto ? _find_property(obj->proto, key) : nullptr,
+                   out_tag, out_data);
 }
 
 __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
@@ -3258,6 +3404,7 @@ inline constexpr auto random_weighted_choice =
     "culebra_runtime_random_weighted_choice";
 inline constexpr auto io_exists           = "culebra_runtime_io_exists";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
+inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
@@ -3267,6 +3414,8 @@ inline constexpr auto build_class_instance
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
+inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";
+inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
@@ -3324,6 +3473,8 @@ inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto args_slice_to_array =
     "culebra_runtime_args_slice_to_array";
+inline constexpr auto release_overflow_args =
+    "culebra_runtime_release_overflow_args";
 inline constexpr auto type_of             = "culebra_runtime_type_of";
 inline constexpr auto value_equal         = "culebra_runtime_value_equal";
 inline constexpr auto value_less          = "culebra_runtime_value_less";
@@ -3362,6 +3513,11 @@ struct JIT {
     // EH/defer emission flags (populated by scan_eh_defer):
     bool has_eh = false;        // contains TRY or any scope with defers
     bool has_fn_defer = false;  // contains DEFER directly in fn body
+    // True if the function body references the auto-bound `__ARGS__`
+    // identifier (overflow args Array). When false, the prologue skips
+    // building the Array entirely — saves a heap allocation per call
+    // for the common no-varargs case.
+    bool uses_args = false;
   };
 
   // LEXICAL_SCOPE nodes that contain a DEFER within their own scope level
@@ -3775,6 +3931,12 @@ struct JIT {
 
   // Counter for generating unique function names
   int funcCounter_ = 0;
+
+  // Counter for per-callsite property-get inline-cache globals.
+  int prop_ic_counter_ = 0;
+
+  // Counter for per-callsite property-set inline-cache globals.
+  int prop_set_ic_counter_ = 0;
 
   JIT(llvm::LLVMContext* ctx, llvm::Module* mod, llvm::IRBuilder<>& builder)
       : ctx_(*ctx), module_(mod), builder_(builder) {
@@ -4445,6 +4607,9 @@ struct JIT {
 
     if (node.tag == "IDENTIFIER"_) {
       auto name = std::string(node.token);
+      // `__ARGS__` is auto-bound by the function prologue; flag use so
+      // the prologue can skip the Array allocation when nothing reads it.
+      if (name == "__ARGS__") info.uses_args = true;
       if (my_locals.contains(name) || is_builtin_var(name)) return;
       // Check if in any outer scope — if so, it's a free var
       bool in_outer = false;
@@ -4919,8 +5084,9 @@ struct JIT {
       case "NIL"_:
         return make_nil();
       case "STRING"_:
-      case "INTERPOLATED_CONTENT"_:
         return compile_string(ast);
+      case "INTERPOLATED_CONTENT"_:
+        return compile_interpolated_content(ast);
       case "INTERPOLATED_STRING"_:
         return compile_interpolated_string(ast);
       case "ARRAY"_:
@@ -4995,6 +5161,12 @@ struct JIT {
     return make_string(global);
   }
 
+  llvm::Value* compile_interpolated_content(const peg::Ast& ast) {
+    auto str = decode_interpolated_content(ast.token);
+    auto global = builder_.CreateGlobalString(str, ".str");
+    return make_string(global);
+  }
+
   llvm::Value* compile_array(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -5044,27 +5216,92 @@ struct JIT {
   // next must be 0-arg Function) is emitted only when the literal
   // name is one of the three — keeping the hot path for ordinary
   // literal properties free of any name comparison at runtime.
+  //
+  // Inlines a per-callsite write IC: load `obj->shape` and compare
+  // with the cached expected shape. Match → fast helper that knows
+  // the offset and result shape from the IC (no `find_slot` linear
+  // scan, no `transition_add` lookup). Miss → slow helper that does
+  // the full work and refills the IC. See `JitPropSetIC` and
+  // `culebra_runtime_object_set_fast` / `_set_ic`.
   void emit_object_set(llvm::Value* objPtr, const std::string& name,
                        bool mut, llvm::Value* tag, llvm::Value* data) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
     if (is_well_known_prop(name)) {
       auto wkKey = get_or_create_global_str(name, ".wkkey");
       emit_call(
           module_->getOrInsertFunction(rt::check_well_known_prop,
                                        builder_.getVoidTy(), ptrTy,
-                                       builder_.getInt8Ty(),
-                                       builder_.getInt64Ty()),
+                                       i8Ty, i64Ty),
           {wkKey, tag, data});
     }
     auto keyPtr = get_or_create_global_str(name, ".key");
+
+    // IC: { void* expected, void* result, i64 offset, i8 prop_mut }.
+    // PrivateLinkage so each module owns its own cache cells. Initial
+    // expected_shape uses sentinel `(void*)1` (see compile_property_get
+    // for the rationale) so the first call always misses to the slow
+    // path; nullptr would spuriously match a fresh Object's null shape.
+    auto icTy = llvm::StructType::get(ctx_, {ptrTy, ptrTy, i64Ty, i8Ty});
+    auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
+        llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+    auto* icInit = llvm::ConstantStruct::get(
+        icTy, {sentinelPtr,
+               llvm::ConstantPointerNull::get(ptrTy),
+               llvm::ConstantInt::get(i64Ty, 0),
+               llvm::ConstantInt::get(i8Ty, 0)});
+    auto* icGlobal = new llvm::GlobalVariable(
+        *module_, icTy, /*isConstant=*/false,
+        llvm::GlobalValue::PrivateLinkage, icInit,
+        ".prop.set.ic." + std::to_string(prop_set_ic_counter_++));
+
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto fastBB = llvm::BasicBlock::Create(ctx_, "set.fast", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "set.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "set.merge", fn);
+
+    auto shapeFieldPtr = builder_.CreateConstInBoundsGEP1_64(
+        i8Ty, objPtr, offsetof(JitObject, shape), "set.shape.fp");
+    auto objShape = builder_.CreateLoad(ptrTy, shapeFieldPtr, "set.obj.shape");
+    auto icExpectedPtr =
+        builder_.CreateStructGEP(icTy, icGlobal, 0, "set.ic.exp.p");
+    auto icExpected =
+        builder_.CreateLoad(ptrTy, icExpectedPtr, "set.ic.exp");
+    auto shapeMatch =
+        builder_.CreateICmpEQ(objShape, icExpected, "set.shape.match");
+    builder_.CreateCondBr(shapeMatch, fastBB, slowBB);
+
+    builder_.SetInsertPoint(fastBB);
+    emit_call(
+        module_->getOrInsertFunction(rt::object_set_fast,
+                                     builder_.getVoidTy(), ptrTy, ptrTy,
+                                     ptrTy, i8Ty, i64Ty, i64Ty, i64Ty),
+        {objPtr, keyPtr, icGlobal, tag, data, current_line_val(),
+         current_column_val()});
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(slowBB);
     emit_call(
         module_->getOrInsertFunction(
-            rt::object_set, builder_.getVoidTy(), ptrTy,
-            ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
-            builder_.getInt64Ty(), builder_.getInt64Ty(),
-            builder_.getInt64Ty()),
-        {objPtr, keyPtr, builder_.getInt1(mut), tag, data,
+            rt::object_set_ic, builder_.getVoidTy(), ptrTy, ptrTy, ptrTy,
+            builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty),
+        {objPtr, keyPtr, icGlobal, builder_.getInt1(mut), tag, data,
          current_line_val(), current_column_val()});
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    // `obj->has_drop` is consulted by the destructor to decide whether
+    // to look up `drop` and call it. The runtime helpers used to set
+    // this field; with the IC split we know `name` at compile time, so
+    // emit the store directly and only when needed. After the merge so
+    // it doesn't fire if the slow path threw an immutable-property
+    // error (the throw skips merge via the landingpad).
+    if (name == "drop") {
+      auto hasDropPtr = builder_.CreateConstInBoundsGEP1_64(
+          i8Ty, objPtr, offsetof(JitObject, has_drop), "set.has_drop.p");
+      builder_.CreateStore(builder_.getInt8(1), hasDropPtr);
+    }
   }
 
   llvm::Value* emit_object_has(llvm::Value* objPtr, llvm::Value* keyPtr,
@@ -5116,8 +5353,10 @@ struct JIT {
     for (auto& node : ast.nodes) {
       llvm::Value* piece;
       if (node->tag == "INTERPOLATED_CONTENT"_) {
-        // Raw text between expressions
-        piece = builder_.CreateGlobalString(std::string(node->token), ".str");
+        // Raw text between expressions; decode escape sequences first
+        // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
+        auto decoded = decode_interpolated_content(node->token);
+        piece = builder_.CreateGlobalString(decoded, ".str");
       } else {
         // Expression - evaluate and convert to display string
         auto val = compile(*node);
@@ -5932,8 +6171,10 @@ struct JIT {
       case "INTERPOLATED_CONTENT"_: {
         auto is_str = builder_.CreateICmpEQ(extract_tag(subject),
                                             builder_.getInt8(TAG_STRING));
-        auto lit = builder_.CreateGlobalString(std::string(pattern.token),
-                                               ".pat.str");
+        auto pat_str = pattern.tag == "INTERPOLATED_CONTENT"_
+                           ? decode_interpolated_content(pattern.token)
+                           : std::string(pattern.token);
+        auto lit = builder_.CreateGlobalString(pat_str, ".pat.str");
         auto subj_ptr =
             builder_.CreateIntToPtr(extract_data(subject), ptrTy);
         auto eq = emit_call(
@@ -7134,11 +7375,11 @@ struct JIT {
     }
 
     // __ARGS__: Array of overflow args (args[declaredArity..n_args)).
-    // Always bound so referencing `__ARGS__` in the body never fails
-    // with `undefined variable` — callers that pass exactly the
-    // declared count see an empty Array (.size() == 0). The runtime
-    // takes over the +1 ownership from the remaining slab slots.
-    {
+    // Built only when the body references it (FuncInfo::uses_args).
+    // Otherwise we still need to release the +1 retains the caller
+    // transferred for each overflow slot — but the dedicated helper
+    // (release_overflow_args) skips the Array allocation entirely.
+    if (info.uses_args) {
       auto argsArr = emit_call(
           module_->getOrInsertFunction(
               rt::args_slice_to_array, ptrTy, ptrTy,
@@ -7153,6 +7394,28 @@ struct JIT {
       } else {
         define_var("__ARGS__", make_stack_slot("__ARGS__", argsVal));
       }
+    } else {
+      // Conditional: only call the release helper when there *are*
+      // overflow args (n_args > declaredArity). For the typical case
+      // where the caller passes the declared count exactly, this
+      // collapses to a single compare + not-taken branch — cheaper
+      // than always entering the helper.
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto needRelBB = llvm::BasicBlock::Create(ctx_, "args.release", fn);
+      auto skipBB = llvm::BasicBlock::Create(ctx_, "args.no_release", fn);
+      auto declI64 =
+          builder_.getInt64(static_cast<int64_t>(declaredArity));
+      auto hasOverflow = builder_.CreateICmpUGT(nArgsArg, declI64,
+                                                "args.has_overflow");
+      builder_.CreateCondBr(hasOverflow, needRelBB, skipBB);
+      builder_.SetInsertPoint(needRelBB);
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::release_overflow_args, builder_.getVoidTy(), ptrTy,
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {argsArg, declI64, nArgsArg});
+      builder_.CreateBr(skipBB);
+      builder_.SetInsertPoint(skipBB);
     }
 
     auto bodyVal = compile(*body_ast);
@@ -7255,10 +7518,20 @@ struct JIT {
     return callee;
   }
 
-  // Get a property from an object (TAG_OBJECT required)
+  // Get a property from an object (TAG_OBJECT required).
+  //
+  // Inlines a V8/SpiderMonkey-style monomorphic inline cache: each call
+  // site owns a private IC global of `{Shape*, slot_offset}`. Fast path
+  // (no runtime call): load `obj->shape`, compare with the cached
+  // shape, and on hit load `slots.data()[offset].value` directly. Slow
+  // path: call `culebra_runtime_object_get_ic`, which looks up the
+  // shape and refreshes the IC. Layout assumption: std::vector's first
+  // member is its data pointer (true on libc++/libstdc++/MSVC STL).
   llvm::Value* compile_property_get(llvm::Value* receiver,
                                     const std::string& name) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
 
     auto tag = extract_tag(receiver);
     auto isObj =
@@ -7276,24 +7549,85 @@ struct JIT {
     auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto keyPtr = builder_.CreateGlobalString(name, ".key");
 
+    // Initialise expected_shape to a non-null sentinel `(void*)1` so
+    // the very first call always misses to slow path. Real Shape*
+    // pointers are heap-allocated and 8-byte aligned, never == 1, so
+    // the sentinel cannot collide with a legitimate shape (in
+    // particular, it does NOT match the `shape == nullptr` state of a
+    // freshly-allocated Object — which the prior nullptr initialiser
+    // would have spuriously fast-pathed into an OOB slots[0] read).
+    auto icTy = llvm::StructType::get(ctx_, {ptrTy, i64Ty});
+    auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
+        llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+    auto* icInit = llvm::ConstantStruct::get(
+        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
+    auto* icGlobal = new llvm::GlobalVariable(
+        *module_, icTy, /*isConstant=*/false,
+        llvm::GlobalValue::PrivateLinkage, icInit,
+        ".prop.ic." + std::to_string(prop_ic_counter_++));
+
+    auto fastBB = llvm::BasicBlock::Create(ctx_, "prop.fast", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "prop.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "prop.merge", fn);
+
+    auto shapeFieldPtr = builder_.CreateConstInBoundsGEP1_64(
+        i8Ty, objPtr, offsetof(JitObject, shape), "shape.fieldp");
+    auto objShape = builder_.CreateLoad(ptrTy, shapeFieldPtr, "obj.shape");
+    auto icShapePtr =
+        builder_.CreateStructGEP(icTy, icGlobal, 0, "ic.shape.p");
+    auto icShape = builder_.CreateLoad(ptrTy, icShapePtr, "ic.shape");
+    auto shapeMatch =
+        builder_.CreateICmpEQ(objShape, icShape, "shape.match");
+    builder_.CreateCondBr(shapeMatch, fastBB, slowBB);
+
+    builder_.SetInsertPoint(fastBB);
+    auto icOffsetPtr =
+        builder_.CreateStructGEP(icTy, icGlobal, 1, "ic.off.p");
+    auto icOffset = builder_.CreateLoad(i64Ty, icOffsetPtr, "ic.off");
+
+    auto slotsFieldPtr = builder_.CreateConstInBoundsGEP1_64(
+        i8Ty, objPtr, offsetof(JitObject, slots), "slots.vec.p");
+    auto slotsData = builder_.CreateLoad(ptrTy, slotsFieldPtr, "slots.data");
+
+    auto byteOffset = builder_.CreateMul(
+        icOffset, llvm::ConstantInt::get(i64Ty, sizeof(JitObjectEntry)),
+        "entry.byte.off");
+    auto entryPtr = builder_.CreateInBoundsGEP(
+        i8Ty, slotsData, byteOffset, "entry.p");
+
+    auto fastTag = builder_.CreateLoad(i8Ty, entryPtr, "fast.tag");
+    auto entryDataPtr = builder_.CreateConstInBoundsGEP1_64(
+        i8Ty, entryPtr, offsetof(JitValue, data), "entry.data.p");
+    auto fastData = builder_.CreateLoad(i64Ty, entryDataPtr, "fast.data");
+    builder_.CreateBr(mergeBB);
+    auto fastEnd = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(slowBB);
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                              fn->getEntryBlock().begin());
-    auto outTag =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "get.tag");
-    auto outData =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "get.data");
-
+    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "get.tag");
+    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "get.data");
     emit_call(
-        module_->getOrInsertFunction(rt::object_get,
+        module_->getOrInsertFunction(rt::object_get_ic,
                                      builder_.getVoidTy(), ptrTy, ptrTy,
-                                     ptrTy, ptrTy),
-        {objPtr, keyPtr, outTag, outData});
+                                     ptrTy, ptrTy, ptrTy),
+        {objPtr, keyPtr, icGlobal, outTag, outData});
+    auto slowTag = builder_.CreateLoad(i8Ty, outTag, "slow.tag");
+    auto slowData = builder_.CreateLoad(i64Ty, outData, "slow.data");
+    builder_.CreateBr(mergeBB);
+    auto slowEnd = builder_.GetInsertBlock();
 
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    builder_.SetInsertPoint(mergeBB);
+    auto tagPhi = builder_.CreatePHI(i8Ty, 2, "prop.tag");
+    tagPhi->addIncoming(fastTag, fastEnd);
+    tagPhi->addIncoming(slowTag, slowEnd);
+    auto dataPhi = builder_.CreatePHI(i64Ty, 2, "prop.data");
+    dataPhi->addIncoming(fastData, fastEnd);
+    dataPhi->addIncoming(slowData, slowEnd);
+
     llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    result = builder_.CreateInsertValue(result, tagPhi, {0});
+    result = builder_.CreateInsertValue(result, dataPhi, {1});
     return result;
   }
 

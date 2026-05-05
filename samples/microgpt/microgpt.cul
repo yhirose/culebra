@@ -14,13 +14,8 @@ if !IO.exists(data_path) {
 }
 
 raw = IO.read(data_path)
-# Single-quoted strings take characters literally; there are no
-# escape sequences. Build a true newline via a bare interpolated
-# string containing one.
-newline = "
-"
 mut docs = []
-for line in raw.split(newline) {
+for line in raw.split("\n") {
   s = line.trim()
   if s.size() > 0 { docs.push(s) }
 }

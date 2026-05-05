@@ -136,7 +136,12 @@ const auto grammar_ = R"(
   STRING                   <-  ['] < (!['] .)* > [']
 
   INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
-  INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
+  # Inside interpolated strings, '\X' is one logical character: the parser
+  # keeps both bytes in the captured token and the runtime decoder turns
+  # recognized escapes (\n \r \t \\ \" \{) into their byte values. This
+  # also lets '\"' and '\{' appear inside the content without prematurely
+  # closing the string or starting an interpolation.
+  INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
 
   ~let                     <-  K('let')
   ~class                   <-  K('class')
@@ -193,6 +198,42 @@ inline peg::parser& get_parser() {
   }
 
   return parser;
+}
+
+// Decode escape sequences in an INTERPOLATED_CONTENT token. Recognized:
+//   \n \r \t \\ \" \{
+// Unknown '\X' is preserved literally as backslash + char (Python's
+// permissive default — keeps the string round-trippable rather than
+// silently dropping the escape introducer).
+inline std::string decode_interpolated_content(std::string_view raw) {
+  // Common case: most plain-text segments contain no backslash. Skip the
+  // per-byte loop and emit the source bytes verbatim.
+  if (raw.find('\\') == std::string_view::npos) {
+    return std::string(raw);
+  }
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); i++) {
+    char c = raw[i];
+    if (c == '\\' && i + 1 < raw.size()) {
+      char n = raw[i + 1];
+      switch (n) {
+        case 'n':  out += '\n'; i++; continue;
+        case 'r':  out += '\r'; i++; continue;
+        case 't':  out += '\t'; i++; continue;
+        case '\\': out += '\\'; i++; continue;
+        case '"':  out += '"';  i++; continue;
+        case '{':  out += '{';  i++; continue;
+        default:
+          out += '\\';
+          out += n;
+          i++;
+          continue;
+      }
+    }
+    out += c;
+  }
+  return out;
 }
 
 // Extract an optional TYPE_ANNOTATION sibling (the captured type name) from

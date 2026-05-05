@@ -19,21 +19,25 @@ namespace culebra {
 // Shapes are immutable. Adding a property to an Object transitions
 // it to a new Shape via `transition_add`; the source Shape caches
 // the transition so identical (parent, name) pairs always resolve
-// to the same target Shape. Property reads use the offset map to
-// translate name -> slot index.
+// to the same target Shape. Property reads use a linear scan over
+// `names` to translate name -> slot index — for the typical 5–15
+// property count seen in this codebase a flat scan beats both
+// std::map (tree pointer chasing) and unordered_map (hash + bucket)
+// on cache traffic. The slow path is hit only on inline-cache miss.
 struct Shape {
   std::vector<std::string> names;          // insertion order
-  std::map<std::string_view, size_t> offsets;
   Shape* parent = nullptr;                  // not used yet; reserved for proto chains
   std::map<std::string_view, Shape*> add_transitions;
 
   bool has(std::string_view name) const {
-    return offsets.contains(name);
+    return offset(name) != static_cast<size_t>(-1);
   }
   // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
   size_t offset(std::string_view name) const {
-    auto it = offsets.find(name);
-    return it != offsets.end() ? it->second : static_cast<size_t>(-1);
+    for (size_t i = 0; i < names.size(); i++) {
+      if (names[i] == name) return i;
+    }
+    return static_cast<size_t>(-1);
   }
 };
 
@@ -56,11 +60,8 @@ struct ShapeRegistry {
     if (it != current->add_transitions.end()) return it->second;
     auto next = std::make_unique<Shape>();
     next->names = current->names;
-    next->offsets = current->offsets;
     next->names.push_back(std::string(name));
     auto& stored_name = next->names.back();
-    next->offsets[std::string_view(stored_name)] =
-        next->names.size() - 1;
     auto* raw = next.get();
     owned_.push_back(std::move(next));
     // Key the cache by the new shape's stored name view so the

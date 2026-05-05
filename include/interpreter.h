@@ -1867,6 +1867,10 @@ struct Interpreter {
     }
 
     if (ast.is_token) {
+      // STRING (single-quote) is raw; INTERPOLATED_CONTENT decodes \X.
+      if (ast.tag == "INTERPOLATED_CONTENT"_) {
+        return Value(decode_interpolated_content(ast.token));
+      }
       return Value(std::string(ast.token));
     }
 
@@ -2038,9 +2042,12 @@ struct Interpreter {
         return val.type == Value::Float &&
                val.get<double>() == pattern.token_to_number<double>();
       case "STRING"_:
-      case "INTERPOLATED_CONTENT"_:
         return val.type == Value::String &&
                val.get<std::string>() == std::string(pattern.token);
+      case "INTERPOLATED_CONTENT"_:
+        return val.type == Value::String &&
+               val.get<std::string>() ==
+                   decode_interpolated_content(pattern.token);
       case "IDENTIFIER"_: {
         bind_pattern_name(env, pattern, val, mut);
         return true;
@@ -3011,10 +3018,15 @@ struct Interpreter {
 
   Value eval_interpolated_string(const peg::Ast& ast,
                                  std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
     std::string s;
     for (auto node : ast.nodes) {
-      const auto& val = eval(*node, env);
-      s += str_display_with_dunder(val);
+      if (node->tag == "INTERPOLATED_CONTENT"_) {
+        s += decode_interpolated_content(node->token);
+      } else {
+        const auto& val = eval(*node, env);
+        s += str_display_with_dunder(val);
+      }
     }
     return Value(std::move(s));
   };

@@ -596,6 +596,46 @@ test_interpolated_string = fn () {
   assert(ret == 'Hello World!')
 }
 
+// String escape sequences. Single-quote strings are RAW (every character
+// is taken literally — `\n` is two bytes). Double-quote (interpolated)
+// strings decode `\n \r \t \\ \" \{`; unknown `\X` is preserved as-is.
+test_string_escapes = fn () {
+  // Single-quote: raw, no decoding.
+  assert('\n'.size() == 2)
+  assert('\t'.size() == 2)
+
+  // Double-quote: control characters.
+  assert("\n".size() == 1)
+  assert("\r".size() == 1)
+  assert("\t".size() == 1)
+  assert("a\nb".size() == 3)
+  assert("a\nb".split("\n").size() == 2)
+  assert("a\nb".split("\n")[0] == 'a')
+  assert("a\nb".split("\n")[1] == 'b')
+
+  // Backslash and embedded quote.
+  assert("\\".size() == 1)
+  assert("\\" == '\')
+  assert("\"".size() == 1)
+  assert("a\"b".size() == 3)
+
+  // Brace escape — embed a literal `{` without starting interpolation.
+  // (`}` is only special as an interpolation terminator; raw `}` is fine.)
+  assert("\{".size() == 1)
+  assert("\{x}".size() == 3)
+  n = 42
+  assert("a\{n}" == 'a{n}')
+
+  // Unknown escapes pass through unchanged (Python-style: kept as the
+  // backslash + char, not silently stripped).
+  assert("\q" == '\q')
+  assert("\q".size() == 2)
+
+  // Interpolation still composes with escapes in the same string.
+  v = 7
+  assert("v={v}\tend" == 'v=7	end')
+}
+
 test_lexical_scope = fn () {
 	a = 0
 	{
@@ -1094,6 +1134,7 @@ test_random()
 test_io_exists()
 test_fib()
 test_interpolated_string()
+test_string_escapes()
 test_lexical_scope()
 test_builtin_methods()
 test_shadow_rules()
