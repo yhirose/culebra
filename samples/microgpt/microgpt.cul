@@ -1,48 +1,42 @@
-# Culebra port of karpathy/microgpt (scalar autograd), same algorithm
-# and hyperparameters as samples/microgpt/microgpt.py.
+# Culebra port of karpathy/microgpt (scalar autograd), unchanged
+# algorithm. Reference implementation for the benchmark; reads from
+# samples/microgpt/names.txt.
 #
-# Usage:
-#   ./build/culebra       samples/microgpt/microgpt.cul -- 1000
-#   ./build/culebra --jit samples/microgpt/microgpt.cul -- 1000
+# Usage: ./build/culebra [--jit] samples/microgpt/microgpt.cul -- [num_steps] [n_samples]
 
-Random.seed(42)
+Random.seed(42) # Let there be order among chaos
 
+# Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
 data_path = 'samples/microgpt/names.txt'
 if !IO.exists(data_path) {
   puts("error: {data_path} missing. Run `just fetch-names` first.")
   Sys.exit(1)
 }
 
-raw = IO.read(data_path)
 mut docs = []
-for line in raw.split("\n") {
-  s = line.trim()
+for line in IO.read(data_path).split("\n") {
+  let s = line.trim()
   if s.size() > 0 { docs.push(s) }
 }
 Random.shuffle(docs)
 puts("num docs: {docs.size()}")
 
-# Sorted unique character set. Linear dedupe is fine: names.txt only
-# contains ~27 distinct characters.
-mut uchars = []
-for d in docs {
-  for c in d {
-    if !uchars.contains(c) { uchars.push(c) }
-  }
-}
-uchars.sort_by(fn (c) { c })
-BOS = uchars.size()
-vocab_size = uchars.size() + 1
+# Let there be a Tokenizer to translate strings to sequences of integers ("tokens") and back
+mut uchars = [] # unique characters in the dataset become token ids 0..n-1
+for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
+uchars.sort_by(|c| c)
+BOS = uchars.size()              # token id for a special Beginning of Sequence (BOS) token
+vocab_size = uchars.size() + 1   # total number of unique tokens, +1 is for BOS
 puts("vocab size: {vocab_size}")
 
-# --- Autograd ---
 
+# Let there be Autograd to recursively apply the chain rule through a computation graph
 class Value {
   new(data, children = [], local_grads = []) {
-    this.data = data
-    this.grad = 0.0
-    this._children = children
-    this._local_grads = local_grads
+    this.data = data                # scalar value of this node calculated during forward pass
+    this.grad = 0.0                 # derivative of the loss w.r.t. this node, calculated in backward pass
+    this._children = children       # children of this node in the computation graph
+    this._local_grads = local_grads # local derivative of this node w.r.t. its children
     this._visited = false
   }
   __add__(other) {
@@ -66,8 +60,8 @@ class Value {
       _         => this * (1.0 / other)
     }
   }
-  log() { Value.new(Math.log(this.data), [this], [1.0 / this.data]) }
-  exp() { d = Math.exp(this.data); Value.new(d, [this], [d]) }
+  log()  { Value.new(Math.log(this.data), [this], [1.0 / this.data]) }
+  exp()  { d = Math.exp(this.data); Value.new(d, [this], [d]) }
   relu() {
     d = if this.data > 0.0 { this.data } else { 0.0 }
     g = if this.data > 0.0 { 1.0 } else { 0.0 }
@@ -75,7 +69,7 @@ class Value {
   }
   backward() {
     mut topo = []
-    build_topo = fn (node) {
+    build_topo = |node| {
       if !node._visited {
         node._visited = true
         for ch in node._children { self(ch) }
@@ -84,58 +78,37 @@ class Value {
     }
     build_topo(this)
     this.grad = 1.0
-    mut i = topo.size() - 1
-    while i >= 0 {
-      let v = topo[i]
-      mut j = 0
-      while j < v._children.size() {
+    topo.reverse()
+    topo.for_each(|v| {
+      Math.range(v._children.size()).for_each(|j| {
         let child = v._children[j]
         child.grad = child.grad + v._local_grads[j] * v.grad
-        j = j + 1
-      }
-      i = i - 1
-    }
+      })
+    })
     for tv in topo { tv._visited = false }
   }
 }
 
-# Python's `sum(arr)` starts at int 0 and relies on __radd__. Here we
-# use reduce with an explicit Value(0.0) accumulator.
-sum_v = fn (arr) {
-  arr.reduce(Value.new(0.0), fn (acc, v) { acc + v })
-}
+sum_v = |arr| arr.reduce(Value.new(0.0), |a, b| a + b)
 
-# Max of the `.data` field across an array of Values.
-max_data = fn (arr) {
-  mut best = arr[0].data
-  mut i = 1
-  while i < arr.size() {
-    let d = arr[i].data
-    if d > best { best = d }
-    i = i + 1
-  }
-  best
-}
+max_data = |arr| arr.reduce(arr[0].data, |best, v|
+  if v.data > best { v.data } else { best }
+)
 
-# --- Hyperparameters ---
-n_layer = 1
-n_embd = 16
-block_size = 16
-n_head = 4
-head_dim = n_embd / n_head
 
-matrix = fn (nout, nin, std = 0.08) {
-  mut m = []
-  for _ in 0..nout {
-    mut row = []
-    for _ in 0..nin { row.push(Value.new(Random.gauss(0.0, std))) }
-    m.push(row)
-  }
-  m
-}
+# Initialize the parameters, to store the knowledge of the model
+n_layer = 1     # depth of the transformer neural network (number of layers)
+n_embd = 16     # width of the network (embedding dimension)
+block_size = 16 # maximum context length of the attention window (note: the longest name is 15 characters)
+n_head = 4      # number of attention heads
+head_dim = n_embd / n_head # derived dimension of each head
+attn_scale = 1.0 / (head_dim ** 0.5)
 
-# Build per-layer weights as an Array of Objects; Culebra Object props
-# must be identifiers, so we can't use 'layer0.attn_wq' as a key.
+matrix = |nout, nin, std = 0.08|
+  Math.range(nout).map(|_|
+    Math.range(nin).map(|_| Value.new(Random.gauss(0.0, std))).collect()
+  ).collect()
+
 mut layers = []
 for _ in 0..n_layer {
   layers.push({
@@ -155,66 +128,46 @@ state = {
 }
 
 mut params = []
-collect = fn (mat) {
-  for row in mat { for p in row { params.push(p) } }
-}
-collect(state.wte); collect(state.wpe); collect(state.lm_head)
+collect_params = |mat| { for row in mat { for p in row { params.push(p) } } }
+collect_params(state.wte); collect_params(state.wpe); collect_params(state.lm_head)
 for layer in state.layers {
-  collect(layer.attn_wq); collect(layer.attn_wk)
-  collect(layer.attn_wv); collect(layer.attn_wo)
-  collect(layer.mlp_fc1); collect(layer.mlp_fc2)
+  collect_params(layer.attn_wq); collect_params(layer.attn_wk)
+  collect_params(layer.attn_wv); collect_params(layer.attn_wo)
+  collect_params(layer.mlp_fc1); collect_params(layer.mlp_fc2)
 }
-puts("num params: {params.size()}")
+puts("num params: {params.size()}") # flatten params into a single list[Value]
 
-# --- Model ---
 
-linear = fn (x, w) {
-  mut out = []
-  for wo in w {
-    mut acc = Value.new(0.0)
-    mut i = 0
-    while i < wo.size() {
-      acc = acc + wo[i] * x[i]
-      i = i + 1
-    }
-    out.push(acc)
-  }
-  out
-}
+# Define the model architecture: a function mapping tokens and parameters to logits over what comes next
+# Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU
+dot = |a, b| Math.range(a.size()).reduce(Value.new(0.0),
+  |acc, i| acc + a[i] * b[i])
 
-softmax = fn (logits) {
-  mx = max_data(logits)
-  mut exps = []
-  for val in logits { exps.push((val - mx).exp()) }
-  total = sum_v(exps)
-  mut out = []
-  for e in exps { out.push(e / total) }
-  out
+linear = |x, w| w.map(|wo| dot(wo, x))
+
+softmax = |logits| {
+  let mx = max_data(logits)
+  let exps = logits.map(|v| (v - mx).exp())
+  let total = sum_v(exps)
+  exps.map(|e| e / total)
 }
 
-rmsnorm = fn (x) {
-  mut ms = Value.new(0.0)
-  for xi in x { ms = ms + xi * xi }
-  ms = ms * (1.0 / x.size())
-  scale = (ms + 1e-5) ** -0.5
-  mut out = []
-  for xi in x { out.push(xi * scale) }
-  out
+rmsnorm = |x| {
+  let ms = sum_v(x.map(|xi| xi * xi)) * (1.0 / x.size())
+  let scale = (ms + 1e-5) ** -0.5
+  x.map(|xi| xi * scale)
 }
+
+add_v = |a, b| Math.range(a.size()).map(|i| a[i] + b[i]).collect()
 
 gpt = fn (token_id, pos_id, keys, values) {
-  tok_emb = state.wte[token_id]
-  pos_emb = state.wpe[pos_id]
-  mut x = []
-  mut i = 0
-  while i < tok_emb.size() {
-    x.push(tok_emb[i] + pos_emb[i])
-    i = i + 1
-  }
-  x = rmsnorm(x)
+  let tok_emb = state.wte[token_id]               # token embedding
+  let pos_emb = state.wpe[pos_id]                 # position embedding
+  mut x = rmsnorm(add_v(tok_emb, pos_emb))        # joint token and position embedding, then rmsnorm
+                                                  # (not redundant: backward pass via the residual connection)
 
-  mut li = 0
-  while li < n_layer {
+  for li in 0..n_layer {
+    # 1) Multi-head Attention block
     let x_residual1 = x
     x = rmsnorm(x)
     let layer = state.layers[li]
@@ -224,110 +177,70 @@ gpt = fn (token_id, pos_id, keys, values) {
     keys[li].push(k)
     values[li].push(v)
 
-    mut x_attn = []
-    mut h = 0
-    while h < n_head {
+    let x_attn = Math.range(n_head).flat_map(|h| {
       let hs = h * head_dim
       let q_h = q.slice(hs, hs + head_dim)
-      mut k_h = []
-      mut v_h = []
-      mut t = 0
-      while t < keys[li].size() {
-        k_h.push(keys[li][t].slice(hs, hs + head_dim))
-        v_h.push(values[li][t].slice(hs, hs + head_dim))
-        t = t + 1
-      }
-      mut attn_logits = []
-      mut tt = 0
-      let scale_inv = 1.0 / (head_dim ** 0.5)
-      while tt < k_h.size() {
-        mut dot = Value.new(0.0)
-        mut jj = 0
-        while jj < head_dim {
-          dot = dot + q_h[jj] * k_h[tt][jj]
-          jj = jj + 1
-        }
-        attn_logits.push(dot * scale_inv)
-        tt = tt + 1
-      }
+      let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
+      let v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))
+      let attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)
       let attn_weights = softmax(attn_logits)
-      mut head_out = []
-      mut j = 0
-      while j < head_dim {
-        mut s = Value.new(0.0)
-        mut tidx = 0
-        while tidx < v_h.size() {
-          s = s + attn_weights[tidx] * v_h[tidx][j]
-          tidx = tidx + 1
-        }
-        head_out.push(s)
-        j = j + 1
-      }
-      for e in head_out { x_attn.push(e) }
-      h = h + 1
-    }
-    x = linear(x_attn, layer.attn_wo)
-    mut x2 = []
-    mut k2 = 0
-    while k2 < x.size() { x2.push(x[k2] + x_residual1[k2]); k2 = k2 + 1 }
-    x = x2
+      Math.range(head_dim).map(|j|
+        Math.range(v_h.size()).reduce(Value.new(0.0),
+          |acc, t| acc + attn_weights[t] * v_h[t][j])
+      ).collect()
+    }).collect()
 
+    x = add_v(linear(x_attn, layer.attn_wo), x_residual1)
+
+    # 2) MLP block
     let x_residual2 = x
     x = rmsnorm(x)
-    x = linear(x, layer.mlp_fc1)
-    mut xr = []
-    for xi in x { xr.push(xi.relu()) }
-    x = xr
-    x = linear(x, layer.mlp_fc2)
-    mut x3 = []
-    mut k3 = 0
-    while k3 < x.size() { x3.push(x[k3] + x_residual2[k3]); k3 = k3 + 1 }
-    x = x3
-
-    li = li + 1
+    x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())
+    x = add_v(linear(x, layer.mlp_fc2), x_residual2)
   }
   linear(x, state.lm_head)
 }
 
-# --- Training ---
+
+# Let there be Adam, the blessed optimizer and its buffers
 learning_rate = 0.01
 beta1 = 0.85
 beta2 = 0.99
 eps_adam = 1e-8
-mut m_buf = []
-mut v_buf = []
+mut m_buf = [] # first moment buffer
+mut v_buf = [] # second moment buffer
 for _ in 0..params.size() { m_buf.push(0.0); v_buf.push(0.0) }
 
-num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 }
+# Repeat in sequence
+num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 } # number of training steps
 mut final_loss = 0.0
 
 mut step = 0
 while step < num_steps {
+  # Take single document, tokenize it, surround it with BOS special token on both sides
   let doc = docs[step % docs.size()]
   mut tokens = [BOS]
   for c in doc { tokens.push(uchars.index_of(c)) }
   tokens.push(BOS)
   let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
 
+  # Forward the token sequence through the model, building up the computation graph all the way to the loss
   mut keys = []
   mut values = []
   for _ in 0..n_layer { keys.push([]); values.push([]) }
-  mut losses = []
-  mut pos_id = 0
-  while pos_id < n {
-    let token_id = tokens[pos_id]
-    let target_id = tokens[pos_id + 1]
-    let logits = gpt(token_id, pos_id, keys, values)
-    let probs = softmax(logits)
-    losses.push(-probs[target_id].log())
-    pos_id = pos_id + 1
-  }
-  let loss = (1.0 / n) * sum_v(losses)
+
+  let total_loss = Math.range(n).reduce(Value.new(0.0), |acc, pos_id| {
+    let probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))
+    acc + (-probs[tokens[pos_id + 1]].log())
+  })
+  let loss = (1.0 / n) * total_loss # final average loss over the document sequence. May yours be low.
+
+  # Backward the loss, calculating the gradients with respect to all model parameters
   loss.backward()
 
-  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps))
-  mut i = 0
-  while i < params.size() {
+  # Adam optimizer update: update the model parameters based on the corresponding gradients
+  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps)) # linear learning rate decay
+  for i in 0..params.size() {
     let p = params[i]
     m_buf[i] = beta1 * m_buf[i] + (1.0 - beta1) * p.grad
     v_buf[i] = beta2 * v_buf[i] + (1.0 - beta2) * p.grad * p.grad
@@ -335,7 +248,6 @@ while step < num_steps {
     let v_hat = v_buf[i] / (1.0 - beta2 ** (step + 1))
     p.data = p.data - lr_t * m_hat / (v_hat ** 0.5 + eps_adam)
     p.grad = 0.0
-    i = i + 1
   }
 
   if (step + 1) % 10 == 0 || step == 0 {
@@ -347,10 +259,13 @@ while step < num_steps {
 
 puts("final loss: {final_loss}")
 
-# --- Inference ---
-temperature = 0.5
-puts('--- inference (hallucinated names) ---')
+
+# Inference: may the model babble back to us
 let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
+puts('--- inference (new, hallucinated names) ---')
+let pop = Math.range(vocab_size).collect()
+
 mut sample_idx = 0
 while sample_idx < n_samples {
   mut keys2 = []
@@ -358,21 +273,13 @@ while sample_idx < n_samples {
   for _ in 0..n_layer { keys2.push([]); values2.push([]) }
   mut token_id = BOS
   mut sample = []
-  mut pos_id = 0
-  while pos_id < block_size {
+  for pos_id in 0..block_size {
     let logits = gpt(token_id, pos_id, keys2, values2)
-    mut scaled = []
-    for l in logits { scaled.push(l / temperature) }
-    let probs = softmax(scaled)
-    mut pop = []
-    for i in 0..vocab_size { pop.push(i) }
-    mut weights = []
-    for p in probs { weights.push(p.data) }
+    let probs = softmax(logits.map(|l| l / temperature))
+    let weights = probs.map(|p| p.data)
     token_id = Random.weighted_choice(pop, weights)
-    if token_id == BOS { pos_id = block_size } else {
-      sample.push(uchars[token_id])
-      pos_id = pos_id + 1
-    }
+    if token_id == BOS { break }
+    sample.push(uchars[token_id])
   }
   puts("sample {sample_idx+1}: {sample.join('')}")
   sample_idx = sample_idx + 1

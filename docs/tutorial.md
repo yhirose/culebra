@@ -18,8 +18,8 @@ echo "puts('hello')" > hello.cul
 1. Values and bindings
 ----------------------
 
-Culebra has seven types: `Nil`, `Bool`, `Long`, `String`, `Array`,
-`Object`, `Function`.
+Culebra has eight types: `Nil`, `Bool`, `Long`, `Float`, `String`,
+`Array`, `Object`, `Function`.
 
 ```culebra
 x = 10             # bare assignment (new immutable binding, or reassign outer)
@@ -74,10 +74,10 @@ puts(arr.filter(fn (x) { x % 2 == 1 })) # [1, 3]
 puts(arr.reduce(0, fn (acc, x) { acc + x })) # 6
 puts(arr.sum())                       # 6   (also: product / min / max)
 
-obj = {name: 'alice', age: 30}
+obj = {name: 'alice', mut age: 30}    # `mut` per-property; otherwise immutable
 puts(obj.name)                        # 'alice'
 puts(obj.keys())                      # ['age', 'name']
-obj.age = 31                          # property reassignment
+obj.age = 31                          # property reassignment (only on `mut` props)
 ```
 
 4. String interpolation and pattern matching
@@ -103,11 +103,11 @@ puts(describe([1, 2, 3, 4]))          # 'head=1, rest=3'
 puts(describe({name: 'bob', age: 25})) # 'bob, 25'
 ```
 
-5. Objects from closures (Culebra's signature idiom)
-----------------------------------------------------
+5. Objects: closures and `class` sugar
+--------------------------------------
 
-Culebra has no class syntax, but an **object literal that captures
-state through closures** gives you an object-oriented style:
+Culebra has two styles for OO. **Closure objects** capture private
+state in the enclosing scope:
 
 ```culebra
 Car = {
@@ -121,14 +121,30 @@ Car = {
 }
 
 car = Car.new(5)
-car.run(1)
-car.run(2)
+car.run(1); car.run(2)
 puts(car.total())                     # 'total: 15 miles.'
 ```
 
 The bare `total_miles = ...` inside `run` reassigns the `mut
-total_miles` declared in the enclosing `new`. That is how the object's
-private state is stored and mutated.
+total_miles` declared in the enclosing `new`.
+
+**`class` sugar** is shorter and carries a `class:` tag for `match`
+and debugging. Fields set via `this.x = ...` are mutable by default.
+Both backends compile classes; methods include dunders (`__add__`,
+`__mul__`, `__pow__`, `__matmul__`, …) and the well-known `drop`
+RAII hook.
+
+```culebra
+class Car {
+  new(mpr)  { this.miles = 0; this.mpr = mpr }
+  run(n)    { this.miles = this.miles + this.mpr * n }
+  total()   { "total: {this.miles} miles." }
+}
+car = Car.new(5)
+car.run(1); car.run(2)
+puts(car.total())                     # 'total: 15 miles.'
+puts(car.class)                       # 'Car'
+```
 
 6. Shadow prohibition keeps you safe
 ------------------------------------

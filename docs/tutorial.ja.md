@@ -18,8 +18,8 @@ echo "puts('hello')" > hello.cul
 1. 値と宣言
 ------------
 
-Culebra には 7 種類の型があります: `Nil`, `Bool`, `Long`, `String`,
-`Array`, `Object`, `Function`。
+Culebra には 8 種類の型があります: `Nil`, `Bool`, `Long`, `Float`,
+`String`, `Array`, `Object`, `Function`。
 
 ```culebra
 x = 10             # bare 代入（イミュータブル束縛、外側があれば再代入）
@@ -73,10 +73,10 @@ puts(arr.filter(fn (x) { x % 2 == 1 })) # [1, 3]
 puts(arr.reduce(0, fn (acc, x) { acc + x })) # 6
 puts(arr.sum())                       # 6   (product / min / max も同様)
 
-obj = {name: 'alice', age: 30}
+obj = {name: 'alice', mut age: 30}    # `mut` を付けたプロパティのみ再代入可
 puts(obj.name)                        # 'alice'
 puts(obj.keys())                      # ['age', 'name']
-obj.age = 31                          # プロパティ再代入
+obj.age = 31                          # `mut` プロパティの再代入
 ```
 
 4. 文字列補間とパターンマッチ
@@ -102,11 +102,11 @@ puts(describe([1, 2, 3, 4]))          # 'head=1, rest=3'
 puts(describe({name: 'bob', age: 25})) # 'bob, 25'
 ```
 
-5. クロージャによるオブジェクト（Culebra の核イディオム）
-----------------------------------------------------------
+5. オブジェクト: クロージャと `class` 糖衣
+--------------------------------------------
 
-クラス構文はありませんが、**クロージャで state を捕捉する Object リテラル**
-でオブジェクト指向スタイルが書けます:
+OO スタイルは 2 通り。**クロージャオブジェクト**は外側スコープに
+state を捕捉する形:
 
 ```culebra
 Car = {
@@ -120,14 +120,30 @@ Car = {
 }
 
 car = Car.new(5)
-car.run(1)
-car.run(2)
+car.run(1); car.run(2)
 puts(car.total())                     # '走行距離: 15 miles.'
 ```
 
-`run` メソッド内の裸の `total_miles = ...` が、外側 `new` の `mut
-total_miles` を再代入します。これで private state を持つオブジェクト
-が表現できます。
+`run` 内の裸の `total_miles = ...` が外側 `new` の `mut total_miles`
+を再代入します。
+
+**`class` 糖衣**はより簡潔で、`class:` タグが付くので `match` や
+debug に使えます。`this.x = ...` で作るフィールドはデフォルトで
+mutable。インタプリタ・JIT 両方で動き、メソッドには dunder
+(`__add__`, `__mul__`, `__pow__`, `__matmul__`, ...) と well-known な
+`drop` (RAII フック) も書けます。
+
+```culebra
+class Car {
+  new(mpr)  { this.miles = 0; this.mpr = mpr }
+  run(n)    { this.miles = this.miles + this.mpr * n }
+  total()   { "走行距離: {this.miles} miles." }
+}
+car = Car.new(5)
+car.run(1); car.run(2)
+puts(car.total())                     # '走行距離: 15 miles.'
+puts(car.class)                       # 'Car'
+```
 
 6. シャドウ禁止で身を守る
 ---------------------------

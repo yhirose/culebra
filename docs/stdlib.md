@@ -168,9 +168,9 @@ puts(Math.iota(5, 2))      # []
 ### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
 
 Lazy counterpart to `Math.iota`: returns an iterator yielding the
-same integer sequence one element at a time. Use with `for`-in (or
-iterator-aware functions once Phase 3 adds method chaining) to
-iterate in **constant additional memory** regardless of the range
+same integer sequence one element at a time. Use with `for`-in or
+iterator method chains (`Math.range(N).map(...).reduce(...)` etc.)
+to iterate in **constant additional memory** regardless of the range
 size. Empty-range conventions match `iota`: `n <= 0` or
 `start >= end` yields an iterator that completes immediately.
 

@@ -8,7 +8,7 @@ the same AST.
 Features
 --------
 
-* Dynamic typing with 7 core types; first-class functions with lexical
+* Dynamic typing with 8 core types; first-class functions with lexical
   closures
 * Rust-flavored syntax (`let`, `mut`, `fn`, `|x| expr` lambdas);
   optional type annotations with runtime checks
@@ -40,6 +40,14 @@ make_counter = fn () {
 }
 c = make_counter()
 puts(c()); puts(c())                   # 1, 2
+
+# Class sugar — same encapsulation, terser; carries a `class:` tag
+class Counter {
+  new()  { this.n = 0 }
+  tick() { this.n = this.n + 1; this.n }
+}
+c2 = Counter.new()
+puts(c2.tick()); puts(c2.tick())       # 1, 2
 
 # Pattern matching
 describe = fn (v) {

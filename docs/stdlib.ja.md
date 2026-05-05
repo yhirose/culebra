@@ -160,10 +160,11 @@ puts(Math.iota(5, 2))      # []
 ### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
 
 `Math.iota` の遅延版。同じ整数列を 1 要素ずつ yield するイテレータを
-返します。`for`-in ループや（Phase 3 で入る予定の）イテレータ
-メソッドチェーンと組み合わせて使い、範囲サイズに関わらず**定数の
-追加メモリ**で反復します。空範囲の規約は `iota` と同じで、`n <= 0`
-や `start >= end` は即座に完了するイテレータを返します。
+返します。`for`-in ループやイテレータメソッドチェーン
+(`Math.range(N).map(...).reduce(...)` など) と組み合わせて使い、
+範囲サイズに関わらず**定数の追加メモリ**で反復します。空範囲の
+規約は `iota` と同じで、`n <= 0` や `start >= end` は即座に完了する
+イテレータを返します。
 
 ```culebra
 for i in Math.range(5)     { puts(i) }     # 0, 1, 2, 3, 4

@@ -160,7 +160,7 @@ From lowest to highest:
 2. `&&`
 3. `==`, `!=`, `<`, `<=`, `>`, `>=`
 4. Binary `+`, `-`
-5. Binary `*`, `/`, `%`
+5. Binary `*`, `/`, `%`, `@` (matmul)
 6. Unary `+`, `-`, `!` (right-associative)
 7. `**` (right-associative). Binds tighter than unary minus —
    `-2**2 == -4` — but the RHS of `**` itself accepts a unary
