@@ -1,5 +1,6 @@
 #pragma once
 
+#include <num_format.h>
 #include <parser.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
@@ -7,6 +8,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -171,7 +174,7 @@ struct ArrayValue : public ObjectValue {
 };
 
 struct Value {
-  enum Type { Nil, Bool, Long, String, Object, Array, Function };
+  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function };
 
   Value() : type(Nil) {}
   Value(const Value& rhs) : type(rhs.type), v(rhs.v) {}
@@ -193,10 +196,24 @@ struct Value {
 
   explicit Value(bool b) : type(Bool), v(b) {}
   explicit Value(long l) : type(Long), v(l) {}
+  explicit Value(double d) : type(Float), v(d) {}
   explicit Value(std::string&& s) : type(String), v(s) {}
   explicit Value(ObjectValue&& o) : type(Object), v(o) {}
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
+
+  bool is_numeric() const { return type == Long || type == Float; }
+
+  double to_double_coerce() const {
+    switch (type) {
+      case Long:
+        return static_cast<double>(get<long>());
+      case Float:
+        return get<double>();
+      default:
+        throw std::runtime_error("type error.");
+    }
+  }
 
   template <typename T>
   T& get() {
@@ -214,6 +231,12 @@ struct Value {
         return get<bool>();
       case Long:
         return get<long>() != 0;
+      case Float: {
+        // Python semantics: 0.0 (and -0.0) are false, every other finite
+        // value is true, NaN is true (matches Python's `bool(float('nan'))`).
+        auto d = get<double>();
+        return d != 0.0;
+      }
       default:
         throw std::runtime_error("type error.");
     }
@@ -305,6 +328,8 @@ struct Value {
         return to_bool() ? "true" : "false";
       case Long:
         return std::to_string(to_long());
+      case Float:
+        return str_float();
       case String:
         return std::format("'{}'", to_string());
       case Object:
@@ -319,6 +344,10 @@ struct Value {
     std::unreachable();
   }
 
+  std::string str_float() const {
+    return format_float_shortest(get<double>());
+  }
+
   // Unquoted variant: strings come through bare (for interpolation / to_string).
   std::string str_display() const {
     if (type == String) return get<std::string>();
@@ -331,7 +360,15 @@ struct Value {
   }
 
   bool operator==(const Value& rhs) const {
-    if (type != rhs.type) return false;
+    // Numeric cross-type equality: `1 == 1.0`, `0 == 0.0`. Matches
+    // Python, and keeps comparisons meaningful after a Long↔Float
+    // promotion elsewhere in an expression.
+    if (type != rhs.type) {
+      if (is_numeric() && rhs.is_numeric()) {
+        return to_double_coerce() == rhs.to_double_coerce();
+      }
+      return false;
+    }
     switch (type) {
       case Nil:
         return true;
@@ -339,6 +376,8 @@ struct Value {
         return get<bool>() == rhs.get<bool>();
       case Long:
         return get<long>() == rhs.get<long>();
+      case Float:
+        return get<double>() == rhs.get<double>();
       case String:
         return get<std::string>() == rhs.get<std::string>();
       // TODO: Object and Array support
@@ -350,17 +389,28 @@ struct Value {
 
   bool operator!=(const Value& rhs) const { return !operator==(rhs); }
 
-  bool operator<=(const Value& rhs) const {
+  // Shared body for all four ordering operators. `cmp` is invoked on a
+  // pair of doubles (numeric / Bool / String-lexicographic) or never
+  // called for Nil (Nil always yields false — see spec §5).
+  template <class Cmp>
+  bool ord_compare(const Value& rhs, Cmp cmp) const {
+    if (is_numeric() && rhs.is_numeric() && type != rhs.type) {
+      return cmp(to_double_coerce(), rhs.to_double_coerce());
+    }
     if (type != rhs.type) throw std::runtime_error("type error.");
     switch (type) {
       case Nil:
         return false;
       case Bool:
-        return get<bool>() <= rhs.get<bool>();
+        return cmp(double(get<bool>()), double(rhs.get<bool>()));
       case Long:
-        return get<long>() <= rhs.get<long>();
-      case String:
-        return get<std::string>() <= rhs.get<std::string>();
+        return cmp(double(get<long>()), double(rhs.get<long>()));
+      case Float:
+        return cmp(get<double>(), rhs.get<double>());
+      case String: {
+        auto c = get<std::string>().compare(rhs.get<std::string>());
+        return cmp(double(c), 0.0);
+      }
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -369,57 +419,16 @@ struct Value {
   }
 
   bool operator<(const Value& rhs) const {
-    if (type != rhs.type) throw std::runtime_error("type error.");
-    switch (type) {
-      case Nil:
-        return false;
-      case Bool:
-        return get<bool>() < rhs.get<bool>();
-      case Long:
-        return get<long>() < rhs.get<long>();
-      case String:
-        return get<std::string>() < rhs.get<std::string>();
-      // TODO: Object and Array support
-      default:
-        throw std::logic_error("invalid internal condition.");
-    }
-    std::unreachable();
+    return ord_compare(rhs, [](double a, double b) { return a < b; });
   }
-
-  bool operator>=(const Value& rhs) const {
-    if (type != rhs.type) throw std::runtime_error("type error.");
-    switch (type) {
-      case Nil:
-        return false;
-      case Bool:
-        return get<bool>() >= rhs.get<bool>();
-      case Long:
-        return get<long>() >= rhs.get<long>();
-      case String:
-        return get<std::string>() >= rhs.get<std::string>();
-      // TODO: Object and Array support
-      default:
-        throw std::logic_error("invalid internal condition.");
-    }
-    std::unreachable();
+  bool operator<=(const Value& rhs) const {
+    return ord_compare(rhs, [](double a, double b) { return a <= b; });
   }
-
   bool operator>(const Value& rhs) const {
-    if (type != rhs.type) throw std::runtime_error("type error.");
-    switch (type) {
-      case Nil:
-        return false;
-      case Bool:
-        return get<bool>() > rhs.get<bool>();
-      case Long:
-        return get<long>() > rhs.get<long>();
-      case String:
-        return get<std::string>() > rhs.get<std::string>();
-      // TODO: Object and Array support
-      default:
-        throw std::logic_error("invalid internal condition.");
-    }
-    std::unreachable();
+    return ord_compare(rhs, [](double a, double b) { return a > b; });
+  }
+  bool operator>=(const Value& rhs) const {
+    return ord_compare(rhs, [](double a, double b) { return a >= b; });
   }
 
   Type type;
@@ -606,6 +615,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
     case Value::Nil:      return name == "Nil";
     case Value::Bool:     return name == "Bool";
     case Value::Long:     return name == "Long";
+    case Value::Float:    return name == "Float";
     case Value::String:   return name == "String";
     case Value::Array:    return name == "Array";
     case Value::Object:   return name == "Object";
@@ -1084,6 +1094,46 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              }
                              return Value(std::move(out));
                            }))},
+      {"sum"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("this").to_array();
+         long acc = 0;
+         for (const auto& v : *arr.values) acc += v.to_long();
+         return Value(acc);
+       }))},
+      {"product"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("this").to_array();
+         long acc = 1;
+         for (const auto& v : *arr.values) acc *= v.to_long();
+         return Value(acc);
+       }))},
+      {"min"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("this").to_array();
+         if (arr.values->empty()) {
+           throw std::runtime_error("type error: min of empty Array.");
+         }
+         long best = (*arr.values)[0].to_long();
+         for (size_t i = 1; i < arr.values->size(); i++) {
+           long x = (*arr.values)[i].to_long();
+           if (x < best) best = x;
+         }
+         return Value(best);
+       }))},
+      {"max"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& arr = callEnv->get("this").to_array();
+         if (arr.values->empty()) {
+           throw std::runtime_error("type error: max of empty Array.");
+         }
+         long best = (*arr.values)[0].to_long();
+         for (size_t i = 1; i < arr.values->size(); i++) {
+           long x = (*arr.values)[i].to_long();
+           if (x > best) best = x;
+         }
+         return Value(best);
+       }))},
       {"sort_by"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
@@ -1437,13 +1487,16 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
          // nullopt-like sentinel: inner iterator value (or Nil when
          // none is active).
          auto inner = std::make_shared<Value>();
+         auto line = callEnv->get("__LINE__").to_long();
+         auto col = callEnv->get("__COLUMN__").to_long();
          return _make_iterator(
-             [upstream, f, inner](std::shared_ptr<Environment>) {
+             [upstream, f, inner, line, col](std::shared_ptr<Environment>) {
                for (;;) {
                  if (inner->type == Value::Nil) {
                    auto outer = _iter_next_value(upstream);
                    if (!outer) return _iter_step_done();
-                   *inner = _get_iterator(_invoke_callback(f, *outer), 0, 0);
+                   *inner = _get_iterator(_invoke_callback(f, *outer),
+                                          line, col);
                  }
                  auto v = _iter_next_value(*inner);
                  if (!v) { *inner = Value(); continue; }
@@ -1456,9 +1509,11 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto first = callEnv->get("this");
+         auto line = callEnv->get("__LINE__").to_long();
+         auto col = callEnv->get("__COLUMN__").to_long();
          // Resolve other's iterator up front; also accept anything
          // iterable for `other` (duck-typed).
-         auto second = _get_iterator(callEnv->get("other"), 0, 0);
+         auto second = _get_iterator(callEnv->get("other"), line, col);
          auto on_first = std::make_shared<bool>(true);
          return _make_iterator(
              [first, second, on_first](std::shared_ptr<Environment>) {
@@ -1479,7 +1534,9 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"other", false}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto a = callEnv->get("this");
-         auto b = _get_iterator(callEnv->get("other"), 0, 0);
+         auto line = callEnv->get("__LINE__").to_long();
+         auto col = callEnv->get("__COLUMN__").to_long();
+         auto b = _get_iterator(callEnv->get("other"), line, col);
          return _make_iterator([a, b](std::shared_ptr<Environment>) {
            auto va = _iter_next_value(a);
            if (!va) return _iter_step_done();
@@ -1584,6 +1641,52 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
          while (_iter_next_value(upstream)) n++;
          return Value(n);
        }))},
+
+      {"sum"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         long acc = 0;
+         while (auto v = _iter_next_value(upstream)) acc += v->to_long();
+         return Value(acc);
+       }))},
+
+      {"product"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         long acc = 1;
+         while (auto v = _iter_next_value(upstream)) acc *= v->to_long();
+         return Value(acc);
+       }))},
+
+      {"min"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto first = _iter_next_value(upstream);
+         if (!first) {
+           throw std::runtime_error("type error: min of empty Iterator.");
+         }
+         long best = first->to_long();
+         while (auto v = _iter_next_value(upstream)) {
+           long x = v->to_long();
+           if (x < best) best = x;
+         }
+         return Value(best);
+       }))},
+
+      {"max"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto first = _iter_next_value(upstream);
+         if (!first) {
+           throw std::runtime_error("type error: max of empty Iterator.");
+         }
+         long best = first->to_long();
+         while (auto v = _iter_next_value(upstream)) {
+           long x = v->to_long();
+           if (x > best) best = x;
+         }
+         return Value(best);
+       }))},
   };
   return props_;
 }
@@ -1644,6 +1747,8 @@ struct Interpreter {
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_:
         return eval_bin_expression(ast, env);
+      case "POWER"_:
+        return eval_power(ast, env);
       case "IDENTIFIER"_:
         return eval_identifier(ast, env);
       case "OBJECT"_:
@@ -1656,6 +1761,8 @@ struct Interpreter {
         return eval_bool(ast, env);
       case "NUMBER"_:
         return eval_number(ast, env);
+      case "FLOAT"_:
+        return eval_float(ast, env);
       case "INTERPOLATED_STRING"_:
         return eval_interpolated_string(ast, env);
       case "DEBUGGER"_:
@@ -1842,6 +1949,9 @@ struct Interpreter {
       case "NUMBER"_:
         return val.type == Value::Long &&
                val.get<long>() == pattern.token_to_number<long>();
+      case "FLOAT"_:
+        return val.type == Value::Float &&
+               val.get<double>() == pattern.token_to_number<double>();
       case "STRING"_:
       case "INTERPOLATED_CONTENT"_:
         return val.type == Value::String &&
@@ -2000,13 +2110,14 @@ struct Interpreter {
     }
 
     // Overflow args (incl. variadic built-ins' sink) bind to __ARGS__.
-    if (total > params.size()) {
-      ArrayValue extras;
-      for (size_t idx = params.size(); idx < total; idx++) {
-        extras.values->push_back(arg_value(idx));
-      }
-      callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+    // Always bind — the Array is empty when no overflow — so a body that
+    // checks `__ARGS__.size()` works whether or not the caller passes
+    // extras. This matches the JIT's unified calling convention.
+    ArrayValue extras;
+    for (size_t idx = params.size(); idx < total; idx++) {
+      extras.values->push_back(arg_value(idx));
     }
+    callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
 
     callEnv->initialize("__LINE__", Value((long)call_line), false);
     callEnv->initialize("__COLUMN__", Value((long)call_column), false);
@@ -2246,41 +2357,103 @@ struct Interpreter {
 
   Value eval_unary_minus(const peg::Ast& ast,
                          std::shared_ptr<Environment> env) {
-    return Value(eval(*ast.nodes[1], env).to_long() * -1);
+    auto v = eval(*ast.nodes[1], env);
+    if (v.type == Value::Float) return Value(-v.get<double>());
+    return Value(v.to_long() * -1);
   }
 
   Value eval_unary_not(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     return Value(!eval(*ast.nodes[1], env).to_bool());
   }
 
+  // Arithmetic with Long↔Float promotion. Both operands Long → Long
+  // result (integer arithmetic, truncated division/modulo — matching
+  // C semantics, unchanged from before Float was introduced). Either
+  // operand Float → Float result via double promotion.
+  Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope) {
+    if (!lhs.is_numeric() || !rhs.is_numeric()) {
+      throw std::runtime_error("type error.");
+    }
+    // Integer fast path: both Long.
+    if (lhs.type == Value::Long && rhs.type == Value::Long) {
+      auto a = lhs.get<long>();
+      auto b = rhs.get<long>();
+      switch (ope) {
+        case '+': return Value(a + b);
+        case '-': return Value(a - b);
+        case '*': return Value(a * b);
+        case '/':
+          if (b == 0) throw std::runtime_error("divide by 0 error");
+          return Value(a / b);
+        case '%':
+          if (b == 0) throw std::runtime_error("divide by 0 error");
+          return Value(a % b);
+      }
+      throw std::logic_error("invalid arithmetic operator");
+    }
+    // Mixed or both-Float path: promote to double.
+    auto a = lhs.to_double_coerce();
+    auto b = rhs.to_double_coerce();
+    switch (ope) {
+      case '+': return Value(a + b);
+      case '-': return Value(a - b);
+      case '*': return Value(a * b);
+      case '/':
+        // Follow Python: float divide-by-zero also raises.
+        if (b == 0.0) throw std::runtime_error("divide by 0 error");
+        return Value(a / b);
+      case '%':
+        if (b == 0.0) throw std::runtime_error("divide by 0 error");
+        return Value(std::fmod(a, b));
+    }
+    throw std::logic_error("invalid arithmetic operator");
+  }
+
   Value eval_bin_expression(const peg::Ast& ast,
                             std::shared_ptr<Environment> env) {
-    auto ret = eval(*ast.nodes[0], env).to_long();
+    auto ret = eval(*ast.nodes[0], env);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto val = eval(*ast.nodes[i + 1], env).to_long();
+      auto rhs = eval(*ast.nodes[i + 1], env);
       auto ope = eval(*ast.nodes[i], env).to_string()[0];
-      switch (ope) {
-        case '+':
-          ret += val;
-          break;
-        case '-':
-          ret -= val;
-          break;
-        case '*':
-          ret *= val;
-          break;
-        case '%':
-          ret %= val;
-          break;
-        case '/':
-          if (val == 0) {
-            throw std::runtime_error("divide by 0 error");
-          }
-          ret /= val;
-          break;
-      }
+      ret = eval_bin_op_step(ret, rhs, ope);
     }
-    return Value(ret);
+    return ret;
+  }
+
+  // `**` is right-associative (grammar makes POWER recurse on the RHS),
+  // so we evaluate lhs and rhs then combine. Python semantics:
+  //   Long ** non-negative Long  → Long
+  //   Long ** negative Long      → Float
+  //   any Float operand          → Float
+  //   0 ** 0 = 1 (matches IEEE 754 and Python).
+  Value eval_power(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto base = eval(*ast.nodes[0], env);
+    auto exp = eval(*ast.nodes[2], env);
+    if (!base.is_numeric() || !exp.is_numeric()) {
+      throw std::runtime_error("type error.");
+    }
+    if (base.type == Value::Long && exp.type == Value::Long) {
+      auto a = base.get<long>();
+      auto b = exp.get<long>();
+      if (b >= 0) {
+        // Integer exponentiation by squaring; wraps on overflow to
+        // match the rest of Long arithmetic (no bignum).
+        long result = 1, acc = a;
+        long e = b;
+        while (e > 0) {
+          if (e & 1) result *= acc;
+          e >>= 1;
+          if (e > 0) acc *= acc;
+        }
+        return Value(result);
+      }
+      // Negative integer exponent: promote to float so `2 ** -1 == 0.5`.
+      if (a == 0) throw std::runtime_error("divide by 0 error");
+      return Value(std::pow(static_cast<double>(a), static_cast<double>(b)));
+    }
+    auto x = base.to_double_coerce();
+    auto y = exp.to_double_coerce();
+    return Value(std::pow(x, y));
   }
 
   bool is_keyword(std::string_view ident) const {
@@ -2435,6 +2608,10 @@ struct Interpreter {
   Value eval_number(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     return Value(ast.token_to_number<long>());
   };
+
+  Value eval_float(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    return Value(ast.token_to_number<double>());
+  }
 
   Value eval_interpolated_string(const peg::Ast& ast,
                                  std::shared_ptr<Environment> env) {

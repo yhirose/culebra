@@ -23,45 +23,50 @@ inline std::vector<std::string>& _culebra_sys_argv_holder() {
 // Runtime functions callable from JIT'd code
 // ---------------------------------------------------------------------------
 
+// Bring the shared numeric helpers into scope so the extern "C"
+// runtime wrappers below can use unqualified names.
+using culebra::throw_type_error_at;
+using culebra::parse_long_strict;
+using culebra::parse_double_strict;
+
 extern "C" {
 
 // --- Globals ---
 
 __attribute__((used)) inline int64_t culebra_runtime_to_long(
     const char* s, int64_t line, int64_t col) {
-  auto fail = [&]() {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
-  };
-  if (!s) fail();
-  size_t i = 0, j = std::strlen(s);
-  while (i < j && std::isspace(static_cast<unsigned char>(s[i]))) i++;
-  while (j > i && std::isspace(static_cast<unsigned char>(s[j - 1]))) j--;
-  if (i == j) fail();
-  try {
-    size_t used = 0;
-    std::string t(s + i, j - i);
-    long v = std::stol(t, &used, 10);
-    if (used != t.size()) fail();
-    return static_cast<int64_t>(v);
-  } catch (const std::runtime_error&) {
-    throw;
-  } catch (...) {
-    fail();
+  if (!s) throw_type_error_at(line, col);
+  return parse_long_strict(s, line, col);
+}
+
+__attribute__((used)) inline JitValue culebra_runtime_to_long_any(
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag == TAG_LONG) return {TAG_LONG, data};
+  if (tag == TAG_FLOAT) {
+    return {TAG_LONG, static_cast<int64_t>(_culebra_float_to_double(data))};
   }
-  return 0;  // unreachable
+  if (tag == TAG_STRING) {
+    return {TAG_LONG,
+            parse_long_strict(reinterpret_cast<const char*>(data), line, col)};
+  }
+  throw_type_error_at(line, col);
+}
+
+__attribute__((used)) inline JitValue culebra_runtime_to_float_any(
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag == TAG_FLOAT) return {TAG_FLOAT, data};
+  if (tag == TAG_LONG) {
+    return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(data))};
+  }
+  if (tag == TAG_STRING) {
+    auto d = parse_double_strict(reinterpret_cast<const char*>(data), line, col);
+    return {TAG_FLOAT, _culebra_double_to_bits(d)};
+  }
+  throw_type_error_at(line, col);
 }
 
 __attribute__((used)) inline const char* culebra_runtime_type_of(int8_t tag) {
-  switch (tag) {
-    case 0: return "Nil";
-    case 1: return "Bool";
-    case 2: return "Long";
-    case 3: return "Function";
-    case 4: return "String";
-    case 5: return "Array";
-    case 6: return "Object";
-  }
-  return "Unknown";
+  return _culebra_tag_name(tag);
 }
 
 __attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
@@ -144,7 +149,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {
     auto* str = _culebra_heap_str(s);
-    culebra_runtime_array_push(r, culebra::TAG_STRING,
+    culebra_runtime_array_push(r, TAG_STRING,
                                reinterpret_cast<int64_t>(str));
   }
   return r;
@@ -166,9 +171,17 @@ inline void JIT::declare_stdlib_runtime() {
   module_->getOrInsertFunction(rt::to_long,
                                builder_.getInt64Ty(), ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::to_long_any, valueType_,
+                               builder_.getInt8Ty(), builder_.getInt64Ty(),
+                               builder_.getInt64Ty(), builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::to_float_any, valueType_,
+                               builder_.getInt8Ty(), builder_.getInt64Ty(),
+                               builder_.getInt64Ty(), builder_.getInt64Ty());
   module_->getOrInsertFunction(rt::type_of, ptrTy,
                                builder_.getInt8Ty());
   module_->getOrInsertFunction(rt::iota, ptrTy,
+                               builder_.getInt64Ty(), builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::math_range, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
   module_->getOrInsertFunction(rt::input, ptrTy);
   module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
@@ -184,6 +197,50 @@ inline void JIT::declare_stdlib_runtime() {
                                builder_.getInt64Ty());
   module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
   module_->getOrInsertFunction(rt::sys_argv, ptrTy);
+
+  // Iterator terminal methods.
+  auto i64 = builder_.getInt64Ty();
+  auto i8 = builder_.getInt8Ty();
+  module_->getOrInsertFunction(rt::iter_collect, ptrTy, i8, i64);
+  module_->getOrInsertFunction(rt::iter_count, i64, i8, i64);
+  module_->getOrInsertFunction(rt::iter_for_each, builder_.getVoidTy(),
+                               i8, i64, i8, i64, i64, i64);
+  module_->getOrInsertFunction(rt::iter_reduce, builder_.getVoidTy(),
+                               i8, i64, i8, i64, i8, i64, i64, i64,
+                               ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::iter_find, builder_.getVoidTy(),
+                               i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
+                               i64);
+  // sum/product/min/max: (it, id, line, col) -> i64
+  module_->getOrInsertFunction(rt::iter_sum, i64, i8, i64, i64, i64);
+  module_->getOrInsertFunction(rt::iter_product, i64, i8, i64, i64, i64);
+  module_->getOrInsertFunction(rt::iter_min, i64, i8, i64, i64, i64);
+  module_->getOrInsertFunction(rt::iter_max, i64, i8, i64, i64, i64);
+  module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
+                               i64);
+
+  // Iterator lazy factories.
+  module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64);
+  module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64);
+  module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
+  module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
+  module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64);
+  // chain/zip/flat_map carry line+col for the "not iterable" error.
+  module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  module_->getOrInsertFunction(rt::iter_zip, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  module_->getOrInsertFunction(rt::iter_enumerate, ptrTy, i8, i64);
+  module_->getOrInsertFunction(rt::iter_flat_map, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  // (next_cls, iter_tag, iter_data, &out_tag, &out_data) -> i64 (1/0)
+  module_->getOrInsertFunction(rt::iter_advance, i64, ptrTy, i8, i64, ptrTy,
+                               ptrTy);
+  module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 }
 
 inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
@@ -209,12 +266,23 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
-    emit_type_check(arg, "String", "to_long argument");
-    auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+    // Polymorphic: Long/Float/String. The runtime helper dispatches
+    // on tag (Long identity, Float truncate, String parse) and
+    // raises `type error` for anything else.
     auto result = builder_.CreateCall(
-        module_->getFunction(rt::to_long), {ptr, line, col});
+        module_->getFunction(rt::to_long_any),
+        {extract_tag(arg), extract_data(arg), line, col});
     emit_value_release(arg);
-    return make_long(result);
+    return result;
+  }
+
+  if (name == "to_float" && argsAst.nodes.size() == 1) {
+    auto arg = compile(*argsAst.nodes[0]);
+    auto result = builder_.CreateCall(
+        module_->getFunction(rt::to_float_any),
+        {extract_tag(arg), extract_data(arg), line, col});
+    emit_value_release(arg);
+    return result;
   }
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
@@ -304,6 +372,21 @@ inline llvm::Value* JIT::try_compile_stdlib_namespace(
       auto arr = builder_.CreateCall(module_->getFunction(rt::iota),
                                      {start, end});
       return make_array(arr);
+    }
+    if (method == "range" &&
+        (argsAst.nodes.size() == 1 || argsAst.nodes.size() == 2)) {
+      llvm::Value* start_v;
+      llvm::Value* end_v;
+      if (argsAst.nodes.size() == 1) {
+        start_v = builder_.getInt64(0);
+        end_v = value_to_long(compile(*argsAst.nodes[0]));
+      } else {
+        start_v = value_to_long(compile(*argsAst.nodes[0]));
+        end_v = value_to_long(compile(*argsAst.nodes[1]));
+      }
+      auto obj = builder_.CreateCall(
+          module_->getFunction(rt::math_range), {start_v, end_v});
+      return make_object(obj);
     }
   }
 

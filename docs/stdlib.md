@@ -38,8 +38,11 @@ Index
 1. `Math`
 ---------
 
-Integer math utilities. Floating-point helpers (`sqrt`, `sin`, etc.)
-are deferred until Culebra gains a `Float` type.
+Integer math utilities. Culebra now has a `Float` type and a `**`
+exponentiation operator (see [§4](language.md#4-types) and
+[§7](language.md#7-expressions) of the language spec), but
+library-level float helpers (`sqrt`, `log`, `exp`, `sin`, `cos`,
+`random`) are still deferred — see §5 below.
 
 ### `Math.abs(x: Long) -> Long`
 
@@ -129,12 +132,12 @@ for i in Math.range(1_000_000_000) {
 }
 ```
 
-**JIT**: interpreter-only. The `for` statement itself works under
-`--jit` for `Array` / `Object` keys / `String` scalars, but the
-iterator protocol that `Math.range` relies on does not — `--jit`
-would iterate the returned object's property keys (`iter`, `next`)
-instead of driving the iterator. Use `Math.iota` under `--jit` when
-you need a concrete integer sequence. See language.md §17.5.
+**JIT**: `Math.range` returns a JIT-native iterator Object under
+`--jit`; for-in and the lazy iterator methods drive it at protocol
+speed (one closure call per step). Use `Math.iota` when you want an
+eager `Array` for maximum per-element throughput; use `Math.range`
+when you want constant-memory streaming over a potentially huge
+sequence. See language.md §17.5.
 
 ---
 
@@ -280,12 +283,12 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 5. Not included (yet)
 ---------------------
 
-### Floating-point math (`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.random`)
+### Floating-point math (`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.exp`, `Math.random`)
 
-Culebra has no `Float` type yet. Integer-only variants would be
-awkward (`sqrt` could return the integer square root). Adding a full
-math suite is deferred to a future phase that also introduces a
-numeric type hierarchy.
+The `Float` type now exists and `**` can fill in for `pow`, but the
+library-level helpers (`sqrt`, trig, logs, random) are not yet
+wired up. Planned for Phase 2; until then, use `x ** 0.5` where
+applicable.
 
 ### Regular expressions
 

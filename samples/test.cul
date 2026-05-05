@@ -178,6 +178,156 @@ test_sum = fn () {
   assert(ret == 55)
 }
 
+test_float = fn () {
+  // Literals & type
+  assert(type_of(1.0) == 'Float')
+  assert(type_of(0.5) == 'Float')
+  assert(type_of(1e-5) == 'Float')
+  assert(type_of(1.5e3) == 'Float')
+  assert(type_of(42) == 'Long')
+
+  // Display: Float always carries a decimal point or exponent.
+  assert(to_string(1.0) == '1.0')
+  assert(to_string(0.5) == '0.5')
+  assert(to_string(-2.5) == '-2.5')
+  assert(to_string(1.5e-5) == '1.5e-05')
+
+  // Arithmetic — homogeneous Long (unchanged integer semantics).
+  assert(1 + 2 == 3)
+  assert(7 / 2 == 3)
+  assert(-7 % 3 == -1)
+  assert(type_of(1 + 2) == 'Long')
+
+  // Arithmetic — homogeneous Float.
+  assert(1.0 + 2.0 == 3.0)
+  assert(1.5 * 2.0 == 3.0)
+  assert(type_of(1.0 + 2.0) == 'Float')
+
+  // Promotion: Long op Float -> Float (both directions).
+  assert(type_of(1 + 2.0) == 'Float')
+  assert(type_of(2.0 + 1) == 'Float')
+  assert(1 + 0.5 == 1.5)
+  assert(2.0 - 1 == 1.0)
+  assert(3 / 2.0 == 1.5)
+  assert(2.0 / 4 == 0.5)
+
+  // Cross-type equality (numeric).
+  assert(1 == 1.0)
+  assert(1.0 == 1)
+  assert(!(1 == 1.5))
+  assert(1 < 1.5)
+  assert(2.5 > 2)
+
+  // Unary minus.
+  assert(-1.5 == -1.5)
+  assert(type_of(-1.5) == 'Float')
+
+  // Power.
+  assert(2 ** 10 == 1024)
+  assert(type_of(2 ** 10) == 'Long')
+  assert(2 ** -1 == 0.5)
+  assert(type_of(2 ** -1) == 'Float')
+  assert(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
+  assert(type_of(2.0 ** 10) == 'Float')
+  // Right-associative: 2**3**2 == 2**(3**2) == 512.
+  assert(2 ** 3 ** 2 == 512)
+  // Unary minus binds looser than **: -2**2 == -(2**2) == -4.
+  assert(-2 ** 2 == -4)
+  // Operator precedence: 2 * 3**2 == 2 * 9 == 18.
+  assert(2 * 3 ** 2 == 18)
+  // 0 ** 0 convention.
+  assert(0 ** 0 == 1)
+
+  // Type annotation.
+  x: Float = 3.14
+  assert(x == 3.14)
+
+  // Conversions.
+  assert(to_long(3.7) == 3)       // truncate toward zero
+  assert(to_long(-3.7) == -3)
+  assert(to_float(3) == 3.0)
+  assert(to_float('1.5') == 1.5)
+  assert(to_long('42') == 42)     // unchanged string path
+
+  // Zero sign: IEEE 754 treats 0.0 and -0.0 as equal but with
+  // distinct bit patterns. Culebra follows Python: equal.
+  assert(0.0 == -0.0)
+  assert(!(0.0 != -0.0))
+  // Truthiness: 0.0 and -0.0 are both false.
+  mut zero_is_falsy = true
+  if 0.0 { zero_is_falsy = false }
+  assert(zero_is_falsy)
+  mut nz_is_truthy = false
+  if 0.5 { nz_is_truthy = true }
+  assert(nz_is_truthy)
+
+  // NaN: self-inequality, arithmetic propagation, ordering returns
+  // false, truthy under Python semantics (UNE matches). Built via
+  // sqrt of a negative (0.0 / 0.0 would raise divide-by-zero).
+  nan = (-1.0) ** 0.5
+  assert(type_of(nan) == 'Float')
+  assert(nan != nan)               // IEEE 754: NaN !=  everything
+  assert(!(nan == nan))
+  assert(!(nan < 1.0))             // ordering on NaN is false
+  assert(!(nan > 1.0))
+  assert(!(nan <= 1.0))
+  assert(!(nan >= 1.0))
+  nan_plus = nan + 1.0
+  assert(nan_plus != nan_plus)     // NaN propagates through arithmetic
+  mut nan_truthy = false
+  if nan { nan_truthy = true }     // NaN is truthy
+  assert(nan_truthy)
+
+  // Infinity: produced by overflow (1e308 * 10), propagates through
+  // arithmetic, ordered above every finite value.
+  big = 1e308 * 10.0
+  assert(type_of(big) == 'Float')
+  assert(big > 1e308)
+  assert(big == big)
+  assert(to_string(big) == 'inf')
+  neg_big = -big
+  assert(to_string(neg_big) == '-inf')
+  // inf - inf is NaN.
+  sub = big - big
+  assert(sub != sub)
+
+  // Pattern matching on Float literals.
+  described = match 1.5 {
+    1.5 => 'one-point-five',
+    _   => 'other',
+  }
+  assert(described == 'one-point-five')
+  described2 = match 2.0 {
+    1.5 => 'nope',
+    x: Float => x + 1.0,
+    _   => nil,
+  }
+  assert(described2 == 3.0)
+
+  // Interpolated strings pick up Float display form. Leading text is
+  // required because a `"{expr}"` with only one segment collapses to
+  // the expression (pre-existing optimizer behavior, not Float-specific).
+  assert("x={1.0}" == 'x=1.0')
+  assert("x={-2.5}" == 'x=-2.5')
+  assert("x={1.5e-5}" == 'x=1.5e-05')
+  assert("x={nan}" == 'x=nan')
+  assert("x={big}" == 'x=inf')
+
+  // Constant-folding peephole for `** 2` keeps result Long when base
+  // is Long (wraps like Long multiplication).
+  assert(5 ** 2 == 25)
+  assert(2.5 ** 2 == 6.25)
+  assert(type_of(5 ** 2) == 'Long')
+  assert(type_of(2.5 ** 2) == 'Float')
+  // `** 0.5` peephole: sqrt.
+  assert(16 ** 0.5 == 4.0)
+  assert(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
+
+  // Divide-by-zero on Float still raises (same diagnostic as Long).
+  // Not easy to assert without a try/catch helper — skip for now;
+  // behavior covered manually.
+}
+
 test_fib = fn () {
   fib = fn (x) {
     if x < 2 {
@@ -305,6 +455,17 @@ test_builtin_methods = fn () {
   assert([1, 2, 3].all(fn (x) { x > 0 }))
   assert(![1, 2, 3].all(fn (x) { x > 1 }))
   assert([].all(fn (x) { x > 0 }))
+
+  # sum / product: identity on empty (0 / 1)
+  assert([1, 2, 3, 4].sum() == 10)
+  assert([].sum() == 0)
+  assert([2, 3, 4].product() == 24)
+  assert([].product() == 1)
+
+  # min / max
+  assert([3, 1, 4, 1, 5, 9, 2, 6].min() == 1)
+  assert([3, 1, 4, 1, 5, 9, 2, 6].max() == 9)
+  assert([-3, -1, -4].min() == -4)
 
   fm = [1, 2, 3].flat_map(fn (x) { [x, x * 10] })
   assert(fm.size() == 6 && fm[0] == 1 && fm[1] == 10 && fm[5] == 30)
@@ -450,6 +611,18 @@ test_ufcs = fn () {
     .sum()
     .incr()
   assert(result == 61)
+
+  // Variadic __ARGS__: overflow goes to __ARGS__, and __ARGS__ is
+  // always bound (empty Array when no overflow).
+  greet = fn () {
+    if __ARGS__.size() > 0 { "hello {__ARGS__[0]}" } else { 'hello' }
+  }
+  assert('world'.greet() == 'hello world')
+  assert(greet() == 'hello')
+  collect_extras = fn (first) { __ARGS__ }
+  assert(collect_extras('a').size() == 0)
+  rest = collect_extras(1, 2, 3)
+  assert(rest.size() == 2 && rest[0] == 2 && rest[1] == 3)
 }
 
 // JIT-safe subset of for-in tests. Iterator-protocol coverage
@@ -552,6 +725,7 @@ test_object_factory()
 test_class()
 debugger
 test_sum()
+test_float()
 test_fib()
 test_interpolated_string()
 test_lexical_scope()

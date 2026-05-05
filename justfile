@@ -20,9 +20,28 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite (samples/test.cul)
+# Run the test suite (samples/test.cul) on the tree-walking interpreter.
 test: build
     ./build/culebra samples/test.cul
+
+# Run the test suite under the LLVM ORC JIT backend.
+test-jit: build
+    ./build/culebra --jit samples/test.cul
+
+# Run the test suite on both backends and assert their stdout is
+# identical. Catches regressions where one backend diverges from the
+# other (e.g. a new feature implemented in one place only).
+test-all: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out_interp=$(./build/culebra samples/test.cul)
+    out_jit=$(./build/culebra --jit samples/test.cul)
+    if [[ "$out_interp" != "$out_jit" ]]; then
+        echo "interpreter and JIT outputs differ:"
+        diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
+        exit 1
+    fi
+    echo "test-all OK: interpreter and JIT match"
 
 # Run shadow-prohibition negative tests (expected to fail with a
 # shadow error message, on both interpreter and JIT).

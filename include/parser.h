@@ -33,7 +33,10 @@ const auto grammar_ = R"(
   UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
   UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
   UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
-  MULTIPLICATIVE           <-  CALL (_ MULTIPLICATIVE_OPERATOR _ CALL)*
+  MULTIPLICATIVE           <-  POWER (_ MULTIPLICATIVE_OPERATOR _ POWER)*
+  # '**' RHS recurses through UNARY_PLUS so `2 ** -1` and `2 ** 3 ** 4`
+  # both parse as in Python (unary prefix allowed, right-associative).
+  POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
 
   CALL                     <-  PRIMARY (_ (ARGUMENTS / INDEX / DOT))*
   ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
@@ -52,7 +55,7 @@ const auto grammar_ = R"(
   GUARD                    <-  if _ EXPRESSION
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
-  PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / NUMBER / STRING /
+  PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   WILDCARD                 <-  '_' !IdentChar
   TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
@@ -63,7 +66,7 @@ const auto grammar_ = R"(
 
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
@@ -80,7 +83,10 @@ const auto grammar_ = R"(
   UNARY_PLUS_OPERATOR      <-  '+'
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'
-  MULTIPLICATIVE_OPERATOR  <-  [*/%]
+  # '*' negative-lookahead avoids chewing the first '*' of '**' when a
+  # left-over arithmetic chain hands back to MULTIPLICATIVE.
+  MULTIPLICATIVE_OPERATOR  <-  '*' !'*' / [/%]
+  POWER_OPERATOR           <-  '**'
 
   LET                      <-  K('let')?
   MUTABLE                  <-  K('mut')?
@@ -95,6 +101,12 @@ const auto grammar_ = R"(
   NIL                      <-  K('nil')
   BOOLEAN                  <-  K('true' / 'false')
 
+  # Float literals. Either (a) integer part followed by a dot and
+  # fractional digits, with an optional exponent, or (b) integer part
+  # followed directly by an exponent. A trailing-dot form (e.g. `1.`)
+  # is intentionally *not* accepted so that `1.foo` stays unambiguous.
+  FLOAT                    <-  < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)?
+                              / [0-9]+ [eE] [-+]? [0-9]+ >
   NUMBER                   <-  < [0-9]+ >
   STRING                   <-  ['] < (!['] .)* > [']
 

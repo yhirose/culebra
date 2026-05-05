@@ -71,6 +71,7 @@ puts(arr.size())                      # 3
 puts(arr.map(fn (x) { x * x }))       # [1, 4, 9]
 puts(arr.filter(fn (x) { x % 2 == 1 })) # [1, 3]
 puts(arr.reduce(0, fn (acc, x) { acc + x })) # 6
+puts(arr.sum())                       # 6   (product / min / max も同様)
 
 obj = {name: 'alice', age: 30}
 puts(obj.name)                        # 'alice'

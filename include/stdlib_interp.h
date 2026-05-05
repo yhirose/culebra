@@ -27,14 +27,12 @@
 inline std::pair<long, long> _parse_iota_range_args(
     std::shared_ptr<Environment> callEnv) {
   long start = 0, end = 0;
-  if (callEnv->has("__ARGS__")) {
-    const auto& extras = *callEnv->get("__ARGS__").to_array().values;
-    if (extras.size() == 1) {
-      end = extras[0].to_long();
-    } else if (extras.size() >= 2) {
-      start = extras[0].to_long();
-      end = extras[1].to_long();
-    }
+  const auto& extras = *callEnv->get("__ARGS__").to_array().values;
+  if (extras.size() == 1) {
+    end = extras[0].to_long();
+  } else if (extras.size() >= 2) {
+    start = extras[0].to_long();
+    end = extras[1].to_long();
   }
   return {start, end};
 }
@@ -299,36 +297,37 @@ inline void setup_built_in_functions(
 
   env.initialize(
       "to_long",
-      Value(FunctionValue({{"s", false, "String"sv}},
+      Value(FunctionValue({{"v", false}},
                           [](std::shared_ptr<Environment> env) {
-                            const auto& s = env->get("s").to_string();
-                            size_t i = 0, j = s.size();
-                            while (i < j && std::isspace(
-                                                static_cast<unsigned char>(s[i])))
-                              i++;
-                            while (j > i && std::isspace(
-                                                static_cast<unsigned char>(s[j - 1])))
-                              j--;
-                            auto t = s.substr(i, j - i);
-                            if (t.empty()) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(std::format(
-                                  "type error at {}:{}.", line, col));
+                            const auto& v = env->get("v");
+                            auto line = env->get("__LINE__").to_long();
+                            auto col = env->get("__COLUMN__").to_long();
+                            if (v.type == Value::Long) return v;
+                            if (v.type == Value::Float) {
+                              // Truncate toward zero (matches Python's int()).
+                              return Value(static_cast<long>(v.get<double>()));
                             }
-                            try {
-                              size_t idx = 0;
-                              long v = std::stol(t, &idx, 10);
-                              if (idx != t.size()) throw std::invalid_argument("");
-                              return Value(v);
-                            } catch (...) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(std::format(
-                                  "type error at {}:{}.", line, col));
-                            }
+                            if (v.type != Value::String) throw_type_error_at(line, col);
+                            return Value(parse_long_strict(v.to_string(), line, col));
                           },
                           "Long"sv)),
+      false);
+
+  env.initialize(
+      "to_float",
+      Value(FunctionValue({{"v", false}},
+                          [](std::shared_ptr<Environment> env) {
+                            const auto& v = env->get("v");
+                            auto line = env->get("__LINE__").to_long();
+                            auto col = env->get("__COLUMN__").to_long();
+                            if (v.type == Value::Float) return v;
+                            if (v.type == Value::Long) {
+                              return Value(static_cast<double>(v.get<long>()));
+                            }
+                            if (v.type != Value::String) throw_type_error_at(line, col);
+                            return Value(parse_double_strict(v.to_string(), line, col));
+                          },
+                          "Float"sv)),
       false);
 
   env.initialize("to_string",
@@ -350,6 +349,7 @@ inline void setup_built_in_functions(
                               case Value::Nil:      n = "Nil"; break;
                               case Value::Bool:     n = "Bool"; break;
                               case Value::Long:     n = "Long"; break;
+                              case Value::Float:    n = "Float"; break;
                               case Value::String:   n = "String"; break;
                               case Value::Array:    n = "Array"; break;
                               case Value::Object:   n = "Object"; break;

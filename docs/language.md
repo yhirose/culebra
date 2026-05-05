@@ -93,8 +93,13 @@ and only recognized after `:` or `->`.
 
 ### Literals
 
-* Integer: `NUMBER <- [0-9]+`. All numbers are 64-bit signed integers
-  (`Long`). No floating point, hex, or octal literals.
+* Integer: `NUMBER <- [0-9]+`. A `NUMBER` is a 64-bit signed integer
+  (`Long`). No hex or octal literals.
+* Float: `FLOAT <- [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? / [0-9]+ [eE] [-+]? [0-9]+`.
+  A literal with either a decimal point (followed by digits, not a
+  bare trailing dot) or an `e`/`E` exponent is a `Float` (IEEE 754
+  binary64). Examples: `1.0`, `0.5`, `-2.5` (unary minus applied to
+  `2.5`), `1e-5`, `1.5e3`.
 * String: `'...'` (no escapes, no interpolation). Single quote is the
   terminator; apostrophes inside must be avoided. (No escape syntax
   yet.)
@@ -106,7 +111,7 @@ and only recognized after `:` or `->`.
 ### Operators and punctuation
 
     ==  !=  <=  <  >=  >        # comparison
-    +  -  *  /  %               # arithmetic
+    +  -  *  /  %  **           # arithmetic (`**` exponentiation)
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
     =                           # assignment
@@ -138,7 +143,7 @@ Selected rules:
     ASSIGNMENT  <- LET MUTABLE PRIMARY (ARGUMENTS / INDEX / DOT)*
                    TYPE_ANNOTATION? '=' EXPRESSION
     PRIMARY     <- WHILE / IF / MATCH / FUNCTION / OBJECT / ARRAY
-                 / NIL / BOOLEAN / NUMBER / IDENTIFIER
+                 / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER
                  / STRING / INTERPOLATED_STRING / '(' EXPRESSION ')'
 
 ### Operator precedence
@@ -151,7 +156,11 @@ From lowest to highest:
 4. Binary `+`, `-`
 5. Binary `*`, `/`, `%`
 6. Unary `+`, `-`, `!` (right-associative)
-7. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
+7. `**` (right-associative). Binds tighter than unary minus —
+   `-2**2 == -4` — but the RHS of `**` itself accepts a unary
+   prefix, so `2 ** -1 == 0.5` and `2 ** -3 ** 2 == 0.00195…` both
+   parse as in Python.
+8. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
 
 `=` is right-associative but appears only in `ASSIGNMENT`, not as a
 general expression operator.
@@ -172,31 +181,40 @@ Most constructs are expressions that yield a value:
 4. Types
 --------
 
-Culebra has exactly seven types:
+Culebra has exactly eight types:
 
 | Type       | Description                             |
 |------------|-----------------------------------------|
 | `Nil`      | Single value `nil`                      |
 | `Bool`     | `true` or `false`                       |
 | `Long`     | 64-bit signed integer                   |
+| `Float`    | IEEE 754 binary64 (double precision)    |
 | `String`   | Immutable heap-allocated byte string    |
 | `Array`    | Mutable ordered collection of values    |
 | `Object`   | Mutable map of string keys to values    |
 | `Function` | Closure (function pointer + captures)   |
 
-There is no implicit conversion between types. Arithmetic,
-comparison, and boolean operators will raise `type error` when given
-the wrong kind of value (see §15).
+Arithmetic and comparison between `Long` and `Float` promote the
+`Long` operand to `Float` automatically — see §7. Outside that
+numeric pair there is no implicit conversion between types, and
+arithmetic, comparison, or boolean operators given the wrong kind of
+value raise `type error` (see §15).
 
 `Any` is only valid in type annotations and matches any value.
+
+**Both backends**: `Float` is fully supported in the tree-walking
+interpreter and the LLVM ORC JIT. Long-only code paths keep their
+existing inline integer codegen under `--jit`; Float values take a
+narrow Long↔Float promotion slow path that matches interpreter
+semantics bit-for-bit.
 
 ---
 
 5. Values and identity
 ----------------------
 
-* `Nil`, `Bool`, and `Long` are value types: they are compared and
-  copied by value. `==` compares by the underlying data.
+* `Nil`, `Bool`, `Long`, and `Float` are value types: they are
+  compared and copied by value. `==` compares by the underlying data.
 * `String`, `Array`, `Object`, and `Function` are reference types:
   variables hold a reference to a heap-allocated object. Assignment
   and passing copy the reference, not the object. Mutation through
@@ -210,15 +228,20 @@ the wrong kind of value (see §15).
   identity (same pointer). Two arrays with the same elements but
   distinct allocations are not equal.
 
+Cross-type numeric equality: `Long` and `Float` compare by numeric
+value. `1 == 1.0`, `0 == 0.0`. `NaN` compares unequal to everything
+including itself.
+
 Ordering (`<`, `<=`, `>`, `>=`) is defined for:
 
-* `Long` and `Bool` — numeric ordering (booleans order `false` <
-  `true`).
+* `Long`, `Float`, and `Bool` — numeric ordering (booleans order
+  `false` < `true`; `Long` and `Float` mix by value via promotion).
 * `String` — lexicographic byte ordering.
 * `Nil` — `nil` compares equal to `nil` and always returns `false`
   for ordering comparisons.
 
-Ordering values of different types raises `type error`.
+Ordering values of different types (outside the numeric pair) raises
+`type error`.
 
 ---
 
@@ -375,14 +398,38 @@ natural. Prior-art summary:
 
 ### Arithmetic
 
-`+`, `-`, `*`, `/`, `%` operate on `Long`. Both operands must be
-`Long`; otherwise `type error`. Integer division truncates toward zero.
-Division or modulo by zero raises `divide by 0 error at L:C`.
+`+`, `-`, `*`, `/`, `%`, `**` take two numeric operands (`Long` or
+`Float`); a non-numeric operand raises `type error`.
+
+* **Both `Long` → `Long`.** Integer arithmetic; division and modulo
+  truncate toward zero (C semantics, not Python's floor division).
+  `7 / 2 == 3`, `-7 % 3 == -1`. Overflow wraps (no bignum).
+* **Either operand `Float` → `Float`.** The `Long` operand is
+  promoted to `Float` and the operation runs in IEEE 754 binary64.
+  `1 + 2.0 == 3.0`, `3 / 2.0 == 1.5`.
+
+Division or modulo by zero raises `divide by 0 error at L:C` for both
+`Long / 0` and `Float / 0.0` (matches Python's `ZeroDivisionError`).
+
+`**` (exponentiation) has a slightly richer rule:
+
+* `Long ** non-negative Long → Long` (integer exponentiation; wraps
+  on overflow). `2 ** 10 == 1024`.
+* `Long ** negative Long → Float`. `2 ** -1 == 0.5`. `0 ** -1`
+  raises `divide by 0 error`.
+* Either operand `Float` → `Float` (via `std::pow`). `2.0 ** 0.5 ≈
+  1.4142`.
+* `**` is right-associative and binds tighter than unary minus. Its
+  RHS accepts a unary prefix, so both `2 ** 3 ** 4 == 2 ** 81` and
+  `2 ** -1 == 0.5` parse as in Python.
 
 ### Comparison
 
-* `==`, `!=`: any two values; see §5 for reference-type semantics.
-* `<`, `<=`, `>`, `>=`: same-typed operands only, else `type error`.
+* `==`, `!=`: any two values; see §5 for reference-type semantics
+  and for numeric cross-type equality (`1 == 1.0`).
+* `<`, `<=`, `>`, `>=`: same-typed operands, with the exception that
+  `Long` and `Float` compare by numeric value (`1 < 1.5` works). Any
+  other cross-type ordering raises `type error`.
 
 ### Logical
 
@@ -394,10 +441,13 @@ Division or modulo by zero raises `divide by 0 error at L:C`.
 
 ### Truthiness
 
-Only `Bool` and `Long` are convertible to bool:
+Only `Bool`, `Long`, and `Float` are convertible to bool:
 
 * `Bool`: itself.
 * `Long`: `0` is false, all others true.
+* `Float`: `0.0` (and `-0.0`) are false. Every other finite value is
+  true, and `NaN` is true (Python's `bool(float('nan'))` also
+  returns `True`).
 * `Nil`, `String`, `Array`, `Object`, `Function`: **not convertible** —
   using one in a boolean context (e.g., `if s { ... }`) raises
   `type error`.
@@ -407,7 +457,7 @@ Only `Bool` and `Long` are convertible to bool:
 
 ### Unary
 
-`+x` is a no-op (must be `Long`). `-x` negates a `Long`.
+`+x` is a no-op (must be numeric). `-x` negates a `Long` or `Float`.
 
 ### Parentheses
 
@@ -435,8 +485,8 @@ double = fn (x) { x * 2 }
 word_count = fn (s) { s.split(' ').size() }
 'hello world'.word_count()       # UFCS → 2
 
-sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
-[1, 2, 3, 4].sum()               # UFCS → 10
+total = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+[1, 2, 3, 4].total()             # UFCS → 10
 
 # Existing methods always win — a user-defined `size` is shadowed by
 # the Array/Object/String built-in `size`.
@@ -452,9 +502,7 @@ free-function call with the receiver in the first positional slot.
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method
 path wins, otherwise the name is looked up as a free function and
-invoked with the receiver as its first argument. The one gap is
-variadic `__ARGS__`, which is interpreter-only; a UFCS call into a
-function that inspects `__ARGS__` still errors under `--jit`.
+invoked with the receiver as its first argument.
 
 ---
 
@@ -488,6 +536,9 @@ is inserted:
 * `Nil` → `nil`
 * `Bool` → `true` or `false`
 * `Long` → decimal
+* `Float` → shortest round-trip decimal, always with a `.` or an
+  exponent so the type is distinguishable from `Long`: `1.0`, `0.5`,
+  `-2.5`, `1e-05`, `nan`, `inf`, `-inf`
 * `Array` → `[v1, v2, ...]` with each element's `puts` form (strings
   in brackets are quoted, e.g. `['hi']`)
 * `Object` → `{key: val, mut key2: val2, ...}` sorted alphabetically
@@ -687,14 +738,14 @@ other type raises `type error`.
 `var`: if it would shadow a closure-captured name from an enclosing
 function, the script is rejected (see §6).
 
-**JIT**: `for` / `break` / `continue` compile under `--jit` for direct
-iteration over `Array`, `Object` (yields keys in ascending order), and
-`String` (UTF-8 scalar walk). The user-level iterator protocol
-(Objects with a custom `iter`/`next` pair and the lazy iterator
-methods in §17.5) is **interpreter-only** — under `--jit` they are
-treated as plain objects, so `for … in` would iterate over `["iter",
-"next"]` rather than invoking the protocol. Use the interpreter when a
-script relies on iterator-protocol objects such as `Math.range`.
+**JIT**: `for` / `break` / `continue` compile under `--jit` for
+direct iteration over `Array`, `Object` (yields keys in ascending
+order), and `String` (UTF-8 scalar walk). Objects that carry their
+own `iter` property (user-defined iterators, `Math.range`,
+`String.code_points()` / `.graphemes()`, iterator method chains) are
+driven through the iterator protocol at runtime — same semantics as
+the interpreter, with a native-loop fast path preserved for the
+Array/String/keys cases.
 
 ### `break` and `continue`
 
@@ -793,7 +844,7 @@ enforce their invariant at three specific runtime points:
 
 ### Recognized type names
 
-    Nil  Bool  Long  String  Array  Object  Function  Any
+    Nil  Bool  Long  Float  String  Array  Object  Function  Any
 
 `Any` always matches. Unknown type names fail the check and raise
 `type error`.
@@ -1122,11 +1173,11 @@ per-iterator state (decode offset, lookahead buffer) is independent,
 so multiple iterators derived from the same String walk in parallel
 without interfering with each other.
 
-**JIT**: `iter` / `code_points` / `graphemes` use the iterator
-protocol and so are interpreter-only (see §17.5). `for c in s { ... }`
-itself works under `--jit` for the scalar case (yielding one-scalar
-Strings); for code-point or grapheme iteration under `--jit`, run via
-the interpreter.
+**JIT**: `iter` / `code_points` / `graphemes` return iterator Objects
+that the JIT drives through the same protocol path as user-defined
+iterators. Semantics match the interpreter; throughput is dominated
+by the per-step closure dispatch. For maximum speed over Arrays and
+direct String scalars, prefer `for c in s { ... }` (native loop).
 
 ### 17.2 Array methods
 
@@ -1152,6 +1203,10 @@ return a new `Array` and leave the receiver unchanged.
 | `a.any(f: Function) -> Bool`                | `true` if `f(x)` is truthy for any element, else `false`. `f` must take one parameter. |
 | `a.all(f: Function) -> Bool`                | `true` if `f(x)` is truthy for every element (or if empty), else `false`. `f` must take one parameter. |
 | `a.flat_map(f: Function) -> Array`          | Concatenate `f(x)` for each element; each `f(x)` must be an `Array`. `f` must take one parameter. |
+| `a.sum() -> Long`                           | Sum of all elements. All elements must be `Long`. Empty → `0`. |
+| `a.product() -> Long`                       | Product of all elements. All elements must be `Long`. Empty → `1`. |
+| `a.min() -> Long`                           | Smallest element. All elements must be `Long`. Throws on empty. |
+| `a.max() -> Long`                           | Largest element. All elements must be `Long`. Throws on empty. |
 | `a.sort_by(key: Function) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). |
 
 ```culebra
@@ -1270,6 +1325,10 @@ concrete value.
 | `it.any(p)` | `Bool` | `true` if any `p(x)` is truthy |
 | `it.all(p)` | `Bool` | `true` if every `p(x)` is truthy (empty → `true`) |
 | `it.count()` | `Long` | number of elements consumed |
+| `it.sum()` | `Long` | sum of all elements (all must be `Long`; empty → `0`) |
+| `it.product()` | `Long` | product of all elements (all must be `Long`; empty → `1`) |
+| `it.min()` | `Long` | smallest element (all must be `Long`; throws on empty) |
+| `it.max()` | `Long` | largest element (all must be `Long`; throws on empty) |
 
 **Eager vs lazy**: `Array` has its own eager `map` / `filter` /
 `for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§17.2)
@@ -1310,13 +1369,16 @@ countdown = fn (start) {
 for x in countdown(3) { puts(x) }              # 3, 2, 1
 ```
 
-**JIT gap**: the `for` statement itself works under `--jit` for
-`Array`, `Object` keys, and `String` scalars. The user-level iterator
-protocol described in this section — custom objects with `iter`/`next`,
-lazy iterator methods (`map`, `filter`, `take`, …), and
-`Math.range` — is interpreter-only. Using them under `--jit` will not
-error but produces wrong results (it treats the iterator object as a
-plain object and iterates over its property keys).
+**JIT**: everything in this section — for-in driving the protocol,
+user-defined iterators, lazy iterator method chains, `Math.range`,
+`String.code_points()` / `.graphemes()`, and Array-eager method
+chaining on `[...].map(...).filter(...)` — runs under `--jit` with
+interpreter-equivalent semantics. The Array/String/keys fast paths
+stay native (one load per element); iterator-protocol driving pays a
+per-step closure dispatch, which is inherent to a dynamic-language
+iterator chain. Use `Math.iota` + `Array.map` / `.filter` / `.reduce`
+when you want eager materialization and maximum throughput; use
+`Math.range` + lazy methods when you want constant-memory streaming.
 
 ---
 
@@ -1344,26 +1406,55 @@ assert(1 + 1 == 2)
 **Throws**: `assert failed at L:C.` on falsy; `type error at L:C.` if
 `cond` is neither `Bool` nor `Long`.
 
-### `to_long(s: String) -> Long`
+### `to_long(v: Any) -> Long`
 
-Parse `s` as a base-10 signed integer. Leading/trailing whitespace is
-allowed; anything else fails.
+Convert `v` to `Long`:
 
-**Throws**: `type error at L:C.` if `s` does not parse as an integer.
+* `Long` → itself.
+* `Float` → truncated toward zero (matches Python's `int()`).
+  `to_long(3.7) == 3`, `to_long(-3.7) == -3`.
+* `String` → parsed as a base-10 signed integer; leading/trailing
+  whitespace is allowed, anything else fails.
+* Other types raise `type error`.
+
+**Throws**: `type error at L:C.` on an unparseable string or a
+non-numeric / non-string argument.
 
 ```culebra
 puts(to_long('42'))    # 42
 puts(to_long('-7'))    # -7
+puts(to_long(3.9))     # 3
+```
+
+### `to_float(v: Any) -> Float`
+
+Convert `v` to `Float`:
+
+* `Float` → itself.
+* `Long` → promoted to `Float` (exact for absolute values up to
+  2⁵³; larger magnitudes may lose precision).
+* `String` → parsed as a decimal or exponent-form float; leading /
+  trailing whitespace is allowed.
+* Other types raise `type error`.
+
+```culebra
+puts(to_float(3))         # 3.0
+puts(to_float('1.5'))     # 1.5
+puts(to_float('1e-5'))    # 1e-05
 ```
 
 ### `to_string(v: Any) -> String`
 
 Convert `v` to its display form (same formatting as interpolation
 inserts — strings come through unquoted). See §8 for the display
-convention.
+convention. `Float` uses the shortest round-trip decimal and always
+carries either a decimal point or an exponent, so the type is
+visually distinguishable from `Long`.
 
 ```culebra
 puts(to_string(42))         # '42'
+puts(to_string(1.0))        # '1.0'
+puts(to_string(1e-5))       # '1e-05'
 puts(to_string([1, 2]))     # '[1, 2]'
 puts(to_string('hi'))       # 'hi'
 ```
@@ -1371,11 +1462,12 @@ puts(to_string('hi'))       # 'hi'
 ### `type_of(v: Any) -> String`
 
 Return the runtime type name of `v`. One of
-`'Nil'`, `'Bool'`, `'Long'`, `'String'`, `'Array'`, `'Object'`,
-`'Function'`.
+`'Nil'`, `'Bool'`, `'Long'`, `'Float'`, `'String'`, `'Array'`,
+`'Object'`, `'Function'`.
 
 ```culebra
 puts(type_of(42))          # 'Long'
+puts(type_of(1.5))         # 'Float'
 puts(type_of('hi'))        # 'String'
 puts(type_of([1, 2]))      # 'Array'
 ```
