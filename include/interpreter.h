@@ -997,9 +997,10 @@ inline std::map<std::string_view, Value>& string_builtins() {
 
 #include <stdlib_interp.h>
 
-inline std::shared_ptr<Environment> environment() {
+inline std::shared_ptr<Environment> environment(
+    const std::vector<std::string>& argv = {}) {
   auto env = std::make_shared<Environment>();
-  setup_built_in_functions(*env);
+  setup_built_in_functions(*env, argv);
   return env;
 }
 

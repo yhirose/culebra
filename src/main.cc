@@ -29,15 +29,23 @@ struct Options {
   int opt_level = 2;
 #endif
   vector<string> script_path_list;
+  vector<string> script_argv;
 };
 
 Options parse_command_line(int argc, const char** argv) {
   Options options;
 
   int argi = 1;
+  bool past_separator = false;
   while (argi < argc) {
     string arg = argv[argi++];
-    if (arg == "--shell") {
+    if (past_separator) {
+      options.script_argv.push_back(std::move(arg));
+      continue;
+    }
+    if (arg == "--") {
+      past_separator = true;
+    } else if (arg == "--shell") {
       options.shell = true;
     } else if (arg == "--ast") {
       options.print_ast = true;
@@ -81,6 +89,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
 
 #ifdef CULEBRA_JIT_ENABLED
       if (options.jit) {
+        culebra::_culebra_sys_argv_holder() = options.script_argv;
         culebra::JIT::run(ast, options.emit_llvm, options.debug,
                           options.opt_level);
         continue;
@@ -105,11 +114,21 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   return true;
 }
 
+// The CLI aliases IO.puts and IO.print as globals. Embedders that use
+// culebra::environment() directly get a clean environment without
+// these global names.
+void install_cli_aliases(culebra::Environment& env) {
+  const auto& io = env.get("IO").to_object();
+  env.initialize("puts", io.get("puts"), false);
+  env.initialize("print", io.get("print"), false);
+}
+
 int main(int argc, const char** argv) {
   auto options = parse_command_line(argc, argv);
 
   try {
-    auto env = culebra::environment();
+    auto env = culebra::environment(options.script_argv);
+    install_cli_aliases(*env);
 
     if (!run_scripts(env, options)) {
       return -1;

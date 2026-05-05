@@ -1,12 +1,21 @@
 Culebra Standard Library
 ========================
 
-This document specifies the built-in **global functions** and I/O of
-the Culebra runtime. Everything described here is available without
-any `import` statement.
+This document specifies the **built-in library** of Culebra: the
+namespace objects (`Math`, `IO`, `Sys`) that group the runtime
+utilities. Everything described here is available without any
+`import` statement.
 
-Methods on built-in types (`String`, `Array`, `Object`) are part of
-the language itself; see [§17 of the language spec](language.md).
+Language-level built-ins — `assert`, `range`, `to_long`, `to_string`,
+`type_of` — are specified in
+[§18 of the language spec](language.md). Methods on built-in types
+(`String`, `Array`, `Object`) are specified in
+[§17 of the language spec](language.md).
+
+The CLI (`src/main.cc`) additionally installs `puts` and `print` as
+globals aliased to `IO.puts` / `IO.print` (see [§19 of the language
+spec](language.md)). Embedders that use `culebra::environment()`
+directly get a clean namespace without those aliases.
 
 Conventions used below:
 
@@ -18,144 +27,124 @@ Conventions used below:
 Index
 -----
 
-1. Global functions
-2. I/O
-3. Design notes
-4. Not included (yet)
+1. `Math`
+2. `IO`
+3. `Sys`
+4. Design notes
+5. Not included (yet)
 
 ---
 
-1. Global functions
--------------------
+1. `Math`
+---------
 
-### `puts(x: Any) -> Nil`
+Integer math utilities. Floating-point helpers (`sqrt`, `sin`, etc.)
+are deferred until Culebra gains a `Float` type.
 
-Print `x` followed by a newline to standard output. Reference types
-are formatted the same way as `Array.str_array()` / `Object.str_object()`,
-and strings are printed **with surrounding single quotes**.
+### `Math.abs(x: Long) -> Long`
+
+Absolute value of `x`.
 
 ```culebra
-puts('hi')       # → 'hi'
-puts(42)         # → 42
-puts([1, 'a'])   # → [1, 'a']
+puts(Math.abs(-7))    # 7
 ```
 
-### `print(x: Any) -> Nil`
+### `Math.min(a: Long, b: Long) -> Long`
+
+Smaller of `a` and `b`.
+
+### `Math.max(a: Long, b: Long) -> Long`
+
+Larger of `a` and `b`.
+
+### `Math.pow(base: Long, exp: Long) -> Long`
+
+Integer exponentiation. `base ** exp`, computed by repeated squaring.
+`Math.pow(x, 0)` is `1` for every `x` (including `0`).
+
+**Throws**: `type error at L:C.` if `exp < 0`.
+
+```culebra
+puts(Math.pow(2, 10))    # 1024
+puts(Math.pow(7, 0))     # 1
+puts(Math.pow(-3, 3))    # -27
+```
+
+### `Math.sign(x: Long) -> Long`
+
+Returns `-1` for negative, `0` for zero, `1` for positive.
+
+```culebra
+puts(Math.sign(-5))      # -1
+puts(Math.sign(0))       # 0
+puts(Math.sign(42))      # 1
+```
+
+### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
+
+Clamp `x` to the inclusive range `[lo, hi]`. No error is raised when
+`lo > hi`; the result in that case is `hi`.
+
+```culebra
+puts(Math.clamp(5, 0, 10))   # 5
+puts(Math.clamp(-5, 0, 10))  # 0
+puts(Math.clamp(15, 0, 10))  # 10
+```
+
+---
+
+2. `IO`
+-------
+
+Output, standard input, and file I/O.
+
+### `IO.puts(x: Any) -> Nil`
+
+Print `x` followed by a newline to standard output. Reference types
+are formatted the same way as `Array.str_array()` /
+`Object.str_object()`, and strings are printed **with surrounding
+single quotes**.
+
+```culebra
+IO.puts('hi')       # → 'hi'
+IO.puts(42)         # → 42
+IO.puts([1, 'a'])   # → [1, 'a']
+```
+
+### `IO.print(x: Any) -> Nil`
 
 Write `x` to standard output **without a trailing newline**, using
 `to_string` formatting (strings are **unquoted**). Useful for
 building a single line of output from several writes.
 
 ```culebra
-print('Hello, ')
-print('world!')
-puts('')         # → Hello, world!
+IO.print('Hello, ')
+IO.print('world!')
+IO.puts('')         # → Hello, world!
 ```
 
-### `assert(cond: Bool) -> Nil`
-
-Evaluate `cond`. If falsy, abort with `assert failed at L:C.`. The
-location is the source position of the `assert` call.
-
-```culebra
-assert(1 + 1 == 2)
-```
-
-**Throws**: `assert failed at L:C.` on falsy; `type error at L:C.` if
-`cond` is neither `Bool` nor `Long`.
-
-### `abs(x: Long) -> Long`
-
-Absolute value of `x`.
-
-```culebra
-puts(abs(-7))    # 7
-```
-
-### `min(a: Long, b: Long) -> Long`
-
-Smaller of `a` and `b`.
-
-### `max(a: Long, b: Long) -> Long`
-
-Larger of `a` and `b`.
-
-### `range(n: Long) -> Array` / `range(start: Long, end: Long) -> Array`
-
-Generate a new `Array` of integers.
-
-* `range(n)` returns `[0, 1, ..., n-1]`. If `n <= 0`, an empty array.
-* `range(start, end)` returns `[start, start+1, ..., end-1]`. If
-  `start >= end`, an empty array.
-
-```culebra
-puts(range(3))         # [0, 1, 2]
-puts(range(2, 5))      # [2, 3, 4]
-puts(range(5, 2))      # []
-```
-
-### `to_long(s: String) -> Long`
-
-Parse `s` as a base-10 signed integer. Leading/trailing whitespace is
-allowed; anything else fails.
-
-**Throws**: `type error at L:C.` if `s` does not parse as an integer.
-
-```culebra
-puts(to_long('42'))    # 42
-puts(to_long('-7'))    # -7
-```
-
-### `to_string(v: Any) -> String`
-
-Convert `v` to its display form (same formatting as interpolation
-inserts — strings come through unquoted).
-
-```culebra
-puts(to_string(42))         # '42'
-puts(to_string([1, 2]))     # '[1, 2]'
-puts(to_string('hi'))       # 'hi'
-```
-
-### `type_of(v: Any) -> String`
-
-Return the runtime type name of `v`. One of
-`'Nil'`, `'Bool'`, `'Long'`, `'String'`, `'Array'`, `'Object'`,
-`'Function'`.
-
-```culebra
-puts(type_of(42))          # 'Long'
-puts(type_of('hi'))        # 'String'
-puts(type_of([1, 2]))      # 'Array'
-```
-
----
-
-2. I/O
-------
-
-### `input() -> String`
+### `IO.input() -> String`
 
 Read a single line from standard input. The trailing newline is
 stripped. Returns `''` (empty string) on end-of-file.
 
 ```culebra
 puts('name?')
-name = input()
+name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `read_file(path: String) -> String`
+### `IO.read(path: String) -> String`
 
 Read the entire file at `path` into a `String`.
 
 **Throws**: `type error at L:C.` if the file cannot be opened.
 
 ```culebra
-contents = read_file('data.txt')
+contents = IO.read('data.txt')
 ```
 
-### `write_file(path: String, content: String) -> Nil`
+### `IO.write(path: String, content: String) -> Nil`
 
 Write `content` to the file at `path`, creating or overwriting it.
 
@@ -163,39 +152,92 @@ Write `content` to the file at `path`, creating or overwriting it.
 writing.
 
 ```culebra
-write_file('out.txt', 'hello\n')
+IO.write('out.txt', 'hello\n')
 ```
 
 ---
 
-3. Design notes
+3. `Sys`
+--------
+
+Process-level information.
+
+### `Sys.argv -> Array`
+
+Array of `String` arguments passed to the script on the command
+line. Everything after a standalone `--` is captured; the
+`culebra` executable and script paths themselves are excluded.
+Empty when no `--` block was given or when running in the REPL.
+
+```culebra
+# $ culebra run.cul -- hello world
+puts(Sys.argv)        # ['hello', 'world']
+```
+
+### `Sys.exit(code: Long) -> Nil`
+
+Terminate the process immediately with the given exit code. Does
+not return; pending `defer` statements are *not* run.
+
+```culebra
+if error_occurred { Sys.exit(1) }
+```
+
+### `Sys.env(name: String) -> String`
+
+Return the value of the environment variable `name`, or `''` (empty
+string) if it is not set. Use `.size() > 0` to distinguish an unset
+variable from one set to the empty string.
+
+```culebra
+puts(Sys.env('HOME'))          # '/Users/alice'
+puts(Sys.env('NOT_A_VAR'))     # ''
+```
+
+---
+
+4. Design notes
 ---------------
+
+### Namespace-first, CLI-aliased globals
+
+The library adds **no global names**: everything lives under
+`Math`, `IO`, or `Sys`. This keeps `culebra::environment()` free of
+surprises for embedders who use Culebra as a scripting engine
+inside a host application.
+
+For CLI scripting, however, `puts` / `print` are so pervasive that
+writing `IO.puts` everywhere adds friction. The CLI binary
+(`src/main.cc`) installs them as globals right after constructing
+the environment — pointing to the same function values that live
+under `IO`, so there is no duplication. V8 takes an analogous
+approach: the engine provides no `print`, and the `d8` shell
+installs one.
 
 ### Free function vs method
 
-Global free functions are used when the operation either constructs
-a value from nothing (`range`, `input`) or applies uniformly to
-multiple types (`type_of`, `to_string`), and when the name reads
-better unqualified (`abs(x)`, `min(a, b)`). Operations that are
-*about* a specific type use method syntax — see §17 of the language
-spec for String/Array/Object methods.
+Free functions (in namespaces) are used when the operation either
+constructs a value from nothing (`range`, `IO.input`) or applies
+uniformly to multiple types (`type_of`, `to_string`). Operations
+that are *about* a specific type use method syntax — see §17 of the
+language spec for String/Array/Object methods.
 
 ### Error-by-throw versus `nil` returns
 
 The library prefers throwing on unrecoverable type errors
-(`to_long('abc')`, `read_file(...)` on a missing file) and returning
-sentinel values for "found or not" predicates (`input()` returns
+(`to_long('abc')`, `IO.read(...)` on a missing file) and returning
+sentinel values for "found or not" predicates (`IO.input()` returns
 `''` on EOF). This keeps hot paths simple without requiring a
 `try`/`catch` mechanism.
 
 ---
 
-4. Not included (yet)
+5. Not included (yet)
 ---------------------
 
-### Floating-point math (`sqrt`, `sin`, `cos`, `log`, `pow`, `random`)
+### Floating-point math (`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.random`)
 
-Culebra has no `Float` type yet. Integer-only math functions would be
+Culebra has no `Float` type yet. Integer-only variants would be
 awkward (`sqrt` could return the integer square root). Adding a full
 math suite is deferred to a future phase that also introduces a
 numeric type hierarchy.
@@ -205,10 +247,10 @@ numeric type hierarchy.
 Deferred; would require either a built-in regex engine or a vendored
 dependency.
 
-### Date, time, random, OS introspection
+### Date, time
 
 Deferred. Scripts that need these today can call out through
-`read_file`/`write_file` with a helper process.
+`IO.read` / `IO.write` with a helper process.
 
 ### Collections beyond `Array`/`Object`
 

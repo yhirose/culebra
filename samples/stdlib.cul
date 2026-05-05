@@ -1,12 +1,12 @@
-# Standard library tour: global built-in functions and I/O.
-# (Built-in type methods are part of the language — see language.md §17.)
-# Works identically under the interpreter and the JIT.
+# Standard library tour: Math / IO / Sys namespaces.
+# Core built-ins (assert, range, to_long, to_string, type_of) are
+# part of the language — see docs/language.md §18.
+# `puts` / `print` are CLI aliases of IO.puts / IO.print installed
+# by src/main.cc (§19). Type methods are in language.md §17.
+# Works identically under the interpreter and the JIT, except
+# Sys.argv which is interpreter-only.
 
-# --- Global functions ---------------------------------------------------
-
-puts(abs(-7))                          # 7
-puts(min(3, 5))                        # 3
-puts(max(3, 5))                        # 5
+# --- Core built-ins (language spec) -------------------------------------
 
 puts(range(5))                         # [0, 1, 2, 3, 4]
 puts(range(2, 5))                      # [2, 3, 4]
@@ -21,7 +21,23 @@ puts(type_of('hi'))                    # 'String'
 puts(type_of([1, 2]))                  # 'Array'
 puts(type_of({a: 1}))                  # 'Object'
 
-# print: no trailing newline, strings unquoted.
+# --- Math ---------------------------------------------------------------
+
+puts(Math.abs(-7))                     # 7
+puts(Math.min(3, 5))                   # 3
+puts(Math.max(3, 5))                   # 5
+puts(Math.pow(2, 10))                  # 1024
+puts(Math.sign(-42))                   # -1
+puts(Math.clamp(15, 0, 10))            # 10
+
+# --- Sys ----------------------------------------------------------------
+
+puts(Sys.argv)                         # [] unless run with `-- ...`
+# puts(Sys.env('HOME'))                # '/Users/alice' etc.
+# Sys.exit(0)                          # terminates immediately
+
+# --- print (no trailing newline, strings unquoted) ----------------------
+
 print('Hello, ')
 print('world!')
 puts('')                               # Hello, world!

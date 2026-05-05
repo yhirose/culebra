@@ -148,6 +148,32 @@ make_bumper = fn () {
 スコープでのシャドウは許可されます。詳細は
 [`language.ja.md` §6](language.ja.md) の "シャドウ禁止" を参照。
 
+7. 標準ライブラリ
+------------------
+
+コア言語の組み込み関数は裸で使えます（`assert`, `range`,
+`to_long`, `to_string`, `type_of`）。それ以外は `Math`, `IO`,
+`Sys` の名前空間配下です:
+
+```culebra
+puts(Math.abs(-7))              # 7
+puts(Math.min(3, 5))            # 3
+
+name = IO.input()               # 標準入力から 1 行
+IO.write('out.txt', 'hello')    # ファイル書き出し
+
+# $ culebra script.cul -- alice bob
+puts(Sys.argv)                  # ['alice', 'bob']
+```
+
+`puts` と `print` は CLI が提供するエイリアスで `IO.puts` /
+`IO.print` と同じ関数を指します。`culebra` バイナリでスクリプト
+を実行する場合 `puts(x)` と `IO.puts(x)` は等価です。
+`culebra::environment()` を直接使う埋め込み用途では `IO` 名前空間
+のみが提供されます。
+
+詳細は [`stdlib.ja.md`](stdlib.ja.md)。
+
 次の一歩
 ---------
 

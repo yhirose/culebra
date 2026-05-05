@@ -1,11 +1,20 @@
 Culebra 標準ライブラリ
 ======================
 
-本書は Culebra 実行系に組み込まれている**グローバル関数**と**入出力**
-を規定します。ここに記載のものは `import` 文なしで利用できます。
+本書は Culebra の**組み込みライブラリ**を規定します。ランタイム
+ユーティリティをまとめた名前空間オブジェクト（`Math`, `IO`, `Sys`）
+を対象とします。ここに記載のものは `import` 文なしで利用できます。
 
-組み込み型（`String`, `Array`, `Object`）のメソッドは言語自身の一部で、
-[言語仕様 §17](language.ja.md) を参照してください。
+言語レベルの組み込み関数（`assert`, `range`, `to_long`, `to_string`,
+`type_of`）は [言語仕様 §18](language.ja.md) を参照してください。
+組み込み型（`String`, `Array`, `Object`）のメソッドは
+[言語仕様 §17](language.ja.md) に規定されています。
+
+CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
+`IO.puts` / `IO.print` のエイリアスとしてグローバルに配置します
+（[言語仕様 §19](language.ja.md) 参照）。`culebra::environment()`
+を直接呼び出す埋め込み用途では、これらのエイリアスは導入されず
+名前空間はクリーンなままです。
 
 本書で用いる記法:
 
@@ -17,181 +26,212 @@ Culebra 標準ライブラリ
 目次
 ----
 
-1. グローバル関数
-2. 入出力
-3. 設計上の注記
-4. 未収録（将来検討）
+1. `Math`
+2. `IO`
+3. `Sys`
+4. 設計上の注記
+5. 未収録（将来検討）
 
 ---
 
-1. グローバル関数
-------------------
+1. `Math`
+---------
 
-### `puts(x: Any) -> Nil`
+整数演算のユーティリティ群。浮動小数点系（`sqrt`, `sin` など）は
+`Float` 型の導入まで保留されています。
+
+### `Math.abs(x: Long) -> Long`
+
+`x` の絶対値。
+
+```culebra
+puts(Math.abs(-7))    # 7
+```
+
+### `Math.min(a: Long, b: Long) -> Long`
+
+`a` と `b` のうち小さい方。
+
+### `Math.max(a: Long, b: Long) -> Long`
+
+`a` と `b` のうち大きい方。
+
+### `Math.pow(base: Long, exp: Long) -> Long`
+
+整数累乗。繰り返し二乗法で `base ** exp` を計算します。
+`Math.pow(x, 0)` は `x` に関わらず `1`（`0` を含む）。
+
+**例外**: `exp < 0` のとき `type error at L:C.`。
+
+```culebra
+puts(Math.pow(2, 10))    # 1024
+puts(Math.pow(7, 0))     # 1
+puts(Math.pow(-3, 3))    # -27
+```
+
+### `Math.sign(x: Long) -> Long`
+
+負数で `-1`、ゼロで `0`、正数で `1` を返します。
+
+```culebra
+puts(Math.sign(-5))      # -1
+puts(Math.sign(0))       # 0
+puts(Math.sign(42))      # 1
+```
+
+### `Math.clamp(x: Long, lo: Long, hi: Long) -> Long`
+
+`x` を閉区間 `[lo, hi]` に収めます。`lo > hi` の場合はエラーに
+ならず `hi` を返します。
+
+```culebra
+puts(Math.clamp(5, 0, 10))   # 5
+puts(Math.clamp(-5, 0, 10))  # 0
+puts(Math.clamp(15, 0, 10))  # 10
+```
+
+---
+
+2. `IO`
+-------
+
+出力、標準入力、ファイル入出力。
+
+### `IO.puts(x: Any) -> Nil`
 
 `x` を改行付きで標準出力に書き出します。参照型は
 `Array.str_array()` / `Object.str_object()` と同じ書式で整形され、
 文字列は**シングルクォートで囲んで**出力されます。
 
 ```culebra
-puts('hi')       # → 'hi'
-puts(42)         # → 42
-puts([1, 'a'])   # → [1, 'a']
+IO.puts('hi')       # → 'hi'
+IO.puts(42)         # → 42
+IO.puts([1, 'a'])   # → [1, 'a']
 ```
 
-### `print(x: Any) -> Nil`
+### `IO.print(x: Any) -> Nil`
 
 `x` を**末尾改行なし**で標準出力へ書き出します。書式は `to_string`
 と同じで、文字列は**引用符なし**で出力されます。複数回の書き込みで
 1 行を組み立てたい場合に便利です。
 
 ```culebra
-print('Hello, ')
-print('world!')
-puts('')         # → Hello, world!
+IO.print('Hello, ')
+IO.print('world!')
+IO.puts('')         # → Hello, world!
 ```
 
-### `assert(cond: Bool) -> Nil`
-
-`cond` を評価し、偽なら `assert failed at L:C.` で中断します。位置は
-`assert` 呼出のソース位置です。
-
-```culebra
-assert(1 + 1 == 2)
-```
-
-**例外**: 偽のとき `assert failed at L:C.`、`cond` が `Bool` でも
-`Long` でもないとき `type error at L:C.`。
-
-### `abs(x: Long) -> Long`
-
-`x` の絶対値。
-
-```culebra
-puts(abs(-7))    # 7
-```
-
-### `min(a: Long, b: Long) -> Long`
-
-`a` と `b` のうち小さい方。
-
-### `max(a: Long, b: Long) -> Long`
-
-`a` と `b` のうち大きい方。
-
-### `range(n: Long) -> Array` / `range(start: Long, end: Long) -> Array`
-
-整数の新しい `Array` を生成します。
-
-* `range(n)` は `[0, 1, ..., n-1]` を返します。`n <= 0` なら空配列。
-* `range(start, end)` は `[start, start+1, ..., end-1]` を返します。
-  `start >= end` なら空配列。
-
-```culebra
-puts(range(3))         # [0, 1, 2]
-puts(range(2, 5))      # [2, 3, 4]
-puts(range(5, 2))      # []
-```
-
-### `to_long(s: String) -> Long`
-
-`s` を 10 進の符号付き整数としてパース。前後の空白は許容、それ以外
-は失敗します。
-
-**例外**: パースできない場合 `type error at L:C.`。
-
-```culebra
-puts(to_long('42'))    # 42
-puts(to_long('-7'))    # -7
-```
-
-### `to_string(v: Any) -> String`
-
-`v` を表示形式に変換します（補間時と同じフォーマット。文字列は
-引用符なしで渡る）。
-
-```culebra
-puts(to_string(42))         # '42'
-puts(to_string([1, 2]))     # '[1, 2]'
-puts(to_string('hi'))       # 'hi'
-```
-
-### `type_of(v: Any) -> String`
-
-`v` の実行時の型名を返します。
-`'Nil'`, `'Bool'`, `'Long'`, `'String'`, `'Array'`, `'Object'`,
-`'Function'` のいずれか。
-
-```culebra
-puts(type_of(42))          # 'Long'
-puts(type_of('hi'))        # 'String'
-puts(type_of([1, 2]))      # 'Array'
-```
-
----
-
-2. 入出力
-----------
-
-### `input() -> String`
+### `IO.input() -> String`
 
 標準入力から 1 行読み取ります。末尾の改行は除かれます。EOF のとき
 `''`（空文字列）を返します。
 
 ```culebra
 puts('name?')
-name = input()
+name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `read_file(path: String) -> String`
+### `IO.read(path: String) -> String`
 
 `path` のファイル全体を `String` として読み込みます。
 
 **例外**: 開けないとき `type error at L:C.`。
 
 ```culebra
-contents = read_file('data.txt')
+contents = IO.read('data.txt')
 ```
 
-### `write_file(path: String, content: String) -> Nil`
+### `IO.write(path: String, content: String) -> Nil`
 
 `content` を `path` のファイルに書き込みます（作成または上書き）。
 
 **例外**: 書き込み用に開けないとき `type error at L:C.`。
 
 ```culebra
-write_file('out.txt', 'hello\n')
+IO.write('out.txt', 'hello\n')
 ```
 
 ---
 
-3. 設計上の注記
+3. `Sys`
+--------
+
+プロセスレベルの情報。
+
+### `Sys.argv -> Array`
+
+スクリプトにコマンドラインで渡された `String` 引数の配列。単独の
+`--` より後ろが取り込まれ、`culebra` 実行ファイルとスクリプトパス
+自体は含みません。`--` ブロックが無い場合や REPL 実行時は空配列
+です。
+
+```culebra
+# $ culebra run.cul -- hello world
+puts(Sys.argv)        # ['hello', 'world']
+```
+
+### `Sys.exit(code: Long) -> Nil`
+
+指定の終了コードでプロセスを即座に終了します。呼び出しは戻らず、
+保留中の `defer` 文も**実行されません**。
+
+```culebra
+if error_occurred { Sys.exit(1) }
+```
+
+### `Sys.env(name: String) -> String`
+
+環境変数 `name` の値を返します。未設定の場合は `''`（空文字列）。
+未設定と空文字列設定を区別したい場合は `.size() > 0` を使用。
+
+```culebra
+puts(Sys.env('HOME'))          # '/Users/alice'
+puts(Sys.env('NOT_A_VAR'))     # ''
+```
+
+---
+
+4. 設計上の注記
 ----------------
+
+### 名前空間ファースト、グローバルは CLI のエイリアス
+
+ライブラリ自体は**グローバル名を一切追加しません**。すべての関数
+は `Math`, `IO`, `Sys` のいずれかに属します。これにより
+`culebra::environment()` はホストアプリケーションに埋め込むスクリプト
+エンジンとして、意図しないグローバルを持ち込まない形になります。
+
+ただし CLI スクリプトで `puts` / `print` は頻出するため、毎回
+`IO.puts` と書くのは摩擦が大きい。CLI バイナリ（`src/main.cc`）
+は環境構築直後にこれらをグローバルとしてインストールします。
+指す関数値は `IO` 配下と同一なので重複はありません。V8 が同様の
+アプローチを採っており、エンジン自体は `print` を提供せず、`d8`
+シェルが後付けで導入しています。
 
 ### 自由関数 vs メソッド
 
-自由関数は、無から値を構築する場合（`range`, `input`）、複数の型に
-等しく適用される場合（`type_of`, `to_string`）、および修飾なしの
-名前の方が読みやすい場合（`abs(x)`, `min(a, b)`）に使います。
-特定の型に関する操作はメソッド構文を用いますが、その設計方針は
-言語仕様 §17（String/Array/Object メソッド）を参照してください。
+自由関数（名前空間内）は、無から値を構築する場合（`range`,
+`IO.input`）、複数の型に等しく適用される場合（`type_of`,
+`to_string`）に使います。特定の型に関する操作はメソッド構文を
+用いますが、その設計方針は言語仕様 §17（String/Array/Object
+メソッド）を参照してください。
 
 ### エラー送出 vs `nil` 戻り値
 
 回復不能な型エラー（`to_long('abc')`、存在しないファイルへの
-`read_file(...)` など）は例外送出を優先し、「見つかるかどうか」の
-述語はセンチネルを返す方針です（`input()` は EOF で `''`）。
+`IO.read(...)` など）は例外送出を優先し、「見つかるかどうか」の
+述語はセンチネルを返す方針です（`IO.input()` は EOF で `''`）。
 `try`/`catch` なしでホットパスを簡潔に保つためです。
 
 ---
 
-4. 未収録（将来検討）
+5. 未収録（将来検討）
 ----------------------
 
-### 浮動小数点演算（`sqrt`, `sin`, `cos`, `log`, `pow`, `random`）
+### 浮動小数点演算（`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.random`）
 
-Culebra には `Float` 型がまだありません。整数のみの数学関数は
+Culebra には `Float` 型がまだありません。整数のみの変種は
 意味が不自然になります（`sqrt` は整数平方根になるなど）。本格的な
 数学ライブラリは、数値型体系を導入する将来フェーズに委ねます。
 
@@ -200,9 +240,9 @@ Culebra には `Float` 型がまだありません。整数のみの数学関数
 将来対応。ビルトインの正規表現エンジン、またはベンダ依存のライブラリ
 が必要です。
 
-### 日時、乱数、OS インスペクション
+### 日時
 
-将来対応。必要なら `read_file`/`write_file` 経由でヘルパープロセスを
+将来対応。必要なら `IO.read` / `IO.write` 経由でヘルパープロセスを
 呼ぶ形で代用できます。
 
 ### `Array`/`Object` 以外のコレクション
@@ -212,4 +252,4 @@ Culebra には `Float` 型がまだありません。整数のみの数学関数
 
 ---
 
-関連: 言語仕様は [`docs/language.ja.md`](language.ja.md)にあります。
+関連: 言語仕様は [`docs/language.ja.md`](language.ja.md) にあります。

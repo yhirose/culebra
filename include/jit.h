@@ -1425,6 +1425,10 @@ inline constexpr auto defer_push          = "culebra_runtime_defer_push";
 inline constexpr auto defer_run_to        = "culebra_runtime_defer_run_to";
 inline constexpr auto div_zero            = "culebra_runtime_div_zero";
 inline constexpr auto input               = "culebra_runtime_input";
+inline constexpr auto math_pow            = "culebra_runtime_math_pow";
+inline constexpr auto sys_argv            = "culebra_runtime_sys_argv";
+inline constexpr auto sys_env             = "culebra_runtime_sys_env";
+inline constexpr auto sys_exit            = "culebra_runtime_sys_exit";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
@@ -1752,6 +1756,14 @@ struct JIT {
   llvm::Value* try_compile_stdlib_global(const std::string& name,
                                          const peg::Ast& argsAst,
                                          const peg::Ast& callAst);
+  llvm::Value* try_compile_stdlib_namespace(std::string_view ns,
+                                            std::string_view method,
+                                            const peg::Ast& argsAst,
+                                            const peg::Ast& callAst);
+  llvm::Value* try_compile_stdlib_namespace_property(std::string_view ns,
+                                                      std::string_view prop);
+  llvm::Value* emit_output_call(const char* rt_name,
+                                const peg::Ast& argsAst);
 
  private:
   llvm::LLVMContext& ctx_;
@@ -4219,6 +4231,22 @@ struct JIT {
       auto name = std::string(calleeNode->token);
       start = try_compile_stdlib_global(name, *ast.nodes[1], ast);
       if (start) next_idx = 2;
+    }
+
+    if (!start && calleeNode->tag == "IDENTIFIER"_ &&
+        ast.nodes.size() >= 2 &&
+        ast.nodes[1]->original_tag == "DOT"_) {
+      auto ns = calleeNode->token;
+      auto prop = ast.nodes[1]->token;
+      if (ast.nodes.size() >= 3 &&
+          ast.nodes[2]->original_tag == "ARGUMENTS"_) {
+        start = try_compile_stdlib_namespace(ns, prop, *ast.nodes[2], ast);
+        if (start) next_idx = 3;
+      }
+      if (!start) {
+        start = try_compile_stdlib_namespace_property(ns, prop);
+        if (start) next_idx = 2;
+      }
     }
 
     if (!start) return compile_call(ast);

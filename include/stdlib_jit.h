@@ -3,6 +3,22 @@
 // JIT-side implementation of the Culebra standard library. Fragment header;
 // include once at the end of jit.h.
 
+#include <cstdlib>
+
+// ---------------------------------------------------------------------------
+// Runtime state
+// ---------------------------------------------------------------------------
+
+namespace culebra {
+// Holder for Sys.argv under the JIT. main.cc (or any embedder) populates
+// this before calling JIT::run; culebra_runtime_sys_argv() materializes
+// a fresh JitArray from it on each access.
+inline std::vector<std::string>& _culebra_sys_argv_holder() {
+  static std::vector<std::string> v;
+  return v;
+}
+}  // namespace culebra
+
 // ---------------------------------------------------------------------------
 // Runtime functions callable from JIT'd code
 // ---------------------------------------------------------------------------
@@ -97,6 +113,43 @@ __attribute__((used)) inline void culebra_runtime_write_file(
   ofs.write(content, static_cast<std::streamsize>(len));
 }
 
+// --- Math / Sys ---
+
+__attribute__((used)) inline int64_t culebra_runtime_math_pow(
+    int64_t base, int64_t exp, int64_t line, int64_t col) {
+  if (exp < 0) {
+    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+  }
+  int64_t r = 1;
+  while (exp > 0) {
+    if (exp & 1) r *= base;
+    base *= base;
+    exp >>= 1;
+  }
+  return r;
+}
+
+__attribute__((used)) inline void culebra_runtime_sys_exit(int64_t code) {
+  std::exit(static_cast<int>(code));
+}
+
+__attribute__((used)) inline const char* culebra_runtime_sys_env(
+    const char* name) {
+  const char* v = std::getenv(name);
+  return _culebra_heap_str(std::string(v ? v : ""));
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
+  auto& argv = culebra::_culebra_sys_argv_holder();
+  auto* r = culebra_runtime_array_new();
+  for (const auto& s : argv) {
+    auto* str = _culebra_heap_str(s);
+    culebra_runtime_array_push(r, culebra::TAG_STRING,
+                               reinterpret_cast<int64_t>(str));
+  }
+  return r;
+}
+
 }  // extern "C"
 
 // ---------------------------------------------------------------------------
@@ -123,6 +176,14 @@ inline void JIT::declare_stdlib_runtime() {
   module_->getOrInsertFunction(rt::write_file,
                                builder_.getVoidTy(), ptrTy, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::math_pow,
+                               builder_.getInt64Ty(),
+                               builder_.getInt64Ty(), builder_.getInt64Ty(),
+                               builder_.getInt64Ty(), builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::sys_exit, builder_.getVoidTy(),
+                               builder_.getInt64Ty());
+  module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
+  module_->getOrInsertFunction(rt::sys_argv, ptrTy);
 }
 
 inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
@@ -132,21 +193,10 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
 
-  if (name == "puts" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(module_->getFunction(rt::puts),
-                        {extract_tag(arg), extract_data(arg)});
-    emit_value_release(arg);
-    return make_nil();
-  }
-
-  if (name == "print" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(module_->getFunction(rt::print),
-                        {extract_tag(arg), extract_data(arg)});
-    emit_value_release(arg);
-    return make_nil();
-  }
+  if (name == "puts" && argsAst.nodes.size() == 1)
+    return emit_output_call(rt::puts, argsAst);
+  if (name == "print" && argsAst.nodes.size() == 1)
+    return emit_output_call(rt::print, argsAst);
 
   if (name == "assert" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
@@ -155,28 +205,6 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
         {extract_tag(arg), extract_data(arg), line, col});
     emit_value_release(arg);
     return make_nil();
-  }
-
-  if (name == "abs" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    auto x = value_to_long(arg);
-    auto isNeg = builder_.CreateICmpSLT(x, builder_.getInt64(0));
-    auto r = builder_.CreateSelect(isNeg, builder_.CreateNeg(x), x);
-    return make_long(r);
-  }
-
-  if (name == "min" && argsAst.nodes.size() == 2) {
-    auto a = value_to_long(compile(*argsAst.nodes[0]));
-    auto b = value_to_long(compile(*argsAst.nodes[1]));
-    auto r = builder_.CreateSelect(builder_.CreateICmpSLT(a, b), a, b);
-    return make_long(r);
-  }
-
-  if (name == "max" && argsAst.nodes.size() == 2) {
-    auto a = value_to_long(compile(*argsAst.nodes[0]));
-    auto b = value_to_long(compile(*argsAst.nodes[1]));
-    auto r = builder_.CreateSelect(builder_.CreateICmpSGT(a, b), a, b);
-    return make_long(r);
   }
 
   if (name == "range" && argsAst.nodes.size() == 1) {
@@ -221,37 +249,134 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
     return make_string(s);
   }
 
-  if (name == "input" && argsAst.nodes.size() == 0) {
-    auto s = builder_.CreateCall(module_->getFunction(rt::input),
-                                 {});
-    return make_string(s);
+  return nullptr;
+}
+
+inline llvm::Value* JIT::try_compile_stdlib_namespace(
+    std::string_view ns, std::string_view method,
+    const peg::Ast& argsAst, const peg::Ast& callAst) {
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto line = builder_.getInt64(callAst.line);
+  auto col = builder_.getInt64(callAst.column);
+
+  if (ns == "Math") {
+    if (method == "abs" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      auto x = value_to_long(arg);
+      auto isNeg = builder_.CreateICmpSLT(x, builder_.getInt64(0));
+      auto r = builder_.CreateSelect(isNeg, builder_.CreateNeg(x), x);
+      return make_long(r);
+    }
+    if (method == "min" && argsAst.nodes.size() == 2) {
+      auto a = value_to_long(compile(*argsAst.nodes[0]));
+      auto b = value_to_long(compile(*argsAst.nodes[1]));
+      auto r = builder_.CreateSelect(builder_.CreateICmpSLT(a, b), a, b);
+      return make_long(r);
+    }
+    if (method == "max" && argsAst.nodes.size() == 2) {
+      auto a = value_to_long(compile(*argsAst.nodes[0]));
+      auto b = value_to_long(compile(*argsAst.nodes[1]));
+      auto r = builder_.CreateSelect(builder_.CreateICmpSGT(a, b), a, b);
+      return make_long(r);
+    }
+    if (method == "pow" && argsAst.nodes.size() == 2) {
+      auto base = value_to_long(compile(*argsAst.nodes[0]));
+      auto exp = value_to_long(compile(*argsAst.nodes[1]));
+      auto r = builder_.CreateCall(module_->getFunction(rt::math_pow),
+                                   {base, exp, line, col});
+      return make_long(r);
+    }
+    if (method == "sign" && argsAst.nodes.size() == 1) {
+      auto x = value_to_long(compile(*argsAst.nodes[0]));
+      auto zero = builder_.getInt64(0);
+      auto is_neg = builder_.CreateICmpSLT(x, zero);
+      auto is_pos = builder_.CreateICmpSGT(x, zero);
+      auto pos_or_zero = builder_.CreateSelect(is_pos, builder_.getInt64(1),
+                                               zero);
+      auto r = builder_.CreateSelect(is_neg, builder_.getInt64(-1),
+                                     pos_or_zero);
+      return make_long(r);
+    }
+    if (method == "clamp" && argsAst.nodes.size() == 3) {
+      auto x = value_to_long(compile(*argsAst.nodes[0]));
+      auto lo = value_to_long(compile(*argsAst.nodes[1]));
+      auto hi = value_to_long(compile(*argsAst.nodes[2]));
+      auto above_lo = builder_.CreateSelect(builder_.CreateICmpSLT(x, lo),
+                                            lo, x);
+      auto r = builder_.CreateSelect(builder_.CreateICmpSGT(above_lo, hi),
+                                     hi, above_lo);
+      return make_long(r);
+    }
   }
 
-  if (name == "read_file" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    emit_type_check(arg, "String", "read_file argument");
-    auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-    auto s = builder_.CreateCall(
-        module_->getFunction(rt::read_file), {ptr, line, col});
-    emit_value_release(arg);
-    return make_string(s);
+  if (ns == "IO") {
+    if (method == "puts" && argsAst.nodes.size() == 1)
+      return emit_output_call(rt::puts, argsAst);
+    if (method == "print" && argsAst.nodes.size() == 1)
+      return emit_output_call(rt::print, argsAst);
+    if (method == "input" && argsAst.nodes.size() == 0) {
+      auto s = builder_.CreateCall(module_->getFunction(rt::input), {});
+      return make_string(s);
+    }
+    if (method == "read" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "IO.read argument");
+      auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto s = builder_.CreateCall(
+          module_->getFunction(rt::read_file), {ptr, line, col});
+      emit_value_release(arg);
+      return make_string(s);
+    }
+    if (method == "write" && argsAst.nodes.size() == 2) {
+      auto p = compile(*argsAst.nodes[0]);
+      emit_type_check(p, "String", "IO.write path");
+      auto c = compile(*argsAst.nodes[1]);
+      emit_type_check(c, "String", "IO.write content");
+      auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
+      auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
+      builder_.CreateCall(module_->getFunction(rt::write_file),
+                          {pp, cp, line, col});
+      emit_value_release(p);
+      emit_value_release(c);
+      return make_nil();
+    }
   }
 
-  if (name == "write_file" && argsAst.nodes.size() == 2) {
-    auto p = compile(*argsAst.nodes[0]);
-    emit_type_check(p, "String", "write_file path");
-    auto c = compile(*argsAst.nodes[1]);
-    emit_type_check(c, "String", "write_file content");
-    auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
-    auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
-    builder_.CreateCall(module_->getFunction(rt::write_file),
-                        {pp, cp, line, col});
-    emit_value_release(p);
-    emit_value_release(c);
-    return make_nil();
+  if (ns == "Sys") {
+    if (method == "exit" && argsAst.nodes.size() == 1) {
+      auto code = value_to_long(compile(*argsAst.nodes[0]));
+      builder_.CreateCall(module_->getFunction(rt::sys_exit), {code});
+      return make_nil();  // unreachable; sys_exit terminates the process
+    }
+    if (method == "env" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "Sys.env argument");
+      auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto s = builder_.CreateCall(module_->getFunction(rt::sys_env), {ptr});
+      emit_value_release(arg);
+      return make_string(s);
+    }
   }
 
   return nullptr;
+}
+
+inline llvm::Value* JIT::try_compile_stdlib_namespace_property(
+    std::string_view ns, std::string_view prop) {
+  if (ns == "Sys" && prop == "argv") {
+    auto arr = builder_.CreateCall(module_->getFunction(rt::sys_argv), {});
+    return make_array(arr);
+  }
+  return nullptr;
+}
+
+inline llvm::Value* JIT::emit_output_call(const char* rt_name,
+                                           const peg::Ast& argsAst) {
+  auto arg = compile(*argsAst.nodes[0]);
+  builder_.CreateCall(module_->getFunction(rt_name),
+                      {extract_tag(arg), extract_data(arg)});
+  emit_value_release(arg);
+  return make_nil();
 }
 
 }  // namespace culebra

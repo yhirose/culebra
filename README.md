@@ -16,6 +16,10 @@ Features
   destructuring, guards)
 * String interpolation; rich built-in methods on arrays, objects, and
   strings
+* Minimal standard library grouped under `Math`, `IO`, `Sys`
+  namespaces; CLI args exposed as `Sys.argv`. The library adds no
+  globals — the CLI installs `puts` / `print` as aliases for
+  scripting ergonomics; embedders get a clean environment
 * Reference counting plus a mark-and-sweep cycle collector
 * LLVM ORC JIT with `-O2` by default, or pure-C++ interpreter (no LLVM
   required)
@@ -92,15 +96,10 @@ just bench-all
 Architecture
 ------------
 
-* [`include/parser.h`](include/parser.h) — PEG grammar (via
-  [cpp-peglib](vendor/cpp-peglib)) that builds the AST.
-* [`include/interpreter.h`](include/interpreter.h) — tree-walking
-  interpreter.
-* [`include/jit.h`](include/jit.h) — LLVM ORC JIT. Compiles the same
-  AST using a tagged `%Value = { i8, i64 }` representation; heap types
-  share an `i64` refcount header and participate in the cycle collector.
-* [`include/repl.h`](include/repl.h), [`include/debugger.h`](include/debugger.h)
-  — REPL and interactive CLI debugger.
+* [`include/parser.h`](include/parser.h) — PEG grammar (via [cpp-peglib](vendor/cpp-peglib)) that builds the AST.
+* [`include/interpreter.h`](include/interpreter.h) — tree-walking interpreter.
+* [`include/jit.h`](include/jit.h) — LLVM ORC JIT. Compiles the same AST using a tagged `%Value = { i8, i64 }` representation; heap types share an `i64` refcount header and participate in the cycle collector.
+* [`include/repl.h`](include/repl.h), [`include/debugger.h`](include/debugger.h) — REPL and interactive CLI debugger.
 
 Both backends share the same parser and AST. Adding a feature usually
 means: grammar tweak, `eval_*` in the interpreter, and `compile_*` in

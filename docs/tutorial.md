@@ -151,6 +151,31 @@ same function's block scope is still allowed. See
 [`language.md` §6](language.md)'s "Shadow prohibition" for the full
 rule.
 
+7. Standard library
+-------------------
+
+Core language built-ins are unqualified (`assert`, `range`,
+`to_long`, `to_string`, `type_of`). Everything else lives under
+`Math`, `IO`, or `Sys`:
+
+```culebra
+puts(Math.abs(-7))              # 7
+puts(Math.min(3, 5))            # 3
+
+name = IO.input()               # read one line from stdin
+IO.write('out.txt', 'hello')    # file I/O
+
+# $ culebra script.cul -- alice bob
+puts(Sys.argv)                  # ['alice', 'bob']
+```
+
+`puts` and `print` are CLI conveniences that alias `IO.puts` /
+`IO.print`, so `puts(x)` and `IO.puts(x)` are equivalent when
+running scripts through the `culebra` binary. Embedders that
+construct the environment themselves get the `IO` namespace only.
+
+Full reference: [`stdlib.md`](stdlib.md).
+
 Next steps
 ----------
 

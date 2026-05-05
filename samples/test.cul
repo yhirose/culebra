@@ -376,10 +376,19 @@ test_shadow_rules = fn () {
 }
 
 test_stdlib = fn () {
-  assert(abs(-7) == 7)
-  assert(abs(5) == 5)
-  assert(min(3, 5) == 3)
-  assert(max(3, 5) == 5)
+  assert(Math.abs(-7) == 7)
+  assert(Math.abs(5) == 5)
+  assert(Math.min(3, 5) == 3)
+  assert(Math.max(3, 5) == 5)
+  assert(Math.pow(2, 10) == 1024)
+  assert(Math.pow(7, 0) == 1)
+  assert(Math.pow(-3, 3) == -27)
+  assert(Math.sign(-5) == -1)
+  assert(Math.sign(0) == 0)
+  assert(Math.sign(42) == 1)
+  assert(Math.clamp(5, 0, 10) == 5)
+  assert(Math.clamp(-5, 0, 10) == 0)
+  assert(Math.clamp(15, 0, 10) == 10)
   assert(range(3).size() == 3)
   assert(range(3)[0] == 0 && range(3)[2] == 2)
   assert(range(2, 5).size() == 3)

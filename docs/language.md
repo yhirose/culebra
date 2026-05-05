@@ -27,9 +27,9 @@ Table of contents
 15. Error handling
 16. Memory model (RC + cycle collector)
 17. Built-in type methods
-18. Command-line interface
-19. Known limitations
-20. Examples
+18. Core built-in functions
+19. Command-line interface
+20. Known limitations
 
 ---
 
@@ -1021,10 +1021,90 @@ puts(p)          # {b: 2}
 
 ---
 
-18. Command-line interface
+18. Core built-in functions
+---------------------------
+
+The functions below are part of the language proper: they are bound
+into every execution environment and cannot be replaced. They are
+distinguished from the broader standard library (see
+[`docs/stdlib.md`](stdlib.md)) by being either tied to language
+semantics (source-position errors, type introspection, the display
+convention) or essential to idiomatic control flow. Output primitives
+(`puts`, `print`) and the namespace objects (`Math`, `IO`, `Sys`)
+live in the standard library.
+
+### `assert(cond: Bool) -> Nil`
+
+Evaluate `cond`. If falsy, abort with `assert failed at L:C.`. The
+location is the source position of the `assert` call.
+
+```culebra
+assert(1 + 1 == 2)
+```
+
+**Throws**: `assert failed at L:C.` on falsy; `type error at L:C.` if
+`cond` is neither `Bool` nor `Long`.
+
+### `range(n: Long) -> Array` / `range(start: Long, end: Long) -> Array`
+
+Generate a new `Array` of integers.
+
+* `range(n)` returns `[0, 1, ..., n-1]`. If `n <= 0`, an empty array.
+* `range(start, end)` returns `[start, start+1, ..., end-1]`. If
+  `start >= end`, an empty array.
+
+```culebra
+puts(range(3))         # [0, 1, 2]
+puts(range(2, 5))      # [2, 3, 4]
+puts(range(5, 2))      # []
+```
+
+### `to_long(s: String) -> Long`
+
+Parse `s` as a base-10 signed integer. Leading/trailing whitespace is
+allowed; anything else fails.
+
+**Throws**: `type error at L:C.` if `s` does not parse as an integer.
+
+```culebra
+puts(to_long('42'))    # 42
+puts(to_long('-7'))    # -7
+```
+
+### `to_string(v: Any) -> String`
+
+Convert `v` to its display form (same formatting as interpolation
+inserts — strings come through unquoted). See §8 for the display
+convention.
+
+```culebra
+puts(to_string(42))         # '42'
+puts(to_string([1, 2]))     # '[1, 2]'
+puts(to_string('hi'))       # 'hi'
+```
+
+### `type_of(v: Any) -> String`
+
+Return the runtime type name of `v`. One of
+`'Nil'`, `'Bool'`, `'Long'`, `'String'`, `'Array'`, `'Object'`,
+`'Function'`.
+
+```culebra
+puts(type_of(42))          # 'Long'
+puts(type_of('hi'))        # 'String'
+puts(type_of([1, 2]))      # 'Array'
+```
+
+---
+
+19. Command-line interface
 --------------------------
 
-    culebra [flags] [script.cul ...]
+    culebra [flags] [script.cul ...] [-- arg ...]
+
+Everything after a standalone `--` is captured verbatim and exposed to
+the script as `Sys.argv` (see [`docs/stdlib.md`](stdlib.md)). Without
+a `--`, `Sys.argv` is empty.
 
 ### Flags
 
@@ -1041,9 +1121,26 @@ If no script is provided, the REPL is launched automatically. The JIT
 REPL does not preserve state between inputs (each input is a fresh
 compilation), while the interpreter REPL does.
 
+### CLI-installed globals
+
+The CLI binary adds two globals to the script environment before
+running user code:
+
+| Global  | Aliased to  |
+|---------|-------------|
+| `puts`  | `IO.puts`   |
+| `print` | `IO.print`  |
+
+These are convenience shortcuts for the most common output calls;
+they point to the same function values that live under `IO`, so
+`puts(x)` and `IO.puts(x)` are fully equivalent. Embedders that use
+`culebra::environment()` directly do not receive these aliases —
+their environment contains only `Math`, `IO`, `Sys`, and the core
+built-ins from §18.
+
 ---
 
-19. Known limitations
+20. Known limitations
 ---------------------
 
 * No floating-point numbers, big integers, or bignums.
@@ -1052,7 +1149,8 @@ compilation), while the interpreter REPL does.
 * Array and object equality compare by reference, not structural.
 * No user-level exception handling (`try`/`catch`).
 * No module system (`import`) yet.
-* No standard library beyond `puts`, `assert`, `.size()`, `.push()`.
+* Standard library is minimal (basic I/O, integer math, process
+  info); see [`docs/stdlib.md`](stdlib.md).
 * Type annotations are enforced only at function boundaries and
   annotated assignments; they do not make the language static.
 * Pattern matching has no exhaustiveness check.
