@@ -720,6 +720,11 @@ Semantics:
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's
   `new` body, and a runtime helper wires them into the fresh object.
+* Well-known methods like `drop` (§16) can be written as ordinary
+  class methods. Under the JIT, methods are held on a shared per-class
+  meta object via prototype delegation, but the auto-drop lookup walks
+  the proto chain — `class C { drop() { ... } }` fires as expected
+  with `this` bound to the instance.
 
 ### Operator overloading
 

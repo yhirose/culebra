@@ -53,6 +53,14 @@ test-all: build
 test-shadow-errors: build
     ./scripts/test_shadow_errors.sh
 
+# Smoke: run microgpt 5 training steps (no inference) on both backends
+# to catch regressions in the JIT value-ownership / dunder dispatch
+# paths that the unit tests don't exercise at scale.
+smoke-microgpt: build fetch-names
+    ./build/culebra       samples/microgpt/microgpt.cul -- 5 0 > /dev/null
+    ./build/culebra --jit samples/microgpt/microgpt.cul -- 5 0 > /dev/null
+    @echo "smoke-microgpt OK: 5 steps completed on both backends"
+
 # Download Karpathy's names dataset for samples/microgpt.
 fetch-names:
     #!/usr/bin/env bash

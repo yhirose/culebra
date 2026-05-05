@@ -1655,6 +1655,9 @@ __attribute__((used)) inline JitObject* culebra_runtime_build_class_meta(
                                method_vals[i].tag, method_vals[i].data, 0,
                                0);
   }
+  // The meta isn't an instance; undo the `has_drop` side-effect that
+  // `culebra_runtime_object_set` set when binding the "drop" method.
+  meta->has_drop = false;
   return meta;
 }
 
@@ -1685,6 +1688,8 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
   // any of its instances. The matching release runs in the JitObject
   // destructor (release_impl GC_TAG_OBJECT path).
   if (class_meta) class_meta->refcount++;
+  // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
+  if (class_meta && _find_property(class_meta, "drop")) inst->has_drop = true;
 
   auto* cn = _culebra_heap_str(class_name);
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
@@ -3210,9 +3215,10 @@ inline void _culebra_cell_release(JitCell* c);
 // reference (matches interp's documented warning).
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
-  auto idx = o->find_slot("drop");
-  if (idx == static_cast<size_t>(-1)) return;
-  const auto& v = o->slots[idx].value;
+  // Walks proto so class-sugar instances find their inherited `drop`.
+  auto* entry = _find_property(o, "drop");
+  if (!entry) return;
+  const auto& v = entry->value;
   if (v.tag != GC_TAG_FUNC) return;
   auto* cls = reinterpret_cast<JitClosure*>(v.data);
   if (!cls || cls->arity != 0) return;
@@ -3311,6 +3317,14 @@ __attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
 __attribute__((used)) inline void culebra_runtime_value_release(int8_t tag,
                                                                 int64_t data) {
   _culebra_value_release_impl(tag, data);
+}
+
+// Fused retain(rhs) + release(lhs); halves runtime call overhead in
+// the postfix loop's per-step ownership swap.
+__attribute__((used)) inline void culebra_runtime_value_swap_owned(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  culebra_runtime_value_retain(rt, rd);
+  _culebra_value_release_impl(lt, ld);
 }
 
 __attribute__((used)) inline void culebra_runtime_cell_retain(JitCell* c) {
@@ -3483,6 +3497,7 @@ inline constexpr auto value_greater       = "culebra_runtime_value_greater";
 inline constexpr auto value_geq           = "culebra_runtime_value_geq";
 inline constexpr auto value_release       = "culebra_runtime_value_release";
 inline constexpr auto value_retain        = "culebra_runtime_value_retain";
+inline constexpr auto value_swap_owned    = "culebra_runtime_value_swap_owned";
 inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
 inline constexpr auto write_file          = "culebra_runtime_write_file";
 }  // namespace rt
@@ -4082,6 +4097,18 @@ struct JIT {
             rt::value_release, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {tag, data});
+  }
+
+  // IR-side wrapper for `rt::value_swap_owned`.
+  void emit_value_swap_owned(llvm::Value* keep, llvm::Value* drop) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::value_swap_owned, builder_.getVoidTy(),
+            i8Ty, i64Ty, i8Ty, i64Ty),
+        {extract_tag(drop), extract_data(drop),
+         extract_tag(keep), extract_data(keep)});
   }
 
   void emit_cell_retain(llvm::Value* cellPtr) {
@@ -7495,9 +7522,15 @@ struct JIT {
         case "ARGUMENTS"_:
           callee = compile_function_call(postfix, callee);
           break;
-        case "INDEX"_:
-          callee = compile_index_access(postfix, callee);
+        case "INDEX"_: {
+          // INDEX/DOT return borrowed slot values; promote them to +1
+          // so chained access like `a.b[i].c` doesn't over-release the
+          // intermediate when the next step's swap drops it.
+          auto receiver = callee;
+          callee = compile_index_access(postfix, receiver);
+          emit_value_swap_owned(callee, receiver);
           break;
+        }
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
@@ -7506,7 +7539,9 @@ struct JIT {
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
-            callee = compile_property_get(callee, name);
+            auto receiver = callee;
+            callee = compile_property_get(receiver, name);
+            emit_value_swap_owned(callee, receiver);
           }
           break;
         }
@@ -7951,9 +7986,12 @@ struct JIT {
         case "ARGUMENTS"_:
           callee = compile_function_call(postfix, callee);
           break;
-        case "INDEX"_:
-          callee = compile_index_access(postfix, callee);
+        case "INDEX"_: {
+          auto receiver = callee;
+          callee = compile_index_access(postfix, receiver);
+          emit_value_swap_owned(callee, receiver);
           break;
+        }
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
@@ -7962,7 +8000,9 @@ struct JIT {
             i++;
           } else {
             auto name = std::string(postfix.token);
-            callee = compile_property_get(callee, name);
+            auto receiver = callee;
+            callee = compile_property_get(receiver, name);
+            emit_value_swap_owned(callee, receiver);
           }
           break;
         }

@@ -855,6 +855,36 @@ test_drop = fn () {
   // Child order between c1/c2 isn't observable from refcount semantics
   assert((events[1] == 'c1' && events[2] == 'c2') ||
          (events[1] == 'c2' && events[2] == 'c1'))
+
+  // `drop` declared as a class-sugar method.
+  events = []
+  class CSDrop {
+    new(id) { this.id = id }
+    drop()  { events.push(this.id) }
+  }
+  {
+    let _r = CSDrop.new('cs1')
+  }
+  assert(events.size() == 1 && events[0] == 'cs1')
+
+  events = []
+  {
+    let _a = CSDrop.new('cs2a')
+    let _b = CSDrop.new('cs2b')
+  }
+  assert(events.size() == 2)
+  assert((events[0] == 'cs2a' && events[1] == 'cs2b') ||
+         (events[0] == 'cs2b' && events[1] == 'cs2a'))
+
+  // Reading an instance property in scope must not pin the instance —
+  // the JIT property-read path used to leak the receiver's +1 ref,
+  // suppressing drop here.
+  events = []
+  {
+    let r = CSDrop.new('cs3')
+    let _id = r.id
+  }
+  assert(events.size() == 1 && events[0] == 'cs3')
 }
 
 // JIT-safe subset of UFCS tests. The __ARGS__/variadic case lives
