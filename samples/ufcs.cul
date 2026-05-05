@@ -1,6 +1,5 @@
 # Uniform Function Call Syntax (UFCS): any free function whose first
 # parameter matches the receiver can be called with method syntax.
-# (Interpreter only for now; JIT support lands in a later phase.)
 #
 # Resolution order for `x.name(args)`:
 #   1. property/method on `x` (wins)

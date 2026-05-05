@@ -1012,6 +1012,28 @@ __attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
   throw std::runtime_error(std::format("type error at {}:{}.", line, col));
 }
 
+// Like type_error but includes "expected X, got Y" — caller passes the
+// expected type as a string-literal global and the runtime tag of the
+// actual value. Used by leaf JIT accessors (value_to_long etc.) where
+// both pieces of context are statically available at the throw site.
+__attribute__((used)) inline void culebra_runtime_type_error_typed(
+    int64_t line, int64_t col, const char* expected, int8_t got_tag) {
+  const char* got = "?";
+  switch (got_tag) {
+    case TAG_NIL:    got = "Nil";      break;
+    case TAG_BOOL:   got = "Bool";     break;
+    case TAG_LONG:   got = "Long";     break;
+    case TAG_FLOAT:  got = "Float";    break;
+    case TAG_STRING: got = "String";   break;
+    case TAG_ARRAY:  got = "Array";    break;
+    case TAG_OBJECT: got = "Object";   break;
+    case TAG_FUNC:   got = "Function"; break;
+    case TAG_TENSOR: got = "Tensor";   break;
+  }
+  throw std::runtime_error(std::format(
+      "type error: expected {}, got {} at {}:{}.", expected, got, line, col));
+}
+
 __attribute__((used)) inline void culebra_runtime_arity_error(
     int64_t got, int64_t declared, int64_t line, int64_t col) {
   throw std::runtime_error(std::format(
@@ -3947,6 +3969,7 @@ inline constexpr auto to_long_any         = "culebra_runtime_to_long_any";
 inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
+inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto args_slice_to_array =
     "culebra_runtime_args_slice_to_array";
@@ -4679,6 +4702,22 @@ struct JIT {
         {current_line_val(), current_column_val()});
   }
 
+  // Emit a typed type-error throw with "expected X, got Y" context.
+  // `expected` is a compile-time string literal; `got_tag` is the i8
+  // LLVM value of the actual operand's runtime tag (e.g. extract_tag(v)).
+  void emit_type_error_typed(const char* expected, llvm::Value* got_tag) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto exp_str = builder_.CreateGlobalStringPtr(expected);
+    emit_call(
+        module_->getOrInsertFunction(rt::type_error_typed,
+                                     builder_.getVoidTy(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
+                                     ptrTy,
+                                     builder_.getInt8Ty()),
+        {current_line_val(), current_column_val(), exp_str, got_tag});
+  }
+
   void emit_div_zero() {
     emit_call(
         module_->getOrInsertFunction(rt::div_zero,
@@ -4880,7 +4919,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errorBB);
-    emit_type_error();
+    emit_type_error_typed("Bool, Long, or Float", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -4905,7 +4944,7 @@ struct JIT {
     builder_.CreateCondBr(isLong, okBB, errorBB);
 
     builder_.SetInsertPoint(errorBB);
-    emit_type_error();
+    emit_type_error_typed("Long", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
@@ -4940,7 +4979,7 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errorBB);
-    emit_type_error();
+    emit_type_error_typed("Long or Float", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -5434,6 +5473,10 @@ struct JIT {
     module_->getOrInsertFunction(rt::type_error,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::type_error_typed,
+                                 builder_.getVoidTy(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(), ptrTy,
+                                 builder_.getInt8Ty());
     // User-level throw: stashes tag+data in globals and raises a
     // C++ exception; try/catch landingpads read the globals back.
     module_->getOrInsertFunction(rt::throw_,
@@ -8364,7 +8407,7 @@ struct JIT {
     builder_.CreateCondBr(isObj, okBB, errBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Object", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
@@ -8467,7 +8510,7 @@ struct JIT {
     builder_.CreateCondBr(isArr, okBB, errBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
@@ -8633,7 +8676,7 @@ struct JIT {
     builder_.CreateCondBr(isFunc, callBB, errorBB);
 
     builder_.SetInsertPoint(errorBB);
-    emit_type_error();
+    emit_type_error_typed("Function", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(callBB);

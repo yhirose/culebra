@@ -887,8 +887,8 @@ test_drop = fn () {
   assert(events.size() == 1 && events[0] == 'cs3')
 }
 
-// JIT-safe subset of UFCS tests. The __ARGS__/variadic case lives
-// in tests/test_ufcs.cul and runs under the interpreter only.
+// JIT-safe subset of UFCS tests. Broader coverage including the
+// __ARGS__/variadic case lives in tests/test_ufcs.cul.
 test_ufcs = fn () {
   // Free function as method on primitive
   double = fn (x) { x * 2 }
@@ -942,9 +942,9 @@ test_ufcs = fn () {
   assert(rest.size() == 2 && rest[0] == 2 && rest[1] == 3)
 }
 
-// JIT-safe subset of for-in tests. Iterator-protocol coverage
-// (user-defined iter/next, lazy range, iterator methods) lives
-// in tests/test_iter.cul and runs under the interpreter only.
+// JIT-safe subset of for-in tests. Broader coverage including
+// user-defined iter/next, lazy range, and iterator methods lives
+// in tests/test_iter.cul.
 test_for_in = fn () {
   // Array iteration
   mut sum = 0

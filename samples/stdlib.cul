@@ -2,9 +2,8 @@
 # Core built-ins (assert, to_long, to_string, type_of) are part of
 # the language — see docs/language.md §18.
 # `puts` / `print` are CLI aliases of IO.puts / IO.print installed
-# by src/main.cc (§19). Type methods are in language.md §17.
-# Works identically under the interpreter and the JIT, except
-# Sys.argv which is interpreter-only.
+# by src/main.cc (§20). Type methods are in language.md §17.
+# Works identically under the interpreter and the JIT.
 
 # --- Core built-ins (language spec) -------------------------------------
 

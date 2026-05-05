@@ -229,6 +229,33 @@ struct Value {
 
   bool is_numeric() const { return type == Long || type == Float; }
 
+  // Stable name for the runtime type tag, used by the `to_X` accessors
+  // below when constructing "type error: expected X, got Y" messages.
+  // (The user-visible `type_of` builtin in stdlib_interp.h has its own
+  // copy of this switch; both should stay in sync.)
+  const char* type_name() const {
+    switch (type) {
+      case Nil:      return "Nil";
+      case Bool:     return "Bool";
+      case Long:     return "Long";
+      case Float:    return "Float";
+      case String:   return "String";
+      case Array:    return "Array";
+      case Object:   return "Object";
+      case Function: return "Function";
+      case Tensor:   return "Tensor";
+    }
+    return "?";
+  }
+
+  // Throws a "type error: expected X, got Y" runtime_error. Caller-side
+  // messages have no trailing period — the eval() wrap appends one
+  // along with " at L:C." so the format stays consistent.
+  [[noreturn]] void _throw_type_error(const char* expected) const {
+    throw std::runtime_error(std::format(
+        "type error: expected {}, got {}", expected, type_name()));
+  }
+
   double to_double_coerce() const {
     switch (type) {
       case Long:
@@ -236,7 +263,7 @@ struct Value {
       case Float:
         return get<double>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Long or Float");
     }
   }
 
@@ -263,7 +290,7 @@ struct Value {
         return d != 0.0;
       }
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Bool, Long, or Float");
     }
   }
 
@@ -273,7 +300,7 @@ struct Value {
       case Long:
         return get<long>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Long");
     }
   }
 
@@ -282,7 +309,7 @@ struct Value {
       case String:
         return get<std::string>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("String");
     }
   }
 
@@ -291,7 +318,7 @@ struct Value {
       case Function:
         return get<FunctionValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Function");
     }
   }
 
@@ -304,7 +331,7 @@ struct Value {
       case Tensor:
         return get<TensorValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Object, Array, or Tensor");
     }
   }
 
@@ -317,7 +344,7 @@ struct Value {
       case Tensor:
         return get<TensorValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Object, Array, or Tensor");
     }
   }
 
@@ -326,7 +353,7 @@ struct Value {
       case Array:
         return get<ArrayValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Array");
     }
   }
 
@@ -335,7 +362,7 @@ struct Value {
       case Tensor:
         return get<TensorValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Tensor");
     }
   }
   TensorValue& to_tensor() {
@@ -343,7 +370,7 @@ struct Value {
       case Tensor:
         return get<TensorValue>();
       default:
-        throw std::runtime_error("type error.");
+        _throw_type_error("Tensor");
     }
   }
 
@@ -445,7 +472,11 @@ struct Value {
     if (is_numeric() && rhs.is_numeric() && type != rhs.type) {
       return cmp(to_double_coerce(), rhs.to_double_coerce());
     }
-    if (type != rhs.type) throw std::runtime_error("type error.");
+    if (type != rhs.type) {
+      throw std::runtime_error(std::format(
+          "type error: cannot compare {} and {}",
+          type_name(), rhs.type_name()));
+    }
     switch (type) {
       case Nil:
         return false;
@@ -2039,6 +2070,21 @@ struct Interpreter {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
   Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    try {
+      return _eval_dispatch(ast, env);
+    } catch (std::runtime_error& e) {
+      // Attach the AST location of the deepest eval() that threw — only
+      // once, by checking whether the message already carries " at ".
+      // Throw sites by convention omit the trailing period; we add it
+      // here together with the location so messages stay consistent.
+      std::string_view msg = e.what();
+      if (msg.find(" at ") != std::string_view::npos) throw;
+      throw std::runtime_error(
+          std::format("{} at {}:{}.", msg, ast.line, ast.column));
+    }
+  }
+
+  Value _eval_dispatch(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     using namespace peg::udl;
 
     if (debugger_) {
@@ -3033,7 +3079,9 @@ struct Interpreter {
     // `@` has no numeric meaning, so skip the numeric path entirely;
     // reaching this point means the LHS didn't supply `__matmul__`.
     if (ope == '@' || !lhs.is_numeric() || !rhs.is_numeric()) {
-      throw std::runtime_error("type error.");
+      throw std::runtime_error(std::format(
+          "type error: cannot apply '{}' to {} and {}",
+          ope, lhs.type_name(), rhs.type_name()));
     }
     // Integer fast path: both Long.
     if (lhs.type == Value::Long && rhs.type == Value::Long) {
@@ -3091,7 +3139,9 @@ struct Interpreter {
                       std::shared_ptr<Environment> env) {
     if (auto r = try_dunder_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
-      throw std::runtime_error("type error.");
+      throw std::runtime_error(std::format(
+          "type error: '**' requires numeric operands, got {} and {}",
+          base.type_name(), exp.type_name()));
     }
     if (base.type == Value::Long && exp.type == Value::Long) {
       auto a = base.get<long>();

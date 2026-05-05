@@ -1,5 +1,4 @@
 # for-in loops and the iterator protocol.
-# (Interpreter only for now; JIT support lands in a future phase.)
 
 # --- Array iteration ---------------------------------------------------
 
