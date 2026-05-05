@@ -12,6 +12,12 @@ overloading, auto-reflection, `Math.*`, `Random.*`).
                           attention, autograd built on Phase 1 Tensor + TNode.
                           ~15× faster per step than the scalar version.
 - `names.txt`           — Training data (gitignored). Run `just fetch-names`.
+- `sidebyside.html`     — Static side-by-side viewer with two tabs:
+                          Python ↔ Culebra scalar (algorithm correspondence)
+                          and Culebra scalar ↔ Tensor (port progression).
+- `build_sidebyside.py` — Regenerator for `sidebyside.html`. Re-run after
+                          any edit to the three source files; section
+                          line ranges live in `SECTIONS_*` near the top.
 
 ## Running
 
