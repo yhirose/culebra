@@ -1,9 +1,11 @@
 #pragma once
 
+#include <num_format.h>
 #include <parser.h>
-#include <support.h>
+#include <random_state.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
+#include <well_known_props.h>
 
 #include <algorithm>
 #include <cctype>
@@ -597,7 +599,7 @@ inline const Value& ObjectValue::get(std::string_view name) const {
   return properties->at(name).val;
 }
 
-// Validate the well-known-property contract (see support.h)
+// Validate the well-known-property contract (see well_known_props.h)
 // for a freshly-bound interpreter Value: must be a 0-arg Function.
 inline void _check_drop_contract(std::string_view name, const Value& val) {
   if (!is_well_known_prop(name)) return;
@@ -1272,8 +1274,18 @@ inline std::map<std::string_view, Value>& string_builtins() {
        }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& s = callEnv->get("this").to_string();
-         return Value(std::string(trim_ascii(s)));
+         auto s = callEnv->get("this").to_string();
+         size_t start = 0;
+         while (start < s.size() &&
+                std::isspace(static_cast<unsigned char>(s[start]))) {
+           start++;
+         }
+         size_t end = s.size();
+         while (end > start &&
+                std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+           end--;
+         }
+         return Value(s.substr(start, end - start));
        }))},
       {"split"sv,
        Value(FunctionValue(

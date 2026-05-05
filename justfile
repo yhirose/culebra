@@ -20,29 +20,24 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite (tests/*.cul) on the tree-walking interpreter.
+# Run the test suite (samples/test.cul and test_class.cul) on the
+# tree-walking interpreter.
 test: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for f in tests/*.cul; do
-      ./build/culebra "$f"
-    done
+    ./build/culebra samples/test.cul
+    ./build/culebra samples/test_class.cul
 
 # Run the test suite under the LLVM ORC JIT backend.
 test-jit: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for f in tests/*.cul; do
-      ./build/culebra --jit "$f"
-    done
+    ./build/culebra --jit samples/test.cul
+    ./build/culebra --jit samples/test_class.cul
 
-# Run every test file on both backends and assert their stdout is
+# Run both test files on both backends and assert their stdout is
 # identical per file. Catches regressions where one backend diverges
 # from the other (e.g. a new feature implemented in one place only).
 test-all: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for f in tests/*.cul; do
+    for f in samples/test.cul samples/test_class.cul; do
       out_interp=$(./build/culebra "$f")
       out_jit=$(./build/culebra --jit "$f")
       if [[ "$out_interp" != "$out_jit" ]]; then

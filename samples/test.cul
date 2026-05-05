@@ -569,7 +569,7 @@ test_random = fn () {
 
 test_io_exists = fn () {
   // The test script itself has to exist.
-  assert(IO.exists('tests/test_core.cul'))
+  assert(IO.exists('samples/test.cul'))
   assert(!IO.exists('definitely-not-a-real-path-xyz.cul'))
   // Empty path is not a valid filesystem entry.
   assert(!IO.exists(''))
@@ -888,7 +888,7 @@ test_drop = fn () {
 }
 
 // JIT-safe subset of UFCS tests. The __ARGS__/variadic case lives
-// in tests/test_ufcs.cul and runs under the interpreter only.
+// in samples/test_ufcs.cul and runs under the interpreter only.
 test_ufcs = fn () {
   // Free function as method on primitive
   double = fn (x) { x * 2 }
@@ -944,7 +944,7 @@ test_ufcs = fn () {
 
 // JIT-safe subset of for-in tests. Iterator-protocol coverage
 // (user-defined iter/next, lazy Math.range, iterator methods) lives
-// in tests/test_iter.cul and runs under the interpreter only.
+// in samples/test_iter.cul and runs under the interpreter only.
 test_for_in = fn () {
   // Array iteration
   mut sum = 0

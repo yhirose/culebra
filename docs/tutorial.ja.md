@@ -34,8 +34,7 @@ z = z + 1          # mut なら再代入可
 2. 関数とクロージャ
 --------------------
 
-関数は第一級の値です。定義は `fn (params) { body }`、または短縮形は
-`|x| expr`:
+関数は第一級の値です。定義は `fn (params) { body }`:
 
 ```culebra
 add = fn (a, b) { a + b }
@@ -63,38 +62,16 @@ puts(c())                  # 1
 puts(c())                  # 2
 ```
 
-3. 制御フロー
---------------
-
-`if` (および §5 の `match`) は式で、選ばれた分岐の値を持ちます。
-`while` と `for` は文で、値は `nil` です。
-
-```culebra
-sign = if x > 0 { 1 } else if x < 0 { -1 } else { 0 }
-
-mut i = 0
-while i < 5 { puts(i); i = i + 1 }
-
-for c in 'abc'   { puts(c) }    # 文字列を 1 文字ずつ走査（UTF-8 スカラ単位）
-for n in 0..10   { puts(n) }    # exclusive range
-for n in 0..=10  { puts(n) }    # inclusive range
-for k in obj     { puts("{k}={obj[k]}") }   # Object のキーを昇順走査
-```
-
-`break` / `continue` は `while` と `for` の中で使えます。
-
-4. 配列・Object・イテレータ連鎖
---------------------------------
+3. 配列と Object
+-----------------
 
 ```culebra
 arr = [1, 2, 3]
 puts(arr.size())                      # 3
+puts(arr.map(fn (x) { x * x }))       # [1, 4, 9]
+puts(arr.filter(fn (x) { x % 2 == 1 })) # [1, 3]
+puts(arr.reduce(0, fn (acc, x) { acc + x })) # 6
 puts(arr.sum())                       # 6   (product / min / max も同様)
-
-# メソッドチェーンで合成。ラムダは |x| 形式が便利
-puts([1, 2, 3, 4].map(|x| x * x)
-                 .filter(|x| x > 4)
-                 .reduce(0, |a, b| a + b))  # 25
 
 obj = {name: 'alice', mut age: 30}    # `mut` を付けたプロパティのみ再代入可
 puts(obj.name)                        # 'alice'
@@ -102,12 +79,7 @@ puts(obj.keys())                      # ['age', 'name']
 obj.age = 31                          # `mut` プロパティの再代入
 ```
 
-`Math.range(N)` は遅延イテレータを返し、`.map`, `.filter`, `.reduce`,
-`.for_each` 等と組み合わせると中間配列を作りません。JIT は多くの
-パターンを単純なカウンタループへ融合します — 詳細は
-[`language.md` §17](language.ja.md)。
-
-5. 文字列補間とパターンマッチ
+4. 文字列補間とパターンマッチ
 ------------------------------
 
 ```culebra
@@ -130,12 +102,36 @@ puts(describe([1, 2, 3, 4]))          # 'head=1, rest=3'
 puts(describe({name: 'bob', age: 25})) # 'bob, 25'
 ```
 
-6. `class` 糖衣
-----------------
+5. オブジェクト: クロージャと `class` 糖衣
+--------------------------------------------
 
-`class` はコンストラクタとメソッドを宣言します。`this.x = ...` で作る
-フィールドはデフォルトで mutable。インスタンスは `class:` タグを持ち
-`obj.class` や `match` から参照できます。
+OO スタイルは 2 通り。**クロージャオブジェクト**は外側スコープに
+state を捕捉する形:
+
+```culebra
+Car = {
+  new: fn (miles_per_run) {
+    mut total_miles = 0
+    {
+      run:   fn (times) { total_miles = total_miles + miles_per_run * times },
+      total: fn ()      { "走行距離: {total_miles} miles." }
+    }
+  }
+}
+
+car = Car.new(5)
+car.run(1); car.run(2)
+puts(car.total())                     # '走行距離: 15 miles.'
+```
+
+`run` 内の裸の `total_miles = ...` が外側 `new` の `mut total_miles`
+を再代入します。
+
+**`class` 糖衣**はより簡潔で、`class:` タグが付くので `match` や
+debug に使えます。`this.x = ...` で作るフィールドはデフォルトで
+mutable。インタプリタ・JIT 両方で動き、メソッドには dunder
+(`__add__`, `__mul__`, `__pow__`, `__matmul__`, ...) と well-known な
+`drop` (RAII フック) も書けます。
 
 ```culebra
 class Car {
@@ -149,50 +145,32 @@ puts(car.total())                     # '走行距離: 15 miles.'
 puts(car.class)                       # 'Car'
 ```
 
-メソッドには演算子オーバーロード用の dunder (`__add__`, `__mul__`,
-`__pow__`, `__matmul__`, ...) や、well-known な `drop` (RAII フック)
-も書けます:
+6. シャドウ禁止で身を守る
+---------------------------
+
+外側関数でキャプチャされた変数を `let` / `mut` / パラメータ / `match`
+パターンで**シャドウすると**コンパイルエラーになります:
 
 ```culebra
-class V {
-  new(x)        { this.x = x }
-  __add__(o)    { V.new(this.x + o.x) }
-  drop()        { puts("releasing {this.x}") }
+make_bumper = fn () {
+  mut count = 0
+  bump = fn () {
+    mut count = 10    # エラー: 外側変数 'count' をシャドウできません
+  }
 }
-puts((V.new(2) + V.new(3)).x)         # 5
-# V がコレクトされるたび 'releasing ...' が呼ばれる
 ```
 
-外側の `mut` を捕捉するクロージャもオブジェクトとして使えます
-(`class` キーワードなし)。両スタイルの比較は
-[`language.md` §10](language.ja.md) を参照。
+これは "新しいローカルを作ったつもりが外側を書き換えるつもりだった"
+という典型的バグを未然に防ぎます。グローバル変数や同関数内のブロック
+スコープでのシャドウは許可されます。詳細は
+[`language.ja.md` §6](language.ja.md) の "シャドウ禁止" を参照。
 
-7. エラーハンドリング
-----------------------
-
-`throw` で送出、`try ... catch` で捕捉します。送出する値は任意の
-Culebra 値で、文字列でも Object でも構いません。
-
-```culebra
-parse_pos = fn (s) {
-  let n = to_long(s)
-  if n <= 0 { throw "expected positive, got {s}" }
-  n
-}
-
-result = try { parse_pos('-3') } catch err { "fallback ({err})" }
-puts(result)                          # 'fallback (expected positive, got -3)'
-```
-
-`defer { cleanup() }` で、正常終了・`return`・`throw` のどの経路でも
-必ず走るクリーンアップを登録できます。
-
-8. 標準ライブラリ
+7. 標準ライブラリ
 ------------------
 
 コア言語の組み込み関数は裸で使えます（`assert`, `to_long`,
-`to_string`, `type_of`）。それ以外は `Math`, `IO`, `Sys`, `Random`,
-`String` 等の名前空間配下です:
+`to_string`, `type_of`）。それ以外は `Math`, `IO`, `Sys` の名前空間
+配下です:
 
 ```culebra
 puts(Math.abs(-7))              # 7
@@ -213,21 +191,11 @@ puts(Sys.argv)                  # ['alice', 'bob']
 
 詳細は [`stdlib.ja.md`](stdlib.ja.md)。
 
-> **サイドバー — UFCS。** 任意の自由関数 `f(x, ...)` は `x.f(...)`
-> としても呼べます。純粋に構文上の糖衣ですが、自分が所有していない
-> 型に対するヘルパーをメソッドチェーンに自然に混ぜられます。
-
-> **サイドバー — シャドウ禁止。** 外側関数で捕捉された変数を
-> `let` / `mut` / パラメータ / `match` パターンで**シャドウすると**
-> コンパイルエラーになります。"新しいローカルを作ったつもりが
-> 外側を書き換えるつもりだった" バグを未然に防ぎます。詳細は
-> [`language.ja.md` §6](language.ja.md)。
-
 次の一歩
 ---------
 
 - サンプル集: [`samples/`](../samples/)（`class.cul`, `closure.cul`,
-  `match.cul`, `types.cul`, `microgpt/` など）
+  `match.cul`, `types.cul` など）
 - 言語仕様の全体像: [`language.ja.md`](language.ja.md)
 - 標準ライブラリのリファレンス: [`stdlib.ja.md`](stdlib.ja.md)
 - インタラクティブに試す: `./build/culebra --shell`

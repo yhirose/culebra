@@ -27,26 +27,12 @@ Conventions used below:
 Index
 -----
 
-1. `Math` — numeric utilities, constants, integer sequences
-2. `IO` — output, stdin, file I/O
-3. `Random` — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-4. `Sys` — argv, exit, env
+1. `Math`
+2. `IO`
+3. `Random`
+4. `Sys`
 5. Design notes
 6. Not included (yet)
-
-**Where to find what**
-
-| Need… | Look at |
-|---|---|
-| Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
-| Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
-| Integer sequences (eager / lazy) | `Math.iota` / `Math.range` |
-| Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
-| Read a file | `IO.read` (throws on failure) |
-| Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
-| Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
-| String / Array / Object methods | [language spec §17](language.md) |
-| Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
 
 ---
 
@@ -60,32 +46,12 @@ the shape documented below. See [§4](language.md#4-types) and
 [§7](language.md#7-expressions) of the language spec for how `Long`
 and `Float` interact.
 
-Sub-groups in this section: **constants** (`Math.pi`, `Math.e`,
-`Math.inf`, `Math.nan`) — **scalar ops** (`abs`, `min`, `max`,
-`log`, `exp`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `sign`,
-`clamp`) — **integer sequences** (`iota` eager, `range` lazy).
-
 ### Constants
 
-`Math.pi`, `Math.e`, `Math.inf`, `Math.nan` are `Float` properties.
-Both backends evaluate these as compile-time constants under `--jit`.
-
-<a id="math-pi"></a>
-#### `Math.pi`
-
-`π` ≈ `3.141592653589793`.
-
-#### `Math.e`
-
-Euler's number, ≈ `2.718281828459045`.
-
-#### `Math.inf`
-
-Positive infinity (`Math.inf > 1e308 == true`). Negate with `-Math.inf`.
-
-#### `Math.nan`
-
-Quiet NaN. Note `Math.nan == Math.nan` is `false` per IEEE-754.
+`Math.pi`, `Math.e`, `Math.inf`, `Math.nan` are `Float` properties
+with the obvious values (`π`, `e`, positive infinity, and a quiet
+NaN). Both backends evaluate these as compile-time constants under
+`--jit`.
 
 ```culebra
 puts(Math.pi)              # 3.141592653589793
@@ -93,8 +59,6 @@ puts(Math.e)               # 2.718281828459045
 puts(Math.inf > 1e308)     # true
 puts(Math.nan == Math.nan) # false
 ```
-
-### Scalar operations
 
 ### `Math.abs(x: Long|Float) -> Long|Float`
 
@@ -183,9 +147,7 @@ puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
 
-### Integer sequences
-
-#### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
+### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
 
 Generate a new `Array` of consecutive integers. Named after APL /
 C++ `std::iota` / Scheme SRFI-1 — materialise a run of integers as an
@@ -203,7 +165,7 @@ puts(Math.iota(2, 5))      # [2, 3, 4]
 puts(Math.iota(5, 2))      # []
 ```
 
-#### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
+### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
 
 Lazy counterpart to `Math.iota`: returns an iterator yielding the
 same integer sequence one element at a time. Use with `for`-in or
@@ -277,10 +239,7 @@ puts("Hello, {name}")
 
 Read the entire file at `path` into a `String`.
 
-**Errors** (raised as runtime `type error`, not user-catchable via
-`try`/`catch`): file does not exist, is not readable, or is a
-directory. Use `IO.exists(path)` to pre-check when a missing file is
-not exceptional.
+**Throws**: `type error at L:C.` if the file cannot be opened.
 
 ```culebra
 contents = IO.read('data.txt')
@@ -290,9 +249,8 @@ contents = IO.read('data.txt')
 
 Write `content` to the file at `path`, creating or overwriting it.
 
-**Errors** (raised as runtime `type error`): the path's parent
-directory does not exist, the path is not writable, or write fails
-(e.g., disk full). Existing files are overwritten without warning.
+**Throws**: `type error at L:C.` if the file cannot be opened for
+writing.
 
 ```culebra
 IO.write('out.txt', 'hello\n')

@@ -1,12 +1,12 @@
 # For-in / iterator protocol regression tests.
 #
 # Exercised on both the tree interpreter and the JIT. Direct for-in
-# over Array/Object/String is tested in test_core.cul (test_for_in); this
+# over Array/Object/String is tested in test.cul (test_for_in); this
 # file focuses on the user-level iterator protocol and the lazy
 # iterator methods.
 #
-# Run with:  ./build/culebra tests/test_iter.cul
-#            ./build/culebra --jit tests/test_iter.cul
+# Run with:  ./build/culebra samples/test_iter.cul
+#            ./build/culebra --jit samples/test_iter.cul
 
 # Array iteration
 mut sum = 0

@@ -26,11 +26,10 @@ Table of contents
 14. Optional type annotations
 15. Error handling
 16. Memory model (RC + cycle collector)
-17. Built-in type methods (incl. iterator protocol)
+17. Built-in type methods
 18. Core built-in functions
 19. Command-line interface
 20. Known limitations
-21. Appendix: interpreter ↔ JIT divergence
 
 ---
 
@@ -88,9 +87,9 @@ Reserved words that cannot be used as identifiers in declarations:
     fn  match  break  continue  throw  try  catch  defer
 
 The parser also recognizes `let` as an optional prefix in assignments.
-Type annotation names (`Nil`, `Bool`, `Long`, `Float`, `String`,
-`Array`, `Object`, `Function`, `Any`) are *not* reserved; they are
-contextual and only recognized after `:` or `->`.
+Type annotation names (`Nil`, `Bool`, `Long`, `String`, `Array`,
+`Object`, `Function`, `Any`) are *not* reserved; they are contextual
+and only recognized after `:` or `->`.
 
 ### Literals
 
@@ -501,13 +500,46 @@ Only `Bool`, `Long`, and `Float` are convertible to bool:
 
 `(expr)` groups and does not introduce a scope.
 
-### Method call
+### Method call and UFCS
 
-A method call takes the form `receiver.name(args)`. The full
-resolution rules — including method/UFCS dispatch order and how
-built-ins interact with user-defined properties — are specified in
-§10 ("Methods and UFCS"). The dunder operators (`+`, `-`, `*`, `==`,
-`@`, …) and `__str__` are also defined there.
+A method call takes the form `receiver.name(args)`. Resolution order:
+
+1. If `receiver` exposes a property or built-in method named `name`,
+   invoke it. For `Object` / `Array`, user-defined properties win
+   over built-ins; built-ins fill in otherwise. String methods are
+   the only choice for `String` receivers.
+2. Otherwise, if a free function named `name` is visible in the
+   enclosing scope, call it with `receiver` as the first argument and
+   the remaining arguments as-is. This is **Uniform Function Call
+   Syntax (UFCS)**, matching the D / Nim convention.
+3. Otherwise the property lookup returns `nil`; the subsequent call
+   fails with a type error.
+
+```culebra
+double = fn (x) { x * 2 }
+42.double()                      # UFCS → double(42) → 84
+
+word_count = fn (s) { s.split(' ').size() }
+'hello world'.word_count()       # UFCS → 2
+
+total = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+[1, 2, 3, 4].total()             # UFCS → 10
+
+# Existing methods always win — a user-defined `size` is shadowed by
+# the Array/Object/String built-in `size`.
+size = fn (x) { 99 }
+[1, 2, 3].size()                 # 3 (builtin), not 99
+```
+
+UFCS only fires when DOT is immediately followed by an argument list;
+bare property access (`x.name` without `()`) never uses UFCS. `this`
+is **not** bound inside UFCS invocations — the call is semantically a
+free-function call with the receiver in the first positional slot.
+
+**JIT**: UFCS is supported under `--jit`. Resolution happens at
+runtime: if the receiver carries a property by that name the method
+path wins, otherwise the name is looked up as a free function and
+invoked with the receiver as its first argument.
 
 ---
 
@@ -649,48 +681,15 @@ raises `immutable property 'key' at L:C`.
 Property names are identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
 Computed / string-indexed properties are not supported.
 
-### Methods and UFCS
+### Methods and `this`
 
-A method call `receiver.name(args)` resolves in this order:
+When `obj.m(args)` is called and `obj.m` is a `Function`, the function
+is invoked with `this` bound to `obj`. The function must use `this`
+explicitly to access the receiver; it is otherwise a regular free
+function.
 
-1. If `receiver` exposes a property or built-in method named `name`,
-   invoke it. For `Object` / `Array`, user-defined properties win
-   over built-ins; built-ins fill in otherwise. String methods are
-   the only choice for `String` receivers. When the resolved value is
-   a `Function`, `this` is bound to `receiver` for the duration of
-   the call.
-2. Otherwise, if a free function named `name` is visible in the
-   enclosing scope, call it with `receiver` as the first argument and
-   the remaining arguments as-is. This is **Uniform Function Call
-   Syntax (UFCS)**, matching the D / Nim convention.
-3. Otherwise the property lookup returns `nil`; the subsequent call
-   fails with a type error.
-
-```culebra
-o = { n: 10, add: fn (x) { x + this.n } }
-puts(o.add(5))                   # 15  (method, this = o)
-
-double = fn (x) { x * 2 }
-42.double()                      # UFCS → double(42) → 84
-
-word_count = fn (s) { s.split(' ').size() }
-'hello world'.word_count()       # UFCS → 2
-
-# Existing methods always win — a user-defined `size` is shadowed by
-# the Array/Object/String built-in `size`.
-size = fn (x) { 99 }
-[1, 2, 3].size()                 # 3 (builtin), not 99
-```
-
-UFCS only fires when DOT is immediately followed by an argument list;
-bare property access (`x.name` without `()`) never uses UFCS. `this`
-is **not** bound inside UFCS invocations — the call is semantically a
-free-function call with the receiver in the first positional slot.
-
-**JIT**: UFCS is supported under `--jit`. Resolution happens at
-runtime: if the receiver carries a property by that name the method
-path wins, otherwise the name is looked up as a free function and
-invoked with the receiver as its first argument.
+    o = { n: 10, add: fn (x) { x + this.n } }
+    puts(o.add(5))              # 15
 
 ### `class` sugar
 
@@ -1215,7 +1214,7 @@ Integrating these with `try`/`catch` is future work.
 ### `assert(cond)`
 
 Evaluates `cond`; if falsy, aborts with `assert failed at L:C.`. Used
-as a lightweight testing primitive (see `tests/test_core.cul`).
+as a lightweight testing primitive (see `samples/test.cul`).
 
 ### JIT support
 
@@ -1355,18 +1354,6 @@ the built-in is a fallback).
 
 Global built-in functions (`puts`, `assert`, `Math.*`, `IO.*`,
 etc.) are specified separately in [`docs/stdlib.md`](stdlib.md).
-
-**Well-known method names (protocols).** Several method names are
-recognized by the runtime and let plain `Object`s opt into language
-features. They are checked by name on both backends:
-
-| Method | Purpose | Defined in |
-|---|---|---|
-| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
-| `__str__` | Custom display form | §10 |
-| `drop` | RAII cleanup hook | §16 |
-| `iter`, `next` | Iterator protocol | §17.5 |
-| `class` (property, not a method) | Nominal tag for `match` / debug | §10 |
 
 Conventions:
 
@@ -1797,62 +1784,3 @@ built-ins from §18.
   body is parsed as an `Object` literal, not a block.
 * Property names are identifiers only; computed / string-indexed
   property access is not supported.
-
----
-
-21. Appendix: interpreter ↔ JIT divergence
-------------------------------------------
-
-The interpreter (`include/interpreter.h`) is normative. The JIT
-(`include/jit.h`) compiles the same AST and tracks the same
-semantics, but a few operational differences are worth knowing.
-
-**Equivalent semantics:**
-
-* All numeric arithmetic, comparison, truthiness, and overflow rules
-  (§7) match bit-for-bit, including division-by-zero, `Long` overflow
-  wrap, and `Float` IEEE-754 behavior.
-* Method dispatch and UFCS (§10), operator dunders (§10), `__str__`
-  display (§10), and the iterator protocol (§17.5) drive both
-  backends through the same protocol.
-* `throw` / `try` / `catch` / `defer` (§15) propagate across function
-  boundaries (the JIT lowers to LLVM `invoke` / `landingpad` plus the
-  Itanium personality).
-* Auto-drop fires at the same points (§16): scope exit and cycle
-  collection.
-* Class sugar (§10), per-callsite property lookups, and built-in
-  type methods produce identical observable behavior.
-
-**Operational differences (semantics-preserving):**
-
-* **Object property storage.** The JIT uses a process-interned
-  hidden-class (Shape) layout with vector-backed slots and
-  per-callsite inline caches. The interpreter uses an ordered map.
-  Iteration order over an Object's keys is alphabetical on both.
-* **HOF fusion.** The JIT fuses many `Math.range(N).<HOF>(...)` and
-  `iter.map(λ).collect()` patterns into bare counter loops. The
-  interpreter dispatches each closure step-by-step. Effects fire in
-  the same order on both.
-* **Class method storage.** The JIT places methods on a shared
-  per-class meta object reached via prototype delegation; the
-  interpreter copies methods onto each instance. `obj.m` returns a
-  bound function on either backend.
-* **Cycle GC cadence.** Both backends run a mark-and-sweep over the
-  young set every 10,000 new allocations. The JIT additionally uses
-  a generational young/old split with vector-backed tracking
-  (transparent to user code).
-
-**Known JIT-only caveats:**
-
-* `defer` registered at function / top-level scope does not fire on
-  the throw-unwind path; wrap such defers in a nested `{ ... }`
-  block for throw-safe cleanup. Inside nested blocks, defers fire on
-  every exit path as specified.
-* `--shell --jit` does not preserve state between inputs (each line
-  is a fresh compilation). The interpreter REPL does preserve state.
-* Top-level bindings to `drop`-bearing objects may live until program
-  exit due to env-level cycles (see §16). Use `defer` or a factory
-  function for script-wide resources.
-
-When in doubt, the interpreter is authoritative — diverging JIT
-behavior is treated as a bug.
