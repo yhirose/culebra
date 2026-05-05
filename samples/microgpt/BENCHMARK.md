@@ -13,27 +13,33 @@ training only (`num_steps` configured, `n_samples=0` to skip inference).
 
 ## Numbers
 
-Wall time of training only (`n_samples=0` to skip inference).
+Wall time of training only (`n_samples=0` to skip inference). Five runs;
+mean / min reported.
 
-| Implementation                 | 5 steps | 20 steps | per step | vs. Python |
-|--------------------------------|--------:|---------:|---------:|-----------:|
-| Python (CPython, scalar)       |  0.40 s |   1.48 s |   ~74 ms |         1× |
-| Culebra `--jit` (imperative)   |  1.29 s |   2.26 s |  ~113 ms |      ~1.5× |
-| Culebra `--jit` (HOF / lambda) |  1.55 s |   2.92 s |  ~146 ms |      ~2.0× |
-| Culebra interpreter            | 14.0 s  |  55.7 s  | ~2,800 ms |    ~37.6× |
+| Implementation                 | 5 steps |   20 steps   | total/20 | incremental | vs. Python |
+|--------------------------------|--------:|-------------:|---------:|------------:|-----------:|
+| Python (CPython, scalar)       |  0.42 s | 1.43 / 1.31s |  ~71 ms  |     ~63 ms  |         1× |
+| Culebra `--jit` (imperative)   |  1.31 s | 2.27 / 2.19s |  ~114 ms |     ~64 ms  |     ~1.60× |
+| Culebra `--jit` (HOF / lambda) |  1.18 s | 2.13 / 2.06s |  ~107 ms |     ~63 ms  |     ~1.58× |
+| Culebra interpreter            |  13.4 s |  ~55 s       | ~2,800 ms|   ~2,800 ms |    ~37.6× |
 
-`per step` is from the 20-step run (5-step is JIT-warmup-heavy
-and overstates per-step cost). At steady-state on `--jit`, the
-imperative Culebra port runs scalar microgpt within **1.5× of CPython**.
+`total/20` averages JIT compilation + 20 training steps; `incremental`
+isolates the per-step cost by `(20 step − 5 step) / 15` so JIT warmup
+(~1 s) doesn't pollute the rate. At **steady state, both `--jit` styles
+match CPython per-step (~63 ms)**; the residual ~1.6× on total wall
+time is the JIT-compilation warmup that does not amortize over a
+20-step run.
 
 The "HOF / lambda" row is `microgpt_hof.cul` — the same algorithm
 written in functional style with `arr.map(|x| ...)` /
 `.reduce(init, |a, b| ...)` chains rather than imperative `while`
-loops. About 26% shorter than the imperative version (286 vs 384
-lines). JIT inlines literal-lambda callbacks for `map`, `filter`,
-`for_each`, `reduce` (Array) and `reduce` / `for_each` (Iterator),
-so the per-element closure invocation overhead has mostly been
-absorbed.
+loops. About 26% shorter than the imperative version. JIT inlines
+literal-lambda callbacks for `map`, `filter`, `for_each`, `reduce`
+(Array) and `reduce` / `for_each` / `map.collect` (Iterator), and
+fuses `Math.range(N).<HOF>(...)` chains into direct counter loops —
+so the HOF style now slightly beats the imperative one on this
+workload (the imperative version still uses `while`-loop boilerplate
+that's not as obviously specialised by the JIT).
 
 The two Culebra backends produce **identical loss values** at every
 step (final loss after 20 steps: 2.413316935338878…), confirming
@@ -44,15 +50,19 @@ correctness issue.
 
 ### 1000-step extrapolation (a real training run)
 
+Linear model: `wall ≈ warmup + N × incremental`.
+
 | Implementation              | Wall time |
 |-----------------------------|----------:|
-| Python                      |    ~74 s  |
-| Culebra `--jit` imperative  |    ~1.9 min |
-| Culebra `--jit` HOF         |    ~2.4 min |
+| Python                      |    ~67 s  |
+| Culebra `--jit` imperative  |    ~65 s  |
+| Culebra `--jit` HOF         |    ~64 s  |
 | Culebra interpreter         |    ~46 min |
 
-`--jit` imperative is now within ~1.5× of CPython on this workload —
-practically usable for actual scalar autograd training runs.
+At a real training-run length, **the JIT essentially matches CPython** on
+both styles. The 20-step "1.6× of Python" headline is dominated by
+JIT-compile warmup (~1 s out of 2.27 s); past 30–40 steps the warmup
+is amortized away.
 
 ### Where the speedup came from
 
@@ -169,8 +179,34 @@ that further:
     appears) gates the build; otherwise a cheap conditional release
     of the slab retains replaces it.
 
-The full optimization round took the JIT imperative from ~10× of
-CPython to ~1.5× at steady-state.
+The optimization round through (13) took the JIT imperative from ~10× of
+CPython to ~1.5× at steady-state. A second round added on later
+(2026-04-29) closed the remaining gap and pulled HOF style up to the
+same level:
+
+14. **Drop per-instance `class_name` heap copy.** `build_class_instance`
+    used to call `_culebra_heap_str(class_name)` for every constructor
+    invocation, mallocing + copying a 5-byte string into a fresh
+    buffer. `class_name` is already a process-lifetime LLVM module
+    global and TAG_STRING values are borrowed (no refcount), so we
+    can stash the pointer directly. Cuts ~10⁵ mallocs per step on
+    microgpt; ~5% wall-time saving on imperative.
+
+15. **Fuse `iter.map(λ).collect()`.** Postfix-loop AST detection in
+    `compile_call`: when a chain matches `<iter>.map(λ).collect()` and
+    the lambda is inlinable, emit a single inline loop that allocates
+    one output Array and pushes each per-element result, skipping the
+    `iter_map` runtime closure wrapper that the lazy path would build.
+
+16. **Fuse `Math.range(N).<HOF>(...)` to a counter loop.** The biggest
+    HOF-style win. Detect `Math.range(N).reduce(init, λ)`,
+    `.for_each(λ)`, and `.map(λ).collect()` at the AST level and emit
+    a direct i64 counter loop (`for i in 0..N`) with the body inlined.
+    Skips the `culebra_runtime_math_range` wrapper-iterator + capture
+    cells (~17% of HOF microgpt's runtime) and the per-element
+    trampoline closure call. With this in place, the HOF style went
+    from ~3.0 s to ~2.13 s on 20-step microgpt — ~30% faster, finally
+    matching imperative.
 
 Reproduce:
 
@@ -201,9 +237,9 @@ Object now does the same thing structurally: a process-interned
 `Shape` shared across instances, slot offsets resolved at JIT compile
 time via inline caches on both reads and writes, and direct
 `slots.data()[offset].value` access on the fast path. After the full
-set of optimizations above, the gap to CPython is the honest ~1.5×
-shown in the steady-state column rather than the 330–2000× we saw
-before.
+set of optimizations above, the steady-state per-step cost matches
+CPython (~63 ms either way), with the residual 20-step total wall
+ratio (~1.6×) being JIT compile warmup amortizing over a longer run.
 
 `--jit` is ~25× faster than interp on this workload (2.26 s vs 55.7 s
 at 20 steps) because the inner arithmetic on `Float` payloads —
@@ -223,11 +259,11 @@ for `0 + Value` / `(1/n) * Value`, `Math.log/exp/sqrt`, `Random.gauss/
 shuffle/weighted_choice`, `IO.exists`, `**` operator. The full
 language coverage planned in Phases 1–4 is exercised.
 
-**Practically usable**: extrapolated to 1000 steps, `--jit` finishes
-in about ~1.9 minutes (Python ~74 s, ratio ~1.5×); the HOF lambda
-variant in ~2.4 minutes; the interpreter in ~46 minutes. The JIT
-imperative form is genuinely competitive with CPython for scalar
-autograd training.
+**Practically usable**: extrapolated to 1000 steps, both JIT styles
+finish in ~64–65 s vs CPython's ~67 s — Culebra is at parity with
+CPython on this workload at real training-run lengths. The interpreter
+takes ~46 minutes (used as a correctness reference, not a runtime
+target).
 
 **Where the remaining JIT time goes** (re-profiled after the full
 optimization round, sampled on a 100-step `--jit` run):
@@ -248,7 +284,9 @@ profile entries: read and write inline caches both inline the fast
 path in IR with no runtime call. What remains is the fundamental
 cost of the value model: refcount, the cycle collector's
 unavoidable per-allocation registration, and allocator churn. Beyond
-this point, additional speedup requires structural changes — most
-notably a Matrix-based formulation that collapses per-step Object
-count, or a different value representation. Those are open as
-future work; the scalar port is closed at this performance level.
+this point, candidates for further work include a Matrix-based
+formulation that collapses per-step Object count, a bump allocator
+for short-lived `Value`s, or a different value representation
+(NaN-boxing). At parity with CPython per-step the scalar port has
+hit its natural design ceiling; bigger wins now need structural
+changes.

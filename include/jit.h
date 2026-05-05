@@ -313,6 +313,8 @@ inline int64_t& _gc_slot_of(void* ptr, int8_t tag) {
 }
 
 struct _GcTracker {
+  using TaggedPtr = std::pair<void*, int8_t>;
+
   // Generational tracker. `young` holds freshly-allocated heap
   // objects in a flat vector; each object stores its slot index in
   // its own `gc_slot` field so add and remove are O(1) push /
@@ -328,7 +330,7 @@ struct _GcTracker {
   // references will leak; that's an acceptable trade for the
   // ~30%-of-self-time we save vs the previous unordered_map<void*,
   // int8_t> for the old generation.
-  std::vector<std::pair<void*, int8_t>> young;
+  std::vector<TaggedPtr> young;
   std::vector<size_t> free_slots;
   size_t alloc_counter = 0;
   size_t threshold = GC_THRESHOLD;
@@ -376,21 +378,22 @@ struct _GcTracker {
     return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY || tag == GC_TAG_OBJECT;
   }
 
-  static void push_if_refcounted(std::vector<void*>& out, int8_t tag,
+  static void push_if_refcounted(std::vector<TaggedPtr>& out, int8_t tag,
                                  int64_t data) {
     if (is_refcounted_value_tag(tag))
-      out.push_back(reinterpret_cast<void*>(data));
+      out.push_back({reinterpret_cast<void*>(data), tag});
   }
 
   // Enumerate child objects (cells/closures/arrays/objects) directly
-  // reachable from ptr.
+  // reachable from ptr. Tags travel with pointers so the cycle GC can
+  // call `_gc_slot_of(ptr, tag)` directly on each child.
   void enumerate_children(void* ptr, int8_t tag,
-                          std::vector<void*>& out) {
+                          std::vector<TaggedPtr>& out) {
     switch (tag) {
       case GC_TAG_FUNC: {
         auto* c = static_cast<JitClosure*>(ptr);
         for (size_t i = 0; i < c->n_captures; i++) {
-          if (c->captures[i]) out.push_back(c->captures[i]);
+          if (c->captures[i]) out.push_back({c->captures[i], GC_TAG_CELL});
         }
         break;
       }
@@ -409,7 +412,7 @@ struct _GcTracker {
         // Reach the shared class meta via proto so GC sees it as live
         // while any instance is alive (and discovers methods through
         // it on subsequent walks).
-        if (o->proto) out.push_back(o->proto);
+        if (o->proto) out.push_back({o->proto, GC_TAG_OBJECT});
         break;
       }
       case GC_TAG_CELL: {
@@ -518,21 +521,22 @@ struct _GcTracker {
     // refcount and we never decrement for old->young edges (old
     // isn't iterated to enumerate children).
     //
-    // All subsequent state is keyed by snapshot index — gc_refs and
-    // reachable are dense vectors instead of hash maps. The single
-    // remaining hash table (`ptr_idx`) maps a child pointer back to
-    // its index when we encounter it during the decrement / BFS
-    // walk.
-    std::vector<std::pair<void*, int8_t>> snapshot;
+    // All collect-local state is keyed by snapshot index. Pointer →
+    // index lookup avoids a hash table by repurposing each tracked
+    // object's `gc_slot` field as the snapshot index for the duration
+    // of this collect. Promoted (or untracked) objects keep their
+    // existing `gc_slot == -1`, so a child whose `_gc_slot_of()` is
+    // negative is "outside the snapshot" — same semantics the prior
+    // `unordered_map::find` returned.
+    std::vector<TaggedPtr> snapshot;
     snapshot.reserve(young_alive());
     for (auto& e : young) {
       if (e.first) snapshot.push_back(e);
     }
 
-    std::unordered_map<void*, size_t> ptr_idx;
-    ptr_idx.reserve(snapshot.size());
     for (size_t i = 0; i < snapshot.size(); i++) {
-      ptr_idx.emplace(snapshot[i].first, i);
+      _gc_slot_of(snapshot[i].first, snapshot[i].second) =
+          static_cast<int64_t>(i);
     }
 
     std::vector<int64_t> gc_refs(snapshot.size());
@@ -541,13 +545,15 @@ struct _GcTracker {
     }
 
     // Subtract internal references.
-    std::vector<void*> children;
+    std::vector<TaggedPtr> children;
     for (size_t i = 0; i < snapshot.size(); i++) {
       children.clear();
       enumerate_children(snapshot[i].first, snapshot[i].second, children);
-      for (auto* c : children) {
-        auto it = ptr_idx.find(c);
-        if (it != ptr_idx.end()) --gc_refs[it->second];
+      for (auto& c : children) {
+        auto idx = _gc_slot_of(c.first, c.second);
+        if (idx >= 0 && static_cast<size_t>(idx) < snapshot.size()) {
+          --gc_refs[idx];
+        }
       }
     }
 
@@ -565,18 +571,18 @@ struct _GcTracker {
       q.pop();
       children.clear();
       enumerate_children(snapshot[i].first, snapshot[i].second, children);
-      for (auto* c : children) {
-        auto it = ptr_idx.find(c);
-        if (it == ptr_idx.end()) continue;
-        if (!reachable[it->second]) {
-          reachable[it->second] = true;
-          q.push(it->second);
+      for (auto& c : children) {
+        auto idx = _gc_slot_of(c.first, c.second);
+        if (idx < 0 || static_cast<size_t>(idx) >= snapshot.size()) continue;
+        if (!reachable[idx]) {
+          reachable[idx] = true;
+          q.push(idx);
         }
       }
     }
 
     // Collect garbage (unreachable)
-    std::vector<std::pair<void*, int8_t>> garbage;
+    std::vector<TaggedPtr> garbage;
     for (size_t i = 0; i < snapshot.size(); i++) {
       if (!reachable[i]) garbage.push_back(snapshot[i]);
     }
@@ -587,15 +593,24 @@ struct _GcTracker {
                      garbage.size(), snapshot.size());
       }
 
-      // Boost refcounts to prevent premature destruction during clearing
+      // Boost refcounts so intra-cycle releases during `clear_references`
+      // can't drive any garbage entry to 0 prematurely.
       for (auto& [p, t] : garbage) refcount_ref(p) += GC_REFCOUNT_BOOST;
-
-      // Clear references (breaks cycles)
       for (auto& [p, t] : garbage) clear_references(p, t);
 
-      // Set refcount to 1 and release: release brings it to 0 and triggers
-      // normal destruction, which safely iterates the (now empty) children.
-      // The destructor's `_gc().remove()` removes them from `young`.
+      // Pre-detach each garbage entry from `young` and clear its
+      // `gc_slot` so the upcoming destructor's `_gc().remove()` is a
+      // no-op (it would otherwise read the snapshot index left by
+      // step (1) and clear the wrong slot).
+      for (auto& [p, t] : garbage) {
+        auto idx = _gc_slot_of(p, t);
+        young[static_cast<size_t>(idx)] = {nullptr, 0};
+        free_slots.push_back(static_cast<size_t>(idx));
+        _gc_slot_of(p, t) = -1;
+      }
+
+      // refcount = 1 then release → destructor runs, frees the
+      // (already-emptied) children, deletes the storage.
       for (auto& [p, t] : garbage) {
         refcount_ref(p) = 1;
         if (t == GC_TAG_CELL) {
@@ -606,11 +621,9 @@ struct _GcTracker {
       }
     }
 
-    // "Promote" surviving entries simply by clearing their gc_slot
-    // — they leave the tracker entirely. Their refcount keeps them
-    // alive as long as something holds them; the only cost is that
-    // cycles formed entirely among promoted objects won't be
-    // collected.
+    // Promote survivors by clearing their (still-snapshot-index)
+    // `gc_slot` to -1; they leave the tracker entirely, so cycles
+    // formed entirely among promoted objects won't be collected.
     for (auto& [p, t] : young) {
       if (p) _gc_slot_of(p, t) = -1;
     }
@@ -1691,9 +1704,12 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
   // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
   if (class_meta && _find_property(class_meta, "drop")) inst->has_drop = true;
 
-  auto* cn = _culebra_heap_str(class_name);
+  // `class_name` is a process-lifetime LLVM module global; TAG_STRING
+  // values are borrowed (no refcount), so we can stash it directly
+  // without the per-instance malloc + memcpy that `_culebra_heap_str`
+  // would do.
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
-                             reinterpret_cast<int64_t>(cn), 0, 0);
+                             reinterpret_cast<int64_t>(class_name), 0, 0);
 
   if (body_tag == TAG_FUNC) {
     auto* body_cls = reinterpret_cast<JitClosure*>(body_data);
@@ -3873,6 +3889,37 @@ struct JIT {
   llvm::Value* emit_inlined_iter_reduce(llvm::Value* iter_val,
                                          llvm::Value* init,
                                          const peg::Ast& lambda_ast);
+  // Fused `iter.map(λ).collect()`: walks `iter` with the body of `λ`
+  // emitted inline per-element, pushes each result into a fresh Array.
+  // Skips the per-element wrapper-iterator allocation that the lazy
+  // `iter_map` + `iter_collect` runtime path costs.
+  llvm::Value* emit_inlined_iter_map_collect(llvm::Value* iter_val,
+                                              const peg::Ast& lambda_ast);
+
+  // Postfix-loop helper: if `ast.nodes[i..]` matches the chain
+  // `.map(λ).collect()` with an inlinable λ, return the fused value.
+  // Caller must advance its index by 3 (consuming ARGUMENTS,
+  // DOT(collect), ARGUMENTS) on a hit. Returns `std::nullopt` when
+  // the pattern doesn't match.
+  std::optional<llvm::Value*> try_fuse_iter_map_collect(
+      const peg::Ast& ast, size_t i, llvm::Value* receiver);
+
+  // Fused `Math.range(N).<HOF>(...)` — emits a direct counter loop
+  // (`for i in 0..N`) with the body inlined, skipping the iterator
+  // wrapper + capture-cell allocation that `culebra_runtime_math_range`
+  // would do per call. The `n_ast` expression is compiled once into a
+  // Long bound for the loop.
+  template <class PerIter>
+  void emit_range_unary_inline_loop(const peg::Ast& n_ast,
+                                     const peg::Ast& lambda_ast,
+                                     PerIter&& per_iter);
+  llvm::Value* emit_inlined_range_for_each(const peg::Ast& n_ast,
+                                            const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_range_map_collect(const peg::Ast& n_ast,
+                                               const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_range_reduce(const peg::Ast& n_ast,
+                                          const peg::Ast& init_ast,
+                                          const peg::Ast& lambda_ast);
 
   // Method names with JIT-native codegen in compile_builtin_method.
   // Exposed so a startup self-check (see culebra.h) can guard against
@@ -7535,6 +7582,16 @@ struct JIT {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
             auto method = std::string(postfix.token);
+            // The lazy iterator path allocates a wrapping iterator and
+            // walks it via per-element runtime closure calls; fusing
+            // `.map(λ).collect()` collapses both into one inline loop.
+            if (method == "map") {
+              if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
+                callee = *fused;
+                i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
+                break;
+              }
+            }
             callee = compile_method_call(method, *ast.nodes[i + 1], callee);
             i++;  // consume ARGUMENTS
           } else {
@@ -7965,6 +8022,43 @@ struct JIT {
         ast.nodes[1]->original_tag == "DOT"_) {
       auto ns = calleeNode->token;
       auto prop = ast.nodes[1]->token;
+      // `Math.range(N).<HOF>(...)` fusion: emit a direct counter loop
+      // so the iterator wrapper + capture cells from
+      // `culebra_runtime_math_range` (~17% of HOF microgpt's runtime)
+      // never allocate, and the per-element trampoline call vanishes.
+      if (ns == "Math" && prop == "range" &&
+          ast.nodes.size() >= 5 &&
+          ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
+          ast.nodes[2]->nodes.size() == 1 &&
+          ast.nodes[3]->original_tag == "DOT"_ &&
+          ast.nodes[4]->original_tag == "ARGUMENTS"_) {
+        const auto& n_ast = *ast.nodes[2]->nodes[0];
+        auto method = std::string(ast.nodes[3]->token);
+        const auto& m_args = *ast.nodes[4];
+        // .reduce(init, |acc, i| body)
+        if (method == "reduce" && m_args.nodes.size() == 2 &&
+            is_inlinable_lambda(*m_args.nodes[1], 2) &&
+            ast.nodes.size() == 5) {
+          return emit_inlined_range_reduce(
+              n_ast, *m_args.nodes[0], *m_args.nodes[1]);
+        }
+        // .for_each(|i| body)
+        if (method == "for_each" && m_args.nodes.size() == 1 &&
+            is_inlinable_lambda(*m_args.nodes[0], 1) &&
+            ast.nodes.size() == 5) {
+          return emit_inlined_range_for_each(n_ast, *m_args.nodes[0]);
+        }
+        // .map(|i| body).collect()
+        if (method == "map" && m_args.nodes.size() == 1 &&
+            is_inlinable_lambda(*m_args.nodes[0], 1) &&
+            ast.nodes.size() == 7 &&
+            ast.nodes[5]->original_tag == "DOT"_ &&
+            ast.nodes[5]->token == "collect" &&
+            ast.nodes[6]->original_tag == "ARGUMENTS"_ &&
+            ast.nodes[6]->nodes.empty()) {
+          return emit_inlined_range_map_collect(n_ast, *m_args.nodes[0]);
+        }
+      }
       if (ast.nodes.size() >= 3 &&
           ast.nodes[2]->original_tag == "ARGUMENTS"_) {
         start = try_compile_stdlib_namespace(ns, prop, *ast.nodes[2], ast);
@@ -7996,6 +8090,13 @@ struct JIT {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
             auto method = std::string(postfix.token);
+            if (method == "map") {
+              if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
+                callee = *fused;
+                i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
+                break;
+              }
+            }
             callee = compile_method_call(method, *ast.nodes[i + 1], callee);
             i++;
           } else {
@@ -8655,6 +8756,199 @@ inline llvm::Value* JIT::emit_inlined_iter_for_each(
       });
   return make_nil();
 }
+
+inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
+    const peg::Ast& ast, size_t i, llvm::Value* receiver) {
+  using namespace peg::udl;
+  // Postfix shape: DOT(map) ARGUMENTS(λ) DOT(collect) ARGUMENTS().
+  // Caller has already verified ast.nodes[i] = DOT and
+  // ast.nodes[i+1] = ARGUMENTS, and that postfix.token == "map".
+  if (ast.nodes[i + 1]->nodes.size() != 1) return std::nullopt;
+  if (!is_inlinable_lambda(*ast.nodes[i + 1]->nodes[0], 1)) {
+    return std::nullopt;
+  }
+  if (i + 3 >= ast.nodes.size()) return std::nullopt;
+  if (ast.nodes[i + 2]->original_tag != "DOT"_) return std::nullopt;
+  if (ast.nodes[i + 2]->token != "collect") return std::nullopt;
+  if (ast.nodes[i + 3]->original_tag != "ARGUMENTS"_) return std::nullopt;
+  if (!ast.nodes[i + 3]->nodes.empty()) return std::nullopt;
+  expect_tag(receiver, TAG_OBJECT, "map.collect");
+  return emit_inlined_iter_map_collect(receiver,
+                                        *ast.nodes[i + 1]->nodes[0]);
+}
+
+inline llvm::Value* JIT::emit_inlined_iter_map_collect(
+    llvm::Value* iter_val, const peg::Ast& lambda_ast) {
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  // Allocate the destination Array up-front; per-element results get
+  // pushed into it inside the inlined iteration loop.
+  auto outPtr = emit_call(
+      module_->getOrInsertFunction(rt::array_new, ptrTy), {}, "imc.out");
+  emit_iter_unary_inline_loop(
+      iter_val, lambda_ast,
+      [&](llvm::Value* /*elem*/, llvm::Value* result) {
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_push, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty()),
+            {outPtr, extract_tag(result), extract_data(result)});
+      });
+  return make_array(outPtr);
+}
+
+// Shared scaffold for `Math.range(N).<unary HOF>(λ)`: emits an i64
+// counter loop, binds `λ`'s single param to `i` in a fresh scope,
+// compiles the body inline, then hands the +1-owned result to
+// `per_iter`. Skips the per-call iterator-wrapper allocation that
+// `culebra_runtime_math_range` does (and the per-element trampoline
+// closure call).
+template <class PerIter>
+inline void JIT::emit_range_unary_inline_loop(const peg::Ast& n_ast,
+                                               const peg::Ast& lambda_ast,
+                                               PerIter&& per_iter) {
+  using namespace llvm;
+  auto fn = builder_.GetInsertBlock()->getParent();
+  auto i64Ty = builder_.getInt64Ty();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+
+  auto n_val = value_to_long(compile(n_ast));
+
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto iAlloca = entryB.CreateAlloca(i64Ty, nullptr, "rng.i");
+  builder_.CreateStore(builder_.getInt64(0), iAlloca);
+
+  auto condBB = BasicBlock::Create(ctx_, "rng.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "rng.body", fn);
+  auto endBB = BasicBlock::Create(ctx_, "rng.end", fn);
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto i_cond = builder_.CreateLoad(i64Ty, iAlloca, "rng.i.cur");
+  auto cond = builder_.CreateICmpSLT(i_cond, n_val, "rng.cond.lt");
+  builder_.CreateCondBr(cond, bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  auto i_cur = builder_.CreateLoad(i64Ty, iAlloca, "rng.i.body");
+  auto i_val = make_long(i_cur);
+
+  push_scope();
+  bool captured = info.captured_locals.contains(param_name);
+  auto slot = captured ? make_cell_slot(param_name, i_val)
+                       : make_stack_slot(param_name, i_val);
+  define_var(param_name, slot);
+
+  auto result = compile(body_ast);
+  per_iter(i_val, result);
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    auto i_next =
+        builder_.CreateAdd(i_cur, builder_.getInt64(1), "rng.i.next");
+    builder_.CreateStore(i_next, iAlloca);
+    builder_.CreateBr(condBB);
+  }
+
+  builder_.SetInsertPoint(endBB);
+}
+
+inline llvm::Value* JIT::emit_inlined_range_for_each(
+    const peg::Ast& n_ast, const peg::Ast& lambda_ast) {
+  emit_range_unary_inline_loop(
+      n_ast, lambda_ast,
+      [&](llvm::Value* /*i*/, llvm::Value* result) {
+        emit_value_release(result);
+      });
+  return make_nil();
+}
+
+inline llvm::Value* JIT::emit_inlined_range_map_collect(
+    const peg::Ast& n_ast, const peg::Ast& lambda_ast) {
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto outPtr = emit_call(
+      module_->getOrInsertFunction(rt::array_new, ptrTy), {}, "rmc.out");
+  emit_range_unary_inline_loop(
+      n_ast, lambda_ast,
+      [&](llvm::Value* /*i*/, llvm::Value* result) {
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_push, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty()),
+            {outPtr, extract_tag(result), extract_data(result)});
+      });
+  return make_array(outPtr);
+}
+
+inline llvm::Value* JIT::emit_inlined_range_reduce(
+    const peg::Ast& n_ast, const peg::Ast& init_ast,
+    const peg::Ast& lambda_ast) {
+  using namespace llvm;
+  auto fn = builder_.GetInsertBlock()->getParent();
+  auto i64Ty = builder_.getInt64Ty();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
+
+  // acc alloca seeded with init's +1.
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "rrd.acc");
+  builder_.CreateStore(compile(init_ast), accAlloca);
+
+  auto n_val = value_to_long(compile(n_ast));
+  auto iAlloca = entryB.CreateAlloca(i64Ty, nullptr, "rrd.i");
+  builder_.CreateStore(builder_.getInt64(0), iAlloca);
+
+  auto condBB = BasicBlock::Create(ctx_, "rrd.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "rrd.body", fn);
+  auto endBB = BasicBlock::Create(ctx_, "rrd.end", fn);
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto i_cond = builder_.CreateLoad(i64Ty, iAlloca, "rrd.i.cur");
+  auto cond = builder_.CreateICmpSLT(i_cond, n_val, "rrd.cond.lt");
+  builder_.CreateCondBr(cond, bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  auto i_cur = builder_.CreateLoad(i64Ty, iAlloca, "rrd.i.body");
+  auto i_val = make_long(i_cur);
+  auto acc_val = builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.cur");
+
+  push_scope();
+  bool acc_captured = info.captured_locals.contains(acc_name);
+  define_var(acc_name,
+             acc_captured ? make_cell_slot(acc_name, acc_val)
+                          : make_stack_slot(acc_name, acc_val));
+  bool val_captured = info.captured_locals.contains(val_name);
+  define_var(val_name,
+             val_captured ? make_cell_slot(val_name, i_val)
+                          : make_stack_slot(val_name, i_val));
+
+  auto result = compile(body_ast);
+  // Release the prior acc before overwriting (mirrors
+  // `emit_inlined_iter_reduce`).
+  auto old_acc =
+      builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.prev");
+  emit_value_release(old_acc);
+  builder_.CreateStore(result, accAlloca);
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    auto i_next =
+        builder_.CreateAdd(i_cur, builder_.getInt64(1), "rrd.i.next");
+    builder_.CreateStore(i_next, iAlloca);
+    builder_.CreateBr(condBB);
+  }
+
+  builder_.SetInsertPoint(endBB);
+  return builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.final");
+}
+
 
 inline llvm::Value* JIT::emit_inlined_iter_reduce(
     llvm::Value* iter_val, llvm::Value* init, const peg::Ast& lambda_ast) {
