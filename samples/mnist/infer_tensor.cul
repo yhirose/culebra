@@ -1,0 +1,87 @@
+# API mock — Tensor port of samples/mnist/infer.cul.
+#
+# This file does NOT run yet; it is a design surface for the planned
+# Tensor builtin. Compare line-by-line with infer_numpy.py to confirm
+# the API expresses BLAS-shaped inference cleanly.
+#
+# numpy reference (infer_numpy.py):
+#     z1 = W1 @ X.T + b1[:, None]
+#     a1 = sigmoid(z1)
+#     z2 = W2 @ a1 + b2[:, None]
+#     a2 = sigmoid(z2)
+#     preds = a2.argmax(axis=0)
+
+let DIR = 'samples/mnist'
+
+let load_2d = fn (path) {
+  mut rows = []
+  for line in IO.read(path).split("\n") {
+    if line.size() == 0 { continue }
+    mut row = []
+    for s in line.split(",") {
+      row.push(to_float(s))
+    }
+    rows.push(row)
+  }
+  rows
+}
+
+let load_int_1d = fn (path) {
+  mut out = []
+  for line in IO.read(path).split("\n") {
+    let s = line.trim()
+    if s.size() == 0 { continue }
+    out.push(to_long(s))
+  }
+  out
+}
+
+# Sanity: required CSVs must be present.
+for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
+          'test_images.csv', 'test_labels.csv'] {
+  if !IO.exists("{DIR}/{f}") {
+    puts("missing {DIR}/{f}; run train.py and prep_test.py first")
+    Sys.exit(1)
+  }
+}
+
+# Tensor.from(nested_array) materializes a 2D F32 Tensor. b1/b2 are
+# written as one-column CSVs by train.py, so they come in as [N, 1].
+# (No Tensor.from_csv — it composes from load_2d + Tensor.from per the
+# Phase 1 YAGNI decision.)
+let W1 = Tensor.from_csv("{DIR}/W1.csv")             # [30, 784]
+let b1 = Tensor.from_csv("{DIR}/b1.csv")             # [30, 1]
+let W2 = Tensor.from_csv("{DIR}/W2.csv")             # [10, 30]
+let b2 = Tensor.from_csv("{DIR}/b2.csv")             # [10, 1]
+let X  = Tensor.from_csv("{DIR}/test_images.csv")    # [N, 784]
+
+# Labels stay as a Culebra Array<Long> — Tensor has no integer dtype
+# in Phase 1, and we only need scalar comparison against argmax.
+let y = load_int_1d("{DIR}/test_labels.csv")
+
+let n = X.shape()[0]
+puts("[culebra-tensor] loaded N={n} (W1=30x784, W2=10x30)")
+
+# Forward pass. linear_sigmoid is the dot+bias+sigmoid fused op
+# (single CBLAS sgemm + vDSP vadd + vvexpf on macOS). Bias broadcasts
+# from [N_HID, 1] across the batch axis.
+#
+# Shapes: X is [N, 784]; transpose to [784, N] so the batch axis is
+# trailing for column-vector convention matching numpy.
+let Xt = X.transpose()                              # [784, N]
+let a1 = W1.linear_sigmoid(Xt, b1)                  # [30,  N]
+let a2 = W2.linear_sigmoid(a1, b2)                  # [10,  N]
+
+# argmax over axis 0 gives one prediction per column — shape [N].
+let preds = a2.argmax(0)
+Tensor.eval(preds)
+
+# Bridge to scalar Culebra for the equality check. Phase 3 will add
+# Tensor(bool) and a fast .equal_count() so this loop disappears.
+let p = preds.to_array()
+mut correct = 0
+for k in range(n) {
+  if to_long(p[k]) == y[k] { correct = correct + 1 }
+}
+let acc = to_float(correct) / to_float(n)
+puts("[culebra-tensor] inference: {n} predictions, accuracy: {acc}")

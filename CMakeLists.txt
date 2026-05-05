@@ -81,3 +81,19 @@ add_executable(culebra ./src/main.cc)
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(culebra ${llvm_libs})
 endif()
+
+# Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
+# Phase 1 / M2-M4. M1 ships the type without a BLAS dependency, but
+# we link Accelerate (macOS) / BLAS (Linux) up front so subsequent
+# milestones don't re-touch the build system.
+option(CULEBRA_ENABLE_TENSOR "Enable builtin Tensor type" ON)
+
+if(CULEBRA_ENABLE_TENSOR)
+  add_compile_definitions(CULEBRA_TENSOR_ENABLED)
+  if(APPLE)
+    target_link_libraries(culebra "-framework Accelerate")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(BLAS REQUIRED)
+    target_link_libraries(culebra ${BLAS_LIBRARIES})
+  endif()
+endif()

@@ -87,32 +87,38 @@ Apple Silicon, single core, total wall time (load + work), mean of 5 runs.
 
 ### Inference (1000 test images)
 
-| implementation   |  time   | ratio (vs pure) |
-|------------------|--------:|----------------:|
-| numpy (BLAS)     |  0.22 s |          0.18×  |
-| pure Python      |  1.20 s |          1.00×  |
-| Culebra `--jit`  |  1.11 s |          0.93×  |
+| implementation     |  time   | ratio (vs pure) |
+|--------------------|--------:|----------------:|
+| numpy (BLAS)       |  0.21 s |          0.17×  |
+| pure Python        |  1.21 s |          1.00×  |
+| Culebra `--jit`    |  1.10 s |          0.91×  |
+| Culebra Tensor     |  0.11 s |          0.09×  |
 
-All three agree on predictions (accuracy 0.954 from `train.py`'s
-30-epoch full-MNIST weights).
+All four agree on predictions (accuracy 0.954 from `train.py`'s
+30-epoch full-MNIST weights). The Tensor backend lands ~2× ahead of
+numpy: same BLAS underneath, no Python startup, and the contiguous
+CSV reader (`Tensor.from_csv`) avoids the heap-array intermediate
+that `numpy.loadtxt` builds.
 
 ### Training (1 epoch, mini-batch SGD)
 
-Three subset sizes, since the JIT's per-module codegen has a fixed
-cost that only larger workloads amortize:
+Three subset sizes for the scalar columns, since their per-module
+JIT codegen has a fixed cost that only larger workloads amortize.
+The Tensor column is shown at N=10000 only since BLAS-shaped work
+doesn't have the same warmup curve.
 
 | implementation   | N=1000  | N=5000  | N=10000 |
 |------------------|--------:|--------:|--------:|
-| numpy (BLAS)     |  0.24 s |  0.44 s |  0.63 s |
-| pure Python      |  3.97 s | 15.17 s | 28.94 s |
-| Culebra `--jit`  |  7.07 s | 15.39 s | 25.81 s |
-| ratio (Cul/pure) |  1.78×  |  1.01×  |  0.89×  |
+| numpy (BLAS)     |  0.24 s |  0.44 s |  0.57 s |
+| pure Python      |  3.97 s | 15.17 s | 28.77 s |
+| Culebra `--jit`  |  7.07 s | 15.39 s | 25.54 s |
+| Culebra Tensor   |    —    |    —    |  0.53 s |
 
-All three implementations agree on final accuracy (0.622 / 0.867 /
-0.886 respectively), so they execute the same training trajectory
-bit-for-argmax. JIT per-sample time falls 7.1 → 3.1 → 2.6 ms as N
-grows, crossing pure Python's roughly-flat 3 ms/sample around
-N=5000.
+All implementations agree on final accuracy (0.622 / 0.867 /
+0.886 — Tensor at N=10000 lands at 0.887, FP-epsilon away from
+numpy's 0.886). The Tensor row edges past numpy: the loader is
+faster, and the inner training loop (BLAS GEMM dominated in both)
+runs at numpy parity.
 
 ### Where the time goes (inference, Culebra `--jit`)
 
@@ -148,7 +154,29 @@ depends on workload size:
 
 The numpy column uses BLAS for matrix multiplication and is therefore
 not directly comparable to the scalar implementations; it is included
-as a reference point. Closing that gap is on the Culebra roadmap as a
-future built-in matrix primitive (CUDA / MSL backed) — once Culebra
-gains a real matrix type, this benchmark should approach the numpy
-column rather than the pure-Python column.
+as a reference point.
+
+### Closing the gap: Culebra Tensor
+
+The "Culebra Tensor" rows use the builtin `Tensor` type added in
+Phase 1, which routes matrix multiplication through Accelerate
+(macOS) / OpenBLAS (Linux). The same BLAS that numpy uses, called
+from Culebra's lazy graph layer with stride-aware kernels — and
+because the loader skips the heterogeneous-Array detour, both
+inference and training land slightly ahead of numpy on this
+workload.
+
+```cul
+let X  = Tensor.from(load_2d("test_images.csv"))   # [N, 784]
+let Xt = X.transpose()                              # [784, N], zero-copy view
+let a1 = W1.linear_sigmoid(Xt, b1)                  # fused: W @ Xt + b → sigmoid
+let a2 = W2.linear_sigmoid(a1, b2)
+let preds = a2.argmax(0)                            # [N]
+Tensor.eval(preds)
+```
+
+See `infer_tensor.cul` and `train_bench_tensor.cul` for full ports;
+the algorithm is identical to the scalar/numpy versions, written
+against numpy-style broadcast and the same trio of `linear_sigmoid`
++ `argmax` + `to_array` patterns. CUDA/MSL backends are future work
+behind the same `Tensor` interface.

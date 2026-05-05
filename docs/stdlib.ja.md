@@ -28,8 +28,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 2. [`IO`](#2-io) — 出力・標準入力・ファイル I/O
 3. [`Random`](#3-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
 4. [`Sys`](#4-sys) — argv / exit / env
-5. [設計上の注記](#5-設計上の注記)
-6. [未収録（将来検討）](#6-未収録将来検討)
+5. [`Tensor`](#5-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
+6. [設計上の注記](#6-設計上の注記)
+7. [未収録（将来検討）](#7-未収録将来検討)
 
 **目的別索引**
 
@@ -41,6 +42,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | ファイル読込 | `IO.read`（失敗時 throw） |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
+| 行列・テンソル演算（BLAS 対応） | [§5 Tensor](#5-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
 | 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
@@ -348,7 +350,143 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 5. 設計上の注記
+## 5. `Tensor`
+
+N 次元数値テンソル。lazy 計算グラフを構築し、`Tensor.eval(...)` で
+BLAS / vDSP 経由のカーネルを起動して値を確定します。dtype は
+`Float32`（デフォルト）と `Float64`、形状は variadic か `[m, n]`
+配列で指定。`transpose` / `slice` / `reshape` は zero-copy view。
+
+```culebra
+let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
+let B = Tensor.randn(3, 2)
+let C = A.dot(B) + 1.0                # lazy: グラフを作るだけ
+Tensor.eval(C)                        # ここで BLAS GEMM が走る
+puts(C.shape())                       # [2, 2]
+puts(C.to_array())                    # [[..., ...], [..., ...]]
+```
+
+### 構築（名前空間関数）
+
+#### `Tensor.zeros(...) -> Tensor` / `Tensor.ones(...)` / `Tensor.randn(...)`
+
+形状を variadic（`Tensor.zeros(3, 4)`）または Array
+（`Tensor.zeros([3, 4])`）で受け取ります。dtype は `"f32"` か
+`"f64"` の文字列を**第一引数**に置く Julia 流：
+
+```culebra
+let a   = Tensor.zeros(3, 4)              # F32 default
+let a64 = Tensor.zeros("f64", 3, 4)       # 明示
+let dims = [3, 4]
+let b   = Tensor.zeros(dims)              # 計算済み形状
+let r   = Tensor.randn(2, 3)              # 標準正規
+```
+
+#### `Tensor.from(arr: Array) -> Tensor`
+
+ネストされた Culebra 配列を Tensor に変換します。1D（`[1.0, 2.0]`）
+または 2D（`[[1.0, 2.0], [3.0, 4.0]]`）を受け、F32 で格納：
+
+```culebra
+let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
+let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
+```
+
+#### `Tensor.from_csv(path: String) -> Tensor`
+
+CSV ファイルを直接 contiguous な Tensor に読み込みます。常に
+**rank-2** を返す — 単列 CSV は `[N, 1]`（bias ベクトル形式）。
+nested Array を経由しないので、`Tensor.from(load_2d(path))`
+パターンより 3-5x 速い（MNIST 規模で実測）：
+
+```culebra
+let W1 = Tensor.from_csv("W1.csv")    # [30, 784]
+let b1 = Tensor.from_csv("b1.csv")    # [30, 1]
+let X  = Tensor.from_csv("X.csv")     # [N, 784]
+```
+
+#### `Tensor.eval(t1, t2, ...) -> Nil`
+
+可変長の Tensor を受け、依存グラフを topological 順に評価します。
+共有部分式は一度だけ計算されます。学習ループの mini-batch 境界で
+**必ず一度呼ぶ**（呼ばないとグラフが累積してメモリが膨張）。
+
+```culebra
+W2 = W2 - d2.dot(a1.transpose()) * lr
+b2 = b2 - d2.sum(1).reshape([N_OUT, 1]) * lr
+W1 = W1 - d1.dot(xb.transpose()) * lr
+b1 = b1 - d1.sum(1).reshape([N_HID, 1]) * lr
+Tensor.eval(W1, b1, W2, b2)              # 4 つを 1 パスで評価
+```
+
+### 活性化関数（名前空間関数）
+
+メソッド形式（`.relu()` 等）にしないのは、ユーザのクラスメソッドで
+`relu` を定義する慣習（microgpt の `Value.relu()` など）と衝突する
+ため。
+
+```culebra
+let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
+let r = Tensor.relu(x)           # max(0, x)
+let p = Tensor.softmax(logits)   # 最終軸で online stable
+```
+
+### Tensor のメソッド
+
+形状・線形代数・reduction はメソッド構文：
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `.shape() -> Array` | Array of Long | 形状を Array で返す |
+| `.dot(other: Tensor) -> Tensor` | lazy | 行列積。両辺 rank-2 |
+| `.linear_sigmoid(x, b) -> Tensor` | lazy | 融合 `sigmoid(self @ x + b)` |
+| `.pow(exp) -> Tensor` | lazy | elementwise 冪、exp は Tensor または scalar |
+| `.transpose() -> Tensor` | view | 全軸逆順（rank-2 で行列転置） |
+| `.slice(start, end) -> Tensor` | view | 軸 0 を `[start, end)` で切り出し |
+| `.reshape(dims: Array) -> Tensor` | view | 連続入力のみ。新形状 |
+| `.sum() -> Float` | scalar | 全要素和（暗黙 eval） |
+| `.sum(axis: Long) -> Tensor` | lazy | 軸を 1 つ畳む |
+| `.mean() / .mean(axis)` | Float / Tensor | 同様 |
+| `.max() / .max(axis)` | Float / Tensor | 同様 |
+| `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスを Float で格納 |
+| `.to_array() -> Array` | eager | Culebra Array へ変換（暗黙 eval） |
+
+### 演算子オーバーロード
+
+`+ - * /` はブロードキャスト elementwise（numpy / silarray 規則）。
+スカラーとの混在も自動：
+
+```culebra
+let M = Tensor.ones(3, 4)
+let v = Tensor.ones(4)            # → [3, 4] にブロードキャスト
+let r = Tensor.ones(3, 1)         # → [3, 4] にブロードキャスト
+Tensor.eval(M + v, M + r, M + 1.0, M * 2.0)
+```
+
+`@` 演算子は未実装（`.dot()` を使う）。
+
+### dtype / 形状の制約
+
+- dtype は F32 / F64 のみ。binop / dot は同 dtype 必須（暗黙昇格なし）
+- `.dot()` は rank-2 のみ。3D+ batched matmul は将来検討
+- `.reshape()` は連続入力のみ（transpose 後 reshape は materialize が必要 —
+  今は明示的に `Tensor.from((...).to_array())` を経由）
+- `.softmax()` も連続入力のみ
+
+### バックエンド
+
+Phase 1 では **CPU** のみ。
+
+- macOS: Accelerate framework（`cblas_sgemm/dgemm`、scalar fallback で sigmoid）
+- Linux: OpenBLAS（`find_package(BLAS)`）
+
+将来 Metal / CUDA を `tensor_backend.h` の dispatch table 経由で
+追加予定。API は変わらず、`use_cpu()` / `use_metal()` /
+`use_cuda()` のグローバル切替で動作先を選ぶ silarray 流。
+
+---
+
+## 6. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -381,7 +519,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 6. 未収録（将来検討）
+## 7. 未収録（将来検討）
 
 ### 三角関数
 

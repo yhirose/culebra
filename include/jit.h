@@ -4,6 +4,7 @@
 
 #include <parser.h>
 #include <support.h>
+#include <tensor.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
@@ -150,6 +151,17 @@ struct JitArray {
   // Trailing field so the established IR layout for `JitArray` (which
   // codegen accesses by GEP index) is undisturbed.
   int64_t gc_slot = -1;
+};
+
+// Refcounted Tensor handle for the JIT runtime. `impl` is a shared_ptr
+// so a graph node's `inputs` (also shared_ptr<TensorImpl>) and the JIT
+// handle can co-own a TensorImpl across both interp and JIT paths.
+// JIT-emitted IR only GEPs refcount/gc_slot — `impl` is touched from
+// C++ runtime fns only.
+struct JitTensor {
+  int64_t refcount;
+  int64_t gc_slot = -1;
+  culebra::TensorPtr impl;
 };
 
 }  // extern "C"
@@ -363,10 +375,12 @@ static constexpr int8_t TAG_OBJECT = 6;
 // `coerce_to_double`). Float is a value type: retain/release is a
 // no-op and the cycle collector ignores it via `is_refcounted_value_tag`.
 static constexpr int8_t TAG_FLOAT = 7;
+static constexpr int8_t TAG_TENSOR = 8;
 
 static constexpr int8_t GC_TAG_FUNC = TAG_FUNC;
 static constexpr int8_t GC_TAG_ARRAY = TAG_ARRAY;
 static constexpr int8_t GC_TAG_OBJECT = TAG_OBJECT;
+static constexpr int8_t GC_TAG_TENSOR = TAG_TENSOR;
 static constexpr int8_t GC_TAG_CELL = 100;
 
 // Minimum collect-trigger threshold; adaptive at runtime — see collect().
@@ -381,6 +395,7 @@ inline int64_t& _gc_slot_of(void* ptr, int8_t tag) {
   switch (tag) {
     case GC_TAG_ARRAY: return static_cast<JitArray*>(ptr)->gc_slot;
     case GC_TAG_OBJECT: return static_cast<JitObject*>(ptr)->gc_slot;
+    case GC_TAG_TENSOR: return static_cast<JitTensor*>(ptr)->gc_slot;
     case GC_TAG_CELL: return static_cast<JitCell*>(ptr)->gc_slot;
     default: return static_cast<JitClosure*>(ptr)->gc_slot;  // GC_TAG_FUNC
   }
@@ -449,7 +464,8 @@ struct _GcTracker {
   }
 
   static bool is_refcounted_value_tag(int8_t tag) {
-    return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY || tag == GC_TAG_OBJECT;
+    return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY ||
+           tag == GC_TAG_OBJECT || tag == GC_TAG_TENSOR;
   }
 
   static void push_if_refcounted(std::vector<TaggedPtr>& out, int8_t tag,
@@ -759,6 +775,10 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       s += "]";
       return s;
     }
+    case TAG_TENSOR: {
+      auto* t = reinterpret_cast<JitTensor*>(data);
+      return tensor_str(*t->impl);
+    }
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
       _JitStrGuard guard(obj);
@@ -924,6 +944,7 @@ __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
     case TAG_ARRAY:
     case TAG_OBJECT:
     case TAG_FLOAT:
+    case TAG_TENSOR:
       std::cout << _culebra_value_to_str_impl(type, data) << std::endl;
       break;
     default:
@@ -1103,6 +1124,7 @@ inline const char* _culebra_tag_name(int8_t tag) {
     case TAG_ARRAY:  return "Array";
     case TAG_OBJECT: return "Object";
     case TAG_FLOAT:  return "Float";
+    case TAG_TENSOR: return "Tensor";
   }
   return "Unknown";
 }
@@ -1218,9 +1240,24 @@ inline std::optional<JitValue> _dispatch_arith_dunder(int8_t lt, int64_t ld,
   return std::nullopt;
 }
 
-#define CUL_NUM_BINOP(name, dunder, expr, reflect)                      \
+// Forward decl — body is further down with the other Tensor runtime entries.
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_binop(
+    int8_t lt, int64_t ld, int8_t rt_, int64_t rd, int64_t op_id);
+
+// Routes binop through the Tensor runtime when either operand is a
+// Tensor. M2.0 requires both operands to be Tensor; scalar broadcast
+// lands in M2.1.
+inline std::optional<JitValue> _try_tensor_binop(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int op_id) {
+  if (lt != TAG_TENSOR && rt != TAG_TENSOR) return std::nullopt;
+  auto* t = culebra_runtime_tensor_binop(lt, ld, rt, rd, op_id);
+  return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(t)};
+}
+
+#define CUL_NUM_BINOP(name, dunder, expr, reflect, op_id)               \
   __attribute__((used)) inline JitValue culebra_runtime_num_##name(     \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+    if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
     if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, dunder,         \
                                         reflect))                       \
       return *r;                                                        \
@@ -1228,13 +1265,16 @@ inline std::optional<JitValue> _dispatch_arith_dunder(int8_t lt, int64_t ld,
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(add, "__add__", a + b, true)
-CUL_NUM_BINOP(sub, "__sub__", a - b, false)
-CUL_NUM_BINOP(mul, "__mul__", a * b, true)
+CUL_NUM_BINOP(add, "__add__", a + b, true,  static_cast<int>(culebra::Op::Add))
+CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
+CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
 __attribute__((used)) inline JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _try_tensor_binop(lt, ld, rt, rd,
+                                  static_cast<int>(culebra::Op::Div)))
+    return *r;
   if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, "__div__", false))
     return *r;
   auto a = _culebra_coerce_num(lt, ld);
@@ -1534,6 +1574,248 @@ __attribute__((used)) inline void culebra_runtime_array_set_or_push(
   } else {
     culebra_runtime_array_push(arr, tag, data);
   }
+}
+
+// --- Tensor runtime ---
+
+// args layout: [optional "f32"/"f64" string, shape varargs OR single
+// Array of Long]. Mirrors the interpreter's parse_tensor_dtype_prefix
+// + parse_tensor_shape pair.
+inline std::pair<culebra::Dtype, culebra::TensorShape>
+_culebra_parse_tensor_ctor_args(const JitValue* args, int64_t n, int64_t line,
+                                int64_t col) {
+  auto type_err = [&]() {
+    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+  };
+  culebra::Dtype dt = culebra::Dtype::F32;
+  int64_t off = 0;
+  if (n > 0 && args[0].tag == TAG_STRING) {
+    auto d = culebra::parse_dtype(reinterpret_cast<const char*>(args[0].data));
+    if (!d) type_err();
+    dt = *d;
+    off = 1;
+  }
+  std::vector<int64_t> dims;
+  auto push_long = [&](const JitValue& v) {
+    if (v.tag != TAG_LONG) type_err();
+    dims.push_back(v.data);
+  };
+  if (n - off == 1 && args[off].tag == TAG_ARRAY) {
+    auto* a = reinterpret_cast<JitArray*>(args[off].data);
+    for (size_t i = 0; i < a->size; i++) push_long(a->items[i]);
+  } else {
+    for (int64_t i = off; i < n; i++) push_long(args[i]);
+  }
+  return {dt, culebra::TensorShape(std::move(dims))};
+}
+
+inline JitTensor* _culebra_jit_tensor_register(culebra::TensorPtr impl) {
+  auto* t = new JitTensor{1, -1, std::move(impl)};
+  _gc().add(t, GC_TAG_TENSOR);
+  return t;
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_zeros(
+    const JitValue* args, int64_t n, int64_t line, int64_t col) {
+  auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
+  return _culebra_jit_tensor_register(culebra::tensor_zeros(std::move(shape), dt));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_ones(
+    const JitValue* args, int64_t n, int64_t line, int64_t col) {
+  auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
+  return _culebra_jit_tensor_register(culebra::tensor_ones(std::move(shape), dt));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_randn(
+    const JitValue* args, int64_t n, int64_t line, int64_t col) {
+  auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
+  return _culebra_jit_tensor_register(culebra::tensor_randn(std::move(shape), dt));
+}
+
+// Tensor.from(arr): walk a 1D or 2D nested JitArray. M1 only F32; an
+// optional dtype tag arrives in M2.
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_from(
+    JitArray* a, int64_t line, int64_t col) {
+  auto type_err = [&]() {
+    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+  };
+  auto coerce = [&](const JitValue& v) {
+    if (v.tag == TAG_LONG) return static_cast<double>(v.data);
+    if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
+    type_err();
+    return 0.0;
+  };
+  using culebra::TensorImpl;
+  using culebra::TensorShape;
+  using culebra::Dtype;
+  if (a->size == 0) {
+    return _culebra_jit_tensor_register(
+        std::make_shared<TensorImpl>(TensorShape({0}), Dtype::F32));
+  }
+  if (a->items[0].tag == TAG_LONG || a->items[0].tag == TAG_FLOAT) {
+    auto impl = std::make_shared<TensorImpl>(
+        TensorShape({static_cast<int64_t>(a->size)}), Dtype::F32);
+    auto* p = impl->data_as<float>();
+    for (size_t i = 0; i < a->size; i++) {
+      p[i] = static_cast<float>(coerce(a->items[i]));
+    }
+    return _culebra_jit_tensor_register(std::move(impl));
+  }
+  if (a->items[0].tag != TAG_ARRAY) type_err();
+  auto* row0 = reinterpret_cast<JitArray*>(a->items[0].data);
+  size_t cols = row0->size;
+  size_t rows = a->size;
+  auto impl = std::make_shared<TensorImpl>(
+      TensorShape({static_cast<int64_t>(rows), static_cast<int64_t>(cols)}),
+      Dtype::F32);
+  auto* p = impl->data_as<float>();
+  for (size_t i = 0; i < rows; i++) {
+    if (a->items[i].tag != TAG_ARRAY) type_err();
+    auto* row = reinterpret_cast<JitArray*>(a->items[i].data);
+    if (row->size != cols) type_err();
+    for (size_t j = 0; j < cols; j++) {
+      p[i * cols + j] = static_cast<float>(coerce(row->items[j]));
+    }
+  }
+  return _culebra_jit_tensor_register(std::move(impl));
+}
+
+// .shape() — returns a fresh JitArray of Long.
+__attribute__((used)) inline JitArray* culebra_runtime_tensor_shape(
+    JitTensor* t) {
+  auto* a = culebra_runtime_array_new();
+  for (auto d : t->impl->shape.dims) {
+    culebra_runtime_array_push(a, TAG_LONG, d);
+  }
+  return a;
+}
+
+// Build a lazy elementwise binop. At least one operand must be
+// TAG_TENSOR; scalars (Long/Float) are lifted to a rank-0 Tensor with
+// the other side's dtype, then broadcast handles the rest.
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_binop(
+    int8_t lt, int64_t ld, int8_t rt_, int64_t rd, int64_t op_id) {
+  culebra::Dtype dt =
+      reinterpret_cast<JitTensor*>(lt == TAG_TENSOR ? ld : rd)->impl->dtype;
+  auto lift = [&](int8_t tag, int64_t data) -> culebra::TensorPtr {
+    if (tag == TAG_TENSOR) return reinterpret_cast<JitTensor*>(data)->impl;
+    return culebra::tensor_scalar(_culebra_coerce_num(tag, data), dt);
+  };
+  return _culebra_jit_tensor_register(culebra::tensor_binop(
+      static_cast<culebra::Op>(op_id), lift(lt, ld), lift(rt_, rd)));
+}
+
+__attribute__((used)) inline void culebra_runtime_tensor_eval_one(
+    JitTensor* t) {
+  culebra::tensor_eval_node(*t->impl);
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_transpose(
+    JitTensor* t) {
+  return _culebra_jit_tensor_register(culebra::tensor_transpose(t->impl));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_slice(
+    JitTensor* t, int64_t start, int64_t end) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_slice(t->impl, start, end));
+}
+
+// Forces eval and returns a Culebra Array. Rank 1 → flat Array of
+// Float; rank 2 → Array of Array of Float. Higher ranks are not
+// supported in Phase 1.
+__attribute__((used)) inline JitArray* culebra_runtime_tensor_to_array(
+    JitTensor* t) {
+  culebra::tensor_eval_node(*t->impl);
+  const auto& impl = *t->impl;
+  auto read_at = [&](int64_t flat_idx) -> int64_t {
+    double v = (impl.dtype == culebra::Dtype::F32)
+        ? static_cast<double>(impl.data_as<float>()[flat_idx])
+        : impl.data_as<double>()[flat_idx];
+    return _culebra_double_to_bits(v);
+  };
+  const auto& dims = impl.shape.dims;
+  if (dims.size() == 1) {
+    auto* out = culebra_runtime_array_new();
+    for (int64_t i = 0; i < dims[0]; i++) {
+      culebra_runtime_array_push(out, TAG_FLOAT,
+                                  read_at(i * impl.strides[0]));
+    }
+    return out;
+  }
+  if (dims.size() == 2) {
+    auto* out = culebra_runtime_array_new();
+    for (int64_t i = 0; i < dims[0]; i++) {
+      auto* row = culebra_runtime_array_new();
+      for (int64_t j = 0; j < dims[1]; j++) {
+        culebra_runtime_array_push(
+            row, TAG_FLOAT,
+            read_at(i * impl.strides[0] + j * impl.strides[1]));
+      }
+      culebra_runtime_array_push(out, TAG_ARRAY,
+                                  reinterpret_cast<int64_t>(row));
+    }
+    return out;
+  }
+  throw std::runtime_error("Tensor.to_array: rank > 2 not supported.");
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_from_csv(
+    const char* path) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_from_csv(std::string(path), culebra::Dtype::F32));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_dot(
+    JitTensor* a, JitTensor* b) {
+  return _culebra_jit_tensor_register(culebra::tensor_dot(a->impl, b->impl));
+}
+
+// Unary activations (sigmoid / relu / softmax). op_id selects which.
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_unary(
+    JitTensor* a, int64_t op_id) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_unary(static_cast<culebra::Op>(op_id), a->impl));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_linear_sigmoid(
+    JitTensor* W, JitTensor* x, JitTensor* b) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_linear_sigmoid(W->impl, x->impl, b->impl));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_reduce_axis(
+    JitTensor* t, int64_t op_id, int64_t axis) {
+  return _culebra_jit_tensor_register(culebra::tensor_reduce_axis(
+      static_cast<culebra::Op>(op_id), t->impl, axis));
+}
+
+__attribute__((used)) inline JitValue culebra_runtime_tensor_reduce_all(
+    JitTensor* t, int64_t op_id) {
+  using culebra::Op;
+  double v = 0.0;
+  switch (static_cast<Op>(op_id)) {
+    case Op::Sum:  v = culebra::tensor_reduce_all<Op::Sum>(t->impl); break;
+    case Op::Mean: v = culebra::tensor_reduce_all<Op::Mean>(t->impl); break;
+    case Op::Max:  v = culebra::tensor_reduce_all<Op::Max>(t->impl); break;
+    default: throw std::runtime_error("tensor: invalid reduce op_id");
+  }
+  return {TAG_FLOAT, _culebra_double_to_bits(v)};
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_reshape(
+    JitTensor* t, JitArray* dims) {
+  std::vector<int64_t> new_dims;
+  new_dims.reserve(dims->size);
+  for (size_t i = 0; i < dims->size; i++) {
+    if (dims->items[i].tag != TAG_LONG) {
+      throw std::runtime_error("type error.");
+    }
+    new_dims.push_back(dims->items[i].data);
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_reshape(
+      t->impl, culebra::TensorShape(std::move(new_dims))));
 }
 
 // --- Object runtime ---
@@ -3371,6 +3653,14 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       }
       break;
     }
+    case GC_TAG_TENSOR: {
+      auto* t = reinterpret_cast<JitTensor*>(data);
+      if (--t->refcount == 0) {
+        _gc().remove(t, GC_TAG_TENSOR);
+        delete t;  // ~JitTensor releases the shared_ptr<TensorImpl>
+      }
+      break;
+    }
     default:
       break;  // TAG_NIL/BOOL/LONG/STRING: no-op
   }
@@ -3399,6 +3689,9 @@ __attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
       break;
     case 6:
       reinterpret_cast<JitObject*>(data)->refcount++;
+      break;
+    case 8:
+      reinterpret_cast<JitTensor*>(data)->refcount++;
       break;
   }
 }
@@ -3461,6 +3754,23 @@ inline constexpr auto array_reverse       = "culebra_runtime_array_reverse";
 inline constexpr auto array_set           = "culebra_runtime_array_set";
 inline constexpr auto array_set_or_push   = "culebra_runtime_array_set_or_push";
 inline constexpr auto array_size          = "culebra_runtime_array_size";
+inline constexpr auto tensor_zeros        = "culebra_runtime_tensor_zeros";
+inline constexpr auto tensor_ones         = "culebra_runtime_tensor_ones";
+inline constexpr auto tensor_randn        = "culebra_runtime_tensor_randn";
+inline constexpr auto tensor_from         = "culebra_runtime_tensor_from";
+inline constexpr auto tensor_shape        = "culebra_runtime_tensor_shape";
+inline constexpr auto tensor_binop        = "culebra_runtime_tensor_binop";
+inline constexpr auto tensor_eval_one     = "culebra_runtime_tensor_eval_one";
+inline constexpr auto tensor_transpose    = "culebra_runtime_tensor_transpose";
+inline constexpr auto tensor_slice        = "culebra_runtime_tensor_slice";
+inline constexpr auto tensor_reshape      = "culebra_runtime_tensor_reshape";
+inline constexpr auto tensor_reduce_axis  = "culebra_runtime_tensor_reduce_axis";
+inline constexpr auto tensor_reduce_all   = "culebra_runtime_tensor_reduce_all";
+inline constexpr auto tensor_to_array     = "culebra_runtime_tensor_to_array";
+inline constexpr auto tensor_dot          = "culebra_runtime_tensor_dot";
+inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
+inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
+inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";
 inline constexpr auto array_slice         = "culebra_runtime_array_slice";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
@@ -4011,7 +4321,14 @@ struct JIT {
         "sum",         "product",    "min",      "max",
         "collect",     "count",      "take",     "skip",
         "take_while",  "chain",      "zip",      "enumerate",
-        "code_points", "graphemes",  "iter"};
+        "code_points", "graphemes",  "iter",
+        // Tensor methods. (Activations sigmoid/relu/softmax are
+        // exposed as `Tensor.sigmoid(t)` namespace functions instead,
+        // because they collide with class-method names users
+        // commonly define — e.g. microgpt's `Value.relu()`.)
+        "shape",       "pow",        "transpose",  "reshape",
+        "mean",        "argmax",     "to_array",   "dot",
+        "linear_sigmoid"};
     return known;
   }
   // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
@@ -4430,6 +4747,14 @@ struct JIT {
     auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
     llvm::Value* val = llvm::UndefValue::get(valueType_);
     val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_OBJECT), {0});
+    val = builder_.CreateInsertValue(val, data, {1});
+    return val;
+  }
+
+  llvm::Value* make_tensor(llvm::Value* ptr) {
+    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
+    llvm::Value* val = llvm::UndefValue::get(valueType_);
+    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_TENSOR), {0});
     val = builder_.CreateInsertValue(val, data, {1});
     return val;
   }
@@ -9228,6 +9553,102 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   auto tag = extract_tag(receiver);
   auto fn = builder_.GetInsertBlock()->getParent();
 
+  // Tensor methods. Dispatch unconditionally on TAG_TENSOR; non-Tensor
+  // receivers raise a type error (no overload with other types in M1).
+  if (method == "shape" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "shape");
+    auto arrPtr = emit_call(
+        module_->getFunction(rt::tensor_shape), {tPtr}, "tshape");
+    return make_array(arrPtr);
+  }
+  if (method == "pow" && argsAst.nodes.size() == 1) {
+    expect_tag(receiver, TAG_TENSOR, "pow");
+    auto exp = compile(*argsAst.nodes[0]);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_binop),
+        {extract_tag(receiver), extract_data(receiver),
+         extract_tag(exp), extract_data(exp),
+         builder_.getInt64(static_cast<int64_t>(culebra::Op::Pow))},
+        "tpow");
+    emit_value_release(exp);
+    return make_tensor(resultPtr);
+  }
+  if (method == "transpose" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "transpose");
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_transpose), {tPtr}, "tt");
+    return make_tensor(resultPtr);
+  }
+  if (method == "reshape" && argsAst.nodes.size() == 1) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "reshape");
+    auto dims = compile(*argsAst.nodes[0]);
+    emit_type_check(dims, "Array", "Tensor.reshape argument");
+    auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_reshape), {tPtr, dimsPtr}, "tr");
+    emit_value_release(dims);
+    return make_tensor(resultPtr);
+  }
+
+  // Tensor axis-ful reductions (1 Long arg). Tensor-only — receivers
+  // of other types fall through to the existing Array `.sum() / .max()`
+  // handler below (which only accepts 0 args, raising type_error here).
+  if ((method == "sum" || method == "mean" || method == "max" ||
+       method == "argmax") && argsAst.nodes.size() == 1) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, method.c_str());
+    auto axis = value_to_long(compile(*argsAst.nodes[0]));
+    int op_id =
+        method == "sum"    ? static_cast<int>(culebra::Op::Sum)
+      : method == "mean"   ? static_cast<int>(culebra::Op::Mean)
+      : method == "max"    ? static_cast<int>(culebra::Op::Max)
+                           : static_cast<int>(culebra::Op::Argmax);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_reduce_axis),
+        {tPtr, builder_.getInt64(op_id), axis}, "trax");
+    return make_tensor(resultPtr);
+  }
+  // Tensor `.mean()` (0-arg). `.sum()` / `.max()` 0-arg fall through
+  // to the polymorphic handler below which adds a TAG_TENSOR branch.
+  if (method == "mean" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "mean");
+    auto v = emit_call(
+        module_->getFunction(rt::tensor_reduce_all),
+        {tPtr, builder_.getInt64(static_cast<int>(culebra::Op::Mean))},
+        "trall");
+    return v;
+  }
+  if (method == "to_array" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "to_array");
+    auto arrPtr = emit_call(
+        module_->getFunction(rt::tensor_to_array), {tPtr}, "tta");
+    return make_array(arrPtr);
+  }
+  if (method == "dot" && argsAst.nodes.size() == 1) {
+    auto aPtr = expect_tag(receiver, TAG_TENSOR, "dot");
+    auto other = compile(*argsAst.nodes[0]);
+    emit_type_check(other, "Tensor", "Tensor.dot argument");
+    auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_dot), {aPtr, bPtr}, "td");
+    emit_value_release(other);
+    return make_tensor(resultPtr);
+  }
+  if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
+    auto wPtr = expect_tag(receiver, TAG_TENSOR, "linear_sigmoid");
+    auto xv = compile(*argsAst.nodes[0]);
+    emit_type_check(xv, "Tensor", "linear_sigmoid x");
+    auto bv = compile(*argsAst.nodes[1]);
+    emit_type_check(bv, "Tensor", "linear_sigmoid b");
+    auto xp = builder_.CreateIntToPtr(extract_data(xv), ptrTy);
+    auto bp = builder_.CreateIntToPtr(extract_data(bv), ptrTy);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_linear_sigmoid),
+        {wPtr, xp, bp}, "tls");
+    emit_value_release(xv);
+    emit_value_release(bv);
+    return make_tensor(resultPtr);
+  }
+
   // .size() — works on Array, Object, String
   if (method == "size" && argsAst.nodes.size() == 0) {
     auto arrBB = llvm::BasicBlock::Create(ctx_, "size.arr", fn);
@@ -9307,19 +9728,21 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_nil();
   }
 
-  // slice works on Array and String
+  // slice works on Array, String, and Tensor — all use [start, end).
   if (method == "slice" && argsAst.nodes.size() == 2) {
     auto start = value_to_long(compile(*argsAst.nodes[0]));
     auto end = value_to_long(compile(*argsAst.nodes[1]));
 
     auto arrBB = llvm::BasicBlock::Create(ctx_, "sl.arr", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "sl.str", fn);
+    auto tenBB = llvm::BasicBlock::Create(ctx_, "sl.ten", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "sl.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "sl.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 2);
+    auto sw = builder_.CreateSwitch(tag, errBB, 3);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
@@ -9339,14 +9762,24 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strBBEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
+    builder_.SetInsertPoint(tenBB);
+    auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto newTen = emit_call(
+        module_->getFunction(rt::tensor_slice),
+        {tenPtr, start, end});
+    auto tenVal = make_tensor(newTen);
+    auto tenBBEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
     builder_.SetInsertPoint(errBB);
     emit_type_error();
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "sl");
+    auto phi = builder_.CreatePHI(valueType_, 3, "sl");
     phi->addIncoming(arrVal, arrBBEnd);
     phi->addIncoming(strVal, strBBEnd);
+    phi->addIncoming(tenVal, tenBBEnd);
     return phi;
   }
 
@@ -9800,6 +10233,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // sum / product / min / max — integer aggregates, same shape for
   // Array and Iterator receivers. Non-Long elements raise a type
   // error; min/max additionally throw on empty input.
+  // sum / max also accept TAG_TENSOR (the axis-less Tensor reduction
+  // returns a Float); product / min stay 2-way (no Tensor support).
   if ((method == "sum" || method == "product" ||
        method == "min" || method == "max") &&
       argsAst.nodes.size() == 0) {
@@ -9818,18 +10253,76 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       arr_rt_name = rt::array_max;
       iter_rt_name = rt::iter_max;
     }
-    return dispatch_arr_iter(
-        method.c_str(),
-        [&](llvm::Value* arrPtr) {
-          auto n = emit_call(module_->getFunction(arr_rt_name),
-                             {arrPtr, ho_line, ho_col});
-          return make_long(n);
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          auto n = emit_call(module_->getFunction(iter_rt_name),
-                             {it, id, ho_line, ho_col});
-          return make_long(n);
-        });
+    bool tensor_capable = (method == "sum" || method == "max");
+    if (!tensor_capable) {
+      return dispatch_arr_iter(
+          method.c_str(),
+          [&](llvm::Value* arrPtr) {
+            auto n = emit_call(module_->getFunction(arr_rt_name),
+                               {arrPtr, ho_line, ho_col});
+            return make_long(n);
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            auto n = emit_call(module_->getFunction(iter_rt_name),
+                               {it, id, ho_line, ho_col});
+            return make_long(n);
+          });
+    }
+    // 3-way dispatch for sum / max: TAG_ARRAY → Long, TAG_OBJECT
+    // (iterator) → Long, TAG_TENSOR → Float (axis-less reduction).
+    auto t = extract_tag(receiver);
+    auto d = extract_data(receiver);
+    auto arrBB = llvm::BasicBlock::Create(
+        ctx_, std::string(method) + ".arr", fn);
+    auto iterBB = llvm::BasicBlock::Create(
+        ctx_, std::string(method) + ".iter", fn);
+    auto tenBB = llvm::BasicBlock::Create(
+        ctx_, std::string(method) + ".ten", fn);
+    auto errBB = llvm::BasicBlock::Create(
+        ctx_, std::string(method) + ".err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(
+        ctx_, std::string(method) + ".merge", fn);
+    auto sw = builder_.CreateSwitch(t, errBB, 3);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), iterBB);
+    sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
+    auto arrN = emit_call(module_->getFunction(arr_rt_name),
+                          {arrPtr, ho_line, ho_col});
+    auto arrV = make_long(arrN);
+    auto arrEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(iterBB);
+    auto iterN = emit_call(module_->getFunction(iter_rt_name),
+                           {t, d, ho_line, ho_col});
+    auto iterV = make_long(iterN);
+    auto iterEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(tenBB);
+    auto tenPtr = builder_.CreateIntToPtr(d, ptrTy);
+    int op_id = (method == "sum") ? static_cast<int>(culebra::Op::Sum)
+                                  : static_cast<int>(culebra::Op::Max);
+    auto tenV = emit_call(
+        module_->getFunction(rt::tensor_reduce_all),
+        {tenPtr, builder_.getInt64(op_id)});
+    auto tenEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 3,
+                                  std::string(method) + ".res");
+    phi->addIncoming(arrV, arrEnd);
+    phi->addIncoming(iterV, iterEnd);
+    phi->addIncoming(tenV, tenEnd);
+    return phi;
   }
 
   // --- Iterator-only methods (no eager Array equivalent) ---

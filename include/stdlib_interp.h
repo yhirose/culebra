@@ -400,6 +400,176 @@ inline Value make_random_namespace() {
   return Value(std::move(ns));
 }
 
+// Tensor.zeros(3, 4) and Tensor.zeros([3, 4]) produce the same shape.
+// Reads positional Long entries from `args[offset..]`, or unwraps a
+// single Array argument if that is what's there.
+inline TensorShape parse_tensor_shape(const std::vector<Value>& args,
+                                      size_t offset, size_t line, size_t col) {
+  std::vector<int64_t> dims;
+  auto push_long = [&](const Value& v) {
+    if (v.type != Value::Long) throw_type_error_at(line, col);
+    dims.push_back(v.to_long());
+  };
+  if (args.size() - offset == 1 && args[offset].type == Value::Array) {
+    for (const auto& v : *args[offset].to_array().values) push_long(v);
+  } else {
+    for (size_t i = offset; i < args.size(); i++) push_long(args[i]);
+  }
+  // TensorShape ctor rejects negative dims.
+  return TensorShape(std::move(dims));
+}
+
+// If args[0] is a "f32"/"f64" tag, consume it; otherwise default F32.
+// Returns {dtype, offset of first shape arg}.
+inline std::pair<Dtype, size_t> parse_tensor_dtype_prefix(
+    const std::vector<Value>& args, size_t line, size_t col) {
+  if (args.empty() || args[0].type != Value::String) return {Dtype::F32, 0};
+  auto d = parse_dtype(args[0].get<std::string>());
+  if (!d) throw_type_error_at(line, col);
+  return {*d, 1};
+}
+
+template <typename T>
+inline void _tensor_fill_1d(T* out, const std::vector<Value>& vs, size_t line,
+                            size_t col) {
+  for (size_t i = 0; i < vs.size(); i++) {
+    if (!vs[i].is_numeric()) throw_type_error_at(line, col);
+    out[i] = static_cast<T>(vs[i].to_double_coerce());
+  }
+}
+
+template <typename T>
+inline void _tensor_fill_2d(T* out, const std::vector<Value>& rows_v,
+                            size_t cols, size_t line, size_t col) {
+  for (size_t i = 0; i < rows_v.size(); i++) {
+    if (rows_v[i].type != Value::Array) throw_type_error_at(line, col);
+    const auto& row = *rows_v[i].to_array().values;
+    if (row.size() != cols) throw_type_error_at(line, col);
+    for (size_t j = 0; j < cols; j++) {
+      if (!row[j].is_numeric()) throw_type_error_at(line, col);
+      out[i * cols + j] = static_cast<T>(row[j].to_double_coerce());
+    }
+  }
+}
+
+// Detects 1D Array<Float|Long> or 2D Array of equal-length numeric
+// rows. Higher-rank "from" is deferred to M2+.
+inline TensorPtr tensor_from_array(const ArrayValue& a, Dtype dt, size_t line,
+                                   size_t col) {
+  const auto& vs = *a.values;
+  if (vs.empty()) return tensor_zeros(TensorShape({0}), dt);
+
+  if (vs[0].is_numeric()) {
+    auto t = std::make_shared<TensorImpl>(
+        TensorShape({static_cast<int64_t>(vs.size())}), dt);
+    if (dt == Dtype::F32) _tensor_fill_1d(t->data_as<float>(), vs, line, col);
+    else                  _tensor_fill_1d(t->data_as<double>(), vs, line, col);
+    return t;
+  }
+
+  if (vs[0].type != Value::Array) throw_type_error_at(line, col);
+  size_t cols = vs[0].to_array().values->size();
+  size_t rows = vs.size();
+  auto t = std::make_shared<TensorImpl>(
+      TensorShape({static_cast<int64_t>(rows), static_cast<int64_t>(cols)}),
+      dt);
+  if (dt == Dtype::F32)
+    _tensor_fill_2d(t->data_as<float>(), vs, cols, line, col);
+  else
+    _tensor_fill_2d(t->data_as<double>(), vs, cols, line, col);
+  return t;
+}
+
+inline Value make_tensor_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  // Variadic ctor: declared with no formal params so every positional
+  // arg lands in __ARGS__. Layout is [optional dtype string, shape
+  // varargs OR single Array of Long].
+  auto make_ctor = [](TensorPtr (*kernel)(TensorShape, Dtype)) {
+    return Value(FunctionValue(
+        {},
+        [kernel](std::shared_ptr<Environment> env) {
+          auto line = env->get("__LINE__").to_long();
+          auto col = env->get("__COLUMN__").to_long();
+          if (!env->has("__ARGS__")) throw_type_error_at(line, col);
+          const auto& args = *env->get("__ARGS__").to_array().values;
+          auto [dt, offset] = parse_tensor_dtype_prefix(args, line, col);
+          auto shape = parse_tensor_shape(args, offset, line, col);
+          return Value(TensorValue(kernel(std::move(shape), dt)));
+        },
+        "Tensor"sv));
+  };
+
+  ns.initialize("zeros", make_ctor(&tensor_zeros), false);
+  ns.initialize("ones", make_ctor(&tensor_ones), false);
+  ns.initialize("randn", make_ctor(&tensor_randn), false);
+
+  // Activations: namespace functions (not Tensor methods), since
+  // `relu / sigmoid / softmax` are common class-method names — having
+  // them as methods would shadow user definitions. The namespace form
+  // makes the call site explicitly Tensor-flavored.
+  auto make_unary_ns = [](Op op) {
+    return Value(FunctionValue(
+        {{"t", false, "Tensor"sv}},
+        [op](std::shared_ptr<Environment> env) {
+          const auto& t = env->get("t").to_tensor().impl;
+          return Value(TensorValue(tensor_unary(op, t)));
+        },
+        "Tensor"sv));
+  };
+  ns.initialize("sigmoid", make_unary_ns(Op::Sigmoid), false);
+  ns.initialize("relu", make_unary_ns(Op::Relu), false);
+  ns.initialize("softmax", make_unary_ns(Op::Softmax), false);
+
+  ns.initialize(
+      "eval",
+      Value(FunctionValue(
+          {},
+          [](std::shared_ptr<Environment> env) {
+            auto line = env->get("__LINE__").to_long();
+            auto col = env->get("__COLUMN__").to_long();
+            if (!env->has("__ARGS__")) return Value();
+            const auto& args = *env->get("__ARGS__").to_array().values;
+            for (const auto& v : args) {
+              if (v.type != Value::Tensor) throw_type_error_at(line, col);
+              tensor_eval_node(*v.to_tensor().impl);
+            }
+            return Value();
+          })),
+      false);
+
+  ns.initialize(
+      "from_csv",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& path = env->get("path").to_string();
+            return Value(TensorValue(tensor_from_csv(path, Dtype::F32)));
+          },
+          "Tensor"sv)),
+      false);
+
+  ns.initialize(
+      "from",
+      Value(FunctionValue(
+          {{"a", false, "Array"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto line = env->get("__LINE__").to_long();
+            auto col = env->get("__COLUMN__").to_long();
+            const auto& a = env->get("a").to_array();
+            // No dtype arg in M1: always F32. M2+ may take a trailing
+            // string tag once mixed-dtype binops are sorted.
+            auto t = tensor_from_array(a, Dtype::F32, line, col);
+            return Value(TensorValue(std::move(t)));
+          },
+          "Tensor"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+
 inline Value make_sys_namespace(const std::vector<std::string>& argv) {
   using namespace std::literals;
   ObjectValue ns;
@@ -513,6 +683,7 @@ inline void setup_built_in_functions(
                               case Value::Array:    n = "Array"; break;
                               case Value::Object:   n = "Object"; break;
                               case Value::Function: n = "Function"; break;
+                              case Value::Tensor:   n = "Tensor"; break;
                             }
                             return Value(std::string(n));
                           },
@@ -523,6 +694,7 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
+  env.initialize("Tensor", make_tensor_namespace(), false);
 }
 
 inline std::shared_ptr<Environment> environment(

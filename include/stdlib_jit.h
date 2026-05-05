@@ -431,6 +431,43 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::io_exists, jit.builder_.getInt64Ty(), ptrTy);
 
+  // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
+  // -> ptr signature; from takes a single Array (ptr, line, col);
+  // shape is just (Tensor*) -> Array*.
+  for (auto name : {rt::tensor_zeros, rt::tensor_ones, rt::tensor_randn}) {
+    jit.module_->getOrInsertFunction(name, ptrTy, ptrTy,
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
+  }
+  jit.module_->getOrInsertFunction(rt::tensor_from, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_shape, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_eval_one,
+                               jit.builder_.getVoidTy(), ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_binop, ptrTy,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_transpose, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_slice, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_reshape, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_reduce_axis, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_reduce_all, jit.valueType_,
+                               ptrTy, jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_to_array, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_from_csv, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_unary, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_linear_sigmoid, ptrTy,
+                               ptrTy, ptrTy, ptrTy);
+
   // Iterator terminal methods.
   auto i64 = jit.builder_.getInt64Ty();
   auto i8 = jit.builder_.getInt8Ty();
@@ -554,6 +591,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   auto make_string = [&](llvm::Value* v) { return jit.make_string(v); };      \
   auto make_array = [&](llvm::Value* v) { return jit.make_array(v); };        \
   auto make_object = [&](llvm::Value* v) { return jit.make_object(v); };      \
+  auto make_tensor = [&](llvm::Value* v) { return jit.make_tensor(v); };      \
   auto make_nil = [&]() { return jit.make_nil(); };                           \
   auto make_bool = [&](llvm::Value* v) { return jit.make_bool(v); };          \
   auto make_float = [&](llvm::Value* v) { return jit.make_float(v); };        \
@@ -889,6 +927,89 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto s = builder_.CreateCall(module_->getFunction(rt::sys_env), {ptr});
       emit_value_release(arg);
       return make_string(s);
+    }
+  }
+
+  if (ns == "Tensor") {
+    auto pack_args = [&]() {
+      auto n = argsAst.nodes.size();
+      llvm::IRBuilder<> entryB(
+          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
+          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
+      auto argsAlloca = entryB.CreateAlloca(
+          valueType_, builder_.getInt64(static_cast<int64_t>(std::max<size_t>(n, 1))),
+          "tensor.args");
+      std::vector<llvm::Value*> compiled;
+      compiled.reserve(n);
+      for (size_t i = 0; i < n; i++) {
+        auto v = compile(*argsAst.nodes[i]);
+        auto slot = builder_.CreateGEP(valueType_, argsAlloca,
+                                       builder_.getInt64(i));
+        builder_.CreateStore(v, slot);
+        compiled.push_back(v);
+      }
+      return std::make_pair(argsAlloca, std::move(compiled));
+    };
+
+    if (method == "zeros" || method == "ones" || method == "randn") {
+      auto [argsAlloca, compiled] = pack_args();
+      const char* rt_name = method == "zeros" ? rt::tensor_zeros
+                          : method == "ones"  ? rt::tensor_ones
+                                              : rt::tensor_randn;
+      auto t = builder_.CreateCall(
+          module_->getFunction(rt_name),
+          {argsAlloca,
+           builder_.getInt64(static_cast<int64_t>(argsAst.nodes.size())),
+           line, col});
+      for (auto v : compiled) emit_value_release(v);
+      return make_tensor(t);
+    }
+    if (method == "from" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "Array", "Tensor.from argument");
+      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto t = builder_.CreateCall(
+          module_->getFunction(rt::tensor_from), {ap, line, col});
+      emit_value_release(arg);
+      return make_tensor(t);
+    }
+    if (method == "from_csv" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "Tensor.from_csv argument");
+      auto pp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto t = builder_.CreateCall(
+          module_->getFunction(rt::tensor_from_csv), {pp});
+      emit_value_release(arg);
+      return make_tensor(t);
+    }
+    if ((method == "sigmoid" || method == "relu" || method == "softmax") &&
+        argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "Tensor",
+                      method == "sigmoid" ? "Tensor.sigmoid argument"
+                    : method == "relu"    ? "Tensor.relu argument"
+                                          : "Tensor.softmax argument");
+      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      int op_id = method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
+                : method == "relu"    ? static_cast<int>(culebra::Op::Relu)
+                                      : static_cast<int>(culebra::Op::Softmax);
+      auto t = builder_.CreateCall(
+          module_->getFunction(rt::tensor_unary),
+          {ap, builder_.getInt64(op_id)});
+      emit_value_release(arg);
+      return make_tensor(t);
+    }
+    if (method == "eval") {
+      // Variadic: each arg must be a Tensor; we just call eval_one
+      // on each and release. No alloca needed.
+      for (size_t i = 0; i < argsAst.nodes.size(); i++) {
+        auto v = compile(*argsAst.nodes[i]);
+        emit_type_check(v, "Tensor", "Tensor.eval argument");
+        auto p = builder_.CreateIntToPtr(extract_data(v), ptrTy);
+        builder_.CreateCall(module_->getFunction(rt::tensor_eval_one), {p});
+        emit_value_release(v);
+      }
+      return make_nil();
     }
   }
 

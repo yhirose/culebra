@@ -2,6 +2,7 @@
 
 #include <parser.h>
 #include <support.h>
+#include <tensor.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
@@ -185,8 +186,18 @@ struct ArrayValue : public ObjectValue {
   std::shared_ptr<std::vector<Value>> values;
 };
 
+// Builtin Tensor type. The data buffer lives in a shared_ptr<TensorImpl>
+// (see tensor.h); cycles are impossible because the buffer holds opaque
+// bytes, so no InterpGC tracking is needed.
+struct TensorValue : public ObjectValue {
+  explicit TensorValue(TensorPtr i) : ObjectValue(), impl(std::move(i)) {}
+  std::map<std::string_view, Value>& builtins() override;
+
+  TensorPtr impl;
+};
+
 struct Value {
-  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function };
+  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor };
 
   Value() : type(Nil) {}
   Value(const Value& rhs) : type(rhs.type), v(rhs.v) {}
@@ -212,6 +223,7 @@ struct Value {
   explicit Value(std::string&& s) : type(String), v(s) {}
   explicit Value(ObjectValue&& o) : type(Object), v(o) {}
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
+  explicit Value(TensorValue&& t) : type(Tensor), v(t) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
 
   bool is_numeric() const { return type == Long || type == Float; }
@@ -288,6 +300,8 @@ struct Value {
         return get<ObjectValue>();
       case Array:
         return get<ArrayValue>();
+      case Tensor:
+        return get<TensorValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -299,6 +313,8 @@ struct Value {
         return get<ObjectValue>();
       case Array:
         return get<ArrayValue>();
+      case Tensor:
+        return get<TensorValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -308,6 +324,23 @@ struct Value {
     switch (type) {
       case Array:
         return get<ArrayValue>();
+      default:
+        throw std::runtime_error("type error.");
+    }
+  }
+
+  const TensorValue& to_tensor() const {
+    switch (type) {
+      case Tensor:
+        return get<TensorValue>();
+      default:
+        throw std::runtime_error("type error.");
+    }
+  }
+  TensorValue& to_tensor() {
+    switch (type) {
+      case Tensor:
+        return get<TensorValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -348,6 +381,8 @@ struct Value {
         return str_object();
       case Array:
         return str_array();
+      case Tensor:
+        return tensor_str(*get<TensorValue>().impl);
       case Function:
         return "[function]";
       default:
@@ -642,6 +677,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
     case Value::Array:    return name == "Array";
     case Value::Object:   return name == "Object";
     case Value::Function: return name == "Function";
+    case Value::Tensor:   return name == "Tensor";
   }
   return false;
 }
@@ -1240,6 +1276,187 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
            return _iter_step_value(std::move(v));
          });
        }))}};
+  return props_;
+}
+
+// Shared body for .sum / .mean / .max — variadic Long arg selects
+// axis (lazy Tensor result) vs no arg (eager Float result).
+template <Op op>
+inline Value _make_tensor_reduction_method() {
+  return Value(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> callEnv) {
+        const auto& self = callEnv->get("this").to_tensor().impl;
+        if (callEnv->has("__ARGS__")) {
+          const auto& args = *callEnv->get("__ARGS__").to_array().values;
+          if (!args.empty()) {
+            if (args[0].type != Value::Long) {
+              throw std::runtime_error("type error.");
+            }
+            return Value(TensorValue(
+                tensor_reduce_axis(op, self, args[0].to_long())));
+          }
+        }
+        return Value(tensor_reduce_all<op>(self));
+      }));
+}
+
+// Builtin methods on Tensor values. M1 added .shape(); M2 adds .pow().
+// Linear-algebra / reduction methods land in M3–M4.
+inline std::map<std::string_view, Value>& TensorValue::builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"shape"sv, Value(FunctionValue(
+                       {},
+                       [](std::shared_ptr<Environment> callEnv) {
+                         const auto& impl =
+                             *callEnv->get("this").to_tensor().impl;
+                         ArrayValue out;
+                         out.values->reserve(impl.shape.dims.size());
+                         for (auto d : impl.shape.dims) {
+                           out.values->push_back(Value(static_cast<long>(d)));
+                         }
+                         return Value(std::move(out));
+                       },
+                       "Array"sv))},
+      {"pow"sv, Value(FunctionValue(
+                     {{"exp", false}},
+                     [](std::shared_ptr<Environment> callEnv) {
+                       const auto& self =
+                           callEnv->get("this").to_tensor().impl;
+                       const auto& exp = callEnv->get("exp");
+                       TensorPtr b;
+                       if (exp.type == Value::Tensor) {
+                         b = exp.to_tensor().impl;
+                       } else if (exp.is_numeric()) {
+                         b = tensor_scalar(exp.to_double_coerce(),
+                                           self->dtype);
+                       } else {
+                         throw std::runtime_error("type error.");
+                       }
+                       return Value(TensorValue(
+                           tensor_binop(Op::Pow, self, std::move(b))));
+                     },
+                     "Tensor"sv))},
+      {"transpose"sv, Value(FunctionValue(
+                          {},
+                          [](std::shared_ptr<Environment> callEnv) {
+                            const auto& self =
+                                callEnv->get("this").to_tensor().impl;
+                            return Value(TensorValue(tensor_transpose(self)));
+                          },
+                          "Tensor"sv))},
+      {"slice"sv, Value(FunctionValue(
+                       {{"start", false, "Long"sv},
+                        {"end", false, "Long"sv}},
+                       [](std::shared_ptr<Environment> callEnv) {
+                         const auto& self =
+                             callEnv->get("this").to_tensor().impl;
+                         auto start = callEnv->get("start").to_long();
+                         auto end = callEnv->get("end").to_long();
+                         return Value(TensorValue(
+                             tensor_slice(self, start, end)));
+                       },
+                       "Tensor"sv))},
+      {"reshape"sv, Value(FunctionValue(
+                         {{"dims", false, "Array"sv}},
+                         [](std::shared_ptr<Environment> callEnv) {
+                           const auto& self =
+                               callEnv->get("this").to_tensor().impl;
+                           const auto& dims_v =
+                               *callEnv->get("dims").to_array().values;
+                           std::vector<int64_t> new_dims;
+                           new_dims.reserve(dims_v.size());
+                           for (const auto& d : dims_v) {
+                             if (d.type != Value::Long) {
+                               throw std::runtime_error("type error.");
+                             }
+                             new_dims.push_back(d.to_long());
+                           }
+                           return Value(TensorValue(tensor_reshape(
+                               self, TensorShape(std::move(new_dims)))));
+                         },
+                         "Tensor"sv))},
+      // Reductions: zero-arg form returns a Float scalar (eager); the
+      // axis form (1 Long arg) returns a lazy Tensor with that axis
+      // dropped. argmax has no axis-less form.
+      {"sum"sv, _make_tensor_reduction_method<Op::Sum>()},
+      {"mean"sv, _make_tensor_reduction_method<Op::Mean>()},
+      {"max"sv, _make_tensor_reduction_method<Op::Max>()},
+      {"argmax"sv, Value(FunctionValue(
+                        {{"axis", false, "Long"sv}},
+                        [](std::shared_ptr<Environment> callEnv) {
+                          const auto& self =
+                              callEnv->get("this").to_tensor().impl;
+                          auto axis = callEnv->get("axis").to_long();
+                          return Value(TensorValue(tensor_reduce_axis(
+                              Op::Argmax, self, axis)));
+                        },
+                        "Tensor"sv))},
+      {"dot"sv, Value(FunctionValue(
+                     {{"other", false, "Tensor"sv}},
+                     [](std::shared_ptr<Environment> callEnv) {
+                       const auto& self =
+                           callEnv->get("this").to_tensor().impl;
+                       const auto& other =
+                           callEnv->get("other").to_tensor().impl;
+                       return Value(TensorValue(tensor_dot(self, other)));
+                     },
+                     "Tensor"sv))},
+      {"linear_sigmoid"sv, Value(FunctionValue(
+           {{"x", false, "Tensor"sv}, {"b", false, "Tensor"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& W = callEnv->get("this").to_tensor().impl;
+             const auto& x = callEnv->get("x").to_tensor().impl;
+             const auto& b = callEnv->get("b").to_tensor().impl;
+             return Value(TensorValue(tensor_linear_sigmoid(W, x, b)));
+           },
+           "Tensor"sv))},
+      // .to_array(): exit point from the Tensor world. Forces eval
+      // and returns a Culebra Array of Float (1D) or Array of Array
+      // (2D). Higher ranks are out of scope for Phase 1.
+      {"to_array"sv, Value(FunctionValue(
+                          {},
+                          [](std::shared_ptr<Environment> callEnv) {
+                            const auto& self =
+                                callEnv->get("this").to_tensor().impl;
+                            tensor_eval_node(*self);
+                            auto read_at = [&](int64_t flat_idx) {
+                              return self->dtype == Dtype::F32
+                                  ? static_cast<double>(
+                                        self->data_as<float>()[flat_idx])
+                                  : self->data_as<double>()[flat_idx];
+                            };
+                            const auto& dims = self->shape.dims;
+                            if (dims.size() == 1) {
+                              ArrayValue out;
+                              out.values->reserve(dims[0]);
+                              for (int64_t i = 0; i < dims[0]; i++) {
+                                out.values->push_back(
+                                    Value(read_at(i * self->strides[0])));
+                              }
+                              return Value(std::move(out));
+                            }
+                            if (dims.size() == 2) {
+                              ArrayValue out;
+                              out.values->reserve(dims[0]);
+                              for (int64_t i = 0; i < dims[0]; i++) {
+                                ArrayValue row;
+                                row.values->reserve(dims[1]);
+                                for (int64_t j = 0; j < dims[1]; j++) {
+                                  row.values->push_back(Value(read_at(
+                                      i * self->strides[0] +
+                                      j * self->strides[1])));
+                                }
+                                out.values->push_back(Value(std::move(row)));
+                              }
+                              return Value(std::move(out));
+                            }
+                            throw std::runtime_error(
+                                "to_array: rank > 2 not supported.");
+                          },
+                          "Array"sv))},
+  };
   return props_;
 }
 
@@ -2780,6 +2997,24 @@ struct Interpreter {
 
   Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope,
                          std::shared_ptr<Environment> env) {
+    if (lhs.type == Value::Tensor || rhs.type == Value::Tensor) {
+      Op tensor_op;
+      switch (ope) {
+        case '+': tensor_op = Op::Add; break;
+        case '-': tensor_op = Op::Sub; break;
+        case '*': tensor_op = Op::Mul; break;
+        case '/': tensor_op = Op::Div; break;
+        default:  throw std::runtime_error("type error.");
+      }
+      Dtype dt = (lhs.type == Value::Tensor) ? lhs.to_tensor().impl->dtype
+                                             : rhs.to_tensor().impl->dtype;
+      auto lift = [&](const Value& v) {
+        if (v.type == Value::Tensor) return v.to_tensor().impl;
+        if (v.is_numeric()) return tensor_scalar(v.to_double_coerce(), dt);
+        throw std::runtime_error("type error.");
+      };
+      return Value(TensorValue(tensor_binop(tensor_op, lift(lhs), lift(rhs))));
+    }
     if (auto* dunder = arith_op_to_dunder(ope)) {
       if (auto r = try_dunder_binop(lhs, rhs, dunder, env)) return *r;
       if (op_reflects(ope)) {
