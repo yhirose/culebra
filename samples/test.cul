@@ -286,14 +286,71 @@ test_builtin_methods = fn () {
   evens = [1, 2, 3, 4, 5].filter(fn (x) { x % 2 == 0 })
   assert(evens.size() == 2 && evens[0] == 2 && evens[1] == 4)
 
-  sum = [1, 2, 3, 4].reduce(0, fn (a, x) { a + x })
+  sum = [1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })
   assert(sum == 10)
 
-  assert([1, 2, 3].reduce(1, fn (a, x) { a * x }) == 6)
+  assert([1, 2, 3].reduce(1, fn (acc, x) { acc * x }) == 6)
 
   mut total = 0
   [10, 20, 30].for_each(fn (x) { total = total + x })
   assert(total == 60)
+}
+
+// Top-level binding used by test_shadow_rules to exercise "shadowing a
+// top-level user binding is allowed" (globals tier).
+shadow_src_value = 100
+
+// Top-level function whose parameter shadows a top-level binding
+// (globals tier — allowed).
+shadow_arg_fn = fn (shadow_src_value) { shadow_src_value + 1 }
+
+// Top-level function whose match pattern shadows a top-level binding
+// (globals tier — allowed).
+shadow_match_fn = fn (v) {
+  match v {
+    shadow_src_value: Long => shadow_src_value * 10
+  }
+}
+
+test_shadow_rules = fn () {
+  // (A) Shadowing a builtin is allowed.
+  mut min = 0
+  min = 5
+  assert(min == 5)
+
+  // (B) Shadowing a top-level user binding is allowed.
+  mut shadow_src_value = 999
+  assert(shadow_src_value == 999)
+
+  // (C) Block-scope rebinding within the same function is allowed.
+  val = 0
+  {
+    let val = 1
+    assert(val == 1)
+  }
+  assert(val == 0)
+
+  // (D) Closure-as-object: bare reassignment reaches captured outer.
+  make_counter = fn () {
+    mut n = 0
+    {
+      incr: fn () { n = n + 1 },
+      get:  fn () { n }
+    }
+  }
+  c = make_counter()
+  c.incr()
+  c.incr()
+  c.incr()
+  assert(c.get() == 3)
+
+  // (E) Parameter of a top-level function may shadow a top-level
+  // binding (globals tier). Tested via shadow_arg_fn defined above.
+  assert(shadow_arg_fn(4) == 5)
+
+  // (F) Match pattern of a top-level function may shadow a top-level
+  // binding. Tested via shadow_match_fn defined above.
+  assert(shadow_match_fn(7) == 70)
 }
 
 test_stdlib = fn () {
@@ -334,6 +391,10 @@ test_fib()
 test_interpolated_string()
 test_lexical_scope()
 test_builtin_methods()
+test_shadow_rules()
+// After test_shadow_rules, the top-level binding should be unchanged
+// because the inner `mut shadow_src_value = 999` was a local shadow.
+assert(shadow_src_value == 100)
 test_stdlib()
 
 return // end

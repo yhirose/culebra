@@ -1614,6 +1614,65 @@ struct JIT {
     return names.contains(name);
   }
 
+  // Invoke `f(name, line, column)` for each identifier that a pattern
+  // would bind if it matches.
+  template <typename F>
+  static void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
+    using namespace peg::udl;
+    if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+      for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
+      return;
+    }
+    switch (pattern.tag) {
+      case "IDENTIFIER"_:
+        f(pattern.token, pattern.line, pattern.column);
+        return;
+      case "TYPED_IDENT"_: {
+        auto& id = *pattern.nodes[0];
+        f(id.token, id.line, id.column);
+        return;
+      }
+      case "ARRAY_PATTERN"_:
+        for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
+        return;
+      case "REST_PATTERN"_: {
+        auto& id = *pattern.nodes[0];
+        f(id.token, id.line, id.column);
+        return;
+      }
+      case "OBJECT_PATTERN"_:
+        for (auto& key_node : pattern.nodes) {
+          f(key_node->token, key_node->line, key_node->column);
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  // Throw if `name` appears in any closure-captured outer scope.
+  // outer[0] is the top-level (main) scope; its entries behave like
+  // globals and may be shadowed freely. outer[1..] are enclosing
+  // function locals whose names would be captured by the current
+  // function and thus must not be shadowed.
+  static void check_shadow_against_captures(
+      const std::string& name,
+      const std::vector<const std::set<std::string>*>& outer,
+      size_t line, size_t column) {
+    for (size_t i = 1; i < outer.size(); i++) {
+      if (outer[i]->contains(name)) throw_shadow_error(name, line, column);
+    }
+  }
+
+  void check_pattern_shadow(
+      const peg::Ast& pattern,
+      const std::vector<const std::set<std::string>*>& outer) const {
+    for_each_pattern_binding(
+        pattern, [&](std::string_view name, size_t line, size_t col) {
+          check_shadow_against_captures(std::string(name), outer, line, col);
+        });
+  }
+
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
   // not in any outer scope (auto-local). Does not descend into nested
   // functions.
@@ -1623,6 +1682,14 @@ struct JIT {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_) return;
 
+    if (node.tag == "MATCH"_) {
+      // MATCH = [subject, MATCH_ARMS]; MATCH_ARM = [PATTERN, (GUARD)?, EXPR].
+      for (auto& arm : node.nodes[1]->nodes) {
+        check_pattern_shadow(*arm->nodes[0], outer);
+      }
+      // fall through to normal recursive walk
+    }
+
     if (node.tag == "ASSIGNMENT"_) {
       auto lvalcnt = static_cast<int>(node.nodes.size()) - 3;
       if (lvalcnt == 1) {
@@ -1630,18 +1697,25 @@ struct JIT {
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
           bool is_let = (node.nodes[0]->token == "let");
-          bool in_outer = false;
-          if (!is_let) {
+          bool is_mut = (node.nodes[1]->token == "mut");
+          bool is_declare = is_let || is_mut;
+
+          if (is_declare) {
+            check_shadow_against_captures(name, outer, ident_node->line,
+                                          ident_node->column);
+            locals.insert(name);
+          } else {
+            // Bare assignment: local only if not in outer
+            bool in_outer = false;
             for (auto* s : outer) {
               if (s->contains(name)) {
                 in_outer = true;
                 break;
               }
             }
-          }
-          // let always makes local; bare only if not in outer
-          if (is_let || !in_outer) {
-            locals.insert(name);
+            if (!in_outer) {
+              locals.insert(name);
+            }
           }
         }
       }
@@ -1751,7 +1825,10 @@ struct JIT {
       std::vector<const std::set<std::string>*>& outer) {
     std::set<std::string> my_locals;
     for (auto& p : fnAst.nodes[0]->nodes) {
-      my_locals.insert(std::string(p->nodes[1]->token));
+      auto& id = *p->nodes[1];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      my_locals.insert(name);
     }
     collect_fn_locals(*fnAst.nodes[1], my_locals, outer);
 

@@ -19,6 +19,18 @@ struct Value;
 struct Symbol;
 struct Environment;
 
+// Raise the uniform shadow-prohibition error. Used by all sites that
+// would introduce a binding shadowing a closure-captured variable:
+// `let`/`mut` declarations, function parameters, and `match` pattern
+// bindings — in both the interpreter and the JIT.
+[[noreturn]] inline void throw_shadow_error(std::string_view name,
+                                            size_t line, size_t column) {
+  throw std::runtime_error(std::format(
+      "cannot shadow outer variable '{}' (declared in an enclosing function) "
+      "at {}:{}.",
+      name, line, column));
+}
+
 // Cycle collector for ObjectValue/ArrayValue (shared_ptr-based).
 // Python-style mark-and-sweep; runs periodically and on program exit.
 // Uses weak_ptr<void> so incomplete types (Symbol, Value) don't matter here.
@@ -411,6 +423,41 @@ struct Environment {
     return outer && outer->has(s);
   }
 
+  // Used for shadow-prohibition: declaring a new `let`/`mut` binding
+  // that shadows a closure-captured variable (from an enclosing function)
+  // is an error. Block-scope shadowing within the same function is
+  // allowed, as is shadowing a global (builtin or top-level binding).
+  bool would_shadow_capture(std::string_view s) const {
+    // Walk through same-function block envs until we reach the current
+    // function's frame, then skip past it. Anything found beyond that
+    // (excluding the global root) is a closure-captured binding.
+    const Environment* e = this;
+    while (e && !e->is_function_frame) {
+      e = e->outer.get();
+    }
+    if (!e) return false;  // top-level execution — no enclosing function
+    e = e->outer.get();
+    while (e && e->outer) {
+      if (e->dictionary.contains(s)) return true;
+      e = e->outer.get();
+    }
+    return false;
+  }
+
+  // Shadow-check helper for function-literal parameters: at definition
+  // time, determine whether `name` would end up shadowing a captured
+  // variable once the function is called. Walks this env (the
+  // definition scope) and its outer chain, stopping before the global
+  // root.
+  bool def_scope_captures(std::string_view s) const {
+    const Environment* e = this;
+    while (e && e->outer) {
+      if (e->dictionary.contains(s)) return true;
+      e = e->outer.get();
+    }
+    return false;
+  }
+
   const Value& get(std::string_view s) const {
     if (dictionary.contains(s)) {
       return dictionary.at(s).val;
@@ -447,6 +494,7 @@ struct Environment {
   size_t level;
   std::shared_ptr<Environment> outer;
   std::map<std::string_view, Symbol> dictionary;
+  bool is_function_frame = false;
 };
 
 typedef std::function<void(const peg::Ast& ast, Environment& env,
@@ -678,6 +726,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              for (const auto& v : *arr.values) {
                                auto inner =
                                    std::make_shared<Environment>(callEnv);
+                               inner->is_function_frame = true;
                                inner->initialize(
                                    "self", callEnv->get("f"), false);
                                if (!f.params->empty()) {
@@ -704,6 +753,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              for (const auto& v : *arr.values) {
                                auto inner =
                                    std::make_shared<Environment>(callEnv);
+                               inner->is_function_frame = true;
                                inner->initialize(
                                    "self", callEnv->get("f"), false);
                                if (!f.params->empty()) {
@@ -731,6 +781,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              for (const auto& v : *arr.values) {
                                auto inner =
                                    std::make_shared<Environment>(callEnv);
+                               inner->is_function_frame = true;
                                inner->initialize(
                                    "self", callEnv->get("f"), false);
                                if (!f.params->empty()) {
@@ -754,6 +805,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
              Value acc = callEnv->get("init");
              for (const auto& v : *arr.values) {
                auto inner = std::make_shared<Environment>(callEnv);
+               inner->is_function_frame = true;
                inner->initialize("self", callEnv->get("f"), false);
                if (f.params->size() >= 1) {
                  const auto& p0 = (*f.params)[0];
@@ -1003,6 +1055,18 @@ struct Interpreter {
     return Value();
   }
 
+  // Bind a pattern variable into `env`, first checking that it does not
+  // shadow a variable captured from an enclosing function. `ident_node`
+  // supplies both the name (via its token) and the diagnostic location.
+  void bind_pattern_name(std::shared_ptr<Environment>& env,
+                         const peg::Ast& ident_node, Value val) {
+    auto name = ident_node.token;
+    if (env->would_shadow_capture(name)) {
+      throw_shadow_error(name, ident_node.line, ident_node.column);
+    }
+    env->initialize(name, std::move(val), true);
+  }
+
   // Try to match a pattern against `val`. On success, bind any introduced
   // variables into `env` and return true.
   bool try_pattern(const peg::Ast& pattern, const Value& val,
@@ -1033,13 +1097,13 @@ struct Interpreter {
         return val.type == Value::String &&
                val.get<std::string>() == std::string(pattern.token);
       case "IDENTIFIER"_: {
-        env->initialize(pattern.token, val, true);
+        bind_pattern_name(env, pattern, val);
         return true;
       }
       case "TYPED_IDENT"_: {
         auto type_name = pattern.nodes[1]->token;
         if (!type_matches(val, type_name)) return false;
-        env->initialize(pattern.nodes[0]->token, val, true);
+        bind_pattern_name(env, *pattern.nodes[0], val);
         return true;
       }
       case "ARRAY_PATTERN"_: {
@@ -1078,8 +1142,8 @@ struct Interpreter {
         for (size_t j = 0; j < rest_len; j++) {
           rest.values->push_back(items[rest_idx + j]);
         }
-        env->initialize(elems[rest_idx]->nodes[0]->token,
-                        Value(std::move(rest)), true);
+        bind_pattern_name(env, *elems[rest_idx]->nodes[0],
+                          Value(std::move(rest)));
         // Match post-rest fixed elements
         for (size_t i = rest_idx + 1; i < elems.size(); i++) {
           auto src_idx = items.size() - (elems.size() - i);
@@ -1093,7 +1157,7 @@ struct Interpreter {
         for (const auto& key_node : pattern.nodes) {
           auto key = key_node->token;
           if (!obj.has(key)) return false;
-          env->initialize(key, obj.get(key), true);
+          bind_pattern_name(env, *key_node, obj.get(key));
         }
         return true;
       }
@@ -1127,8 +1191,12 @@ struct Interpreter {
     std::vector<FunctionValue::Parameter> params;
     for (auto node : ast.nodes[0]->nodes) {
       auto mut = node->nodes[0]->token == "mut";
-      const auto& name = node->nodes[1]->token;
+      auto& id = *node->nodes[1];
+      const auto& name = id.token;
       auto type_name = extract_type_annotation(*node, 2);
+      if (env->def_scope_captures(name)) {
+        throw_shadow_error(name, id.line, id.column);
+      }
       params.push_back({name, mut, type_name});
     }
 
@@ -1153,6 +1221,7 @@ struct Interpreter {
 
     if (params.size() <= args.size()) {
       auto callEnv = std::make_shared<Environment>(env);
+      callEnv->is_function_frame = true;
       callEnv->initialize("self", val, false);
       for (auto iprm = 0u; iprm < params.size(); iprm++) {
         auto param = params[iprm];
@@ -1391,10 +1460,18 @@ struct Interpreter {
 
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;
-      if (!let && env->has(ident)) {
-        env->assign(ident, rval);
-      } else if (is_keyword(ident)) {
+      if (is_keyword(ident)) {
         throw std::runtime_error("left-hand side is invalid variable name.");
+      }
+      auto declare = let || mut;
+      if (declare) {
+        if (env->would_shadow_capture(ident)) {
+          auto& ident_node = *ast.nodes[lvaloff];
+          throw_shadow_error(ident, ident_node.line, ident_node.column);
+        }
+        env->initialize(ident, rval, mut);
+      } else if (env->has(ident)) {
+        env->assign(ident, rval);
       } else {
         env->initialize(ident, rval, mut);
       }

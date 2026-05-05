@@ -227,19 +227,73 @@ Ordering values of different types raises `type error`.
 ### Declaration and assignment
 
     x = 10           # bare assignment
-    let y = 20       # let binding
-    let mut z = 30   # let binding, mutable
+    let y = 20       # let binding (immutable)
+    mut z = 30       # mut binding (mutable)
+    let mut w = 40   # equivalent to `mut w = 40`
 
 Assignment with a simple identifier LHS is handled as follows:
 
-* If `let` is present, a new binding is created in the current scope,
-  always shadowing any outer binding of the same name.
-* Without `let`, `x = v` searches the scope chain:
+* If `let` or `mut` is present, a new binding is created in the current
+  scope. It is a compile-time error to shadow a variable captured from
+  an enclosing function (see "Shadow prohibition" below).
+* Without `let`/`mut`, bare `x = v` searches the scope chain:
   * If `x` exists in any visible scope (including outer closures and
     the global scope), that binding is reassigned. This may update
-    captured variables in outer scopes (see §11).
-  * Otherwise a new binding is created in the current function's
-    scope.
+    captured variables in outer scopes (see §11). This is the
+    mechanism by which closure-based objects mutate their state.
+  * Otherwise a new (immutable) binding is created in the current
+    function's scope.
+
+### Shadow prohibition
+
+Introducing a new binding is an error if a variable with the same
+name exists in an enclosing function (closure-captured). The rule
+applies uniformly to three kinds of binding introduction:
+
+* `let` / `mut` declarations
+* function parameters (`fn (name) { ... }`)
+* `match` pattern bindings (`match v { name => ... }`)
+
+For example:
+
+    make_bumper = fn () {
+      mut count = 0
+      bump = fn () {
+        mut count = 10     # error: cannot shadow outer variable 'count'
+      }
+      incr = fn (count) {  # error: parameter shadows captured 'count'
+        count + 1
+      }
+      peek = fn (v) {
+        match v {
+          count: Long => count    # error: pattern shadows captured
+        }
+      }
+    }
+
+This catches a common class of bugs where a nested scope introduces
+the same name as a captured variable, silently breaking the intent
+to reassign the outer binding. Renaming the inner variable removes
+the ambiguity.
+
+Shadowing is *allowed* in two cases:
+
+* **Globals and builtins** (`puts`, `min`, or any top-level binding)
+  may always be shadowed. This keeps the Ruby-style feel of writing
+  `mut min = arr[0]` in a local function without friction.
+* **Block-scope shadowing within the same function** is allowed. A
+  `{ ... }` block may introduce a new `let`/`mut` binding of a name
+  already declared in the enclosing function body:
+
+        fn () {
+          a = 0
+          { let a = 1; ... }   # OK: new binding scoped to the block
+        }
+
+The restriction applies only at function boundaries. The design
+follows the spirit of C++'s `-Wshadow` and mirrors Scheme's
+`set!`/`define` distinction: closure-captured state is mutated via
+bare `x = v`, and a new local is declared with `let`/`mut`.
 
 ### Mutability
 
@@ -266,6 +320,52 @@ Complex assignment targets (LHS) are supported:
 
     arr[0] = x              # index assignment
     obj.key = v             # property assignment (creates key if absent)
+
+### Design note: why three-tier shadow rules
+
+Culebra treats the three shadow axes independently:
+
+| Scope relationship | Culebra | Typical convention |
+|---|---|---|
+| Across a function boundary (closure capture) | **Error** | Warning or allowed |
+| Within the same function (block scope) | Allowed | Warning or allowed |
+| A global / builtin name | Allowed | Warning or allowed |
+
+Most languages apply one policy to all three (either all-allowed like
+Rust/Swift, or all-warned like C++ `-Wshadow` / ESLint `no-shadow`).
+Culebra splits them because each axis serves a different purpose in a
+Scheme-influenced, closure-as-object idiom:
+
+* **Captured state is object state.** In the closure-based object
+  pattern (see `samples/class.cul`), an enclosing function's mutable
+  binding is the object's private field. Accidentally shadowing it —
+  typically by writing `mut x = ...` intending a new local — silently
+  breaks the object. Making this a compile-time error is worth the
+  small restriction.
+* **Block scope is a computation staging area.** Inside a single
+  function, a `{ ... }` block is a local calculation region.
+  Rebinding a name there (`let a = transform(a)`) is a common,
+  intentional pattern, not a bug. No reason to restrict it.
+* **Globals form a shared vocabulary.** Builtins (`min`, `puts`,
+  `range`) and top-level names are understood to be ambient. Locals
+  like `mut min = arr[0]` are an ergonomic idiom, not a confusion
+  risk. Requiring renames would be friction without safety gain.
+
+The effect is that the rule catches the bug class it is designed to
+catch — confusion between "new local" and "outer reassignment" —
+without interfering with the two situations where shadowing is
+natural. Prior-art summary:
+
+* Python's `nonlocal` solves the same problem by declaring at function
+  entry that a name refers to an outer binding. Culebra's default
+  (bare `x = v` reaching outer) already expresses this at the use
+  site, so the declaration is unnecessary — but the risk of
+  accidental rebinding remains, and that is what shadow prohibition
+  closes.
+* Scheme's `set!` / `define` split avoids the same confusion by giving
+  mutation and binding different names. Culebra expresses the same
+  distinction through `let`/`mut` vs. bare `=`, and the shadow check
+  enforces it.
 
 ---
 
@@ -767,7 +867,7 @@ puts([10, 20, 30].index_of(99))    # -1
 
 puts([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
 puts([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
-puts([1, 2, 3, 4].reduce(0, fn (a, x) { a + x })) # 10
+puts([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
 ```
 
 ### 17.3 Object methods

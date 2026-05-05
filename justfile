@@ -24,6 +24,11 @@ clean:
 test: build
     ./build/culebra samples/test.cul
 
+# Run shadow-prohibition negative tests (expected to fail with a
+# shadow error message, on both interpreter and JIT).
+test-shadow-errors: build
+    ./scripts/test_shadow_errors.sh
+
 # Quick fib(33) benchmark comparing interpreter vs JIT
 bench: build
     #!/usr/bin/env bash
