@@ -1,5 +1,4 @@
-Culebra 標準ライブラリ
-======================
+# Culebra 標準ライブラリ
 
 本書は Culebra の**組み込みライブラリ**を規定します。ランタイム
 ユーティリティをまとめた名前空間オブジェクト（`Math`, `IO`, `Sys`）
@@ -23,31 +22,64 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 * 例外条項は `type error at L:C.` 等の実行時エラーを示します。
   [言語仕様 §15](language.ja.md) を参照。
 
-目次
-----
+## 目次
 
-1. `Math`
-2. `IO`
-3. `Random`
-4. `Sys`
-5. 設計上の注記
-6. 未収録（将来検討）
+1. [`Math`](#1-math) — 数値ユーティリティ・定数・整数列
+2. [`IO`](#2-io) — 出力・標準入力・ファイル I/O
+3. [`Random`](#3-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
+4. [`Sys`](#4-sys) — argv / exit / env
+5. [設計上の注記](#5-設計上の注記)
+6. [未収録（将来検討）](#6-未収録将来検討)
+
+**目的別索引**
+
+| やりたいこと | 参照先 |
+|---|---|
+| 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
+| スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
+| 整数列（eager / lazy） | `Math.iota` / `Math.range` |
+| 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
+| ファイル読込 | `IO.read`（失敗時 throw） |
+| 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
+| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
+| String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
+| 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
 
 ---
 
-1. `Math`
----------
+## 1. `Math`
 
 数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`・
 `iota`・`range`）は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）
 は `Long` / `Float` のいずれかを受け取ります。`Long` と `Float` の
 相互作用は言語仕様 §4 / §7 を参照。
 
+このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
+`Math.inf`、`Math.nan`） — **スカラー演算**（`abs`、`min`、`max`、
+`log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
+`clamp`） — **整数列**（`iota` eager、`range` lazy）。
+
 ### 定数
 
 `Math.pi` / `Math.e` / `Math.inf` / `Math.nan` は `Float` の
-プロパティ（π、e、正の無限大、quiet NaN）です。`--jit` でも
-コンパイル時定数として展開されます。
+プロパティです。`--jit` でもコンパイル時定数として展開されます。
+
+<a id="math-pi"></a>
+#### `Math.pi`
+
+`π` ≈ `3.141592653589793`。
+
+#### `Math.e`
+
+ネイピア数 ≈ `2.718281828459045`。
+
+#### `Math.inf`
+
+正の無限大（`Math.inf > 1e308 == true`）。負の場合は `-Math.inf`。
+
+#### `Math.nan`
+
+quiet NaN。`Math.nan == Math.nan` は IEEE-754 通り `false`。
 
 ```culebra
 puts(Math.pi)              # 3.141592653589793
@@ -55,6 +87,8 @@ puts(Math.e)               # 2.718281828459045
 puts(Math.inf > 1e308)     # true
 puts(Math.nan == Math.nan) # false
 ```
+
+### スカラー演算
 
 ### `Math.abs(x: Long|Float) -> Long|Float`
 
@@ -139,7 +173,9 @@ puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
 
-### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
+### 整数列
+
+#### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
 
 連続整数の新しい `Array` を生成します。名前は APL / C++
 `std::iota` / Scheme SRFI-1 の慣例に倣い、「連続整数を配列として
@@ -157,7 +193,7 @@ puts(Math.iota(2, 5))      # [2, 3, 4]
 puts(Math.iota(5, 2))      # []
 ```
 
-### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
+#### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
 
 `Math.iota` の遅延版。同じ整数列を 1 要素ずつ yield するイテレータを
 返します。`for`-in ループやイテレータメソッドチェーン
@@ -186,8 +222,7 @@ for i in Math.range(1_000_000_000) {
 
 ---
 
-2. `IO`
--------
+## 2. `IO`
 
 出力、標準入力、ファイル入出力。
 
@@ -230,7 +265,10 @@ puts("Hello, {name}")
 
 `path` のファイル全体を `String` として読み込みます。
 
-**例外**: 開けないとき `type error at L:C.`。
+**エラー**（実行時 `type error` として送出。`try`/`catch` でユーザ
+捕捉はできない）: ファイルが存在しない、読込権限がない、ディレクトリ
+を指している。ファイル不在が例外的でない場合は事前に
+`IO.exists(path)` でチェックしてください。
 
 ```culebra
 contents = IO.read('data.txt')
@@ -240,7 +278,9 @@ contents = IO.read('data.txt')
 
 `content` を `path` のファイルに書き込みます（作成または上書き）。
 
-**例外**: 書き込み用に開けないとき `type error at L:C.`。
+**エラー**（実行時 `type error`）: 親ディレクトリが存在しない、
+書込権限がない、書込が失敗した（ディスクフル等）。既存ファイルは
+警告なしで上書きします。
 
 ```culebra
 IO.write('out.txt', 'hello\n')
@@ -260,8 +300,7 @@ if !IO.exists('data.txt') {
 
 ---
 
-3. `Random`
------------
+## 3. `Random`
 
 乱数生成。プロセスごとに単一の Mersenne-Twister-64 エンジンを
 持ち、インタプリタと JIT で共有しています。`Random.seed(n)` は
@@ -318,8 +357,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-4. `Sys`
---------
+## 4. `Sys`
 
 プロセスレベルの情報。
 
@@ -356,8 +394,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-5. 設計上の注記
-----------------
+## 5. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -390,8 +427,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-6. 未収録（将来検討）
-----------------------
+## 6. 未収録（将来検討）
 
 ### 三角関数
 

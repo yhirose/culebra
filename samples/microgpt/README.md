@@ -6,10 +6,11 @@ overloading, auto-reflection, `Math.*`, `Random.*`).
 
 ## Files
 
-- `microgpt.py`     — Karpathy's reference (Python).
-- `microgpt.cul`    — Culebra port, HOF-idiomatic style.
-- `names.txt`       — Training data (gitignored). Run `just fetch-names`.
-- `sidebyside.html` — Static side-by-side viewer of both files.
+- `microgpt.py`         — Karpathy's reference (Python).
+- `microgpt.cul`        — Culebra port, HOF-idiomatic style.
+- `names.txt`           — Training data (gitignored). Run `just fetch-names`.
+- `sidebyside.html`     — Static side-by-side viewer of both files.
+- `build_sidebyside.py` — Regenerator for `sidebyside.html` (re-run after edits).
 
 ## Running
 

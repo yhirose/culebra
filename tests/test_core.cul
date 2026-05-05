@@ -569,7 +569,7 @@ test_random = fn () {
 
 test_io_exists = fn () {
   // The test script itself has to exist.
-  assert(IO.exists('samples/test.cul'))
+  assert(IO.exists('tests/test_core.cul'))
   assert(!IO.exists('definitely-not-a-real-path-xyz.cul'))
   // Empty path is not a valid filesystem entry.
   assert(!IO.exists(''))
@@ -888,7 +888,7 @@ test_drop = fn () {
 }
 
 // JIT-safe subset of UFCS tests. The __ARGS__/variadic case lives
-// in samples/test_ufcs.cul and runs under the interpreter only.
+// in tests/test_ufcs.cul and runs under the interpreter only.
 test_ufcs = fn () {
   // Free function as method on primitive
   double = fn (x) { x * 2 }
@@ -944,7 +944,7 @@ test_ufcs = fn () {
 
 // JIT-safe subset of for-in tests. Iterator-protocol coverage
 // (user-defined iter/next, lazy Math.range, iterator methods) lives
-// in samples/test_iter.cul and runs under the interpreter only.
+// in tests/test_iter.cul and runs under the interpreter only.
 test_for_in = fn () {
   // Array iteration
   mut sum = 0
@@ -1176,5 +1176,30 @@ test_drop()
 test_ufcs()
 test_for_in()
 test_underscore_sink()
+
+// Regression: nested 2D index-assign underflowed inner-array refcount
+// under --jit (see compile_assignment in include/jit.h).
+test_chained_index_assign_in_nested_loops = fn () {
+  mut g = []
+  for i in Math.range(3) {
+    mut row = []
+    for j in Math.range(4) { row.push(0.0) }
+    g.push(row)
+  }
+  for k in Math.range(10) {
+    for i in Math.range(3) {
+      for j in Math.range(4) {
+        g[i][j] = g[i][j] + 0.001
+      }
+    }
+  }
+  for i in Math.range(3) {
+    for j in Math.range(4) {
+      assert(g[i][j] > 0.0099)
+      assert(g[i][j] < 0.0101)
+    }
+  }
+}
+test_chained_index_assign_in_nested_loops()
 
 return // end

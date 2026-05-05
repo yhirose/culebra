@@ -4,8 +4,9 @@
 #
 # Usage: ./build/culebra [--jit] samples/microgpt/microgpt.cul -- [num_steps] [n_samples]
 
-Random.seed(42)
+Random.seed(42) # Let there be order among chaos
 
+# Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
 data_path = 'samples/microgpt/names.txt'
 if !IO.exists(data_path) {
   puts("error: {data_path} missing. Run `just fetch-names` first.")
@@ -20,20 +21,22 @@ for line in IO.read(data_path).split("\n") {
 Random.shuffle(docs)
 puts("num docs: {docs.size()}")
 
-mut uchars = []
+# Let there be a Tokenizer to translate strings to sequences of integers ("tokens") and back
+mut uchars = [] # unique characters in the dataset become token ids 0..n-1
 for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
 uchars.sort_by(|c| c)
-BOS = uchars.size()
-vocab_size = uchars.size() + 1
+BOS = uchars.size()              # token id for a special Beginning of Sequence (BOS) token
+vocab_size = uchars.size() + 1   # total number of unique tokens, +1 is for BOS
 puts("vocab size: {vocab_size}")
 
 
+# Let there be Autograd to recursively apply the chain rule through a computation graph
 class Value {
   new(data, children = [], local_grads = []) {
-    this.data = data
-    this.grad = 0.0
-    this._children = children
-    this._local_grads = local_grads
+    this.data = data                # scalar value of this node calculated during forward pass
+    this.grad = 0.0                 # derivative of the loss w.r.t. this node, calculated in backward pass
+    this._children = children       # children of this node in the computation graph
+    this._local_grads = local_grads # local derivative of this node w.r.t. its children
     this._visited = false
   }
   __add__(other) {
@@ -93,11 +96,12 @@ max_data = |arr| arr.reduce(arr[0].data, |best, v|
 )
 
 
-n_layer = 1
-n_embd = 16
-block_size = 16
-n_head = 4
-head_dim = n_embd / n_head
+# Initialize the parameters, to store the knowledge of the model
+n_layer = 1     # depth of the transformer neural network (number of layers)
+n_embd = 16     # width of the network (embedding dimension)
+block_size = 16 # maximum context length of the attention window (note: the longest name is 15 characters)
+n_head = 4      # number of attention heads
+head_dim = n_embd / n_head # derived dimension of each head
 attn_scale = 1.0 / (head_dim ** 0.5)
 
 matrix = |nout, nin, std = 0.08|
@@ -131,9 +135,11 @@ for layer in state.layers {
   collect_params(layer.attn_wv); collect_params(layer.attn_wo)
   collect_params(layer.mlp_fc1); collect_params(layer.mlp_fc2)
 }
-puts("num params: {params.size()}")
+puts("num params: {params.size()}") # flatten params into a single list[Value]
 
 
+# Define the model architecture: a function mapping tokens and parameters to logits over what comes next
+# Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU
 dot = |a, b| Math.range(a.size()).reduce(Value.new(0.0),
   |acc, i| acc + a[i] * b[i])
 
@@ -155,9 +161,13 @@ rmsnorm = |x| {
 add_v = |a, b| Math.range(a.size()).map(|i| a[i] + b[i]).collect()
 
 gpt = fn (token_id, pos_id, keys, values) {
-  mut x = rmsnorm(add_v(state.wte[token_id], state.wpe[pos_id]))
+  let tok_emb = state.wte[token_id]               # token embedding
+  let pos_emb = state.wpe[pos_id]                 # position embedding
+  mut x = rmsnorm(add_v(tok_emb, pos_emb))        # joint token and position embedding, then rmsnorm
+                                                  # (not redundant: backward pass via the residual connection)
 
   for li in 0..n_layer {
+    # 1) Multi-head Attention block
     let x_residual1 = x
     x = rmsnorm(x)
     let layer = state.layers[li]
@@ -182,6 +192,7 @@ gpt = fn (token_id, pos_id, keys, values) {
 
     x = add_v(linear(x_attn, layer.attn_wo), x_residual1)
 
+    # 2) MLP block
     let x_residual2 = x
     x = rmsnorm(x)
     x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())
@@ -191,25 +202,29 @@ gpt = fn (token_id, pos_id, keys, values) {
 }
 
 
+# Let there be Adam, the blessed optimizer and its buffers
 learning_rate = 0.01
 beta1 = 0.85
 beta2 = 0.99
 eps_adam = 1e-8
-mut m_buf = []
-mut v_buf = []
+mut m_buf = [] # first moment buffer
+mut v_buf = [] # second moment buffer
 for _ in 0..params.size() { m_buf.push(0.0); v_buf.push(0.0) }
 
-num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 }
+# Repeat in sequence
+num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 } # number of training steps
 mut final_loss = 0.0
 
 mut step = 0
 while step < num_steps {
+  # Take single document, tokenize it, surround it with BOS special token on both sides
   let doc = docs[step % docs.size()]
   mut tokens = [BOS]
   for c in doc { tokens.push(uchars.index_of(c)) }
   tokens.push(BOS)
   let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
 
+  # Forward the token sequence through the model, building up the computation graph all the way to the loss
   mut keys = []
   mut values = []
   for _ in 0..n_layer { keys.push([]); values.push([]) }
@@ -218,10 +233,13 @@ while step < num_steps {
     let probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))
     acc + (-probs[tokens[pos_id + 1]].log())
   })
-  let loss = (1.0 / n) * total_loss
+  let loss = (1.0 / n) * total_loss # final average loss over the document sequence. May yours be low.
+
+  # Backward the loss, calculating the gradients with respect to all model parameters
   loss.backward()
 
-  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps))
+  # Adam optimizer update: update the model parameters based on the corresponding gradients
+  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps)) # linear learning rate decay
   for i in 0..params.size() {
     let p = params[i]
     m_buf[i] = beta1 * m_buf[i] + (1.0 - beta1) * p.grad
@@ -242,9 +260,10 @@ while step < num_steps {
 puts("final loss: {final_loss}")
 
 
-temperature = 0.5
-puts('--- inference (hallucinated names) ---')
+# Inference: may the model babble back to us
 let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
+puts('--- inference (new, hallucinated names) ---')
 let pop = Math.range(vocab_size).collect()
 
 mut sample_idx = 0

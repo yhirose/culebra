@@ -4,11 +4,16 @@
 #include <charconv>
 #include <cmath>
 #include <format>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 namespace culebra {
+
+// ---------------------------------------------------------------------------
+// Numeric formatting / parsing
+// ---------------------------------------------------------------------------
 
 // Shortest round-trip decimal for a double, with a forced decimal point
 // or exponent so Float display is visually distinguishable from Long
@@ -77,6 +82,43 @@ inline double parse_double_strict(std::string_view s, long line, long col) {
     throw_type_error_at(line, col);
   }
   return 0.0;  // unreachable
+}
+
+// ---------------------------------------------------------------------------
+// Shared PRNG (interpreter and JIT)
+// ---------------------------------------------------------------------------
+
+// Default seed state for the shared PRNG. Produced once at program
+// startup via a seed-sequence function call so that multiple engines
+// (if any) are uncorrelated. Not thread-safe — Culebra's execution
+// model is single-threaded.
+inline std::mt19937_64 _culebra_random_engine{std::random_device{}()};
+
+// Single process-wide PRNG, shared between the interpreter and the
+// JIT so `Random.seed(n)` has the same effect regardless of backend.
+inline std::mt19937_64& random_engine() { return _culebra_random_engine; }
+
+// ---------------------------------------------------------------------------
+// Well-known property contract
+// ---------------------------------------------------------------------------
+
+// Property names the runtime invokes behind the scenes:
+//   drop  - RAII destructor (called on last release / cycle break)
+//   iter  - iterator constructor (returns an object with `next`)
+//   next  - iterator advance (returns `{done, value}`)
+// Each must be a 0-arg Function. Both backends enforce the shape at
+// assignment time so a violation surfaces near its source. Type-shape
+// checking stays in each backend (interpreter Value vs JitClosure are
+// not interchangeable); only the name set and error wording are shared
+// here so the two backends can't drift.
+inline bool is_well_known_prop(std::string_view name) {
+  return name == "drop" || name == "iter" || name == "next";
+}
+
+[[noreturn]] inline void throw_well_known_prop_contract_error(
+    std::string_view name) {
+  throw std::runtime_error(std::format(
+      "type error: '{}' must be a Function taking no arguments.", name));
 }
 
 }  // namespace culebra

@@ -1,77 +1,111 @@
 Culebra Programming Language
 ============================
 
-A small, dynamically-typed scripting language written in C++23. Ships
-with both a tree-walking interpreter and an LLVM ORC JIT compiler for
-the same AST.
+A small, dynamically-typed scripting language with Rust-inspired
+syntax, written in C++23. Two backends share one AST: a tree-walking
+interpreter and an LLVM ORC JIT.
 
-Features
---------
+**Why Culebra**
 
-* Dynamic typing with 8 core types; first-class functions with lexical
-  closures
-* Rust-flavored syntax (`let`, `mut`, `fn`, `|x| expr` lambdas);
-  optional type annotations with runtime checks
-* Pattern matching (literals, bindings, typed, or-patterns, array/object
-  destructuring, guards); `_` is a non-binding sink in `let _ = ...`,
-  `for _ in ...`, `fn(_, _, x)`, and pattern slots
-* String interpolation; rich built-in methods on arrays, objects, and
-  strings
-* Minimal standard library grouped under `Math`, `IO`, `Sys`
-  namespaces; CLI args exposed as `Sys.argv`. The library adds no
-  globals — the CLI installs `puts` / `print` as aliases for
-  scripting ergonomics; embedders get a clean environment
-* Reference counting plus a mark-and-sweep cycle collector
-* LLVM ORC JIT with `-O2` by default, or pure-C++ interpreter (no LLVM
-  required)
+* **Familiar syntax.** `let` / `mut` / `fn` / `|x| expr` / `match`,
+  string interpolation, first-class closures.
+* **Small surface, capable engine.** Eight types, no hidden globals;
+  refcount + cycle GC; per-callsite inline caches and HOF fusion in
+  the JIT. Same AST runs on the interpreter (no LLVM needed) or on
+  LLVM ORC at `-O2`.
+* **Embed or script.** `~1 MB` interpreter binary, or full JIT for
+  performance-critical loops. CLI exposes `puts` / `Sys.argv`;
+  embedders work with a minimal environment.
 
-Quick look
-----------
+Intended audience: developers who want a language similar in style
+to Ruby or Python, but with type-annotated operator overloading and
+a native-code JIT built on LLVM ORC — a codebase suitable for study
+and extension.
+
+Performance
+-----------
+
+`just bench-all` on Apple Silicon (`-O2`, LLVM 22):
+
+| benchmark          | interp | jit    | speedup |
+|--------------------|-------:|-------:|--------:|
+| fib(0..33)         | ~8.2s  | ~0.17s | ~48×    |
+| sum(0..10,000,000) | ~5.8s  | ~0.15s | ~39×    |
+| closure_counter    | ~1.2s  | ~0.05s | ~24×    |
+| array_push (100k)  | ~0.29s | ~0.08s | ~3.6×   |
+| object_churn (100k)| ~0.16s | ~0.26s | ~0.6×   |
+
+The JIT is faster on compute-bound workloads; allocator-heavy
+and trivial code may favor the interpreter.
+
+### End-to-end: microgpt
+
+[`samples/microgpt`](samples/microgpt/) ports Karpathy's scalar
+autograd microgpt. Apple Silicon, single core, training only
+(mean of 5 runs):
+
+| step | Python  | Culebra `--jit` | ratio (Cul/Py) |
+|-----:|--------:|----------------:|---------------:|
+|   20 |  1.39 s |          1.99 s |          1.43× |
+|  100 |  6.81 s |          5.77 s |          0.85× |
+|  200 | 13.06 s |         10.85 s |          0.83× |
+
+Below ~50 steps Python wins because Culebra pays ~1 s of JIT
+warmup. Past that, Culebra runs ~17% faster per step. See
+[`samples/microgpt/README.md`](samples/microgpt/README.md) for
+the full breakdown.
+
+### Pure inference: MNIST MLP
+
+[`samples/mnist`](samples/mnist/) trains a 784–30–10 sigmoid MLP on
+MNIST (numpy) and runs inference for 1000 test images in four
+implementations. Total wall time, mean of 5 runs:
+
+| implementation     |  time   | ratio (vs pure) |
+|--------------------|--------:|----------------:|
+| numpy (BLAS)       |  0.34 s |          0.27×  |
+| pure Python        |  1.24 s |          1.00×  |
+| Culebra `--jit`    |  1.24 s |          1.00×  |
+| Culebra interp     | 28.03 s |          22.6×  |
+
+All four agree on predictions (accuracy 0.954). Unlike microgpt, this
+workload is pure scalar forward pass — no Object dispatch — so JIT
+ties pure Python rather than beating it. The numpy column is BLAS,
+included as a reference; closing that gap requires a built-in matrix
+primitive, which is on the Culebra roadmap (CUDA / MSL backed). See
+[`samples/mnist/README.md`](samples/mnist/README.md) for the breakdown.
+
+At a glance
+-----------
 
 ```culebra
-# Optional type annotations
-add = fn (a: Long, b: Long) -> Long { a + b }
-puts(add(3, 4))                        # 7
-
 # Closures capture and mutate outer scope
 make_counter = fn () {
   mut n = 0
-  fn () { n = n + 1; n }   # bare `n = ...` reassigns the captured outer
+  fn () { n = n + 1; n }
 }
-c = make_counter()
-puts(c()); puts(c())                   # 1, 2
+c = make_counter(); puts(c()); puts(c())   # 1, 2
 
-# Class sugar — same encapsulation, terser; carries a `class:` tag
+# `class` form — same encapsulation, more concise; carries a `class:` tag
 class Counter {
   new()  { this.n = 0 }
   tick() { this.n = this.n + 1; this.n }
 }
-c2 = Counter.new()
-puts(c2.tick()); puts(c2.tick())       # 1, 2
+c = Counter.new(); puts(c.tick()); puts(c.tick())   # 1, 2
 
 # Pattern matching
 describe = fn (v) {
   match v {
-    0                     => 'zero',
-    1 | 2 | 3             => 'small',
-    n: Long if n > 100    => "big ({n})",
-    s: String             => "str ({s})",
-    [head, ...tail]       => "head={head}, rest={tail.size()}",
-    {name, age}           => "{name}, {age}",
-    _                     => 'other'
+    0                  => 'zero',
+    n: Long if n > 100 => "big ({n})",
+    [head, ...tail]    => "head={head}, rest={tail.size()}",
+    {name, age}        => "{name}, {age}",
+    _                  => 'other'
   }
 }
 
-# String interpolation and recursion
-fib = fn (x) {
-  if x < 2 { x } else { self(x - 2) + self(x - 1) }
-}
-mut i = 0
-while i < 10 { puts("{i}: {fib(i)}"); i = i + 1 }
-
-# Lambda sugar for short functors
-squares = [1, 2, 3, 4].map(|x| x * x)
-puts(squares)                           # [1, 4, 9, 16]
+# Lambda shorthand + iterator chain
+[1, 2, 3, 4].map(|x| x * x).filter(|x| x > 4)   # [9, 16]
 ```
 
 More examples in [`samples/`](samples/).
@@ -86,68 +120,21 @@ Documentation
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
 
-Build and run
--------------
+Build
+-----
 
-Requires a C++23 compiler and `just`. The JIT build also needs LLVM
-17 or newer (tested against 22.x). Install it with your platform's
-package manager:
-
-| Platform | Install |
-|----------|---------|
-| macOS    | `brew install llvm` |
-| Debian/Ubuntu | `apt install llvm-17-dev` (or newer) |
-| Fedora/RHEL | `dnf install llvm-devel` |
-| Windows  | `winget install LLVM.LLVM` or `choco install llvm` |
-
-CMake detects Homebrew's keg-only LLVM automatically on macOS. On
-other systems `find_package(LLVM CONFIG)` uses the default search
-path; override with `-DCMAKE_PREFIX_PATH=/path/to/llvm` if needed.
-To require a newer minimum, pass `-DCULEBRA_MIN_LLVM_VERSION=<n>`.
+Requires a C++23 compiler and `just`. JIT also needs LLVM 17+
+(`brew install llvm` / `apt install llvm-17-dev` / `dnf install
+llvm-devel` / `winget install LLVM.LLVM`).
 
 ```bash
-just build              # with JIT (release)
-just build-no-jit       # interpreter only, ~1MB binary
+just build              # with JIT
+just build-no-jit       # interpreter only, ~1 MB binary
 just test
-just bench-all
-
-./build/culebra               samples/fib.cul  # interpreter
-./build/culebra --jit         samples/fib.cul  # JIT
-./build/culebra --shell                        # REPL (add --jit for JIT REPL)
-./build/culebra --ast         samples/fib.cul  # print AST
-./build/culebra --jit --emit-llvm samples/fib.cul
-./build/culebra --debug       samples/debug.cul
+./build/culebra --shell                # REPL  (--jit for JIT REPL)
+./build/culebra        samples/fib.cul # interpreter
+./build/culebra --jit  samples/fib.cul # JIT
 ```
-
-Architecture
-------------
-
-* [`include/parser.h`](include/parser.h) — PEG grammar (via [cpp-peglib](vendor/cpp-peglib)) that builds the AST.
-* [`include/interpreter.h`](include/interpreter.h) — tree-walking interpreter.
-* [`include/jit.h`](include/jit.h) — LLVM ORC JIT. Compiles the same AST using a tagged `%Value = { i8, i64 }` representation; heap types share an `i64` refcount header and participate in the cycle collector.
-* [`include/repl.h`](include/repl.h), [`include/debugger.h`](include/debugger.h) — REPL and interactive CLI debugger.
-
-Both backends share the same parser and AST. Adding a feature usually
-means: grammar tweak, `eval_*` in the interpreter, and `compile_*` in
-the JIT.
-
-Performance
------------
-
-Times from `just bench-all` on an Apple Silicon laptop (`-O2`, LLVM 22):
-
-| benchmark          | interp | jit   | speedup |
-|--------------------|-------:|------:|--------:|
-| fib(0..33)         | ~8.2s  | ~0.17s | ~48×   |
-| sum(0..10,000,000) | ~5.8s  | ~0.15s | ~39×   |
-| closure_counter    | ~1.2s  | ~0.05s | ~24×   |
-| array_push (100k)  | ~0.29s | ~0.08s |  ~3.6× |
-| object_churn (100k)| ~0.16s | ~0.26s |  ~0.6× |
-| string_build       | ~0.02s | ~0.05s |  ~0.4× |
-
-The JIT wins big on compute-heavy code (fib, sum, closure_counter). On
-allocation-heavy or trivial workloads, RC and alloc overhead dominate
-and the interpreter can come out ahead.
 
 License
 -------

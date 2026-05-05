@@ -1,5 +1,4 @@
-Culebra Standard Library
-========================
+# Culebra Standard Library
 
 This document specifies the **built-in library** of Culebra: the
 namespace objects (`Math`, `IO`, `Sys`) that group the runtime
@@ -24,20 +23,32 @@ Conventions used below:
 * Throws clauses describe runtime errors of the form
   `type error at L:C.` etc. See [§15 of the language spec](language.md).
 
-Index
------
+## Index
 
-1. `Math`
-2. `IO`
-3. `Random`
-4. `Sys`
-5. Design notes
-6. Not included (yet)
+1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
+2. [`IO`](#2-io) — output, stdin, file I/O
+3. [`Random`](#3-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
+4. [`Sys`](#4-sys) — argv, exit, env
+5. [Design notes](#5-design-notes)
+6. [Not included (yet)](#6-not-included-yet)
+
+**Where to find what**
+
+| Need… | Look at |
+|---|---|
+| Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
+| Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
+| Integer sequences (eager / lazy) | `Math.iota` / `Math.range` |
+| Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
+| Read a file | `IO.read` (throws on failure) |
+| Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
+| Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
+| String / Array / Object methods | [language spec §17](language.md) |
+| Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
 
 ---
 
-1. `Math`
----------
+## 1. `Math`
 
 Numeric utilities. Integer-only routines (`pow`, `sign`, `clamp`,
 `iota`, `range`) preserve `Long` input; the Float-domain routines
@@ -46,12 +57,32 @@ the shape documented below. See [§4](language.md#4-types) and
 [§7](language.md#7-expressions) of the language spec for how `Long`
 and `Float` interact.
 
+Sub-groups in this section: **constants** (`Math.pi`, `Math.e`,
+`Math.inf`, `Math.nan`) — **scalar ops** (`abs`, `min`, `max`,
+`log`, `exp`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `sign`,
+`clamp`) — **integer sequences** (`iota` eager, `range` lazy).
+
 ### Constants
 
-`Math.pi`, `Math.e`, `Math.inf`, `Math.nan` are `Float` properties
-with the obvious values (`π`, `e`, positive infinity, and a quiet
-NaN). Both backends evaluate these as compile-time constants under
-`--jit`.
+`Math.pi`, `Math.e`, `Math.inf`, `Math.nan` are `Float` properties.
+Both backends evaluate these as compile-time constants under `--jit`.
+
+<a id="math-pi"></a>
+#### `Math.pi`
+
+`π` ≈ `3.141592653589793`.
+
+#### `Math.e`
+
+Euler's number, ≈ `2.718281828459045`.
+
+#### `Math.inf`
+
+Positive infinity (`Math.inf > 1e308 == true`). Negate with `-Math.inf`.
+
+#### `Math.nan`
+
+Quiet NaN. Note `Math.nan == Math.nan` is `false` per IEEE-754.
 
 ```culebra
 puts(Math.pi)              # 3.141592653589793
@@ -59,6 +90,8 @@ puts(Math.e)               # 2.718281828459045
 puts(Math.inf > 1e308)     # true
 puts(Math.nan == Math.nan) # false
 ```
+
+### Scalar operations
 
 ### `Math.abs(x: Long|Float) -> Long|Float`
 
@@ -147,7 +180,9 @@ puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
 
-### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
+### Integer sequences
+
+#### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
 
 Generate a new `Array` of consecutive integers. Named after APL /
 C++ `std::iota` / Scheme SRFI-1 — materialise a run of integers as an
@@ -165,7 +200,7 @@ puts(Math.iota(2, 5))      # [2, 3, 4]
 puts(Math.iota(5, 2))      # []
 ```
 
-### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
+#### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
 
 Lazy counterpart to `Math.iota`: returns an iterator yielding the
 same integer sequence one element at a time. Use with `for`-in or
@@ -194,8 +229,7 @@ sequence. See language.md §17.5.
 
 ---
 
-2. `IO`
--------
+## 2. `IO`
 
 Output, standard input, and file I/O.
 
@@ -239,7 +273,10 @@ puts("Hello, {name}")
 
 Read the entire file at `path` into a `String`.
 
-**Throws**: `type error at L:C.` if the file cannot be opened.
+**Errors** (raised as runtime `type error`, not user-catchable via
+`try`/`catch`): file does not exist, is not readable, or is a
+directory. Use `IO.exists(path)` to pre-check when a missing file is
+not exceptional.
 
 ```culebra
 contents = IO.read('data.txt')
@@ -249,8 +286,9 @@ contents = IO.read('data.txt')
 
 Write `content` to the file at `path`, creating or overwriting it.
 
-**Throws**: `type error at L:C.` if the file cannot be opened for
-writing.
+**Errors** (raised as runtime `type error`): the path's parent
+directory does not exist, the path is not writable, or write fails
+(e.g., disk full). Existing files are overwritten without warning.
 
 ```culebra
 IO.write('out.txt', 'hello\n')
@@ -271,8 +309,7 @@ if !IO.exists('data.txt') {
 
 ---
 
-3. `Random`
------------
+## 3. `Random`
 
 Random-number generation. The process has a single shared
 Mersenne-Twister-64 engine, shared between the interpreter and JIT
@@ -330,8 +367,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-4. `Sys`
---------
+## 4. `Sys`
 
 Process-level information.
 
@@ -369,8 +405,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-5. Design notes
----------------
+## 5. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -405,8 +440,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-6. Not included (yet)
----------------------
+## 6. Not included (yet)
 
 ### Trigonometry
 

@@ -20,24 +20,29 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite (samples/test.cul and test_class.cul) on the
-# tree-walking interpreter.
+# Run the test suite (tests/*.cul) on the tree-walking interpreter.
 test: build
-    ./build/culebra samples/test.cul
-    ./build/culebra samples/test_class.cul
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for f in tests/*.cul; do
+      ./build/culebra "$f"
+    done
 
 # Run the test suite under the LLVM ORC JIT backend.
 test-jit: build
-    ./build/culebra --jit samples/test.cul
-    ./build/culebra --jit samples/test_class.cul
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for f in tests/*.cul; do
+      ./build/culebra --jit "$f"
+    done
 
-# Run both test files on both backends and assert their stdout is
+# Run every test file on both backends and assert their stdout is
 # identical per file. Catches regressions where one backend diverges
 # from the other (e.g. a new feature implemented in one place only).
 test-all: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for f in samples/test.cul samples/test_class.cul; do
+    for f in tests/*.cul; do
       out_interp=$(./build/culebra "$f")
       out_jit=$(./build/culebra --jit "$f")
       if [[ "$out_interp" != "$out_jit" ]]; then
@@ -75,6 +80,26 @@ fetch-names:
     echo "fetching $url"
     curl -fsSL "$url" -o "$path"
     echo "saved $path ($(wc -l < "$path") lines)"
+
+# Download MNIST IDX files for samples/mnist.
+fetch-mnist:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=samples/mnist/data
+    mkdir -p "$out"
+    primary='https://storage.googleapis.com/cvdf-datasets/mnist'
+    fallback='https://ossci-datasets.s3.amazonaws.com/mnist'
+    for f in train-images-idx3-ubyte.gz train-labels-idx1-ubyte.gz \
+             t10k-images-idx3-ubyte.gz  t10k-labels-idx1-ubyte.gz; do
+      if [[ -s "$out/$f" ]]; then
+        echo "$out/$f already present"
+        continue
+      fi
+      echo "fetching $f"
+      curl -fsSL "$primary/$f" -o "$out/$f" \
+        || curl -fsSL "$fallback/$f" -o "$out/$f"
+    done
+    echo "MNIST data ready in $out"
 
 # Quick fib(33) benchmark comparing interpreter vs JIT
 bench: build
