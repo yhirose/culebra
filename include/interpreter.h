@@ -85,15 +85,20 @@ struct FunctionValue {
   struct Parameter {
     std::string_view name;
     bool mut;
+    std::string_view type_name;  // empty = no annotation
   };
 
   FunctionValue(
       const std::vector<Parameter>& params,
-      const std::function<Value(std::shared_ptr<Environment> env)>& eval)
-      : params(std::make_shared<std::vector<Parameter>>(params)), eval(eval) {}
+      const std::function<Value(std::shared_ptr<Environment> env)>& eval,
+      std::string_view return_type = {})
+      : params(std::make_shared<std::vector<Parameter>>(params)),
+        eval(eval),
+        return_type(return_type) {}
 
   std::shared_ptr<std::vector<Parameter>> params;
   std::function<Value(std::shared_ptr<Environment> env)> eval;
+  std::string_view return_type;  // empty = no annotation
 };
 
 struct ObjectValue {
@@ -504,6 +509,29 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
   return props_;
 }
 
+// Runtime type check for optional annotations. "Any" matches everything.
+inline bool type_matches(const Value& val, std::string_view name) {
+  if (name == "Any") return true;
+  switch (val.type) {
+    case Value::Nil:      return name == "Nil";
+    case Value::Bool:     return name == "Bool";
+    case Value::Long:     return name == "Long";
+    case Value::String:   return name == "String";
+    case Value::Array:    return name == "Array";
+    case Value::Object:   return name == "Object";
+    case Value::Function: return name == "Function";
+  }
+  return false;
+}
+
+inline void check_type(const Value& val, std::string_view name,
+                       std::string_view context, size_t line, size_t col) {
+  if (name.empty()) return;
+  if (type_matches(val, name)) return;
+  throw std::runtime_error(std::format(
+      "type error: {} expects {} at {}:{}.", context, name, line, col));
+}
+
 inline std::string Value::str_object() const {
   const auto& obj = to_object();
   auto* key = obj.properties.get();
@@ -679,16 +707,21 @@ struct Interpreter {
     for (auto node : ast.nodes[0]->nodes) {
       auto mut = node->nodes[0]->token == "mut";
       const auto& name = node->nodes[1]->token;
-      params.push_back({name, mut});
+      auto type_name = extract_type_annotation(*node, 2);
+      params.push_back({name, mut, type_name});
     }
 
-    auto body = ast.nodes[1];
+    size_t body_idx = 1;
+    auto return_type = extract_return_type(ast, body_idx);
+    auto body = ast.nodes[body_idx];
 
-    return Value(
-        FunctionValue(params, [=, this](std::shared_ptr<Environment> callEnv) {
+    return Value(FunctionValue(
+        params,
+        [=, this](std::shared_ptr<Environment> callEnv) {
           callEnv->append_outer(env);
           return eval(*body, callEnv);
-        }));
+        },
+        return_type));
   };
 
   Value eval_function_call(const peg::Ast& ast,
@@ -704,15 +737,21 @@ struct Interpreter {
         auto param = params[iprm];
         auto arg = args[iprm];
         auto val = eval(*arg, env);
+        check_type(val, param.type_name,
+                   std::format("parameter '{}'", param.name),
+                   arg->line, arg->column);
         callEnv->initialize(param.name, val, param.mut);
       }
       callEnv->initialize("__LINE__", Value((long)ast.line), false);
       callEnv->initialize("__COLUMN__", Value((long)ast.column), false);
+      Value result;
       try {
-        return f.eval(callEnv);
+        result = f.eval(callEnv);
       } catch (const Value& e) {
-        return e;
+        result = e;
       }
+      check_type(result, f.return_type, "return value", ast.line, ast.column);
+      return result;
     }
 
     std::string msg = "arguments error...";
@@ -889,12 +928,22 @@ struct Interpreter {
   }
 
   Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
     auto lvaloff = 2;
     auto lvalcnt = ast.nodes.size() - 3;
+
+    // Optional TYPE_ANNOTATION appears just before the trailing EXPRESSION.
+    auto type_name =
+        extract_type_annotation(ast, ast.nodes.size() - 2);
+    if (!type_name.empty()) lvalcnt--;
 
     auto let = ast.nodes[0]->token == "let";
     auto mut = ast.nodes[1]->token == "mut";
     auto rval = eval(*ast.nodes.back(), env);
+
+    if (!type_name.empty()) {
+      check_type(rval, type_name, "assignment", ast.line, ast.column);
+    }
 
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;
@@ -907,8 +956,6 @@ struct Interpreter {
       }
       return rval;
     } else {
-      using namespace peg::udl;
-
       Value lval = eval(*ast.nodes[lvaloff], env);
 
       auto end = lvaloff + lvalcnt - 1;

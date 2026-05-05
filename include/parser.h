@@ -19,7 +19,7 @@ const auto grammar_ = R"(
 
   EXPRESSION               <-  ASSIGNMENT / LOGICAL_OR
 
-  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* _ '=' _ EXPRESSION
+  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
 
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
@@ -43,9 +43,12 @@ const auto grammar_ = R"(
   PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
-  FUNCTION                 <-  fn _ PARAMETERS _ BLOCK
+  FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  MUTABLE _ IDENTIFIER
+  PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)?
+
+  TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* >
+  RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* >
 
   BLOCK                    <-  '{' _ STATEMENTS _ '}'
 
@@ -120,6 +123,33 @@ inline peg::parser& get_parser() {
   return parser;
 }
 
+// Extract an optional TYPE_ANNOTATION sibling (the captured type name) from
+// an AST node, returning {} if none is present. The expected position is
+// `node.nodes[index]`; pass the tentative slot to probe.
+inline std::string_view extract_type_annotation(const peg::Ast& node,
+                                                size_t index) {
+  using namespace peg::udl;
+  if (index < node.nodes.size() &&
+      node.nodes[index]->tag == "TYPE_ANNOTATION"_) {
+    return node.nodes[index]->token;
+  }
+  return {};
+}
+
+// For a FUNCTION AST node, returns the declared return type (or {}) and
+// writes the body's node index to *body_idx.
+inline std::string_view extract_return_type(const peg::Ast& fn_ast,
+                                            size_t& body_idx) {
+  using namespace peg::udl;
+  if (fn_ast.nodes.size() == 3 &&
+      fn_ast.nodes[1]->tag == "RETURN_TYPE"_) {
+    body_idx = 2;
+    return fn_ast.nodes[1]->token;
+  }
+  body_idx = 1;
+  return {};
+}
+
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        const char* expr, size_t len,
                                        std::vector<std::string>& msgs) {
@@ -132,7 +162,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(true, {"PARAMETERS", "SEQUENCE", "OBJECT",
-                                        "ARRAY", "RETURN", "LEXICAL_SCOPE"});
+                                        "ARRAY", "RETURN", "LEXICAL_SCOPE",
+                                        "TYPE_ANNOTATION", "RETURN_TYPE"});
 
     return opt.optimize(ast);
   }

@@ -457,6 +457,32 @@ __attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
   throw std::runtime_error(std::format("type error at {}:{}.", line, col));
 }
 
+inline const char* _culebra_tag_name(int8_t tag) {
+  switch (tag) {
+    case 0: return "Nil";
+    case 1: return "Bool";
+    case 2: return "Long";
+    case 3: return "Function";
+    case 4: return "String";
+    case 5: return "Array";
+    case 6: return "Object";
+  }
+  return "Unknown";
+}
+
+// Check that a Value's tag matches a named type ("Any" matches everything).
+__attribute__((used)) inline void culebra_runtime_type_check(
+    int8_t tag, const char* expected, const char* context, int64_t line,
+    int64_t col) {
+  if (expected == nullptr || expected[0] == '\0') return;
+  if (std::strcmp(expected, "Any") == 0) return;
+  auto* actual = _culebra_tag_name(tag);
+  if (std::strcmp(actual, expected) != 0) {
+    throw std::runtime_error(std::format(
+        "type error: {} expects {} at {}:{}.", context, expected, line, col));
+  }
+}
+
 __attribute__((used)) inline void culebra_runtime_div_zero(int64_t line,
                                                            int64_t col) {
   throw std::runtime_error(
@@ -910,6 +936,10 @@ struct JIT {
   // Debug mode flag
   bool debug_enabled_ = false;
 
+  // Current function's declared return type (empty = unchecked). The token is
+  // owned by the AST, which outlives the compilation, so string_view is safe.
+  std::string_view current_return_type_;
+
   // Counter for generating unique function names
   int funcCounter_ = 0;
 
@@ -1045,6 +1075,34 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {current_line_val(), current_column_val()});
+  }
+
+  void emit_type_check(llvm::Value* val, std::string_view expected_type,
+                       std::string_view context) {
+    if (expected_type.empty() || expected_type == "Any") return;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto tag = extract_tag(val);
+    auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
+    auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
+    builder_.CreateCall(
+        module_->getOrInsertFunction(
+            "culebra_runtime_type_check", builder_.getVoidTy(),
+            builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {tag, expPtr, ctxPtr, current_line_val(), current_column_val()});
+  }
+
+  // Cache of compile-time string constants to avoid duplicate globals per
+  // emission.
+  std::unordered_map<std::string, llvm::Constant*> global_str_cache_;
+  llvm::Constant* get_or_create_global_str(std::string_view s,
+                                           const char* name_hint) {
+    std::string key(s);
+    auto it = global_str_cache_.find(key);
+    if (it != global_str_cache_.end()) return it->second;
+    auto* g = builder_.CreateGlobalString(key, name_hint);
+    global_str_cache_.emplace(std::move(key), g);
+    return g;
   }
 
   // Get the raw cell pointer from a Cell slot (for passing to closure).
@@ -1362,6 +1420,10 @@ struct JIT {
     module_->getOrInsertFunction("culebra_runtime_type_error",
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    module_->getOrInsertFunction(
+        "culebra_runtime_type_check", builder_.getVoidTy(),
+        builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+        builder_.getInt64Ty());
     module_->getOrInsertFunction("culebra_runtime_div_zero",
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
@@ -1698,12 +1760,20 @@ struct JIT {
   // --- Assignment ---
 
   llvm::Value* compile_assignment(const peg::Ast& ast) {
+    using namespace peg::udl;
     auto lvaloff = 2;
     auto lvalcnt = static_cast<int>(ast.nodes.size()) - 3;
+
+    auto type_name = extract_type_annotation(ast, ast.nodes.size() - 2);
+    if (!type_name.empty()) lvalcnt--;
 
     auto let = ast.nodes[0]->token == "let";
     auto mut = ast.nodes[1]->token == "mut";
     auto rval = compile(*ast.nodes.back());
+
+    if (!type_name.empty()) {
+      emit_type_check(rval, type_name, "assignment");
+    }
 
     if (lvalcnt == 1) {
       auto name = std::string(ast.nodes[lvaloff]->token);
@@ -2238,11 +2308,16 @@ struct JIT {
     }
     const FuncInfo& info = infoIt->second;
 
-    // Collect parameters
+    // Collect parameters (name + optional type annotation)
     std::vector<std::string> paramNames;
+    std::vector<std::string_view> paramTypeNames;
     for (auto& node : ast.nodes[0]->nodes) {
       paramNames.push_back(std::string(node->nodes[1]->token));
+      paramTypeNames.push_back(extract_type_annotation(*node, 2));
     }
+
+    size_t bodyIdx = 1;
+    auto returnType = extract_return_type(ast, bodyIdx);
 
     // Signature: %Value fn(ptr __cls__, %Value this, %Value p1, ...)
     std::vector<llvm::Type*> paramTypes;
@@ -2273,8 +2348,10 @@ struct JIT {
     auto prevScopes = std::move(scopes_);
     auto prevInfo = current_info_;
     auto prevClosureArg = current_closure_arg_;
+    auto prevReturnType = current_return_type_;
     scopes_.clear();
     current_info_ = &info;
+    current_return_type_ = returnType;
 
     // Emit function body
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
@@ -2300,8 +2377,13 @@ struct JIT {
     }
 
     // Bind declared parameters
-    for (auto& name : paramNames) {
+    for (size_t i = 0; i < paramNames.size(); i++) {
+      const auto& name = paramNames[i];
       auto argVal = &*argIt++;
+      if (!paramTypeNames[i].empty()) {
+        emit_type_check(argVal, paramTypeNames[i],
+                        std::string("parameter '") + name + "'");
+      }
       if (info.captured_locals.contains(name)) {
         define_var(name, make_cell_slot(name, argVal));
       } else {
@@ -2328,9 +2410,12 @@ struct JIT {
       define_var(fv, VarSlot{VarSlot::Cell, holder});
     }
 
-    auto bodyVal = compile(*ast.nodes[1]);
+    auto bodyVal = compile(*ast.nodes[bodyIdx]);
 
     if (!builder_.GetInsertBlock()->getTerminator()) {
+      if (!returnType.empty()) {
+        emit_type_check(bodyVal, returnType, "return value");
+      }
       builder_.CreateRet(bodyVal);
     }
 
@@ -2338,6 +2423,7 @@ struct JIT {
     verifyFunction(*fn);
 
     // Restore state
+    current_return_type_ = prevReturnType;
     current_closure_arg_ = prevClosureArg;
     current_info_ = prevInfo;
     scopes_ = std::move(prevScopes);
@@ -2694,6 +2780,9 @@ struct JIT {
       val = make_nil();
     } else {
       val = compile(*ast.nodes[0]);
+    }
+    if (!current_return_type_.empty()) {
+      emit_type_check(val, current_return_type_, "return value");
     }
     builder_.CreateRet(val);
     return val;
