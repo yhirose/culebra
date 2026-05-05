@@ -818,6 +818,11 @@ puts('hello'.slice(-3, -1))       # 'll'
 | `a.filter(f: Function) -> Array`            | `f(x)` が真となる要素だけの新配列。`f` は 1 引数を受け取る |
 | `a.for_each(f: Function) -> Nil`            | 各要素に `f(x)` を適用（副作用目的）。`f` は 1 引数を受け取る |
 | `a.reduce(init: Any, f: Function) -> Any`   | 畳み込み: `init` から始めて `acc = f(acc, x)` を適用し最終 `acc` を返す。`f` は 2 引数を受け取る |
+| `a.find(f: Function) -> Any`                | `f(x)` が真となる最初の要素。なければ `nil`。`f` は 1 引数を受け取る |
+| `a.any(f: Function) -> Bool`                | いずれかの要素で `f(x)` が真なら `true`、そうでなければ `false`。`f` は 1 引数を受け取る |
+| `a.all(f: Function) -> Bool`                | すべての要素で `f(x)` が真なら `true`（空配列でも `true`）、そうでなければ `false`。`f` は 1 引数を受け取る |
+| `a.flat_map(f: Function) -> Array`          | 各要素に `f(x)` を適用し、その結果配列を連結。各 `f(x)` は `Array` を返す必要あり。`f` は 1 引数を受け取る |
+| `a.sort_by(key: Function) -> Nil` *(破壊的)* | `key(x)` を比較キーとして昇順に in-place で安定ソート。`key` は 1 引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり |
 
 ```culebra
 mut a = [1, 2, 3]
@@ -831,6 +836,15 @@ puts([10, 20, 30].index_of(99))    # -1
 puts([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
 puts([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
 puts([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
+
+puts([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
+puts([1, 2, 3].any(fn (x) { x > 2 }))           # true
+puts([1, 2, 3].all(fn (x) { x > 0 }))           # true
+puts([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
+
+mut words = ['banana', 'fig', 'apple']
+words.sort_by(fn (s) { s.size() })
+puts(words)                                      # ['fig', 'apple', 'banana']
 ```
 
 ### 17.3 オブジェクトメソッド

@@ -855,6 +855,11 @@ return a new `Array` and leave the receiver unchanged.
 | `a.filter(f: Function) -> Array`            | New array of elements for which `f(x)` is truthy. `f` must take one parameter. |
 | `a.for_each(f: Function) -> Nil`            | Call `f(x)` for each element for side effects. `f` must take one parameter. |
 | `a.reduce(init: Any, f: Function) -> Any`   | Fold: start with `init`, apply `acc = f(acc, x)` for each element, return final `acc`. `f` must take two parameters. |
+| `a.find(f: Function) -> Any`                | First element for which `f(x)` is truthy, else `nil`. `f` must take one parameter. |
+| `a.any(f: Function) -> Bool`                | `true` if `f(x)` is truthy for any element, else `false`. `f` must take one parameter. |
+| `a.all(f: Function) -> Bool`                | `true` if `f(x)` is truthy for every element (or if empty), else `false`. `f` must take one parameter. |
+| `a.flat_map(f: Function) -> Array`          | Concatenate `f(x)` for each element; each `f(x)` must be an `Array`. `f` must take one parameter. |
+| `a.sort_by(key: Function) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). |
 
 ```culebra
 mut a = [1, 2, 3]
@@ -868,6 +873,15 @@ puts([10, 20, 30].index_of(99))    # -1
 puts([1, 2, 3].map(fn (x) { x * x }))           # [1, 4, 9]
 puts([1, 2, 3, 4].filter(fn (x) { x % 2 == 0 })) # [2, 4]
 puts([1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })) # 10
+
+puts([3, 1, 4, 1, 5].find(fn (x) { x > 3 }))    # 4
+puts([1, 2, 3].any(fn (x) { x > 2 }))           # true
+puts([1, 2, 3].all(fn (x) { x > 0 }))           # true
+puts([1, 2, 3].flat_map(fn (x) { [x, x * 10] })) # [1, 10, 2, 20, 3, 30]
+
+mut words = ['banana', 'fig', 'apple']
+words.sort_by(fn (s) { s.size() })
+puts(words)                                      # ['fig', 'apple', 'banana']
 ```
 
 ### 17.3 Object methods

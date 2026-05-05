@@ -395,6 +395,20 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   }
 }
 
+// Strict less-than on comparable tags. Mismatched tags or unsupported
+// types (Function/Array/Object) throw — mirrors interpreter `Value::<`.
+inline bool _culebra_value_less(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  if (t1 != t2) throw std::runtime_error("type error.");
+  switch (t1) {
+    case 0: return false;
+    case 1: return (d1 != 0) < (d2 != 0);
+    case 2: return d1 < d2;
+    case 4: return std::strcmp(reinterpret_cast<const char*>(d1),
+                               reinterpret_cast<const char*>(d2)) < 0;
+    default: throw std::runtime_error("type error.");
+  }
+}
+
 extern "C" {
 
 __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
@@ -739,19 +753,30 @@ __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
 // consumed (released at function exit). So array elements must be retained
 // before being handed to the closure.
 
-__attribute__((used)) inline JitArray* culebra_runtime_array_map(
-    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+// Type-check a higher-order callback argument. Returns the Closure or
+// throws. Centralizes the identical preamble shared by all higher-order
+// array runtime helpers.
+inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
+                                            size_t expected_arity,
+                                            const char* method_name,
+                                            int64_t line, int64_t col) {
   if (fn_tag != 3) {
     throw std::runtime_error(
         std::format("type error at {}:{}.", line, col));
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != 1) {
+  if (fn->arity != expected_arity) {
     throw std::runtime_error(std::format(
-        "type error: map expects a 1-parameter function at {}:{}.",
-        line, col));
+        "type error: {} expects a {}-parameter function at {}:{}.",
+        method_name, expected_arity, line, col));
   }
+  return fn;
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_array_map(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "map", line, col);
   auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
   auto* out = culebra_runtime_array_new();
   JitValue nil_val = {0, 0};
@@ -767,16 +792,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_map(
 __attribute__((used)) inline JitArray* culebra_runtime_array_filter(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
-  if (fn_tag != 3) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
-  }
-  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != 1) {
-    throw std::runtime_error(std::format(
-        "type error: filter expects a 1-parameter function at {}:{}.",
-        line, col));
-  }
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "filter", line, col);
   auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
   auto* out = culebra_runtime_array_new();
   JitValue nil_val = {0, 0};
@@ -797,16 +813,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_filter(
 __attribute__((used)) inline void culebra_runtime_array_for_each(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
-  if (fn_tag != 3) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
-  }
-  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != 1) {
-    throw std::runtime_error(std::format(
-        "type error: for_each expects a 1-parameter function at {}:{}.",
-        line, col));
-  }
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "for_each", line, col);
   auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
   JitValue nil_val = {0, 0};
   for (size_t i = 0; i < arr->size; i++) {
@@ -817,6 +824,130 @@ __attribute__((used)) inline void culebra_runtime_array_for_each(
   }
 }
 
+// find returns the first matching element (or nil) via out-params.
+__attribute__((used)) inline void culebra_runtime_array_find(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col,
+    int8_t* out_tag, int64_t* out_data) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "find", line, col);
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    bool keep = (r.tag == 1 || r.tag == 2) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (keep) {
+      culebra_runtime_value_retain(e.tag, e.data);
+      *out_tag = e.tag;
+      *out_data = e.data;
+      return;
+    }
+  }
+  *out_tag = 0;
+  *out_data = 0;
+}
+
+__attribute__((used)) inline int64_t culebra_runtime_array_any(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "any", line, col);
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    bool keep = (r.tag == 1 || r.tag == 2) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (keep) return 1;
+  }
+  return 0;
+}
+
+__attribute__((used)) inline int64_t culebra_runtime_array_all(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "all", line, col);
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    bool keep = (r.tag == 1 || r.tag == 2) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (!keep) return 0;
+  }
+  return 1;
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_array_flat_map(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "flat_map", line, col);
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  auto* out = culebra_runtime_array_new();
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    if (r.tag != 5) {  // TAG_ARRAY
+      _culebra_value_release_impl(r.tag, r.data);
+      throw std::runtime_error(std::format(
+          "type error: flat_map callback must return an Array at {}:{}.",
+          line, col));
+    }
+    auto* inner = reinterpret_cast<JitArray*>(r.data);
+    for (size_t j = 0; j < inner->size; j++) {
+      auto ie = inner->items[j];
+      culebra_runtime_value_retain(ie.tag, ie.data);
+      culebra_runtime_array_push(out, ie.tag, ie.data);
+    }
+    _culebra_value_release_impl(r.tag, r.data);
+  }
+  return out;
+}
+
+// sort_by: evaluates the key function on each element once, stable-sorts
+// in place by those keys. Mutates. Keys are released on every exit path
+// (including during a throw from the key comparison).
+__attribute__((used)) inline void culebra_runtime_array_sort_by(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "sort_by", line, col);
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  std::vector<std::pair<JitValue, size_t>> keyed;
+  keyed.reserve(arr->size);
+  auto release_keys = [&] {
+    for (auto& [k, _] : keyed) _culebra_value_release_impl(k.tag, k.data);
+  };
+  try {
+    for (size_t i = 0; i < arr->size; i++) {
+      auto e = arr->items[i];
+      culebra_runtime_value_retain(e.tag, e.data);
+      keyed.emplace_back(call(fn, nil_val, e), i);
+    }
+    std::stable_sort(keyed.begin(), keyed.end(),
+                     [](const auto& a, const auto& b) {
+                       return _culebra_value_less(a.first.tag, a.first.data,
+                                                  b.first.tag, b.first.data);
+                     });
+    std::vector<JitValue> sorted(arr->size);
+    for (size_t i = 0; i < keyed.size(); i++) {
+      sorted[i] = arr->items[keyed[i].second];
+    }
+    for (size_t i = 0; i < arr->size; i++) arr->items[i] = sorted[i];
+  } catch (...) {
+    release_keys();
+    throw;
+  }
+  release_keys();
+}
+
 // reduce returns the final accumulator via out-params (avoids relying on
 // cross-language struct-return ABI).
 __attribute__((used)) inline void culebra_runtime_array_reduce(
@@ -824,16 +955,7 @@ __attribute__((used)) inline void culebra_runtime_array_reduce(
     int64_t fn_data, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
   using JitFn2 = JitValue (*)(JitClosure*, JitValue, JitValue, JitValue);
-  if (fn_tag != 3) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
-  }
-  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != 2) {
-    throw std::runtime_error(std::format(
-        "type error: reduce expects a 2-parameter function at {}:{}.",
-        line, col));
-  }
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 2, "reduce", line, col);
   auto call = reinterpret_cast<JitFn2>(fn->fn_ptr);
   JitValue nil_val = {0, 0};
   JitValue acc = {init_tag, init_data};
@@ -1983,6 +2105,33 @@ struct JIT {
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt8Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         ptrTy, ptrTy);
+    // find (arr, fn_tag, fn_data, line, col, out_tag, out_data)
+    module_->getOrInsertFunction(
+        "culebra_runtime_array_find", builder_.getVoidTy(), ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+        builder_.getInt64Ty(), ptrTy, ptrTy);
+    // any/all (arr, fn_tag, fn_data, line, col) -> i64 (0/1)
+    module_->getOrInsertFunction("culebra_runtime_array_any",
+                                 builder_.getInt64Ty(), ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_all",
+                                 builder_.getInt64Ty(), ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    // flat_map (arr, fn_tag, fn_data, line, col) -> ptr
+    module_->getOrInsertFunction("culebra_runtime_array_flat_map", ptrTy,
+                                 ptrTy, builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    // sort_by (arr, fn_tag, fn_data, line, col)
+    module_->getOrInsertFunction(
+        "culebra_runtime_array_sort_by", builder_.getVoidTy(), ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+        builder_.getInt64Ty());
 
     declare_stdlib_runtime();
   }
@@ -3653,7 +3802,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       "join",        "index_of",   "contains", "upper",   "lower",
       "trim",        "split",      "starts_with", "ends_with",
       "keys",        "has",        "remove",
-      "map",         "filter",     "reduce",   "for_each"};
+      "map",         "filter",     "reduce",   "for_each",
+      "find",        "any",        "all",      "flat_map", "sort_by"};
   if (!known.contains(method)) return nullptr;
 
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -3993,6 +4143,61 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     result = builder_.CreateInsertValue(result, tagLoaded, {0});
     result = builder_.CreateInsertValue(result, dataLoaded, {1});
     return result;
+  }
+
+  if (method == "find" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "find");
+    auto f = compile(*argsAst.nodes[0]);
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag =
+        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
+    builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_find"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col,
+         outTag, outData});
+    emit_value_release(f);
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    llvm::Value* result = llvm::UndefValue::get(valueType_);
+    result = builder_.CreateInsertValue(result, tagLoaded, {0});
+    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    return result;
+  }
+
+  if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, method.c_str());
+    auto f = compile(*argsAst.nodes[0]);
+    auto rt_name = method == "any" ? "culebra_runtime_array_any"
+                                   : "culebra_runtime_array_all";
+    auto result_i64 = builder_.CreateCall(
+        module_->getFunction(rt_name),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    auto as_bool =
+        builder_.CreateICmpNE(result_i64, builder_.getInt64(0));
+    return make_bool(as_bool);
+  }
+
+  if (method == "flat_map" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "flat_map");
+    auto f = compile(*argsAst.nodes[0]);
+    auto out = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_flat_map"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_array(out);
+  }
+
+  if (method == "sort_by" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "sort_by");
+    auto f = compile(*argsAst.nodes[0]);
+    builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_sort_by"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_nil();
   }
 
   return nullptr;

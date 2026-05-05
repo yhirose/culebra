@@ -294,6 +294,28 @@ test_builtin_methods = fn () {
   mut total = 0
   [10, 20, 30].for_each(fn (x) { total = total + x })
   assert(total == 60)
+
+  assert([3, 1, 4, 1, 5].find(fn (x) { x > 3 }) == 4)
+  assert([3, 1, 4].find(fn (x) { x > 100 }) == nil)
+
+  assert([1, 2, 3].any(fn (x) { x > 2 }))
+  assert(![1, 2, 3].any(fn (x) { x > 100 }))
+  assert([].any(fn (x) { x > 0 }) == false)
+
+  assert([1, 2, 3].all(fn (x) { x > 0 }))
+  assert(![1, 2, 3].all(fn (x) { x > 1 }))
+  assert([].all(fn (x) { x > 0 }))
+
+  fm = [1, 2, 3].flat_map(fn (x) { [x, x * 10] })
+  assert(fm.size() == 6 && fm[0] == 1 && fm[1] == 10 && fm[5] == 30)
+
+  mut nums = [3, 1, 4, 1, 5, 9, 2, 6]
+  nums.sort_by(fn (x) { x })
+  assert(nums[0] == 1 && nums[1] == 1 && nums[7] == 9)
+
+  mut ws = ['banana', 'fig', 'apple']
+  ws.sort_by(fn (s) { s.size() })
+  assert(ws[0] == 'fig' && ws[1] == 'apple' && ws[2] == 'banana')
 }
 
 // Top-level binding used by test_shadow_rules to exercise "shadowing a

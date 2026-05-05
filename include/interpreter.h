@@ -632,6 +632,26 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
   return props_;
 }
 
+// Higher-order Array helpers: invoke a 1-parameter callback `f` on `v`.
+// Sets up a function-frame environment with `self` bound to the callback,
+// and treats an early return (`return x` compiled as a thrown Value) as
+// the callback's result.
+inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
+                                   const FunctionValue& f, const Value& v) {
+  auto inner = std::make_shared<Environment>(callEnv);
+  inner->is_function_frame = true;
+  inner->initialize("self", callEnv->get("f"), false);
+  if (!f.params->empty()) {
+    const auto& p = (*f.params)[0];
+    inner->initialize(p.name, v, p.mut);
+  }
+  try {
+    return f.eval(inner);
+  } catch (const Value& e) {
+    return e;
+  }
+}
+
 inline std::map<std::string_view, Value>& ArrayValue::builtins() {
   using namespace std::literals;
   static std::map<std::string_view, Value> props_ = {
@@ -719,27 +739,12 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f =
-                                 callEnv->get("f").to_function();
+                             const auto& f = callEnv->get("f").to_function();
                              ArrayValue out;
                              out.values->reserve(arr.values->size());
                              for (const auto& v : *arr.values) {
-                               auto inner =
-                                   std::make_shared<Environment>(callEnv);
-                               inner->is_function_frame = true;
-                               inner->initialize(
-                                   "self", callEnv->get("f"), false);
-                               if (!f.params->empty()) {
-                                 const auto& p = (*f.params)[0];
-                                 inner->initialize(p.name, v, p.mut);
-                               }
-                               Value r;
-                               try {
-                                 r = f.eval(inner);
-                               } catch (const Value& e) {
-                                 r = e;
-                               }
-                               out.values->push_back(r);
+                               out.values->push_back(
+                                   invoke_unary_callback(callEnv, f, v));
                              }
                              return Value(std::move(out));
                            }))},
@@ -747,26 +752,11 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f =
-                                 callEnv->get("f").to_function();
+                             const auto& f = callEnv->get("f").to_function();
                              ArrayValue out;
                              for (const auto& v : *arr.values) {
-                               auto inner =
-                                   std::make_shared<Environment>(callEnv);
-                               inner->is_function_frame = true;
-                               inner->initialize(
-                                   "self", callEnv->get("f"), false);
-                               if (!f.params->empty()) {
-                                 const auto& p = (*f.params)[0];
-                                 inner->initialize(p.name, v, p.mut);
-                               }
-                               Value r;
-                               try {
-                                 r = f.eval(inner);
-                               } catch (const Value& e) {
-                                 r = e;
-                               }
-                               if (r.to_bool()) {
+                               if (invoke_unary_callback(callEnv, f, v)
+                                       .to_bool()) {
                                  out.values->push_back(v);
                                }
                              }
@@ -776,23 +766,9 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f =
-                                 callEnv->get("f").to_function();
+                             const auto& f = callEnv->get("f").to_function();
                              for (const auto& v : *arr.values) {
-                               auto inner =
-                                   std::make_shared<Environment>(callEnv);
-                               inner->is_function_frame = true;
-                               inner->initialize(
-                                   "self", callEnv->get("f"), false);
-                               if (!f.params->empty()) {
-                                 const auto& p = (*f.params)[0];
-                                 inner->initialize(p.name, v, p.mut);
-                               }
-                               try {
-                                 f.eval(inner);
-                               } catch (const Value&) {
-                                 // discard early return
-                               }
+                               invoke_unary_callback(callEnv, f, v);
                              }
                              return Value();
                            }))},
@@ -822,7 +798,82 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                }
              }
              return acc;
-           }))}};
+           }))},
+      {"find"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f = callEnv->get("f").to_function();
+                             for (const auto& v : *arr.values) {
+                               if (invoke_unary_callback(callEnv, f, v)
+                                       .to_bool()) return v;
+                             }
+                             return Value();
+                           }))},
+      {"any"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f = callEnv->get("f").to_function();
+                             for (const auto& v : *arr.values) {
+                               if (invoke_unary_callback(callEnv, f, v)
+                                       .to_bool()) return Value(true);
+                             }
+                             return Value(false);
+                           }))},
+      {"all"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f = callEnv->get("f").to_function();
+                             for (const auto& v : *arr.values) {
+                               if (!invoke_unary_callback(callEnv, f, v)
+                                        .to_bool()) return Value(false);
+                             }
+                             return Value(true);
+                           }))},
+      {"flat_map"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f = callEnv->get("f").to_function();
+                             ArrayValue out;
+                             for (const auto& v : *arr.values) {
+                               auto r = invoke_unary_callback(callEnv, f, v);
+                               if (r.type != Value::Array) {
+                                 throw std::runtime_error(
+                                     "type error: flat_map callback must "
+                                     "return an Array.");
+                               }
+                               for (const auto& e : *r.to_array().values) {
+                                 out.values->push_back(e);
+                               }
+                             }
+                             return Value(std::move(out));
+                           }))},
+      {"sort_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& arr = callEnv->get("this").to_array();
+                             const auto& f = callEnv->get("f").to_function();
+                             auto& vs = *arr.values;
+                             std::vector<std::pair<Value, size_t>> keyed;
+                             keyed.reserve(vs.size());
+                             for (size_t i = 0; i < vs.size(); i++) {
+                               keyed.emplace_back(
+                                   invoke_unary_callback(callEnv, f, vs[i]), i);
+                             }
+                             std::stable_sort(
+                                 keyed.begin(), keyed.end(),
+                                 [](const auto& a, const auto& b) {
+                                   return a.first < b.first;
+                                 });
+                             std::vector<Value> sorted;
+                             sorted.reserve(vs.size());
+                             for (auto& [k, i] : keyed) sorted.push_back(vs[i]);
+                             vs = std::move(sorted);
+                             return Value();
+                           }))}};
   return props_;
 }
 
