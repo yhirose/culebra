@@ -11,7 +11,7 @@
 
 CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 `IO.puts` / `IO.print` のエイリアスとしてグローバルに配置します
-（[言語仕様 §19](language.ja.md) 参照）。`culebra::environment()`
+（[言語仕様 §20](language.ja.md) 参照）。`culebra::environment()`
 を直接呼び出す埋め込み用途では、これらのエイリアスは導入されず
 名前空間はクリーンなままです。
 

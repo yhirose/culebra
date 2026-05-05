@@ -1,0 +1,88 @@
+# Multiple dispatch (multimethod) — Phase 1 / E milestone.
+# Top-level `fn name(...) body` declarations with type-annotated params
+# build a multimethod; the call site picks the most specific match
+# based on the dynamic types of the arguments.
+#
+# Phase 1 scope: interp only. JIT execution surfaces a clear error.
+
+# --- Concrete-type dispatch ---
+
+fn area(s: Long)   { s * s }
+fn area(s: Float)  { s * s }
+fn area(s: String) { s.size() }
+
+assert(area(5) == 25)
+assert(area(5.0) == 25.0)
+assert(area("hello") == 5)
+
+# --- Any (no annotation) catch-all ---
+
+fn area(x) { -1 }
+assert(area([1, 2, 3]) == -1)
+assert(area(true) == -1)
+
+# --- Specificity: concrete beats Any ---
+
+fn label(x: Long, y) { "long-any" }
+fn label(x, y: Long) { "any-long" }
+fn label(x: Long, y: Long) { "long-long" }    # most specific
+fn label(x, y) { "any-any" }
+
+assert(label(1, 2) == "long-long")
+assert(label(1, "x") == "long-any")
+assert(label("x", 1) == "any-long")
+assert(label("x", "y") == "any-any")
+
+# --- Class-instance dispatch ---
+
+class Square {
+  new(side) { this.side = side }
+}
+class Circle {
+  new(r) { this.r = r }
+}
+
+fn shape_area(s: Square) { s.side * s.side }
+fn shape_area(c: Circle) { 3.14 * c.r * c.r }
+
+let s = Square.new(4)
+let c = Circle.new(2)
+assert(shape_area(s) == 16)
+assert(shape_area(c) == 12.56)
+
+# --- Same-signature redefinition overwrites (REPL-friendly) ---
+
+fn greet(name: String) { "hi, {name}" }
+fn greet(name: String) { "hello, {name}" }
+assert(greet("alice") == "hello, alice")
+
+# --- Disambiguated dispatch (concrete-on-one-side wins) ---
+
+fn amb(x: Long, y) { 1 }
+fn amb(x, y: Long) { 2 }
+
+# amb(1, "x") — only (Long, Any) matches.
+assert(amb(1, "x") == 1)
+# amb("x", 1) — only (Any, Long) matches.
+assert(amb("x", 1) == 2)
+# amb(1, 2) is ambiguous — no test here, raises (verified manually).
+# amb("x", "y") raises no-match — no test here.
+
+# --- Coexist with closures: regular `let f = fn(...)` still works ---
+
+let helper = fn(x) { x * 2 }
+assert(helper(7) == 14)
+
+# --- Coexist with class methods + dunder ---
+#
+# Adding multimethod free functions doesn't disturb instance method
+# dispatch via `obj.method()`.
+
+class Box {
+  new(v) { this.v = v }
+  squared() { this.v * this.v }
+}
+let b = Box.new(5)
+assert(b.squared() == 25)
+
+puts("test_multidispatch: OK")

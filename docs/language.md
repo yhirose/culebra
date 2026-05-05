@@ -26,9 +26,10 @@ tracks its behavior.
 16. [Memory model (RC + cycle collector)](#16-memory-model)
 17. [Built-in type methods (incl. iterator protocol)](#17-built-in-type-methods)
 18. [Core built-in functions](#18-core-built-in-functions)
-19. [Command-line interface](#19-command-line-interface)
-20. [Known limitations](#20-known-limitations)
-21. [Appendix: interpreter ↔ JIT divergence](#21-appendix-interpreter--jit-divergence)
+19. [Multimethods](#19-multimethods)
+20. [Command-line interface](#20-command-line-interface)
+21. [Known limitations](#21-known-limitations)
+22. [Appendix: interpreter ↔ JIT divergence](#22-appendix-interpreter--jit-divergence)
 
 ---
 
@@ -1709,7 +1710,7 @@ factories; both backends recognise them for fusion / specialisation,
 and they are the standard form used in `for`-in loops throughout the
 language. The broader standard library (namespaced under `Math`,
 `IO`, `Sys`) is documented in [`docs/stdlib.md`](stdlib.md). Output
-primitives `puts` and `print` are CLI-installed globals (§19).
+primitives `puts` and `print` are CLI-installed globals (§20).
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -1836,7 +1837,120 @@ puts(iota(5, 2))      # []
 
 ---
 
-## 19. Command-line interface
+## 19. Multimethods
+
+Multiple top-level `fn name(params) body` declarations sharing a name
+form a **multimethod** when their parameters have differing type
+annotations (§14). At a call site, the most specifically matching
+method is selected based on the runtime types of the arguments.
+
+```
+fn area(s: Long)   { s * s }
+fn area(s: Float)  { s * s }
+fn area(s: String) { s.size() }
+
+area(5)        # → 25     (Long)
+area(5.0)      # → 25.0   (Float)
+area("hello")  # → 5      (String)
+```
+
+Anonymous function expressions `let f = fn(...) {...}` are unaffected.
+Multimethods only apply to **top-level `fn name(...)` declarations**.
+
+### Syntax
+
+```
+MULTIFN_DECL <- 'fn' IDENTIFIER PARAMETERS RETURN_TYPE? BLOCK
+```
+
+When `fn name(...)` appears in statement position, this rule takes
+precedence. Anonymous `fn(...) {...}` continues to be an expression
+(closure), as before.
+
+### Specificity rules
+
+For each argument *i*, the parameter annotation and the runtime type
+of the argument yield a specificity score:
+
+| Annotation                                              | Argument                                 | Score    |
+|---------------------------------------------------------|------------------------------------------|----------|
+| `Any` (no annotation)                                   | anything                                 | 0        |
+| `Object`                                                | class instance (e.g. `Square`, `Circle`) | 1        |
+| Exact match (`Long`, `Float`, ..., concrete class name) | same type                                | 2        |
+| otherwise                                               | —                                        | no match |
+
+The per-argument scores form a tuple. A method is selected when its
+score tuple is **at least as large as the other in every position and
+strictly greater in at least one**. If two tuples compare equal, an
+**ambiguous dispatch** error is raised. If two tuples are
+incomparable (each wins on some position), the earlier-declared
+method takes precedence.
+
+```
+fn label(x: Long, y)       { "long-any"  }
+fn label(x, y: Long)       { "any-long"  }
+fn label(x: Long, y: Long) { "long-long" }   # most specific
+fn label(x, y)             { "any-any"   }
+
+label(1, 2)         # → "long-long"
+label(1, "x")       # → "long-any"
+label("x", 1)       # → "any-long"
+label("x", "y")     # → "any-any"
+```
+
+### Class instance dispatch
+
+Instances created by `class` declarations (§10) dispatch on their
+class name:
+
+```
+class Square { new(side) { this.side = side } }
+class Circle { new(r)    { this.r    = r    } }
+
+fn shape_area(s: Square) { s.side * s.side }
+fn shape_area(c: Circle) { 3.14 * c.r * c.r }
+
+shape_area(Square.new(4))  # → 16
+shape_area(Circle.new(2))  # → 12.56
+```
+
+This relies on the `class:` String property that class sugar attaches
+to each instance (§10). The `Object` annotation is looser and matches
+any class instance.
+
+### Same-name, same-signature redeclaration
+
+A subsequent declaration whose **parameter type sequence matches an
+existing entry exactly** overwrites that entry's body. The semantics
+are intended for REPL iteration.
+
+```
+fn greet(name: String) { "hi, {name}"    }
+fn greet(name: String) { "hello, {name}" }   # overwrites
+
+greet("alice")  # → "hello, alice"
+```
+
+### Coexistence with existing features
+
+* Ordinary local bindings `let f = fn(...) {...}` continue to work
+  unchanged.
+* Method dispatch on `obj.method()` is unaffected. Methods are still
+  defined inside a `class` body and called through `this.`.
+* A method whose parameters are all `Any` serves as a catch-all.
+
+### Constraints
+
+* **Top-level / free functions only.** Nested declarations inside a
+  block, and class methods, are not subject to this mechanism.
+* **Errors.** With no matching method the runtime raises
+  `no matching method`; with a tie in specificity it raises
+  `ambiguous dispatch`. Both halt the program immediately rather than
+  surfacing as catchable runtime exceptions (§15, §22).
+
+---
+
+## 20. Command-line interface
 
     culebra [flags] [script.cul ...] [-- arg ...]
 
@@ -1878,7 +1992,7 @@ built-ins from §18.
 
 ---
 
-## 20. Known limitations
+## 21. Known limitations
 
 * No big integers or bignums; `Long` overflow wraps.
 * Single-quoted `'...'` strings are raw (no escapes, no interpolation,
@@ -1906,7 +2020,7 @@ built-ins from §18.
 
 ---
 
-## 21. Appendix: interpreter ↔ JIT divergence
+## 22. Appendix: interpreter ↔ JIT divergence
 
 The interpreter (`include/interpreter.h`) is normative. The JIT
 (`include/jit.h`) compiles the same AST and tracks the same

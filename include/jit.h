@@ -1151,17 +1151,30 @@ inline const char* _culebra_tag_name(int8_t tag) {
   return "Unknown";
 }
 
-// Check that a Value's tag matches a named type ("Any" matches everything).
+// Check that a Value matches a named type ("Any" matches everything).
+// For class-instance arguments (TAG_OBJECT with a `class:` String
+// property), also accept the matching class name — without this the
+// JIT can't validate `s: Square` annotations against `Square.new(...)`.
 __attribute__((used)) inline void culebra_runtime_type_check(
-    int8_t tag, const char* expected, const char* context, int64_t line,
-    int64_t col) {
+    int8_t tag, int64_t data, const char* expected, const char* context,
+    int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
   if (std::strcmp(expected, "Any") == 0) return;
   auto* actual = _culebra_tag_name(tag);
-  if (std::strcmp(actual, expected) != 0) {
-    throw std::runtime_error(std::format(
-        "type error: {} expects {} at {}:{}.", context, expected, line, col));
+  if (std::strcmp(actual, expected) == 0) return;
+  if (tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(data);
+    if (auto idx = obj->find_slot("class");
+        idx != static_cast<size_t>(-1)) {
+      const auto& cls_slot = obj->slots[idx].value;
+      if (cls_slot.tag == TAG_STRING) {
+        auto* cls = reinterpret_cast<const char*>(cls_slot.data);
+        if (std::strcmp(cls, expected) == 0) return;
+      }
+    }
   }
+  throw std::runtime_error(std::format(
+      "type error: {} expects {} at {}:{}.", context, expected, line, col));
 }
 
 __attribute__((used)) inline void culebra_runtime_div_zero(int64_t line,
@@ -2178,12 +2191,226 @@ __attribute__((used)) inline int64_t culebra_runtime_object_size(
   return static_cast<int64_t>(obj->prop_size());
 }
 
+// --- Multimethod dispatch (interp-parity, see eval_multifn_decl) ---
+//
+// The two tables below are process-wide statics, mirroring the
+// single-threaded scoping of `culebra_thrown_tag` etc. (see the
+// runtime-globals comment near the top of this file). Multiple JIT
+// instances in the same process — and successive runs that share a
+// process — accumulate entries; if that becomes a real configuration
+// (e.g. a long-lived host embedding repeated culebra invocations) we
+// should switch to a per-JitContext registry. For the supported
+// single-binary single-run case, both tables are bounded by the
+// number of multimethods declared in the script and are torn down at
+// process exit alongside the closures they reference.
+
+// Forward declarations — closure_new and value_release_impl are
+// defined later in this file but used by the multimethod runtime.
+__attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
+    void* fn_ptr, size_t n_captures, size_t arity);
+
+struct JitMultiMethodEntry {
+  std::vector<std::string> param_types;  // empty = "Any"
+  JitClosure* body;                       // +1 owned by this entry
+};
+
+inline std::map<std::string, std::vector<JitMultiMethodEntry>>&
+_jit_multimethods() {
+  static std::map<std::string, std::vector<JitMultiMethodEntry>> tbl;
+  return tbl;
+}
+
+// Side table mapping a dispatcher closure pointer to its multimethod
+// name, so the shared static thunk can recover which name to dispatch
+// for. Dispatchers live for the lifetime of the program (held by the
+// env binding); leak is bounded by the number of multimethods.
+inline std::map<JitClosure*, std::string>&
+_jit_multifn_dispatcher_names() {
+  static std::map<JitClosure*, std::string> tbl;
+  return tbl;
+}
+
+// Runtime type name for dispatch. For primitives this is the same as
+// `_culebra_tag_name`, but for class instances (TAG_OBJECT with a
+// `class:` String slot) we substitute the class name — that's why
+// this can't share `_culebra_tag_name`'s tag-only switch. Mirrors
+// `value_dyn_type` in interpreter.h.
+inline std::string_view _jit_value_dyn_type(JitValue v) {
+  switch (v.tag) {
+    case TAG_NIL:    return "Nil";
+    case TAG_BOOL:   return "Bool";
+    case TAG_LONG:   return "Long";
+    case TAG_FLOAT:  return "Float";
+    case TAG_STRING: return "String";
+    case TAG_ARRAY:  return "Array";
+    case TAG_FUNC:   return "Function";
+    case TAG_TENSOR: return "Tensor";
+    case TAG_OBJECT: {
+      auto* obj = reinterpret_cast<JitObject*>(v.data);
+      if (auto idx = obj->find_slot("class");
+          idx != static_cast<size_t>(-1)) {
+        const auto& slot = obj->slots[idx].value;
+        if (slot.tag == TAG_STRING) {
+          return std::string_view(reinterpret_cast<const char*>(slot.data));
+        }
+      }
+      return "Object";
+    }
+  }
+  return "Object";
+}
+
+inline int _jit_multifn_specificity(std::string_view param_type,
+                                    std::string_view arg_type) {
+  if (param_type.empty() || param_type == "Any") return 0;
+  if (param_type == "Object" && arg_type != "Object") return 1;
+  if (param_type == arg_type) return 2;
+  return -1;
+}
+
+// Pick the most specific matching method in `methods` for the given
+// `args` types. Returns an index into `methods`, or -1 on no match,
+// or -2 on ambiguous tie. Mirrors `multifn_pick` in interpreter.h.
+inline int64_t _jit_multifn_pick(
+    const std::vector<JitMultiMethodEntry>& methods,
+    const std::vector<std::string_view>& arg_types) {
+  std::vector<int> score(arg_types.size());
+  std::vector<int> best_score(arg_types.size());
+  size_t best_idx = 0;
+  bool have_best = false;
+  bool ambiguous = false;
+  for (size_t i = 0; i < methods.size(); i++) {
+    const auto& m = methods[i];
+    if (m.param_types.size() != arg_types.size()) continue;
+    bool ok = true;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      int s = _jit_multifn_specificity(m.param_types[p], arg_types[p]);
+      if (s < 0) { ok = false; break; }
+      score[p] = s;
+    }
+    if (!ok) continue;
+    if (!have_best) {
+      best_idx = i;
+      best_score = score;
+      have_best = true;
+      continue;
+    }
+    bool better_any = false, worse_any = false;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      if (score[p] > best_score[p]) better_any = true;
+      if (score[p] < best_score[p]) worse_any = true;
+    }
+    if (better_any && !worse_any) {
+      best_idx = i;
+      best_score = score;
+      ambiguous = false;
+    } else if (!better_any && !worse_any) {
+      ambiguous = true;
+    }
+  }
+  if (!have_best) return -1;
+  if (ambiguous)  return -2;
+  return static_cast<int64_t>(best_idx);
+}
+
+// JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
+// dispatcher closure. The `cls` pointer keys into the dispatcher-name
+// side table to recover which multimethod to dispatch.
+inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
+                                              JitValue /*this_val*/,
+                                              int64_t n_args,
+                                              JitValue* args) {
+  auto name_it = _jit_multifn_dispatcher_names().find(cls);
+  if (name_it == _jit_multifn_dispatcher_names().end()) {
+    throw std::runtime_error("internal: multimethod dispatcher missing name");
+  }
+  const std::string& name = name_it->second;
+
+  auto& tbl = _jit_multimethods();
+  auto m_it = tbl.find(name);
+  if (m_it == tbl.end()) {
+    throw std::runtime_error(std::format(
+        "no matching method for `{}`", name));
+  }
+
+  std::vector<std::string_view> arg_types(static_cast<size_t>(n_args));
+  for (size_t i = 0; i < arg_types.size(); i++) {
+    arg_types[i] = _jit_value_dyn_type(args[i]);
+  }
+
+  auto pick = _jit_multifn_pick(m_it->second, arg_types);
+  if (pick == -1) {
+    throw std::runtime_error(std::format(
+        "no matching method for `{}`", name));
+  }
+  if (pick == -2) {
+    throw std::runtime_error(std::format(
+        "ambiguous dispatch for `{}`", name));
+  }
+
+  auto* body = m_it->second[static_cast<size_t>(pick)].body;
+  return reinterpret_cast<JitFn>(body->fn_ptr)(body, {TAG_NIL, 0}, n_args,
+                                                args);
+}
+
+// Append a method to the named multimethod table (replacing an entry
+// with an identical param-type sequence — REPL / re-decl semantics).
+// Returns the dispatcher closure for `name`, creating it on first
+// call and caching it across re-decls. Caller takes a +1 reference
+// (the env binding) and is responsible for the matching release.
+__attribute__((used)) inline JitClosure*
+culebra_runtime_multifn_register_and_install(const char* name_cstr,
+                                             JitClosure* body,
+                                             const char* const* param_types,
+                                             int64_t n_param_types) {
+  std::string name(name_cstr);
+  JitMultiMethodEntry method;
+  // Caller's `body` arrives at +1; the table takes that ownership
+  // outright. On replace, the displaced body's +1 is released below.
+  method.body = body;
+  method.param_types.reserve(static_cast<size_t>(n_param_types));
+  for (int64_t i = 0; i < n_param_types; i++) {
+    method.param_types.emplace_back(
+        param_types[i] ? param_types[i] : "");
+  }
+
+  auto& tbl = _jit_multimethods();
+  auto& methods = tbl[name];
+  bool replaced = false;
+  for (auto& existing : methods) {
+    if (existing.param_types == method.param_types) {
+      _culebra_value_release_impl(
+          TAG_FUNC, reinterpret_cast<int64_t>(existing.body));
+      existing = std::move(method);
+      replaced = true;
+      break;
+    }
+  }
+  if (!replaced) methods.push_back(std::move(method));
+
+  // Find or create the dispatcher closure for this name.
+  for (auto& [cls_ptr, n] : _jit_multifn_dispatcher_names()) {
+    if (n == name) {
+      cls_ptr->refcount++;  // hand a +1 back to the caller
+      return cls_ptr;
+    }
+  }
+  auto* dispatcher = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
+      /*n_captures=*/0, /*arity=*/n_param_types);
+  _jit_multifn_dispatcher_names()[dispatcher] = name;
+  // closure_new returns +1; caller becomes the owner. Don't bump again.
+  return dispatcher;
+}
+
 // Auto-synthesized `class.parameters()` walker, mirroring the interp
 // helper in interpreter.h::_walk_collect_params. Walks `val`
 // recursively: Arrays are descended element-wise, plain Object dicts
 // (no `class:` tag) are descended into their property values, and
 // class instances are collected as leaves. Scalars are skipped.
 // Property keys starting with '_' are skipped (private/cache fields).
+// Each collected leaf is appended to `out` with its refcount bumped
+// (+1 retained); the caller owns `out`'s eventual release.
 inline void _jit_walk_collect_params(JitValue v, JitArray* out);
 
 inline void _jit_walk_collect_params_object(JitObject* obj, JitArray* out) {
@@ -4029,6 +4256,8 @@ inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
 inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
+inline constexpr auto multifn_register_and_install =
+    "culebra_runtime_multifn_register_and_install";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
 inline constexpr auto args_slice_to_array =
     "culebra_runtime_args_slice_to_array";
@@ -4817,14 +5046,16 @@ struct JIT {
     if (expected_type.empty() || expected_type == "Any") return;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto tag = extract_tag(val);
+    auto data = extract_data(val);
     auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
     auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
     emit_call(
         module_->getOrInsertFunction(
             rt::type_check, builder_.getVoidTy(),
-            builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-            builder_.getInt64Ty()),
-        {tag, expPtr, ctxPtr, current_line_val(), current_column_val()});
+            builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {tag, data, expPtr, ctxPtr, current_line_val(),
+         current_column_val()});
   }
 
   // Cache of compile-time string constants to avoid duplicate globals per
@@ -5237,6 +5468,17 @@ struct JIT {
       return;
     }
 
+    if (node.tag == "MULTIFN_DECL"_) {
+      // `fn name(params) body` binds `name` in the enclosing scope.
+      // Body is analyzed separately by visit_for_frees as a nested
+      // function. Same shape as CLASS_DECL above.
+      auto& id = *node.nodes[0];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
+      return;
+    }
+
     for (auto& c : node.nodes) {
       collect_fn_locals(*c, locals, outer);
     }
@@ -5249,16 +5491,24 @@ struct JIT {
     using namespace peg::udl;
 
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
-        node.tag == "DEFER"_) {
-      // Analyze nested function / defer body; its locals/frees don't
-      // leak into the enclosing scope, but the enclosing scope owns any
-      // captured vars (cells) that it references. FUNCTION and LAMBDA
-      // share analyze_function (same AST shape: [params, body]; LAMBDA
-      // just lacks the optional RETURN_TYPE slot).
+        node.tag == "DEFER"_ || node.tag == "MULTIFN_DECL"_) {
+      // Analyze nested function / defer / multimethod body; its
+      // locals/frees don't leak into the enclosing scope, but the
+      // enclosing scope owns any captured vars (cells) that it
+      // references. FUNCTION and LAMBDA share analyze_function (same
+      // AST shape: [params, body]; LAMBDA just lacks the optional
+      // RETURN_TYPE slot). MULTIFN_DECL has [name, params, body] —
+      // analyze_multifn picks params/body off nodes[1] and the last
+      // child.
       outer.push_back(&my_locals);
-      auto nested_info = (node.tag == "DEFER"_)
-                             ? analyze_defer(node, outer)
-                             : analyze_function(node, outer);
+      FuncInfo nested_info;
+      if (node.tag == "DEFER"_) {
+        nested_info = analyze_defer(node, outer);
+      } else if (node.tag == "MULTIFN_DECL"_) {
+        nested_info = analyze_multifn(node, outer);
+      } else {
+        nested_info = analyze_function(node, outer);
+      }
       outer.pop_back();
       for (const auto& fv : nested_info.free_vars) {
         if (my_locals.contains(fv)) {
@@ -5485,6 +5735,16 @@ struct JIT {
                              *methodAst.nodes[2], outer);
   }
 
+  // MULTIFN_DECL ast: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK].
+  // Analyzed like a nested FUNCTION — body is the last child.
+  FuncInfo analyze_multifn(
+      const peg::Ast& multifnAst,
+      std::vector<const std::set<std::string>*>& outer) {
+    auto bodyIdx = multifnAst.nodes.size() - 1;
+    return analyze_fn_common(&multifnAst, *multifnAst.nodes[1],
+                             *multifnAst.nodes[bodyIdx], outer);
+  }
+
   // `defer { BODY }` behaves like a 0-parameter nested function that
   // closes over the enclosing scope. Shadow checks are unneeded (no
   // params, no let/mut at the defer line itself).
@@ -5537,6 +5797,12 @@ struct JIT {
                                  builder_.getInt64Ty(), ptrTy,
                                  builder_.getInt8Ty());
     module_->getOrInsertFunction(rt::class_parameters_walk, valueType_, ptrTy);
+    // multifn_register_and_install:
+    //   JitClosure* (const char* name, JitClosure* body,
+    //                const char** param_types, int64_t n_param_types)
+    module_->getOrInsertFunction(rt::multifn_register_and_install,
+                                 ptrTy, ptrTy, ptrTy, ptrTy,
+                                 builder_.getInt64Ty());
     // User-level throw: stashes tag+data in globals and raises a
     // C++ exception; try/catch landingpads read the globals back.
     module_->getOrInsertFunction(rt::throw_,
@@ -5555,8 +5821,8 @@ struct JIT {
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(
         rt::type_check, builder_.getVoidTy(),
-        builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-        builder_.getInt64Ty());
+        builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
+        builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::div_zero,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
@@ -5771,6 +6037,8 @@ struct JIT {
         return compile_range(ast);
       case "CLASS_DECL"_:
         return compile_class_decl(ast);
+      case "MULTIFN_DECL"_:
+        return compile_multifn_decl(ast);
       case "LOGICAL_OR"_:
         return compile_logical_or(ast);
       case "NIL_COALESCE"_:
@@ -8050,6 +8318,85 @@ struct JIT {
     // Patch the pre-allocated cell with the real class namespace.
     store_slot(classSlot, classVal);
     emit_value_retain(classVal);
+    return make_nil();
+  }
+
+  // `fn name(params) body` — top-level multimethod declaration. Compiles
+  // the body as a normal closure and hands ownership to the runtime
+  // multimethod table; the runtime returns a dispatcher closure (created
+  // on the first decl per name and cached afterward) which we bind to
+  // `name` in the surrounding scope. See _jit_multifn_dispatcher_thunk
+  // for the dispatch logic. JIT counterpart of eval_multifn_decl.
+  llvm::Value* compile_multifn_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+
+    // AST: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK]
+    std::string name(ast.nodes[0]->token);
+    const peg::Ast* params_ast = ast.nodes[1].get();
+    size_t body_idx = 2;
+    std::string_view returnType;
+    if (ast.nodes.size() == 4 && ast.nodes[2]->tag == "RETURN_TYPE"_) {
+      returnType = ast.nodes[2]->token;
+      body_idx = 3;
+    }
+    auto body_ast = ast.nodes[body_idx];
+
+    // Compile body — returns +1 Value(TAG_FUNC) wrapping a JitClosure.
+    auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType);
+    auto bodyClosurePtr =
+        builder_.CreateIntToPtr(extract_data(bodyVal), ptrTy);
+
+    // Collect param-type annotations as a global array of C strings.
+    // Empty annotations map to a null pointer; the runtime treats null
+    // identically to the empty string ("Any").
+    std::vector<llvm::Constant*> typePtrs;
+    typePtrs.reserve(params_ast->nodes.size());
+    for (auto& p : params_ast->nodes) {
+      auto t = extract_type_annotation(*p, 2);
+      if (t.empty()) {
+        typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
+      } else {
+        typePtrs.push_back(get_or_create_global_str(t, ".pt"));
+      }
+    }
+    auto n_param_types = static_cast<int64_t>(typePtrs.size());
+
+    llvm::Value* paramTypesPtr;
+    if (typePtrs.empty()) {
+      paramTypesPtr = llvm::ConstantPointerNull::get(ptrTy);
+    } else {
+      auto arrayTy = llvm::ArrayType::get(ptrTy, typePtrs.size());
+      auto initializer = llvm::ConstantArray::get(arrayTy, typePtrs);
+      auto gv = new llvm::GlobalVariable(
+          *module_, arrayTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, initializer, ".paramtypes");
+      paramTypesPtr = builder_.CreateBitCast(gv, ptrTy);
+    }
+
+    auto namePtr = get_or_create_global_str(name, ".mname");
+    auto dispatcherPtr = emit_call(
+        module_->getOrInsertFunction(rt::multifn_register_and_install,
+                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty),
+        {namePtr, bodyClosurePtr, paramTypesPtr,
+         builder_.getInt64(n_param_types)},
+        "multifn.disp");
+
+    auto dispatcherVal = make_func(dispatcherPtr);
+
+    // Bind the dispatcher in the surrounding scope. First decl per name
+    // creates a cell slot; subsequent decls overwrite (the runtime
+    // returns the same cached dispatcher pointer, so this is a +1
+    // refresh on the same object).
+    auto* existing = lookup_var(name);
+    if (!existing) {
+      auto slot = make_cell_slot(name, dispatcherVal);
+      define_var(name, slot);
+    } else {
+      store_slot(*existing, dispatcherVal);
+    }
+
     return make_nil();
   }
 

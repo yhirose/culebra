@@ -12,7 +12,13 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / MULTIFN_DECL / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+
+  # Top-level named function declaration. Multiple declarations with
+  # the same name and different parameter type signatures form a
+  # multimethod (Phase 1: interp only, free fn only). Anonymous
+  # `fn(...) {...}` keeps its existing role inside expressions.
+  MULTIFN_DECL             <-  fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 
   CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
   METHOD                   <-  IDENTIFIER _ PARAMETERS _ BLOCK

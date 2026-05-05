@@ -20,15 +20,20 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite (tests/*.cul) on the tree-walking interpreter.
+# Run the test suite on the tree-walking interpreter. Picks up
+# everything under tests/, including any interp-only subdirectory if
+# one is later re-introduced.
 test: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for f in tests/*.cul; do
+    shopt -s nullglob
+    for f in tests/*.cul tests/interp/*.cul; do
       ./build/culebra "$f"
     done
 
-# Run the test suite under the LLVM ORC JIT backend.
+# Run the test suite under the LLVM ORC JIT backend. Skips
+# tests/interp/ (when present) — that subdirectory is reserved for
+# tests of features that are interp-only at the current phase.
 test-jit: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -39,6 +44,7 @@ test-jit: build
 # Run every test file on both backends and assert their stdout is
 # identical per file. Catches regressions where one backend diverges
 # from the other (e.g. a new feature implemented in one place only).
+# (Skips tests/interp/, which holds interp-only features.)
 test-all: build
     #!/usr/bin/env bash
     set -euo pipefail

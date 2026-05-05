@@ -12,7 +12,7 @@ Language-level built-ins — `assert`, `to_long`, `to_float`,
 [§17 of the language spec](language.md).
 
 The CLI (`src/main.cc`) additionally installs `puts` and `print` as
-globals aliased to `IO.puts` / `IO.print` (see [§19 of the language
+globals aliased to `IO.puts` / `IO.print` (see [§20 of the language
 spec](language.md)). Embedders that use `culebra::environment()`
 directly get a clean namespace without those aliases.
 

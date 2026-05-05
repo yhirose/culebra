@@ -698,6 +698,20 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
 }
 
 // Runtime type check for optional annotations. "Any" matches everything.
+// If `val` is a class-sugar instance, return a view of its class
+// name (the synthetic `class:` String property the desugaring
+// inserts). Returns nullopt for plain Objects and non-Objects. The
+// view aliases the property's std::string and is valid as long as
+// `val` is.
+inline std::optional<std::string_view> class_tag(const Value& val) {
+  if (val.type != Value::Object) return std::nullopt;
+  const auto& obj = val.to_object();
+  if (!obj.has("class")) return std::nullopt;
+  const auto& cn = obj.get("class");
+  if (cn.type != Value::String) return std::nullopt;
+  return std::string_view(cn.template get<std::string>());
+}
+
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
   switch (val.type) {
@@ -707,7 +721,11 @@ inline bool type_matches(const Value& val, std::string_view name) {
     case Value::Float:    return name == "Float";
     case Value::String:   return name == "String";
     case Value::Array:    return name == "Array";
-    case Value::Object:   return name == "Object";
+    case Value::Object: {
+      if (name == "Object") return true;
+      auto tag = class_tag(val);
+      return tag && *tag == name;
+    }
     case Value::Function: return name == "Function";
     case Value::Tensor:   return name == "Tensor";
   }
@@ -728,24 +746,20 @@ inline std::string Value::str_object() const {
   StrGuard guard(key);
   if (guard.already) return "{...}";
   const auto& properties = *obj.properties;
-  // If the object carries a String `class:` tag (class-sugar instance
-  // or any user-built Object that uses the same convention), hoist the
-  // tag to a prefix so `{class: 'Matrix', rows: 2}` prints as
-  // `Matrix {rows: 2}` — cleaner at a glance and emphasises the nominal
-  // type. The `class` entry itself is skipped in the property list to
-  // avoid repeating information.
+  // If the object carries a String `class:` tag, hoist it as a
+  // prefix so `{class: 'Matrix', rows: 2}` prints as
+  // `Matrix {rows: 2}`. The `class` entry is then skipped in the
+  // property list.
   std::string s;
-  auto it = properties.find("class");
-  bool has_class_tag = it != properties.end() &&
-                       it->second.val.type == String;
-  if (has_class_tag) {
-    s = it->second.val.template get<std::string>();
+  auto tag = class_tag(*this);
+  if (tag) {
+    s.assign(*tag);
     s += " ";
   }
   s += "{";
   bool first = true;
   for (const auto& [name, sym] : properties) {
-    if (has_class_tag && name == "class") continue;
+    if (tag && name == "class") continue;
     if (!first) {
       s += ", ";
     }
@@ -2069,6 +2083,18 @@ inline void setup_core_globals(Environment& env) {
 struct Interpreter {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
+  struct MultiMethod {
+    std::vector<std::string> param_types;
+    Value body;
+  };
+  // Method tables for top-level `fn name(...)` decls. The dispatcher
+  // registered in env captures a shared_ptr to one of these vectors,
+  // so subsequent decls just push_back here. Owned here (not in env)
+  // because env's keys are std::string_view into AST tokens, and the
+  // synthesized table key has to outlive any such view.
+  std::map<std::string, std::shared_ptr<std::vector<MultiMethod>>>
+      multimethods_;
+
   Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     try {
       return _eval_dispatch(ast, env);
@@ -2173,6 +2199,8 @@ struct Interpreter {
         return Value();
       case "CLASS_DECL"_:
         return eval_class_decl(ast, env);
+      case "MULTIFN_DECL"_:
+        return eval_multifn_decl(ast, env);
     }
 
     if (ast.is_token) {
@@ -2512,6 +2540,162 @@ struct Interpreter {
   // expression — both are handled by eval()'s tag dispatch.
   Value eval_lambda(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     return make_function_value(*ast.nodes[0], ast.nodes[1], {}, env);
+  }
+
+  // Specificity score per (param_type, arg_type): Any < Object-loose
+  // < exact match. Score must be 0..max so vectors of scores are
+  // directly comparable.
+  static int multifn_specificity(std::string_view param_type,
+                                 std::string_view arg_type) {
+    if (param_type.empty() || param_type == "Any") return 0;
+    if (param_type == "Object" && arg_type != "Object") return 1;
+    if (param_type == arg_type) return 2;
+    return -1;
+  }
+
+  // Dynamic type-name view for dispatch. For Object instances with a
+  // `class:` String tag this aliases the stored class name; the view
+  // is valid as long as `v` is.
+  static std::string_view value_dyn_type(const Value& v) {
+    switch (v.type) {
+      case Value::Nil:      return "Nil";
+      case Value::Bool:     return "Bool";
+      case Value::Long:     return "Long";
+      case Value::Float:    return "Float";
+      case Value::String:   return "String";
+      case Value::Array:    return "Array";
+      case Value::Function: return "Function";
+      case Value::Tensor:   return "Tensor";
+      case Value::Object:
+        if (auto tag = class_tag(v)) return *tag;
+        return "Object";
+    }
+    return "Object";
+  }
+
+  struct PickResult {
+    enum Status { Match, NoMatch, Ambiguous } status;
+    size_t idx;  // valid only when status == Match
+  };
+
+  // Pick the most specific matching method. Tie on exactly-equal
+  // scores → Ambiguous; element-wise incomparable scores leave the
+  // current best in place (first-registered wins).
+  PickResult multifn_pick(const std::vector<MultiMethod>& methods,
+                          const std::vector<Value>& args) {
+    std::vector<std::string_view> arg_types(args.size());
+    for (size_t p = 0; p < args.size(); p++) {
+      arg_types[p] = value_dyn_type(args[p]);
+    }
+    std::vector<int> score(args.size());
+    std::vector<int> best_score(args.size());
+    size_t best_idx = 0;
+    bool have_best = false;
+    bool ambiguous = false;
+    for (size_t i = 0; i < methods.size(); i++) {
+      const auto& m = methods[i];
+      if (m.param_types.size() != args.size()) continue;
+      bool ok = true;
+      for (size_t p = 0; p < args.size(); p++) {
+        int s = multifn_specificity(m.param_types[p], arg_types[p]);
+        if (s < 0) { ok = false; break; }
+        score[p] = s;
+      }
+      if (!ok) continue;
+      if (!have_best) {
+        best_idx = i;
+        best_score = score;
+        have_best = true;
+        continue;
+      }
+      bool better_any = false, worse_any = false;
+      for (size_t p = 0; p < args.size(); p++) {
+        if (score[p] > best_score[p]) better_any = true;
+        if (score[p] < best_score[p]) worse_any = true;
+      }
+      if (better_any && !worse_any) {
+        best_idx = i;
+        best_score = score;
+        ambiguous = false;
+      } else if (!better_any && !worse_any) {
+        ambiguous = true;
+      }
+    }
+    if (!have_best) return {PickResult::NoMatch, 0};
+    if (ambiguous)  return {PickResult::Ambiguous, 0};
+    return {PickResult::Match, best_idx};
+  }
+
+  // `fn name(params) body` — first decl registers a dispatcher under
+  // `name`; subsequent decls append (or overwrite a same-signature
+  // entry).
+  Value eval_multifn_decl(const peg::Ast& ast,
+                          std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    auto name_view = ast.nodes[0]->token;
+    auto name_owned = std::string(name_view);
+
+    // Children: IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK
+    size_t body_idx = 2;
+    std::string_view return_type;
+    if (ast.nodes.size() == 4 && ast.nodes[2]->tag == "RETURN_TYPE"_) {
+      return_type = ast.nodes[2]->token;
+      body_idx = 3;
+    }
+    auto fn_val = make_function_value(*ast.nodes[1], ast.nodes[body_idx],
+                                       return_type, env);
+
+    MultiMethod method;
+    method.body = fn_val;
+    for (const auto& p : *fn_val.to_function().params) {
+      method.param_types.emplace_back(p.type_name);
+    }
+
+    auto it = multimethods_.find(name_owned);
+    if (it == multimethods_.end()) {
+      auto methods = std::make_shared<std::vector<MultiMethod>>();
+      methods->push_back(std::move(method));
+      multimethods_[name_owned] = methods;
+
+      auto dispatcher = Value(FunctionValue(
+          {},
+          [this, methods, name_owned](std::shared_ptr<Environment> callEnv) {
+            auto line = callEnv->get("__LINE__").to_long();
+            auto col = callEnv->get("__COLUMN__").to_long();
+            const auto& args = *callEnv->get("__ARGS__").to_array().values;
+            auto pick = multifn_pick(*methods, args);
+            if (pick.status == PickResult::NoMatch) {
+              throw std::runtime_error(std::format(
+                  "no matching method for `{}` at {}:{}.", name_owned, line,
+                  col));
+            }
+            if (pick.status == PickResult::Ambiguous) {
+              throw std::runtime_error(std::format(
+                  "ambiguous dispatch for `{}` at {}:{}.", name_owned, line,
+                  col));
+            }
+            return invoke_user_function(
+                (*methods)[pick.idx].body, callEnv, args.size(),
+                [&](size_t i) { return args[i]; },
+                [&](size_t) -> std::pair<size_t, size_t> {
+                  return {static_cast<size_t>(line),
+                          static_cast<size_t>(col)};
+                },
+                static_cast<size_t>(line), static_cast<size_t>(col));
+          }));
+      env->initialize(name_view, dispatcher, false);
+      return Value();
+    }
+
+    auto& methods = *it->second;
+    for (auto& existing : methods) {
+      if (existing.param_types == method.param_types) {
+        existing = std::move(method);
+        return Value();
+      }
+    }
+    methods.push_back(std::move(method));
+    return Value();
   }
 
   // `class Name { new(...) {...}  m(...) {...} }` desugars to
