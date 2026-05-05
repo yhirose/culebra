@@ -1,0 +1,5 @@
+# Recursive Fibonacci (compute-bound, function calls)
+fib = fn (x) {
+  if x < 2 { x } else { self(x - 2) + self(x - 1) }
+}
+puts(fib(33))

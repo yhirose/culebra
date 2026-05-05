@@ -1,0 +1,9 @@
+# Object allocation + property access churn
+mut i = 0
+mut total = 0
+while i < 100000 {
+  let o = { x: i, y: i + 1, z: i + 2 }
+  total = total + o.x + o.y + o.z
+  i = i + 1
+}
+puts(total)

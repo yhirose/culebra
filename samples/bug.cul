@@ -1,13 +1,5 @@
-# Cycric reference
-a = {
-  b: 'b',
-  mut c: nil
-}
-#a.c = a
-#puts(a.c)
-puts(a)
-
-# Unintentinal reference to global variable
+# Closure captures outer variable: this is the expected behavior.
+# `f()` modifies the enclosing `b` via closure capture.
 mut b = 0
 f = fn () {
   b = 1

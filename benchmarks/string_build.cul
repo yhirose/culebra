@@ -1,0 +1,8 @@
+# String concatenation via interpolation (heavy allocator churn)
+mut i = 0
+mut s = ''
+while i < 5000 {
+  s = "{s}{i},"
+  i = i + 1
+}
+puts('done')

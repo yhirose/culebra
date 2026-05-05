@@ -23,6 +23,11 @@ struct Options {
   bool print_ast = false;
   bool shell = false;
   bool debug = false;
+#ifdef CULEBRA_JIT_ENABLED
+  bool jit = false;
+  bool emit_llvm = false;
+  int opt_level = 2;
+#endif
   vector<string> script_path_list;
 };
 
@@ -38,6 +43,14 @@ Options parse_command_line(int argc, const char** argv) {
       options.print_ast = true;
     } else if (arg == "--debug") {
       options.debug = true;
+#ifdef CULEBRA_JIT_ENABLED
+    } else if (arg == "--jit") {
+      options.jit = true;
+    } else if (arg == "--emit-llvm") {
+      options.emit_llvm = true;
+    } else if (arg.starts_with("-O")) {
+      options.opt_level = std::stoi(arg.substr(2));
+#endif
     } else {
       options.script_path_list.push_back(arg);
     }
@@ -65,6 +78,14 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
       if (options.print_ast) {
         cout << peg::ast_to_s(ast);
       }
+
+#ifdef CULEBRA_JIT_ENABLED
+      if (options.jit) {
+        culebra::JIT::run(ast, options.emit_llvm, options.debug,
+                          options.opt_level);
+        continue;
+      }
+#endif
 
       culebra::Value val;
       auto dbg =
@@ -95,7 +116,11 @@ int main(int argc, const char** argv) {
     }
 
     if (options.shell) {
+#ifdef CULEBRA_JIT_ENABLED
+      culebra::repl(env, options.print_ast, options.jit);
+#else
       culebra::repl(env, options.print_ast);
+#endif
     }
   } catch (exception& e) {
     cerr << e.what() << endl;

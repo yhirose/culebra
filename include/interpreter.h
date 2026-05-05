@@ -1,129 +1,85 @@
 #pragma once
 
-#include <peglib.h>
+#include <parser.h>
 
-#include <format>
+#include <algorithm>
 #include <map>
 #include <print>
-#include <string>
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace culebra {
-
-const auto grammar_ = R"(
-  PROGRAM                  <-  _ STATEMENTS _
-  STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / LEXICAL_SCOPE / EXPRESSION
-
-  DEBUGGER                 <-  debugger
-  RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
-  LEXICAL_SCOPE            <-  BLOCK
-
-  EXPRESSION               <-  ASSIGNMENT / LOGICAL_OR
-
-  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* _ '=' _ EXPRESSION
-
-  LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
-  LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-  CONDITION                <-  ADDITIVE (_ CONDITION_OPERATOR _ ADDITIVE)*
-  ADDITIVE                 <-  UNARY_PLUS (_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
-  UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
-  UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
-  UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
-  MULTIPLICATIVE           <-  CALL (_ MULTIPLICATIVE_OPERATOR _ CALL)*
-
-  CALL                     <-  PRIMARY (_ (ARGUMENTS / INDEX / DOT))*
-  ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
-  INDEX                    <-  '[' _ EXPRESSION _ ']'
-  DOT                      <-  '.' _ IDENTIFIER
-
-  SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
-
-  WHILE                    <-  while _ EXPRESSION _ BLOCK
-  IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
-
-  PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
-                               STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
-
-  FUNCTION                 <-  fn _ PARAMETERS _ BLOCK
-  PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  MUTABLE _ IDENTIFIER
-
-  BLOCK                    <-  '{' _ STATEMENTS _ '}'
-
-  CONDITION_OPERATOR       <-  '==' / '!=' / '<=' / '<' / '>=' / '>'
-  ADDITIVE_OPERATOR        <-  [-+]
-  UNARY_PLUS_OPERATOR      <-  '+'
-  UNARY_MINUS_OPERATOR     <-  '-'
-  UNARY_NOT_OPERATOR       <-  '!'
-  MULTIPLICATIVE_OPERATOR  <-  [*/%]
-
-  LET                      <-  K('let')?
-  MUTABLE                  <-  K('mut')?
-
-  IDENTIFIER               <-  < IdentInitChar IdentChar* >
-
-  OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-  OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER _ ':' _ EXPRESSION
-
-  ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
-
-  NIL                      <-  K('nil')
-  BOOLEAN                  <-  K('true' / 'false')
-
-  NUMBER                   <-  < [0-9]+ >
-  STRING                   <-  ['] < (!['] .)* > [']
-
-  INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
-  INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
-
-  ~debugger                <-  K('debugger')
-  ~while                   <-  K('while')
-  ~if                      <-  K('if')
-  ~else                    <-  K('else')
-  ~fn                      <-  K('fn')
-  ~return                  <-  K('return')
-
-  ~_                       <-  (WhiteSpace / EndOfLine)*
-  ~_sp_                    <-  SpaceChar*
-  ~_nl_                    <-  LineComment? EndOfLine
-
-  WhiteSpace               <-  SpaceChar / Comment
-  Comment                  <-  BlockComment / LineComment
-
-  SpaceChar                <-  ' ' / '\t'
-  EndOfLine                <-  '\r\n' / '\n' / '\r'
-  IdentInitChar            <-  [a-zA-Z_]
-  IdentChar                <-  [a-zA-Z0-9_]
-  BlockComment             <-  '/*' (!'*/' .)* '*/'
-  LineComment              <-  ('#' / '//') (!EndOfLine .)* &EndOfLine
-
-  K(S)                     <-  < S > !IdentInitChar # Keyward Macro
-)";
-
-inline peg::parser& get_parser() {
-  static peg::parser parser;
-  static bool initialized = false;
-
-  if (!initialized) {
-    initialized = true;
-
-    parser.set_logger([&](size_t ln, size_t col, const std::string& msg) {
-      std::println(stderr, "{}:{}: {}", ln, col, msg);
-    });
-
-    if (!parser.load_grammar(grammar_)) {
-      throw std::logic_error("invalid peg grammar");
-    }
-
-    parser.enable_ast();
-  }
-
-  return parser;
-}
 
 struct Value;
 struct Symbol;
 struct Environment;
+
+// Cycle collector for ObjectValue/ArrayValue (shared_ptr-based).
+// Python-style mark-and-sweep; runs periodically and on program exit.
+// Uses weak_ptr<void> so incomplete types (Symbol, Value) don't matter here.
+struct InterpGC {
+  enum Kind : int { MAP = 0, VEC = 1 };
+
+  struct Entry {
+    std::weak_ptr<void> weak;
+    void* ptr;
+    Kind kind;
+  };
+
+  static InterpGC& instance() {
+    static InterpGC g;
+    return g;
+  }
+
+  ~InterpGC() { collect(); }
+
+  template <typename T>
+  void track_map(std::shared_ptr<T> p) {
+    entries_.push_back({std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())),
+                        p.get(), MAP});
+    bump();
+  }
+  template <typename T>
+  void track_vec(std::shared_ptr<T> p) {
+    entries_.push_back({std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())),
+                        p.get(), VEC});
+    bump();
+  }
+
+  void collect();
+
+ private:
+  std::vector<Entry> entries_;
+  size_t alloc_counter_ = 0;
+  size_t threshold_ = 10000;
+  bool running_ = false;
+
+  void bump() {
+    if (!running_ && ++alloc_counter_ >= threshold_) {
+      alloc_counter_ = 0;
+      collect();
+    }
+  }
+};
+
+inline InterpGC& interp_gc() { return InterpGC::instance(); }
+
+// Cycle detection during str() / out() to avoid infinite recursion on
+// cyclic objects. RAII guard: inserts on construction, erases on destruction.
+inline thread_local std::unordered_set<const void*> _str_visiting;
+
+struct StrGuard {
+  const void* key;
+  bool already;
+  explicit StrGuard(const void* k) : key(k) {
+    already = !_str_visiting.insert(k).second;
+  }
+  ~StrGuard() {
+    if (!already) _str_visiting.erase(key);
+  }
+};
 
 struct FunctionValue {
   struct Parameter {
@@ -142,7 +98,9 @@ struct FunctionValue {
 
 struct ObjectValue {
   ObjectValue()
-      : properties(std::make_shared<std::map<std::string_view, Symbol>>()) {}
+      : properties(std::make_shared<std::map<std::string_view, Symbol>>()) {
+    interp_gc().track_map(properties);
+  }
   bool has(std::string_view name) const;
   const Value& get(std::string_view name) const;
   void assign(std::string_view name, const Value& val);
@@ -153,7 +111,9 @@ struct ObjectValue {
 };
 
 struct ArrayValue : public ObjectValue {
-  ArrayValue() : values(std::make_shared<std::vector<Value>>()) {}
+  ArrayValue() : values(std::make_shared<std::vector<Value>>()) {
+    interp_gc().track_vec(values);
+  }
   std::map<std::string_view, Value>& builtins() override;
 
   std::shared_ptr<std::vector<Value>> values;
@@ -270,7 +230,11 @@ struct Value {
   std::string str_object() const;
 
   std::string str_array() const {
-    const auto& values = *to_array().values;
+    const auto& av = to_array();
+    auto* key = av.values.get();
+    StrGuard guard(key);
+    if (guard.already) return "[...]";
+    const auto& values = *av.values;
     std::string s = "[";
     for (auto i = 0u; i < values.size(); i++) {
       if (i != 0) {
@@ -310,15 +274,16 @@ struct Value {
   }
 
   bool operator==(const Value& rhs) const {
+    if (type != rhs.type) return false;
     switch (type) {
       case Nil:
-        return rhs.type == Nil;
+        return true;
       case Bool:
-        return to_bool() == rhs.to_bool();
+        return get<bool>() == rhs.get<bool>();
       case Long:
-        return to_long() == rhs.to_long();
+        return get<long>() == rhs.get<long>();
       case String:
-        return to_string() == rhs.to_string();
+        return get<std::string>() == rhs.get<std::string>();
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -329,15 +294,16 @@ struct Value {
   bool operator!=(const Value& rhs) const { return !operator==(rhs); }
 
   bool operator<=(const Value& rhs) const {
+    if (type != rhs.type) throw std::runtime_error("type error.");
     switch (type) {
       case Nil:
         return false;
       case Bool:
-        return to_bool() <= rhs.to_bool();
+        return get<bool>() <= rhs.get<bool>();
       case Long:
-        return to_long() <= rhs.to_long();
+        return get<long>() <= rhs.get<long>();
       case String:
-        return to_string() <= rhs.to_string();
+        return get<std::string>() <= rhs.get<std::string>();
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -346,15 +312,16 @@ struct Value {
   }
 
   bool operator<(const Value& rhs) const {
+    if (type != rhs.type) throw std::runtime_error("type error.");
     switch (type) {
       case Nil:
         return false;
       case Bool:
-        return to_bool() < rhs.to_bool();
+        return get<bool>() < rhs.get<bool>();
       case Long:
-        return to_long() < rhs.to_long();
+        return get<long>() < rhs.get<long>();
       case String:
-        return to_string() < rhs.to_string();
+        return get<std::string>() < rhs.get<std::string>();
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -363,15 +330,16 @@ struct Value {
   }
 
   bool operator>=(const Value& rhs) const {
+    if (type != rhs.type) throw std::runtime_error("type error.");
     switch (type) {
       case Nil:
         return false;
       case Bool:
-        return to_bool() >= rhs.to_bool();
+        return get<bool>() >= rhs.get<bool>();
       case Long:
-        return to_long() >= rhs.to_long();
+        return get<long>() >= rhs.get<long>();
       case String:
-        return to_string() >= rhs.to_string();
+        return get<std::string>() >= rhs.get<std::string>();
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -380,15 +348,16 @@ struct Value {
   }
 
   bool operator>(const Value& rhs) const {
+    if (type != rhs.type) throw std::runtime_error("type error.");
     switch (type) {
       case Nil:
         return false;
       case Bool:
-        return to_bool() > rhs.to_bool();
+        return get<bool>() > rhs.get<bool>();
       case Long:
-        return to_long() > rhs.to_long();
+        return get<long>() > rhs.get<long>();
       case String:
-        return to_string() > rhs.to_string();
+        return get<std::string>() > rhs.get<std::string>();
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -536,7 +505,11 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
 }
 
 inline std::string Value::str_object() const {
-  const auto& properties = *to_object().properties;
+  const auto& obj = to_object();
+  auto* key = obj.properties.get();
+  StrGuard guard(key);
+  if (guard.already) return "{...}";
+  const auto& properties = *obj.properties;
   std::string s = "{";
   bool first = true;
   for (const auto& [name, sym] : properties) {
@@ -1066,26 +1039,6 @@ struct Interpreter {
   Debugger debugger_;
 };
 
-inline std::shared_ptr<peg::Ast> parse(const std::string& path,
-                                       const char* expr, size_t len,
-                                       std::vector<std::string>& msgs) {
-  auto& parser = get_parser();
-
-  parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
-  });
-
-  std::shared_ptr<peg::Ast> ast;
-  if (parser.parse_n(expr, len, ast, path.c_str())) {
-    auto opt = peg::AstOptimizer(true, {"PARAMETERS", "SEQUENCE", "OBJECT",
-                                        "ARRAY", "RETURN", "LEXICAL_SCOPE"});
-
-    return opt.optimize(ast);
-  }
-
-  return nullptr;
-}
-
 inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
                       std::shared_ptr<Environment> env, Value& val,
                       std::vector<std::string>& msgs,
@@ -1101,6 +1054,115 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
   }
 
   return false;
+}
+
+// --- Cycle collector implementation ---
+// (Defined here so Value is complete.)
+
+inline void InterpGC::collect() {
+  if (running_) return;
+  running_ = true;
+  using PropMap = std::map<std::string_view, Symbol>;
+  using ValVec = std::vector<Value>;
+
+  // Prune expired, lock live, and track via typed shared_ptrs.
+  entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                [](auto& e) { return e.weak.expired(); }),
+                 entries_.end());
+
+  struct Live {
+    void* ptr;
+    Kind kind;
+    std::shared_ptr<void> sp;  // void-typed for type erasure
+  };
+  std::vector<Live> live;
+  live.reserve(entries_.size());
+  for (auto& e : entries_) {
+    if (auto sp = e.weak.lock()) {
+      live.push_back({e.ptr, e.kind, std::move(sp)});
+    }
+  }
+
+  // gc_refs: use_count - 1 (our local), then subtract internal incoming refs
+  std::unordered_map<void*, long> gc_refs;
+  gc_refs.reserve(live.size());
+  for (auto& l : live) gc_refs[l.ptr] = l.sp.use_count() - 1;
+
+  auto dec_if_tracked = [&](void* p) {
+    auto it = gc_refs.find(p);
+    if (it != gc_refs.end()) --it->second;
+  };
+  auto decrement_for_value = [&](const Value& val) {
+    if (val.type == Value::Object) {
+      dec_if_tracked(val.template get<ObjectValue>().properties.get());
+    } else if (val.type == Value::Array) {
+      const auto& av = val.template get<ArrayValue>();
+      dec_if_tracked(av.properties.get());
+      dec_if_tracked(av.values.get());
+    }
+  };
+
+  auto each_child_value = [&](void* ptr, Kind k, auto&& fn) {
+    if (k == MAP) {
+      auto* m = static_cast<PropMap*>(ptr);
+      for (auto& [_, sym] : *m) fn(sym.val);
+    } else {
+      auto* v = static_cast<ValVec*>(ptr);
+      for (auto& val : *v) fn(val);
+    }
+  };
+
+  // Subtract internal references
+  for (auto& l : live) {
+    each_child_value(l.ptr, l.kind, decrement_for_value);
+  }
+
+  // Mark external roots and propagate reachability
+  std::unordered_set<void*> reachable;
+  std::queue<void*> q;
+  for (auto& [ptr, r] : gc_refs) {
+    if (r > 0) {
+      reachable.insert(ptr);
+      q.push(ptr);
+    }
+  }
+
+  std::unordered_map<void*, Kind> kind_by_ptr;
+  kind_by_ptr.reserve(live.size());
+  for (auto& l : live) kind_by_ptr[l.ptr] = l.kind;
+
+  while (!q.empty()) {
+    auto* p = q.front();
+    q.pop();
+    auto kit = kind_by_ptr.find(p);
+    if (kit == kind_by_ptr.end()) continue;
+    each_child_value(p, kit->second, [&](const Value& val) {
+      auto mark = [&](void* c) {
+        auto [_, inserted] = reachable.insert(c);
+        if (inserted && gc_refs.contains(c)) q.push(c);
+      };
+      if (val.type == Value::Object) {
+        mark(val.template get<ObjectValue>().properties.get());
+      } else if (val.type == Value::Array) {
+        const auto& av = val.template get<ArrayValue>();
+        mark(av.properties.get());
+        mark(av.values.get());
+      }
+    });
+  }
+
+  // Break cycles: clear unreachable containers. shared_ptr cascade handles
+  // the rest.
+  for (auto& l : live) {
+    if (!reachable.contains(l.ptr)) {
+      if (l.kind == MAP)
+        static_cast<PropMap*>(l.ptr)->clear();
+      else
+        static_cast<ValVec*>(l.ptr)->clear();
+    }
+  }
+
+  running_ = false;
 }
 
 }  // namespace culebra

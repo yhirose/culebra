@@ -1,0 +1,16 @@
+# Closure with mutable captured state (cell reads/writes)
+make_counter = fn () {
+  mut n = 0
+  fn () {
+    n = n + 1
+    n
+  }
+}
+c = make_counter()
+mut last = 0
+mut i = 0
+while i < 1000000 {
+  last = c()
+  i = i + 1
+}
+puts(last)

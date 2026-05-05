@@ -1,0 +1,15 @@
+# Array grow via push, then read-back
+arr = []
+mut i = 0
+while i < 100000 {
+  arr.push(i)
+  i = i + 1
+}
+# Sum via index access
+mut acc = 0
+mut j = 0
+while j < 100000 {
+  acc = acc + arr[j]
+  j = j + 1
+}
+puts(acc)
