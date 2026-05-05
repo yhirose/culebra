@@ -608,6 +608,8 @@ struct Interpreter {
         return eval_while(ast, env);
       case "IF"_:
         return eval_if(ast, env);
+      case "MATCH"_:
+        return eval_match(ast, env);
       case "FUNCTION"_:
         return eval_function(ast, env);
       case "CALL"_:
@@ -700,6 +702,126 @@ struct Interpreter {
     }
 
     return Value();
+  }
+
+  // Try to match a pattern against `val`. On success, bind any introduced
+  // variables into `env` and return true.
+  bool try_pattern(const peg::Ast& pattern, const Value& val,
+                   std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+
+    // PATTERN with multiple children is an OR pattern.
+    if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+      for (const auto& sub : pattern.nodes) {
+        if (try_pattern(*sub, val, env)) return true;
+      }
+      return false;
+    }
+
+    switch (pattern.tag) {
+      case "WILDCARD"_:
+        return true;
+      case "NIL"_:
+        return val.type == Value::Nil;
+      case "BOOLEAN"_:
+        return val.type == Value::Bool &&
+               val.get<bool>() == (pattern.token == "true");
+      case "NUMBER"_:
+        return val.type == Value::Long &&
+               val.get<long>() == pattern.token_to_number<long>();
+      case "STRING"_:
+      case "INTERPOLATED_CONTENT"_:
+        return val.type == Value::String &&
+               val.get<std::string>() == std::string(pattern.token);
+      case "IDENTIFIER"_: {
+        env->initialize(pattern.token, val, true);
+        return true;
+      }
+      case "TYPED_IDENT"_: {
+        auto type_name = pattern.nodes[1]->token;
+        if (!type_matches(val, type_name)) return false;
+        env->initialize(pattern.nodes[0]->token, val, true);
+        return true;
+      }
+      case "ARRAY_PATTERN"_: {
+        if (val.type != Value::Array) return false;
+        const auto& items = *val.to_array().values;
+        const auto& elems = pattern.nodes;
+
+        // Find optional rest position
+        int rest_idx = -1;
+        for (size_t i = 0; i < elems.size(); i++) {
+          if (elems[i]->tag == "REST_PATTERN"_) {
+            if (rest_idx >= 0) return false;  // at most one rest
+            rest_idx = static_cast<int>(i);
+          }
+        }
+
+        if (rest_idx < 0) {
+          if (items.size() != elems.size()) return false;
+          for (size_t i = 0; i < elems.size(); i++) {
+            if (!try_pattern(*elems[i], items[i], env)) return false;
+          }
+          return true;
+        }
+
+        // With rest: require at least fixed element count
+        auto fixed = elems.size() - 1;
+        if (items.size() < fixed) return false;
+        // Match pre-rest fixed elements
+        for (int i = 0; i < rest_idx; i++) {
+          if (!try_pattern(*elems[i], items[i], env)) return false;
+        }
+        // Collect rest into new Array
+        auto rest_len = items.size() - fixed;
+        ArrayValue rest;
+        rest.values->reserve(rest_len);
+        for (size_t j = 0; j < rest_len; j++) {
+          rest.values->push_back(items[rest_idx + j]);
+        }
+        env->initialize(elems[rest_idx]->nodes[0]->token,
+                        Value(std::move(rest)), true);
+        // Match post-rest fixed elements
+        for (size_t i = rest_idx + 1; i < elems.size(); i++) {
+          auto src_idx = items.size() - (elems.size() - i);
+          if (!try_pattern(*elems[i], items[src_idx], env)) return false;
+        }
+        return true;
+      }
+      case "OBJECT_PATTERN"_: {
+        if (val.type != Value::Object) return false;
+        const auto& obj = val.to_object();
+        for (const auto& key_node : pattern.nodes) {
+          auto key = key_node->token;
+          if (!obj.has(key)) return false;
+          env->initialize(key, obj.get(key), true);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Value eval_match(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    auto subject = eval(*ast.nodes[0], env);
+    const auto& arms = ast.nodes[1]->nodes;  // MATCH_ARMS
+    for (const auto& arm : arms) {
+      // arm.nodes: PATTERN (GUARD)? EXPRESSION
+      const auto& pattern = *arm->nodes[0];
+      size_t next = 1;
+      auto armEnv = std::make_shared<Environment>();
+      armEnv->append_outer(env);
+      if (!try_pattern(pattern, subject, armEnv)) continue;
+
+      if (next < arm->nodes.size() && arm->nodes[next]->tag == "GUARD"_) {
+        auto guard_val = eval(*arm->nodes[next]->nodes[0], armEnv);
+        next++;
+        if (!guard_val.to_bool()) continue;
+      }
+      return eval(*arm->nodes[next], armEnv);
+    }
+    return Value();  // no arm matched → nil
   }
 
   Value eval_function(const peg::Ast& ast, std::shared_ptr<Environment> env) {
@@ -922,8 +1044,9 @@ struct Interpreter {
   bool is_keyword(std::string_view ident) const {
     using namespace std::literals;
     static std::set<std::string_view> keywords = {
-        "nil"sv,    "true"sv,  "false"sv, "mut"sv,  "debugger"sv,
-        "return"sv, "while"sv, "if"sv,    "else"sv, "fn"sv};
+        "nil"sv,    "true"sv,  "false"sv, "mut"sv,   "debugger"sv,
+        "return"sv, "while"sv, "if"sv,    "else"sv,  "fn"sv,
+        "match"sv};
     return keywords.contains(ident);
   }
 

@@ -40,7 +40,24 @@ const auto grammar_ = R"(
   WHILE                    <-  while _ EXPRESSION _ BLOCK
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
-  PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
+  MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
+  MATCH_ARMS               <-  (MATCH_ARM (_ ',' _ MATCH_ARM)* _ ','?)?
+  MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ EXPRESSION
+  GUARD                    <-  if _ EXPRESSION
+
+  PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
+  PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / NUMBER / STRING /
+                               ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
+  WILDCARD                 <-  '_' !IdentChar
+  TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
+
+  ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _ ']'
+  ARRAY_PAT_ELEM           <-  REST_PATTERN / PATTERN
+  REST_PATTERN             <-  '...' _ IDENTIFIER
+
+  OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+
+  PRIMARY                  <-  WHILE / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
@@ -84,6 +101,7 @@ const auto grammar_ = R"(
   ~else                    <-  K('else')
   ~fn                      <-  K('fn')
   ~return                  <-  K('return')
+  ~match                   <-  K('match')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
@@ -161,9 +179,11 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
-    auto opt = peg::AstOptimizer(true, {"PARAMETERS", "SEQUENCE", "OBJECT",
-                                        "ARRAY", "RETURN", "LEXICAL_SCOPE",
-                                        "TYPE_ANNOTATION", "RETURN_TYPE"});
+    auto opt = peg::AstOptimizer(
+        true, {"PARAMETERS", "SEQUENCE", "OBJECT", "ARRAY", "RETURN",
+               "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
+               "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
+               "REST_PATTERN"});
 
     return opt.optimize(ast);
   }

@@ -605,6 +605,23 @@ __attribute__((used)) inline int64_t culebra_runtime_array_size(JitArray* arr) {
   return static_cast<int64_t>(arr->size);
 }
 
+// Forward decl (defined later alongside the refcount runtime).
+__attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
+                                                               int64_t data);
+
+// Create a new array by copying [start, start+len) from src. Each copied
+// element is retained (new array holds another reference).
+__attribute__((used)) inline JitArray* culebra_runtime_array_slice(
+    JitArray* src, int64_t start, int64_t len) {
+  auto* r = culebra_runtime_array_new();
+  for (int64_t i = 0; i < len; i++) {
+    auto& e = src->items[start + i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    culebra_runtime_array_push(r, e.tag, e.data);
+  }
+  return r;
+}
+
 __attribute__((used)) inline void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data) {
   if (static_cast<size_t>(idx) < arr->size) {
@@ -1460,6 +1477,8 @@ struct JIT {
     module_->getOrInsertFunction(
         "culebra_runtime_array_set_or_push", builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_slice", ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction("culebra_runtime_object_new", ptrTy);
     module_->getOrInsertFunction(
         "culebra_runtime_object_set", builder_.getVoidTy(), ptrTy, ptrTy,
@@ -1504,6 +1523,8 @@ struct JIT {
         return compile_while(ast);
       case "IF"_:
         return compile_if(ast);
+      case "MATCH"_:
+        return compile_match(ast);
       case "FUNCTION"_:
         return compile_function(ast);
       case "CALL"_:
@@ -2256,6 +2277,378 @@ struct JIT {
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
     return builder_.CreateLoad(valueType_, resultAlloca, "if.result");
+  }
+
+  // Emit IR that tests whether `subject` matches `pattern`.
+  // On success, emits variable bindings (via define_var) visible from the
+  // current scope; returns i1 true. On failure, returns i1 false; any
+  // bindings emitted speculatively are not read because the arm is skipped.
+  llvm::Value* emit_pattern(const peg::Ast& pattern, llvm::Value* subject) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+
+    // OR pattern: PATTERN node with multiple sub-patterns
+    if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto mergeBB = llvm::BasicBlock::Create(ctx_, "or.match", fn);
+      std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
+      for (size_t i = 0; i < pattern.nodes.size(); i++) {
+        auto m = emit_pattern(*pattern.nodes[i], subject);
+        incoming.push_back({m, builder_.GetInsertBlock()});
+        if (i + 1 < pattern.nodes.size()) {
+          auto nextBB = llvm::BasicBlock::Create(ctx_, "or.try", fn);
+          builder_.CreateCondBr(m, mergeBB, nextBB);
+          builder_.SetInsertPoint(nextBB);
+        } else {
+          builder_.CreateBr(mergeBB);
+        }
+      }
+      builder_.SetInsertPoint(mergeBB);
+      auto phi = builder_.CreatePHI(builder_.getInt1Ty(),
+                                    incoming.size(), "or.result");
+      for (auto& [v, bb] : incoming) phi->addIncoming(v, bb);
+      return phi;
+    }
+
+    switch (pattern.tag) {
+      case "WILDCARD"_:
+        return builder_.getTrue();
+      case "NIL"_:
+        return builder_.CreateICmpEQ(extract_tag(subject),
+                                     builder_.getInt8(TAG_NIL));
+      case "BOOLEAN"_: {
+        auto is_bool = builder_.CreateICmpEQ(extract_tag(subject),
+                                             builder_.getInt8(TAG_BOOL));
+        auto want = builder_.getInt64(pattern.token == "true" ? 1 : 0);
+        auto eq = builder_.CreateICmpEQ(extract_data(subject), want);
+        return builder_.CreateAnd(is_bool, eq);
+      }
+      case "NUMBER"_: {
+        auto is_long = builder_.CreateICmpEQ(extract_tag(subject),
+                                             builder_.getInt8(TAG_LONG));
+        auto want = builder_.getInt64(pattern.token_to_number<long>());
+        auto eq = builder_.CreateICmpEQ(extract_data(subject), want);
+        return builder_.CreateAnd(is_long, eq);
+      }
+      case "STRING"_:
+      case "INTERPOLATED_CONTENT"_: {
+        auto is_str = builder_.CreateICmpEQ(extract_tag(subject),
+                                            builder_.getInt8(TAG_STRING));
+        auto lit = builder_.CreateGlobalString(std::string(pattern.token),
+                                               ".pat.str");
+        auto subj_ptr =
+            builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+        auto eq = builder_.CreateCall(
+            module_->getOrInsertFunction("culebra_runtime_str_eq",
+                                         builder_.getInt1Ty(), ptrTy, ptrTy),
+            {subj_ptr, lit});
+        return builder_.CreateAnd(is_str, eq);
+      }
+      case "IDENTIFIER"_: {
+        // Always matches; bind subject to this name.
+        auto name = std::string(pattern.token);
+        bool captured = current_info_ &&
+                        current_info_->captured_locals.contains(name);
+        auto slot = captured ? make_cell_slot(name, subject)
+                             : make_stack_slot(name, subject);
+        define_var(name, slot);
+        return builder_.getTrue();
+      }
+      case "TYPED_IDENT"_: {
+        auto type_name = pattern.nodes[1]->token;
+        auto tag = extract_tag(subject);
+        llvm::Value* tag_match;
+        if (type_name == "Any") {
+          tag_match = builder_.getTrue();
+        } else if (type_name == "Nil") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL));
+        } else if (type_name == "Bool") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));
+        } else if (type_name == "Long") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
+        } else if (type_name == "String") {
+          tag_match =
+              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
+        } else if (type_name == "Array") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
+        } else if (type_name == "Object") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+        } else if (type_name == "Function") {
+          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
+        } else {
+          tag_match = builder_.getFalse();
+        }
+        // Bind unconditionally; only used if arm actually runs.
+        auto name = std::string(pattern.nodes[0]->token);
+        bool captured = current_info_ &&
+                        current_info_->captured_locals.contains(name);
+        auto slot = captured ? make_cell_slot(name, subject)
+                             : make_stack_slot(name, subject);
+        define_var(name, slot);
+        return tag_match;
+      }
+      case "ARRAY_PATTERN"_:
+        return emit_array_pattern(pattern, subject);
+      case "OBJECT_PATTERN"_:
+        return emit_object_pattern(pattern, subject);
+    }
+    return builder_.getFalse();
+  }
+
+  // Element-by-element destructuring with short-circuit on first mismatch.
+  llvm::Value* emit_array_pattern(const peg::Ast& pattern,
+                                  llvm::Value* subject) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto failBB = llvm::BasicBlock::Create(ctx_, "arr.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "arr.ok", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "arr.end", fn);
+
+    // 1. Tag must be Array
+    auto isArr = builder_.CreateICmpEQ(extract_tag(subject),
+                                       builder_.getInt8(TAG_ARRAY));
+    auto sizeBB = llvm::BasicBlock::Create(ctx_, "arr.size", fn);
+    builder_.CreateCondBr(isArr, sizeBB, failBB);
+    builder_.SetInsertPoint(sizeBB);
+
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+    auto size = builder_.CreateCall(
+        module_->getOrInsertFunction("culebra_runtime_array_size",
+                                     builder_.getInt64Ty(), ptrTy),
+        {arrPtr}, "arr.n");
+
+    const auto& elems = pattern.nodes;
+    int rest_idx = -1;
+    for (size_t i = 0; i < elems.size(); i++) {
+      if (elems[i]->tag == "REST_PATTERN"_) {
+        rest_idx = static_cast<int>(i);
+        break;
+      }
+    }
+    auto fixed = elems.size() - (rest_idx >= 0 ? 1 : 0);
+
+    // 2. Size check
+    llvm::Value* size_ok;
+    if (rest_idx < 0) {
+      size_ok = builder_.CreateICmpEQ(size, builder_.getInt64(fixed));
+    } else {
+      size_ok = builder_.CreateICmpSGE(size, builder_.getInt64(fixed));
+    }
+    auto elemBB = llvm::BasicBlock::Create(ctx_, "arr.elem", fn);
+    builder_.CreateCondBr(size_ok, elemBB, failBB);
+    builder_.SetInsertPoint(elemBB);
+
+    // Helper: fetch arr[i] as a Value
+    auto get_elem = [&](llvm::Value* idx) {
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto outTag =
+          entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ap.tag");
+      auto outData =
+          entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ap.data");
+      builder_.CreateCall(
+          module_->getOrInsertFunction(
+              "culebra_runtime_array_get", builder_.getVoidTy(), ptrTy,
+              builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+              builder_.getInt64Ty()),
+          {arrPtr, idx, outTag, outData, current_line_val(),
+           current_column_val()});
+      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, t, {0});
+      v = builder_.CreateInsertValue(v, d, {1});
+      return v;
+    };
+
+    // 3. Match each element, short-circuit on failure
+    auto pre_count =
+        rest_idx < 0 ? elems.size() : static_cast<size_t>(rest_idx);
+    for (size_t i = 0; i < pre_count; i++) {
+      auto v = get_elem(builder_.getInt64(i));
+      auto m = emit_pattern(*elems[i], v);
+      auto contBB = llvm::BasicBlock::Create(ctx_, "arr.cont", fn);
+      builder_.CreateCondBr(m, contBB, failBB);
+      builder_.SetInsertPoint(contBB);
+    }
+
+    if (rest_idx >= 0) {
+      // Slice rest: start = rest_idx, len = size - fixed
+      auto rest_start = builder_.getInt64(rest_idx);
+      auto rest_len =
+          builder_.CreateSub(size, builder_.getInt64(fixed), "rest.len");
+      auto rest_arr_ptr = builder_.CreateCall(
+          module_->getOrInsertFunction("culebra_runtime_array_slice", ptrTy,
+                                       ptrTy, builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
+          {arrPtr, rest_start, rest_len}, "rest.arr");
+      auto rest_val = make_array(rest_arr_ptr);
+      auto rest_name =
+          std::string(elems[rest_idx]->nodes[0]->token);
+      bool cap = current_info_ &&
+                 current_info_->captured_locals.contains(rest_name);
+      auto slot = cap ? make_cell_slot(rest_name, rest_val)
+                      : make_stack_slot(rest_name, rest_val);
+      define_var(rest_name, slot);
+
+      // Match post-rest elements (from end of array)
+      for (size_t i = rest_idx + 1; i < elems.size(); i++) {
+        auto off = static_cast<int64_t>(elems.size() - i);
+        auto idx = builder_.CreateSub(size, builder_.getInt64(off));
+        auto v = get_elem(idx);
+        auto m = emit_pattern(*elems[i], v);
+        auto contBB = llvm::BasicBlock::Create(ctx_, "arr.cont2", fn);
+        builder_.CreateCondBr(m, contBB, failBB);
+        builder_.SetInsertPoint(contBB);
+      }
+    }
+
+    builder_.CreateBr(okBB);
+
+    builder_.SetInsertPoint(okBB);
+    auto okEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(failBB);
+    auto failEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "arr.match");
+    phi->addIncoming(builder_.getTrue(), okEnd);
+    phi->addIncoming(builder_.getFalse(), failEnd);
+    return phi;
+  }
+
+  llvm::Value* emit_object_pattern(const peg::Ast& pattern,
+                                   llvm::Value* subject) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto failBB = llvm::BasicBlock::Create(ctx_, "obj.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "obj.ok", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "obj.end", fn);
+
+    auto isObj = builder_.CreateICmpEQ(extract_tag(subject),
+                                       builder_.getInt8(TAG_OBJECT));
+    auto contBB = llvm::BasicBlock::Create(ctx_, "obj.next", fn);
+    builder_.CreateCondBr(isObj, contBB, failBB);
+    builder_.SetInsertPoint(contBB);
+
+    auto objPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+
+    // For each key: has + get + bind
+    for (const auto& key_node : pattern.nodes) {
+      auto key = std::string(key_node->token);
+      auto keyPtr = get_or_create_global_str(key, ".obj.key");
+      auto has = builder_.CreateCall(
+          module_->getOrInsertFunction("culebra_runtime_object_has",
+                                       builder_.getInt1Ty(), ptrTy, ptrTy),
+          {objPtr, keyPtr});
+      auto next = llvm::BasicBlock::Create(ctx_, "obj.bind", fn);
+      builder_.CreateCondBr(has, next, failBB);
+      builder_.SetInsertPoint(next);
+
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto outTag =
+          entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "op.tag");
+      auto outData =
+          entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "op.data");
+      builder_.CreateCall(
+          module_->getOrInsertFunction("culebra_runtime_object_get",
+                                       builder_.getVoidTy(), ptrTy, ptrTy,
+                                       ptrTy, ptrTy),
+          {objPtr, keyPtr, outTag, outData});
+      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, t, {0});
+      v = builder_.CreateInsertValue(v, d, {1});
+      // Retain since we're creating a new owning reference in the slot
+      emit_value_retain(v);
+
+      bool cap = current_info_ &&
+                 current_info_->captured_locals.contains(key);
+      auto slot = cap ? make_cell_slot(key, v) : make_stack_slot(key, v);
+      define_var(key, slot);
+    }
+
+    builder_.CreateBr(okBB);
+    builder_.SetInsertPoint(okBB);
+    auto okEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(failBB);
+    auto failEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "obj.match");
+    phi->addIncoming(builder_.getTrue(), okEnd);
+    phi->addIncoming(builder_.getFalse(), failEnd);
+    return phi;
+  }
+
+  llvm::Value* compile_match(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    auto subject = compile(*ast.nodes[0]);
+    // Stash subject in a local so every arm reads the same SSA value.
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto subjAlloca = entryB.CreateAlloca(valueType_, nullptr, "match.subj");
+    builder_.CreateStore(subject, subjAlloca);
+
+    auto endBB = llvm::BasicBlock::Create(ctx_, "match.end", fn);
+    auto resultAlloca =
+        entryB.CreateAlloca(valueType_, nullptr, "match.result");
+    builder_.CreateStore(make_nil(), resultAlloca);
+
+    const auto& arms = ast.nodes[1]->nodes;  // MATCH_ARMS
+    for (size_t ai = 0; ai < arms.size(); ai++) {
+      auto next_arm_bb =
+          llvm::BasicBlock::Create(ctx_, "match.next", fn);
+      auto body_bb = llvm::BasicBlock::Create(ctx_, "match.body", fn);
+
+      push_scope();
+
+      auto subj_val = builder_.CreateLoad(valueType_, subjAlloca);
+      auto match_cond = emit_pattern(*arms[ai]->nodes[0], subj_val);
+      // Either head for guard check or straight to body
+      size_t next_idx = 1;
+      bool has_guard = arms[ai]->nodes.size() > 1 &&
+                       arms[ai]->nodes[1]->tag == "GUARD"_;
+      if (has_guard) {
+        auto guard_bb =
+            llvm::BasicBlock::Create(ctx_, "match.guard", fn);
+        builder_.CreateCondBr(match_cond, guard_bb, next_arm_bb);
+        builder_.SetInsertPoint(guard_bb);
+        auto guard_val = compile(*arms[ai]->nodes[1]->nodes[0]);
+        auto guard_bool = value_to_bool(guard_val);
+        builder_.CreateCondBr(guard_bool, body_bb, next_arm_bb);
+        next_idx = 2;
+      } else {
+        builder_.CreateCondBr(match_cond, body_bb, next_arm_bb);
+      }
+
+      builder_.SetInsertPoint(body_bb);
+      auto body_val = compile(*arms[ai]->nodes[next_idx]);
+      builder_.CreateStore(body_val, resultAlloca);
+      if (!builder_.GetInsertBlock()->getTerminator()) {
+        builder_.CreateBr(endBB);
+      }
+
+      pop_scope();
+      builder_.SetInsertPoint(next_arm_bb);
+    }
+
+    // No arm matched → result stays nil
+    builder_.CreateBr(endBB);
+
+    builder_.SetInsertPoint(endBB);
+    return builder_.CreateLoad(valueType_, resultAlloca, "match.res");
   }
 
   llvm::Value* compile_while(const peg::Ast& ast) {
