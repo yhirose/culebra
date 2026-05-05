@@ -19,6 +19,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/TargetSelect.h"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -77,6 +78,7 @@ struct JitClosure {
   void* fn_ptr;
   size_t n_captures;
   JitCell** captures;
+  size_t arity;  // number of user-visible params (excluding __cls__, this)
 };
 
 // --- Cycle collector ---
@@ -377,6 +379,20 @@ inline const char* _culebra_heap_str(const std::string& s) {
   auto buf = static_cast<char*>(std::malloc(s.size() + 1));
   std::memcpy(buf, s.c_str(), s.size() + 1);
   return buf;
+}
+
+// Same-tag equality matching the interpreter's operator==. Strings compare by
+// contents; reference types (func/array/object) by identity.
+inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  if (t1 != t2) return false;
+  switch (t1) {
+    case 0: return true;
+    case 1: return (d1 != 0) == (d2 != 0);
+    case 2: return d1 == d2;
+    case 4: return std::strcmp(reinterpret_cast<const char*>(d1),
+                               reinterpret_cast<const char*>(d2)) == 0;
+    default: return d1 == d2;  // func/array/object: identity
+  }
 }
 
 extern "C" {
@@ -698,7 +714,7 @@ __attribute__((used)) inline JitCell* culebra_runtime_cell_new(int8_t tag,
 // --- Closure runtime ---
 
 __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
-    void* fn_ptr, size_t n_captures) {
+    void* fn_ptr, size_t n_captures, size_t arity) {
   auto* c = new JitClosure();
   c->refcount = 1;
   c->fn_ptr = fn_ptr;
@@ -707,8 +723,325 @@ __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
       n_captures ? static_cast<JitCell**>(
                        std::malloc(sizeof(JitCell*) * n_captures))
                  : nullptr;
+  c->arity = arity;
   _gc().add(c, GC_TAG_FUNC);
   return c;
+}
+
+// --- Higher-order array helpers -------------------------------------------
+//
+// These invoke a user-supplied JIT-compiled closure per element. The call
+// signatures below must match compile_function's emitted signature:
+//
+//   %Value fn(ptr __cls__, %Value this, %Value p1, ...)
+//
+// Closure arg ownership: each arg Value passed to the JIT'd function is
+// consumed (released at function exit). So array elements must be retained
+// before being handed to the closure.
+
+__attribute__((used)) inline JitArray* culebra_runtime_array_map(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  if (fn_tag != 3) {
+    throw std::runtime_error(
+        std::format("type error at {}:{}.", line, col));
+  }
+  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
+  if (fn->arity != 1) {
+    throw std::runtime_error(std::format(
+        "type error: map expects a 1-parameter function at {}:{}.",
+        line, col));
+  }
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  auto* out = culebra_runtime_array_new();
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    culebra_runtime_array_push(out, r.tag, r.data);
+  }
+  return out;
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_array_filter(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  if (fn_tag != 3) {
+    throw std::runtime_error(
+        std::format("type error at {}:{}.", line, col));
+  }
+  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
+  if (fn->arity != 1) {
+    throw std::runtime_error(std::format(
+        "type error: filter expects a 1-parameter function at {}:{}.",
+        line, col));
+  }
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  auto* out = culebra_runtime_array_new();
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    bool keep = (r.tag == 1 || r.tag == 2) ? (r.data != 0) : false;
+    _culebra_value_release_impl(r.tag, r.data);
+    if (keep) {
+      culebra_runtime_value_retain(e.tag, e.data);
+      culebra_runtime_array_push(out, e.tag, e.data);
+    }
+  }
+  return out;
+}
+
+__attribute__((used)) inline void culebra_runtime_array_for_each(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  using JitFn1 = JitValue (*)(JitClosure*, JitValue, JitValue);
+  if (fn_tag != 3) {
+    throw std::runtime_error(
+        std::format("type error at {}:{}.", line, col));
+  }
+  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
+  if (fn->arity != 1) {
+    throw std::runtime_error(std::format(
+        "type error: for_each expects a 1-parameter function at {}:{}.",
+        line, col));
+  }
+  auto call = reinterpret_cast<JitFn1>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    JitValue r = call(fn, nil_val, e);
+    _culebra_value_release_impl(r.tag, r.data);
+  }
+}
+
+// reduce returns the final accumulator via out-params (avoids relying on
+// cross-language struct-return ABI).
+__attribute__((used)) inline void culebra_runtime_array_reduce(
+    JitArray* arr, int8_t init_tag, int64_t init_data, int8_t fn_tag,
+    int64_t fn_data, int64_t line, int64_t col, int8_t* out_tag,
+    int64_t* out_data) {
+  using JitFn2 = JitValue (*)(JitClosure*, JitValue, JitValue, JitValue);
+  if (fn_tag != 3) {
+    throw std::runtime_error(
+        std::format("type error at {}:{}.", line, col));
+  }
+  auto* fn = reinterpret_cast<JitClosure*>(fn_data);
+  if (fn->arity != 2) {
+    throw std::runtime_error(std::format(
+        "type error: reduce expects a 2-parameter function at {}:{}.",
+        line, col));
+  }
+  auto call = reinterpret_cast<JitFn2>(fn->fn_ptr);
+  JitValue nil_val = {0, 0};
+  JitValue acc = {init_tag, init_data};
+  for (size_t i = 0; i < arr->size; i++) {
+    auto e = arr->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    acc = call(fn, nil_val, acc, e);
+  }
+  *out_tag = acc.tag;
+  *out_data = acc.data;
+}
+
+__attribute__((used)) inline int64_t culebra_runtime_str_size(const char* s) {
+  return static_cast<int64_t>(std::strlen(s));
+}
+
+__attribute__((used)) inline const char* culebra_runtime_str_upper(
+    const char* s) {
+  auto n = std::strlen(s);
+  auto* buf = static_cast<char*>(std::malloc(n + 1));
+  for (size_t i = 0; i < n; i++) {
+    buf[i] =
+        static_cast<char>(std::toupper(static_cast<unsigned char>(s[i])));
+  }
+  buf[n] = '\0';
+  return buf;
+}
+
+__attribute__((used)) inline const char* culebra_runtime_str_lower(
+    const char* s) {
+  auto n = std::strlen(s);
+  auto* buf = static_cast<char*>(std::malloc(n + 1));
+  for (size_t i = 0; i < n; i++) {
+    buf[i] =
+        static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+  }
+  buf[n] = '\0';
+  return buf;
+}
+
+__attribute__((used)) inline const char* culebra_runtime_str_trim(
+    const char* s) {
+  auto n = std::strlen(s);
+  size_t start = 0;
+  while (start < n && std::isspace(static_cast<unsigned char>(s[start]))) {
+    start++;
+  }
+  size_t end = n;
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+    end--;
+  }
+  auto len = end - start;
+  auto* buf = static_cast<char*>(std::malloc(len + 1));
+  std::memcpy(buf, s + start, len);
+  buf[len] = '\0';
+  return buf;
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_str_split(
+    const char* s, const char* sep) {
+  auto* r = culebra_runtime_array_new();
+  std::string_view sv(s);
+  std::string_view sp(sep);
+  if (sp.empty()) {
+    culebra_runtime_array_push(
+        r, /*String*/ 4,
+        reinterpret_cast<int64_t>(_culebra_heap_str(std::string(sv))));
+    return r;
+  }
+  size_t pos = 0;
+  while (true) {
+    auto p = sv.find(sp, pos);
+    if (p == std::string_view::npos) {
+      auto* piece = _culebra_heap_str(std::string(sv.substr(pos)));
+      culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
+      break;
+    }
+    auto* piece = _culebra_heap_str(std::string(sv.substr(pos, p - pos)));
+    culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
+    pos = p + sp.size();
+  }
+  return r;
+}
+
+__attribute__((used)) inline bool culebra_runtime_str_contains(
+    const char* s, const char* sub) {
+  return std::strstr(s, sub) != nullptr;
+}
+
+__attribute__((used)) inline bool culebra_runtime_str_starts_with(
+    const char* s, const char* prefix) {
+  auto lp = std::strlen(prefix);
+  return std::strncmp(s, prefix, lp) == 0;
+}
+
+__attribute__((used)) inline bool culebra_runtime_str_ends_with(
+    const char* s, const char* suffix) {
+  auto ls = std::strlen(s);
+  auto lsuf = std::strlen(suffix);
+  if (lsuf > ls) return false;
+  return std::strncmp(s + (ls - lsuf), suffix, lsuf) == 0;
+}
+
+__attribute__((used)) inline const char* culebra_runtime_str_slice(
+    const char* s, int64_t start, int64_t end) {
+  int64_t size = static_cast<int64_t>(std::strlen(s));
+  if (start < 0) start += size;
+  if (end < 0) end += size;
+  if (start < 0) start = 0;
+  if (start > size) start = size;
+  if (end < start) end = start;
+  if (end > size) end = size;
+  auto len = static_cast<size_t>(end - start);
+  auto* buf = static_cast<char*>(std::malloc(len + 1));
+  std::memcpy(buf, s + start, len);
+  buf[len] = '\0';
+  return buf;
+}
+
+__attribute__((used)) inline void culebra_runtime_array_pop(
+    JitArray* arr, int8_t* out_tag, int64_t* out_data) {
+  if (arr->size == 0) {
+    *out_tag = 0;
+    *out_data = 0;
+    return;
+  }
+  auto& last = arr->items[arr->size - 1];
+  *out_tag = last.tag;
+  *out_data = last.data;
+  arr->size--;
+}
+
+// Slice with negative indices and clamping. Returns a new array with retained
+// elements (independent refcount).
+__attribute__((used)) inline JitArray* culebra_runtime_array_slice2(
+    JitArray* src, int64_t start, int64_t end) {
+  int64_t size = static_cast<int64_t>(src->size);
+  if (start < 0) start += size;
+  if (end < 0) end += size;
+  if (start < 0) start = 0;
+  if (start > size) start = size;
+  if (end < start) end = start;
+  if (end > size) end = size;
+  auto* r = culebra_runtime_array_new();
+  for (int64_t i = start; i < end; i++) {
+    auto& e = src->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    culebra_runtime_array_push(r, e.tag, e.data);
+  }
+  return r;
+}
+
+__attribute__((used)) inline const char* culebra_runtime_array_join(
+    JitArray* arr, const char* sep) {
+  std::string out;
+  for (size_t i = 0; i < arr->size; i++) {
+    if (i > 0) out += sep;
+    auto tag = arr->items[i].tag;
+    auto data = arr->items[i].data;
+    if (tag == 4) {
+      out += reinterpret_cast<const char*>(data);
+    } else {
+      out += _culebra_value_to_str_impl(tag, data);
+    }
+  }
+  return _culebra_heap_str(out);
+}
+
+__attribute__((used)) inline int64_t culebra_runtime_array_index_of(
+    JitArray* arr, int8_t tag, int64_t data) {
+  for (size_t i = 0; i < arr->size; i++) {
+    if (_culebra_value_equal(arr->items[i].tag, arr->items[i].data, tag, data))
+      return static_cast<int64_t>(i);
+  }
+  return -1;
+}
+
+__attribute__((used)) inline bool culebra_runtime_array_contains(
+    JitArray* arr, int8_t tag, int64_t data) {
+  return culebra_runtime_array_index_of(arr, tag, data) >= 0;
+}
+
+__attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
+  if (arr->size < 2) return;
+  for (size_t i = 0, j = arr->size - 1; i < j; i++, j--) {
+    auto tmp = arr->items[i];
+    arr->items[i] = arr->items[j];
+    arr->items[j] = tmp;
+  }
+}
+
+__attribute__((used)) inline JitArray* culebra_runtime_object_keys(
+    JitObject* obj) {
+  auto* r = culebra_runtime_array_new();
+  for (const auto& [k, _] : obj->props) {
+    auto* buf = _culebra_heap_str(k);
+    culebra_runtime_array_push(r, /*String*/ 4, reinterpret_cast<int64_t>(buf));
+  }
+  return r;
+}
+
+__attribute__((used)) inline void culebra_runtime_object_remove(
+    JitObject* obj, const char* key) {
+  auto it = obj->props.find(key);
+  if (it == obj->props.end()) return;
+  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
+  obj->props.erase(it);
 }
 
 }  // extern "C" (close briefly for C++ impl helpers)
@@ -925,6 +1258,16 @@ struct JIT {
     MPM.run(mod, MAM);
   }
 
+  // Built-in type method dispatch (language-level; lives in jit.h).
+  llvm::Value* compile_builtin_method(const std::string& method,
+                                      const peg::Ast& argsAst,
+                                      llvm::Value* receiver);
+  // Stdlib helpers — bodies live in stdlib_jit.h.
+  void declare_stdlib_runtime();
+  llvm::Value* try_compile_stdlib_global(const std::string& name,
+                                         const peg::Ast& argsAst,
+                                         const peg::Ast& callAst);
+
  private:
   llvm::LLVMContext& ctx_;
   llvm::Module* module_;
@@ -970,7 +1313,8 @@ struct JIT {
         ctx_, {builder_.getInt64Ty(), valueType_}, "Cell");
     closureType_ = llvm::StructType::create(
         ctx_,
-        {builder_.getInt64Ty(), ptrTy, builder_.getInt64Ty(), ptrTy},
+        {builder_.getInt64Ty(), ptrTy, builder_.getInt64Ty(), ptrTy,
+         builder_.getInt64Ty()},
         "Closure");
   }
 
@@ -1263,8 +1607,11 @@ struct JIT {
   // --- Free variable analysis ---
 
   static bool is_builtin_var(const std::string& name) {
-    return name == "puts" || name == "assert" || name == "self" ||
-           name == "this";
+    static const std::unordered_set<std::string_view> names = {
+        "puts",    "print",     "assert",    "self",    "this",
+        "abs",     "min",       "max",       "range",   "to_long",
+        "to_string", "type_of", "input",     "read_file", "write_file"};
+    return names.contains(name);
   }
 
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
@@ -1494,6 +1841,7 @@ struct JIT {
     module_->getOrInsertFunction("culebra_runtime_cell_new", ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction("culebra_runtime_closure_new", ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction("culebra_runtime_value_retain",
                                  builder_.getVoidTy(),
@@ -1505,6 +1853,61 @@ struct JIT {
                                  builder_.getVoidTy(), ptrTy);
     module_->getOrInsertFunction("culebra_runtime_cell_release",
                                  builder_.getVoidTy(), ptrTy);
+
+    // Built-in type methods.
+    module_->getOrInsertFunction("culebra_runtime_str_size",
+                                 builder_.getInt64Ty(), ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_upper", ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_lower", ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_trim", ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_split", ptrTy, ptrTy,
+                                 ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_contains",
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_starts_with",
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_ends_with",
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_str_slice", ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_pop",
+                                 builder_.getVoidTy(), ptrTy, ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_array_slice2", ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_join", ptrTy, ptrTy,
+                                 ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_array_contains",
+                                 builder_.getInt1Ty(), ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_index_of",
+                                 builder_.getInt64Ty(), ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_reverse",
+                                 builder_.getVoidTy(), ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_object_keys", ptrTy, ptrTy);
+    module_->getOrInsertFunction("culebra_runtime_object_remove",
+                                 builder_.getVoidTy(), ptrTy, ptrTy);
+    // Higher-order array helpers (§17.2): (arr, fn_tag, fn_data, line, col).
+    module_->getOrInsertFunction("culebra_runtime_array_map", ptrTy, ptrTy,
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction("culebra_runtime_array_filter", ptrTy,
+                                 ptrTy, builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(
+        "culebra_runtime_array_for_each", builder_.getVoidTy(), ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+        builder_.getInt64Ty());
+    module_->getOrInsertFunction(
+        "culebra_runtime_array_reduce", builder_.getVoidTy(), ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt8Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+        ptrTy, ptrTy);
+
+    declare_stdlib_runtime();
   }
 
   // --- Main dispatch ---
@@ -2825,10 +3228,12 @@ struct JIT {
     // At the caller's insertion point, create a closure populated with
     // cell pointers from the current scope.
     auto n = info.free_vars.size();
+    auto arity = paramNames.size();
     auto closurePtr = builder_.CreateCall(
         module_->getOrInsertFunction("culebra_runtime_closure_new", ptrTy,
-                                     ptrTy, builder_.getInt64Ty()),
-        {fn, builder_.getInt64(n)}, "closure");
+                                     ptrTy, builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {fn, builder_.getInt64(n), builder_.getInt64(arity)}, "closure");
 
     if (n > 0) {
       // Load the captures array pointer from the closure
@@ -2983,79 +3388,31 @@ struct JIT {
     return result;
   }
 
+  // Helper: check receiver tag matches expected TAG_*, else type error.
+  llvm::Value* expect_tag(llvm::Value* receiver, int8_t expected,
+                          const char* bb_prefix) {
+    auto tag = extract_tag(receiver);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto okBB = llvm::BasicBlock::Create(
+        ctx_, std::string(bb_prefix) + ".ok", fn);
+    auto errBB = llvm::BasicBlock::Create(
+        ctx_, std::string(bb_prefix) + ".err", fn);
+    auto cond = builder_.CreateICmpEQ(tag, builder_.getInt8(expected));
+    builder_.CreateCondBr(cond, okBB, errBB);
+    builder_.SetInsertPoint(errBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+    return builder_.CreateIntToPtr(extract_data(receiver),
+                                   llvm::PointerType::get(ctx_, 0));
+  }
+
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto tag = extract_tag(receiver);
-    auto fn = builder_.GetInsertBlock()->getParent();
-
-    // .size() - works on both Array and Object
-    if (method == "size" && argsAst.nodes.size() == 0) {
-      auto arrBB = llvm::BasicBlock::Create(ctx_, "size.arr", fn);
-      auto objBB = llvm::BasicBlock::Create(ctx_, "size.obj", fn);
-      auto errBB = llvm::BasicBlock::Create(ctx_, "size.err", fn);
-      auto mergeBB = llvm::BasicBlock::Create(ctx_, "size.merge", fn);
-
-      auto sw = builder_.CreateSwitch(tag, errBB, 2);
-      sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
-      sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
-
-      builder_.SetInsertPoint(arrBB);
-      auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-      auto arrSize = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_array_size",
-                                       builder_.getInt64Ty(), ptrTy),
-          {arrPtr}, "asz");
-      auto arrSizeBB = builder_.GetInsertBlock();
-      builder_.CreateBr(mergeBB);
-
-      builder_.SetInsertPoint(objBB);
-      auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-      auto objSize = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_object_size",
-                                       builder_.getInt64Ty(), ptrTy),
-          {objPtr}, "osz");
-      auto objSizeBB = builder_.GetInsertBlock();
-      builder_.CreateBr(mergeBB);
-
-      builder_.SetInsertPoint(errBB);
-      emit_type_error();
-      builder_.CreateUnreachable();
-
-      builder_.SetInsertPoint(mergeBB);
-      auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 2, "sz");
-      phi->addIncoming(arrSize, arrSizeBB);
-      phi->addIncoming(objSize, objSizeBB);
-      return make_long(phi);
-    }
-
-    // .push(x) - Array only
-    if (method == "push") {
-      auto isArr =
-          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY), "is.arr");
-      auto okBB = llvm::BasicBlock::Create(ctx_, "push.ok", fn);
-      auto errBB = llvm::BasicBlock::Create(ctx_, "push.err", fn);
-      builder_.CreateCondBr(isArr, okBB, errBB);
-
-      builder_.SetInsertPoint(errBB);
-      emit_type_error();
-      builder_.CreateUnreachable();
-
-      builder_.SetInsertPoint(okBB);
-      auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-      if (argsAst.nodes.size() != 1) {
-        throw std::runtime_error("push() requires one argument");
-      }
-      auto val = compile(*argsAst.nodes[0]);
-      auto vtag = extract_tag(val);
-      auto vdata = extract_data(val);
-      builder_.CreateCall(
-          module_->getOrInsertFunction(
-              "culebra_runtime_array_push", builder_.getVoidTy(), ptrTy,
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {arrPtr, vtag, vdata});
-      return make_nil();
+    if (auto* r =
+            compile_builtin_method(method, argsAst, receiver)) {
+      return r;
     }
 
     // User-defined method on Object: fetch property, call with this=receiver
@@ -3106,48 +3463,52 @@ struct JIT {
     return builder_.CreateCall(calleeType, fnPtr, args, "call.result");
   }
 
-  // Detect builtins at call site
+  // Handle a CALL, intercepting stdlib globals in the leading `name(args)`
+  // so they compile directly instead of resolving as variables.
   llvm::Value* compile_call_with_builtins(const peg::Ast& ast) {
     using namespace peg::udl;
-
     auto calleeNode = ast.nodes[0];
 
-    if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() == 2 &&
+    llvm::Value* start = nullptr;
+    size_t next_idx = 1;
+
+    if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "ARGUMENTS"_) {
       auto name = std::string(calleeNode->token);
-      const auto& argsAst = *ast.nodes[1];
-
-      if (name == "puts" && argsAst.nodes.size() == 1) {
-        auto arg = compile(*argsAst.nodes[0]);
-        auto tag = extract_tag(arg);
-        auto data = extract_data(arg);
-        builder_.CreateCall(
-            module_->getOrInsertFunction("culebra_runtime_puts",
-                                         builder_.getVoidTy(),
-                                         builder_.getInt8Ty(),
-                                         builder_.getInt64Ty()),
-            {tag, data});
-        emit_value_release(arg);
-        return make_nil();
-      }
-
-      if (name == "assert" && argsAst.nodes.size() == 1) {
-        auto arg = compile(*argsAst.nodes[0]);
-        auto tag = extract_tag(arg);
-        auto data = extract_data(arg);
-        builder_.CreateCall(
-            module_->getOrInsertFunction(
-                "culebra_runtime_assert", builder_.getVoidTy(),
-                builder_.getInt8Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty(), builder_.getInt64Ty()),
-            {tag, data, builder_.getInt64(ast.line),
-             builder_.getInt64(ast.column)});
-        emit_value_release(arg);
-        return make_nil();
-      }
+      start = try_compile_stdlib_global(name, *ast.nodes[1], ast);
+      if (start) next_idx = 2;
     }
 
-    return compile_call(ast);
+    if (!start) return compile_call(ast);
+
+    // Continue with remaining postfixes (matching compile_call's loop).
+    llvm::Value* callee = start;
+    for (auto i = next_idx; i < ast.nodes.size(); i++) {
+      const auto& postfix = *ast.nodes[i];
+      switch (postfix.original_tag) {
+        case "ARGUMENTS"_:
+          callee = compile_function_call(postfix, callee);
+          break;
+        case "INDEX"_:
+          callee = compile_index_access(postfix, callee);
+          break;
+        case "DOT"_: {
+          if (i + 1 < ast.nodes.size() &&
+              ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
+            auto method = std::string(postfix.token);
+            callee = compile_method_call(method, *ast.nodes[i + 1], callee);
+            i++;
+          } else {
+            auto name = std::string(postfix.token);
+            callee = compile_property_get(callee, name);
+          }
+          break;
+        }
+        default:
+          throw std::runtime_error("invalid call postfix");
+      }
+    }
+    return callee;
   }
 
   // --- Debugger ---
@@ -3205,6 +3566,363 @@ struct JIT {
   }
 };
 
+inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
+                                                const peg::Ast& argsAst,
+                                                llvm::Value* receiver) {
+  // Fast path: bail out immediately on unknown method names before doing any
+  // setup. Keeps user-defined method calls free of stdlib overhead.
+  static const std::unordered_set<std::string_view> known = {
+      "size",        "push",       "pop",      "reverse", "slice",
+      "join",        "index_of",   "contains", "upper",   "lower",
+      "trim",        "split",      "starts_with", "ends_with",
+      "keys",        "has",        "remove",
+      "map",         "filter",     "reduce",   "for_each"};
+  if (!known.contains(method)) return nullptr;
+
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto tag = extract_tag(receiver);
+  auto fn = builder_.GetInsertBlock()->getParent();
+
+  // .size() — works on Array, Object, String
+  if (method == "size" && argsAst.nodes.size() == 0) {
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "size.arr", fn);
+    auto objBB = llvm::BasicBlock::Create(ctx_, "size.obj", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "size.str", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "size.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "size.merge", fn);
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto arrSize = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_size"), {arrPtr}, "asz");
+    auto arrSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto objSize = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_object_size"), {objPtr}, "osz");
+    auto objSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto strSize = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_size"), {strPtr}, "ssz");
+    auto strSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 3, "sz");
+    phi->addIncoming(arrSize, arrSizeBB);
+    phi->addIncoming(objSize, objSizeBB);
+    phi->addIncoming(strSize, strSizeBB);
+    return make_long(phi);
+  }
+
+  // --- Array methods ---
+
+  if (method == "push" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "push");
+    auto val = compile(*argsAst.nodes[0]);
+    builder_.CreateCall(module_->getFunction("culebra_runtime_array_push"),
+                        {arrPtr, extract_tag(val), extract_data(val)});
+    return make_nil();
+  }
+
+  if (method == "pop" && argsAst.nodes.size() == 0) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "pop");
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "pop.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "pop.data");
+    builder_.CreateCall(module_->getFunction("culebra_runtime_array_pop"),
+                        {arrPtr, outTag, outData});
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    llvm::Value* result = llvm::UndefValue::get(valueType_);
+    result = builder_.CreateInsertValue(result, tagLoaded, {0});
+    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    return result;
+  }
+
+  if (method == "reverse" && argsAst.nodes.size() == 0) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "rev");
+    builder_.CreateCall(module_->getFunction("culebra_runtime_array_reverse"),
+                        {arrPtr});
+    return make_nil();
+  }
+
+  // slice works on Array and String
+  if (method == "slice" && argsAst.nodes.size() == 2) {
+    auto start = value_to_long(compile(*argsAst.nodes[0]));
+    auto end = value_to_long(compile(*argsAst.nodes[1]));
+
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "sl.arr", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "sl.str", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "sl.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "sl.merge", fn);
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 2);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto newArr = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_slice2"),
+        {arrPtr, start, end});
+    auto arrVal = make_array(newArr);
+    auto arrBBEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto newStr = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_slice"),
+        {strPtr, start, end});
+    auto strVal = make_string(newStr);
+    auto strBBEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "sl");
+    phi->addIncoming(arrVal, arrBBEnd);
+    phi->addIncoming(strVal, strBBEnd);
+    return phi;
+  }
+
+  if (method == "join" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "join");
+    auto sep = compile(*argsAst.nodes[0]);
+    emit_type_check(sep, "String", "join separator");
+    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
+    auto s = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_join"), {arrPtr, sepPtr});
+    emit_value_release(sep);
+    return make_string(s);
+  }
+
+  if (method == "index_of" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "iof");
+    auto v = compile(*argsAst.nodes[0]);
+    auto idx = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_index_of"),
+        {arrPtr, extract_tag(v), extract_data(v)});
+    emit_value_release(v);
+    return make_long(idx);
+  }
+
+  // contains works on Array and String (different arg types).
+  if (method == "contains" && argsAst.nodes.size() == 1) {
+    auto arrBB = llvm::BasicBlock::Create(ctx_, "ct.arr", fn);
+    auto strBB = llvm::BasicBlock::Create(ctx_, "ct.str", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "ct.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ct.merge", fn);
+
+    auto sw = builder_.CreateSwitch(tag, errBB, 2);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+
+    builder_.SetInsertPoint(arrBB);
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto v = compile(*argsAst.nodes[0]);
+    auto arrFound = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_contains"),
+        {arrPtr, extract_tag(v), extract_data(v)});
+    emit_value_release(v);
+    auto arrBoolVal = make_bool(arrFound);
+    auto arrEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(strBB);
+    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto sub = compile(*argsAst.nodes[0]);
+    emit_type_check(sub, "String", "contains argument");
+    auto subPtr = builder_.CreateIntToPtr(extract_data(sub), ptrTy);
+    auto strFound = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_contains"),
+        {strPtr, subPtr});
+    emit_value_release(sub);
+    auto strBoolVal = make_bool(strFound);
+    auto strEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "ct");
+    phi->addIncoming(arrBoolVal, arrEnd);
+    phi->addIncoming(strBoolVal, strEnd);
+    return phi;
+  }
+
+  // --- String methods ---
+
+  if (method == "upper" && argsAst.nodes.size() == 0) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "up");
+    auto s = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_upper"), {strPtr});
+    return make_string(s);
+  }
+
+  if (method == "lower" && argsAst.nodes.size() == 0) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "lo");
+    auto s = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_lower"), {strPtr});
+    return make_string(s);
+  }
+
+  if (method == "trim" && argsAst.nodes.size() == 0) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "tr");
+    auto s = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_trim"), {strPtr});
+    return make_string(s);
+  }
+
+  if (method == "split" && argsAst.nodes.size() == 1) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "sp");
+    auto sep = compile(*argsAst.nodes[0]);
+    emit_type_check(sep, "String", "split separator");
+    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
+    auto arr = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_split"), {strPtr, sepPtr});
+    emit_value_release(sep);
+    return make_array(arr);
+  }
+
+  if (method == "starts_with" && argsAst.nodes.size() == 1) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "sw");
+    auto p = compile(*argsAst.nodes[0]);
+    emit_type_check(p, "String", "starts_with argument");
+    auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
+    auto r = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_starts_with"),
+        {strPtr, pPtr});
+    emit_value_release(p);
+    return make_bool(r);
+  }
+
+  if (method == "ends_with" && argsAst.nodes.size() == 1) {
+    auto strPtr = expect_tag(receiver, TAG_STRING, "ew");
+    auto p = compile(*argsAst.nodes[0]);
+    emit_type_check(p, "String", "ends_with argument");
+    auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
+    auto r = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_str_ends_with"),
+        {strPtr, pPtr});
+    emit_value_release(p);
+    return make_bool(r);
+  }
+
+  // --- Object methods ---
+
+  if (method == "keys" && argsAst.nodes.size() == 0) {
+    auto objPtr = expect_tag(receiver, TAG_OBJECT, "keys");
+    auto arr = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_object_keys"), {objPtr});
+    return make_array(arr);
+  }
+
+  if (method == "has" && argsAst.nodes.size() == 1) {
+    auto objPtr = expect_tag(receiver, TAG_OBJECT, "has");
+    auto key = compile(*argsAst.nodes[0]);
+    emit_type_check(key, "String", "has argument");
+    auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
+    auto r = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_object_has"), {objPtr, keyPtr});
+    emit_value_release(key);
+    return make_bool(r);
+  }
+
+  if (method == "remove" && argsAst.nodes.size() == 1) {
+    auto objPtr = expect_tag(receiver, TAG_OBJECT, "rm");
+    auto key = compile(*argsAst.nodes[0]);
+    emit_type_check(key, "String", "remove argument");
+    auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
+    builder_.CreateCall(module_->getFunction("culebra_runtime_object_remove"),
+                        {objPtr, keyPtr});
+    emit_value_release(key);
+    return make_nil();
+  }
+
+  // --- Higher-order array methods (§17.2) ---
+
+  auto ho_line = current_line_val();
+  auto ho_col = current_column_val();
+
+  if (method == "map" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "map");
+    auto f = compile(*argsAst.nodes[0]);
+    auto out = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_map"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_array(out);
+  }
+
+  if (method == "filter" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "filter");
+    auto f = compile(*argsAst.nodes[0]);
+    auto out = builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_filter"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_array(out);
+  }
+
+  if (method == "for_each" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "foreach");
+    auto f = compile(*argsAst.nodes[0]);
+    builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_for_each"),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_nil();
+  }
+
+  if (method == "reduce" && argsAst.nodes.size() == 2) {
+    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "reduce");
+    auto init = compile(*argsAst.nodes[0]);
+    auto f = compile(*argsAst.nodes[1]);
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag =
+        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
+    builder_.CreateCall(
+        module_->getFunction("culebra_runtime_array_reduce"),
+        {arrPtr, extract_tag(init), extract_data(init), extract_tag(f),
+         extract_data(f), ho_line, ho_col, outTag, outData});
+    emit_value_release(f);
+    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    llvm::Value* result = llvm::UndefValue::get(valueType_);
+    result = builder_.CreateInsertValue(result, tagLoaded, {0});
+    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    return result;
+  }
+
+  return nullptr;
+}
+
 }  // namespace culebra
+
+#include <stdlib_jit.h>
 
 #endif  // CULEBRA_JIT_ENABLED

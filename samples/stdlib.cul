@@ -1,0 +1,27 @@
+# Standard library tour: global built-in functions and I/O.
+# (Built-in type methods are part of the language — see language.md §17.)
+# Works identically under the interpreter and the JIT.
+
+# --- Global functions ---------------------------------------------------
+
+puts(abs(-7))                          # 7
+puts(min(3, 5))                        # 3
+puts(max(3, 5))                        # 5
+
+puts(range(5))                         # [0, 1, 2, 3, 4]
+puts(range(2, 5))                      # [2, 3, 4]
+
+puts(to_long('42'))                    # 42
+puts(to_long('  -7 '))                 # -7
+puts(to_string(42))                    # '42'
+puts(to_string([1, 2, 3]))             # '[1, 2, 3]'
+
+puts(type_of(42))                      # 'Long'
+puts(type_of('hi'))                    # 'String'
+puts(type_of([1, 2]))                  # 'Array'
+puts(type_of({a: 1}))                  # 'Object'
+
+# print: no trailing newline, strings unquoted.
+print('Hello, ')
+print('world!')
+puts('')                               # Hello, world!

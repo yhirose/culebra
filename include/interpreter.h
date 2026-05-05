@@ -3,6 +3,9 @@
 #include <parser.h>
 
 #include <algorithm>
+#include <cctype>
+#include <fstream>
+#include <iostream>
 #include <map>
 #include <print>
 #include <queue>
@@ -273,6 +276,12 @@ struct Value {
     std::unreachable();
   }
 
+  // Unquoted variant: strings come through bare (for interpolation / to_string).
+  std::string str_display() const {
+    if (type == String) return get<std::string>();
+    return str();
+  }
+
   std::ostream& out(std::ostream& os) const {
     os << str();
     return os;
@@ -478,37 +487,6 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
   (*properties)[name] = Symbol{val, mut};
 }
 
-inline std::map<std::string_view, Value>& ObjectValue::builtins() {
-  using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
-      {"size"sv,
-       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
-         long n = val.to_object().properties->size();
-         return Value(n);
-       }))}};
-  return props_;
-}
-
-inline std::map<std::string_view, Value>& ArrayValue::builtins() {
-  using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
-      {"size"sv, Value(FunctionValue({},
-                                     [](std::shared_ptr<Environment> callEnv) {
-                                       const auto& val = callEnv->get("this");
-                                       long n = val.to_array().values->size();
-                                       return Value(n);
-                                     }))},
-      {"push"sv, Value(FunctionValue{{{"arg", false}},
-                                     [](std::shared_ptr<Environment> callEnv) {
-                                       const auto& val = callEnv->get("this");
-                                       const auto& arg = callEnv->get("arg");
-                                       val.to_array().values->push_back(arg);
-                                       return Value();
-                                     }})}};
-  return props_;
-}
-
 // Runtime type check for optional annotations. "Any" matches everything.
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
@@ -556,31 +534,352 @@ inline std::string Value::str_object() const {
   return s;
 }
 
-inline void setup_built_in_functions(Environment& env) {
-  env.initialize("puts",
-                 Value(FunctionValue({{"arg", true}},
-                                     [](std::shared_ptr<Environment> env) {
-                                       std::cout << env->get("arg").str()
-                                                 << std::endl;
-                                       return Value();
-                                     })),
-                 false);
-
-  env.initialize(
-      "assert",
-      Value(FunctionValue({{"arg", true}},
-                          [](std::shared_ptr<Environment> env) {
-                            auto cond = env->get("arg").to_bool();
-                            if (!cond) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto column = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(
-                                  std::format("assert failed at {}:{}.", line, column));
-                            }
-                            return Value();
-                          })),
-      false);
+inline std::pair<long, long> normalize_slice(long start, long end, long size) {
+  if (start < 0) start += size;
+  if (end < 0) end += size;
+  if (start < 0) start = 0;
+  if (start > size) start = size;
+  if (end < start) end = start;
+  if (end > size) end = size;
+  return {start, end};
 }
+
+inline std::map<std::string_view, Value>& ObjectValue::builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         long n = val.to_object().properties->size();
+         return Value(n);
+       }))},
+      {"keys"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         const auto& props = *val.to_object().properties;
+         ArrayValue arr;
+         arr.values->reserve(props.size());
+         for (const auto& [k, _] : props) {
+           arr.values->push_back(Value(std::string(k)));
+         }
+         return Value(std::move(arr));
+       }))},
+      {"has"sv, Value(FunctionValue({{"key", false, "String"sv}},
+                                    [](std::shared_ptr<Environment> callEnv) {
+                                      const auto& val = callEnv->get("this");
+                                      const auto& k =
+                                          callEnv->get("key").to_string();
+                                      return Value(
+                                          val.to_object().properties->contains(
+                                              k));
+                                    }))},
+      {"remove"sv,
+       Value(FunctionValue({{"key", false, "String"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& val = callEnv->get("this");
+                             const auto& k = callEnv->get("key").to_string();
+                             val.to_object().properties->erase(k);
+                             return Value();
+                           }))}};
+  return props_;
+}
+
+inline std::map<std::string_view, Value>& ArrayValue::builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv, Value(FunctionValue({},
+                                     [](std::shared_ptr<Environment> callEnv) {
+                                       const auto& val = callEnv->get("this");
+                                       long n = val.to_array().values->size();
+                                       return Value(n);
+                                     }))},
+      {"push"sv, Value(FunctionValue{{{"arg", false}},
+                                     [](std::shared_ptr<Environment> callEnv) {
+                                       const auto& val = callEnv->get("this");
+                                       const auto& arg = callEnv->get("arg");
+                                       val.to_array().values->push_back(arg);
+                                       return Value();
+                                     }})},
+      {"pop"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         auto& vs = *val.to_array().values;
+         if (vs.empty()) return Value();
+         auto last = vs.back();
+         vs.pop_back();
+         return last;
+       }))},
+      {"slice"sv,
+       Value(FunctionValue(
+           {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& val = callEnv->get("this");
+             auto& vs = *val.to_array().values;
+             auto [s, e] = normalize_slice(callEnv->get("start").to_long(),
+                                           callEnv->get("end").to_long(),
+                                           static_cast<long>(vs.size()));
+             ArrayValue out;
+             out.values->reserve(e - s);
+             for (long i = s; i < e; i++) out.values->push_back(vs[i]);
+             return Value(std::move(out));
+           }))},
+      {"join"sv,
+       Value(FunctionValue({{"sep", false, "String"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& val = callEnv->get("this");
+                             const auto& sep =
+                                 callEnv->get("sep").to_string();
+                             std::string out;
+                             bool first = true;
+                             for (const auto& v : *val.to_array().values) {
+                               if (!first) out += sep;
+                               first = false;
+                               out += v.str_display();
+                             }
+                             return Value(std::move(out));
+                           }))},
+      {"index_of"sv,
+       Value(FunctionValue({{"v", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& val = callEnv->get("this");
+                             const auto& needle = callEnv->get("v");
+                             const auto& vs = *val.to_array().values;
+                             for (size_t i = 0; i < vs.size(); i++) {
+                               if (vs[i] == needle)
+                                 return Value(static_cast<long>(i));
+                             }
+                             return Value(static_cast<long>(-1));
+                           }))},
+      {"contains"sv,
+       Value(FunctionValue({{"v", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& val = callEnv->get("this");
+                             const auto& needle = callEnv->get("v");
+                             for (const auto& v : *val.to_array().values) {
+                               if (v == needle) return Value(true);
+                             }
+                             return Value(false);
+                           }))},
+      {"reverse"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         auto& vs = *val.to_array().values;
+         std::reverse(vs.begin(), vs.end());
+         return Value();
+       }))},
+      {"map"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f =
+                                 callEnv->get("f").to_function();
+                             ArrayValue out;
+                             out.values->reserve(arr.values->size());
+                             for (const auto& v : *arr.values) {
+                               auto inner =
+                                   std::make_shared<Environment>(callEnv);
+                               inner->initialize(
+                                   "self", callEnv->get("f"), false);
+                               if (!f.params->empty()) {
+                                 const auto& p = (*f.params)[0];
+                                 inner->initialize(p.name, v, p.mut);
+                               }
+                               Value r;
+                               try {
+                                 r = f.eval(inner);
+                               } catch (const Value& e) {
+                                 r = e;
+                               }
+                               out.values->push_back(r);
+                             }
+                             return Value(std::move(out));
+                           }))},
+      {"filter"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f =
+                                 callEnv->get("f").to_function();
+                             ArrayValue out;
+                             for (const auto& v : *arr.values) {
+                               auto inner =
+                                   std::make_shared<Environment>(callEnv);
+                               inner->initialize(
+                                   "self", callEnv->get("f"), false);
+                               if (!f.params->empty()) {
+                                 const auto& p = (*f.params)[0];
+                                 inner->initialize(p.name, v, p.mut);
+                               }
+                               Value r;
+                               try {
+                                 r = f.eval(inner);
+                               } catch (const Value& e) {
+                                 r = e;
+                               }
+                               if (r.to_bool()) {
+                                 out.values->push_back(v);
+                               }
+                             }
+                             return Value(std::move(out));
+                           }))},
+      {"for_each"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& arr = callEnv->get("this").to_array();
+                             const auto& f =
+                                 callEnv->get("f").to_function();
+                             for (const auto& v : *arr.values) {
+                               auto inner =
+                                   std::make_shared<Environment>(callEnv);
+                               inner->initialize(
+                                   "self", callEnv->get("f"), false);
+                               if (!f.params->empty()) {
+                                 const auto& p = (*f.params)[0];
+                                 inner->initialize(p.name, v, p.mut);
+                               }
+                               try {
+                                 f.eval(inner);
+                               } catch (const Value&) {
+                                 // discard early return
+                               }
+                             }
+                             return Value();
+                           }))},
+      {"reduce"sv,
+       Value(FunctionValue(
+           {{"init", false}, {"f", false, "Function"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& arr = callEnv->get("this").to_array();
+             const auto& f = callEnv->get("f").to_function();
+             Value acc = callEnv->get("init");
+             for (const auto& v : *arr.values) {
+               auto inner = std::make_shared<Environment>(callEnv);
+               inner->initialize("self", callEnv->get("f"), false);
+               if (f.params->size() >= 1) {
+                 const auto& p0 = (*f.params)[0];
+                 inner->initialize(p0.name, acc, p0.mut);
+               }
+               if (f.params->size() >= 2) {
+                 const auto& p1 = (*f.params)[1];
+                 inner->initialize(p1.name, v, p1.mut);
+               }
+               try {
+                 acc = f.eval(inner);
+               } catch (const Value& e) {
+                 acc = e;
+               }
+             }
+             return acc;
+           }))}};
+  return props_;
+}
+
+// Method lookup table for primitive String values. Not part of any Object.
+inline std::map<std::string_view, Value>& string_builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(static_cast<long>(
+             callEnv->get("this").to_string().size()));
+       }))},
+      {"upper"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto s = callEnv->get("this").to_string();
+         for (auto& c : s) {
+           c = static_cast<char>(
+               std::toupper(static_cast<unsigned char>(c)));
+         }
+         return Value(std::move(s));
+       }))},
+      {"lower"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto s = callEnv->get("this").to_string();
+         for (auto& c : s) {
+           c = static_cast<char>(
+               std::tolower(static_cast<unsigned char>(c)));
+         }
+         return Value(std::move(s));
+       }))},
+      {"trim"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto s = callEnv->get("this").to_string();
+         size_t start = 0;
+         while (start < s.size() &&
+                std::isspace(static_cast<unsigned char>(s[start]))) {
+           start++;
+         }
+         size_t end = s.size();
+         while (end > start &&
+                std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+           end--;
+         }
+         return Value(s.substr(start, end - start));
+       }))},
+      {"split"sv,
+       Value(FunctionValue(
+           {{"sep", false, "String"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& s = callEnv->get("this").to_string();
+             const auto& sep = callEnv->get("sep").to_string();
+             ArrayValue out;
+             if (sep.empty()) {
+               out.values->push_back(Value(std::string(s)));
+             } else {
+               size_t pos = 0;
+               while (true) {
+                 auto p = s.find(sep, pos);
+                 if (p == std::string::npos) {
+                   out.values->push_back(Value(s.substr(pos)));
+                   break;
+                 }
+                 out.values->push_back(Value(s.substr(pos, p - pos)));
+                 pos = p + sep.size();
+               }
+             }
+             return Value(std::move(out));
+           }))},
+      {"contains"sv,
+       Value(FunctionValue({{"sub", false, "String"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             const auto& s = callEnv->get("this").to_string();
+                             const auto& sub =
+                                 callEnv->get("sub").to_string();
+                             return Value(s.find(sub) != std::string::npos);
+                           }))},
+      {"starts_with"sv,
+       Value(FunctionValue(
+           {{"prefix", false, "String"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& s = callEnv->get("this").to_string();
+             const auto& prefix = callEnv->get("prefix").to_string();
+             return Value(s.size() >= prefix.size() &&
+                          s.compare(0, prefix.size(), prefix) == 0);
+           }))},
+      {"ends_with"sv,
+       Value(FunctionValue(
+           {{"suffix", false, "String"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& s = callEnv->get("this").to_string();
+             const auto& suf = callEnv->get("suffix").to_string();
+             return Value(s.size() >= suf.size() &&
+                          s.compare(s.size() - suf.size(), suf.size(), suf) ==
+                              0);
+           }))},
+      {"slice"sv,
+       Value(FunctionValue(
+           {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& s = callEnv->get("this").to_string();
+             auto [ss, ee] = normalize_slice(callEnv->get("start").to_long(),
+                                             callEnv->get("end").to_long(),
+                                             static_cast<long>(s.size()));
+             return Value(s.substr(ss, ee - ss));
+           }))}};
+  return props_;
+}
+
+#include <stdlib_interp.h>
 
 inline std::shared_ptr<Environment> environment() {
   auto env = std::make_shared<Environment>();
@@ -864,6 +1163,14 @@ struct Interpreter {
                    arg->line, arg->column);
         callEnv->initialize(param.name, val, param.mut);
       }
+      // Bind extra positional args to __ARGS__ for variadic built-ins.
+      if (args.size() > params.size()) {
+        ArrayValue extras;
+        for (auto i = params.size(); i < args.size(); i++) {
+          extras.values->push_back(eval(*args[i], env));
+        }
+        callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+      }
       callEnv->initialize("__LINE__", Value((long)ast.line), false);
       callEnv->initialize("__COLUMN__", Value((long)ast.column), false);
       Value result;
@@ -898,8 +1205,22 @@ struct Interpreter {
 
   Value eval_property(const peg::Ast& ast, std::shared_ptr<Environment> env,
                       const Value& val) {
-    const auto& obj = val.to_object();
     auto name = ast.token;
+
+    // String is a primitive; its methods live in a separate table.
+    if (val.type == Value::String) {
+      const auto& methods = string_builtins();
+      auto it = methods.find(name);
+      if (it == methods.end()) return Value();
+      const auto& pf = it->second.to_function();
+      return Value(
+          FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
+            callEnv->initialize("this", val, false);
+            return pf.eval(callEnv);
+          }));
+    }
+
+    const auto& obj = val.to_object();
     if (!obj.has(name)) {
       return Value();
     }

@@ -5,4 +5,4 @@ b = [1,2,3](2)
 assert(b.size() == 3 && b[-1] == 3)
 
 c = [1,2,3](5)
-assert(c.size() == 5 && c[-1] == undefined)
+assert(c.size() == 5 && c[-1] == nil)
