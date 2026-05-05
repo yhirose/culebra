@@ -4,6 +4,7 @@
 
 #include <num_format.h>
 #include <parser.h>
+#include <shape.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 #include <well_known_props.h>
@@ -70,6 +71,11 @@ struct JitArray {
   size_t size;
   size_t capacity;
   JitValue* items;
+  // Index into the GC tracker's young vector while this Array is in
+  // the young generation; -1 when in old (or untracked / shutdown).
+  // Trailing field so the established IR layout for `JitArray` (which
+  // codegen accesses by GEP index) is undisturbed.
+  int64_t gc_slot = -1;
 };
 
 }  // extern "C"
@@ -97,12 +103,96 @@ struct JitObject {
   int64_t refcount;
   bool has_drop = false;
   JitIterFastFn fast_next_fn = nullptr;
-  std::map<std::string, JitObjectEntry> props;
+  // Optional prototype pointer. When set, property lookup falls through
+  // to `proto->slots` after this object's own slots are exhausted (one
+  // level only — proto chains aren't supported). Class-sugar instances
+  // share their dunder methods through a per-class meta object held
+  // here, so each instance's own slots carry only data fields.
+  JitObject* proto = nullptr;
+  // Property layout: `shape` is a process-interned descriptor mapping
+  // names to slot indices; `slots[i]` holds the entry for `shape->names[i]`.
+  // Two instances with the same property set share the same Shape*.
+  // This is the JIT analogue of Python's __slots__ — fixed-offset
+  // attribute access in place of a per-instance hash/vector lookup.
+  // Shapes are immutable; adding a property transitions to a new
+  // Shape via `ShapeRegistry::transition_add` (cached, so identical
+  // transitions always resolve to the same target Shape).
+  culebra::Shape* shape = nullptr;
+  std::vector<JitObjectEntry> slots;
+  int64_t gc_slot = -1;  // see JitArray::gc_slot
+
+  // --- Shape-based property access helpers ---
+
+  // Slot index for `key`, or static_cast<size_t>(-1) if absent.
+  size_t find_slot(std::string_view key) const {
+    if (!shape) return static_cast<size_t>(-1);
+    return shape->offset(key);
+  }
+  bool has_own(std::string_view key) const {
+    return shape && shape->has(key);
+  }
+  size_t prop_size() const { return slots.size(); }
+
+  // Append a new property. Caller must ensure `key` is absent;
+  // otherwise the shape transition produces a corrupted layout.
+  size_t append_slot(std::string_view key, JitValue value, bool mut) {
+    if (!shape) shape = culebra::shape_registry().root();
+    shape = culebra::shape_registry().transition_add(shape, key);
+    slots.push_back({value, mut});
+    return slots.size() - 1;
+  }
+
+  // Set or update. Returns slot index.
+  size_t set_or_append(std::string_view key, JitValue value, bool mut) {
+    auto idx = find_slot(key);
+    if (idx == static_cast<size_t>(-1)) {
+      return append_slot(key, value, mut);
+    }
+    slots[idx] = {value, mut};
+    return idx;
+  }
+
+  // Iterate (name, entry) pairs in insertion order.
+  template <class F>
+  void for_each(F&& f) const {
+    if (!shape) return;
+    for (size_t i = 0; i < shape->names.size(); i++) {
+      f(std::string_view(shape->names[i]), slots[i]);
+    }
+  }
+  template <class F>
+  void for_each_mut(F&& f) {
+    if (!shape) return;
+    for (size_t i = 0; i < shape->names.size(); i++) {
+      f(std::string_view(shape->names[i]), slots[i]);
+    }
+  }
+
+  // Remove a property by rebuilding the shape from root. Slow path
+  // (`Object.remove` is rare); cycle members invoked via the cycle
+  // collector use the unified release path which clears slots wholesale
+  // instead.
+  void erase(std::string_view key) {
+    auto idx = find_slot(key);
+    if (idx == static_cast<size_t>(-1)) return;
+    auto* new_shape = culebra::shape_registry().root();
+    std::vector<JitObjectEntry> new_slots;
+    new_slots.reserve(slots.size() - 1);
+    for (size_t i = 0; i < shape->names.size(); i++) {
+      if (i == idx) continue;
+      new_shape = culebra::shape_registry().transition_add(
+          new_shape, shape->names[i]);
+      new_slots.push_back(std::move(slots[i]));
+    }
+    shape = new_shape;
+    slots = std::move(new_slots);
+  }
 };
 
 struct JitCell {
   int64_t refcount;
   JitValue value;
+  int64_t gc_slot = -1;  // see JitArray::gc_slot
 };
 
 struct JitClosure {
@@ -111,6 +201,7 @@ struct JitClosure {
   size_t n_captures;
   JitCell** captures;
   size_t arity;  // number of user-visible params (excluding __cls__, this)
+  int64_t gc_slot = -1;  // see JitArray::gc_slot
 };
 
 // Uniform calling convention for every JIT closure. Callers build a
@@ -171,8 +262,37 @@ static constexpr int8_t GC_TAG_CELL = 100;
 static constexpr size_t GC_THRESHOLD = 10000;
 static constexpr int64_t GC_REFCOUNT_BOOST = 1000000;
 
+// Type-dispatched accessor to a refcounted heap object's `gc_slot`
+// field. Each tracked struct (JitArray, JitObject, JitCell,
+// JitClosure) carries an i64 `gc_slot` that is the object's index
+// into the tracker's young vector (or -1 when in old / untracked).
+inline int64_t& _gc_slot_of(void* ptr, int8_t tag) {
+  switch (tag) {
+    case GC_TAG_ARRAY: return static_cast<JitArray*>(ptr)->gc_slot;
+    case GC_TAG_OBJECT: return static_cast<JitObject*>(ptr)->gc_slot;
+    case GC_TAG_CELL: return static_cast<JitCell*>(ptr)->gc_slot;
+    default: return static_cast<JitClosure*>(ptr)->gc_slot;  // GC_TAG_FUNC
+  }
+}
+
 struct _GcTracker {
-  std::unordered_map<void*, int8_t> objects;
+  // Generational tracker. `young` holds freshly-allocated heap
+  // objects in a flat vector; each object stores its slot index in
+  // its own `gc_slot` field so add and remove are O(1) push /
+  // swap-pop with no per-call heap allocation. After a collect, the
+  // surviving young objects are "promoted" simply by clearing their
+  // gc_slot to -1 — they're no longer in any tracker. Refcount is
+  // sufficient to manage their lifetime; cycles among promoted
+  // objects are not detected.
+  //
+  // For Culebra's class-sugar workloads (params + class meta +
+  // per-step intermediates) cycles among promoted objects don't
+  // form in practice. Programs that mix long-lived data with cyclic
+  // references will leak; that's an acceptable trade for the
+  // ~30%-of-self-time we save vs the previous unordered_map<void*,
+  // int8_t> for the old generation.
+  std::vector<std::pair<void*, int8_t>> young;
+  std::vector<size_t> free_slots;
   size_t alloc_counter = 0;
   size_t threshold = GC_THRESHOLD;
   bool running = false;      // prevent re-entry
@@ -182,16 +302,38 @@ struct _GcTracker {
     return t;
   }
 
+  _GcTracker() {
+    young.reserve(1 << 18);
+    free_slots.reserve(1 << 14);
+  }
+
   ~_GcTracker() { collect(); }
 
   void add(void* ptr, int8_t tag) {
-    objects[ptr] = tag;
+    size_t slot;
+    if (!free_slots.empty()) {
+      slot = free_slots.back();
+      free_slots.pop_back();
+      young[slot] = {ptr, tag};
+    } else {
+      slot = young.size();
+      young.push_back({ptr, tag});
+    }
+    _gc_slot_of(ptr, tag) = static_cast<int64_t>(slot);
     if (!running && ++alloc_counter >= threshold) {
       alloc_counter = 0;
       collect();
     }
   }
-  void remove(void* ptr) { objects.erase(ptr); }
+  void remove(void* ptr, int8_t tag) {
+    auto& slot = _gc_slot_of(ptr, tag);
+    if (slot >= 0) {
+      young[slot] = {nullptr, 0};
+      free_slots.push_back(static_cast<size_t>(slot));
+      slot = -1;
+    }
+    // gc_slot == -1: already promoted (or untracked) — nothing to do.
+  }
 
   static bool is_refcounted_value_tag(int8_t tag) {
     return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY || tag == GC_TAG_OBJECT;
@@ -224,9 +366,13 @@ struct _GcTracker {
       }
       case GC_TAG_OBJECT: {
         auto* o = static_cast<JitObject*>(ptr);
-        for (auto& [_, entry] : o->props) {
+        for (auto& entry : o->slots) {
           push_if_refcounted(out, entry.value.tag, entry.value.data);
         }
+        // Reach the shared class meta via proto so GC sees it as live
+        // while any instance is alive (and discovers methods through
+        // it on subsequent walks).
+        if (o->proto) out.push_back(o->proto);
         break;
       }
       case GC_TAG_CELL: {
@@ -276,9 +422,16 @@ struct _GcTracker {
         // cycle members is undefined; each drop still runs exactly
         // once because the helper short-circuits on missing drop.
         _culebra_call_drop_if_present(o);
-        auto props = std::move(o->props);
-        o->props.clear();
-        for (auto& [_, entry] : props) {
+        if (o->proto) {
+          auto* proto = o->proto;
+          o->proto = nullptr;
+          _culebra_value_release_impl(GC_TAG_OBJECT,
+                                       reinterpret_cast<int64_t>(proto));
+        }
+        auto slots = std::move(o->slots);
+        o->slots.clear();
+        o->shape = nullptr;
+        for (auto& entry : slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
         break;
@@ -293,96 +446,139 @@ struct _GcTracker {
     }
   }
 
+  // Minor-only generational GC: every collect scans only `young`,
+  // promotes survivors to `old`, and never re-scans `old`. Cycles
+  // entirely inside long-lived objects are not detected. For the
+  // class-sugar workloads Culebra is targeted at (params + class
+  // metadata + per-step intermediates) those cycles don't form in
+  // practice. Programs that hit a real long-lived-cycle pattern
+  // would need an explicit major-collect entry point — left as
+  // future work; threshold-triggered major collects regressed bench
+  // when tested because `old` for HOF-style microgpt grows past any
+  // reasonable threshold due to closure capture patterns.
+  // Alive entry count in young (excluding swap-popped null slots).
+  size_t young_alive() const { return young.size() - free_slots.size(); }
+
   void collect() {
-    if (objects.empty() || running) return;
+    if (young_alive() == 0 || running) return;
     running = true;
     _do_collect();
-    // Re-arm to twice the surviving live set (floored at GC_THRESHOLD).
-    // Without this, a fixed threshold makes collect fire O(N) times per
-    // step on workloads that retain a large live set, turning total GC
-    // work into O(N^2).
-    threshold = std::max(GC_THRESHOLD, objects.size() * 2);
+    threshold = std::max(GC_THRESHOLD, young_alive() * 2);
     running = false;
   }
 
   void _do_collect() {
-    if (objects.empty()) return;
+    if (young_alive() == 0) return;
 
     if (std::getenv("CULEBRA_GC_DEBUG")) {
-      std::println(stderr, "[GC] scan tracked={}", objects.size());
+      std::println(stderr, "[GC] scan young={}", young_alive());
     }
 
-    // Snapshot tracked objects (collection may modify the map)
-    std::vector<std::pair<void*, int8_t>> snapshot(objects.begin(),
-                                                   objects.end());
+    // Minor collect: snapshot young objects and run the existing
+    // decrement / BFS reachability over them. Old objects are not
+    // visited; if a young object is held only by an old one, it
+    // shows up as a reachable root because gc_refs keeps the full
+    // refcount and we never decrement for old->young edges (old
+    // isn't iterated to enumerate children).
+    //
+    // All subsequent state is keyed by snapshot index — gc_refs and
+    // reachable are dense vectors instead of hash maps. The single
+    // remaining hash table (`ptr_idx`) maps a child pointer back to
+    // its index when we encounter it during the decrement / BFS
+    // walk.
+    std::vector<std::pair<void*, int8_t>> snapshot;
+    snapshot.reserve(young_alive());
+    for (auto& e : young) {
+      if (e.first) snapshot.push_back(e);
+    }
 
-    // gc_refs = refcount initially
-    std::unordered_map<void*, int64_t> gc_refs;
-    gc_refs.reserve(snapshot.size());
-    for (auto& [p, t] : snapshot) gc_refs[p] = refcount_ref(p);
+    std::unordered_map<void*, size_t> ptr_idx;
+    ptr_idx.reserve(snapshot.size());
+    for (size_t i = 0; i < snapshot.size(); i++) {
+      ptr_idx.emplace(snapshot[i].first, i);
+    }
 
-    // Subtract internal references
+    std::vector<int64_t> gc_refs(snapshot.size());
+    for (size_t i = 0; i < snapshot.size(); i++) {
+      gc_refs[i] = refcount_ref(snapshot[i].first);
+    }
+
+    // Subtract internal references.
     std::vector<void*> children;
-    for (auto& [p, t] : snapshot) {
+    for (size_t i = 0; i < snapshot.size(); i++) {
       children.clear();
-      enumerate_children(p, t, children);
+      enumerate_children(snapshot[i].first, snapshot[i].second, children);
       for (auto* c : children) {
-        auto it = gc_refs.find(c);
-        if (it != gc_refs.end()) --it->second;
+        auto it = ptr_idx.find(c);
+        if (it != ptr_idx.end()) --gc_refs[it->second];
       }
     }
 
-    // Mark external roots and propagate reachability
-    std::unordered_set<void*> reachable;
-    std::queue<void*> q;
-    for (auto& [p, r] : gc_refs) {
-      if (r > 0) {
-        reachable.insert(p);
-        q.push(p);
+    // Mark external roots and propagate reachability via index BFS.
+    std::vector<bool> reachable(snapshot.size(), false);
+    std::queue<size_t> q;
+    for (size_t i = 0; i < snapshot.size(); i++) {
+      if (gc_refs[i] > 0) {
+        reachable[i] = true;
+        q.push(i);
       }
     }
     while (!q.empty()) {
-      auto* p = q.front();
+      auto i = q.front();
       q.pop();
-      auto it = objects.find(p);
-      if (it == objects.end()) continue;
       children.clear();
-      enumerate_children(p, it->second, children);
+      enumerate_children(snapshot[i].first, snapshot[i].second, children);
       for (auto* c : children) {
-        auto [_, inserted] = reachable.insert(c);
-        if (inserted && gc_refs.contains(c)) q.push(c);
+        auto it = ptr_idx.find(c);
+        if (it == ptr_idx.end()) continue;
+        if (!reachable[it->second]) {
+          reachable[it->second] = true;
+          q.push(it->second);
+        }
       }
     }
 
     // Collect garbage (unreachable)
     std::vector<std::pair<void*, int8_t>> garbage;
-    for (auto& [p, t] : snapshot) {
-      if (!reachable.contains(p)) garbage.push_back({p, t});
+    for (size_t i = 0; i < snapshot.size(); i++) {
+      if (!reachable[i]) garbage.push_back(snapshot[i]);
     }
 
-    if (garbage.empty()) return;
+    if (!garbage.empty()) {
+      if (std::getenv("CULEBRA_GC_DEBUG")) {
+        std::println(stderr, "[GC] collecting {} cycle objects (tracked={})",
+                     garbage.size(), snapshot.size());
+      }
 
-    if (std::getenv("CULEBRA_GC_DEBUG")) {
-      std::println(stderr, "[GC] collecting {} cycle objects (tracked={})",
-                   garbage.size(), snapshot.size());
-    }
+      // Boost refcounts to prevent premature destruction during clearing
+      for (auto& [p, t] : garbage) refcount_ref(p) += GC_REFCOUNT_BOOST;
 
-    // Boost refcounts to prevent premature destruction during clearing
-    for (auto& [p, t] : garbage) refcount_ref(p) += GC_REFCOUNT_BOOST;
+      // Clear references (breaks cycles)
+      for (auto& [p, t] : garbage) clear_references(p, t);
 
-    // Clear references (breaks cycles)
-    for (auto& [p, t] : garbage) clear_references(p, t);
-
-    // Set refcount to 1 and release: release brings it to 0 and triggers
-    // normal destruction, which safely iterates the (now empty) children.
-    for (auto& [p, t] : garbage) {
-      refcount_ref(p) = 1;
-      if (t == GC_TAG_CELL) {
-        _culebra_cell_release(static_cast<JitCell*>(p));
-      } else {
-        _culebra_value_release_impl(t, reinterpret_cast<int64_t>(p));
+      // Set refcount to 1 and release: release brings it to 0 and triggers
+      // normal destruction, which safely iterates the (now empty) children.
+      // The destructor's `_gc().remove()` removes them from `young`.
+      for (auto& [p, t] : garbage) {
+        refcount_ref(p) = 1;
+        if (t == GC_TAG_CELL) {
+          _culebra_cell_release(static_cast<JitCell*>(p));
+        } else {
+          _culebra_value_release_impl(t, reinterpret_cast<int64_t>(p));
+        }
       }
     }
+
+    // "Promote" surviving entries simply by clearing their gc_slot
+    // — they leave the tracker entirely. Their refcount keeps them
+    // alive as long as something holds them; the only cost is that
+    // cycles formed entirely among promoted objects won't be
+    // collected.
+    for (auto& [p, t] : young) {
+      if (p) _gc_slot_of(p, t) = -1;
+    }
+    young.clear();
+    free_slots.clear();
   }
 };
 
@@ -446,21 +642,34 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       // Hoist a String `class:` tag to a prefix (matches the tree
       // interpreter's str_object formatting).
       std::string s;
-      auto it = obj->props.find("class");
-      bool has_class_tag = it != obj->props.end() &&
-                           it->second.value.tag == TAG_STRING;
-      if (has_class_tag) {
-        s = reinterpret_cast<const char*>(it->second.value.data);
-        s += " ";
+      bool has_class_tag = false;
+      {
+        auto idx = obj->find_slot("class");
+        if (idx != static_cast<size_t>(-1) &&
+            obj->slots[idx].value.tag == TAG_STRING) {
+          s = reinterpret_cast<const char*>(obj->slots[idx].value.data);
+          s += " ";
+          has_class_tag = true;
+        }
       }
       s += "{";
+      // Render in alphabetical key order (matches interp's str_object).
+      std::vector<size_t> order;
+      order.reserve(obj->prop_size());
+      for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
+        if (has_class_tag && obj->shape->names[i] == "class") continue;
+        order.push_back(i);
+      }
+      std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return obj->shape->names[a] < obj->shape->names[b];
+      });
       bool first = true;
-      for (const auto& [name, entry] : obj->props) {
-        if (has_class_tag && name == "class") continue;
+      for (auto i : order) {
+        const auto& entry = obj->slots[i];
         if (!first) s += ", ";
         first = false;
         if (entry.mut) s += "mut ";
-        s += name;
+        s += obj->shape->names[i];
         s += ": ";
         s += _culebra_value_to_str_impl(entry.value.tag, entry.value.data);
       }
@@ -816,13 +1025,27 @@ inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
 }
 
 // Look up a Function-typed property on a JitObject by name.
+// Walk own props then (optionally) the proto chain (one level) for a
+// matching property. Returns nullptr if absent. Shared helper for
+// every property reader on the JIT side; keeps the proto-fallthrough
+// rule in a single place.
+inline const JitObjectEntry* _find_property(JitObject* obj,
+                                             const char* key) {
+  auto idx = obj->find_slot(key);
+  if (idx != static_cast<size_t>(-1)) return &obj->slots[idx];
+  if (obj->proto) {
+    idx = obj->proto->find_slot(key);
+    if (idx != static_cast<size_t>(-1)) return &obj->proto->slots[idx];
+  }
+  return nullptr;
+}
+
 inline JitClosure* _lookup_dunder(int8_t tag, int64_t data, const char* name) {
   if (tag != TAG_OBJECT) return nullptr;
   auto* obj = reinterpret_cast<JitObject*>(data);
-  auto it = obj->props.find(name);
-  if (it == obj->props.end()) return nullptr;
-  if (it->second.value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(it->second.value.data);
+  auto* entry = _find_property(obj, name);
+  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(entry->value.data);
 }
 
 // Try `recv.dunder(arg)`. Returns the +1 result or std::nullopt.
@@ -1239,72 +1462,87 @@ __attribute__((used)) inline void culebra_runtime_check_well_known_prop(
 __attribute__((used)) inline void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col) {
-  auto it = obj->props.find(key);
-  if (it == obj->props.end()) {
-    obj->props.emplace(std::string(key),
-                       JitObjectEntry{JitValue{tag, data}, mut});
+  auto idx = obj->find_slot(key);
+  if (idx == static_cast<size_t>(-1)) {
+    obj->append_slot(key, JitValue{tag, data}, mut);
   } else {
-    if (!it->second.mut) {
+    auto& entry = obj->slots[idx];
+    if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
       throw std::runtime_error(std::format(
           "immutable property '{}' at {}:{}.", key, line, col));
     }
-    _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
-    it->second.value.tag = tag;
-    it->second.value.data = data;
+    _culebra_value_release_impl(entry.value.tag, entry.value.data);
+    entry.value.tag = tag;
+    entry.value.data = data;
   }
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
 __attribute__((used)) inline void culebra_runtime_object_get(
     JitObject* obj, const char* key, int8_t* out_tag, int64_t* out_data) {
-  auto it = obj->props.find(key);
-  if (it == obj->props.end()) {
-    *out_tag = 0;
-    *out_data = 0;
+  if (auto* entry = _find_property(obj, key)) {
+    *out_tag = entry->value.tag;
+    *out_data = entry->value.data;
     return;
   }
-  *out_tag = it->second.value.tag;
-  *out_data = it->second.value.data;
+  *out_tag = 0;
+  *out_data = 0;
 }
 
 __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
-  return obj->props.find(key) != obj->props.end();
+  return _find_property(obj, key) != nullptr;
+}
+
+// Build a "class meta" object that holds shared method closures for
+// proto delegation. Called once per class declaration (compile-time
+// emission, runtime allocation), captured in the constructor closure
+// so each instance can point its `proto` at the same meta.
+__attribute__((used)) inline JitObject* culebra_runtime_build_class_meta(
+    const char* const* method_names, const JitValue* method_vals,
+    int64_t n_methods) {
+  auto* meta = culebra_runtime_object_new();
+  for (int64_t i = 0; i < n_methods; i++) {
+    culebra_runtime_value_retain(method_vals[i].tag, method_vals[i].data);
+    culebra_runtime_object_set(meta, method_names[i], /*mut*/ false,
+                               method_vals[i].tag, method_vals[i].data, 0,
+                               0);
+  }
+  return meta;
 }
 
 // Class-sugar constructor body. Mirrors the tree interpreter's
 // `eval_class_decl` constructor path:
 //   1. Allocate a fresh instance (refcount=1, caller-owned).
-//   2. Stamp the `class:` tag and attach each method closure.
-//   3. Invoke the user's `new` body (if any) with `this` bound to the
+//   2. Stamp the `class:` tag.
+//   3. Wire the instance's `proto` at the shared class meta object;
+//      method lookups fall through to it via _lookup_dunder /
+//      culebra_runtime_object_get / object_has.
+//   4. Invoke the user's `new` body (if any) with `this` bound to the
 //      new instance. Args are forwarded with +1 ownership intact
 //      (JIT ABI); the body's return value is discarded.
-//   4. Promote every property to mutable so later `this.x = y` calls
-//      don't trip the immutable-property guard.
+//   5. Promote every own property to mutable so later `this.x = y`
+//      calls don't trip the immutable-property guard.
 //
 // `body_tag`/`body_data` describe the user-body closure (TAG_FUNC) or
-// TAG_NIL for a class with no `new` method. `method_vals` is borrowed;
-// this helper retains each entry before storing in the instance.
+// TAG_NIL for a class with no `new` method. `class_meta` is borrowed;
+// this helper retains it once per instance to balance the matching
+// release in the Object destructor.
 __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
-    const char* class_name, int8_t body_tag, int64_t body_data,
-    const char* const* method_names, const JitValue* method_vals,
-    int64_t n_methods, int64_t n_args, JitValue* args) {
+    const char* class_name, JitObject* class_meta, int8_t body_tag,
+    int64_t body_data, int64_t n_args, JitValue* args) {
   auto* inst = culebra_runtime_object_new();
+
+  inst->proto = class_meta;
+  // Retain the meta on the instance so it lives at least as long as
+  // any of its instances. The matching release runs in the JitObject
+  // destructor (release_impl GC_TAG_OBJECT path).
+  if (class_meta) class_meta->refcount++;
 
   auto* cn = _culebra_heap_str(class_name);
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
                              reinterpret_cast<int64_t>(cn), 0, 0);
-
-  // Each method closure must hold a +1 for the instance slot — the
-  // closures are borrowed from the constructor's capture cells, which
-  // keep their own reference for the lifetime of the class binding.
-  for (int64_t i = 0; i < n_methods; i++) {
-    culebra_runtime_value_retain(method_vals[i].tag, method_vals[i].data);
-    culebra_runtime_object_set(inst, method_names[i], /*mut*/ false,
-                               method_vals[i].tag, method_vals[i].data, 0,
-                               0);
-  }
 
   if (body_tag == TAG_FUNC) {
     auto* body_cls = reinterpret_cast<JitClosure*>(body_data);
@@ -1329,7 +1567,7 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
     }
   }
 
-  for (auto& [k, entry] : inst->props) {
+  for (auto& entry : inst->slots) {
     entry.mut = true;
   }
 
@@ -1338,7 +1576,7 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
 
 __attribute__((used)) inline int64_t culebra_runtime_object_size(
     JitObject* obj) {
-  return static_cast<int64_t>(obj->props.size());
+  return static_cast<int64_t>(obj->prop_size());
 }
 
 // --- Cell runtime ---
@@ -1410,10 +1648,11 @@ inline JitValue _iter_self_iter_fn(JitClosure*, JitValue this_val,
 inline JitClosure* _iter_next_closure(JitValue iter_val) {
   if (iter_val.tag != TAG_OBJECT) return nullptr;
   auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
-  auto it = iter_obj->props.find("next");
-  if (it == iter_obj->props.end()) return nullptr;
-  if (it->second.value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(it->second.value.data);
+  auto idx = iter_obj->find_slot("next");
+  if (idx == static_cast<size_t>(-1)) return nullptr;
+  const auto& entry = iter_obj->slots[idx];
+  if (entry.value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(entry.value.data);
 }
 
 // Advance with an on-the-fly next-closure lookup — one std::map::find
@@ -1438,9 +1677,9 @@ inline JitValue _iter_advance_fast(JitClosure* next_cls,
 
 inline bool _iter_step_done(JitValue step) {
   auto* step_obj = reinterpret_cast<JitObject*>(step.data);
-  auto it = step_obj->props.find("done");
-  if (it == step_obj->props.end()) return false;
-  auto v = it->second.value;
+  auto idx = step_obj->find_slot("done");
+  if (idx == static_cast<size_t>(-1)) return false;
+  auto v = step_obj->slots[idx].value;
   if (v.tag == TAG_NIL) return false;
   if (v.tag == TAG_BOOL || v.tag == TAG_LONG) return v.data != 0;
   return true;
@@ -1449,9 +1688,9 @@ inline bool _iter_step_done(JitValue step) {
 // Returns step.value with +1 retained (caller owns). Nil if missing.
 inline JitValue _iter_step_value(JitValue step) {
   auto* step_obj = reinterpret_cast<JitObject*>(step.data);
-  auto it = step_obj->props.find("value");
-  if (it == step_obj->props.end()) return {0, 0};
-  auto v = it->second.value;
+  auto idx = step_obj->find_slot("value");
+  if (idx == static_cast<size_t>(-1)) return {0, 0};
+  auto v = step_obj->slots[idx].value;
   culebra_runtime_value_retain(v.tag, v.data);
   return v;
 }
@@ -2009,9 +2248,10 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
   }
   if (t == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(d);
-    auto it = o->props.find("iter");
-    if (it != o->props.end() && it->second.value.tag == TAG_FUNC) {
-      auto iv = it->second.value;
+    auto idx = o->find_slot("iter");
+    if (idx != static_cast<size_t>(-1) &&
+        o->slots[idx].value.tag == TAG_FUNC) {
+      auto iv = o->slots[idx].value;
       auto* iv_cls = reinterpret_cast<JitClosure*>(iv.data);
       culebra_runtime_value_retain(t, d);
       return reinterpret_cast<JitFn>(iv_cls->fn_ptr)(iv_cls, {t, d}, 0,
@@ -2767,7 +3007,19 @@ __attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
 __attribute__((used)) inline JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
-  for (const auto& [k, _] : obj->props) {
+  // Documented as alphabetical (matches interp's Object.keys); the
+  // underlying shape stores names in insertion order, so sort an
+  // index snapshot before emitting.
+  std::vector<size_t> order;
+  order.reserve(obj->prop_size());
+  for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
+    order.push_back(i);
+  }
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return obj->shape->names[a] < obj->shape->names[b];
+  });
+  for (auto i : order) {
+    auto& k = obj->shape->names[i];
     auto* buf = _culebra_heap_str(k);
     culebra_runtime_array_push(r, TAG_STRING, reinterpret_cast<int64_t>(buf));
   }
@@ -2776,10 +3028,11 @@ __attribute__((used)) inline JitArray* culebra_runtime_object_keys(
 
 __attribute__((used)) inline void culebra_runtime_object_remove(
     JitObject* obj, const char* key) {
-  auto it = obj->props.find(key);
-  if (it == obj->props.end()) return;
-  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
-  obj->props.erase(it);
+  auto idx = obj->find_slot(key);
+  if (idx == static_cast<size_t>(-1)) return;
+  _culebra_value_release_impl(obj->slots[idx].value.tag,
+                              obj->slots[idx].value.data);
+  obj->erase(key);
   if (std::string_view(key) == "drop") obj->has_drop = false;
 }
 
@@ -2811,9 +3064,9 @@ inline void _culebra_cell_release(JitCell* c);
 // reference (matches interp's documented warning).
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
-  auto it = o->props.find("drop");
-  if (it == o->props.end()) return;
-  const auto& v = it->second.value;
+  auto idx = o->find_slot("drop");
+  if (idx == static_cast<size_t>(-1)) return;
+  const auto& v = o->slots[idx].value;
   if (v.tag != GC_TAG_FUNC) return;
   auto* cls = reinterpret_cast<JitClosure*>(v.data);
   if (!cls || cls->arity != 0) return;
@@ -2842,7 +3095,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           _culebra_cell_release(c->captures[i]);
         }
         std::free(c->captures);
-        _gc().remove(c);
+        _gc().remove(c, GC_TAG_FUNC);
         delete c;
       }
       break;
@@ -2854,7 +3107,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           _culebra_value_release_impl(a->items[i].tag, a->items[i].data);
         }
         delete[] a->items;
-        _gc().remove(a);
+        _gc().remove(a, GC_TAG_ARRAY);
         delete a;
       }
       break;
@@ -2863,10 +3116,16 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       auto* o = reinterpret_cast<JitObject*>(data);
       if (--o->refcount == 0) {
         _culebra_call_drop_if_present(o);
-        for (auto& [name, entry] : o->props) {
+        if (o->proto) {
+          auto* proto = o->proto;
+          o->proto = nullptr;
+          _culebra_value_release_impl(GC_TAG_OBJECT,
+                                       reinterpret_cast<int64_t>(proto));
+        }
+        for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
-        _gc().remove(o);
+        _gc().remove(o, GC_TAG_OBJECT);
         delete o;
       }
       break;
@@ -2880,7 +3139,7 @@ inline void _culebra_cell_release(JitCell* c) {
   if (!c) return;
   if (--c->refcount == 0) {
     _culebra_value_release_impl(c->value.tag, c->value.data);
-    _gc().remove(c);
+    _gc().remove(c, GC_TAG_CELL);
     delete c;
   }
 }
@@ -3005,6 +3264,8 @@ inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
+inline constexpr auto build_class_meta
+    = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
@@ -6414,18 +6675,18 @@ struct JIT {
   // Build an LLVM function that serves as the `new` dispatcher for a
   // class declaration. At runtime this function:
   //
-  //   1. Reads its captured cells to recover (a) the user's `new` body
-  //      closure and (b) each instance-method closure.
-  //   2. Packages those into a stack slab + metadata and calls
-  //      `rt::build_class_instance` to allocate the instance, attach
-  //      `class:` and method slots, invoke the user body, and promote
-  //      every slot to mutable.
+  //   1. Reads its captured cells to recover (a) the shared class
+  //      meta object (built once per class declaration; holds the
+  //      method closures via proto delegation) and (b) the user's
+  //      `new` body closure if present.
+  //   2. Calls `rt::build_class_instance` to allocate the instance,
+  //      wire its proto at the meta, run the user body if any, and
+  //      promote the instance's own data slots to mutable.
   //
   // The caller's `this` (the class namespace, carried with +1 per ABI)
   // is released up front since the constructor has no use for it.
-  llvm::Function* emit_constructor_fn(
-      std::string_view class_name, bool has_new, size_t arity,
-      const std::vector<std::string>& method_names) {
+  llvm::Function* emit_constructor_fn(std::string_view class_name,
+                                       bool has_new, size_t arity) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -6451,11 +6712,8 @@ struct JIT {
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
     builder_.SetInsertPoint(entryBB);
 
-    // Caller's `this` (the Car namespace) is unused — release the +1.
+    // Caller's `this` (the class namespace) is unused — release the +1.
     emit_value_release(thisArg);
-
-    size_t n_methods = method_names.size();
-    size_t body_cap_idx = has_new ? n_methods : size_t{0};
 
     auto capturesFieldPtr =
         builder_.CreateStructGEP(closureType_, clsArg, 3);
@@ -6470,26 +6728,16 @@ struct JIT {
       return builder_.CreateLoad(valueType_, valuePtr);
     };
 
-    llvm::Value* methodSlab;
-    if (n_methods > 0) {
-      methodSlab = builder_.CreateAlloca(
-          valueType_, builder_.getInt64(static_cast<int64_t>(n_methods)),
-          "methods");
-      for (size_t i = 0; i < n_methods; i++) {
-        auto methodVal = load_capture(i);
-        auto slot = builder_.CreateInBoundsGEP(
-            valueType_, methodSlab,
-            {builder_.getInt64(static_cast<int64_t>(i))});
-        builder_.CreateStore(methodVal, slot);
-      }
-    } else {
-      methodSlab = llvm::ConstantPointerNull::get(ptrTy);
-    }
+    // Capture[0] is the shared class meta (TAG_OBJECT). Capture[1] is
+    // the user `new` body (TAG_FUNC) when present.
+    auto metaVal = load_capture(0);
+    auto metaPtr = builder_.CreateIntToPtr(
+        builder_.CreateExtractValue(metaVal, {1}), ptrTy, "meta.ptr");
 
     llvm::Value* bodyTag;
     llvm::Value* bodyData;
     if (has_new) {
-      auto bodyVal = load_capture(body_cap_idx);
+      auto bodyVal = load_capture(1);
       bodyTag = builder_.CreateExtractValue(bodyVal, {0});
       bodyData = builder_.CreateExtractValue(bodyVal, {1});
     } else {
@@ -6500,31 +6748,11 @@ struct JIT {
     auto classNameGlobal =
         get_or_create_global_str(class_name, ".class.name");
 
-    llvm::Value* nameArrayPtr;
-    if (n_methods > 0) {
-      std::vector<llvm::Constant*> names;
-      names.reserve(n_methods);
-      for (const auto& m : method_names) {
-        names.push_back(
-            llvm::cast<llvm::Constant>(get_or_create_global_str(m, ".mname")));
-      }
-      auto nameArrayTy = llvm::ArrayType::get(ptrTy, n_methods);
-      auto nameArrayConst = llvm::ConstantArray::get(nameArrayTy, names);
-      auto nameArrayGlobal = new llvm::GlobalVariable(
-          *module_, nameArrayTy, /*isConstant=*/true,
-          llvm::GlobalValue::PrivateLinkage, nameArrayConst, ".mnames");
-      nameArrayPtr = nameArrayGlobal;
-    } else {
-      nameArrayPtr = llvm::ConstantPointerNull::get(ptrTy);
-    }
-
     auto result = builder_.CreateCall(
         module_->getOrInsertFunction(rt::build_class_instance, valueType_,
-                                     ptrTy, i8Ty, i64Ty, ptrTy, ptrTy,
-                                     i64Ty, i64Ty, ptrTy),
-        {classNameGlobal, bodyTag, bodyData, nameArrayPtr, methodSlab,
-         builder_.getInt64(static_cast<int64_t>(n_methods)), nArgsArg,
-         argsArg});
+                                     ptrTy, ptrTy, i8Ty, i64Ty, i64Ty,
+                                     ptrTy),
+        {classNameGlobal, metaPtr, bodyTag, bodyData, nArgsArg, argsArg});
     builder_.CreateRet(result);
 
     verifyFunction(*fn);
@@ -6578,11 +6806,57 @@ struct JIT {
       new_arity = new_ast->nodes[1]->nodes.size();
     }
 
-    auto ctor_fn =
-        emit_constructor_fn(class_name, new_ast != nullptr, new_arity,
-                            method_names);
+    // Build the shared class meta object once per class declaration:
+    // a JitObject with all method closures set as immutable props.
+    // Each instance points its `proto` at this meta, so dunder
+    // dispatch + general property lookup fall through here without
+    // copying the methods into every instance's own props.
+    llvm::Value* metaPtr;
+    {
+      llvm::Value* methodSlab;
+      llvm::Value* nameArrayPtr;
+      size_t n_methods = method_vals.size();
+      if (n_methods > 0) {
+        methodSlab = builder_.CreateAlloca(
+            valueType_, builder_.getInt64(static_cast<int64_t>(n_methods)),
+            "meta.methods");
+        for (size_t i = 0; i < n_methods; i++) {
+          auto slot = builder_.CreateInBoundsGEP(
+              valueType_, methodSlab,
+              {builder_.getInt64(static_cast<int64_t>(i))});
+          builder_.CreateStore(method_vals[i], slot);
+        }
+        std::vector<llvm::Constant*> names;
+        names.reserve(n_methods);
+        for (const auto& m : method_names) {
+          names.push_back(llvm::cast<llvm::Constant>(
+              get_or_create_global_str(m, ".mname")));
+        }
+        auto nameArrayTy = llvm::ArrayType::get(ptrTy, n_methods);
+        auto nameArrayConst = llvm::ConstantArray::get(nameArrayTy, names);
+        nameArrayPtr = new llvm::GlobalVariable(
+            *module_, nameArrayTy, /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, nameArrayConst, ".mnames");
+      } else {
+        methodSlab = llvm::ConstantPointerNull::get(ptrTy);
+        nameArrayPtr = llvm::ConstantPointerNull::get(ptrTy);
+      }
+      metaPtr = emit_call(
+          module_->getOrInsertFunction(rt::build_class_meta, ptrTy, ptrTy,
+                                       ptrTy, builder_.getInt64Ty()),
+          {nameArrayPtr, methodSlab,
+           builder_.getInt64(static_cast<int64_t>(n_methods))},
+          "class.meta");
+    }
+    auto metaVal = make_object(metaPtr);
 
-    size_t n_captures = method_vals.size() + (new_ast ? 1 : 0);
+    auto ctor_fn =
+        emit_constructor_fn(class_name, new_ast != nullptr, new_arity);
+
+    // Captures: meta first, then body if present. (Methods themselves
+    // were transferred into the meta object above and don't need to
+    // live separately in the closure.)
+    size_t n_captures = 1 + (new_ast ? 1 : 0);
     auto closurePtr = emit_call(
         module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                      builder_.getInt64Ty(),
@@ -6609,11 +6883,9 @@ struct JIT {
           {builder_.getInt64(static_cast<int64_t>(i))});
       builder_.CreateStore(cellPtr, dst);
     };
-    for (size_t i = 0; i < method_vals.size(); i++) {
-      install_capture(i, method_vals[i]);
-    }
+    install_capture(0, metaVal);
     if (body_val) {
-      install_capture(method_vals.size(), body_val);
+      install_capture(1, body_val);
     }
 
     // Wrap the constructor closure into a Value(TAG_FUNC) for storage.

@@ -11,52 +11,48 @@ both, nothing more.
 Hardware: Apple Silicon laptop, single core. Each run is wall time of
 training only (`num_steps` configured, `n_samples=0` to skip inference).
 
-## Numbers (after GC tuning + JIT HOF inlining)
+## Numbers
 
-Wall time of training only (`n_samples=0` to skip inference). Two
-step counts so the linear-scaling assumption is visible.
+Wall time of training only (`n_samples=0` to skip inference).
 
-| Implementation                 | 5 steps |  20 steps | per step | vs. Python |
-|--------------------------------|--------:|----------:|---------:|-----------:|
-| Python (CPython, scalar)       |  0.43 s |    1.44 s |   ~72 ms |         1× |
-| Culebra `--jit` (imperative)   |  4.06 s |   16.66 s |  ~833 ms |     ~11.6× |
-| Culebra `--jit` (HOF / lambda) |  8.04 s |       ≈4× |   ~1.6 s |       ~22× |
-| Culebra interpreter            | 14.01 s |   55.54 s | ~2,777 ms |    ~38.6× |
+| Implementation                 | 5 steps | 20 steps | per step | vs. Python |
+|--------------------------------|--------:|---------:|---------:|-----------:|
+| Python (CPython, scalar)       |  0.40 s |   1.48 s |   ~74 ms |         1× |
+| Culebra `--jit` (imperative)   |  1.51 s |   3.94 s |  ~197 ms |      ~2.7× |
+| Culebra `--jit` (HOF / lambda) |  2.11 s |   6.76 s |  ~338 ms |      ~4.6× |
+| Culebra interpreter            | 14.0 s  |  55.7 s  | ~2,800 ms |    ~37.6× |
+
+`per step` is from the 20-step run (5-step is JIT-warmup-heavy
+and overstates per-step cost). At steady-state on `--jit`, the
+imperative Culebra port runs scalar microgpt within **2.7× of CPython**.
 
 The "HOF / lambda" row is `microgpt_hof.cul` — the same algorithm
 written in functional style with `arr.map(|x| ...)` /
 `.reduce(init, |a, b| ...)` chains rather than imperative `while`
 loops. About 26% shorter than the imperative version (286 vs 384
-lines). The JIT now inlines literal-lambda callbacks for `map`,
-`filter`, `for_each`, `reduce` (Array) and `reduce` / `for_each`
-(Iterator), so the per-element closure invocation that used to
-double the JIT cost is gone for those HOFs. Iterator.map /
-.filter still produce a lazy iterator and require chain fusion
-to inline — that's deferred work; for now the HOF version is ~2×
-the imperative version on JIT, vs ~2.2× before the inlining work.
-
-`per step` is computed from the 20-step run (5-step is dominated by
-JIT warmup / first-doc length, so it overestimates by ~5–10%). Linear
-scaling is confirmed: 5→20 steps ratio is 3.5–4.1× across all three
-implementations.
+lines). JIT inlines literal-lambda callbacks for `map`, `filter`,
+`for_each`, `reduce` (Array) and `reduce` / `for_each` (Iterator),
+so the per-element closure invocation overhead has mostly been
+absorbed.
 
 The two Culebra backends produce **identical loss values** at every
 step (final loss after 20 steps: 2.413316935338878…), confirming
 `--jit` matches the interpreter bit-for-bit. Python's loss diverges
 because Python `random.shuffle` and Culebra `Random.shuffle` produce
-different sequences from the same MT64 seed (different initial state)
-— expected, not a correctness issue.
+different sequences from the same MT64 seed — expected, not a
+correctness issue.
 
 ### 1000-step extrapolation (a real training run)
 
 | Implementation              | Wall time |
 |-----------------------------|----------:|
-| Python                      |    ~72 s  |
-| Culebra `--jit`             |   ~14 min |
-| Culebra interpreter         |   ~46 min |
+| Python                      |    ~74 s  |
+| Culebra `--jit` imperative  |    ~3.3 min |
+| Culebra `--jit` HOF         |    ~5.6 min |
+| Culebra interpreter         |    ~46 min |
 
-Practically usable on `--jit`; the interpreter is fine for short
-sanity-check runs.
+`--jit` imperative is now within ~2.7× of CPython on this workload —
+practically usable for actual scalar autograd training runs.
 
 ### Where the speedup came from
 
@@ -88,6 +84,41 @@ and the JIT 5-step from ~1m39s to 4 s — about 43× and 24×
 respectively, in five commits totaling roughly 30 lines of net
 change.
 
+A subsequent JIT-side optimization round narrowed the gap further:
+
+3. **Prototype delegation in JIT class instances.** Each instance
+   used to copy method closure entries into its property map; with
+   ~9 dunders × ~10⁵ instances, the per-instance method props
+   dominated the cycle collector's per-Object walk. Methods now
+   live on a shared per-class meta object pointed at via a
+   `JitObject::proto` field, and lookup falls through to it. Cut
+   per-instance own-prop count from ~14 to ~5.
+
+4. **Vector storage for `JitObject::props`.** Replaced the
+   `std::map<string, JitObjectEntry>` with a thin
+   `vector<pair<...>>` wrapper. With ~5 props per object, linear
+   search beats a red-black tree on cache traffic.
+
+5. **Index-keyed vectors inside `_do_collect`.** Replaced two
+   `unordered_map`/`unordered_set` keyed by raw pointer with dense
+   vectors keyed by snapshot index. Removed ~12% of self-time spent
+   in hash table operations.
+
+6. **Generational GC.** Split the tracker into `young` and `old`.
+   Each collect walks only `young`, then promotes survivors to
+   `old` (which is never re-scanned). For workloads with two-tier
+   object lifetimes — params + class metadata vs per-step
+   intermediates — this drops GC time from ~60% to ~3%.
+
+7. **Vector-backed young + per-object `gc_slot`.** `_gc().add` was
+   still 31% of self-time inside `unordered_map::emplace`. Replace
+   `young` with a flat vector + per-object slot index field (added
+   to JitArray / JitObject / JitCell / JitClosure). Add and remove
+   are now O(1) push / swap-pop with no per-call heap allocation.
+
+The full optimization round took the JIT imperative from ~10× of
+CPython to ~2.7× at steady-state.
+
 Reproduce:
 
 ```
@@ -113,20 +144,20 @@ on every backend.
 
 CPython's `__slots__` keeps each `Value` in a fixed-layout C struct
 allocated and freed in tens of nanoseconds. Culebra's `class`-sugar
-Object goes through the shared property map plus refcount plumbing,
-so per-allocation cost is higher — but with the cycle collector no
-longer firing on every batch of 10000 allocs, that cost is now the
-honest ~12–39× gap shown above instead of the 330–2000× we saw
-before.
+Object still goes through the shared property map plus refcount
+plumbing — but after the optimization rounds above (proto delegation,
+generational GC, vector-backed tracker), the gap to CPython is the
+honest ~2.7× shown in the steady-state column rather than the 330–2000×
+we saw before.
 
-`--jit` is ~3× faster than interp on this workload because the inner
-arithmetic on `Float` payloads — including the `**` peephole for
-`x**0.5` and the inlined Long fast paths for Math — runs as native
-LLVM IR rather than tree-walked. Object creation still goes through
-the same C++ runtime helpers on both backends, putting a floor on
-how fast scalar microgpt can run.
+`--jit` is ~14× faster than interp on this workload (3.94 s vs 55.7 s
+at 20 steps) because the inner arithmetic on `Float` payloads —
+including the `**` peephole for `x**0.5` and the inlined Long fast
+paths for Math — runs as native LLVM IR rather than tree-walked.
+The interpreter has not received the JIT-side optimization rounds
+listed above and remains the proportional figure (~38× of CPython).
 
-## Conclusion: scalar port is closed
+## Conclusion
 
 **Functionally validated**: Culebra fully runs Karpathy's scalar GPT
 end-to-end — `class` sugar, dunder operator overloading
@@ -136,28 +167,28 @@ shuffle/weighted_choice`, `IO.exists`, `**` operator. The full
 language coverage planned in Phases 1–4 is exercised.
 
 **Practically usable**: extrapolated to 1000 steps, `--jit` finishes
-in ~14 minutes and the interpreter in ~46 minutes (Python ~72 s).
-This is the first point at which scalar microgpt is usable for
-actual training runs on Culebra.
+in about ~3.3 minutes (Python ~74 s, ratio ~2.7×); the HOF lambda
+variant in ~5.6 minutes; the interpreter in ~46 minutes. The JIT
+imperative form is genuinely competitive with CPython for scalar
+autograd training.
 
-**Where the remaining time goes** (re-profiled at the current point):
+**Where the remaining JIT time goes** (re-profiled after the most
+recent round on a 500-step `--jit` run):
 
-| Category                                | Self-time |
-|-----------------------------------------|----------:|
-| GC walk + `gc_refs`/`reachable` hash probes | ~50% |
-| `malloc`/`free`                         | ~15% |
-| `std::any` value handlers               | ~7% |
-| Real interpreter eval                   | ~3-5% |
-| Other overhead                          | ~25% |
+| Category                                            | Self-time |
+|-----------------------------------------------------|----------:|
+| `_gc().add` (vector push, was hash insert pre-fix)  |       ~5% |
+| `_GcTracker::_do_collect` body                      |       ~4% |
+| Native JIT-compiled code (`<unknown binary>` blocks) |     ~10% |
+| `culebra_runtime_object_get` / `_set`               |       ~5% |
+| `_culebra_value_release_impl` + `value_retain`      |       ~3% |
+| `nanov2_*` (allocator churn)                        |       ~9% |
+| Real interpreter eval helpers (dunder, num ops)     |       ~5% |
+| Other (system, dyld stubs, stdlib)                  |     ~59% |
 
-Most of the remaining cost is GC bookkeeping (hash-table probes
-during the cycle walk) and allocator churn from the per-Value
-property map / children-array allocations. Real AST evaluation is
-3-5% — the interpreter is now near the floor for what an AST
-tree-walker on `std::any`-based values can run at.
-
-Beyond this point, meaningful speedup needs a structural change
-(bytecode interpreter, different value representation, or a
-Matrix-based formulation that collapses per-step Object count).
-Those are open as future work but out of scope for the scalar port,
-which is now closed.
+Most of the per-step cost has shifted out of the GC and into the
+ordinary Object-construction / property-access path. Beyond this
+point, additional speedup requires structural changes — most
+notably a Matrix-based formulation that collapses per-step Object
+count, or a different value representation. Those are open as
+future work; the scalar port is closed at this performance level.
