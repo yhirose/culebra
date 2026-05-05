@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            g++-14 \
+            libblas-dev \
+            just \
+            wget \
+            lsb-release \
+            software-properties-common \
+            gnupg
+          # Ubuntu 24.04's default llvm-dev (17/18) is too old — culebra's
+          # JIT uses LLVM 20+ APIs. Pull LLVM 22 from apt.llvm.org to
+          # match the local dev environment (README references LLVM 22).
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y llvm-22-dev
+          # Ubuntu 24.04 ships gcc-13 by default, which lacks C++23 <print>.
+          {
+            echo "CC=gcc-14"
+            echo "CXX=g++-14"
+            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
+          } >> "$GITHUB_ENV"
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install llvm just
+
+      - name: Build (interpreter + JIT)
+        run: just build
+
+      - name: Run tests on both backends
+        run: just test-all
+
+      - name: Run shadow-error tests
+        run: just test-shadow-errors
+
+      - name: Smoke test microgpt (5 steps, both backends)
+        run: just smoke-microgpt

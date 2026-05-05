@@ -80,6 +80,12 @@ add_executable(culebra ./src/main.cc)
 
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(culebra ${llvm_libs})
+  # ORC JIT looks up culebra_runtime_* symbols in the host process at
+  # codegen time. On macOS those symbols are visible by default; on
+  # ELF/Linux they are stripped from the dynamic symbol table unless
+  # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
+  # platform (no-op on macOS).
+  set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
 endif()
 
 # Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
