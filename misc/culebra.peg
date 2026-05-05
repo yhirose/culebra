@@ -1,25 +1,37 @@
 PROGRAM                  <-  _ STATEMENTS _
 STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-STATEMENT                <-  DEBUGGER / RETURN / LEXICAL_SCOPE / EXPRESSION
+STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+
+CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+METHOD                   <-  IDENTIFIER _ PARAMETERS _ BLOCK
 
 DEBUGGER                 <-  debugger
 RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
+THROW                    <-  throw _sp_ !_nl_ EXPRESSION
+BREAK                    <-  break
+CONTINUE                 <-  continue
+DEFER                    <-  defer _ BLOCK
 LEXICAL_SCOPE            <-  BLOCK
 
-EXPRESSION               <-  ASSIGNMENT / LOGICAL_OR
+EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
+TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
-ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* _ '=' _ EXPRESSION
+ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
+DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
 
+NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
 LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
 LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-CONDITION                <-  ADDITIVE (_ CONDITION_OPERATOR _ ADDITIVE)*
-ADDITIVE                 <-  UNARY_PLUS (_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
+CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
+RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
+ADDITIVE                 <-  UNARY_PLUS (_h_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
 UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
 UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
 UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
-MULTIPLICATIVE           <-  CALL (_ MULTIPLICATIVE_OPERATOR _ CALL)*
+MULTIPLICATIVE           <-  POWER (_ MULTIPLICATIVE_OPERATOR _ POWER)*
+POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
 
-CALL                     <-  PRIMARY (_ (ARGUMENTS / INDEX / DOT))*
+CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
 ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
 INDEX                    <-  '[' _ EXPRESSION _ ']'
 DOT                      <-  '.' _ IDENTIFIER
@@ -27,23 +39,49 @@ DOT                      <-  '.' _ IDENTIFIER
 SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
 
 WHILE                    <-  while _ EXPRESSION _ BLOCK
+FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK
 IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
-PRIMARY                  <-  WHILE / IF / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
+MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
+MATCH_ARMS               <-  (MATCH_ARM (_ ',' _ MATCH_ARM)* _ ','?)?
+MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ EXPRESSION
+GUARD                    <-  if _ EXPRESSION
+
+PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
+PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
+                             ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
+WILDCARD                 <-  '_' !IdentChar
+TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
+
+ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _ ']'
+ARRAY_PAT_ELEM           <-  REST_PATTERN / PATTERN
+REST_PATTERN             <-  '...' _ IDENTIFIER
+
+OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+
+PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
                              STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
-FUNCTION                 <-  fn _ PARAMETERS _ BLOCK
+FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+LAMBDA                   <-  LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
+LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
 PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-PARAMETER                <-  MUTABLE _ IDENTIFIER
+PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+DEFAULT_VALUE            <-  EXPRESSION
+
+TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* >
+RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* >
 
 BLOCK                    <-  '{' _ STATEMENTS _ '}'
 
 CONDITION_OPERATOR       <-  '==' / '!=' / '<=' / '<' / '>=' / '>'
+RANGE_OPERATOR           <-  < '..=' / '..' >
 ADDITIVE_OPERATOR        <-  [-+]
 UNARY_PLUS_OPERATOR      <-  '+'
 UNARY_MINUS_OPERATOR     <-  '-'
 UNARY_NOT_OPERATOR       <-  '!'
-MULTIPLICATIVE_OPERATOR  <-  [*/%]
+MULTIPLICATIVE_OPERATOR  <-  '*' !'*' / [/%@]
+POWER_OPERATOR           <-  '**'
 
 LET                      <-  K('let')?
 MUTABLE                  <-  K('mut')?
@@ -51,28 +89,42 @@ MUTABLE                  <-  K('mut')?
 IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
 OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER _ ':' _ EXPRESSION
+OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
 ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
 NIL                      <-  K('nil')
 BOOLEAN                  <-  K('true' / 'false')
 
+FLOAT                    <-  < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)?
+                            / [0-9]+ [eE] [-+]? [0-9]+ >
 NUMBER                   <-  < [0-9]+ >
 STRING                   <-  ['] < (!['] .)* > [']
 
 INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
 INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
 
+~let                     <-  K('let')
+~class                   <-  K('class')
 ~debugger                <-  K('debugger')
 ~while                   <-  K('while')
+~for                     <-  K('for')
+~in                      <-  K('in')
 ~if                      <-  K('if')
 ~else                    <-  K('else')
 ~fn                      <-  K('fn')
 ~return                  <-  K('return')
+~match                   <-  K('match')
+~throw                   <-  K('throw')
+~try                     <-  K('try')
+~catch                   <-  K('catch')
+~break                   <-  K('break')
+~continue                <-  K('continue')
+~defer                   <-  K('defer')
 
 ~_                       <-  (WhiteSpace / EndOfLine)*
 ~_sp_                    <-  SpaceChar*
+~_h_                     <-  (SpaceChar / BlockComment)*
 ~_nl_                    <-  LineComment? EndOfLine
 
 WhiteSpace               <-  SpaceChar / Comment
@@ -85,4 +137,4 @@ IdentChar                <-  [a-zA-Z0-9_]
 BlockComment             <-  '/*' (!'*/' .)* '*/'
 LineComment              <-  ('#' / '//') (!EndOfLine .)* &EndOfLine
 
-K(S)                     <-  < S > !IdentInitChar # Keyward Macro
+K(S)                     <-  < S > !IdentInitChar # Keyword Macro

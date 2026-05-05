@@ -167,6 +167,7 @@ static constexpr int8_t GC_TAG_ARRAY = TAG_ARRAY;
 static constexpr int8_t GC_TAG_OBJECT = TAG_OBJECT;
 static constexpr int8_t GC_TAG_CELL = 100;
 
+// Minimum collect-trigger threshold; adaptive at runtime — see collect().
 static constexpr size_t GC_THRESHOLD = 10000;
 static constexpr int64_t GC_REFCOUNT_BOOST = 1000000;
 
@@ -296,6 +297,11 @@ struct _GcTracker {
     if (objects.empty() || running) return;
     running = true;
     _do_collect();
+    // Re-arm to twice the surviving live set (floored at GC_THRESHOLD).
+    // Without this, a fixed threshold makes collect fire O(N) times per
+    // step on workloads that retain a large live set, turning total GC
+    // work into O(N^2).
+    threshold = std::max(GC_THRESHOLD, objects.size() * 2);
     running = false;
   }
 

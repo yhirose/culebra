@@ -1,40 +1,69 @@
-syn match   culOperator     "\%(+\|-\|/\|*\|=\|\^\|&\||\|!\|>\|<\|%\)=\?"
-syn match   culDecNumber    "\<[0-9][0-9_]*"
-syn match   culFuncCall     "\w\(\w\)*("he=e-1,me=e-1
-syn match   culError        ";"
-syn match   culError        "\s*$"
-syn match   culLineComment  "\(\/\/\|#\).*" contains=@Spell,javaScriptCommentTodo
+" Vim syntax file for Culebra (.cul)
+" Tracks the grammar in include/parser.h.
 
-syn keyword culFunction     fn
-syn keyword culSelf         self
-syn keyword culConditional	if else
-syn keyword culRepeat		while
-syn keyword culReturn		return
-syn keyword culDebugger		debugger
-syn keyword culBoolean		true false
+if exists("b:current_syntax")
+  finish
+endif
+
+" Comments
 syn keyword culCommentTodo  TODO FIXME XXX TBD contained
-syn keyword culStorage      mut
+syn match   culLineComment  "\%(\/\/\|#\).*"      contains=culCommentTodo,@Spell
+syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
 
+" Numbers — float patterns first so the integer rule does not steal them.
+syn match   culFloat        "\<\d\+\.\d\+\%([eE][-+]\?\d\+\)\?\>"
+syn match   culFloat        "\<\d\+[eE][-+]\?\d\+\>"
+syn match   culDecNumber    "\<\d\+\>"
+
+" Strings
 syn region  culStringS      start=+'+ skip=+\\\\\|\\'+ end=+'\|$+
-syn region  culStringD      start=+"+ skip=+\\\\\|\\"+ end=+"\|$+
-syn region  culComment      start="/\*" end="\*/" contains=@Spell,javaScriptCommentTodo
+syn region  culStringD      start=+"+ skip=+\\\\\|\\"+ end=+"\|$+ contains=culInterp
+syn region  culInterp       matchgroup=culInterpDelim
+                            \ start=+{+ end=+}+ contained contains=TOP
 
-hi def link culBoolean	       Boolean
-hi def link culComment	       Comment
-hi def link culCommentTodo	   Todo
-hi def link culConditional	   Conditional
-hi def link culDecNumber	   Number
-hi def link culFuncCall        Function
-hi def link culFunction        Type
-hi def link culLineComment	   Comment
-hi def link culOperator        Operator
-hi def link culRepeat	       Repeat
-hi def link culReturn	       Statement
-hi def link culDebugger	       Debug
-hi def link culSelf            Constant
-hi def link culStorage         StorageClass
-hi def link culStringD	       String
-hi def link culStringS	       String
-hi def link culError	       Error
+" Operators (multi-char first so prefixes don't shadow them)
+syn match   culOperator     "&&\|||\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
+syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
+
+" Keywords
+syn keyword culFunction     fn
+syn keyword culClass        class
+syn keyword culConditional  if else match
+syn keyword culRepeat       while for in
+syn keyword culStatement    return break continue throw try catch defer
+syn keyword culDebugger     debugger
+syn keyword culBoolean      true false
+syn keyword culConstant     nil
+syn keyword culSelf         self this __ARGS__
+syn keyword culStorage      let mut
+
+" Capitalized identifiers — built-in types (Long/Float/String/Bool/...),
+" stdlib namespaces (Math/IO/Random), user class names.
+syn match   culType         "\<[A-Z][A-Za-z0-9_]*\>"
+
+" Function-call sites
+syn match   culFuncCall     "\<\h\w*\ze("
+
+hi def link culLineComment   Comment
+hi def link culComment       Comment
+hi def link culCommentTodo   Todo
+hi def link culFloat         Float
+hi def link culDecNumber     Number
+hi def link culStringS       String
+hi def link culStringD       String
+hi def link culInterpDelim   Special
+hi def link culOperator      Operator
+hi def link culFunction      Type
+hi def link culClass         Structure
+hi def link culConditional   Conditional
+hi def link culRepeat        Repeat
+hi def link culStatement     Statement
+hi def link culDebugger      Debug
+hi def link culBoolean       Boolean
+hi def link culConstant      Constant
+hi def link culSelf          Constant
+hi def link culStorage       StorageClass
+hi def link culType          Type
+hi def link culFuncCall      Function
 
 let b:current_syntax = "cul"

@@ -1,0 +1,283 @@
+# Higher-order-function variant of microgpt.cul. Same algorithm and
+# hyperparameters; rewritten to use Array.map / .reduce / .for_each
+# and the |x| ... lambda sugar wherever it makes the code closer to
+# the Python reference. Loss values match the imperative version
+# bit-for-bit.
+
+Random.seed(42)
+
+data_path = 'samples/microgpt/names.txt'
+if !IO.exists(data_path) {
+  puts("error: {data_path} missing. Run `just fetch-names` first.")
+  Sys.exit(1)
+}
+
+newline = "
+"
+mut docs = []
+for line in IO.read(data_path).split(newline) {
+  let s = line.trim()
+  if s.size() > 0 { docs.push(s) }
+}
+Random.shuffle(docs)
+puts("num docs: {docs.size()}")
+
+mut uchars = []
+for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
+uchars.sort_by(|c| c)
+BOS = uchars.size()
+vocab_size = uchars.size() + 1
+puts("vocab size: {vocab_size}")
+
+# --- Autograd ---
+
+class Value {
+  new(data, children = [], local_grads = []) {
+    this.data = data
+    this.grad = 0.0
+    this._children = children
+    this._local_grads = local_grads
+    this._visited = false
+  }
+  __add__(other) {
+    match other {
+      o: Object => Value.new(this.data + o.data, [this, o], [1.0, 1.0]),
+      _         => Value.new(this.data + other, [this], [1.0])
+    }
+  }
+  __mul__(other) {
+    match other {
+      o: Object => Value.new(this.data * o.data, [this, o], [o.data, this.data]),
+      _         => Value.new(this.data * other, [this], [other])
+    }
+  }
+  __pow__(n)     { Value.new(this.data ** n, [this], [n * this.data ** (n - 1)]) }
+  __neg__()      { this * (-1.0) }
+  __sub__(other) { this + (-other) }
+  __div__(other) {
+    match other {
+      o: Object => this * (o ** -1.0),
+      _         => this * (1.0 / other)
+    }
+  }
+  log() { Value.new(Math.log(this.data), [this], [1.0 / this.data]) }
+  exp() { d = Math.exp(this.data); Value.new(d, [this], [d]) }
+  relu() {
+    d = if this.data > 0.0 { this.data } else { 0.0 }
+    g = if this.data > 0.0 { 1.0 } else { 0.0 }
+    Value.new(d, [this], [g])
+  }
+  backward() {
+    mut topo = []
+    build_topo = |node| {
+      if !node._visited {
+        node._visited = true
+        for ch in node._children { self(ch) }
+        topo.push(node)
+      }
+    }
+    build_topo(this)
+    this.grad = 1.0
+    mut i = topo.size() - 1
+    while i >= 0 {
+      let v = topo[i]
+      Math.range(v._children.size()).for_each(|j| {
+        let child = v._children[j]
+        child.grad = child.grad + v._local_grads[j] * v.grad
+      })
+      i = i - 1
+    }
+    for tv in topo { tv._visited = false }
+  }
+}
+
+# Sum of an Array<Value> using Value's __add__. Built-in `sum` only
+# works on Long; we need a Value-typed accumulator.
+sum_v = |arr| arr.reduce(Value.new(0.0), |a, b| a + b)
+
+# Max of `.data` field across an Array<Value>. Built-in `max` is
+# Long-only, so we reduce manually.
+max_data = |arr| arr.reduce(arr[0].data, |best, v|
+  if v.data > best { v.data } else { best }
+)
+
+# --- Hyperparameters ---
+n_layer = 1
+n_embd = 16
+block_size = 16
+n_head = 4
+head_dim = n_embd / n_head
+
+matrix = |nout, nin, std = 0.08|
+  Math.range(nout).map(|_|
+    Math.range(nin).map(|_| Value.new(Random.gauss(0.0, std))).collect()
+  ).collect()
+
+mut layers = []
+for _ in 0..n_layer {
+  layers.push({
+    attn_wq: matrix(n_embd, n_embd),
+    attn_wk: matrix(n_embd, n_embd),
+    attn_wv: matrix(n_embd, n_embd),
+    attn_wo: matrix(n_embd, n_embd),
+    mlp_fc1: matrix(4 * n_embd, n_embd),
+    mlp_fc2: matrix(n_embd, 4 * n_embd)
+  })
+}
+state = {
+  wte: matrix(vocab_size, n_embd),
+  wpe: matrix(block_size, n_embd),
+  lm_head: matrix(vocab_size, n_embd),
+  layers: layers
+}
+
+mut params = []
+collect_params = |mat| { for row in mat { for p in row { params.push(p) } } }
+collect_params(state.wte); collect_params(state.wpe); collect_params(state.lm_head)
+for layer in state.layers {
+  collect_params(layer.attn_wq); collect_params(layer.attn_wk)
+  collect_params(layer.attn_wv); collect_params(layer.attn_wo)
+  collect_params(layer.mlp_fc1); collect_params(layer.mlp_fc2)
+}
+puts("num params: {params.size()}")
+
+# --- Model ---
+
+# dot product of two equal-length Arrays of Values, returning Value
+dot = |a, b| Math.range(a.size()).reduce(Value.new(0.0), |acc, i| acc + a[i] * b[i])
+
+linear = |x, w| w.map(|wo| dot(wo, x))
+
+softmax = |logits| {
+  let mx = max_data(logits)
+  let exps = logits.map(|v| (v - mx).exp())
+  let total = sum_v(exps)
+  exps.map(|e| e / total)
+}
+
+rmsnorm = |x| {
+  let ms = sum_v(x.map(|xi| xi * xi)) * (1.0 / x.size())
+  let scale = (ms + 1e-5) ** -0.5
+  x.map(|xi| xi * scale)
+}
+
+# Element-wise add of two equal-length Arrays of Values.
+add_v = |a, b| Math.range(a.size()).map(|i| a[i] + b[i]).collect()
+
+gpt = fn (token_id, pos_id, keys, values) {
+  mut x = rmsnorm(add_v(state.wte[token_id], state.wpe[pos_id]))
+
+  mut li = 0
+  while li < n_layer {
+    let x_residual1 = x
+    x = rmsnorm(x)
+    let layer = state.layers[li]
+    let q = linear(x, layer.attn_wq)
+    let k = linear(x, layer.attn_wk)
+    let v = linear(x, layer.attn_wv)
+    keys[li].push(k)
+    values[li].push(v)
+
+    let scale_inv = 1.0 / (head_dim ** 0.5)
+    let x_attn = Math.range(n_head).flat_map(|h| {
+      let hs = h * head_dim
+      let q_h = q.slice(hs, hs + head_dim)
+      let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
+      let v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))
+      let attn_logits = k_h.map(|kt| dot(kt, q_h) * scale_inv)
+      let attn_weights = softmax(attn_logits)
+      Math.range(head_dim).map(|j|
+        Math.range(v_h.size()).reduce(Value.new(0.0),
+          |acc, t| acc + attn_weights[t] * v_h[t][j])
+      ).collect()
+    }).collect()
+
+    x = add_v(linear(x_attn, layer.attn_wo), x_residual1)
+
+    let x_residual2 = x
+    x = rmsnorm(x)
+    x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())
+    x = add_v(linear(x, layer.mlp_fc2), x_residual2)
+
+    li = li + 1
+  }
+  linear(x, state.lm_head)
+}
+
+# --- Training ---
+learning_rate = 0.01
+beta1 = 0.85
+beta2 = 0.99
+eps_adam = 1e-8
+mut m_buf = []
+mut v_buf = []
+for _ in 0..params.size() { m_buf.push(0.0); v_buf.push(0.0) }
+
+num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 }
+mut final_loss = 0.0
+
+mut step = 0
+while step < num_steps {
+  let doc = docs[step % docs.size()]
+  mut tokens = [BOS]
+  for c in doc { tokens.push(uchars.index_of(c)) }
+  tokens.push(BOS)
+  let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
+
+  mut keys = []
+  mut values = []
+  for _ in 0..n_layer { keys.push([]); values.push([]) }
+
+  let losses = Math.range(n).map(|pos_id| {
+    let probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))
+    -probs[tokens[pos_id + 1]].log()
+  }).collect()
+  let loss = (1.0 / n) * sum_v(losses)
+  loss.backward()
+
+  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps))
+  Math.range(params.size()).for_each(|i| {
+    let p = params[i]
+    m_buf[i] = beta1 * m_buf[i] + (1.0 - beta1) * p.grad
+    v_buf[i] = beta2 * v_buf[i] + (1.0 - beta2) * p.grad * p.grad
+    let m_hat = m_buf[i] / (1.0 - beta1 ** (step + 1))
+    let v_hat = v_buf[i] / (1.0 - beta2 ** (step + 1))
+    p.data = p.data - lr_t * m_hat / (v_hat ** 0.5 + eps_adam)
+    p.grad = 0.0
+  })
+
+  if (step + 1) % 10 == 0 || step == 0 {
+    puts("step {step+1} / {num_steps} | loss {loss.data}")
+  }
+  final_loss = loss.data
+  step = step + 1
+}
+
+puts("final loss: {final_loss}")
+
+# --- Inference ---
+temperature = 0.5
+puts('--- inference (hallucinated names) ---')
+let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+mut sample_idx = 0
+while sample_idx < n_samples {
+  mut keys2 = []
+  mut values2 = []
+  for _ in 0..n_layer { keys2.push([]); values2.push([]) }
+  mut token_id = BOS
+  mut sample = []
+  mut pos_id = 0
+  while pos_id < block_size {
+    let logits = gpt(token_id, pos_id, keys2, values2)
+    let probs = softmax(logits.map(|l| l / temperature))
+    let pop = Math.range(vocab_size).collect()
+    let weights = probs.map(|p| p.data)
+    token_id = Random.weighted_choice(pop, weights)
+    if token_id == BOS { pos_id = block_size } else {
+      sample.push(uchars[token_id])
+      pos_id = pos_id + 1
+    }
+  }
+  puts("sample {sample_idx+1}: {sample.join('')}")
+  sample_idx = sample_idx + 1
+}

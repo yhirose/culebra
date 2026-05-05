@@ -62,13 +62,20 @@ inline std::map<std::string_view, Value>& iterator_builtins();
 // Uses weak_ptr<void> so incomplete types (Symbol, Value) don't matter here.
 // Process-wide singleton; NOT thread-safe (see THREAD SAFETY note at
 // the top of the runtime section in jit.h).
+//
+// We only track ArrayValue's `values` vector: cycles that go entirely
+// through Object property maps without an Array in between are not
+// detected. This trade keeps the tracker entries down to one per
+// Array (vs one per Object plus one per Array previously) and the
+// per-collect walk visits roughly half the pointers. microgpt's
+// cycles route Object → Array (`_children`) → Object, so they're
+// still broken correctly. User code with direct Object→Object cycles
+// will leak — the language spec already calls cycles a hazard and
+// recommends weak refs (`drop` for explicit teardown).
 struct InterpGC {
-  enum Kind : int { MAP = 0, VEC = 1 };
-
   struct Entry {
     std::weak_ptr<void> weak;
     void* ptr;
-    Kind kind;
   };
 
   static InterpGC& instance() {
@@ -79,15 +86,9 @@ struct InterpGC {
   ~InterpGC() { collect(); }
 
   template <typename T>
-  void track_map(std::shared_ptr<T> p) {
-    entries_.push_back({std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())),
-                        p.get(), MAP});
-    bump();
-  }
-  template <typename T>
   void track_vec(std::shared_ptr<T> p) {
-    entries_.push_back({std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())),
-                        p.get(), VEC});
+    entries_.push_back(
+        {std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())), p.get()});
     bump();
   }
 
@@ -96,7 +97,8 @@ struct InterpGC {
  private:
   std::vector<Entry> entries_;
   size_t alloc_counter_ = 0;
-  size_t threshold_ = 10000;
+  static constexpr size_t GC_MIN_THRESHOLD = 10000;
+  size_t threshold_ = GC_MIN_THRESHOLD;  // adaptive; see collect().
   bool running_ = false;
 
   void bump() {
@@ -157,7 +159,8 @@ struct ObjectValue {
     auto* raw = new std::map<std::string_view, Symbol>();
     properties = std::shared_ptr<std::map<std::string_view, Symbol>>(
         raw, &_destroy_prop_map);
-    interp_gc().track_map(properties);
+    // properties map is intentionally not GC-tracked — see the InterpGC
+    // class header. Cycles are detected via the contained ArrayValues.
   }
 
   // Synthetic ctor: skips default map allocation and GC tracking so that
@@ -3137,62 +3140,58 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
 inline void InterpGC::collect() {
   if (running_) return;
   running_ = true;
-  using PropMap = std::map<std::string_view, Symbol>;
   using ValVec = std::vector<Value>;
 
-  // Prune expired, lock live, and track via typed shared_ptrs.
+  // Prune expired entries.
   entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
                                 [](auto& e) { return e.weak.expired(); }),
                  entries_.end());
 
+  // Lock live shared_ptrs.
   struct Live {
     void* ptr;
-    Kind kind;
-    std::shared_ptr<void> sp;  // void-typed for type erasure
+    std::shared_ptr<void> sp;
   };
   std::vector<Live> live;
   live.reserve(entries_.size());
   for (auto& e : entries_) {
-    if (auto sp = e.weak.lock()) {
-      live.push_back({e.ptr, e.kind, std::move(sp)});
-    }
+    if (auto sp = e.weak.lock()) live.push_back({e.ptr, std::move(sp)});
   }
 
-  // gc_refs: use_count - 1 (our local), then subtract internal incoming refs
+  // gc_refs: use_count - 1 (our local copy in `live`).
   std::unordered_map<void*, long> gc_refs;
   gc_refs.reserve(live.size());
   for (auto& l : live) gc_refs[l.ptr] = l.sp.use_count() - 1;
 
-  auto dec_if_tracked = [&](void* p) {
-    auto it = gc_refs.find(p);
-    if (it != gc_refs.end()) --it->second;
-  };
-  auto decrement_for_value = [&](const Value& val) {
-    if (val.type == Value::Object) {
-      dec_if_tracked(val.template get<ObjectValue>().properties.get());
-    } else if (val.type == Value::Array) {
-      const auto& av = val.template get<ArrayValue>();
-      dec_if_tracked(av.properties.get());
-      dec_if_tracked(av.values.get());
+  // For each Value held in a tracked ValVec, find the ValVec(s)
+  // reachable in one step and invoke `fn(child_ptr)`. Object property
+  // maps are untracked but we descend through them once to surface the
+  // tracked Arrays they contain. `auto&& fn` keeps the visitor
+  // monomorphic per call site, so the compiler inlines instead of
+  // emitting a thunk.
+  auto walk_array_children = [](ValVec* v, auto&& fn) {
+    for (auto& val : *v) {
+      if (val.type == Value::Array) {
+        fn(val.template get<ArrayValue>().values.get());
+      } else if (val.type == Value::Object) {
+        for (auto& [_, sym] : *val.template get<ObjectValue>().properties) {
+          if (sym.val.type == Value::Array) {
+            fn(sym.val.template get<ArrayValue>().values.get());
+          }
+        }
+      }
     }
   };
 
-  auto each_child_value = [&](void* ptr, Kind k, auto&& fn) {
-    if (k == MAP) {
-      auto* m = static_cast<PropMap*>(ptr);
-      for (auto& [_, sym] : *m) fn(sym.val);
-    } else {
-      auto* v = static_cast<ValVec*>(ptr);
-      for (auto& val : *v) fn(val);
-    }
-  };
-
-  // Subtract internal references
+  // Subtract internal references.
   for (auto& l : live) {
-    each_child_value(l.ptr, l.kind, decrement_for_value);
+    walk_array_children(static_cast<ValVec*>(l.ptr), [&](void* p) {
+      auto it = gc_refs.find(p);
+      if (it != gc_refs.end()) --it->second;
+    });
   }
 
-  // Mark external roots and propagate reachability
+  // Mark external roots and BFS-propagate reachability.
   std::unordered_set<void*> reachable;
   std::queue<void*> q;
   for (auto& [ptr, r] : gc_refs) {
@@ -3201,46 +3200,29 @@ inline void InterpGC::collect() {
       q.push(ptr);
     }
   }
-
-  std::unordered_map<void*, Kind> kind_by_ptr;
-  kind_by_ptr.reserve(live.size());
-  for (auto& l : live) kind_by_ptr[l.ptr] = l.kind;
-
+  auto mark = [&](void* c) {
+    if (reachable.insert(c).second && gc_refs.contains(c)) q.push(c);
+  };
   while (!q.empty()) {
-    auto* p = q.front();
+    auto* v = static_cast<ValVec*>(q.front());
     q.pop();
-    auto kit = kind_by_ptr.find(p);
-    if (kit == kind_by_ptr.end()) continue;
-    each_child_value(p, kit->second, [&](const Value& val) {
-      auto mark = [&](void* c) {
-        auto [_, inserted] = reachable.insert(c);
-        if (inserted && gc_refs.contains(c)) q.push(c);
-      };
-      if (val.type == Value::Object) {
-        mark(val.template get<ObjectValue>().properties.get());
-      } else if (val.type == Value::Array) {
-        const auto& av = val.template get<ArrayValue>();
-        mark(av.properties.get());
-        mark(av.values.get());
-      }
-    });
+    walk_array_children(v, mark);
   }
 
-  // Break cycles: clear unreachable containers. shared_ptr cascade handles
-  // the rest. Call drop on unreachable object-maps before clearing — order
-  // among cycle members is undefined (each drop still runs once because
-  // the custom deleter skips maps emptied here).
+  // Break cycles by clearing unreachable ValVecs. shared_ptr cascade
+  // does the rest, including invoking each freed PropMap's custom
+  // deleter (which fires `drop` on its way out).
   for (auto& l : live) {
     if (!reachable.contains(l.ptr)) {
-      if (l.kind == MAP) {
-        auto* m = static_cast<PropMap*>(l.ptr);
-        _call_drop_if_present(m);
-        m->clear();
-      } else {
-        static_cast<ValVec*>(l.ptr)->clear();
-      }
+      static_cast<ValVec*>(l.ptr)->clear();
     }
   }
+
+  // Re-arm the next-collect threshold to twice the surviving live set
+  // (floored at GC_MIN_THRESHOLD). Without this, a fixed threshold makes
+  // collect fire O(N) times per step on workloads that retain a large
+  // live set, turning total GC work into O(N^2).
+  threshold_ = std::max(GC_MIN_THRESHOLD, reachable.size() * 2);
 
   running_ = false;
 }

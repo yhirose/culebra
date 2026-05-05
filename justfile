@@ -53,6 +53,21 @@ test-all: build
 test-shadow-errors: build
     ./scripts/test_shadow_errors.sh
 
+# Download Karpathy's names dataset for samples/microgpt.
+fetch-names:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    path=samples/microgpt/names.txt
+    if [[ -s "$path" ]]; then
+      echo "$path already present ($(wc -l < "$path") lines)"
+      exit 0
+    fi
+    mkdir -p samples/microgpt
+    url='https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt'
+    echo "fetching $url"
+    curl -fsSL "$url" -o "$path"
+    echo "saved $path ($(wc -l < "$path") lines)"
+
 # Quick fib(33) benchmark comparing interpreter vs JIT
 bench: build
     #!/usr/bin/env bash

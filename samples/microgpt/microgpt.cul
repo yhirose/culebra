@@ -1,0 +1,384 @@
+# Culebra port of karpathy/microgpt (scalar autograd), same algorithm
+# and hyperparameters as samples/microgpt/microgpt.py.
+#
+# Usage:
+#   ./build/culebra       samples/microgpt/microgpt.cul -- 1000
+#   ./build/culebra --jit samples/microgpt/microgpt.cul -- 1000
+
+Random.seed(42)
+
+data_path = 'samples/microgpt/names.txt'
+if !IO.exists(data_path) {
+  puts("error: {data_path} missing. Run `just fetch-names` first.")
+  Sys.exit(1)
+}
+
+raw = IO.read(data_path)
+# Single-quoted strings take characters literally; there are no
+# escape sequences. Build a true newline via a bare interpolated
+# string containing one.
+newline = "
+"
+mut docs = []
+for line in raw.split(newline) {
+  s = line.trim()
+  if s.size() > 0 { docs.push(s) }
+}
+Random.shuffle(docs)
+puts("num docs: {docs.size()}")
+
+# Sorted unique character set. Linear dedupe is fine: names.txt only
+# contains ~27 distinct characters.
+mut uchars = []
+for d in docs {
+  for c in d {
+    if !uchars.contains(c) { uchars.push(c) }
+  }
+}
+uchars.sort_by(fn (c) { c })
+BOS = uchars.size()
+vocab_size = uchars.size() + 1
+puts("vocab size: {vocab_size}")
+
+# --- Autograd ---
+
+class Value {
+  new(data, children = [], local_grads = []) {
+    this.data = data
+    this.grad = 0.0
+    this._children = children
+    this._local_grads = local_grads
+    this._visited = false
+  }
+  __add__(other) {
+    match other {
+      o: Object => Value.new(this.data + o.data, [this, o], [1.0, 1.0]),
+      _         => Value.new(this.data + other, [this], [1.0])
+    }
+  }
+  __mul__(other) {
+    match other {
+      o: Object => Value.new(this.data * o.data, [this, o], [o.data, this.data]),
+      _         => Value.new(this.data * other, [this], [other])
+    }
+  }
+  __pow__(n)     { Value.new(this.data ** n, [this], [n * this.data ** (n - 1)]) }
+  __neg__()      { this * (-1.0) }
+  __sub__(other) { this + (-other) }
+  __div__(other) {
+    match other {
+      o: Object => this * (o ** -1.0),
+      _         => this * (1.0 / other)
+    }
+  }
+  log() { Value.new(Math.log(this.data), [this], [1.0 / this.data]) }
+  exp() { d = Math.exp(this.data); Value.new(d, [this], [d]) }
+  relu() {
+    d = if this.data > 0.0 { this.data } else { 0.0 }
+    g = if this.data > 0.0 { 1.0 } else { 0.0 }
+    Value.new(d, [this], [g])
+  }
+  backward() {
+    mut topo = []
+    build_topo = fn (node) {
+      if !node._visited {
+        node._visited = true
+        for ch in node._children { self(ch) }
+        topo.push(node)
+      }
+    }
+    build_topo(this)
+    this.grad = 1.0
+    mut i = topo.size() - 1
+    while i >= 0 {
+      let v = topo[i]
+      mut j = 0
+      while j < v._children.size() {
+        let child = v._children[j]
+        child.grad = child.grad + v._local_grads[j] * v.grad
+        j = j + 1
+      }
+      i = i - 1
+    }
+    for tv in topo { tv._visited = false }
+  }
+}
+
+# Python's `sum(arr)` starts at int 0 and relies on __radd__. Here we
+# use reduce with an explicit Value(0.0) accumulator.
+sum_v = fn (arr) {
+  arr.reduce(Value.new(0.0), fn (acc, v) { acc + v })
+}
+
+# Max of the `.data` field across an array of Values.
+max_data = fn (arr) {
+  mut best = arr[0].data
+  mut i = 1
+  while i < arr.size() {
+    let d = arr[i].data
+    if d > best { best = d }
+    i = i + 1
+  }
+  best
+}
+
+# --- Hyperparameters ---
+n_layer = 1
+n_embd = 16
+block_size = 16
+n_head = 4
+head_dim = n_embd / n_head
+
+matrix = fn (nout, nin, std = 0.08) {
+  mut m = []
+  for _ in 0..nout {
+    mut row = []
+    for _ in 0..nin { row.push(Value.new(Random.gauss(0.0, std))) }
+    m.push(row)
+  }
+  m
+}
+
+# Build per-layer weights as an Array of Objects; Culebra Object props
+# must be identifiers, so we can't use 'layer0.attn_wq' as a key.
+mut layers = []
+for _ in 0..n_layer {
+  layers.push({
+    attn_wq: matrix(n_embd, n_embd),
+    attn_wk: matrix(n_embd, n_embd),
+    attn_wv: matrix(n_embd, n_embd),
+    attn_wo: matrix(n_embd, n_embd),
+    mlp_fc1: matrix(4 * n_embd, n_embd),
+    mlp_fc2: matrix(n_embd, 4 * n_embd)
+  })
+}
+state = {
+  wte: matrix(vocab_size, n_embd),
+  wpe: matrix(block_size, n_embd),
+  lm_head: matrix(vocab_size, n_embd),
+  layers: layers
+}
+
+mut params = []
+collect = fn (mat) {
+  for row in mat { for p in row { params.push(p) } }
+}
+collect(state.wte); collect(state.wpe); collect(state.lm_head)
+for layer in state.layers {
+  collect(layer.attn_wq); collect(layer.attn_wk)
+  collect(layer.attn_wv); collect(layer.attn_wo)
+  collect(layer.mlp_fc1); collect(layer.mlp_fc2)
+}
+puts("num params: {params.size()}")
+
+# --- Model ---
+
+linear = fn (x, w) {
+  mut out = []
+  for wo in w {
+    mut acc = Value.new(0.0)
+    mut i = 0
+    while i < wo.size() {
+      acc = acc + wo[i] * x[i]
+      i = i + 1
+    }
+    out.push(acc)
+  }
+  out
+}
+
+softmax = fn (logits) {
+  mx = max_data(logits)
+  mut exps = []
+  for val in logits { exps.push((val - mx).exp()) }
+  total = sum_v(exps)
+  mut out = []
+  for e in exps { out.push(e / total) }
+  out
+}
+
+rmsnorm = fn (x) {
+  mut ms = Value.new(0.0)
+  for xi in x { ms = ms + xi * xi }
+  ms = ms * (1.0 / x.size())
+  scale = (ms + 1e-5) ** -0.5
+  mut out = []
+  for xi in x { out.push(xi * scale) }
+  out
+}
+
+gpt = fn (token_id, pos_id, keys, values) {
+  tok_emb = state.wte[token_id]
+  pos_emb = state.wpe[pos_id]
+  mut x = []
+  mut i = 0
+  while i < tok_emb.size() {
+    x.push(tok_emb[i] + pos_emb[i])
+    i = i + 1
+  }
+  x = rmsnorm(x)
+
+  mut li = 0
+  while li < n_layer {
+    let x_residual1 = x
+    x = rmsnorm(x)
+    let layer = state.layers[li]
+    let q = linear(x, layer.attn_wq)
+    let k = linear(x, layer.attn_wk)
+    let v = linear(x, layer.attn_wv)
+    keys[li].push(k)
+    values[li].push(v)
+
+    mut x_attn = []
+    mut h = 0
+    while h < n_head {
+      let hs = h * head_dim
+      let q_h = q.slice(hs, hs + head_dim)
+      mut k_h = []
+      mut v_h = []
+      mut t = 0
+      while t < keys[li].size() {
+        k_h.push(keys[li][t].slice(hs, hs + head_dim))
+        v_h.push(values[li][t].slice(hs, hs + head_dim))
+        t = t + 1
+      }
+      mut attn_logits = []
+      mut tt = 0
+      let scale_inv = 1.0 / (head_dim ** 0.5)
+      while tt < k_h.size() {
+        mut dot = Value.new(0.0)
+        mut jj = 0
+        while jj < head_dim {
+          dot = dot + q_h[jj] * k_h[tt][jj]
+          jj = jj + 1
+        }
+        attn_logits.push(dot * scale_inv)
+        tt = tt + 1
+      }
+      let attn_weights = softmax(attn_logits)
+      mut head_out = []
+      mut j = 0
+      while j < head_dim {
+        mut s = Value.new(0.0)
+        mut tidx = 0
+        while tidx < v_h.size() {
+          s = s + attn_weights[tidx] * v_h[tidx][j]
+          tidx = tidx + 1
+        }
+        head_out.push(s)
+        j = j + 1
+      }
+      for e in head_out { x_attn.push(e) }
+      h = h + 1
+    }
+    x = linear(x_attn, layer.attn_wo)
+    mut x2 = []
+    mut k2 = 0
+    while k2 < x.size() { x2.push(x[k2] + x_residual1[k2]); k2 = k2 + 1 }
+    x = x2
+
+    let x_residual2 = x
+    x = rmsnorm(x)
+    x = linear(x, layer.mlp_fc1)
+    mut xr = []
+    for xi in x { xr.push(xi.relu()) }
+    x = xr
+    x = linear(x, layer.mlp_fc2)
+    mut x3 = []
+    mut k3 = 0
+    while k3 < x.size() { x3.push(x[k3] + x_residual2[k3]); k3 = k3 + 1 }
+    x = x3
+
+    li = li + 1
+  }
+  linear(x, state.lm_head)
+}
+
+# --- Training ---
+learning_rate = 0.01
+beta1 = 0.85
+beta2 = 0.99
+eps_adam = 1e-8
+mut m_buf = []
+mut v_buf = []
+for _ in 0..params.size() { m_buf.push(0.0); v_buf.push(0.0) }
+
+num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 1000 }
+mut final_loss = 0.0
+
+mut step = 0
+while step < num_steps {
+  let doc = docs[step % docs.size()]
+  mut tokens = [BOS]
+  for c in doc { tokens.push(uchars.index_of(c)) }
+  tokens.push(BOS)
+  let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
+
+  mut keys = []
+  mut values = []
+  for _ in 0..n_layer { keys.push([]); values.push([]) }
+  mut losses = []
+  mut pos_id = 0
+  while pos_id < n {
+    let token_id = tokens[pos_id]
+    let target_id = tokens[pos_id + 1]
+    let logits = gpt(token_id, pos_id, keys, values)
+    let probs = softmax(logits)
+    losses.push(-probs[target_id].log())
+    pos_id = pos_id + 1
+  }
+  let loss = (1.0 / n) * sum_v(losses)
+  loss.backward()
+
+  let lr_t = learning_rate * (1.0 - to_float(step) / to_float(num_steps))
+  mut i = 0
+  while i < params.size() {
+    let p = params[i]
+    m_buf[i] = beta1 * m_buf[i] + (1.0 - beta1) * p.grad
+    v_buf[i] = beta2 * v_buf[i] + (1.0 - beta2) * p.grad * p.grad
+    let m_hat = m_buf[i] / (1.0 - beta1 ** (step + 1))
+    let v_hat = v_buf[i] / (1.0 - beta2 ** (step + 1))
+    p.data = p.data - lr_t * m_hat / (v_hat ** 0.5 + eps_adam)
+    p.grad = 0.0
+    i = i + 1
+  }
+
+  if (step + 1) % 10 == 0 || step == 0 {
+    puts("step {step+1} / {num_steps} | loss {loss.data}")
+  }
+  final_loss = loss.data
+  step = step + 1
+}
+
+puts("final loss: {final_loss}")
+
+# --- Inference ---
+temperature = 0.5
+puts('--- inference (hallucinated names) ---')
+let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+mut sample_idx = 0
+while sample_idx < n_samples {
+  mut keys2 = []
+  mut values2 = []
+  for _ in 0..n_layer { keys2.push([]); values2.push([]) }
+  mut token_id = BOS
+  mut sample = []
+  mut pos_id = 0
+  while pos_id < block_size {
+    let logits = gpt(token_id, pos_id, keys2, values2)
+    mut scaled = []
+    for l in logits { scaled.push(l / temperature) }
+    let probs = softmax(scaled)
+    mut pop = []
+    for i in 0..vocab_size { pop.push(i) }
+    mut weights = []
+    for p in probs { weights.push(p.data) }
+    token_id = Random.weighted_choice(pop, weights)
+    if token_id == BOS { pos_id = block_size } else {
+      sample.push(uchars[token_id])
+      pos_id = pos_id + 1
+    }
+  }
+  puts("sample {sample_idx+1}: {sample.join('')}")
+  sample_idx = sample_idx + 1
+}

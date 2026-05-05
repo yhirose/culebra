@@ -27,7 +27,7 @@ const auto grammar_ = R"(
   EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
-  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
+  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
   DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
 
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
@@ -35,7 +35,11 @@ const auto grammar_ = R"(
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
   CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
   RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
-  ADDITIVE                 <-  UNARY_PLUS (_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
+  # Newline before `+`/`-` does NOT continue the current expression:
+  # `let v = X` followed by a line starting with `-y` is two statements.
+  # Continuation across newlines requires the operator at line end
+  # (or wrapping in parentheses).
+  ADDITIVE                 <-  UNARY_PLUS (_h_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
   UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
   UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
   UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
@@ -44,7 +48,13 @@ const auto grammar_ = R"(
   # both parse as in Python (unary prefix allowed, right-associative).
   POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
 
-  CALL                     <-  PRIMARY (_ (ARGUMENTS / INDEX / DOT))*
+  # Newline before `(` or `[` does NOT extend the previous expression
+  # into a call/index — that line is a parenthesized expression or
+  # array literal in its own right. `.` is unambiguous (cannot start
+  # a statement) so cross-line method chaining still works:
+  #   xs.map(...)
+  #     .filter(...)   # OK
+  CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
   ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
   INDEX                    <-  '[' _ EXPRESSION _ ']'
   DOT                      <-  '.' _ IDENTIFIER
@@ -148,6 +158,7 @@ const auto grammar_ = R"(
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
+  ~_h_                     <-  (SpaceChar / BlockComment)*
   ~_nl_                    <-  LineComment? EndOfLine
 
   WhiteSpace               <-  SpaceChar / Comment
