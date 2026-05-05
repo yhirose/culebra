@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iomanip>
+#include <print>
 #include <linenoise.hpp>
 #include "culebra.h"
 
@@ -28,7 +29,7 @@ class CommandLineDebugger {
       show_lines(ast);
 
       for (;;) {
-        std::cout << std::endl << "debug> ";
+        std::print("\ndebug> ");
 
         std::string s;
         std::getline(std::cin, s);
@@ -67,8 +68,7 @@ class CommandLineDebugger {
   void show_lines(const peg::Ast& ast) {
     prepare_cache(ast.path);
 
-    std::cout << std::endl
-              << "Break in " << ast.path << ":" << ast.line << std::endl;
+    std::println("\nBreak in {}:{}", ast.path, ast.line);
 
     auto count = get_line_count(ast.path);
 
@@ -80,12 +80,8 @@ class CommandLineDebugger {
 
     for (auto l = start; l < end; l++) {
       auto s = get_line(ast.path, l);
-      if (l == ast.line) {
-        std::cout << "> ";
-      } else {
-        std::cout << "  ";
-      }
-      std::cout << std::setw(needed_digits) << l << " " << s << std::endl;
+      auto marker = (l == ast.line) ? ">" : " ";
+      std::println("{} {:>{}} {}", marker, l, needed_digits, s);
     }
   }
 
@@ -120,10 +116,9 @@ class CommandLineDebugger {
     if (symbol.empty()) {
       print_all(ast, env);
     } else if (env.has(symbol)) {
-      std::cout << symbol << ": " << env.get(symbol).str() << std::endl;
+      std::println("{}: {}", symbol, env.get(symbol).str());
     } else {
-      std::cout << "'" << symbol << "'"
-                << "is not undefined." << std::endl;
+      std::println("'{}'is not undefined.", symbol);
     }
   }
 
@@ -135,7 +130,7 @@ class CommandLineDebugger {
       if (env.has(symbol)) {
         const auto& val = env.get(symbol);
         if (val.type != Value::Function) {
-          std::cout << symbol << ": " << val.str() << std::endl;
+          std::println("{}: {}", symbol, val.str());
         }
       }
     }
@@ -190,9 +185,8 @@ class CommandLineDebugger {
   }
 
   void usage() {
-    std::cout << "Usage: (c)ontinue, (n)ext, (s)tep in, step (o)out, (p)ring, "
-                 "(l)ist, (q)uit"
-              << std::endl;
+    std::println("Usage: (c)ontinue, (n)ext, (s)tep in, step (o)ut, (p)rint, "
+                 "(l)ist, (q)uit");
   }
 
   bool read_file(const char* path, std::vector<char>& buff) {

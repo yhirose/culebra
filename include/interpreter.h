@@ -2,8 +2,9 @@
 
 #include <peglib.h>
 
+#include <format>
 #include <map>
-#include <sstream>
+#include <print>
 #include <string>
 
 namespace culebra {
@@ -107,7 +108,7 @@ inline peg::parser& get_parser() {
     initialized = true;
 
     parser.set_logger([&](size_t ln, size_t col, const std::string& msg) {
-      std::cerr << ln << ":" << col << ": " << msg << std::endl;
+      std::println(stderr, "{}:{}: {}", ln, col, msg);
     });
 
     if (!parser.load_grammar(grammar_)) {
@@ -250,6 +251,8 @@ struct Value {
     switch (type) {
       case Object:
         return get<ObjectValue>();
+      case Array:
+        return get<ArrayValue>();
       default:
         throw std::runtime_error("type error.");
     }
@@ -288,7 +291,7 @@ struct Value {
       case Long:
         return std::to_string(to_long());
       case String:
-        return "'" + to_string() + "'";
+        return std::format("'{}'", to_string());
       case Object:
         return str_object();
       case Array:
@@ -298,7 +301,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   std::ostream& out(std::ostream& os) const {
@@ -320,7 +323,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   bool operator!=(const Value& rhs) const { return !operator==(rhs); }
@@ -339,7 +342,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   bool operator<(const Value& rhs) const {
@@ -356,7 +359,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   bool operator>=(const Value& rhs) const {
@@ -373,7 +376,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   bool operator>(const Value& rhs) const {
@@ -390,7 +393,7 @@ struct Value {
       default:
         throw std::logic_error("invalid internal condition.");
     }
-    // NOTREACHED
+    std::unreachable();
   }
 
   Type type;
@@ -535,13 +538,12 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
 inline std::string Value::str_object() const {
   const auto& properties = *to_object().properties;
   std::string s = "{";
-  auto it = properties.begin();
-  for (; it != properties.end(); ++it) {
-    if (it != properties.begin()) {
+  bool first = true;
+  for (const auto& [name, sym] : properties) {
+    if (!first) {
       s += ", ";
     }
-    const auto& name = it->first;
-    const auto& sym = it->second;
+    first = false;
     if (sym.mut) {
       s += "mut ";
     }
@@ -571,10 +573,8 @@ inline void setup_built_in_functions(Environment& env) {
                             if (!cond) {
                               auto line = env->get("__LINE__").to_long();
                               auto column = env->get("__COLUMN__").to_long();
-                              std::string msg = "assert failed at " +
-                                                std::to_string(line) + ":" +
-                                                std::to_string(column) + ".";
-                              throw std::runtime_error(msg);
+                              throw std::runtime_error(
+                                  std::format("assert failed at {}:{}.", line, column));
                             }
                             return Value();
                           })),
@@ -654,7 +654,7 @@ struct Interpreter {
       return Value(std::string(ast.token));
     }
 
-    // NOTREACHED
+    std::unreachable();
     throw std::logic_error("invalid Ast type");
   }
 
@@ -712,7 +712,7 @@ struct Interpreter {
     auto body = ast.nodes[1];
 
     return Value(
-        FunctionValue(params, [=](std::shared_ptr<Environment> callEnv) {
+        FunctionValue(params, [=, this](std::shared_ptr<Environment> callEnv) {
           callEnv->append_outer(env);
           return eval(*body, callEnv);
         }));
@@ -1072,9 +1072,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   auto& parser = get_parser();
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    std::stringstream ss;
-    ss << path << ":" << ln << ":" << col << ": " << err_msg << std::endl;
-    msgs.push_back(ss.str());
+    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
   });
 
   std::shared_ptr<peg::Ast> ast;

@@ -45,3 +45,4 @@ CMakeCache.txt
 *.cmake
 *.vcxproj.filters
 *.opensdf
+.DS_Store

@@ -1,4 +1,5 @@
 #include <culebra.h>
+#include <print>
 
 using namespace std;
 
@@ -53,7 +54,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   for (auto path : options.script_path_list) {
     vector<char> buff;
     if (!read_file(path.c_str(), buff)) {
-      cerr << "can't open '" << path << "'." << endl;
+      std::println(stderr, "can't open '{}'.", path);
       return false;
     }
 
