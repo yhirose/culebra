@@ -6555,7 +6555,7 @@ struct JIT {
         builder_.CreateCondBr(isArr, okBB, errBB);
 
         builder_.SetInsertPoint(errBB);
-        emit_type_error();
+        emit_type_error_typed("Array", tag);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(okBB);
@@ -6618,7 +6618,7 @@ struct JIT {
         builder_.CreateCondBr(isObj, okBB, errBB);
 
         builder_.SetInsertPoint(errBB);
-        emit_type_error();
+        emit_type_error_typed("Object", tag);
         builder_.CreateUnreachable();
 
         builder_.SetInsertPoint(okBB);
@@ -7762,7 +7762,7 @@ struct JIT {
     sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
 
     builder_.SetInsertPoint(badBB);
-    emit_type_error();
+    emit_type_error_typed("Array, Object, or String", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrayBB);
@@ -8961,7 +8961,7 @@ struct JIT {
     auto cond = builder_.CreateICmpEQ(tag, builder_.getInt8(expected));
     builder_.CreateCondBr(cond, okBB, errBB);
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed(_culebra_tag_name(expected), tag);
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(okBB);
     return builder_.CreateIntToPtr(extract_data(receiver),
@@ -10424,7 +10424,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array, Object, or String", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -10512,7 +10512,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array, String, or Tensor", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -10580,7 +10580,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array or String", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -10712,7 +10712,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array or Object", t);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrBB);
@@ -11053,7 +11053,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array, Object, or Tensor", t);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
@@ -11183,7 +11183,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error();
+    emit_type_error_typed("Array, Object, or String", t);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrBB);

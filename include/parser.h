@@ -16,8 +16,8 @@ const auto grammar_ = R"(
 
   # Top-level named function declaration. Multiple declarations with
   # the same name and different parameter type signatures form a
-  # multimethod (Phase 1: interp only, free fn only). Anonymous
-  # `fn(...) {...}` keeps its existing role inside expressions.
+  # multimethod (free fn only). Anonymous `fn(...) {...}` keeps its
+  # existing role inside expressions.
   MULTIFN_DECL             <-  fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 
   CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'

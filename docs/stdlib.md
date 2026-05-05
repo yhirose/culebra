@@ -29,8 +29,9 @@ Conventions used below:
 2. [`IO`](#2-io) — output, stdin, file I/O
 3. [`Random`](#3-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
 4. [`Sys`](#4-sys) — argv, exit, env
-5. [Design notes](#5-design-notes)
-6. [Not included (yet)](#6-not-included-yet)
+5. [`Tensor`](#5-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
+6. [Design notes](#6-design-notes)
+7. [Not included (yet)](#7-not-included-yet)
 
 **Where to find what**
 
@@ -359,7 +360,174 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 5. Design notes
+## 5. `Tensor`
+
+N-dimensional numeric tensor. Builds a lazy computation graph and
+launches BLAS / vDSP kernels through `Tensor.eval(...)` to materialize
+values. Supported dtypes are `Float32` (default) and `Float64`.
+Shapes can be supplied as variadic args or as an `[m, n]` Array.
+`transpose`, `slice`, and `reshape` produce zero-copy views.
+
+```culebra
+let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
+let B = Tensor.randn(3, 2)
+let C = A.dot(B) + 1.0                # lazy: builds the graph only
+Tensor.eval(C)                        # BLAS GEMM runs here
+puts(C.shape())                       # [2, 2]
+puts(C.to_array())                    # [[..., ...], [..., ...]]
+```
+
+### Construction (namespace functions)
+
+#### `Tensor.zeros(...) -> Tensor` / `Tensor.ones(...)` / `Tensor.randn(...)`
+
+The shape is variadic (`Tensor.zeros(3, 4)`) or an Array
+(`Tensor.zeros([3, 4])`). The dtype is a string `"f32"` or `"f64"`
+placed as the **first argument**, Julia-style:
+
+```culebra
+let a   = Tensor.zeros(3, 4)              # F32 default
+let a64 = Tensor.zeros("f64", 3, 4)       # explicit
+let dims = [3, 4]
+let b   = Tensor.zeros(dims)              # computed shape
+let r   = Tensor.randn(2, 3)              # standard normal
+```
+
+#### `Tensor.from(arr: Array) -> Tensor`
+
+Converts a nested Culebra Array into a Tensor. Accepts 1D
+(`[1.0, 2.0]`) or 2D (`[[1.0, 2.0], [3.0, 4.0]]`); stored as F32:
+
+```culebra
+let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
+let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
+```
+
+#### `Tensor.from_csv(path: String) -> Tensor`
+
+Reads a CSV file directly into a contiguous Tensor. Always returns
+**rank-2** — a single-column CSV becomes `[N, 1]` (the bias-vector
+form). Skips the nested Array intermediary, which is 3-5× faster than
+the `Tensor.from(load_2d(path))` pattern (measured on MNIST):
+
+```culebra
+let W1 = Tensor.from_csv("W1.csv")    # [30, 784]
+let b1 = Tensor.from_csv("b1.csv")    # [30, 1]
+let X  = Tensor.from_csv("X.csv")     # [N, 784]
+```
+
+#### `Tensor.eval(t1, t2, ...) -> Nil`
+
+Takes a variable number of Tensor arguments and evaluates the
+dependency graph in topological order. Shared subexpressions are
+computed once. Call this **at least once per mini-batch boundary** in
+a training loop — otherwise the graph accumulates and memory grows
+unbounded.
+
+```culebra
+W2 = W2 - d2.dot(a1.transpose()) * lr
+b2 = b2 - d2.sum(1).reshape([N_OUT, 1]) * lr
+W1 = W1 - d1.dot(xb.transpose()) * lr
+b1 = b1 - d1.sum(1).reshape([N_HID, 1]) * lr
+Tensor.eval(W1, b1, W2, b2)              # evaluate all four in one pass
+```
+
+### Activation functions (namespace functions)
+
+These are namespace functions, not methods (`.relu()` etc.), to avoid
+clashing with the convention of users defining `relu` as a class
+method (microGPT's `Value.relu()`, for instance).
+
+```culebra
+let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
+let r = Tensor.relu(x)           # max(0, x)
+let p = Tensor.softmax(logits)   # over the last axis, online-stable
+```
+
+### Tensor methods
+
+Shape ops, linear algebra, and reductions use method syntax:
+
+| Method | Returns | Description |
+|---|---|---|
+| `.shape() -> Array` | Array of Long | shape as an Array |
+| `.dot(other: Tensor) -> Tensor` | lazy | matrix product; both operands rank-2 |
+| `.linear_sigmoid(x, b) -> Tensor` | lazy | fused `sigmoid(self @ x + b)` |
+| `.pow(exp) -> Tensor` | lazy | elementwise power; `exp` is Tensor or scalar |
+| `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
+| `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
+| `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
+| `.sum() -> Float` | scalar | sum of all elements (forces eval) |
+| `.sum(axis: Long) -> Tensor` | lazy | reduce one axis |
+| `.mean() / .mean(axis)` | Float / Tensor | likewise |
+| `.max() / .max(axis)` | Float / Tensor | likewise |
+| `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
+| `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |
+
+### Operator overloading
+
+`+ - * /` are broadcasting elementwise (numpy / silarray rules).
+Scalars mix automatically:
+
+```culebra
+let M = Tensor.ones(3, 4)
+let v = Tensor.ones(4)            # broadcasts to [3, 4]
+let r = Tensor.ones(3, 1)         # broadcasts to [3, 4]
+Tensor.eval(M + v, M + r, M + 1.0, M * 2.0)
+```
+
+The `@` operator is not implemented (use `.dot()`).
+
+### Compound assignment (`+=` `-=` `*=` `/=` `**=`) and in-place writes
+
+Compound assignment writes back into the LHS Tensor's buffer (no
+fresh Tensor is allocated) when **the LHS owns its buffer and the
+shape matches the RHS broadcast result**. Views, unevaluated graph
+nodes, and shape mismatches automatically fall back to the ordinary
+path (a fresh Tensor).
+
+```culebra
+mut W = Tensor.randn('f32', 1024, 256)
+let alias = W
+W -= grad * lr     # writes directly into W's buffer
+Tensor.eval(alias) # alias.to_array() sees the updated values
+```
+
+The SGD-style update `W = W - grad * lr` allocates a W-sized buffer
+every step. `-=` removes that allocation; the gap widens for larger
+weights and longer loops (measured: 5000 steps on a 1024×256 f32
+weight, plain `=` 5.5 s → `-=` 3.6 s).
+
+Supported ops: `+= -= *= /= **=` (`%=` and `@=` are not — `%` has no
+defined Tensor semantics, and `@` changes the output shape so
+in-place is unsafe).
+
+### dtype / shape constraints
+
+- dtype is F32 or F64 only. Binops and `dot` require matching dtypes
+  (no implicit promotion).
+- `.dot()` is rank-2 only. Batched 3D+ matmul is future work.
+- `.reshape()` requires contiguous input (a post-`transpose` reshape
+  must materialize first — currently go through
+  `Tensor.from((...).to_array())` explicitly).
+- `.softmax()` also requires contiguous input.
+
+### Backends
+
+Phase 1 is **CPU only**.
+
+- macOS: Accelerate framework (`cblas_sgemm/dgemm`, scalar fallback
+  for `sigmoid`).
+- Linux: OpenBLAS (`find_package(BLAS)`).
+
+Future Metal / CUDA support will be added through the dispatch table
+in `tensor_backend.h`. The API stays the same; the silarray-style
+globals `use_cpu()` / `use_metal()` / `use_cuda()` will toggle the
+target.
+
+---
+
+## 6. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -394,7 +562,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 6. Not included (yet)
+## 7. Not included (yet)
 
 ### Trigonometry
 
