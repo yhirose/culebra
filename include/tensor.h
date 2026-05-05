@@ -547,8 +547,12 @@ inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
   for (size_t i = 0; i < a->shape.dims.size(); i++) {
     if (static_cast<int64_t>(i) != axis) out_dims.push_back(a->shape.dims[i]);
   }
+  // Read dtype before std::move(a) — function-argument evaluation order
+  // is indeterminate in C++17, and gcc happens to sequence the move
+  // before the dtype read, leaving `a` moved-from at access time.
+  auto dtype = a->dtype;
   auto t = std::make_shared<TensorImpl>(
-      op, TensorShape(std::move(out_dims)), a->dtype,
+      op, TensorShape(std::move(out_dims)), dtype,
       std::vector<TensorPtr>{std::move(a)});
   t->op_param = axis;
   return t;
@@ -754,8 +758,11 @@ inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
         "Tensor: dot inner dims do not match (A.cols != B.rows).");
   }
   std::vector<int64_t> out_dims{a->shape.dims[0], b->shape.dims[1]};
+  // Read dtype before std::move(a) — see tensor_reduce_axis for the
+  // gcc argument-evaluation-order rationale.
+  auto dtype = a->dtype;
   return std::make_shared<TensorImpl>(
-      Op::Dot, TensorShape(std::move(out_dims)), a->dtype,
+      Op::Dot, TensorShape(std::move(out_dims)), dtype,
       std::vector<TensorPtr>{std::move(a), std::move(b)});
 }
 
@@ -906,8 +913,11 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
         "Tensor: linear_sigmoid inner dims do not match.");
   }
   std::vector<int64_t> out_dims{W->shape.dims[0], x->shape.dims[1]};
+  // Read dtype before std::move(W) — see tensor_reduce_axis for the
+  // gcc argument-evaluation-order rationale.
+  auto dtype = W->dtype;
   return std::make_shared<TensorImpl>(
-      Op::LinearSigmoid, TensorShape(std::move(out_dims)), W->dtype,
+      Op::LinearSigmoid, TensorShape(std::move(out_dims)), dtype,
       std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)});
 }
 
