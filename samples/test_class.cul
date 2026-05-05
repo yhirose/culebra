@@ -1,0 +1,209 @@
+# Class-sugar regression tests. Runs on both the tree interpreter and
+# the JIT.
+
+test_class_basic = fn () {
+  class Car {
+    new(mpr) { this.miles = 0; this.mpr = mpr }
+    run(n)   { this.miles = this.miles + this.mpr * n }
+    total()  { this.miles }
+  }
+  c = Car.new(5)
+  c.run(1); c.run(2)
+  assert(c.total() == 15)
+  assert(c.class == 'Car')
+}
+
+test_class_default_ctor = fn () {
+  class Empty {
+    greet() { 'hi' }
+  }
+  e = Empty.new()
+  assert(e.greet() == 'hi')
+  assert(e.class == 'Empty')
+}
+
+test_class_independent_instances = fn () {
+  class Car {
+    new(mpr) { this.miles = 0; this.mpr = mpr }
+    run(n)   { this.miles = this.miles + this.mpr * n }
+    total()  { this.miles }
+  }
+  a = Car.new(10); b = Car.new(20)
+  a.run(1); b.run(1)
+  assert(a.total() == 10 && b.total() == 20)
+}
+
+test_class_chain = fn () {
+  class Counter {
+    new()  { this.n = 0 }
+    bump() { this.n = this.n + 1; this }
+    value(){ this.n }
+  }
+  k = Counter.new()
+  k.bump().bump().bump()
+  assert(k.value() == 3)
+}
+
+test_class_match_tag = fn () {
+  class Point { new(x, y) { this.x = x; this.y = y } }
+  describe = fn (o) {
+    match o {
+      {class} if class == 'Point' => 'point',
+      _ => 'other'
+    }
+  }
+  assert(describe(Point.new(0, 0)) == 'point')
+  assert(describe({}) == 'other')
+}
+
+test_op_overload = fn () {
+  class Vec {
+    new(x, y) { this.x = x; this.y = y }
+    __add__(r) { Vec.new(this.x + r.x, this.y + r.y) }
+    __sub__(r) { Vec.new(this.x - r.x, this.y - r.y) }
+    __mul__(r) {
+      match r {
+        n: Long => Vec.new(this.x * n, this.y * n),
+        _       => Vec.new(this.x * r.x, this.y * r.y)
+      }
+    }
+    __neg__()  { Vec.new(-this.x, -this.y) }
+    __eq__(r)  { this.x == r.x && this.y == r.y }
+    __lt__(r)  {
+      (this.x * this.x + this.y * this.y) < (r.x * r.x + r.y * r.y)
+    }
+  }
+  a = Vec.new(1, 2)
+  b = Vec.new(3, 4)
+
+  s = a + b
+  assert(s.x == 4 && s.y == 6)
+  assert((b - a).x == 2)
+  assert((a * 3).x == 3)                 # scalar scale
+  assert((a * b).y == 8)                 # element-wise
+  assert((-a).x == -1)
+
+  assert(a == Vec.new(1, 2))
+  assert(a != b)
+  assert(a < b)
+  assert(a <= Vec.new(1, 2))             # derives from __lt__ + __eq__
+  assert(b > a)
+  assert(b >= Vec.new(3, 4))
+}
+
+test_pow_overload = fn () {
+  class Wrapped {
+    new(n) { this.n = n }
+    __pow__(e) { Wrapped.new(this.n * e.n) }   # silly demo semantics
+  }
+  r = Wrapped.new(3) ** Wrapped.new(4)
+  assert(r.n == 12)
+}
+
+test_auto_reflect = fn () {
+  class Vec {
+    new(x, y) { this.x = x; this.y = y }
+    __add__(r) {
+      match r {
+        n: Long => Vec.new(this.x + n, this.y + n),
+        _       => Vec.new(this.x + r.x, this.y + r.y)
+      }
+    }
+    __mul__(r) {
+      match r {
+        n: Long => Vec.new(this.x * n, this.y * n),
+        _       => Vec.new(this.x * r.x, this.y * r.y)
+      }
+    }
+    __eq__(r) { this.x == r.x && this.y == r.y }
+  }
+  v = Vec.new(3, 4)
+  a = 2 * v                          # Long * Vec reflects to v.__mul__(2)
+  assert(a.x == 6 && a.y == 8)
+  b = 10 + v                         # Long + Vec reflects to v.__add__(10)
+  assert(b.x == 13 && b.y == 14)
+  # Equality reflection (Object RHS)
+  assert(v == Vec.new(3, 4))
+  assert(Vec.new(3, 4) == v)
+}
+
+test_matmul_overload = fn () {
+  class Mat {
+    new(data) { this.data = data }
+    __matmul__(r) {
+      mut out = []
+      for i in 0..this.data.size() {
+        mut row = []
+        for j in 0..r.data[0].size() {
+          mut s = 0
+          for k in 0..r.data.size() {
+            s = s + this.data[i][k] * r.data[k][j]
+          }
+          row.push(s)
+        }
+        out.push(row)
+      }
+      Mat.new(out)
+    }
+  }
+  a = Mat.new([[1, 2], [3, 4]])
+  b = Mat.new([[5, 6], [7, 8]])
+  c = a @ b
+  assert(c.data[0][0] == 19 && c.data[0][1] == 22)
+  assert(c.data[1][0] == 43 && c.data[1][1] == 50)
+  # Chains left-associatively (same precedence as *).
+  d = a @ b @ a
+  assert(d.data[0][0] == 19 + 66)
+}
+
+test_str_dunder = fn () {
+  class Matrix {
+    new(r, c) { this.rows = r; this.cols = c }
+    __str__()  { "Matrix {this.rows}x{this.cols}" }
+  }
+  m = Matrix.new(2, 3)
+
+  # to_string picks up __str__
+  assert(to_string(m) == 'Matrix 2x3')
+
+  # String interpolation picks it up too
+  assert("shape: {m}" == 'shape: Matrix 2x3')
+
+  # Object without __str__ falls back to the default formatter
+  plain = {a: 1, b: 2}
+  assert(to_string(plain) == '{a: 1, b: 2}')
+}
+
+test_default_display = fn () {
+  # Class-sugar instance: `class:` tag is hoisted to a prefix, and
+  # omitted from the property list to avoid repetition.
+  class Point { new(x, y) { this.x = x; this.y = y } }
+  p = Point.new(3, 4)
+  assert(to_string(p) == 'Point {mut x: 3, mut y: 4}')
+
+  # Plain literals using the `class:` convention get the same treatment.
+  tagged = {class: 'Tag', x: 10}
+  assert(to_string(tagged) == 'Tag {x: 10}')
+
+  # A non-String `class` field is treated as a regular property.
+  weird = {class: 42, x: 1}
+  assert(to_string(weird) == '{class: 42, x: 1}')
+
+  # Untagged Object is unchanged.
+  plain = {a: 1, b: 2}
+  assert(to_string(plain) == '{a: 1, b: 2}')
+}
+
+test_class_basic()
+test_class_default_ctor()
+test_class_independent_instances()
+test_class_chain()
+test_class_match_tag()
+test_op_overload()
+test_pow_overload()
+test_auto_reflect()
+test_matmul_overload()
+test_str_dunder()
+test_default_display()
+
+puts('class-sugar OK')

@@ -29,36 +29,86 @@ Index
 
 1. `Math`
 2. `IO`
-3. `Sys`
-4. Design notes
-5. Not included (yet)
+3. `Random`
+4. `Sys`
+5. Design notes
+6. Not included (yet)
 
 ---
 
 1. `Math`
 ---------
 
-Integer math utilities. Culebra now has a `Float` type and a `**`
-exponentiation operator (see [§4](language.md#4-types) and
-[§7](language.md#7-expressions) of the language spec), but
-library-level float helpers (`sqrt`, `log`, `exp`, `sin`, `cos`,
-`random`) are still deferred — see §5 below.
+Numeric utilities. Integer-only routines (`pow`, `sign`, `clamp`,
+`iota`, `range`) preserve `Long` input; the Float-domain routines
+(`log`, `exp`, `sqrt`, …) accept either `Long` or `Float` and return
+the shape documented below. See [§4](language.md#4-types) and
+[§7](language.md#7-expressions) of the language spec for how `Long`
+and `Float` interact.
 
-### `Math.abs(x: Long) -> Long`
+### Constants
 
-Absolute value of `x`.
+`Math.pi`, `Math.e`, `Math.inf`, `Math.nan` are `Float` properties
+with the obvious values (`π`, `e`, positive infinity, and a quiet
+NaN). Both backends evaluate these as compile-time constants under
+`--jit`.
 
 ```culebra
-puts(Math.abs(-7))    # 7
+puts(Math.pi)              # 3.141592653589793
+puts(Math.e)               # 2.718281828459045
+puts(Math.inf > 1e308)     # true
+puts(Math.nan == Math.nan) # false
 ```
 
-### `Math.min(a: Long, b: Long) -> Long`
+### `Math.abs(x: Long|Float) -> Long|Float`
 
-Smaller of `a` and `b`.
+Absolute value. Returns `Long` for `Long` input, `Float` for `Float`
+input.
 
-### `Math.max(a: Long, b: Long) -> Long`
+```culebra
+puts(Math.abs(-7))     # 7
+puts(Math.abs(-7.5))   # 7.5
+```
 
-Larger of `a` and `b`.
+### `Math.min(a, b, ...) -> Long|Float`, `Math.max(a, b, ...) -> Long|Float`
+
+Smallest / largest of two or more numeric arguments. Returns `Long`
+when every argument is `Long`; any `Float` argument promotes the
+result to `Float`. At least two arguments are required; fewer — or
+any non-numeric argument — raises `type error`.
+
+```culebra
+puts(Math.min(3, 1, 4, 1, 5))   # 1
+puts(Math.max(1.5, 2, 0.5))     # 2.0
+```
+
+### `Math.log(x: Long|Float) -> Float`
+
+Natural logarithm of `x`. `Math.log(0)` is `-inf`; `Math.log` of a
+negative value is `nan`. The return type is always `Float` even when
+the result is mathematically an integer.
+
+### `Math.exp(x: Long|Float) -> Float`
+
+`e` raised to `x`.
+
+### `Math.sqrt(x: Long|Float) -> Float`
+
+Principal square root. `Math.sqrt(-1.0)` is `nan`.
+
+### `Math.floor(x: Long|Float) -> Long`, `Math.ceil(x: Long|Float) -> Long`, `Math.round(x: Long|Float) -> Long`
+
+Round a numeric value to an integer. `Long` input is returned
+unchanged. `Math.floor` rounds toward `-∞`, `Math.ceil` toward `+∞`,
+and `Math.round` uses **banker's rounding** (round half to even,
+matching Python's built-in `round()`).
+
+```culebra
+puts(Math.floor(-1.5))   # -2
+puts(Math.ceil(-1.5))    # -1
+puts(Math.round(2.5))    # 2      (ties to even)
+puts(Math.round(3.5))    # 4
+```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
 
@@ -66,6 +116,9 @@ Integer exponentiation. `base ** exp`, computed by repeated squaring.
 `Math.pow(x, 0)` is `1` for every `x` (including `0`).
 
 **Throws**: `type error at L:C.` if `exp < 0`.
+
+Kept for back-compat; **prefer the `**` operator** which also handles
+`Float` and negative exponents (see language spec §7).
 
 ```culebra
 puts(Math.pow(2, 10))    # 1024
@@ -203,9 +256,81 @@ writing.
 IO.write('out.txt', 'hello\n')
 ```
 
+### `IO.exists(path: String) -> Bool`
+
+Return whether an entry exists at `path`. Does not distinguish
+regular files from directories or symlinks. An empty or invalid path
+returns `false`. Useful for the check-then-download pattern without
+needing `try`/`catch`.
+
+```culebra
+if !IO.exists('data.txt') {
+  IO.write('data.txt', 'hello')
+}
+```
+
 ---
 
-3. `Sys`
+3. `Random`
+-----------
+
+Random-number generation. The process has a single shared
+Mersenne-Twister-64 engine, shared between the interpreter and JIT
+backends; `Random.seed(n)` resets it and makes every subsequent draw
+reproducible within one program execution. Without a `seed` call the
+engine is initialised from `std::random_device`.
+
+### `Random.seed(n: Long) -> Nil`
+
+Reseed the shared PRNG. Same `n` → same sequence.
+
+```culebra
+Random.seed(42)
+```
+
+### `Random.int(lo: Long, hi: Long) -> Long`
+
+Uniform integer in the half-open range `[lo, hi)`. Requires `hi > lo`,
+otherwise `type error`.
+
+```culebra
+Random.seed(0)
+puts(Random.int(0, 10))        # 0..9
+```
+
+### `Random.uniform(lo: Float, hi: Float) -> Float`
+
+Uniform real in the half-open range `[lo, hi)`. `Long` arguments are
+accepted and promoted to `Float`.
+
+### `Random.gauss(mu: Float, sigma: Float) -> Float`
+
+A sample from a Gaussian distribution with the given mean and
+standard deviation. `Long` arguments are promoted to `Float`.
+
+```culebra
+Random.gauss(0.0, 1.0)         # standard normal
+```
+
+### `Random.shuffle(a: Array) -> Nil`
+
+Fisher–Yates in-place permutation. Returns `nil`; the argument is
+mutated.
+
+### `Random.weighted_choice(pop: Array, weights: Array) -> Any`
+
+Draw a single element from `pop` with probability proportional to the
+matching `weights` entry. Weights must all be numeric and of the same
+length as `pop`; empty or mismatched inputs raise `type error`.
+Weights of `0` are never selected.
+
+```culebra
+Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
+```
+
+---
+
+4. `Sys`
 --------
 
 Process-level information.
@@ -244,15 +369,15 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-4. Design notes
+5. Design notes
 ---------------
 
 ### Namespace-first, CLI-aliased globals
 
 The library adds **no global names**: everything lives under
-`Math`, `IO`, or `Sys`. This keeps `culebra::environment()` free of
-surprises for embedders who use Culebra as a scripting engine
-inside a host application.
+`Math`, `IO`, `Random`, or `Sys`. This keeps `culebra::environment()`
+free of surprises for embedders who use Culebra as a scripting
+engine inside a host application.
 
 For CLI scripting, however, `puts` / `print` are so pervasive that
 writing `IO.puts` everywhere adds friction. The CLI binary
@@ -280,15 +405,15 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-5. Not included (yet)
+6. Not included (yet)
 ---------------------
 
-### Floating-point math (`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.exp`, `Math.random`)
+### Trigonometry
 
-The `Float` type now exists and `**` can fill in for `pow`, but the
-library-level helpers (`sqrt`, trig, logs, random) are not yet
-wired up. Planned for Phase 2; until then, use `x ** 0.5` where
-applicable.
+`Math.sin` / `Math.cos` / `Math.tan` / `Math.atan2` are not yet
+exposed. Random drawing and the core transcendentals (`log`, `exp`,
+`sqrt`) are available; trig entries can be added when a concrete use
+case lands.
 
 ### Regular expressions
 

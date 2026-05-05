@@ -28,35 +28,79 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 
 1. `Math`
 2. `IO`
-3. `Sys`
-4. 設計上の注記
-5. 未収録（将来検討）
+3. `Random`
+4. `Sys`
+5. 設計上の注記
+6. 未収録（将来検討）
 
 ---
 
 1. `Math`
 ---------
 
-整数演算のユーティリティ群。Culebra には `Float` 型と `**` 演算子が
-導入されていますが（言語仕様 §4 / §7）、ライブラリレベルの浮動小数点
-ヘルパ（`sqrt`, `log`, `exp`, `sin`, `cos`, `random`）は引き続き
-保留です。下の §5 を参照。
+数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`・
+`iota`・`range`）は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）
+は `Long` / `Float` のいずれかを受け取ります。`Long` と `Float` の
+相互作用は言語仕様 §4 / §7 を参照。
 
-### `Math.abs(x: Long) -> Long`
+### 定数
 
-`x` の絶対値。
+`Math.pi` / `Math.e` / `Math.inf` / `Math.nan` は `Float` の
+プロパティ（π、e、正の無限大、quiet NaN）です。`--jit` でも
+コンパイル時定数として展開されます。
 
 ```culebra
-puts(Math.abs(-7))    # 7
+puts(Math.pi)              # 3.141592653589793
+puts(Math.e)               # 2.718281828459045
+puts(Math.inf > 1e308)     # true
+puts(Math.nan == Math.nan) # false
 ```
 
-### `Math.min(a: Long, b: Long) -> Long`
+### `Math.abs(x: Long|Float) -> Long|Float`
 
-`a` と `b` のうち小さい方。
+絶対値。`Long` 入力なら `Long`、`Float` 入力なら `Float` を返します。
 
-### `Math.max(a: Long, b: Long) -> Long`
+```culebra
+puts(Math.abs(-7))     # 7
+puts(Math.abs(-7.5))   # 7.5
+```
 
-`a` と `b` のうち大きい方。
+### `Math.min(a, b, ...) -> Long|Float`、`Math.max(a, b, ...) -> Long|Float`
+
+2 つ以上の数値引数から最小 / 最大を取ります。全て `Long` なら `Long`、
+1 つでも `Float` が含まれれば結果は `Float`。引数 1 個以下、または
+数値以外が混じれば `type error`。
+
+```culebra
+puts(Math.min(3, 1, 4, 1, 5))   # 1
+puts(Math.max(1.5, 2, 0.5))     # 2.0
+```
+
+### `Math.log(x: Long|Float) -> Float`
+
+自然対数。`Math.log(0)` は `-inf`、負の値は `nan` を返します。
+整数値を返す場合でも戻り値は常に `Float`。
+
+### `Math.exp(x: Long|Float) -> Float`
+
+`e` の `x` 乗。
+
+### `Math.sqrt(x: Long|Float) -> Float`
+
+主平方根。`Math.sqrt(-1.0)` は `nan`。
+
+### `Math.floor(x: Long|Float) -> Long`、`Math.ceil(...) -> Long`、`Math.round(...) -> Long`
+
+整数への丸め。`Long` 入力はそのまま返します。`Math.floor` は
+`-∞` 方向、`Math.ceil` は `+∞` 方向、`Math.round` は
+**偶数丸め（bankers' rounding）** — Python の `round()` と同じ挙動。
+
+```culebra
+puts(Math.floor(-1.5))   # -2
+puts(Math.ceil(-1.5))    # -1
+puts(Math.round(2.5))    # 2      (偶数側へ丸める)
+puts(Math.round(3.5))    # 4
+```
 
 ### `Math.pow(base: Long, exp: Long) -> Long`
 
@@ -64,6 +108,9 @@ puts(Math.abs(-7))    # 7
 `Math.pow(x, 0)` は `x` に関わらず `1`（`0` を含む）。
 
 **例外**: `exp < 0` のとき `type error at L:C.`。
+
+後方互換のため残してあります。**基本は `**` 演算子を使ってください**
+（`Float`・負指数も扱えます。言語仕様 §7）。
 
 ```culebra
 puts(Math.pow(2, 10))    # 1024
@@ -198,9 +245,79 @@ contents = IO.read('data.txt')
 IO.write('out.txt', 'hello\n')
 ```
 
+### `IO.exists(path: String) -> Bool`
+
+`path` にエントリ（ファイル／ディレクトリ／シンボリックリンクを
+区別しない）があるかを返します。空文字列や不正なパスは `false`。
+`try`/`catch` 無しで「取得前に有無を確認」パターンに使えます。
+
+```culebra
+if !IO.exists('data.txt') {
+  IO.write('data.txt', 'hello')
+}
+```
+
 ---
 
-3. `Sys`
+3. `Random`
+-----------
+
+乱数生成。プロセスごとに単一の Mersenne-Twister-64 エンジンを
+持ち、インタプリタと JIT で共有しています。`Random.seed(n)` は
+エンジンをリセットし、以降の呼び出しを 1 回のプログラム実行内で
+再現可能にします。`seed` を呼ばなければ `std::random_device` で
+初期化されます。
+
+### `Random.seed(n: Long) -> Nil`
+
+PRNG を再シード。同じ `n` → 同じ系列。
+
+```culebra
+Random.seed(42)
+```
+
+### `Random.int(lo: Long, hi: Long) -> Long`
+
+半開区間 `[lo, hi)` からの一様整数。`hi > lo` 必須、
+違反すると `type error`。
+
+```culebra
+Random.seed(0)
+puts(Random.int(0, 10))        # 0..9
+```
+
+### `Random.uniform(lo: Float, hi: Float) -> Float`
+
+半開区間 `[lo, hi)` からの一様実数。`Long` 引数も受け付け、
+`Float` に昇格します。
+
+### `Random.gauss(mu: Float, sigma: Float) -> Float`
+
+平均 `mu`、標準偏差 `sigma` のガウス分布から 1 サンプル。
+`Long` 引数は `Float` に昇格します。
+
+```culebra
+Random.gauss(0.0, 1.0)         # 標準正規
+```
+
+### `Random.shuffle(a: Array) -> Nil`
+
+Fisher–Yates によるインプレース置換。`nil` を返し、引数は破壊的に
+並び替えられます。
+
+### `Random.weighted_choice(pop: Array, weights: Array) -> Any`
+
+対応する `weights` に比例する確率で `pop` から 1 要素を取り出します。
+`weights` はすべて数値かつ `pop` と同じ長さである必要があります。
+空または長さ不一致は `type error`。重み `0` は選ばれません。
+
+```culebra
+Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
+```
+
+---
+
+4. `Sys`
 --------
 
 プロセスレベルの情報。
@@ -238,13 +355,13 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-4. 設計上の注記
+5. 設計上の注記
 ----------------
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
 ライブラリ自体は**グローバル名を一切追加しません**。すべての関数
-は `Math`, `IO`, `Sys` のいずれかに属します。これにより
+は `Math`, `IO`, `Random`, `Sys` のいずれかに属します。これにより
 `culebra::environment()` はホストアプリケーションに埋め込むスクリプト
 エンジンとして、意図しないグローバルを持ち込まない形になります。
 
@@ -272,15 +389,14 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-5. 未収録（将来検討）
+6. 未収録（将来検討）
 ----------------------
 
-### 浮動小数点演算（`Math.sqrt`, `Math.sin`, `Math.cos`, `Math.log`, `Math.exp`, `Math.random`）
+### 三角関数
 
-`Float` 型は導入されており、冪乗は `**` 演算子で行えますが、
-ライブラリレベルのヘルパ（`sqrt`、三角関数、対数、乱数）はまだ
-配線されていません。Phase 2 で追加予定。当面は平方根なら
-`x ** 0.5` などで代替できます。
+`Math.sin` / `cos` / `tan` / `atan2` は未実装です。乱数生成と主要な
+超越関数（`log`, `exp`, `sqrt`）は揃っているので、三角関数は具体的
+なユースケースが出てきた時点で追加します。
 
 ### 正規表現
 

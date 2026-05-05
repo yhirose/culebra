@@ -10,10 +10,11 @@ Features
 
 * Dynamic typing with 7 core types; first-class functions with lexical
   closures
-* Rust-flavored syntax (`let`, `mut`, `fn`); optional type annotations
-  with runtime checks
+* Rust-flavored syntax (`let`, `mut`, `fn`, `|x| expr` lambdas);
+  optional type annotations with runtime checks
 * Pattern matching (literals, bindings, typed, or-patterns, array/object
-  destructuring, guards)
+  destructuring, guards); `_` is a non-binding sink in `let _ = ...`,
+  `for _ in ...`, `fn(_, _, x)`, and pattern slots
 * String interpolation; rich built-in methods on arrays, objects, and
   strings
 * Minimal standard library grouped under `Math`, `IO`, `Sys`
@@ -59,6 +60,10 @@ fib = fn (x) {
 }
 mut i = 0
 while i < 10 { puts("{i}: {fib(i)}"); i = i + 1 }
+
+# Lambda sugar for short functors
+squares = [1, 2, 3, 4].map(|x| x * x)
+puts(squares)                           # [1, 4, 9, 16]
 ```
 
 More examples in [`samples/`](samples/).

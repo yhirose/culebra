@@ -2,6 +2,7 @@
 
 #include <num_format.h>
 #include <parser.h>
+#include <random_state.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 #include <well_known_props.h>
@@ -10,11 +11,13 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <print>
 #include <queue>
+#include <random>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -126,19 +129,27 @@ struct FunctionValue {
     std::string_view name;
     bool mut;
     std::string_view type_name;  // empty = no annotation
+    // Default expression AST (nullptr = no default). Points into the
+    // root AST, which outlives all FunctionValues for a given eval.
+    const peg::Ast* default_expr = nullptr;
   };
 
   FunctionValue(
       const std::vector<Parameter>& params,
       const std::function<Value(std::shared_ptr<Environment> env)>& eval,
-      std::string_view return_type = {})
+      std::string_view return_type = {},
+      std::shared_ptr<Environment> def_env = {})
       : params(std::make_shared<std::vector<Parameter>>(params)),
         eval(eval),
-        return_type(return_type) {}
+        return_type(return_type),
+        def_env(std::move(def_env)) {}
 
   std::shared_ptr<std::vector<Parameter>> params;
   std::function<Value(std::shared_ptr<Environment> env)> eval;
   std::string_view return_type;  // empty = no annotation
+  // Definition environment — used only to evaluate parameter defaults
+  // (for body execution, `eval` closes over this env itself).
+  std::shared_ptr<Environment> def_env;
 };
 
 struct ObjectValue {
@@ -478,11 +489,19 @@ struct Environment {
     return outer && outer->has(s);
   }
 
+  // `_` is a non-binding sink: any binding form (`let _`, `for _ in`,
+  // `fn(_, _, x)`, `match { _ => }`) drops the value instead of
+  // introducing a name. Centralizing the check in Environment means
+  // every bind site (initialize / would_shadow_capture /
+  // def_scope_captures) inherits the rule for free.
+  static bool is_sink(std::string_view s) { return s == "_"; }
+
   // Used for shadow-prohibition: declaring a new `let`/`mut` binding
   // that shadows a closure-captured variable (from an enclosing function)
   // is an error. Block-scope shadowing within the same function is
   // allowed, as is shadowing a global (builtin or top-level binding).
   bool would_shadow_capture(std::string_view s) const {
+    if (is_sink(s)) return false;
     // Walk through same-function block envs until we reach the current
     // function's frame, then skip past it. Anything found beyond that
     // (excluding the global root) is a closure-captured binding.
@@ -505,6 +524,7 @@ struct Environment {
   // definition scope) and its outer chain, stopping before the global
   // root.
   bool def_scope_captures(std::string_view s) const {
+    if (is_sink(s)) return false;
     const Environment* e = this;
     while (e && e->outer) {
       if (e->dictionary.contains(s)) return true;
@@ -543,6 +563,7 @@ struct Environment {
   }
 
   void initialize(std::string_view s, Value val, bool mut) {
+    if (is_sink(s)) return;
     dictionary[s] = Symbol{std::move(val), mut};
   }
 
@@ -638,9 +659,24 @@ inline std::string Value::str_object() const {
   StrGuard guard(key);
   if (guard.already) return "{...}";
   const auto& properties = *obj.properties;
-  std::string s = "{";
+  // If the object carries a String `class:` tag (class-sugar instance
+  // or any user-built Object that uses the same convention), hoist the
+  // tag to a prefix so `{class: 'Matrix', rows: 2}` prints as
+  // `Matrix {rows: 2}` — cleaner at a glance and emphasises the nominal
+  // type. The `class` entry itself is skipped in the property list to
+  // avoid repeating information.
+  std::string s;
+  auto it = properties.find("class");
+  bool has_class_tag = it != properties.end() &&
+                       it->second.val.type == String;
+  if (has_class_tag) {
+    s = it->second.val.template get<std::string>();
+    s += " ";
+  }
+  s += "{";
   bool first = true;
   for (const auto& [name, sym] : properties) {
+    if (has_class_tag && name == "class") continue;
     if (!first) {
       s += ", ";
     }
@@ -735,6 +771,39 @@ inline Value _invoke_method_no_args(const Value& receiver,
                                     std::string_view method_name) {
   const auto& fn = receiver.to_object().get(method_name);
   return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
+}
+
+// Display hook: if `v` is an Object carrying a `__str__` method, run
+// it and return its String result. Returns nullopt otherwise so the
+// caller falls back to the built-in formatter (`str_display`). The
+// method is expected to return a String; anything else is a type
+// error so a buggy `__str__` fails loudly.
+inline std::optional<std::string> _try_str_dunder(const Value& v) {
+  if (v.type != Value::Object) return std::nullopt;
+  const auto& obj = v.to_object();
+  if (!obj.has("__str__")) return std::nullopt;
+  const auto& m = obj.get("__str__");
+  if (m.type != Value::Function) return std::nullopt;
+  auto r = _invoke_method_no_args(v, "__str__");
+  if (r.type != Value::String) {
+    throw std::runtime_error("__str__ must return a String");
+  }
+  return r.template get<std::string>();
+}
+
+// Like `v.str_display()` (unquoted strings) but honors `__str__` on
+// Object — used by interpolation, `print`, and `to_string`.
+inline std::string str_display_with_dunder(const Value& v) {
+  if (auto r = _try_str_dunder(v)) return *r;
+  return v.str_display();
+}
+
+// Like `v.str()` (quoted strings) but honors `__str__` on Object —
+// used by `puts`. Objects with `__str__` return the custom form with
+// no extra quoting regardless.
+inline std::string str_quoted_with_dunder(const Value& v) {
+  if (auto r = _try_str_dunder(v)) return *r;
+  return v.str();
 }
 
 // Advance an iterator one step. Returns the yielded value, or
@@ -1726,6 +1795,8 @@ struct Interpreter {
         return eval_match(ast, env);
       case "FUNCTION"_:
         return eval_function(ast, env);
+      case "LAMBDA"_:
+        return eval_lambda(ast, env);
       case "CALL"_:
         return eval_call(ast, env);
       case "LEXICAL_SCOPE"_:
@@ -1734,6 +1805,8 @@ struct Interpreter {
         return eval_assignment(ast, env);
       case "LOGICAL_OR"_:
         return eval_logical_or(ast, env);
+      case "NIL_COALESCE"_:
+        return eval_nil_coalesce(ast, env);
       case "LOGICAL_AND"_:
         return eval_logical_and(ast, env);
       case "CONDITION"_:
@@ -1747,6 +1820,10 @@ struct Interpreter {
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_:
         return eval_bin_expression(ast, env);
+      case "RANGE"_:
+        return eval_range(ast, env);
+      case "DESTRUCTURE_ASSIGN"_:
+        return eval_destructure_assign(ast, env);
       case "POWER"_:
         return eval_power(ast, env);
       case "IDENTIFIER"_:
@@ -1782,6 +1859,8 @@ struct Interpreter {
       case "DEFER"_:
         eval_defer(ast, env);
         return Value();
+      case "CLASS_DECL"_:
+        return eval_class_decl(ast, env);
     }
 
     if (ast.is_token) {
@@ -1915,25 +1994,28 @@ struct Interpreter {
   // Bind a pattern variable into `env`, first checking that it does not
   // shadow a variable captured from an enclosing function. `ident_node`
   // supplies both the name (via its token) and the diagnostic location.
+  // `mut` controls the mutability of the binding — match arms always bind
+  // as mut; destructure-let honors the user-declared `mut` qualifier.
   void bind_pattern_name(std::shared_ptr<Environment>& env,
-                         const peg::Ast& ident_node, Value val) {
+                         const peg::Ast& ident_node, Value val,
+                         bool mut = true) {
     auto name = ident_node.token;
     if (env->would_shadow_capture(name)) {
       throw_shadow_error(name, ident_node.line, ident_node.column);
     }
-    env->initialize(name, std::move(val), true);
+    env->initialize(name, std::move(val), mut);
   }
 
   // Try to match a pattern against `val`. On success, bind any introduced
   // variables into `env` and return true.
   bool try_pattern(const peg::Ast& pattern, const Value& val,
-                   std::shared_ptr<Environment> env) {
+                   std::shared_ptr<Environment> env, bool mut = true) {
     using namespace peg::udl;
 
     // PATTERN with multiple children is an OR pattern.
     if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
       for (const auto& sub : pattern.nodes) {
-        if (try_pattern(*sub, val, env)) return true;
+        if (try_pattern(*sub, val, env, mut)) return true;
       }
       return false;
     }
@@ -1957,13 +2039,13 @@ struct Interpreter {
         return val.type == Value::String &&
                val.get<std::string>() == std::string(pattern.token);
       case "IDENTIFIER"_: {
-        bind_pattern_name(env, pattern, val);
+        bind_pattern_name(env, pattern, val, mut);
         return true;
       }
       case "TYPED_IDENT"_: {
         auto type_name = pattern.nodes[1]->token;
         if (!type_matches(val, type_name)) return false;
-        bind_pattern_name(env, *pattern.nodes[0], val);
+        bind_pattern_name(env, *pattern.nodes[0], val, mut);
         return true;
       }
       case "ARRAY_PATTERN"_: {
@@ -1983,7 +2065,7 @@ struct Interpreter {
         if (rest_idx < 0) {
           if (items.size() != elems.size()) return false;
           for (size_t i = 0; i < elems.size(); i++) {
-            if (!try_pattern(*elems[i], items[i], env)) return false;
+            if (!try_pattern(*elems[i], items[i], env, mut)) return false;
           }
           return true;
         }
@@ -1993,7 +2075,7 @@ struct Interpreter {
         if (items.size() < fixed) return false;
         // Match pre-rest fixed elements
         for (int i = 0; i < rest_idx; i++) {
-          if (!try_pattern(*elems[i], items[i], env)) return false;
+          if (!try_pattern(*elems[i], items[i], env, mut)) return false;
         }
         // Collect rest into new Array
         auto rest_len = items.size() - fixed;
@@ -2003,11 +2085,11 @@ struct Interpreter {
           rest.values->push_back(items[rest_idx + j]);
         }
         bind_pattern_name(env, *elems[rest_idx]->nodes[0],
-                          Value(std::move(rest)));
+                          Value(std::move(rest)), mut);
         // Match post-rest fixed elements
         for (size_t i = rest_idx + 1; i < elems.size(); i++) {
           auto src_idx = items.size() - (elems.size() - i);
-          if (!try_pattern(*elems[i], items[src_idx], env)) return false;
+          if (!try_pattern(*elems[i], items[src_idx], env, mut)) return false;
         }
         return true;
       }
@@ -2017,7 +2099,7 @@ struct Interpreter {
         for (const auto& key_node : pattern.nodes) {
           auto key = key_node->token;
           if (!obj.has(key)) return false;
-          bind_pattern_name(env, *key_node, obj.get(key));
+          bind_pattern_name(env, *key_node, obj.get(key), mut);
         }
         return true;
       }
@@ -2047,23 +2129,42 @@ struct Interpreter {
     return Value();  // no arm matched → nil
   }
 
-  Value eval_function(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  // Parse a PARAMETERS AST node into FunctionValue::Parameter objects,
+  // enforcing shadow + trailing-default rules. Shared by FUNCTION,
+  // class METHODs, and class constructors.
+  std::vector<FunctionValue::Parameter> parse_parameters(
+      const peg::Ast& params_ast, std::shared_ptr<Environment> env) {
     std::vector<FunctionValue::Parameter> params;
-    for (auto node : ast.nodes[0]->nodes) {
+    bool seen_default = false;
+    for (auto node : params_ast.nodes) {
       auto mut = node->nodes[0]->token == "mut";
       auto& id = *node->nodes[1];
       const auto& name = id.token;
       auto type_name = extract_type_annotation(*node, 2);
+      auto* default_expr = extract_default_expr(*node);
+      if (default_expr) {
+        seen_default = true;
+      } else if (seen_default) {
+        throw std::runtime_error(std::format(
+            "non-default parameter '{}' follows a default parameter at {}:{}.",
+            std::string(name), id.line, id.column));
+      }
       if (env->def_scope_captures(name)) {
         throw_shadow_error(name, id.line, id.column);
       }
-      params.push_back({name, mut, type_name});
+      params.push_back({name, mut, type_name, default_expr});
     }
+    return params;
+  }
 
-    size_t body_idx = 1;
-    auto return_type = extract_return_type(ast, body_idx);
-    auto body = ast.nodes[body_idx];
-
+  // Build a FunctionValue from explicit PARAMETERS / BLOCK AST nodes.
+  // Shared by eval_function (FUNCTION ast) and eval_class_decl (METHOD
+  // ast), which have different wrapper shapes around the same core.
+  Value make_function_value(const peg::Ast& params_ast,
+                            std::shared_ptr<peg::Ast> body,
+                            std::string_view return_type,
+                            std::shared_ptr<Environment> env) {
+    auto params = parse_parameters(params_ast, env);
     return Value(FunctionValue(
         params,
         [=, this](std::shared_ptr<Environment> callEnv) {
@@ -2077,8 +2178,117 @@ struct Interpreter {
             throw;
           }
         },
-        return_type));
+        return_type,
+        env));
+  }
+
+  Value eval_function(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    size_t body_idx = 1;
+    auto return_type = extract_return_type(ast, body_idx);
+    return make_function_value(*ast.nodes[0], ast.nodes[body_idx],
+                               return_type, env);
   };
+
+  // LAMBDA: [LAMBDA_PARAMS, BODY]. BODY may be a BLOCK or a bare
+  // expression — both are handled by eval()'s tag dispatch.
+  Value eval_lambda(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    return make_function_value(*ast.nodes[0], ast.nodes[1], {}, env);
+  }
+
+  // `class Name { new(...) {...}  m(...) {...} }` desugars to
+  //   Name = { new: fn(...) { mut this = { class: 'Name', m: fn(...){...} };
+  //                           <new body>; this } }
+  // `new` is optional; absent form accepts zero args and returns a
+  // bare instance with only the class tag and methods. Methods close
+  // over the defining scope but `this` is bound fresh per method call
+  // via the existing method-dispatch protocol.
+  Value eval_class_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    // Method names and class name are kept as `string_view` into the
+    // source AST (stable for the program's lifetime). This matches how
+    // Environment and ObjectValue store keys, and avoids dangling
+    // `string_view`s caused by moving std::strings inside captured
+    // lambdas.
+    auto class_name = ast.nodes[0]->token;
+
+    const peg::Ast* new_ast = nullptr;
+    std::vector<std::pair<std::string_view, Value>> method_template;
+    for (size_t i = 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      auto name_view = m.nodes[0]->token;
+      if (name_view == "new") {
+        new_ast = &m;
+      } else {
+        auto fn_val =
+            make_function_value(*m.nodes[1], m.nodes[2], {}, env);
+        method_template.push_back({name_view, std::move(fn_val)});
+      }
+    }
+
+    auto build_instance = [class_name, method_template]() {
+      ObjectValue instance;
+      instance.properties->emplace(
+          "class", Symbol{Value(std::string(class_name)), false});
+      for (const auto& [name, val] : method_template) {
+        instance.properties->emplace(name, Symbol{val, false});
+      }
+      return instance;
+    };
+
+    // Class-sugar convention: instance fields set via `this.x = y` are
+    // mutable regardless of the `let`/`mut` prefix used at assignment
+    // time. This matches Python / Ruby / JS class semantics — methods
+    // routinely mutate `this` — and spares the user from peppering
+    // constructors with `mut this.x = ...`.
+    auto promote_all_mut = [](const Value& inst) {
+      if (inst.type != Value::Object) return;
+      for (auto& [_, sym] : *inst.to_object().properties) {
+        sym.mut = true;
+      }
+    };
+
+    Value constructor;
+    if (new_ast) {
+      auto ctor_params = parse_parameters(*new_ast->nodes[1], env);
+      auto body = new_ast->nodes[2];
+      constructor = Value(FunctionValue(
+          ctor_params,
+          [=, this](std::shared_ptr<Environment> callEnv) {
+            callEnv->append_outer(env);
+            callEnv->initialize("this", Value(build_instance()), true);
+            try {
+              eval(*body, callEnv);
+              run_deferred(callEnv);
+            } catch (const ReturnValue&) {
+              // Explicit `return` inside `new` is fine — we still hand
+              // back `this`; the returned value is discarded.
+              run_deferred(callEnv);
+            } catch (...) {
+              run_deferred(callEnv);
+              throw;
+            }
+            auto this_val = callEnv->get("this");
+            promote_all_mut(this_val);
+            return this_val;
+          },
+          {},
+          env));
+    } else {
+      constructor = Value(FunctionValue(
+          {},
+          [=](std::shared_ptr<Environment>) {
+            auto inst = Value(build_instance());
+            promote_all_mut(inst);
+            return inst;
+          },
+          {},
+          env));
+    }
+
+    ObjectValue class_obj;
+    class_obj.properties->emplace("new", Symbol{constructor, false});
+    env->initialize(class_name, Value(std::move(class_obj)), false);
+    return Value();
+  }
 
   // Shared backbone for invoking a user function. `arg_value(i)` /
   // `arg_loc(i)` abstract where each of the `total` effective arguments
@@ -2093,7 +2303,12 @@ struct Interpreter {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
 
-    if (params.size() > total) {
+    // A parameter with a default is optional; all others are required.
+    size_t required = 0;
+    for (const auto& p : params) {
+      if (!p.default_expr) required++;
+    }
+    if (total < required) {
       throw std::runtime_error("arguments error...");
     }
 
@@ -2102,8 +2317,24 @@ struct Interpreter {
     callEnv->initialize("self", fn_val, false);
 
     for (size_t p = 0; p < params.size(); p++) {
-      auto v = arg_value(p);
-      auto [ln, col] = arg_loc(p);
+      Value v;
+      size_t ln = call_line, col = call_column;
+      if (p < total) {
+        v = arg_value(p);
+        std::tie(ln, col) = arg_loc(p);
+      } else {
+        // Default needs access to the FUNCTION's definition env (for any
+        // closure-captured names) plus any earlier params. Build a fresh
+        // env over def_env and copy already-bound earlier params in.
+        // (Environment's ctor only inits `level`; set `outer` explicitly.)
+        auto defEnv = std::make_shared<Environment>(f.def_env);
+        defEnv->outer = f.def_env;
+        for (size_t j = 0; j < p; j++) {
+          defEnv->initialize(params[j].name, callEnv->get(params[j].name),
+                             false);
+        }
+        v = eval(*params[p].default_expr, defEnv);
+      }
       check_type(v, params[p].type_name,
                  std::format("parameter '{}'", params[p].name), ln, col);
       callEnv->initialize(params[p].name, v, params[p].mut);
@@ -2334,6 +2565,50 @@ struct Interpreter {
     auto ope = eval(*ast.nodes[1], env).to_string();
     auto rhs = eval(*ast.nodes[2], env);
 
+    // Dunder dispatch for Object LHS. A class that defines just
+    // `__eq__` and `__lt__` gets the full six-way suite: `__le__` is
+    // derived as `lt || eq`, and the three "greater" ops are negations
+    // of the corresponding "less-or-equal" / "less" forms.
+    auto bool_val = [&](const Value& v) {
+      return v.type == Value::Bool ? v.template get<bool>() : v.to_bool();
+    };
+    auto le_as_bool = [&]() -> std::optional<bool> {
+      if (auto le = try_dunder_binop(lhs, rhs, "__le__", env))
+        return bool_val(*le);
+      auto lt = try_dunder_binop(lhs, rhs, "__lt__", env);
+      auto eq = try_dunder_binop(lhs, rhs, "__eq__", env);
+      if (!lt && !eq) return std::nullopt;
+      return (lt && bool_val(*lt)) || (eq && bool_val(*eq));
+    };
+    // Auto-reflection: `==` is commutative, so if the LHS doesn't
+    // carry `__eq__` but the RHS does, reach over and use it. Ordering
+    // operators (`<`, `<=`) are not commutative and don't reflect.
+    auto try_eq = [&]() -> std::optional<Value> {
+      if (auto r = try_dunder_binop(lhs, rhs, "__eq__", env)) return r;
+      if (auto r = try_dunder_binop(rhs, lhs, "__eq__", env)) return r;
+      return std::nullopt;
+    };
+    if (lhs.type == Value::Object || rhs.type == Value::Object) {
+      if (ope == "==") {
+        if (auto r = try_eq()) return Value(bool_val(*r));
+      } else if (ope == "!=") {
+        if (auto r = try_eq()) return Value(!bool_val(*r));
+      }
+    }
+    if (lhs.type == Value::Object) {
+      if (ope == "<") {
+        if (auto r = try_dunder_binop(lhs, rhs, "__lt__", env))
+          return Value(bool_val(*r));
+      } else if (ope == "<=") {
+        if (auto r = le_as_bool()) return Value(*r);
+      } else if (ope == ">") {
+        if (auto r = le_as_bool()) return Value(!*r);
+      } else if (ope == ">=") {
+        if (auto r = try_dunder_binop(lhs, rhs, "__lt__", env))
+          return Value(!bool_val(*r));
+      }
+    }
+
     if (ope == "==") {
       return Value(lhs == rhs);
     } else if (ope == "!=") {
@@ -2358,6 +2633,7 @@ struct Interpreter {
   Value eval_unary_minus(const peg::Ast& ast,
                          std::shared_ptr<Environment> env) {
     auto v = eval(*ast.nodes[1], env);
+    if (auto r = try_dunder_unary(v, "__neg__", env)) return *r;
     if (v.type == Value::Float) return Value(-v.get<double>());
     return Value(v.to_long() * -1);
   }
@@ -2370,8 +2646,102 @@ struct Interpreter {
   // result (integer arithmetic, truncated division/modulo — matching
   // C semantics, unchanged from before Float was introduced). Either
   // operand Float → Float result via double promotion.
-  Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope) {
-    if (!lhs.is_numeric() || !rhs.is_numeric()) {
+  // `a ?? b ?? c` returns the first non-nil operand, short-circuiting
+  // on evaluation. All-nil chains return nil.
+  Value eval_nil_coalesce(const peg::Ast& ast,
+                          std::shared_ptr<Environment> env) {
+    auto val = eval(*ast.nodes[0], env);
+    for (size_t i = 1; i < ast.nodes.size(); i++) {
+      if (val.type != Value::Nil) return val;
+      val = eval(*ast.nodes[i], env);
+    }
+    return val;
+  }
+
+  // `a..b` (exclusive) and `a..=b` (inclusive) yield a lazy integer
+  // iterator equivalent to Math.range — for-in compatible, no up-front
+  // allocation. `to_long` throws `type error` on Float or non-numeric
+  // operands (matching the JIT's `value_to_long` guard); range literals
+  // are stricter than Math.range on purpose.
+  Value eval_range(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto start = eval(*ast.nodes[0], env).to_long();
+    auto end = eval(*ast.nodes[2], env).to_long();
+    if (ast.nodes[1]->token == "..=") end++;
+    auto current = std::make_shared<long>(start);
+    return _make_iterator(
+        [current, end](std::shared_ptr<Environment>) {
+          if (*current >= end) return _iter_step_done();
+          auto v = Value(*current);
+          (*current)++;
+          return _iter_step_value(std::move(v));
+        });
+  }
+
+  // Shared dunder-dispatch core. Arity 0 (unary) or 1 (binary); the
+  // optional `rhs` is consumed only when arity == 1. Returns nullopt if
+  // `receiver` isn't an Object carrying a callable dunder of this name.
+  std::optional<Value> try_dunder(const Value& receiver, const Value* rhs,
+                                  std::string_view dunder,
+                                  std::shared_ptr<Environment> env) {
+    if (receiver.type != Value::Object) return std::nullopt;
+    const auto& obj = receiver.to_object();
+    auto it = obj.properties->find(dunder);
+    if (it == obj.properties->end()) return std::nullopt;
+    const auto& m = it->second.val;
+    if (m.type != Value::Function) return std::nullopt;
+    auto bound = _wrap_method_with_this(m, receiver);
+    size_t arity = rhs ? 1 : 0;
+    return invoke_user_function(
+        bound, env, arity,
+        [&](size_t) { return rhs ? *rhs : Value(); },
+        [&](size_t) -> std::pair<size_t, size_t> { return {0, 0}; },
+        0, 0);
+  }
+
+  std::optional<Value> try_dunder_binop(const Value& lhs, const Value& rhs,
+                                        std::string_view dunder,
+                                        std::shared_ptr<Environment> env) {
+    return try_dunder(lhs, &rhs, dunder, env);
+  }
+
+  std::optional<Value> try_dunder_unary(const Value& operand,
+                                        std::string_view dunder,
+                                        std::shared_ptr<Environment> env) {
+    return try_dunder(operand, nullptr, dunder, env);
+  }
+
+  static const char* arith_op_to_dunder(char ope) {
+    switch (ope) {
+      case '+': return "__add__";
+      case '-': return "__sub__";
+      case '*': return "__mul__";
+      case '/': return "__div__";
+      case '%': return "__mod__";
+      case '@': return "__matmul__";
+    }
+    return nullptr;
+  }
+
+  // Auto-reflection only fires for operators where `rhs.__op__(lhs)`
+  // still computes the mathematically-correct `lhs op rhs` — i.e.,
+  // commutative arithmetic. Non-commutative ops (`-`, `/`, `%`, `@`,
+  // `**`) require the LHS to carry the dunder. Reflection is only
+  // attempted after the LHS-side dunder lookup fails.
+  static bool op_reflects(char ope) {
+    return ope == '+' || ope == '*';
+  }
+
+  Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope,
+                         std::shared_ptr<Environment> env) {
+    if (auto* dunder = arith_op_to_dunder(ope)) {
+      if (auto r = try_dunder_binop(lhs, rhs, dunder, env)) return *r;
+      if (op_reflects(ope)) {
+        if (auto r = try_dunder_binop(rhs, lhs, dunder, env)) return *r;
+      }
+    }
+    // `@` has no numeric meaning, so skip the numeric path entirely;
+    // reaching this point means the LHS didn't supply `__matmul__`.
+    if (ope == '@' || !lhs.is_numeric() || !rhs.is_numeric()) {
       throw std::runtime_error("type error.");
     }
     // Integer fast path: both Long.
@@ -2415,7 +2785,7 @@ struct Interpreter {
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto rhs = eval(*ast.nodes[i + 1], env);
       auto ope = eval(*ast.nodes[i], env).to_string()[0];
-      ret = eval_bin_op_step(ret, rhs, ope);
+      ret = eval_bin_op_step(ret, rhs, ope, env);
     }
     return ret;
   }
@@ -2429,6 +2799,7 @@ struct Interpreter {
   Value eval_power(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     auto base = eval(*ast.nodes[0], env);
     auto exp = eval(*ast.nodes[2], env);
+    if (auto r = try_dunder_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
       throw std::runtime_error("type error.");
     }
@@ -2464,6 +2835,21 @@ struct Interpreter {
         "else"sv,   "fn"sv,       "match"sv,  "throw"sv,    "try"sv,
         "catch"sv,  "break"sv,    "continue"sv, "defer"sv};
     return keywords.contains(ident);
+  }
+
+  // DESTRUCTURE_ASSIGN ast children: [MUTABLE, (OBJECT_PATTERN|ARRAY_PATTERN), EXPRESSION]
+  // `let` is suppressed; `let mut` yields MUTABLE.token == "mut".
+  // Evaluates RHS once, then reuses `try_pattern` for binding. Pattern
+  // mismatch is a runtime error (unlike match, where it's just "no").
+  Value eval_destructure_assign(const peg::Ast& ast,
+                                std::shared_ptr<Environment> env) {
+    auto mut = ast.nodes[0]->token == "mut";
+    const auto& pattern = *ast.nodes[1];
+    auto rval = eval(*ast.nodes[2], env);
+    if (!try_pattern(pattern, rval, env, mut)) {
+      throw std::runtime_error("destructure pattern did not match value");
+    }
+    return rval;
   }
 
   Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
@@ -2563,7 +2949,14 @@ struct Interpreter {
       const auto& prop = *ast.nodes[i];
       auto mut = prop.nodes[0]->token == "mut";
       const auto& name = prop.nodes[1]->token;
-      auto val = eval(*prop.nodes[2], env);
+      // Shorthand: name resolves in current scope (error path mirrors
+      // bare identifier).
+      Value val;
+      if (prop.nodes.size() < 3) {
+        val = env->get(name);
+      } else {
+        val = eval(*prop.nodes[2], env);
+      }
       _check_drop_contract(name, val);
       obj.properties->emplace(name, Symbol{std::move(val), mut});
     }
@@ -2618,11 +3011,7 @@ struct Interpreter {
     std::string s;
     for (auto node : ast.nodes) {
       const auto& val = eval(*node, env);
-      if (val.type == Value::String) {
-        s += val.to_string();
-      } else {
-        s += val.str();
-      }
+      s += str_display_with_dunder(val);
     }
     return Value(std::move(s));
   };

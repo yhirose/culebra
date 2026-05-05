@@ -11,7 +11,10 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+
+  CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+  METHOD                   <-  IDENTIFIER _ PARAMETERS _ BLOCK
 
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
@@ -21,14 +24,17 @@ const auto grammar_ = R"(
   DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
-  EXPRESSION               <-  ASSIGNMENT / TRY / LOGICAL_OR
+  EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
+  DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
 
+  NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-  CONDITION                <-  ADDITIVE (_ CONDITION_OPERATOR _ ADDITIVE)*
+  CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
+  RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
   ADDITIVE                 <-  UNARY_PLUS (_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
   UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
   UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
@@ -66,12 +72,19 @@ const auto grammar_ = R"(
 
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+  # Lambda sugar: `|x, y| expr` / `|x, y| { ... }` desugars to
+  # `fn(x, y) { ... }`. To return an object literal from an expression
+  # body, wrap in parens: `|x| ({a: x})` — otherwise the `{...}` is
+  # parsed as a block.
+  LAMBDA                   <-  LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
+  LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)?
+  PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  DEFAULT_VALUE            <-  EXPRESSION
 
   TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* >
   RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* >
@@ -79,13 +92,15 @@ const auto grammar_ = R"(
   BLOCK                    <-  '{' _ STATEMENTS _ '}'
 
   CONDITION_OPERATOR       <-  '==' / '!=' / '<=' / '<' / '>=' / '>'
+  RANGE_OPERATOR           <-  < '..=' / '..' >
   ADDITIVE_OPERATOR        <-  [-+]
   UNARY_PLUS_OPERATOR      <-  '+'
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'
   # '*' negative-lookahead avoids chewing the first '*' of '**' when a
   # left-over arithmetic chain hands back to MULTIPLICATIVE.
-  MULTIPLICATIVE_OPERATOR  <-  '*' !'*' / [/%]
+  # '@' is matrix-multiply (PEP 465) and shares multiplicative precedence.
+  MULTIPLICATIVE_OPERATOR  <-  '*' !'*' / [/%@]
   POWER_OPERATOR           <-  '**'
 
   LET                      <-  K('let')?
@@ -94,7 +109,7 @@ const auto grammar_ = R"(
   IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
   OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-  OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER _ ':' _ EXPRESSION
+  OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
   ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
@@ -113,6 +128,8 @@ const auto grammar_ = R"(
   INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
   INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
 
+  ~let                     <-  K('let')
+  ~class                   <-  K('class')
   ~debugger                <-  K('debugger')
   ~while                   <-  K('while')
   ~for                     <-  K('for')
@@ -180,6 +197,20 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
   return {};
 }
 
+// For a PARAMETER AST node, returns the DEFAULT_VALUE's inner expression
+// (or nullptr if the parameter has no default). PARAMETER layout is
+// `[MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?]` and the
+// optimizer unwraps DEFAULT_VALUE's single EXPRESSION child.
+inline const peg::Ast* extract_default_expr(const peg::Ast& param_node) {
+  using namespace peg::udl;
+  for (size_t i = 2; i < param_node.nodes.size(); i++) {
+    if (param_node.nodes[i]->tag == "DEFAULT_VALUE"_) {
+      return param_node.nodes[i]->nodes[0].get();
+    }
+  }
+  return nullptr;
+}
+
 // For a FUNCTION AST node, returns the declared return type (or {}) and
 // writes the body's node index to *body_idx.
 inline std::string_view extract_return_type(const peg::Ast& fn_ast,
@@ -206,9 +237,13 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(
-        true, {"PARAMETERS", "SEQUENCE", "OBJECT", "ARRAY", "RETURN",
+        true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
+               "OBJECT_PROPERTY",
+               "ARRAY", "RETURN",
                "THROW", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
+               "DEFAULT_VALUE",
+               "CLASS_DECL", "METHOD",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "REST_PATTERN"});
 

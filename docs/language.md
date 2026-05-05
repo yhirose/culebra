@@ -112,8 +112,11 @@ and only recognized after `:` or `->`.
 
     ==  !=  <=  <  >=  >        # comparison
     +  -  *  /  %  **           # arithmetic (`**` exponentiation)
+    @                           # matmul (user-defined via `__matmul__`)
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
+    ??                          # nil coalesce (lower precedence than ||)
+    ..  ..=                     # range literals (exclusive / inclusive)
     =                           # assignment
     =>                          # match arm separator
     ->                          # return type
@@ -254,6 +257,9 @@ Ordering values of different types (outside the numeric pair) raises
     let y = 20       # let binding (immutable)
     mut z = 30       # mut binding (mutable)
     let mut w = 40   # equivalent to `mut w = 40`
+    let {name, age} = person           # object destructure
+    let [a, b, ...rest] = xs           # array destructure (rest allowed)
+    let mut {x, y} = point             # destructure with mutable bindings
 
 Assignment with a simple identifier LHS is handled as follows:
 
@@ -267,6 +273,31 @@ Assignment with a simple identifier LHS is handled as follows:
     mechanism by which closure-based objects mutate their state.
   * Otherwise a new (immutable) binding is created in the current
     function's scope.
+
+### The `_` sink
+
+`_` is a non-binding sink. In any binding form it evaluates the
+right-hand side (so side effects still run) but discards the value
+instead of introducing a name. The same form may therefore appear
+repeatedly within one scope, and the shadow-prohibition rule below
+does not apply to `_`.
+
+    let _ = side_effect()                  # value dropped
+    let _ = 1; let _ = 2                   # repeated _ in one scope is fine
+    for _ in 0..n { count = count + 1 }    # body runs n times, no iter var
+    fn (_, _, x) { x }                     # only the third arg is bound
+    try { ... } catch _ { recover() }      # error value dropped
+    let [first, _, third] = [1, 2, 3]      # array slot ignored
+    let [_, ..._, last] = xs               # head and middle dropped
+    match v { [a, _, c] => a + c }         # pattern slot is a sink
+
+Reading `_` is an error — the binding never happens, so a later `_`
+reference raises `undefined variable '_'`. The sink rule applies
+uniformly to `let`/`mut` declarations, `for ... in`, function
+parameters, `try ... catch`, and pattern slots inside destructure /
+`match`. (Inside an `Object` pattern `{ _, x }` is a special case:
+`_` still requires the object to carry a literal `_` key, and is not
+a sink there — use a positional pattern if you want to discard.)
 
 ### Shadow prohibition
 
@@ -438,6 +469,9 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
   returns `y`. Short-circuit.
 * `x || y`: evaluates `x`; if truthy returns `x`, else evaluates and
   returns `y`. Short-circuit.
+* `x ?? y`: returns `x` if it is not `nil`, else `y`. Short-circuit
+  (RHS not evaluated when LHS is non-nil). Lower precedence than `||`.
+  Chains left-associatively: `a ?? b ?? c` = `(a ?? b) ?? c`.
 
 ### Truthiness
 
@@ -593,9 +627,25 @@ equality.
     {}                                     # empty object
     {name: 'alice', age: 30}               # two properties
     {mut counter: 0, name: 'x'}            # explicit mut on a property
+    {name, age}                            # shorthand — same as {name: name, age: age}
 
 Property order in the source is irrelevant for equality or access, but
 the alphabetical order is used for display and iteration.
+
+The shorthand form `{x}` is equivalent to `{x: x}`: it reuses the
+identifier as both key and value, looking up `x` in the current scope.
+`mut` is allowed (`{mut n}`), which declares the property mutable while
+the value still comes from the binding `n`.
+
+### Display conventions
+
+The default formatter (used when an Object has no `__str__`) hoists a
+String `class:` property to a prefix, and omits it from the property
+list. So a class-sugar instance with fields `x`, `y` displays as
+`Point {mut x: 3, mut y: 4}` instead of `{class: 'Point', mut x: 3,
+mut y: 4}`. Plain objects that happen to carry a `class:` key get the
+same treatment; a non-String `class` field is displayed as a regular
+property.
 
 ### Access and mutation
 
@@ -620,6 +670,125 @@ function.
     o = { n: 10, add: fn (x) { x + this.n } }
     puts(o.add(5))              # 15
 
+### `class` sugar
+
+Closure-based objects remain the canonical OO idiom. The `class` form
+is a lightweight alternative that desugars to the same runtime shape:
+
+    class Car {
+      new(mpr)  { this.miles = 0; this.mpr = mpr }
+      run(n)    { this.miles = this.miles + this.mpr * n }
+      total()   { this.miles }
+    }
+    c = Car.new(5); c.run(3); puts(c.total())
+    puts(c.class)            # 'Car' — nominal tag for match / debugging
+
+Semantics:
+
+* The decl binds `Car` to an `Object` with a single `new` property.
+* `Car.new(...)` returns a fresh `Object` carrying `class: 'Car'` plus
+  every non-`new` method as a property. `this` is bound to that object
+  for the duration of the constructor body.
+* Fields created via `this.x = y` inside constructors and methods are
+  **mutable by default** (unlike bare `o.x = y`, which creates an
+  immutable property). This matches the idiom of classes whose methods
+  routinely mutate instance state.
+* The `new` method is optional; without it the class accepts no
+  arguments and returns an instance with only methods and `class:`.
+* Both the interpreter and the JIT compile classes. Instance
+  construction is a small runtime call — `new` itself is a regular
+  JIT closure whose captures are the method closures plus the user's
+  `new` body, and a runtime helper wires them into the fresh object.
+
+### Operator overloading
+
+Any `Object` (whether produced by `class` sugar or a plain literal)
+can participate in arithmetic and comparison by defining dunder
+methods. Dispatch happens at runtime: if the left operand is an
+`Object` with the matching dunder, the method is called with the
+right operand as its sole argument; otherwise the built-in numeric
+path runs. **Both the interpreter and the JIT** route through the
+same dunder protocol, so `Object` arithmetic compiles. Classes
+defined via `class` sugar participate identically since their
+instances are plain `Object`s with methods attached.
+
+| Operator     | Dunder      | Notes                                    |
+|--------------|-------------|------------------------------------------|
+| `a + b`      | `__add__`   |                                          |
+| `a - b`      | `__sub__`   |                                          |
+| `a * b`      | `__mul__`   |                                          |
+| `a / b`      | `__div__`   |                                          |
+| `a % b`      | `__mod__`   |                                          |
+| `a ** b`     | `__pow__`   |                                          |
+| `a @ b`      | `__matmul__`| Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
+| `-a`         | `__neg__`   | 0-arg method on `a`                      |
+| `a == b`     | `__eq__`    | `!=` derives by negation                 |
+| `a < b`      | `__lt__`    | `>=` derives by negation                 |
+| `a <= b`     | `__le__`    | If missing, derived as `__lt__` or `__eq__`; `>` derives by negation |
+
+Example:
+
+    class Vec {
+      new(x, y)   { this.x = x; this.y = y }
+      __add__(r)  { Vec.new(this.x + r.x, this.y + r.y) }
+      __mul__(r)  { Vec.new(this.x * r, this.y * r) }    # scalar
+      __eq__(r)   { this.x == r.x && this.y == r.y }
+    }
+    a = Vec.new(1, 2)
+    b = Vec.new(3, 4)
+    c = (a + b) * 2           # Vec(8, 12)
+
+### Custom string representation (`__str__`)
+
+Defining a 0-arg `__str__` method on an `Object` lets the value
+supply its own display form for `puts` / `print`, string
+interpolation (`"{x}"`), and `to_string(x)`. The method must
+return a `String`; anything else is a type error. `Object`s
+without `__str__` use the default formatter (`{key: value, ...}`).
+
+    class Matrix {
+      new(r, c)  { this.rows = r; this.cols = c }
+      __str__()  { "Matrix {this.rows}x{this.cols}" }
+    }
+    m = Matrix.new(2, 3)
+    puts(m)                        # Matrix 2x3
+    puts("shape: {m}")             # 'shape: Matrix 2x3'
+    to_string(m)                   # 'Matrix 2x3'
+
+The dispatch is top-level only: when `__str__` is involved inside a
+nested structure (`puts([m])`), the outer formatter's default
+recursive walk still uses `str()` for each element, so the custom
+form only appears for the operand passed directly to the display
+hook. Deeper customization can be layered on once a concrete need
+arises.
+
+`__str__` bodies should **not** recursively invoke `puts(this)` or
+interpolate `"{this}"` — there is no built-in recursion guard, so
+that form loops until the call stack is exhausted. Produce the
+final string via direct property access (`this.x`) instead.
+
+### Auto-reflection
+
+For commutative operators (`+`, `*`, `==`), when the LHS doesn't carry
+the dunder (e.g., it's a `Long` or `Float`) but the RHS is an `Object`
+that does, the call reflects: `lhs op rhs` becomes `rhs.__op__(lhs)`.
+The `rhs`-side method receives the scalar as its argument and is
+expected to handle it (typically with a `match` on the argument type):
+
+    class Vec { ...
+      __mul__(r) {
+        match r {
+          n: Long => Vec.new(this.x * n, this.y * n),   # scalar
+          _       => Vec.new(this.x * r.x, this.y * r.y) # elementwise
+        }
+      }
+    }
+    a = 2 * Vec.new(3, 4)        # reflects → Vec.__mul__(2) → Vec(6, 8)
+
+Non-commutative operators (`-`, `/`, `%`, `**`, `@`, `<`, `<=`) do
+**not** reflect — `rhs.__op__(lhs)` would compute the wrong answer.
+For those, the LHS must be an Object carrying the dunder.
+
 ---
 
 11. Functions and closures
@@ -631,10 +800,44 @@ function.
     fn (x) { x + 1 }
     fn (mut x) { x = x + 1; x }
     fn (a: Long, b: Long) -> Long { a + b }
+    fn (name, greeting = 'hello') { "{greeting}, {name}" }
 
 Functions are first-class values and the only way to define a reusable
 piece of code. There is no `fn name(...)` declaration syntax; use
 `name = fn (...) { ... }`.
+
+### Lambda sugar `|x| ...`
+
+A lighter form is available for the common case of passing a tiny
+function to a higher-order call:
+
+    add   = |x, y| x + y                 # expression body
+    sq    = |x| x * x
+    noop  = || 42                         # zero params
+    clamp = |v, lo, hi| {                 # block body — use when you
+      mut x = v                           # need multiple statements
+      if x < lo { x = lo }
+      if x > hi { x = hi }
+      x
+    }
+    xs.map(|x| x * 2)                     # passes cleanly as a functor
+
+Semantically identical to `fn (...) { ... }`:
+
+* Captures variables from the enclosing scope.
+* Accepts the same `mut` / type-annotation / default-value parameter
+  forms: `|mut x = 10| { ... }` works just like `fn (mut x = 10) ...`.
+* Body is either a single expression or a `{ ... }` block. The block
+  form is tried first, so `|x| { a }` means "block with one statement
+  returning `a`"; to build an object literal return, wrap it in parens:
+  `|x| ({a: x})`.
+* Self-reference via `self` works the same as in `fn`.
+* No return-type annotation slot (keep lambdas short; use `fn` for
+  functions whose signature deserves the annotation).
+
+The `|` delimiter is not ambiguous with pattern alternation (which
+only appears inside `match` arms) or logical `||` (which never starts
+an expression).
 
 ### Parameters
 
@@ -642,6 +845,11 @@ piece of code. There is no `fn name(...)` declaration syntax; use
   the body. Without `mut`, reassigning the parameter raises
   `immutable variable`.
 * Optional type annotations are enforced on entry (§14).
+* A parameter may have a default value via `name = expr`. When the
+  caller omits the argument, the default is evaluated on each call in
+  the function's definition environment, extended with any earlier
+  parameter bindings — so `fn (a, b = a + 1)` works. Default
+  parameters must follow all required parameters.
 
 ### Return
 
@@ -727,7 +935,14 @@ fresh scope per iteration.
 for x in [1, 2, 3] { puts(x) }
 
 for k in {b: 2, a: 1} { puts(k) }   # keys, ascending
+
+for i in 0..10 { puts(i) }          # exclusive (0..9)
+for i in 0..=10 { puts(i) }         # inclusive (0..10)
 ```
+
+Range literals `a..b` (exclusive) and `a..=b` (inclusive) return the
+same lazy integer iterator as `Math.range` — no up-front allocation.
+Endpoints must be `Long`.
 
 The iterator protocol (see §17.5) requires the target to be either an
 `Object` (or subtype `Array`) with an `iter` method, or an object
@@ -1345,7 +1560,7 @@ arr.map(f).filter(g)
 arr.iter().map(f).filter(g).collect()
 
 # Lazy with early termination: only touches 4 elements
-Math.range(1_000_000).filter(f).map(g).take(4).collect()
+Math.range(1000000).filter(f).map(g).take(4).collect()
 ```
 
 **User-defined example**:
@@ -1520,16 +1735,24 @@ built-ins from §18.
 20. Known limitations
 ---------------------
 
-* No floating-point numbers, big integers, or bignums.
-* No string escape sequences; strings are raw between quotes.
-* No string indexing or slicing as a first-class operation.
-* Array and object equality compare by reference, not structural.
-* No user-level exception handling (`try`/`catch`).
-* No module system (`import`) yet.
-* Standard library is minimal (basic I/O, integer math, process
-  info); see [`docs/stdlib.md`](stdlib.md).
+* No big integers or bignums; `Long` overflow wraps.
+* No string escape sequences; strings are raw between quotes. `{{` /
+  `}}` for literal braces inside `"..."` are not supported.
+* `String` is byte-indexed (`size` / `slice` count bytes); Unicode
+  work goes through `code_points()` / `graphemes()` iterators.
+* `Array` and `Object` equality compare by reference, not structural.
+* Runtime errors (`type error`, `divide by 0`, `index out of range`,
+  etc.) abort the program and do **not** flow through user `throw` /
+  `try` / `catch` — those channels are reserved for user-raised
+  values.
+* JIT `defer` at function / top-level scope does not run on the
+  throw-unwind path (see §15); wrap the defer in a nested block for
+  throw-safe cleanup.
+* No module / `import` system yet.
 * Type annotations are enforced only at function boundaries and
   annotated assignments; they do not make the language static.
 * Pattern matching has no exhaustiveness check.
 * `match` arm bodies must be single expressions — `{ ... }` in an arm
   body is parsed as an `Object` literal, not a block.
+* Property names are identifiers only; computed / string-indexed
+  property access is not supported.

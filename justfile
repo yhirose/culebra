@@ -20,27 +20,32 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite (samples/test.cul) on the tree-walking interpreter.
+# Run the test suite (samples/test.cul and test_class.cul) on the
+# tree-walking interpreter.
 test: build
     ./build/culebra samples/test.cul
+    ./build/culebra samples/test_class.cul
 
 # Run the test suite under the LLVM ORC JIT backend.
 test-jit: build
     ./build/culebra --jit samples/test.cul
+    ./build/culebra --jit samples/test_class.cul
 
-# Run the test suite on both backends and assert their stdout is
-# identical. Catches regressions where one backend diverges from the
-# other (e.g. a new feature implemented in one place only).
+# Run both test files on both backends and assert their stdout is
+# identical per file. Catches regressions where one backend diverges
+# from the other (e.g. a new feature implemented in one place only).
 test-all: build
     #!/usr/bin/env bash
     set -euo pipefail
-    out_interp=$(./build/culebra samples/test.cul)
-    out_jit=$(./build/culebra --jit samples/test.cul)
-    if [[ "$out_interp" != "$out_jit" ]]; then
-        echo "interpreter and JIT outputs differ:"
-        diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
-        exit 1
-    fi
+    for f in samples/test.cul samples/test_class.cul; do
+      out_interp=$(./build/culebra "$f")
+      out_jit=$(./build/culebra --jit "$f")
+      if [[ "$out_interp" != "$out_jit" ]]; then
+          echo "interpreter and JIT outputs differ for $f:"
+          diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
+          exit 1
+      fi
+    done
     echo "test-all OK: interpreter and JIT match"
 
 # Run shadow-prohibition negative tests (expected to fail with a

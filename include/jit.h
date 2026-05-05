@@ -8,11 +8,6 @@
 #include <unicodelib_encodings.h>
 #include <well_known_props.h>
 
-// Bring numeric helpers into the JIT file's top-level scope so the
-// inline runtime helpers (defined in extern "C" blocks below) can use
-// unqualified names.
-using culebra::format_float_shortest;
-
 // macOS termios.h defines CR1/CR2/CR3 macros that conflict with LLVM headers
 #if defined(__APPLE__)
 #undef CR1
@@ -423,7 +418,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     case TAG_FLOAT: {
       double d;
       std::memcpy(&d, &data, sizeof(d));
-      return format_float_shortest(d);
+      return culebra::format_float_shortest(d);
     }
     case TAG_ARRAY: {
       auto* arr = reinterpret_cast<JitArray*>(data);
@@ -442,9 +437,20 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* obj = reinterpret_cast<JitObject*>(data);
       _JitStrGuard guard(obj);
       if (guard.already) return "{...}";
-      std::string s = "{";
+      // Hoist a String `class:` tag to a prefix (matches the tree
+      // interpreter's str_object formatting).
+      std::string s;
+      auto it = obj->props.find("class");
+      bool has_class_tag = it != obj->props.end() &&
+                           it->second.value.tag == TAG_STRING;
+      if (has_class_tag) {
+        s = reinterpret_cast<const char*>(it->second.value.data);
+        s += " ";
+      }
+      s += "{";
       bool first = true;
       for (const auto& [name, entry] : obj->props) {
+        if (has_class_tag && name == "class") continue;
         if (!first) s += ", ";
         first = false;
         if (entry.mut) s += "mut ";
@@ -550,8 +556,18 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
 
 extern "C" {
 
+// Forward decl; the `__str__` dispatcher lives alongside the other
+// dunder helpers further down (it returns std::optional<std::string>,
+// so it needs full C++ linkage — can't be declared inside the
+// enclosing extern "C" block).
+inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data);
+
 __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
                                                        int64_t data) {
+  if (auto s = _try_str_dunder(type, data)) {
+    std::cout << *s << std::endl;
+    return;
+  }
   switch (type) {
     case TAG_NIL:
       std::cout << "nil" << std::endl;
@@ -577,9 +593,11 @@ __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
   }
 }
 
-// For interpolation: strings unquoted, everything else via str()
+// For interpolation / print / to_string: strings unquoted, Objects
+// with `__str__` return their custom form.
 __attribute__((used)) inline const char* culebra_runtime_value_to_display(
     int8_t type, int64_t data) {
+  if (auto s = _try_str_dunder(type, data)) return _culebra_heap_str(*s);
   if (type == 4) return reinterpret_cast<const char*>(data);
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
 }
@@ -775,20 +793,97 @@ __attribute__((used)) inline void culebra_runtime_div_zero(int64_t line,
 // emits an inline "both Long" fast path and only calls these when at
 // least one operand is Float or the types are mixed.
 
-#define CUL_NUM_BINOP(name, expr)                                       \
+// Invoke a method closure with an explicit `this`. Retains both the
+// receiver and the argument so the callee can consume them per the
+// JIT's closure ABI. Returns the +1 result.
+inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
+                                        JitValue arg) {
+  culebra_runtime_value_retain(self.tag, self.data);
+  culebra_runtime_value_retain(arg.tag, arg.data);
+  JitValue args[1] = {arg};
+  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 1, args);
+}
+
+inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
+  culebra_runtime_value_retain(self.tag, self.data);
+  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
+}
+
+// Look up a Function-typed property on a JitObject by name.
+inline JitClosure* _lookup_dunder(int8_t tag, int64_t data, const char* name) {
+  if (tag != TAG_OBJECT) return nullptr;
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  auto it = obj->props.find(name);
+  if (it == obj->props.end()) return nullptr;
+  if (it->second.value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(it->second.value.data);
+}
+
+// Try `recv.dunder(arg)`. Returns the +1 result or std::nullopt.
+inline std::optional<JitValue> _try_dunder_binop(int8_t rt, int64_t rd,
+                                                 int8_t at, int64_t ad,
+                                                 const char* name) {
+  auto* cls = _lookup_dunder(rt, rd, name);
+  if (!cls) return std::nullopt;
+  return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
+}
+
+inline std::optional<JitValue> _try_dunder_unary(int8_t t, int64_t d,
+                                                 const char* name) {
+  auto* cls = _lookup_dunder(t, d, name);
+  if (!cls) return std::nullopt;
+  return _culebra_invoke_method0(cls, {t, d});
+}
+
+// Invoke `__str__` on an Object, copying the returned String into an
+// owned std::string and releasing the dunder's +1 return. Returns
+// nullopt for non-Objects or Objects without `__str__`; throws on
+// non-String returns so a buggy method fails loudly.
+inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data) {
+  auto r = _try_dunder_unary(type, data, "__str__");
+  if (!r) return std::nullopt;
+  if (r->tag != TAG_STRING) {
+    _culebra_value_release_impl(r->tag, r->data);
+    throw std::runtime_error("__str__ must return a String");
+  }
+  std::string out(reinterpret_cast<const char*>(r->data));
+  _culebra_value_release_impl(r->tag, r->data);
+  return out;
+}
+
+// Arithmetic binop: try `lhs.__op__(rhs)`; if `reflect` is true and
+// nothing matched, try `rhs.__op__(lhs)` (commutative auto-reflection
+// for `+` and `*`). Callers fall back to the numeric path otherwise.
+inline std::optional<JitValue> _dispatch_arith_dunder(int8_t lt, int64_t ld,
+                                                     int8_t rt, int64_t rd,
+                                                     const char* name,
+                                                     bool reflect) {
+  if (auto r = _try_dunder_binop(lt, ld, rt, rd, name)) return r;
+  if (reflect) {
+    if (auto r = _try_dunder_binop(rt, rd, lt, ld, name)) return r;
+  }
+  return std::nullopt;
+}
+
+#define CUL_NUM_BINOP(name, dunder, expr, reflect)                      \
   __attribute__((used)) inline JitValue culebra_runtime_num_##name(     \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+    if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, dunder,         \
+                                        reflect))                       \
+      return *r;                                                        \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(add, a + b)
-CUL_NUM_BINOP(sub, a - b)
-CUL_NUM_BINOP(mul, a * b)
+CUL_NUM_BINOP(add, "__add__", a + b, true)
+CUL_NUM_BINOP(sub, "__sub__", a - b, false)
+CUL_NUM_BINOP(mul, "__mul__", a * b, true)
 #undef CUL_NUM_BINOP
 
 __attribute__((used)) inline JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, "__div__", false))
+    return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   if (b == 0.0) throw std::runtime_error("divide by 0 error");
@@ -797,30 +892,96 @@ __attribute__((used)) inline JitValue culebra_runtime_num_div(
 
 __attribute__((used)) inline JitValue culebra_runtime_num_mod(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, "__mod__", false))
+    return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   if (b == 0.0) throw std::runtime_error("divide by 0 error");
   return {TAG_FLOAT, _culebra_double_to_bits(std::fmod(a, b))};
 }
 
+// `@` (matmul) has no numeric meaning — always dispatches through
+// `__matmul__`. Non-commutative, so no reflection.
+__attribute__((used)) inline JitValue culebra_runtime_num_matmul(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__matmul__")) return *r;
+  throw std::runtime_error("type error.");
+}
+
+// Extract a boolean from a dunder's +1 return value and release the
+// (potentially heap-backed) result. Matches `Value::to_bool`: accepts
+// Bool/Long/Float and throws `type error` on anything else, so a
+// comparison dunder that forgets to return a boolean fails loudly.
+inline bool _extract_bool_and_release(JitValue v) {
+  bool b;
+  if (v.tag == TAG_BOOL) b = v.data != 0;
+  else if (v.tag == TAG_LONG) b = v.data != 0;
+  else if (v.tag == TAG_FLOAT) b = _culebra_float_to_double(v.data) != 0.0;
+  else {
+    _culebra_value_release_impl(v.tag, v.data);
+    throw std::runtime_error("type error.");
+  }
+  _culebra_value_release_impl(v.tag, v.data);
+  return b;
+}
+
 // extern "C" entry points for the comparison helpers. One per
 // operator so the JIT can look them up by name.
 __attribute__((used)) inline bool culebra_runtime_value_equal(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // `==` is commutative, so try either side's `__eq__`.
+  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__eq__"))
+    return _extract_bool_and_release(*r);
+  if (auto r = _try_dunder_binop(t2, d2, t1, d1, "__eq__"))
+    return _extract_bool_and_release(*r);
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
-#define CUL_VALUE_ORD(name, expr)                                       \
-  __attribute__((used)) inline bool culebra_runtime_value_##name(       \
-      int8_t t1, int64_t d1, int8_t t2, int64_t d2) {                   \
-    return _culebra_value_ord(                                          \
-        t1, d1, t2, d2, [](double a, double b) { return expr; });       \
-  }
-CUL_VALUE_ORD(less,    a <  b)
-CUL_VALUE_ORD(leq,     a <= b)
-CUL_VALUE_ORD(greater, a >  b)
-CUL_VALUE_ORD(geq,     a >= b)
-#undef CUL_VALUE_ORD
+// Try `lhs.__le__(rhs)`, falling back to `__lt__` || `__eq__` to match
+// the interpreter's derivation when a class only defines `__lt__`.
+inline std::optional<bool> _dunder_le(int8_t t1, int64_t d1,
+                                      int8_t t2, int64_t d2) {
+  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__le__"))
+    return _extract_bool_and_release(*r);
+  auto lt = _try_dunder_binop(t1, d1, t2, d2, "__lt__");
+  auto eq = _try_dunder_binop(t1, d1, t2, d2, "__eq__");
+  if (!lt && !eq) return std::nullopt;
+  bool l = lt && _extract_bool_and_release(*lt);
+  bool e = eq && _extract_bool_and_release(*eq);
+  return l || e;
+}
+
+__attribute__((used)) inline bool culebra_runtime_value_less(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__lt__"))
+    return _extract_bool_and_release(*r);
+  return _culebra_value_ord(t1, d1, t2, d2,
+                            [](double a, double b) { return a < b; });
+}
+
+__attribute__((used)) inline bool culebra_runtime_value_leq(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  if (auto r = _dunder_le(t1, d1, t2, d2)) return *r;
+  return _culebra_value_ord(t1, d1, t2, d2,
+                            [](double a, double b) { return a <= b; });
+}
+
+__attribute__((used)) inline bool culebra_runtime_value_greater(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // a > b ≡ !(a <= b)
+  if (auto r = _dunder_le(t1, d1, t2, d2)) return !*r;
+  return _culebra_value_ord(t1, d1, t2, d2,
+                            [](double a, double b) { return a > b; });
+}
+
+__attribute__((used)) inline bool culebra_runtime_value_geq(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // a >= b ≡ !(a < b)
+  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__lt__"))
+    return !_extract_bool_and_release(*r);
+  return _culebra_value_ord(t1, d1, t2, d2,
+                            [](double a, double b) { return a >= b; });
+}
 
 // Power with full Python-style semantics:
 //   Long ** non-negative Long  → Long (exp-by-squaring, wraps)
@@ -828,6 +989,7 @@ CUL_VALUE_ORD(geq,     a >= b)
 //   any Float                  → Float
 __attribute__((used)) inline JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) {
@@ -853,6 +1015,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_pow(
 // raises type error. Called only from the unary-minus slow path.
 __attribute__((used)) inline JitValue culebra_runtime_num_neg(
     int8_t t, int64_t d) {
+  if (auto r = _try_dunder_unary(t, d, "__neg__")) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);
@@ -1087,6 +1250,69 @@ __attribute__((used)) inline void culebra_runtime_object_get(
 __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
   return obj->props.find(key) != obj->props.end();
+}
+
+// Class-sugar constructor body. Mirrors the tree interpreter's
+// `eval_class_decl` constructor path:
+//   1. Allocate a fresh instance (refcount=1, caller-owned).
+//   2. Stamp the `class:` tag and attach each method closure.
+//   3. Invoke the user's `new` body (if any) with `this` bound to the
+//      new instance. Args are forwarded with +1 ownership intact
+//      (JIT ABI); the body's return value is discarded.
+//   4. Promote every property to mutable so later `this.x = y` calls
+//      don't trip the immutable-property guard.
+//
+// `body_tag`/`body_data` describe the user-body closure (TAG_FUNC) or
+// TAG_NIL for a class with no `new` method. `method_vals` is borrowed;
+// this helper retains each entry before storing in the instance.
+__attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
+    const char* class_name, int8_t body_tag, int64_t body_data,
+    const char* const* method_names, const JitValue* method_vals,
+    int64_t n_methods, int64_t n_args, JitValue* args) {
+  auto* inst = culebra_runtime_object_new();
+
+  auto* cn = _culebra_heap_str(class_name);
+  culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
+                             reinterpret_cast<int64_t>(cn), 0, 0);
+
+  // Each method closure must hold a +1 for the instance slot — the
+  // closures are borrowed from the constructor's capture cells, which
+  // keep their own reference for the lifetime of the class binding.
+  for (int64_t i = 0; i < n_methods; i++) {
+    culebra_runtime_value_retain(method_vals[i].tag, method_vals[i].data);
+    culebra_runtime_object_set(inst, method_names[i], /*mut*/ false,
+                               method_vals[i].tag, method_vals[i].data, 0,
+                               0);
+  }
+
+  if (body_tag == TAG_FUNC) {
+    auto* body_cls = reinterpret_cast<JitClosure*>(body_data);
+    JitValue this_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+    // Body consumes `this` via the slot +1 on function exit, so retain
+    // before handing it off. If the body throws, the instance's +1 is
+    // otherwise stranded — release it before rethrowing to the caller.
+    culebra_runtime_value_retain(this_val.tag, this_val.data);
+    try {
+      auto result = reinterpret_cast<JitFn>(body_cls->fn_ptr)(
+          body_cls, this_val, n_args, args);
+      _culebra_value_release_impl(result.tag, result.data);
+    } catch (...) {
+      _culebra_value_release_impl(TAG_OBJECT,
+                                   reinterpret_cast<int64_t>(inst));
+      throw;
+    }
+  } else {
+    // Default constructor: release any args the caller transferred.
+    for (int64_t i = 0; i < n_args; i++) {
+      _culebra_value_release_impl(args[i].tag, args[i].data);
+    }
+  }
+
+  for (auto& [k, entry] : inst->props) {
+    entry.mut = true;
+  }
+
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
 __attribute__((used)) inline int64_t culebra_runtime_object_size(
@@ -2722,9 +2948,19 @@ inline constexpr auto defer_run_to        = "culebra_runtime_defer_run_to";
 inline constexpr auto div_zero            = "culebra_runtime_div_zero";
 inline constexpr auto input               = "culebra_runtime_input";
 inline constexpr auto math_pow            = "culebra_runtime_math_pow";
+inline constexpr auto math_log            = "culebra_runtime_math_log";
+inline constexpr auto math_exp            = "culebra_runtime_math_exp";
+inline constexpr auto math_sqrt           = "culebra_runtime_math_sqrt";
+inline constexpr auto math_floor          = "culebra_runtime_math_floor";
+inline constexpr auto math_ceil           = "culebra_runtime_math_ceil";
+inline constexpr auto math_round          = "culebra_runtime_math_round";
+inline constexpr auto math_abs            = "culebra_runtime_math_abs";
+inline constexpr auto math_min            = "culebra_runtime_math_min";
+inline constexpr auto math_max            = "culebra_runtime_math_max";
 inline constexpr auto num_add             = "culebra_runtime_num_add";
 inline constexpr auto num_sub             = "culebra_runtime_num_sub";
 inline constexpr auto num_mul             = "culebra_runtime_num_mul";
+inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
 inline constexpr auto num_div             = "culebra_runtime_num_div";
 inline constexpr auto num_mod             = "culebra_runtime_num_mod";
 inline constexpr auto num_pow             = "culebra_runtime_num_pow";
@@ -2732,11 +2968,21 @@ inline constexpr auto num_neg             = "culebra_runtime_num_neg";
 inline constexpr auto sys_argv            = "culebra_runtime_sys_argv";
 inline constexpr auto sys_env             = "culebra_runtime_sys_env";
 inline constexpr auto sys_exit            = "culebra_runtime_sys_exit";
+inline constexpr auto random_seed         = "culebra_runtime_random_seed";
+inline constexpr auto random_int          = "culebra_runtime_random_int";
+inline constexpr auto random_uniform      = "culebra_runtime_random_uniform";
+inline constexpr auto random_gauss        = "culebra_runtime_random_gauss";
+inline constexpr auto random_shuffle      = "culebra_runtime_random_shuffle";
+inline constexpr auto random_weighted_choice =
+    "culebra_runtime_random_weighted_choice";
+inline constexpr auto io_exists           = "culebra_runtime_io_exists";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
+inline constexpr auto build_class_instance
+    = "culebra_runtime_build_class_instance";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
@@ -3624,8 +3870,14 @@ struct JIT {
     return names.contains(name);
   }
 
+  // `_` is the non-binding sink (see Environment::is_sink in
+  // interpreter.h). Pattern walks and shadow checks must skip it so it
+  // can appear repeatedly in the same scope (`fn(_, _, x)`,
+  // `let _ = ...; let _ = ...`) without colliding.
+  static bool is_sink_name(std::string_view s) { return s == "_"; }
+
   // Invoke `f(name, line, column)` for each identifier that a pattern
-  // would bind if it matches.
+  // would bind if it matches. `_` is skipped (sink — no binding).
   template <typename F>
   static void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
     using namespace peg::udl;
@@ -3633,13 +3885,16 @@ struct JIT {
       for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
       return;
     }
+    auto emit = [&](std::string_view name, size_t line, size_t col) {
+      if (!is_sink_name(name)) f(name, line, col);
+    };
     switch (pattern.tag) {
       case "IDENTIFIER"_:
-        f(pattern.token, pattern.line, pattern.column);
+        emit(pattern.token, pattern.line, pattern.column);
         return;
       case "TYPED_IDENT"_: {
         auto& id = *pattern.nodes[0];
-        f(id.token, id.line, id.column);
+        emit(id.token, id.line, id.column);
         return;
       }
       case "ARRAY_PATTERN"_:
@@ -3647,12 +3902,12 @@ struct JIT {
         return;
       case "REST_PATTERN"_: {
         auto& id = *pattern.nodes[0];
-        f(id.token, id.line, id.column);
+        emit(id.token, id.line, id.column);
         return;
       }
       case "OBJECT_PATTERN"_:
         for (auto& key_node : pattern.nodes) {
-          f(key_node->token, key_node->line, key_node->column);
+          emit(key_node->token, key_node->line, key_node->column);
         }
         return;
       default:
@@ -3664,11 +3919,13 @@ struct JIT {
   // outer[0] is the top-level (main) scope; its entries behave like
   // globals and may be shadowed freely. outer[1..] are enclosing
   // function locals whose names would be captured by the current
-  // function and thus must not be shadowed.
+  // function and thus must not be shadowed. `_` is the sink and is
+  // exempt from the shadow rule entirely.
   static void check_shadow_against_captures(
       const std::string& name,
       const std::vector<const std::set<std::string>*>& outer,
       size_t line, size_t column) {
+    if (is_sink_name(name)) return;
     for (size_t i = 1; i < outer.size(); i++) {
       if (outer[i]->contains(name)) throw_shadow_error(name, line, column);
     }
@@ -3690,7 +3947,7 @@ struct JIT {
       const peg::Ast& node, std::set<std::string>& locals,
       const std::vector<const std::set<std::string>*>& outer) const {
     using namespace peg::udl;
-    if (node.tag == "FUNCTION"_) return;
+    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
 
     if (node.tag == "MATCH"_) {
       // MATCH = [subject, MATCH_ARMS]; MATCH_ARM = [PATTERN, (GUARD)?, EXPR].
@@ -3714,10 +3971,11 @@ struct JIT {
       // TRY = [body_block, catch_ident, catch_body]. The catch binding
       // introduces a new local in the enclosing function; register it
       // so nested closures that capture it see it and get a cell.
+      // `try ... catch _ { ... }` is the sink form (drop the value).
       auto& id = *node.nodes[1];
       auto name = std::string(id.token);
       check_shadow_against_captures(name, outer, id.line, id.column);
-      locals.insert(name);
+      if (!is_sink_name(name)) locals.insert(name);
       // fall through to walk the bodies
     }
 
@@ -3756,7 +4014,7 @@ struct JIT {
           if (is_declare) {
             check_shadow_against_captures(name, outer, ident_node->line,
                                           ident_node->column);
-            locals.insert(name);
+            if (!is_sink_name(name)) locals.insert(name);
           } else {
             // Bare assignment: local only if not in outer
             bool in_outer = false;
@@ -3766,13 +4024,24 @@ struct JIT {
                 break;
               }
             }
-            if (!in_outer) {
+            if (!in_outer && !is_sink_name(name)) {
               locals.insert(name);
             }
           }
         }
       }
       collect_fn_locals(*node.nodes.back(), locals, outer);
+      return;
+    }
+
+    if (node.tag == "CLASS_DECL"_) {
+      // `class Name { ... }` binds `Name` in the enclosing scope.
+      // Method bodies are analyzed separately (visit_for_frees), not
+      // as part of the enclosing function's local set.
+      auto& id = *node.nodes[0];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
       return;
     }
 
@@ -3787,14 +4056,17 @@ struct JIT {
                        FuncInfo& info) {
     using namespace peg::udl;
 
-    if (node.tag == "FUNCTION"_ || node.tag == "DEFER"_) {
+    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
+        node.tag == "DEFER"_) {
       // Analyze nested function / defer body; its locals/frees don't
       // leak into the enclosing scope, but the enclosing scope owns any
-      // captured vars (cells) that it references.
+      // captured vars (cells) that it references. FUNCTION and LAMBDA
+      // share analyze_function (same AST shape: [params, body]; LAMBDA
+      // just lacks the optional RETURN_TYPE slot).
       outer.push_back(&my_locals);
-      auto nested_info = (node.tag == "FUNCTION"_)
-                             ? analyze_function(node, outer)
-                             : analyze_defer(node, outer);
+      auto nested_info = (node.tag == "DEFER"_)
+                             ? analyze_defer(node, outer)
+                             : analyze_function(node, outer);
       outer.pop_back();
       for (const auto& fv : nested_info.free_vars) {
         if (my_locals.contains(fv)) {
@@ -3803,6 +4075,29 @@ struct JIT {
           if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
               info.free_vars.end()) {
             info.free_vars.push_back(fv);
+          }
+        }
+      }
+      return;
+    }
+
+    if (node.tag == "CLASS_DECL"_) {
+      // Each METHOD is a nested function (params + body) that captures
+      // from the enclosing scope. Propagate their free_vars exactly
+      // like the FUNCTION branch above.
+      for (size_t i = 1; i < node.nodes.size(); i++) {
+        const auto& method = *node.nodes[i];
+        outer.push_back(&my_locals);
+        auto method_info = analyze_method(method, outer);
+        outer.pop_back();
+        for (const auto& fv : method_info.free_vars) {
+          if (my_locals.contains(fv)) {
+            info.captured_locals.insert(fv);
+          } else {
+            if (std::find(info.free_vars.begin(), info.free_vars.end(),
+                          fv) == info.free_vars.end()) {
+              info.free_vars.push_back(fv);
+            }
           }
         }
       }
@@ -3914,7 +4209,7 @@ struct JIT {
   // while still at the function's top level (not inside any `{}`).
   bool scan_eh_defer(const peg::Ast& node, bool at_fn_top, FuncInfo& info) {
     using namespace peg::udl;
-    if (node.tag == "FUNCTION"_) return false;
+    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return false;
     if (node.tag == "DEFER"_) {
       if (at_fn_top) info.has_fn_defer = true;
       return true;
@@ -3939,24 +4234,56 @@ struct JIT {
     return any;
   }
 
-  FuncInfo analyze_function(
-      const peg::Ast& fnAst,
+  // Body of the shared analysis for user-defined callable AST nodes
+  // (FUNCTION or METHOD). `params_ast` / `body_ast` are supplied
+  // explicitly because METHOD puts its IDENTIFIER at index 0, pushing
+  // the params / body down by one slot. `info_key` is the AST pointer
+  // used to key `func_info_` — callers point at the outer FUNCTION /
+  // METHOD node so `compile_*` can recover the analysis result later.
+  FuncInfo analyze_fn_common(
+      const peg::Ast* info_key,
+      const peg::Ast& params_ast,
+      const peg::Ast& body_ast,
       std::vector<const std::set<std::string>*>& outer) {
     std::set<std::string> my_locals;
-    for (auto& p : fnAst.nodes[0]->nodes) {
+    for (auto& p : params_ast.nodes) {
       auto& id = *p->nodes[1];
       auto name = std::string(id.token);
       check_shadow_against_captures(name, outer, id.line, id.column);
       my_locals.insert(name);
     }
-    collect_fn_locals(*fnAst.nodes[1], my_locals, outer);
+    collect_fn_locals(body_ast, my_locals, outer);
 
     FuncInfo info;
-    visit_for_frees(*fnAst.nodes[1], my_locals, outer, info);
-    scan_eh_defer(*fnAst.nodes[1], true, info);
+    for (auto& p : params_ast.nodes) {
+      if (auto* def = extract_default_expr(*p)) {
+        visit_for_frees(*def, my_locals, outer, info);
+      }
+    }
+    visit_for_frees(body_ast, my_locals, outer, info);
+    scan_eh_defer(body_ast, true, info);
 
-    func_info_[&fnAst] = info;
+    func_info_[info_key] = info;
     return info;
+  }
+
+  // Shared by FUNCTION ([PARAMETERS, (RETURN_TYPE)?, BLOCK]) and LAMBDA
+  // ([LAMBDA_PARAMS, BODY]) — both have params at index 0, so we only
+  // distinguish them when extracting the return type at compile time.
+  FuncInfo analyze_function(
+      const peg::Ast& fnAst,
+      std::vector<const std::set<std::string>*>& outer) {
+    return analyze_fn_common(&fnAst, *fnAst.nodes[0], *fnAst.nodes[1], outer);
+  }
+
+  // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
+  // nested FUNCTION — method-dispatch's implicit `this` is already
+  // classified as a builtin by `is_builtin_var`, so no extra setup.
+  FuncInfo analyze_method(
+      const peg::Ast& methodAst,
+      std::vector<const std::set<std::string>*>& outer) {
+    return analyze_fn_common(&methodAst, *methodAst.nodes[1],
+                             *methodAst.nodes[2], outer);
   }
 
   // `defer { BODY }` behaves like a 0-parameter nested function that
@@ -4214,14 +4541,24 @@ struct JIT {
         return compile_match(ast);
       case "FUNCTION"_:
         return compile_function(ast);
+      case "LAMBDA"_:
+        return compile_lambda(ast);
       case "CALL"_:
         return compile_call_with_builtins(ast);
       case "LEXICAL_SCOPE"_:
         return compile_lexical_scope(ast);
       case "ASSIGNMENT"_:
         return compile_assignment(ast);
+      case "DESTRUCTURE_ASSIGN"_:
+        return compile_destructure_assign(ast);
+      case "RANGE"_:
+        return compile_range(ast);
+      case "CLASS_DECL"_:
+        return compile_class_decl(ast);
       case "LOGICAL_OR"_:
         return compile_logical_or(ast);
+      case "NIL_COALESCE"_:
+        return compile_nil_coalesce(ast);
       case "LOGICAL_AND"_:
         return compile_logical_and(ast);
       case "CONDITION"_:
@@ -4414,10 +4751,22 @@ struct JIT {
         {}, "obj");
 
     // Each child is OBJECT_PROPERTY: [MUTABLE, IDENTIFIER, EXPRESSION]
+    // or the shorthand form [MUTABLE, IDENTIFIER] — `{x}` reuses the
+    // identifier as both key and value (loaded from the current scope).
     for (auto& prop : ast.nodes) {
       bool mut = (prop->nodes[0]->token == "mut");
       auto name = std::string(prop->nodes[1]->token);
-      auto val = compile(*prop->nodes[2]);
+      llvm::Value* val;
+      if (prop->nodes.size() < 3) {
+        auto slot = lookup_var(name);
+        if (!slot) {
+          throw std::runtime_error(
+              std::format("undefined variable '{}'...", name));
+        }
+        val = load_slot(*slot, name);
+      } else {
+        val = compile(*prop->nodes[2]);
+      }
       emit_object_set(objPtr, name, mut, extract_tag(val), extract_data(val));
     }
 
@@ -4527,6 +4876,15 @@ struct JIT {
 
     if (lvalcnt == 1) {
       auto name = std::string(ast.nodes[lvaloff]->token);
+
+      // Sink: `let _ = expr` / `_ = expr`. The RHS still runs (its side
+      // effects matter); the value passes through as the assignment's
+      // result with its +1 from compile() intact, since no slot absorbs
+      // it. Caller (compile_statements) drops the result like any other
+      // unused value.
+      if (is_sink_name(name)) {
+        return rval;
+      }
 
       // Check if the variable already exists in the current (innermost) scope.
       // If so, reuse the slot (avoid alloca accumulation in loops with `let`).
@@ -4646,6 +5004,41 @@ struct JIT {
     }
   }
 
+  // `a..b` / `a..=b`: lazy integer iterator (same runtime object as
+  // Math.range). Inclusive form bumps the end by one at compile time.
+  llvm::Value* compile_range(const peg::Ast& ast) {
+    auto start = value_to_long(compile(*ast.nodes[0]));
+    auto end = value_to_long(compile(*ast.nodes[2]));
+    if (ast.nodes[1]->token == "..=") {
+      end = builder_.CreateAdd(end, builder_.getInt64(1), "range.incl");
+    }
+    auto obj = builder_.CreateCall(
+        module_->getFunction(rt::math_range), {start, end});
+    return make_object(obj);
+  }
+
+  // DESTRUCTURE_ASSIGN children: [MUTABLE, (OBJECT_PATTERN|ARRAY_PATTERN), EXPRESSION]
+  // Reuses the match-pattern emitter. On runtime mismatch, throws via
+  // emit_type_error (same channel used by other "shape mismatch" cases).
+  llvm::Value* compile_destructure_assign(const peg::Ast& ast) {
+    const auto& pattern = *ast.nodes[1];
+    auto rval = compile(*ast.nodes[2]);
+
+    auto matched = emit_pattern(pattern, rval);
+
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto failBB = llvm::BasicBlock::Create(ctx_, "destr.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "destr.ok", fn);
+    builder_.CreateCondBr(matched, okBB, failBB);
+
+    builder_.SetInsertPoint(failBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(okBB);
+    return rval;
+  }
+
   // --- Arithmetic ---
   //
   // Float-aware binary arithmetic uses a 3-way dispatch:
@@ -4726,6 +5119,22 @@ struct JIT {
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto rhs = compile(*ast.nodes[i + 1]);
       auto ope = ast.nodes[i]->token[0];
+
+      // `@` always goes through the runtime helper — no Long fast path
+      // because it has no built-in numeric meaning (dispatch only via
+      // `__matmul__`). Emit directly, then skip the dispatch below.
+      if (ope == '@') {
+        auto ptrTy = llvm::PointerType::get(ctx_, 0);
+        (void)ptrTy;
+        lhs = emit_call(
+            module_->getOrInsertFunction(
+                rt::num_matmul, valueType_,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt8Ty(), builder_.getInt64Ty()),
+            {extract_tag(lhs), extract_data(lhs),
+             extract_tag(rhs), extract_data(rhs)}, "matmul");
+        continue;
+      }
 
       const char* rt_name = nullptr;
       switch (ope) {
@@ -4995,23 +5404,30 @@ struct JIT {
 
   // --- Logical operators (short-circuit) ---
 
-  llvm::Value* compile_logical_or(const peg::Ast& ast) {
+  // Left-to-right "keep the first operand satisfying `keep_if`, else
+  // fall through to the last" — the shared skeleton for `||` and `??`
+  // (logical-and inverts the branch so doesn't share). `label` prefixes
+  // generated block/slot names for readable IR.
+  template <class KeepPred>
+  llvm::Value* compile_short_circuit(const peg::Ast& ast, const char* label,
+                                     KeepPred keep_if) {
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "or.merge");
+    auto mergeBB = llvm::BasicBlock::Create(
+        ctx_, std::string(label) + ".merge");
 
     llvm::IRBuilder<> entryBuilder(&fn->getEntryBlock(),
                                    fn->getEntryBlock().begin());
-    auto resultAlloca =
-        entryBuilder.CreateAlloca(valueType_, nullptr, "or.tmp");
+    auto resultAlloca = entryBuilder.CreateAlloca(
+        valueType_, nullptr, std::string(label) + ".tmp");
 
     for (auto i = 0u; i < ast.nodes.size(); i++) {
       auto val = compile(*ast.nodes[i]);
       builder_.CreateStore(val, resultAlloca);
-      auto b = value_to_bool(val);
 
       if (i < ast.nodes.size() - 1) {
-        auto nextBB = llvm::BasicBlock::Create(ctx_, "or.next", fn);
-        builder_.CreateCondBr(b, mergeBB, nextBB);
+        auto nextBB = llvm::BasicBlock::Create(
+            ctx_, std::string(label) + ".next", fn);
+        builder_.CreateCondBr(keep_if(val), mergeBB, nextBB);
         builder_.SetInsertPoint(nextBB);
       } else {
         builder_.CreateBr(mergeBB);
@@ -5020,7 +5436,21 @@ struct JIT {
 
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
-    return builder_.CreateLoad(valueType_, resultAlloca, "or.result");
+    return builder_.CreateLoad(
+        valueType_, resultAlloca, std::string(label) + ".result");
+  }
+
+  llvm::Value* compile_nil_coalesce(const peg::Ast& ast) {
+    return compile_short_circuit(
+        ast, "coal", [&](llvm::Value* v) {
+          return builder_.CreateICmpNE(
+              extract_tag(v), builder_.getInt8(TAG_NIL), "coal.notnil");
+        });
+  }
+
+  llvm::Value* compile_logical_or(const peg::Ast& ast) {
+    return compile_short_circuit(
+        ast, "or", [&](llvm::Value* v) { return value_to_bool(v); });
   }
 
   llvm::Value* compile_logical_and(const peg::Ast& ast) {
@@ -5180,13 +5610,17 @@ struct JIT {
         return builder_.CreateAnd(is_str, eq);
       }
       case "IDENTIFIER"_: {
-        // Always matches; bind subject to this name.
+        // Always matches; bind subject to this name. `_` is the sink:
+        // matches but introduces no binding (subject is borrowed here,
+        // so there's nothing to release on this path).
         auto name = std::string(pattern.token);
-        bool captured = current_info_ &&
-                        current_info_->captured_locals.contains(name);
-        auto slot = captured ? make_cell_slot(name, subject)
-                             : make_stack_slot(name, subject);
-        define_var(name, slot);
+        if (!is_sink_name(name)) {
+          bool captured = current_info_ &&
+                          current_info_->captured_locals.contains(name);
+          auto slot = captured ? make_cell_slot(name, subject)
+                               : make_stack_slot(name, subject);
+          define_var(name, slot);
+        }
         return builder_.getTrue();
       }
       case "TYPED_IDENT"_: {
@@ -5215,13 +5649,17 @@ struct JIT {
         } else {
           tag_match = builder_.getFalse();
         }
-        // Bind unconditionally; only used if arm actually runs.
+        // Bind unconditionally; only used if arm actually runs. `_` is
+        // the sink — the type tag still gates the match, but no slot
+        // is allocated.
         auto name = std::string(pattern.nodes[0]->token);
-        bool captured = current_info_ &&
-                        current_info_->captured_locals.contains(name);
-        auto slot = captured ? make_cell_slot(name, subject)
-                             : make_stack_slot(name, subject);
-        define_var(name, slot);
+        if (!is_sink_name(name)) {
+          bool captured = current_info_ &&
+                          current_info_->captured_locals.contains(name);
+          auto slot = captured ? make_cell_slot(name, subject)
+                               : make_stack_slot(name, subject);
+          define_var(name, slot);
+        }
         return tag_match;
       }
       case "ARRAY_PATTERN"_:
@@ -5323,11 +5761,18 @@ struct JIT {
       auto rest_val = make_array(rest_arr_ptr);
       auto rest_name =
           std::string(elems[rest_idx]->nodes[0]->token);
-      bool cap = current_info_ &&
-                 current_info_->captured_locals.contains(rest_name);
-      auto slot = cap ? make_cell_slot(rest_name, rest_val)
-                      : make_stack_slot(rest_name, rest_val);
-      define_var(rest_name, slot);
+      if (is_sink_name(rest_name)) {
+        // `[a, ...] = arr` / `[a, ..._, b] = arr`: still slice the
+        // tail (so post-rest elements get the right indices), but
+        // drop the resulting Array's +1 instead of holding it.
+        emit_value_release(rest_val);
+      } else {
+        bool cap = current_info_ &&
+                   current_info_->captured_locals.contains(rest_name);
+        auto slot = cap ? make_cell_slot(rest_name, rest_val)
+                        : make_stack_slot(rest_name, rest_val);
+        define_var(rest_name, slot);
+      }
 
       // Match post-rest elements (from end of array)
       for (size_t i = rest_idx + 1; i < elems.size(); i++) {
@@ -5399,13 +5844,17 @@ struct JIT {
       llvm::Value* v = llvm::UndefValue::get(valueType_);
       v = builder_.CreateInsertValue(v, t, {0});
       v = builder_.CreateInsertValue(v, d, {1});
-      // Retain since we're creating a new owning reference in the slot
-      emit_value_retain(v);
-
-      bool cap = current_info_ &&
-                 current_info_->captured_locals.contains(key);
-      auto slot = cap ? make_cell_slot(key, v) : make_stack_slot(key, v);
-      define_var(key, slot);
+      if (is_sink_name(key)) {
+        // sink: presence of the key still gates the match (matching
+        // the interpreter), but no binding is introduced.
+      } else {
+        // Retain since we're creating a new owning reference in the slot
+        emit_value_retain(v);
+        bool cap = current_info_ &&
+                   current_info_->captured_locals.contains(key);
+        auto slot = cap ? make_cell_slot(key, v) : make_stack_slot(key, v);
+        define_var(key, slot);
+      }
     }
 
     builder_.CreateBr(okBB);
@@ -5618,11 +6067,17 @@ struct JIT {
                                         llvm::BasicBlock* continue_bb,
                                         llvm::BasicBlock* break_bb) {
     push_scope();
-    bool captured = current_info_ &&
-                    current_info_->captured_locals.contains(var_name);
-    auto slot = captured ? make_cell_slot(var_name, elemVal)
-                         : make_stack_slot(var_name, elemVal);
-    define_var(var_name, slot);
+    if (is_sink_name(var_name)) {
+      // `for _ in iter`: drop the per-iteration +1 transfer that the
+      // caller already emitted (no slot will release it for us).
+      emit_value_release(elemVal);
+    } else {
+      bool captured = current_info_ &&
+                      current_info_->captured_locals.contains(var_name);
+      auto slot = captured ? make_cell_slot(var_name, elemVal)
+                           : make_stack_slot(var_name, elemVal);
+      define_var(var_name, slot);
+    }
 
     loop_stack_.push_back({continue_bb, break_bb});
     compile(body);
@@ -5884,27 +6339,285 @@ struct JIT {
 
   // --- Function ---
 
+  // Build an LLVM function that serves as the `new` dispatcher for a
+  // class declaration. At runtime this function:
+  //
+  //   1. Reads its captured cells to recover (a) the user's `new` body
+  //      closure and (b) each instance-method closure.
+  //   2. Packages those into a stack slab + metadata and calls
+  //      `rt::build_class_instance` to allocate the instance, attach
+  //      `class:` and method slots, invoke the user body, and promote
+  //      every slot to mutable.
+  //
+  // The caller's `this` (the class namespace, carried with +1 per ABI)
+  // is released up front since the constructor has no use for it.
+  llvm::Function* emit_constructor_fn(
+      std::string_view class_name, bool has_new, size_t arity,
+      const std::vector<std::string>& method_names) {
+    using namespace llvm;
+    auto ptrTy = PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto i8Ty = builder_.getInt8Ty();
+
+    auto fnType = FunctionType::get(
+        valueType_, {ptrTy, valueType_, i64Ty, ptrTy}, false);
+    auto fnName = std::format("__culebra_ctor_{}", funcCounter_++);
+    auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
+                               module_);
+
+    auto savedIP = builder_.saveIP();
+    auto argIt = fn->arg_begin();
+    auto clsArg = &*argIt++;
+    auto thisArg = &*argIt++;
+    auto nArgsArg = &*argIt++;
+    auto argsArg = &*argIt++;
+    clsArg->setName("__cls__");
+    thisArg->setName("this");
+    nArgsArg->setName("n_args");
+    argsArg->setName("args");
+
+    auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
+    builder_.SetInsertPoint(entryBB);
+
+    // Caller's `this` (the Car namespace) is unused — release the +1.
+    emit_value_release(thisArg);
+
+    size_t n_methods = method_names.size();
+    size_t body_cap_idx = has_new ? n_methods : size_t{0};
+
+    auto capturesFieldPtr =
+        builder_.CreateStructGEP(closureType_, clsArg, 3);
+    auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr);
+
+    auto load_capture = [&](size_t i) {
+      auto cellSlotPtr = builder_.CreateInBoundsGEP(
+          ptrTy, capturesArr,
+          {builder_.getInt64(static_cast<int64_t>(i))});
+      auto cellPtr = builder_.CreateLoad(ptrTy, cellSlotPtr);
+      auto valuePtr = builder_.CreateStructGEP(cellType_, cellPtr, 1);
+      return builder_.CreateLoad(valueType_, valuePtr);
+    };
+
+    llvm::Value* methodSlab;
+    if (n_methods > 0) {
+      methodSlab = builder_.CreateAlloca(
+          valueType_, builder_.getInt64(static_cast<int64_t>(n_methods)),
+          "methods");
+      for (size_t i = 0; i < n_methods; i++) {
+        auto methodVal = load_capture(i);
+        auto slot = builder_.CreateInBoundsGEP(
+            valueType_, methodSlab,
+            {builder_.getInt64(static_cast<int64_t>(i))});
+        builder_.CreateStore(methodVal, slot);
+      }
+    } else {
+      methodSlab = llvm::ConstantPointerNull::get(ptrTy);
+    }
+
+    llvm::Value* bodyTag;
+    llvm::Value* bodyData;
+    if (has_new) {
+      auto bodyVal = load_capture(body_cap_idx);
+      bodyTag = builder_.CreateExtractValue(bodyVal, {0});
+      bodyData = builder_.CreateExtractValue(bodyVal, {1});
+    } else {
+      bodyTag = builder_.getInt8(TAG_NIL);
+      bodyData = builder_.getInt64(0);
+    }
+
+    auto classNameGlobal =
+        get_or_create_global_str(class_name, ".class.name");
+
+    llvm::Value* nameArrayPtr;
+    if (n_methods > 0) {
+      std::vector<llvm::Constant*> names;
+      names.reserve(n_methods);
+      for (const auto& m : method_names) {
+        names.push_back(
+            llvm::cast<llvm::Constant>(get_or_create_global_str(m, ".mname")));
+      }
+      auto nameArrayTy = llvm::ArrayType::get(ptrTy, n_methods);
+      auto nameArrayConst = llvm::ConstantArray::get(nameArrayTy, names);
+      auto nameArrayGlobal = new llvm::GlobalVariable(
+          *module_, nameArrayTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, nameArrayConst, ".mnames");
+      nameArrayPtr = nameArrayGlobal;
+    } else {
+      nameArrayPtr = llvm::ConstantPointerNull::get(ptrTy);
+    }
+
+    auto result = builder_.CreateCall(
+        module_->getOrInsertFunction(rt::build_class_instance, valueType_,
+                                     ptrTy, i8Ty, i64Ty, ptrTy, ptrTy,
+                                     i64Ty, i64Ty, ptrTy),
+        {classNameGlobal, bodyTag, bodyData, nameArrayPtr, methodSlab,
+         builder_.getInt64(static_cast<int64_t>(n_methods)), nArgsArg,
+         argsArg});
+    builder_.CreateRet(result);
+
+    verifyFunction(*fn);
+    builder_.restoreIP(savedIP);
+    (void)arity;
+    return fn;
+  }
+
+  // `class Name { new(...){...}  m(...){...} }` — compiles each method
+  // plus the user-new body as regular closures, then emits a synthetic
+  // constructor closure that delegates to the runtime instance builder.
+  // `Name` binds the resulting namespace object in the current scope.
+  llvm::Value* compile_class_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    std::string class_name(ast.nodes[0]->token);
+
+    const peg::Ast* new_ast = nullptr;
+    std::vector<std::string> method_names;
+    std::vector<const peg::Ast*> method_asts;
+    for (size_t i = 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      auto name = std::string(m.nodes[0]->token);
+      if (name == "new") {
+        new_ast = &m;
+      } else {
+        method_names.push_back(std::move(name));
+        method_asts.push_back(&m);
+      }
+    }
+
+    // Pre-allocate a cell for `Name` so method closures — which will
+    // almost always reference the class for `Name.new(...)` or match
+    // tagging — can capture it before the namespace itself exists.
+    // The cell starts nil; we patch it to the real class value once
+    // the methods have been compiled and the ctor closure is built.
+    auto nilVal = make_nil();
+    auto classSlot = make_cell_slot(class_name, nilVal);
+    define_var(class_name, classSlot);
+
+    // Compile each method into a closure %Value (+1 owned).
+    std::vector<llvm::Value*> method_vals;
+    method_vals.reserve(method_asts.size());
+    for (auto* m : method_asts) {
+      method_vals.push_back(compile_function(*m));
+    }
+    llvm::Value* body_val = nullptr;
+    size_t new_arity = 0;
+    if (new_ast) {
+      body_val = compile_function(*new_ast);
+      new_arity = new_ast->nodes[1]->nodes.size();
+    }
+
+    auto ctor_fn =
+        emit_constructor_fn(class_name, new_ast != nullptr, new_arity,
+                            method_names);
+
+    size_t n_captures = method_vals.size() + (new_ast ? 1 : 0);
+    auto closurePtr = emit_call(
+        module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {ctor_fn,
+         builder_.getInt64(static_cast<int64_t>(n_captures)),
+         builder_.getInt64(static_cast<int64_t>(new_arity))},
+        "ctor.closure");
+
+    auto capturesFieldPtr =
+        builder_.CreateStructGEP(closureType_, closurePtr, 3);
+    auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr);
+    auto install_capture = [&](size_t i, llvm::Value* v) {
+      // cell_new takes ownership of the %Value's +1 by storing the raw
+      // tag/data without retaining. Storing the cell pointer into the
+      // captures array likewise transfers the cell's +1 to the closure.
+      auto cellPtr = emit_call(
+          module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty()),
+          {extract_tag(v), extract_data(v)}, "ctor.cell");
+      auto dst = builder_.CreateInBoundsGEP(
+          ptrTy, capturesArr,
+          {builder_.getInt64(static_cast<int64_t>(i))});
+      builder_.CreateStore(cellPtr, dst);
+    };
+    for (size_t i = 0; i < method_vals.size(); i++) {
+      install_capture(i, method_vals[i]);
+    }
+    if (body_val) {
+      install_capture(method_vals.size(), body_val);
+    }
+
+    // Wrap the constructor closure into a Value(TAG_FUNC) for storage.
+    auto ctorVal = make_func(closurePtr);
+
+    // Build the class namespace object: { new: ctorClosure }.
+    auto classObj = emit_call(
+        module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+        "class.ns");
+    emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
+                    extract_data(ctorVal));
+    auto classVal = make_object(classObj);
+
+    // Patch the pre-allocated cell with the real class namespace.
+    store_slot(classSlot, classVal);
+    emit_value_retain(classVal);
+    return make_nil();
+  }
+
   llvm::Value* compile_function(const peg::Ast& ast) {
+    using namespace peg::udl;
+    // FUNCTION: [PARAMETERS, (RETURN_TYPE)?, BLOCK]
+    // METHOD:   [IDENTIFIER, PARAMETERS, BLOCK] (no return-type slot).
+    const peg::Ast* params_ast;
+    std::shared_ptr<peg::Ast> body_ast;
+    std::string_view returnType;
+    if (ast.tag == "METHOD"_) {
+      params_ast = ast.nodes[1].get();
+      body_ast = ast.nodes[2];
+      returnType = {};
+    } else {
+      params_ast = ast.nodes[0].get();
+      size_t bodyIdx = 1;
+      returnType = extract_return_type(ast, bodyIdx);
+      body_ast = ast.nodes[bodyIdx];
+    }
+    return compile_fn_common(&ast, *params_ast, body_ast, returnType);
+  }
+
+  // LAMBDA ast: [LAMBDA_PARAMS, BODY]. No declared return type. BODY
+  // may be any expression — compile_fn_common's generic dispatch handles
+  // both BLOCK and bare expressions.
+  llvm::Value* compile_lambda(const peg::Ast& ast) {
+    return compile_fn_common(&ast, *ast.nodes[0], ast.nodes[1], {});
+  }
+
+  // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.
+  // `info_key` matches what `analyze_fn_common` used, so `func_info_`
+  // lookup finds the free-var / captured-local sets.
+  llvm::Value* compile_fn_common(
+      const peg::Ast* info_key,
+      const peg::Ast& params_ast,
+      std::shared_ptr<peg::Ast> body_ast,
+      std::string_view returnType) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
-    // Look up this function's analysis info
-    auto infoIt = func_info_.find(&ast);
+    auto infoIt = func_info_.find(info_key);
     if (infoIt == func_info_.end()) {
       throw std::runtime_error("missing func_info for function");
     }
     const FuncInfo& info = infoIt->second;
 
-    // Collect parameters (name + optional type annotation)
     std::vector<std::string> paramNames;
     std::vector<std::string_view> paramTypeNames;
-    for (auto& node : ast.nodes[0]->nodes) {
+    std::vector<const peg::Ast*> paramDefaults;
+    std::optional<size_t> firstDefaulted;
+    for (auto& node : params_ast.nodes) {
       paramNames.push_back(std::string(node->nodes[1]->token));
       paramTypeNames.push_back(extract_type_annotation(*node, 2));
+      auto* def = extract_default_expr(*node);
+      paramDefaults.push_back(def);
+      if (def && !firstDefaulted) {
+        firstDefaulted = paramNames.size() - 1;
+      }
     }
-
-    size_t bodyIdx = 1;
-    auto returnType = extract_return_type(ast, bodyIdx);
 
     // Uniform closure ABI:
     //   Value fn(ptr __cls__, Value this, i64 n_args, ptr args)
@@ -5962,10 +6675,12 @@ struct JIT {
 
     // Arity guard: matching the interpreter, it is an error to call
     // with fewer args than declared. Overflow is allowed (lands in
-    // `__ARGS__`).
+    // `__ARGS__`). Required-arity is the number of params WITHOUT a
+    // default (leading portion, since defaults must be trailing).
     size_t declaredArity = paramNames.size();
+    size_t requiredArity = firstDefaulted.value_or(declaredArity);
     {
-      auto need = builder_.getInt64(static_cast<int64_t>(declaredArity));
+      auto need = builder_.getInt64(static_cast<int64_t>(requiredArity));
       auto tooFew = builder_.CreateICmpULT(nArgsArg, need);
       auto okBB = BasicBlock::Create(ctx_, "arity.ok", fn);
       auto errBB = BasicBlock::Create(ctx_, "arity.err", fn);
@@ -6000,19 +6715,74 @@ struct JIT {
       define_var("this", make_stack_slot("this", thisArg));
     }
 
-    // Declared parameters: load from args[i] (the caller transferred
-    // each +1 into the slab) and hand straight to the slot.
+    // Free variables bound BEFORE params so that default expressions on
+    // parameters can reference captured outer variables. These are
+    // borrowed cell refs — the closure object owns them.
+    for (size_t i = 0; i < info.free_vars.size(); i++) {
+      const auto& fv = info.free_vars[i];
+      auto capturesFieldPtr =
+          builder_.CreateStructGEP(closureType_, clsArg, 3, "caps.ptr");
+      auto capturesArr =
+          builder_.CreateLoad(ptrTy, capturesFieldPtr, "caps");
+      auto cellSlotPtr = builder_.CreateInBoundsGEP(
+          ptrTy, capturesArr, {builder_.getInt64(i)}, "cell.slot");
+      auto cellPtr = builder_.CreateLoad(ptrTy, cellSlotPtr, fv + ".cell");
+      llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
+      auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
+      builder_.CreateStore(cellPtr, holder);
+      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
+    }
+
+    // Declared parameters: for non-defaulted params, load from args[i]
+    // (the caller transferred each +1 into the slab). For defaulted
+    // params, branch on `i < n_args`: either take the slab entry or
+    // compile the default expression inline, then PHI-merge.
     for (size_t i = 0; i < paramNames.size(); i++) {
       const auto& name = paramNames[i];
-      auto slotPtr = builder_.CreateInBoundsGEP(
-          valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
-          name + ".slot");
-      auto argVal = builder_.CreateLoad(valueType_, slotPtr, name);
+      llvm::Value* argVal = nullptr;
+      if (!paramDefaults[i]) {
+        auto slotPtr = builder_.CreateInBoundsGEP(
+            valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
+            name + ".slot");
+        argVal = builder_.CreateLoad(valueType_, slotPtr, name);
+      } else {
+        auto hasArg = builder_.CreateICmpUGT(
+            nArgsArg, builder_.getInt64(static_cast<int64_t>(i)),
+            name + ".has");
+        auto takeBB = BasicBlock::Create(ctx_, name + ".take", fn);
+        auto defBB = BasicBlock::Create(ctx_, name + ".def", fn);
+        auto mergeBB = BasicBlock::Create(ctx_, name + ".merge", fn);
+        builder_.CreateCondBr(hasArg, takeBB, defBB);
+
+        builder_.SetInsertPoint(takeBB);
+        auto slotPtr = builder_.CreateInBoundsGEP(
+            valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
+            name + ".slot");
+        auto fromArgs = builder_.CreateLoad(valueType_, slotPtr, name);
+        auto takeEndBB = builder_.GetInsertBlock();
+        builder_.CreateBr(mergeBB);
+
+        builder_.SetInsertPoint(defBB);
+        auto defVal = compile(*paramDefaults[i]);
+        emit_value_retain(defVal);  // match caller's +1 transfer discipline
+        auto defEndBB = builder_.GetInsertBlock();
+        builder_.CreateBr(mergeBB);
+
+        builder_.SetInsertPoint(mergeBB);
+        auto phi = builder_.CreatePHI(valueType_, 2, name + ".phi");
+        phi->addIncoming(fromArgs, takeEndBB);
+        phi->addIncoming(defVal, defEndBB);
+        argVal = phi;
+      }
       if (!paramTypeNames[i].empty()) {
         emit_type_check(argVal, paramTypeNames[i],
                         std::string("parameter '") + name + "'");
       }
-      if (info.captured_locals.contains(name)) {
+      if (is_sink_name(name)) {
+        // `fn(_, _, x)`: drop each `_` arg's +1 transfer instead of
+        // binding it. Allows repeated `_` params without slot collision.
+        emit_value_release(argVal);
+      } else if (info.captured_locals.contains(name)) {
         define_var(name, make_cell_slot(name, argVal));
       } else {
         define_var(name, make_stack_slot(name, argVal));
@@ -6041,27 +6811,7 @@ struct JIT {
       }
     }
 
-    // Bind free variables: extract cell pointers from closure->captures[i]
-    for (size_t i = 0; i < info.free_vars.size(); i++) {
-      const auto& fv = info.free_vars[i];
-      // captures_field = load ptr from closure->captures (field 2)
-      auto capturesFieldPtr =
-          builder_.CreateStructGEP(closureType_, clsArg, 3, "caps.ptr");
-      auto capturesArr =
-          builder_.CreateLoad(ptrTy, capturesFieldPtr, "caps");
-      // cell_slot = captures[i]
-      auto cellSlotPtr = builder_.CreateInBoundsGEP(
-          ptrTy, capturesArr, {builder_.getInt64(i)}, "cell.slot");
-      auto cellPtr = builder_.CreateLoad(ptrTy, cellSlotPtr, fv + ".cell");
-      // Store cell pointer into a local alloca (as Cell slot)
-      llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
-      auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
-      builder_.CreateStore(cellPtr, holder);
-      // Borrowed: the closure object owns the cell ref.
-      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
-    }
-
-    auto bodyVal = compile(*ast.nodes[bodyIdx]);
+    auto bodyVal = compile(*body_ast);
 
     if (!builder_.GetInsertBlock()->getTerminator()) {
       if (!returnType.empty()) {

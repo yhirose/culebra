@@ -63,6 +63,44 @@ test_closure = fn () {
   assert(ret == 319)
 }
 
+test_lambda = fn () {
+  add = |x, y| x + y
+  assert(add(2, 3) == 5)
+
+  square = |x| x * x
+  assert(square(6) == 36)
+
+  incr = |x| {
+    mut n = x
+    n = n + 1
+    n
+  }
+  assert(incr(10) == 11)
+
+  forty_two = || 42
+  assert(forty_two() == 42)
+
+  make_adder = |n| |x| x + n
+  add5 = make_adder(5)
+  assert(add5(3) == 8)
+  assert(add5(10) == 15)
+
+  f = |mut x = 10| { x = x + 1; x }
+  assert(f() == 11)
+  assert(f(100) == 101)
+
+  apply = fn (g, v) { g(v) }
+  assert(apply(|x| x * 10, 7) == 70)
+
+  # Type annotation on a lambda parameter works the same as on `fn`.
+  typed = |x: Long| x + 1
+  assert(typed(5) == 6)
+
+  # `self` inside a lambda refers to the lambda itself.
+  fib = |n| if n < 2 { n } else { self(n - 1) + self(n - 2) }
+  assert(fib(10) == 55)
+}
+
 test_array = fn () {
   a = [1,2,3]
   assert(a.size() == 3)
@@ -100,6 +138,51 @@ test_function = fn () {
   assert(f(1) == 4)
 }
 
+test_nil_coalesce = fn () {
+  assert((nil ?? 'd') == 'd')
+  assert(('v' ?? 'd') == 'v')
+  assert((nil ?? nil ?? 'c') == 'c')
+  assert((nil ?? nil ?? nil) == nil)
+
+  # Short-circuit: RHS only evaluated when LHS is nil
+  mut n = 0
+  bump = fn () { n = n + 1; 'x' }
+  let a1 = 'present' ?? bump()
+  assert(n == 0)
+  let a2 = nil ?? bump()
+  assert(n == 1)
+
+  # Missing object property feeds ??
+  o = {a: 1}
+  assert((o.missing ?? -1) == -1)
+  assert((o.a ?? -1) == 1)
+
+  # Lower precedence than || (left-associative, `||` groups tighter)
+  assert((true || false ?? 'd') == true)
+}
+
+test_default_params = fn () {
+  greet = fn (name, greeting = 'hello') { "{greeting}, {name}" }
+  assert(greet('alice') == 'hello, alice')
+  assert(greet('alice', 'hi') == 'hi, alice')
+
+  make_point = fn (x = 0, y = 0, z = 0) { {x, y, z} }
+  assert(make_point().x == 0)
+  assert(make_point(10, 20).z == 0)
+  assert(make_point(10, 20, 30).z == 30)
+
+  # Default expr references earlier param
+  bump = fn (a, b = a + 1) { a + b }
+  assert(bump(5) == 11)
+  assert(bump(5, 100) == 105)
+
+  # Default closes over enclosing scope
+  base = 100
+  add_base = fn (n = base) { n }
+  assert(add_base() == 100)
+  assert(add_base(5) == 5)
+}
+
 test_object = fn () {
   n = 1
   o = {
@@ -117,6 +200,53 @@ test_object = fn () {
   assert(a.a == nil)
   assert(a.b == 1)
   assert(a.size() == 1)
+}
+
+test_object_shorthand = fn () {
+  x = 10
+  y = 20
+  p = {x, y}
+  assert(p.x == 10)
+  assert(p.y == 20)
+  assert(p.size() == 2)
+
+  z = 100
+  q = {x, y, z: z * 2}
+  assert(q.z == 200)
+
+  n = 5
+  r = {mut n}
+  r.n = 99
+  assert(r.n == 99)
+  assert(n == 5)
+}
+
+test_destructure = fn () {
+  # Object destructure
+  let {name, age} = {name: 'alice', age: 30, role: 'admin'}
+  assert(name == 'alice')
+  assert(age == 30)
+
+  # Array destructure
+  let [a, b, c] = [10, 20, 30]
+  assert(a == 10)
+  assert(c == 30)
+
+  # With rest
+  let [head, ...tail] = [1, 2, 3, 4, 5]
+  assert(head == 1)
+  assert(tail.size() == 4)
+  assert(tail[0] == 2)
+
+  # let mut allows reassignment (interpreter-enforced)
+  let mut [x, y] = [100, 200]
+  x = x + 1
+  assert(x == 101)
+
+  # Composes with shorthand
+  let {first, last} = {first: 'A', last: 'Z'}
+  p = {first, last}
+  assert(p.first == 'A' && p.last == 'Z')
 }
 
 test_object_factory = fn () {
@@ -326,6 +456,123 @@ test_float = fn () {
   // Divide-by-zero on Float still raises (same diagnostic as Long).
   // Not easy to assert without a try/catch helper — skip for now;
   // behavior covered manually.
+}
+
+test_math = fn () {
+  // Constants. Math.pi and Math.e are finite doubles; inf is infinite;
+  // nan compares unequal to itself.
+  assert(Math.pi > 3.14 && Math.pi < 3.15)
+  assert(Math.e > 2.71 && Math.e < 2.72)
+  assert(Math.inf > 1e308)
+  assert(Math.nan != Math.nan)
+  assert(type_of(Math.pi) == 'Float')
+  assert(type_of(Math.inf) == 'Float')
+
+  // log / exp round-trip.
+  assert(Math.log(Math.e) == 1.0)
+  assert(Math.exp(0) == 1.0)
+  assert(Math.log(1) == 0.0)
+  assert(type_of(Math.log(1)) == 'Float')          // Long arg, Float result
+  assert(type_of(Math.exp(1.0)) == 'Float')
+
+  // sqrt.
+  assert(Math.sqrt(4) == 2.0)
+  assert(Math.sqrt(2.0) > 1.4142 && Math.sqrt(2.0) < 1.4143)
+  assert(Math.sqrt(-1.0) != Math.sqrt(-1.0))       // NaN
+
+  // floor / ceil / round. Long input passes through unchanged.
+  assert(Math.floor(2.7) == 2)
+  assert(Math.floor(-2.3) == -3)
+  assert(Math.ceil(2.3) == 3)
+  assert(Math.ceil(-2.7) == -2)
+  assert(Math.round(2.5) == 2)                     // banker's rounding (ties to even)
+  assert(Math.round(3.5) == 4)
+  assert(Math.round(-0.5) == 0)
+  assert(Math.round(1.4) == 1)
+  assert(Math.floor(7) == 7)
+  assert(type_of(Math.floor(7)) == 'Long')
+  assert(type_of(Math.floor(7.5)) == 'Long')
+
+  // abs: return type follows input type.
+  assert(Math.abs(-7) == 7)
+  assert(Math.abs(-7.5) == 7.5)
+  assert(type_of(Math.abs(-7)) == 'Long')
+  assert(type_of(Math.abs(-7.5)) == 'Float')
+
+  // min / max variadic. Long-only stays Long; any Float lifts to Float.
+  assert(Math.min(3, 1, 4, 1, 5) == 1)
+  assert(Math.max(3, 1, 4, 1, 5) == 5)
+  assert(type_of(Math.min(3, 1, 4)) == 'Long')
+  assert(Math.min(1.5, 2) == 1.5)
+  assert(type_of(Math.min(1.5, 2)) == 'Float')
+  assert(Math.max(-1.0, -2) == -1.0)
+  assert(type_of(Math.max(1, 2.0, 3)) == 'Float')
+
+  // Math.pow kept for back-compat (non-negative Long exponent).
+  assert(Math.pow(2, 10) == 1024)
+  assert(type_of(Math.pow(2, 10)) == 'Long')
+}
+
+test_random = fn () {
+  // Seeding reproduces the same sequence.
+  Random.seed(42)
+  a1 = Random.int(0, 100)
+  a2 = Random.int(0, 100)
+  Random.seed(42)
+  assert(Random.int(0, 100) == a1)
+  assert(Random.int(0, 100) == a2)
+
+  // int is half-open [lo, hi) — produce many samples and check bounds.
+  Random.seed(0)
+  mut i = 0
+  mut x = 0
+  while i < 100 {
+    x = Random.int(10, 20)
+    assert(x >= 10)
+    assert(x < 20)
+    i = i + 1
+  }
+
+  // uniform yields a Float in [lo, hi) and promotes Long arguments.
+  Random.seed(0)
+  u = Random.uniform(0.0, 1.0)
+  assert(type_of(u) == 'Float')
+  assert(u >= 0.0)
+  assert(u < 1.0)
+  assert(type_of(Random.uniform(0, 1)) == 'Float')  // Long args promoted
+
+  // gauss returns Float; not checking value because it's unbounded.
+  assert(type_of(Random.gauss(0.0, 1.0)) == 'Float')
+  assert(type_of(Random.gauss(0, 1)) == 'Float')    // Long args promoted
+
+  // shuffle permutes without adding or dropping elements.
+  Random.seed(0)
+  mut arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  Random.shuffle(arr)
+  assert(arr.size() == 10)
+  mut sum = 0
+  arr.for_each(fn (elem) { sum = sum + elem })
+  assert(sum == 55)
+
+  // weighted_choice: weight 0 is never picked.
+  Random.seed(0)
+  i = 0
+  mut pick = ''
+  while i < 50 {
+    pick = Random.weighted_choice(['a', 'y', 'c'], [1.0, 0.0, 1.0])
+    assert(pick == 'a' || pick == 'c')
+    i = i + 1
+  }
+  // All weight on one element.
+  assert(Random.weighted_choice(['only'], [1.0]) == 'only')
+}
+
+test_io_exists = fn () {
+  // The test script itself has to exist.
+  assert(IO.exists('samples/test.cul'))
+  assert(!IO.exists('definitely-not-a-real-path-xyz.cul'))
+  // Empty path is not a valid filesystem entry.
+  assert(!IO.exists(''))
 }
 
 test_fib = fn () {
@@ -668,6 +915,18 @@ test_for_in = fn () {
   for i in Math.iota(5) { total = total + i }
   assert(total == 10)
 
+  // Range literals (exclusive / inclusive).
+  total = 0
+  for i in 1..5 { total = total + i }
+  assert(total == 10)
+  total = 0
+  for i in 1..=5 { total = total + i }
+  assert(total == 15)
+  n = 3
+  total = 0
+  for i in 0..n*2 { total = total + i }
+  assert(total == 15)
+
   // String: UTF-8 scalar walk. 'café' is 5 bytes but 4 scalars.
   mut count = 0
   for c in 'hello' { count = count + 1 }
@@ -679,6 +938,55 @@ test_for_in = fn () {
   for c in 'ab' { parts.push(c) }
   assert(parts.size() == 2)
   assert(parts[0] == 'a' && parts[1] == 'b')
+}
+
+test_underscore_sink = fn () {
+  // `_` is a non-binding sink: any binding form drops the value
+  // instead of introducing a name. Reading `_` later is an error
+  // (the binding never happened).
+
+  // for _ in iter: body still runs, no `_` is bound
+  mut count = 0
+  for _ in 0..3 { count = count + 1 }
+  assert(count == 3)
+
+  // RHS side effects of `let _ = ...` still run
+  mut touched = false
+  let side_effect = fn () { touched = true; 42 }
+  let _ = side_effect()
+  assert(touched == true)
+
+  // Repeated `let _ = ...` in the same scope — no shadow error
+  let _ = 1
+  let _ = 2
+  let _ = 3
+
+  // fn(_, _, x): repeated `_` parameters allowed
+  let third_arg = fn (_, _, x) { x }
+  assert(third_arg(100, 200, 'hello') == 'hello')
+  let ignore_all = fn (_, _, _) { 99 }
+  assert(ignore_all(1, 2, 3) == 99)
+
+  // Array destructure with `_`
+  let [first, _, third_v] = [10, 20, 30]
+  assert(first == 10)
+  assert(third_v == 30)
+
+  // Rest pattern named `_` is also a sink
+  let [_, ..._, last] = [1, 2, 3, 4, 5]
+  assert(last == 5)
+
+  // match: `_` inside an array pattern slot is a sink
+  let m = match [1, 2, 3] { [a, _, c] => a + c }
+  assert(m == 4)
+
+  // `_` inside a nested function does not collide with outer `_`
+  let outer_fn = fn () {
+    let _ = 'a'
+    let inner = fn (_) { 'b' }
+    inner(99)
+  }
+  assert(outer_fn() == 'b')
 }
 
 test_stdlib = fn () {
@@ -717,15 +1025,73 @@ debugger
 test_call()
 test_return()
 test_closure()
+test_lambda()
+test_nil_coalesce()
+test_default_params()
 test_nil()
 test_array()
 test_function()
 test_object()
+test_object_shorthand()
+test_destructure()
 test_object_factory()
+
+test_dunder_ops = fn () {
+  make_box = fn (v) {
+    {
+      v: v,
+      __add__: fn (r) {
+        match r {
+          n: Long => this.v + n,
+          _       => this.v + r.v
+        }
+      },
+      __mul__: fn (r) {
+        match r {
+          n: Long => this.v * n,
+          _       => this.v * r.v
+        }
+      },
+      __sub__: fn (r) { this.v - r.v },
+      __neg__: fn ()  { -this.v },
+      __pow__: fn (e) { this.v ** e.v },
+      __matmul__: fn (r) { this.v * r.v + 1 },
+      __eq__:  fn (r) { this.v == r.v },
+      __lt__:  fn (r) { this.v <  r.v }
+    }
+  }
+  a = make_box(3)
+  b = make_box(4)
+  # Arithmetic
+  assert(a + b == 7)
+  assert(a - b == -1)
+  assert(a * b == 12)
+  assert(a * 5 == 15)
+  assert(-a == -3)
+  assert(a @ b == 13)
+  assert(make_box(2) ** make_box(3) == 8)
+  # Reflection for commutative ops
+  assert(2 + a == 5)
+  assert(5 * a == 15)
+  # Comparisons (derived __le__ from __lt__ + __eq__)
+  assert(a == make_box(3))
+  assert(a != b)
+  assert(a < b)
+  assert(a <= make_box(3))
+  assert(b > a)
+  assert(b >= make_box(4))
+  # Equality reflection
+  assert(make_box(3) == a)
+}
+
+test_dunder_ops()
 test_class()
 debugger
 test_sum()
 test_float()
+test_math()
+test_random()
+test_io_exists()
 test_fib()
 test_interpolated_string()
 test_lexical_scope()
@@ -738,5 +1104,6 @@ test_stdlib()
 test_drop()
 test_ufcs()
 test_for_in()
+test_underscore_sink()
 
 return // end
