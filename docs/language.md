@@ -954,7 +954,7 @@ for i in 0..=10 { puts(i) }         # inclusive (0..10)
 ```
 
 Range literals `a..b` (exclusive) and `a..=b` (inclusive) return the
-same lazy integer iterator as `Math.range` — no up-front allocation.
+same lazy integer iterator as `range` — no up-front allocation.
 Endpoints must be `Long`.
 
 The iterator protocol (see §17.5) requires the target to be either an
@@ -969,7 +969,7 @@ function, the script is rejected (see §6).
 **JIT**: `for` / `break` / `continue` compile under `--jit` for
 direct iteration over `Array`, `Object` (yields keys in ascending
 order), and `String` (UTF-8 scalar walk). Objects that carry their
-own `iter` property (user-defined iterators, `Math.range`,
+own `iter` property (user-defined iterators, `range`,
 `String.code_points()` / `.graphemes()`, iterator method chains) are
 driven through the iterator protocol at runtime — same semantics as
 the interpreter, with a native-loop fast path preserved for the
@@ -1580,7 +1580,7 @@ arr.map(f).filter(g)
 arr.iter().map(f).filter(g).collect()
 
 # Lazy with early termination: only touches 4 elements
-Math.range(1000000).filter(f).map(g).take(4).collect()
+range(1000000).filter(f).map(g).take(4).collect()
 ```
 
 **User-defined example**:
@@ -1605,28 +1605,31 @@ for x in countdown(3) { puts(x) }              # 3, 2, 1
 ```
 
 **JIT**: everything in this section — for-in driving the protocol,
-user-defined iterators, lazy iterator method chains, `Math.range`,
+user-defined iterators, lazy iterator method chains, `range`,
 `String.code_points()` / `.graphemes()`, and Array-eager method
 chaining on `[...].map(...).filter(...)` — runs under `--jit` with
 interpreter-equivalent semantics. The Array/String/keys fast paths
 stay native (one load per element); iterator-protocol driving pays a
 per-step closure dispatch, which is inherent to a dynamic-language
-iterator chain. Use `Math.iota` + `Array.map` / `.filter` / `.reduce`
+iterator chain. Use `iota` + `Array.map` / `.filter` / `.reduce`
 when you want eager materialization and maximum throughput; use
-`Math.range` + lazy methods when you want constant-memory streaming.
+`range` + lazy methods when you want constant-memory streaming.
 
 ---
 
 ## 18. Core built-in functions
 
 The functions below are part of the language proper: they are bound
-into every execution environment and cannot be replaced. They are
-distinguished from the broader standard library (see
-[`docs/stdlib.md`](stdlib.md)) by being tied to language semantics —
-source-position errors, type introspection, and the display
-convention — so they cannot be written purely in user space. Output
-primitives (`puts`, `print`), arithmetic helpers (`Math.*`), I/O
-(`IO.*`), and process info (`Sys.*`) live in the standard library.
+into every execution environment as global names and cannot be
+replaced. The first group (`assert`, `to_long` / `to_float` /
+`to_string`, `type_of`) is tied to language semantics — source-position
+errors, type introspection, and the display convention. The second
+group (`range`, `iota`) provides the canonical integer-sequence
+factories; both backends recognise them for fusion / specialisation,
+and they are the standard form used in `for`-in loops throughout the
+language. The broader standard library (namespaced under `Math`,
+`IO`, `Sys`) is documented in [`docs/stdlib.md`](stdlib.md). Output
+primitives `puts` and `print` are CLI-installed globals (§19).
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -1704,6 +1707,51 @@ puts(type_of(42))          # 'Long'
 puts(type_of(1.5))         # 'Float'
 puts(type_of('hi'))        # 'String'
 puts(type_of([1, 2]))      # 'Array'
+```
+
+### `range(n: Long) -> Iterator` / `range(start: Long, end: Long) -> Iterator`
+
+Lazy integer-sequence factory: returns an Iterator (§17.5) that
+yields integers one at a time. Use with `for`-in or iterator method
+chains to iterate in **constant additional memory** regardless of
+the range size.
+
+* `range(n)` yields `0, 1, ..., n-1`. If `n <= 0`, the iterator
+  completes immediately.
+* `range(start, end)` yields `start, start+1, ..., end-1`. If
+  `start >= end`, completes immediately.
+
+```culebra
+for i in range(5)     { puts(i) }     # 0, 1, 2, 3, 4
+for i in range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+
+# Constant memory even for huge bounds
+for i in range(1_000_000_000) {
+  if i > 3 { break }
+  puts(i)
+}
+```
+
+**JIT**: `range` returns a JIT-native iterator Object, and the
+`range(N).<HOF>(...)` method-chain pattern is fused into a direct
+counter loop. See §17.5.
+
+### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
+
+Eager counterpart to `range`: materialise an `Array` of the same
+sequence. Named after APL / C++ `std::iota` / Scheme SRFI-1. Prefer
+`range` for `for`-in loops; use `iota` when you actually need the
+full `Array` (e.g. to index into it, or to pass to a function that
+expects an `Array`).
+
+* `iota(n)` returns `[0, 1, ..., n-1]`. If `n <= 0`, an empty array.
+* `iota(start, end)` returns `[start, start+1, ..., end-1]`. If
+  `start >= end`, an empty array.
+
+```culebra
+puts(iota(3))         # [0, 1, 2]
+puts(iota(2, 5))      # [2, 3, 4]
+puts(iota(5, 2))      # []
 ```
 
 ---
@@ -1806,7 +1854,7 @@ semantics, but a few operational differences are worth knowing.
   hidden-class (Shape) layout with vector-backed slots and
   per-callsite inline caches. The interpreter uses an ordered map.
   Iteration order over an Object's keys is alphabetical on both.
-* **HOF fusion.** The JIT fuses many `Math.range(N).<HOF>(...)` and
+* **HOF fusion.** The JIT fuses many `range(N).<HOF>(...)` and
   `iter.map(λ).collect()` patterns into bare counter loops. The
   interpreter dispatches each closure step-by-step. Effects fire in
   the same order on both.

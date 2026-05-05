@@ -102,7 +102,7 @@ puts(obj.keys())                      # ['age', 'name']
 obj.age = 31                          # `mut` プロパティの再代入
 ```
 
-`Math.range(N)` は遅延イテレータを返し、`.map`, `.filter`, `.reduce`,
+`range(N)` は遅延イテレータを返し、`.map`, `.filter`, `.reduce`,
 `.for_each` 等と組み合わせると中間配列を作りません。JIT は多くの
 パターンを単純なカウンタループへ融合します — 詳細は
 [`language.md` §17](language.ja.md)。
@@ -130,7 +130,7 @@ puts(describe([1, 2, 3, 4]))          # 'head=1, rest=3'
 puts(describe({name: 'bob', age: 25})) # 'bob, 25'
 ```
 
-6. `class` 糖衣
+6. `class` 構文
 ----------------
 
 `class` はコンストラクタとメソッドを宣言します。`this.x = ...` で作る
@@ -196,7 +196,7 @@ puts(result)                          # 'fallback (expected positive, got -3)'
 
 ```culebra
 puts(Math.abs(-7))              # 7
-puts(Math.iota(5))              # [0, 1, 2, 3, 4]
+puts(iota(5))              # [0, 1, 2, 3, 4]
 
 name = IO.input()               # 標準入力から 1 行
 IO.write('out.txt', 'hello')    # ファイル書き出し

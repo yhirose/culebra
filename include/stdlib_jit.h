@@ -1,8 +1,14 @@
 #pragma once
 
-// JIT-side implementation of the Culebra standard library. Fragment header;
-// include once at the end of jit.h.
+// JIT-side implementation of the Culebra standard library.
+//
+// Independent header. Include from main.cc (or any embedder) after
+// jit.h. Provides the runtime functions called from JIT'd code and the
+// `JitExtension` struct that fills `JIT::ExtensionHooks`. Embedders
+// install the stdlib by calling `culebra::install_jit_stdlib()` once
+// before `JIT::run()`.
 
+#include <jit.h>
 #include <support.h>
 
 #include <algorithm>
@@ -73,15 +79,6 @@ __attribute__((used)) inline JitValue culebra_runtime_to_float_any(
 
 __attribute__((used)) inline const char* culebra_runtime_type_of(int8_t tag) {
   return _culebra_tag_name(tag);
-}
-
-__attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
-                                                            int64_t end) {
-  auto* r = culebra_runtime_array_new();
-  for (int64_t i = start; i < end; i++) {
-    culebra_runtime_array_push(r, /*tag Long*/ 2, i);
-  }
-  return r;
 }
 
 __attribute__((used)) inline void culebra_runtime_print(int8_t type,
@@ -319,191 +316,266 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
 }  // extern "C"
 
 // ---------------------------------------------------------------------------
-// JIT compile-side dispatch (member function definitions)
+// JIT compile-side dispatch (extension hook implementation)
 // ---------------------------------------------------------------------------
 
 namespace culebra {
 
-inline void JIT::declare_stdlib_runtime() {
-  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+// JitExtension fills the JIT::ExtensionHooks for the standard library
+// (Math/IO/Random/Sys + bare globals like puts/to_long/type_of and the
+// `Math.range(N).<HOF>(...)` fusion peephole). Declared as a friend of
+// JIT in jit.h so each member can reach the JIT internals it needs
+// (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
+// class having to expose them publicly.
+struct JitExtension {
+  static void declare_runtime(JIT& jit);
+  static llvm::Value* compile_global(JIT& jit, const std::string& name,
+                                       const peg::Ast& argsAst,
+                                       const peg::Ast& callAst);
+  static llvm::Value* compile_ns_call(JIT& jit,
+                                        std::string_view ns,
+                                        std::string_view method,
+                                        const peg::Ast& argsAst,
+                                        const peg::Ast& callAst);
+  static llvm::Value* compile_ns_prop(JIT& jit,
+                                        std::string_view ns,
+                                        std::string_view prop);
 
-  module_->getOrInsertFunction(rt::print, builder_.getVoidTy(),
-                               builder_.getInt8Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::to_long,
-                               builder_.getInt64Ty(), ptrTy,
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::to_long_any, valueType_,
-                               builder_.getInt8Ty(), builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::to_float_any, valueType_,
-                               builder_.getInt8Ty(), builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::type_of, ptrTy,
-                               builder_.getInt8Ty());
-  module_->getOrInsertFunction(rt::iota, ptrTy,
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::math_range, ptrTy,
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::input, ptrTy);
-  module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::write_file,
-                               builder_.getVoidTy(), ptrTy, ptrTy,
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::math_pow,
-                               builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
+  static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
+                                         const peg::Ast& argsAst);
+
+  static bool is_builtin_var(const std::string& name);
+  static llvm::Value* compile_ufcs_builtin(JIT& jit,
+                                             const std::string& method,
+                                             const peg::Ast& argsAst,
+                                             llvm::Value* receiver);
+
+  static void install() {
+    JIT::install_extension({
+        .declare_runtime = &declare_runtime,
+        .compile_global = &compile_global,
+        .compile_ns_call = &compile_ns_call,
+        .compile_ns_prop = &compile_ns_prop,
+        .is_builtin_var = &is_builtin_var,
+        .compile_ufcs_builtin = &compile_ufcs_builtin,
+    });
+  }
+};
+
+// Convenience wrapper for embedders. Call once before JIT::run().
+inline void install_jit_stdlib() { JitExtension::install(); }
+
+inline void JitExtension::declare_runtime(JIT& jit) {
+  auto ptrTy = llvm::PointerType::get(jit.ctx_, 0);
+
+  jit.module_->getOrInsertFunction(rt::print, jit.builder_.getVoidTy(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::to_long,
+                               jit.builder_.getInt64Ty(), ptrTy,
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::to_long_any, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::to_float_any, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::type_of, ptrTy,
+                               jit.builder_.getInt8Ty());
+  jit.module_->getOrInsertFunction(rt::input, ptrTy);
+  jit.module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::write_file,
+                               jit.builder_.getVoidTy(), ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::math_pow,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   // Float-domain Math: (tag, data, line, col) -> JitValue. Register
   // the full family in one pass since they share the same signature.
   for (auto name : {rt::math_log, rt::math_exp, rt::math_sqrt,
                     rt::math_floor, rt::math_ceil, rt::math_round,
                     rt::math_abs}) {
-    module_->getOrInsertFunction(name, valueType_,
-                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
-                                 builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
+    jit.module_->getOrInsertFunction(name, jit.valueType_,
+                                 jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
   }
   // Variadic min/max: (args_ptr, n, line, col) -> JitValue.
   for (auto name : {rt::math_min, rt::math_max}) {
-    module_->getOrInsertFunction(name, valueType_, ptrTy,
-                                 builder_.getInt64Ty(),
-                                 builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
+    jit.module_->getOrInsertFunction(name, jit.valueType_, ptrTy,
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
   }
-  module_->getOrInsertFunction(rt::sys_exit, builder_.getVoidTy(),
-                               builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::sys_argv, ptrTy);
+  jit.module_->getOrInsertFunction(rt::sys_exit, jit.builder_.getVoidTy(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::sys_argv, ptrTy);
   // Random
-  module_->getOrInsertFunction(rt::random_seed, builder_.getVoidTy(),
-                               builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::random_int, builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty(),
-                               builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::random_uniform, valueType_,
-                               builder_.getInt8Ty(), builder_.getInt64Ty(),
-                               builder_.getInt8Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::random_gauss, valueType_,
-                               builder_.getInt8Ty(), builder_.getInt64Ty(),
-                               builder_.getInt8Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::random_shuffle, builder_.getVoidTy(),
+  jit.module_->getOrInsertFunction(rt::random_seed, jit.builder_.getVoidTy(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::random_int, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::random_uniform, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::random_gauss, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::random_shuffle, jit.builder_.getVoidTy(),
                                ptrTy);
-  module_->getOrInsertFunction(rt::random_weighted_choice, valueType_,
-                               ptrTy, ptrTy, builder_.getInt64Ty(),
-                               builder_.getInt64Ty());
-  module_->getOrInsertFunction(rt::io_exists, builder_.getInt64Ty(), ptrTy);
+  jit.module_->getOrInsertFunction(rt::random_weighted_choice, jit.valueType_,
+                               ptrTy, ptrTy, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::io_exists, jit.builder_.getInt64Ty(), ptrTy);
 
   // Iterator terminal methods.
-  auto i64 = builder_.getInt64Ty();
-  auto i8 = builder_.getInt8Ty();
-  module_->getOrInsertFunction(rt::iter_collect, ptrTy, i8, i64);
-  module_->getOrInsertFunction(rt::iter_count, i64, i8, i64);
-  module_->getOrInsertFunction(rt::iter_for_each, builder_.getVoidTy(),
+  auto i64 = jit.builder_.getInt64Ty();
+  auto i8 = jit.builder_.getInt8Ty();
+  jit.module_->getOrInsertFunction(rt::iter_collect, ptrTy, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_count, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_for_each, jit.builder_.getVoidTy(),
                                i8, i64, i8, i64, i64, i64);
-  module_->getOrInsertFunction(rt::iter_reduce, builder_.getVoidTy(),
+  jit.module_->getOrInsertFunction(rt::iter_reduce, jit.builder_.getVoidTy(),
                                i8, i64, i8, i64, i8, i64, i64, i64,
                                ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::iter_find, builder_.getVoidTy(),
+  jit.module_->getOrInsertFunction(rt::iter_find, jit.builder_.getVoidTy(),
                                i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
+  jit.module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
                                i64);
   // sum/product/min/max: (it, id, line, col) -> i64
-  module_->getOrInsertFunction(rt::iter_sum, i64, i8, i64, i64, i64);
-  module_->getOrInsertFunction(rt::iter_product, i64, i8, i64, i64, i64);
-  module_->getOrInsertFunction(rt::iter_min, i64, i8, i64, i64, i64);
-  module_->getOrInsertFunction(rt::iter_max, i64, i8, i64, i64, i64);
-  module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
+  jit.module_->getOrInsertFunction(rt::iter_sum, i64, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_product, i64, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_min, i64, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_max, i64, i8, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
                                i64);
 
   // Iterator lazy factories.
-  module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64);
-  module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64);
-  module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
-  module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
-  module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64);
   // chain/zip/flat_map carry line+col for the "not iterable" error.
-  module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
+  jit.module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
                                i64, i64);
-  module_->getOrInsertFunction(rt::iter_zip, ptrTy, i8, i64, i8, i64,
+  jit.module_->getOrInsertFunction(rt::iter_zip, ptrTy, i8, i64, i8, i64,
                                i64, i64);
-  module_->getOrInsertFunction(rt::iter_enumerate, ptrTy, i8, i64);
-  module_->getOrInsertFunction(rt::iter_flat_map, ptrTy, i8, i64, i8, i64,
+  jit.module_->getOrInsertFunction(rt::iter_enumerate, ptrTy, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_flat_map, ptrTy, i8, i64, i8, i64,
                                i64, i64);
   // (next_cls, iter_tag, iter_data, &out_tag, &out_data) -> i64 (1/0)
-  module_->getOrInsertFunction(rt::iter_advance, i64, ptrTy, i8, i64, ptrTy,
+  jit.module_->getOrInsertFunction(rt::iter_advance, i64, ptrTy, i8, i64, ptrTy,
                                ptrTy);
-  module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
-  module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 }
 
-inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
-                                                   const peg::Ast& argsAst,
-                                                   const peg::Ast& callAst) {
-  auto ptrTy = llvm::PointerType::get(ctx_, 0);
-  auto line = builder_.getInt64(callAst.line);
-  auto col = builder_.getInt64(callAst.column);
+inline llvm::Value* JitExtension::compile_global(JIT& jit,
+                                                  const std::string& name,
+                                                  const peg::Ast& argsAst,
+                                                  const peg::Ast& callAst) {
+  auto line = jit.builder_.getInt64(callAst.line);
+  auto col = jit.builder_.getInt64(callAst.column);
 
   if (name == "puts" && argsAst.nodes.size() == 1)
-    return emit_output_call(rt::puts, argsAst);
+    return emit_output_call(jit, rt::puts, argsAst);
   if (name == "print" && argsAst.nodes.size() == 1)
-    return emit_output_call(rt::print, argsAst);
+    return emit_output_call(jit, rt::print, argsAst);
 
   if (name == "assert" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(
-        module_->getFunction(rt::assert_),
-        {extract_tag(arg), extract_data(arg), line, col});
-    emit_value_release(arg);
-    return make_nil();
+    auto arg = jit.compile(*argsAst.nodes[0]);
+    jit.builder_.CreateCall(
+        jit.module_->getFunction(rt::assert_),
+        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
+    jit.emit_value_release(arg);
+    return jit.make_nil();
   }
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]);
     // Polymorphic: Long/Float/String. The runtime helper dispatches
     // on tag (Long identity, Float truncate, String parse) and
     // raises `type error` for anything else.
-    auto result = builder_.CreateCall(
-        module_->getFunction(rt::to_long_any),
-        {extract_tag(arg), extract_data(arg), line, col});
-    emit_value_release(arg);
+    auto result = jit.builder_.CreateCall(
+        jit.module_->getFunction(rt::to_long_any),
+        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
+    jit.emit_value_release(arg);
     return result;
   }
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    auto result = builder_.CreateCall(
-        module_->getFunction(rt::to_float_any),
-        {extract_tag(arg), extract_data(arg), line, col});
-    emit_value_release(arg);
+    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto result = jit.builder_.CreateCall(
+        jit.module_->getFunction(rt::to_float_any),
+        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
+    jit.emit_value_release(arg);
     return result;
   }
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    auto s = builder_.CreateCall(
-        module_->getFunction(rt::value_to_display),
-        {extract_tag(arg), extract_data(arg)});
-    emit_value_release(arg);
-    return make_string(s);
+    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto s = jit.builder_.CreateCall(
+        jit.module_->getFunction(rt::value_to_display),
+        {jit.extract_tag(arg), jit.extract_data(arg)});
+    jit.emit_value_release(arg);
+    return jit.make_string(s);
   }
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    auto s = builder_.CreateCall(module_->getFunction(rt::type_of),
-                                 {extract_tag(arg)});
-    emit_value_release(arg);
-    return make_string(s);
+    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto s = jit.builder_.CreateCall(jit.module_->getFunction(rt::type_of),
+                                 {jit.extract_tag(arg)});
+    jit.emit_value_release(arg);
+    return jit.make_string(s);
   }
 
   return nullptr;
 }
 
-inline llvm::Value* JIT::try_compile_stdlib_namespace(
-    std::string_view ns, std::string_view method,
-    const peg::Ast& argsAst, const peg::Ast& callAst) {
+// Member-style shorthands so each JitExtension::compile_* body can call
+// `make_long(v)` / `extract_tag(v)` / `module_->...` directly instead
+// of `jit.make_long(v)` / `jit.module_->...`. References for true JIT
+// members; forwarding lambdas for member functions (C++ has no member
+// aliasing). Undefined at the end of this header.
+#define CULEBRA_JIT_EXT_BODY_ALIASES(jit)                                     \
+  auto& module_ = jit.module_;                                                \
+  auto& builder_ = jit.builder_;                                              \
+  auto& valueType_ = jit.valueType_;                                          \
+  auto& ctx_ = jit.ctx_;                                                      \
+  auto extract_tag = [&](llvm::Value* v) { return jit.extract_tag(v); };      \
+  auto extract_data = [&](llvm::Value* v) { return jit.extract_data(v); };    \
+  auto make_long = [&](llvm::Value* v) { return jit.make_long(v); };          \
+  auto make_string = [&](llvm::Value* v) { return jit.make_string(v); };      \
+  auto make_array = [&](llvm::Value* v) { return jit.make_array(v); };        \
+  auto make_object = [&](llvm::Value* v) { return jit.make_object(v); };      \
+  auto make_nil = [&]() { return jit.make_nil(); };                           \
+  auto make_bool = [&](llvm::Value* v) { return jit.make_bool(v); };          \
+  auto make_float = [&](llvm::Value* v) { return jit.make_float(v); };        \
+  auto value_to_long = [&](llvm::Value* v) { return jit.value_to_long(v); };  \
+  auto emit_value_release = [&](llvm::Value* v) {                             \
+    return jit.emit_value_release(v);                                         \
+  };                                                                          \
+  auto emit_type_check = [&](llvm::Value* v, std::string_view t,              \
+                             const char* w) {                                 \
+    return jit.emit_type_check(v, t, w);                                      \
+  };                                                                          \
+  auto compile = [&](const peg::Ast& a) { return jit.compile(a); };           \
+  auto emit_output_call = [&](const char* rt, const peg::Ast& a) {            \
+    return JitExtension::emit_output_call(jit, rt, a);                        \
+  }
+
+inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
+                                                    std::string_view ns,
+                                                    std::string_view method,
+                                                    const peg::Ast& argsAst,
+                                                    const peg::Ast& callAst) {
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
@@ -704,34 +776,6 @@ inline llvm::Value* JIT::try_compile_stdlib_namespace(
                                      hi, above_lo);
       return make_long(r);
     }
-    if (method == "iota" && argsAst.nodes.size() == 1) {
-      auto end = value_to_long(compile(*argsAst.nodes[0]));
-      auto arr = builder_.CreateCall(module_->getFunction(rt::iota),
-                                     {builder_.getInt64(0), end});
-      return make_array(arr);
-    }
-    if (method == "iota" && argsAst.nodes.size() == 2) {
-      auto start = value_to_long(compile(*argsAst.nodes[0]));
-      auto end = value_to_long(compile(*argsAst.nodes[1]));
-      auto arr = builder_.CreateCall(module_->getFunction(rt::iota),
-                                     {start, end});
-      return make_array(arr);
-    }
-    if (method == "range" &&
-        (argsAst.nodes.size() == 1 || argsAst.nodes.size() == 2)) {
-      llvm::Value* start_v;
-      llvm::Value* end_v;
-      if (argsAst.nodes.size() == 1) {
-        start_v = builder_.getInt64(0);
-        end_v = value_to_long(compile(*argsAst.nodes[0]));
-      } else {
-        start_v = value_to_long(compile(*argsAst.nodes[0]));
-        end_v = value_to_long(compile(*argsAst.nodes[1]));
-      }
-      auto obj = builder_.CreateCall(
-          module_->getFunction(rt::math_range), {start_v, end_v});
-      return make_object(obj);
-    }
   }
 
   if (ns == "IO") {
@@ -851,8 +895,10 @@ inline llvm::Value* JIT::try_compile_stdlib_namespace(
   return nullptr;
 }
 
-inline llvm::Value* JIT::try_compile_stdlib_namespace_property(
-    std::string_view ns, std::string_view prop) {
+inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
+                                                    std::string_view ns,
+                                                    std::string_view prop) {
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   if (ns == "Sys" && prop == "argv") {
     auto arr = builder_.CreateCall(module_->getFunction(rt::sys_argv), {});
     return make_array(arr);
@@ -869,13 +915,71 @@ inline llvm::Value* JIT::try_compile_stdlib_namespace_property(
   return nullptr;
 }
 
-inline llvm::Value* JIT::emit_output_call(const char* rt_name,
-                                           const peg::Ast& argsAst) {
-  auto arg = compile(*argsAst.nodes[0]);
-  builder_.CreateCall(module_->getFunction(rt_name),
-                      {extract_tag(arg), extract_data(arg)});
-  emit_value_release(arg);
-  return make_nil();
+inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
+                                                     const char* rt_name,
+                                                     const peg::Ast& argsAst) {
+  auto arg = jit.compile(*argsAst.nodes[0]);
+  jit.builder_.CreateCall(jit.module_->getFunction(rt_name),
+                      {jit.extract_tag(arg), jit.extract_data(arg)});
+  jit.emit_value_release(arg);
+  return jit.make_nil();
 }
+
+inline bool JitExtension::is_builtin_var(const std::string& name) {
+  static const std::unordered_set<std::string_view> names = {
+      "puts",    "print",     "assert",
+      "to_long", "to_float",  "to_string", "type_of",
+      "Math",    "IO",        "Random",    "Sys"};
+  return names.contains(name);
+}
+
+inline llvm::Value* JitExtension::compile_ufcs_builtin(
+    JIT& jit, const std::string& method, const peg::Ast& argsAst,
+    llvm::Value* receiver) {
+  if (argsAst.nodes.size() != 0) return nullptr;
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
+  auto line = jit.current_line_val();
+  auto col = jit.current_column_val();
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  if (method == "puts" || method == "print") {
+    auto rt_name = method == "puts" ? rt::puts : rt::print;
+    builder_.CreateCall(module_->getFunction(rt_name),
+                        {extract_tag(receiver), extract_data(receiver)});
+    emit_value_release(receiver);
+    return make_nil();
+  }
+  if (method == "assert") {
+    builder_.CreateCall(
+        module_->getFunction(rt::assert_),
+        {extract_tag(receiver), extract_data(receiver), line, col});
+    emit_value_release(receiver);
+    return make_nil();
+  }
+  if (method == "to_long") {
+    emit_type_check(receiver, "String", "to_long argument");
+    auto strPtr =
+        builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto r = builder_.CreateCall(
+        module_->getFunction(rt::to_long), {strPtr, line, col});
+    emit_value_release(receiver);
+    return make_long(r);
+  }
+  if (method == "to_string") {
+    auto s = builder_.CreateCall(
+        module_->getFunction(rt::value_to_display),
+        {extract_tag(receiver), extract_data(receiver)});
+    emit_value_release(receiver);
+    return make_string(s);
+  }
+  if (method == "type_of") {
+    auto s = builder_.CreateCall(module_->getFunction(rt::type_of),
+                                 {extract_tag(receiver)});
+    emit_value_release(receiver);
+    return make_string(s);
+  }
+  return nullptr;
+}
+
+#undef CULEBRA_JIT_EXT_BODY_ALIASES
 
 }  // namespace culebra

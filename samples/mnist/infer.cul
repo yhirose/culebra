@@ -48,10 +48,10 @@ let sigmoid = fn (z) {
 
 let predict = fn (x, W1, b1, W2, b2) {
   mut a1 = []
-  for i in Math.range(N_HID) {
+  for i in range(N_HID) {
     mut s = b1[i]
     let row = W1[i]
-    for j in Math.range(N_IN) {
+    for j in range(N_IN) {
       s = s + row[j] * x[j]
     }
     a1.push(sigmoid(s))
@@ -59,10 +59,10 @@ let predict = fn (x, W1, b1, W2, b2) {
 
   mut best_v = -1.0
   mut best_i = 0
-  for i in Math.range(N_OUT) {
+  for i in range(N_OUT) {
     mut s = b2[i]
     let row = W2[i]
-    for j in Math.range(N_HID) {
+    for j in range(N_HID) {
       s = s + row[j] * a1[j]
     }
     let v = sigmoid(s)
@@ -94,7 +94,7 @@ let n = X.size()
 puts("[culebra] loaded N={n} (W1={W1.size()}x{W1[0].size()}, W2={W2.size()}x{W2[0].size()})")
 
 mut correct = 0
-for k in Math.range(n) {
+for k in range(n) {
   if predict(X[k], W1, b1, W2, b2) == y[k] {
     correct = correct + 1
   }

@@ -80,7 +80,7 @@ class Value {
     this.grad = 1.0
     topo.reverse()
     topo.for_each(|v| {
-      Math.range(v._children.size()).for_each(|j| {
+      range(v._children.size()).for_each(|j| {
         let child = v._children[j]
         child.grad = child.grad + v._local_grads[j] * v.grad
       })
@@ -105,8 +105,8 @@ head_dim = n_embd / n_head # derived dimension of each head
 attn_scale = 1.0 / (head_dim ** 0.5)
 
 matrix = |nout, nin, std = 0.08|
-  Math.range(nout).map(|_|
-    Math.range(nin).map(|_| Value.new(Random.gauss(0.0, std))).collect()
+  range(nout).map(|_|
+    range(nin).map(|_| Value.new(Random.gauss(0.0, std))).collect()
   ).collect()
 
 mut layers = []
@@ -140,7 +140,7 @@ puts("num params: {params.size()}") # flatten params into a single list[Value]
 
 # Define the model architecture: a function mapping tokens and parameters to logits over what comes next
 # Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU
-dot = |a, b| Math.range(a.size()).reduce(Value.new(0.0),
+dot = |a, b| range(a.size()).reduce(Value.new(0.0),
   |acc, i| acc + a[i] * b[i])
 
 linear = |x, w| w.map(|wo| dot(wo, x))
@@ -158,7 +158,7 @@ rmsnorm = |x| {
   x.map(|xi| xi * scale)
 }
 
-add_v = |a, b| Math.range(a.size()).map(|i| a[i] + b[i]).collect()
+add_v = |a, b| range(a.size()).map(|i| a[i] + b[i]).collect()
 
 gpt = fn (token_id, pos_id, keys, values) {
   let tok_emb = state.wte[token_id]               # token embedding
@@ -177,15 +177,15 @@ gpt = fn (token_id, pos_id, keys, values) {
     keys[li].push(k)
     values[li].push(v)
 
-    let x_attn = Math.range(n_head).flat_map(|h| {
+    let x_attn = range(n_head).flat_map(|h| {
       let hs = h * head_dim
       let q_h = q.slice(hs, hs + head_dim)
       let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
       let v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))
       let attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)
       let attn_weights = softmax(attn_logits)
-      Math.range(head_dim).map(|j|
-        Math.range(v_h.size()).reduce(Value.new(0.0),
+      range(head_dim).map(|j|
+        range(v_h.size()).reduce(Value.new(0.0),
           |acc, t| acc + attn_weights[t] * v_h[t][j])
       ).collect()
     }).collect()
@@ -229,7 +229,7 @@ while step < num_steps {
   mut values = []
   for _ in 0..n_layer { keys.push([]); values.push([]) }
 
-  let total_loss = Math.range(n).reduce(Value.new(0.0), |acc, pos_id| {
+  let total_loss = range(n).reduce(Value.new(0.0), |acc, pos_id| {
     let probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))
     acc + (-probs[tokens[pos_id + 1]].log())
   })
@@ -264,7 +264,7 @@ puts("final loss: {final_loss}")
 let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
 temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
 puts('--- inference (new, hallucinated names) ---')
-let pop = Math.range(vocab_size).collect()
+let pop = range(vocab_size).collect()
 
 mut sample_idx = 0
 while sample_idx < n_samples {

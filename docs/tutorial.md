@@ -104,7 +104,7 @@ puts(obj.keys())                      # ['age', 'name']
 obj.age = 31                          # property reassignment (only on `mut` props)
 ```
 
-`Math.range(N)` returns a lazy iterator; combined with `.map`,
+`range(N)` returns a lazy iterator; combined with `.map`,
 `.filter`, `.reduce`, `.for_each`, etc., it avoids building
 intermediate arrays. The JIT fuses many of these into bare counter
 loops — see [`language.md` §17](language.md).
@@ -197,7 +197,7 @@ Core language built-ins are unqualified (`assert`, `to_long`,
 
 ```culebra
 puts(Math.abs(-7))              # 7
-puts(Math.iota(5))              # [0, 1, 2, 3, 4]
+puts(iota(5))              # [0, 1, 2, 3, 4]
 
 name = IO.input()               # read one line from stdin
 IO.write('out.txt', 'hello')    # file I/O

@@ -943,7 +943,7 @@ test_ufcs = fn () {
 }
 
 // JIT-safe subset of for-in tests. Iterator-protocol coverage
-// (user-defined iter/next, lazy Math.range, iterator methods) lives
+// (user-defined iter/next, lazy range, iterator methods) lives
 // in tests/test_iter.cul and runs under the interpreter only.
 test_for_in = fn () {
   // Array iteration
@@ -980,9 +980,9 @@ test_for_in = fn () {
   for _ in [] { touched = true }
   assert(touched == false)
 
-  // Math.iota returns an Array — goes through the Array fast path.
+  // iota returns an Array — goes through the Array fast path.
   mut total = 0
-  for i in Math.iota(5) { total = total + i }
+  for i in iota(5) { total = total + i }
   assert(total == 10)
 
   // Range literals (exclusive / inclusive).
@@ -1073,11 +1073,11 @@ test_stdlib = fn () {
   assert(Math.clamp(5, 0, 10) == 5)
   assert(Math.clamp(-5, 0, 10) == 0)
   assert(Math.clamp(15, 0, 10) == 10)
-  assert(Math.iota(3).size() == 3)
-  assert(Math.iota(3)[0] == 0 && Math.iota(3)[2] == 2)
-  assert(Math.iota(2, 5).size() == 3)
-  assert(Math.iota(2, 5)[0] == 2 && Math.iota(2, 5)[2] == 4)
-  assert(Math.iota(5, 2).size() == 0)
+  assert(iota(3).size() == 3)
+  assert(iota(3)[0] == 0 && iota(3)[2] == 2)
+  assert(iota(2, 5).size() == 3)
+  assert(iota(2, 5)[0] == 2 && iota(2, 5)[2] == 4)
+  assert(iota(5, 2).size() == 0)
   assert(to_long('42') == 42)
   assert(to_long('  -7  ') == -7)
   assert(to_string(42) == '42')
@@ -1181,20 +1181,20 @@ test_underscore_sink()
 // under --jit (see compile_assignment in include/jit.h).
 test_chained_index_assign_in_nested_loops = fn () {
   mut g = []
-  for i in Math.range(3) {
+  for i in range(3) {
     mut row = []
-    for j in Math.range(4) { row.push(0.0) }
+    for j in range(4) { row.push(0.0) }
     g.push(row)
   }
-  for k in Math.range(10) {
-    for i in Math.range(3) {
-      for j in Math.range(4) {
+  for k in range(10) {
+    for i in range(3) {
+      for j in range(4) {
         g[i][j] = g[i][j] + 0.001
       }
     }
   }
-  for i in Math.range(3) {
-    for j in Math.range(4) {
+  for i in range(3) {
+    for j in range(4) {
       assert(g[i][j] > 0.0099)
       assert(g[i][j] < 0.0101)
     }

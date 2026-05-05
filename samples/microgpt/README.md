@@ -82,7 +82,7 @@ inlined as IR.
 
 **HOF fusion** (close the gap for functional style):
 inlined Array `map`/`filter`/`for_each`/`reduce`, inlined Iterator
-`reduce`/`for_each`/`map.collect`, and `Math.range(N).<HOF>(...)`
+`reduce`/`for_each`/`map.collect`, and `range(N).<HOF>(...)`
 chains fused into direct counter loops.
 
 Plus narrow wins: skip per-instance `class_name` heap copy, omit

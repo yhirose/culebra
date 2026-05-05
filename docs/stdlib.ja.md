@@ -4,10 +4,10 @@
 ユーティリティをまとめた名前空間オブジェクト（`Math`, `IO`, `Sys`）
 を対象とします。ここに記載のものは `import` 文なしで利用できます。
 
-言語レベルの組み込み関数（`assert`, `to_long`, `to_string`,
-`type_of`）は [言語仕様 §18](language.ja.md) を参照してください。
-組み込み型（`String`, `Array`, `Object`）のメソッドは
-[言語仕様 §17](language.ja.md) に規定されています。
+言語レベルの組み込み関数（`assert`, `to_long`, `to_float`,
+`to_string`, `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
+を参照してください。組み込み型（`String`, `Array`, `Object`）の
+メソッドは [言語仕様 §17](language.ja.md) に規定されています。
 
 CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 `IO.puts` / `IO.print` のエイリアスとしてグローバルに配置します
@@ -37,27 +37,28 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 |---|---|
 | 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
-| 整数列（eager / lazy） | `Math.iota` / `Math.range` |
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
 | ファイル読込 | `IO.read`（失敗時 throw） |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
+| 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
 | 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
 
 ---
 
 ## 1. `Math`
 
-数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`・
-`iota`・`range`）は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）
-は `Long` / `Float` のいずれかを受け取ります。`Long` と `Float` の
-相互作用は言語仕様 §4 / §7 を参照。
+数値ユーティリティ群。整数専用ルーチン（`pow`・`sign`・`clamp`）
+は `Long` 入力を保ち、浮動小数点ルーチン（`log` ほか）は `Long` /
+`Float` のいずれかを受け取ります。`Long` と `Float` の相互作用は
+言語仕様 §4 / §7 を参照。
 
 このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
 `Math.inf`、`Math.nan`） — **スカラー演算**（`abs`、`min`、`max`、
 `log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
-`clamp`） — **整数列**（`iota` eager、`range` lazy）。
+`clamp`）。整数列ファクトリ `range` / `iota` は言語コアグローバルで、
+[言語仕様 §18](language.ja.md#18-コア組み込み関数) を参照。
 
 ### 定数
 
@@ -172,53 +173,6 @@ puts(Math.clamp(5, 0, 10))   # 5
 puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
-
-### 整数列
-
-#### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
-
-連続整数の新しい `Array` を生成します。名前は APL / C++
-`std::iota` / Scheme SRFI-1 の慣例に倣い、「連続整数を配列として
-実体化する」操作を表します。**遅延版**は `Math.range`（同じ引数で
-イテレータを返す）で、`for`-in ループでの反復には `Math.range`、
-`Array` 自体が必要な場合には `Math.iota` を使い分けます。
-
-* `Math.iota(n)` は `[0, 1, ..., n-1]` を返します。`n <= 0` なら空配列。
-* `Math.iota(start, end)` は `[start, start+1, ..., end-1]` を返します。
-  `start >= end` なら空配列。
-
-```culebra
-puts(Math.iota(3))         # [0, 1, 2]
-puts(Math.iota(2, 5))      # [2, 3, 4]
-puts(Math.iota(5, 2))      # []
-```
-
-#### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
-
-`Math.iota` の遅延版。同じ整数列を 1 要素ずつ yield するイテレータを
-返します。`for`-in ループやイテレータメソッドチェーン
-(`Math.range(N).map(...).reduce(...)` など) と組み合わせて使い、
-範囲サイズに関わらず**定数の追加メモリ**で反復します。空範囲の
-規約は `iota` と同じで、`n <= 0` や `start >= end` は即座に完了する
-イテレータを返します。
-
-```culebra
-for i in Math.range(5)     { puts(i) }     # 0, 1, 2, 3, 4
-for i in Math.range(2, 6)  { puts(i) }     # 2, 3, 4, 5
-
-# 巨大範囲でも定数メモリ
-for i in Math.range(1_000_000_000) {
-  if i > 3 { break }
-  puts(i)
-}
-```
-
-**JIT**: `Math.range` は `--jit` でも JIT-native な iterator
-オブジェクトを返し、for-in や lazy iterator メソッドがプロトコル
-速度（1 ステップあたりクロージャ呼出 1 回）で駆動します。最大
-スループットで要素を回したい場合は `Math.iota`（eager `Array`）を、
-巨大な整数列を定数メモリでストリームしたい場合は `Math.range` を
-使い分けてください。詳細は language.ja.md §17.5 参照。
 
 ---
 
@@ -412,7 +366,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ### 自由関数 vs メソッド
 
-自由関数（名前空間内）は、無から値を構築する場合（`Math.iota`,
+自由関数（名前空間内）は、無から値を構築する場合（`iota`,
 `IO.input`）、複数の型に等しく適用される場合（`type_of`,
 `to_string`）に使います。特定の型に関する操作はメソッド構文を
 用いますが、その設計方針は言語仕様 §17（String/Array/Object

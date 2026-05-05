@@ -5,22 +5,17 @@ A small, dynamically-typed scripting language with Rust-inspired
 syntax, written in C++23. Two backends share one AST: a tree-walking
 interpreter and an LLVM ORC JIT.
 
-**Why Culebra**
-
-* **Familiar syntax.** `let` / `mut` / `fn` / `|x| expr` / `match`,
-  string interpolation, first-class closures.
-* **Small surface, capable engine.** Eight types, no hidden globals;
-  refcount + cycle GC; per-callsite inline caches and HOF fusion in
-  the JIT. Same AST runs on the interpreter (no LLVM needed) or on
-  LLVM ORC at `-O2`.
-* **Embed or script.** `~1 MB` interpreter binary, or full JIT for
+* `let` / `mut` / `fn` / `|x| expr` / `match`, string interpolation,
+  first-class closures.
+* Eight built-in types, no hidden globals. Refcount + cycle GC.
+  Per-callsite inline caches and HOF fusion in the JIT.
+* Same AST runs on the tree-walking interpreter (no LLVM needed) or
+  on LLVM ORC at `-O2`.
+* `~1 MB` interpreter binary for embedding, or full JIT for
   performance-critical loops. CLI exposes `puts` / `Sys.argv`;
   embedders work with a minimal environment.
-
-Intended audience: developers who want a language similar in style
-to Ruby or Python, but with type-annotated operator overloading and
-a native-code JIT built on LLVM ORC — a codebase suitable for study
-and extension.
+* Type-annotated operator overloading, intended for users coming
+  from Ruby or Python.
 
 Performance
 -----------
@@ -55,25 +50,34 @@ warmup. Past that, Culebra runs ~17% faster per step. See
 [`samples/microgpt/README.md`](samples/microgpt/README.md) for
 the full breakdown.
 
-### Pure inference: MNIST MLP
+### Pure scalar: MNIST MLP
 
 [`samples/mnist`](samples/mnist/) trains a 784–30–10 sigmoid MLP on
-MNIST (numpy) and runs inference for 1000 test images in four
-implementations. Total wall time, mean of 5 runs:
+MNIST and benchmarks both inference and training. Total wall time,
+mean of 5 runs:
 
-| implementation     |  time   | ratio (vs pure) |
-|--------------------|--------:|----------------:|
-| numpy (BLAS)       |  0.34 s |          0.27×  |
-| pure Python        |  1.24 s |          1.00×  |
-| Culebra `--jit`    |  1.24 s |          1.00×  |
-| Culebra interp     | 28.03 s |          22.6×  |
+**Inference** (1000 test images)
 
-All four agree on predictions (accuracy 0.954). Unlike microgpt, this
-workload is pure scalar forward pass — no Object dispatch — so JIT
-ties pure Python rather than beating it. The numpy column is BLAS,
-included as a reference; closing that gap requires a built-in matrix
-primitive, which is on the Culebra roadmap (CUDA / MSL backed). See
-[`samples/mnist/README.md`](samples/mnist/README.md) for the breakdown.
+| implementation   |  time   | ratio (vs pure) |
+|------------------|--------:|----------------:|
+| numpy (BLAS)     |  0.22 s |          0.18×  |
+| pure Python      |  1.20 s |          1.00×  |
+| Culebra `--jit`  |  1.11 s |          0.93×  |
+
+**Training** (1 epoch, mini-batch SGD)
+
+| implementation   | N=1000  | N=5000  | N=10000 |
+|------------------|--------:|--------:|--------:|
+| numpy (BLAS)     |  0.24 s |  0.44 s |  0.63 s |
+| pure Python      |  3.97 s | 15.17 s | 28.94 s |
+| Culebra `--jit`  |  7.07 s | 15.39 s | 25.81 s |
+
+All three agree on predictions (inference accuracy 0.954, training
+0.622 / 0.867 / 0.886). JIT beats pure Python on inference, ties at
+N=5000 training, and pulls 11% ahead by N=10000 — the JIT's fixed
+per-module codegen cost (~3–4 s) takes a few thousand mini-batches
+to amortize. See [`samples/mnist/README.md`](samples/mnist/README.md)
+for the full analysis.
 
 At a glance
 -----------

@@ -5,3 +5,9 @@ b1.csv
 b2.csv
 test_images.csv
 test_labels.csv
+train_images.csv
+train_labels.csv
+init_W1.csv
+init_W2.csv
+init_b1.csv
+init_b2.csv

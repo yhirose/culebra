@@ -1,4 +1,8 @@
 #include <culebra.h>
+#include <stdlib_interp.h>
+#ifdef CULEBRA_JIT_ENABLED
+#include <stdlib_jit.h>
+#endif
 #include <print>
 
 using namespace std;
@@ -125,6 +129,10 @@ void install_cli_aliases(culebra::Environment& env) {
 
 int main(int argc, const char** argv) {
   auto options = parse_command_line(argc, argv);
+
+#ifdef CULEBRA_JIT_ENABLED
+  culebra::install_jit_stdlib();
+#endif
 
   try {
     auto env = culebra::environment(options.script_argv);

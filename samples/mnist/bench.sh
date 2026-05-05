@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Benchmark all 4 inference implementations: 5 runs each, report mean.
-# Usage: ./samples/mnist/bench.sh
+# Benchmark all 4 inference and training implementations across 5 runs
+# each. Reports mean wall time. Usage: ./samples/mnist/bench.sh
 #
-# Requires that `just fetch-mnist`, `train.py` and `prep_test.py` have
-# already been run (W*.csv, b*.csv, test_*.csv must exist).
+# Requires that `just fetch-mnist`, `train.py`, `prep_test.py`, and
+# `prep_train.py` have already been run (W*.csv, b*.csv, init_*.csv,
+# train_*.csv, test_*.csv must exist).
 
 set -euo pipefail
 
@@ -25,10 +26,17 @@ bench_cmd() {
       'BEGIN { printf "  %-22s mean = %.3fs (n=%d)\n", l, s/r, r }'
 }
 
-echo "MNIST MLP inference, 1000 test images, mean of $RUNS runs"
+echo "=== Inference: 1000 test images, mean of $RUNS runs ==="
 echo "(includes load + inference; Culebra JIT includes ~1s warmup)"
 echo
 bench_cmd "numpy"           python3.11 samples/mnist/infer_numpy.py
 bench_cmd "pure Python"     python3    samples/mnist/infer_pure.py
-bench_cmd "Culebra interp"  ./build/culebra        samples/mnist/infer.cul
 bench_cmd "Culebra --jit"   ./build/culebra --jit  samples/mnist/infer.cul
+
+echo
+echo "=== Training: 1 epoch / 1000 samples / 100 batches, mean of $RUNS runs ==="
+echo "(hand-coded backprop, identical algorithm across implementations)"
+echo
+bench_cmd "numpy"           python3.11 samples/mnist/train_bench_numpy.py
+bench_cmd "pure Python"     python3    samples/mnist/train_bench_pure.py
+bench_cmd "Culebra --jit"   ./build/culebra --jit  samples/mnist/train_bench.cul

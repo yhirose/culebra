@@ -1751,13 +1751,62 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
   return props_;
 }
 
-#include <stdlib_interp.h>
+// Shared arg parser for the integer range/iota factories. 1 arg → end
+// (start defaults to 0), 2+ args → (start, end). Missing args leave the
+// pair at (0, 0), which yields an empty range/iota.
+inline std::pair<long, long> _parse_range_args(
+    std::shared_ptr<Environment> callEnv) {
+  long start = 0, end = 0;
+  const auto& extras = *callEnv->get("__ARGS__").to_array().values;
+  if (extras.size() == 1) {
+    end = extras[0].to_long();
+  } else if (extras.size() >= 2) {
+    start = extras[0].to_long();
+    end = extras[1].to_long();
+  }
+  return {start, end};
+}
 
-inline std::shared_ptr<Environment> environment(
-    const std::vector<std::string>& argv = {}) {
-  auto env = std::make_shared<Environment>();
-  setup_built_in_functions(*env, argv);
-  return env;
+// Language-core globals available in every Environment that opts in via
+// setup_core_globals (called by `culebra::environment()` for the CLI
+// and by any embedder that wants the same defaults). `range` / `iota`
+// are first-class iterator/array factories — Python/Rust/Kotlin etc.
+// expose them as builtins, not under a Math namespace.
+inline void setup_core_globals(Environment& env) {
+  // iota(n) / iota(start, end): materialize a new Array of consecutive
+  // integers. Eager; for lazy iteration use range.
+  env.initialize(
+      "iota",
+      Value(FunctionValue(
+          {}, [](std::shared_ptr<Environment> callEnv) {
+            auto [start, end] = _parse_range_args(callEnv);
+            ArrayValue out;
+            if (end > start) out.values->reserve(end - start);
+            for (long i = start; i < end; i++) {
+              out.values->push_back(Value(i));
+            }
+            return Value(std::move(out));
+          })),
+      false);
+
+  // range(n) / range(start, end): lazy integer iterator (constant
+  // additional memory). Yields successive integers via the iterator
+  // protocol (see language.md §17.5).
+  env.initialize(
+      "range",
+      Value(FunctionValue(
+          {}, [](std::shared_ptr<Environment> callEnv) {
+            auto [start, end] = _parse_range_args(callEnv);
+            auto current = std::make_shared<long>(start);
+            return _make_iterator(
+                [current, end](std::shared_ptr<Environment>) {
+                  if (*current >= end) return _iter_step_done();
+                  auto v = Value(*current);
+                  (*current)++;
+                  return _iter_step_value(std::move(v));
+                });
+          })),
+      false);
 }
 
 struct Interpreter {

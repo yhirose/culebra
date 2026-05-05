@@ -46,16 +46,16 @@ for c in 'café' { puts(c) }
 # 'f'
 # 'é'    (UTF-8 2-byte scalar, emitted as one String)
 
-# --- Math.range (lazy, for for-loops) vs Math.iota (eager, for Array) ---
+# --- range (lazy, for for-loops) vs iota (eager, for Array) ---
 
-for i in Math.range(3) { puts(i) }
+for i in range(3) { puts(i) }
 # 0, 1, 2      # no Array allocated, O(1) memory
 
-puts(Math.iota(3))                     # [0, 1, 2]  — explicit Array
+puts(iota(3))                     # [0, 1, 2]  — explicit Array
 
-# Math.range stays cheap even for huge bounds
+# range stays cheap even for huge bounds
 mut first_three = []
-for i in Math.range(1000000) {
+for i in range(1000000) {
   first_three.push(i)
   if i == 2 { break }
 }
@@ -64,7 +64,7 @@ puts(first_three)                      # [0, 1, 2]
 # --- Lazy iterator chains (Phase 3) -------------------------------------
 
 # map / filter / take — constant memory, stops at 5 matches
-evens_times_three = Math.range(1000)
+evens_times_three = range(1000)
   .filter(fn (x) { x % 2 == 0 })
   .map(fn (x) { x * 3 })
   .take(5)
@@ -72,7 +72,7 @@ evens_times_three = Math.range(1000)
 puts(evens_times_three)   # [0, 6, 12, 18, 24]
 
 # reduce
-total = Math.range(1, 11).reduce(0, fn (a, x) { a + x })
+total = range(1, 11).reduce(0, fn (a, x) { a + x })
 puts(total)               # 55
 
 # any / all / find
@@ -93,13 +93,13 @@ flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(fn (xs) { xs }).collect()
 puts(flat)                # [1, 2, 3, 4, 5, 6]
 
 # skip + take_while
-head = Math.range(100)
+head = range(100)
   .skip(10)
   .take_while(fn (x) { x < 15 })
   .collect()
 puts(head)                # [10, 11, 12, 13, 14]
 
-# --- User-defined iterator (Math.iota's spirit, built in user land) -----
+# --- User-defined iterator (iota's spirit, built in user land) -----
 
 countdown = fn (start) {
   mut i = start

@@ -1,0 +1,179 @@
+# Culebra training benchmark — port of train_bench_pure.py.
+# 1 epoch over 1000 samples with hand-coded mini-batch backprop.
+
+let DIR = 'samples/mnist'
+let N_IN  = 784
+let N_HID = 30
+let N_OUT = 10
+let BATCH = 10
+let ETA   = 3.0
+
+let load_2d = fn (path) {
+  mut rows = []
+  for line in IO.read(path).split("\n") {
+    if line.size() == 0 { continue }
+    mut row = []
+    for s in line.split(",") {
+      row.push(to_float(s))
+    }
+    rows.push(row)
+  }
+  rows
+}
+
+let load_1d = fn (path) {
+  mut out = []
+  for line in IO.read(path).split("\n") {
+    let s = line.trim()
+    if s.size() == 0 { continue }
+    out.push(to_float(s))
+  }
+  out
+}
+
+let load_int_1d = fn (path) {
+  mut out = []
+  for line in IO.read(path).split("\n") {
+    let s = line.trim()
+    if s.size() == 0 { continue }
+    out.push(to_long(s))
+  }
+  out
+}
+
+let zeros_1d = fn (n) {
+  mut a = []
+  for i in range(n) { a.push(0.0) }
+  a
+}
+let zeros_2d = fn (rows, cols) {
+  mut m = []
+  for i in range(rows) { m.push(zeros_1d(cols)) }
+  m
+}
+
+let sigmoid = fn (z) { 1.0 / (1.0 + Math.exp(-z)) }
+
+let predict = fn (x, W1, b1, W2, b2) {
+  mut a1 = []
+  for i in range(N_HID) {
+    mut s = b1[i]
+    let row = W1[i]
+    for j in range(N_IN) { s = s + row[j] * x[j] }
+    a1.push(sigmoid(s))
+  }
+  mut best_v = -1.0
+  mut best_i = 0
+  for i in range(N_OUT) {
+    mut s = b2[i]
+    let row = W2[i]
+    for j in range(N_HID) { s = s + row[j] * a1[j] }
+    let v = sigmoid(s)
+    if v > best_v { best_v = v; best_i = i }
+  }
+  best_i
+}
+
+# Sanity: required CSVs must be present
+for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
+          'train_images.csv', 'train_labels.csv',
+          'test_images.csv',  'test_labels.csv'] {
+  if !IO.exists("{DIR}/{f}") {
+    puts("missing {DIR}/{f}; run prep_train.py and prep_test.py first")
+    Sys.exit(1)
+  }
+}
+
+mut W1 = load_2d("{DIR}/init_W1.csv")
+mut b1 = load_1d("{DIR}/init_b1.csv")
+mut W2 = load_2d("{DIR}/init_W2.csv")
+mut b2 = load_1d("{DIR}/init_b2.csv")
+let X  = load_2d("{DIR}/train_images.csv")
+let y  = load_int_1d("{DIR}/train_labels.csv")
+let Xt = load_2d("{DIR}/test_images.csv")
+let yt = load_int_1d("{DIR}/test_labels.csv")
+
+let n = X.size()
+puts("[culebra-train] loaded train={n} test={Xt.size()}")
+
+let lr = ETA / to_float(BATCH)
+mut s = 0
+while s < n {
+  mut gW1 = zeros_2d(N_HID, N_IN)
+  mut gb1 = zeros_1d(N_HID)
+  mut gW2 = zeros_2d(N_OUT, N_HID)
+  mut gb2 = zeros_1d(N_OUT)
+
+  for k in range(BATCH) {
+    let x = X[s + k]
+    let label = y[s + k]
+
+    # Forward
+    mut a1 = []
+    for i in range(N_HID) {
+      mut z = b1[i]
+      let row = W1[i]
+      for j in range(N_IN) { z = z + row[j] * x[j] }
+      a1.push(sigmoid(z))
+    }
+    mut a2 = []
+    for i in range(N_OUT) {
+      mut z = b2[i]
+      let row = W2[i]
+      for j in range(N_HID) { z = z + row[j] * a1[j] }
+      a2.push(sigmoid(z))
+    }
+
+    # Backward (MSE loss with sigmoid output)
+    mut d2 = []
+    for i in range(N_OUT) {
+      let t = if i == label { 1.0 } else { 0.0 }
+      d2.push((a2[i] - t) * a2[i] * (1.0 - a2[i]))
+    }
+    mut d1 = []
+    for i in range(N_HID) {
+      mut z = 0.0
+      for kk in range(N_OUT) { z = z + W2[kk][i] * d2[kk] }
+      d1.push(z * a1[i] * (1.0 - a1[i]))
+    }
+
+    # Accumulate gradients
+    for i in range(N_OUT) {
+      gb2[i] = gb2[i] + d2[i]
+      let row = gW2[i]
+      for j in range(N_HID) {
+        row[j] = row[j] + d2[i] * a1[j]
+      }
+    }
+    for i in range(N_HID) {
+      gb1[i] = gb1[i] + d1[i]
+      let row = gW1[i]
+      for j in range(N_IN) {
+        row[j] = row[j] + d1[i] * x[j]
+      }
+    }
+  }
+
+  # Apply update
+  for i in range(N_OUT) {
+    b2[i] = b2[i] - lr * gb2[i]
+    let row = W2[i]
+    let grow = gW2[i]
+    for j in range(N_HID) { row[j] = row[j] - lr * grow[j] }
+  }
+  for i in range(N_HID) {
+    b1[i] = b1[i] - lr * gb1[i]
+    let row = W1[i]
+    let grow = gW1[i]
+    for j in range(N_IN) { row[j] = row[j] - lr * grow[j] }
+  }
+
+  s = s + BATCH
+}
+
+mut correct = 0
+for k in range(Xt.size()) {
+  if predict(Xt[k], W1, b1, W2, b2) == yt[k] { correct = correct + 1 }
+}
+let acc = to_float(correct) / to_float(Xt.size())
+puts("[culebra-train] {n / BATCH} batches done, test accuracy: {acc}")

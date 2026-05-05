@@ -2769,6 +2769,15 @@ __attribute__((used)) inline JitObject* culebra_runtime_math_range(
   return _iter_wrap_fast<&_math_range_fast_fn>({current_cell, end_cell});
 }
 
+__attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
+                                                            int64_t end) {
+  auto* r = culebra_runtime_array_new();
+  for (int64_t i = start; i < end; i++) {
+    culebra_runtime_array_push(r, /*tag Long*/ 2, i);
+  }
+  return r;
+}
+
 // --- Higher-order array helpers -------------------------------------------
 //
 // These invoke a user-supplied JIT-compiled closure per element. The call
@@ -4005,21 +4014,56 @@ struct JIT {
         "code_points", "graphemes",  "iter"};
     return known;
   }
-  // Stdlib helpers — bodies live in stdlib_jit.h.
-  void declare_stdlib_runtime();
-  llvm::Value* try_compile_stdlib_global(const std::string& name,
-                                         const peg::Ast& argsAst,
-                                         const peg::Ast& callAst);
-  llvm::Value* try_compile_stdlib_namespace(std::string_view ns,
-                                            std::string_view method,
-                                            const peg::Ast& argsAst,
-                                            const peg::Ast& callAst);
-  llvm::Value* try_compile_stdlib_namespace_property(std::string_view ns,
-                                                      std::string_view prop);
-  llvm::Value* emit_output_call(const char* rt_name,
-                                const peg::Ast& argsAst);
+  // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
+  // Sys, ...) live outside the language core; an embedder installs them
+  // by passing a populated ExtensionHooks struct via install_extension()
+  // before calling JIT::run(). Any field may be nullptr — coalesced as
+  // a no-op at the call site, so the core compiles to a "no extensions"
+  // JIT when nothing is registered.
+  // Each pointer is zero-initialized via `hooks_{}` below; per-field
+  // `= nullptr` would force the compiler to evaluate `JIT&` while JIT
+  // itself is still being defined (clang error: default member
+  // initializer needed within definition of enclosing class).
+  struct ExtensionHooks {
+    // Declare runtime function signatures on the LLVM module so emitted
+    // calls into the extension link cleanly.
+    void (*declare_runtime)(JIT&);
+    // CALL with a bare identifier callee (`name(args)`).
+    llvm::Value* (*compile_global)(JIT&, const std::string& name,
+                                    const peg::Ast& argsAst,
+                                    const peg::Ast& callAst);
+    // CALL with a `Namespace.method(args)` callee.
+    llvm::Value* (*compile_ns_call)(JIT&,
+                                     std::string_view ns,
+                                     std::string_view method,
+                                     const peg::Ast& argsAst,
+                                     const peg::Ast& callAst);
+    // Bare `Namespace.property` reference (no call following).
+    llvm::Value* (*compile_ns_prop)(JIT&,
+                                     std::string_view ns,
+                                     std::string_view prop);
+    // True if `name` is provided by the extension (puts/Math/IO/...).
+    // Free-variable analysis uses this to skip names that don't live in
+    // user scopes_.
+    bool (*is_builtin_var)(const std::string& name);
+    // Emit `receiver.method(args)` as a UFCS call into an extension
+    // global (`x.puts()` → `puts(x)`). Returns nullptr to fall through
+    // to regular method dispatch.
+    llvm::Value* (*compile_ufcs_builtin)(JIT&, const std::string& method,
+                                          const peg::Ast& argsAst,
+                                          llvm::Value* receiver);
+  };
+  static void install_extension(const ExtensionHooks& hooks) {
+    hooks_ = hooks;
+  }
 
  private:
+  static inline ExtensionHooks hooks_{};
+  // Friend declared so extension implementations (e.g. JitExtension in
+  // stdlib_jit.h) can reach JIT internals (builder_/module_/make_long/
+  // extract_tag/...) without those being part of the public surface.
+  friend struct JitExtension;
+
   llvm::LLVMContext& ctx_;
   llvm::Module* module_;
   llvm::IRBuilder<>& builder_;
@@ -4263,6 +4307,32 @@ struct JIT {
         {current_line_val(), current_column_val()});
   }
 
+  // Emit a divide-by-zero check on `divisor`. On zero, throws via
+  // emit_div_zero (terminates the basic block); otherwise leaves the
+  // builder positioned at the ok-path BB, ready for SDiv/SRem/FDiv/FRem.
+  // The compare is selected from `divisor`'s LLVM type; `label_prefix`
+  // is used for both BB IR labels (e.g. "div", "fdiv", "mod").
+  void emit_div_zero_guard(llvm::Value* divisor, const char* label_prefix) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::Value* isZero;
+    if (divisor->getType()->isFloatingPointTy()) {
+      auto zero = llvm::ConstantFP::get(divisor->getType(), 0.0);
+      isZero = builder_.CreateFCmpOEQ(divisor, zero, "iszero");
+    } else {
+      auto zero = llvm::ConstantInt::get(divisor->getType(), 0);
+      isZero = builder_.CreateICmpEQ(divisor, zero, "iszero");
+    }
+    auto zeroBB = llvm::BasicBlock::Create(
+        ctx_, std::string(label_prefix) + ".zero", fn);
+    auto okBB = llvm::BasicBlock::Create(
+        ctx_, std::string(label_prefix) + ".ok", fn);
+    builder_.CreateCondBr(isZero, zeroBB, okBB);
+    builder_.SetInsertPoint(zeroBB);
+    emit_div_zero();
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+  }
+
   void emit_type_check(llvm::Value* val, std::string_view expected_type,
                        std::string_view context) {
     if (expected_type.empty() || expected_type == "Any") return;
@@ -4493,12 +4563,14 @@ struct JIT {
 
   // --- Free variable analysis ---
 
+  // `self`/`this` are language-core keywords for the implicit method
+  // receiver; `range`/`iota` are core globals (see
+  // `try_compile_core_global`); everything else (puts/Math/IO/...) is
+  // supplied by the registered extension.
   static bool is_builtin_var(const std::string& name) {
-    static const std::unordered_set<std::string_view> names = {
-        "puts",      "print",   "assert", "self", "this",
-        "to_long",   "to_string", "type_of",
-        "Math",      "IO",      "Sys"};
-    return names.contains(name);
+    if (name == "self" || name == "this") return true;
+    if (name == "range" || name == "iota") return true;
+    return hooks_.is_builtin_var && hooks_.is_builtin_var(name);
   }
 
   // `_` is the non-binding sink (see Environment::is_sink in
@@ -5148,7 +5220,17 @@ struct JIT {
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
-    declare_stdlib_runtime();
+    // Core globals: range/iota are language-level integer iterator/array
+    // factories (`for i in range(n) {}`). math_range backs the `..`
+    // range syntax too, so its runtime decl must live in the core.
+    module_->getOrInsertFunction(rt::iota, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::math_range, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+
+    if (hooks_.declare_runtime) hooks_.declare_runtime(*this);
   }
 
   // --- Main dispatch ---
@@ -5769,11 +5851,22 @@ struct JIT {
   // payloads; otherwise invoke the runtime helper identified by
   // `rt_name`. Kept as a template so the caller's lambda is inlined
   // (no std::function heap allocation per arithmetic AST node).
-  template <class LongPath>
+  //
+  // Three branches:
+  //   - bothLong  → `long_path(ldata, rdata)` returning a JitValue
+  //   - bothNum   → `float_path(lDouble, rDouble)` returning a JitValue
+  //                 (typically `make_float(builder_.CreateFAdd(...))`)
+  //   - otherwise → `rt_name` runtime call (Object dunder dispatch)
+  template <class LongPath, class FloatPath>
   llvm::Value* emit_binop_dispatch(llvm::Value* lhs, llvm::Value* rhs,
-                                   const char* rt_name, LongPath long_path) {
+                                   const char* rt_name,
+                                   LongPath long_path,
+                                   FloatPath float_path) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto intBB = llvm::BasicBlock::Create(ctx_, "binop.int", fn);
+    auto checkNumBB =
+        llvm::BasicBlock::Create(ctx_, "binop.check_num", fn);
+    auto floatBB = llvm::BasicBlock::Create(ctx_, "binop.float", fn);
     auto numBB = llvm::BasicBlock::Create(ctx_, "binop.num", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "binop.merge", fn);
 
@@ -5782,14 +5875,37 @@ struct JIT {
     auto ldata = extract_data(lhs);
     auto rdata = extract_data(rhs);
     auto longTag = builder_.getInt8(TAG_LONG);
+    auto floatTag = builder_.getInt8(TAG_FLOAT);
     auto lIsLong = builder_.CreateICmpEQ(ltag, longTag);
     auto rIsLong = builder_.CreateICmpEQ(rtag, longTag);
     auto bothLong = builder_.CreateAnd(lIsLong, rIsLong, "both.long");
-    builder_.CreateCondBr(bothLong, intBB, numBB);
+    builder_.CreateCondBr(bothLong, intBB, checkNumBB);
 
     builder_.SetInsertPoint(intBB);
     auto intResult = long_path(ldata, rdata);
     auto intEndBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(checkNumBB);
+    auto lIsFloat = builder_.CreateICmpEQ(ltag, floatTag);
+    auto rIsFloat = builder_.CreateICmpEQ(rtag, floatTag);
+    auto lIsNum = builder_.CreateOr(lIsLong, lIsFloat);
+    auto rIsNum = builder_.CreateOr(rIsLong, rIsFloat);
+    auto bothNum = builder_.CreateAnd(lIsNum, rIsNum, "both.num");
+    builder_.CreateCondBr(bothNum, floatBB, numBB);
+
+    builder_.SetInsertPoint(floatBB);
+    auto doubleTy = llvm::Type::getDoubleTy(ctx_);
+    auto lFromFloat = builder_.CreateBitCast(ldata, doubleTy, "l.f");
+    auto lFromLong = builder_.CreateSIToFP(ldata, doubleTy, "l.l2f");
+    auto lDouble = builder_.CreateSelect(lIsLong, lFromLong, lFromFloat,
+                                          "l.d");
+    auto rFromFloat = builder_.CreateBitCast(rdata, doubleTy, "r.f");
+    auto rFromLong = builder_.CreateSIToFP(rdata, doubleTy, "r.l2f");
+    auto rDouble = builder_.CreateSelect(rIsLong, rFromLong, rFromFloat,
+                                          "r.d");
+    auto floatResult = float_path(lDouble, rDouble);
+    auto floatEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(numBB);
@@ -5804,8 +5920,9 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 2, "binop.r");
+    auto phi = builder_.CreatePHI(valueType_, 3, "binop.r");
     phi->addIncoming(intResult, intEndBB);
+    phi->addIncoming(floatResult, floatEndBB);
     phi->addIncoming(numResult, numEndBB);
     return phi;
   }
@@ -5825,6 +5942,11 @@ struct JIT {
             auto r = (ope == '+') ? builder_.CreateAdd(ld, rd, "add")
                                   : builder_.CreateSub(ld, rd, "sub");
             return make_long(r);
+          },
+          [&](llvm::Value* lD, llvm::Value* rD) -> llvm::Value* {
+            auto r = (ope == '+') ? builder_.CreateFAdd(lD, rD, "fadd")
+                                  : builder_.CreateFSub(lD, rD, "fsub");
+            return make_float(r);
           });
     }
     return lhs;
@@ -5867,24 +5989,19 @@ struct JIT {
             if (ope == '*') {
               return make_long(builder_.CreateMul(ld, rd, "mul"));
             }
-            // `/` or `%` on two Longs: zero-check then SDiv/SRem.
-            auto fn = builder_.GetInsertBlock()->getParent();
-            auto isZero =
-                builder_.CreateICmpEQ(rd, builder_.getInt64(0), "iszero");
-            auto zeroBB = llvm::BasicBlock::Create(
-                ctx_, ope == '/' ? "div.zero" : "mod.zero", fn);
-            auto okBB = llvm::BasicBlock::Create(
-                ctx_, ope == '/' ? "div.ok" : "mod.ok", fn);
-            builder_.CreateCondBr(isZero, zeroBB, okBB);
-
-            builder_.SetInsertPoint(zeroBB);
-            emit_div_zero();
-            builder_.CreateUnreachable();
-
-            builder_.SetInsertPoint(okBB);
+            emit_div_zero_guard(rd, ope == '/' ? "div" : "mod");
             auto r = (ope == '/') ? builder_.CreateSDiv(ld, rd, "div")
                                   : builder_.CreateSRem(ld, rd, "mod");
             return make_long(r);
+          },
+          [&](llvm::Value* lD, llvm::Value* rD) -> llvm::Value* {
+            if (ope == '*') {
+              return make_float(builder_.CreateFMul(lD, rD, "fmul"));
+            }
+            emit_div_zero_guard(rD, ope == '/' ? "fdiv" : "fmod");
+            auto r = (ope == '/') ? builder_.CreateFDiv(lD, rD, "fdiv")
+                                  : builder_.CreateFRem(lD, rD, "fmod");
+            return make_float(r);
           });
     }
     return lhs;
@@ -5972,6 +6089,9 @@ struct JIT {
             base, base, rt::num_mul,
             [&](llvm::Value* ld, llvm::Value* rd) {
               return make_long(builder_.CreateMul(ld, rd, "mul"));
+            },
+            [&](llvm::Value* lD, llvm::Value* rD) {
+              return make_float(builder_.CreateFMul(lD, rD, "fmul"));
             });
       }
       if (lit->is_float && lit->d == 0.5) {
@@ -7877,67 +7997,20 @@ struct JIT {
       return compile_method_or_ufcs(method, *freeFnSlot, argsAst, receiver);
     }
 
-    // UFCS to a stdlib builtin: `x.puts()` → `puts(x)` and so on for
-    // the handful of unary global builtins. These names live in
-    // `is_builtin_var` but don't show up in `scopes_`, so the
-    // lookup_var branch above misses them. Matches interp's UFCS
-    // resolution, which consults the full env (builtins included).
-    if (auto* r = try_compile_ufcs_builtin(method, argsAst, receiver)) {
-      return r;
+    // UFCS into an extension builtin: `x.puts()` → `puts(x)` and so on
+    // for unary globals. These names live in `is_builtin_var` but don't
+    // show up in `scopes_`, so the lookup_var branch above misses them.
+    // Matches interp's UFCS resolution, which consults the full env.
+    if (hooks_.compile_ufcs_builtin) {
+      if (auto* r =
+              hooks_.compile_ufcs_builtin(*this, method, argsAst, receiver)) {
+        return r;
+      }
     }
 
     // User-defined method on Object: fetch property, call with this=receiver
     auto methodVal = compile_property_get(receiver, method);
     return compile_function_call(argsAst, methodVal, receiver);
-  }
-
-  // Emit UFCS for `x.NAME()` when NAME is a stdlib global (is_builtin_var)
-  // whose arity matches `1 + argsAst.nodes.size()`. Returns nullptr when
-  // the pattern doesn't match, letting the caller fall through.
-  llvm::Value* try_compile_ufcs_builtin(const std::string& method,
-                                        const peg::Ast& argsAst,
-                                        llvm::Value* receiver) {
-    if (argsAst.nodes.size() != 0) return nullptr;
-    auto line = current_line_val();
-    auto col = current_column_val();
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    if (method == "puts" || method == "print") {
-      auto rt_name = method == "puts" ? rt::puts : rt::print;
-      builder_.CreateCall(module_->getFunction(rt_name),
-                          {extract_tag(receiver), extract_data(receiver)});
-      emit_value_release(receiver);
-      return make_nil();
-    }
-    if (method == "assert") {
-      builder_.CreateCall(
-          module_->getFunction(rt::assert_),
-          {extract_tag(receiver), extract_data(receiver), line, col});
-      emit_value_release(receiver);
-      return make_nil();
-    }
-    if (method == "to_long") {
-      emit_type_check(receiver, "String", "to_long argument");
-      auto strPtr =
-          builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-      auto r = builder_.CreateCall(
-          module_->getFunction(rt::to_long), {strPtr, line, col});
-      emit_value_release(receiver);
-      return make_long(r);
-    }
-    if (method == "to_string") {
-      auto s = builder_.CreateCall(
-          module_->getFunction(rt::value_to_display),
-          {extract_tag(receiver), extract_data(receiver)});
-      emit_value_release(receiver);
-      return make_string(s);
-    }
-    if (method == "type_of") {
-      auto s = builder_.CreateCall(module_->getFunction(rt::type_of),
-                                   {extract_tag(receiver)});
-      emit_value_release(receiver);
-      return make_string(s);
-    }
-    return nullptr;
   }
 
   // Emit the runtime dispatch between a user method (receiver owns a
@@ -8071,11 +8144,92 @@ struct JIT {
     return compile_function_call_raw(callee, thisVal, userArgs);
   }
 
-  // Handle a CALL, intercepting stdlib globals in the leading `name(args)`
-  // so they compile directly instead of resolving as variables.
+  // Lower `range(N)` / `range(start, end)` / `iota(N)` / `iota(start,
+  // end)` to a single runtime call. Returns nullptr if the callee is
+  // not one of these or the arity is wrong, letting the regular
+  // dispatch take over.
+  llvm::Value* try_compile_core_global(const std::string& name,
+                                        const peg::Ast& argsAst) {
+    auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
+      if (argsAst.nodes.size() == 1) {
+        s = builder_.getInt64(0);
+        e = value_to_long(compile(*argsAst.nodes[0]));
+        return true;
+      }
+      if (argsAst.nodes.size() == 2) {
+        s = value_to_long(compile(*argsAst.nodes[0]));
+        e = value_to_long(compile(*argsAst.nodes[1]));
+        return true;
+      }
+      return false;
+    };
+    llvm::Value *s = nullptr, *e = nullptr;
+    if (name == "iota" && two_args(s, e)) {
+      auto arr = builder_.CreateCall(module_->getFunction(rt::iota), {s, e});
+      return make_array(arr);
+    }
+    if (name == "range" && two_args(s, e)) {
+      auto obj = builder_.CreateCall(module_->getFunction(rt::math_range),
+                                      {s, e});
+      return make_object(obj);
+    }
+    return nullptr;
+  }
+
+  // Fuse `range(N).<HOF>(...)` into a direct counter loop, skipping
+  // the iterator wrapper and per-element trampoline. Recognized HOFs:
+  // .reduce(init, |acc,i|), .for_each(|i|), .map(|i|).collect().
+  // ~17% of HOF microgpt's runtime is in these shapes; bypassing the
+  // wrapper keeps the loop alloc-free.
+  llvm::Value* try_compile_range_fusion(const peg::Ast& ast) {
+    using namespace peg::udl;
+    if (ast.nodes.empty()) return nullptr;
+    const auto& calleeNode = *ast.nodes[0];
+    if (calleeNode.tag != "IDENTIFIER"_) return nullptr;
+    if (calleeNode.token != "range") return nullptr;
+    if (ast.nodes.size() < 4 ||
+        ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
+        ast.nodes[1]->nodes.size() != 1 ||
+        ast.nodes[2]->original_tag != "DOT"_ ||
+        ast.nodes[3]->original_tag != "ARGUMENTS"_) {
+      return nullptr;
+    }
+    const auto& n_ast = *ast.nodes[1]->nodes[0];
+    auto method = ast.nodes[2]->token;
+    const auto& m_args = *ast.nodes[3];
+    if (method == "reduce" && m_args.nodes.size() == 2 &&
+        is_inlinable_lambda(*m_args.nodes[1], 2) &&
+        ast.nodes.size() == 4) {
+      return emit_inlined_range_reduce(
+          n_ast, *m_args.nodes[0], *m_args.nodes[1]);
+    }
+    if (method == "for_each" && m_args.nodes.size() == 1 &&
+        is_inlinable_lambda(*m_args.nodes[0], 1) &&
+        ast.nodes.size() == 4) {
+      return emit_inlined_range_for_each(n_ast, *m_args.nodes[0]);
+    }
+    if (method == "map" && m_args.nodes.size() == 1 &&
+        is_inlinable_lambda(*m_args.nodes[0], 1) &&
+        ast.nodes.size() == 6 &&
+        ast.nodes[4]->original_tag == "DOT"_ &&
+        ast.nodes[4]->token == "collect" &&
+        ast.nodes[5]->original_tag == "ARGUMENTS"_ &&
+        ast.nodes[5]->nodes.empty()) {
+      return emit_inlined_range_map_collect(n_ast, *m_args.nodes[0]);
+    }
+    return nullptr;
+  }
+
+  // Handle a CALL. The core lowers `range`/`iota` (and the
+  // `range(N).<HOF>(...)` fusion) directly; everything else delegates
+  // to the registered extension via the install_extension hooks. With
+  // no extension installed every hook is a no-op and this falls
+  // through to the regular CALL dispatch.
   llvm::Value* compile_call_with_builtins(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
+
+    if (auto v = try_compile_range_fusion(ast)) return v;
 
     llvm::Value* start = nullptr;
     size_t next_idx = 1;
@@ -8083,7 +8237,10 @@ struct JIT {
     if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "ARGUMENTS"_) {
       auto name = std::string(calleeNode->token);
-      start = try_compile_stdlib_global(name, *ast.nodes[1], ast);
+      start = try_compile_core_global(name, *ast.nodes[1]);
+      if (!start && hooks_.compile_global) {
+        start = hooks_.compile_global(*this, name, *ast.nodes[1], ast);
+      }
       if (start) next_idx = 2;
     }
 
@@ -8092,50 +8249,14 @@ struct JIT {
         ast.nodes[1]->original_tag == "DOT"_) {
       auto ns = calleeNode->token;
       auto prop = ast.nodes[1]->token;
-      // `Math.range(N).<HOF>(...)` fusion: emit a direct counter loop
-      // so the iterator wrapper + capture cells from
-      // `culebra_runtime_math_range` (~17% of HOF microgpt's runtime)
-      // never allocate, and the per-element trampoline call vanishes.
-      if (ns == "Math" && prop == "range" &&
-          ast.nodes.size() >= 5 &&
-          ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
-          ast.nodes[2]->nodes.size() == 1 &&
-          ast.nodes[3]->original_tag == "DOT"_ &&
-          ast.nodes[4]->original_tag == "ARGUMENTS"_) {
-        const auto& n_ast = *ast.nodes[2]->nodes[0];
-        auto method = std::string(ast.nodes[3]->token);
-        const auto& m_args = *ast.nodes[4];
-        // .reduce(init, |acc, i| body)
-        if (method == "reduce" && m_args.nodes.size() == 2 &&
-            is_inlinable_lambda(*m_args.nodes[1], 2) &&
-            ast.nodes.size() == 5) {
-          return emit_inlined_range_reduce(
-              n_ast, *m_args.nodes[0], *m_args.nodes[1]);
-        }
-        // .for_each(|i| body)
-        if (method == "for_each" && m_args.nodes.size() == 1 &&
-            is_inlinable_lambda(*m_args.nodes[0], 1) &&
-            ast.nodes.size() == 5) {
-          return emit_inlined_range_for_each(n_ast, *m_args.nodes[0]);
-        }
-        // .map(|i| body).collect()
-        if (method == "map" && m_args.nodes.size() == 1 &&
-            is_inlinable_lambda(*m_args.nodes[0], 1) &&
-            ast.nodes.size() == 7 &&
-            ast.nodes[5]->original_tag == "DOT"_ &&
-            ast.nodes[5]->token == "collect" &&
-            ast.nodes[6]->original_tag == "ARGUMENTS"_ &&
-            ast.nodes[6]->nodes.empty()) {
-          return emit_inlined_range_map_collect(n_ast, *m_args.nodes[0]);
-        }
-      }
       if (ast.nodes.size() >= 3 &&
-          ast.nodes[2]->original_tag == "ARGUMENTS"_) {
-        start = try_compile_stdlib_namespace(ns, prop, *ast.nodes[2], ast);
+          ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
+          hooks_.compile_ns_call) {
+        start = hooks_.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
         if (start) next_idx = 3;
       }
-      if (!start) {
-        start = try_compile_stdlib_namespace_property(ns, prop);
+      if (!start && hooks_.compile_ns_prop) {
+        start = hooks_.compile_ns_prop(*this, ns, prop);
         if (start) next_idx = 2;
       }
     }
@@ -9100,7 +9221,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
   // Fast path: bail out immediately on unknown method names before doing any
-  // setup. Keeps user-defined method calls free of stdlib overhead.
+  // setup. Keeps user-defined method calls free of builtin-method overhead.
   if (!known_builtin_methods().contains(method)) return nullptr;
 
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -9884,7 +10005,5 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 }
 
 }  // namespace culebra
-
-#include <stdlib_jit.h>
 
 #endif  // CULEBRA_JIT_ENABLED

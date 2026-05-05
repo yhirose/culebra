@@ -57,9 +57,9 @@ mut touched = false
 for _ in [] { touched = true }
 assert(!touched)
 
-# Iteration over Math.iota (factory-returned Array)
+# Iteration over iota (factory-returned Array)
 mut total = 0
-for i in Math.iota(5) { total = total + i }
+for i in iota(5) { total = total + i }
 assert(total == 10)
 
 # --- Phase 2: String iteration (UTF-8 scalar walk) ---
@@ -108,19 +108,19 @@ assert('a👨‍👩‍👧b'.code_points().count() == 7)
 assert('a👨‍👩‍👧b'.graphemes().count() == 3)
 assert(''.graphemes().count() == 0)
 
-# --- Phase 2: Math.range (lazy integer iterator) ---
+# --- Phase 2: range (lazy integer iterator) ---
 mut sum = 0
-for i in Math.range(5) { sum = sum + i }
+for i in range(5) { sum = sum + i }
 assert(sum == 10)
 
 # Empty range
 mut touched = false
-for _ in Math.range(5, 2) { touched = true }
+for _ in range(5, 2) { touched = true }
 assert(!touched)
 
 # Large bounds with early break — must not OOM/hang
 mut n = 0
-for i in Math.range(1000000) {
+for i in range(1000000) {
   n = i
   if i >= 3 { break }
 }
@@ -128,7 +128,7 @@ assert(n == 3)
 
 # start, end form
 mut coll = []
-for i in Math.range(3, 7) { coll.push(i) }
+for i in range(3, 7) { coll.push(i) }
 assert(coll.size() == 4)
 assert(coll[0] == 3 && coll[3] == 6)
 
@@ -140,22 +140,22 @@ assert(r1.size() == 3)
 assert(r1[0] == 10 && r1[2] == 30)
 
 # filter
-r2 = Math.range(10).filter(fn (x) { x % 3 == 0 }).collect()
+r2 = range(10).filter(fn (x) { x % 3 == 0 }).collect()
 assert(r2.size() == 4)
 assert(r2[0] == 0 && r2[3] == 9)
 
 # take — lazy: never touches the 1M elements beyond index 3
-r3 = Math.range(1000000).take(3).collect()
+r3 = range(1000000).take(3).collect()
 assert(r3.size() == 3)
 assert(r3[0] == 0 && r3[2] == 2)
 
 # skip
-r4 = Math.range(10).skip(7).collect()
+r4 = range(10).skip(7).collect()
 assert(r4.size() == 3)
 assert(r4[0] == 7 && r4[2] == 9)
 
 # take_while
-r5 = Math.range(20).take_while(fn (x) { x < 5 }).collect()
+r5 = range(20).take_while(fn (x) { x < 5 }).collect()
 assert(r5.size() == 5)
 assert(r5[0] == 0 && r5[4] == 4)
 
@@ -189,14 +189,14 @@ mut acc = 0
 assert(acc == 6)
 
 # reduce
-s = Math.range(1, 6).reduce(0, fn (a, x) { a + x })
+s = range(1, 6).reduce(0, fn (a, x) { a + x })
 assert(s == 15)
 
 s2 = [].iter().reduce(42, fn (a, x) { a + x })
 assert(s2 == 42)   # empty → init
 
 # find
-f = Math.range(100).find(fn (x) { x > 10 && x % 3 == 0 })
+f = range(100).find(fn (x) { x > 10 && x % 3 == 0 })
 assert(f == 12)
 
 f2 = [1, 2, 3].iter().find(fn (x) { x > 99 })
@@ -210,25 +210,25 @@ assert([1, 2, 3].iter().all(fn (x) { x > 1 }) == false)
 assert([].iter().all(fn (x) { x > 0 }) == true)   # vacuous truth
 
 # count
-assert(Math.range(100).filter(fn (x) { x % 7 == 0 }).count() == 15)
+assert(range(100).filter(fn (x) { x % 7 == 0 }).count() == 15)
 assert([].iter().count() == 0)
 
 # sum / product — identity on empty (0 / 1), same shape as math folds
-assert(Math.range(1, 11).sum() == 55)
+assert(range(1, 11).sum() == 55)
 assert([].iter().sum() == 0)
-assert(Math.range(1, 6).product() == 120)
+assert(range(1, 6).product() == 120)
 assert([].iter().product() == 1)
-assert(Math.range(100).filter(fn (x) { x % 3 == 0 }).sum() == 1683)
+assert(range(100).filter(fn (x) { x % 3 == 0 }).sum() == 1683)
 
 # min / max — empty input throws (tested via type_of check on a helper
 # that would only produce a value on success)
 assert([5, 2, 8, 1, 9, 3].iter().min() == 1)
 assert([5, 2, 8, 1, 9, 3].iter().max() == 9)
-assert(Math.range(-5, 5).min() == -5)
-assert(Math.range(-5, 5).max() == 4)
+assert(range(-5, 5).min() == -5)
+assert(range(-5, 5).max() == 4)
 
 # Chain of chains: lazy + terminal
-head = Math.range(1000000)
+head = range(1000000)
   .filter(fn (x) { x % 2 == 0 })
   .map(fn (x) { x * x })
   .take(4)
@@ -269,7 +269,7 @@ assert(z2.size() == 0)
 # zip against a lazy iter: the longer side must not be consumed past
 # the shorter side's length.
 mut visited = 0
-counted = Math.range(1000000).map(fn (x) { visited = visited + 1; x })
+counted = range(1000000).map(fn (x) { visited = visited + 1; x })
 z3 = [10, 20, 30].iter().zip(counted).collect()
 assert(z3.size() == 3)
 # map pulls one element per zip step on the short side; the long side
@@ -295,9 +295,9 @@ fm = [[], [1], [], [2, 3], []].iter()
 assert(fm.size() == 3)
 assert(fm[0] == 1 && fm[1] == 2 && fm[2] == 3)
 
-# flat_map with Math.range callbacks (non-Array iterable)
+# flat_map with range callbacks (non-Array iterable)
 fm2 = [1, 2, 3].iter()
-  .flat_map(fn (n) { Math.range(n) })
+  .flat_map(fn (n) { range(n) })
   .collect()
 assert(fm2.size() == 6)
 # range(1) + range(2) + range(3) = [0] + [0,1] + [0,1,2]

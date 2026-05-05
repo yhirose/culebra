@@ -589,7 +589,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 
 デフォルトのフォーマッター（`__str__` を持たない Object に使われる）は、
 String 型の `class:` プロパティを先頭に持ち上げ、プロパティ一覧からは
-省きます。`x`, `y` フィールドを持つ class-sugar インスタンスは
+省きます。`x`, `y` フィールドを持つ `class` 構文のインスタンスは
 `{class: 'Point', mut x: 3, mut y: 4}` ではなく
 `Point {mut x: 3, mut y: 4}` と表示されます。`class:` キーを持つ
 普通の Object も同様に扱われます。`class` フィールドが String で
@@ -649,7 +649,7 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 なければ自由関数として解決してレシーバを第一引数として呼び出し
 ます。
 
-### `class` 糖衣
+### `class` 構文
 
 クロージャベースのオブジェクトが正統な OO イディオムですが、軽量な
 代替として `class` 形式があり、同じランタイム表現に脱糖されます:
@@ -686,13 +686,13 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
 
 ### 演算子オーバーロード
 
-任意の `Object`（`class` 糖衣で作られたものでもプレーンな object
+任意の `Object`（`class` 構文で作られたものでもプレーンな object
 リテラルでも）は、dunder メソッドを定義することで算術・比較演算に
 参加できます。ディスパッチは実行時: 左オペランドが dunder を持つ
 `Object` ならそのメソッドが右オペランドを唯一の引数として呼ばれ、
 そうでなければ組み込みの数値パスが動きます。**インタプリタ・JIT
 両方**が同じ dunder プロトコルを通るので、`Object` の算術は JIT
-でも動きます。`class` 糖衣で作ったインスタンスも、普通の `Object`
+でも動きます。`class` 構文で作ったインスタンスも、普通の `Object`
 にメソッドを持たせたものなので同様に扱えます。
 
 | 演算子        | dunder       | 備考                                   |
@@ -787,7 +787,7 @@ LHS が dunder を持つ `Object` である必要があります。
 `fn 名前(...)` の宣言構文は存在しません。`名前 = fn (...) { ... }` を
 使ってください。
 
-### ラムダ糖衣 `|x| ...`
+### ラムダ構文 `|x| ...`
 
 高階関数に短い関数を渡すときの軽量構文:
 
@@ -924,7 +924,7 @@ for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 **JIT**: `--jit` では `Array` / `Object`（キーを昇順で列挙）/
 `String`（UTF-8 スカラー単位）に対する直接反復として `for` /
 `break` / `continue` が動作します。加えて、独自の `iter`
-プロパティを持つ Object（ユーザー定義 iterator・`Math.range`・
+プロパティを持つ Object（ユーザー定義 iterator・`range`・
 `String.code_points()` / `.graphemes()`・iterator メソッドチェーン）
 は iterator プロトコルを実行時に駆動します — インタープリタと同じ
 セマンティクスで、Array/String/keys の高速パスはそのまま維持。
@@ -1515,7 +1515,7 @@ arr.map(f).filter(g)
 arr.iter().map(f).filter(g).collect()
 
 # Lazy + 早期終了: 要素 4 つしか触らない
-Math.range(1000000).filter(f).map(g).take(4).collect()
+range(1000000).filter(f).map(g).take(4).collect()
 ```
 
 **ユーザ定義の例**:
@@ -1540,28 +1540,30 @@ for x in countdown(3) { puts(x) }              # 3, 2, 1
 ```
 
 **JIT**: 本節のすべて — for-in によるプロトコル駆動、ユーザー定義
-イテレータ、lazy iterator メソッドチェーン、`Math.range`、
+イテレータ、lazy iterator メソッドチェーン、`range`、
 `String.code_points()` / `.graphemes()`、`[...].map(...).filter(...)`
 のような Array の eager チェーン — が `--jit` でインタープリタと
 同じセマンティクスで動作します。Array / String / keys の高速パスは
 native のまま（要素あたり 1 load）。iterator プロトコル駆動は
 ステップあたりのクロージャ呼出コストを支払います（動的言語での
 iterator chain で不可避）。eager に実体化して最大スループットが
-欲しい場合は `Math.iota` + `Array.map` / `.filter` / `.reduce`、
-定数メモリでストリーミングしたい場合は `Math.range` + lazy
+欲しい場合は `iota` + `Array.map` / `.filter` / `.reduce`、
+定数メモリでストリーミングしたい場合は `range` + lazy
 メソッドを使い分けてください。
 
 ---
 
 ## 18. コア組み込み関数
 
-以下の関数は言語本体の一部で、すべての実行環境にバインドされ、
-置き換えはできません。標準ライブラリ（[`docs/stdlib.ja.md`](stdlib.ja.md)
-参照）とは、言語セマンティクス（ソース位置に紐付くエラー、型の内省、
-表示規則）に結びついていて**ユーザ空間だけでは書けない**点で
-区別されます。出力プリミティブ（`puts`, `print`）、算術ヘルパ
-（`Math.*`）、I/O（`IO.*`）、プロセス情報（`Sys.*`）は標準ライブラリ
-側に配置されます。
+以下の関数は言語本体の一部で、すべての実行環境にグローバル名として
+バインドされ、置き換えはできません。前半グループ（`assert`、`to_long`
+/ `to_float` / `to_string`、`type_of`）は言語セマンティクス（ソース位置に
+紐付くエラー、型の内省、表示規則）に結びついています。後半グループ
+（`range`、`iota`）は標準的な整数列ファクトリで、両バックエンドが
+fusion / specialisation の対象として認識し、言語全体の `for`-in ループで
+使われる正規形です。`Math` / `IO` / `Sys` といったネームスペース付き
+の標準ライブラリは [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。出力
+プリミティブ `puts` / `print` は CLI が追加するグローバルです（§19）。
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -1637,6 +1639,48 @@ puts(type_of(42))          # 'Long'
 puts(type_of(1.5))         # 'Float'
 puts(type_of('hi'))        # 'String'
 puts(type_of([1, 2]))      # 'Array'
+```
+
+### `range(n: Long) -> Iterator` / `range(start: Long, end: Long) -> Iterator`
+
+遅延評価の整数列ファクトリ。Iterator（§17.5）を返し、整数を 1 つずつ
+yield します。`for`-in やイテレータメソッドチェーンと組み合わせると、
+範囲のサイズに関わらず**一定の追加メモリ**で反復できます。
+
+* `range(n)` は `0, 1, ..., n-1` を yield。`n <= 0` なら即座に完了。
+* `range(start, end)` は `start, start+1, ..., end-1` を yield。
+  `start >= end` なら即座に完了。
+
+```culebra
+for i in range(5)     { puts(i) }     # 0, 1, 2, 3, 4
+for i in range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+
+# 巨大な上限でも定数メモリで動く
+for i in range(1_000_000_000) {
+  if i > 3 { break }
+  puts(i)
+}
+```
+
+**JIT**: `range` は JIT ネイティブな iterator Object を返し、
+`range(N).<HOF>(...)` のメソッドチェーンは直接の counter ループに
+fusion されます。§17.5 を参照。
+
+### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
+
+`range` の eager 版。同じ整数列を `Array` として実体化します。APL /
+C++ `std::iota` / Scheme SRFI-1 から命名。`for`-in ループには `range` を
+推奨し、本当に `Array` 全体が必要な場合（インデックスアクセスする、
+`Array` を期待する関数に渡す等）に `iota` を使います。
+
+* `iota(n)` は `[0, 1, ..., n-1]`。`n <= 0` なら空配列。
+* `iota(start, end)` は `[start, start+1, ..., end-1]`。`start >= end`
+  なら空配列。
+
+```culebra
+puts(iota(3))         # [0, 1, 2]
+puts(iota(2, 5))      # [2, 3, 4]
+puts(iota(5, 2))      # []
 ```
 
 ---
@@ -1727,7 +1771,7 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
   personality に lower）。
 * Auto-drop は同じタイミング（§16: スコープ脱出 + サイクル GC 回収
   時）で発火。
-* `class` 糖衣（§10）、コールサイト単位のプロパティ参照、組み込み
+* `class` 構文（§10）、コールサイト単位のプロパティ参照、組み込み
   型メソッドはすべて観測可能挙動が同じ。
 
 **運用上の差異（セマンティクスは保存）:**
@@ -1737,7 +1781,7 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
   バックのスロット + コールサイト単位の inline cache を使う。
   インタプリタは順序付きマップ。Object のキー反復順序は両者とも
   アルファベット順。
-* **HOF 融合.** JIT は多くの `Math.range(N).<HOF>(...)` や
+* **HOF 融合.** JIT は多くの `range(N).<HOF>(...)` や
   `iter.map(λ).collect()` パターンを直接のカウンタループへ融合する。
   インタプリタは各 closure をステップごとにディスパッチ。副作用は
   どちらも同じ順で発火。

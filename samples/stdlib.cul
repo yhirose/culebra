@@ -26,8 +26,8 @@ puts(Math.max(3, 5))                   # 5
 puts(Math.pow(2, 10))                  # 1024
 puts(Math.sign(-42))                   # -1
 puts(Math.clamp(15, 0, 10))            # 10
-puts(Math.iota(5))                     # [0, 1, 2, 3, 4]
-puts(Math.iota(2, 5))                  # [2, 3, 4]
+puts(iota(5))                     # [0, 1, 2, 3, 4]
+puts(iota(2, 5))                  # [2, 3, 4]
 
 # --- Sys ----------------------------------------------------------------
 
