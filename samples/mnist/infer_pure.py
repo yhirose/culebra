@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Pure Python inference (no numpy, scalar loops).
-
-The reference shape that `infer.cul` is matched against. Both walk
-the same nested-loop dot-product structure; differences in timing
-between this and `infer.cul` therefore reflect interpreter quality
-rather than algorithmic differences.
-"""
+"""Pure Python inference (no numpy, scalar loops). Runs `CYCLES` cycles
+in-process and reports cold/warm — pure Python has no JIT/BLAS warmup
+so cold ≈ warm here, but the format matches the other implementations."""
 
 import math
 import time
@@ -13,6 +9,7 @@ from pathlib import Path
 
 DIR = Path(__file__).parent
 N_IN, N_HID, N_OUT = 784, 30, 10
+CYCLES = 3
 
 
 def load_2d(path: Path) -> list[list[float]]:
@@ -78,17 +75,23 @@ def main() -> None:
     print(f"[pure]  loaded N={n} in {t_load:.3f}s "
           f"(W1={len(W1)}x{len(W1[0])}, W2={len(W2)}x{len(W2[0])})")
 
-    t0 = time.perf_counter()
+    times = []
     correct = 0
-    for k in range(n):
-        if predict(X[k], W1, b1, W2, b2) == y[k]:
-            correct += 1
-    t_infer = time.perf_counter() - t0
+    for cycle in range(CYCLES):
+        t0 = time.perf_counter()
+        c = 0
+        for k in range(n):
+            if predict(X[k], W1, b1, W2, b2) == y[k]:
+                c += 1
+        times.append(time.perf_counter() - t0)
+        correct = c
 
     acc = correct / n
-    print(f"[pure]  inference: {n} predictions in {t_infer:.3f}s "
-          f"({1000 * t_infer / n:.3f} ms/img)")
-    print(f"[pure]  accuracy: {acc:.4f}")
+    cold = times[0]
+    warm = sum(times[1:]) / (CYCLES - 1) if CYCLES > 1 else float("nan")
+    print(f"[pure]  cold={cold:.3f}s warm={warm:.3f}s accuracy={acc:.4f}")
+    print(f"BENCH label=pure_infer load={t_load:.4f} cold={cold:.4f} "
+          f"warm={warm:.4f} accuracy={acc:.4f}")
 
 
 if __name__ == "__main__":

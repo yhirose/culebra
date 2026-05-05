@@ -1177,6 +1177,36 @@ test_ufcs()
 test_for_in()
 test_underscore_sink()
 
+test_compound_assign = fn () {
+  // Identifier target — every operator on Long.
+  mut x = 10
+  x += 3;  assert(x == 13)
+  x -= 5;  assert(x == 8)
+  x *= 4;  assert(x == 32)
+  x /= 2;  assert(x == 16)
+  x %= 7;  assert(x == 2)
+  x **= 4; assert(x == 16)
+
+  // Float promotion via `/=` and `**=`.
+  mut f = 9
+  f /= 2.0; assert(f == 4.5)
+  mut e = 2
+  e **= -1; assert(e == 0.5)
+
+  // Array index target.
+  mut a = [1, 2, 3]
+  a[1] += 10;  assert(a[0] == 1 && a[1] == 12 && a[2] == 3)
+  a[2] *= 100; assert(a[2] == 300)
+  a[0] -= 1;   assert(a[0] == 0)
+
+  // Object property target (must be `mut` to permit reassignment).
+  mut o = {mut count: 5, mut total: 1.0}
+  o.count += 2; assert(o.count == 7)
+  o.total *= 3; assert(o.total == 3.0)
+  o.count -= 7; assert(o.count == 0)
+}
+test_compound_assign()
+
 // Regression: nested 2D index-assign underflowed inner-array refcount
 // under --jit (see compile_assignment in include/jit.h).
 test_chained_index_assign_in_nested_loops = fn () {

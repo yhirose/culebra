@@ -12,6 +12,7 @@
 #include <support.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -302,6 +303,13 @@ __attribute__((used)) inline const char* culebra_runtime_sys_env(
   return _culebra_heap_str(std::string(v ? v : ""));
 }
 
+__attribute__((used)) inline double culebra_runtime_sys_time() {
+  using clock = std::chrono::steady_clock;
+  static const auto t0 = clock::now();
+  auto now = clock::now();
+  return std::chrono::duration<double>(now - t0).count();
+}
+
 __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
   auto& argv = culebra::_culebra_sys_argv_holder();
   auto* r = culebra_runtime_array_new();
@@ -412,6 +420,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::sys_argv, ptrTy);
+  jit.module_->getOrInsertFunction(rt::sys_time, jit.builder_.getDoubleTy());
   // Random
   jit.module_->getOrInsertFunction(rt::random_seed, jit.builder_.getVoidTy(),
                                jit.builder_.getInt64Ty());
@@ -451,6 +460,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_transpose, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_clone, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_slice, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
@@ -927,6 +937,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto s = builder_.CreateCall(module_->getFunction(rt::sys_env), {ptr});
       emit_value_release(arg);
       return make_string(s);
+    }
+    if (method == "time" && argsAst.nodes.size() == 0) {
+      auto t = builder_.CreateCall(module_->getFunction(rt::sys_time), {});
+      return make_float(t);
     }
   }
 

@@ -1380,6 +1380,46 @@ __attribute__((used)) inline bool culebra_runtime_value_geq(
 //   Long ** non-negative Long  → Long (exp-by-squaring, wraps)
 //   Long ** negative Long      → Float (promotes via std::pow)
 //   any Float                  → Float
+// In-place Tensor compound assignment: `lhs OP= rhs`. When lhs is a
+// Tensor that owns its storage and the op is + - * / **, mutate lhs's
+// buffer directly (saves the per-step allocation in SGD-style loops).
+// Falls back to the regular binop helper for non-Tensor lhs or when
+// the in-place precondition fails (so the caller's ABI is identical
+// to the regular num_OP helper).
+inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
+                                    int8_t rt, int64_t rd,
+                                    culebra::Op op) {
+  auto* lhs_t = reinterpret_cast<JitTensor*>(ld);
+  culebra::TensorPtr rhs;
+  if (rt == TAG_TENSOR) {
+    rhs = reinterpret_cast<JitTensor*>(rd)->impl;
+  } else {
+    rhs = culebra::tensor_scalar(_culebra_coerce_num(rt, rd),
+                                 lhs_t->impl->dtype);
+  }
+  if (culebra::tensor_inplace_binop(*lhs_t->impl, op, std::move(rhs))) {
+    culebra_runtime_value_retain(lt, ld);
+    return {lt, ld};
+  }
+  return {TAG_NIL, 0};  // sentinel: in-place did not run
+}
+
+#define CUL_NUM_INPLACE(name, op_enum)                                  \
+  __attribute__((used)) inline JitValue                                 \
+  culebra_runtime_num_inplace_##name(                                   \
+      int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+    if (lt == TAG_TENSOR) {                                             \
+      auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::op_enum);   \
+      if (r.tag != TAG_NIL) return r;                                   \
+    }                                                                   \
+    return culebra_runtime_num_##name(lt, ld, rt, rd);                  \
+  }
+CUL_NUM_INPLACE(add, Op::Add)
+CUL_NUM_INPLACE(sub, Op::Sub)
+CUL_NUM_INPLACE(mul, Op::Mul)
+CUL_NUM_INPLACE(div, Op::Div)
+#undef CUL_NUM_INPLACE
+
 __attribute__((used)) inline JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__pow__")) return *r;
@@ -1402,6 +1442,15 @@ __attribute__((used)) inline JitValue culebra_runtime_num_pow(
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   return {TAG_FLOAT, _culebra_double_to_bits(std::pow(a, b))};
+}
+
+__attribute__((used)) inline JitValue culebra_runtime_num_inplace_pow(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (lt == TAG_TENSOR) {
+    auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::Op::Pow);
+    if (r.tag != TAG_NIL) return r;
+  }
+  return culebra_runtime_num_pow(lt, ld, rt, rd);
 }
 
 // Unary negation: Long → Long (wraps), Float → Float. Non-numeric
@@ -1714,6 +1763,11 @@ __attribute__((used)) inline void culebra_runtime_tensor_eval_one(
 __attribute__((used)) inline JitTensor* culebra_runtime_tensor_transpose(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_transpose(t->impl));
+}
+
+__attribute__((used)) inline JitTensor* culebra_runtime_tensor_clone(
+    JitTensor* t) {
+  return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
 }
 
 __attribute__((used)) inline JitTensor* culebra_runtime_tensor_slice(
@@ -3762,6 +3816,7 @@ inline constexpr auto tensor_shape        = "culebra_runtime_tensor_shape";
 inline constexpr auto tensor_binop        = "culebra_runtime_tensor_binop";
 inline constexpr auto tensor_eval_one     = "culebra_runtime_tensor_eval_one";
 inline constexpr auto tensor_transpose    = "culebra_runtime_tensor_transpose";
+inline constexpr auto tensor_clone        = "culebra_runtime_tensor_clone";
 inline constexpr auto tensor_slice        = "culebra_runtime_tensor_slice";
 inline constexpr auto tensor_reshape      = "culebra_runtime_tensor_reshape";
 inline constexpr auto tensor_reduce_axis  = "culebra_runtime_tensor_reduce_axis";
@@ -3805,9 +3860,18 @@ inline constexpr auto num_div             = "culebra_runtime_num_div";
 inline constexpr auto num_mod             = "culebra_runtime_num_mod";
 inline constexpr auto num_pow             = "culebra_runtime_num_pow";
 inline constexpr auto num_neg             = "culebra_runtime_num_neg";
+// In-place variants for compound assignment (`t += x`). Tensor lhs
+// mutates in place and returns the same Tensor; non-Tensor lhs is
+// equivalent to the plain num_OP helper.
+inline constexpr auto num_inplace_add     = "culebra_runtime_num_inplace_add";
+inline constexpr auto num_inplace_sub     = "culebra_runtime_num_inplace_sub";
+inline constexpr auto num_inplace_mul     = "culebra_runtime_num_inplace_mul";
+inline constexpr auto num_inplace_div     = "culebra_runtime_num_inplace_div";
+inline constexpr auto num_inplace_pow     = "culebra_runtime_num_inplace_pow";
 inline constexpr auto sys_argv            = "culebra_runtime_sys_argv";
 inline constexpr auto sys_env             = "culebra_runtime_sys_env";
 inline constexpr auto sys_exit            = "culebra_runtime_sys_exit";
+inline constexpr auto sys_time            = "culebra_runtime_sys_time";
 inline constexpr auto random_seed         = "culebra_runtime_random_seed";
 inline constexpr auto random_int          = "culebra_runtime_random_int";
 inline constexpr auto random_uniform      = "culebra_runtime_random_uniform";
@@ -4328,7 +4392,7 @@ struct JIT {
         // commonly define — e.g. microgpt's `Value.relu()`.)
         "shape",       "pow",        "transpose",  "reshape",
         "mean",        "argmax",     "to_array",   "dot",
-        "linear_sigmoid"};
+        "linear_sigmoid", "clone"};
     return known;
   }
   // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
@@ -5030,8 +5094,10 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 3;
-      if (lvalcnt == 1) {
+      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+      auto op_tok = node.nodes[node.nodes.size() - 2]->token;
+      bool compound = op_tok != "=";
+      if (lvalcnt == 1 && !compound) {
         auto ident_node = node.nodes[2];
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
@@ -5201,24 +5267,28 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 3;
+      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+      auto op_tok = node.nodes[node.nodes.size() - 2]->token;
+      bool compound = op_tok != "=";
       if (lvalcnt == 1) {
-        // Simple target: `x = expr` or `let x = expr`
+        // Simple target: `x = expr` / `let x = expr` / `x += expr`.
+        // For compound (`x += expr`), x must already exist — visit it as
+        // an identifier so the closure-capture analyzer sees the read.
         auto ident_node = node.nodes[2];
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
           bool is_let = (node.nodes[0]->token == "let");
-          // If not let and x is not my local and not builtin, treat as
-          // a reference to outer (visit as identifier to capture as free).
-          if (!is_let && !my_locals.contains(name) &&
+          if ((!is_let || compound) && !my_locals.contains(name) &&
               !is_builtin_var(name)) {
             visit_for_frees(*ident_node, my_locals, outer, info);
           }
         }
       } else {
-        // Complex lvalue: primary + postfixes
+        // Complex lvalue: primary + postfixes (excluding TYPE_ANNOTATION
+        // and ASSIGN_OP at positions [size-3]..[size-2]).
         visit_for_frees(*node.nodes[2], my_locals, outer, info);
-        for (int i = 3; i < static_cast<int>(node.nodes.size()) - 1; i++) {
+        for (int i = 3; i < static_cast<int>(node.nodes.size()) - 2; i++) {
+          if (node.nodes[i]->tag == "TYPE_ANNOTATION"_) continue;
           visit_for_frees(*node.nodes[i], my_locals, outer, info);
         }
       }
@@ -5978,13 +6048,25 @@ struct JIT {
   llvm::Value* compile_assignment(const peg::Ast& ast) {
     using namespace peg::udl;
     auto lvaloff = 2;
-    auto lvalcnt = static_cast<int>(ast.nodes.size()) - 3;
+    // ASSIGNMENT layout: see eval_assignment in interpreter.h.
+    auto lvalcnt = static_cast<int>(ast.nodes.size()) - 4;
 
-    auto type_name = extract_type_annotation(ast, ast.nodes.size() - 2);
+    auto type_name = extract_type_annotation(ast, ast.nodes.size() - 3);
     if (!type_name.empty()) lvalcnt--;
 
     auto let = ast.nodes[0]->token == "let";
     auto mut = ast.nodes[1]->token == "mut";
+    auto op_tok = ast.nodes[ast.nodes.size() - 2]->token;
+    bool compound = op_tok != "=";
+    auto base_op = compound
+        ? op_tok.substr(0, op_tok.size() - 1)
+        : std::string_view{};
+
+    if (compound && (let || mut)) {
+      throw std::runtime_error(
+          "compound assignment cannot declare a new variable.");
+    }
+
     auto rval = compile(*ast.nodes.back());
 
     if (!type_name.empty()) {
@@ -6001,6 +6083,30 @@ struct JIT {
       // unused value.
       if (is_sink_name(name)) {
         return rval;
+      }
+
+      if (compound) {
+        auto slot = lookup_var(name);
+        if (!slot) {
+          throw std::runtime_error(
+              std::format("compound assignment on undefined name '{}'",
+                          name));
+        }
+        auto cur = load_slot(*slot, name);
+        // In-place fast path is requested for Tensor lhs; the runtime
+        // helper falls back to the plain binop otherwise. When it
+        // succeeds, new_val is the same handle as cur (mutated buffer),
+        // and store_slot still works correctly — it releases the slot's
+        // old ref (== cur's underlying) and absorbs new_val.
+        auto new_val = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+        // Both cur (from load_slot) and rval (from compile) carry a +1
+        // that emit_arith_step did not consume. Drop them here so the
+        // path is leak-balanced for refcounted operands (Tensor/Object).
+        emit_value_release(rval);
+        emit_value_release(cur);
+        store_slot(*slot, new_val);
+        emit_value_retain(new_val);
+        return new_val;
       }
 
       // Check if the variable already exists in the current (innermost) scope.
@@ -6085,8 +6191,39 @@ struct JIT {
         auto arrPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
         auto idxVal = compile(finalPostfix);
         auto idx = value_to_long(idxVal);
-        auto rtag = extract_tag(rval);
-        auto rdata = extract_data(rval);
+        // For compound (`a[i] += rhs`), read current → apply op → write back.
+        // The plain path absorbs `rval` into the slot directly.
+        llvm::Value* to_store = rval;
+        if (compound) {
+          auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
+                                              nullptr, "cidx.out.tag");
+          auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
+                                               nullptr, "cidx.out.data");
+          emit_call(
+              module_->getOrInsertFunction(
+                  rt::array_get, builder_.getVoidTy(), ptrTy,
+                  builder_.getInt64Ty(), ptrTy, ptrTy,
+                  builder_.getInt64Ty(), builder_.getInt64Ty()),
+              {arrPtr, idx, outTag, outData, current_line_val(),
+               current_column_val()});
+          auto curTag =
+              builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+          auto curData =
+              builder_.CreateLoad(builder_.getInt64Ty(), outData);
+          llvm::Value* cur = llvm::UndefValue::get(valueType_);
+          cur = builder_.CreateInsertValue(cur, curTag, {0});
+          cur = builder_.CreateInsertValue(cur, curData, {1});
+          // array_get returns +0 borrowed; promote to +1 owned so the
+          // arith step can treat it like compile()-style inputs.
+          emit_value_retain(cur);
+          to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+          // Drop the +1's that emit_arith_step did not consume, before
+          // array_set absorbs to_store. Mirror of the IDENTIFIER path.
+          emit_value_release(rval);
+          emit_value_release(cur);
+        }
+        auto rtag = extract_tag(to_store);
+        auto rdata = extract_data(to_store);
         emit_call(
             module_->getOrInsertFunction(
                 rt::array_set, builder_.getVoidTy(), ptrTy,
@@ -6096,8 +6233,8 @@ struct JIT {
             {arrPtr, idx, rtag, rdata, current_line_val(),
              current_column_val()});
         emit_value_release(lval);  // release the lvalue's ref
-        emit_value_retain(rval);
-        return rval;
+        emit_value_retain(to_store);
+        return to_store;
       }
       case "DOT"_: {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -6116,11 +6253,20 @@ struct JIT {
         builder_.SetInsertPoint(okBB);
         auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
         auto name = std::string(finalPostfix.token);
-        emit_object_set(objPtr, name, mut, extract_tag(rval),
-                        extract_data(rval));
+        // For compound (`o.x += rhs`), read current → apply op → write back.
+        llvm::Value* to_store = rval;
+        if (compound) {
+          // compile_property_get returns +0 borrowed (no slot retain),
+          // so cur does not need a matching release; only rval does.
+          auto cur = compile_property_get(lval, name);
+          to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+          emit_value_release(rval);
+        }
+        emit_object_set(objPtr, name, mut, extract_tag(to_store),
+                        extract_data(to_store));
         emit_value_release(lval);  // release the lvalue's ref
-        emit_value_retain(rval);
-        return rval;
+        emit_value_retain(to_store);
+        return to_store;
       }
       default:
         throw std::runtime_error("invalid lvalue postfix");
@@ -6250,6 +6396,75 @@ struct JIT {
     phi->addIncoming(floatResult, floatEndBB);
     phi->addIncoming(numResult, numEndBB);
     return phi;
+  }
+
+  // Single arith step for compound-assignment lowering. `inplace=true`
+  // swaps the runtime helper for the Tensor-aware in-place variant;
+  // Long/Float fast paths are unchanged (those are value types, so
+  // in-place doesn't apply).
+  llvm::Value* emit_arith_step(llvm::Value* lhs, llvm::Value* rhs,
+                               std::string_view op, bool inplace = false) {
+    if (op == "@") {
+      // No in-place matmul (output shape differs from lhs).
+      return emit_call(
+          module_->getOrInsertFunction(
+              rt::num_matmul, valueType_,
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {extract_tag(lhs), extract_data(lhs),
+           extract_tag(rhs), extract_data(rhs)}, "cmp.matmul");
+    }
+    if (op == "**") {
+      const char* rt_name = inplace ? rt::num_inplace_pow : rt::num_pow;
+      return emit_call(
+          module_->getOrInsertFunction(
+              rt_name, valueType_,
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {extract_tag(lhs), extract_data(lhs),
+           extract_tag(rhs), extract_data(rhs)}, "cmp.pow");
+    }
+    char ope = op[0];
+    const char* rt_name = nullptr;
+    switch (ope) {
+      case '+': rt_name = inplace ? rt::num_inplace_add : rt::num_add; break;
+      case '-': rt_name = inplace ? rt::num_inplace_sub : rt::num_sub; break;
+      case '*': rt_name = inplace ? rt::num_inplace_mul : rt::num_mul; break;
+      case '/': rt_name = inplace ? rt::num_inplace_div : rt::num_div; break;
+      case '%': rt_name = rt::num_mod; break;  // mod has no Tensor in-place
+      default:
+        throw std::runtime_error("invalid compound assignment operator");
+    }
+    return emit_binop_dispatch(
+        lhs, rhs, rt_name,
+        [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
+          switch (ope) {
+            case '+': return make_long(builder_.CreateAdd(ld, rd, "add"));
+            case '-': return make_long(builder_.CreateSub(ld, rd, "sub"));
+            case '*': return make_long(builder_.CreateMul(ld, rd, "mul"));
+            case '/':
+              emit_div_zero_guard(rd, "div");
+              return make_long(builder_.CreateSDiv(ld, rd, "div"));
+            case '%':
+              emit_div_zero_guard(rd, "mod");
+              return make_long(builder_.CreateSRem(ld, rd, "mod"));
+          }
+          return nullptr;
+        },
+        [&](llvm::Value* lD, llvm::Value* rD) -> llvm::Value* {
+          switch (ope) {
+            case '+': return make_float(builder_.CreateFAdd(lD, rD, "fadd"));
+            case '-': return make_float(builder_.CreateFSub(lD, rD, "fsub"));
+            case '*': return make_float(builder_.CreateFMul(lD, rD, "fmul"));
+            case '/':
+              emit_div_zero_guard(rD, "fdiv");
+              return make_float(builder_.CreateFDiv(lD, rD, "fdiv"));
+            case '%':
+              emit_div_zero_guard(rD, "fmod");
+              return make_float(builder_.CreateFRem(lD, rD, "fmod"));
+          }
+          return nullptr;
+        });
   }
 
   llvm::Value* compile_additive(const peg::Ast& ast) {
@@ -9577,6 +9792,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tPtr = expect_tag(receiver, TAG_TENSOR, "transpose");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_transpose), {tPtr}, "tt");
+    return make_tensor(resultPtr);
+  }
+  if (method == "clone" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, "clone");
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_clone), {tPtr}, "tcl");
     return make_tensor(resultPtr);
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {

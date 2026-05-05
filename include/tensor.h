@@ -356,21 +356,28 @@ inline TensorPtr tensor_scalar(double v, Dtype d) {
   return t;
 }
 
+// Soft cap so broadcast / kernel helpers can stack-allocate stride
+// arrays. Phase 1 / MNIST stays at rank ≤ 4; raise if a future
+// workload needs deeper tensors.
+inline constexpr size_t kMaxTensorRank = 8;
+
 // Strides into the input aligned to `out_shape` for broadcast.
-// Caller passes the input's actual strides (which may be non-standard
-// for a view). Dims the input was broadcast across get stride 0.
-inline std::vector<int64_t> _broadcast_strides(
-    const TensorShape& in_shape, const std::vector<int64_t>& in_strides,
-    const TensorShape& out_shape) {
+// Caller provides an `out_strides` buffer (length kMaxTensorRank);
+// the function fills the leading `out_shape.rank()` slots. Dims the
+// input was broadcast across get stride 0. Avoids the per-call
+// vector heap allocation that per-binop accumulates in MNIST.
+inline void _broadcast_strides(int64_t* out_strides,
+                                const TensorShape& in_shape,
+                                const std::vector<int64_t>& in_strides,
+                                const TensorShape& out_shape) {
   size_t out_rank = out_shape.dims.size();
   size_t in_rank = in_shape.dims.size();
   size_t leading = out_rank - in_rank;
-  std::vector<int64_t> out(out_rank, 0);
+  for (size_t i = 0; i < out_rank; i++) out_strides[i] = 0;
   for (size_t i = leading; i < out_rank; i++) {
     auto in_dim = in_shape.dims[i - leading];
-    if (in_dim != 1) out[i] = in_strides[i - leading];
+    if (in_dim != 1) out_strides[i] = in_strides[i - leading];
   }
-  return out;
 }
 
 // Op-specialized binop applicator. Keeps the switch out of the inner
@@ -408,8 +415,10 @@ inline void _tensor_run_binop_broadcast(T* out, const T* a, const T* b,
                                          const TensorShape& a_shape,
                                          const TensorShape& b_shape,
                                          const TensorShape& out_shape) {
-  auto astr = _broadcast_strides(a_shape, astr_in, out_shape);
-  auto bstr = _broadcast_strides(b_shape, bstr_in, out_shape);
+  int64_t astr[kMaxTensorRank];
+  int64_t bstr[kMaxTensorRank];
+  _broadcast_strides(astr, a_shape, astr_in, out_shape);
+  _broadcast_strides(bstr, b_shape, bstr_in, out_shape);
   auto rank = out_shape.dims.size();
   auto total = out_shape.num_elements();
   for (size_t i = 0; i < total; i++) {
@@ -461,6 +470,71 @@ inline void _tensor_run_binop(TensorImpl& t) {
 }
 
 inline void tensor_eval_node(TensorImpl& t);
+
+// In-place elementwise binop: `dst = dst OP rhs` writing into dst's
+// own buffer. Skips the per-step allocation that `t = t + x` would
+// do — meaningful for SGD-style weight updates over large tensors.
+// Returns false (caller falls back to the lazy path) if dst is a
+// view, lazy, dtype-mismatched, or the broadcast result would not
+// fit in dst.shape — keeps semantics identical to the lazy form.
+template <typename T>
+inline void _tensor_inplace_for_dtype(Op op, TensorImpl& dst,
+                                      const TensorImpl& rhs) {
+  // dst is both the destination buffer and the lhs operand of the
+  // binop, so the existing _tensor_run_binop_* helpers already do the
+  // right thing: pass dst as out + a, rhs as b.
+  auto* out = dst.data_as<T>();
+  auto* a = out;
+  const auto* b = rhs.data_as<T>();
+  size_t n = dst.shape.num_elements();
+  if (dst.shape == rhs.shape && rhs.is_contiguous()) {
+    switch (op) {
+      case Op::Add: _tensor_run_binop_same_shape<T, Op::Add>(out, a, b, n); break;
+      case Op::Sub: _tensor_run_binop_same_shape<T, Op::Sub>(out, a, b, n); break;
+      case Op::Mul: _tensor_run_binop_same_shape<T, Op::Mul>(out, a, b, n); break;
+      case Op::Div: _tensor_run_binop_same_shape<T, Op::Div>(out, a, b, n); break;
+      case Op::Pow: _tensor_run_binop_same_shape<T, Op::Pow>(out, a, b, n); break;
+      default: throw std::logic_error("tensor: in-place on non-binop");
+    }
+    return;
+  }
+  // dst is contiguous (precondition), so its strides are the contiguous
+  // strides for dst.shape — pass them as the lhs strides.
+  switch (op) {
+    case Op::Add:
+      _tensor_run_binop_broadcast<T, Op::Add>(out, a, b, dst.strides,
+          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
+    case Op::Sub:
+      _tensor_run_binop_broadcast<T, Op::Sub>(out, a, b, dst.strides,
+          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
+    case Op::Mul:
+      _tensor_run_binop_broadcast<T, Op::Mul>(out, a, b, dst.strides,
+          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
+    case Op::Div:
+      _tensor_run_binop_broadcast<T, Op::Div>(out, a, b, dst.strides,
+          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
+    case Op::Pow:
+      _tensor_run_binop_broadcast<T, Op::Pow>(out, a, b, dst.strides,
+          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
+    default: throw std::logic_error("tensor: in-place on non-binop");
+  }
+}
+
+inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
+  if (dst.base != nullptr) return false;
+  if (!dst.is_contiguous()) return false;
+  if (!dst.is_evaluated()) return false;
+  if (dst.dtype != rhs->dtype) return false;
+  auto out = tensor_broadcast_shape(dst.shape, rhs->shape);
+  if (!(out == dst.shape)) return false;
+  tensor_eval_node(*rhs);
+  if (dst.dtype == Dtype::F32) {
+    _tensor_inplace_for_dtype<float>(op, dst, *rhs);
+  } else {
+    _tensor_inplace_for_dtype<double>(op, dst, *rhs);
+  }
+  return true;
+}
 
 // Build a lazy reduction along `axis`. Output shape drops that axis
 // (numpy's keepdims=false). Caller must validate `axis` ∈ [0, rank).
@@ -598,6 +672,41 @@ inline double tensor_reduce_all(TensorPtr a) {
     return static_cast<double>(_tensor_reduce_all_typed<float, op>(*a));
   }
   return _tensor_reduce_all_typed<double, op>(*a);
+}
+
+// Deep copy. Materializes the source if it's still lazy, then either
+// memcpy's the contiguous buffer or walks strides for views.
+template <typename T>
+inline void _tensor_clone_typed(const TensorImpl& src, TensorImpl& dst) {
+  auto n = src.shape.num_elements();
+  const T* sp = src.data_as<T>();
+  T* dp = dst.data_as<T>();
+  if (src.is_contiguous() && src.base == nullptr) {
+    std::memcpy(dp, sp, n * sizeof(T));
+    return;
+  }
+  const auto& dims = src.shape.dims;
+  const auto& str = src.strides;
+  if (dims.size() == 1) {
+    auto s0 = str[0];
+    for (int64_t i = 0; i < dims[0]; i++) dp[i] = sp[i * s0];
+  } else if (dims.size() == 2) {
+    auto s0 = str[0], s1 = str[1];
+    size_t k = 0;
+    for (int64_t i = 0; i < dims[0]; i++) {
+      for (int64_t j = 0; j < dims[1]; j++) dp[k++] = sp[i * s0 + j * s1];
+    }
+  } else {
+    throw std::runtime_error("Tensor.clone: rank > 2 not supported in Phase 1.");
+  }
+}
+
+inline TensorPtr tensor_clone(TensorPtr t) {
+  tensor_eval_node(*t);
+  auto out = std::make_shared<TensorImpl>(t->shape, t->dtype);
+  if (t->dtype == Dtype::F32) _tensor_clone_typed<float>(*t, *out);
+  else                        _tensor_clone_typed<double>(*t, *out);
+  return out;
 }
 
 // Reverse all axes (a.T). For 1D it's a no-op view; for 2D it swaps
@@ -822,7 +931,8 @@ inline void _tensor_run_linear_sigmoid_typed(TensorImpl& out) {
                 wA.data, wA.lda, xB.data, xB.lda, 0.0, o, N);
   }
   // 2) Add broadcast bias + sigmoid in a single pass.
-  auto bstr = _broadcast_strides(b.shape, b.strides, out.shape);
+  int64_t bstr[kMaxTensorRank];
+  _broadcast_strides(bstr, b.shape, b.strides, out.shape);
   const T* bd = b.data_as<T>();
   for (int i = 0; i < M; i++) {
     for (int j = 0; j < N; j++) {

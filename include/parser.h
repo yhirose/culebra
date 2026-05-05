@@ -27,8 +27,12 @@ const auto grammar_ = R"(
   EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
-  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
+  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
   DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
+  # ASSIGN_OP captures the literal so eval_assignment can dispatch on
+  # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
+  # alternation chooses the longer match.
+  ASSIGN_OP                <-  < '**=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
 
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*

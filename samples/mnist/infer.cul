@@ -1,13 +1,12 @@
 # Culebra port of samples/mnist/infer_pure.py — same nested-loop
-# scalar inference, byte-identical CSV inputs. The two ports walk
-# the same code shape so any timing gap reflects interpreter quality
-# rather than algorithmic differences. Times are measured externally
-# (e.g. `time ./build/culebra --jit samples/mnist/infer.cul`).
+# scalar inference, byte-identical CSV inputs. Runs CYCLES cycles
+# in-process and reports cold (cycle 1) vs warm-mean (cycles 2..K).
 
 let DIR = 'samples/mnist'
 let N_IN  = 784
 let N_HID = 30
 let N_OUT = 10
+let CYCLES = 3
 
 let load_2d = fn (path) {
   mut rows = []
@@ -83,22 +82,36 @@ for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
   }
 }
 
+let load_t0 = Sys.time()
 let W1 = load_2d("{DIR}/W1.csv")
 let b1 = load_1d("{DIR}/b1.csv")
 let W2 = load_2d("{DIR}/W2.csv")
 let b2 = load_1d("{DIR}/b2.csv")
 let X  = load_2d("{DIR}/test_images.csv")
 let y  = load_int_1d("{DIR}/test_labels.csv")
+let t_load = Sys.time() - load_t0
 
 let n = X.size()
-puts("[culebra] loaded N={n} (W1={W1.size()}x{W1[0].size()}, W2={W2.size()}x{W2[0].size()})")
+puts("[culebra] loaded N={n} in {t_load}s (W1={W1.size()}x{W1[0].size()}, W2={W2.size()}x{W2[0].size()})")
 
-mut correct = 0
-for k in range(n) {
-  if predict(X[k], W1, b1, W2, b2) == y[k] {
-    correct = correct + 1
+mut times = []
+mut acc = 0.0
+for cycle in range(CYCLES) {
+  let t0 = Sys.time()
+  mut correct = 0
+  for k in range(n) {
+    if predict(X[k], W1, b1, W2, b2) == y[k] {
+      correct = correct + 1
+    }
   }
+  times.push(Sys.time() - t0)
+  acc = to_float(correct) / to_float(n)
 }
 
-let acc = to_float(correct) / to_float(n)
-puts("[culebra] inference: {n} predictions, accuracy: {acc}")
+let cold = times[0]
+mut warm_sum = 0.0
+for t in times { warm_sum = warm_sum + t }
+warm_sum = warm_sum - cold
+let warm = if times.size() > 1 { warm_sum / to_float(times.size() - 1) } else { Math.nan }
+puts("[culebra] cold={cold}s warm={warm}s accuracy={acc}")
+print("BENCH label=culebra_infer load={t_load} cold={cold} warm={warm} accuracy={acc}\n")

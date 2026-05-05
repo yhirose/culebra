@@ -118,6 +118,7 @@ contextual and only recognized after `:` or `->`.
     ??                          # nil coalesce (lower precedence than ||)
     ..  ..=                     # range literals (exclusive / inclusive)
     =                           # assignment
+    +=  -=  *=  /=  %=  **=  @= # compound assignment
     =>                          # match arm separator
     ->                          # return type
     ...                         # rest pattern
@@ -269,6 +270,48 @@ Assignment with a simple identifier LHS is handled as follows:
     mechanism by which closure-based objects mutate their state.
   * Otherwise a new (immutable) binding is created in the current
     function's scope.
+
+### Compound assignment
+
+Seven compound-assignment operators rewrite `LHS OP= RHS` as
+`LHS = LHS OP RHS`, with the side-effect that the LHS is evaluated
+exactly once. They cannot be combined with `let` or `mut` (compound
+assignment only updates an existing binding):
+
+    x += 1     # x = x + 1
+    x -= y     # x = x - y
+    x *= 2
+    x /= 3
+    x %= 5
+    x **= 2
+    x @= M     # matrix multiply (via Tensor / __matmul__)
+
+The LHS may be an identifier, an array element (`a[i]`), or an object
+property (`o.x`). Index expressions and property names are evaluated
+exactly once. Compound assignment to an undefined name is an error.
+
+    a[next_idx()] += 1   # next_idx() is called once
+    o.count += delta
+    bogus += 1           # error: compound assignment on undefined name
+
+**Tensor interaction (in-place writes).** When the LHS is a Tensor
+that owns its storage and the result fits the LHS's shape, `+=`, `-=`,
+`*=`, `/=`, and `**=` write the result back into the existing buffer
+instead of allocating a fresh Tensor. (`%=` has no Tensor semantics
+and `@=` changes the output shape, so neither is in-place.) Other references to the same
+Tensor see the update — this matches NumPy semantics:
+
+    mut W = Tensor.randn('f32', 1024, 256)
+    let alias = W
+    W -= grad * lr   # mutates W's buffer
+    Tensor.eval(alias)  # alias.to_array() observes the new values
+
+`W = W - grad * lr` allocates a new Tensor every step, so for SGD-style
+updates over large weight tensors `-=` is materially faster (the
+per-step weight allocation goes away). When the LHS is a view, an
+unevaluated graph node, or has a shape that the RHS does not broadcast
+into, the runtime falls back transparently to the regular new-Tensor
+path — no observable behaviour change.
 
 ### The `_` sink
 

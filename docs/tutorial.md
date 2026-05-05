@@ -26,6 +26,8 @@ x = 10             # bare assignment (new immutable binding, or reassign outer)
 let y = 20         # let: new immutable binding
 mut z = 30         # mut: new mutable binding
 z = z + 1          # mut allows reassignment
+z += 1             # compound assignment: sugar for `z = z + 1`
+                   # (`-= *= /= %= **= @=` work the same way)
 ```
 
 A bare assignment searches outward through enclosing scopes and

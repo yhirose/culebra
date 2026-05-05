@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <chrono>
 #include <random>
 #include <string>
 #include <vector>
@@ -600,6 +601,22 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
                             return Value(std::string(v ? v : ""));
                           },
                           "String"sv)),
+      false);
+
+  // Monotonic seconds since first call. Anchor at process startup so
+  // time differences across calls are measured against a stable origin.
+  ns.initialize(
+      "time",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment>) {
+                            using clock = std::chrono::steady_clock;
+                            static const auto t0 = clock::now();
+                            auto now = clock::now();
+                            return Value(std::chrono::duration<double>(
+                                             now - t0)
+                                             .count());
+                          },
+                          "Float"sv)),
       false);
 
   return Value(std::move(ns));

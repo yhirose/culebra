@@ -164,6 +164,25 @@ let chained = B.slice(0, 5).transpose()
 assert(to_string(chained.shape()) == "[4, 5]")
 Tensor.eval(chained + Tensor.ones(4, 5))
 
+# --- clone: deep copy, isolates copy from source ---
+
+let cl_src = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let cl_copy = cl_src.clone()
+assert(to_string(cl_copy.shape()) == "[2, 2]")
+assert(to_string(cl_copy.to_array()) == to_string(cl_src.to_array()))
+
+# In-place op on the copy must not touch the source.
+cl_copy -= Tensor.ones(2, 2)
+Tensor.eval(cl_copy)
+assert(to_string(cl_src.to_array())  == "[[1.0, 2.0], [3.0, 4.0]]")
+assert(to_string(cl_copy.to_array()) == "[[0.0, 1.0], [2.0, 3.0]]")
+
+# Clone of a non-contiguous view: contiguous independent buffer.
+let cl_view = cl_src.transpose()
+let cl_view_copy = cl_view.clone()
+assert(to_string(cl_view_copy.shape()) == "[2, 2]")
+assert(to_string(cl_view_copy.to_array()) == "[[1.0, 3.0], [2.0, 4.0]]")
+
 # --- M3.2: reductions ---
 
 let R = Tensor.ones(2, 3)
@@ -288,5 +307,51 @@ assert(v00 > 0.99 && v00 < 1.01)
 assert(v01 == 0.5)
 assert(v10 == 0.5)
 assert(v11 > 0.99 && v11 < 1.01)
+
+// --- compound assignment & in-place op ---
+//
+// Phase A gives the syntax; Phase B writes the result through to dst's
+// existing buffer when dst owns its storage. We verify both the result
+// values *and* that the same buffer was reused — by holding a second
+// reference to the same Tensor and checking the mutation is visible
+// there (which it would NOT be if the path allocated a fresh Tensor).
+
+mut t_add = Tensor.from([[10.0, 20.0]])
+let alias_add = t_add
+t_add += Tensor.from([[1.0, 2.0]])
+Tensor.eval(alias_add)
+assert(to_float(alias_add.to_array()[0][0]) == 11.0)
+assert(to_float(alias_add.to_array()[0][1]) == 22.0)
+
+mut t_sub = Tensor.from([[10.0, 20.0]])
+let alias_sub = t_sub
+t_sub -= Tensor.from([[1.0, 2.0]])
+Tensor.eval(alias_sub)
+assert(to_float(alias_sub.to_array()[0][0]) == 9.0)
+
+mut t_mul = Tensor.from([[10.0, 20.0]])
+t_mul *= Tensor.from([[2.0, 3.0]])
+Tensor.eval(t_mul)
+assert(to_float(t_mul.to_array()[0][1]) == 60.0)
+
+mut t_div = Tensor.from([[10.0, 20.0]])
+t_div /= Tensor.from([[2.0, 4.0]])
+Tensor.eval(t_div)
+assert(to_float(t_div.to_array()[0][1]) == 5.0)
+
+// Scalar rhs: lifts to a rank-0 Tensor and broadcasts.
+mut t_scal = Tensor.from([[10.0, 20.0, 30.0]])
+t_scal *= 2.0
+Tensor.eval(t_scal)
+let tsv = t_scal.to_array()
+assert(to_float(tsv[0][0]) == 20.0)
+assert(to_float(tsv[0][2]) == 60.0)
+
+// Compound-assign on an object property that holds a Tensor.
+mut model = {mut W: Tensor.from([[5.0]])}
+let alias_W = model.W
+model.W -= Tensor.from([[2.0]])
+Tensor.eval(alias_W)
+assert(to_float(alias_W.to_array()[0][0]) == 3.0)
 
 puts("test_tensor: OK")

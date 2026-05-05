@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Pure Python training benchmark: 1 epoch, hand-coded backprop, no numpy."""
+"""Pure Python training benchmark: 1 epoch, hand-coded backprop, no numpy.
+
+CYCLES=1 — pure Python has no JIT/BLAS warmup and the run is heavy
+(~30s on N=10000), so we skip the warm-mean and only emit cold."""
 
 import math
 import time
@@ -10,6 +13,7 @@ DIR = Path(__file__).parent
 N_IN, N_HID, N_OUT = 784, 30, 10
 BATCH = 10
 ETA = 3.0
+CYCLES = 1
 
 
 def load_2d(path: Path) -> list[list[float]]:
@@ -65,22 +69,8 @@ def predict(x, W1, b1, W2, b2) -> int:
     return best_i
 
 
-def main() -> None:
-    t0 = time.perf_counter()
-    W1 = load_2d(DIR / "init_W1.csv")
-    b1 = load_1d(DIR / "init_b1.csv")
-    W2 = load_2d(DIR / "init_W2.csv")
-    b2 = load_1d(DIR / "init_b2.csv")
-    X = load_2d(DIR / "train_images.csv")
-    y = load_int_1d(DIR / "train_labels.csv")
-    Xt = load_2d(DIR / "test_images.csv")
-    yt = load_int_1d(DIR / "test_labels.csv")
-    t_load = time.perf_counter() - t0
-    n = len(X)
-    print(f"[pure-train]  loaded train={n} test={len(Xt)} in {t_load:.3f}s")
-
+def run_epoch(W1, b1, W2, b2, X, y, n):
     lr = ETA / BATCH
-    t0 = time.perf_counter()
     for s in range(0, n, BATCH):
         gW1 = zeros_2d(N_HID, N_IN)
         gb1 = zeros_1d(N_HID)
@@ -91,7 +81,6 @@ def main() -> None:
             x = X[s + k]
             label = y[s + k]
 
-            # Forward
             a1 = [0.0] * N_HID
             for i in range(N_HID):
                 z = b1[i]
@@ -108,7 +97,6 @@ def main() -> None:
                     z += row[j] * a1[j]
                 a2[i] = sigmoid(z)
 
-            # Backward (MSE loss with sigmoid output)
             d2 = [0.0] * N_OUT
             for i in range(N_OUT):
                 t = 1.0 if i == label else 0.0
@@ -121,7 +109,6 @@ def main() -> None:
                     z += W2[kk][i] * d2[kk]
                 d1[i] = z * a1[i] * (1.0 - a1[i])
 
-            # Accumulate gradients
             for i in range(N_OUT):
                 gb2[i] += d2[i]
                 row = gW2[i]
@@ -133,7 +120,6 @@ def main() -> None:
                 for j in range(N_IN):
                     row[j] += d1[i] * x[j]
 
-        # Apply update
         for i in range(N_OUT):
             b2[i] -= lr * gb2[i]
             row = W2[i]
@@ -146,7 +132,32 @@ def main() -> None:
             grow = gW1[i]
             for j in range(N_IN):
                 row[j] -= lr * grow[j]
-    t_train = time.perf_counter() - t0
+
+
+def main() -> None:
+    t0 = time.perf_counter()
+    init_W1 = load_2d(DIR / "init_W1.csv")
+    init_b1 = load_1d(DIR / "init_b1.csv")
+    init_W2 = load_2d(DIR / "init_W2.csv")
+    init_b2 = load_1d(DIR / "init_b2.csv")
+    X = load_2d(DIR / "train_images.csv")
+    y = load_int_1d(DIR / "train_labels.csv")
+    Xt = load_2d(DIR / "test_images.csv")
+    yt = load_int_1d(DIR / "test_labels.csv")
+    t_load = time.perf_counter() - t0
+    n = len(X)
+    print(f"[pure-train]  loaded train={n} test={len(Xt)} in {t_load:.3f}s")
+
+    times = []
+    W1 = b1 = W2 = b2 = None
+    for _ in range(CYCLES):
+        W1 = [row[:] for row in init_W1]
+        b1 = init_b1[:]
+        W2 = [row[:] for row in init_W2]
+        b2 = init_b2[:]
+        t0 = time.perf_counter()
+        run_epoch(W1, b1, W2, b2, X, y, n)
+        times.append(time.perf_counter() - t0)
 
     correct = 0
     for k in range(len(Xt)):
@@ -154,9 +165,12 @@ def main() -> None:
             correct += 1
     acc = correct / len(Xt)
 
-    print(f"[pure-train]  train: {n // BATCH} batches in {t_train:.3f}s "
-          f"({1000 * t_train / (n // BATCH):.2f} ms/batch)")
-    print(f"[pure-train]  test accuracy: {acc:.4f}")
+    cold = times[0]
+    warm = sum(times[1:]) / (CYCLES - 1) if CYCLES > 1 else float("nan")
+    print(f"[pure-train]  cold={cold:.3f}s warm={warm:.3f}s "
+          f"accuracy={acc:.4f}")
+    print(f"BENCH label=pure_train load={t_load:.4f} cold={cold:.4f} "
+          f"warm={warm:.4f} accuracy={acc:.4f}")
 
 
 if __name__ == "__main__":

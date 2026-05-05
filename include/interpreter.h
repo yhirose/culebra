@@ -1346,6 +1346,14 @@ inline std::map<std::string_view, Value>& TensorValue::builtins() {
                             return Value(TensorValue(tensor_transpose(self)));
                           },
                           "Tensor"sv))},
+      {"clone"sv, Value(FunctionValue(
+                      {},
+                      [](std::shared_ptr<Environment> callEnv) {
+                        const auto& self =
+                            callEnv->get("this").to_tensor().impl;
+                        return Value(TensorValue(tensor_clone(self)));
+                      },
+                      "Tensor"sv))},
       {"slice"sv, Value(FunctionValue(
                        {{"start", false, "Long"sv},
                         {"end", false, "Long"sv}},
@@ -3078,9 +3086,8 @@ struct Interpreter {
   //   Long ** negative Long      → Float
   //   any Float operand          → Float
   //   0 ** 0 = 1 (matches IEEE 754 and Python).
-  Value eval_power(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    auto base = eval(*ast.nodes[0], env);
-    auto exp = eval(*ast.nodes[2], env);
+  Value compute_power(const Value& base, const Value& exp,
+                      std::shared_ptr<Environment> env) {
     if (auto r = try_dunder_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
       throw std::runtime_error("type error.");
@@ -3107,6 +3114,48 @@ struct Interpreter {
     auto x = base.to_double_coerce();
     auto y = exp.to_double_coerce();
     return Value(std::pow(x, y));
+  }
+
+  Value eval_power(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto base = eval(*ast.nodes[0], env);
+    auto exp = eval(*ast.nodes[2], env);
+    return compute_power(base, exp, env);
+  }
+
+  // `**` has its own integer fast path (compute_power); the other ops
+  // share the eval_bin_op_step dispatch. `op` is the operator without
+  // the trailing `=`.
+  Value apply_compound_op(const Value& lhs, const Value& rhs,
+                          std::string_view op,
+                          std::shared_ptr<Environment> env) {
+    if (op == "**") return compute_power(lhs, rhs, env);
+    return eval_bin_op_step(lhs, rhs, op[0], env);
+  }
+
+  // In-place fast path for `t OP= rhs` when `t` is a Tensor — skips
+  // the per-step buffer allocation that the lazy `t = t OP rhs` would
+  // do. Returns false if `t` is not a Tensor or the in-place
+  // preconditions fail (caller then falls back to apply_compound_op).
+  bool try_tensor_inplace(Value& lhs, std::string_view op, const Value& rhs) {
+    if (lhs.type != Value::Tensor) return false;
+    Op tensor_op;
+    if (op == "+") tensor_op = Op::Add;
+    else if (op == "-") tensor_op = Op::Sub;
+    else if (op == "*") tensor_op = Op::Mul;
+    else if (op == "/") tensor_op = Op::Div;
+    else if (op == "**") tensor_op = Op::Pow;
+    else return false;
+    auto& dst = *lhs.to_tensor().impl;
+    auto lift = [&](const Value& v) -> TensorPtr {
+      if (v.type == Value::Tensor) return v.to_tensor().impl;
+      if (v.is_numeric()) {
+        return tensor_scalar(v.to_double_coerce(), dst.dtype);
+      }
+      return nullptr;
+    };
+    auto rhs_tensor = lift(rhs);
+    if (!rhs_tensor) return false;
+    return tensor_inplace_binop(dst, tensor_op, std::move(rhs_tensor));
   }
 
   bool is_keyword(std::string_view ident) const {
@@ -3137,25 +3186,56 @@ struct Interpreter {
   Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     using namespace peg::udl;
     auto lvaloff = 2;
-    auto lvalcnt = ast.nodes.size() - 3;
+    // ASSIGNMENT layout:
+    //   [LET, MUTABLE, lval-chain..., (TYPE_ANNOTATION)?, ASSIGN_OP, EXPRESSION]
+    // — the same shape is assumed by the JIT (collect_fn_locals,
+    // visit_for_frees, compile_assignment) and by extract_type_annotation
+    // (which reads the slot before ASSIGN_OP).
+    auto lvalcnt = ast.nodes.size() - 4;
 
-    // Optional TYPE_ANNOTATION appears just before the trailing EXPRESSION.
     auto type_name =
-        extract_type_annotation(ast, ast.nodes.size() - 2);
+        extract_type_annotation(ast, ast.nodes.size() - 3);
     if (!type_name.empty()) lvalcnt--;
 
     auto let = ast.nodes[0]->token == "let";
     auto mut = ast.nodes[1]->token == "mut";
+    auto op_tok = ast.nodes[ast.nodes.size() - 2]->token;
+    bool compound = op_tok != "=";
+
+    if (compound && (let || mut)) {
+      throw std::runtime_error(
+          "compound assignment cannot declare a new variable.");
+    }
+
     auto rval = eval(*ast.nodes.back(), env);
 
     if (!type_name.empty()) {
       check_type(rval, type_name, "assignment", ast.line, ast.column);
     }
 
+    // For compound ops the binary operand is everything before the '='.
+    auto base_op = compound
+        ? op_tok.substr(0, op_tok.size() - 1)
+        : std::string_view{};
+
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;
       if (is_keyword(ident)) {
         throw std::runtime_error("left-hand side is invalid variable name.");
+      }
+      if (compound) {
+        if (!env->has(ident)) {
+          throw std::runtime_error(std::format(
+              "compound assignment on undefined name '{}'", ident));
+        }
+        auto cur = env->get(ident);
+        // In-place fast path for Tensor LHS — see try_tensor_inplace.
+        if (try_tensor_inplace(cur, base_op, rval)) {
+          return cur;
+        }
+        auto new_val = apply_compound_op(cur, rval, base_op, env);
+        env->assign(ident, new_val);
+        return new_val;
       }
       auto declare = let || mut;
       if (declare) {
@@ -3198,16 +3278,37 @@ struct Interpreter {
         case "INDEX"_: {
           const auto& arr = lval.to_array();
           auto idx = eval(postfix, env).to_long();
-          if (0 <= idx && idx < static_cast<long>(arr.values->size())) {
-            arr.values->at(idx) = rval;
-          } else {
+          if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
             throw std::logic_error("index out of range.");
           }
+          if (compound) {
+            auto cur = arr.values->at(idx);
+            if (try_tensor_inplace(cur, base_op, rval)) {
+              return cur;
+            }
+            auto new_val = apply_compound_op(cur, rval, base_op, env);
+            arr.values->at(idx) = new_val;
+            return new_val;
+          }
+          arr.values->at(idx) = rval;
           return rval;
         }
         case "DOT"_: {
           auto& obj = lval.to_object();
           auto name = postfix.token;
+          if (compound) {
+            if (!obj.has(name)) {
+              throw std::runtime_error(
+                  "compound assignment on missing property.");
+            }
+            auto cur = obj.get(name);
+            if (try_tensor_inplace(cur, base_op, rval)) {
+              return cur;
+            }
+            auto new_val = apply_compound_op(cur, rval, base_op, env);
+            obj.assign(name, new_val);
+            return new_val;
+          }
           if (obj.has(name)) {
             obj.assign(name, rval);
           } else {
