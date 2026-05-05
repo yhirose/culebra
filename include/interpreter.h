@@ -34,6 +34,8 @@ struct Environment;
 // Cycle collector for ObjectValue/ArrayValue (shared_ptr-based).
 // Python-style mark-and-sweep; runs periodically and on program exit.
 // Uses weak_ptr<void> so incomplete types (Symbol, Value) don't matter here.
+// Process-wide singleton; NOT thread-safe (see THREAD SAFETY note at
+// the top of the runtime section in jit.h).
 struct InterpGC {
   enum Kind : int { MAP = 0, VEC = 1 };
 
@@ -400,6 +402,14 @@ struct Symbol {
   bool mut;
 };
 
+// Internal control-flow signal for `return expr`. Kept distinct from
+// user-thrown Values so that a user `throw` propagates past function
+// boundaries into the nearest `try/catch`, while `return` unwinds only
+// the current function call.
+struct ReturnValue {
+  Value value;
+};
+
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
 }
@@ -495,6 +505,9 @@ struct Environment {
   std::shared_ptr<Environment> outer;
   std::map<std::string_view, Symbol> dictionary;
   bool is_function_frame = false;
+  // Deferred callables registered in this scope via `defer { ... }`.
+  // Fired in LIFO order when the scope exits (normally or via throw).
+  std::vector<std::function<void()>> deferred;
 };
 
 typedef std::function<void(const peg::Ast& ast, Environment& env,
@@ -647,8 +660,8 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   }
   try {
     return f.eval(inner);
-  } catch (const Value& e) {
-    return e;
+  } catch (const ReturnValue& r) {
+    return r.value;
   }
 }
 
@@ -793,8 +806,8 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                }
                try {
                  acc = f.eval(inner);
-               } catch (const Value& e) {
-                 acc = e;
+               } catch (const ReturnValue& r) {
+                 acc = r.value;
                }
              }
              return acc;
@@ -1053,6 +1066,15 @@ struct Interpreter {
         return Value();
       case "RETURN"_:
         eval_return(ast, env);
+        std::unreachable();
+      case "THROW"_:
+        eval_throw(ast, env);
+        std::unreachable();
+      case "TRY"_:
+        return eval_try(ast, env);
+      case "DEFER"_:
+        eval_defer(ast, env);
+        return Value();
     }
 
     if (ast.is_token) {
@@ -1259,7 +1281,14 @@ struct Interpreter {
         params,
         [=, this](std::shared_ptr<Environment> callEnv) {
           callEnv->append_outer(env);
-          return eval(*body, callEnv);
+          try {
+            auto r = eval(*body, callEnv);
+            run_deferred(callEnv);
+            return r;
+          } catch (...) {
+            run_deferred(callEnv);
+            throw;
+          }
         },
         return_type));
   };
@@ -1296,8 +1325,8 @@ struct Interpreter {
       Value result;
       try {
         result = f.eval(callEnv);
-      } catch (const Value& e) {
-        result = e;
+      } catch (const ReturnValue& r) {
+        result = r.value;
       }
       check_type(result, f.return_type, "return value", ast.line, ast.column);
       return result;
@@ -1386,9 +1415,15 @@ struct Interpreter {
                            std::shared_ptr<Environment> env) {
     auto scopeEnv = std::make_shared<Environment>();
     scopeEnv->append_outer(env);
-    for (auto node : ast.nodes) {
-      eval(*node, scopeEnv);
+    try {
+      for (auto node : ast.nodes) {
+        eval(*node, scopeEnv);
+      }
+    } catch (...) {
+      run_deferred(scopeEnv);
+      throw;
     }
+    run_deferred(scopeEnv);
     return Value();
   }
 
@@ -1485,9 +1520,9 @@ struct Interpreter {
   bool is_keyword(std::string_view ident) const {
     using namespace std::literals;
     static std::set<std::string_view> keywords = {
-        "nil"sv,    "true"sv,  "false"sv, "mut"sv,   "debugger"sv,
-        "return"sv, "while"sv, "if"sv,    "else"sv,  "fn"sv,
-        "match"sv};
+        "nil"sv,    "true"sv,  "false"sv, "mut"sv,    "debugger"sv,
+        "return"sv, "while"sv, "if"sv,    "else"sv,   "fn"sv,
+        "match"sv,  "throw"sv, "try"sv,   "catch"sv,  "defer"sv};
     return keywords.contains(ident);
   }
 
@@ -1649,10 +1684,80 @@ struct Interpreter {
 
   void eval_return(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     if (ast.nodes.empty()) {
-      throw Value();
+      throw ReturnValue{Value()};
     } else {
-      throw eval(*ast.nodes[0], env);
+      throw ReturnValue{eval(*ast.nodes[0], env)};
     }
+  }
+
+  void eval_throw(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    throw eval(*ast.nodes[0], env);
+  }
+
+  // Run deferred callables registered in `env` in LIFO order. If one
+  // throws, it propagates; remaining defers for that scope are abandoned
+  // (matches Swift; Go would run all, but we keep it simple).
+  void run_deferred(std::shared_ptr<Environment> env) {
+    while (!env->deferred.empty()) {
+      auto fn = std::move(env->deferred.back());
+      env->deferred.pop_back();
+      fn();
+    }
+  }
+
+  // TRY = [BLOCK, IDENTIFIER, BLOCK]  (try-body, catch-binding, catch-body)
+  Value eval_try(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto tryEnv = std::make_shared<Environment>();
+    tryEnv->append_outer(env);
+    Value tryResult;
+    bool threw = false;
+    Value thrown;
+    try {
+      tryResult = eval(*ast.nodes[0], tryEnv);
+    } catch (const Value& e) {
+      threw = true;
+      thrown = e;
+    } catch (...) {
+      run_deferred(tryEnv);
+      throw;
+    }
+    run_deferred(tryEnv);
+    if (!threw) return tryResult;
+
+    auto catchEnv = std::make_shared<Environment>();
+    catchEnv->append_outer(env);
+    // The catch binding introduces a new name: apply the same shadow
+    // check as parameters and pattern bindings.
+    bind_pattern_name(catchEnv, *ast.nodes[1], thrown);
+    Value catchResult;
+    try {
+      catchResult = eval(*ast.nodes[2], catchEnv);
+    } catch (...) {
+      run_deferred(catchEnv);
+      throw;
+    }
+    run_deferred(catchEnv);
+    return catchResult;
+  }
+
+  void eval_defer(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    // Capture the body AST (shared_ptr keeps subtree alive) and `env`
+    // weakly so the scope can be destroyed without a cycle.
+    auto body = ast.nodes[0];
+    std::weak_ptr<Environment> wenv = env;
+    env->deferred.push_back([this, body, wenv]() {
+      auto e = wenv.lock();
+      if (!e) return;
+      auto scopeEnv = std::make_shared<Environment>();
+      scopeEnv->append_outer(e);
+      // A `return` inside a defer body exits only the defer closure,
+      // not the enclosing function. This matches the JIT's semantics
+      // (the defer body compiles to its own LLVM function whose `ret`
+      // stays local).
+      try {
+        eval(*body, scopeEnv);
+      } catch (const ReturnValue&) {}
+    });
   }
 
   Debugger debugger_;
@@ -1662,13 +1767,30 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
                       std::shared_ptr<Environment> env, Value& val,
                       std::vector<std::string>& msgs,
                       Debugger debugger = nullptr) {
+  auto flush_top_defers = [&] {
+    // Best-effort: swallow exceptions thrown by top-level defers so
+    // that all registered defers get a chance to run.
+    while (!env->deferred.empty()) {
+      auto fn = std::move(env->deferred.back());
+      env->deferred.pop_back();
+      try { fn(); } catch (...) {}
+    }
+  };
   try {
     val = Interpreter(debugger).eval(*ast, env);
+    flush_top_defers();
+    return true;
+  } catch (const ReturnValue& r) {
+    // bare `return` at top level is unusual but harmless — use its value
+    val = r.value;
+    flush_top_defers();
     return true;
   } catch (const Value& e) {
-    val = e;
-    return true;
+    // uncaught user `throw` propagated to the top level
+    flush_top_defers();
+    msgs.push_back(std::format("uncaught: {}", e.str_display()));
   } catch (std::runtime_error& e) {
+    flush_top_defers();
     msgs.push_back(e.what());
   }
 

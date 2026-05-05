@@ -19,6 +19,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/TargetSelect.h"
 
+#include <cassert>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -36,6 +37,14 @@
 
 // ---------------------------------------------------------------------------
 // Runtime types and functions callable from JIT'd code
+//
+// THREAD SAFETY: the Culebra runtime is single-threaded. The globals
+// below (exception carriers `culebra_thrown_tag` / `_data` /
+// `culebra_is_throw`, the defer stack `_culebra_defer_stack`, the
+// shared `InterpGC` used by the tree interpreter) are plain globals,
+// NOT `thread_local`. Concurrent use from multiple host threads would
+// race on these. Script-level concurrency would require moving this
+// state to `thread_local` or per-interpreter-context storage.
 // ---------------------------------------------------------------------------
 
 extern "C" {
@@ -485,6 +494,103 @@ __attribute__((used)) inline void culebra_runtime_assert(int8_t type,
 __attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
                                                              int64_t col) {
   throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+}
+
+// C++ exception thrown by `culebra_runtime_throw` when user code runs
+// `throw expr`. The payload (tag + data) is NOT read via this object
+// in JITed code — that would require exposing the typeinfo symbol
+// (`_ZTI16CulebraException`) to the JIT linker, which is fragile
+// across platforms. Instead, landingpads use catch-all and read the
+// `culebra_thrown_*` globals below. The member fields are only read
+// by the host-side catch in JIT::run to format the uncaught-throw
+// message.
+class CulebraException : public std::exception {
+ public:
+  int8_t tag;
+  int64_t data;
+  CulebraException(int8_t t, int64_t d) : tag(t), data(d) {}
+  const char* what() const noexcept override { return "CulebraException"; }
+};
+
+__attribute__((used)) void culebra_runtime_value_retain(int8_t tag,
+                                                        int64_t data);
+
+// Culebra is single-threaded, so plain globals are fine. Populated
+// by `culebra_runtime_throw` and read by try/catch landingpads to
+// distinguish user throws (`culebra_is_throw == 1`) from internal
+// runtime errors (`std::runtime_error` etc., which re-raise).
+__attribute__((used)) inline int8_t culebra_thrown_tag = 0;
+__attribute__((used)) inline int64_t culebra_thrown_data = 0;
+__attribute__((used)) inline int8_t culebra_is_throw = 0;
+
+__attribute__((used)) inline void culebra_runtime_throw(int8_t tag,
+                                                        int64_t data) {
+  // Retain so the payload stays alive through stack unwinding. The
+  // matching catch handler is responsible for the balancing release.
+  culebra_runtime_value_retain(tag, data);
+  culebra_thrown_tag = tag;
+  culebra_thrown_data = data;
+  culebra_is_throw = 1;
+  throw CulebraException(tag, data);
+}
+
+// Re-throw the currently-in-flight exception. Used by cleanup
+// landingpads to let the exception keep unwinding after running
+// deferred work, while still allowing the JIT to choose the next
+// landingpad via an `invoke` unwind edge (LLVM's `resume` alone
+// abandons the current function, skipping outer landingpads in the
+// same function).
+__attribute__((used)) inline void culebra_runtime_rethrow() {
+  throw;
+}
+
+// --- Defer stack (JIT side) ---
+//
+// Culebra is single-threaded, so a single global LIFO stack of retained
+// closure Values is sufficient. Each lexical scope records a "mark"
+// (the stack size) on entry and, on every exit path (fall-through,
+// return, throw), unwinds the stack back to that mark — running each
+// popped closure as a 0-arg call.
+inline std::vector<JitValue>& _culebra_defer_stack() {
+  static std::vector<JitValue> s;
+  return s;
+}
+
+__attribute__((used)) inline int64_t culebra_runtime_defer_mark() {
+  return static_cast<int64_t>(_culebra_defer_stack().size());
+}
+
+__attribute__((used)) inline void culebra_runtime_defer_push(int8_t tag,
+                                                             int64_t data) {
+  // Retain: stack owns a reference until run_to drops it.
+  culebra_runtime_value_retain(tag, data);
+  _culebra_defer_stack().push_back(JitValue{tag, data});
+}
+
+__attribute__((used)) inline void culebra_runtime_defer_run_to(int64_t mark) {
+  using JitFn0 = JitValue (*)(JitClosure*, JitValue);
+  auto& s = _culebra_defer_stack();
+  while (static_cast<int64_t>(s.size()) > mark) {
+    auto v = s.back();
+    s.pop_back();
+    auto* c = reinterpret_cast<JitClosure*>(v.data);
+    auto call = reinterpret_cast<JitFn0>(c->fn_ptr);
+    JitValue nil_val = {0, 0};
+    try {
+      auto r = call(c, nil_val);
+      _culebra_value_release_impl(r.tag, r.data);
+    } catch (...) {
+      _culebra_value_release_impl(v.tag, v.data);
+      // Drop remaining defers for this scope so they don't leak.
+      while (static_cast<int64_t>(s.size()) > mark) {
+        auto rem = s.back();
+        s.pop_back();
+        _culebra_value_release_impl(rem.tag, rem.data);
+      }
+      throw;
+    }
+    _culebra_value_release_impl(v.tag, v.data);
+  }
 }
 
 inline const char* _culebra_tag_name(int8_t tag) {
@@ -1276,6 +1382,85 @@ static constexpr int8_t TAG_ARRAY = 5;
 static constexpr int8_t TAG_OBJECT = 6;
 
 // ---------------------------------------------------------------------------
+// Runtime function names
+//
+// Centralized so: a typo fails to compile (unknown identifier) instead
+// of silently producing an unresolved LLVM declaration; renames happen
+// once; the full runtime ABI is scannable in one place.
+// ---------------------------------------------------------------------------
+namespace rt {
+inline constexpr auto array_all           = "culebra_runtime_array_all";
+inline constexpr auto array_any           = "culebra_runtime_array_any";
+inline constexpr auto array_contains      = "culebra_runtime_array_contains";
+inline constexpr auto array_filter        = "culebra_runtime_array_filter";
+inline constexpr auto array_find          = "culebra_runtime_array_find";
+inline constexpr auto array_flat_map      = "culebra_runtime_array_flat_map";
+inline constexpr auto array_for_each      = "culebra_runtime_array_for_each";
+inline constexpr auto array_get           = "culebra_runtime_array_get";
+inline constexpr auto array_index_of      = "culebra_runtime_array_index_of";
+inline constexpr auto array_join          = "culebra_runtime_array_join";
+inline constexpr auto array_map           = "culebra_runtime_array_map";
+inline constexpr auto array_new           = "culebra_runtime_array_new";
+inline constexpr auto array_pop           = "culebra_runtime_array_pop";
+inline constexpr auto array_push          = "culebra_runtime_array_push";
+inline constexpr auto array_reduce        = "culebra_runtime_array_reduce";
+inline constexpr auto array_resize        = "culebra_runtime_array_resize";
+inline constexpr auto array_reverse       = "culebra_runtime_array_reverse";
+inline constexpr auto array_set           = "culebra_runtime_array_set";
+inline constexpr auto array_set_or_push   = "culebra_runtime_array_set_or_push";
+inline constexpr auto array_size          = "culebra_runtime_array_size";
+inline constexpr auto array_slice         = "culebra_runtime_array_slice";
+inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
+inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
+// Trailing underscore on `assert_` / `throw_` dodges C++ keyword
+// collision (the `assert` macro from <cassert>, and the `throw` keyword).
+inline constexpr auto assert_             = "culebra_runtime_assert";
+inline constexpr auto cell_new            = "culebra_runtime_cell_new";
+inline constexpr auto cell_release        = "culebra_runtime_cell_release";
+inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
+inline constexpr auto closure_new         = "culebra_runtime_closure_new";
+inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
+inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
+inline constexpr auto defer_push          = "culebra_runtime_defer_push";
+inline constexpr auto defer_run_to        = "culebra_runtime_defer_run_to";
+inline constexpr auto div_zero            = "culebra_runtime_div_zero";
+inline constexpr auto input               = "culebra_runtime_input";
+inline constexpr auto object_get          = "culebra_runtime_object_get";
+inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto object_keys         = "culebra_runtime_object_keys";
+inline constexpr auto object_new          = "culebra_runtime_object_new";
+inline constexpr auto object_remove       = "culebra_runtime_object_remove";
+inline constexpr auto object_set          = "culebra_runtime_object_set";
+inline constexpr auto object_size         = "culebra_runtime_object_size";
+inline constexpr auto print               = "culebra_runtime_print";
+inline constexpr auto puts                = "culebra_runtime_puts";
+inline constexpr auto range               = "culebra_runtime_range";
+inline constexpr auto read_file           = "culebra_runtime_read_file";
+inline constexpr auto rethrow             = "culebra_runtime_rethrow";
+inline constexpr auto str_cmp             = "culebra_runtime_str_cmp";
+inline constexpr auto str_concat          = "culebra_runtime_str_concat";
+inline constexpr auto str_contains        = "culebra_runtime_str_contains";
+inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
+inline constexpr auto str_eq              = "culebra_runtime_str_eq";
+inline constexpr auto str_lower           = "culebra_runtime_str_lower";
+inline constexpr auto str_size            = "culebra_runtime_str_size";
+inline constexpr auto str_slice           = "culebra_runtime_str_slice";
+inline constexpr auto str_split           = "culebra_runtime_str_split";
+inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
+inline constexpr auto str_trim            = "culebra_runtime_str_trim";
+inline constexpr auto str_upper           = "culebra_runtime_str_upper";
+inline constexpr auto throw_              = "culebra_runtime_throw";
+inline constexpr auto to_long             = "culebra_runtime_to_long";
+inline constexpr auto type_check          = "culebra_runtime_type_check";
+inline constexpr auto type_error          = "culebra_runtime_type_error";
+inline constexpr auto type_of             = "culebra_runtime_type_of";
+inline constexpr auto value_release       = "culebra_runtime_value_release";
+inline constexpr auto value_retain        = "culebra_runtime_value_retain";
+inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
+inline constexpr auto write_file          = "culebra_runtime_write_file";
+}  // namespace rt
+
+// ---------------------------------------------------------------------------
 // JIT compiler implementation
 // ---------------------------------------------------------------------------
 
@@ -1292,7 +1477,152 @@ struct JIT {
   struct FuncInfo {
     std::vector<std::string> free_vars;   // captured from outer
     std::set<std::string> captured_locals;  // my locals captured by nested
+    // EH/defer emission flags (populated by scan_eh_defer):
+    bool has_eh = false;        // contains TRY or any scope with defers
+    bool has_fn_defer = false;  // contains DEFER directly in fn body
   };
+
+  // LEXICAL_SCOPE nodes that contain a DEFER within their own scope level
+  // (not crossing nested LEXICAL_SCOPE / FUNCTION / DEFER). Scopes not in
+  // this set skip emitting scope.mark / scope.cleanup landingpad.
+  std::unordered_set<const peg::Ast*> scope_has_defer_;
+
+  // RAII snapshot of compiler per-function state. Entering a nested
+  // LLVM function body (compile_function / compile_defer) constructs
+  // one; the dtor (or an explicit `restore()` before the caller's
+  // closure-build) restores the outer context. Ctor resets all fields
+  // to safe defaults — outer's lpad, fn-mark, scopes, etc. are
+  // intentionally not inherited since they live in a different LLVM
+  // function. `restore()` is idempotent.
+  struct CompilerStateSaver {
+    JIT* jit;
+    llvm::BasicBlock* insert_block;
+    std::vector<std::map<std::string, VarSlot>> scopes;
+    const FuncInfo* info;
+    llvm::Value* closure_arg;
+    std::string_view return_type;
+    llvm::BasicBlock* lpad;
+    llvm::Value* fn_defer_mark;
+
+    explicit CompilerStateSaver(JIT& j)
+        : jit(&j),
+          insert_block(j.builder_.GetInsertBlock()),
+          scopes(std::exchange(j.scopes_, {})),
+          info(std::exchange(j.current_info_, nullptr)),
+          closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
+          return_type(std::exchange(j.current_return_type_, {})),
+          lpad(std::exchange(j.current_lpad_, nullptr)),
+          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)) {}
+
+    void restore() {
+      if (!jit) return;
+      // Caller is expected to pop every scope it pushed; anything left
+      // behind signals a push/pop imbalance that would silently leak.
+      assert(jit->scopes_.empty() && "unbalanced push_scope/pop_scope");
+      jit->current_fn_defer_mark_ = fn_defer_mark;
+      jit->current_lpad_ = lpad;
+      jit->current_return_type_ = return_type;
+      jit->current_closure_arg_ = closure_arg;
+      jit->current_info_ = info;
+      jit->scopes_ = std::move(scopes);
+      jit->builder_.SetInsertPoint(insert_block);
+      jit = nullptr;
+    }
+
+    ~CompilerStateSaver() { restore(); }
+
+    CompilerStateSaver(const CompilerStateSaver&) = delete;
+    CompilerStateSaver& operator=(const CompilerStateSaver&) = delete;
+    CompilerStateSaver(CompilerStateSaver&&) = delete;
+    CompilerStateSaver& operator=(CompilerStateSaver&&) = delete;
+  };
+
+  // When inside a `try { ... }` region, points at the landingpad BB
+  // that catches `CulebraException` for that region. Any call emitted
+  // while this is non-null is emitted as `invoke` with this as the
+  // unwind destination, so a user `throw` propagates back to the
+  // nearest enclosing `try`. Nested try blocks save/restore.
+  llvm::BasicBlock* current_lpad_ = nullptr;
+
+  // Unified call-site emitter: `invoke` if inside a try, else `call`.
+  // All JIT-generated call sites (runtime functions, user functions,
+  // closures) go through this so user `throw` propagates uniformly.
+  llvm::CallBase* emit_call(llvm::FunctionCallee callee,
+                            llvm::ArrayRef<llvm::Value*> args,
+                            const llvm::Twine& name = "") {
+    if (current_lpad_) {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
+      auto inv = builder_.CreateInvoke(callee, contBB, current_lpad_, args,
+                                       name);
+      builder_.SetInsertPoint(contBB);
+      return inv;
+    }
+    return builder_.CreateCall(callee, args, name);
+  }
+
+  // Indirect-call overload (function pointer + explicit FunctionType).
+  llvm::CallBase* emit_call(llvm::FunctionType* fty, llvm::Value* fnPtr,
+                            llvm::ArrayRef<llvm::Value*> args,
+                            const llvm::Twine& name = "") {
+    if (current_lpad_) {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
+      auto inv = builder_.CreateInvoke(fty, fnPtr, contBB, current_lpad_, args,
+                                       name);
+      builder_.SetInsertPoint(contBB);
+      return inv;
+    }
+    return builder_.CreateCall(fty, fnPtr, args, name);
+  }
+
+  // Re-raise the currently-handled exception (inside a catch-all
+  // cleanup landingpad). If `outerLpad` is non-null, invoke
+  // `__cxa_rethrow` with it as the unwind target so the exception
+  // reaches that outer lpad within the same LLVM function; otherwise
+  // a plain call lets the exception propagate out to the caller.
+  void emit_rethrow(llvm::BasicBlock* outerLpad) {
+    auto rethrowFn = module_->getOrInsertFunction(
+        "__cxa_rethrow", builder_.getVoidTy());
+    auto fn = builder_.GetInsertBlock()->getParent();
+    if (outerLpad) {
+      auto deadBB = llvm::BasicBlock::Create(ctx_, "rethrow.dead", fn);
+      builder_.CreateInvoke(rethrowFn, deadBB, outerLpad, {});
+      builder_.SetInsertPoint(deadBB);
+    } else {
+      builder_.CreateCall(rethrowFn, {});
+    }
+    builder_.CreateUnreachable();
+  }
+
+  // Build a catch-all cleanup landingpad at the current insertion
+  // point: catches any in-flight exception, runs the scope's defers
+  // back to `mark`, and re-raises so the exception keeps propagating
+  // (to `outerLpad` if given, otherwise out of the current function).
+  void emit_cleanup_landingpad(llvm::BasicBlock* cleanupBB,
+                               llvm::Value* mark,
+                               llvm::BasicBlock* outerLpad,
+                               const char* excName) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    builder_.SetInsertPoint(cleanupBB);
+    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
+    auto lpad = builder_.CreateLandingPad(lpadTy, 1, excName);
+    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
+    auto excPtr = builder_.CreateExtractValue(lpad, {0});
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+        {excPtr});
+    builder_.CreateCall(
+        module_->getFunction(rt::defer_run_to), {mark});
+    emit_rethrow(outerLpad);
+  }
+
+  // Itanium C++ personality. Same attribute used by -fexceptions output.
+  llvm::Constant* get_personality_fn() {
+    auto fty = llvm::FunctionType::get(builder_.getInt32Ty(), {}, true);
+    auto callee = module_->getOrInsertFunction("__gxx_personality_v0", fty);
+    return llvm::cast<llvm::Constant>(callee.getCallee());
+  }
 
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
@@ -1318,17 +1648,36 @@ struct JIT {
     auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
     auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
                                    "__culebra_main", mod.get());
+    if (jit.main_info_.has_eh) {
+      mainFn->setPersonalityFn(jit.get_personality_fn());
+    }
 
     auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
     builder.SetInsertPoint(entryBB);
 
     jit.push_scope();
+
+    // Top-level defers run on normal completion; on an uncaught throw
+    // they are skipped (wrap in a `{}` or try/catch for throw-path
+    // cleanup).
+    llvm::Value* mainMark = nullptr;
+    if (jit.main_info_.has_fn_defer) {
+      mainMark = builder.CreateCall(
+          mod->getFunction(rt::defer_mark), {}, "main.mark");
+      jit.current_fn_defer_mark_ = mainMark;
+    }
+
     jit.compile(*ast);
 
     if (!builder.GetInsertBlock()->getTerminator()) {
+      if (mainMark) {
+        builder.CreateCall(
+            mod->getFunction(rt::defer_run_to), {mainMark});
+      }
       builder.CreateRetVoid();
     }
 
+    jit.current_fn_defer_mark_ = nullptr;
     jit.pop_scope();
     jit.current_info_ = nullptr;
 
@@ -1384,6 +1733,20 @@ struct JIT {
   llvm::Value* compile_builtin_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
+
+  // Method names with JIT-native codegen in compile_builtin_method.
+  // Exposed so a startup self-check (see culebra.h) can guard against
+  // drift from the interpreter's builtin tables.
+  static const std::unordered_set<std::string_view>& known_builtin_methods() {
+    static const std::unordered_set<std::string_view> known = {
+        "size",        "push",       "pop",      "reverse", "slice",
+        "join",        "index_of",   "contains", "upper",   "lower",
+        "trim",        "split",      "starts_with", "ends_with",
+        "keys",        "has",        "remove",
+        "map",         "filter",     "reduce",   "for_each",
+        "find",        "any",        "all",      "flat_map", "sort_by"};
+    return known;
+  }
   // Stdlib helpers — bodies live in stdlib_jit.h.
   void declare_stdlib_runtime();
   llvm::Value* try_compile_stdlib_global(const std::string& name,
@@ -1421,6 +1784,11 @@ struct JIT {
   // Current function's declared return type (empty = unchecked). The token is
   // owned by the AST, which outlives the compilation, so string_view is safe.
   std::string_view current_return_type_;
+
+  // Defer-stack mark recorded at the current function's entry. `return`
+  // lowers `defer_run_to(this mark)` before emitting `ret` so the
+  // function's own defers run regardless of where the return sits.
+  llvm::Value* current_fn_defer_mark_ = nullptr;
 
   // Counter for generating unique function names
   int funcCounter_ = 0;
@@ -1502,9 +1870,9 @@ struct JIT {
   void emit_value_retain(llvm::Value* val) {
     auto tag = extract_tag(val);
     auto data = extract_data(val);
-    builder_.CreateCall(
+    emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_value_retain", builder_.getVoidTy(),
+            rt::value_retain, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {tag, data});
   }
@@ -1512,24 +1880,24 @@ struct JIT {
   void emit_value_release(llvm::Value* val) {
     auto tag = extract_tag(val);
     auto data = extract_data(val);
-    builder_.CreateCall(
+    emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_value_release", builder_.getVoidTy(),
+            rt::value_release, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {tag, data});
   }
 
   void emit_cell_retain(llvm::Value* cellPtr) {
-    builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_cell_retain",
+    emit_call(
+        module_->getOrInsertFunction(rt::cell_retain,
                                      builder_.getVoidTy(),
                                      llvm::PointerType::get(ctx_, 0)),
         {cellPtr});
   }
 
   void emit_cell_release(llvm::Value* cellPtr) {
-    builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_cell_release",
+    emit_call(
+        module_->getOrInsertFunction(rt::cell_release,
                                      builder_.getVoidTy(),
                                      llvm::PointerType::get(ctx_, 0)),
         {cellPtr});
@@ -1543,8 +1911,8 @@ struct JIT {
   }
 
   void emit_type_error() {
-    builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_type_error",
+    emit_call(
+        module_->getOrInsertFunction(rt::type_error,
                                      builder_.getVoidTy(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
@@ -1552,8 +1920,8 @@ struct JIT {
   }
 
   void emit_div_zero() {
-    builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_div_zero",
+    emit_call(
+        module_->getOrInsertFunction(rt::div_zero,
                                      builder_.getVoidTy(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
@@ -1567,9 +1935,9 @@ struct JIT {
     auto tag = extract_tag(val);
     auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
     auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
-    builder_.CreateCall(
+    emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_type_check", builder_.getVoidTy(),
+            rt::type_check, builder_.getVoidTy(),
             builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
             builder_.getInt64Ty()),
         {tag, expPtr, ctxPtr, current_line_val(), current_column_val()});
@@ -1806,10 +2174,31 @@ struct JIT {
 
     if (node.tag == "MATCH"_) {
       // MATCH = [subject, MATCH_ARMS]; MATCH_ARM = [PATTERN, (GUARD)?, EXPR].
+      // Register pattern-bound names as locals of the enclosing
+      // function so that nested closures capturing them are handled
+      // correctly by the free-variable analysis (the bindings are
+      // then promoted to cells via `captured_locals`). Same mechanism
+      // as TRY's catch binding below.
       for (auto& arm : node.nodes[1]->nodes) {
         check_pattern_shadow(*arm->nodes[0], outer);
+        for_each_pattern_binding(
+            *arm->nodes[0],
+            [&](std::string_view name, size_t, size_t) {
+              locals.insert(std::string(name));
+            });
       }
       // fall through to normal recursive walk
+    }
+
+    if (node.tag == "TRY"_) {
+      // TRY = [body_block, catch_ident, catch_body]. The catch binding
+      // introduces a new local in the enclosing function; register it
+      // so nested closures that capture it see it and get a cell.
+      auto& id = *node.nodes[1];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
+      // fall through to walk the bodies
     }
 
     if (node.tag == "ASSIGNMENT"_) {
@@ -1856,13 +2245,15 @@ struct JIT {
                        FuncInfo& info) {
     using namespace peg::udl;
 
-    if (node.tag == "FUNCTION"_) {
-      // Analyze nested function; pass (outer + my_locals) as its outers
+    if (node.tag == "FUNCTION"_ || node.tag == "DEFER"_) {
+      // Analyze nested function / defer body; its locals/frees don't
+      // leak into the enclosing scope, but the enclosing scope owns any
+      // captured vars (cells) that it references.
       outer.push_back(&my_locals);
-      auto nested_info = analyze_function(node, outer);
+      auto nested_info = (node.tag == "FUNCTION"_)
+                             ? analyze_function(node, outer)
+                             : analyze_defer(node, outer);
       outer.pop_back();
-      // Propagate nested's free vars: those that are my locals are captured
-      // by me; others are my frees too.
       for (const auto& fv : nested_info.free_vars) {
         if (my_locals.contains(fv)) {
           info.captured_locals.insert(fv);
@@ -1942,6 +2333,40 @@ struct JIT {
     }
   }
 
+  // Walk this function's body populating `info.has_eh`,
+  // `info.has_fn_defer`, and `scope_has_defer_`. Returns true iff the
+  // subtree contains a DEFER at the caller's own scope level — used so
+  // an enclosing LEXICAL_SCOPE can mark itself without rescanning.
+  // Recursion stops at nested FUNCTION / DEFER boundaries (those own
+  // their own defers, analyzed separately). `at_fn_top` is true only
+  // while still at the function's top level (not inside any `{}`).
+  bool scan_eh_defer(const peg::Ast& node, bool at_fn_top, FuncInfo& info) {
+    using namespace peg::udl;
+    if (node.tag == "FUNCTION"_) return false;
+    if (node.tag == "DEFER"_) {
+      if (at_fn_top) info.has_fn_defer = true;
+      return true;
+    }
+    if (node.tag == "TRY"_) {
+      info.has_eh = true;
+      bool any = false;
+      for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
+      return any;
+    }
+    if (node.tag == "LEXICAL_SCOPE"_) {
+      bool inner = false;
+      for (auto& c : node.nodes) inner |= scan_eh_defer(*c, false, info);
+      if (inner) {
+        scope_has_defer_.insert(&node);
+        info.has_eh = true;
+      }
+      return false;  // this scope absorbs its own defers
+    }
+    bool any = false;
+    for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
+    return any;
+  }
+
   FuncInfo analyze_function(
       const peg::Ast& fnAst,
       std::vector<const std::set<std::string>*>& outer) {
@@ -1956,18 +2381,44 @@ struct JIT {
 
     FuncInfo info;
     visit_for_frees(*fnAst.nodes[1], my_locals, outer, info);
+    scan_eh_defer(*fnAst.nodes[1], true, info);
 
     func_info_[&fnAst] = info;
     return info;
   }
 
+  // `defer { BODY }` behaves like a 0-parameter nested function that
+  // closes over the enclosing scope. Shadow checks are unneeded (no
+  // params, no let/mut at the defer line itself).
+  FuncInfo analyze_defer(
+      const peg::Ast& deferAst,
+      std::vector<const std::set<std::string>*>& outer) {
+    std::set<std::string> my_locals;
+    collect_fn_locals(*deferAst.nodes[0], my_locals, outer);
+
+    FuncInfo info;
+    visit_for_frees(*deferAst.nodes[0], my_locals, outer, info);
+    scan_eh_defer(*deferAst.nodes[0], true, info);
+
+    func_info_[&deferAst] = info;
+    return info;
+  }
+
+  // One JIT instance per compilation. `func_info_` and
+  // `scope_has_defer_` are keyed by `peg::Ast*` and never cleared —
+  // only the `JIT::run`-local instance keeps pointer stability.
+  // Reusing an instance across compilations would collide on reused
+  // node addresses; the assert below guards future misuse.
   FuncInfo analyze_program(const peg::Ast& programAst) {
+    assert(func_info_.empty() && scope_has_defer_.empty() &&
+           "JIT reused — analyze_program expects a fresh instance");
     std::vector<const std::set<std::string>*> outer;
     std::set<std::string> my_locals;
     collect_fn_locals(programAst, my_locals, outer);
 
     FuncInfo info;
     visit_for_frees(programAst, my_locals, outer, info);
+    scan_eh_defer(programAst, true, info);
     return info;
   }
 
@@ -1975,161 +2426,177 @@ struct JIT {
 
   void declare_runtime_functions() {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    module_->getOrInsertFunction("culebra_runtime_puts", builder_.getVoidTy(),
+    module_->getOrInsertFunction(rt::puts, builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_assert", builder_.getVoidTy(), builder_.getInt8Ty(),
+        rt::assert_, builder_.getVoidTy(), builder_.getInt8Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_type_error",
+    module_->getOrInsertFunction(rt::type_error,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    // User-level throw: stashes tag+data in globals and raises a
+    // C++ exception; try/catch landingpads read the globals back.
+    module_->getOrInsertFunction(rt::throw_,
+                                 builder_.getVoidTy(), builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::rethrow,
+                                 builder_.getVoidTy());
+    // Defer: (push takes tag+data of a closure Value)
+    module_->getOrInsertFunction(rt::defer_mark,
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::defer_push,
+                                 builder_.getVoidTy(), builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::defer_run_to,
+                                 builder_.getVoidTy(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_type_check", builder_.getVoidTy(),
+        rt::type_check, builder_.getVoidTy(),
         builder_.getInt8Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
         builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_div_zero",
+    module_->getOrInsertFunction(rt::div_zero,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_debugger_break",
+    module_->getOrInsertFunction(rt::debugger_break,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_value_to_display", ptrTy,
+    module_->getOrInsertFunction(rt::value_to_display, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_str_concat", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::str_concat, ptrTy, ptrTy,
                                  ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_eq",
+    module_->getOrInsertFunction(rt::str_eq,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_cmp",
+    module_->getOrInsertFunction(rt::str_cmp,
                                  builder_.getInt32Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_array_new", ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_array_push",
+    module_->getOrInsertFunction(rt::array_new, ptrTy);
+    module_->getOrInsertFunction(rt::array_push,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_array_resize", builder_.getVoidTy(), ptrTy,
+        rt::array_resize, builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_get",
+    module_->getOrInsertFunction(rt::array_get,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt64Ty(), ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_array_set", builder_.getVoidTy(), ptrTy,
+        rt::array_set, builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_size",
+    module_->getOrInsertFunction(rt::array_size,
                                  builder_.getInt64Ty(), ptrTy);
     module_->getOrInsertFunction(
-        "culebra_runtime_array_set_or_push", builder_.getVoidTy(), ptrTy,
+        rt::array_set_or_push, builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_slice", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::array_slice, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_object_new", ptrTy);
+    module_->getOrInsertFunction(rt::object_new, ptrTy);
     module_->getOrInsertFunction(
-        "culebra_runtime_object_set", builder_.getVoidTy(), ptrTy, ptrTy,
+        rt::object_set, builder_.getVoidTy(), ptrTy, ptrTy,
         builder_.getInt1Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_object_get",
+    module_->getOrInsertFunction(rt::object_get,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy,
                                  ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_object_has",
+    module_->getOrInsertFunction(rt::object_has,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_object_size",
+    module_->getOrInsertFunction(rt::object_size,
                                  builder_.getInt64Ty(), ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_cell_new", ptrTy,
+    module_->getOrInsertFunction(rt::cell_new, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_closure_new", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::closure_new, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_value_retain",
+    module_->getOrInsertFunction(rt::value_retain,
                                  builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_value_release",
+    module_->getOrInsertFunction(rt::value_release,
                                  builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_cell_retain",
+    module_->getOrInsertFunction(rt::cell_retain,
                                  builder_.getVoidTy(), ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_cell_release",
+    module_->getOrInsertFunction(rt::cell_release,
                                  builder_.getVoidTy(), ptrTy);
 
     // Built-in type methods.
-    module_->getOrInsertFunction("culebra_runtime_str_size",
+    module_->getOrInsertFunction(rt::str_size,
                                  builder_.getInt64Ty(), ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_upper", ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_lower", ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_trim", ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_split", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::str_upper, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_lower, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_trim, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy,
                                  ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_contains",
+    module_->getOrInsertFunction(rt::str_contains,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_starts_with",
+    module_->getOrInsertFunction(rt::str_starts_with,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_ends_with",
+    module_->getOrInsertFunction(rt::str_ends_with,
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_str_slice", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_pop",
+    module_->getOrInsertFunction(rt::array_pop,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_array_slice2", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::array_slice2, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_join", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::array_join, ptrTy, ptrTy,
                                  ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_array_contains",
+    module_->getOrInsertFunction(rt::array_contains,
                                  builder_.getInt1Ty(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_index_of",
+    module_->getOrInsertFunction(rt::array_index_of,
                                  builder_.getInt64Ty(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_reverse",
+    module_->getOrInsertFunction(rt::array_reverse,
                                  builder_.getVoidTy(), ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_object_keys", ptrTy, ptrTy);
-    module_->getOrInsertFunction("culebra_runtime_object_remove",
+    module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::object_remove,
                                  builder_.getVoidTy(), ptrTy, ptrTy);
     // Higher-order array helpers (§17.2): (arr, fn_tag, fn_data, line, col).
-    module_->getOrInsertFunction("culebra_runtime_array_map", ptrTy, ptrTy,
+    module_->getOrInsertFunction(rt::array_map, ptrTy, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_filter", ptrTy,
+    module_->getOrInsertFunction(rt::array_filter, ptrTy,
                                  ptrTy, builder_.getInt8Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_array_for_each", builder_.getVoidTy(), ptrTy,
+        rt::array_for_each, builder_.getVoidTy(), ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty());
     module_->getOrInsertFunction(
-        "culebra_runtime_array_reduce", builder_.getVoidTy(), ptrTy,
+        rt::array_reduce, builder_.getVoidTy(), ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt8Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         ptrTy, ptrTy);
     // find (arr, fn_tag, fn_data, line, col, out_tag, out_data)
     module_->getOrInsertFunction(
-        "culebra_runtime_array_find", builder_.getVoidTy(), ptrTy,
+        rt::array_find, builder_.getVoidTy(), ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty(), ptrTy, ptrTy);
     // any/all (arr, fn_tag, fn_data, line, col) -> i64 (0/1)
-    module_->getOrInsertFunction("culebra_runtime_array_any",
+    module_->getOrInsertFunction(rt::array_any,
                                  builder_.getInt64Ty(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction("culebra_runtime_array_all",
+    module_->getOrInsertFunction(rt::array_all,
                                  builder_.getInt64Ty(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // flat_map (arr, fn_tag, fn_data, line, col) -> ptr
-    module_->getOrInsertFunction("culebra_runtime_array_flat_map", ptrTy,
+    module_->getOrInsertFunction(rt::array_flat_map, ptrTy,
                                  ptrTy, builder_.getInt8Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // sort_by (arr, fn_tag, fn_data, line, col)
     module_->getOrInsertFunction(
-        "culebra_runtime_array_sort_by", builder_.getVoidTy(), ptrTy,
+        rt::array_sort_by, builder_.getVoidTy(), ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty());
 
@@ -2199,6 +2666,12 @@ struct JIT {
         return compile_return(ast);
       case "DEBUGGER"_:
         return compile_debugger(ast);
+      case "THROW"_:
+        return compile_throw(ast);
+      case "TRY"_:
+        return compile_try(ast);
+      case "DEFER"_:
+        return compile_defer(ast);
     }
 
     // Token (e.g., operator string)
@@ -2255,8 +2728,8 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     // Create empty array
-    auto arrPtr = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_array_new", ptrTy),
+    auto arrPtr = emit_call(
+        module_->getOrInsertFunction(rt::array_new, ptrTy),
         {}, "arr");
 
     // Resize first if size/default specified (matches interpreter order)
@@ -2270,9 +2743,9 @@ struct JIT {
         defTag = extract_tag(defVal);
         defData = extract_data(defVal);
       }
-      builder_.CreateCall(
+      emit_call(
           module_->getOrInsertFunction(
-              "culebra_runtime_array_resize", builder_.getVoidTy(), ptrTy,
+              rt::array_resize, builder_.getVoidTy(), ptrTy,
               builder_.getInt64Ty(), builder_.getInt8Ty(),
               builder_.getInt64Ty()),
           {arrPtr, count, defTag, defData});
@@ -2285,9 +2758,9 @@ struct JIT {
       auto val = compile(*seqNodes[i]);
       auto tag = extract_tag(val);
       auto data = extract_data(val);
-      builder_.CreateCall(
+      emit_call(
           module_->getOrInsertFunction(
-              "culebra_runtime_array_set_or_push", builder_.getVoidTy(),
+              rt::array_set_or_push, builder_.getVoidTy(),
               ptrTy, builder_.getInt64Ty(), builder_.getInt8Ty(),
               builder_.getInt64Ty()),
           {arrPtr, builder_.getInt64(i), tag, data});
@@ -2299,8 +2772,8 @@ struct JIT {
   llvm::Value* compile_object(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
-    auto objPtr = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_object_new", ptrTy),
+    auto objPtr = emit_call(
+        module_->getOrInsertFunction(rt::object_new, ptrTy),
         {}, "obj");
 
     // Each child is OBJECT_PROPERTY: [MUTABLE, IDENTIFIER, EXPRESSION]
@@ -2311,9 +2784,9 @@ struct JIT {
       auto tag = extract_tag(val);
       auto data = extract_data(val);
       auto keyPtr = builder_.CreateGlobalString(name, ".key");
-      builder_.CreateCall(
+      emit_call(
           module_->getOrInsertFunction(
-              "culebra_runtime_object_set", builder_.getVoidTy(), ptrTy,
+              rt::object_set, builder_.getVoidTy(), ptrTy,
               ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
               builder_.getInt64Ty(), builder_.getInt64Ty(),
               builder_.getInt64Ty()),
@@ -2341,14 +2814,14 @@ struct JIT {
         auto val = compile(*node);
         auto tag = extract_tag(val);
         auto data = extract_data(val);
-        piece = builder_.CreateCall(
-            module_->getOrInsertFunction("culebra_runtime_value_to_display",
+        piece = emit_call(
+            module_->getOrInsertFunction(rt::value_to_display,
                                          ptrTy, builder_.getInt8Ty(),
                                          builder_.getInt64Ty()),
             {tag, data}, "disp");
       }
-      result = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_str_concat", ptrTy,
+      result = emit_call(
+          module_->getOrInsertFunction(rt::str_concat, ptrTy,
                                        ptrTy, ptrTy),
           {result, piece}, "concat");
     }
@@ -2385,8 +2858,8 @@ struct JIT {
     emit_cell_release(oldCell);
     auto tag = extract_tag(initValue);
     auto data = extract_data(initValue);
-    auto cellPtr = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_cell_new", ptrTy,
+    auto cellPtr = emit_call(
+        module_->getOrInsertFunction(rt::cell_new, ptrTy,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
         {tag, data}, "cell");
@@ -2505,9 +2978,9 @@ struct JIT {
         auto idx = value_to_long(idxVal);
         auto rtag = extract_tag(rval);
         auto rdata = extract_data(rval);
-        builder_.CreateCall(
+        emit_call(
             module_->getOrInsertFunction(
-                "culebra_runtime_array_set", builder_.getVoidTy(), ptrTy,
+                rt::array_set, builder_.getVoidTy(), ptrTy,
                 builder_.getInt64Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty()),
@@ -2537,9 +3010,9 @@ struct JIT {
         auto keyPtr = builder_.CreateGlobalString(name, ".key");
         auto rtag = extract_tag(rval);
         auto rdata = extract_data(rval);
-        builder_.CreateCall(
+        emit_call(
             module_->getOrInsertFunction(
-                "culebra_runtime_object_set", builder_.getVoidTy(), ptrTy,
+                rt::object_set, builder_.getVoidTy(), ptrTy,
                 ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty()),
@@ -2689,10 +3162,13 @@ struct JIT {
       builder_.SetInsertPoint(strBB);
       auto lptr = builder_.CreateIntToPtr(ldata, ptrTy);
       auto rptr = builder_.CreateIntToPtr(rdata, ptrTy);
-      auto strEq = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_str_eq",
+      auto strEq = emit_call(
+          module_->getOrInsertFunction(rt::str_eq,
                                        builder_.getInt1Ty(), ptrTy, ptrTy),
           {lptr, rptr}, "str.eq");
+      // emit_call may have split the block with an invoke; capture the
+      // actual predecessor for the PHI below.
+      auto strEndBB = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(intBB);
@@ -2704,7 +3180,7 @@ struct JIT {
 
       builder_.SetInsertPoint(mergeBB);
       auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 3, "eq.result");
-      phi->addIncoming(strEq, strBB);
+      phi->addIncoming(strEq, strEndBB);
       phi->addIncoming(intEq, intBB);
       phi->addIncoming(builder_.getFalse(), diffTagBB);
 
@@ -2748,8 +3224,8 @@ struct JIT {
     builder_.SetInsertPoint(strBB);
     auto lptr = builder_.CreateIntToPtr(ldata, ptrTy);
     auto rptr = builder_.CreateIntToPtr(rdata, ptrTy);
-    auto strCmp = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_str_cmp",
+    auto strCmp = emit_call(
+        module_->getOrInsertFunction(rt::str_cmp,
                                      builder_.getInt32Ty(), ptrTy, ptrTy),
         {lptr, rptr}, "str.cmp");
     auto zero32 = builder_.getInt32(0);
@@ -2967,8 +3443,8 @@ struct JIT {
                                                ".pat.str");
         auto subj_ptr =
             builder_.CreateIntToPtr(extract_data(subject), ptrTy);
-        auto eq = builder_.CreateCall(
-            module_->getOrInsertFunction("culebra_runtime_str_eq",
+        auto eq = emit_call(
+            module_->getOrInsertFunction(rt::str_eq,
                                          builder_.getInt1Ty(), ptrTy, ptrTy),
             {subj_ptr, lit});
         return builder_.CreateAnd(is_str, eq);
@@ -3042,8 +3518,8 @@ struct JIT {
     builder_.SetInsertPoint(sizeBB);
 
     auto arrPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
-    auto size = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_array_size",
+    auto size = emit_call(
+        module_->getOrInsertFunction(rt::array_size,
                                      builder_.getInt64Ty(), ptrTy),
         {arrPtr}, "arr.n");
 
@@ -3076,9 +3552,9 @@ struct JIT {
           entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ap.tag");
       auto outData =
           entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ap.data");
-      builder_.CreateCall(
+      emit_call(
           module_->getOrInsertFunction(
-              "culebra_runtime_array_get", builder_.getVoidTy(), ptrTy,
+              rt::array_get, builder_.getVoidTy(), ptrTy,
               builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
               builder_.getInt64Ty()),
           {arrPtr, idx, outTag, outData, current_line_val(),
@@ -3107,8 +3583,8 @@ struct JIT {
       auto rest_start = builder_.getInt64(rest_idx);
       auto rest_len =
           builder_.CreateSub(size, builder_.getInt64(fixed), "rest.len");
-      auto rest_arr_ptr = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_array_slice", ptrTy,
+      auto rest_arr_ptr = emit_call(
+          module_->getOrInsertFunction(rt::array_slice, ptrTy,
                                        ptrTy, builder_.getInt64Ty(),
                                        builder_.getInt64Ty()),
           {arrPtr, rest_start, rest_len}, "rest.arr");
@@ -3170,8 +3646,8 @@ struct JIT {
     for (const auto& key_node : pattern.nodes) {
       auto key = std::string(key_node->token);
       auto keyPtr = get_or_create_global_str(key, ".obj.key");
-      auto has = builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_object_has",
+      auto has = emit_call(
+          module_->getOrInsertFunction(rt::object_has,
                                        builder_.getInt1Ty(), ptrTy, ptrTy),
           {objPtr, keyPtr});
       auto next = llvm::BasicBlock::Create(ctx_, "obj.bind", fn);
@@ -3184,8 +3660,8 @@ struct JIT {
           entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "op.tag");
       auto outData =
           entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "op.data");
-      builder_.CreateCall(
-          module_->getOrInsertFunction("culebra_runtime_object_get",
+      emit_call(
+          module_->getOrInsertFunction(rt::object_get,
                                        builder_.getVoidTy(), ptrTy, ptrTy,
                                        ptrTy, ptrTy),
           {objPtr, keyPtr, outTag, outData});
@@ -3307,6 +3783,21 @@ struct JIT {
   // --- Lexical scope ---
 
   llvm::Value* compile_lexical_scope(const peg::Ast& ast) {
+    // No defers in this scope → only variable-binding scoping needed.
+    bool has_defer = scope_has_defer_.contains(&ast);
+
+    llvm::Value* mark = nullptr;
+    llvm::BasicBlock* cleanupBB = nullptr;
+    llvm::BasicBlock* savedLpad = current_lpad_;
+    if (has_defer) {
+      // defer_mark is nothrow, so a plain call (not invoke) is safe.
+      mark = builder_.CreateCall(
+          module_->getFunction(rt::defer_mark), {}, "scope.mark");
+      auto fn = builder_.GetInsertBlock()->getParent();
+      cleanupBB = llvm::BasicBlock::Create(ctx_, "scope.cleanup", fn);
+      current_lpad_ = cleanupBB;
+    }
+
     push_scope();
     llvm::Value* val = make_nil();
     for (auto& node : ast.nodes) {
@@ -3314,6 +3805,19 @@ struct JIT {
       val = compile(*node);
     }
     pop_scope();
+    current_lpad_ = savedLpad;
+
+    if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
+      emit_call(module_->getFunction(rt::defer_run_to),
+                {mark});
+    }
+    auto afterBB = builder_.GetInsertBlock();
+
+    if (has_defer) {
+      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "scope.exc");
+    }
+
+    builder_.SetInsertPoint(afterBB);
     return val;
   }
 
@@ -3353,6 +3857,9 @@ struct JIT {
     auto fnName = std::format("__culebra_fn_{}", funcCounter_++);
     auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
                                module_);
+    if (info.has_eh) {
+      fn->setPersonalityFn(get_personality_fn());
+    }
 
     // Name parameters
     auto argIt = fn->arg_begin();
@@ -3365,20 +3872,24 @@ struct JIT {
       ++argIt;
     }
 
-    // Save current state
-    auto prevBB = builder_.GetInsertBlock();
-    auto prevScopes = std::move(scopes_);
-    auto prevInfo = current_info_;
-    auto prevClosureArg = current_closure_arg_;
-    auto prevReturnType = current_return_type_;
-    scopes_.clear();
+    CompilerStateSaver saver(*this);
     current_info_ = &info;
     current_return_type_ = returnType;
 
-    // Emit function body
     auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
     builder_.SetInsertPoint(entryBB);
     push_scope();
+
+    // Function-level defers (not inside a nested `{}`) run on normal
+    // fall-through and on `return`; for throw-path cleanup, wrap them
+    // in a block (`{ defer { ... } ... }`) which emits a proper scope
+    // cleanup landingpad.
+    llvm::Value* fnMark = nullptr;
+    if (info.has_fn_defer) {
+      fnMark = builder_.CreateCall(
+          module_->getFunction(rt::defer_mark), {}, "fn.mark");
+      current_fn_defer_mark_ = fnMark;
+    }
 
     argIt = fn->arg_begin();
     auto clsArg = &*argIt++;
@@ -3438,31 +3949,38 @@ struct JIT {
       if (!returnType.empty()) {
         emit_type_check(bodyVal, returnType, "return value");
       }
+      // Run function-level defers before returning.
+      if (fnMark) {
+        builder_.CreateCall(
+            module_->getFunction(rt::defer_run_to), {fnMark});
+      }
       builder_.CreateRet(bodyVal);
     }
 
     pop_scope();
     verifyFunction(*fn);
 
-    // Restore state
-    current_return_type_ = prevReturnType;
-    current_closure_arg_ = prevClosureArg;
-    current_info_ = prevInfo;
-    scopes_ = std::move(prevScopes);
-    builder_.SetInsertPoint(prevBB);
+    // Restore outer context before emitting the closure at the caller's
+    // insertion point — the cell captures come from the outer scope.
+    saver.restore();
+    return emit_closure_build(fn, info, paramNames.size());
+  }
 
-    // At the caller's insertion point, create a closure populated with
-    // cell pointers from the current scope.
+  // Construct a JitClosure for `fn` at the current insertion point:
+  // calls `closure_new`, then fills in the captures array with cell
+  // pointers from the caller's scope (each retained). Returns the
+  // closure as a %Value (TAG_FUNC). Shared by compile_function and
+  // compile_defer (defer uses arity=0).
+  llvm::Value* emit_closure_build(llvm::Function* fn, const FuncInfo& info,
+                                  size_t arity) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto n = info.free_vars.size();
-    auto arity = paramNames.size();
-    auto closurePtr = builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_closure_new", ptrTy,
+    auto closurePtr = emit_call(
+        module_->getOrInsertFunction(rt::closure_new, ptrTy,
                                      ptrTy, builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {fn, builder_.getInt64(n), builder_.getInt64(arity)}, "closure");
-
     if (n > 0) {
-      // Load the captures array pointer from the closure
       auto capturesFieldPtr =
           builder_.CreateStructGEP(closureType_, closurePtr, 3);
       auto capturesArr = builder_.CreateLoad(ptrTy, capturesFieldPtr);
@@ -3481,11 +3999,9 @@ struct JIT {
         auto dstSlot = builder_.CreateInBoundsGEP(
             ptrTy, capturesArr, {builder_.getInt64(i)});
         builder_.CreateStore(cellPtr, dstSlot);
-        // Closure owns a ref to each captured cell
-        emit_cell_retain(cellPtr);
+        emit_cell_retain(cellPtr);  // closure owns a ref to each cell
       }
     }
-
     return make_func(closurePtr);
   }
 
@@ -3554,8 +4070,8 @@ struct JIT {
     auto outData =
         entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "get.data");
 
-    builder_.CreateCall(
-        module_->getOrInsertFunction("culebra_runtime_object_get",
+    emit_call(
+        module_->getOrInsertFunction(rt::object_get,
                                      builder_.getVoidTy(), ptrTy, ptrTy,
                                      ptrTy, ptrTy),
         {objPtr, keyPtr, outTag, outData});
@@ -3598,9 +4114,9 @@ struct JIT {
     auto outData =
         entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "idx.out.data");
 
-    builder_.CreateCall(
+    emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_array_get", builder_.getVoidTy(), ptrTy,
+            rt::array_get, builder_.getVoidTy(), ptrTy,
             builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
             builder_.getInt64Ty()),
         {arrPtr, idx, outTag, outData, current_line_val(),
@@ -3686,7 +4202,7 @@ struct JIT {
     for (size_t i = 1; i < args.size(); i++) argTypes.push_back(valueType_);
     auto calleeType = llvm::FunctionType::get(valueType_, argTypes, false);
 
-    return builder_.CreateCall(calleeType, fnPtr, args, "call.result");
+    return emit_call(calleeType, fnPtr, args, "call.result");
   }
 
   // Handle a CALL, intercepting stdlib globals in the leading `name(args)`
@@ -3743,9 +4259,9 @@ struct JIT {
     if (!debug_enabled_) return make_nil();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto pathPtr = builder_.CreateGlobalString(ast.path, ".dbgpath");
-    builder_.CreateCall(
+    emit_call(
         module_->getOrInsertFunction(
-            "culebra_runtime_debugger_break", builder_.getVoidTy(), ptrTy,
+            rt::debugger_break, builder_.getVoidTy(), ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
         {pathPtr, builder_.getInt64(static_cast<int64_t>(ast.line)),
          builder_.getInt64(static_cast<int64_t>(ast.column))});
@@ -3764,8 +4280,211 @@ struct JIT {
     if (!current_return_type_.empty()) {
       emit_type_check(val, current_return_type_, "return value");
     }
+    // Run any defers registered in this function's scopes before
+    // returning to the caller. No invoke needed: we're exiting.
+    if (current_fn_defer_mark_) {
+      builder_.CreateCall(
+          module_->getFunction(rt::defer_run_to),
+          {current_fn_defer_mark_});
+    }
     builder_.CreateRet(val);
     return val;
+  }
+
+  // `defer { BODY }` — compiles BODY as a 0-param closure and pushes
+  // it onto the global defer stack. The closure captures any outer
+  // variables it references, via the same cell mechanism as regular
+  // fn literals. The surrounding scope's exit path (fall-through,
+  // return, throw) calls `culebra_runtime_defer_run_to` to unwind the
+  // stack back to that scope's mark.
+  llvm::Value* compile_defer(const peg::Ast& ast) {
+    using namespace llvm;
+    auto ptrTy = PointerType::get(ctx_, 0);
+
+    auto infoIt = func_info_.find(&ast);
+    if (infoIt == func_info_.end()) {
+      throw std::runtime_error("missing func_info for defer");
+    }
+    const FuncInfo& info = infoIt->second;
+
+    // Closure signature: %Value fn(ptr __cls__, %Value this). 0 params.
+    std::vector<Type*> paramTypes = {ptrTy, valueType_};
+    auto fnType = FunctionType::get(valueType_, paramTypes, false);
+    auto fnName = std::format("__culebra_defer_{}", funcCounter_++);
+    auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage, fnName,
+                               module_);
+    if (info.has_eh) {
+      fn->setPersonalityFn(get_personality_fn());
+    }
+
+    auto argIt = fn->arg_begin();
+    argIt->setName("__cls__");
+    ++argIt;
+    argIt->setName("this");
+
+    CompilerStateSaver saver(*this);
+    current_info_ = &info;
+
+    auto entryBB = BasicBlock::Create(ctx_, "entry", fn);
+    builder_.SetInsertPoint(entryBB);
+    push_scope();
+
+    argIt = fn->arg_begin();
+    auto clsArg = &*argIt++;
+    current_closure_arg_ = clsArg;
+
+    // Bind free variables: load cell pointers from closure->captures[i].
+    for (size_t i = 0; i < info.free_vars.size(); i++) {
+      const auto& fv = info.free_vars[i];
+      auto capturesFieldPtr =
+          builder_.CreateStructGEP(closureType_, clsArg, 3, "caps.ptr");
+      auto capturesArr =
+          builder_.CreateLoad(ptrTy, capturesFieldPtr, "caps");
+      auto cellSlotPtr = builder_.CreateInBoundsGEP(
+          ptrTy, capturesArr, {builder_.getInt64(i)}, "cell.slot");
+      auto cellPtr = builder_.CreateLoad(ptrTy, cellSlotPtr, fv + ".cell");
+      llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
+      auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
+      builder_.CreateStore(cellPtr, holder);
+      define_var(fv, VarSlot{VarSlot::Cell, holder});
+    }
+
+    compile(*ast.nodes[0]);
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateRet(make_nil());
+    }
+
+    pop_scope();
+    verifyFunction(*fn);
+
+    saver.restore();
+
+    // Build the 0-arg closure and push it onto the defer stack. The
+    // runtime retains it; we drop the local ref after.
+    auto closureVal = emit_closure_build(fn, info, 0);
+    builder_.CreateCall(
+        module_->getFunction(rt::defer_push),
+        {extract_tag(closureVal), extract_data(closureVal)});
+    emit_value_release(closureVal);
+    return make_nil();
+  }
+
+  // `throw expr` — evaluates expr, hands its tag/data to the runtime
+  // which raises a CulebraException. Control never falls through.
+  llvm::Value* compile_throw(const peg::Ast& ast) {
+    auto val = compile(*ast.nodes[0]);
+    emit_call(module_->getFunction(rt::throw_),
+              {extract_tag(val), extract_data(val)});
+    builder_.CreateUnreachable();
+    // Fresh dead block so any trailing code has a valid insert point.
+    auto deadBB = llvm::BasicBlock::Create(
+        ctx_, "throw.dead", builder_.GetInsertBlock()->getParent());
+    builder_.SetInsertPoint(deadBB);
+    return make_nil();
+  }
+
+  // `try BODY catch name HANDLER` — evaluates BODY. If BODY throws a
+  // CulebraException, HANDLER runs with `name` bound to the caught
+  // value. The whole form is an expression yielding whichever block
+  // ran last. `return` inside BODY / HANDLER returns from the
+  // enclosing user function (standard LLVM ret semantics).
+  llvm::Value* compile_try(const peg::Ast& ast) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    auto tryBB = llvm::BasicBlock::Create(ctx_, "try.body", fn);
+    auto lpadBB = llvm::BasicBlock::Create(ctx_, "try.lpad", fn);
+    auto catchBB = llvm::BasicBlock::Create(ctx_, "try.catch", fn);
+    auto endBB = llvm::BasicBlock::Create(ctx_, "try.end", fn);
+
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto resultSlot = entryB.CreateAlloca(valueType_, nullptr, "try.result");
+    builder_.CreateStore(make_nil(), resultSlot);
+    auto caughtSlot = entryB.CreateAlloca(valueType_, nullptr, "try.caught");
+
+    builder_.CreateBr(tryBB);
+
+    // --- Try body: compile with current_lpad_ set to lpadBB ---
+    builder_.SetInsertPoint(tryBB);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = lpadBB;
+    push_scope();
+    auto tryVal = compile(*ast.nodes[0]);
+    pop_scope();
+    current_lpad_ = savedLpad;
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateStore(tryVal, resultSlot);
+      builder_.CreateBr(endBB);
+    }
+
+    // --- Landing pad: catch-all. If it's a Culebra user throw (as
+    // signaled by the `culebra_is_throw` global), read the carried
+    // tag/data and proceed. Otherwise resume unwinding so runtime
+    // errors (std::runtime_error etc.) propagate past `try/catch`. ---
+    builder_.SetInsertPoint(lpadBB);
+    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
+    auto lpad = builder_.CreateLandingPad(lpadTy, 1, "exc");
+    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
+
+    // Check the is-throw flag
+    auto flagGlobal = module_->getOrInsertGlobal(
+        "culebra_is_throw", builder_.getInt8Ty());
+    auto flagVal = builder_.CreateLoad(builder_.getInt8Ty(), flagGlobal,
+                                       "is_throw");
+    auto isOurs = builder_.CreateICmpNE(flagVal, builder_.getInt8(0));
+    auto handleBB = llvm::BasicBlock::Create(ctx_, "try.handle", fn);
+    auto notOursBB = llvm::BasicBlock::Create(ctx_, "try.notours", fn);
+    builder_.CreateCondBr(isOurs, handleBB, notOursBB);
+
+    // Not a Culebra user throw — let it keep unwinding.
+    builder_.SetInsertPoint(notOursBB);
+    builder_.CreateResume(lpad);
+
+    builder_.SetInsertPoint(handleBB);
+    // Clear the flag and consume the exception.
+    builder_.CreateStore(builder_.getInt8(0), flagGlobal);
+    auto excPtr = builder_.CreateExtractValue(lpad, {0}, "exc.ptr");
+    auto beginCatch = module_->getOrInsertFunction(
+        "__cxa_begin_catch", ptrTy, ptrTy);
+    builder_.CreateCall(beginCatch, {excPtr});
+    auto endCatchFn = module_->getOrInsertFunction("__cxa_end_catch",
+                                                   builder_.getVoidTy());
+    builder_.CreateCall(endCatchFn);
+    // Read the thrown Value from the globals into caughtSlot.
+    auto tagGlobal = module_->getOrInsertGlobal(
+        "culebra_thrown_tag", builder_.getInt8Ty());
+    auto dataGlobal = module_->getOrInsertGlobal(
+        "culebra_thrown_data", builder_.getInt64Ty());
+    auto tagVal = builder_.CreateLoad(builder_.getInt8Ty(), tagGlobal,
+                                      "exc.tag");
+    auto dataVal = builder_.CreateLoad(builder_.getInt64Ty(), dataGlobal,
+                                       "exc.data");
+    llvm::Value* caught = llvm::UndefValue::get(valueType_);
+    caught = builder_.CreateInsertValue(caught, tagVal, {0});
+    caught = builder_.CreateInsertValue(caught, dataVal, {1});
+    builder_.CreateStore(caught, caughtSlot);
+    builder_.CreateBr(catchBB);
+
+    // --- Catch body: bind thrown value as `name` ---
+    builder_.SetInsertPoint(catchBB);
+    push_scope();
+    auto caughtName = std::string(ast.nodes[1]->token);
+    auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
+    bool captured = current_info_ &&
+                    current_info_->captured_locals.contains(caughtName);
+    auto slot = captured ? make_cell_slot(caughtName, caughtValue)
+                         : make_stack_slot(caughtName, caughtValue);
+    define_var(caughtName, slot);
+    auto catchVal = compile(*ast.nodes[2]);
+    pop_scope();
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateStore(catchVal, resultSlot);
+      builder_.CreateBr(endBB);
+    }
+
+    // --- End ---
+    builder_.SetInsertPoint(endBB);
+    return builder_.CreateLoad(valueType_, resultSlot, "try.res");
   }
 
   // --- Execution ---
@@ -3788,7 +4507,19 @@ struct JIT {
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
-    mainFn();
+    try {
+      mainFn();
+    } catch (const CulebraException& e) {
+      // Balance the retain performed in culebra_runtime_throw.
+      _culebra_value_release_impl(e.tag, e.data);
+      auto s = _culebra_value_to_str_impl(e.tag, e.data);
+      // Run (best-effort) any top-level defers the uncaught throw
+      // skipped, so the global defer stack is drained between runs.
+      try {
+        culebra_runtime_defer_run_to(0);
+      } catch (...) {}
+      throw std::runtime_error(std::format("uncaught: {}", s));
+    }
   }
 };
 
@@ -3797,14 +4528,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                                 llvm::Value* receiver) {
   // Fast path: bail out immediately on unknown method names before doing any
   // setup. Keeps user-defined method calls free of stdlib overhead.
-  static const std::unordered_set<std::string_view> known = {
-      "size",        "push",       "pop",      "reverse", "slice",
-      "join",        "index_of",   "contains", "upper",   "lower",
-      "trim",        "split",      "starts_with", "ends_with",
-      "keys",        "has",        "remove",
-      "map",         "filter",     "reduce",   "for_each",
-      "find",        "any",        "all",      "flat_map", "sort_by"};
-  if (!known.contains(method)) return nullptr;
+  if (!known_builtin_methods().contains(method)) return nullptr;
 
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto tag = extract_tag(receiver);
@@ -3825,22 +4549,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto arrSize = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_size"), {arrPtr}, "asz");
+    auto arrSize = emit_call(
+        module_->getFunction(rt::array_size), {arrPtr}, "asz");
     auto arrSizeBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
     auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto objSize = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_object_size"), {objPtr}, "osz");
+    auto objSize = emit_call(
+        module_->getFunction(rt::object_size), {objPtr}, "osz");
     auto objSizeBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
     auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto strSize = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_size"), {strPtr}, "ssz");
+    auto strSize = emit_call(
+        module_->getFunction(rt::str_size), {strPtr}, "ssz");
     auto strSizeBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -3861,7 +4585,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "push" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "push");
     auto val = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(module_->getFunction("culebra_runtime_array_push"),
+    emit_call(module_->getFunction(rt::array_push),
                         {arrPtr, extract_tag(val), extract_data(val)});
     return make_nil();
   }
@@ -3872,7 +4596,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "pop.tag");
     auto outData =
         entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "pop.data");
-    builder_.CreateCall(module_->getFunction("culebra_runtime_array_pop"),
+    emit_call(module_->getFunction(rt::array_pop),
                         {arrPtr, outTag, outData});
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
@@ -3884,7 +4608,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "reverse" && argsAst.nodes.size() == 0) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "rev");
-    builder_.CreateCall(module_->getFunction("culebra_runtime_array_reverse"),
+    emit_call(module_->getFunction(rt::array_reverse),
                         {arrPtr});
     return make_nil();
   }
@@ -3905,8 +4629,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto newArr = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_slice2"),
+    auto newArr = emit_call(
+        module_->getFunction(rt::array_slice2),
         {arrPtr, start, end});
     auto arrVal = make_array(newArr);
     auto arrBBEnd = builder_.GetInsertBlock();
@@ -3914,8 +4638,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(strBB);
     auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto newStr = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_slice"),
+    auto newStr = emit_call(
+        module_->getFunction(rt::str_slice),
         {strPtr, start, end});
     auto strVal = make_string(newStr);
     auto strBBEnd = builder_.GetInsertBlock();
@@ -3937,8 +4661,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto sep = compile(*argsAst.nodes[0]);
     emit_type_check(sep, "String", "join separator");
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
-    auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_join"), {arrPtr, sepPtr});
+    auto s = emit_call(
+        module_->getFunction(rt::array_join), {arrPtr, sepPtr});
     emit_value_release(sep);
     return make_string(s);
   }
@@ -3946,8 +4670,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "index_of" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "iof");
     auto v = compile(*argsAst.nodes[0]);
-    auto idx = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_index_of"),
+    auto idx = emit_call(
+        module_->getFunction(rt::array_index_of),
         {arrPtr, extract_tag(v), extract_data(v)});
     emit_value_release(v);
     return make_long(idx);
@@ -3967,8 +4691,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto v = compile(*argsAst.nodes[0]);
-    auto arrFound = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_contains"),
+    auto arrFound = emit_call(
+        module_->getFunction(rt::array_contains),
         {arrPtr, extract_tag(v), extract_data(v)});
     emit_value_release(v);
     auto arrBoolVal = make_bool(arrFound);
@@ -3980,8 +4704,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto sub = compile(*argsAst.nodes[0]);
     emit_type_check(sub, "String", "contains argument");
     auto subPtr = builder_.CreateIntToPtr(extract_data(sub), ptrTy);
-    auto strFound = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_contains"),
+    auto strFound = emit_call(
+        module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
     emit_value_release(sub);
     auto strBoolVal = make_bool(strFound);
@@ -4003,22 +4727,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "upper" && argsAst.nodes.size() == 0) {
     auto strPtr = expect_tag(receiver, TAG_STRING, "up");
-    auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_upper"), {strPtr});
+    auto s = emit_call(
+        module_->getFunction(rt::str_upper), {strPtr});
     return make_string(s);
   }
 
   if (method == "lower" && argsAst.nodes.size() == 0) {
     auto strPtr = expect_tag(receiver, TAG_STRING, "lo");
-    auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_lower"), {strPtr});
+    auto s = emit_call(
+        module_->getFunction(rt::str_lower), {strPtr});
     return make_string(s);
   }
 
   if (method == "trim" && argsAst.nodes.size() == 0) {
     auto strPtr = expect_tag(receiver, TAG_STRING, "tr");
-    auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_trim"), {strPtr});
+    auto s = emit_call(
+        module_->getFunction(rt::str_trim), {strPtr});
     return make_string(s);
   }
 
@@ -4027,8 +4751,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto sep = compile(*argsAst.nodes[0]);
     emit_type_check(sep, "String", "split separator");
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
-    auto arr = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_split"), {strPtr, sepPtr});
+    auto arr = emit_call(
+        module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
     return make_array(arr);
   }
@@ -4038,8 +4762,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto p = compile(*argsAst.nodes[0]);
     emit_type_check(p, "String", "starts_with argument");
     auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
-    auto r = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_starts_with"),
+    auto r = emit_call(
+        module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
     emit_value_release(p);
     return make_bool(r);
@@ -4050,8 +4774,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto p = compile(*argsAst.nodes[0]);
     emit_type_check(p, "String", "ends_with argument");
     auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
-    auto r = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_str_ends_with"),
+    auto r = emit_call(
+        module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
     emit_value_release(p);
     return make_bool(r);
@@ -4061,8 +4785,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "keys" && argsAst.nodes.size() == 0) {
     auto objPtr = expect_tag(receiver, TAG_OBJECT, "keys");
-    auto arr = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_object_keys"), {objPtr});
+    auto arr = emit_call(
+        module_->getFunction(rt::object_keys), {objPtr});
     return make_array(arr);
   }
 
@@ -4071,8 +4795,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto key = compile(*argsAst.nodes[0]);
     emit_type_check(key, "String", "has argument");
     auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
-    auto r = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_object_has"), {objPtr, keyPtr});
+    auto r = emit_call(
+        module_->getFunction(rt::object_has), {objPtr, keyPtr});
     emit_value_release(key);
     return make_bool(r);
   }
@@ -4082,7 +4806,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto key = compile(*argsAst.nodes[0]);
     emit_type_check(key, "String", "remove argument");
     auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
-    builder_.CreateCall(module_->getFunction("culebra_runtime_object_remove"),
+    emit_call(module_->getFunction(rt::object_remove),
                         {objPtr, keyPtr});
     emit_value_release(key);
     return make_nil();
@@ -4096,8 +4820,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "map" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "map");
     auto f = compile(*argsAst.nodes[0]);
-    auto out = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_map"),
+    auto out = emit_call(
+        module_->getFunction(rt::array_map),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_array(out);
@@ -4106,8 +4830,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "filter" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "filter");
     auto f = compile(*argsAst.nodes[0]);
-    auto out = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_filter"),
+    auto out = emit_call(
+        module_->getFunction(rt::array_filter),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_array(out);
@@ -4116,8 +4840,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "for_each" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "foreach");
     auto f = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_for_each"),
+    emit_call(
+        module_->getFunction(rt::array_for_each),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_nil();
@@ -4132,8 +4856,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
     auto outData =
         entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
-    builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_reduce"),
+    emit_call(
+        module_->getFunction(rt::array_reduce),
         {arrPtr, extract_tag(init), extract_data(init), extract_tag(f),
          extract_data(f), ho_line, ho_col, outTag, outData});
     emit_value_release(f);
@@ -4153,8 +4877,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
     auto outData =
         entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
-    builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_find"),
+    emit_call(
+        module_->getFunction(rt::array_find),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col,
          outTag, outData});
     emit_value_release(f);
@@ -4169,9 +4893,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, method.c_str());
     auto f = compile(*argsAst.nodes[0]);
-    auto rt_name = method == "any" ? "culebra_runtime_array_any"
-                                   : "culebra_runtime_array_all";
-    auto result_i64 = builder_.CreateCall(
+    auto rt_name = method == "any" ? rt::array_any
+                                   : rt::array_all;
+    auto result_i64 = emit_call(
         module_->getFunction(rt_name),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
@@ -4183,8 +4907,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "flat_map");
     auto f = compile(*argsAst.nodes[0]);
-    auto out = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_flat_map"),
+    auto out = emit_call(
+        module_->getFunction(rt::array_flat_map),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_array(out);
@@ -4193,8 +4917,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "sort_by" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_tag(receiver, TAG_ARRAY, "sort_by");
     auto f = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(
-        module_->getFunction("culebra_runtime_array_sort_by"),
+    emit_call(
+        module_->getFunction(rt::array_sort_by),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_nil();

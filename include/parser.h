@@ -11,13 +11,16 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / DEFER / LEXICAL_SCOPE / EXPRESSION
 
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
+  THROW                    <-  throw _sp_ !_nl_ EXPRESSION
+  DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
-  EXPRESSION               <-  ASSIGNMENT / LOGICAL_OR
+  EXPRESSION               <-  ASSIGNMENT / TRY / LOGICAL_OR
+  TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_ (ARGUMENTS / INDEX / DOT))* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
 
@@ -102,6 +105,10 @@ const auto grammar_ = R"(
   ~fn                      <-  K('fn')
   ~return                  <-  K('return')
   ~match                   <-  K('match')
+  ~throw                   <-  K('throw')
+  ~try                     <-  K('try')
+  ~catch                   <-  K('catch')
+  ~defer                   <-  K('defer')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
@@ -181,6 +188,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(
         true, {"PARAMETERS", "SEQUENCE", "OBJECT", "ARRAY", "RETURN",
+               "THROW", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "REST_PATTERN"});

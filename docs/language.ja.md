@@ -696,8 +696,94 @@ Culebra は動的型付けで、型注釈は任意です。注釈は以下 3 つ
 15. エラー処理
 ---------------
 
-Culebra にはユーザレベルの例外機構はありません。エラーは現在の実行を
-以下の形式の診断メッセージで中断します:
+### `throw` / `try` / `catch`
+
+Culebra は `throw` で例外を発生させ、`try`/`catch` で受けます。
+`throw` できる値は**任意の Culebra 値**です。
+
+    throw 'something bad'
+    throw {kind: 'io', msg: 'file not found', path: p}
+
+    try { risky() }
+    catch e { puts("error: {e}") }
+
+セマンティクス:
+
+* `throw expr` は `expr` を評価し、その値を直近の `try` まで伝播
+  させます。**関数境界を越え**、何階層でも透過します
+* `try { A } catch name { B }` は新しいスコープで `A` を評価し、
+  `A` 内で `throw` が起きたら別スコープで `name` に thrown 値を
+  束縛して `B` を評価します。`try`/`catch` 全体は**式**として、
+  実行されたブロックの最後の値を返します
+* トップレベルまで到達した未 catch の `throw` は `uncaught: ...`
+  と表示され、プログラムは非ゼロ終了します
+* `throw` は `return` と別: `return` は自分の関数だけを抜け、
+  `throw` は外側の関数も貫通します
+
+### `defer`
+
+`defer { BLOCK }` は、**囲みの字句スコープ**を抜ける時に `BLOCK`
+を実行するよう登録します。複数登録時は LIFO 順。正常終了・早期
+`return`・`throw` の**いずれの経路でも**必ず実行されます。
+
+    fn work() {
+      {
+        f = open_tmp()
+        defer { f.close() }     # この内側ブロックを抜ける時に発火
+        process(f)
+      }                         # ← ここで f.close() が走る
+      more_work()
+    }
+
+ブロックスコープ（関数スコープではなく）であることの意味:
+
+* ループ本体の `defer` は**各反復**で発火 — 反復ごとのクリーン
+  アップ要件に合う
+* 条件ブロック内の `defer` は、そのブロックが実際に実行された
+  時のみ発火
+* 関数全体の終了時に発火させたければ、関数本体の先頭に `defer` を
+  書く（関数本体自体がブロック）
+* トップレベルの `defer` はプログラム終了時に発火
+
+defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
+関数を抜けません）。defer 本体内の `throw` は defer を中断して
+通常の例外として伝播します。
+
+### Scope guard パターン
+
+コールバック内部から「呼び出し側スコープで cleanup したい」など、
+自分で `defer` を置けない場面では、小さなヘルパーを自前で定義すれば
+十分です。言語には組み込みません。
+
+    make_guard = fn () {
+      mut fns = []
+      {
+        add: fn (f) { fns.push(f) },
+        run: fn () {
+          mut i = fns.size() - 1
+          while i >= 0 { fns[i](); i = i - 1 }
+          fns = []
+        }
+      }
+    }
+
+    process = fn (items) {
+      g = make_guard()
+      defer { g.run() }
+      mut f = nil
+      items.for_each(fn (item) {
+        if f == nil {
+          f = open('out')
+          g.add(fn () { f.close() })
+        }
+        write(f, item)
+      })
+    }
+
+### ランタイムエラー
+
+ランタイムエラーは現在、以下の形式で診断メッセージを出して**即座に
+終了**します（`throw`/`catch` には乗りません）:
 
     type error at L:C.
     type error: parameter 'name' expects T at L:C.
@@ -707,13 +793,34 @@ Culebra にはユーザレベルの例外機構はありません。エラーは
     immutable property 'key' at L:C.
     undefined variable 'name'...
     assert failed at L:C.
+    cannot shadow outer variable 'x' (...) at L:C.
 
 `L` と `C` は該当する AST ノードの 1 起点の行番号・桁番号です。
+これらを `try`/`catch` で受けられるようにするのは将来課題。
 
 ### `assert(cond)`
 
 `cond` を評価し、偽なら `assert failed at L:C.` で中断します。
 軽量なテスト用プリミティブです（`samples/test.cul` 参照）。
+
+### JIT サポート
+
+JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
+ケースでツリーインタプリタと同じセマンティクスでサポートします:
+
+* `throw` / `try` / `catch` は LLVM の `invoke` / `landingpad` と
+  Itanium C++ personality を使って関数境界を超えて伝播
+* `defer` はレキシカルスコープ（`{ defer { ... } ... }`）内で動作。
+  scope の cleanup landingpad により、正常終了・`return`・throw の
+  全経路で発火
+* **制限事項**: 関数本体直下やトップレベル直下（ブロックに入れて
+  いない）`defer` は**正常終了または `return` のみ**発火します。
+  未 catch の throw で関数／プログラムを抜けた場合はスキップされ
+  ます。throw 経路でも cleanup したければブロック `{ }` で囲んで
+  ください (`fn () { { defer { ... } ... } }`)
+
+ランタイムエラー（type error、divide by 0 など）は両バックエンドで
+引き続きユーザの `try/catch` をバイパスします。
 
 ---
 

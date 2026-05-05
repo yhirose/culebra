@@ -730,8 +730,96 @@ feature, not a type system.
 15. Error handling
 ------------------
 
-Culebra has no user-level exception mechanism. Errors abort the
-current run with a diagnostic message of the form:
+### `throw` / `try` / `catch`
+
+Culebra supports user-raised exceptions via `throw` and catching via
+`try`/`catch`. The thrown value may be **any** Culebra value.
+
+    throw 'something bad'
+    throw {kind: 'io', msg: 'file not found', path: p}
+
+    try { risky() }
+    catch e { puts("error: {e}") }
+
+Semantics:
+
+* `throw expr` evaluates `expr` and propagates it as a Culebra value
+  until caught by the nearest enclosing `try`. It crosses function
+  boundaries and propagates through any number of frames.
+* `try { A } catch name { B }` evaluates `A` in a fresh scope; on
+  `throw` within `A`, `B` is evaluated in another fresh scope with
+  `name` bound to the thrown value. The whole `try`/`catch` is an
+  expression yielding the value of whichever block ran last.
+* An uncaught `throw` at the top level is reported with `uncaught: ...`
+  and the program exits with a non-zero status.
+* `throw` is distinct from `return`: a function's early `return`
+  unwinds only that function; a user `throw` travels past enclosing
+  functions.
+
+### `defer`
+
+A `defer { BLOCK }` statement registers `BLOCK` to run when the
+**enclosing lexical scope** exits, in LIFO order. Defers run on
+*every* exit path — normal completion, early `return`, or `throw`.
+
+    fn work() {
+      {
+        f = open_tmp()
+        defer { f.close() }     # fires when this inner block exits
+        process(f)
+      }                         # ← f.close() runs here
+      more_work()
+    }
+
+Block scope (not function scope) means:
+
+* `defer` in a loop body fires on every iteration — matches the
+  programmer's intent of per-iteration cleanup.
+* `defer` in a conditional block fires only if that block actually ran.
+* To tie cleanup to the function, place `defer` at the top of the
+  function body (the function body itself is a block).
+* Top-level `defer` runs when the program exits.
+
+A `return` inside a defer body exits only the defer closure, not the
+enclosing function. `throw` inside a defer body aborts that defer and
+propagates as a regular exception.
+
+### Scope guard pattern
+
+When cleanup must be registered from code that cannot place its own
+`defer` (e.g., a callback that wants cleanup at the caller's scope),
+a small helper object is enough — the language does not ship a
+built-in for it:
+
+    make_guard = fn () {
+      mut fns = []
+      {
+        add: fn (f) { fns.push(f) },
+        run: fn () {
+          mut i = fns.size() - 1
+          while i >= 0 { fns[i](); i = i - 1 }
+          fns = []
+        }
+      }
+    }
+
+    process = fn (items) {
+      g = make_guard()
+      defer { g.run() }
+      mut f = nil
+      items.for_each(fn (item) {
+        if f == nil {
+          f = open('out')
+          g.add(fn () { f.close() })
+        }
+        write(f, item)
+      })
+    }
+
+### Runtime errors
+
+Runtime errors currently abort the program with a diagnostic of the
+form (they do **not** flow through `throw`/`catch`):
 
     type error at L:C.
     type error: parameter 'name' expects T at L:C.
@@ -741,13 +829,35 @@ current run with a diagnostic message of the form:
     immutable property 'key' at L:C.
     undefined variable 'name'...
     assert failed at L:C.
+    cannot shadow outer variable 'x' (...) at L:C.
 
 `L` and `C` are 1-based line and column of the offending AST node.
+Integrating these with `try`/`catch` is future work.
 
 ### `assert(cond)`
 
 Evaluates `cond`; if falsy, aborts with `assert failed at L:C.`. Used
 as a lightweight testing primitive (see `samples/test.cul`).
+
+### JIT support
+
+The JIT backend supports `throw` / `try` / `catch` / `defer` with
+semantics matching the tree interpreter for the common cases:
+
+* `throw` / `try` / `catch` propagate across function boundaries via
+  LLVM `invoke` / `landingpad` and the Itanium C++ personality.
+* `defer` inside a lexical-scope block (`{ defer { ... } ... }`)
+  registers a closure on a global defer stack; a scope cleanup
+  landingpad runs it on fall-through, `return`, and throw-unwind
+  paths.
+* **Limitation**: `defer` written directly in a function body or at
+  the top level (not inside a nested `{ }`) only runs on *normal*
+  exit or `return`. An uncaught throw that escapes the function or
+  program skips it. For throw-path cleanup, wrap the defer in a
+  block (`fn () { { defer { ... } ... } }`).
+
+Runtime errors (type error, divide by 0, etc.) continue to bypass
+user `try/catch` on both backends.
 
 ---
 

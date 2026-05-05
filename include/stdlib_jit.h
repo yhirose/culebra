@@ -108,19 +108,19 @@ namespace culebra {
 inline void JIT::declare_stdlib_runtime() {
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
-  module_->getOrInsertFunction("culebra_runtime_print", builder_.getVoidTy(),
+  module_->getOrInsertFunction(rt::print, builder_.getVoidTy(),
                                builder_.getInt8Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction("culebra_runtime_to_long",
+  module_->getOrInsertFunction(rt::to_long,
                                builder_.getInt64Ty(), ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction("culebra_runtime_type_of", ptrTy,
+  module_->getOrInsertFunction(rt::type_of, ptrTy,
                                builder_.getInt8Ty());
-  module_->getOrInsertFunction("culebra_runtime_range", ptrTy,
+  module_->getOrInsertFunction(rt::range, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction("culebra_runtime_input", ptrTy);
-  module_->getOrInsertFunction("culebra_runtime_read_file", ptrTy, ptrTy,
+  module_->getOrInsertFunction(rt::input, ptrTy);
+  module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
-  module_->getOrInsertFunction("culebra_runtime_write_file",
+  module_->getOrInsertFunction(rt::write_file,
                                builder_.getVoidTy(), ptrTy, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
 }
@@ -134,7 +134,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
 
   if (name == "puts" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(module_->getFunction("culebra_runtime_puts"),
+    builder_.CreateCall(module_->getFunction(rt::puts),
                         {extract_tag(arg), extract_data(arg)});
     emit_value_release(arg);
     return make_nil();
@@ -142,7 +142,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
 
   if (name == "print" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
-    builder_.CreateCall(module_->getFunction("culebra_runtime_print"),
+    builder_.CreateCall(module_->getFunction(rt::print),
                         {extract_tag(arg), extract_data(arg)});
     emit_value_release(arg);
     return make_nil();
@@ -151,7 +151,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
   if (name == "assert" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
     builder_.CreateCall(
-        module_->getFunction("culebra_runtime_assert"),
+        module_->getFunction(rt::assert_),
         {extract_tag(arg), extract_data(arg), line, col});
     emit_value_release(arg);
     return make_nil();
@@ -181,7 +181,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
 
   if (name == "range" && argsAst.nodes.size() == 1) {
     auto end = value_to_long(compile(*argsAst.nodes[0]));
-    auto arr = builder_.CreateCall(module_->getFunction("culebra_runtime_range"),
+    auto arr = builder_.CreateCall(module_->getFunction(rt::range),
                                    {builder_.getInt64(0), end});
     return make_array(arr);
   }
@@ -189,7 +189,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
   if (name == "range" && argsAst.nodes.size() == 2) {
     auto start = value_to_long(compile(*argsAst.nodes[0]));
     auto end = value_to_long(compile(*argsAst.nodes[1]));
-    auto arr = builder_.CreateCall(module_->getFunction("culebra_runtime_range"),
+    auto arr = builder_.CreateCall(module_->getFunction(rt::range),
                                    {start, end});
     return make_array(arr);
   }
@@ -199,7 +199,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
     emit_type_check(arg, "String", "to_long argument");
     auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
     auto result = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_to_long"), {ptr, line, col});
+        module_->getFunction(rt::to_long), {ptr, line, col});
     emit_value_release(arg);
     return make_long(result);
   }
@@ -207,7 +207,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
   if (name == "to_string" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
     auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_value_to_display"),
+        module_->getFunction(rt::value_to_display),
         {extract_tag(arg), extract_data(arg)});
     emit_value_release(arg);
     return make_string(s);
@@ -215,14 +215,14 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
     auto arg = compile(*argsAst.nodes[0]);
-    auto s = builder_.CreateCall(module_->getFunction("culebra_runtime_type_of"),
+    auto s = builder_.CreateCall(module_->getFunction(rt::type_of),
                                  {extract_tag(arg)});
     emit_value_release(arg);
     return make_string(s);
   }
 
   if (name == "input" && argsAst.nodes.size() == 0) {
-    auto s = builder_.CreateCall(module_->getFunction("culebra_runtime_input"),
+    auto s = builder_.CreateCall(module_->getFunction(rt::input),
                                  {});
     return make_string(s);
   }
@@ -232,7 +232,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
     emit_type_check(arg, "String", "read_file argument");
     auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
     auto s = builder_.CreateCall(
-        module_->getFunction("culebra_runtime_read_file"), {ptr, line, col});
+        module_->getFunction(rt::read_file), {ptr, line, col});
     emit_value_release(arg);
     return make_string(s);
   }
@@ -244,7 +244,7 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
     emit_type_check(c, "String", "write_file content");
     auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
     auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
-    builder_.CreateCall(module_->getFunction("culebra_runtime_write_file"),
+    builder_.CreateCall(module_->getFunction(rt::write_file),
                         {pp, cp, line, col});
     emit_value_release(p);
     emit_value_release(c);
