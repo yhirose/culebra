@@ -375,6 +375,139 @@ test_shadow_rules = fn () {
   assert(shadow_match_fn(7) == 70)
 }
 
+// Auto-drop (RAII). Cross-checks that scope-exit drop fires in both
+// backends and that the well-known-property contract for `drop` is
+// enforced at assignment time.
+test_drop = fn () {
+  // Use a captured `mut` counter to observe drop firings without
+  // depending on stdout ordering.
+  mut events = []
+  make_thing = fn (id) {
+    { drop: fn () { events.push(id) } }
+  }
+
+  // Scope-exit drop on a single object.
+  {
+    let _t = make_thing('a')
+  }
+  assert(events.size() == 1 && events[0] == 'a')
+
+  // Cascade: parent drop fires before child drops are released.
+  events = []
+  make_parent = fn () {
+    let c1 = make_thing('c1')
+    let c2 = make_thing('c2')
+    { c1: c1, c2: c2, drop: fn () { events.push('p') } }
+  }
+  {
+    let _p = make_parent()
+  }
+  assert(events.size() == 3)
+  assert(events[0] == 'p')        // parent's drop runs first
+  // Child order between c1/c2 isn't observable from refcount semantics
+  assert((events[1] == 'c1' && events[2] == 'c2') ||
+         (events[1] == 'c2' && events[2] == 'c1'))
+}
+
+// JIT-safe subset of UFCS tests. The __ARGS__/variadic case lives
+// in samples/test_ufcs.cul and runs under the interpreter only.
+test_ufcs = fn () {
+  // Free function as method on primitive
+  double = fn (x) { x * 2 }
+  assert(42.double() == 84)
+  assert((-3).double() == -6)
+
+  // UFCS on String / Array
+  word_count = fn (s) { s.split(' ').size() }
+  assert('a b c'.word_count() == 3)
+  sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+  assert([1, 2, 3, 4].sum() == 10)
+
+  // Multiple args: receiver first, rest follow
+  scale = fn (x, factor) { x * factor }
+  assert(7.scale(3) == 21)
+
+  // Existing method wins over same-named free function
+  size = fn (x) { 99 }
+  assert([1, 2, 3].size() == 3)
+  assert('hello'.size() == 5)
+  assert({a: 1, b: 2}.size() == 2)
+
+  // Object HOF via UFCS
+  map_keys_to = fn (o, f) {
+    mut r = []
+    for k in o { r.push(f(k)) }
+    r
+  }
+  ks = {b: 2, a: 1}.map_keys_to(fn (k) { k })
+  assert(ks.size() == 2)
+  assert(ks[0] == 'a' && ks[1] == 'b')
+
+  // Chain mixing builtin (Array.map) and UFCS (sum/incr)
+  incr = fn (x) { x + 1 }
+  result = [1, 2, 3]
+    .map(fn (x) { x * 10 })
+    .sum()
+    .incr()
+  assert(result == 61)
+}
+
+// JIT-safe subset of for-in tests. Iterator-protocol coverage
+// (user-defined iter/next, lazy Math.range, iterator methods) lives
+// in samples/test_iter.cul and runs under the interpreter only.
+test_for_in = fn () {
+  // Array iteration
+  mut sum = 0
+  for x in [1, 2, 3, 4] { sum = sum + x }
+  assert(sum == 10)
+
+  // Object iteration yields keys (ascending)
+  mut keys = []
+  for k in {b: 2, a: 1, c: 3} { keys.push(k) }
+  assert(keys.size() == 3)
+  assert(keys[0] == 'a' && keys[1] == 'b' && keys[2] == 'c')
+
+  // break exits inner loop only
+  mut hit = 0
+  for i in [1, 2, 3] {
+    for j in [10, 20, 30] {
+      if j == 20 { break }
+      hit = hit + 1
+    }
+  }
+  assert(hit == 3)
+
+  // continue skips
+  mut evens = 0
+  for x in [1, 2, 3, 4, 5, 6] {
+    if x % 2 == 1 { continue }
+    evens = evens + 1
+  }
+  assert(evens == 3)
+
+  // Empty iteration
+  mut touched = false
+  for _ in [] { touched = true }
+  assert(touched == false)
+
+  // Math.iota returns an Array — goes through the Array fast path.
+  mut total = 0
+  for i in Math.iota(5) { total = total + i }
+  assert(total == 10)
+
+  // String: UTF-8 scalar walk. 'café' is 5 bytes but 4 scalars.
+  mut count = 0
+  for c in 'hello' { count = count + 1 }
+  assert(count == 5)
+  mut scalars = 0
+  for c in 'café' { scalars = scalars + 1 }
+  assert(scalars == 4)
+  mut parts = []
+  for c in 'ab' { parts.push(c) }
+  assert(parts.size() == 2)
+  assert(parts[0] == 'a' && parts[1] == 'b')
+}
+
 test_stdlib = fn () {
   assert(Math.abs(-7) == 7)
   assert(Math.abs(5) == 5)
@@ -389,11 +522,11 @@ test_stdlib = fn () {
   assert(Math.clamp(5, 0, 10) == 5)
   assert(Math.clamp(-5, 0, 10) == 0)
   assert(Math.clamp(15, 0, 10) == 10)
-  assert(range(3).size() == 3)
-  assert(range(3)[0] == 0 && range(3)[2] == 2)
-  assert(range(2, 5).size() == 3)
-  assert(range(2, 5)[0] == 2 && range(2, 5)[2] == 4)
-  assert(range(5, 2).size() == 0)
+  assert(Math.iota(3).size() == 3)
+  assert(Math.iota(3)[0] == 0 && Math.iota(3)[2] == 2)
+  assert(Math.iota(2, 5).size() == 3)
+  assert(Math.iota(2, 5)[0] == 2 && Math.iota(2, 5)[2] == 4)
+  assert(Math.iota(5, 2).size() == 0)
   assert(to_long('42') == 42)
   assert(to_long('  -7  ') == -7)
   assert(to_string(42) == '42')
@@ -405,6 +538,7 @@ test_stdlib = fn () {
   assert(type_of(nil) == 'Nil')
   assert(type_of(true) == 'Bool')
 }
+
 
 debugger
 test_call()
@@ -427,5 +561,8 @@ test_shadow_rules()
 // because the inner `mut shadow_src_value = 999` was a local shadow.
 assert(shadow_src_value == 100)
 test_stdlib()
+test_drop()
+test_ufcs()
+test_for_in()
 
 return // end

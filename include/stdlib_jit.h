@@ -64,8 +64,8 @@ __attribute__((used)) inline const char* culebra_runtime_type_of(int8_t tag) {
   return "Unknown";
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_range(int64_t start,
-                                                             int64_t end) {
+__attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
+                                                            int64_t end) {
   auto* r = culebra_runtime_array_new();
   for (int64_t i = start; i < end; i++) {
     culebra_runtime_array_push(r, /*tag Long*/ 2, i);
@@ -168,7 +168,7 @@ inline void JIT::declare_stdlib_runtime() {
                                builder_.getInt64Ty(), builder_.getInt64Ty());
   module_->getOrInsertFunction(rt::type_of, ptrTy,
                                builder_.getInt8Ty());
-  module_->getOrInsertFunction(rt::range, ptrTy,
+  module_->getOrInsertFunction(rt::iota, ptrTy,
                                builder_.getInt64Ty(), builder_.getInt64Ty());
   module_->getOrInsertFunction(rt::input, ptrTy);
   module_->getOrInsertFunction(rt::read_file, ptrTy, ptrTy,
@@ -205,21 +205,6 @@ inline llvm::Value* JIT::try_compile_stdlib_global(const std::string& name,
         {extract_tag(arg), extract_data(arg), line, col});
     emit_value_release(arg);
     return make_nil();
-  }
-
-  if (name == "range" && argsAst.nodes.size() == 1) {
-    auto end = value_to_long(compile(*argsAst.nodes[0]));
-    auto arr = builder_.CreateCall(module_->getFunction(rt::range),
-                                   {builder_.getInt64(0), end});
-    return make_array(arr);
-  }
-
-  if (name == "range" && argsAst.nodes.size() == 2) {
-    auto start = value_to_long(compile(*argsAst.nodes[0]));
-    auto end = value_to_long(compile(*argsAst.nodes[1]));
-    auto arr = builder_.CreateCall(module_->getFunction(rt::range),
-                                   {start, end});
-    return make_array(arr);
   }
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
@@ -306,6 +291,19 @@ inline llvm::Value* JIT::try_compile_stdlib_namespace(
       auto r = builder_.CreateSelect(builder_.CreateICmpSGT(above_lo, hi),
                                      hi, above_lo);
       return make_long(r);
+    }
+    if (method == "iota" && argsAst.nodes.size() == 1) {
+      auto end = value_to_long(compile(*argsAst.nodes[0]));
+      auto arr = builder_.CreateCall(module_->getFunction(rt::iota),
+                                     {builder_.getInt64(0), end});
+      return make_array(arr);
+    }
+    if (method == "iota" && argsAst.nodes.size() == 2) {
+      auto start = value_to_long(compile(*argsAst.nodes[0]));
+      auto end = value_to_long(compile(*argsAst.nodes[1]));
+      auto arr = builder_.CreateCall(module_->getFunction(rt::iota),
+                                     {start, end});
+      return make_array(arr);
     }
   }
 

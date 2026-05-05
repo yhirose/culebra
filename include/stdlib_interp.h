@@ -2,12 +2,13 @@
 
 // Interpreter-side implementation of the Culebra standard library.
 //
-// Core built-ins bound on every environment: assert, range, to_long,
+// Core built-ins bound on every environment: assert, to_long,
 // to_string, type_of (see docs/language.md §18). Everything else is
-// grouped under a namespace ObjectValue: Math (abs/min/max), IO
-// (puts/print/input/read/write), Sys (argv). The CLI (src/main.cc)
-// additionally aliases IO.puts / IO.print as globals for scripting
-// ergonomics; embedders get a clean environment by default.
+// grouped under a namespace ObjectValue: Math (abs/min/max/pow/sign/
+// clamp/iota), IO (puts/print/input/read/write), Sys (argv/exit/env).
+// The CLI (src/main.cc) additionally aliases IO.puts / IO.print as
+// globals for scripting ergonomics; embedders get a clean environment
+// by default.
 //
 // Fragment header: included from within `namespace culebra { ... }` in
 // interpreter.h. Do not wrap in a namespace.
@@ -18,6 +19,25 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+// Unified arg extraction for Math.iota / Math.range (and any future
+// "integer range" factory): 1 arg → end (start defaults to 0), 2+ args →
+// (start, end). Missing args leave the output pair at (0, 0), yielding
+// an empty range.
+inline std::pair<long, long> _parse_iota_range_args(
+    std::shared_ptr<Environment> callEnv) {
+  long start = 0, end = 0;
+  if (callEnv->has("__ARGS__")) {
+    const auto& extras = *callEnv->get("__ARGS__").to_array().values;
+    if (extras.size() == 1) {
+      end = extras[0].to_long();
+    } else if (extras.size() >= 2) {
+      start = extras[0].to_long();
+      end = extras[1].to_long();
+    }
+  }
+  return {start, end};
+}
 
 inline Value make_math_namespace() {
   using namespace std::literals;
@@ -103,6 +123,45 @@ inline Value make_math_namespace() {
                             return Value(x);
                           },
                           "Long"sv)),
+      false);
+
+  // Math.iota(n) / Math.iota(start, end): materialize a new Array of
+  // consecutive integers. Name follows APL / C++ std::iota / SRFI-1.
+  // For iteration without materializing the Array, use Math.range
+  // (lazy iterator counterpart).
+  ns.initialize(
+      "iota",
+      Value(FunctionValue(
+          {}, [](std::shared_ptr<Environment> callEnv) {
+            auto [start, end] = _parse_iota_range_args(callEnv);
+            ArrayValue out;
+            if (end > start) out.values->reserve(end - start);
+            for (long i = start; i < end; i++) {
+              out.values->push_back(Value(i));
+            }
+            return Value(std::move(out));
+          })),
+      false);
+
+  // Math.range(n) / Math.range(start, end): lazy integer iterator. The
+  // counterpart to Math.iota — yields successive integers via the
+  // iterator protocol (see language.md §17.5) without allocating the
+  // full Array up front. Use in for-in loops to iterate in constant
+  // additional memory.
+  ns.initialize(
+      "range",
+      Value(FunctionValue(
+          {}, [](std::shared_ptr<Environment> callEnv) {
+            auto [start, end] = _parse_iota_range_args(callEnv);
+            auto current = std::make_shared<long>(start);
+            return _make_iterator(
+                [current, end](std::shared_ptr<Environment>) {
+                  if (*current >= end) return _iter_step_done();
+                  auto v = Value(*current);
+                  (*current)++;
+                  return _iter_step_value(std::move(v));
+                });
+          })),
       false);
 
   return Value(std::move(ns));
@@ -236,31 +295,6 @@ inline void setup_built_in_functions(
                             }
                             return Value();
                           })),
-      false);
-
-  // range(n) -> [0..n), range(start, end) -> [start..end). Uses __ARGS__.
-  env.initialize(
-      "range",
-      Value(FunctionValue(
-          {}, [](std::shared_ptr<Environment> callEnv) {
-            long start = 0, end = 0;
-            if (callEnv->has("__ARGS__")) {
-              const auto& extras =
-                  *callEnv->get("__ARGS__").to_array().values;
-              if (extras.size() == 1) {
-                end = extras[0].to_long();
-              } else if (extras.size() >= 2) {
-                start = extras[0].to_long();
-                end = extras[1].to_long();
-              }
-            }
-            ArrayValue out;
-            if (end > start) out.values->reserve(end - start);
-            for (long i = start; i < end; i++) {
-              out.values->push_back(Value(i));
-            }
-            return Value(std::move(out));
-          })),
       false);
 
   env.initialize(

@@ -1,15 +1,12 @@
 # Standard library tour: Math / IO / Sys namespaces.
-# Core built-ins (assert, range, to_long, to_string, type_of) are
-# part of the language — see docs/language.md §18.
+# Core built-ins (assert, to_long, to_string, type_of) are part of
+# the language — see docs/language.md §18.
 # `puts` / `print` are CLI aliases of IO.puts / IO.print installed
 # by src/main.cc (§19). Type methods are in language.md §17.
 # Works identically under the interpreter and the JIT, except
 # Sys.argv which is interpreter-only.
 
 # --- Core built-ins (language spec) -------------------------------------
-
-puts(range(5))                         # [0, 1, 2, 3, 4]
-puts(range(2, 5))                      # [2, 3, 4]
 
 puts(to_long('42'))                    # 42
 puts(to_long('  -7 '))                 # -7
@@ -29,6 +26,8 @@ puts(Math.max(3, 5))                   # 5
 puts(Math.pow(2, 10))                  # 1024
 puts(Math.sign(-42))                   # -1
 puts(Math.clamp(15, 0, 10))            # 10
+puts(Math.iota(5))                     # [0, 1, 2, 3, 4]
+puts(Math.iota(2, 5))                  # [2, 3, 4]
 
 # --- Sys ----------------------------------------------------------------
 

@@ -6,7 +6,7 @@ namespace objects (`Math`, `IO`, `Sys`) that group the runtime
 utilities. Everything described here is available without any
 `import` statement.
 
-Language-level built-ins — `assert`, `range`, `to_long`, `to_string`,
+Language-level built-ins — `assert`, `to_long`, `to_string`,
 `type_of` — are specified in
 [§18 of the language spec](language.md). Methods on built-in types
 (`String`, `Array`, `Object`) are specified in
@@ -90,6 +90,51 @@ puts(Math.clamp(5, 0, 10))   # 5
 puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
+
+### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
+
+Generate a new `Array` of consecutive integers. Named after APL /
+C++ `std::iota` / Scheme SRFI-1 — materialise a run of integers as an
+array. The **lazy** counterpart is `Math.range` (same arguments,
+iterator return) — prefer it for `for`-in loops and use `Math.iota`
+when you actually need the full `Array`.
+
+* `Math.iota(n)` returns `[0, 1, ..., n-1]`. If `n <= 0`, an empty array.
+* `Math.iota(start, end)` returns `[start, start+1, ..., end-1]`. If
+  `start >= end`, an empty array.
+
+```culebra
+puts(Math.iota(3))         # [0, 1, 2]
+puts(Math.iota(2, 5))      # [2, 3, 4]
+puts(Math.iota(5, 2))      # []
+```
+
+### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
+
+Lazy counterpart to `Math.iota`: returns an iterator yielding the
+same integer sequence one element at a time. Use with `for`-in (or
+iterator-aware functions once Phase 3 adds method chaining) to
+iterate in **constant additional memory** regardless of the range
+size. Empty-range conventions match `iota`: `n <= 0` or
+`start >= end` yields an iterator that completes immediately.
+
+```culebra
+for i in Math.range(5)     { puts(i) }     # 0, 1, 2, 3, 4
+for i in Math.range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+
+# Constant memory even for huge bounds
+for i in Math.range(1_000_000_000) {
+  if i > 3 { break }
+  puts(i)
+}
+```
+
+**JIT**: interpreter-only. The `for` statement itself works under
+`--jit` for `Array` / `Object` keys / `String` scalars, but the
+iterator protocol that `Math.range` relies on does not — `--jit`
+would iterate the returned object's property keys (`iter`, `next`)
+instead of driving the iterator. Use `Math.iota` under `--jit` when
+you need a concrete integer sequence. See language.md §17.5.
 
 ---
 
@@ -217,7 +262,7 @@ installs one.
 ### Free function vs method
 
 Free functions (in namespaces) are used when the operation either
-constructs a value from nothing (`range`, `IO.input`) or applies
+constructs a value from nothing (`Math.iota`, `IO.input`) or applies
 uniformly to multiple types (`type_of`, `to_string`). Operations
 that are *about* a specific type use method syntax — see §17 of the
 language spec for String/Array/Object methods.

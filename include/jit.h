@@ -3,6 +3,7 @@
 #ifdef CULEBRA_JIT_ENABLED
 
 #include <parser.h>
+#include <well_known_props.h>
 
 // macOS termios.h defines CR1/CR2/CR3 macros that conflict with LLVM headers
 #if defined(__APPLE__)
@@ -74,6 +75,10 @@ struct JitObjectEntry {
 
 struct JitObject {
   int64_t refcount;
+  // Fast-path bit for the destruction hot path: skip the std::map
+  // lookup for `drop` when the object has none. Maintained by
+  // object_set / object_remove.
+  bool has_drop = false;
   std::map<std::string, JitObjectEntry> props;
 };
 
@@ -97,6 +102,7 @@ struct JitClosure {
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 inline void _culebra_cell_release(JitCell* c);
+inline void _culebra_call_drop_if_present(JitObject* o);
 
 // Tag values stored in the tracker. Values 3/5/6 match Value::Type for
 // Function/Array/Object. 100 distinguishes cells (not a Value type).
@@ -209,6 +215,10 @@ struct _GcTracker {
       }
       case GC_TAG_OBJECT: {
         auto* o = static_cast<JitObject*>(ptr);
+        // Fire drop before tearing down the prop map. Order among
+        // cycle members is undefined; each drop still runs exactly
+        // once because the helper short-circuits on missing drop.
+        _culebra_call_drop_if_present(o);
         auto props = std::move(o->props);
         o->props.clear();
         for (auto& [_, entry] : props) {
@@ -384,9 +394,10 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   }
 }
 
-inline const char* _culebra_heap_str(const std::string& s) {
+inline const char* _culebra_heap_str(std::string_view s) {
   auto buf = static_cast<char*>(std::malloc(s.size() + 1));
-  std::memcpy(buf, s.c_str(), s.size() + 1);
+  std::memcpy(buf, s.data(), s.size());
+  buf[s.size()] = '\0';
   return buf;
 }
 
@@ -778,6 +789,31 @@ __attribute__((used)) inline JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// Validate the well-known-property contract (see well_known_props.h)
+// for a freshly-bound JIT value: must be a 0-arg Function. The arg's
+// +1 is released before throwing — codegen passes ownership and
+// expects either store-into-map or release.
+inline void _culebra_check_well_known_prop(std::string_view name,
+                                           int8_t tag, int64_t data) {
+  if (!culebra::is_well_known_prop(name)) return;
+  auto bad = [&]() {
+    _culebra_value_release_impl(tag, data);
+    culebra::throw_well_known_prop_contract_error(name);
+  };
+  if (tag != GC_TAG_FUNC) bad();
+  auto* cls = reinterpret_cast<JitClosure*>(data);
+  if (!cls || cls->arity != 0) bad();
+}
+
+// Standalone version of the well-known check for codegen to call only
+// when the property name is statically "drop" / "iter" / "next".
+// Frees the regular object_set hot path from a name comparison on
+// every property bind.
+__attribute__((used)) inline void culebra_runtime_check_well_known_prop(
+    const char* key, int8_t tag, int64_t data) {
+  _culebra_check_well_known_prop(key, tag, data);
+}
+
 __attribute__((used)) inline void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col) {
@@ -795,6 +831,7 @@ __attribute__((used)) inline void culebra_runtime_object_set(
     it->second.value.tag = tag;
     it->second.value.data = data;
   }
+  if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
 __attribute__((used)) inline void culebra_runtime_object_get(
@@ -1074,6 +1111,25 @@ __attribute__((used)) inline void culebra_runtime_array_reduce(
   *out_data = acc.data;
 }
 
+// Length in UTF-8 bytes of the next scalar at `offset`. Returns 0
+// once `offset >= len`; on an invalid lead byte, returns 1 (emit the
+// raw byte to avoid stalling the iterator). Mirrors the interpreter's
+// String.iter semantics.
+__attribute__((used)) inline int64_t culebra_runtime_utf8_scalar_len(
+    const char* s, int64_t offset, int64_t len) {
+  if (offset >= len) return 0;
+  auto r = peg::codepoint_length(s + offset, len - offset);
+  return r == 0 ? 1 : static_cast<int64_t>(r);
+}
+
+// Heap-copy `scalar_len` bytes from `s + offset` into a new String.
+// Used by JIT for-in over String to yield one-scalar Strings.
+__attribute__((used)) inline const char* culebra_runtime_str_scalar_at(
+    const char* s, int64_t offset, int64_t scalar_len) {
+  return _culebra_heap_str(std::string_view(s + offset,
+                                            static_cast<size_t>(scalar_len)));
+}
+
 __attribute__((used)) inline int64_t culebra_runtime_str_size(const char* s) {
   return static_cast<int64_t>(std::strlen(s));
 }
@@ -1129,18 +1185,18 @@ __attribute__((used)) inline JitArray* culebra_runtime_str_split(
   if (sp.empty()) {
     culebra_runtime_array_push(
         r, /*String*/ 4,
-        reinterpret_cast<int64_t>(_culebra_heap_str(std::string(sv))));
+        reinterpret_cast<int64_t>(_culebra_heap_str(sv)));
     return r;
   }
   size_t pos = 0;
   while (true) {
     auto p = sv.find(sp, pos);
     if (p == std::string_view::npos) {
-      auto* piece = _culebra_heap_str(std::string(sv.substr(pos)));
+      auto* piece = _culebra_heap_str(sv.substr(pos));
       culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
       break;
     }
-    auto* piece = _culebra_heap_str(std::string(sv.substr(pos, p - pos)));
+    auto* piece = _culebra_heap_str(sv.substr(pos, p - pos));
     culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
     pos = p + sp.size();
   }
@@ -1270,6 +1326,7 @@ __attribute__((used)) inline void culebra_runtime_object_remove(
   if (it == obj->props.end()) return;
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
   obj->props.erase(it);
+  if (std::string_view(key) == "drop") obj->has_drop = false;
 }
 
 }  // extern "C" (close briefly for C++ impl helpers)
@@ -1283,10 +1340,49 @@ __attribute__((used)) inline void culebra_runtime_object_remove(
 
 inline void _culebra_cell_release(JitCell* c);
 
+// RAII drop: if `o` has a 0-arg `drop` Function property, invoke it
+// with `this` bound to `o` before any child values are released.
+// Called from the normal refcount-0 path and from the cycle collector.
+// The contract (drop must be a 0-arg Function) is validated at
+// assignment time, so a mis-shaped drop is silently skipped here as a
+// belt-and-braces check.
+//
+// Refcount trick (matches interpreter's shared_ptr + no-op deleter):
+// bump high enough that the drop body's function-frame release of its
+// owned `this` slot — plus any retain/release pairs in the body —
+// can't drive refcount back to 0 and re-enter destruction. The frame
+// release subtracts 1, so 2 is the minimum safe baseline. After drop
+// returns we slam the count to 0; if the body resurrected `o` by
+// storing it somewhere, the caller owns the resulting dangling
+// reference (matches interp's documented warning).
+inline void _culebra_call_drop_if_present(JitObject* o) {
+  if (!o || !o->has_drop) return;
+  auto it = o->props.find("drop");
+  if (it == o->props.end()) return;
+  const auto& v = it->second.value;
+  if (v.tag != GC_TAG_FUNC) return;
+  auto* cls = reinterpret_cast<JitClosure*>(v.data);
+  if (!cls || cls->arity != 0) return;
+
+  o->refcount = 2;
+  using JitFn0 = JitValue (*)(JitClosure*, JitValue);
+  auto call = reinterpret_cast<JitFn0>(cls->fn_ptr);
+  JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  try {
+    auto r = call(cls, this_val);
+    _culebra_value_release_impl(r.tag, r.data);
+  } catch (const std::exception& e) {
+    std::cerr << "drop: " << e.what() << std::endl;
+  } catch (...) {
+    std::cerr << "drop: unknown error" << std::endl;
+  }
+  o->refcount = 0;
+}
+
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
   if (data == 0) return;
   switch (tag) {
-    case 3: {  // TAG_FUNC (closure)
+    case GC_TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(data);
       if (--c->refcount == 0) {
         for (size_t i = 0; i < c->n_captures; i++) {
@@ -1298,7 +1394,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       }
       break;
     }
-    case 5: {  // TAG_ARRAY
+    case GC_TAG_ARRAY: {
       auto* a = reinterpret_cast<JitArray*>(data);
       if (--a->refcount == 0) {
         for (size_t i = 0; i < a->size; i++) {
@@ -1310,9 +1406,10 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       }
       break;
     }
-    case 6: {  // TAG_OBJECT
+    case GC_TAG_OBJECT: {
       auto* o = reinterpret_cast<JitObject*>(data);
       if (--o->refcount == 0) {
+        _culebra_call_drop_if_present(o);
         for (auto& [name, entry] : o->props) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
@@ -1435,10 +1532,12 @@ inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
+inline constexpr auto check_well_known_prop =
+    "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
 inline constexpr auto print               = "culebra_runtime_print";
 inline constexpr auto puts                = "culebra_runtime_puts";
-inline constexpr auto range               = "culebra_runtime_range";
+inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto read_file           = "culebra_runtime_read_file";
 inline constexpr auto rethrow             = "culebra_runtime_rethrow";
 inline constexpr auto str_cmp             = "culebra_runtime_str_cmp";
@@ -1447,7 +1546,9 @@ inline constexpr auto str_contains        = "culebra_runtime_str_contains";
 inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
 inline constexpr auto str_eq              = "culebra_runtime_str_eq";
 inline constexpr auto str_lower           = "culebra_runtime_str_lower";
+inline constexpr auto str_scalar_at       = "culebra_runtime_str_scalar_at";
 inline constexpr auto str_size            = "culebra_runtime_str_size";
+inline constexpr auto utf8_scalar_len     = "culebra_runtime_utf8_scalar_len";
 inline constexpr auto str_slice           = "culebra_runtime_str_slice";
 inline constexpr auto str_split           = "culebra_runtime_str_split";
 inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
@@ -1475,6 +1576,12 @@ struct JIT {
     enum Kind { Stack, Cell };
     Kind kind;
     llvm::AllocaInst* alloca;  // Stack: holds Value. Cell: holds Cell pointer.
+    // True when the slot owns the +1 ref it holds — its value will be
+    // released on scope exit. False for borrowed views: capture cells
+    // (the closure object owns the cell) and any other slot whose ref
+    // count is managed elsewhere. Required to keep callers honest;
+    // every binding has a clear ownership story.
+    bool owned;
   };
 
   // Analysis result for a function (including top-level __culebra_main).
@@ -1547,6 +1654,16 @@ struct JIT {
   // unwind destination, so a user `throw` propagates back to the
   // nearest enclosing `try`. Nested try blocks save/restore.
   llvm::BasicBlock* current_lpad_ = nullptr;
+
+  // Targets for the innermost enclosing loop. `break` jumps to the
+  // break target (after the loop); `continue` jumps to the continue
+  // target (loop-header / increment). Loops push a frame on entry and
+  // pop on exit; nested loops stack correctly.
+  struct LoopBlocks {
+    llvm::BasicBlock* continue_target;
+    llvm::BasicBlock* break_target;
+  };
+  std::vector<LoopBlocks> loop_stack_;
 
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
   // All JIT-generated call sites (runtime functions, user functions,
@@ -1678,6 +1795,7 @@ struct JIT {
         builder.CreateCall(
             mod->getFunction(rt::defer_run_to), {mainMark});
       }
+      jit.release_all_scopes_for_exit();
       builder.CreateRetVoid();
     }
 
@@ -1824,7 +1942,47 @@ struct JIT {
 
   void push_scope() { scopes_.emplace_back(); }
 
-  void pop_scope() { scopes_.pop_back(); }
+  // Emit IR to release every owned binding in `scope` and zero the
+  // underlying allocas so a subsequent re-entry (loop iteration,
+  // recursive call) starts from a clean slate. Borrowed slots — the
+  // function's `self` / `this` / params and capture cells — are
+  // skipped: their refcounts belong to the caller or the enclosing
+  // closure, not to the callee's frame.
+  void release_scope_slots(const std::map<std::string, VarSlot>& scope) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    for (const auto& [name, slot] : scope) {
+      if (!slot.owned) continue;
+      if (slot.kind == VarSlot::Stack) {
+        auto val = builder_.CreateLoad(valueType_, slot.alloca);
+        emit_value_release(val);
+        builder_.CreateStore(
+            llvm::ConstantAggregateZero::get(valueType_), slot.alloca);
+      } else {
+        auto cellPtr = builder_.CreateLoad(ptrTy, slot.alloca);
+        emit_cell_release(cellPtr);
+        builder_.CreateStore(llvm::ConstantPointerNull::get(ptrTy),
+                             slot.alloca);
+      }
+    }
+  }
+
+  // Release every binding in every active scope. Used at function exit
+  // (return / fall-through) so locals' refcounts reach zero in the
+  // callee — this is what gives auto-drop interp-equivalent timing.
+  // Throw / break / continue paths still leak their inner-scope slots
+  // until the cycle collector runs (matches prior JIT behaviour).
+  void release_all_scopes_for_exit() {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      release_scope_slots(*it);
+    }
+  }
+
+  void pop_scope() {
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      release_scope_slots(scopes_.back());
+    }
+    scopes_.pop_back();
+  }
 
   const VarSlot* lookup_var(const std::string& name) const {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
@@ -2110,9 +2268,9 @@ struct JIT {
 
   static bool is_builtin_var(const std::string& name) {
     static const std::unordered_set<std::string_view> names = {
-        "puts",    "print",     "assert",    "self",    "this",
-        "abs",     "min",       "max",       "range",   "to_long",
-        "to_string", "type_of", "input",     "read_file", "write_file"};
+        "puts",      "print",   "assert", "self", "this",
+        "to_long",   "to_string", "type_of",
+        "Math",      "IO",      "Sys"};
     return names.contains(name);
   }
 
@@ -2213,6 +2371,20 @@ struct JIT {
       // fall through to walk the bodies
     }
 
+    if (node.tag == "FOR"_) {
+      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body)]. The loop
+      // variable is a binding introduced by the for-in, in the enclosing
+      // function's scope, so nested closures capturing it get a cell.
+      auto& id = *node.nodes[0];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
+      // Walk the iterable expr and body (skip the binding node).
+      collect_fn_locals(*node.nodes[1], locals, outer);
+      collect_fn_locals(*node.nodes[2], locals, outer);
+      return;
+    }
+
     if (node.tag == "ASSIGNMENT"_) {
       auto lvalcnt = static_cast<int>(node.nodes.size()) - 3;
       if (lvalcnt == 1) {
@@ -2279,6 +2451,14 @@ struct JIT {
       return;
     }
 
+    // DOT[IDENTIFIER] is a property name, not a variable reference.
+    // The AST optimizer collapses the single-child rule so node.tag
+    // reads as IDENTIFIER; use original_tag and check before the
+    // IDENTIFIER handler below.
+    if (node.original_tag == "DOT"_) {
+      return;
+    }
+
     if (node.tag == "IDENTIFIER"_) {
       auto name = std::string(node.token);
       if (my_locals.contains(name) || is_builtin_var(name)) return;
@@ -2300,8 +2480,12 @@ struct JIT {
       return;
     }
 
-    if (node.tag == "DOT"_) {
-      // DOT node is a property name, not a variable reference. Skip entirely.
+    if (node.tag == "FOR"_) {
+      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body)]. The
+      // IDENT node is a binding, not a free-var reference. Visit only
+      // the iterable and the body.
+      visit_for_frees(*node.nodes[1], my_locals, outer, info);
+      visit_for_frees(*node.nodes[2], my_locals, outer, info);
       return;
     }
 
@@ -2629,6 +2813,12 @@ struct JIT {
         return compile_statements(ast);
       case "WHILE"_:
         return compile_while(ast);
+      case "FOR"_:
+        return compile_for(ast);
+      case "BREAK"_:
+        return compile_break(ast);
+      case "CONTINUE"_:
+        return compile_continue(ast);
       case "IF"_:
         return compile_if(ast);
       case "MATCH"_:
@@ -2781,6 +2971,42 @@ struct JIT {
     return make_array(arrPtr);
   }
 
+  // Object property bind. The runtime well-known check (drop/iter/
+  // next must be 0-arg Function) is emitted only when the literal
+  // name is one of the three — keeping the hot path for ordinary
+  // literal properties free of any name comparison at runtime.
+  void emit_object_set(llvm::Value* objPtr, const std::string& name,
+                       bool mut, llvm::Value* tag, llvm::Value* data) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    if (is_well_known_prop(name)) {
+      auto wkKey = get_or_create_global_str(name, ".wkkey");
+      emit_call(
+          module_->getOrInsertFunction(rt::check_well_known_prop,
+                                       builder_.getVoidTy(), ptrTy,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty()),
+          {wkKey, tag, data});
+    }
+    auto keyPtr = get_or_create_global_str(name, ".key");
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::object_set, builder_.getVoidTy(), ptrTy,
+            ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {objPtr, keyPtr, builder_.getInt1(mut), tag, data,
+         current_line_val(), current_column_val()});
+  }
+
+  llvm::Value* emit_object_has(llvm::Value* objPtr, llvm::Value* keyPtr,
+                               const llvm::Twine& name = "has.prop") {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    return emit_call(
+        module_->getOrInsertFunction(rt::object_has, builder_.getInt1Ty(),
+                                     ptrTy, ptrTy),
+        {objPtr, keyPtr}, name);
+  }
+
   llvm::Value* compile_object(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -2793,17 +3019,7 @@ struct JIT {
       bool mut = (prop->nodes[0]->token == "mut");
       auto name = std::string(prop->nodes[1]->token);
       auto val = compile(*prop->nodes[2]);
-      auto tag = extract_tag(val);
-      auto data = extract_data(val);
-      auto keyPtr = builder_.CreateGlobalString(name, ".key");
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::object_set, builder_.getVoidTy(), ptrTy,
-              ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
-              builder_.getInt64Ty(), builder_.getInt64Ty(),
-              builder_.getInt64Ty()),
-          {objPtr, keyPtr, builder_.getInt1(mut), tag, data,
-           current_line_val(), current_column_val()});
+      emit_object_set(objPtr, name, mut, extract_tag(val), extract_data(val));
     }
 
     return make_object(objPtr);
@@ -2876,7 +3092,7 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {tag, data}, "cell");
     builder_.CreateStore(cellPtr, cellSlotAlloca);
-    return VarSlot{VarSlot::Cell, cellSlotAlloca};
+    return VarSlot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true};
   }
 
   VarSlot make_stack_slot(const std::string& name, llvm::Value* initValue) {
@@ -2887,7 +3103,7 @@ struct JIT {
     entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_), alloca);
     // At declaration point: use store_slot (releases old = nil first run, else
     // previous iteration's value).
-    VarSlot slot{VarSlot::Stack, alloca};
+    VarSlot slot{VarSlot::Stack, alloca, /*owned=*/true};
     store_slot(slot, initValue);
     return slot;
   }
@@ -3019,17 +3235,8 @@ struct JIT {
         builder_.SetInsertPoint(okBB);
         auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
         auto name = std::string(finalPostfix.token);
-        auto keyPtr = builder_.CreateGlobalString(name, ".key");
-        auto rtag = extract_tag(rval);
-        auto rdata = extract_data(rval);
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::object_set, builder_.getVoidTy(), ptrTy,
-                ptrTy, builder_.getInt1Ty(), builder_.getInt8Ty(),
-                builder_.getInt64Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty()),
-            {objPtr, keyPtr, builder_.getInt1(mut), rtag, rdata,
-             current_line_val(), current_column_val()});
+        emit_object_set(objPtr, name, mut, extract_tag(rval),
+                        extract_data(rval));
         emit_value_release(lval);  // release the lvalue's ref
         emit_value_retain(rval);
         return rval;
@@ -3658,10 +3865,7 @@ struct JIT {
     for (const auto& key_node : pattern.nodes) {
       auto key = std::string(key_node->token);
       auto keyPtr = get_or_create_global_str(key, ".obj.key");
-      auto has = emit_call(
-          module_->getOrInsertFunction(rt::object_has,
-                                       builder_.getInt1Ty(), ptrTy, ptrTy),
-          {objPtr, keyPtr});
+      auto has = emit_object_has(objPtr, keyPtr);
       auto next = llvm::BasicBlock::Create(ctx_, "obj.bind", fn);
       builder_.CreateCondBr(has, next, failBB);
       builder_.SetInsertPoint(next);
@@ -3783,13 +3987,229 @@ struct JIT {
     builder_.CreateCondBr(b, bodyBB, endBB);
 
     builder_.SetInsertPoint(bodyBB);
+    loop_stack_.push_back({condBB, endBB});
     compile(*ast.nodes[1]);
+    loop_stack_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       builder_.CreateBr(condBB);
     }
 
     builder_.SetInsertPoint(endBB);
     return make_nil();
+  }
+
+  // Branch to `target`, then switch the insert point to a fresh dead
+  // block so any statements the caller still emits in the same scope
+  // land somewhere valid (their IR is simply unreachable).
+  void branch_then_dead(llvm::BasicBlock* target, const char* dead_name) {
+    builder_.CreateBr(target);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto dead = llvm::BasicBlock::Create(ctx_, dead_name, fn);
+    builder_.SetInsertPoint(dead);
+  }
+
+  llvm::Value* compile_break(const peg::Ast& ast) {
+    if (loop_stack_.empty()) {
+      throw std::runtime_error(std::format(
+          "break outside loop at {}:{}.", ast.line, ast.column));
+    }
+    branch_then_dead(loop_stack_.back().break_target, "break.dead");
+    return make_nil();
+  }
+
+  llvm::Value* compile_continue(const peg::Ast& ast) {
+    if (loop_stack_.empty()) {
+      throw std::runtime_error(std::format(
+          "continue outside loop at {}:{}.", ast.line, ast.column));
+    }
+    branch_then_dead(loop_stack_.back().continue_target, "continue.dead");
+    return make_nil();
+  }
+
+  // User-defined iterators, Math.range and Iterator method chains
+  // remain interpreter-only (they need the Object+iter/next protocol,
+  // which is not lowered to JIT — see language.md §17.5).
+  llvm::Value* compile_for(const peg::Ast& ast) {
+    auto& id = *ast.nodes[0];
+    auto& iter_expr = *ast.nodes[1];
+    auto& body = *ast.nodes[2];
+    auto var_name = std::string(id.token);
+
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    auto iterable = compile(iter_expr);
+    auto tag = extract_tag(iterable);
+    auto data = extract_data(iterable);
+
+    auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
+    auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
+    auto stringBB = llvm::BasicBlock::Create(ctx_, "for.string", fn);
+    auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
+    auto endBB = llvm::BasicBlock::Create(ctx_, "for.end", fn);
+
+    auto sw = builder_.CreateSwitch(tag, badBB, 3);
+    sw->addCase(builder_.getInt8(TAG_ARRAY), arrayBB);
+    sw->addCase(builder_.getInt8(TAG_OBJECT), objectBB);
+    sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
+
+    builder_.SetInsertPoint(badBB);
+    emit_type_error();
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(arrayBB);
+    compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
+                           var_name, body, endBB);
+
+    // Object branch materializes keys and reuses the array loop.
+    builder_.SetInsertPoint(objectBB);
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
+    auto keysArr = emit_call(
+        module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy),
+        {objPtr}, "obj.keys");
+    compile_for_array_loop(keysArr, var_name, body, endBB);
+
+    builder_.SetInsertPoint(stringBB);
+    compile_for_string_loop(builder_.CreateIntToPtr(data, ptrTy),
+                            var_name, body, endBB);
+
+    builder_.SetInsertPoint(endBB);
+    return make_nil();
+  }
+
+  void emit_for_body_iteration(const std::string& var_name,
+                               llvm::Value* elemVal,
+                               const peg::Ast& body,
+                               llvm::BasicBlock* continue_bb,
+                               llvm::BasicBlock* break_bb) {
+    // The array/object/string already holds its reference to `elemVal`;
+    // give the binding its own (+1) so releasing the slot is balanced.
+    emit_value_retain(elemVal);
+
+    push_scope();
+    bool captured = current_info_ &&
+                    current_info_->captured_locals.contains(var_name);
+    auto slot = captured ? make_cell_slot(var_name, elemVal)
+                         : make_stack_slot(var_name, elemVal);
+    define_var(var_name, slot);
+
+    loop_stack_.push_back({continue_bb, break_bb});
+    compile(body);
+    loop_stack_.pop_back();
+
+    pop_scope();
+
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(continue_bb);
+    }
+  }
+
+  void compile_for_array_loop(llvm::Value* arrPtr,
+                              const std::string& var_name,
+                              const peg::Ast& body,
+                              llvm::BasicBlock* endBB) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    auto size = emit_call(
+        module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                     ptrTy),
+        {arrPtr}, "for.size");
+
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto idxAlloca =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.idx");
+    auto outTag =
+        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "for.out.tag");
+    auto outData =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.out.data");
+    builder_.CreateStore(builder_.getInt64(0), idxAlloca);
+
+    auto condBB = llvm::BasicBlock::Create(ctx_, "for.a.cond", fn);
+    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.a.body", fn);
+    auto incBB = llvm::BasicBlock::Create(ctx_, "for.a.inc", fn);
+
+    builder_.CreateBr(condBB);
+
+    builder_.SetInsertPoint(condBB);
+    auto idx = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "for.i");
+    builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), endBB, bodyBB);
+
+    builder_.SetInsertPoint(bodyBB);
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::array_get, builder_.getVoidTy(), ptrTy,
+            builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {arrPtr, idx, outTag, outData, current_line_val(),
+         current_column_val()});
+    auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+    auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    llvm::Value* elem = llvm::UndefValue::get(valueType_);
+    elem = builder_.CreateInsertValue(elem, t, {0});
+    elem = builder_.CreateInsertValue(elem, d, {1});
+
+    emit_for_body_iteration(var_name, elem, body, incBB, endBB);
+
+    builder_.SetInsertPoint(incBB);
+    auto next = builder_.CreateAdd(
+        builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca),
+        builder_.getInt64(1));
+    builder_.CreateStore(next, idxAlloca);
+    builder_.CreateBr(condBB);
+  }
+
+  void compile_for_string_loop(llvm::Value* strPtr,
+                               const std::string& var_name,
+                               const peg::Ast& body,
+                               llvm::BasicBlock* endBB) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    auto len = emit_call(
+        module_->getOrInsertFunction(rt::str_size, builder_.getInt64Ty(),
+                                     ptrTy),
+        {strPtr}, "for.slen");
+
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto offAlloca =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "for.off");
+    builder_.CreateStore(builder_.getInt64(0), offAlloca);
+
+    auto condBB = llvm::BasicBlock::Create(ctx_, "for.s.cond", fn);
+    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.s.body", fn);
+    auto incBB = llvm::BasicBlock::Create(ctx_, "for.s.inc", fn);
+
+    builder_.CreateBr(condBB);
+
+    builder_.SetInsertPoint(condBB);
+    auto off = builder_.CreateLoad(builder_.getInt64Ty(), offAlloca, "for.o");
+    auto scalarLen = emit_call(
+        module_->getOrInsertFunction(rt::utf8_scalar_len,
+                                     builder_.getInt64Ty(), ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {strPtr, off, len}, "for.slen1");
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(scalarLen, builder_.getInt64(0)), endBB,
+        bodyBB);
+
+    builder_.SetInsertPoint(bodyBB);
+    auto scalarPtr = emit_call(
+        module_->getOrInsertFunction(rt::str_scalar_at, ptrTy, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {strPtr, off, scalarLen}, "for.scalar");
+    emit_for_body_iteration(var_name, make_string(scalarPtr), body, incBB,
+                            endBB);
+
+    builder_.SetInsertPoint(incBB);
+    auto next = builder_.CreateAdd(
+        builder_.CreateLoad(builder_.getInt64Ty(), offAlloca), scalarLen);
+    builder_.CreateStore(next, offAlloca);
+    builder_.CreateBr(condBB);
   }
 
   // --- Lexical scope ---
@@ -3908,20 +4328,25 @@ struct JIT {
     current_closure_arg_ = clsArg;
     auto thisArg = &*argIt++;
 
-    // `self` = make_func(__cls__): calling it re-enters this fn with this closure
+    // `self` = make_func(__cls__): calling it re-enters this fn with this
+    // closure. make_func doesn't retain, so retain explicitly so the
+    // owned `self` slot has the +1 it will hand back at function exit.
     {
       auto selfVal = make_func(clsArg);
+      emit_value_retain(selfVal);
       define_var("self", make_stack_slot("self", selfVal));
     }
 
-    // `this` is from arg; if captured, allocate cell
+    // `this` is from arg; if captured, allocate cell. The arg's +1 was
+    // pre-retained by the caller (via load/compile of the receiver) and
+    // is transferred into the slot — no extra retain needed.
     if (info.captured_locals.contains("this")) {
       define_var("this", make_cell_slot("this", thisArg));
     } else {
       define_var("this", make_stack_slot("this", thisArg));
     }
 
-    // Bind declared parameters
+    // Bind declared parameters. Same ownership transfer as `this`.
     for (size_t i = 0; i < paramNames.size(); i++) {
       const auto& name = paramNames[i];
       auto argVal = &*argIt++;
@@ -3952,7 +4377,8 @@ struct JIT {
       llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
       auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
       builder_.CreateStore(cellPtr, holder);
-      define_var(fv, VarSlot{VarSlot::Cell, holder});
+      // Borrowed: the closure object owns the cell ref.
+      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
     }
 
     auto bodyVal = compile(*ast.nodes[bodyIdx]);
@@ -3966,6 +4392,7 @@ struct JIT {
         builder_.CreateCall(
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
+      release_all_scopes_for_exit();
       builder_.CreateRet(bodyVal);
     }
 
@@ -4169,17 +4596,88 @@ struct JIT {
       return r;
     }
 
+    // UFCS fallback: if `method` is not a known builtin and resolves as
+    // a free function in scope, `x.method(args)` becomes `method(x,
+    // args)` — but only when the receiver has no user property by that
+    // name. Existing methods always win (interpreter parity: Option 1
+    // from the UFCS design discussion).
+    bool is_builtin = known_builtin_methods().contains(method);
+    const VarSlot* freeFnSlot = is_builtin ? nullptr : lookup_var(method);
+    if (freeFnSlot) {
+      return compile_method_or_ufcs(method, *freeFnSlot, argsAst, receiver);
+    }
+
     // User-defined method on Object: fetch property, call with this=receiver
     auto methodVal = compile_property_get(receiver, method);
     return compile_function_call(argsAst, methodVal, receiver);
   }
 
-  llvm::Value* compile_function_call(const peg::Ast& argsAst,
-                                     llvm::Value* callee,
-                                     llvm::Value* thisVal = nullptr) {
+  // Emit the runtime dispatch between a user method (receiver owns a
+  // property `method`) and UFCS (call the free variable `method` with
+  // `receiver` as the first argument). Args are compiled once up front
+  // so side-effects don't duplicate across branches.
+  llvm::Value* compile_method_or_ufcs(const std::string& method,
+                                      const VarSlot& freeFnSlot,
+                                      const peg::Ast& argsAst,
+                                      llvm::Value* receiver) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    std::vector<llvm::Value*> userArgs;
+    userArgs.reserve(argsAst.nodes.size());
+    for (auto& argNode : argsAst.nodes) {
+      userArgs.push_back(compile(*argNode));
+    }
+
+    auto tag = extract_tag(receiver);
+    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+
+    auto checkBB = llvm::BasicBlock::Create(ctx_, "ufcs.check", fn);
+    auto methodBB = llvm::BasicBlock::Create(ctx_, "ufcs.method", fn);
+    auto ufcsBB = llvm::BasicBlock::Create(ctx_, "ufcs.free", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ufcs.merge", fn);
+
+    // Non-Object receivers have no user properties, so UFCS always wins.
+    builder_.CreateCondBr(isObj, checkBB, ufcsBB);
+
+    builder_.SetInsertPoint(checkBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto keyPtr = get_or_create_global_str(method, ".mkey");
+    auto hasProp = emit_object_has(objPtr, keyPtr);
+    builder_.CreateCondBr(hasProp, methodBB, ufcsBB);
+
+    builder_.SetInsertPoint(methodBB);
+    auto methodVal = compile_property_get(receiver, method);
+    auto methodRes =
+        compile_function_call_raw(methodVal, receiver, userArgs);
+    auto methodEndBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(ufcsBB);
+    auto freeFn = load_slot(freeFnSlot, method);
+    std::vector<llvm::Value*> ufcsArgs;
+    ufcsArgs.reserve(userArgs.size() + 1);
+    ufcsArgs.push_back(receiver);
+    for (auto* a : userArgs) ufcsArgs.push_back(a);
+    auto ufcsRes = compile_function_call_raw(freeFn, nullptr, ufcsArgs);
+    auto ufcsEndBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "ufcs.res");
+    phi->addIncoming(methodRes, methodEndBB);
+    phi->addIncoming(ufcsRes, ufcsEndBB);
+    return phi;
+  }
+
+  // Raw call emission: caller has already compiled the user args.
+  // Used by UFCS so a side-effectful arg expression is only lowered
+  // once even though both branches need the resulting Values.
+  llvm::Value* compile_function_call_raw(
+      llvm::Value* callee, llvm::Value* thisVal,
+      llvm::ArrayRef<llvm::Value*> userArgs) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
-    // Type check: TAG_FUNC
     auto tag = extract_tag(callee);
     auto isFunc = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
 
@@ -4193,28 +4691,34 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(callBB);
-
-    // Extract closure pointer from Value
     auto clsPtr = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
-    // Load fn_ptr from closure (field 1, after refcount)
     auto fnFieldPtr =
         builder_.CreateStructGEP(closureType_, clsPtr, 1, "fn.ptr");
     auto fnPtr = builder_.CreateLoad(ptrTy, fnFieldPtr, "fn");
 
-    // Build args: __cls__, this, user args
     std::vector<llvm::Value*> args;
+    args.reserve(userArgs.size() + 2);
     args.push_back(clsPtr);
     args.push_back(thisVal ? thisVal : make_nil());
-    for (auto& argNode : argsAst.nodes) {
-      args.push_back(compile(*argNode));
-    }
+    for (auto* a : userArgs) args.push_back(a);
 
     std::vector<llvm::Type*> argTypes;
-    argTypes.push_back(ptrTy);  // __cls__
+    argTypes.push_back(ptrTy);
     for (size_t i = 1; i < args.size(); i++) argTypes.push_back(valueType_);
     auto calleeType = llvm::FunctionType::get(valueType_, argTypes, false);
 
     return emit_call(calleeType, fnPtr, args, "call.result");
+  }
+
+  llvm::Value* compile_function_call(const peg::Ast& argsAst,
+                                     llvm::Value* callee,
+                                     llvm::Value* thisVal = nullptr) {
+    std::vector<llvm::Value*> userArgs;
+    userArgs.reserve(argsAst.nodes.size());
+    for (auto& argNode : argsAst.nodes) {
+      userArgs.push_back(compile(*argNode));
+    }
+    return compile_function_call_raw(callee, thisVal, userArgs);
   }
 
   // Handle a CALL, intercepting stdlib globals in the leading `name(args)`
@@ -4315,6 +4819,7 @@ struct JIT {
           module_->getFunction(rt::defer_run_to),
           {current_fn_defer_mark_});
     }
+    release_all_scopes_for_exit();
     builder_.CreateRet(val);
     return val;
   }
@@ -4374,7 +4879,8 @@ struct JIT {
       llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
       auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
       builder_.CreateStore(cellPtr, holder);
-      define_var(fv, VarSlot{VarSlot::Cell, holder});
+      // Borrowed: the defer closure object owns the cell ref.
+      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
     }
 
     compile(*ast.nodes[0]);

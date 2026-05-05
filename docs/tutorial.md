@@ -154,13 +154,13 @@ rule.
 7. Standard library
 -------------------
 
-Core language built-ins are unqualified (`assert`, `range`,
-`to_long`, `to_string`, `type_of`). Everything else lives under
-`Math`, `IO`, or `Sys`:
+Core language built-ins are unqualified (`assert`, `to_long`,
+`to_string`, `type_of`). Everything else lives under `Math`, `IO`,
+or `Sys`:
 
 ```culebra
 puts(Math.abs(-7))              # 7
-puts(Math.min(3, 5))            # 3
+puts(Math.iota(5))              # [0, 1, 2, 3, 4]
 
 name = IO.input()               # read one line from stdin
 IO.write('out.txt', 'hello')    # file I/O

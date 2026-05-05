@@ -15,11 +15,15 @@ check() {
     local name="$1"
     local code="$2"
     local expected="$3"
+    local only="${4:-both}"   # "interp" skips JIT; default runs both
     local tmp="./build/.shadow_test_$$.cul"
     printf '%s\n' "$code" > "$tmp"
     for mode in "" "--jit"; do
         local label="interp"
         [ -n "$mode" ] && label="jit"
+        if [ "$only" = "interp" ] && [ "$label" = "jit" ]; then
+            continue
+        fi
         local out
         out=$("$CULEBRA" $mode "$tmp" 2>&1 || true)
         if echo "$out" | grep -q "$expected"; then
@@ -85,6 +89,23 @@ check "match pattern shadow of captured var" \
      }
      f()' \
     "cannot shadow"
+
+check "for-in binding shadow of captured var" \
+    'f = fn () {
+       mut x = 0
+       inner = fn () { for x in [1, 2] { puts(x) } }
+       inner()
+     }
+     f()' \
+    "cannot shadow"
+
+check "drop must be a Function" \
+    'let _ = { drop: 42 }' \
+    "'drop' must be a Function"
+
+check "drop must take zero arguments" \
+    'let _ = { drop: fn (x) { x } }' \
+    "'drop' must be a Function"
 
 echo "-- summary: $passed passed, $failed failed --"
 exit $failed

@@ -1,6 +1,9 @@
 #pragma once
 
 #include <parser.h>
+#include <unicodelib.h>
+#include <unicodelib_encodings.h>
+#include <well_known_props.h>
 
 #include <algorithm>
 #include <cctype>
@@ -18,6 +21,23 @@ namespace culebra {
 struct Value;
 struct Symbol;
 struct Environment;
+
+// RAII drop helpers; defined at the bottom of this header where
+// Environment and Value are complete. See the docblock at their
+// definitions for semantics.
+inline void _call_drop_if_present(
+    std::map<std::string_view, Symbol>* m);
+inline void _destroy_prop_map(
+    std::map<std::string_view, Symbol>* m);
+
+// Forward decls for method tables defined once FunctionValue and Value
+// are complete. `string_builtins()` is the primitive String's method
+// table. `iterator_builtins()` holds the lazy Iterator method chain
+// (map / filter / take / ... / collect); any Object that has both
+// `iter` and `next` properties picks these up via duck-typed fallback
+// in eval_property.
+inline std::map<std::string_view, Value>& string_builtins();
+inline std::map<std::string_view, Value>& iterator_builtins();
 
 // Raise the uniform shadow-prohibition error. Used by all sites that
 // would introduce a binding shadowing a closure-captured variable:
@@ -119,10 +139,19 @@ struct FunctionValue {
 };
 
 struct ObjectValue {
-  ObjectValue()
-      : properties(std::make_shared<std::map<std::string_view, Symbol>>()) {
+  ObjectValue() {
+    auto* raw = new std::map<std::string_view, Symbol>();
+    properties = std::shared_ptr<std::map<std::string_view, Symbol>>(
+        raw, &_destroy_prop_map);
     interp_gc().track_map(properties);
   }
+
+  // Synthetic ctor: skips default map allocation and GC tracking so that
+  // _call_drop_if_present can build a `this` view over an existing map
+  // without extra bookkeeping. Caller must assign `properties` itself.
+  struct Synthetic {};
+  explicit ObjectValue(Synthetic) {}
+
   bool has(std::string_view name) const;
   const Value& get(std::string_view name) const;
   void assign(std::string_view name, const Value& val);
@@ -410,6 +439,13 @@ struct ReturnValue {
   Value value;
 };
 
+// Internal control-flow signals for `break` / `continue`. Caught by the
+// nearest enclosing loop; uncaught occurrences are a language error
+// (checked at eval time via a stack-depth guard). Distinct types so a
+// user `throw` cannot be mistaken for a loop signal.
+struct BreakSignal {};
+struct ContinueSignal {};
+
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
 }
@@ -530,6 +566,19 @@ inline const Value& ObjectValue::get(std::string_view name) const {
   return properties->at(name).val;
 }
 
+// Validate the well-known-property contract (see well_known_props.h)
+// for a freshly-bound interpreter Value: must be a 0-arg Function.
+inline void _check_drop_contract(std::string_view name, const Value& val) {
+  if (!is_well_known_prop(name)) return;
+  if (val.type != Value::Function) {
+    throw_well_known_prop_contract_error(name);
+  }
+  const auto& fn = val.template get<FunctionValue>();
+  if (!fn.params->empty()) {
+    throw_well_known_prop_contract_error(name);
+  }
+}
+
 inline void ObjectValue::assign(std::string_view name, const Value& val) {
   assert(has(name));
   auto& sym = properties->at(name);
@@ -539,12 +588,14 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
     msg += "'...";
     throw std::runtime_error(msg);
   }
+  _check_drop_contract(name, val);
   sym.val = val;
   return;
 }
 
 inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
+  _check_drop_contract(name, val);
   (*properties)[name] = Symbol{val, mut};
 }
 
@@ -605,6 +656,157 @@ inline std::pair<long, long> normalize_slice(long start, long end, long size) {
   return {start, end};
 }
 
+// Build an iterator-protocol step Object. Two shapes: {done: true}
+// (end marker) and {done: false, value: v} (yielded value).
+inline Value _iter_step_done() {
+  ObjectValue step;
+  step.initialize("done", Value(true), false);
+  return Value(std::move(step));
+}
+
+inline Value _iter_step_value(Value v) {
+  ObjectValue step;
+  step.initialize("done", Value(false), false);
+  step.initialize("value", std::move(v), false);
+  return Value(std::move(step));
+}
+
+// Build an Iterator ObjectValue: `iter` returns self (so the iterator
+// is also an Iterable), `next` is the caller-supplied advance function
+// (captures its own state).
+template <typename NextFn>
+inline Value _make_iterator(NextFn&& next_impl) {
+  ObjectValue iter_obj;
+  iter_obj.initialize(
+      "iter",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+        return callEnv->get("this");
+      })),
+      false);
+  iter_obj.initialize(
+      "next",
+      Value(FunctionValue({}, std::forward<NextFn>(next_impl))),
+      false);
+  return Value(std::move(iter_obj));
+}
+
+// Decode one UTF-8 codepoint at `s + off` into `cp`, advancing `off` by
+// the consumed byte count. Invalid / truncated sequences fall back to
+// the raw byte value and advance by one — matching the permissive
+// policy used by `String.iter` / `code_points` / `graphemes`.
+inline void _decode_one_utf8(const std::string& s, size_t& off,
+                             char32_t& cp) {
+  size_t bytes;
+  if (!unicode::utf8::decode_codepoint(s.data() + off, s.size() - off,
+                                       bytes, cp)) {
+    cp = static_cast<unsigned char>(s[off]);
+    bytes = 1;
+  }
+  off += bytes;
+}
+
+// Build a call environment for invoking a well-known method (drop,
+// iter, next) by reaching into an ObjectValue's raw FunctionValue.
+// Populates the bindings that eval_function_call normally provides:
+// `this`, `__LINE__`, `__COLUMN__`, plus the function-frame marker.
+inline std::shared_ptr<Environment> _make_method_call_env(
+    const Value& this_val, size_t line, size_t column) {
+  auto env = std::make_shared<Environment>();
+  env->is_function_frame = true;
+  env->initialize("this", this_val, false);
+  env->initialize("__LINE__", Value((long)line), false);
+  env->initialize("__COLUMN__", Value((long)column), false);
+  return env;
+}
+
+// Invoke a 0-parameter method stored on an iterator-shaped Object
+// (receiver plays the iterator role). `receiver.next()` style call.
+inline Value _invoke_method_no_args(const Value& receiver,
+                                    std::string_view method_name) {
+  const auto& fn = receiver.to_object().get(method_name);
+  return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
+}
+
+// Advance an iterator one step. Returns the yielded value, or
+// `std::nullopt` when the iterator is done. Used by iterator
+// methods to replace the repeated 4-line "call next(), check done,
+// extract value" pattern with a single expression.
+inline std::optional<Value> _iter_next_value(const Value& upstream) {
+  auto step = _invoke_method_no_args(upstream, "next");
+  const auto& s = step.to_object();
+  if (s.get("done").to_bool()) return std::nullopt;
+  return s.get("value");
+}
+
+// Invoke a user-supplied callable (mapper/predicate/reducer callback)
+// on the given argument. Used by Iterator methods where the callback
+// body runs repeatedly per step. No `this` is bound — callbacks are
+// free-function calls — but `self` refers to the callback for
+// recursion. Wrong arity falls through silently (0-param accepts),
+// matching the existing Array higher-order conventions.
+inline Value _invoke_callback(const Value& fn_val, const Value& a) {
+  const auto& fn = fn_val.to_function();
+  auto env = std::make_shared<Environment>();
+  env->is_function_frame = true;
+  env->initialize("self", fn_val, false);
+  if (!fn.params->empty()) {
+    const auto& p = (*fn.params)[0];
+    env->initialize(p.name, a, p.mut);
+  }
+  env->initialize("__LINE__", Value(0L), false);
+  env->initialize("__COLUMN__", Value(0L), false);
+  try {
+    return fn.eval(env);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
+inline Value _invoke_callback(const Value& fn_val, const Value& a,
+                              const Value& b) {
+  const auto& fn = fn_val.to_function();
+  auto env = std::make_shared<Environment>();
+  env->is_function_frame = true;
+  env->initialize("self", fn_val, false);
+  const auto& params = *fn.params;
+  if (!params.empty()) {
+    env->initialize(params[0].name, a, params[0].mut);
+  }
+  if (params.size() >= 2) {
+    env->initialize(params[1].name, b, params[1].mut);
+  }
+  env->initialize("__LINE__", Value(0L), false);
+  env->initialize("__COLUMN__", Value(0L), false);
+  try {
+    return fn.eval(env);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
+// Resolve the `iter` method on an iterable value (Object/Array/String)
+// and call it to obtain an iterator Object. Throws `type error` with
+// the given source location if the value is not iterable.
+inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
+  Value iter_fn;
+  if (iterable.type == Value::String) {
+    const auto& methods = string_builtins();
+    auto it = methods.find("iter");
+    if (it != methods.end()) iter_fn = it->second;
+  } else if (iterable.type == Value::Object ||
+             iterable.type == Value::Array) {
+    if (iterable.to_object().has("iter")) {
+      iter_fn = iterable.to_object().get("iter");
+    }
+  }
+  if (iter_fn.type != Value::Function) {
+    throw std::runtime_error(std::format(
+        "type error: target is not iterable at {}:{}.", line, col));
+  }
+  return iter_fn.to_function().eval(
+      _make_method_call_env(iterable, line, col));
+}
+
 inline std::map<std::string_view, Value>& ObjectValue::builtins() {
   using namespace std::literals;
   static std::map<std::string_view, Value> props_ = {
@@ -641,7 +843,25 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
                              const auto& k = callEnv->get("key").to_string();
                              val.to_object().properties->erase(k);
                              return Value();
-                           }))}};
+                           }))},
+      // Iterator protocol: yield keys in std::map order (ascending).
+      // Snapshot keys up front — avoids invalidation if the map is
+      // mutated mid-iteration, and keeps `next` O(1) per step.
+      {"iter"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         auto props = val.to_object().properties;  // shared_ptr copy
+         auto keys = std::make_shared<std::vector<std::string>>();
+         keys->reserve(props->size());
+         for (const auto& [k, _] : *props) keys->emplace_back(k);
+         auto index = std::make_shared<size_t>(0);
+         return _make_iterator([keys, index](std::shared_ptr<Environment>) {
+           if (*index >= keys->size()) return _iter_step_done();
+           auto v = Value(std::string((*keys)[*index]));
+           (*index)++;
+           return _iter_step_value(std::move(v));
+         });
+       }))}};
   return props_;
 }
 
@@ -886,7 +1106,20 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              for (auto& [k, i] : keyed) sorted.push_back(vs[i]);
                              vs = std::move(sorted);
                              return Value();
-                           }))}};
+                           }))},
+      // Iterator protocol: yield elements in index order.
+      {"iter"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& val = callEnv->get("this");
+         auto values = val.to_array().values;  // shared_ptr copy
+         auto index = std::make_shared<size_t>(0);
+         return _make_iterator([values, index](std::shared_ptr<Environment>) {
+           if (*index >= values->size()) return _iter_step_done();
+           auto v = (*values)[*index];
+           (*index)++;
+           return _iter_step_value(std::move(v));
+         });
+       }))}};
   return props_;
 }
 
@@ -991,7 +1224,367 @@ inline std::map<std::string_view, Value>& string_builtins() {
                                              callEnv->get("end").to_long(),
                                              static_cast<long>(s.size()));
              return Value(s.substr(ss, ee - ss));
-           }))}};
+           }))},
+      // Iterator protocol: lazy UTF-8 walk yielding one-scalar Strings.
+      // Culebra does not currently validate UTF-8 at String construction
+      // (e.g. IO.read returns raw bytes as String), so an invalid or
+      // truncated lead byte must not stall the iterator; in that case
+      // we emit the offending byte as a one-byte substring and advance.
+      {"iter"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         // Share the UTF-8 bytes through a shared_ptr<const string> so
+         // each call to next() only indexes into the shared buffer.
+         auto buf = std::make_shared<const std::string>(
+             callEnv->get("this").to_string());
+         auto offset = std::make_shared<size_t>(0);
+         return _make_iterator([buf, offset](std::shared_ptr<Environment>) {
+           if (*offset >= buf->size()) return _iter_step_done();
+           size_t len = peg::codepoint_length(buf->data() + *offset,
+                                              buf->size() - *offset);
+           if (len == 0) len = 1;  // invalid/truncated: emit raw byte
+           auto scalar = buf->substr(*offset, len);
+           *offset += len;
+           return _iter_step_value(Value(std::move(scalar)));
+         });
+       }))},
+      // Lazy UTF-8 walk yielding Unicode scalar values as Long. For
+      // numeric / range / classification work where the per-scalar
+      // String allocation of `iter`/`for-in` is wasteful. Invalid or
+      // truncated bytes yield the raw byte value (0–255) and advance
+      // by one, mirroring `iter`'s permissive policy.
+      {"code_points"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto buf = std::make_shared<const std::string>(
+             callEnv->get("this").to_string());
+         auto offset = std::make_shared<size_t>(0);
+         return _make_iterator([buf, offset](std::shared_ptr<Environment>) {
+           if (*offset >= buf->size()) return _iter_step_done();
+           char32_t cp;
+           _decode_one_utf8(*buf, *offset, cp);
+           return _iter_step_value(Value(static_cast<long>(cp)));
+         });
+       }))},
+      // Lazy walk yielding Extended Grapheme Cluster boundaries (UAX
+      // #29) as Strings — one user-perceived character per step (e.g.
+      // `'👨‍👩‍👧'.graphemes()` yields one element).
+      //
+      // Streaming decode: grapheme_length requires UTF-32 context, but
+      // we only decode enough UTF-8 into `u32` to make the next cluster
+      // boundary observable. `take(n)` on a multi-MB string therefore
+      // touches only the prefix it actually consumes — mirroring how
+      // `code_points` walks UTF-8 incrementally. Per-iterator state is
+      // independent, so two iterators over the same String don't
+      // interfere.
+      {"graphemes"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto buf = std::make_shared<const std::string>(
+             callEnv->get("this").to_string());
+         auto u32 = std::make_shared<std::u32string>();
+         auto byte_off = std::make_shared<size_t>(0);
+         auto cp_off = std::make_shared<size_t>(0);
+         return _make_iterator(
+             [buf, u32, byte_off, cp_off](std::shared_ptr<Environment>) {
+           // Chunk size when growing u32 to confirm a cluster boundary.
+           // 1 is legal but pays the grapheme_length cost per codepoint;
+           // 16 amortizes it across typical cluster lengths.
+           constexpr size_t kExtendChunk = 16;
+           // Discarding the already-walked prefix keeps memory bounded
+           // for long-lived iterators on large strings — without it a
+           // full walk of a 10 MB ASCII input would hold a 40 MB u32.
+           // UAX #29 only needs bounded lookback (regional-indicator
+           // pairs, at most 2 codepoints), so trimming at step boundary
+           // is safe.
+           constexpr size_t kTrimThreshold = 4096;
+
+           auto extend_to = [&](size_t target) {
+             while (u32->size() < target && *byte_off < buf->size()) {
+               char32_t cp;
+               _decode_one_utf8(*buf, *byte_off, cp);
+               u32->push_back(cp);
+             }
+           };
+           extend_to(*cp_off + 1);
+           if (*cp_off >= u32->size()) return _iter_step_done();
+           // Grow the buffer until `grapheme_length` returns strictly
+           // less than the available size (a boundary is confirmed to
+           // lie inside the buffer) or until the UTF-8 input is
+           // exhausted — without lookahead, a `len == avail` return
+           // could still be truncated by a continuation codepoint.
+           for (;;) {
+             size_t avail = u32->size() - *cp_off;
+             size_t len = unicode::grapheme_length(
+                 u32->data() + *cp_off, avail);
+             if (len == 0) len = 1;  // grapheme_length contract says >=1 on avail>=1; belt-and-braces
+             if (len < avail || *byte_off >= buf->size()) {
+               std::string out;
+               unicode::utf8::encode(u32->data() + *cp_off, len, out);
+               *cp_off += len;
+               if (*cp_off >= kTrimThreshold) {
+                 u32->erase(0, *cp_off);
+                 *cp_off = 0;
+               }
+               return _iter_step_value(Value(std::move(out)));
+             }
+             extend_to(u32->size() + kExtendChunk);
+           }
+         });
+       }))}};
+  return props_;
+}
+
+// Iterator method table. Any Object that has both `iter` and `next`
+// properties picks these up as methods via the duck-typed fallback in
+// eval_property. The lazy non-terminal methods (map/filter/take/...)
+// return a new iterator wrapping the receiver; the terminal methods
+// (collect/for_each/reduce/...) consume the iterator and return a
+// concrete value.
+inline std::map<std::string_view, Value>& iterator_builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      // --- Non-terminal: return a new lazy Iterator ----------------
+
+      {"map"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto f = callEnv->get("f");
+         return _make_iterator(
+             [upstream, f](std::shared_ptr<Environment>) {
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               return _iter_step_value(_invoke_callback(f, *v));
+             });
+       }))},
+
+      {"filter"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto p = callEnv->get("p");
+         return _make_iterator(
+             [upstream, p](std::shared_ptr<Environment>) {
+               for (;;) {
+                 auto v = _iter_next_value(upstream);
+                 if (!v) return _iter_step_done();
+                 if (_invoke_callback(p, *v).to_bool()) {
+                   return _iter_step_value(std::move(*v));
+                 }
+               }
+             });
+       }))},
+
+      {"take"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto limit = callEnv->get("n").to_long();
+         auto count = std::make_shared<long>(0);
+         return _make_iterator(
+             [upstream, limit, count](std::shared_ptr<Environment>) {
+               if (*count >= limit) return _iter_step_done();
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               (*count)++;
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      {"skip"sv,
+       Value(FunctionValue({{"n", false, "Long"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto limit = callEnv->get("n").to_long();
+         auto skipped = std::make_shared<bool>(false);
+         return _make_iterator(
+             [upstream, limit, skipped](std::shared_ptr<Environment>) {
+               if (!*skipped) {
+                 *skipped = true;
+                 for (long i = 0; i < limit; i++) {
+                   if (!_iter_next_value(upstream)) return _iter_step_done();
+                 }
+               }
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      {"take_while"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto p = callEnv->get("p");
+         auto exhausted = std::make_shared<bool>(false);
+         return _make_iterator(
+             [upstream, p, exhausted](std::shared_ptr<Environment>) {
+               if (*exhausted) return _iter_step_done();
+               auto v = _iter_next_value(upstream);
+               if (!v || !_invoke_callback(p, *v).to_bool()) {
+                 *exhausted = true;
+                 return _iter_step_done();
+               }
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      // f(x) must return an iterable; inner iterator is consumed
+      // before advancing the upstream.
+      {"flat_map"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto f = callEnv->get("f");
+         // nullopt-like sentinel: inner iterator value (or Nil when
+         // none is active).
+         auto inner = std::make_shared<Value>();
+         return _make_iterator(
+             [upstream, f, inner](std::shared_ptr<Environment>) {
+               for (;;) {
+                 if (inner->type == Value::Nil) {
+                   auto outer = _iter_next_value(upstream);
+                   if (!outer) return _iter_step_done();
+                   *inner = _get_iterator(_invoke_callback(f, *outer), 0, 0);
+                 }
+                 auto v = _iter_next_value(*inner);
+                 if (!v) { *inner = Value(); continue; }
+                 return _iter_step_value(std::move(*v));
+               }
+             });
+       }))},
+
+      {"chain"sv,
+       Value(FunctionValue({{"other", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto first = callEnv->get("this");
+         // Resolve other's iterator up front; also accept anything
+         // iterable for `other` (duck-typed).
+         auto second = _get_iterator(callEnv->get("other"), 0, 0);
+         auto on_first = std::make_shared<bool>(true);
+         return _make_iterator(
+             [first, second, on_first](std::shared_ptr<Environment>) {
+               if (*on_first) {
+                 auto v = _iter_next_value(first);
+                 if (v) return _iter_step_value(std::move(*v));
+                 *on_first = false;
+               }
+               auto v = _iter_next_value(second);
+               if (!v) return _iter_step_done();
+               return _iter_step_value(std::move(*v));
+             });
+       }))},
+
+      // Pairs elements from both iterators as {first, second} Objects;
+      // stops at the shorter side.
+      {"zip"sv,
+       Value(FunctionValue({{"other", false}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto a = callEnv->get("this");
+         auto b = _get_iterator(callEnv->get("other"), 0, 0);
+         return _make_iterator([a, b](std::shared_ptr<Environment>) {
+           auto va = _iter_next_value(a);
+           if (!va) return _iter_step_done();
+           auto vb = _iter_next_value(b);
+           if (!vb) return _iter_step_done();
+           ObjectValue pair;
+           pair.initialize("first", std::move(*va), false);
+           pair.initialize("second", std::move(*vb), false);
+           return _iter_step_value(Value(std::move(pair)));
+         });
+       }))},
+
+      // Yields {index, value} Objects with index starting at 0.
+      {"enumerate"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto index = std::make_shared<long>(0);
+         return _make_iterator(
+             [upstream, index](std::shared_ptr<Environment>) {
+               auto v = _iter_next_value(upstream);
+               if (!v) return _iter_step_done();
+               ObjectValue pair;
+               pair.initialize("index", Value(*index), false);
+               pair.initialize("value", std::move(*v), false);
+               (*index)++;
+               return _iter_step_value(Value(std::move(pair)));
+             });
+       }))},
+
+      // --- Terminal: consume the iterator and return a value -------
+
+      {"collect"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         ArrayValue out;
+         while (auto v = _iter_next_value(upstream)) {
+           out.values->push_back(std::move(*v));
+         }
+         return Value(std::move(out));
+       }))},
+
+      {"for_each"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto f = callEnv->get("f");
+         while (auto v = _iter_next_value(upstream)) {
+           _invoke_callback(f, *v);
+         }
+         return Value();
+       }))},
+
+      {"reduce"sv,
+       Value(FunctionValue({{"init", false}, {"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto acc = callEnv->get("init");
+         auto f = callEnv->get("f");
+         while (auto v = _iter_next_value(upstream)) {
+           acc = _invoke_callback(f, acc, *v);
+         }
+         return acc;
+       }))},
+
+      {"find"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto p = callEnv->get("p");
+         while (auto v = _iter_next_value(upstream)) {
+           if (_invoke_callback(p, *v).to_bool()) return *v;
+         }
+         return Value();
+       }))},
+
+      {"any"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto p = callEnv->get("p");
+         while (auto v = _iter_next_value(upstream)) {
+           if (_invoke_callback(p, *v).to_bool()) return Value(true);
+         }
+         return Value(false);
+       }))},
+
+      {"all"sv,
+       Value(FunctionValue({{"p", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         auto p = callEnv->get("p");
+         while (auto v = _iter_next_value(upstream)) {
+           if (!_invoke_callback(p, *v).to_bool()) return Value(false);
+         }
+         return Value(true);
+       }))},
+
+      {"count"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto upstream = callEnv->get("this");
+         long n = 0;
+         while (_iter_next_value(upstream)) n++;
+         return Value(n);
+       }))},
+  };
   return props_;
 }
 
@@ -1022,6 +1615,8 @@ struct Interpreter {
         return eval_statements(ast, env);
       case "WHILE"_:
         return eval_while(ast, env);
+      case "FOR"_:
+        return eval_for(ast, env);
       case "IF"_:
         return eval_if(ast, env);
       case "MATCH"_:
@@ -1071,6 +1666,10 @@ struct Interpreter {
       case "THROW"_:
         eval_throw(ast, env);
         std::unreachable();
+      case "BREAK"_:
+        throw BreakSignal{};
+      case "CONTINUE"_:
+        throw ContinueSignal{};
       case "TRY"_:
         return eval_try(ast, env);
       case "DEFER"_:
@@ -1107,7 +1706,84 @@ struct Interpreter {
       if (!cond.to_bool()) {
         break;
       }
-      eval(*ast.nodes[1], env);
+      try {
+        eval(*ast.nodes[1], env);
+      } catch (const BreakSignal&) {
+        return Value();
+      } catch (const ContinueSignal&) {
+        // fall through to next iteration
+      }
+    }
+    return Value();
+  }
+
+  // for IDENT in EXPR BLOCK
+  // Calls EXPR.iter().next() repeatedly; binds value to IDENT in a
+  // fresh scope per iteration. Honors break/continue and defer.
+  Value eval_for(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    const auto& id = *ast.nodes[0];
+    const auto& iter_expr = *ast.nodes[1];
+    const auto& body = *ast.nodes[2];
+    const auto& var_name = id.token;
+
+    // Shadow rule: a for-binding introduces a new name, so it must not
+    // shadow a closure-captured variable in an enclosing function.
+    if (env->def_scope_captures(var_name)) {
+      throw_shadow_error(var_name, id.line, id.column);
+    }
+
+    auto iterable = eval(iter_expr, env);
+    auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
+    if (iter_val.type != Value::Object) {
+      throw std::runtime_error(std::format(
+          "type error: iter() did not return an Object at {}:{}.",
+          iter_expr.line, iter_expr.column));
+    }
+
+    for (;;) {
+      // step = iterator.next()
+      const auto& iter_obj = iter_val.to_object();
+      if (!iter_obj.has("next")) {
+        throw std::runtime_error(std::format(
+            "type error: iterator has no next() at {}:{}.",
+            iter_expr.line, iter_expr.column));
+      }
+      auto next_fn = iter_obj.get("next");
+      if (next_fn.type != Value::Function) {
+        throw std::runtime_error(std::format(
+            "type error: iterator.next is not a Function at {}:{}.",
+            iter_expr.line, iter_expr.column));
+      }
+      auto step = next_fn.to_function().eval(_make_method_call_env(
+          iter_val, iter_expr.line, iter_expr.column));
+      if (step.type != Value::Object) {
+        throw std::runtime_error(std::format(
+            "type error: next() did not return an Object at {}:{}.",
+            iter_expr.line, iter_expr.column));
+      }
+      const auto& step_obj = step.to_object();
+      if (step_obj.has("done") && step_obj.get("done").to_bool()) {
+        break;
+      }
+      Value loop_val = step_obj.has("value") ? step_obj.get("value") : Value();
+
+      auto scopeEnv = std::make_shared<Environment>();
+      scopeEnv->append_outer(env);
+      scopeEnv->initialize(var_name, loop_val, false);
+      try {
+        eval(body, scopeEnv);
+        run_deferred(scopeEnv);
+      } catch (const BreakSignal&) {
+        run_deferred(scopeEnv);
+        return Value();
+      } catch (const ContinueSignal&) {
+        run_deferred(scopeEnv);
+        // fall through
+      } catch (...) {
+        run_deferred(scopeEnv);
+        throw;
+      }
     }
     return Value();
   }
@@ -1294,47 +1970,88 @@ struct Interpreter {
         return_type));
   };
 
-  Value eval_function_call(const peg::Ast& ast,
-                           std::shared_ptr<Environment> env, const Value& val) {
-    const auto& f = val.to_function();
+  // Shared backbone for invoking a user function. `arg_value(i)` /
+  // `arg_loc(i)` abstract where each of the `total` effective arguments
+  // comes from — lazily evaluating AST args for a direct call, or
+  // returning a pre-evaluated receiver at index 0 for a UFCS call.
+  // `call_line`/`call_column` point at the call site for error messages.
+  template <typename ArgVal, typename ArgLoc>
+  Value invoke_user_function(const Value& fn_val,
+                             std::shared_ptr<Environment> env, size_t total,
+                             ArgVal arg_value, ArgLoc arg_loc,
+                             size_t call_line, size_t call_column) {
+    const auto& f = fn_val.to_function();
     const auto& params = *f.params;
-    const auto& args = ast.nodes;
 
-    if (params.size() <= args.size()) {
-      auto callEnv = std::make_shared<Environment>(env);
-      callEnv->is_function_frame = true;
-      callEnv->initialize("self", val, false);
-      for (auto iprm = 0u; iprm < params.size(); iprm++) {
-        auto param = params[iprm];
-        auto arg = args[iprm];
-        auto val = eval(*arg, env);
-        check_type(val, param.type_name,
-                   std::format("parameter '{}'", param.name),
-                   arg->line, arg->column);
-        callEnv->initialize(param.name, val, param.mut);
-      }
-      // Bind extra positional args to __ARGS__ for variadic built-ins.
-      if (args.size() > params.size()) {
-        ArrayValue extras;
-        for (auto i = params.size(); i < args.size(); i++) {
-          extras.values->push_back(eval(*args[i], env));
-        }
-        callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
-      }
-      callEnv->initialize("__LINE__", Value((long)ast.line), false);
-      callEnv->initialize("__COLUMN__", Value((long)ast.column), false);
-      Value result;
-      try {
-        result = f.eval(callEnv);
-      } catch (const ReturnValue& r) {
-        result = r.value;
-      }
-      check_type(result, f.return_type, "return value", ast.line, ast.column);
-      return result;
+    if (params.size() > total) {
+      throw std::runtime_error("arguments error...");
     }
 
-    std::string msg = "arguments error...";
-    throw std::runtime_error(msg);
+    auto callEnv = std::make_shared<Environment>(env);
+    callEnv->is_function_frame = true;
+    callEnv->initialize("self", fn_val, false);
+
+    for (size_t p = 0; p < params.size(); p++) {
+      auto v = arg_value(p);
+      auto [ln, col] = arg_loc(p);
+      check_type(v, params[p].type_name,
+                 std::format("parameter '{}'", params[p].name), ln, col);
+      callEnv->initialize(params[p].name, v, params[p].mut);
+    }
+
+    // Overflow args (incl. variadic built-ins' sink) bind to __ARGS__.
+    if (total > params.size()) {
+      ArrayValue extras;
+      for (size_t idx = params.size(); idx < total; idx++) {
+        extras.values->push_back(arg_value(idx));
+      }
+      callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+    }
+
+    callEnv->initialize("__LINE__", Value((long)call_line), false);
+    callEnv->initialize("__COLUMN__", Value((long)call_column), false);
+
+    Value result;
+    try {
+      result = f.eval(callEnv);
+    } catch (const ReturnValue& r) {
+      result = r.value;
+    }
+    check_type(result, f.return_type, "return value", call_line, call_column);
+    return result;
+  }
+
+  Value eval_function_call(const peg::Ast& ast,
+                           std::shared_ptr<Environment> env, const Value& val) {
+    const auto& args = ast.nodes;
+    return invoke_user_function(
+        val, env, args.size(),
+        [&](size_t i) { return eval(*args[i], env); },
+        [&](size_t i) -> std::pair<size_t, size_t> {
+          return {args[i]->line, args[i]->column};
+        },
+        ast.line, ast.column);
+  }
+
+  // UFCS (D / Nim style): call `fn_val` as if `receiver` were its first
+  // positional argument, with the remaining arguments taken from the
+  // AST's `ARGUMENTS` node. Deliberately does NOT bind `this` (UFCS is
+  // a free-function call, not a method).
+  Value eval_ufcs_call(const peg::Ast& args_ast,
+                       std::shared_ptr<Environment> env,
+                       const Value& fn_val, const Value& receiver,
+                       size_t dot_line, size_t dot_column) {
+    const auto& args = args_ast.nodes;
+    return invoke_user_function(
+        fn_val, env, 1 + args.size(),
+        [&](size_t i) {
+          return i == 0 ? receiver : eval(*args[i - 1], env);
+        },
+        [&](size_t i) -> std::pair<size_t, size_t> {
+          return i == 0 ? std::pair{dot_line, dot_column}
+                        : std::pair{args[i - 1]->line, args[i - 1]->column};
+        },
+        args_ast.line, args_ast.column);
   }
 
   Value eval_array_reference(const peg::Ast& ast,
@@ -1353,6 +2070,18 @@ struct Interpreter {
     return val;
   }
 
+  // Wrap a method value (looked up from a builtin table) into a
+  // Function that will bind `this` to `val` when invoked. Matches how
+  // eval_property used to inline this for Object/Array methods.
+  static Value _wrap_method_with_this(const Value& prop, const Value& val) {
+    const auto& pf = prop.to_function();
+    return Value(
+        FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
+          callEnv->initialize("this", val, false);
+          return pf.eval(callEnv);
+        }));
+  }
+
   Value eval_property(const peg::Ast& ast, std::shared_ptr<Environment> env,
                       const Value& val) {
     auto name = ast.token;
@@ -1362,28 +2091,44 @@ struct Interpreter {
       const auto& methods = string_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
-      const auto& pf = it->second.to_function();
-      return Value(
-          FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
-            callEnv->initialize("this", val, false);
-            return pf.eval(callEnv);
-          }));
+      return _wrap_method_with_this(it->second, val);
     }
 
     const auto& obj = val.to_object();
-    if (!obj.has(name)) {
-      return Value();
+    if (obj.has(name)) {
+      const auto& prop = obj.get(name);
+      if (prop.type == Value::Function) {
+        return _wrap_method_with_this(prop, val);
+      }
+      return prop;
     }
-    const auto& prop = obj.get(name);
-    if (prop.type == Value::Function) {
-      const auto& pf = prop.to_function();
-      return Value(
-          FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
-            callEnv->initialize("this", val, false);
-            return pf.eval(callEnv);
-          }));
+
+    // Duck-typed iterator protocol fallback: any Object/Array that has
+    // both `iter` and `next` methods is treated as an Iterator, and
+    // gains the lazy method set (map/filter/take/.../collect — see
+    // iterator_builtins()). Eager Array methods take priority above.
+    if (obj.has("iter") && obj.has("next")) {
+      const auto& methods = iterator_builtins();
+      auto it = methods.find(name);
+      if (it != methods.end()) {
+        return _wrap_method_with_this(it->second, val);
+      }
     }
-    return prop;
+    return Value();
+  }
+
+  // Decide whether `val` has a method/property named `name` (for
+  // distinguishing "real method call" from "UFCS fallback candidate").
+  // Returning false does NOT imply `val` is a non-object — primitives
+  // like Long simply have no methods.
+  bool receiver_has_property(const Value& val, std::string_view name) {
+    if (val.type == Value::String) {
+      return string_builtins().count(name) > 0;
+    }
+    if (val.type == Value::Object || val.type == Value::Array) {
+      return val.to_object().has(name);
+    }
+    return false;
   }
 
   Value eval_call(const peg::Ast& ast, std::shared_ptr<Environment> env) {
@@ -1401,9 +2146,29 @@ struct Interpreter {
         case "INDEX"_:
           val = eval_array_reference(postfix, env, val);
           break;
-        case "DOT"_:
+        case "DOT"_: {
+          // UFCS: when DOT is immediately followed by ARGUMENTS and the
+          // receiver has no matching property, look up the name as a
+          // free function in the surrounding environment and call it
+          // with `val` as the first argument. Existing methods always
+          // take priority (Option 1 from the UFCS design discussion).
+          auto name = postfix.token;
+          bool has_prop = receiver_has_property(val, name);
+          bool next_is_args =
+              (i + 1 < ast.nodes.size()) &&
+              (ast.nodes[i + 1]->original_tag == "ARGUMENTS"_);
+          if (!has_prop && next_is_args && env->has(name)) {
+            auto fn_val = env->get(name);
+            if (fn_val.type == Value::Function) {
+              val = eval_ufcs_call(*ast.nodes[i + 1], env, fn_val, val,
+                                   postfix.line, postfix.column);
+              i++;  // consume the ARGUMENTS postfix
+              break;
+            }
+          }
           val = eval_property(postfix, env, val);
           break;
+        }
         default:
           throw std::logic_error("invalid internal condition.");
       }
@@ -1521,9 +2286,10 @@ struct Interpreter {
   bool is_keyword(std::string_view ident) const {
     using namespace std::literals;
     static std::set<std::string_view> keywords = {
-        "nil"sv,    "true"sv,  "false"sv, "mut"sv,    "debugger"sv,
-        "return"sv, "while"sv, "if"sv,    "else"sv,   "fn"sv,
-        "match"sv,  "throw"sv, "try"sv,   "catch"sv,  "defer"sv};
+        "nil"sv,    "true"sv,     "false"sv,  "mut"sv,      "debugger"sv,
+        "return"sv, "while"sv,    "for"sv,    "in"sv,       "if"sv,
+        "else"sv,   "fn"sv,       "match"sv,  "throw"sv,    "try"sv,
+        "catch"sv,  "break"sv,    "continue"sv, "defer"sv};
     return keywords.contains(ident);
   }
 
@@ -1625,6 +2391,7 @@ struct Interpreter {
       auto mut = prop.nodes[0]->token == "mut";
       const auto& name = prop.nodes[1]->token;
       auto val = eval(*prop.nodes[2], env);
+      _check_drop_contract(name, val);
       obj.properties->emplace(name, Symbol{std::move(val), mut});
     }
     return Value(std::move(obj));
@@ -1894,17 +2661,68 @@ inline void InterpGC::collect() {
   }
 
   // Break cycles: clear unreachable containers. shared_ptr cascade handles
-  // the rest.
+  // the rest. Call drop on unreachable object-maps before clearing — order
+  // among cycle members is undefined (each drop still runs once because
+  // the custom deleter skips maps emptied here).
   for (auto& l : live) {
     if (!reachable.contains(l.ptr)) {
-      if (l.kind == MAP)
-        static_cast<PropMap*>(l.ptr)->clear();
-      else
+      if (l.kind == MAP) {
+        auto* m = static_cast<PropMap*>(l.ptr);
+        _call_drop_if_present(m);
+        m->clear();
+      } else {
         static_cast<ValVec*>(l.ptr)->clear();
+      }
     }
   }
 
   running_ = false;
+}
+
+// RAII drop: invoked by the PropMap shared_ptr custom deleter (and by
+// InterpGC for cycle members). Looks up a `drop` Function property and
+// calls it with `this` bound to a non-owning view of the same map.
+// The map is always left untouched by this helper itself — the caller
+// (deleter or cycle-collector) performs the actual clear/delete.
+//
+// Re-entry: an empty or drop-less map short-circuits immediately, so
+// the temporary ObjectValue constructed below does not recurse.
+//
+// Exceptions in drop are logged to stderr and swallowed to preserve
+// the rest of the cleanup cascade (matching Python / Swift).
+//
+// Resurrection warning: storing `this` somewhere outside drop leaves
+// a dangling reference once the caller completes the teardown. Do
+// not resurrect `this` in drop bodies.
+inline void _destroy_prop_map(
+    std::map<std::string_view, Symbol>* m) {
+  if (!m) return;
+  _call_drop_if_present(m);
+  delete m;
+}
+
+inline void _call_drop_if_present(
+    std::map<std::string_view, Symbol>* m) {
+  if (!m) return;
+  auto it = m->find("drop");
+  if (it == m->end()) return;
+  if (it->second.val.type != Value::Function) return;
+
+  const auto& fn = it->second.val.template get<FunctionValue>();
+  if (!fn.params->empty()) return;
+
+  ObjectValue this_view(ObjectValue::Synthetic{});
+  this_view.properties =
+      std::shared_ptr<std::map<std::string_view, Symbol>>(
+          m, [](std::map<std::string_view, Symbol>*) {});
+
+  try {
+    fn.eval(_make_method_call_env(Value(std::move(this_view)), 0, 0));
+  } catch (const std::exception& e) {
+    std::cerr << "drop: " << e.what() << std::endl;
+  } catch (...) {
+    std::cerr << "drop: unknown error" << std::endl;
+  }
 }
 
 }  // namespace culebra

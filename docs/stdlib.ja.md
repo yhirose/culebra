@@ -5,7 +5,7 @@ Culebra 標準ライブラリ
 ユーティリティをまとめた名前空間オブジェクト（`Math`, `IO`, `Sys`）
 を対象とします。ここに記載のものは `import` 文なしで利用できます。
 
-言語レベルの組み込み関数（`assert`, `range`, `to_long`, `to_string`,
+言語レベルの組み込み関数（`assert`, `to_long`, `to_string`,
 `type_of`）は [言語仕様 §18](language.ja.md) を参照してください。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
 [言語仕様 §17](language.ja.md) に規定されています。
@@ -89,6 +89,52 @@ puts(Math.clamp(5, 0, 10))   # 5
 puts(Math.clamp(-5, 0, 10))  # 0
 puts(Math.clamp(15, 0, 10))  # 10
 ```
+
+### `Math.iota(n: Long) -> Array` / `Math.iota(start: Long, end: Long) -> Array`
+
+連続整数の新しい `Array` を生成します。名前は APL / C++
+`std::iota` / Scheme SRFI-1 の慣例に倣い、「連続整数を配列として
+実体化する」操作を表します。**遅延版**は `Math.range`（同じ引数で
+イテレータを返す）で、`for`-in ループでの反復には `Math.range`、
+`Array` 自体が必要な場合には `Math.iota` を使い分けます。
+
+* `Math.iota(n)` は `[0, 1, ..., n-1]` を返します。`n <= 0` なら空配列。
+* `Math.iota(start, end)` は `[start, start+1, ..., end-1]` を返します。
+  `start >= end` なら空配列。
+
+```culebra
+puts(Math.iota(3))         # [0, 1, 2]
+puts(Math.iota(2, 5))      # [2, 3, 4]
+puts(Math.iota(5, 2))      # []
+```
+
+### `Math.range(n: Long) -> Iterator` / `Math.range(start: Long, end: Long) -> Iterator`
+
+`Math.iota` の遅延版。同じ整数列を 1 要素ずつ yield するイテレータを
+返します。`for`-in ループや（Phase 3 で入る予定の）イテレータ
+メソッドチェーンと組み合わせて使い、範囲サイズに関わらず**定数の
+追加メモリ**で反復します。空範囲の規約は `iota` と同じで、`n <= 0`
+や `start >= end` は即座に完了するイテレータを返します。
+
+```culebra
+for i in Math.range(5)     { puts(i) }     # 0, 1, 2, 3, 4
+for i in Math.range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+
+# 巨大範囲でも定数メモリ
+for i in Math.range(1_000_000_000) {
+  if i > 3 { break }
+  puts(i)
+}
+```
+
+**JIT**: インタープリタ専用です。`for` 文自体は `--jit` でも
+`Array` / `Object` のキー / `String` のスカラーに対して動作しますが、
+`Math.range` が返すイテレータオブジェクトを駆動するイテレータ
+プロトコルはサポートされていません。`--jit` で `for i in Math.range(…)`
+と書くと、そのオブジェクトのプロパティキー（`iter` / `next`）を
+列挙するだけで正しい結果になりません。`--jit` 下で具体的な整数列が
+欲しい場合は `Math.iota` を使ってください。詳細は language.ja.md
+§17.5 参照。
 
 ---
 
@@ -211,7 +257,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ### 自由関数 vs メソッド
 
-自由関数（名前空間内）は、無から値を構築する場合（`range`,
+自由関数（名前空間内）は、無から値を構築する場合（`Math.iota`,
 `IO.input`）、複数の型に等しく適用される場合（`type_of`,
 `to_string`）に使います。特定の型に関する操作はメソッド構文を
 用いますが、その設計方針は言語仕様 §17（String/Array/Object

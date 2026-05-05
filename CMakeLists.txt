@@ -6,6 +6,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(CULEBRA_ENABLE_JIT "Enable LLVM JIT compilation" OFF)
 
+# Minimum LLVM version. ORC JIT APIs used by jit.h have been stable
+# since LLVM 17; routinely tested against current (22.x). Override
+# with -DCULEBRA_MIN_LLVM_VERSION=<n> if needed.
+set(CULEBRA_MIN_LLVM_VERSION 17 CACHE STRING
+    "Minimum required LLVM major version for the JIT build")
+
 if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
 endif()
@@ -13,9 +19,51 @@ endif()
 include_directories(./include)
 include_directories(./vendor/cpp-peglib)
 include_directories(./vendor/cpp-linenoise)
+include_directories(./vendor/cpp-unicodelib)
 
 if(CULEBRA_ENABLE_JIT)
-  find_package(LLVM REQUIRED CONFIG)
+  # Homebrew installs LLVM keg-only so find_package can't see it without
+  # a hint. When the user didn't pass CMAKE_PREFIX_PATH themselves,
+  # derive it from `brew --prefix llvm`.
+  if(APPLE AND NOT CMAKE_PREFIX_PATH)
+    find_program(BREW_EXECUTABLE brew)
+    if(BREW_EXECUTABLE)
+      execute_process(
+        COMMAND ${BREW_EXECUTABLE} --prefix llvm
+        OUTPUT_VARIABLE BREW_LLVM_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE BREW_LLVM_RESULT)
+      if(BREW_LLVM_RESULT EQUAL 0 AND BREW_LLVM_PREFIX)
+        list(APPEND CMAKE_PREFIX_PATH "${BREW_LLVM_PREFIX}")
+        message(STATUS "Homebrew LLVM detected at ${BREW_LLVM_PREFIX}")
+      endif()
+    endif()
+  endif()
+
+  find_package(LLVM CONFIG)
+  if(NOT LLVM_FOUND)
+    if(APPLE)
+      set(_hint "brew install llvm")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      set(_hint "apt install llvm-${CULEBRA_MIN_LLVM_VERSION}-dev   (Debian/Ubuntu)\n         dnf install llvm-devel                (Fedora/RHEL)")
+    elseif(WIN32)
+      set(_hint "winget install LLVM.LLVM   or   choco install llvm")
+    else()
+      set(_hint "install LLVM ${CULEBRA_MIN_LLVM_VERSION}+ via your platform's package manager")
+    endif()
+    message(FATAL_ERROR
+      "LLVM ${CULEBRA_MIN_LLVM_VERSION}+ not found. Install it with:\n"
+      "         ${_hint}\n"
+      "then re-run cmake (or `just build`). To build without JIT, "
+      "pass -DCULEBRA_ENABLE_JIT=OFF.")
+  endif()
+  if(LLVM_PACKAGE_VERSION VERSION_LESS ${CULEBRA_MIN_LLVM_VERSION})
+    message(FATAL_ERROR
+      "Found LLVM ${LLVM_PACKAGE_VERSION} but Culebra requires "
+      "LLVM ${CULEBRA_MIN_LLVM_VERSION}+. Upgrade via your package "
+      "manager, or override the floor with "
+      "-DCULEBRA_MIN_LLVM_VERSION=<n>.")
+  endif()
   message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
   message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 

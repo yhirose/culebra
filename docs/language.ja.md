@@ -81,7 +81,8 @@ Culebra は Rust 風の構文を持つ、小さな動的型付けスクリプト
 
 識別子として使えない予約語:
 
-    nil  true  false  mut  debugger  return  while  if  else  fn  match
+    nil  true  false  mut  debugger  return  while  for  in  if  else
+    fn  match  break  continue  throw  try  catch  defer
 
 パーサは代入における `let` もオプショナルな接頭辞として認識します。
 型注釈の型名（`Nil`, `Bool`, `Long`, `String`, `Array`, `Object`,
@@ -335,7 +336,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   `{ ... }` は局所計算の staging area で、`let a = transform(a)`
   のような rebinding は意図的パターンであってバグではありません。
   制限する理由がない。
-* **グローバル = 共有の語彙**。`min`, `puts`, `range` などの
+* **グローバル = 共有の語彙**。`puts`, `assert`, `Math`, `IO` などの
   builtins や top-level 名は ambient な存在と理解されており、
   `mut min = arr[0]` のようなローカルは使い勝手の良いイディオム
   であって混乱の種ではない。rename を強制すると安全性の利得なく
@@ -396,6 +397,48 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
 ### 括弧
 
 `(expr)` はグルーピングで、スコープは導入しません。
+
+### メソッド呼出と UFCS
+
+メソッド呼出は `receiver.name(args)` の形です。解決順序:
+
+1. `receiver` が `name` という名前のプロパティ / 組み込みメソッドを
+   持てばそれを呼ぶ。`Object` / `Array` ではユーザ定義プロパティが
+   組み込みを上書きできる。`String` は専用のメソッドテーブルのみ。
+2. 存在しない場合、外側スコープに `name` という名前の自由関数が
+   あれば、`receiver` を第一引数として `name(receiver, args)` を
+   呼ぶ。これが **Uniform Function Call Syntax (UFCS)** で、
+   D / Nim の流儀に倣っています。
+3. どちらも該当しなければプロパティ参照は `nil` を返し、続く呼出は
+   型エラーで失敗します。
+
+```culebra
+double = fn (x) { x * 2 }
+42.double()                      # UFCS → double(42) → 84
+
+word_count = fn (s) { s.split(' ').size() }
+'hello world'.word_count()       # UFCS → 2
+
+sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+[1, 2, 3, 4].sum()               # UFCS → 10
+
+# 既存メソッドが常に優先 — ユーザ定義の `size` は Array / Object /
+# String の組み込み `size` によって隠される。
+size = fn (x) { 99 }
+[1, 2, 3].size()                 # 3 (builtin)、99 ではない
+```
+
+UFCS は **DOT の直後に引数リストがある場合のみ**適用されます。裸の
+プロパティ参照（`x.name` だけ）では UFCS は起動しません。UFCS 呼出
+内では `this` は**バインドされません** — 意味的には自由関数呼出で、
+レシーバは単に第一引数の位置にあります。
+
+**JIT**: UFCS は `--jit` でもサポートされます。解決は実行時に行われ、
+レシーバが同名プロパティを持っていればメソッド経路が勝ち、そうで
+なければ自由関数として解決してレシーバを第一引数として呼び出し
+ます。唯一のギャップは可変長 `__ARGS__` で、こちらはインタープリタ
+専用のため、`__ARGS__` を参照する関数への UFCS 呼出は `--jit` 下で
+エラーになります。
 
 ---
 
@@ -573,8 +616,8 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
 
 ---
 
-12. 制御フロー
----------------
+12. 制御フロー (`if`, `while`, `for`)
+--------------------------------------
 
 ### `if`
 
@@ -590,8 +633,50 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
 
     while cond { body }
 
-`while` は文で、値は `nil`。`break` や `continue` はありません。必要
-ならば関数内で早期 `return` するか、真偽値ガードを使ってください。
+`while` は文で、値は `nil`。ループ本体内で `break` / `continue` が
+使えます。
+
+### `for` ... `in`
+
+    for var in iterable { body }
+
+`iterable.iter()` を一度呼んで得たイテレータに対し、`next()` を
+繰り返し呼び、戻り値の `done` が真になるまで iteration します。各
+ステップの `value` を `var` として反復ごとに新しいスコープに束縛。
+
+```culebra
+for x in [1, 2, 3] { puts(x) }
+
+for k in {b: 2, a: 1} { puts(k) }   # キーを昇順
+```
+
+イテレータプロトコル（§17.5）により、対象は `iter` メソッドを持つ
+`Object`（サブ型の `Array` 含む）、またはすでにイテレータとして
+振る舞う `next` メソッドを持つオブジェクトである必要があります。
+それ以外の型は `type error`。
+
+`for` は文で、値は `nil`。`var` にシャドウ規則が適用されます —
+外側関数でキャプチャ済みの名前をシャドウしそうな場合、スクリプトは
+拒否されます（§6 参照）。
+
+**JIT**: `--jit` では `Array` / `Object`（キーを昇順で列挙）/
+`String`（UTF-8 スカラー単位）に対する直接反復として `for` /
+`break` / `continue` が動作します。一方、ユーザーレベルの
+iterator プロトコル（`iter`/`next` を持つ独自オブジェクトや §17.5
+の lazy iterator メソッド）は**インタープリタ専用**です。`--jit`
+ではこうしたオブジェクトは普通の `Object` として扱われ、`for … in`
+は `["iter", "next"]` のようなプロパティキーを列挙してしまうため、
+プロトコル依存のスクリプト（`Math.range` など）は必ずインタープリタ
+で実行してください。
+
+### `break` と `continue`
+
+    break           # 最内ループを抜ける
+    continue        # 次の iteration へ
+
+`for` か `while` の内部でのみ有効。ループ外で使うと実行時エラーが
+伝播します。`break` / `continue` は値を運びません（ループの値は
+`nil` のまま）。
 
 ### `return`
 
@@ -858,6 +943,70 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 循環の出力は再入位置で `{...}` / `[...]` となり、無限再帰を避けます
 （§8 参照）。
 
+### 自動 drop（RAII）
+
+`Object` が引数 0 個の `Function` 型プロパティ `drop` を持つ場合、
+そのオブジェクトの properties map が解放される直前にランタイムが
+自動的に呼び出します。`drop` 契約は代入時点で検査され、非 Function
+や引数のある Function を束縛すると `type error` になります。
+
+```culebra
+File.open = fn (path) {
+  h = _native_open(path)
+  {
+    read: fn () { _native_read(h) },
+    drop: fn () { _native_close(h) }    # スコープ抜けで呼ばれる
+  }
+}
+
+{
+  let f = File.open('data.txt')
+  process(f.read())
+}
+# ここで f の drop が走る
+```
+
+**連鎖**: 親の `drop` が戻ると親の properties map がクリアされ、
+各子の参照カウントが減少します。カウントが 0 になった子は自身の
+`drop` が呼ばれ、さらに連鎖します。親 → 子の順序は保証されますが、
+**同一親の兄弟同士の順序は未規定**（現在は `std::map` の破棄順に
+従うが実装詳細）。
+
+**例外**: `drop` 内から送出された例外は stderr に記録して握り潰され、
+残りの解放カスケードが続行します。
+
+**循環**: `Object` 間の循環参照はサイクルコレクタで処理されます
+（上記参照）。循環が回収される際は各メンバーの `drop` が 1 回ずつ
+呼ばれ、**順序は未規定**。`drop` 内で `this` を外部に保存する
+（リザレクション）のは未定義動作です。
+
+**束縛スコープの注意**: `drop` は、オブジェクトが**ブロックスコープ**
+の束縛に格納され、かつ `drop` 関数が**ファクトリ関数**で生成された
+場合（closure が外側スコープではなくファクトリの call env を捕捉する）
+に確実に起動します。これはチュートリアル §5 の「closure でオブジェクト」
+イディオムと一致しており、自然に機能します:
+
+```culebra
+make_thing = fn () {
+  { drop: fn () { puts('cleaned') } }   # make_thing の env を捕捉
+}
+{
+  let t = make_thing()                  # ブロックスコープ束縛
+}                                        # ここで drop が走る
+```
+
+`drop` を持つオブジェクトを**トップレベル**で束縛すると、`drop`
+関数がトップレベル環境を捕捉するため環境レベルの循環ができ、
+オブジェクト専用の循環コレクタでは断ち切れずプログラム終了まで
+生き残ることがあります。スクリプト全体にわたるリソースは `defer`
+（§15）や明示的なクリーンアップを推奨します。
+
+**JIT**: `--jit` でも自動 drop はインタープリタと同じタイミングで
+発火します — スコープ離脱時、および循環コレクタが到達不能な循環を
+壊すときに呼ばれます。well-known プロパティの契約
+（`drop` / `iter` / `next` は 0 引数の `Function` であること）も
+両バックエンドで代入時に強制されます。
+
 ---
 
 17. 組み込み型のメソッド
@@ -868,7 +1017,7 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 （`String` にはプロパティストアがないため；`Array`/`Object` では
 同名のユーザ定義プロパティが優先され、ビルトインはフォールバック）。
 
-グローバルなビルトイン関数（`puts`, `assert`, `abs`, `range`, I/O
+グローバルなビルトイン関数（`puts`, `assert`, `Math.*`, `IO.*`
 など）は [`docs/stdlib.ja.md`](stdlib.ja.md) で別途規定します。
 
 記法:
@@ -895,6 +1044,9 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 | `s.starts_with(prefix: String) -> Bool`     | `prefix` で始まるか                   |
 | `s.ends_with(suffix: String) -> Bool`       | `suffix` で終わるか                   |
 | `s.slice(start: Long, end: Long) -> String` | `[start, end)` の部分文字列。負の値は末尾から、`start` は `[0, size()]`、`end` は `[start, size()]` にクランプ |
+| `s.iter() -> Iterator<String>`              | UTF-8 をスカラー単位で walk し**1 スカラー文字列**を yield するイテレータ。`for c in s { ... }` の内部実装。不正バイトは 1 バイト部分文字列として yield |
+| `s.code_points() -> Iterator<Long>`         | **Unicode スカラー値**を `Long`（`U+0000`–`U+10FFFF`）として yield する遅延イテレータ。`iter` の毎反復 String アロケが無駄になる数値・範囲・分類処理向け。不正バイトは生バイト値（0–255） |
+| `s.graphemes() -> Iterator<String>`         | **Extended Grapheme Cluster**（UAX #29）を 1 つずつ `String` として yield。1 ステップが 1 ユーザー知覚文字（絵文字 ZWJ シーケンス等は 1 要素にまとまる） |
 
 ```culebra
 puts('hello'.size())              # 5
@@ -903,7 +1055,35 @@ puts('  hi  '.trim())             # 'hi'
 puts('a,b,c'.split(','))          # ['a', 'b', 'c']
 puts('hello'.slice(1, 4))         # 'ell'
 puts('hello'.slice(-3, -1))       # 'll'
+
+# 同じ文字列の3つのビュー
+puts('café'.size())                # 5（バイト）
+puts('café'.code_points().count()) # 4（スカラー）
+puts('café'.graphemes().count())   # 4（クラスタ）
+
+# 絵文字 ZWJ シーケンス: 5 スカラー、1 grapheme
+puts('👨‍👩‍👧'.code_points().count())  # 5
+puts('👨‍👩‍👧'.graphemes().count())    # 1
+
+# code_points なら数値演算が自然
+upper = 'Hello World'.code_points()
+  .filter(fn (cp) { cp >= 65 && cp <= 90 })
+  .count()                        # 2 ('H', 'W')
 ```
+
+3 種のイテレータはすべて **UTF-8 を逐次 decode** します。各
+`next()` ステップで必要なぶんだけバッファを進めるので、数 MB の
+文字列に対して `s.graphemes().take(3).collect()` としても最初の
+3 クラスタを解決するのに必要なバイト数しか触りません。イテレータ
+ごとの内部状態（decode オフセットと lookahead バッファ）は独立
+しているため、同じ文字列から派生した複数のイテレータを並走
+させても互いに干渉しません。
+
+**JIT**: `iter` / `code_points` / `graphemes` はイテレータ
+プロトコルに依存するためインタープリタ専用です（§17.5 参照）。
+`for c in s { ... }` 自体は `--jit` でも 1 スカラー文字列を yield
+する形で動作します。code point 単位や grapheme 単位の反復が必要
+なときはインタープリタで実行してください。
 
 ### 17.2 配列メソッド
 
@@ -979,6 +1159,118 @@ puts(p)          # {b: 2}
 | `self` | すべての関数本体で有効      | 現在実行中の関数自身             |
 | `this` | メソッド呼出時のみ         | メソッドのレシーバ               |
 
+### 17.5 イテレータプロトコル
+
+`for x in expr { ... }`（§12）は `expr` がイテレータプロトコルに
+参加していることを要求します。プロトコルは `Object`（サブ型の
+`Array` 含む）上の 2 つの **well-known メソッド名**を使います:
+
+| メソッド | 形状 | 呼び出される型 | 戻り値 |
+|---|---|---|---|
+| `iter` | `fn () -> Object` | **Iterable** | **Iterator** (`this` で可) |
+| `next` | `fn () -> Object` | **Iterator** | ステップオブジェクト `{ done: Bool, value: Any }` |
+
+**契約（プロパティ代入時に検査）**: `iter` / `next` を非 `Function`
+値、または引数ありの Function に束縛すると、代入時点で `type error`
+が送出されます（§16 の `drop` 契約と同じ）。
+
+**ステップオブジェクトの形状**:
+
+- `done`: 真 → iteration 完了。ループは `value` を束縛せず終了。
+- `value`: このステップで yield される値。`done` が真のとき省略可。
+
+**Iterator は Iterable でもある**: イテレータの `iter` は自身を返す
+べきで、これにより `for x in some_iterator { ... }` が別途
+Iterable ラッパなしで動作します。
+
+**組み込み Iterable**:
+
+| 型 | `iter()` が yield するもの | 順序 |
+|---|---|---|
+| `Array` | 要素 | インデックス順 (0..size-1) |
+| `Object` | キー | 昇順（`o.keys()` と一致） |
+| `String` | UTF-8 スカラ1つ分の `String` | バイト順 |
+
+`String` の反復は UTF-8 バッファを遅延 walk するため、100 MB の文字列
+を数ステップで `break` しても残りはメモリ化されません。yield される
+値は 1-scalar の `String` で、整数の code point ではありません。
+`.map` で必要な形に変換してください。
+
+**イテレータメソッド**: `iter` と `next` の両方を持つ Object
+（組み込み / ユーザ定義を問わず）は、以下の遅延メソッド群を獲得
+します。非終端メソッドは新しい Iterator を返し、終端メソッドは
+イテレータを消費して具体値を返します。
+
+| 非終端 | 戻り値 | 説明 |
+|---|---|---|
+| `it.map(f)` | Iterator | 各 `x` に対し `f(x)` を yield |
+| `it.filter(p)` | Iterator | `p(x)` が真の `x` のみ yield |
+| `it.take(n)` | Iterator | 先頭 `n` 個、以降 `done` |
+| `it.skip(n)` | Iterator | 最初の `next()` で先頭 `n` 個を捨てる |
+| `it.take_while(p)` | Iterator | 最初に `p(x)` が偽になるまで yield |
+| `it.flat_map(f)` | Iterator | `f(x)` は iterable を返す必要あり、結果を連結 |
+| `it.chain(other)` | Iterator | `it` の次に `other` を yield |
+| `it.zip(other)` | Iterator | `{first, second}` のペアを yield、短い側で終了 |
+| `it.enumerate()` | Iterator | `{index, value}` を yield（`index` は 0 起点） |
+
+| 終端 | 戻り値 | 説明 |
+|---|---|---|
+| `it.collect()` | `Array` | Array に実体化 |
+| `it.for_each(f)` | `Nil` | 副作用目的で `f(x)` を呼ぶ |
+| `it.reduce(init, f)` | Any | 左畳み込み: `acc = f(acc, x)` を `init` から |
+| `it.find(p)` | Any \| `nil` | 最初に `p(x)` が真の `x`、無ければ `nil` |
+| `it.any(p)` | `Bool` | 一つでも `p(x)` が真なら `true` |
+| `it.all(p)` | `Bool` | すべて `p(x)` が真なら `true`（空は `true`） |
+| `it.count()` | `Long` | 要素数 |
+
+**eager vs lazy**: `Array` には独自の eager 版 `map` / `filter` /
+`for_each` / `reduce` / `find` / `any` / `all` / `flat_map`（§17.2）
+があり、すべて新しい `Array` を返します。`Array` に対してこれらを
+呼ぶと eager 版にディスパッチされます。遅延チェーンに切り替えるには
+先に `.iter()` を呼びます。Swift の `arr` vs `arr.lazy`、Kotlin の
+`list` vs `list.asSequence()`、Python のリスト内包 vs ジェネレータ
+と同じ二層構造です。
+
+```culebra
+# Eager: 中間 Array を 2 つ確保
+arr.map(f).filter(g)
+
+# Lazy: single pass、中間 Array なし
+arr.iter().map(f).filter(g).collect()
+
+# Lazy + 早期終了: 要素 4 つしか触らない
+Math.range(1_000_000).filter(f).map(g).take(4).collect()
+```
+
+**ユーザ定義の例**:
+
+```culebra
+countdown = fn (start) {
+  mut i = start
+  {
+    iter: fn () { this },                     # Iterator は自身が Iterable
+    next: fn () {
+      if i <= 0 { { done: true } }
+      else {
+        v = i
+        i = i - 1
+        { done: false, value: v }
+      }
+    }
+  }
+}
+
+for x in countdown(3) { puts(x) }              # 3, 2, 1
+```
+
+**JIT の制約**: `for` 文自体は `--jit` でも `Array` / `Object` の
+キー / `String` のスカラー単位で動作します。ただし本節で説明した
+ユーザーレベルの iterator プロトコル — 独自の `iter`/`next` を持つ
+オブジェクト、lazy iterator メソッド（`map` / `filter` / `take` …）、
+`Math.range` — はインタープリタ専用です。`--jit` で使ってもエラーに
+はなりませんが、iterator オブジェクトを「普通のオブジェクト」として
+扱ってキーを列挙してしまうため、結果は誤りになります。
+
 ---
 
 18. コア組み込み関数
@@ -987,9 +1279,10 @@ puts(p)          # {b: 2}
 以下の関数は言語本体の一部で、すべての実行環境にバインドされ、
 置き換えはできません。標準ライブラリ（[`docs/stdlib.ja.md`](stdlib.ja.md)
 参照）とは、言語セマンティクス（ソース位置に紐付くエラー、型の内省、
-表示規則）と結びついているか、慣用的な制御フローに不可欠である点で
-区別されます。出力プリミティブ（`puts`, `print`）と名前空間オブジェクト
-（`Math`, `IO`, `Sys`）は標準ライブラリ側に配置されます。
+表示規則）に結びついていて**ユーザ空間だけでは書けない**点で
+区別されます。出力プリミティブ（`puts`, `print`）、算術ヘルパ
+（`Math.*`）、I/O（`IO.*`）、プロセス情報（`Sys.*`）は標準ライブラリ
+側に配置されます。
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -1002,20 +1295,6 @@ assert(1 + 1 == 2)
 
 **例外**: 偽のとき `assert failed at L:C.`、`cond` が `Bool` でも
 `Long` でもないとき `type error at L:C.`。
-
-### `range(n: Long) -> Array` / `range(start: Long, end: Long) -> Array`
-
-整数の新しい `Array` を生成します。
-
-* `range(n)` は `[0, 1, ..., n-1]` を返します。`n <= 0` なら空配列。
-* `range(start, end)` は `[start, start+1, ..., end-1]` を返します。
-  `start >= end` なら空配列。
-
-```culebra
-puts(range(3))         # [0, 1, 2]
-puts(range(2, 5))      # [2, 3, 4]
-puts(range(5, 2))      # []
-```
 
 ### `to_long(s: String) -> Long`
 

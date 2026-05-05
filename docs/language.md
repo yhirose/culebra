@@ -21,7 +21,7 @@ Table of contents
 9. Arrays
 10. Objects
 11. Functions and closures
-12. Control flow (`if`, `while`)
+12. Control flow (`if`, `while`, `for`)
 13. Pattern matching (`match`)
 14. Optional type annotations
 15. Error handling
@@ -83,7 +83,8 @@ Identifiers are case-sensitive.
 
 Reserved words that cannot be used as identifiers in declarations:
 
-    nil  true  false  mut  debugger  return  while  if  else  fn  match
+    nil  true  false  mut  debugger  return  while  for  in  if  else
+    fn  match  break  continue  throw  try  catch  defer
 
 The parser also recognizes `let` as an optional prefix in assignments.
 Type annotation names (`Nil`, `Bool`, `Long`, `String`, `Array`,
@@ -346,8 +347,8 @@ Scheme-influenced, closure-as-object idiom:
   function, a `{ ... }` block is a local calculation region.
   Rebinding a name there (`let a = transform(a)`) is a common,
   intentional pattern, not a bug. No reason to restrict it.
-* **Globals form a shared vocabulary.** Builtins (`min`, `puts`,
-  `range`) and top-level names are understood to be ambient. Locals
+* **Globals form a shared vocabulary.** Builtins (`puts`, `assert`,
+  `Math`, `IO`) and top-level names are understood to be ambient. Locals
   like `mut min = arr[0]` are an ergonomic idiom, not a confusion
   risk. Requiring renames would be friction without safety gain.
 
@@ -411,6 +412,49 @@ Only `Bool` and `Long` are convertible to bool:
 ### Parentheses
 
 `(expr)` groups and does not introduce a scope.
+
+### Method call and UFCS
+
+A method call takes the form `receiver.name(args)`. Resolution order:
+
+1. If `receiver` exposes a property or built-in method named `name`,
+   invoke it. For `Object` / `Array`, user-defined properties win
+   over built-ins; built-ins fill in otherwise. String methods are
+   the only choice for `String` receivers.
+2. Otherwise, if a free function named `name` is visible in the
+   enclosing scope, call it with `receiver` as the first argument and
+   the remaining arguments as-is. This is **Uniform Function Call
+   Syntax (UFCS)**, matching the D / Nim convention.
+3. Otherwise the property lookup returns `nil`; the subsequent call
+   fails with a type error.
+
+```culebra
+double = fn (x) { x * 2 }
+42.double()                      # UFCS → double(42) → 84
+
+word_count = fn (s) { s.split(' ').size() }
+'hello world'.word_count()       # UFCS → 2
+
+sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+[1, 2, 3, 4].sum()               # UFCS → 10
+
+# Existing methods always win — a user-defined `size` is shadowed by
+# the Array/Object/String built-in `size`.
+size = fn (x) { 99 }
+[1, 2, 3].size()                 # 3 (builtin), not 99
+```
+
+UFCS only fires when DOT is immediately followed by an argument list;
+bare property access (`x.name` without `()`) never uses UFCS. `this`
+is **not** bound inside UFCS invocations — the call is semantically a
+free-function call with the receiver in the first positional slot.
+
+**JIT**: UFCS is supported under `--jit`. Resolution happens at
+runtime: if the receiver carries a property by that name the method
+path wins, otherwise the name is looked up as a free function and
+invoked with the receiver as its first argument. The one gap is
+variadic `__ARGS__`, which is interpreter-only; a UFCS call into a
+function that inspects `__ARGS__` still errors under `--jit`.
 
 ---
 
@@ -616,9 +660,50 @@ if no branch is taken (no `else` and the `if` was false).
 
     while cond { body }
 
-`while` is a statement; its value is `nil`. There are no `break` or
-`continue` constructs; use early `return` inside a function, or a
-boolean guard.
+`while` is a statement; its value is `nil`. `break` and `continue`
+work inside the loop body.
+
+### `for` ... `in`
+
+    for var in iterable { body }
+
+Iterates by calling `iterable.iter()` once, then repeatedly invoking
+`next()` on the returned iterator until `next()` returns an object
+whose `done` is truthy. Each step's `value` is bound to `var` in a
+fresh scope per iteration.
+
+```culebra
+for x in [1, 2, 3] { puts(x) }
+
+for k in {b: 2, a: 1} { puts(k) }   # keys, ascending
+```
+
+The iterator protocol (see §17.5) requires the target to be either an
+`Object` (or subtype `Array`) with an `iter` method, or an object
+already playing the iterator role with a `next` method. Passing any
+other type raises `type error`.
+
+`for` is a statement; its value is `nil`. Shadow rules apply to
+`var`: if it would shadow a closure-captured name from an enclosing
+function, the script is rejected (see §6).
+
+**JIT**: `for` / `break` / `continue` compile under `--jit` for direct
+iteration over `Array`, `Object` (yields keys in ascending order), and
+`String` (UTF-8 scalar walk). The user-level iterator protocol
+(Objects with a custom `iter`/`next` pair and the lazy iterator
+methods in §17.5) is **interpreter-only** — under `--jit` they are
+treated as plain objects, so `for … in` would iterate over `["iter",
+"next"]` rather than invoking the protocol. Use the interpreter when a
+script relies on iterator-protocol objects such as `Math.range`.
+
+### `break` and `continue`
+
+    break           # exit the innermost enclosing loop
+    continue        # skip to the next iteration of the innermost loop
+
+Valid only inside `for` or `while`. Using them outside a loop
+propagates up as a runtime error. `break` / `continue` do not carry a
+value (the loop's value remains `nil`).
 
 ### `return`
 
@@ -897,6 +982,73 @@ keeps the cycle alive, the collector frees it on the next cycle.
 Printing a cycle produces `{...}` / `[...]` at the re-entry point
 rather than infinite recursion (see §8).
 
+### Auto-drop (RAII)
+
+If an `Object` has a `Function`-typed property named `drop` that takes
+no arguments, the runtime calls it automatically when the object's
+properties map is about to be released. The contract is enforced at
+assignment: binding `drop` to a non-function value, or to a function
+with non-zero arity, raises a `type error`.
+
+```culebra
+File.open = fn (path) {
+  h = _native_open(path)
+  {
+    read: fn () { _native_read(h) },
+    drop: fn () { _native_close(h) }    # called on scope exit
+  }
+}
+
+{
+  let f = File.open('data.txt')
+  process(f.read())
+}
+# f's drop ran here
+```
+
+**Cascade**: when a parent's `drop` returns, its properties map is
+cleared, which decrements each child's reference count. Children
+whose count reaches zero have their own `drop` invoked, and so on.
+Parent-before-child order is guaranteed; sibling order among a
+single parent's properties is **not specified** (currently follows
+`std::map` destruction order but that is an implementation detail).
+
+**Exceptions**: an exception thrown from `drop` is logged to stderr
+and swallowed so that the rest of the cleanup cascade proceeds.
+
+**Cycles**: cyclic references among `Object`s participate in the
+cycle collector (see above). When a cycle is collected, `drop` is
+called on each member once, with order unspecified. Resurrecting
+`this` (storing it somewhere that outlives the `drop` call) is
+undefined behaviour in this implementation.
+
+**Binding-scope caveat**: `drop` fires reliably when the object is
+held in a **block-scoped** binding whose `drop` function was produced
+by a **factory function** (so the closure captures the factory's
+call env, not the surrounding scope). The idiom mirrors tutorial §5
+closures-as-objects and works out of the box:
+
+```culebra
+make_thing = fn () {
+  { drop: fn () { puts('cleaned') } }   # captures make_thing's env
+}
+{
+  let t = make_thing()                  # block-scoped binding
+}                                        # drop fires here
+```
+
+Binding a `drop`-bearing object at the **top level** may leave it
+alive until program exit because the drop function captures the
+top-level environment, creating an environment-level cycle that the
+object-only cycle collector does not break. For script-wide
+resources, prefer `defer` (§15) or explicit cleanup.
+
+**JIT**: auto-drop fires under `--jit` with the same timing as the
+interpreter — at scope exit and when the cycle collector breaks an
+unreachable cycle. The well-known property contract (`drop`/`iter`/
+`next` must be a 0-arg `Function`) is enforced at assignment time on
+both backends.
+
 ---
 
 17. Built-in type methods
@@ -908,7 +1060,7 @@ shadowed by user code (for `String`, which has no property store; for
 `Array`/`Object`, a user-defined property of the same name wins and
 the built-in is a fallback).
 
-Global built-in functions (`puts`, `assert`, `abs`, `range`, I/O,
+Global built-in functions (`puts`, `assert`, `Math.*`, `IO.*`,
 etc.) are specified separately in [`docs/stdlib.md`](stdlib.md).
 
 Conventions:
@@ -935,6 +1087,9 @@ mutated.
 | `s.starts_with(prefix: String) -> Bool`     | Whether `s` begins with `prefix`.    |
 | `s.ends_with(suffix: String) -> Bool`       | Whether `s` ends with `suffix`.      |
 | `s.slice(start: Long, end: Long) -> String` | Substring `[start, end)`. Negative indices count from end; `start` clamped to `[0, size()]`, `end` to `[start, size()]`. |
+| `s.iter() -> Iterator<String>`              | Lazy walk yielding **one-scalar Strings** (UTF-8 scalar value, re-encoded). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
+| `s.code_points() -> Iterator<Long>`         | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar `String` allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
+| `s.graphemes() -> Iterator<String>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) as `String` — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
 
 ```culebra
 puts('hello'.size())              # 5
@@ -943,7 +1098,35 @@ puts('  hi  '.trim())             # 'hi'
 puts('a,b,c'.split(','))          # ['a', 'b', 'c']
 puts('hello'.slice(1, 4))         # 'ell'
 puts('hello'.slice(-3, -1))       # 'll'
+
+# Three views of the same string
+puts('café'.size())               # 5  (bytes)
+puts('café'.code_points().count()) # 4  (scalars)
+puts('café'.graphemes().count())   # 4  (clusters)
+
+# Emoji ZWJ sequence: 5 scalars, 1 grapheme
+puts('👨‍👩‍👧'.code_points().count())  # 5
+puts('👨‍👩‍👧'.graphemes().count())    # 1
+
+# Numeric ops via code_points
+upper = 'Hello World'.code_points()
+  .filter(fn (cp) { cp >= 65 && cp <= 90 })
+  .count()                        # 2 ('H', 'W')
 ```
+
+All three iterators **decode the source string on demand**: each
+`next()` only touches as much of the UTF-8 buffer as that step needs.
+`s.graphemes().take(3).collect()` on a multi-megabyte `s` therefore
+reads only enough bytes to resolve the first three clusters. The
+per-iterator state (decode offset, lookahead buffer) is independent,
+so multiple iterators derived from the same String walk in parallel
+without interfering with each other.
+
+**JIT**: `iter` / `code_points` / `graphemes` use the iterator
+protocol and so are interpreter-only (see §17.5). `for c in s { ... }`
+itself works under `--jit` for the scalar case (yielding one-scalar
+Strings); for code-point or grapheme iteration under `--jit`, run via
+the interpreter.
 
 ### 17.2 Array methods
 
@@ -1019,6 +1202,122 @@ puts(p)          # {b: 2}
 | `self`     | Inside every function    | The currently-executing function.    |
 | `this`     | Inside method calls      | The method's receiver.               |
 
+### 17.5 Iterator protocol
+
+`for x in expr { ... }` (§12) requires `expr` to participate in the
+iterator protocol. The protocol uses two **well-known method names**
+on `Object` (and its subtype `Array`):
+
+| Method | Shape | Called on | Returns |
+|---|---|---|---|
+| `iter` | `fn () -> Object` | an **Iterable** | an **Iterator** (may be `this`) |
+| `next` | `fn () -> Object` | an **Iterator** | a step object `{ done: Bool, value: Any }` |
+
+**Contract, enforced at property assignment**: binding `iter` or
+`next` to a non-`Function` value, or to a function with non-zero
+arity, raises `type error` at the assignment site (mirrors the `drop`
+contract — §16).
+
+**Step object shape**:
+
+- `done`: truthy → iteration is complete; the loop exits without
+  binding `value`.
+- `value`: the value yielded for this step. Absent when `done` is
+  truthy.
+
+**Iterators are also Iterables**: an iterator's `iter` should return
+itself, so `for x in some_iterator { ... }` works without a separate
+Iterable wrapper.
+
+**Built-in iterables**:
+
+| Type | `iter()` yields | Order |
+|---|---|---|
+| `Array` | elements | index order (0..size-1) |
+| `Object` | keys | ascending alphabetical (matches `o.keys()`) |
+| `String` | one-scalar `String` per UTF-8 code point | byte order |
+
+`String` iteration walks the UTF-8 buffer lazily, so iterating a
+100 MB string with `break` after a few steps does not materialize the
+rest. The yielded values are 1-scalar `String`s, not integer code
+points — use `.map` on the iterator to project into whatever shape
+you need.
+
+**Iterator methods**: any Object that has both `iter` and `next`
+properties (whether built-in or user-defined) picks up the lazy
+iterator method set below. Non-terminal methods return a new
+Iterator; terminal methods consume the iterator and return a
+concrete value.
+
+| Non-terminal | Result | Notes |
+|---|---|---|
+| `it.map(f)` | Iterator | yields `f(x)` for each upstream `x` |
+| `it.filter(p)` | Iterator | yields only `x` where `p(x)` is truthy |
+| `it.take(n)` | Iterator | first `n` elements, then `done` |
+| `it.skip(n)` | Iterator | discards first `n` elements on first `next()` |
+| `it.take_while(p)` | Iterator | yields until the first `p(x)` that is falsy |
+| `it.flat_map(f)` | Iterator | `f(x)` must return an iterable; results concatenated |
+| `it.chain(other)` | Iterator | yields `it` then `other` |
+| `it.zip(other)` | Iterator | yields `{first, second}` pairs; stops at the shorter side |
+| `it.enumerate()` | Iterator | yields `{index, value}` with `index` starting at `0` |
+
+| Terminal | Result | Notes |
+|---|---|---|
+| `it.collect()` | `Array` | materialize into an Array |
+| `it.for_each(f)` | `Nil` | invoke `f(x)` for side effects |
+| `it.reduce(init, f)` | Any | left fold: `acc = f(acc, x)` starting from `init` |
+| `it.find(p)` | Any \| `nil` | first `x` where `p(x)` is truthy, else `nil` |
+| `it.any(p)` | `Bool` | `true` if any `p(x)` is truthy |
+| `it.all(p)` | `Bool` | `true` if every `p(x)` is truthy (empty → `true`) |
+| `it.count()` | `Long` | number of elements consumed |
+
+**Eager vs lazy**: `Array` has its own eager `map` / `filter` /
+`for_each` / `reduce` / `find` / `any` / `all` / `flat_map` (§17.2)
+which all return a new `Array`. Calling them on an `Array` dispatches
+to the eager versions; call `.iter()` first to opt into the lazy
+chain. This mirrors Swift's `arr` vs `arr.lazy`, Kotlin's `list` vs
+`list.asSequence()`, and Python's list comprehension vs generator.
+
+```culebra
+# Eager: allocates two intermediate Arrays
+arr.map(f).filter(g)
+
+# Lazy: single pass, no intermediate Arrays
+arr.iter().map(f).filter(g).collect()
+
+# Lazy with early termination: only touches 4 elements
+Math.range(1_000_000).filter(f).map(g).take(4).collect()
+```
+
+**User-defined example**:
+
+```culebra
+countdown = fn (start) {
+  mut i = start
+  {
+    iter: fn () { this },                     # Iterator is its own Iterable
+    next: fn () {
+      if i <= 0 { { done: true } }
+      else {
+        v = i
+        i = i - 1
+        { done: false, value: v }
+      }
+    }
+  }
+}
+
+for x in countdown(3) { puts(x) }              # 3, 2, 1
+```
+
+**JIT gap**: the `for` statement itself works under `--jit` for
+`Array`, `Object` keys, and `String` scalars. The user-level iterator
+protocol described in this section — custom objects with `iter`/`next`,
+lazy iterator methods (`map`, `filter`, `take`, …), and
+`Math.range` — is interpreter-only. Using them under `--jit` will not
+error but produces wrong results (it treats the iterator object as a
+plain object and iterates over its property keys).
+
 ---
 
 18. Core built-in functions
@@ -1027,11 +1326,11 @@ puts(p)          # {b: 2}
 The functions below are part of the language proper: they are bound
 into every execution environment and cannot be replaced. They are
 distinguished from the broader standard library (see
-[`docs/stdlib.md`](stdlib.md)) by being either tied to language
-semantics (source-position errors, type introspection, the display
-convention) or essential to idiomatic control flow. Output primitives
-(`puts`, `print`) and the namespace objects (`Math`, `IO`, `Sys`)
-live in the standard library.
+[`docs/stdlib.md`](stdlib.md)) by being tied to language semantics —
+source-position errors, type introspection, and the display
+convention — so they cannot be written purely in user space. Output
+primitives (`puts`, `print`), arithmetic helpers (`Math.*`), I/O
+(`IO.*`), and process info (`Sys.*`) live in the standard library.
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -1044,20 +1343,6 @@ assert(1 + 1 == 2)
 
 **Throws**: `assert failed at L:C.` on falsy; `type error at L:C.` if
 `cond` is neither `Bool` nor `Long`.
-
-### `range(n: Long) -> Array` / `range(start: Long, end: Long) -> Array`
-
-Generate a new `Array` of integers.
-
-* `range(n)` returns `[0, 1, ..., n-1]`. If `n <= 0`, an empty array.
-* `range(start, end)` returns `[start, start+1, ..., end-1]`. If
-  `start >= end`, an empty array.
-
-```culebra
-puts(range(3))         # [0, 1, 2]
-puts(range(2, 5))      # [2, 3, 4]
-puts(range(5, 2))      # []
-```
 
 ### `to_long(s: String) -> Long`
 

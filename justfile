@@ -7,7 +7,7 @@ default:
 # Configure and build with LLVM JIT enabled (Release)
 build:
     mkdir -p build
-    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCMAKE_PREFIX_PATH="$(brew --prefix llvm)" .. > /dev/null
+    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON .. > /dev/null
     cd build && make
 
 # Build without JIT (Release)

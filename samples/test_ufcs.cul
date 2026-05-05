@@ -1,0 +1,68 @@
+# UFCS regression tests.
+#
+# JIT-safe UFCS behaviour is also covered by test_ufcs() in
+# samples/test.cul (runs under both backends). This file keeps the
+# full matrix including the `__ARGS__` case, which remains
+# interpreter-only (JIT does not yet support variadic `__ARGS__`).
+#
+# Run: ./build/culebra samples/test_ufcs.cul
+
+# Free function as method on primitive
+double = fn (x) { x * 2 }
+assert(42.double() == 84)
+assert((-3).double() == -6)
+
+# UFCS on String
+word_count = fn (s) { s.split(' ').size() }
+assert('a b c'.word_count() == 3)
+assert(''.word_count() == 1)   # empty string split on space yields [""]
+
+# UFCS on Array
+sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
+assert([1, 2, 3, 4].sum() == 10)
+assert([].sum() == 0)
+
+# UFCS with multiple args: first is receiver, rest map normally
+scale = fn (x, factor) { x * factor }
+assert(7.scale(3) == 21)
+assert(10.scale(-2) == -20)
+
+# Existing method takes priority over same-named free function
+size = fn (x) { puts('user size NOT called'); 99 }
+assert([1, 2, 3].size() == 3)          # Array builtin wins
+assert('hello'.size() == 5)             # String builtin wins
+assert({a: 1, b: 2}.size() == 2)        # Object builtin wins
+
+# Object HOF via UFCS
+map_keys_to = fn (o, f) {
+  mut r = []
+  for k in o { r.push(f(k)) }
+  r
+}
+o = {b: 2, a: 1}
+ks = o.map_keys_to(fn (k) { k })
+assert(ks.size() == 2)
+assert(ks[0] == 'a' && ks[1] == 'b')
+
+# Chains mixing builtins and UFCS
+incr = fn (x) { x + 1 }
+result = [1, 2, 3]
+  .map(fn (x) { x * 10 })          # builtin → [10, 20, 30]
+  .sum()                            # UFCS → 60
+  .incr()                           # UFCS → 61
+assert(result == 61)
+
+# UFCS with 0-param function — receiver goes to __ARGS__
+# (not a typical pattern, but mustn't crash)
+greet = fn () {
+  if __ARGS__.size() > 0 {
+    "hello {__ARGS__[0]}"
+  } else {
+    'hello'
+  }
+}
+assert('world'.greet() == 'hello world')
+
+# UFCS doesn't fire when no ARGUMENTS follow (bare property access)
+# `42.double` without () — looks up property, fails normally
+# (can't easily assert this without try/catch; skip)

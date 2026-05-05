@@ -1,0 +1,123 @@
+# for-in loops and the iterator protocol.
+# (Interpreter only for now; JIT support lands in a future phase.)
+
+# --- Array iteration ---------------------------------------------------
+
+for x in [10, 20, 30] { puts(x) }
+# 10
+# 20
+# 30
+
+# --- Object iteration yields keys (ascending) --------------------------
+
+for k in {b: 2, a: 1, c: 3} { puts(k) }
+# 'a'
+# 'b'
+# 'c'
+
+# --- break / continue --------------------------------------------------
+
+for x in [1, 2, 3, 4, 5] {
+  if x == 3 { continue }
+  if x == 5 { break }
+  puts(x)
+}
+# 1
+# 2
+# 4
+
+# --- Nested loops exit innermost only ----------------------------------
+
+for i in [1, 2, 3] {
+  for j in [10, 20] {
+    if j == 20 { break }
+    puts("{i},{j}")
+  }
+}
+# '1,10'
+# '2,10'
+# '3,10'
+
+# --- String iteration yields one-scalar Strings ------------------------
+
+for c in 'café' { puts(c) }
+# 'c'
+# 'a'
+# 'f'
+# 'é'    (UTF-8 2-byte scalar, emitted as one String)
+
+# --- Math.range (lazy, for for-loops) vs Math.iota (eager, for Array) ---
+
+for i in Math.range(3) { puts(i) }
+# 0, 1, 2      # no Array allocated, O(1) memory
+
+puts(Math.iota(3))                     # [0, 1, 2]  — explicit Array
+
+# Math.range stays cheap even for huge bounds
+mut first_three = []
+for i in Math.range(1000000) {
+  first_three.push(i)
+  if i == 2 { break }
+}
+puts(first_three)                      # [0, 1, 2]
+
+# --- Lazy iterator chains (Phase 3) -------------------------------------
+
+# map / filter / take — constant memory, stops at 5 matches
+evens_times_three = Math.range(1000)
+  .filter(fn (x) { x % 2 == 0 })
+  .map(fn (x) { x * 3 })
+  .take(5)
+  .collect()
+puts(evens_times_three)   # [0, 6, 12, 18, 24]
+
+# reduce
+total = Math.range(1, 11).reduce(0, fn (a, x) { a + x })
+puts(total)               # 55
+
+# any / all / find
+puts([1, 2, 3, 4].iter().any(fn (x) { x > 3 }))   # true
+puts([1, 2, 3, 4].iter().all(fn (x) { x > 0 }))   # true
+puts([10, 20, 30].iter().find(fn (x) { x > 15 })) # 20
+
+# enumerate + zip
+for p in ['fizz', 'buzz', 'bang'].iter().enumerate() {
+  puts("{p.index}: {p.value}")
+}
+for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
+  puts("{p.first} / {p.second}")
+}
+
+# flat_map: flatten nested arrays
+flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(fn (xs) { xs }).collect()
+puts(flat)                # [1, 2, 3, 4, 5, 6]
+
+# skip + take_while
+head = Math.range(100)
+  .skip(10)
+  .take_while(fn (x) { x < 15 })
+  .collect()
+puts(head)                # [10, 11, 12, 13, 14]
+
+# --- User-defined iterator (Math.iota's spirit, built in user land) -----
+
+countdown = fn (start) {
+  mut i = start
+  {
+    iter: fn () { this },       # iterator is its own iterable
+    next: fn () {
+      if i <= 0 {
+        { done: true }
+      } else {
+        v = i
+        i = i - 1
+        { done: false, value: v }
+      }
+    }
+  }
+}
+
+for v in countdown(3) { puts(v) }
+# 3
+# 2
+# 1

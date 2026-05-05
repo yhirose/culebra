@@ -11,11 +11,13 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / DEFER / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / LEXICAL_SCOPE / EXPRESSION
 
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
+  BREAK                    <-  break
+  CONTINUE                 <-  continue
   DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
@@ -41,6 +43,7 @@ const auto grammar_ = R"(
   SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
+  FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
@@ -60,7 +63,7 @@ const auto grammar_ = R"(
 
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
-  PRIMARY                  <-  WHILE / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / OBJECT / ARRAY / NIL / BOOLEAN / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
@@ -100,6 +103,8 @@ const auto grammar_ = R"(
 
   ~debugger                <-  K('debugger')
   ~while                   <-  K('while')
+  ~for                     <-  K('for')
+  ~in                      <-  K('in')
   ~if                      <-  K('if')
   ~else                    <-  K('else')
   ~fn                      <-  K('fn')
@@ -108,6 +113,8 @@ const auto grammar_ = R"(
   ~throw                   <-  K('throw')
   ~try                     <-  K('try')
   ~catch                   <-  K('catch')
+  ~break                   <-  K('break')
+  ~continue                <-  K('continue')
   ~defer                   <-  K('defer')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*

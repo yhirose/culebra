@@ -77,7 +77,20 @@ Build and run
 -------------
 
 Requires a C++23 compiler and `just`. The JIT build also needs LLVM
-(tested with 22.x; `brew install llvm`).
+17 or newer (tested against 22.x). Install it with your platform's
+package manager:
+
+| Platform | Install |
+|----------|---------|
+| macOS    | `brew install llvm` |
+| Debian/Ubuntu | `apt install llvm-17-dev` (or newer) |
+| Fedora/RHEL | `dnf install llvm-devel` |
+| Windows  | `winget install LLVM.LLVM` or `choco install llvm` |
+
+CMake detects Homebrew's keg-only LLVM automatically on macOS. On
+other systems `find_package(LLVM CONFIG)` uses the default search
+path; override with `-DCMAKE_PREFIX_PATH=/path/to/llvm` if needed.
+To require a newer minimum, pass `-DCULEBRA_MIN_LLVM_VERSION=<n>`.
 
 ```bash
 just build              # with JIT (release)
@@ -112,17 +125,16 @@ Times from `just bench-all` on an Apple Silicon laptop (`-O2`, LLVM 22):
 
 | benchmark          | interp | jit   | speedup |
 |--------------------|-------:|------:|--------:|
-| fib(0..33)         | ~9.3s  | ~1.6s |  ~5.9×  |
-| sum(0..10,000,000) | ~7.0s  | ~1.6s |  ~4.5×  |
-| closure_counter    | ~2.6s  | ~1.5s |  ~1.7×  |
-| array_push (100k)  | ~1.8s  | ~1.5s |  ~1.2×  |
-| object_churn (100k)| ~1.6s  | ~1.6s |  ~1.0×  |
-| string_build       | ~1.4s  | ~1.5s |  ~1.0×  |
+| fib(0..33)         | ~8.2s  | ~0.17s | ~48×   |
+| sum(0..10,000,000) | ~5.8s  | ~0.15s | ~39×   |
+| closure_counter    | ~1.2s  | ~0.05s | ~24×   |
+| array_push (100k)  | ~0.29s | ~0.08s |  ~3.6× |
+| object_churn (100k)| ~0.16s | ~0.26s |  ~0.6× |
+| string_build       | ~0.02s | ~0.05s |  ~0.4× |
 
-Both backends share a ~1.4s fixed startup: cpp-peglib compiles the PEG
-grammar at process init. That sets the JIT floor and dominates small
-workloads. The JIT wins on compute-heavy code (fib, sum); on
-allocation-heavy code, RC overhead dominates and the two are on par.
+The JIT wins big on compute-heavy code (fib, sum, closure_counter). On
+allocation-heavy or trivial workloads, RC and alloc overhead dominate
+and the interpreter can come out ahead.
 
 License
 -------

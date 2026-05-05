@@ -151,13 +151,13 @@ make_bumper = fn () {
 7. 標準ライブラリ
 ------------------
 
-コア言語の組み込み関数は裸で使えます（`assert`, `range`,
-`to_long`, `to_string`, `type_of`）。それ以外は `Math`, `IO`,
-`Sys` の名前空間配下です:
+コア言語の組み込み関数は裸で使えます（`assert`, `to_long`,
+`to_string`, `type_of`）。それ以外は `Math`, `IO`, `Sys` の名前空間
+配下です:
 
 ```culebra
 puts(Math.abs(-7))              # 7
-puts(Math.min(3, 5))            # 3
+puts(Math.iota(5))              # [0, 1, 2, 3, 4]
 
 name = IO.input()               # 標準入力から 1 行
 IO.write('out.txt', 'hello')    # ファイル書き出し

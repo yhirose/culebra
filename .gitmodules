@@ -4,3 +4,6 @@
 [submodule "vendor/cpp-peglib"]
 	path = vendor/cpp-peglib
 	url = https://github.com/yhirose/cpp-peglib
+[submodule "vendor/cpp-unicodelib"]
+	path = vendor/cpp-unicodelib
+	url = https://github.com/yhirose/cpp-unicodelib
