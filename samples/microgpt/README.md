@@ -7,9 +7,13 @@ overloading, auto-reflection, `Math.*`, `Random.*`).
 ## Files
 
 - `microgpt.py`         — Karpathy's reference (Python).
-- `microgpt.cul`        — Culebra port, HOF-idiomatic style.
+- `microgpt.cul`        — Culebra port, scalar autograd, HOF-idiomatic style.
+- `microgpt_tensor.cul` — Tensor port: same architecture but single-head
+                          attention, autograd built on Phase 1 Tensor + TNode.
+                          ~50× faster per step than the scalar version.
+- `tnode.cul`           — Standalone TNode-on-Tensor demo (linear regression).
 - `names.txt`           — Training data (gitignored). Run `just fetch-names`.
-- `sidebyside.html`     — Static side-by-side viewer of both files.
+- `sidebyside.html`     — Static side-by-side viewer of `microgpt.py` / `microgpt.cul`.
 - `build_sidebyside.py` — Regenerator for `sidebyside.html` (re-run after edits).
 
 ## Running
@@ -26,7 +30,9 @@ python3 samples/microgpt/microgpt.py [num_steps]
 
 ## Numbers
 
-Apple Silicon, single core, mean of 5 runs, training only (`n_samples=0`):
+Apple Silicon, single core, training only (`n_samples=0`).
+
+### Scalar microgpt (mean of 5 runs)
 
 | step  | Python  | Culebra `--jit` | Culebra interp | ratio (Cul/Py) |
 |-------|--------:|----------------:|---------------:|---------------:|
@@ -42,6 +48,23 @@ Culebra ~52 s vs Python ~63 s — Culebra ~17% faster.
 Both Culebra backends produce identical loss values bit-for-bit;
 Python diverges due to a different Mersenne-Twister shuffle sequence
 (expected, not a correctness issue).
+
+### Tensor microgpt (`microgpt_tensor.cul`)
+
+Same architecture as the scalar version (n_head=4, head_dim=4) —
+no remaining differences. Single-run wall time, 100 training steps,
+JIT, n_samples=0:
+
+| implementation         |  total wall |  ms/step |
+|------------------------|------------:|---------:|
+| Culebra Tensor (`--jit`) |    ~1.6 s |   ~3.5 ms |
+| Culebra scalar (`--jit`) |     6.21 s |    ~52 ms |
+
+The Tensor port is **~15× faster per step** than the scalar version.
+The scalar microgpt builds thousands of `Value` objects per training
+step (one per scalar arithmetic op); the Tensor port builds a few
+hundred `TNode`s per step (one per layer-level op + per-head slice
++ concat) and routes each linear into BLAS.
 
 ## Where time goes (`--jit`, 500-step, 8 s sample post-warmup)
 
