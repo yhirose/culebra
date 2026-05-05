@@ -11,7 +11,7 @@ both, nothing more.
 Hardware: Apple Silicon laptop, single core. Each run is wall time of
 training only (`num_steps` configured, `n_samples=0` to skip inference).
 
-## Numbers (after GC tuning)
+## Numbers (after GC tuning + JIT HOF inlining)
 
 Wall time of training only (`n_samples=0` to skip inference). Two
 step counts so the linear-scaling assumption is visible.
@@ -19,8 +19,21 @@ step counts so the linear-scaling assumption is visible.
 | Implementation                 | 5 steps |  20 steps | per step | vs. Python |
 |--------------------------------|--------:|----------:|---------:|-----------:|
 | Python (CPython, scalar)       |  0.43 s |    1.44 s |   ~72 ms |         1× |
-| Culebra `--jit`                |  4.06 s |   16.66 s |  ~833 ms |     ~11.6× |
+| Culebra `--jit` (imperative)   |  4.06 s |   16.66 s |  ~833 ms |     ~11.6× |
+| Culebra `--jit` (HOF / lambda) |  8.04 s |       ≈4× |   ~1.6 s |       ~22× |
 | Culebra interpreter            | 14.01 s |   55.54 s | ~2,777 ms |    ~38.6× |
+
+The "HOF / lambda" row is `microgpt_hof.cul` — the same algorithm
+written in functional style with `arr.map(|x| ...)` /
+`.reduce(init, |a, b| ...)` chains rather than imperative `while`
+loops. About 26% shorter than the imperative version (286 vs 384
+lines). The JIT now inlines literal-lambda callbacks for `map`,
+`filter`, `for_each`, `reduce` (Array) and `reduce` / `for_each`
+(Iterator), so the per-element closure invocation that used to
+double the JIT cost is gone for those HOFs. Iterator.map /
+.filter still produce a lazy iterator and require chain fusion
+to inline — that's deferred work; for now the HOF version is ~2×
+the imperative version on JIT, vs ~2.2× before the inlining work.
 
 `per step` is computed from the 20-step run (5-step is dominated by
 JIT warmup / first-doc length, so it overestimates by ~5–10%). Linear

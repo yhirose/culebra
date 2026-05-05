@@ -1072,6 +1072,21 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_new() {
   return arr;
 }
 
+// Allocate an Array with `capacity` slots already reserved. Used by
+// inlined HOF loops (see emit_inlined_array_map) so per-iteration
+// `array_push` doesn't re-grow the buffer log(N) times. `size`
+// stays 0 — push fills it as elements arrive.
+__attribute__((used)) inline JitArray* culebra_runtime_array_new_reserved(
+    int64_t capacity) {
+  auto* arr = new JitArray();
+  arr->refcount = 1;
+  arr->size = 0;
+  arr->capacity = capacity > 0 ? static_cast<size_t>(capacity) : 0;
+  arr->items = capacity > 0 ? new JitValue[arr->capacity] : nullptr;
+  _gc().add(arr, GC_TAG_ARRAY);
+  return arr;
+}
+
 __attribute__((used)) inline void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data);
 
@@ -2925,6 +2940,7 @@ inline constexpr auto array_index_of      = "culebra_runtime_array_index_of";
 inline constexpr auto array_join          = "culebra_runtime_array_join";
 inline constexpr auto array_map           = "culebra_runtime_array_map";
 inline constexpr auto array_new           = "culebra_runtime_array_new";
+inline constexpr auto array_new_reserved  = "culebra_runtime_array_new_reserved";
 inline constexpr auto array_pop           = "culebra_runtime_array_pop";
 inline constexpr auto array_push          = "culebra_runtime_array_push";
 inline constexpr auto array_max           = "culebra_runtime_array_max";
@@ -3377,6 +3393,54 @@ struct JIT {
   llvm::Value* compile_builtin_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
+
+  // Higher-order-function inlining: when a HOF (map/filter/reduce/...)
+  // is called with a literal lambda or fn expression as the callback,
+  // emit the body inline into the iteration loop instead of going
+  // through the runtime helper's per-element function-pointer call.
+  // Mirrors how Rust monomorphizes iterator adapters and how CPython
+  // bytecode-fuses list comprehensions; closes most of the gap to a
+  // hand-written `while` loop on the JIT path.
+  bool is_inlinable_lambda(const peg::Ast& ast, size_t expected_arity) const;
+
+  // Adding a new HOF: implement an `emit_inlined_array_<op>` that
+  // builds a fresh state (output Array, accumulator alloca, etc.),
+  // calls `emit_array_unary_inline_loop` (or `_binary_acc_inline_loop`
+  // for accumulating shapes), and returns the resulting JitValue.
+  //
+  // PerIter receives the lambda's body result (already +1 owned) and
+  // decides what to do: push to output, accumulate, conditional push,
+  // discard, etc. It runs inside the loop body's scope — the lambda
+  // param's slot has not yet been released, so `elem` is also valid.
+  template <class PerIter>
+  void emit_array_unary_inline_loop(llvm::Value* arrPtr,
+                                    const peg::Ast& lambda_ast,
+                                    PerIter&& per_iter);
+
+  llvm::Value* emit_inlined_array_map(llvm::Value* arrPtr,
+                                      const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_array_filter(llvm::Value* arrPtr,
+                                          const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_array_for_each(llvm::Value* arrPtr,
+                                            const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_array_reduce(llvm::Value* arrPtr,
+                                          llvm::Value* init,
+                                          const peg::Ast& lambda_ast);
+
+  // Iterator-side equivalents. The receiver is an iterator-protocol
+  // Object whose `next` property is the per-step closure (its
+  // closure pointer is hoisted out of the loop). `iter_val` is the
+  // {tag, data} pair already constructed by dispatch_arr_iter's
+  // lazy branch.
+  template <class PerIter>
+  void emit_iter_unary_inline_loop(llvm::Value* iter_val,
+                                   const peg::Ast& lambda_ast,
+                                   PerIter&& per_iter);
+  llvm::Value* emit_inlined_iter_for_each(llvm::Value* iter_val,
+                                           const peg::Ast& lambda_ast);
+  llvm::Value* emit_inlined_iter_reduce(llvm::Value* iter_val,
+                                         llvm::Value* init,
+                                         const peg::Ast& lambda_ast);
 
   // Method names with JIT-native codegen in compile_builtin_method.
   // Exposed so a startup self-check (see culebra.h) can guard against
@@ -4375,6 +4439,8 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_cmp,
                                  builder_.getInt32Ty(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_new, ptrTy);
+    module_->getOrInsertFunction(rt::array_new_reserved, ptrTy,
+                                 builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_push,
                                  builder_.getVoidTy(), ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
@@ -7579,6 +7645,447 @@ struct JIT {
   }
 };
 
+// Recognise an HOF callback that we can inline: the call site must
+// pass a literal `|x| ...` (LAMBDA) or `fn (x) { ... }` (FUNCTION),
+// with the expected number of params and no parameter defaults. The
+// FuncInfo lookup ensures `analyze_function` already ran and we can
+// honour the lambda's `captured_locals` decisions.
+inline bool JIT::is_inlinable_lambda(const peg::Ast& ast,
+                                      size_t expected_arity) const {
+  using namespace peg::udl;
+  if (ast.tag != "LAMBDA"_ && ast.tag != "FUNCTION"_) return false;
+  if (ast.nodes.size() < 2) return false;
+  const auto& params = *ast.nodes[0];
+  if (params.nodes.size() != expected_arity) return false;
+  for (const auto& p : params.nodes) {
+    // PARAMETER: [MUTABLE, IDENTIFIER, (TYPE)?, (DEFAULT)?]. Any node
+    // tagged DEFAULT_VALUE means we'd need full call-site dispatch
+    // logic — not worth duplicating from compile_fn_common; fall back
+    // to the runtime helper for those.
+    for (const auto& sub : p->nodes) {
+      if (sub->tag == "DEFAULT_VALUE"_) return false;
+    }
+  }
+  return func_info_.count(&ast) > 0;
+}
+
+// Shared loop scaffold for unary inlined HOFs (map / filter / for_each).
+// Builds a counted loop over `arrPtr`, binds the lambda's single param
+// to each element in a fresh scope, compiles the body in place, then
+// hands the +1-owned result to `per_iter` (which decides what to do
+// with it: push to output, conditional push, discard, etc.). The
+// `elem` value passed alongside is the current element — also +1
+// retained — so per_iter can inspect or use it without a separate
+// load. After per_iter returns, the scope pops (releasing the param
+// slot's retained ref) and the loop advances.
+//
+// Adding a new unary HOF reduces to writing a per_iter body. See
+// `emit_inlined_array_map` / `_filter` / `_for_each` for examples.
+template <class PerIter>
+inline void JIT::emit_array_unary_inline_loop(
+    llvm::Value* arrPtr, const peg::Ast& lambda_ast,
+    PerIter&& per_iter) {
+  using namespace llvm;
+  auto ptrTy = PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+
+  auto size = emit_call(
+      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                   ptrTy),
+      {arrPtr}, "ihof.size");
+
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto idxAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ihof.idx");
+  auto outTagAlloca =
+      entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ihof.elem.tag");
+  auto outDataAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ihof.elem.data");
+  builder_.CreateStore(builder_.getInt64(0), idxAlloca);
+
+  auto condBB = BasicBlock::Create(ctx_, "ihof.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "ihof.body", fn);
+  auto incBB = BasicBlock::Create(ctx_, "ihof.inc", fn);
+  auto endBB = BasicBlock::Create(ctx_, "ihof.end", fn);
+
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto i = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "ihof.i");
+  builder_.CreateCondBr(builder_.CreateICmpSLT(i, size), bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  emit_call(
+      module_->getOrInsertFunction(
+          rt::array_get, builder_.getVoidTy(), ptrTy,
+          builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+          builder_.getInt64Ty()),
+      {arrPtr, i, outTagAlloca, outDataAlloca, current_line_val(),
+       current_column_val()});
+  auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
+  auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
+  llvm::Value* elem = UndefValue::get(valueType_);
+  elem = builder_.CreateInsertValue(elem, t, {0});
+  elem = builder_.CreateInsertValue(elem, d, {1});
+
+  emit_value_retain(elem);
+  push_scope();
+  bool captured = info.captured_locals.contains(param_name);
+  auto slot = captured ? make_cell_slot(param_name, elem)
+                       : make_stack_slot(param_name, elem);
+  define_var(param_name, slot);
+
+  auto result = compile(body_ast);
+  per_iter(elem, result);
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    builder_.CreateBr(incBB);
+  }
+
+  builder_.SetInsertPoint(incBB);
+  auto next = builder_.CreateAdd(
+      builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca),
+      builder_.getInt64(1));
+  builder_.CreateStore(next, idxAlloca);
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(endBB);
+}
+
+inline llvm::Value* JIT::emit_inlined_array_map(
+    llvm::Value* arrPtr, const peg::Ast& lambda_ast) {
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto size = emit_call(
+      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                   ptrTy),
+      {arrPtr}, "imap.size");
+  auto out =
+      emit_call(module_->getFunction(rt::array_new_reserved), {size});
+  emit_array_unary_inline_loop(
+      arrPtr, lambda_ast,
+      [&](llvm::Value* /*elem*/, llvm::Value* result) {
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_push, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty()),
+            {out, extract_tag(result), extract_data(result)});
+      });
+  return make_array(out);
+}
+
+// Inlined `arr.filter(|x| pred)`. Predicate result must be Bool-like
+// (Bool / Long / Nil); non-bool/-numeric tags fall back to "drop"
+// to mirror the runtime helper's `keep` rule (see culebra_runtime_array_filter).
+inline llvm::Value* JIT::emit_inlined_array_filter(
+    llvm::Value* arrPtr, const peg::Ast& lambda_ast) {
+  using namespace llvm;
+  auto ptrTy = PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+  auto out = emit_call(module_->getFunction(rt::array_new), {});
+  emit_array_unary_inline_loop(
+      arrPtr, lambda_ast,
+      [&](llvm::Value* elem, llvm::Value* result) {
+        auto rt_tag = extract_tag(result);
+        auto rt_data = extract_data(result);
+        auto isBoolish = builder_.CreateOr(
+            builder_.CreateICmpEQ(rt_tag, builder_.getInt8(TAG_BOOL)),
+            builder_.CreateICmpEQ(rt_tag, builder_.getInt8(TAG_LONG)));
+        auto truthy = builder_.CreateAnd(
+            isBoolish,
+            builder_.CreateICmpNE(rt_data, builder_.getInt64(0)));
+        auto keepBB = BasicBlock::Create(ctx_, "ifil.keep", fn);
+        auto dropBB = BasicBlock::Create(ctx_, "ifil.drop", fn);
+        auto contBB = BasicBlock::Create(ctx_, "ifil.cont", fn);
+        builder_.CreateCondBr(truthy, keepBB, dropBB);
+
+        builder_.SetInsertPoint(keepBB);
+        emit_value_release(result);
+        emit_value_retain(elem);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_push, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty()),
+            {out, extract_tag(elem), extract_data(elem)});
+        builder_.CreateBr(contBB);
+
+        builder_.SetInsertPoint(dropBB);
+        emit_value_release(result);
+        builder_.CreateBr(contBB);
+
+        builder_.SetInsertPoint(contBB);
+      });
+  return make_array(out);
+}
+
+inline llvm::Value* JIT::emit_inlined_array_for_each(
+    llvm::Value* arrPtr, const peg::Ast& lambda_ast) {
+  emit_array_unary_inline_loop(
+      arrPtr, lambda_ast,
+      [&](llvm::Value* /*elem*/, llvm::Value* result) {
+        emit_value_release(result);
+      });
+  return make_nil();
+}
+
+// Inlined `arr.reduce(init, |acc, val| body)`. Two-parameter lambda;
+// the accumulator slot lives outside the loop and is overwritten with
+// each iteration's body result. `init` is +1-owned by the caller and
+// is moved into the accumulator (no extra retain/release).
+inline llvm::Value* JIT::emit_inlined_array_reduce(
+    llvm::Value* arrPtr, llvm::Value* init, const peg::Ast& lambda_ast) {
+  using namespace llvm;
+  auto ptrTy = PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
+
+  // Accumulator alloca outside the loop. Lives in entry block to keep
+  // it out of the loop hot path.
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "ired.acc");
+  builder_.CreateStore(init, accAlloca);
+
+  auto size = emit_call(
+      module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
+                                   ptrTy),
+      {arrPtr}, "ired.size");
+
+  auto idxAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ired.idx");
+  auto eTagAlloca =
+      entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ired.elem.tag");
+  auto eDataAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ired.elem.data");
+  builder_.CreateStore(builder_.getInt64(0), idxAlloca);
+
+  auto condBB = BasicBlock::Create(ctx_, "ired.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "ired.body", fn);
+  auto incBB = BasicBlock::Create(ctx_, "ired.inc", fn);
+  auto endBB = BasicBlock::Create(ctx_, "ired.end", fn);
+
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto i = builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca, "ired.i");
+  builder_.CreateCondBr(builder_.CreateICmpSLT(i, size), bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  emit_call(
+      module_->getOrInsertFunction(
+          rt::array_get, builder_.getVoidTy(), ptrTy,
+          builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+          builder_.getInt64Ty()),
+      {arrPtr, i, eTagAlloca, eDataAlloca, current_line_val(),
+       current_column_val()});
+  auto t = builder_.CreateLoad(builder_.getInt8Ty(), eTagAlloca);
+  auto d = builder_.CreateLoad(builder_.getInt64Ty(), eDataAlloca);
+  llvm::Value* elem = UndefValue::get(valueType_);
+  elem = builder_.CreateInsertValue(elem, t, {0});
+  elem = builder_.CreateInsertValue(elem, d, {1});
+  emit_value_retain(elem);
+
+  // Move the current acc out of its alloca for the body. The body's
+  // result is the new acc; store it back. No retain/release dance —
+  // the alloca's value is always +1 owned, ownership transfers
+  // through the body as if the runtime helper called `_culebra_invoke2`.
+  auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "ired.acc.cur");
+
+  push_scope();
+  bool acc_captured = info.captured_locals.contains(acc_name);
+  define_var(acc_name,
+             acc_captured ? make_cell_slot(acc_name, curAcc)
+                          : make_stack_slot(acc_name, curAcc));
+  bool val_captured = info.captured_locals.contains(val_name);
+  define_var(val_name,
+             val_captured ? make_cell_slot(val_name, elem)
+                          : make_stack_slot(val_name, elem));
+
+  auto result = compile(body_ast);
+  builder_.CreateStore(result, accAlloca);
+
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    builder_.CreateBr(incBB);
+  }
+
+  builder_.SetInsertPoint(incBB);
+  auto next = builder_.CreateAdd(
+      builder_.CreateLoad(builder_.getInt64Ty(), idxAlloca),
+      builder_.getInt64(1));
+  builder_.CreateStore(next, idxAlloca);
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(endBB);
+  return builder_.CreateLoad(valueType_, accAlloca, "ired.result");
+}
+
+// Shared loop scaffold for unary inlined Iterator HOFs. Reads the
+// iterator's `next` closure once outside the loop, then steps via
+// `culebra_runtime_iter_advance` (mirroring the for-in protocol
+// loop). `per_iter` runs after the body compiles, with the lambda
+// param's slot still bound.
+template <class PerIter>
+inline void JIT::emit_iter_unary_inline_loop(
+    llvm::Value* iter_val, const peg::Ast& lambda_ast, PerIter&& per_iter) {
+  using namespace llvm;
+  auto ptrTy = PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+
+  auto next_fn_val = compile_property_get(iter_val, "next");
+  auto next_cls_ptr =
+      builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "ihof.next.cls");
+  auto iterTag = extract_tag(iter_val);
+  auto iterData = extract_data(iter_val);
+
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto outTagAlloca =
+      entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ihof.it.tag");
+  auto outDataAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ihof.it.data");
+
+  auto condBB = BasicBlock::Create(ctx_, "ihofi.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "ihofi.body", fn);
+  auto endBB = BasicBlock::Create(ctx_, "ihofi.end", fn);
+
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto ok = emit_call(
+      module_->getFunction(rt::iter_advance),
+      {next_cls_ptr, iterTag, iterData, outTagAlloca, outDataAlloca},
+      "ihofi.ok");
+  auto alive =
+      builder_.CreateICmpNE(ok, builder_.getInt64(0), "ihofi.alive");
+  builder_.CreateCondBr(alive, bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
+  auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
+  llvm::Value* elem = UndefValue::get(valueType_);
+  elem = builder_.CreateInsertValue(elem, t, {0});
+  elem = builder_.CreateInsertValue(elem, d, {1});
+  // iter_advance returns a +1-owned Value; we hand that ref to the
+  // param slot directly (no extra retain).
+
+  push_scope();
+  bool captured = info.captured_locals.contains(param_name);
+  auto slot = captured ? make_cell_slot(param_name, elem)
+                       : make_stack_slot(param_name, elem);
+  define_var(param_name, slot);
+
+  auto result = compile(body_ast);
+  per_iter(elem, result);
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    builder_.CreateBr(condBB);
+  }
+
+  builder_.SetInsertPoint(endBB);
+}
+
+inline llvm::Value* JIT::emit_inlined_iter_for_each(
+    llvm::Value* iter_val, const peg::Ast& lambda_ast) {
+  emit_iter_unary_inline_loop(
+      iter_val, lambda_ast,
+      [&](llvm::Value* /*elem*/, llvm::Value* result) {
+        emit_value_release(result);
+      });
+  return make_nil();
+}
+
+inline llvm::Value* JIT::emit_inlined_iter_reduce(
+    llvm::Value* iter_val, llvm::Value* init, const peg::Ast& lambda_ast) {
+  using namespace llvm;
+  auto ptrTy = PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+
+  const auto& info = func_info_.at(&lambda_ast);
+  const auto& params_ast = *lambda_ast.nodes[0];
+  const auto& body_ast = *lambda_ast.nodes[1];
+  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
+  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
+
+  IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
+  builder_.CreateStore(init, accAlloca);
+
+  auto next_fn_val = compile_property_get(iter_val, "next");
+  auto next_cls_ptr =
+      builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "iri.next.cls");
+  auto iterTag = extract_tag(iter_val);
+  auto iterData = extract_data(iter_val);
+
+  auto outTagAlloca =
+      entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "iri.it.tag");
+  auto outDataAlloca =
+      entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "iri.it.data");
+
+  auto condBB = BasicBlock::Create(ctx_, "iri.cond", fn);
+  auto bodyBB = BasicBlock::Create(ctx_, "iri.body", fn);
+  auto endBB = BasicBlock::Create(ctx_, "iri.end", fn);
+
+  builder_.CreateBr(condBB);
+
+  builder_.SetInsertPoint(condBB);
+  auto ok = emit_call(
+      module_->getFunction(rt::iter_advance),
+      {next_cls_ptr, iterTag, iterData, outTagAlloca, outDataAlloca},
+      "iri.ok");
+  auto alive = builder_.CreateICmpNE(ok, builder_.getInt64(0), "iri.alive");
+  builder_.CreateCondBr(alive, bodyBB, endBB);
+
+  builder_.SetInsertPoint(bodyBB);
+  auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
+  auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
+  llvm::Value* elem = UndefValue::get(valueType_);
+  elem = builder_.CreateInsertValue(elem, t, {0});
+  elem = builder_.CreateInsertValue(elem, d, {1});
+
+  // Move acc out of the alloca into the body's scope (same ownership
+  // dance as emit_inlined_array_reduce). iter_advance handed elem in
+  // +1 so val slot can absorb it directly.
+  auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "iri.acc.cur");
+
+  push_scope();
+  bool acc_captured = info.captured_locals.contains(acc_name);
+  define_var(acc_name,
+             acc_captured ? make_cell_slot(acc_name, curAcc)
+                          : make_stack_slot(acc_name, curAcc));
+  bool val_captured = info.captured_locals.contains(val_name);
+  define_var(val_name,
+             val_captured ? make_cell_slot(val_name, elem)
+                          : make_stack_slot(val_name, elem));
+
+  auto result = compile(body_ast);
+  builder_.CreateStore(result, accAlloca);
+
+  pop_scope();
+
+  if (!builder_.GetInsertBlock()->getTerminator()) {
+    builder_.CreateBr(condBB);
+  }
+
+  builder_.SetInsertPoint(endBB);
+  return builder_.CreateLoad(valueType_, accAlloca, "iri.result");
+}
+
 inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
@@ -7924,7 +8431,25 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   };
 
   if (method == "map" && argsAst.nodes.size() == 1) {
-    auto f = compile(*argsAst.nodes[0]);
+    const auto& cb_ast = *argsAst.nodes[0];
+    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
+      // Skip the closure construction entirely on the eager path; the
+      // iterator (lazy) path still needs a closure, so we only emit
+      // it inside that branch.
+      return dispatch_arr_iter(
+          "map",
+          [&](llvm::Value* arrPtr) {
+            return emit_inlined_array_map(arrPtr, cb_ast);
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            auto f = compile(cb_ast);
+            auto out = emit_call(module_->getFunction(rt::iter_map),
+                                 {it, id, extract_tag(f), extract_data(f)});
+            emit_value_release(f);
+            return make_object(out);
+          });
+    }
+    auto f = compile(cb_ast);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -7945,7 +8470,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "filter" && argsAst.nodes.size() == 1) {
-    auto f = compile(*argsAst.nodes[0]);
+    const auto& cb_ast = *argsAst.nodes[0];
+    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
+      return dispatch_arr_iter(
+          "filter",
+          [&](llvm::Value* arrPtr) {
+            return emit_inlined_array_filter(arrPtr, cb_ast);
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            auto f = compile(cb_ast);
+            auto out = emit_call(module_->getFunction(rt::iter_filter),
+                                 {it, id, extract_tag(f), extract_data(f)});
+            emit_value_release(f);
+            return make_object(out);
+          });
+    }
+    auto f = compile(cb_ast);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -7966,7 +8506,21 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "for_each" && argsAst.nodes.size() == 1) {
-    auto f = compile(*argsAst.nodes[0]);
+    const auto& cb_ast = *argsAst.nodes[0];
+    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
+      return dispatch_arr_iter(
+          "foreach",
+          [&](llvm::Value* arrPtr) {
+            return emit_inlined_array_for_each(arrPtr, cb_ast);
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            llvm::Value* iter_val = llvm::UndefValue::get(valueType_);
+            iter_val = builder_.CreateInsertValue(iter_val, it, {0});
+            iter_val = builder_.CreateInsertValue(iter_val, id, {1});
+            return emit_inlined_iter_for_each(iter_val, cb_ast);
+          });
+    }
+    auto f = compile(cb_ast);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -7986,8 +8540,23 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "reduce" && argsAst.nodes.size() == 2) {
+    const auto& cb_ast = *argsAst.nodes[1];
+    if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
+      auto init = compile(*argsAst.nodes[0]);
+      return dispatch_arr_iter(
+          "reduce",
+          [&](llvm::Value* arrPtr) {
+            return emit_inlined_array_reduce(arrPtr, init, cb_ast);
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            llvm::Value* iter_val = llvm::UndefValue::get(valueType_);
+            iter_val = builder_.CreateInsertValue(iter_val, it, {0});
+            iter_val = builder_.CreateInsertValue(iter_val, id, {1});
+            return emit_inlined_iter_reduce(iter_val, init, cb_ast);
+          });
+    }
     auto init = compile(*argsAst.nodes[0]);
-    auto f = compile(*argsAst.nodes[1]);
+    auto f = compile(cb_ast);
     auto it_tag = extract_tag(init);
     auto it_data = extract_data(init);
     auto ft = extract_tag(f);
