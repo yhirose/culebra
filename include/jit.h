@@ -2,12 +2,10 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
-#include <num_format.h>
 #include <parser.h>
-#include <shape.h>
+#include <support.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
-#include <well_known_props.h>
 
 // macOS termios.h defines CR1/CR2/CR3 macros that conflict with LLVM headers
 #if defined(__APPLE__)
@@ -39,13 +37,89 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <print>
 #include <queue>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace culebra {
+
+// Object property layout description, V8/SpiderMonkey "hidden class"
+// style. Each Shape is interned in the process-wide ShapeRegistry;
+// JitObjects with the same property set share the same Shape* and a
+// fixed-offset slots array, replacing the per-instance hash/vector
+// of (name, value) pairs. This is what brings "Python __slots__"
+// semantics to plain Culebra Objects (and class instances, since
+// `class` desugars to Object).
+//
+// Shapes are immutable. Adding a property to an Object transitions
+// it to a new Shape via `transition_add`; the source Shape caches
+// the transition so identical (parent, name) pairs always resolve
+// to the same target Shape. Property reads use a linear scan over
+// `names` to translate name -> slot index — for the typical 5–15
+// property count seen in this codebase a flat scan beats both
+// std::map (tree pointer chasing) and unordered_map (hash + bucket)
+// on cache traffic. The slow path is hit only on inline-cache miss.
+struct Shape {
+  std::vector<std::string> names;          // insertion order
+  Shape* parent = nullptr;                  // not used yet; reserved for proto chains
+  std::map<std::string_view, Shape*> add_transitions;
+
+  bool has(std::string_view name) const {
+    return offset(name) != static_cast<size_t>(-1);
+  }
+  // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
+  size_t offset(std::string_view name) const {
+    for (size_t i = 0; i < names.size(); i++) {
+      if (names[i] == name) return i;
+    }
+    return static_cast<size_t>(-1);
+  }
+};
+
+// Process-wide intern table. Shapes live for the full program;
+// the set is bounded by the number of distinct property-name sets
+// the program ever uses (typically tiny — every class instance
+// shares one shape, every {a, b, c} object literal shares one).
+struct ShapeRegistry {
+  static ShapeRegistry& instance() {
+    static ShapeRegistry r;
+    return r;
+  }
+  Shape* root() { return root_.get(); }
+
+  // Return the Shape obtained by adding `name` to `current`'s
+  // property set. Cached on `current->add_transitions` so identical
+  // transitions collide on the same Shape pointer.
+  Shape* transition_add(Shape* current, std::string_view name) {
+    auto it = current->add_transitions.find(name);
+    if (it != current->add_transitions.end()) return it->second;
+    auto next = std::make_unique<Shape>();
+    next->names = current->names;
+    next->names.push_back(std::string(name));
+    auto& stored_name = next->names.back();
+    auto* raw = next.get();
+    owned_.push_back(std::move(next));
+    // Key the cache by the new shape's stored name view so the
+    // string_view stays live for the lifetime of the Shape.
+    current->add_transitions[std::string_view(stored_name)] = raw;
+    return raw;
+  }
+
+ private:
+  ShapeRegistry() : root_(std::make_unique<Shape>()) {}
+  std::unique_ptr<Shape> root_;
+  std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
+};
+
+inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
+
+}  // namespace culebra
 
 // ---------------------------------------------------------------------------
 // Runtime types and functions callable from JIT'd code
@@ -1496,7 +1570,7 @@ __attribute__((used)) inline void culebra_runtime_release_overflow_args(
   }
 }
 
-// Validate the well-known-property contract (see well_known_props.h)
+// Validate the well-known-property contract (see support.h)
 // for a freshly-bound JIT value: must be a 0-arg Function. The arg's
 // +1 is released before throwing — codegen passes ownership and
 // expects either store-into-map or release.
@@ -3021,20 +3095,10 @@ __attribute__((used)) inline const char* culebra_runtime_str_lower(
 
 __attribute__((used)) inline const char* culebra_runtime_str_trim(
     const char* s) {
-  auto n = std::strlen(s);
-  size_t start = 0;
-  while (start < n && std::isspace(static_cast<unsigned char>(s[start]))) {
-    start++;
-  }
-  size_t end = n;
-  while (end > start &&
-         std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-    end--;
-  }
-  auto len = end - start;
-  auto* buf = static_cast<char*>(std::malloc(len + 1));
-  std::memcpy(buf, s + start, len);
-  buf[len] = '\0';
+  auto trimmed = culebra::trim_ascii(std::string_view(s, std::strlen(s)));
+  auto* buf = static_cast<char*>(std::malloc(trimmed.size() + 1));
+  std::memcpy(buf, trimmed.data(), trimmed.size());
+  buf[trimmed.size()] = '\0';
   return buf;
 }
 

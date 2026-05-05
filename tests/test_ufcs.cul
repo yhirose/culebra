@@ -1,11 +1,11 @@
 # UFCS regression tests. Runs under both the interpreter and `--jit`.
 #
 # A JIT-safe subset is also duplicated in `test_ufcs()` inside
-# samples/test.cul; this file keeps the full matrix including the
+# tests/test_core.cul; this file keeps the full matrix including the
 # `__ARGS__` variadic case.
 #
-# Run: ./build/culebra samples/test_ufcs.cul
-#      ./build/culebra --jit samples/test_ufcs.cul
+# Run: ./build/culebra tests/test_ufcs.cul
+#      ./build/culebra --jit tests/test_ufcs.cul
 
 # Free function as method on primitive
 double = fn (x) { x * 2 }

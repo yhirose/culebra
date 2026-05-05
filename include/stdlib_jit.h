@@ -3,14 +3,13 @@
 // JIT-side implementation of the Culebra standard library. Fragment header;
 // include once at the end of jit.h.
 
-#include <random_state.h>
+#include <support.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
-#include <random>
 
 // ---------------------------------------------------------------------------
 // Runtime state
