@@ -1,22 +1,19 @@
-# Compiled Object files
+# Compiled object files
 *.slo
 *.lo
 *.o
 *.obj
 
-# Precompiled Headers
+# Precompiled headers
 *.gch
 *.pch
 
-# Compiled Dynamic libraries
+# Compiled dynamic libraries
 *.so
 *.dylib
 *.dll
 
-# Fortran module files
-*.mod
-
-# Compiled Static libraries
+# Compiled static libraries
 *.lai
 *.la
 *.a
@@ -27,22 +24,24 @@
 *.out
 *.app
 
-# Others
+# Debug symbols
 *.dSYM
+
+# Editor swap files
 *.swp
-Debug
-Release
-*.suo
-*.sdf
-*.user
-xcuserdata
-*.xcworkspace
-temp*
-build/
+
+# CMake at the repo root (the canonical build dir is build/, but
+# `cmake .` from the root would scatter these here).
 Makefile
 CMakeFiles
 CMakeCache.txt
-*.cmake
-*.vcxproj.filters
-*.opensdf
+
+# Build directory
+build/
+
+# macOS metadata
 .DS_Store
+
+# Claude Code local artifacts (per-clone permission allowlist,
+# scheduled-tasks runtime lock, etc.)
+.claude/
