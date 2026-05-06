@@ -1,7 +1,7 @@
 #pragma once
 
 #include <parser.h>
-#include <support.h>
+#include <shared.h>
 #include <tensor.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
@@ -51,10 +51,263 @@ inline std::map<std::string_view, Value>& iterator_builtins();
 // bindings — in both the interpreter and the JIT.
 [[noreturn]] inline void throw_shadow_error(std::string_view name,
                                             size_t line, size_t column) {
-  throw std::runtime_error(std::format(
-      "cannot shadow outer variable '{}' (declared in an enclosing function) "
-      "at {}:{}.",
-      name, line, column));
+  throw CulebraError(
+      "ShadowError",
+      std::format("cannot shadow outer variable '{}' (declared in an enclosing "
+                  "function) at {}:{}.",
+                  name, line, column),
+      static_cast<long>(line), static_cast<long>(column));
+}
+
+// --- Static shadow analyzer ---
+//
+// Walks the AST once before eval, raising ShadowError at any binding
+// site that would shadow a name from an enclosing function scope. This
+// matches the JIT's compile-time check (jit.h `collect_fn_locals` /
+// `visit_for_frees`) so both backends reject shadow violations
+// uniformly — including dead code that never executes.
+//
+// `outer[0]` is the top-level scope: those names act as globals and
+// may be shadowed freely. `outer[1..]` are enclosing function scopes
+// whose names would be captured by the current function and so are
+// off-limits for re-binding.
+
+namespace _shadow {
+
+inline bool is_sink_name(std::string_view s) { return s == "_"; }
+
+inline void check(std::string_view name, size_t line, size_t col,
+                  const std::vector<const std::set<std::string, std::less<>>*>& outer) {
+  if (is_sink_name(name)) return;
+  for (size_t i = 1; i < outer.size(); i++) {
+    if (outer[i]->contains(name)) {
+      throw_shadow_error(name, line, col);
+    }
+  }
+}
+
+template <typename F>
+inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
+  using namespace peg::udl;
+  if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+    for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
+    return;
+  }
+  auto emit = [&](std::string_view name, size_t line, size_t col) {
+    if (!is_sink_name(name)) f(name, line, col);
+  };
+  switch (pattern.tag) {
+    case "IDENTIFIER"_:
+      emit(pattern.token, pattern.line, pattern.column);
+      return;
+    case "TYPED_IDENT"_: {
+      auto& id = *pattern.nodes[0];
+      emit(id.token, id.line, id.column);
+      return;
+    }
+    case "ARRAY_PATTERN"_:
+      for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
+      return;
+    case "REST_PATTERN"_: {
+      auto& id = *pattern.nodes[0];
+      emit(id.token, id.line, id.column);
+      return;
+    }
+    case "OBJECT_PATTERN"_:
+      for (auto& key_node : pattern.nodes) {
+        emit(key_node->token, key_node->line, key_node->column);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+inline void check_pattern(
+    const peg::Ast& pattern,
+    const std::vector<const std::set<std::string, std::less<>>*>& outer) {
+  for_each_pattern_binding(
+      pattern, [&](std::string_view name, size_t line, size_t col) {
+        check(name, line, col, outer);
+      });
+}
+
+void analyze_fn_body(const peg::Ast& params_ast, const peg::Ast& body_ast,
+                     std::vector<const std::set<std::string, std::less<>>*>& outer);
+
+// Phase 1: walk this function's body, collecting binding sites into
+// `locals` and checking shadow violations. Stops at nested function
+// boundaries (recursed into in phase 2).
+inline void collect_locals(
+    const peg::Ast& node, std::set<std::string, std::less<>>& locals,
+    const std::vector<const std::set<std::string, std::less<>>*>& outer) {
+  using namespace peg::udl;
+  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
+
+  if (node.tag == "MATCH"_) {
+    // Match-arm bindings are arm-scoped at runtime, but we register
+    // them in the enclosing function's locals so nested closures
+    // inside an arm body can capture them. This over-approximates
+    // (a closure in a *different* arm would see the previous arm's
+    // names too) but only affects free-var resolution, never the
+    // shadow check itself — `check` looks at outer[1..] only.
+    for (auto& arm : node.nodes[1]->nodes) {
+      check_pattern(*arm->nodes[0], outer);
+      for_each_pattern_binding(
+          *arm->nodes[0], [&](std::string_view name, size_t, size_t) {
+            locals.insert(std::string(name));
+          });
+    }
+    // fall through to walk arm bodies
+  }
+
+  if (node.tag == "TRY"_) {
+    auto& id = *node.nodes[1];
+    auto name = std::string(id.token);
+    check(name, id.line, id.column, outer);
+    if (!is_sink_name(name)) locals.insert(name);
+    // fall through
+  }
+
+  if (node.tag == "FOR"_) {
+    auto& id = *node.nodes[0];
+    auto name = std::string(id.token);
+    check(name, id.line, id.column, outer);
+    // FOR binding is block-scoped; deliberately not added to enclosing
+    // locals so a same-named binding outside the loop doesn't see it.
+    collect_locals(*node.nodes[1], locals, outer);
+    collect_locals(*node.nodes[2], locals, outer);
+    return;
+  }
+
+  if (node.tag == "ASSIGNMENT"_) {
+    auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+    auto op_tok = node.nodes[node.nodes.size() - 2]->token;
+    bool compound = op_tok != "=";
+    if (lvalcnt == 1 && !compound) {
+      auto ident_node = node.nodes[2];
+      if (ident_node->tag == "IDENTIFIER"_) {
+        auto name = std::string(ident_node->token);
+        bool is_let = (node.nodes[0]->token == "let");
+        bool is_mut = (node.nodes[1]->token == "mut");
+        if (is_let || is_mut) {
+          check(name, ident_node->line, ident_node->column, outer);
+          if (!is_sink_name(name)) locals.insert(name);
+        } else {
+          // Bare assignment is auto-local only when the name doesn't
+          // already exist in any outer scope.
+          bool in_outer = false;
+          for (auto* s : outer) {
+            if (s->contains(name)) {
+              in_outer = true;
+              break;
+            }
+          }
+          if (!in_outer && !is_sink_name(name)) locals.insert(name);
+        }
+      }
+    }
+    collect_locals(*node.nodes.back(), locals, outer);
+    return;
+  }
+
+  if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_) {
+    auto& id = *node.nodes[0];
+    auto name = std::string(id.token);
+    check(name, id.line, id.column, outer);
+    if (!is_sink_name(name)) locals.insert(name);
+    return;
+  }
+
+  // DESTRUCTURE_ASSIGN binds a pattern to a value.
+  if (node.tag == "DESTRUCTURE_ASSIGN"_) {
+    const auto& pattern = *node.nodes[1];
+    check_pattern(pattern, outer);
+    for_each_pattern_binding(
+        pattern, [&](std::string_view name, size_t, size_t) {
+          locals.insert(std::string(name));
+        });
+    collect_locals(*node.nodes[2], locals, outer);
+    return;
+  }
+
+  for (auto& c : node.nodes) collect_locals(*c, locals, outer);
+}
+
+// Phase 2: descend into nested function bodies with the now-populated
+// outer chain.
+inline void descend_into_nested(
+    const peg::Ast& node,
+    const std::set<std::string, std::less<>>& my_locals,
+    std::vector<const std::set<std::string, std::less<>>*>& outer) {
+  using namespace peg::udl;
+
+  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) {
+    outer.push_back(&my_locals);
+    analyze_fn_body(*node.nodes[0], *node.nodes[1], outer);
+    outer.pop_back();
+    return;
+  }
+
+  if (node.tag == "MULTIFN_DECL"_) {
+    // [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK]
+    outer.push_back(&my_locals);
+    analyze_fn_body(*node.nodes[1], *node.nodes.back(), outer);
+    outer.pop_back();
+    return;
+  }
+
+  if (node.tag == "DEFER"_) {
+    // [BLOCK] — same scope rules as a 0-param nested function.
+    outer.push_back(&my_locals);
+    std::set<std::string, std::less<>> defer_locals;
+    collect_locals(*node.nodes[0], defer_locals, outer);
+    descend_into_nested(*node.nodes[0], defer_locals, outer);
+    outer.pop_back();
+    return;
+  }
+
+  if (node.tag == "CLASS_DECL"_) {
+    // [IDENTIFIER, METHOD ...] — each METHOD is [IDENTIFIER, PARAMETERS, BLOCK].
+    for (size_t i = 1; i < node.nodes.size(); i++) {
+      const auto& method = *node.nodes[i];
+      outer.push_back(&my_locals);
+      analyze_fn_body(*method.nodes[1], *method.nodes[2], outer);
+      outer.pop_back();
+    }
+    return;
+  }
+
+  for (auto& c : node.nodes) descend_into_nested(*c, my_locals, outer);
+}
+
+inline void analyze_fn_body(
+    const peg::Ast& params_ast, const peg::Ast& body_ast,
+    std::vector<const std::set<std::string, std::less<>>*>& outer) {
+  std::set<std::string, std::less<>> my_locals;
+  for (auto& p : params_ast.nodes) {
+    auto& id = *p->nodes[1];
+    auto name = std::string(id.token);
+    check(name, id.line, id.column, outer);
+    if (!is_sink_name(name)) my_locals.insert(name);
+  }
+  collect_locals(body_ast, my_locals, outer);
+  descend_into_nested(body_ast, my_locals, outer);
+}
+
+}  // namespace _shadow
+
+// Top-level entry: run the static shadow check over an entire script
+// AST before evaluation begins. Throws a `ShadowError` CulebraError on
+// the first violation encountered. `outer` starts empty — top-level
+// names enter the chain only when a nested function pushes them, so
+// the first scope (`outer[0]` from a nested function's perspective)
+// is the top-level / "globals" frame which `check` skips.
+inline void check_shadow_static(const peg::Ast& ast) {
+  std::set<std::string, std::less<>> top_locals;
+  std::vector<const std::set<std::string, std::less<>>*> outer;
+  _shadow::collect_locals(ast, top_locals, outer);
+  _shadow::descend_into_nested(ast, top_locals, outer);
 }
 
 // Cycle collector for ObjectValue/ArrayValue (shared_ptr-based).
@@ -252,7 +505,7 @@ struct Value {
   // messages have no trailing period — the eval() wrap appends one
   // along with " at L:C." so the format stays consistent.
   [[noreturn]] void _throw_type_error(const char* expected) const {
-    throw std::runtime_error(std::format(
+    throw CulebraError("TypeError", std::format(
         "type error: expected {}, got {}", expected, type_name()));
   }
 
@@ -473,7 +726,7 @@ struct Value {
       return cmp(to_double_coerce(), rhs.to_double_coerce());
     }
     if (type != rhs.type) {
-      throw std::runtime_error(std::format(
+      throw CulebraError("TypeError", std::format(
           "type error: cannot compare {} and {}",
           type_name(), rhs.type_name()));
     }
@@ -559,47 +812,9 @@ struct Environment {
 
   // `_` is a non-binding sink: any binding form (`let _`, `for _ in`,
   // `fn(_, _, x)`, `match { _ => }`) drops the value instead of
-  // introducing a name. Centralizing the check in Environment means
-  // every bind site (initialize / would_shadow_capture /
-  // def_scope_captures) inherits the rule for free.
+  // introducing a name. Shadow checking happens statically via
+  // `check_shadow_static` (see top of file) before evaluation begins.
   static bool is_sink(std::string_view s) { return s == "_"; }
-
-  // Used for shadow-prohibition: declaring a new `let`/`mut` binding
-  // that shadows a closure-captured variable (from an enclosing function)
-  // is an error. Block-scope shadowing within the same function is
-  // allowed, as is shadowing a global (builtin or top-level binding).
-  bool would_shadow_capture(std::string_view s) const {
-    if (is_sink(s)) return false;
-    // Walk through same-function block envs until we reach the current
-    // function's frame, then skip past it. Anything found beyond that
-    // (excluding the global root) is a closure-captured binding.
-    const Environment* e = this;
-    while (e && !e->is_function_frame) {
-      e = e->outer.get();
-    }
-    if (!e) return false;  // top-level execution — no enclosing function
-    e = e->outer.get();
-    while (e && e->outer) {
-      if (e->dictionary.contains(s)) return true;
-      e = e->outer.get();
-    }
-    return false;
-  }
-
-  // Shadow-check helper for function-literal parameters: at definition
-  // time, determine whether `name` would end up shadowing a captured
-  // variable once the function is called. Walks this env (the
-  // definition scope) and its outer chain, stopping before the global
-  // root.
-  bool def_scope_captures(std::string_view s) const {
-    if (is_sink(s)) return false;
-    const Environment* e = this;
-    while (e && e->outer) {
-      if (e->dictionary.contains(s)) return true;
-      e = e->outer.get();
-    }
-    return false;
-  }
 
   const Value& get(std::string_view s) const {
     if (dictionary.contains(s)) {
@@ -607,10 +822,8 @@ struct Environment {
     } else if (outer) {
       return outer->get(s);
     }
-    std::string msg = "undefined variable '";
-    msg += s;
-    msg += "'...";
-    throw std::runtime_error(msg);
+    throw CulebraError("NameError",
+                       std::format("undefined variable '{}'...", s));
   }
 
   void assign(std::string_view s, Value val) {
@@ -618,10 +831,8 @@ struct Environment {
     if (dictionary.contains(s)) {
       auto& sym = dictionary[s];
       if (!sym.mut) {
-        std::string msg = "immutable variable '";
-        msg += s;
-        msg += "'...";
-        throw std::runtime_error(msg);
+        throw CulebraError("ImmutableError",
+                           std::format("immutable variable '{}'...", s));
       }
       sym.val = std::move(val);
       return;
@@ -664,7 +875,7 @@ inline const Value& ObjectValue::get(std::string_view name) const {
   return properties->at(name).val;
 }
 
-// Validate the well-known-property contract (see support.h)
+// Validate the well-known-property contract (see shared.h)
 // for a freshly-bound interpreter Value: must be a 0-arg Function.
 inline void _check_drop_contract(std::string_view name, const Value& val) {
   if (!is_well_known_prop(name)) return;
@@ -681,10 +892,8 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
   assert(has(name));
   auto& sym = properties->at(name);
   if (!sym.mut) {
-    std::string msg = "immutable property '";
-    msg += name;
-    msg += "'...";
-    throw std::runtime_error(msg);
+    throw CulebraError("ImmutableError",
+                       std::format("immutable property '{}'...", name));
   }
   _check_drop_contract(name, val);
   sym.val = val;
@@ -695,6 +904,18 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
   _check_drop_contract(name, val);
   (*properties)[name] = Symbol{val, mut};
+}
+
+// Build the structured-error Object surfaced to user `catch` blocks.
+// Keys are string literals — safe for the string_view-keyed map.
+inline Value make_error_object(std::string_view kind, std::string_view message,
+                               long line, long col) {
+  ObjectValue obj;
+  obj.initialize("kind", Value(std::string(kind)), false);
+  obj.initialize("message", Value(std::string(message)), false);
+  obj.initialize("line", Value(line), false);
+  obj.initialize("col", Value(col), false);
+  return Value(std::move(obj));
 }
 
 // Runtime type check for optional annotations. "Any" matches everything.
@@ -736,8 +957,9 @@ inline void check_type(const Value& val, std::string_view name,
                        std::string_view context, size_t line, size_t col) {
   if (name.empty()) return;
   if (type_matches(val, name)) return;
-  throw std::runtime_error(std::format(
-      "type error: {} expects {} at {}:{}.", context, name, line, col));
+  throw CulebraError("TypeError", std::format(
+      "type error: {} expects {} at {}:{}.", context, name, line, col),
+      static_cast<long>(line), static_cast<long>(col));
 }
 
 inline std::string Value::str_object() const {
@@ -869,7 +1091,7 @@ inline std::optional<std::string> _try_str_dunder(const Value& v) {
   if (m.type != Value::Function) return std::nullopt;
   auto r = _invoke_method_no_args(v, "__str__");
   if (r.type != Value::String) {
-    throw std::runtime_error("__str__ must return a String");
+    throw CulebraError("TypeError", "__str__ must return a String");
   }
   return r.template get<std::string>();
 }
@@ -962,8 +1184,9 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     }
   }
   if (iter_fn.type != Value::Function) {
-    throw std::runtime_error(std::format(
-        "type error: target is not iterable at {}:{}.", line, col));
+    throw CulebraError("TypeError", std::format(
+        "type error: target is not iterable at {}:{}.", line, col),
+        static_cast<long>(line), static_cast<long>(col));
   }
   return iter_fn.to_function().eval(
       _make_method_call_env(iterable, line, col));
@@ -1236,7 +1459,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
                              for (const auto& v : *arr.values) {
                                auto r = invoke_unary_callback(callEnv, f, v);
                                if (r.type != Value::Array) {
-                                 throw std::runtime_error(
+                                 throw CulebraError("TypeError",
                                      "type error: flat_map callback must "
                                      "return an Array.");
                                }
@@ -1264,7 +1487,8 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("this").to_array();
          if (arr.values->empty()) {
-           throw std::runtime_error("type error: min of empty Array.");
+           throw CulebraError("ValueError",
+                              "min of empty Array.");
          }
          long best = (*arr.values)[0].to_long();
          for (size_t i = 1; i < arr.values->size(); i++) {
@@ -1277,7 +1501,8 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& arr = callEnv->get("this").to_array();
          if (arr.values->empty()) {
-           throw std::runtime_error("type error: max of empty Array.");
+           throw CulebraError("ValueError",
+                              "max of empty Array.");
          }
          long best = (*arr.values)[0].to_long();
          for (size_t i = 1; i < arr.values->size(); i++) {
@@ -1337,7 +1562,8 @@ inline Value _make_tensor_reduction_method() {
           const auto& args = *callEnv->get("__ARGS__").to_array().values;
           if (!args.empty()) {
             if (args[0].type != Value::Long) {
-              throw std::runtime_error("type error.");
+              throw_type_error_at(callEnv->get("__LINE__").to_long(),
+                                  callEnv->get("__COLUMN__").to_long());
             }
             return Value(TensorValue(
                 tensor_reduce_axis(op, self, args[0].to_long())));
@@ -1378,7 +1604,9 @@ inline std::map<std::string_view, Value>& TensorValue::builtins() {
                          b = tensor_scalar(exp.to_double_coerce(),
                                            self->dtype);
                        } else {
-                         throw std::runtime_error("type error.");
+                         throw_type_error_at(
+                             callEnv->get("__LINE__").to_long(),
+                             callEnv->get("__COLUMN__").to_long());
                        }
                        return Value(TensorValue(
                            tensor_binop(Op::Pow, self, std::move(b))));
@@ -1423,7 +1651,9 @@ inline std::map<std::string_view, Value>& TensorValue::builtins() {
                            new_dims.reserve(dims_v.size());
                            for (const auto& d : dims_v) {
                              if (d.type != Value::Long) {
-                               throw std::runtime_error("type error.");
+                               throw_type_error_at(
+                                   callEnv->get("__LINE__").to_long(),
+                                   callEnv->get("__COLUMN__").to_long());
                              }
                              new_dims.push_back(d.to_long());
                            }
@@ -1506,7 +1736,7 @@ inline std::map<std::string_view, Value>& TensorValue::builtins() {
                               }
                               return Value(std::move(out));
                             }
-                            throw std::runtime_error(
+                            throw CulebraError("ValueError",
                                 "to_array: rank > 2 not supported.");
                           },
                           "Array"sv))},
@@ -1994,7 +2224,8 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
          auto upstream = callEnv->get("this");
          auto first = _iter_next_value(upstream);
          if (!first) {
-           throw std::runtime_error("type error: min of empty Iterator.");
+           throw CulebraError("ValueError",
+                              "min of empty Iterator.");
          }
          long best = first->to_long();
          while (auto v = _iter_next_value(upstream)) {
@@ -2009,7 +2240,8 @@ inline std::map<std::string_view, Value>& iterator_builtins() {
          auto upstream = callEnv->get("this");
          auto first = _iter_next_value(upstream);
          if (!first) {
-           throw std::runtime_error("type error: max of empty Iterator.");
+           throw CulebraError("ValueError",
+                              "max of empty Iterator.");
          }
          long best = first->to_long();
          while (auto v = _iter_next_value(upstream)) {
@@ -2098,11 +2330,17 @@ struct Interpreter {
   Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     try {
       return _eval_dispatch(ast, env);
-    } catch (std::runtime_error& e) {
+    } catch (const CulebraError& e) {
       // Attach the AST location of the deepest eval() that threw — only
       // once, by checking whether the message already carries " at ".
-      // Throw sites by convention omit the trailing period; we add it
-      // here together with the location so messages stay consistent.
+      // Re-throw as CulebraError so kind/line/col reach eval_try intact.
+      std::string_view msg = e.what();
+      if (msg.find(" at ") != std::string_view::npos) throw;
+      throw CulebraError(
+          e.kind, std::format("{} at {}:{}.", msg, ast.line, ast.column),
+          static_cast<long>(ast.line), static_cast<long>(ast.column));
+    } catch (const std::runtime_error& e) {
+      // Legacy path for any C++ throw site not yet converted.
       std::string_view msg = e.what();
       if (msg.find(" at ") != std::string_view::npos) throw;
       throw std::runtime_error(
@@ -2257,40 +2495,34 @@ struct Interpreter {
     const auto& body = *ast.nodes[2];
     const auto& var_name = id.token;
 
-    // Shadow rule: a for-binding introduces a new name, so it must not
-    // shadow a closure-captured variable in an enclosing function.
-    if (env->def_scope_captures(var_name)) {
-      throw_shadow_error(var_name, id.line, id.column);
-    }
-
     auto iterable = eval(iter_expr, env);
     auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
+    auto iter_proto_error = [&](std::string_view what) -> CulebraError {
+      return CulebraError(
+          "TypeError",
+          std::format("type error: {} at {}:{}.", what, iter_expr.line,
+                      iter_expr.column),
+          static_cast<long>(iter_expr.line),
+          static_cast<long>(iter_expr.column));
+    };
     if (iter_val.type != Value::Object) {
-      throw std::runtime_error(std::format(
-          "type error: iter() did not return an Object at {}:{}.",
-          iter_expr.line, iter_expr.column));
+      throw iter_proto_error("iter() did not return an Object");
     }
 
     for (;;) {
       // step = iterator.next()
       const auto& iter_obj = iter_val.to_object();
       if (!iter_obj.has("next")) {
-        throw std::runtime_error(std::format(
-            "type error: iterator has no next() at {}:{}.",
-            iter_expr.line, iter_expr.column));
+        throw iter_proto_error("iterator has no next()");
       }
       auto next_fn = iter_obj.get("next");
       if (next_fn.type != Value::Function) {
-        throw std::runtime_error(std::format(
-            "type error: iterator.next is not a Function at {}:{}.",
-            iter_expr.line, iter_expr.column));
+        throw iter_proto_error("iterator.next is not a Function");
       }
       auto step = next_fn.to_function().eval(_make_method_call_env(
           iter_val, iter_expr.line, iter_expr.column));
       if (step.type != Value::Object) {
-        throw std::runtime_error(std::format(
-            "type error: next() did not return an Object at {}:{}.",
-            iter_expr.line, iter_expr.column));
+        throw iter_proto_error("next() did not return an Object");
       }
       const auto& step_obj = step.to_object();
       if (step_obj.has("done") && step_obj.get("done").to_bool()) {
@@ -2344,9 +2576,6 @@ struct Interpreter {
                          const peg::Ast& ident_node, Value val,
                          bool mut = true) {
     auto name = ident_node.token;
-    if (env->would_shadow_capture(name)) {
-      throw_shadow_error(name, ident_node.line, ident_node.column);
-    }
     env->initialize(name, std::move(val), mut);
   }
 
@@ -2492,12 +2721,10 @@ struct Interpreter {
       if (default_expr) {
         seen_default = true;
       } else if (seen_default) {
-        throw std::runtime_error(std::format(
+        throw CulebraError("SyntaxError", std::format(
             "non-default parameter '{}' follows a default parameter at {}:{}.",
-            std::string(name), id.line, id.column));
-      }
-      if (env->def_scope_captures(name)) {
-        throw_shadow_error(name, id.line, id.column);
+            std::string(name), id.line, id.column),
+            static_cast<long>(id.line), static_cast<long>(id.column));
       }
       params.push_back({name, mut, type_name, default_expr});
     }
@@ -2665,14 +2892,14 @@ struct Interpreter {
             const auto& args = *callEnv->get("__ARGS__").to_array().values;
             auto pick = multifn_pick(*methods, args);
             if (pick.status == PickResult::NoMatch) {
-              throw std::runtime_error(std::format(
+              throw CulebraError("DispatchError", std::format(
                   "no matching method for `{}` at {}:{}.", name_owned, line,
-                  col));
+                  col), line, col);
             }
             if (pick.status == PickResult::Ambiguous) {
-              throw std::runtime_error(std::format(
+              throw CulebraError("DispatchError", std::format(
                   "ambiguous dispatch for `{}` at {}:{}.", name_owned, line,
-                  col));
+                  col), line, col);
             }
             return invoke_user_function(
                 (*methods)[pick.idx].body, callEnv, args.size(),
@@ -2812,7 +3039,7 @@ struct Interpreter {
       if (!p.default_expr) required++;
     }
     if (total < required) {
-      throw std::runtime_error("arguments error...");
+      throw CulebraError("ArityError", "arguments error...");
     }
 
     auto callEnv = std::make_shared<Environment>(env);
@@ -2910,7 +3137,7 @@ struct Interpreter {
     if (0 <= idx && idx < static_cast<long>(arr.values->size())) {
       return arr.values->at(idx);
     } else {
-      throw std::logic_error("index out of range.");
+      throw CulebraError("IndexError", "index out of range.");
     }
     return val;
   }
@@ -3301,14 +3528,14 @@ struct Interpreter {
         case '-': tensor_op = Op::Sub; break;
         case '*': tensor_op = Op::Mul; break;
         case '/': tensor_op = Op::Div; break;
-        default:  throw std::runtime_error("type error.");
+        default:  throw CulebraError("TypeError", "type error.");
       }
       Dtype dt = (lhs.type == Value::Tensor) ? lhs.to_tensor().impl->dtype
                                              : rhs.to_tensor().impl->dtype;
       auto lift = [&](const Value& v) {
         if (v.type == Value::Tensor) return v.to_tensor().impl;
         if (v.is_numeric()) return tensor_scalar(v.to_double_coerce(), dt);
-        throw std::runtime_error("type error.");
+        throw CulebraError("TypeError", "type error.");
       };
       return Value(TensorValue(tensor_binop(tensor_op, lift(lhs), lift(rhs))));
     }
@@ -3321,7 +3548,7 @@ struct Interpreter {
     // `@` has no numeric meaning, so skip the numeric path entirely;
     // reaching this point means the LHS didn't supply `__matmul__`.
     if (ope == '@' || !lhs.is_numeric() || !rhs.is_numeric()) {
-      throw std::runtime_error(std::format(
+      throw CulebraError("TypeError", std::format(
           "type error: cannot apply '{}' to {} and {}",
           ope, lhs.type_name(), rhs.type_name()));
     }
@@ -3334,10 +3561,10 @@ struct Interpreter {
         case '-': return Value(a - b);
         case '*': return Value(a * b);
         case '/':
-          if (b == 0) throw std::runtime_error("divide by 0 error");
+          if (b == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
           return Value(a / b);
         case '%':
-          if (b == 0) throw std::runtime_error("divide by 0 error");
+          if (b == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
           return Value(a % b);
       }
       throw std::logic_error("invalid arithmetic operator");
@@ -3351,10 +3578,10 @@ struct Interpreter {
       case '*': return Value(a * b);
       case '/':
         // Follow Python: float divide-by-zero also raises.
-        if (b == 0.0) throw std::runtime_error("divide by 0 error");
+        if (b == 0.0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
         return Value(a / b);
       case '%':
-        if (b == 0.0) throw std::runtime_error("divide by 0 error");
+        if (b == 0.0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
         return Value(std::fmod(a, b));
     }
     throw std::logic_error("invalid arithmetic operator");
@@ -3381,7 +3608,7 @@ struct Interpreter {
                       std::shared_ptr<Environment> env) {
     if (auto r = try_dunder_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
-      throw std::runtime_error(std::format(
+      throw CulebraError("TypeError", std::format(
           "type error: '**' requires numeric operands, got {} and {}",
           base.type_name(), exp.type_name()));
     }
@@ -3401,7 +3628,7 @@ struct Interpreter {
         return Value(result);
       }
       // Negative integer exponent: promote to float so `2 ** -1 == 0.5`.
-      if (a == 0) throw std::runtime_error("divide by 0 error");
+      if (a == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
       return Value(std::pow(static_cast<double>(a), static_cast<double>(b)));
     }
     auto x = base.to_double_coerce();
@@ -3471,7 +3698,8 @@ struct Interpreter {
     const auto& pattern = *ast.nodes[1];
     auto rval = eval(*ast.nodes[2], env);
     if (!try_pattern(pattern, rval, env, mut)) {
-      throw std::runtime_error("destructure pattern did not match value");
+      throw CulebraError("ValueError",
+                         "destructure pattern did not match value");
     }
     return rval;
   }
@@ -3496,7 +3724,7 @@ struct Interpreter {
     bool compound = op_tok != "=";
 
     if (compound && (let || mut)) {
-      throw std::runtime_error(
+      throw CulebraError("SyntaxError",
           "compound assignment cannot declare a new variable.");
     }
 
@@ -3514,11 +3742,12 @@ struct Interpreter {
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;
       if (is_keyword(ident)) {
-        throw std::runtime_error("left-hand side is invalid variable name.");
+        throw CulebraError("SyntaxError",
+                           "left-hand side is invalid variable name.");
       }
       if (compound) {
         if (!env->has(ident)) {
-          throw std::runtime_error(std::format(
+          throw CulebraError("NameError", std::format(
               "compound assignment on undefined name '{}'", ident));
         }
         auto cur = env->get(ident);
@@ -3532,10 +3761,6 @@ struct Interpreter {
       }
       auto declare = let || mut;
       if (declare) {
-        if (env->would_shadow_capture(ident)) {
-          auto& ident_node = *ast.nodes[lvaloff];
-          throw_shadow_error(ident, ident_node.line, ident_node.column);
-        }
         env->initialize(ident, rval, mut);
       } else if (env->has(ident)) {
         env->assign(ident, rval);
@@ -3572,7 +3797,7 @@ struct Interpreter {
           const auto& arr = lval.to_array();
           auto idx = eval(postfix, env).to_long();
           if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
-            throw std::logic_error("index out of range.");
+            throw CulebraError("IndexError", "index out of range.");
           }
           if (compound) {
             auto cur = arr.values->at(idx);
@@ -3591,7 +3816,7 @@ struct Interpreter {
           auto name = postfix.token;
           if (compound) {
             if (!obj.has(name)) {
-              throw std::runtime_error(
+              throw CulebraError("AttributeError",
                   "compound assignment on missing property.");
             }
             auto cur = obj.get(name);
@@ -3732,6 +3957,14 @@ struct Interpreter {
     } catch (const Value& e) {
       threw = true;
       thrown = e;
+    } catch (const CulebraError& e) {
+      threw = true;
+      thrown = make_error_object(e.kind, e.what(), e.line, e.col);
+    } catch (const std::runtime_error& e) {
+      // Unconverted internal error site — surface as a generic
+      // RuntimeError so user `catch` blocks can still introspect it.
+      threw = true;
+      thrown = make_error_object("RuntimeError", e.what(), 0, 0);
     } catch (...) {
       run_deferred(tryEnv);
       throw;
@@ -3792,6 +4025,7 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     }
   };
   try {
+    check_shadow_static(*ast);
     val = Interpreter(debugger).eval(*ast, env);
     flush_top_defers();
     return true;
@@ -3804,9 +4038,12 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     // uncaught user `throw` propagated to the top level
     flush_top_defers();
     msgs.push_back(std::format("uncaught: {}", e.str_display()));
-  } catch (std::runtime_error& e) {
+  } catch (const CulebraError& e) {
     flush_top_defers();
-    msgs.push_back(e.what());
+    msgs.push_back(std::format("{}: {}", e.kind, e.what()));
+  } catch (const std::runtime_error& e) {
+    flush_top_defers();
+    msgs.push_back(std::format("RuntimeError: {}", e.what()));
   }
 
   return false;

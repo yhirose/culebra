@@ -3,7 +3,7 @@
 #ifdef CULEBRA_JIT_ENABLED
 
 #include <parser.h>
-#include <support.h>
+#include <shared.h>
 #include <tensor.h>
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
@@ -850,7 +850,7 @@ inline int64_t _culebra_double_to_bits(double d) {
 inline double _culebra_coerce_num(int8_t tag, int64_t data) {
   if (tag == TAG_LONG) return static_cast<double>(data);
   if (tag == TAG_FLOAT) return _culebra_float_to_double(data);
-  throw std::runtime_error("type error.");
+  throw culebra::CulebraError("TypeError", "type error.");
 }
 
 // Same-tag equality matching the interpreter's operator==. Strings compare by
@@ -892,7 +892,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
       return cmp(_culebra_coerce_num(t1, d1), _culebra_coerce_num(t2, d2));
     }
-    throw std::runtime_error("type error.");
+    throw culebra::CulebraError("TypeError", "type error.");
   }
   switch (t1) {
     case TAG_NIL: return false;
@@ -905,7 +905,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
                            reinterpret_cast<const char*>(d2));
       return cmp(double(c), 0.0);
     }
-    default: throw std::runtime_error("type error.");
+    default: throw culebra::CulebraError("TypeError", "type error.");
   }
 }
 
@@ -1002,14 +1002,14 @@ __attribute__((used)) inline void culebra_runtime_assert(int8_t type,
     }
   }
   if (!truthy) {
-    throw std::runtime_error(
-        std::format("assert failed at {}:{}.", line, col));
+    throw culebra::CulebraError("AssertionError",
+        std::format("assert failed at {}:{}.", line, col), line, col);
   }
 }
 
 __attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
                                                              int64_t col) {
-  throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+  culebra::throw_type_error_at(line, col);
 }
 
 // Like type_error but includes "expected X, got Y" — caller passes the
@@ -1030,16 +1030,17 @@ __attribute__((used)) inline void culebra_runtime_type_error_typed(
     case TAG_FUNC:   got = "Function"; break;
     case TAG_TENSOR: got = "Tensor";   break;
   }
-  throw std::runtime_error(std::format(
-      "type error: expected {}, got {} at {}:{}.", expected, got, line, col));
+  throw culebra::CulebraError("TypeError", std::format(
+      "type error: expected {}, got {} at {}:{}.", expected, got, line, col),
+      line, col);
 }
 
 __attribute__((used)) inline void culebra_runtime_arity_error(
     int64_t got, int64_t declared, int64_t line, int64_t col) {
-  throw std::runtime_error(std::format(
+  throw culebra::CulebraError("ArityError", std::format(
       "arguments error: called with {} argument(s), expected at least {} "
       "at {}:{}.",
-      got, declared, line, col));
+      got, declared, line, col), line, col);
 }
 
 // C++ exception thrown by `culebra_runtime_throw` when user code runs
@@ -1173,14 +1174,15 @@ __attribute__((used)) inline void culebra_runtime_type_check(
       }
     }
   }
-  throw std::runtime_error(std::format(
-      "type error: {} expects {} at {}:{}.", context, expected, line, col));
+  throw culebra::CulebraError("TypeError", std::format(
+      "type error: {} expects {} at {}:{}.", context, expected, line, col),
+      line, col);
 }
 
 __attribute__((used)) inline void culebra_runtime_div_zero(int64_t line,
                                                            int64_t col) {
-  throw std::runtime_error(
-      std::format("divide by 0 error at {}:{}.", line, col));
+  throw culebra::CulebraError("ZeroDivisionError",
+      std::format("divide by 0 error at {}:{}.", line, col), line, col);
 }
 
 // --- Numeric runtime helpers (Float-aware arithmetic slow paths) ---
@@ -1254,7 +1256,8 @@ inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data) {
   if (!r) return std::nullopt;
   if (r->tag != TAG_STRING) {
     _culebra_value_release_impl(r->tag, r->data);
-    throw std::runtime_error("__str__ must return a String");
+    throw culebra::CulebraError("TypeError",
+                                "__str__ must return a String");
   }
   std::string out(reinterpret_cast<const char*>(r->data));
   _culebra_value_release_impl(r->tag, r->data);
@@ -1314,7 +1317,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_div(
     return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
-  if (b == 0.0) throw std::runtime_error("divide by 0 error");
+  if (b == 0.0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
   return {TAG_FLOAT, _culebra_double_to_bits(a / b)};
 }
 
@@ -1324,7 +1327,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_mod(
     return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
-  if (b == 0.0) throw std::runtime_error("divide by 0 error");
+  if (b == 0.0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
   return {TAG_FLOAT, _culebra_double_to_bits(std::fmod(a, b))};
 }
 
@@ -1333,7 +1336,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_mod(
 __attribute__((used)) inline JitValue culebra_runtime_num_matmul(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__matmul__")) return *r;
-  throw std::runtime_error("type error.");
+  throw culebra::CulebraError("TypeError", "type error.");
 }
 
 // Extract a boolean from a dunder's +1 return value and release the
@@ -1347,7 +1350,7 @@ inline bool _extract_bool_and_release(JitValue v) {
   else if (v.tag == TAG_FLOAT) b = _culebra_float_to_double(v.data) != 0.0;
   else {
     _culebra_value_release_impl(v.tag, v.data);
-    throw std::runtime_error("type error.");
+    throw culebra::CulebraError("TypeError", "type error.");
   }
   _culebra_value_release_impl(v.tag, v.data);
   return b;
@@ -1469,7 +1472,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_pow(
       }
       return {TAG_LONG, result};
     }
-    if (a == 0) throw std::runtime_error("divide by 0 error");
+    if (a == 0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
     return {TAG_FLOAT,
             _culebra_double_to_bits(std::pow(static_cast<double>(a),
                                              static_cast<double>(e)))};
@@ -1498,7 +1501,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_neg(
     auto v = _culebra_float_to_double(d);
     return {TAG_FLOAT, _culebra_double_to_bits(-v)};
   }
-  throw std::runtime_error("type error.");
+  throw culebra::CulebraError("TypeError", "type error.");
 }
 
 __attribute__((used)) inline void culebra_runtime_debugger_break(
@@ -1606,8 +1609,8 @@ __attribute__((used)) inline void culebra_runtime_array_get(JitArray* arr,
                                                             int64_t col) {
   if (idx < 0) idx = static_cast<int64_t>(arr->size) + idx;
   if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
-    throw std::runtime_error(
-        std::format("index out of range at {}:{}.", line, col));
+    throw culebra::CulebraError("IndexError",
+        std::format("index out of range at {}:{}.", line, col), line, col);
   }
   *out_tag = arr->items[idx].tag;
   *out_data = arr->items[idx].data;
@@ -1620,8 +1623,8 @@ __attribute__((used)) inline void culebra_runtime_array_set(JitArray* arr,
                                                             int64_t line,
                                                             int64_t col) {
   if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
-    throw std::runtime_error(
-        std::format("index out of range at {}:{}.", line, col));
+    throw culebra::CulebraError("IndexError",
+        std::format("index out of range at {}:{}.", line, col), line, col);
   }
   _culebra_value_release_impl(arr->items[idx].tag, arr->items[idx].data);
   arr->items[idx].tag = tag;
@@ -1669,7 +1672,7 @@ inline std::pair<culebra::Dtype, culebra::TensorShape>
 _culebra_parse_tensor_ctor_args(const JitValue* args, int64_t n, int64_t line,
                                 int64_t col) {
   auto type_err = [&]() {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   };
   culebra::Dtype dt = culebra::Dtype::F32;
   int64_t off = 0;
@@ -1722,7 +1725,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_randn(
 __attribute__((used)) inline JitTensor* culebra_runtime_tensor_from(
     JitArray* a, int64_t line, int64_t col) {
   auto type_err = [&]() {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   };
   auto coerce = [&](const JitValue& v) {
     if (v.tag == TAG_LONG) return static_cast<double>(v.data);
@@ -1847,7 +1850,8 @@ __attribute__((used)) inline JitArray* culebra_runtime_tensor_to_array(
     }
     return out;
   }
-  throw std::runtime_error("Tensor.to_array: rank > 2 not supported.");
+  throw culebra::CulebraError("ValueError",
+      "Tensor.to_array: rank > 2 not supported.");
 }
 
 __attribute__((used)) inline JitTensor* culebra_runtime_tensor_from_csv(
@@ -1899,7 +1903,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_reshape(
   new_dims.reserve(dims->size);
   for (size_t i = 0; i < dims->size; i++) {
     if (dims->items[i].tag != TAG_LONG) {
-      throw std::runtime_error("type error.");
+      throw culebra::CulebraError("TypeError", "type error.");
     }
     new_dims.push_back(dims->items[i].data);
   }
@@ -1941,7 +1945,7 @@ __attribute__((used)) inline void culebra_runtime_release_overflow_args(
   }
 }
 
-// Validate the well-known-property contract (see support.h)
+// Validate the well-known-property contract (see shared.h)
 // for a freshly-bound JIT value: must be a 0-arg Function. The arg's
 // +1 is released before throwing — codegen passes ownership and
 // expects either store-into-map or release.
@@ -1976,8 +1980,8 @@ __attribute__((used)) inline void culebra_runtime_object_set(
     auto& entry = obj->slots[idx];
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
-      throw std::runtime_error(std::format(
-          "immutable property '{}' at {}:{}.", key, line, col));
+      throw culebra::CulebraError("ImmutableError", std::format(
+          "immutable property '{}' at {}:{}.", key, line, col), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -2002,8 +2006,8 @@ __attribute__((used)) inline void culebra_runtime_object_set_fast(
     auto& entry = obj->slots[ic->offset];
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
-      throw std::runtime_error(std::format(
-          "immutable property '{}' at {}:{}.", key, line, col));
+      throw culebra::CulebraError("ImmutableError", std::format(
+          "immutable property '{}' at {}:{}.", key, line, col), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -2041,8 +2045,8 @@ __attribute__((used)) inline void culebra_runtime_object_set_ic(
     auto& entry = obj->slots[idx];
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
-      throw std::runtime_error(std::format(
-          "immutable property '{}' at {}:{}.", key, line, col));
+      throw culebra::CulebraError("ImmutableError", std::format(
+          "immutable property '{}' at {}:{}.", key, line, col), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -2053,6 +2057,41 @@ __attribute__((used)) inline void culebra_runtime_object_set_ic(
     ic->prop_mut = entry.mut ? 1 : 0;
   }
   if (std::string_view(key) == "drop") obj->has_drop = true;
+}
+
+// Build a structured Error Object for a C++ exception that has reached
+// a try/catch landingpad. Called inside an active __cxa_begin_catch
+// region so `try { throw; }` re-raises the same exception for type
+// inspection. On success, populates the culebra_thrown_* globals as if
+// the user had run `throw error_object` and sets `is_throw=1`. Foreign
+// exceptions (anything we can't classify) leave `is_throw=0` so the
+// caller will propagate them with __cxa_rethrow.
+__attribute__((used)) inline void culebra_runtime_try_translate() {
+  if (culebra_is_throw) return;
+  auto build = [](std::string_view kind, std::string_view msg, int64_t line,
+                  int64_t col) {
+    auto* obj = culebra_runtime_object_new();
+    culebra_runtime_object_set(
+        obj, "kind", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(kind)), 0, 0);
+    culebra_runtime_object_set(
+        obj, "message", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(msg)), 0, 0);
+    culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
+    culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
+    culebra_thrown_tag = TAG_OBJECT;
+    culebra_thrown_data = reinterpret_cast<int64_t>(obj);
+    culebra_is_throw = 1;
+  };
+  try {
+    throw;
+  } catch (const culebra::CulebraError& e) {
+    build(e.kind, e.what(), e.line, e.col);
+  } catch (const std::runtime_error& e) {
+    build("RuntimeError", e.what(), 0, 0);
+  } catch (...) {
+    // Foreign exception — let the landingpad rethrow it.
+  }
 }
 
 // Write `(tag, data)` to the out-params; nil if entry is null.
@@ -2329,7 +2368,7 @@ inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
   auto& tbl = _jit_multimethods();
   auto m_it = tbl.find(name);
   if (m_it == tbl.end()) {
-    throw std::runtime_error(std::format(
+    throw culebra::CulebraError("DispatchError", std::format(
         "no matching method for `{}`", name));
   }
 
@@ -2340,11 +2379,11 @@ inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
 
   auto pick = _jit_multifn_pick(m_it->second, arg_types);
   if (pick == -1) {
-    throw std::runtime_error(std::format(
+    throw culebra::CulebraError("DispatchError", std::format(
         "no matching method for `{}`", name));
   }
   if (pick == -2) {
-    throw std::runtime_error(std::format(
+    throw culebra::CulebraError("DispatchError", std::format(
         "ambiguous dispatch for `{}`", name));
   }
 
@@ -2797,8 +2836,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_sum(
   while (_iter_pull(next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     acc += v.data;
   }
@@ -2813,8 +2851,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_product(
   while (_iter_pull(next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     acc *= v.data;
   }
@@ -2826,20 +2863,18 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_min(
   JitValue v;
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(next_cls, {it, id}, v)) {
-    throw std::runtime_error(std::format(
-        "type error: min of empty Iterator at {}:{}.", line, col));
+    throw culebra::CulebraError("ValueError", std::format(
+        "min of empty Iterator at {}:{}.", line, col), line, col);
   }
   if (v.tag != TAG_LONG) {
     _culebra_value_release_impl(v.tag, v.data);
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   int64_t best = v.data;
   while (_iter_pull(next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     if (v.data < best) best = v.data;
   }
@@ -2851,20 +2886,18 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_max(
   JitValue v;
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(next_cls, {it, id}, v)) {
-    throw std::runtime_error(std::format(
-        "type error: max of empty Iterator at {}:{}.", line, col));
+    throw culebra::CulebraError("ValueError", std::format(
+        "max of empty Iterator at {}:{}.", line, col), line, col);
   }
   if (v.tag != TAG_LONG) {
     _culebra_value_release_impl(v.tag, v.data);
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   int64_t best = v.data;
   while (_iter_pull(next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     if (v.data > best) best = v.data;
   }
@@ -3141,8 +3174,8 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                                      nullptr);
     }
   }
-  throw std::runtime_error(std::format(
-      "type error: target is not iterable at {}:{}.", line, col));
+  throw culebra::CulebraError("TypeError", std::format(
+      "type error: target is not iterable at {}:{}.", line, col), line, col);
 }
 
 __attribute__((used)) inline JitObject* culebra_runtime_iter_chain(
@@ -3439,14 +3472,13 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
   if (fn_tag != TAG_FUNC) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (fn->arity != expected_arity) {
-    throw std::runtime_error(std::format(
+    throw culebra::CulebraError("TypeError", std::format(
         "type error: {} expects a {}-parameter function at {}:{}.",
-        method_name, expected_arity, line, col));
+        method_name, expected_arity, line, col), line, col);
   }
   return fn;
 }
@@ -3553,9 +3585,9 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_flat_map(
     JitValue r = _culebra_invoke1(fn, e);
     if (r.tag != TAG_ARRAY) {
       _culebra_value_release_impl(r.tag, r.data);
-      throw std::runtime_error(std::format(
+      throw culebra::CulebraError("TypeError", std::format(
           "type error: flat_map callback must return an Array at {}:{}.",
-          line, col));
+          line, col), line, col);
     }
     auto* inner = reinterpret_cast<JitArray*>(r.data);
     for (size_t j = 0; j < inner->size; j++) {
@@ -3631,8 +3663,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_sum(
   for (size_t i = 0; i < arr->size; i++) {
     auto& e = arr->items[i];
     if (e.tag != TAG_LONG) {
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     acc += e.data;
   }
@@ -3645,8 +3676,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_product(
   for (size_t i = 0; i < arr->size; i++) {
     auto& e = arr->items[i];
     if (e.tag != TAG_LONG) {
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     acc *= e.data;
   }
@@ -3656,19 +3686,17 @@ __attribute__((used)) inline int64_t culebra_runtime_array_product(
 __attribute__((used)) inline int64_t culebra_runtime_array_min(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
-    throw std::runtime_error(std::format(
-        "type error: min of empty Array at {}:{}.", line, col));
+    throw culebra::CulebraError("ValueError", std::format(
+        "min of empty Array at {}:{}.", line, col), line, col);
   }
   if (arr->items[0].tag != TAG_LONG) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   int64_t best = arr->items[0].data;
   for (size_t i = 1; i < arr->size; i++) {
     auto& e = arr->items[i];
     if (e.tag != TAG_LONG) {
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     if (e.data < best) best = e.data;
   }
@@ -3678,19 +3706,17 @@ __attribute__((used)) inline int64_t culebra_runtime_array_min(
 __attribute__((used)) inline int64_t culebra_runtime_array_max(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
-    throw std::runtime_error(std::format(
-        "type error: max of empty Array at {}:{}.", line, col));
+    throw culebra::CulebraError("ValueError", std::format(
+        "max of empty Array at {}:{}.", line, col), line, col);
   }
   if (arr->items[0].tag != TAG_LONG) {
-    throw std::runtime_error(
-        std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   int64_t best = arr->items[0].data;
   for (size_t i = 1; i < arr->size; i++) {
     auto& e = arr->items[i];
     if (e.tag != TAG_LONG) {
-      throw std::runtime_error(
-          std::format("type error at {}:{}.", line, col));
+      culebra::throw_type_error_at(line, col);
     }
     if (e.data > best) best = e.data;
   }
@@ -6316,7 +6342,7 @@ struct JIT {
       if (prop->nodes.size() < 3) {
         auto slot = lookup_var(name);
         if (!slot) {
-          throw std::runtime_error(
+          throw culebra::CulebraError("NameError",
               std::format("undefined variable '{}'...", name));
         }
         val = load_slot(*slot, name);
@@ -6369,7 +6395,7 @@ struct JIT {
     auto name = std::string(ast.token);
     auto slot = lookup_var(name);
     if (!slot) {
-      throw std::runtime_error(
+      throw culebra::CulebraError("NameError",
           std::format("undefined variable '{}'...", name));
     }
     return load_slot(*slot, name);
@@ -6434,7 +6460,7 @@ struct JIT {
         : std::string_view{};
 
     if (compound && (let || mut)) {
-      throw std::runtime_error(
+      throw culebra::CulebraError("SyntaxError",
           "compound assignment cannot declare a new variable.");
     }
 
@@ -6459,7 +6485,7 @@ struct JIT {
       if (compound) {
         auto slot = lookup_var(name);
         if (!slot) {
-          throw std::runtime_error(
+          throw culebra::CulebraError("NameError",
               std::format("compound assignment on undefined name '{}'",
                           name));
         }
@@ -7721,8 +7747,9 @@ struct JIT {
 
   llvm::Value* compile_break(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
-      throw std::runtime_error(std::format(
-          "break outside loop at {}:{}.", ast.line, ast.column));
+      throw culebra::CulebraError("SyntaxError", std::format(
+          "break outside loop at {}:{}.", ast.line, ast.column),
+          ast.line, ast.column);
     }
     branch_then_dead(loop_stack_.back().break_target, "break.dead");
     return make_nil();
@@ -7730,8 +7757,9 @@ struct JIT {
 
   llvm::Value* compile_continue(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
-      throw std::runtime_error(std::format(
-          "continue outside loop at {}:{}.", ast.line, ast.column));
+      throw culebra::CulebraError("SyntaxError", std::format(
+          "continue outside loop at {}:{}.", ast.line, ast.column),
+          ast.line, ast.column);
     }
     branch_then_dead(loop_stack_.back().continue_target, "continue.dead");
     return make_nil();
@@ -9536,16 +9564,31 @@ struct JIT {
       builder_.CreateBr(endBB);
     }
 
-    // --- Landing pad: catch-all. If it's a Culebra user throw (as
-    // signaled by the `culebra_is_throw` global), read the carried
-    // tag/data and proceed. Otherwise resume unwinding so runtime
-    // errors (std::runtime_error etc.) propagate past `try/catch`. ---
+    // --- Landing pad: catch-all. begin_catch enters the C++ catch
+    // context, then `culebra_runtime_try_translate` inspects the
+    // in-flight exception. If it's a user throw (`culebra_is_throw==1`
+    // already, set by `culebra_runtime_throw`) or a CulebraError /
+    // std::runtime_error from a runtime helper (set by translate),
+    // read the carried tag/data and proceed to the catch body.
+    // Otherwise rethrow so the foreign exception keeps unwinding. ---
     builder_.SetInsertPoint(lpadBB);
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
     auto lpad = builder_.CreateLandingPad(lpadTy, 1, "exc");
     lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
 
-    // Check the is-throw flag
+    // Enter the C++ catch context. begin_catch must run before
+    // translate so its `try { throw; }` re-raises the active exception.
+    auto excPtr = builder_.CreateExtractValue(lpad, {0}, "exc.ptr");
+    auto beginCatch = module_->getOrInsertFunction(
+        "__cxa_begin_catch", ptrTy, ptrTy);
+    builder_.CreateCall(beginCatch, {excPtr});
+    auto translateFn = module_->getOrInsertFunction(
+        "culebra_runtime_try_translate", builder_.getVoidTy());
+    builder_.CreateCall(translateFn);
+
+    // Load the flag: `culebra_runtime_throw` set it for user throws,
+    // `culebra_runtime_try_translate` for catchable C++ runtime errors.
+    // Either way, 1 means we have a value to bind to the catch name.
     auto flagGlobal = module_->getOrInsertGlobal(
         "culebra_is_throw", builder_.getInt8Ty());
     auto flagVal = builder_.CreateLoad(builder_.getInt8Ty(), flagGlobal,
@@ -9555,17 +9598,14 @@ struct JIT {
     auto notOursBB = llvm::BasicBlock::Create(ctx_, "try.notours", fn);
     builder_.CreateCondBr(isOurs, handleBB, notOursBB);
 
-    // Not a Culebra user throw — let it keep unwinding.
+    // Not classifiable — rethrow so the foreign exception keeps
+    // unwinding past this try/catch.
     builder_.SetInsertPoint(notOursBB);
-    builder_.CreateResume(lpad);
+    emit_rethrow(savedLpad);
 
     builder_.SetInsertPoint(handleBB);
     // Clear the flag and consume the exception.
     builder_.CreateStore(builder_.getInt8(0), flagGlobal);
-    auto excPtr = builder_.CreateExtractValue(lpad, {0}, "exc.ptr");
-    auto beginCatch = module_->getOrInsertFunction(
-        "__cxa_begin_catch", ptrTy, ptrTy);
-    builder_.CreateCall(beginCatch, {excPtr});
     auto endCatchFn = module_->getOrInsertFunction("__cxa_end_catch",
                                                    builder_.getVoidTy());
     builder_.CreateCall(endCatchFn);

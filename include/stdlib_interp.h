@@ -107,8 +107,7 @@ inline Value make_math_namespace() {
                             if (exp < 0) {
                               auto line = env->get("__LINE__").to_long();
                               auto col = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(std::format(
-                                  "type error at {}:{}.", line, col));
+                              throw_type_error_at(line, col);
                             }
                             long r = 1;
                             while (exp > 0) {
@@ -242,8 +241,10 @@ inline Value make_io_namespace() {
                             if (!ifs) {
                               auto line = env->get("__LINE__").to_long();
                               auto col = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(std::format(
-                                  "type error at {}:{}.", line, col));
+                              throw CulebraError("IOError",
+                                  std::format("IO.read: cannot open '{}' at {}:{}.",
+                                              p, line, col),
+                                  line, col);
                             }
                             std::string s(
                                 (std::istreambuf_iterator<char>(ifs)),
@@ -264,8 +265,10 @@ inline Value make_io_namespace() {
             if (!ofs) {
               auto line = env->get("__LINE__").to_long();
               auto col = env->get("__COLUMN__").to_long();
-              throw std::runtime_error(
-                  std::format("type error at {}:{}.", line, col));
+              throw CulebraError("IOError",
+                  std::format("IO.write: cannot open '{}' at {}:{}.",
+                              p, line, col),
+                  line, col);
             }
             ofs.write(c.data(), c.size());
             return Value();
@@ -634,8 +637,9 @@ inline void setup_built_in_functions(
                             if (!cond) {
                               auto line = env->get("__LINE__").to_long();
                               auto column = env->get("__COLUMN__").to_long();
-                              throw std::runtime_error(
-                                  std::format("assert failed at {}:{}.", line, column));
+                              throw CulebraError("AssertionError",
+                                  std::format("assert failed at {}:{}.", line, column),
+                                  line, column);
                             }
                             return Value();
                           })),

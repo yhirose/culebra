@@ -16,7 +16,7 @@
 // In M1 the only ops are zeros/ones/from(array). Elementwise/BLAS land
 // in M2/M4.
 
-#include <support.h>
+#include <shared.h>
 
 #include <algorithm>
 #include <cmath>
@@ -84,7 +84,7 @@ struct TensorShape {
   explicit TensorShape(std::vector<int64_t> d) : dims(std::move(d)) {
     for (auto x : dims) {
       if (x < 0) {
-        throw std::runtime_error("Tensor: negative dim.");
+        throw CulebraError("ValueError", "Tensor: negative dim.");
       }
     }
   }
@@ -234,7 +234,8 @@ inline TensorPtr tensor_ones(TensorShape s, Dtype d) {
 inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
   std::ifstream ifs(path, std::ios::binary | std::ios::ate);
   if (!ifs) {
-    throw std::runtime_error("Tensor.from_csv: cannot open " + path);
+    throw CulebraError("IOError",
+                       "Tensor.from_csv: cannot open " + path);
   }
   auto size = static_cast<size_t>(ifs.tellg());
   ifs.seekg(0);
@@ -253,7 +254,7 @@ inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
       for (size_t j = i; j < nl; j++) if (contents[j] == ',') cur_cols++;
       if (!first_row_done) { cols = cur_cols; first_row_done = true; }
       else if (cur_cols != cols) {
-        throw std::runtime_error(
+        throw CulebraError("ValueError",
             "Tensor.from_csv: ragged row in " + path);
       }
       rows++;
@@ -282,7 +283,7 @@ inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
         char* parse_end = nullptr;
         double v = std::strtod(contents.data() + s, &parse_end);
         if (parse_end == contents.data() + s) {
-          throw std::runtime_error(
+          throw CulebraError("ValueError",
               "Tensor.from_csv: parse error in " + path);
         }
         store(idx++, v);
@@ -295,7 +296,7 @@ inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
 }
 
 // Standard normal (mean 0, std 1). Uses the process-wide PRNG from
-// support.h so `Random.seed(n)` makes Tensor.randn reproducible.
+// shared.h so `Random.seed(n)` makes Tensor.randn reproducible.
 inline TensorPtr tensor_randn(TensorShape s, Dtype d) {
   auto t = std::make_shared<TensorImpl>(std::move(s), d);
   std::normal_distribution<double> dist{0.0, 1.0};
@@ -327,7 +328,8 @@ inline TensorShape tensor_broadcast_shape(const TensorShape& a,
     int64_t ad = (i + ar >= out_rank) ? a.dims[i - (out_rank - ar)] : 1;
     int64_t bd = (i + br >= out_rank) ? b.dims[i - (out_rank - br)] : 1;
     if (ad != bd && ad != 1 && bd != 1) {
-      throw std::runtime_error("Tensor: shapes not broadcast-compatible.");
+      throw CulebraError("ValueError",
+                         "Tensor: shapes not broadcast-compatible.");
     }
     out[i] = std::max(ad, bd);
   }
@@ -338,7 +340,7 @@ inline TensorShape tensor_broadcast_shape(const TensorShape& a,
 // rules; dtype must match (no implicit promotion in Phase 1).
 inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
   if (a->dtype != b->dtype) {
-    throw std::runtime_error("Tensor: dtype mismatch in binop.");
+    throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   auto shape = tensor_broadcast_shape(a->shape, b->shape);
   auto dtype = a->dtype;
@@ -540,7 +542,7 @@ inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
 // (numpy's keepdims=false). Caller must validate `axis` ∈ [0, rank).
 inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
   if (axis < 0 || axis >= static_cast<int64_t>(a->shape.dims.size())) {
-    throw std::runtime_error("Tensor: reduction axis out of range.");
+    throw CulebraError("IndexError", "Tensor: reduction axis out of range.");
   }
   std::vector<int64_t> out_dims;
   out_dims.reserve(a->shape.dims.size() - 1);
@@ -701,7 +703,8 @@ inline void _tensor_clone_typed(const TensorImpl& src, TensorImpl& dst) {
       for (int64_t j = 0; j < dims[1]; j++) dp[k++] = sp[i * s0 + j * s1];
     }
   } else {
-    throw std::runtime_error("Tensor.clone: rank > 2 not supported in Phase 1.");
+    throw CulebraError("ValueError",
+        "Tensor.clone: rank > 2 not supported in Phase 1.");
   }
 }
 
@@ -730,10 +733,10 @@ inline TensorPtr tensor_transpose(TensorPtr t) {
 inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
   tensor_eval_node(*t);
   if (t->shape.dims.empty()) {
-    throw std::runtime_error("Tensor: slice on rank-0.");
+    throw CulebraError("ValueError", "Tensor: slice on rank-0.");
   }
   if (start < 0 || end < start || end > t->shape.dims[0]) {
-    throw std::runtime_error("Tensor: slice out of bounds.");
+    throw CulebraError("IndexError", "Tensor: slice out of bounds.");
   }
   auto new_dims = t->shape.dims;
   new_dims[0] = end - start;
@@ -748,13 +751,14 @@ inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
 // result is [M, N]. Phase 1 supports rank-2 only.
 inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
   if (a->dtype != b->dtype) {
-    throw std::runtime_error("Tensor: dtype mismatch in dot.");
+    throw CulebraError("ValueError", "Tensor: dtype mismatch in dot.");
   }
   if (a->shape.dims.size() != 2 || b->shape.dims.size() != 2) {
-    throw std::runtime_error("Tensor: dot requires rank-2 inputs.");
+    throw CulebraError("ValueError",
+                       "Tensor: dot requires rank-2 inputs.");
   }
   if (a->shape.dims[1] != b->shape.dims[0]) {
-    throw std::runtime_error(
+    throw CulebraError("ValueError",
         "Tensor: dot inner dims do not match (A.cols != B.rows).");
   }
   std::vector<int64_t> out_dims{a->shape.dims[0], b->shape.dims[1]};
@@ -798,7 +802,7 @@ inline _BlasInput<T> _tensor_blas_input(const TensorImpl& t) {
     return {t.base->data_as<T>(),
             static_cast<int>(t.base->shape.dims[1]), CblasTrans};
   }
-  throw std::runtime_error(
+  throw CulebraError("ValueError",
       "Tensor: dot input layout not supported (M4 handles contiguous and "
       "simple-transpose views only).");
 }
@@ -855,7 +859,7 @@ inline void _tensor_run_softmax_typed(TensorImpl& out) {
   // be contiguous in memory. is_contiguous() covers slice / reshape /
   // double-transpose views that happen to land on a contiguous layout.
   if (!in.is_contiguous()) {
-    throw std::runtime_error(
+    throw CulebraError("ValueError",
         "Tensor: softmax requires contiguous input.");
   }
   const T* d = in.data_as<T>();
@@ -902,14 +906,15 @@ inline void _tensor_run_unary(TensorImpl& t) {
 // the output [M, N] (typical: b is [M, 1] or [M]).
 inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
   if (W->dtype != x->dtype || W->dtype != b->dtype) {
-    throw std::runtime_error("Tensor: dtype mismatch in linear_sigmoid.");
+    throw CulebraError("ValueError",
+                       "Tensor: dtype mismatch in linear_sigmoid.");
   }
   if (W->shape.dims.size() != 2 || x->shape.dims.size() != 2) {
-    throw std::runtime_error(
+    throw CulebraError("ValueError",
         "Tensor: linear_sigmoid requires rank-2 W and x.");
   }
   if (W->shape.dims[1] != x->shape.dims[0]) {
-    throw std::runtime_error(
+    throw CulebraError("ValueError",
         "Tensor: linear_sigmoid inner dims do not match.");
   }
   std::vector<int64_t> out_dims{W->shape.dims[0], x->shape.dims[1]};
@@ -983,10 +988,12 @@ inline void _tensor_run_dot(TensorImpl& out) {
 inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
   tensor_eval_node(*t);
   if (new_shape.num_elements() != t->shape.num_elements()) {
-    throw std::runtime_error("Tensor: reshape element-count mismatch.");
+    throw CulebraError("ValueError",
+                       "Tensor: reshape element-count mismatch.");
   }
   if (!t->is_contiguous()) {
-    throw std::runtime_error("Tensor: reshape requires a contiguous input.");
+    throw CulebraError("ValueError",
+                       "Tensor: reshape requires a contiguous input.");
   }
   auto new_strides = tensor_contiguous_strides(new_shape);
   return std::make_shared<TensorImpl>(

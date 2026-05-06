@@ -12,6 +12,33 @@
 namespace culebra {
 
 // ---------------------------------------------------------------------------
+// Structured runtime error
+// ---------------------------------------------------------------------------
+
+// Internal runtime error vehicle, carrying a kind (TypeError, ShadowError,
+// IndexError, ...) plus optional source location alongside the message.
+// Both backends throw this from internal error sites; the try/catch
+// machinery (interpreter `eval_try` and the JIT TRY landingpad) translates
+// it into a culebra Object with `kind`, `message`, `line`, `col` fields
+// that user code can introspect via `e.kind == 'TypeError'` etc.
+//
+// Inherits from std::runtime_error so unconverted call sites and the
+// top-level fallback still work via the standard exception interface;
+// `e.what()` returns the message verbatim.
+class CulebraError : public std::runtime_error {
+ public:
+  std::string kind;
+  long line = 0;
+  long col = 0;
+
+  CulebraError(std::string k, std::string msg, long l = 0, long c = 0)
+      : std::runtime_error(std::move(msg)),
+        kind(std::move(k)),
+        line(l),
+        col(c) {}
+};
+
+// ---------------------------------------------------------------------------
 // Numeric formatting / parsing
 // ---------------------------------------------------------------------------
 
@@ -35,7 +62,9 @@ inline std::string format_float_shortest(double d) {
 }
 
 [[noreturn]] inline void throw_type_error_at(long line, long col) {
-  throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+  throw CulebraError("TypeError",
+                     std::format("type error at {}:{}.", line, col), line,
+                     col);
 }
 
 // Trim ASCII whitespace from both ends of a string view, returning the
@@ -117,8 +146,10 @@ inline bool is_well_known_prop(std::string_view name) {
 
 [[noreturn]] inline void throw_well_known_prop_contract_error(
     std::string_view name) {
-  throw std::runtime_error(std::format(
-      "type error: '{}' must be a Function taking no arguments.", name));
+  throw CulebraError(
+      "DropContractError",
+      std::format("type error: '{}' must be a Function taking no arguments.",
+                  name));
 }
 
 }  // namespace culebra

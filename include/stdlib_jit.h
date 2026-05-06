@@ -9,7 +9,7 @@
 // before `JIT::run()`.
 
 #include <jit.h>
-#include <support.h>
+#include <shared.h>
 
 #include <algorithm>
 #include <chrono>
@@ -109,7 +109,9 @@ __attribute__((used)) inline const char* culebra_runtime_read_file(
     const char* path, int64_t line, int64_t col) {
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+    throw culebra::CulebraError("IOError",
+        std::format("IO.read: cannot open '{}' at {}:{}.", path, line, col),
+        line, col);
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
                 std::istreambuf_iterator<char>());
@@ -120,7 +122,9 @@ __attribute__((used)) inline void culebra_runtime_write_file(
     const char* path, const char* content, int64_t line, int64_t col) {
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+    throw culebra::CulebraError("IOError",
+        std::format("IO.write: cannot open '{}' at {}:{}.", path, line, col),
+        line, col);
   }
   auto len = std::strlen(content);
   ofs.write(content, static_cast<std::streamsize>(len));
@@ -131,7 +135,7 @@ __attribute__((used)) inline void culebra_runtime_write_file(
 __attribute__((used)) inline int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
   if (exp < 0) {
-    throw std::runtime_error(std::format("type error at {}:{}.", line, col));
+    culebra::throw_type_error_at(line, col);
   }
   int64_t r = 1;
   while (exp > 0) {
@@ -537,7 +541,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
 
   if (name == "assert" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
-    jit.builder_.CreateCall(
+    jit.emit_call(
         jit.module_->getFunction(rt::assert_),
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
     jit.emit_value_release(arg);
@@ -549,7 +553,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     // Polymorphic: Long/Float/String. The runtime helper dispatches
     // on tag (Long identity, Float truncate, String parse) and
     // raises `type error` for anything else.
-    auto result = jit.builder_.CreateCall(
+    auto result = jit.emit_call(
         jit.module_->getFunction(rt::to_long_any),
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
     jit.emit_value_release(arg);
@@ -558,7 +562,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
-    auto result = jit.builder_.CreateCall(
+    auto result = jit.emit_call(
         jit.module_->getFunction(rt::to_float_any),
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
     jit.emit_value_release(arg);
@@ -567,7 +571,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
-    auto s = jit.builder_.CreateCall(
+    auto s = jit.emit_call(
         jit.module_->getFunction(rt::value_to_display),
         {jit.extract_tag(arg), jit.extract_data(arg)});
     jit.emit_value_release(arg);
@@ -576,7 +580,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
-    auto s = jit.builder_.CreateCall(jit.module_->getFunction(rt::type_of),
+    auto s = jit.emit_call(jit.module_->getFunction(rt::type_of),
                                  {jit.extract_tag(arg)});
     jit.emit_value_release(arg);
     return jit.make_string(s);
@@ -616,6 +620,10 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   auto compile = [&](const peg::Ast& a) { return jit.compile(a); };           \
   auto emit_output_call = [&](const char* rt, const peg::Ast& a) {            \
     return JitExtension::emit_output_call(jit, rt, a);                        \
+  };                                                                          \
+  auto emit_call = [&](llvm::FunctionCallee callee,                           \
+                       llvm::ArrayRef<llvm::Value*> args) {                   \
+    return jit.emit_call(callee, args);                                       \
   }
 
 inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
@@ -658,7 +666,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(slowBB);
-      auto slowResult = builder_.CreateCall(
+      auto slowResult = emit_call(
           module_->getFunction(rt_name), {tag, data, line, col});
       auto slowEndBB = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
@@ -677,7 +685,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto math_unary_runtime = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = compile(*argsAst.nodes[0]);
-      auto result = builder_.CreateCall(
+      auto result = emit_call(
           module_->getFunction(rt_name),
           {extract_tag(arg), extract_data(arg), line, col});
       emit_value_release(arg);
@@ -740,7 +748,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto slot1 = builder_.CreateGEP(valueType_, argsAlloca,
                                       builder_.getInt64(1));
       builder_.CreateStore(rhs, slot1);
-      auto slowResult = builder_.CreateCall(
+      auto slowResult = emit_call(
           module_->getFunction(rt_name),
           {argsAlloca, builder_.getInt64(2), line, col});
       auto slowEndBB = builder_.GetInsertBlock();
@@ -780,7 +788,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
         builder_.CreateStore(v, slot);
         compiled.push_back(v);
       }
-      auto result = builder_.CreateCall(
+      auto result = emit_call(
           module_->getFunction(rt_name),
           {argsAlloca, builder_.getInt64(static_cast<int64_t>(n)),
            line, col});
@@ -799,7 +807,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "pow" && argsAst.nodes.size() == 2) {
       auto base = value_to_long(compile(*argsAst.nodes[0]));
       auto exp = value_to_long(compile(*argsAst.nodes[1]));
-      auto r = builder_.CreateCall(module_->getFunction(rt::math_pow),
+      auto r = emit_call(module_->getFunction(rt::math_pow),
                                    {base, exp, line, col});
       return make_long(r);
     }
@@ -832,14 +840,14 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "print" && argsAst.nodes.size() == 1)
       return emit_output_call(rt::print, argsAst);
     if (method == "input" && argsAst.nodes.size() == 0) {
-      auto s = builder_.CreateCall(module_->getFunction(rt::input), {});
+      auto s = emit_call(module_->getFunction(rt::input), {});
       return make_string(s);
     }
     if (method == "read" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "String", "IO.read argument");
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto s = builder_.CreateCall(
+      auto s = emit_call(
           module_->getFunction(rt::read_file), {ptr, line, col});
       emit_value_release(arg);
       return make_string(s);
@@ -851,7 +859,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_type_check(c, "String", "IO.write content");
       auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
       auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
-      builder_.CreateCall(module_->getFunction(rt::write_file),
+      emit_call(module_->getFunction(rt::write_file),
                           {pp, cp, line, col});
       emit_value_release(p);
       emit_value_release(c);
@@ -861,7 +869,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "String", "IO.exists argument");
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto i = builder_.CreateCall(module_->getFunction(rt::io_exists),
+      auto i = emit_call(module_->getFunction(rt::io_exists),
                                    {ptr});
       emit_value_release(arg);
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
@@ -872,13 +880,13 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (ns == "Random") {
     if (method == "seed" && argsAst.nodes.size() == 1) {
       auto n = value_to_long(compile(*argsAst.nodes[0]));
-      builder_.CreateCall(module_->getFunction(rt::random_seed), {n});
+      emit_call(module_->getFunction(rt::random_seed), {n});
       return make_nil();
     }
     if (method == "int" && argsAst.nodes.size() == 2) {
       auto lo = value_to_long(compile(*argsAst.nodes[0]));
       auto hi = value_to_long(compile(*argsAst.nodes[1]));
-      auto r = builder_.CreateCall(
+      auto r = emit_call(
           module_->getFunction(rt::random_int), {lo, hi, line, col});
       return make_long(r);
     }
@@ -886,7 +894,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       if (argsAst.nodes.size() != 2) return nullptr;
       auto a = compile(*argsAst.nodes[0]);
       auto b = compile(*argsAst.nodes[1]);
-      auto r = builder_.CreateCall(
+      auto r = emit_call(
           module_->getFunction(rt_name),
           {extract_tag(a), extract_data(a),
            extract_tag(b), extract_data(b)});
@@ -904,7 +912,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "Array", "Random.shuffle argument");
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      builder_.CreateCall(module_->getFunction(rt::random_shuffle), {ap});
+      emit_call(module_->getFunction(rt::random_shuffle), {ap});
       emit_value_release(arg);
       return make_nil();
     }
@@ -915,7 +923,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_type_check(wts, "Array", "Random.weighted_choice weights");
       auto pp = builder_.CreateIntToPtr(extract_data(pop), ptrTy);
       auto wp = builder_.CreateIntToPtr(extract_data(wts), ptrTy);
-      auto r = builder_.CreateCall(
+      auto r = emit_call(
           module_->getFunction(rt::random_weighted_choice),
           {pp, wp, line, col});
       emit_value_release(pop);
@@ -927,19 +935,19 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (ns == "Sys") {
     if (method == "exit" && argsAst.nodes.size() == 1) {
       auto code = value_to_long(compile(*argsAst.nodes[0]));
-      builder_.CreateCall(module_->getFunction(rt::sys_exit), {code});
+      emit_call(module_->getFunction(rt::sys_exit), {code});
       return make_nil();  // unreachable; sys_exit terminates the process
     }
     if (method == "env" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "String", "Sys.env argument");
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto s = builder_.CreateCall(module_->getFunction(rt::sys_env), {ptr});
+      auto s = emit_call(module_->getFunction(rt::sys_env), {ptr});
       emit_value_release(arg);
       return make_string(s);
     }
     if (method == "time" && argsAst.nodes.size() == 0) {
-      auto t = builder_.CreateCall(module_->getFunction(rt::sys_time), {});
+      auto t = emit_call(module_->getFunction(rt::sys_time), {});
       return make_float(t);
     }
   }
@@ -970,7 +978,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       const char* rt_name = method == "zeros" ? rt::tensor_zeros
                           : method == "ones"  ? rt::tensor_ones
                                               : rt::tensor_randn;
-      auto t = builder_.CreateCall(
+      auto t = emit_call(
           module_->getFunction(rt_name),
           {argsAlloca,
            builder_.getInt64(static_cast<int64_t>(argsAst.nodes.size())),
@@ -982,7 +990,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "Array", "Tensor.from argument");
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto t = builder_.CreateCall(
+      auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});
       emit_value_release(arg);
       return make_tensor(t);
@@ -991,7 +999,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = compile(*argsAst.nodes[0]);
       emit_type_check(arg, "String", "Tensor.from_csv argument");
       auto pp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto t = builder_.CreateCall(
+      auto t = emit_call(
           module_->getFunction(rt::tensor_from_csv), {pp});
       emit_value_release(arg);
       return make_tensor(t);
@@ -1007,7 +1015,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       int op_id = method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
                 : method == "relu"    ? static_cast<int>(culebra::Op::Relu)
                                       : static_cast<int>(culebra::Op::Softmax);
-      auto t = builder_.CreateCall(
+      auto t = emit_call(
           module_->getFunction(rt::tensor_unary),
           {ap, builder_.getInt64(op_id)});
       emit_value_release(arg);
@@ -1020,7 +1028,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
         auto v = compile(*argsAst.nodes[i]);
         emit_type_check(v, "Tensor", "Tensor.eval argument");
         auto p = builder_.CreateIntToPtr(extract_data(v), ptrTy);
-        builder_.CreateCall(module_->getFunction(rt::tensor_eval_one), {p});
+        emit_call(module_->getFunction(rt::tensor_eval_one), {p});
         emit_value_release(v);
       }
       return make_nil();
@@ -1035,7 +1043,7 @@ inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
                                                     std::string_view prop) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   if (ns == "Sys" && prop == "argv") {
-    auto arr = builder_.CreateCall(module_->getFunction(rt::sys_argv), {});
+    auto arr = emit_call(module_->getFunction(rt::sys_argv), {});
     return make_array(arr);
   }
   if (ns == "Math") {
@@ -1054,7 +1062,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
                                                      const char* rt_name,
                                                      const peg::Ast& argsAst) {
   auto arg = jit.compile(*argsAst.nodes[0]);
-  jit.builder_.CreateCall(jit.module_->getFunction(rt_name),
+  jit.emit_call(jit.module_->getFunction(rt_name),
                       {jit.extract_tag(arg), jit.extract_data(arg)});
   jit.emit_value_release(arg);
   return jit.make_nil();
@@ -1078,13 +1086,13 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   if (method == "puts" || method == "print") {
     auto rt_name = method == "puts" ? rt::puts : rt::print;
-    builder_.CreateCall(module_->getFunction(rt_name),
+    emit_call(module_->getFunction(rt_name),
                         {extract_tag(receiver), extract_data(receiver)});
     emit_value_release(receiver);
     return make_nil();
   }
   if (method == "assert") {
-    builder_.CreateCall(
+    emit_call(
         module_->getFunction(rt::assert_),
         {extract_tag(receiver), extract_data(receiver), line, col});
     emit_value_release(receiver);
@@ -1094,20 +1102,20 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     emit_type_check(receiver, "String", "to_long argument");
     auto strPtr =
         builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto r = builder_.CreateCall(
+    auto r = emit_call(
         module_->getFunction(rt::to_long), {strPtr, line, col});
     emit_value_release(receiver);
     return make_long(r);
   }
   if (method == "to_string") {
-    auto s = builder_.CreateCall(
+    auto s = emit_call(
         module_->getFunction(rt::value_to_display),
         {extract_tag(receiver), extract_data(receiver)});
     emit_value_release(receiver);
     return make_string(s);
   }
   if (method == "type_of") {
-    auto s = builder_.CreateCall(module_->getFunction(rt::type_of),
+    auto s = emit_call(module_->getFunction(rt::type_of),
                                  {extract_tag(receiver)});
     emit_value_release(receiver);
     return make_string(s);

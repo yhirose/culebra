@@ -59,11 +59,6 @@ test-all: build
     done
     echo "test-all OK: interpreter and JIT match"
 
-# Run shadow-prohibition negative tests (expected to fail with a
-# shadow error message, on both interpreter and JIT).
-test-shadow-errors: build
-    ./scripts/test_shadow_errors.sh
-
 # Smoke: run microgpt 5 training steps (no inference) on both backends
 # to catch regressions in the JIT value-ownership / dunder dispatch
 # paths that the unit tests don't exercise at scale.

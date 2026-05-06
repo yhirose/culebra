@@ -149,7 +149,10 @@ int main(int argc, const char** argv) {
       culebra::repl(env, options.print_ast);
 #endif
     }
-  } catch (exception& e) {
+  } catch (const culebra::CulebraError& e) {
+    cerr << e.kind << ": " << e.what() << endl;
+    return -1;
+  } catch (const exception& e) {
     cerr << e.what() << endl;
     return -1;
   }

@@ -1204,21 +1204,51 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 
 ### ランタイムエラー
 
-ランタイムエラーは現在、以下の形式で診断メッセージを出して**即座に
-終了**します（`throw`/`catch` には乗りません）:
+内部ランタイムエラー（型エラー、ゼロ除算、プロパティ不在など）は
+ユーザの `try`/`catch` に **構造化 Error Object** として届きます:
 
-    type error at L:C.
-    type error: parameter 'name' expects T at L:C.
-    divide by 0 error at L:C.
-    index out of range at L:C.
-    immutable variable 'x'...
-    immutable property 'key' at L:C.
-    undefined variable 'name'...
-    assert failed at L:C.
-    cannot shadow outer variable 'x' (...) at L:C.
+| プロパティ | 型 | 内容 |
+|---|---|---|
+| `kind` | `String` | `'TypeError'` などのエラー種別。下記参照。 |
+| `message` | `String` | 人間可読な説明（`at L:C.` を含む）。 |
+| `line` | `Long` | 該当 AST ノードの 1 起点行番号。不明時は `0`。 |
+| `col` | `Long` | 同じく桁番号。不明時は `0`。 |
 
-`L` と `C` は該当する AST ノードの 1 起点の行番号・桁番号です。
-これらを `try`/`catch` で受けられるようにするのは将来課題。
+ユーザコードは `e.kind` で分岐できます:
+
+    try { let x = arr[100] }
+    catch e {
+      if e.kind == 'IndexError' { puts("out of range at line {e.line}") }
+      else { throw e }
+    }
+
+標準の `kind` 一覧:
+
+* `TypeError` — 演算子・型強制・型注釈での型不一致
+* `NameError` — 未定義変数（両バックエンドで compile-time）
+* `IndexError` — 配列／テンソルの範囲外アクセス
+* `ValueError` — 値起源のセマンティック誤り（`[].min()`、shape 不一致）
+* `ArityError` — 引数数不足
+* `ZeroDivisionError` — `/` または `%` の右辺が 0
+* `DropContractError` — `drop` / `iter` / `next` が 0 引数 Function でない
+* `ImmutableError` — `let` 束縛 / immutable プロパティへの再代入
+* `AttributeError` — 不在プロパティへの複合代入（interp）
+* `AssertionError` — `assert(falsy)`
+* `DispatchError` — 多重ディスパッチで一致なし／曖昧
+* `SyntaxError` — ループ外の `break` / `continue` 等
+* `IOError` — `IO.read` / `IO.write` のオープン失敗
+* `ShadowError` — uncatchable; `try` ブロックが走る前に発生（下記）
+* `RuntimeError` — 未変換の内部エラーサイトのフォールバック
+
+未 catch のエラーは `Kind: message` 形式で表示し非ゼロ終了します。
+ユーザが `throw expr` で投げた値は `uncaught: {value}` で表示されます。
+
+### コンパイル時エラー
+
+`ShadowError` と `NameError` はプログラム読込時、`try` ブロックが
+走る前に検出されるため、ユーザコードでは catch できません。同じ
+`Kind: message` 形式で表示し中断します。両バックエンドで実施。
+ルールについては §6 の "Shadow prohibition" を参照。
 
 ### `assert(cond)`
 
@@ -1241,8 +1271,9 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
   ます。throw 経路でも cleanup したければブロック `{ }` で囲んで
   ください (`fn () { { defer { ... } ... } }`)
 
-ランタイムエラー（type error、divide by 0 など）は両バックエンドで
-引き続きユーザの `try/catch` をバイパスします。
+内部ランタイムエラー（`TypeError`, `ZeroDivisionError` など）は
+両バックエンドでユーザの `try/catch` に構造化 Error Object として
+流れます — 上の "ランタイムエラー" 節を参照。
 
 ---
 

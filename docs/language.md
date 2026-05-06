@@ -1260,21 +1260,52 @@ built-in for it:
 
 ### Runtime errors
 
-Runtime errors currently abort the program with a diagnostic of the
-form (they do **not** flow through `throw`/`catch`):
+Internal runtime errors (type mismatches, division by zero, missing
+properties, ...) surface to user `try`/`catch` as **structured Error
+Objects** with four properties:
 
-    type error at L:C.
-    type error: parameter 'name' expects T at L:C.
-    divide by 0 error at L:C.
-    index out of range at L:C.
-    immutable variable 'x'...
-    immutable property 'key' at L:C.
-    undefined variable 'name'...
-    assert failed at L:C.
-    cannot shadow outer variable 'x' (...) at L:C.
+| Property | Type | Description |
+|---|---|---|
+| `kind` | `String` | Error category, e.g. `'TypeError'`. See list below. |
+| `message` | `String` | Human-readable description (includes `at L:C.`). |
+| `line` | `Long` | 1-based source line of the offending AST node, `0` if unknown. |
+| `col` | `Long` | 1-based source column, `0` if unknown. |
 
-`L` and `C` are 1-based line and column of the offending AST node.
-Integrating these with `try`/`catch` is future work.
+User code can branch on `e.kind`:
+
+    try { let x = arr[100] }
+    catch e {
+      if e.kind == 'IndexError' { puts("out of range at line {e.line}") }
+      else { throw e }
+    }
+
+Standard `kind` values:
+
+* `TypeError` — type mismatch in operator / coercion / annotation.
+* `NameError` — undefined variable (compile-time on both backends).
+* `IndexError` — array / tensor index out of range.
+* `ValueError` — semantic value problem (`[].min()`, shape mismatch).
+* `ArityError` — function called with too few arguments.
+* `ZeroDivisionError` — `/` or `%` with zero RHS.
+* `DropContractError` — `drop` / `iter` / `next` not a 0-arg Function.
+* `ImmutableError` — assignment to a `let` binding or immutable property.
+* `AttributeError` — compound assignment to a missing property (interp).
+* `AssertionError` — `assert(falsy)`.
+* `DispatchError` — multimethod has no match / ambiguous match.
+* `SyntaxError` — `break` / `continue` outside loop, etc.
+* `IOError` — `IO.read` / `IO.write` open failure.
+* `ShadowError` — uncatchable; raised before `try` blocks run (see below).
+* `RuntimeError` — fallback for any unconverted internal error site.
+
+Uncaught errors print as `Kind: message` and exit with non-zero
+status. User-thrown values via `throw expr` print as `uncaught: {value}`.
+
+### Compile-time errors
+
+`ShadowError` and `NameError` are detected when the program is loaded,
+before any `try` block runs — so user code cannot catch them. They
+abort the program with the same `Kind: message` format. The check
+runs in both backends; see "Shadow prohibition" in §6 for the rule.
 
 ### `assert(cond)`
 
@@ -1298,8 +1329,9 @@ semantics matching the tree interpreter for the common cases:
   program skips it. For throw-path cleanup, wrap the defer in a
   block (`fn () { { defer { ... } ... } }`).
 
-Runtime errors (type error, divide by 0, etc.) continue to bypass
-user `try/catch` on both backends.
+Internal runtime errors (`TypeError`, `ZeroDivisionError`, etc.) flow
+through user `try/catch` as structured Error Objects on both backends
+— see "Runtime errors" above.
 
 ---
 
