@@ -541,7 +541,7 @@ Only `Bool`, `Long`, and `Float` are convertible to bool:
 A method call takes the form `receiver.name(args)`. The full
 resolution rules — including method/UFCS dispatch order and how
 built-ins interact with user-defined properties — are specified in
-§10 ("Methods and UFCS"). The dunder operators (`+`, `-`, `*`, `==`,
+§10 ("Methods and UFCS"). Operator overloading (`+`, `-`, `*`, `==`,
 `@`, …) and `__str__` are also defined there.
 
 ---
@@ -762,28 +762,28 @@ Semantics:
 ### Operator overloading
 
 Any `Object` (whether produced by `class` sugar or a plain literal)
-can participate in arithmetic and comparison by defining dunder
+can participate in arithmetic and comparison by defining special
 methods. Dispatch happens at runtime: if the left operand is an
-`Object` with the matching dunder, the method is called with the
+`Object` with the matching special method, it is called with the
 right operand as its sole argument; otherwise the built-in numeric
 path runs. **Both the interpreter and the JIT** route through the
-same dunder protocol, so `Object` arithmetic compiles. Classes
-defined via `class` sugar participate identically since their
-instances are plain `Object`s with methods attached.
+same special-method protocol, so `Object` arithmetic compiles.
+Classes defined via `class` sugar participate identically since
+their instances are plain `Object`s with methods attached.
 
-| Operator     | Dunder      | Notes                                    |
-|--------------|-------------|------------------------------------------|
-| `a + b`      | `__add__`   |                                          |
-| `a - b`      | `__sub__`   |                                          |
-| `a * b`      | `__mul__`   |                                          |
-| `a / b`      | `__div__`   |                                          |
-| `a % b`      | `__mod__`   |                                          |
-| `a ** b`     | `__pow__`   |                                          |
-| `a @ b`      | `__matmul__`| Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
-| `-a`         | `__neg__`   | 0-arg method on `a`                      |
-| `a == b`     | `__eq__`    | `!=` derives by negation                 |
-| `a < b`      | `__lt__`    | `>=` derives by negation                 |
-| `a <= b`     | `__le__`    | If missing, derived as `__lt__` or `__eq__`; `>` derives by negation |
+| Operator     | Special method | Notes                                 |
+|--------------|----------------|---------------------------------------|
+| `a + b`      | `__add__`      |                                       |
+| `a - b`      | `__sub__`      |                                       |
+| `a * b`      | `__mul__`      |                                       |
+| `a / b`      | `__div__`      |                                       |
+| `a % b`      | `__mod__`      |                                       |
+| `a ** b`     | `__pow__`      |                                       |
+| `a @ b`      | `__matmul__`   | Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
+| `-a`         | `__neg__`      | 0-arg method on `a`                   |
+| `a == b`     | `__eq__`       | `!=` derives by negation              |
+| `a < b`      | `__lt__`       | `>=` derives by negation              |
+| `a <= b`     | `__le__`       | If missing, derived as `__lt__` or `__eq__`; `>` derives by negation |
 
 Example:
 
@@ -829,8 +829,9 @@ final string via direct property access (`this.x`) instead.
 ### Auto-reflection
 
 For commutative operators (`+`, `*`, `==`), when the LHS doesn't carry
-the dunder (e.g., it's a `Long` or `Float`) but the RHS is an `Object`
-that does, the call reflects: `lhs op rhs` becomes `rhs.__op__(lhs)`.
+the matching special method (e.g., it's a `Long` or `Float`) but the
+RHS is an `Object` that does, the call reflects: `lhs op rhs` becomes
+`rhs.__op__(lhs)`.
 The `rhs`-side method receives the scalar as its argument and is
 expected to handle it (typically with a `match` on the argument type):
 
@@ -846,7 +847,7 @@ expected to handle it (typically with a `match` on the argument type):
 
 Non-commutative operators (`-`, `/`, `%`, `**`, `@`, `<`, `<=`) do
 **not** reflect — `rhs.__op__(lhs)` would compute the wrong answer.
-For those, the LHS must be an Object carrying the dunder.
+For those, the LHS must be an Object carrying the matching special method.
 
 ### Auto-synthesized `parameters()`
 
@@ -2063,7 +2064,7 @@ semantics, but a few operational differences are worth knowing.
 * All numeric arithmetic, comparison, truthiness, and overflow rules
   (§7) match bit-for-bit, including division-by-zero, `Long` overflow
   wrap, and `Float` IEEE-754 behavior.
-* Method dispatch and UFCS (§10), operator dunders (§10), `__str__`
+* Method dispatch and UFCS (§10), operator special methods (§10), `__str__`
   display (§10), and the iterator protocol (§17.5) drive both
   backends through the same protocol.
 * `throw` / `try` / `catch` / `defer` (§15) propagate across function

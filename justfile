@@ -60,8 +60,8 @@ test-all: build
     echo "test-all OK: interpreter and JIT match"
 
 # Smoke: run microgpt 5 training steps (no inference) on both backends
-# to catch regressions in the JIT value-ownership / dunder dispatch
-# paths that the unit tests don't exercise at scale.
+# to catch regressions in the JIT value-ownership / special-method
+# dispatch paths that the unit tests don't exercise at scale.
 smoke-microgpt: build fetch-names
     ./build/culebra       samples/microgpt/microgpt.cul -- 5 0 > /dev/null
     ./build/culebra --jit samples/microgpt/microgpt.cul -- 5 0 > /dev/null

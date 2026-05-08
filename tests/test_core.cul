@@ -1106,7 +1106,7 @@ test_object_shorthand()
 test_destructure()
 test_object_factory()
 
-test_dunder_ops = fn () {
+test_special_method_ops = fn () {
   make_box = fn (v) {
     {
       v: v,
@@ -1154,7 +1154,7 @@ test_dunder_ops = fn () {
   assert(make_box(3) == a)
 }
 
-test_dunder_ops()
+test_special_method_ops()
 test_class()
 debugger
 test_sum()

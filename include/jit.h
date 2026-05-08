@@ -192,7 +192,7 @@ struct JitObject {
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one
   // level only — proto chains aren't supported). Class-sugar instances
-  // share their dunder methods through a per-class meta object held
+  // share their special methods through a per-class meta object held
   // here, so each instance's own slots carry only data fields.
   JitObject* proto = nullptr;
   // Property layout: `shape` is a process-interned descriptor mapping
@@ -916,14 +916,14 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
 extern "C" {
 
 // Forward decl; the `__str__` dispatcher lives alongside the other
-// dunder helpers further down (it returns std::optional<std::string>,
+// special-method helpers further down (it returns std::optional<std::string>,
 // so it needs full C++ linkage — can't be declared inside the
 // enclosing extern "C" block).
-inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data);
+inline std::optional<std::string> _try_str_special(int8_t type, int64_t data);
 
 __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
                                                        int64_t data) {
-  if (auto s = _try_str_dunder(type, data)) {
+  if (auto s = _try_str_special(type, data)) {
     std::cout << *s << std::endl;
     return;
   }
@@ -957,7 +957,7 @@ __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
 // with `__str__` return their custom form.
 __attribute__((used)) inline const char* culebra_runtime_value_to_display(
     int8_t type, int64_t data) {
-  if (auto s = _try_str_dunder(type, data)) return _culebra_heap_str(*s);
+  if (auto s = _try_str_special(type, data)) return _culebra_heap_str(*s);
   if (type == 4) return reinterpret_cast<const char*>(data);
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
 }
@@ -1223,7 +1223,7 @@ inline const JitObjectEntry* _find_property(JitObject* obj,
   return nullptr;
 }
 
-inline JitClosure* _lookup_dunder(int8_t tag, int64_t data, const char* name) {
+inline JitClosure* _lookup_special(int8_t tag, int64_t data, const char* name) {
   if (tag != TAG_OBJECT) return nullptr;
   auto* obj = reinterpret_cast<JitObject*>(data);
   auto* entry = _find_property(obj, name);
@@ -1231,28 +1231,29 @@ inline JitClosure* _lookup_dunder(int8_t tag, int64_t data, const char* name) {
   return reinterpret_cast<JitClosure*>(entry->value.data);
 }
 
-// Try `recv.dunder(arg)`. Returns the +1 result or std::nullopt.
-inline std::optional<JitValue> _try_dunder_binop(int8_t rt, int64_t rd,
+// Invoke a special method `recv.<name>(arg)`. Returns the +1 result
+// or std::nullopt.
+inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
                                                  int8_t at, int64_t ad,
                                                  const char* name) {
-  auto* cls = _lookup_dunder(rt, rd, name);
+  auto* cls = _lookup_special(rt, rd, name);
   if (!cls) return std::nullopt;
   return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
 }
 
-inline std::optional<JitValue> _try_dunder_unary(int8_t t, int64_t d,
+inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
                                                  const char* name) {
-  auto* cls = _lookup_dunder(t, d, name);
+  auto* cls = _lookup_special(t, d, name);
   if (!cls) return std::nullopt;
   return _culebra_invoke_method0(cls, {t, d});
 }
 
 // Invoke `__str__` on an Object, copying the returned String into an
-// owned std::string and releasing the dunder's +1 return. Returns
+// owned std::string and releasing the method's +1 return. Returns
 // nullopt for non-Objects or Objects without `__str__`; throws on
 // non-String returns so a buggy method fails loudly.
-inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data) {
-  auto r = _try_dunder_unary(type, data, "__str__");
+inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
+  auto r = _try_special_unary(type, data, "__str__");
   if (!r) return std::nullopt;
   if (r->tag != TAG_STRING) {
     _culebra_value_release_impl(r->tag, r->data);
@@ -1267,13 +1268,13 @@ inline std::optional<std::string> _try_str_dunder(int8_t type, int64_t data) {
 // Arithmetic binop: try `lhs.__op__(rhs)`; if `reflect` is true and
 // nothing matched, try `rhs.__op__(lhs)` (commutative auto-reflection
 // for `+` and `*`). Callers fall back to the numeric path otherwise.
-inline std::optional<JitValue> _dispatch_arith_dunder(int8_t lt, int64_t ld,
+inline std::optional<JitValue> _dispatch_arith_special(int8_t lt, int64_t ld,
                                                      int8_t rt, int64_t rd,
                                                      const char* name,
                                                      bool reflect) {
-  if (auto r = _try_dunder_binop(lt, ld, rt, rd, name)) return r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, name)) return r;
   if (reflect) {
-    if (auto r = _try_dunder_binop(rt, rd, lt, ld, name)) return r;
+    if (auto r = _try_special_binop(rt, rd, lt, ld, name)) return r;
   }
   return std::nullopt;
 }
@@ -1292,12 +1293,12 @@ inline std::optional<JitValue> _try_tensor_binop(
   return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
 
-#define CUL_NUM_BINOP(name, dunder, expr, reflect, op_id)               \
+#define CUL_NUM_BINOP(name, method, expr, reflect, op_id)               \
   __attribute__((used)) inline JitValue culebra_runtime_num_##name(     \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
-    if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, dunder,         \
-                                        reflect))                       \
+    if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
+                                         reflect))                      \
       return *r;                                                        \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
@@ -1313,7 +1314,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_div(
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Div)))
     return *r;
-  if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, "__div__", false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
     return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -1323,7 +1324,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_div(
 
 __attribute__((used)) inline JitValue culebra_runtime_num_mod(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (auto r = _dispatch_arith_dunder(lt, ld, rt, rd, "__mod__", false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
     return *r;
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
@@ -1335,14 +1336,14 @@ __attribute__((used)) inline JitValue culebra_runtime_num_mod(
 // `__matmul__`. Non-commutative, so no reflection.
 __attribute__((used)) inline JitValue culebra_runtime_num_matmul(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__matmul__")) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
   throw culebra::CulebraError("TypeError", "type error.");
 }
 
-// Extract a boolean from a dunder's +1 return value and release the
-// (potentially heap-backed) result. Matches `Value::to_bool`: accepts
-// Bool/Long/Float and throws `type error` on anything else, so a
-// comparison dunder that forgets to return a boolean fails loudly.
+// Extract a boolean from a special method's +1 return value and release
+// the (potentially heap-backed) result. Matches `Value::to_bool`:
+// accepts Bool/Long/Float and throws `type error` on anything else, so
+// a comparison method that forgets to return a boolean fails loudly.
 inline bool _extract_bool_and_release(JitValue v) {
   bool b;
   if (v.tag == TAG_BOOL) b = v.data != 0;
@@ -1361,21 +1362,21 @@ inline bool _extract_bool_and_release(JitValue v) {
 __attribute__((used)) inline bool culebra_runtime_value_equal(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   // `==` is commutative, so try either side's `__eq__`.
-  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__eq__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
     return _extract_bool_and_release(*r);
-  if (auto r = _try_dunder_binop(t2, d2, t1, d1, "__eq__"))
+  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__"))
     return _extract_bool_and_release(*r);
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
 // Try `lhs.__le__(rhs)`, falling back to `__lt__` || `__eq__` to match
 // the interpreter's derivation when a class only defines `__lt__`.
-inline std::optional<bool> _dunder_le(int8_t t1, int64_t d1,
+inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                                       int8_t t2, int64_t d2) {
-  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__le__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__le__"))
     return _extract_bool_and_release(*r);
-  auto lt = _try_dunder_binop(t1, d1, t2, d2, "__lt__");
-  auto eq = _try_dunder_binop(t1, d1, t2, d2, "__eq__");
+  auto lt = _try_special_binop(t1, d1, t2, d2, "__lt__");
+  auto eq = _try_special_binop(t1, d1, t2, d2, "__eq__");
   if (!lt && !eq) return std::nullopt;
   bool l = lt && _extract_bool_and_release(*lt);
   bool e = eq && _extract_bool_and_release(*eq);
@@ -1384,7 +1385,7 @@ inline std::optional<bool> _dunder_le(int8_t t1, int64_t d1,
 
 __attribute__((used)) inline bool culebra_runtime_value_less(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__lt__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return _extract_bool_and_release(*r);
   return _culebra_value_ord(t1, d1, t2, d2,
                             [](double a, double b) { return a < b; });
@@ -1392,7 +1393,7 @@ __attribute__((used)) inline bool culebra_runtime_value_less(
 
 __attribute__((used)) inline bool culebra_runtime_value_leq(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  if (auto r = _dunder_le(t1, d1, t2, d2)) return *r;
+  if (auto r = _special_le(t1, d1, t2, d2)) return *r;
   return _culebra_value_ord(t1, d1, t2, d2,
                             [](double a, double b) { return a <= b; });
 }
@@ -1400,7 +1401,7 @@ __attribute__((used)) inline bool culebra_runtime_value_leq(
 __attribute__((used)) inline bool culebra_runtime_value_greater(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   // a > b ≡ !(a <= b)
-  if (auto r = _dunder_le(t1, d1, t2, d2)) return !*r;
+  if (auto r = _special_le(t1, d1, t2, d2)) return !*r;
   return _culebra_value_ord(t1, d1, t2, d2,
                             [](double a, double b) { return a > b; });
 }
@@ -1408,7 +1409,7 @@ __attribute__((used)) inline bool culebra_runtime_value_greater(
 __attribute__((used)) inline bool culebra_runtime_value_geq(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   // a >= b ≡ !(a < b)
-  if (auto r = _try_dunder_binop(t1, d1, t2, d2, "__lt__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return !_extract_bool_and_release(*r);
   return _culebra_value_ord(t1, d1, t2, d2,
                             [](double a, double b) { return a >= b; });
@@ -1460,7 +1461,7 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 __attribute__((used)) inline JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (auto r = _try_dunder_binop(lt, ld, rt, rd, "__pow__")) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) {
@@ -1495,7 +1496,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_inplace_pow(
 // raises type error. Called only from the unary-minus slow path.
 __attribute__((used)) inline JitValue culebra_runtime_num_neg(
     int8_t t, int64_t d) {
-  if (auto r = _try_dunder_unary(t, d, "__neg__")) return *r;
+  if (auto r = _try_special_unary(t, d, "__neg__")) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);
@@ -2163,7 +2164,7 @@ __attribute__((used)) inline JitObject* culebra_runtime_build_class_meta(
 //   1. Allocate a fresh instance (refcount=1, caller-owned).
 //   2. Stamp the `class:` tag.
 //   3. Wire the instance's `proto` at the shared class meta object;
-//      method lookups fall through to it via _lookup_dunder /
+//      method lookups fall through to it via _lookup_special /
 //      culebra_runtime_object_get / object_has.
 //   4. Invoke the user's `new` body (if any) with `this` bound to the
 //      new instance. Args are forwarded with +1 ownership intact
@@ -6724,7 +6725,7 @@ struct JIT {
   //   - bothLong  → `long_path(ldata, rdata)` returning a JitValue
   //   - bothNum   → `float_path(lDouble, rDouble)` returning a JitValue
   //                 (typically `make_float(builder_.CreateFAdd(...))`)
-  //   - otherwise → `rt_name` runtime call (Object dunder dispatch)
+  //   - otherwise → `rt_name` runtime call (Object special-method dispatch)
   template <class LongPath, class FloatPath>
   llvm::Value* emit_binop_dispatch(llvm::Value* lhs, llvm::Value* rhs,
                                    const char* rt_name,
@@ -8252,7 +8253,7 @@ struct JIT {
 
     // Build the shared class meta object once per class declaration:
     // a JitObject with all method closures set as immutable props.
-    // Each instance points its `proto` at this meta, so dunder
+    // Each instance points its `proto` at this meta, so special-method
     // dispatch + general property lookup fall through here without
     // copying the methods into every instance's own props.
     llvm::Value* metaPtr;

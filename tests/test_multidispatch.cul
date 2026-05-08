@@ -73,7 +73,7 @@ assert(amb("x", 1) == 2)
 let helper = fn(x) { x * 2 }
 assert(helper(7) == 14)
 
-# --- Coexist with class methods + dunder ---
+# --- Coexist with class methods + special methods ---
 #
 # Adding multimethod free functions doesn't disturb instance method
 # dispatch via `obj.method()`.

@@ -153,7 +153,7 @@ puts(car.total())                     # 'total: 15 miles.'
 puts(car.class)                       # 'Car'
 ```
 
-Methods include dunders (`__add__`, `__mul__`, `__pow__`,
+Methods include special methods (`__add__`, `__mul__`, `__pow__`,
 `__matmul__`, …) for operator overloading, and the well-known `drop`
 RAII hook:
 

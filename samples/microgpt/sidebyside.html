@@ -262,7 +262,7 @@
 <tr><td class="ln"> 29</td><td class="src">vocab_size = uchars.size() + <span class="num">1</span>   <span class="cmt"># total number of unique tokens, +1 is for BOS</span></td></tr>
 <tr><td class="ln"> 30</td><td class="src"><span class="kw">puts</span>(<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
 </tbody></table></div></td></tr>
-      <tr class="section"><td colspan="2">class Value — fields &amp; dunder ops</td></tr>
+      <tr class="section"><td colspan="2">class Value — fields &amp; special methods</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln"> 32</td><td class="src"><span class="cmt"># Let there be Autograd to recursively apply the chain rule through a computation graph</span></td></tr>
 <tr><td class="ln"> 33</td><td class="src"><span class="kw">class</span> Value:</td></tr>
@@ -841,7 +841,7 @@
 <tr><td class="ln"> 50</td><td class="src"><span class="kw">let</span> attn_scale = <span class="num">1.0</span> / (to_float(head_dim) ** <span class="num">0.5</span>)</td></tr>
 <tr><td class="ln"> 51</td><td class="src"><span class="kw">let</span> std_init = <span class="num">0.08</span></td></tr>
 </tbody></table></div></td></tr>
-      <tr class="section"><td colspan="2">Autograd class — Value (per-scalar dunders + backward) vs TNode (Tensor wrapper, no dunders)</td></tr>
+      <tr class="section"><td colspan="2">Autograd class — Value (per-scalar special methods + backward) vs TNode (Tensor wrapper, no special methods)</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln"> 33</td><td class="src"><span class="cmt"># Let there be Autograd to recursively apply the chain rule through a computation graph</span></td></tr>
 <tr><td class="ln"> 34</td><td class="src"><span class="kw">class</span> Value {</td></tr>
@@ -942,7 +942,7 @@
 <tr><td class="ln"> 95</td><td class="src">  <span class="kw">if</span> v.data &gt; best { v.data } <span class="kw">else</span> { best }</td></tr>
 <tr><td class="ln"> 96</td><td class="src">)</td></tr>
 </tbody></table></div></td><td class="right"><div class="empty">— no equivalent (handled by language builtins) —</div></td></tr>
-      <tr class="section"><td colspan="2">Op factories: arithmetic + dot + sum_to_scalar + embed (Tensor only — scalar uses Value dunders)</td></tr>
+      <tr class="section"><td colspan="2">Op factories: arithmetic + dot + sum_to_scalar + embed (Tensor only — scalar uses Value special methods)</td></tr>
       <tr class="code-row"><td class="left"><div class="empty">— no equivalent (handled by language builtins) —</div></td><td class="right"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln"> 85</td><td class="src"><span class="cmt"># Op factories. Each returns a TNode and wires its backward closure.</span></td></tr>
 <tr><td class="ln"> 86</td><td class="src"><span class="cmt"># Closures capture parent TNodes and propagate gradient through the</span></td></tr>

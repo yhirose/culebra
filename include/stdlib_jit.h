@@ -84,7 +84,7 @@ __attribute__((used)) inline const char* culebra_runtime_type_of(int8_t tag) {
 
 __attribute__((used)) inline void culebra_runtime_print(int8_t type,
                                                         int64_t data) {
-  if (auto s = _try_str_dunder(type, data)) {
+  if (auto s = _try_str_special(type, data)) {
     std::cout << *s;
     return;
   }

@@ -1,7 +1,7 @@
 Culebra チュートリアル
 ========================
 
-Culebra を触ったことがない人向けの 5 分クイックスタートです。
+Culebra を触ったことがない人向けの5分のクイックスタートです。
 詳細な仕様は [`language.md`](language.ja.md)、標準ライブラリは
 [`stdlib.md`](stdlib.ja.md) を参照してください。
 
@@ -150,9 +150,9 @@ puts(car.total())                     # '走行距離: 15 miles.'
 puts(car.class)                       # 'Car'
 ```
 
-メソッドには演算子オーバーロード用の dunder (`__add__`, `__mul__`,
-`__pow__`, `__matmul__`, ...) や、well-known な `drop` (RAII フック)
-も書けます:
+メソッドには演算子オーバーロード用の特殊メソッド (`__add__`,
+`__mul__`, `__pow__`, `__matmul__`, ...) や、well-known な `drop`
+(RAII フック) も書けます:
 
 ```culebra
 class V {

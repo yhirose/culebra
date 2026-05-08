@@ -1083,7 +1083,7 @@ inline Value _invoke_method_no_args(const Value& receiver,
 // caller falls back to the built-in formatter (`str_display`). The
 // method is expected to return a String; anything else is a type
 // error so a buggy `__str__` fails loudly.
-inline std::optional<std::string> _try_str_dunder(const Value& v) {
+inline std::optional<std::string> _try_str_special(const Value& v) {
   if (v.type != Value::Object) return std::nullopt;
   const auto& obj = v.to_object();
   if (!obj.has("__str__")) return std::nullopt;
@@ -1098,16 +1098,16 @@ inline std::optional<std::string> _try_str_dunder(const Value& v) {
 
 // Like `v.str_display()` (unquoted strings) but honors `__str__` on
 // Object — used by interpolation, `print`, and `to_string`.
-inline std::string str_display_with_dunder(const Value& v) {
-  if (auto r = _try_str_dunder(v)) return *r;
+inline std::string str_display_with_special(const Value& v) {
+  if (auto r = _try_str_special(v)) return *r;
   return v.str_display();
 }
 
 // Like `v.str()` (quoted strings) but honors `__str__` on Object —
 // used by `puts`. Objects with `__str__` return the custom form with
 // no extra quoting regardless.
-inline std::string str_quoted_with_dunder(const Value& v) {
-  if (auto r = _try_str_dunder(v)) return *r;
+inline std::string str_quoted_with_special(const Value& v) {
+  if (auto r = _try_str_special(v)) return *r;
   return v.str();
 }
 
@@ -3353,7 +3353,7 @@ struct Interpreter {
     auto ope = eval(*ast.nodes[1], env).to_string();
     auto rhs = eval(*ast.nodes[2], env);
 
-    // Dunder dispatch for Object LHS. A class that defines just
+    // Special-method dispatch for Object LHS. A class that defines just
     // `__eq__` and `__lt__` gets the full six-way suite: `__le__` is
     // derived as `lt || eq`, and the three "greater" ops are negations
     // of the corresponding "less-or-equal" / "less" forms.
@@ -3361,10 +3361,10 @@ struct Interpreter {
       return v.type == Value::Bool ? v.template get<bool>() : v.to_bool();
     };
     auto le_as_bool = [&]() -> std::optional<bool> {
-      if (auto le = try_dunder_binop(lhs, rhs, "__le__", env))
+      if (auto le = try_special_binop(lhs, rhs, "__le__", env))
         return bool_val(*le);
-      auto lt = try_dunder_binop(lhs, rhs, "__lt__", env);
-      auto eq = try_dunder_binop(lhs, rhs, "__eq__", env);
+      auto lt = try_special_binop(lhs, rhs, "__lt__", env);
+      auto eq = try_special_binop(lhs, rhs, "__eq__", env);
       if (!lt && !eq) return std::nullopt;
       return (lt && bool_val(*lt)) || (eq && bool_val(*eq));
     };
@@ -3372,8 +3372,8 @@ struct Interpreter {
     // carry `__eq__` but the RHS does, reach over and use it. Ordering
     // operators (`<`, `<=`) are not commutative and don't reflect.
     auto try_eq = [&]() -> std::optional<Value> {
-      if (auto r = try_dunder_binop(lhs, rhs, "__eq__", env)) return r;
-      if (auto r = try_dunder_binop(rhs, lhs, "__eq__", env)) return r;
+      if (auto r = try_special_binop(lhs, rhs, "__eq__", env)) return r;
+      if (auto r = try_special_binop(rhs, lhs, "__eq__", env)) return r;
       return std::nullopt;
     };
     if (lhs.type == Value::Object || rhs.type == Value::Object) {
@@ -3385,14 +3385,14 @@ struct Interpreter {
     }
     if (lhs.type == Value::Object) {
       if (ope == "<") {
-        if (auto r = try_dunder_binop(lhs, rhs, "__lt__", env))
+        if (auto r = try_special_binop(lhs, rhs, "__lt__", env))
           return Value(bool_val(*r));
       } else if (ope == "<=") {
         if (auto r = le_as_bool()) return Value(*r);
       } else if (ope == ">") {
         if (auto r = le_as_bool()) return Value(!*r);
       } else if (ope == ">=") {
-        if (auto r = try_dunder_binop(lhs, rhs, "__lt__", env))
+        if (auto r = try_special_binop(lhs, rhs, "__lt__", env))
           return Value(!bool_val(*r));
       }
     }
@@ -3421,7 +3421,7 @@ struct Interpreter {
   Value eval_unary_minus(const peg::Ast& ast,
                          std::shared_ptr<Environment> env) {
     auto v = eval(*ast.nodes[1], env);
-    if (auto r = try_dunder_unary(v, "__neg__", env)) return *r;
+    if (auto r = try_special_unary(v, "__neg__", env)) return *r;
     if (v.type == Value::Float) return Value(-v.get<double>());
     return Value(v.to_long() * -1);
   }
@@ -3465,15 +3465,16 @@ struct Interpreter {
         });
   }
 
-  // Shared dunder-dispatch core. Arity 0 (unary) or 1 (binary); the
-  // optional `rhs` is consumed only when arity == 1. Returns nullopt if
-  // `receiver` isn't an Object carrying a callable dunder of this name.
-  std::optional<Value> try_dunder(const Value& receiver, const Value* rhs,
-                                  std::string_view dunder,
+  // Shared special-method dispatch core. Arity 0 (unary) or 1 (binary);
+  // the optional `rhs` is consumed only when arity == 1. Returns nullopt
+  // if `receiver` isn't an Object carrying a callable special method of
+  // this name.
+  std::optional<Value> try_special(const Value& receiver, const Value* rhs,
+                                  std::string_view special,
                                   std::shared_ptr<Environment> env) {
     if (receiver.type != Value::Object) return std::nullopt;
     const auto& obj = receiver.to_object();
-    auto it = obj.properties->find(dunder);
+    auto it = obj.properties->find(special);
     if (it == obj.properties->end()) return std::nullopt;
     const auto& m = it->second.val;
     if (m.type != Value::Function) return std::nullopt;
@@ -3486,19 +3487,19 @@ struct Interpreter {
         0, 0);
   }
 
-  std::optional<Value> try_dunder_binop(const Value& lhs, const Value& rhs,
-                                        std::string_view dunder,
+  std::optional<Value> try_special_binop(const Value& lhs, const Value& rhs,
+                                        std::string_view special,
                                         std::shared_ptr<Environment> env) {
-    return try_dunder(lhs, &rhs, dunder, env);
+    return try_special(lhs, &rhs, special, env);
   }
 
-  std::optional<Value> try_dunder_unary(const Value& operand,
-                                        std::string_view dunder,
+  std::optional<Value> try_special_unary(const Value& operand,
+                                        std::string_view special,
                                         std::shared_ptr<Environment> env) {
-    return try_dunder(operand, nullptr, dunder, env);
+    return try_special(operand, nullptr, special, env);
   }
 
-  static const char* arith_op_to_dunder(char ope) {
+  static const char* arith_op_to_special(char ope) {
     switch (ope) {
       case '+': return "__add__";
       case '-': return "__sub__";
@@ -3513,8 +3514,8 @@ struct Interpreter {
   // Auto-reflection only fires for operators where `rhs.__op__(lhs)`
   // still computes the mathematically-correct `lhs op rhs` — i.e.,
   // commutative arithmetic. Non-commutative ops (`-`, `/`, `%`, `@`,
-  // `**`) require the LHS to carry the dunder. Reflection is only
-  // attempted after the LHS-side dunder lookup fails.
+  // `**`) require the LHS to carry the special method. Reflection is
+  // only attempted after the LHS-side special-method lookup fails.
   static bool op_reflects(char ope) {
     return ope == '+' || ope == '*';
   }
@@ -3539,10 +3540,10 @@ struct Interpreter {
       };
       return Value(TensorValue(tensor_binop(tensor_op, lift(lhs), lift(rhs))));
     }
-    if (auto* dunder = arith_op_to_dunder(ope)) {
-      if (auto r = try_dunder_binop(lhs, rhs, dunder, env)) return *r;
+    if (auto* special = arith_op_to_special(ope)) {
+      if (auto r = try_special_binop(lhs, rhs, special, env)) return *r;
       if (op_reflects(ope)) {
-        if (auto r = try_dunder_binop(rhs, lhs, dunder, env)) return *r;
+        if (auto r = try_special_binop(rhs, lhs, special, env)) return *r;
       }
     }
     // `@` has no numeric meaning, so skip the numeric path entirely;
@@ -3606,7 +3607,7 @@ struct Interpreter {
   //   0 ** 0 = 1 (matches IEEE 754 and Python).
   Value compute_power(const Value& base, const Value& exp,
                       std::shared_ptr<Environment> env) {
-    if (auto r = try_dunder_binop(base, exp, "__pow__", env)) return *r;
+    if (auto r = try_special_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
       throw CulebraError("TypeError", std::format(
           "type error: '**' requires numeric operands, got {} and {}",
@@ -3916,7 +3917,7 @@ struct Interpreter {
         s += decode_interpolated_content(node->token);
       } else {
         const auto& val = eval(*node, env);
-        s += str_display_with_dunder(val);
+        s += str_display_with_special(val);
       }
     }
     return Value(std::move(s));

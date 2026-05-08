@@ -156,7 +156,7 @@ test_matmul_overload = fn () {
   assert(d.data[0][0] == 19 + 66)
 }
 
-test_str_dunder = fn () {
+test_str_special = fn () {
   class Matrix {
     new(r, c) { this.rows = r; this.cols = c }
     __str__()  { "Matrix {this.rows}x{this.cols}" }
@@ -203,7 +203,7 @@ test_op_overload()
 test_pow_overload()
 test_auto_reflect()
 test_matmul_overload()
-test_str_dunder()
+test_str_special()
 test_default_display()
 
 puts('class-sugar OK')

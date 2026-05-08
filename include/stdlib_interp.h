@@ -203,7 +203,7 @@ inline Value make_io_namespace() {
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
                                       std::cout
-                                          << str_quoted_with_dunder(
+                                          << str_quoted_with_special(
                                                  env->get("arg"))
                                           << std::endl;
                                       return Value();
@@ -213,7 +213,7 @@ inline Value make_io_namespace() {
   ns.initialize("print",
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
-                                      std::cout << str_display_with_dunder(
+                                      std::cout << str_display_with_special(
                                           env->get("arg"));
                                       return Value();
                                     })),
@@ -683,7 +683,7 @@ inline void setup_built_in_functions(
   env.initialize("to_string",
                  Value(FunctionValue({{"v", false}},
                                      [](std::shared_ptr<Environment> env) {
-                                       return Value(str_display_with_dunder(
+                                       return Value(str_display_with_special(
                                            env->get("v")));
                                      },
                                      "String"sv)),

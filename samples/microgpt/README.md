@@ -1,8 +1,8 @@
 # microgpt on Culebra
 
 Karpathy's scalar autograd microgpt, ported to Culebra. Used as a
-benchmark and language-coverage exercise (`class` sugar, dunder
-overloading, auto-reflection, `Math.*`, `Random.*`).
+benchmark and language-coverage exercise (`class` sugar, operator
+overloading via special methods, auto-reflection, `Math.*`, `Random.*`).
 
 ## Files
 
