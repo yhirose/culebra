@@ -8,13 +8,6 @@
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
-// macOS termios.h defines CR1/CR2/CR3 macros that conflict with LLVM headers
-#if defined(__APPLE__)
-#undef CR1
-#undef CR2
-#undef CR3
-#endif
-
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/IRBuilder.h"

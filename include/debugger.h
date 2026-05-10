@@ -4,18 +4,6 @@
 #include <print>
 #include <linenoise.hpp>
 
-// On Linux, linenoise.hpp transitively includes <termios.h>, which
-// defines CR0..CR3 as numeric macros for carriage-return delays. LLVM
-// 22's ConstantRange.h uses CR1/CR2 as parameter names, so the macros
-// blow up the LLVM headers later included via jit.h. Drop them — we
-// don't use the termios CR* values anywhere in culebra.
-#ifdef CR0
-#undef CR0
-#undef CR1
-#undef CR2
-#undef CR3
-#endif
-
 #include "culebra.h"
 
 namespace culebra {
