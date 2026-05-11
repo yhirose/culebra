@@ -52,9 +52,7 @@ inline Value make_math_namespace() {
                           })),
       false);
 
-  // Fold a non-empty set of numeric arguments (`a`, `b`, and any
-  // overflow in `__ARGS__`) with a picker. Returns Long if every arg
-  // was Long, else Float. At least 2 args are required.
+  // Returns Long if every arg was Long, else Float. Requires ≥2 args.
   auto numeric_reduce = [](std::shared_ptr<Environment> env,
                            auto better) {
     long line = env->get("__LINE__").to_long();
@@ -146,8 +144,6 @@ inline Value make_math_namespace() {
                           "Long"sv)),
       false);
 
-  // Float-domain functions. Each one accepts Long or Float input and
-  // produces Float (log/exp/sqrt) or Long (floor/ceil/round).
   auto float_to_float = [](auto fn) {
     return Value(FunctionValue(
         {{"x", false}},
@@ -186,7 +182,6 @@ inline Value make_math_namespace() {
   // round-half-to-even (banker's rounding, matching Python's built-in round()).
   ns.initialize("round", float_to_long ([](double x) { return std::rint(x); }), false);
 
-  // Constants.
   ns.initialize("pi",  Value(M_PI), false);
   ns.initialize("e",   Value(M_E), false);
   ns.initialize("inf", Value(std::numeric_limits<double>::infinity()), false);
@@ -293,7 +288,6 @@ inline Value make_random_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
-  // Small helper: read a numeric argument or raise type error.
   auto get_num = [](std::shared_ptr<Environment>& env, const char* name) {
     const auto& v = env->get(name);
     if (!v.is_numeric()) {

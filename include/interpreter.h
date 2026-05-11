@@ -855,6 +855,16 @@ struct Environment {
   std::vector<std::function<void()>> deferred;
 };
 
+// Lexical scope chained to `outer`. Function frames don't use this —
+// they construct `Environment(parent)` directly and look up captures
+// via `def_env`, not via `outer`.
+inline std::shared_ptr<Environment> make_scope(
+    std::shared_ptr<Environment> outer) {
+  auto env = std::make_shared<Environment>();
+  env->append_outer(std::move(outer));
+  return env;
+}
+
 typedef std::function<void(const peg::Ast& ast, Environment& env,
                            bool force_to_break)>
     Debugger;
@@ -2530,8 +2540,7 @@ struct Interpreter {
       }
       Value loop_val = step_obj.has("value") ? step_obj.get("value") : Value();
 
-      auto scopeEnv = std::make_shared<Environment>();
-      scopeEnv->append_outer(env);
+      auto scopeEnv = make_scope(env);
       scopeEnv->initialize(var_name, loop_val, false);
       try {
         eval(body, scopeEnv);
@@ -2691,8 +2700,7 @@ struct Interpreter {
       // arm.nodes: PATTERN (GUARD)? EXPRESSION
       const auto& pattern = *arm->nodes[0];
       size_t next = 1;
-      auto armEnv = std::make_shared<Environment>();
-      armEnv->append_outer(env);
+      auto armEnv = make_scope(env);
       if (!try_pattern(pattern, subject, armEnv)) continue;
 
       if (next < arm->nodes.size() && arm->nodes[next]->tag == "GUARD"_) {
@@ -3309,8 +3317,7 @@ struct Interpreter {
 
   Value eval_lexical_scope(const peg::Ast& ast,
                            std::shared_ptr<Environment> env) {
-    auto scopeEnv = std::make_shared<Environment>();
-    scopeEnv->append_outer(env);
+    auto scopeEnv = make_scope(env);
     try {
       for (auto node : ast.nodes) {
         eval(*node, scopeEnv);
@@ -3511,6 +3518,24 @@ struct Interpreter {
     return nullptr;
   }
 
+  // `**` is only valid for in-place; regular binop uses `compute_power`.
+  static std::optional<Op> op_to_tensor_op(std::string_view op) {
+    if (op == "+") return Op::Add;
+    if (op == "-") return Op::Sub;
+    if (op == "*") return Op::Mul;
+    if (op == "/") return Op::Div;
+    if (op == "**") return Op::Pow;
+    return std::nullopt;
+  }
+
+  // Returns nullptr when v is neither Tensor nor numeric — callers
+  // decide whether to throw or fall back.
+  static TensorPtr lift_to_tensor(const Value& v, Dtype dt) {
+    if (v.type == Value::Tensor) return v.to_tensor().impl;
+    if (v.is_numeric()) return tensor_scalar(v.to_double_coerce(), dt);
+    return nullptr;
+  }
+
   // Auto-reflection only fires for operators where `rhs.__op__(lhs)`
   // still computes the mathematically-correct `lhs op rhs` — i.e.,
   // commutative arithmetic. Non-commutative ops (`-`, `/`, `%`, `@`,
@@ -3523,22 +3548,14 @@ struct Interpreter {
   Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope,
                          std::shared_ptr<Environment> env) {
     if (lhs.type == Value::Tensor || rhs.type == Value::Tensor) {
-      Op tensor_op;
-      switch (ope) {
-        case '+': tensor_op = Op::Add; break;
-        case '-': tensor_op = Op::Sub; break;
-        case '*': tensor_op = Op::Mul; break;
-        case '/': tensor_op = Op::Div; break;
-        default:  throw CulebraError("TypeError", "type error.");
-      }
+      auto tensor_op = op_to_tensor_op(std::string_view(&ope, 1));
+      if (!tensor_op) throw CulebraError("TypeError", "type error.");
       Dtype dt = (lhs.type == Value::Tensor) ? lhs.to_tensor().impl->dtype
                                              : rhs.to_tensor().impl->dtype;
-      auto lift = [&](const Value& v) {
-        if (v.type == Value::Tensor) return v.to_tensor().impl;
-        if (v.is_numeric()) return tensor_scalar(v.to_double_coerce(), dt);
-        throw CulebraError("TypeError", "type error.");
-      };
-      return Value(TensorValue(tensor_binop(tensor_op, lift(lhs), lift(rhs))));
+      auto l = lift_to_tensor(lhs, dt);
+      auto r = lift_to_tensor(rhs, dt);
+      if (!l || !r) throw CulebraError("TypeError", "type error.");
+      return Value(TensorValue(tensor_binop(*tensor_op, l, r)));
     }
     if (auto* special = arith_op_to_special(ope)) {
       if (auto r = try_special_binop(lhs, rhs, special, env)) return *r;
@@ -3555,35 +3572,27 @@ struct Interpreter {
     }
     // Integer fast path: both Long.
     if (lhs.type == Value::Long && rhs.type == Value::Long) {
-      auto a = lhs.get<long>();
-      auto b = rhs.get<long>();
-      switch (ope) {
-        case '+': return Value(a + b);
-        case '-': return Value(a - b);
-        case '*': return Value(a * b);
-        case '/':
-          if (b == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
-          return Value(a / b);
-        case '%':
-          if (b == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
-          return Value(a % b);
-      }
-      throw std::logic_error("invalid arithmetic operator");
+      return arith_op(lhs.get<long>(), rhs.get<long>(), ope);
     }
     // Mixed or both-Float path: promote to double.
-    auto a = lhs.to_double_coerce();
-    auto b = rhs.to_double_coerce();
+    return arith_op(lhs.to_double_coerce(), rhs.to_double_coerce(), ope);
+  }
+
+  // Float divide-by-zero raises (matches Python), so the b == 0
+  // check fires for both Long and Float.
+  template <class T>
+  static Value arith_op(T a, T b, char ope) {
     switch (ope) {
       case '+': return Value(a + b);
       case '-': return Value(a - b);
       case '*': return Value(a * b);
       case '/':
-        // Follow Python: float divide-by-zero also raises.
-        if (b == 0.0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
+        if (b == T{0}) throw CulebraError("ZeroDivisionError", "divide by 0 error");
         return Value(a / b);
       case '%':
-        if (b == 0.0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
-        return Value(std::fmod(a, b));
+        if (b == T{0}) throw CulebraError("ZeroDivisionError", "divide by 0 error");
+        if constexpr (std::is_floating_point_v<T>) return Value(std::fmod(a, b));
+        else return Value(a % b);
     }
     throw std::logic_error("invalid arithmetic operator");
   }
@@ -3659,24 +3668,12 @@ struct Interpreter {
   // preconditions fail (caller then falls back to apply_compound_op).
   bool try_tensor_inplace(Value& lhs, std::string_view op, const Value& rhs) {
     if (lhs.type != Value::Tensor) return false;
-    Op tensor_op;
-    if (op == "+") tensor_op = Op::Add;
-    else if (op == "-") tensor_op = Op::Sub;
-    else if (op == "*") tensor_op = Op::Mul;
-    else if (op == "/") tensor_op = Op::Div;
-    else if (op == "**") tensor_op = Op::Pow;
-    else return false;
+    auto tensor_op = op_to_tensor_op(op);
+    if (!tensor_op) return false;
     auto& dst = *lhs.to_tensor().impl;
-    auto lift = [&](const Value& v) -> TensorPtr {
-      if (v.type == Value::Tensor) return v.to_tensor().impl;
-      if (v.is_numeric()) {
-        return tensor_scalar(v.to_double_coerce(), dst.dtype);
-      }
-      return nullptr;
-    };
-    auto rhs_tensor = lift(rhs);
+    auto rhs_tensor = lift_to_tensor(rhs, dst.dtype);
     if (!rhs_tensor) return false;
-    return tensor_inplace_binop(dst, tensor_op, std::move(rhs_tensor));
+    return tensor_inplace_binop(dst, *tensor_op, std::move(rhs_tensor));
   }
 
   bool is_keyword(std::string_view ident) const {
@@ -3948,8 +3945,7 @@ struct Interpreter {
 
   // TRY = [BLOCK, IDENTIFIER, BLOCK]  (try-body, catch-binding, catch-body)
   Value eval_try(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    auto tryEnv = std::make_shared<Environment>();
-    tryEnv->append_outer(env);
+    auto tryEnv = make_scope(env);
     Value tryResult;
     bool threw = false;
     Value thrown;
@@ -3973,8 +3969,7 @@ struct Interpreter {
     run_deferred(tryEnv);
     if (!threw) return tryResult;
 
-    auto catchEnv = std::make_shared<Environment>();
-    catchEnv->append_outer(env);
+    auto catchEnv = make_scope(env);
     // The catch binding introduces a new name: apply the same shadow
     // check as parameters and pattern bindings.
     bind_pattern_name(catchEnv, *ast.nodes[1], thrown);
@@ -3997,8 +3992,7 @@ struct Interpreter {
     env->deferred.push_back([this, body, wenv]() {
       auto e = wenv.lock();
       if (!e) return;
-      auto scopeEnv = std::make_shared<Environment>();
-      scopeEnv->append_outer(e);
+      auto scopeEnv = make_scope(e);
       // A `return` inside a defer body exits only the defer closure,
       // not the enclosing function. This matches the JIT's semantics
       // (the defer body compiles to its own LLVM function whose `ret`

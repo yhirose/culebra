@@ -1376,37 +1376,30 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   return l || e;
 }
 
-__attribute__((used)) inline bool culebra_runtime_value_less(
-    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+#define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
+  __attribute__((used)) inline bool culebra_runtime_value_##name(       \
+      int8_t t1, int64_t d1, int8_t t2, int64_t d2) {                   \
+    fast_path                                                           \
+    return _culebra_value_ord(t1, d1, t2, d2,                           \
+                              [](double a, double b) { return a cmp_op b; }); \
+  }
+CUL_DEF_ORD_OP(less, <,
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return _extract_bool_and_release(*r);
-  return _culebra_value_ord(t1, d1, t2, d2,
-                            [](double a, double b) { return a < b; });
-}
-
-__attribute__((used)) inline bool culebra_runtime_value_leq(
-    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+)
+CUL_DEF_ORD_OP(leq, <=,
   if (auto r = _special_le(t1, d1, t2, d2)) return *r;
-  return _culebra_value_ord(t1, d1, t2, d2,
-                            [](double a, double b) { return a <= b; });
-}
-
-__attribute__((used)) inline bool culebra_runtime_value_greater(
-    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  // a > b ≡ !(a <= b)
+)
+// a > b ≡ !(a <= b)
+CUL_DEF_ORD_OP(greater, >,
   if (auto r = _special_le(t1, d1, t2, d2)) return !*r;
-  return _culebra_value_ord(t1, d1, t2, d2,
-                            [](double a, double b) { return a > b; });
-}
-
-__attribute__((used)) inline bool culebra_runtime_value_geq(
-    int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  // a >= b ≡ !(a < b)
+)
+// a >= b ≡ !(a < b)
+CUL_DEF_ORD_OP(geq, >=,
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return !_extract_bool_and_release(*r);
-  return _culebra_value_ord(t1, d1, t2, d2,
-                            [](double a, double b) { return a >= b; });
-}
+)
+#undef CUL_DEF_ORD_OP
 
 // Power with full Python-style semantics:
 //   Long ** non-negative Long  → Long (exp-by-squaring, wraps)
@@ -1450,7 +1443,7 @@ CUL_NUM_INPLACE(add, Op::Add)
 CUL_NUM_INPLACE(sub, Op::Sub)
 CUL_NUM_INPLACE(mul, Op::Mul)
 CUL_NUM_INPLACE(div, Op::Div)
-#undef CUL_NUM_INPLACE
+// Pow expansion is further down — it needs `culebra_runtime_num_pow`.
 
 __attribute__((used)) inline JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
@@ -1476,14 +1469,8 @@ __attribute__((used)) inline JitValue culebra_runtime_num_pow(
   return {TAG_FLOAT, _culebra_double_to_bits(std::pow(a, b))};
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_num_inplace_pow(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (lt == TAG_TENSOR) {
-    auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::Op::Pow);
-    if (r.tag != TAG_NIL) return r;
-  }
-  return culebra_runtime_num_pow(lt, ld, rt, rd);
-}
+CUL_NUM_INPLACE(pow, Op::Pow)
+#undef CUL_NUM_INPLACE
 
 // Unary negation: Long → Long (wraps), Float → Float. Non-numeric
 // raises type error. Called only from the unary-minus slow path.
@@ -4296,9 +4283,7 @@ inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
 inline constexpr auto write_file          = "culebra_runtime_write_file";
 }  // namespace rt
 
-// ---------------------------------------------------------------------------
-// JIT compiler implementation
-// ---------------------------------------------------------------------------
+// --- JIT compiler implementation ---
 
 struct JIT {
   // Per-variable slot in a scope: either a stack-allocated value or a cell
@@ -4629,6 +4614,40 @@ struct JIT {
   // hand-written `while` loop on the JIT path.
   bool is_inlinable_lambda(const peg::Ast& ast, size_t expected_arity) const;
 
+  template <class PerIter>
+  void emit_unary_lambda_body(const peg::Ast& lambda_ast,
+                              llvm::Value* elem, PerIter&& per_iter) {
+    const auto& info = func_info_.at(&lambda_ast);
+    auto param_name =
+        std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
+    push_scope();
+    bool captured = info.captured_locals.contains(param_name);
+    define_var(param_name, make_var_slot(captured, param_name, elem));
+    auto result = compile(*lambda_ast.nodes[1]);
+    per_iter(elem, result);
+    pop_scope();
+  }
+
+  template <class StoreResult>
+  void emit_binary_lambda_body(const peg::Ast& lambda_ast,
+                                llvm::Value* acc_val,
+                                llvm::Value* val_val,
+                                StoreResult&& store_result) {
+    const auto& info = func_info_.at(&lambda_ast);
+    auto acc_name =
+        std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
+    auto val_name =
+        std::string(lambda_ast.nodes[0]->nodes[1]->nodes[1]->token);
+    push_scope();
+    bool acc_captured = info.captured_locals.contains(acc_name);
+    define_var(acc_name, make_var_slot(acc_captured, acc_name, acc_val));
+    bool val_captured = info.captured_locals.contains(val_name);
+    define_var(val_name, make_var_slot(val_captured, val_name, val_val));
+    auto result = compile(*lambda_ast.nodes[1]);
+    store_result(result);
+    pop_scope();
+  }
+
   // Adding a new HOF: implement an `emit_inlined_array_<op>` that
   // builds a fresh state (output Array, accumulator alloca, etc.),
   // calls `emit_array_unary_inline_loop` (or `_binary_acc_inline_loop`
@@ -4907,6 +4926,14 @@ struct JIT {
     }
   }
 
+  // Allocate a slot and bind it: picks cell vs stack from the enclosing
+  // function's capture set (or stack if no enclosing function).
+  void declare_local(const std::string& name, llvm::Value* val) {
+    bool captured = current_info_ &&
+                    current_info_->captured_locals.contains(name);
+    define_var(name, make_var_slot(captured, name, val));
+  }
+
   // Raw load (no retain) - for internal ownership transfer
   llvm::Value* load_slot_raw(const VarSlot& slot, const std::string& name) {
     if (slot.kind == VarSlot::Stack) {
@@ -5099,78 +5126,41 @@ struct JIT {
 
   // --- Value helpers ---
 
-  llvm::Value* make_nil() {
+  // `data` must already be i64; callers zext/bitcast/ptrtoint as needed.
+  llvm::Value* make_value(uint8_t tag, llvm::Value* data) {
     llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_NIL), {0});
-    val = builder_.CreateInsertValue(val, builder_.getInt64(0), {1});
-    return val;
-  }
-
-  llvm::Value* make_bool(llvm::Value* b) {
-    auto data = builder_.CreateZExt(b, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_BOOL), {0});
+    val = builder_.CreateInsertValue(val, builder_.getInt8(tag), {0});
     val = builder_.CreateInsertValue(val, data, {1});
     return val;
   }
 
-  llvm::Value* make_long(llvm::Value* l) {
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_LONG), {0});
-    val = builder_.CreateInsertValue(val, l, {1});
-    return val;
+  llvm::Value* make_nil() { return make_value(TAG_NIL, builder_.getInt64(0)); }
+
+  llvm::Value* make_bool(llvm::Value* b) {
+    return make_value(TAG_BOOL, builder_.CreateZExt(b, builder_.getInt64Ty()));
   }
+
+  llvm::Value* make_long(llvm::Value* l) { return make_value(TAG_LONG, l); }
 
   // Float is stored bit-cast into the i64 payload. The layout of
   // JitValue ({ i8 tag, i64 data }) is unchanged; only the
   // interpretation of `data` differs when tag is TAG_FLOAT.
   llvm::Value* make_float(llvm::Value* d) {
-    auto i64 = builder_.CreateBitCast(d, builder_.getInt64Ty(), "f.bits");
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_FLOAT), {0});
-    val = builder_.CreateInsertValue(val, i64, {1});
-    return val;
+    return make_value(TAG_FLOAT,
+                      builder_.CreateBitCast(d, builder_.getInt64Ty(),
+                                             "f.bits"));
   }
 
-  llvm::Value* make_func(llvm::Value* ptr) {
-    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_FUNC), {0});
-    val = builder_.CreateInsertValue(val, data, {1});
-    return val;
+  llvm::Value* make_ptr_value(uint8_t tag, llvm::Value* ptr) {
+    return make_value(tag,
+                      builder_.CreatePtrToInt(ptr, builder_.getInt64Ty()));
   }
 
-  llvm::Value* make_string(llvm::Value* ptr) {
-    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_STRING), {0});
-    val = builder_.CreateInsertValue(val, data, {1});
-    return val;
-  }
-
-  llvm::Value* make_array(llvm::Value* ptr) {
-    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_ARRAY), {0});
-    val = builder_.CreateInsertValue(val, data, {1});
-    return val;
-  }
-
-  llvm::Value* make_object(llvm::Value* ptr) {
-    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_OBJECT), {0});
-    val = builder_.CreateInsertValue(val, data, {1});
-    return val;
-  }
-
-  llvm::Value* make_tensor(llvm::Value* ptr) {
-    auto data = builder_.CreatePtrToInt(ptr, builder_.getInt64Ty());
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(TAG_TENSOR), {0});
-    val = builder_.CreateInsertValue(val, data, {1});
-    return val;
-  }
+  llvm::Value* make_func(llvm::Value* ptr) { return make_ptr_value(TAG_FUNC, ptr); }
+  llvm::Value* make_string(llvm::Value* ptr) { return make_ptr_value(TAG_STRING, ptr); }
+  llvm::Value* make_array(llvm::Value* ptr) { return make_ptr_value(TAG_ARRAY, ptr); }
+  llvm::Value* make_object(llvm::Value* ptr) { return make_ptr_value(TAG_OBJECT, ptr); }
+  llvm::Value* make_tensor(llvm::Value* ptr) { return make_ptr_value(TAG_TENSOR, ptr); }
 
   llvm::Value* extract_ptr(llvm::Value* v) {
     auto data = extract_data(v);
@@ -6434,6 +6424,12 @@ struct JIT {
     return slot;
   }
 
+  VarSlot make_var_slot(bool captured, const std::string& name,
+                        llvm::Value* initValue) {
+    return captured ? make_cell_slot(name, initValue)
+                    : make_stack_slot(name, initValue);
+  }
+
   // --- Assignment ---
 
   llvm::Value* compile_assignment(const peg::Ast& ast) {
@@ -6521,13 +6517,7 @@ struct JIT {
         }
       }
 
-      // New variable: decide cell vs stack based on whether a nested function
-      // captures it.
-      bool captured = current_info_ &&
-                      current_info_->captured_locals.contains(name);
-      auto slot = captured ? make_cell_slot(name, rval)
-                           : make_stack_slot(name, rval);
-      define_var(name, slot);
+      declare_local(name, rval);
       emit_value_retain(rval);
       return rval;
     }
@@ -7383,13 +7373,7 @@ struct JIT {
         // matches but introduces no binding (subject is borrowed here,
         // so there's nothing to release on this path).
         auto name = std::string(pattern.token);
-        if (!is_sink_name(name)) {
-          bool captured = current_info_ &&
-                          current_info_->captured_locals.contains(name);
-          auto slot = captured ? make_cell_slot(name, subject)
-                               : make_stack_slot(name, subject);
-          define_var(name, slot);
-        }
+        if (!is_sink_name(name)) declare_local(name, subject);
         return builder_.getTrue();
       }
       case "TYPED_IDENT"_: {
@@ -7422,13 +7406,7 @@ struct JIT {
         // the sink — the type tag still gates the match, but no slot
         // is allocated.
         auto name = std::string(pattern.nodes[0]->token);
-        if (!is_sink_name(name)) {
-          bool captured = current_info_ &&
-                          current_info_->captured_locals.contains(name);
-          auto slot = captured ? make_cell_slot(name, subject)
-                               : make_stack_slot(name, subject);
-          define_var(name, slot);
-        }
+        if (!is_sink_name(name)) declare_local(name, subject);
         return tag_match;
       }
       case "ARRAY_PATTERN"_:
@@ -7536,11 +7514,7 @@ struct JIT {
         // drop the resulting Array's +1 instead of holding it.
         emit_value_release(rest_val);
       } else {
-        bool cap = current_info_ &&
-                   current_info_->captured_locals.contains(rest_name);
-        auto slot = cap ? make_cell_slot(rest_name, rest_val)
-                        : make_stack_slot(rest_name, rest_val);
-        define_var(rest_name, slot);
+        declare_local(rest_name, rest_val);
       }
 
       // Match post-rest elements (from end of array)
@@ -7619,10 +7593,7 @@ struct JIT {
       } else {
         // Retain since we're creating a new owning reference in the slot
         emit_value_retain(v);
-        bool cap = current_info_ &&
-                   current_info_->captured_locals.contains(key);
-        auto slot = cap ? make_cell_slot(key, v) : make_stack_slot(key, v);
-        define_var(key, slot);
+        declare_local(key, v);
       }
     }
 
@@ -7843,11 +7814,7 @@ struct JIT {
       // caller already emitted (no slot will release it for us).
       emit_value_release(elemVal);
     } else {
-      bool captured = current_info_ &&
-                      current_info_->captured_locals.contains(var_name);
-      auto slot = captured ? make_cell_slot(var_name, elemVal)
-                           : make_stack_slot(var_name, elemVal);
-      define_var(var_name, slot);
+      declare_local(var_name, elemVal);
     }
 
     loop_stack_.push_back({continue_bb, break_bb});
@@ -9623,11 +9590,7 @@ struct JIT {
     push_scope();
     auto caughtName = std::string(ast.nodes[1]->token);
     auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
-    bool captured = current_info_ &&
-                    current_info_->captured_locals.contains(caughtName);
-    auto slot = captured ? make_cell_slot(caughtName, caughtValue)
-                         : make_stack_slot(caughtName, caughtValue);
-    define_var(caughtName, slot);
+    declare_local(caughtName, caughtValue);
     auto catchVal = compile(*ast.nodes[2]);
     pop_scope();
     if (!builder_.GetInsertBlock()->getTerminator()) {
@@ -9720,11 +9683,6 @@ inline void JIT::emit_array_unary_inline_loop(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
-
   auto size = emit_call(
       module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
                                    ptrTy),
@@ -9765,15 +9723,7 @@ inline void JIT::emit_array_unary_inline_loop(
   elem = builder_.CreateInsertValue(elem, d, {1});
 
   emit_value_retain(elem);
-  push_scope();
-  bool captured = info.captured_locals.contains(param_name);
-  auto slot = captured ? make_cell_slot(param_name, elem)
-                       : make_stack_slot(param_name, elem);
-  define_var(param_name, slot);
-
-  auto result = compile(body_ast);
-  per_iter(elem, result);
-  pop_scope();
+  emit_unary_lambda_body(lambda_ast, elem, std::forward<PerIter>(per_iter));
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(incBB);
@@ -9874,12 +9824,6 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
-  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
-
   // Accumulator alloca outside the loop. Lives in entry block to keep
   // it out of the loop hot path.
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -9931,20 +9875,9 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
   // through the body as if the runtime helper called `_culebra_invoke2`.
   auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "ired.acc.cur");
 
-  push_scope();
-  bool acc_captured = info.captured_locals.contains(acc_name);
-  define_var(acc_name,
-             acc_captured ? make_cell_slot(acc_name, curAcc)
-                          : make_stack_slot(acc_name, curAcc));
-  bool val_captured = info.captured_locals.contains(val_name);
-  define_var(val_name,
-             val_captured ? make_cell_slot(val_name, elem)
-                          : make_stack_slot(val_name, elem));
-
-  auto result = compile(body_ast);
-  builder_.CreateStore(result, accAlloca);
-
-  pop_scope();
+  emit_binary_lambda_body(
+      lambda_ast, curAcc, elem,
+      [&](llvm::Value* result) { builder_.CreateStore(result, accAlloca); });
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(incBB);
@@ -9972,11 +9905,6 @@ inline void JIT::emit_iter_unary_inline_loop(
   using namespace llvm;
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
-
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
 
   auto next_fn_val = compile_property_get(iter_val, "next");
   auto next_cls_ptr =
@@ -10013,16 +9941,7 @@ inline void JIT::emit_iter_unary_inline_loop(
   elem = builder_.CreateInsertValue(elem, d, {1});
   // iter_advance returns a +1-owned Value; we hand that ref to the
   // param slot directly (no extra retain).
-
-  push_scope();
-  bool captured = info.captured_locals.contains(param_name);
-  auto slot = captured ? make_cell_slot(param_name, elem)
-                       : make_stack_slot(param_name, elem);
-  define_var(param_name, slot);
-
-  auto result = compile(body_ast);
-  per_iter(elem, result);
-  pop_scope();
+  emit_unary_lambda_body(lambda_ast, elem, std::forward<PerIter>(per_iter));
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(condBB);
@@ -10094,11 +10013,6 @@ inline void JIT::emit_range_unary_inline_loop(const peg::Ast& n_ast,
   auto fn = builder_.GetInsertBlock()->getParent();
   auto i64Ty = builder_.getInt64Ty();
 
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto param_name = std::string(params_ast.nodes[0]->nodes[1]->token);
-
   auto n_val = value_to_long(compile(n_ast));
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -10119,15 +10033,7 @@ inline void JIT::emit_range_unary_inline_loop(const peg::Ast& n_ast,
   auto i_cur = builder_.CreateLoad(i64Ty, iAlloca, "rng.i.body");
   auto i_val = make_long(i_cur);
 
-  push_scope();
-  bool captured = info.captured_locals.contains(param_name);
-  auto slot = captured ? make_cell_slot(param_name, i_val)
-                       : make_stack_slot(param_name, i_val);
-  define_var(param_name, slot);
-
-  auto result = compile(body_ast);
-  per_iter(i_val, result);
-  pop_scope();
+  emit_unary_lambda_body(lambda_ast, i_val, std::forward<PerIter>(per_iter));
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     auto i_next =
@@ -10173,12 +10079,6 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   auto fn = builder_.GetInsertBlock()->getParent();
   auto i64Ty = builder_.getInt64Ty();
 
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
-  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
-
   // acc alloca seeded with init's +1.
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "rrd.acc");
@@ -10203,24 +10103,16 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   auto i_val = make_long(i_cur);
   auto acc_val = builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.cur");
 
-  push_scope();
-  bool acc_captured = info.captured_locals.contains(acc_name);
-  define_var(acc_name,
-             acc_captured ? make_cell_slot(acc_name, acc_val)
-                          : make_stack_slot(acc_name, acc_val));
-  bool val_captured = info.captured_locals.contains(val_name);
-  define_var(val_name,
-             val_captured ? make_cell_slot(val_name, i_val)
-                          : make_stack_slot(val_name, i_val));
-
-  auto result = compile(body_ast);
-  // Release the prior acc before overwriting (mirrors
-  // `emit_inlined_iter_reduce`).
-  auto old_acc =
-      builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.prev");
-  emit_value_release(old_acc);
-  builder_.CreateStore(result, accAlloca);
-  pop_scope();
+  emit_binary_lambda_body(
+      lambda_ast, acc_val, i_val,
+      [&](llvm::Value* result) {
+        // Release the prior acc before overwriting (mirrors
+        // `emit_inlined_iter_reduce`).
+        auto old_acc =
+            builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.prev");
+        emit_value_release(old_acc);
+        builder_.CreateStore(result, accAlloca);
+      });
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     auto i_next =
@@ -10239,12 +10131,6 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   using namespace llvm;
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
-
-  const auto& info = func_info_.at(&lambda_ast);
-  const auto& params_ast = *lambda_ast.nodes[0];
-  const auto& body_ast = *lambda_ast.nodes[1];
-  auto acc_name = std::string(params_ast.nodes[0]->nodes[1]->token);
-  auto val_name = std::string(params_ast.nodes[1]->nodes[1]->token);
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
@@ -10287,20 +10173,9 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   // +1 so val slot can absorb it directly.
   auto curAcc = builder_.CreateLoad(valueType_, accAlloca, "iri.acc.cur");
 
-  push_scope();
-  bool acc_captured = info.captured_locals.contains(acc_name);
-  define_var(acc_name,
-             acc_captured ? make_cell_slot(acc_name, curAcc)
-                          : make_stack_slot(acc_name, curAcc));
-  bool val_captured = info.captured_locals.contains(val_name);
-  define_var(val_name,
-             val_captured ? make_cell_slot(val_name, elem)
-                          : make_stack_slot(val_name, elem));
-
-  auto result = compile(body_ast);
-  builder_.CreateStore(result, accAlloca);
-
-  pop_scope();
+  emit_binary_lambda_body(
+      lambda_ast, curAcc, elem,
+      [&](llvm::Value* result) { builder_.CreateStore(result, accAlloca); });
 
   if (!builder_.GetInsertBlock()->getTerminator()) {
     builder_.CreateBr(condBB);

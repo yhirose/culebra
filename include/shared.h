@@ -11,20 +11,12 @@
 
 namespace culebra {
 
-// ---------------------------------------------------------------------------
-// Structured runtime error
-// ---------------------------------------------------------------------------
+// --- Structured runtime error ---
 
-// Internal runtime error vehicle, carrying a kind (TypeError, ShadowError,
-// IndexError, ...) plus optional source location alongside the message.
-// Both backends throw this from internal error sites; the try/catch
-// machinery (interpreter `eval_try` and the JIT TRY landingpad) translates
-// it into a culebra Object with `kind`, `message`, `line`, `col` fields
-// that user code can introspect via `e.kind == 'TypeError'` etc.
-//
-// Inherits from std::runtime_error so unconverted call sites and the
-// top-level fallback still work via the standard exception interface;
-// `e.what()` returns the message verbatim.
+// Both backends throw this; try/catch machinery translates it into a
+// culebra Object with `kind`/`message`/`line`/`col` fields. Inherits
+// from std::runtime_error so unconverted call sites still work via
+// the standard exception interface.
 class CulebraError : public std::runtime_error {
  public:
   std::string kind;
@@ -38,9 +30,7 @@ class CulebraError : public std::runtime_error {
         col(c) {}
 };
 
-// ---------------------------------------------------------------------------
-// Numeric formatting / parsing
-// ---------------------------------------------------------------------------
+// --- Numeric formatting / parsing ---
 
 // Shortest round-trip decimal for a double, with a forced decimal point
 // or exponent so Float display is visually distinguishable from Long
@@ -113,33 +103,23 @@ inline double parse_double_strict(std::string_view s, long line, long col) {
   return 0.0;  // unreachable
 }
 
-// ---------------------------------------------------------------------------
-// Shared PRNG (interpreter and JIT)
-// ---------------------------------------------------------------------------
+// --- Shared PRNG (interpreter and JIT) ---
 
-// Default seed state for the shared PRNG. Produced once at program
-// startup via a seed-sequence function call so that multiple engines
-// (if any) are uncorrelated. Not thread-safe — Culebra's execution
-// model is single-threaded.
+// Not thread-safe — Culebra's execution model is single-threaded.
 inline std::mt19937_64 _culebra_random_engine{std::random_device{}()};
 
-// Single process-wide PRNG, shared between the interpreter and the
-// JIT so `Random.seed(n)` has the same effect regardless of backend.
+// Process-wide PRNG so `Random.seed(n)` has the same effect across backends.
 inline std::mt19937_64& random_engine() { return _culebra_random_engine; }
 
-// ---------------------------------------------------------------------------
-// Well-known property contract
-// ---------------------------------------------------------------------------
+// --- Well-known property contract ---
 
 // Property names the runtime invokes behind the scenes:
 //   drop  - RAII destructor (called on last release / cycle break)
 //   iter  - iterator constructor (returns an object with `next`)
 //   next  - iterator advance (returns `{done, value}`)
-// Each must be a 0-arg Function. Both backends enforce the shape at
-// assignment time so a violation surfaces near its source. Type-shape
-// checking stays in each backend (interpreter Value vs JitClosure are
-// not interchangeable); only the name set and error wording are shared
-// here so the two backends can't drift.
+// Each must be a 0-arg Function. The name set and error wording live
+// here so the two backends can't drift; per-backend type checks stay
+// in each backend (Value vs JitClosure aren't interchangeable).
 inline bool is_well_known_prop(std::string_view name) {
   return name == "drop" || name == "iter" || name == "next";
 }

@@ -18,33 +18,19 @@
 #include <filesystem>
 #include <limits>
 
-// ---------------------------------------------------------------------------
-// Runtime state
-// ---------------------------------------------------------------------------
-
 namespace culebra {
-// Holder for Sys.argv under the JIT. main.cc (or any embedder) populates
-// this before calling JIT::run; culebra_runtime_sys_argv() materializes
-// a fresh JitArray from it on each access.
+// main.cc (or any embedder) populates this before calling JIT::run.
 inline std::vector<std::string>& _culebra_sys_argv_holder() {
   static std::vector<std::string> v;
   return v;
 }
 }  // namespace culebra
 
-// ---------------------------------------------------------------------------
-// Runtime functions callable from JIT'd code
-// ---------------------------------------------------------------------------
-
-// Bring the shared numeric helpers into scope so the extern "C"
-// runtime wrappers below can use unqualified names.
 using culebra::parse_double_strict;
 using culebra::parse_long_strict;
 using culebra::throw_type_error_at;
 
 extern "C" {
-
-// --- Globals ---
 
 __attribute__((used)) inline int64_t culebra_runtime_to_long(
     const char* s, int64_t line, int64_t col) {
@@ -95,8 +81,6 @@ __attribute__((used)) inline void culebra_runtime_print(int8_t type,
   }
 }
 
-// --- I/O ---
-
 __attribute__((used)) inline const char* culebra_runtime_input() {
   std::string line;
   if (!std::getline(std::cin, line)) {
@@ -130,8 +114,6 @@ __attribute__((used)) inline void culebra_runtime_write_file(
   ofs.write(content, static_cast<std::streamsize>(len));
 }
 
-// --- Math / Sys ---
-
 __attribute__((used)) inline int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
   if (exp < 0) {
@@ -146,9 +128,6 @@ __attribute__((used)) inline int64_t culebra_runtime_math_pow(
   return r;
 }
 
-// Float-domain Math functions. Each one coerces a numeric argument
-// (Long or Float) to double, applies std::<fn>, and packs back into a
-// JitValue. Non-numeric input throws `type error at L:C`.
 #define CUL_MATH_F2F(name, call)                                        \
   __attribute__((used)) inline JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
@@ -163,8 +142,8 @@ CUL_MATH_F2F(exp,  std::exp(x))
 CUL_MATH_F2F(sqrt, std::sqrt(x))
 #undef CUL_MATH_F2F
 
-// floor / ceil / round return Long. Long input is identity; Float
-// input is rounded by the paired std helper and cast to int64.
+// Long input is identity (not coerced through Float, which would lose
+// precision on values past 2^53).
 #define CUL_MATH_F2L(name, call)                                        \
   __attribute__((used)) inline JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
@@ -188,11 +167,8 @@ __attribute__((used)) inline JitValue culebra_runtime_math_abs(
   throw_type_error_at(line, col);
 }
 
-// Variadic min/max. Arguments are passed as a packed array of JitValue
-// (`n` entries). Returns Long if every entry was Long, Float if any
-// entry was Float. Fewer than 2 args or any non-numeric raises
-// `type error`. Callers are responsible for retain/release of
-// individual entries — the return value owns no reference (numeric).
+// Returns Long if every entry was Long, else Float. Callers handle
+// retain/release of `args`; the return is numeric (no ref).
 inline JitValue _culebra_numeric_reduce(const JitValue* args, int64_t n,
                                         int64_t line, int64_t col,
                                         bool pick_less) {
@@ -327,9 +303,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
 
 }  // extern "C"
 
-// ---------------------------------------------------------------------------
-// JIT compile-side dispatch (extension hook implementation)
-// ---------------------------------------------------------------------------
+// --- JIT compile-side dispatch (extension hook implementation) ---
 
 namespace culebra {
 
