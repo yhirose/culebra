@@ -19,6 +19,8 @@
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1318,6 +1320,163 @@ inline Value call(std::shared_ptr<Environment> env, std::string_view name,
   } catch (const ReturnValue& r) {
     return r.value;
   }
+}
+
+namespace _detail {
+
+// Extract arg types and return type from a callable. Specialized for
+// function pointers, std::function, and lambdas (via operator()).
+template <class T>
+struct fn_traits : fn_traits<decltype(&std::decay_t<T>::operator())> {};
+
+template <class R, class... Args>
+struct fn_traits<R(*)(Args...)> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+template <class C, class R, class... Args>
+struct fn_traits<R(C::*)(Args...) const> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+template <class C, class R, class... Args>
+struct fn_traits<R(C::*)(Args...)> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+template <class R, class... Args>
+struct fn_traits<std::function<R(Args...)>> {
+  using ret = R;
+  using args = std::tuple<Args...>;
+  static constexpr size_t arity = sizeof...(Args);
+};
+
+// Value → C++. Struct specialization so reference return types
+// (`const std::string&`, `const Value&`) compose cleanly.
+template <class T> struct ValueAs;
+
+template <> struct ValueAs<long> {
+  static long convert(const Value& v) { return v.to_long(); }
+};
+template <> struct ValueAs<int> {
+  static int convert(const Value& v) { return static_cast<int>(v.to_long()); }
+};
+template <> struct ValueAs<double> {
+  static double convert(const Value& v) { return v.to_double_coerce(); }
+};
+template <> struct ValueAs<float> {
+  static float convert(const Value& v) { return static_cast<float>(v.to_double_coerce()); }
+};
+template <> struct ValueAs<bool> {
+  static bool convert(const Value& v) { return v.to_bool(); }
+};
+template <> struct ValueAs<std::string> {
+  static std::string convert(const Value& v) { return v.to_string(); }
+};
+template <> struct ValueAs<std::string_view> {
+  static std::string_view convert(const Value& v) {
+    return v.template get<std::string>();
+  }
+};
+template <> struct ValueAs<const std::string&> {
+  static const std::string& convert(const Value& v) {
+    return v.template get<std::string>();
+  }
+};
+template <> struct ValueAs<Value> {
+  static Value convert(const Value& v) { return v; }
+};
+template <> struct ValueAs<const Value&> {
+  static const Value& convert(const Value& v) { return v; }
+};
+
+// C++ → Value. `cpp_to_value(void)` is handled at the call site.
+inline Value cpp_to_value(long v)        { return Value(v); }
+inline Value cpp_to_value(int v)         { return Value(static_cast<long>(v)); }
+inline Value cpp_to_value(double v)      { return Value(v); }
+inline Value cpp_to_value(float v)       { return Value(static_cast<double>(v)); }
+inline Value cpp_to_value(bool v)        { return Value(v); }
+inline Value cpp_to_value(std::string v) { return Value(std::move(v)); }
+inline Value cpp_to_value(std::string_view v) { return Value(std::string(v)); }
+inline Value cpp_to_value(const char* v) { return Value(std::string(v)); }
+inline Value cpp_to_value(Value v)       { return v; }
+
+// Type annotation matching Culebra's "Bool"/"Long"/"Float"/"String"
+// names. Empty for types that don't map cleanly — Param.type_name=""
+// then means "no annotation" (any).
+template <class T> constexpr std::string_view type_annotation_for() { return {}; }
+template <> constexpr std::string_view type_annotation_for<long>()              { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<int>()               { return "Long"; }
+template <> constexpr std::string_view type_annotation_for<double>()            { return "Float"; }
+template <> constexpr std::string_view type_annotation_for<float>()             { return "Float"; }
+template <> constexpr std::string_view type_annotation_for<bool>()              { return "Bool"; }
+template <> constexpr std::string_view type_annotation_for<std::string>()       { return "String"; }
+template <> constexpr std::string_view type_annotation_for<std::string_view>()  { return "String"; }
+template <> constexpr std::string_view type_annotation_for<const std::string&>(){ return "String"; }
+
+}  // namespace _detail
+
+// Embedding helper: register a C++ callable as a host function under
+// `name`. Argument and return types are deduced from `fn`'s signature
+// and converted via the value_to_cpp / cpp_to_value tables. Use
+// `param_names` to give the script meaningful names (otherwise they
+// become `_arg0`, `_arg1`, ...).
+//
+//   culebra::define(env, "log", [](const std::string& msg) {
+//     std::cout << msg << "\n";
+//   }, {"msg"});
+template <class Fn>
+inline void define(std::shared_ptr<Environment> env, std::string_view name,
+                   Fn&& fn, std::vector<std::string> param_names = {}) {
+  using traits = _detail::fn_traits<std::decay_t<Fn>>;
+  using ArgTuple = typename traits::args;
+  using R = typename traits::ret;
+  constexpr size_t arity = traits::arity;
+
+  param_names.resize(arity);
+  for (size_t i = 0; i < arity; ++i) {
+    if (param_names[i].empty()) param_names[i] = "_arg" + std::to_string(i);
+  }
+  // Stable storage for the names. The closure captures `storage` so
+  // the string_views in `params` stay valid for the FunctionValue's
+  // lifetime.
+  auto storage = std::make_shared<std::vector<std::string>>(std::move(param_names));
+
+  auto type_at = []<size_t I>(std::integral_constant<size_t, I>) {
+    return _detail::type_annotation_for<std::tuple_element_t<I, ArgTuple>>();
+  };
+  std::vector<FunctionValue::Parameter> params;
+  params.reserve(arity);
+  [&]<size_t... I>(std::index_sequence<I...>) {
+    (params.push_back({std::string_view((*storage)[I]), false,
+                       type_at(std::integral_constant<size_t, I>{})}), ...);
+  }(std::make_index_sequence<arity>{});
+
+  auto eval = [storage, fn = std::forward<Fn>(fn)](
+                  std::shared_ptr<Environment> callEnv) -> Value {
+    auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
+      if constexpr (std::is_void_v<R>) {
+        fn(_detail::ValueAs<std::tuple_element_t<I, ArgTuple>>::convert(
+            callEnv->get(std::string_view((*storage)[I])))...);
+        return Value();
+      } else {
+        return _detail::cpp_to_value(
+            fn(_detail::ValueAs<std::tuple_element_t<I, ArgTuple>>::convert(
+                callEnv->get(std::string_view((*storage)[I])))...));
+      }
+    };
+    return invoke(std::make_index_sequence<arity>{});
+  };
+  env->initialize(name,
+                  Value(FunctionValue(std::move(params), std::move(eval),
+                                      _detail::type_annotation_for<R>())),
+                  /*mut=*/false);
 }
 
 inline std::map<std::string_view, Value>& ArrayValue::builtins() {

@@ -116,22 +116,44 @@ supply all positional arguments explicitly.
 
 ## Defining host functions
 
-Add a host function to an `Environment` by binding a `FunctionValue`
-to a name:
+`culebra::define` registers a C++ callable as a script-visible
+function. Argument types and return type are deduced from the
+callable's signature.
 
 ```cpp
-env->initialize("log_msg",
+culebra::define(env, "log", [](const std::string& msg) {
+  std::cout << msg << "\n";
+}, {"msg"});
+
+culebra::define(env, "host_add",
+                [](long a, long b) { return a + b; }, {"a", "b"});
+```
+
+Supported argument and return types: `long`, `int`, `double`, `float`,
+`bool`, `std::string`, `std::string_view`, `const std::string&`, and
+`culebra::Value` (passthrough). The deduced type maps to an annotation
+on the script-side parameter (`Long`, `Float`, `Bool`, `String`), so a
+mistyped argument fails at the call site rather than inside the
+callable.
+
+Parameter names default to `_arg0`, `_arg1`, ... when omitted — pass
+explicit names if scripts will introspect via `fn.parameters()`.
+
+For control over the raw `FunctionValue` (variadics, default values,
+manual env access), bind the value directly:
+
+```cpp
+env->initialize("custom",
     culebra::Value(culebra::FunctionValue(
         {{"msg", false}},
         [](std::shared_ptr<culebra::Environment> env) {
-          std::cout << env->get("msg").to_string() << "\n";
+          // hand-roll: pull args from env, return Value
           return culebra::Value();
         })),
     /*mut=*/false);
 ```
 
-The `FunctionValue` body reads arguments from its callee `env`. See
-`include/stdlib_interp.h` for many examples of this pattern (Math.abs,
+`include/stdlib_interp.h` has many examples of the raw form (Math.abs,
 IO.print, Random.uniform, ...).
 
 ## Smoke tests
@@ -144,3 +166,6 @@ The repository includes two small samples that exercise the contract:
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
   two Runtimes on a single thread, alternating between them, with
   independent PRNG state and independent JIT hook sets.
+* [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)
+  — `culebra::define` round-trips through scripts and via
+  `culebra::call`, including the auto-attached type annotation.

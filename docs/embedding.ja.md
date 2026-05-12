@@ -119,23 +119,45 @@ auto v = culebra::call(env, "update",
 
 ## ホスト関数の定義
 
-ホスト関数は `FunctionValue` を `Environment` に名前付きで束縛して
-追加します:
+`culebra::define` で C++ の callable をスクリプトから見える関数
+として登録します。引数の型と戻り値の型は callable のシグネチャ
+から自動推論されます。
 
 ```cpp
-env->initialize("log_msg",
+culebra::define(env, "log", [](const std::string& msg) {
+  std::cout << msg << "\n";
+}, {"msg"});
+
+culebra::define(env, "host_add",
+                [](long a, long b) { return a + b; }, {"a", "b"});
+```
+
+サポートする引数・戻り値の型: `long`, `int`, `double`, `float`,
+`bool`, `std::string`, `std::string_view`, `const std::string&`,
+`culebra::Value`（透過）。推論された型はスクリプト側パラメータの
+型注釈（`Long`, `Float`, `Bool`, `String`）にマップされるので、
+誤った型の引数は callable に入る前に呼び出し側で弾かれます。
+
+パラメータ名を省略すると `_arg0`, `_arg1`, ... になります —
+スクリプトから `fn.parameters()` で内省される場合は明示的に
+指定してください。
+
+`FunctionValue` を直接組みたい場合（可変長、デフォルト値、env を
+直接触りたい等）は raw 形式で:
+
+```cpp
+env->initialize("custom",
     culebra::Value(culebra::FunctionValue(
         {{"msg", false}},
         [](std::shared_ptr<culebra::Environment> env) {
-          std::cout << env->get("msg").to_string() << "\n";
+          // 手書き: env から引数を取って Value を返す
           return culebra::Value();
         })),
     /*mut=*/false);
 ```
 
-`FunctionValue` の本体は呼び出し側の `env` から引数を読みます。
-このパターンの実例は `include/stdlib_interp.h` 内の Math.abs /
-IO.print / Random.uniform 等に多数あります。
+raw 形式の実例は `include/stdlib_interp.h` の Math.abs / IO.print /
+Random.uniform 等に多数あります。
 
 ## スモークテスト
 
@@ -147,3 +169,6 @@ IO.print / Random.uniform 等に多数あります。
 * [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
   1 スレッド内で 2 つの Runtime を交互に切替え、独立した PRNG 状態
   と独立した JIT フックセットを検証。
+* [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)
+  — `culebra::define` を経由してスクリプトと `culebra::call` 両方から
+  C++ 関数を呼び、自動付与される型注釈の動作も確認。

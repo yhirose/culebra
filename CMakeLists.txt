@@ -129,3 +129,4 @@ endfunction()
 
 culebra_add_smoke_exe(mt_smoke)
 culebra_add_smoke_exe(mi_smoke)
+culebra_add_smoke_exe(define_smoke)
