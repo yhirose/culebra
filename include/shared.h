@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace culebra {
 
@@ -103,13 +105,86 @@ inline double parse_double_strict(std::string_view s, long line, long col) {
   return 0.0;  // unreachable
 }
 
+// --- Runtime context ---
+
+// Owns all per-instance VM state. Multiple Runtimes can coexist on the
+// same thread; RuntimeScope swaps the active one. Single-Runtime
+// embedders never construct one — a lazy thread-local default fills in.
+//
+// Heavy types (InterpGC, ShapeRegistry, ...) live in type-erased slots
+// because they're defined in headers that include shared.h, so they
+// can't be direct members.
+enum RuntimeSlot : size_t {
+  kSlotInterpGc = 0,
+  kSlotJitGc,
+  kSlotShapeRegistry,
+  kSlotDeferStack,
+  kSlotJitHooks,
+  kRuntimeSlotCount
+};
+
+struct Runtime {
+  std::mt19937_64 random_engine{std::random_device{}()};
+  std::vector<std::string> sys_argv;
+
+  // JIT exception carriers. Set by `culebra_runtime_throw`, read by
+  // the try/catch landing pad. See jit.h for the protocol.
+  int8_t thrown_tag = 0;
+  int64_t thrown_data = 0;
+  int8_t is_throw = 0;
+
+  std::array<void*, kRuntimeSlotCount> substate{};
+  std::array<void (*)(void*), kRuntimeSlotCount> substate_deleter{};
+
+  Runtime() = default;
+  ~Runtime() {
+    for (size_t i = 0; i < substate.size(); ++i) {
+      if (substate[i] && substate_deleter[i]) substate_deleter[i](substate[i]);
+    }
+  }
+  Runtime(const Runtime&) = delete;
+  Runtime& operator=(const Runtime&) = delete;
+};
+
+inline thread_local Runtime* _culebra_current_runtime = nullptr;
+
+inline Runtime& default_runtime() {
+  static thread_local Runtime rt;
+  return rt;
+}
+
+inline Runtime& current_runtime() {
+  return _culebra_current_runtime ? *_culebra_current_runtime
+                                  : default_runtime();
+}
+
+// RAII to switch the active Runtime for the current thread.
+struct RuntimeScope {
+  Runtime* prev_;
+  explicit RuntimeScope(Runtime& rt) : prev_(_culebra_current_runtime) {
+    _culebra_current_runtime = &rt;
+  }
+  ~RuntimeScope() { _culebra_current_runtime = prev_; }
+  RuntimeScope(const RuntimeScope&) = delete;
+  RuntimeScope& operator=(const RuntimeScope&) = delete;
+};
+
+// Lazy-init a default-constructible T into a Runtime slot.
+template <class T>
+inline T& runtime_substate(RuntimeSlot slot) {
+  auto& rt = current_runtime();
+  if (!rt.substate[slot]) {
+    rt.substate[slot] = new T();
+    rt.substate_deleter[slot] = [](void* p) { delete static_cast<T*>(p); };
+  }
+  return *static_cast<T*>(rt.substate[slot]);
+}
+
 // --- Shared PRNG (interpreter and JIT) ---
 
-// Not thread-safe — Culebra's execution model is single-threaded.
-inline std::mt19937_64 _culebra_random_engine{std::random_device{}()};
-
-// Process-wide PRNG so `Random.seed(n)` has the same effect across backends.
-inline std::mt19937_64& random_engine() { return _culebra_random_engine; }
+inline std::mt19937_64& random_engine() {
+  return current_runtime().random_engine;
+}
 
 // --- Well-known property contract ---
 

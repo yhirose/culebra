@@ -32,6 +32,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <print>
 #include <queue>
@@ -82,8 +83,7 @@ struct Shape {
 // shares one shape, every {a, b, c} object literal shares one).
 struct ShapeRegistry {
   static ShapeRegistry& instance() {
-    static ShapeRegistry r;
-    return r;
+    return culebra::runtime_substate<ShapeRegistry>(culebra::kSlotShapeRegistry);
   }
   Shape* root() { return root_.get(); }
 
@@ -105,8 +105,9 @@ struct ShapeRegistry {
     return raw;
   }
 
- private:
   ShapeRegistry() : root_(std::make_unique<Shape>()) {}
+
+ private:
   std::unique_ptr<Shape> root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
 };
@@ -419,8 +420,7 @@ struct _GcTracker {
   bool running = false;      // prevent re-entry
 
   static _GcTracker& instance() {
-    static _GcTracker t;
-    return t;
+    return culebra::runtime_substate<_GcTracker>(culebra::kSlotJitGc);
   }
 
   _GcTracker() {
@@ -1059,18 +1059,31 @@ __attribute__((used)) void culebra_runtime_value_retain(int8_t tag,
 // by `culebra_runtime_throw` and read by try/catch landingpads to
 // distinguish user throws (`culebra_is_throw == 1`) from internal
 // runtime errors (`std::runtime_error` etc., which re-raise).
-__attribute__((used)) inline int8_t culebra_thrown_tag = 0;
-__attribute__((used)) inline int64_t culebra_thrown_data = 0;
-__attribute__((used)) inline int8_t culebra_is_throw = 0;
+// JIT IR reaches the carriers through these accessors — ORC's emutls
+// can't resolve `__emutls_v.*` from JIT modules, so a regular call
+// into C++ (where Runtime lookup just works) is the portable path.
+__attribute__((used)) inline int8_t culebra_runtime_get_is_throw() {
+  return culebra::current_runtime().is_throw;
+}
+__attribute__((used)) inline void culebra_runtime_clear_is_throw() {
+  culebra::current_runtime().is_throw = 0;
+}
+__attribute__((used)) inline int8_t culebra_runtime_get_thrown_tag() {
+  return culebra::current_runtime().thrown_tag;
+}
+__attribute__((used)) inline int64_t culebra_runtime_get_thrown_data() {
+  return culebra::current_runtime().thrown_data;
+}
 
 __attribute__((used)) inline void culebra_runtime_throw(int8_t tag,
                                                         int64_t data) {
   // Retain so the payload stays alive through stack unwinding. The
   // matching catch handler is responsible for the balancing release.
   culebra_runtime_value_retain(tag, data);
-  culebra_thrown_tag = tag;
-  culebra_thrown_data = data;
-  culebra_is_throw = 1;
+  auto& rt = culebra::current_runtime();
+  rt.thrown_tag = tag;
+  rt.thrown_data = data;
+  rt.is_throw = 1;
   throw CulebraException(tag, data);
 }
 
@@ -1092,8 +1105,8 @@ __attribute__((used)) inline void culebra_runtime_rethrow() {
 // return, throw), unwinds the stack back to that mark — running each
 // popped closure as a 0-arg call.
 inline std::vector<JitValue>& _culebra_defer_stack() {
-  static std::vector<JitValue> s;
-  return s;
+  return culebra::runtime_substate<std::vector<JitValue>>(
+      culebra::kSlotDeferStack);
 }
 
 __attribute__((used)) inline int64_t culebra_runtime_defer_mark() {
@@ -2048,9 +2061,10 @@ __attribute__((used)) inline void culebra_runtime_object_set_ic(
 // exceptions (anything we can't classify) leave `is_throw=0` so the
 // caller will propagate them with __cxa_rethrow.
 __attribute__((used)) inline void culebra_runtime_try_translate() {
-  if (culebra_is_throw) return;
-  auto build = [](std::string_view kind, std::string_view msg, int64_t line,
-                  int64_t col) {
+  auto& rt = culebra::current_runtime();
+  if (rt.is_throw) return;
+  auto build = [&rt](std::string_view kind, std::string_view msg,
+                     int64_t line, int64_t col) {
     auto* obj = culebra_runtime_object_new();
     culebra_runtime_object_set(
         obj, "kind", false, TAG_STRING,
@@ -2060,9 +2074,9 @@ __attribute__((used)) inline void culebra_runtime_try_translate() {
         reinterpret_cast<int64_t>(_culebra_heap_str(msg)), 0, 0);
     culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
     culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
-    culebra_thrown_tag = TAG_OBJECT;
-    culebra_thrown_data = reinterpret_cast<int64_t>(obj);
-    culebra_is_throw = 1;
+    rt.thrown_tag = TAG_OBJECT;
+    rt.thrown_data = reinterpret_cast<int64_t>(obj);
+    rt.is_throw = 1;
   };
   try {
     throw;
@@ -4476,13 +4490,23 @@ struct JIT {
     return llvm::cast<llvm::Constant>(callee.getCallee());
   }
 
+  // Process-wide LLVM target init. Concurrent callers race on the
+  // built-in target registry, so guard with std::call_once. Each
+  // JIT::run() goes through this before touching ORC.
+  static void ensure_native_target_init() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+    });
+  }
+
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
                          int opt_level = 2) {
     using namespace llvm;
 
-    InitializeNativeTarget();
-    InitializeNativeTargetAsmPrinter();
+    ensure_native_target_init();
 
     auto ctx = std::make_unique<LLVMContext>();
     auto mod = std::make_unique<Module>("culebra", *ctx);
@@ -4784,12 +4808,28 @@ struct JIT {
                                           const peg::Ast& argsAst,
                                           llvm::Value* receiver);
   };
+  // Inside a RuntimeScope: install into that Runtime (overrides the
+  // default, for sandboxing). Outside any scope: install into the
+  // process-wide default that all Runtimes fall back to.
   static void install_extension(const ExtensionHooks& hooks) {
-    hooks_ = hooks;
+    if (culebra::_culebra_current_runtime) {
+      culebra::runtime_substate<ExtensionHooks>(culebra::kSlotJitHooks) = hooks;
+    } else {
+      default_hooks_ = hooks;
+    }
+  }
+
+  static const ExtensionHooks& current_hooks() {
+    auto& rt = culebra::current_runtime();
+    if (auto* p =
+            static_cast<ExtensionHooks*>(rt.substate[culebra::kSlotJitHooks])) {
+      return *p;
+    }
+    return default_hooks_;
   }
 
  private:
-  static inline ExtensionHooks hooks_{};
+  static inline ExtensionHooks default_hooks_{};
   // Friend declared so extension implementations (e.g. JitExtension in
   // stdlib_jit.h) can reach JIT internals (builder_/module_/make_long/
   // extract_tag/...) without those being part of the public surface.
@@ -5298,7 +5338,8 @@ struct JIT {
   static bool is_builtin_var(const std::string& name) {
     if (name == "self" || name == "this") return true;
     if (name == "range" || name == "iota") return true;
-    return hooks_.is_builtin_var && hooks_.is_builtin_var(name);
+    auto& h = current_hooks();
+    return h.is_builtin_var && h.is_builtin_var(name);
   }
 
   // `_` is the non-binding sink (see Environment::is_sink in
@@ -6004,7 +6045,8 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
-    if (hooks_.declare_runtime) hooks_.declare_runtime(*this);
+    auto& h = current_hooks();
+    if (h.declare_runtime) h.declare_runtime(*this);
   }
 
   // --- Main dispatch ---
@@ -8980,9 +9022,9 @@ struct JIT {
     // for unary globals. These names live in `is_builtin_var` but don't
     // show up in `scopes_`, so the lookup_var branch above misses them.
     // Matches interp's UFCS resolution, which consults the full env.
-    if (hooks_.compile_ufcs_builtin) {
-      if (auto* r =
-              hooks_.compile_ufcs_builtin(*this, method, argsAst, receiver)) {
+    auto& h = current_hooks();
+    if (h.compile_ufcs_builtin) {
+      if (auto* r = h.compile_ufcs_builtin(*this, method, argsAst, receiver)) {
         return r;
       }
     }
@@ -9282,12 +9324,13 @@ struct JIT {
     llvm::Value* start = nullptr;
     size_t next_idx = 1;
 
+    auto& h = current_hooks();
     if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "ARGUMENTS"_) {
       auto name = std::string(calleeNode->token);
       start = try_compile_core_global(name, *ast.nodes[1]);
-      if (!start && hooks_.compile_global) {
-        start = hooks_.compile_global(*this, name, *ast.nodes[1], ast);
+      if (!start && h.compile_global) {
+        start = h.compile_global(*this, name, *ast.nodes[1], ast);
       }
       if (start) next_idx = 2;
     }
@@ -9299,12 +9342,12 @@ struct JIT {
       auto prop = ast.nodes[1]->token;
       if (ast.nodes.size() >= 3 &&
           ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
-          hooks_.compile_ns_call) {
-        start = hooks_.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
+          h.compile_ns_call) {
+        start = h.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
         if (start) next_idx = 3;
       }
-      if (!start && hooks_.compile_ns_prop) {
-        start = hooks_.compile_ns_prop(*this, ns, prop);
+      if (!start && h.compile_ns_prop) {
+        start = h.compile_ns_prop(*this, ns, prop);
         if (start) next_idx = 2;
       }
     }
@@ -9550,10 +9593,9 @@ struct JIT {
     // Load the flag: `culebra_runtime_throw` set it for user throws,
     // `culebra_runtime_try_translate` for catchable C++ runtime errors.
     // Either way, 1 means we have a value to bind to the catch name.
-    auto flagGlobal = module_->getOrInsertGlobal(
-        "culebra_is_throw", builder_.getInt8Ty());
-    auto flagVal = builder_.CreateLoad(builder_.getInt8Ty(), flagGlobal,
-                                       "is_throw");
+    auto getIsThrow = module_->getOrInsertFunction(
+        "culebra_runtime_get_is_throw", builder_.getInt8Ty());
+    auto flagVal = builder_.CreateCall(getIsThrow, {}, "is_throw");
     auto isOurs = builder_.CreateICmpNE(flagVal, builder_.getInt8(0));
     auto handleBB = llvm::BasicBlock::Create(ctx_, "try.handle", fn);
     auto notOursBB = llvm::BasicBlock::Create(ctx_, "try.notours", fn);
@@ -9566,19 +9608,19 @@ struct JIT {
 
     builder_.SetInsertPoint(handleBB);
     // Clear the flag and consume the exception.
-    builder_.CreateStore(builder_.getInt8(0), flagGlobal);
+    auto clearIsThrow = module_->getOrInsertFunction(
+        "culebra_runtime_clear_is_throw", builder_.getVoidTy());
+    builder_.CreateCall(clearIsThrow);
     auto endCatchFn = module_->getOrInsertFunction("__cxa_end_catch",
                                                    builder_.getVoidTy());
     builder_.CreateCall(endCatchFn);
-    // Read the thrown Value from the globals into caughtSlot.
-    auto tagGlobal = module_->getOrInsertGlobal(
-        "culebra_thrown_tag", builder_.getInt8Ty());
-    auto dataGlobal = module_->getOrInsertGlobal(
-        "culebra_thrown_data", builder_.getInt64Ty());
-    auto tagVal = builder_.CreateLoad(builder_.getInt8Ty(), tagGlobal,
-                                      "exc.tag");
-    auto dataVal = builder_.CreateLoad(builder_.getInt64Ty(), dataGlobal,
-                                       "exc.data");
+    // Read the thrown Value via accessors (see thread-local note above).
+    auto getTag = module_->getOrInsertFunction(
+        "culebra_runtime_get_thrown_tag", builder_.getInt8Ty());
+    auto getData = module_->getOrInsertFunction(
+        "culebra_runtime_get_thrown_data", builder_.getInt64Ty());
+    auto tagVal = builder_.CreateCall(getTag, {}, "exc.tag");
+    auto dataVal = builder_.CreateCall(getData, {}, "exc.data");
     llvm::Value* caught = llvm::UndefValue::get(valueType_);
     caught = builder_.CreateInsertValue(caught, tagVal, {0});
     caught = builder_.CreateInsertValue(caught, dataVal, {1});

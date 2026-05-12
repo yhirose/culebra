@@ -148,6 +148,8 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
+* Embedding from C++: [`docs/embedding.md`](docs/embedding.md)
+  / [日本語](docs/embedding.ja.md)
 
 Build
 -----

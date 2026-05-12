@@ -191,8 +191,10 @@ const auto grammar_ = R"(
 )";
 
 inline peg::parser& get_parser() {
-  static peg::parser parser;
-  static bool initialized = false;
+  // thread_local — peg::parser's logger callback and VM state aren't
+  // safe to share across host threads.
+  static thread_local peg::parser parser;
+  static thread_local bool initialized = false;
 
   if (!initialized) {
     initialized = true;

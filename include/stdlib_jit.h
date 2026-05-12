@@ -21,8 +21,7 @@
 namespace culebra {
 // main.cc (or any embedder) populates this before calling JIT::run.
 inline std::vector<std::string>& _culebra_sys_argv_holder() {
-  static std::vector<std::string> v;
-  return v;
+  return current_runtime().sys_argv;
 }
 }  // namespace culebra
 

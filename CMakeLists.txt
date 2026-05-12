@@ -103,3 +103,29 @@ if(CULEBRA_ENABLE_TENSOR)
     target_link_libraries(culebra ${BLAS_LIBRARIES})
   endif()
 endif()
+
+# Embedding smoke tests. mt_smoke exercises thread_local isolation
+# (parser, GC, exception state); mi_smoke exercises RuntimeScope and
+# per-Runtime hooks. Build them alongside `culebra` so they stay in
+# step with the headers.
+enable_testing()
+
+function(culebra_add_smoke_exe name)
+  add_executable(${name} tests/embedding/${name}.cc)
+  target_compile_features(${name} PRIVATE cxx_std_23)
+  if(CULEBRA_ENABLE_TENSOR)
+    if(APPLE)
+      target_link_libraries(${name} "-framework Accelerate")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_libraries(${name} ${BLAS_LIBRARIES})
+    endif()
+  endif()
+  if(CULEBRA_ENABLE_JIT)
+    target_link_libraries(${name} ${llvm_libs})
+    set_target_properties(${name} PROPERTIES ENABLE_EXPORTS ON)
+  endif()
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+culebra_add_smoke_exe(mt_smoke)
+culebra_add_smoke_exe(mi_smoke)

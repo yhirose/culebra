@@ -331,10 +331,7 @@ struct InterpGC {
     void* ptr;
   };
 
-  static InterpGC& instance() {
-    static InterpGC g;
-    return g;
-  }
+  static InterpGC& instance() { return runtime_substate<InterpGC>(kSlotInterpGc); }
 
   ~InterpGC() { collect(); }
 
@@ -1275,6 +1272,49 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   }
   try {
     return f.eval(inner);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
+// Default-valued params aren't resolved — pass all positional args.
+// Extras bind to `__ARGS__` (matches the in-language calling convention).
+inline Value call(std::shared_ptr<Environment> env, std::string_view name,
+                  std::vector<Value> args) {
+  if (!env->has(name)) {
+    throw CulebraError("NameError",
+        std::format("'{}' is not defined", name));
+  }
+  auto fn_val = env->get(name);
+  if (fn_val.type != Value::Function) {
+    throw CulebraError("TypeError",
+        std::format("'{}' is not a function", name));
+  }
+  const auto& f = fn_val.get<FunctionValue>();
+  const auto& params = *f.params;
+  if (args.size() < params.size()) {
+    throw CulebraError("ArityError",
+        std::format("'{}' expects {} args, got {}",
+                    name, params.size(), args.size()));
+  }
+
+  auto callEnv = std::make_shared<Environment>(env);
+  callEnv->is_function_frame = true;
+  callEnv->initialize("self", fn_val, false);
+
+  for (size_t i = 0; i < params.size(); ++i) {
+    callEnv->initialize(params[i].name, std::move(args[i]), params[i].mut);
+  }
+  ArrayValue extras;
+  for (size_t i = params.size(); i < args.size(); ++i) {
+    extras.values->push_back(std::move(args[i]));
+  }
+  callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+  callEnv->initialize("__LINE__", Value(0L), false);
+  callEnv->initialize("__COLUMN__", Value(0L), false);
+
+  try {
+    return f.eval(callEnv);
   } catch (const ReturnValue& r) {
     return r.value;
   }
