@@ -48,16 +48,33 @@ test-jit: build
 test-all: build
     #!/usr/bin/env bash
     set -euo pipefail
+    failed=()
     for f in tests/*.cul; do
       out_interp=$(./build/culebra "$f")
       out_jit=$(./build/culebra --jit "$f")
       if [[ "$out_interp" != "$out_jit" ]]; then
           echo "interpreter and JIT outputs differ for $f:"
           diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
-          exit 1
+          failed+=("$f")
       fi
     done
+    if (( ${#failed[@]} > 0 )); then
+      echo "test-all FAIL: ${#failed[@]} file(s) diverge"
+      exit 1
+    fi
     echo "test-all OK: interpreter and JIT match"
+
+# Run embedding-API smoke tests via ctest (mt_smoke, mi_smoke,
+# define_smoke). These C++ tests verify thread_local isolation, the
+# RuntimeScope / per-Runtime hooks story, and the culebra::define
+# helper end-to-end.
+test-embed: build
+    cd build && ctest --output-on-failure
+
+# Full verification: differential test (.cul on both backends) +
+# embedding C++ smoke tests. Run before every commit.
+verify: test-all test-embed
+    @echo "verify OK"
 
 # Smoke: run microgpt 5 training steps (no inference) on both backends
 # to catch regressions in the JIT value-ownership / special-method
