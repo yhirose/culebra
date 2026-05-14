@@ -199,6 +199,12 @@ struct JitObject {
   // transitions always resolve to the same target Shape).
   culebra::Shape* shape = nullptr;
   std::vector<JitObjectEntry> slots;
+  // Sidecar for non-String literal keys (Phase 7-C). Lazy-allocated;
+  // small objects pay nothing. GC walks values during cycle collection
+  // (see GcTracker), but keys are primitive (Long/Float/Bool/Nil) and
+  // hold no references, so no key tracking is needed.
+  struct AnyKeyMap;  // forward decl; full definition below
+  AnyKeyMap* non_string_props = nullptr;
   int64_t gc_slot = -1;  // see JitArray::gc_slot
 
   // --- Shape-based property access helpers ---
@@ -376,6 +382,49 @@ static constexpr int8_t GC_TAG_ARRAY = TAG_ARRAY;
 static constexpr int8_t GC_TAG_OBJECT = TAG_OBJECT;
 static constexpr int8_t GC_TAG_TENSOR = TAG_TENSOR;
 static constexpr int8_t GC_TAG_CELL = 100;
+
+// Hash/eq for JitValue keys in JitObject's non-String key sidecar.
+// Numerically-equal Long/Float/Bool share a bucket (Python convention).
+struct JitValueHash {
+  size_t operator()(const JitValue& v) const {
+    switch (v.tag) {
+      case TAG_NIL:  return 0;
+      case TAG_BOOL: return std::hash<long>{}(v.data != 0 ? 1 : 0);
+      case TAG_LONG: return std::hash<long>{}(v.data);
+      case TAG_FLOAT: {
+        double d;
+        std::memcpy(&d, &v.data, sizeof d);
+        long as_long = static_cast<long>(d);
+        if (std::isfinite(d) && static_cast<double>(as_long) == d) {
+          return std::hash<long>{}(as_long);
+        }
+        return std::hash<double>{}(d);
+      }
+    }
+    return std::hash<int64_t>{}(v.data) ^ static_cast<size_t>(v.tag);
+  }
+};
+struct JitValueEq {
+  bool operator()(const JitValue& a, const JitValue& b) const {
+    if (a.tag == b.tag) return a.data == b.data;
+    auto as_double = [](const JitValue& v) -> double {
+      if (v.tag == TAG_LONG) return static_cast<double>(v.data);
+      if (v.tag == TAG_BOOL) return v.data != 0 ? 1.0 : 0.0;
+      if (v.tag == TAG_FLOAT) {
+        double d;
+        std::memcpy(&d, &v.data, sizeof d);
+        return d;
+      }
+      return std::numeric_limits<double>::quiet_NaN();
+    };
+    bool num_a = (a.tag == TAG_LONG || a.tag == TAG_FLOAT || a.tag == TAG_BOOL);
+    bool num_b = (b.tag == TAG_LONG || b.tag == TAG_FLOAT || b.tag == TAG_BOOL);
+    return num_a && num_b && as_double(a) == as_double(b);
+  }
+};
+
+struct JitObject::AnyKeyMap
+    : std::unordered_map<JitValue, JitObjectEntry, JitValueHash, JitValueEq> {};
 
 // Minimum collect-trigger threshold; adaptive at runtime — see collect().
 static constexpr size_t GC_THRESHOLD = 10000;
@@ -1971,6 +2020,54 @@ __attribute__((used)) inline void culebra_runtime_object_set(
     entry.value.data = data;
   }
   if (std::string_view(key) == "drop") obj->has_drop = true;
+}
+
+// Non-String key access into the sidecar AnyKeyMap. Used by JIT code
+// emitted for `{1: "x"}` literals and `obj[k]` postfix where k is not
+// a String.
+__attribute__((used)) inline void culebra_runtime_object_set_any(
+    JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
+    int8_t val_tag, int64_t val_data) {
+  if (!obj->non_string_props) {
+    obj->non_string_props = new JitObject::AnyKeyMap();
+  }
+  JitValue key{key_tag, key_data};
+  auto& m = *obj->non_string_props;
+  auto it = m.find(key);
+  if (it == m.end()) {
+    m.emplace(key, JitObjectEntry{JitValue{val_tag, val_data}, mut});
+    return;
+  }
+  if (!it->second.mut) {
+    _culebra_value_release_impl(val_tag, val_data);
+    throw culebra::CulebraError("ImmutableError",
+                                "immutable entry on non-String key");
+  }
+  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
+  it->second.value.tag = val_tag;
+  it->second.value.data = val_data;
+}
+
+__attribute__((used)) inline void culebra_runtime_object_get_any(
+    JitObject* obj, int8_t key_tag, int64_t key_data,
+    int8_t* out_tag, int64_t* out_data) {
+  if (!obj->non_string_props) {
+    throw culebra::CulebraError("KeyError", "key not present");
+  }
+  JitValue key{key_tag, key_data};
+  auto it = obj->non_string_props->find(key);
+  if (it == obj->non_string_props->end()) {
+    throw culebra::CulebraError("KeyError", "key not present");
+  }
+  *out_tag = it->second.value.tag;
+  *out_data = it->second.value.data;
+  culebra_runtime_value_retain(*out_tag, *out_data);
+}
+
+__attribute__((used)) inline int8_t culebra_runtime_object_has_any(
+    JitObject* obj, int8_t key_tag, int64_t key_data) {
+  if (!obj->non_string_props) return 0;
+  return obj->non_string_props->contains({key_tag, key_data}) ? 1 : 0;
 }
 
 // Fast path for the property-write IC. Caller (JIT-emitted IR) has
@@ -4150,6 +4247,9 @@ inline constexpr auto build_class_meta
 inline constexpr auto object_set          = "culebra_runtime_object_set";
 inline constexpr auto object_set_fast     = "culebra_runtime_object_set_fast";
 inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
+inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
+inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
+inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
@@ -6240,18 +6340,38 @@ struct JIT {
   }
 
   llvm::Value* compile_object(const peg::Ast& ast) {
+    using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto objPtr = emit_call(
         module_->getOrInsertFunction(rt::object_new, ptrTy),
         {}, "obj");
 
-    // Each child is OBJECT_PROPERTY: [MUTABLE, IDENTIFIER, EXPRESSION]
+    // Each child is OBJECT_PROPERTY: [MUTABLE, KEY, EXPRESSION]
     // or the shorthand form [MUTABLE, IDENTIFIER] — `{x}` reuses the
-    // identifier as both key and value (loaded from the current scope).
+    // identifier as both key and value. KEY is IDENTIFIER for the
+    // common case; Long/Float/Bool/Nil literal keys take a separate
+    // value-keyed sidecar path (object_set_any).
     for (auto& prop : ast.nodes) {
       bool mut = (prop->nodes[0]->token == "mut");
-      auto name = std::string(prop->nodes[1]->token);
+      const auto& key_node = *prop->nodes[1];
+
+      if (key_node.tag != "IDENTIFIER"_) {
+        // Non-IDENTIFIER literal key — emit Value-keyed set.
+        auto key = compile(key_node);
+        auto val = compile(*prop->nodes[2]);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::object_set_any, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt1Ty(), builder_.getInt8Ty(),
+                builder_.getInt64Ty()),
+            {objPtr, extract_tag(key), extract_data(key),
+             builder_.getInt1(mut), extract_tag(val), extract_data(val)});
+        continue;
+      }
+
+      auto name = std::string(key_node.token);
       llvm::Value* val;
       if (prop->nodes.size() < 3) {
         auto slot = lookup_var(name);
@@ -8825,43 +8945,60 @@ struct JIT {
   llvm::Value* compile_index_access(const peg::Ast& idxAst,
                                     llvm::Value* arr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-
-    // Type check: callee must be Array
-    auto tag = extract_tag(arr);
-    auto isArr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
-
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto okBB = llvm::BasicBlock::Create(ctx_, "idx.ok", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "idx.err", fn);
-    builder_.CreateCondBr(isArr, okBB, errBB);
+    auto tag = extract_tag(arr);
+
+    auto arrBB    = llvm::BasicBlock::Create(ctx_, "idx.arr", fn);
+    auto objBB    = llvm::BasicBlock::Create(ctx_, "idx.obj", fn);
+    auto errBB    = llvm::BasicBlock::Create(ctx_, "idx.err", fn);
+    auto mergeBB  = llvm::BasicBlock::Create(ctx_, "idx.merge", fn);
+
+    auto isArr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
+    auto chkObjBB = llvm::BasicBlock::Create(ctx_, "idx.chk_obj", fn);
+    builder_.CreateCondBr(isArr, arrBB, chkObjBB);
+    builder_.SetInsertPoint(chkObjBB);
+    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+    builder_.CreateCondBr(isObj, objBB, errBB);
 
     builder_.SetInsertPoint(errBB);
     emit_type_error_typed("Array", tag);
     builder_.CreateUnreachable();
 
-    builder_.SetInsertPoint(okBB);
+    // Allocate output slots in entry block; reused by both paths.
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "idx.out.tag");
+    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "idx.out.data");
+
+    // Array path: existing behavior — index by Long.
+    builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
     auto idxVal = compile(idxAst);
     auto idx = value_to_long(idxVal);
-
-    // Allocate output slots in entry block
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto outTag =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "idx.out.tag");
-    auto outData =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "idx.out.data");
-
     emit_call(
         module_->getOrInsertFunction(
-            rt::array_get, builder_.getVoidTy(), ptrTy,
-            builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-            builder_.getInt64Ty()),
+            rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy,
+            ptrTy, i64Ty, i64Ty),
         {arrPtr, idx, outTag, outData, current_line_val(),
          current_column_val()});
+    builder_.CreateBr(mergeBB);
 
-    auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-    auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+    // Object path: look up by Value key in the non-String sidecar.
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
+    auto objKey = compile(idxAst);
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::object_get_any, builder_.getVoidTy(), ptrTy, i8Ty, i64Ty,
+            ptrTy, ptrTy),
+        {objPtr, extract_tag(objKey), extract_data(objKey), outTag, outData});
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
+    auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
     llvm::Value* result = llvm::UndefValue::get(valueType_);
     result = builder_.CreateInsertValue(result, tagLoaded, {0});
     result = builder_.CreateInsertValue(result, dataLoaded, {1});

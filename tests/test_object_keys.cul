@@ -1,0 +1,24 @@
+// Non-String literal keys on Object (Phase 7-B/C).
+// Both backends accept Long/Float/Bool/Nil as keys and look them up
+// via obj[k].
+
+let m = {1: "one", 2: "two", 3.14: "pi"}
+assert(m[1] == "one")
+assert(m[2] == "two")
+assert(m[3.14] == "pi")
+
+// Single-key cases (avoid Python-style numeric cross-type collision).
+let by_bool = {true: "y"}
+assert(by_bool[true] == "y")
+
+let by_nil = {nil: "n"}
+assert(by_nil[nil] == "n")
+
+// String keys keep working alongside non-String ones — String keys
+// flow through the shape/string_view path; non-String keys live in
+// the lazy sidecar.
+let mix = {a: 1, 99: "ninety-nine"}
+assert(mix.a == 1)
+assert(mix[99] == "ninety-nine")
+
+IO.puts("test_object_keys OK")
