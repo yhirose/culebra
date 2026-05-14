@@ -514,6 +514,15 @@ struct ArrayValue : public ObjectValue {
   std::shared_ptr<std::vector<Value>> values;
 };
 
+// Immutable, fixed-arity sequence. Hashable when every element is.
+struct TupleValue {
+  std::shared_ptr<std::vector<Value>> elements;
+
+  TupleValue() : elements(std::make_shared<std::vector<Value>>()) {}
+  explicit TupleValue(std::vector<Value> v)
+      : elements(std::make_shared<std::vector<Value>>(std::move(v))) {}
+};
+
 // Builtin Tensor type. The data buffer lives in a shared_ptr<TensorImpl>
 // (see tensor.h); cycles are impossible because the buffer holds opaque
 // bytes, so no InterpGC tracking is needed.
@@ -525,7 +534,7 @@ struct TensorValue : public ObjectValue {
 };
 
 struct Value {
-  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor };
+  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple };
 
   Value() : type(Nil) {}
   Value(const Value& rhs) : type(rhs.type), v(rhs.v) {}
@@ -553,6 +562,7 @@ struct Value {
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
   explicit Value(TensorValue&& t) : type(Tensor), v(t) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
+  explicit Value(TupleValue&& t) : type(Tuple), v(t) {}
 
   bool is_numeric() const { return type == Long || type == Float; }
 
@@ -571,8 +581,14 @@ struct Value {
       case Object:   return "Object";
       case Function: return "Function";
       case Tensor:   return "Tensor";
+      case Tuple:    return "Tuple";
     }
     return "?";
+  }
+
+  const TupleValue& to_tuple() const {
+    if (type == Tuple) return get<TupleValue>();
+    _throw_type_error("Tuple");
   }
 
   // Throws a "type error: expected X, got Y" runtime_error. Caller-side
@@ -740,6 +756,17 @@ struct Value {
         return tensor_str(*get<TensorValue>().impl);
       case Function:
         return "[function]";
+      case Tuple: {
+        const auto& v = *get<TupleValue>().elements;
+        std::string s = "(";
+        for (size_t i = 0; i < v.size(); i++) {
+          if (i) s += ", ";
+          s += v[i].str();
+        }
+        if (v.size() == 1) s += ",";
+        s += ")";
+        return s;
+      }
       default:
         throw std::logic_error("invalid internal condition.");
     }
@@ -782,6 +809,15 @@ struct Value {
         return get<double>() == rhs.get<double>();
       case String:
         return get<std::string>() == rhs.get<std::string>();
+      case Tuple: {
+        const auto& a = *get<TupleValue>().elements;
+        const auto& b = *rhs.get<TupleValue>().elements;
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++) {
+          if (!(a[i] == b[i])) return false;
+        }
+        return true;
+      }
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -866,6 +902,13 @@ struct ValueHash {
       }
       case Value::String:
         return std::hash<std::string>{}(v.get<std::string>());
+      case Value::Tuple: {
+        size_t h = 0xa3b1c5d7e9f10000ULL;
+        for (const auto& e : *v.get<TupleValue>().elements) {
+          h ^= (*this)(e) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        }
+        return h;
+      }
       default:
         throw CulebraError("TypeError", std::format(
             "unhashable type: '{}'", v.type_name()));
@@ -2837,6 +2880,12 @@ struct Interpreter {
         return eval_object(ast, env);
       case "ARRAY"_:
         return eval_array(ast, env);
+      case "TUPLE"_: {
+        std::vector<Value> elems;
+        elems.reserve(ast.nodes.size());
+        for (const auto& n : ast.nodes) elems.push_back(eval(*n, env));
+        return Value(TupleValue(std::move(elems)));
+      }
       case "NIL"_:
         return eval_nil(ast, env);
       case "BOOLEAN"_:

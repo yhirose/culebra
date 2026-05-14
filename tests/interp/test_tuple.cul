@@ -1,0 +1,20 @@
+// Tuple literal (Phase 7-D, interp-only for now; JIT support pending).
+
+let pair = (3, 4)
+let one  = (1,)
+let trip = (1, "two", 3.14)
+assert(type_of(pair) == "Tuple")
+assert(type_of(one)  == "Tuple")
+assert(type_of(trip) == "Tuple")
+
+// Equality
+let a = (1, 2)
+let b = (1, 2)
+assert(a == b)
+
+// Tuple as Object key
+let grid = {(0,0): "origin", (1,0): "east"}
+assert(grid[(0,0)] == "origin")
+assert(grid[(1,0)] == "east")
+
+IO.puts("test_tuple OK")

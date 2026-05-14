@@ -94,7 +94,9 @@ const auto grammar_ = R"(
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
-                               STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
+                               STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
+  TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
+                            /  '(' _ EXPRESSION _ ',' _ ')'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
   # Lambda sugar: `|x, y| expr` / `|x, y| { ... }` desugars to
@@ -130,7 +132,7 @@ const auto grammar_ = R"(
   IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
   OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-  OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN) _ ':' _ EXPRESSION
+  OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
                             /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
   ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
@@ -304,7 +306,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(
         true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
-               "OBJECT_PROPERTY",
+               "OBJECT_PROPERTY", "TUPLE",
                "ARRAY", "RETURN",
                "THROW", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
