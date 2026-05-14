@@ -832,10 +832,11 @@ struct Symbol {
   bool mut;
 };
 
-// Insertion-ordered map keyed by string_view. Drop-in for the
-// std::map<string_view, Symbol> the interpreter used previously —
-// iteration now visits entries in the order they were inserted,
-// matching the Python 3.7+ dict / Ruby Hash convention.
+// Insertion-ordered keyed-by-string_view map.
+// - keys (string_view) must remain valid for the map's lifetime —
+//   typically AST tokens or class-tag string pool entries.
+// - find/contains/insert are O(1) avg; erase is O(n) (entries shift +
+//   index recompute), which is acceptable since Object.remove is rare.
 struct OrderedSymbolMap {
   using Entry = std::pair<std::string_view, Symbol>;
 

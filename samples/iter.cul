@@ -7,11 +7,11 @@ for x in [10, 20, 30] { puts(x) }
 # 20
 # 30
 
-# --- Object iteration yields keys (ascending) --------------------------
+# --- Object iteration yields keys (insertion order) --------------------
 
 for k in {b: 2, a: 1, c: 3} { puts(k) }
-# 'a'
 # 'b'
+# 'a'
 # 'c'
 
 # --- break / continue --------------------------------------------------
