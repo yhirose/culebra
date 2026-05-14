@@ -130,7 +130,8 @@ const auto grammar_ = R"(
   IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
   OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-  OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
+  OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN) _ ':' _ EXPRESSION
+                            /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
   ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 

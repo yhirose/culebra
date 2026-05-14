@@ -34,6 +34,8 @@ struct Environment;
 // Environment and Value are complete. See the docblock at their
 // definitions for semantics.
 struct OrderedSymbolMap;
+struct ValueHash;
+struct ValueEq;
 inline void _call_drop_if_present(OrderedSymbolMap* m);
 inline void _destroy_prop_map(OrderedSymbolMap* m);
 
@@ -486,9 +488,21 @@ struct ObjectValue {
   const Value& get(std::string_view name) const;
   void assign(std::string_view name, const Value& val);
   void initialize(std::string_view name, const Value& val, bool mut);
+
+  // Non-String key overloads (Phase 7-B). `{1: "x", true: "y"}` etc.
+  // String keys still flow through the std::string_view path above so
+  // the existing fast paths (class method lookup, AST-token keys) are
+  // unaffected.
+  bool has(const Value& key) const;
+  const Value& get(const Value& key) const;
+  void initialize(const Value& key, const Value& val, bool mut);
+
   virtual std::map<std::string_view, Value>& builtins();
 
   std::shared_ptr<OrderedSymbolMap> properties;
+  // Lazy-allocated for non-String keys.
+  std::shared_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
+      non_string_props;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -832,6 +846,37 @@ struct Symbol {
   bool mut;
 };
 
+// Hash + equality for Value as a dictionary key. Numerically-equal
+// Long / Float / Bool fall into the same bucket so `{1: "a", 1.0: "b"}`
+// keeps only the second entry — matches Python's dict semantics.
+// Unhashable inputs (Object / Array / Function / Tensor) throw.
+struct ValueHash {
+  size_t operator()(const Value& v) const {
+    switch (v.type) {
+      case Value::Nil:    return 0;
+      case Value::Bool:   return std::hash<long>{}(v.get<bool>() ? 1 : 0);
+      case Value::Long:   return std::hash<long>{}(v.get<long>());
+      case Value::Float: {
+        double d = v.get<double>();
+        long as_long = static_cast<long>(d);
+        if (std::isfinite(d) && static_cast<double>(as_long) == d) {
+          return std::hash<long>{}(as_long);
+        }
+        return std::hash<double>{}(d);
+      }
+      case Value::String:
+        return std::hash<std::string>{}(v.get<std::string>());
+      default:
+        throw CulebraError("TypeError", std::format(
+            "unhashable type: '{}'", v.type_name()));
+    }
+  }
+};
+
+struct ValueEq {
+  bool operator()(const Value& a, const Value& b) const { return a == b; }
+};
+
 // Insertion-ordered keyed-by-string_view map.
 // - keys (string_view) must remain valid for the map's lifetime —
 //   typically AST tokens or class-tag string pool entries.
@@ -1066,6 +1111,28 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
   _check_drop_contract(name, val);
   (*properties)[name] = Symbol{val, mut};
+}
+
+// Non-String key overloads — dispatch to non_string_props (lazy
+// alloc). Phase 7-B handles Long/Float/Bool/Nil keys; runtime String
+// keys (e.g. `obj[some_var]` where some_var is a String) need
+// stable string storage and are out of scope for this phase.
+inline bool ObjectValue::has(const Value& key) const {
+  if (!non_string_props) return false;
+  return non_string_props->contains(key);
+}
+
+inline const Value& ObjectValue::get(const Value& key) const {
+  return non_string_props->at(key).val;
+}
+
+inline void ObjectValue::initialize(const Value& key, const Value& val,
+                                    bool mut) {
+  if (!non_string_props) {
+    non_string_props = std::make_shared<
+        std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
+  }
+  (*non_string_props)[key] = Symbol{val, mut};
 }
 
 // Build the structured-error Object surfaced to user `catch` blocks.
@@ -3447,8 +3514,15 @@ struct Interpreter {
   Value eval_array_reference(const peg::Ast& ast,
                              std::shared_ptr<Environment> env,
                              const Value& val) {
+    auto key = eval(ast, env);
+    // Object[k]: look up the Value-keyed sidecar.
+    if (val.type == Value::Object) {
+      const auto& obj = val.to_object();
+      if (obj.has(key)) return obj.get(key);
+      throw CulebraError("KeyError", "key not present");
+    }
     const auto& arr = val.to_array();
-    auto idx = eval(ast, env).to_long();
+    auto idx = key.to_long();
     if (idx < 0) {
       idx = arr.values->size() + idx;
     }
@@ -4142,15 +4216,25 @@ struct Interpreter {
   };
 
   Value eval_object(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
     ObjectValue obj;
     for (auto i = 0u; i < ast.nodes.size(); i++) {
       const auto& prop = *ast.nodes[i];
       auto mut = prop.nodes[0]->token == "mut";
-      const auto& name = prop.nodes[1]->token;
-      // Shorthand: name resolves in current scope (error path mirrors
-      // bare identifier).
+      const auto& key_node = *prop.nodes[1];
+
+      // Non-IDENTIFIER literal keys: store under Value-keyed sidecar.
+      if (key_node.tag != "IDENTIFIER"_) {
+        auto key = eval(key_node, env);
+        auto val = eval(*prop.nodes[2], env);
+        obj.initialize(key, std::move(val), mut);
+        continue;
+      }
+
+      auto name = key_node.token;
       Value val;
       if (prop.nodes.size() < 3) {
+        // Shorthand: name resolves in current scope.
         val = env->get(name);
       } else {
         val = eval(*prop.nodes[2], env);
