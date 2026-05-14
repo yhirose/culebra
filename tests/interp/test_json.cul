@@ -1,0 +1,29 @@
+// JSON.stringify / JSON.parse round-trip (Phase 7-F, interp-only).
+// JIT does not bind JSON yet (no JIT-side helper).
+
+let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}
+let s = JSON.stringify(v)
+let v2 = JSON.parse(s)
+assert(v2.name == "alice")
+assert(v2.age == 30)
+assert(v2.active == true)
+assert(v2.score == 3.14)
+assert(v2.parent == nil)
+
+// Insertion order preserved in stringify
+let o = {b: 2, a: 1, c: 3}
+let s2 = JSON.stringify(o)
+assert(s2 == '{"b":2,"a":1,"c":3}')
+
+// Array round-trip
+let arr = [1, "two", 3.0, true, nil]
+let p = JSON.parse(JSON.stringify(arr))
+assert(p[0] == 1)
+assert(p[1] == "two")
+assert(p[2] == 3.0)
+
+// Nested
+let nested = JSON.parse('{"a":[1,2,{"b":"c"}]}')
+assert(nested.a[2].b == "c")
+
+IO.puts("test_json OK")

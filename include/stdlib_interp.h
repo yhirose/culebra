@@ -613,6 +613,215 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
   return Value(std::move(ns));
 }
 
+// --- JSON stringify/parse ---
+
+inline std::string _json_escape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out += '"';
+  for (char c : s) {
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof buf, "\\u%04x", c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  out += '"';
+  return out;
+}
+
+inline std::string json_stringify(const Value& v) {
+  switch (v.type) {
+    case Value::Nil:    return "null";
+    case Value::Bool:   return v.get<bool>() ? "true" : "false";
+    case Value::Long:   return std::to_string(v.get<long>());
+    case Value::Float: {
+      double d = v.get<double>();
+      if (!std::isfinite(d)) {
+        throw CulebraError("ValueError",
+                           "JSON.stringify: non-finite Float");
+      }
+      return format_float_shortest(d);
+    }
+    case Value::String: return _json_escape(v.get<std::string>());
+    case Value::Array: {
+      std::string s = "[";
+      const auto& xs = *v.to_array().values;
+      for (size_t i = 0; i < xs.size(); i++) {
+        if (i) s += ",";
+        s += json_stringify(xs[i]);
+      }
+      return s + "]";
+    }
+    case Value::Object: {
+      std::string s = "{";
+      bool first = true;
+      for (const auto& [k, sym] : *v.to_object().properties) {
+        if (!first) s += ",";
+        first = false;
+        s += _json_escape(k) + ":" + json_stringify(sym.val);
+      }
+      return s + "}";
+    }
+    default:
+      throw CulebraError("TypeError", std::format(
+          "JSON.stringify: cannot serialize {}", v.type_name()));
+  }
+}
+
+// Minimal recursive-descent JSON parser.
+struct _JsonParser {
+  const char* p;
+  const char* end;
+  void skip_ws() { while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p; }
+  [[noreturn]] void fail(const char* msg) {
+    throw CulebraError("ValueError",
+                       std::format("JSON.parse: {}", msg));
+  }
+  Value parse_value() {
+    skip_ws();
+    if (p >= end) fail("unexpected end");
+    char c = *p;
+    if (c == '{') return parse_object();
+    if (c == '[') return parse_array();
+    if (c == '"') return parse_string();
+    if (c == 't' || c == 'f') return parse_bool();
+    if (c == 'n') return parse_null();
+    return parse_number();
+  }
+  Value parse_object() {
+    ++p; skip_ws();
+    ObjectValue obj;
+    if (p < end && *p == '}') { ++p; return Value(std::move(obj)); }
+    while (p < end) {
+      skip_ws();
+      auto key = parse_string_raw();
+      skip_ws();
+      if (p >= end || *p != ':') fail("expected ':'");
+      ++p;
+      auto val = parse_value();
+      // Heap-stable storage for the key string_view.
+      static thread_local std::deque<std::string> pool;
+      pool.push_back(std::move(key));
+      obj.initialize(std::string_view(pool.back()), val, false);
+      skip_ws();
+      if (p < end && *p == ',') { ++p; continue; }
+      if (p < end && *p == '}') { ++p; return Value(std::move(obj)); }
+      fail("expected ',' or '}'");
+    }
+    fail("unterminated object");
+  }
+  Value parse_array() {
+    ++p; skip_ws();
+    ArrayValue arr;
+    if (p < end && *p == ']') { ++p; return Value(std::move(arr)); }
+    while (p < end) {
+      arr.values->push_back(parse_value());
+      skip_ws();
+      if (p < end && *p == ',') { ++p; continue; }
+      if (p < end && *p == ']') { ++p; return Value(std::move(arr)); }
+      fail("expected ',' or ']'");
+    }
+    fail("unterminated array");
+  }
+  Value parse_string() { return Value(parse_string_raw()); }
+  std::string parse_string_raw() {
+    if (*p != '"') fail("expected string");
+    ++p;
+    std::string out;
+    while (p < end && *p != '"') {
+      if (*p == '\\' && p + 1 < end) {
+        ++p;
+        switch (*p) {
+          case '"':  out += '"'; break;
+          case '\\': out += '\\'; break;
+          case '/':  out += '/'; break;
+          case 'n':  out += '\n'; break;
+          case 'r':  out += '\r'; break;
+          case 't':  out += '\t'; break;
+          case 'b':  out += '\b'; break;
+          case 'f':  out += '\f'; break;
+          default:   fail("bad escape");
+        }
+        ++p;
+      } else {
+        out += *p++;
+      }
+    }
+    if (p >= end) fail("unterminated string");
+    ++p;
+    return out;
+  }
+  Value parse_bool() {
+    if (end - p >= 4 && std::string_view(p, 4) == "true")  { p += 4; return Value(true); }
+    if (end - p >= 5 && std::string_view(p, 5) == "false") { p += 5; return Value(false); }
+    fail("bad bool");
+  }
+  Value parse_null() {
+    if (end - p >= 4 && std::string_view(p, 4) == "null") { p += 4; return Value(); }
+    fail("bad null");
+  }
+  Value parse_number() {
+    const char* start = p;
+    if (*p == '-') ++p;
+    bool is_float = false;
+    while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    if (p < end && *p == '.') {
+      is_float = true; ++p;
+      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    }
+    if (p < end && (*p == 'e' || *p == 'E')) {
+      is_float = true; ++p;
+      if (p < end && (*p == '+' || *p == '-')) ++p;
+      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    }
+    std::string buf(start, p);
+    if (is_float) return Value(std::stod(buf));
+    return Value(static_cast<long>(std::stoll(buf)));
+  }
+};
+
+inline Value json_parse(std::string_view s) {
+  _JsonParser jp{s.data(), s.data() + s.size()};
+  auto v = jp.parse_value();
+  jp.skip_ws();
+  if (jp.p != jp.end) {
+    throw CulebraError("ValueError",
+                       "JSON.parse: trailing characters");
+  }
+  return v;
+}
+
+inline Value make_json_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "stringify",
+      Value(FunctionValue({{"v", false}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(json_stringify(env->get("v")));
+          }, "String"sv)),
+      false);
+  ns.initialize(
+      "parse",
+      Value(FunctionValue({{"s", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return json_parse(env->get("s").to_string());
+          })),
+      false);
+  return Value(std::move(ns));
+}
+
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
   using namespace std::literals;
@@ -706,6 +915,7 @@ inline void setup_built_in_functions(
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
   env.initialize("Tensor", make_tensor_namespace(), false);
+  env.initialize("JSON", make_json_namespace(), false);
 }
 
 inline std::shared_ptr<Environment> environment(
