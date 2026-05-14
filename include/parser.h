@@ -93,10 +93,12 @@ const auto grammar_ = R"(
 
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
+  SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'
+                            /  '{' _ EXPRESSION _ ',' _ '}'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
   # Lambda sugar: `|x, y| expr` / `|x, y| { ... }` desugars to
@@ -306,7 +308,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   if (parser.parse_n(expr, len, ast, path.c_str())) {
     auto opt = peg::AstOptimizer(
         true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
-               "OBJECT_PROPERTY", "TUPLE",
+               "OBJECT_PROPERTY", "TUPLE", "SET",
                "ARRAY", "RETURN",
                "THROW", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",

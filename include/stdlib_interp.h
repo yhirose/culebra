@@ -694,6 +694,7 @@ inline void setup_built_in_functions(
                               case Value::Function: n = "Function"; break;
                               case Value::Tensor:   n = "Tensor"; break;
                               case Value::Tuple:    n = "Tuple"; break;
+                              case Value::Set:      n = "Set"; break;
                             }
                             return Value(std::string(n));
                           },

@@ -523,6 +523,11 @@ struct TupleValue {
       : elements(std::make_shared<std::vector<Value>>(std::move(v))) {}
 };
 
+// Defined after ValueHash/ValueEq are complete (see below).
+struct SetValue;
+inline std::string _set_str(const Value& v);
+inline bool _set_eq(const Value& a, const Value& b);
+
 // Builtin Tensor type. The data buffer lives in a shared_ptr<TensorImpl>
 // (see tensor.h); cycles are impossible because the buffer holds opaque
 // bytes, so no InterpGC tracking is needed.
@@ -534,7 +539,7 @@ struct TensorValue : public ObjectValue {
 };
 
 struct Value {
-  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple };
+  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple, Set };
 
   Value() : type(Nil) {}
   Value(const Value& rhs) : type(rhs.type), v(rhs.v) {}
@@ -563,6 +568,8 @@ struct Value {
   explicit Value(TensorValue&& t) : type(Tensor), v(t) {}
   explicit Value(FunctionValue&& f) : type(Function), v(f) {}
   explicit Value(TupleValue&& t) : type(Tuple), v(t) {}
+  // Defined out-of-line so SetValue is complete here.
+  explicit Value(SetValue&& s);
 
   bool is_numeric() const { return type == Long || type == Float; }
 
@@ -582,6 +589,7 @@ struct Value {
       case Function: return "Function";
       case Tensor:   return "Tensor";
       case Tuple:    return "Tuple";
+      case Set:      return "Set";
     }
     return "?";
   }
@@ -767,6 +775,7 @@ struct Value {
         s += ")";
         return s;
       }
+      case Set: return _set_str(*this);
       default:
         throw std::logic_error("invalid internal condition.");
     }
@@ -818,6 +827,7 @@ struct Value {
         }
         return true;
       }
+      case Set: return _set_eq(*this, rhs);
       // TODO: Object and Array support
       default:
         throw std::logic_error("invalid internal condition.");
@@ -919,6 +929,42 @@ struct ValueHash {
 struct ValueEq {
   bool operator()(const Value& a, const Value& b) const { return a == b; }
 };
+
+// Unordered collection of unique hashable values.
+struct SetValue {
+  // shared_ptr so methods like .add()/.remove() on a copy reach the
+  // same underlying storage (mirrors ArrayValue/ObjectValue semantics).
+  std::shared_ptr<std::vector<Value>> members;  // insertion order
+  std::shared_ptr<std::unordered_map<Value, size_t, ValueHash, ValueEq>> index;
+
+  SetValue()
+      : members(std::make_shared<std::vector<Value>>()),
+        index(std::make_shared<
+              std::unordered_map<Value, size_t, ValueHash, ValueEq>>()) {}
+};
+
+inline Value::Value(SetValue&& s) : type(Set), v(std::move(s)) {}
+
+inline std::string _set_str(const Value& v) {
+  const auto& xs = *v.get<SetValue>().members;
+  std::string s = "{";
+  for (size_t i = 0; i < xs.size(); i++) {
+    if (i) s += ", ";
+    s += xs[i].str();
+  }
+  s += "}";
+  return s;
+}
+
+inline bool _set_eq(const Value& a, const Value& b) {
+  const auto& ia = *a.get<SetValue>().index;
+  const auto& ib = *b.get<SetValue>().index;
+  if (ia.size() != ib.size()) return false;
+  for (const auto& [k, _] : ia) {
+    if (!ib.contains(k)) return false;
+  }
+  return true;
+}
 
 // Insertion-ordered keyed-by-string_view map.
 // - keys (string_view) must remain valid for the map's lifetime —
@@ -1027,6 +1073,7 @@ inline ObjectValue::ObjectValue() {
   // properties map is intentionally not GC-tracked — see the InterpGC
   // class header. Cycles are detected via the contained ArrayValues.
 }
+
 
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
@@ -2885,6 +2932,16 @@ struct Interpreter {
         elems.reserve(ast.nodes.size());
         for (const auto& n : ast.nodes) elems.push_back(eval(*n, env));
         return Value(TupleValue(std::move(elems)));
+      }
+      case "SET"_: {
+        SetValue s;
+        for (const auto& n : ast.nodes) {
+          auto v = eval(*n, env);
+          if (s.index->contains(v)) continue;  // dedupe
+          s.index->emplace(v, s.members->size());
+          s.members->push_back(std::move(v));
+        }
+        return Value(std::move(s));
       }
       case "NIL"_:
         return eval_nil(ast, env);
