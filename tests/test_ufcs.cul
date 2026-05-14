@@ -42,7 +42,7 @@ map_keys_to = fn (o, f) {
 o = {b: 2, a: 1}
 ks = o.map_keys_to(fn (k) { k })
 assert(ks.size() == 2)
-assert(ks[0] == 'a' && ks[1] == 'b')
+assert(ks[0] == 'b' && ks[1] == 'a')
 
 # Chains mixing builtins and UFCS
 incr = fn (x) { x + 1 }

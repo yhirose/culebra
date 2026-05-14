@@ -13,11 +13,11 @@ mut sum = 0
 for x in [1, 2, 3, 4] { sum = sum + x }
 assert(sum == 10)
 
-# Object iteration yields keys (ascending)
+# Object iteration yields keys in insertion order
 mut keys = []
 for k in {b: 2, a: 1, c: 3} { keys.push(k) }
 assert(keys.size() == 3)
-assert(keys[0] == 'a' && keys[1] == 'b' && keys[2] == 'c')
+assert(keys[0] == 'b' && keys[1] == 'a' && keys[2] == 'c')
 
 # break exits inner loop only
 mut hit = 0

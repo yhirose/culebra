@@ -797,9 +797,6 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         if (has_class_tag && obj->shape->names[i] == "class") continue;
         order.push_back(i);
       }
-      std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-        return obj->shape->names[a] < obj->shape->names[b];
-      });
       bool first = true;
       for (auto i : order) {
         const auto& entry = obj->slots[i];
@@ -2399,18 +2396,10 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
 inline void _jit_walk_collect_params(JitValue v, JitArray* out);
 
 inline void _jit_walk_collect_params_object(JitObject* obj, JitArray* out) {
-  // Match interp ordering (std::map sorted-by-key), and the JIT's own
-  // user-visible Object iteration which sorts before emitting (see
-  // culebra_runtime_object_keys). The Shape's names vector stores
-  // declaration order, so sort an index snapshot first.
+  // Both backends iterate Object properties in insertion order. The
+  // Shape's names vector already stores them in declaration order.
   if (!obj->shape) return;
-  std::vector<size_t> order;
-  order.reserve(obj->shape->names.size());
-  for (size_t i = 0; i < obj->shape->names.size(); i++) order.push_back(i);
-  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-    return obj->shape->names[a] < obj->shape->names[b];
-  });
-  for (auto i : order) {
+  for (size_t i = 0; i < obj->shape->names.size(); i++) {
     std::string_view key(obj->shape->names[i]);
     if (key == "class") continue;
     if (!key.empty() && key[0] == '_') continue;
@@ -3861,18 +3850,8 @@ __attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
 __attribute__((used)) inline JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
-  // Documented as alphabetical (matches interp's Object.keys); the
-  // underlying shape stores names in insertion order, so sort an
-  // index snapshot before emitting.
-  std::vector<size_t> order;
-  order.reserve(obj->prop_size());
+  // Insertion order (Shape stores names in declaration order).
   for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
-    order.push_back(i);
-  }
-  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-    return obj->shape->names[a] < obj->shape->names[b];
-  });
-  for (auto i : order) {
     auto& k = obj->shape->names[i];
     auto* buf = _culebra_heap_str(k);
     culebra_runtime_array_push(r, TAG_STRING, reinterpret_cast<int64_t>(buf));

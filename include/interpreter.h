@@ -33,10 +33,9 @@ struct Environment;
 // RAII drop helpers; defined at the bottom of this header where
 // Environment and Value are complete. See the docblock at their
 // definitions for semantics.
-inline void _call_drop_if_present(
-    std::map<std::string_view, Symbol>* m);
-inline void _destroy_prop_map(
-    std::map<std::string_view, Symbol>* m);
+struct OrderedSymbolMap;
+inline void _call_drop_if_present(OrderedSymbolMap* m);
+inline void _destroy_prop_map(OrderedSymbolMap* m);
 
 // Forward decls for method tables defined once FunctionValue and Value
 // are complete. `string_builtins()` is the primitive String's method
@@ -474,13 +473,8 @@ struct FunctionValue {
 };
 
 struct ObjectValue {
-  ObjectValue() {
-    auto* raw = new std::map<std::string_view, Symbol>();
-    properties = std::shared_ptr<std::map<std::string_view, Symbol>>(
-        raw, &_destroy_prop_map);
-    // properties map is intentionally not GC-tracked — see the InterpGC
-    // class header. Cycles are detected via the contained ArrayValues.
-  }
+  // Defined out-of-line after OrderedSymbolMap is complete.
+  ObjectValue();
 
   // Synthetic ctor: skips default map allocation and GC tracking so that
   // _call_drop_if_present can build a `this` view over an existing map
@@ -494,7 +488,7 @@ struct ObjectValue {
   void initialize(std::string_view name, const Value& val, bool mut);
   virtual std::map<std::string_view, Value>& builtins();
 
-  std::shared_ptr<std::map<std::string_view, Symbol>> properties;
+  std::shared_ptr<OrderedSymbolMap> properties;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -838,6 +832,90 @@ struct Symbol {
   bool mut;
 };
 
+// Insertion-ordered map keyed by string_view. Drop-in for the
+// std::map<string_view, Symbol> the interpreter used previously —
+// iteration now visits entries in the order they were inserted,
+// matching the Python 3.7+ dict / Ruby Hash convention.
+struct OrderedSymbolMap {
+  using Entry = std::pair<std::string_view, Symbol>;
+
+  bool contains(std::string_view k) const { return index_.contains(k); }
+
+  Symbol& at(std::string_view k) { return entries_[index_.at(k)].second; }
+  const Symbol& at(std::string_view k) const {
+    return entries_[index_.at(k)].second;
+  }
+
+  Symbol& operator[](std::string_view k) {
+    auto it = index_.find(k);
+    if (it != index_.end()) return entries_[it->second].second;
+    index_.emplace(k, entries_.size());
+    entries_.emplace_back(k, Symbol{});
+    return entries_.back().second;
+  }
+
+  template <class S>
+  std::pair<typename std::vector<Entry>::iterator, bool>
+  emplace(std::string_view k, S&& s) {
+    auto it = index_.find(k);
+    if (it != index_.end()) {
+      return {entries_.begin() + it->second, false};
+    }
+    index_.emplace(k, entries_.size());
+    entries_.emplace_back(k, std::forward<S>(s));
+    return {entries_.begin() + (entries_.size() - 1), true};
+  }
+
+  template <class S>
+  void insert_or_assign(std::string_view k, S&& s) {
+    auto it = index_.find(k);
+    if (it != index_.end()) {
+      entries_[it->second].second = std::forward<S>(s);
+    } else {
+      index_.emplace(k, entries_.size());
+      entries_.emplace_back(k, std::forward<S>(s));
+    }
+  }
+
+  // Compact erase: shifts later entries down and updates indices. O(n).
+  size_t erase(std::string_view k) {
+    auto it = index_.find(k);
+    if (it == index_.end()) return 0;
+    size_t idx = it->second;
+    index_.erase(it);
+    entries_.erase(entries_.begin() + idx);
+    for (auto& [_, i] : index_) {
+      if (i > idx) --i;
+    }
+    return 1;
+  }
+
+  size_t size() const { return entries_.size(); }
+  bool empty() const { return entries_.empty(); }
+
+  auto find(std::string_view k) {
+    auto it = index_.find(k);
+    return it == index_.end() ? entries_.end()
+                              : entries_.begin() + it->second;
+  }
+  auto find(std::string_view k) const {
+    auto it = index_.find(k);
+    return it == index_.end() ? entries_.cend()
+                              : entries_.cbegin() + it->second;
+  }
+
+  auto begin() { return entries_.begin(); }
+  auto end()   { return entries_.end(); }
+  auto begin() const { return entries_.cbegin(); }
+  auto end()   const { return entries_.cend(); }
+  auto cbegin() const { return entries_.cbegin(); }
+  auto cend()   const { return entries_.cend(); }
+
+ private:
+  std::vector<Entry> entries_;
+  std::unordered_map<std::string_view, size_t> index_;
+};
+
 // Internal control-flow signal for `return expr`. Kept distinct from
 // user-thrown Values so that a user `throw` propagates past function
 // boundaries into the nearest `try/catch`, while `return` unwinds only
@@ -852,6 +930,14 @@ struct ReturnValue {
 // user `throw` cannot be mistaken for a loop signal.
 struct BreakSignal {};
 struct ContinueSignal {};
+
+// Defined out-of-line so OrderedSymbolMap is complete here.
+inline ObjectValue::ObjectValue() {
+  auto* raw = new OrderedSymbolMap();
+  properties = std::shared_ptr<OrderedSymbolMap>(raw, &_destroy_prop_map);
+  // properties map is intentionally not GC-tracked — see the InterpGC
+  // class header. Cycles are detected via the contained ArrayValues.
+}
 
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
@@ -4364,15 +4450,13 @@ inline void InterpGC::collect() {
 // Resurrection warning: storing `this` somewhere outside drop leaves
 // a dangling reference once the caller completes the teardown. Do
 // not resurrect `this` in drop bodies.
-inline void _destroy_prop_map(
-    std::map<std::string_view, Symbol>* m) {
+inline void _destroy_prop_map(OrderedSymbolMap* m) {
   if (!m) return;
   _call_drop_if_present(m);
   delete m;
 }
 
-inline void _call_drop_if_present(
-    std::map<std::string_view, Symbol>* m) {
+inline void _call_drop_if_present(OrderedSymbolMap* m) {
   if (!m) return;
   auto it = m->find("drop");
   if (it == m->end()) return;
@@ -4383,8 +4467,7 @@ inline void _call_drop_if_present(
 
   ObjectValue this_view(ObjectValue::Synthetic{});
   this_view.properties =
-      std::shared_ptr<std::map<std::string_view, Symbol>>(
-          m, [](std::map<std::string_view, Symbol>*) {});
+      std::shared_ptr<OrderedSymbolMap>(m, [](OrderedSymbolMap*) {});
 
   try {
     fn.eval(_make_method_call_env(Value(std::move(this_view)), 0, 0));

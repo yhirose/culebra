@@ -703,10 +703,12 @@ test_builtin_methods = fn () {
   b.reverse()
   assert(b[0] == 3 && b[2] == 1)
 
-  // Object methods (§17.3)
+  // Object methods (§17.3). Iteration is insertion order, so keys
+  // come out in the order the literal listed them.
   o = {b: 2, a: 1, c: 3}
   assert(o.keys().size() == 3)
-  assert(o.keys()[0] == 'a')
+  assert(o.keys()[0] == 'b')
+  assert(o.keys()[1] == 'a')
   assert(o.keys()[2] == 'c')
   assert(o.has('a'))
   assert(!o.has('z'))
@@ -919,7 +921,7 @@ test_ufcs = fn () {
   }
   ks = {b: 2, a: 1}.map_keys_to(fn (k) { k })
   assert(ks.size() == 2)
-  assert(ks[0] == 'a' && ks[1] == 'b')
+  assert(ks[0] == 'b' && ks[1] == 'a')
 
   // Chain mixing builtin (Array.map) and UFCS (sum/incr)
   incr = fn (x) { x + 1 }
@@ -951,11 +953,11 @@ test_for_in = fn () {
   for x in [1, 2, 3, 4] { sum = sum + x }
   assert(sum == 10)
 
-  // Object iteration yields keys (ascending)
+  // Object iteration yields keys in insertion order
   mut keys = []
   for k in {b: 2, a: 1, c: 3} { keys.push(k) }
   assert(keys.size() == 3)
-  assert(keys[0] == 'a' && keys[1] == 'b' && keys[2] == 'c')
+  assert(keys[0] == 'b' && keys[1] == 'a' && keys[2] == 'c')
 
   // break exits inner loop only
   mut hit = 0

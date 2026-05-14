@@ -598,7 +598,7 @@ is inserted:
   `-2.5`, `1e-05`, `nan`, `inf`, `-inf`
 * `Array` → `[v1, v2, ...]` with each element's `puts` form (strings
   in brackets are quoted, e.g. `['hi']`)
-* `Object` → `{key: val, mut key2: val2, ...}` sorted alphabetically
+* `Object` → `{key: val, mut key2: val2, ...}` in insertion order
 * `Function` → `[function]`
 
 String values inside `"..."` are inserted verbatim (no quotes); this
@@ -650,8 +650,9 @@ equality.
     {mut counter: 0, name: 'x'}            # explicit mut on a property
     {name, age}                            # shorthand — same as {name: name, age: age}
 
-Property order in the source is irrelevant for equality or access, but
-the alphabetical order is used for display and iteration.
+Property order in the source is irrelevant for equality or access,
+but the order is preserved for display and iteration (insertion
+order, matching Python 3.7+ dict and Ruby Hash).
 
 The shorthand form `{x}` is equivalent to `{x: x}`: it reuses the
 identifier as both key and value, looking up `x` in the current scope.
@@ -857,8 +858,8 @@ fields. The walker descends through `Array` elements and plain `Object`
 dicts (no `class:` tag), and collects each class instance it encounters
 as a leaf without recursing into it. Skipped during the walk: the
 `class:` tag itself, and any field whose name starts with `_` (treated
-as private/cache state). Iteration is alphabetical by key, matching the
-interpreter's `std::map` order on both backends.
+as private/cache state). Iteration is in insertion order on both
+backends.
 
     class Value { new(x) { this.x = x } }
     class GPT {
@@ -1586,13 +1587,13 @@ puts(words)                                      # ['fig', 'apple', 'banana']
 | Signature                        | Description                                |
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | Number of own properties.                  |
-| `o.keys() -> Array`              | `Array` of `String` keys in ascending alphabetical order (matches display order — §8). |
+| `o.keys() -> Array`              | `Array` of `String` keys in insertion order (matches display order — §8). |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`. Ignores built-in method names. |
 | `o.remove(key: String) -> Nil` *(mutating)* | Delete the property named `key` if present. |
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-puts(o.keys())   # ['a', 'b', 'c']
+puts(o.keys())   # ['b', 'a', 'c']  (insertion order)
 puts(o.has('a')) # true
 mut p = {a: 1, b: 2}
 p.remove('a')
@@ -1638,7 +1639,7 @@ Iterable wrapper.
 | Type | `iter()` yields | Order |
 |---|---|---|
 | `Array` | elements | index order (0..size-1) |
-| `Object` | keys | ascending alphabetical (matches `o.keys()`) |
+| `Object` | keys | insertion order (matches `o.keys()`) |
 | `String` | one-scalar `String` per UTF-8 code point | byte order |
 
 `String` iteration walks the UTF-8 buffer lazily, so iterating a
@@ -2079,8 +2080,9 @@ semantics, but a few operational differences are worth knowing.
 
 * **Object property storage.** The JIT uses a process-interned
   hidden-class (Shape) layout with vector-backed slots and
-  per-callsite inline caches. The interpreter uses an ordered map.
-  Iteration order over an Object's keys is alphabetical on both.
+  per-callsite inline caches. The interpreter uses an insertion-
+  ordered map. Iteration order over an Object's keys is insertion
+  order on both.
 * **HOF fusion.** The JIT fuses many `range(N).<HOF>(...)` and
   `iter.map(λ).collect()` patterns into bare counter loops. The
   interpreter dispatches each closure step-by-step. Effects fire in
