@@ -115,16 +115,8 @@ __attribute__((used)) inline void culebra_runtime_write_file(
 
 __attribute__((used)) inline int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
-  if (exp < 0) {
-    culebra::throw_type_error_at(line, col);
-  }
-  int64_t r = 1;
-  while (exp > 0) {
-    if (exp & 1) r *= base;
-    base *= base;
-    exp >>= 1;
-  }
-  return r;
+  if (exp < 0) culebra::throw_type_error_at(line, col);
+  return culebra::ipow_nonneg(base, exp);
 }
 
 #define CUL_MATH_F2F(name, call)                                        \

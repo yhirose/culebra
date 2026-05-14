@@ -74,9 +74,70 @@ inline std::map<std::string_view, Value>& iterator_builtins();
 // whose names would be captured by the current function and so are
 // off-limits for re-binding.
 
-namespace _shadow {
-
+// `_` is the non-binding sink in patterns and parameters.
 inline bool is_sink_name(std::string_view s) { return s == "_"; }
+
+// --- Multimethod dispatch (shared between interp and JIT) ---
+
+// Specificity score for a (param_type, arg_type) pair. Higher = more
+// specific. -1 means no match.
+inline int multifn_specificity(std::string_view param_type,
+                                std::string_view arg_type) {
+  if (param_type.empty() || param_type == "Any") return 0;
+  if (param_type == "Object" && arg_type != "Object") return 1;
+  if (param_type == arg_type) return 2;
+  return -1;
+}
+
+// Pick the most specific matching entry. Returns:
+//   idx >= 0  : matching entry index
+//   -1        : no match
+//   -2        : ambiguous (tie at the top)
+// `params_of(entry)` must return a container of param-type strings.
+template <class Entry, class ParamsOf>
+inline int64_t multifn_pick(const std::vector<Entry>& methods,
+                             const std::vector<std::string_view>& arg_types,
+                             ParamsOf params_of) {
+  std::vector<int> score(arg_types.size());
+  std::vector<int> best_score(arg_types.size());
+  size_t best_idx = 0;
+  bool have_best = false;
+  bool ambiguous = false;
+  for (size_t i = 0; i < methods.size(); i++) {
+    const auto& params = params_of(methods[i]);
+    if (params.size() != arg_types.size()) continue;
+    bool ok = true;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      int s = multifn_specificity(params[p], arg_types[p]);
+      if (s < 0) { ok = false; break; }
+      score[p] = s;
+    }
+    if (!ok) continue;
+    if (!have_best) {
+      best_idx = i;
+      best_score = score;
+      have_best = true;
+      continue;
+    }
+    bool better_any = false, worse_any = false;
+    for (size_t p = 0; p < arg_types.size(); p++) {
+      if (score[p] > best_score[p]) better_any = true;
+      if (score[p] < best_score[p]) worse_any = true;
+    }
+    if (better_any && !worse_any) {
+      best_idx = i;
+      best_score = score;
+      ambiguous = false;
+    } else if (!better_any && !worse_any) {
+      ambiguous = true;
+    }
+  }
+  if (!have_best) return -1;
+  if (ambiguous)  return -2;
+  return static_cast<int64_t>(best_idx);
+}
+
+namespace _shadow {
 
 inline void check(std::string_view name, size_t line, size_t col,
                   const std::vector<const std::set<std::string, std::less<>>*>& outer) {
@@ -88,6 +149,10 @@ inline void check(std::string_view name, size_t line, size_t col,
   }
 }
 
+}  // namespace _shadow
+
+// Invoke `f(name, line, column)` for each identifier that `pattern`
+// would bind on a successful match. `_` (sink) is skipped.
 template <typename F>
 inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
   using namespace peg::udl;
@@ -124,6 +189,8 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
       return;
   }
 }
+
+namespace _shadow {
 
 inline void check_pattern(
     const peg::Ast& pattern,
@@ -813,7 +880,6 @@ struct Environment {
   // `fn(_, _, x)`, `match { _ => }`) drops the value instead of
   // introducing a name. Shadow checking happens statically via
   // `check_shadow_static` (see top of file) before evaluation begins.
-  static bool is_sink(std::string_view s) { return s == "_"; }
 
   const Value& get(std::string_view s) const {
     if (dictionary.contains(s)) {
@@ -841,7 +907,7 @@ struct Environment {
   }
 
   void initialize(std::string_view s, Value val, bool mut) {
-    if (is_sink(s)) return;
+    if (is_sink_name(s)) return;
     dictionary[s] = Symbol{std::move(val), mut};
   }
 
@@ -2976,17 +3042,6 @@ struct Interpreter {
     return make_function_value(*ast.nodes[0], ast.nodes[1], {}, env);
   }
 
-  // Specificity score per (param_type, arg_type): Any < Object-loose
-  // < exact match. Score must be 0..max so vectors of scores are
-  // directly comparable.
-  static int multifn_specificity(std::string_view param_type,
-                                 std::string_view arg_type) {
-    if (param_type.empty() || param_type == "Any") return 0;
-    if (param_type == "Object" && arg_type != "Object") return 1;
-    if (param_type == arg_type) return 2;
-    return -1;
-  }
-
   // Dynamic type-name view for dispatch. For Object instances with a
   // `class:` String tag this aliases the stored class name; the view
   // is valid as long as `v` is.
@@ -3012,52 +3067,21 @@ struct Interpreter {
     size_t idx;  // valid only when status == Match
   };
 
-  // Pick the most specific matching method. Tie on exactly-equal
-  // scores → Ambiguous; element-wise incomparable scores leave the
-  // current best in place (first-registered wins).
-  PickResult multifn_pick(const std::vector<MultiMethod>& methods,
-                          const std::vector<Value>& args) {
+  // Adapter around the shared `culebra::multifn_pick` template — maps
+  // its int64_t return into the interp-side PickResult enum.
+  PickResult pick_method(const std::vector<MultiMethod>& methods,
+                         const std::vector<Value>& args) {
     std::vector<std::string_view> arg_types(args.size());
     for (size_t p = 0; p < args.size(); p++) {
       arg_types[p] = value_dyn_type(args[p]);
     }
-    std::vector<int> score(args.size());
-    std::vector<int> best_score(args.size());
-    size_t best_idx = 0;
-    bool have_best = false;
-    bool ambiguous = false;
-    for (size_t i = 0; i < methods.size(); i++) {
-      const auto& m = methods[i];
-      if (m.param_types.size() != args.size()) continue;
-      bool ok = true;
-      for (size_t p = 0; p < args.size(); p++) {
-        int s = multifn_specificity(m.param_types[p], arg_types[p]);
-        if (s < 0) { ok = false; break; }
-        score[p] = s;
-      }
-      if (!ok) continue;
-      if (!have_best) {
-        best_idx = i;
-        best_score = score;
-        have_best = true;
-        continue;
-      }
-      bool better_any = false, worse_any = false;
-      for (size_t p = 0; p < args.size(); p++) {
-        if (score[p] > best_score[p]) better_any = true;
-        if (score[p] < best_score[p]) worse_any = true;
-      }
-      if (better_any && !worse_any) {
-        best_idx = i;
-        best_score = score;
-        ambiguous = false;
-      } else if (!better_any && !worse_any) {
-        ambiguous = true;
-      }
-    }
-    if (!have_best) return {PickResult::NoMatch, 0};
-    if (ambiguous)  return {PickResult::Ambiguous, 0};
-    return {PickResult::Match, best_idx};
+    auto r = multifn_pick(methods, arg_types,
+                          [](const MultiMethod& m) -> const std::vector<std::string>& {
+                            return m.param_types;
+                          });
+    if (r == -1) return {PickResult::NoMatch, 0};
+    if (r == -2) return {PickResult::Ambiguous, 0};
+    return {PickResult::Match, static_cast<size_t>(r)};
   }
 
   // `fn name(params) body` — first decl registers a dispatcher under
@@ -3097,7 +3121,7 @@ struct Interpreter {
             auto line = callEnv->get("__LINE__").to_long();
             auto col = callEnv->get("__COLUMN__").to_long();
             const auto& args = *callEnv->get("__ARGS__").to_array().values;
-            auto pick = multifn_pick(*methods, args);
+            auto pick = pick_method(*methods, args);
             if (pick.status == PickResult::NoMatch) {
               throw CulebraError("DispatchError", std::format(
                   "no matching method for `{}` at {}:{}.", name_owned, line,
@@ -3824,18 +3848,7 @@ struct Interpreter {
     if (base.type == Value::Long && exp.type == Value::Long) {
       auto a = base.get<long>();
       auto b = exp.get<long>();
-      if (b >= 0) {
-        // Integer exponentiation by squaring; wraps on overflow to
-        // match the rest of Long arithmetic (no bignum).
-        long result = 1, acc = a;
-        long e = b;
-        while (e > 0) {
-          if (e & 1) result *= acc;
-          e >>= 1;
-          if (e > 0) acc *= acc;
-        }
-        return Value(result);
-      }
+      if (b >= 0) return Value(ipow_nonneg(a, b));
       // Negative integer exponent: promote to float so `2 ** -1 == 0.5`.
       if (a == 0) throw CulebraError("ZeroDivisionError", "divide by 0 error");
       return Value(std::pow(static_cast<double>(a), static_cast<double>(b)));

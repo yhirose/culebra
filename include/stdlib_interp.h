@@ -107,13 +107,7 @@ inline Value make_math_namespace() {
                               auto col = env->get("__COLUMN__").to_long();
                               throw_type_error_at(line, col);
                             }
-                            long r = 1;
-                            while (exp > 0) {
-                              if (exp & 1) r *= base;
-                              base *= base;
-                              exp >>= 1;
-                            }
-                            return Value(r);
+                            return Value(ipow_nonneg(base, exp));
                           },
                           "Long"sv)),
       false);

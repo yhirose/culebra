@@ -1463,15 +1463,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_pow(
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
-    if (e >= 0) {
-      int64_t result = 1, acc = a;
-      while (e > 0) {
-        if (e & 1) result *= acc;
-        e >>= 1;
-        if (e > 0) acc *= acc;
-      }
-      return {TAG_LONG, result};
-    }
+    if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
     if (a == 0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
     return {TAG_FLOAT,
             _culebra_double_to_bits(std::pow(static_cast<double>(a),
@@ -2294,57 +2286,16 @@ inline std::string_view _jit_value_dyn_type(JitValue v) {
   return "Object";
 }
 
-inline int _jit_multifn_specificity(std::string_view param_type,
-                                    std::string_view arg_type) {
-  if (param_type.empty() || param_type == "Any") return 0;
-  if (param_type == "Object" && arg_type != "Object") return 1;
-  if (param_type == arg_type) return 2;
-  return -1;
-}
-
-// Pick the most specific matching method in `methods` for the given
-// `args` types. Returns an index into `methods`, or -1 on no match,
-// or -2 on ambiguous tie. Mirrors `multifn_pick` in interpreter.h.
+// Adapter: supplies the param-types accessor for the shared pick
+// algorithm in interpreter.h.
 inline int64_t _jit_multifn_pick(
     const std::vector<JitMultiMethodEntry>& methods,
     const std::vector<std::string_view>& arg_types) {
-  std::vector<int> score(arg_types.size());
-  std::vector<int> best_score(arg_types.size());
-  size_t best_idx = 0;
-  bool have_best = false;
-  bool ambiguous = false;
-  for (size_t i = 0; i < methods.size(); i++) {
-    const auto& m = methods[i];
-    if (m.param_types.size() != arg_types.size()) continue;
-    bool ok = true;
-    for (size_t p = 0; p < arg_types.size(); p++) {
-      int s = _jit_multifn_specificity(m.param_types[p], arg_types[p]);
-      if (s < 0) { ok = false; break; }
-      score[p] = s;
-    }
-    if (!ok) continue;
-    if (!have_best) {
-      best_idx = i;
-      best_score = score;
-      have_best = true;
-      continue;
-    }
-    bool better_any = false, worse_any = false;
-    for (size_t p = 0; p < arg_types.size(); p++) {
-      if (score[p] > best_score[p]) better_any = true;
-      if (score[p] < best_score[p]) worse_any = true;
-    }
-    if (better_any && !worse_any) {
-      best_idx = i;
-      best_score = score;
-      ambiguous = false;
-    } else if (!better_any && !worse_any) {
-      ambiguous = true;
-    }
-  }
-  if (!have_best) return -1;
-  if (ambiguous)  return -2;
-  return static_cast<int64_t>(best_idx);
+  return culebra::multifn_pick(
+      methods, arg_types,
+      [](const JitMultiMethodEntry& m) -> const std::vector<std::string>& {
+        return m.param_types;
+      });
 }
 
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
@@ -5342,50 +5293,8 @@ struct JIT {
     return h.is_builtin_var && h.is_builtin_var(name);
   }
 
-  // `_` is the non-binding sink (see Environment::is_sink in
-  // interpreter.h). Pattern walks and shadow checks must skip it so it
-  // can appear repeatedly in the same scope (`fn(_, _, x)`,
-  // `let _ = ...; let _ = ...`) without colliding.
-  static bool is_sink_name(std::string_view s) { return s == "_"; }
-
-  // Invoke `f(name, line, column)` for each identifier that a pattern
-  // would bind if it matches. `_` is skipped (sink — no binding).
-  template <typename F>
-  static void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
-    using namespace peg::udl;
-    if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
-      for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
-      return;
-    }
-    auto emit = [&](std::string_view name, size_t line, size_t col) {
-      if (!is_sink_name(name)) f(name, line, col);
-    };
-    switch (pattern.tag) {
-      case "IDENTIFIER"_:
-        emit(pattern.token, pattern.line, pattern.column);
-        return;
-      case "TYPED_IDENT"_: {
-        auto& id = *pattern.nodes[0];
-        emit(id.token, id.line, id.column);
-        return;
-      }
-      case "ARRAY_PATTERN"_:
-        for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
-        return;
-      case "REST_PATTERN"_: {
-        auto& id = *pattern.nodes[0];
-        emit(id.token, id.line, id.column);
-        return;
-      }
-      case "OBJECT_PATTERN"_:
-        for (auto& key_node : pattern.nodes) {
-          emit(key_node->token, key_node->line, key_node->column);
-        }
-        return;
-      default:
-        return;
-    }
-  }
+  // The sink-name predicate and the pattern-binding visitor live in
+  // interpreter.h as free functions in namespace culebra.
 
   // Throw if `name` appears in any closure-captured outer scope.
   // outer[0] is the top-level (main) scope; its entries behave like

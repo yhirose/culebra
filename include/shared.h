@@ -59,6 +59,18 @@ inline std::string format_float_shortest(double d) {
                      col);
 }
 
+// Integer power by squaring. `exp` must be non-negative; result wraps
+// on overflow (matches the rest of Long arithmetic — no bignum).
+inline long ipow_nonneg(long base, long exp) {
+  long r = 1;
+  while (exp > 0) {
+    if (exp & 1) r *= base;
+    exp >>= 1;
+    if (exp > 0) base *= base;
+  }
+  return r;
+}
+
 // Trim ASCII whitespace from both ends of a string view, returning the
 // substring. Shared by the numeric string parsers below.
 inline std::string_view trim_ascii(std::string_view s) {
