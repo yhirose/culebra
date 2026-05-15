@@ -514,9 +514,14 @@ Phase 1 では **CPU** のみ。
 Culebra の値と JSON テキストの相互変換。両バックエンドで同じ API
 を提供します。
 
-### `JSON.stringify(v: Any) -> String`
+### `JSON.stringify(v: Any) -> String` / `JSON.stringify(v: Any, indent: Long) -> String`
 
-`v` をコンパクトな JSON 文字列にシリアライズします。サポート対象:
+`v` を JSON 文字列にシリアライズします。引数 1 つだとコンパクト出力
+（空白なし）、正の `indent` を渡すとそのスペース数でインデントし
+pretty-print します（カンマの後に改行、`":"` の代わりに `": "`）。
+`indent <= 0` はコンパクトと等価です。
+
+サポート対象:
 
 | Culebra            | JSON                              |
 |--------------------|-----------------------------------|
@@ -525,10 +530,12 @@ Culebra の値と JSON テキストの相互変換。両バックエンドで同
 | `Long`, `Float`    | 数値（非有限 Float は `ValueError` を投げる） |
 | `String`           | クォート文字列、`\n`/`\t`/`\r`/`\"`/`\\`/`\u00xx` エスケープ |
 | `Array`            | JSON 配列                          |
+| `Tuple`            | JSON 配列（`Array` と同じ形）         |
+| `Set`              | JSON 配列、メンバーは挿入順            |
 | `Object`（String キーのみ）| JSON オブジェクト、キーは挿入順       |
 
-`Function`, `Tensor`, `Tuple`, `Set` はシリアライズ不可。また
-非 String キーを含む Object に対しても `TypeError` を投げます。
+`Function`, `Tensor`、および非 String キーを持つ Object は
+シリアライズ不可で `TypeError` を投げます。
 
 ### `JSON.parse(s: String) -> Any`
 
@@ -541,9 +548,9 @@ JSON 文字列を Culebra の値に変換します。小数点や指数表記を
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-let s = JSON.stringify(v)
-puts(s)                              # {"name":"alice","age":30,...}
-let back = JSON.parse(s)
+puts(JSON.stringify(v))              # コンパクト: {"name":"alice",...}
+puts(JSON.stringify(v, 2))           # pretty, 2 スペースインデント
+let back = JSON.parse(JSON.stringify(v))
 puts(back.name)                      # alice
 ```
 

@@ -698,7 +698,7 @@ In addition to String keys (`{name: 'alice'}`), Object literals accept
     let by_id = {1: 'one', 2: 'two', 3.14: 'pi'}
     let by_nil = {nil: 'unknown'}
 
-Non-String keys go into a lazy sidecar map and are read with `obj[k]`:
+Non-String keys live in a sidecar map and are read with `obj[k]`:
 
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
@@ -707,9 +707,28 @@ Numerically-equivalent keys collide following Python's rule:
 `hash(1) == hash(1.0) == hash(true)`, so `{1: 'a', 1.0: 'b'}` keeps
 only one entry (the last write wins).
 
-String keys are preserved in insertion order. Non-String keys keep
-their own insertion order and render after the String block in
-`to_string` output.
+String and non-String keys share a single insertion-order record, so
+`to_string` renders mixed-key Objects with the keys interleaved in
+their actual write order — matching Python and Ruby Hash semantics.
+
+### Subscript assignment
+
+`obj[k] = v` writes any hashable key — `Long`, `Float`, `Bool`, `Nil`,
+`Tuple`, or a runtime `String` — into the sidecar map:
+
+    mut bag = {}
+    let k = 'alpha'
+    bag[k]     = 1                  # runtime String key
+    bag[42]    = 'long'
+    bag[(1,2)] = 'tuple'
+    puts(bag[k])                    # 1
+    puts(bag[(1,2)])                # 'tuple'
+
+Subscript writes do **not** unify with the shape-based `obj.foo` path.
+A runtime `obj["foo"] = 1` lands in the sidecar and `obj.foo` (which
+goes through the shape fast path) still returns `nil`. To set a static
+property, use `obj.foo = 1` directly. Compound forms (`obj[k] += v`)
+are Array-only.
 
 ### Methods and UFCS
 
@@ -948,6 +967,29 @@ and Set keys:
 Iteration with `for x in t { ... }` walks the elements in order. Both
 backends implement these semantics identically.
 
+Built-in methods:
+
+| Method        | Description                                        |
+|---------------|----------------------------------------------------|
+| `size()`      | Element count (`Long`)                             |
+| `contains(x)` | `Bool` — is `x` an element?                        |
+| `to_array()`  | Fresh `Array` with the same elements               |
+| `iter()`      | Iterator yielding elements in index order          |
+
+### Destructuring
+
+A tuple binding `let (a, b) = t` unpacks the tuple into named slots.
+Element count must match exactly; mismatches throw `ValueError`. Tuple
+patterns also work in `match` arms and nest naturally:
+
+    let (x, y, z) = (10, 'hi', 3.14)
+    let (p, (q, r)) = (1, (2, 3))    # nested
+
+    let kind = match (1, 2) {
+      (0, 0) => 'origin',
+      (a, b) => 'other',
+    }
+
 ---
 
 ## Sets
@@ -971,16 +1013,40 @@ Equality ignores order:
 
 Built-in methods:
 
-| Method        | Description                                        |
-|---------------|----------------------------------------------------|
-| `size()`      | Element count (`Long`)                             |
-| `contains(x)` | `Bool` — is `x` a member?                          |
-| `union(b)`    | New `Set` of all elements from this and `b`        |
-| `intersect(b)`| New `Set` of elements present in both              |
-| `diff(b)`     | New `Set` of elements in this but not in `b`       |
+| Method         | Description                                        |
+|----------------|----------------------------------------------------|
+| `size()`       | Element count (`Long`)                             |
+| `contains(x)`  | `Bool` — is `x` a member?                          |
+| `union(b)`     | New `Set` of all elements from this and `b`        |
+| `intersect(b)` | New `Set` of elements present in both              |
+| `diff(b)`      | New `Set` of elements in this but not in `b`       |
+| `sym_diff(b)`  | New `Set` of elements in either but not both       |
+| `subset(b)`    | `Bool` — every element of self is in `b`           |
+| `superset(b)`  | `Bool` — every element of `b` is in self           |
+| `to_array()`   | Fresh `Array` with the members in insertion order  |
+| `iter()`       | Iterator yielding members in insertion order       |
+| `add(x)`       | Insert `x`; returns `true` if newly added (interp only) |
+| `remove(x)`    | Remove `x`; returns `true` if present (interp only) |
 
 The set-operation methods preserve the left operand's insertion order
-for elements that survive. Both backends ship with these methods.
+for elements that survive. `add` / `remove` are interp-only at the
+moment — they collide with user-defined Object methods of the same
+name on the JIT side (e.g. a `Calculator.add(1)` class method), and
+resolving that needs runtime tag dispatch in the method call site.
+
+### Operators
+
+| Operator | Equivalent       |
+|----------|------------------|
+| `a \| b` | `a.union(b)`     |
+| `a & b`  | `a.intersect(b)` |
+| `a - b`  | `a.diff(b)`      |
+| `a ^ b`  | `a.sym_diff(b)`  |
+
+Set operators sit at their own precedence layer between range and
+additive operators (matching Python's bitwise precedence: `a | b == c`
+parses as `(a | b) == c`). All four operators require both operands
+to be Sets; `-` falls back to numeric subtraction otherwise.
 
 ---
 

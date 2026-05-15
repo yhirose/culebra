@@ -533,9 +533,14 @@ target.
 Round-trip between Culebra values and JSON text. Both backends ship
 the same surface.
 
-### `JSON.stringify(v: Any) -> String`
+### `JSON.stringify(v: Any) -> String` / `JSON.stringify(v: Any, indent: Long) -> String`
 
-Serialize `v` to a compact JSON string. Supported value types:
+Serialize `v` to a JSON string. With one argument the output is
+compact (no whitespace); with a positive `indent` it pretty-prints
+with that many spaces per nesting level (newline after each comma,
+`": "` separator). `indent <= 0` is equivalent to the compact form.
+
+Supported value types:
 
 | Culebra            | JSON                            |
 |--------------------|---------------------------------|
@@ -544,11 +549,12 @@ Serialize `v` to a compact JSON string. Supported value types:
 | `Long`, `Float`    | number (non-finite Float raises `ValueError`) |
 | `String`           | quoted string with `\n`, `\t`, `\r`, `\"`, `\\`, `\u00xx` escapes |
 | `Array`            | JSON array                      |
+| `Tuple`            | JSON array (same shape as `Array`) |
+| `Set`              | JSON array, members in insertion order |
 | `Object` (String keys only) | JSON object, keys in insertion order |
 
-`Function`, `Tensor`, `Tuple`, and `Set` are not serializable —
-`stringify` throws `TypeError` for these, and for an Object that
-carries non-String keys.
+`Function`, `Tensor`, and Objects carrying non-String keys are not
+serializable — `stringify` throws `TypeError` for these.
 
 ### `JSON.parse(s: String) -> Any`
 
@@ -561,9 +567,9 @@ Malformed input raises `ValueError` with a short message
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-let s = JSON.stringify(v)
-puts(s)                              # {"name":"alice","age":30,...}
-let back = JSON.parse(s)
+puts(JSON.stringify(v))              # compact: {"name":"alice",...}
+puts(JSON.stringify(v, 2))           # pretty, 2-space indent
+let back = JSON.parse(JSON.stringify(v))
 puts(back.name)                      # alice
 ```
 
