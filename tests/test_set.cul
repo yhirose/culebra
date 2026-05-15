@@ -1,0 +1,49 @@
+// Set literal — runs on both interp and JIT (Phase 8-B).
+
+let s = {1, 2, 3}
+assert(type_of(s) == "Set")
+
+// Duplicate elements collapse.
+let dup = {1, 2, 2, 3, 1}
+assert(type_of(dup) == "Set")
+
+// Set equality ignores order.
+let a = {1, 2, 3}
+let b = {3, 2, 1}
+assert(a == b)
+
+let c = {1, 2}
+let d = {1, 2, 3}
+let eq_cd = (a == c)
+assert(eq_cd == false)
+
+// Mixed element types.
+let mix = {1, "two", 3.14, true}
+assert(type_of(mix) == "Set")
+
+// --- Set methods (Phase 8-F) ---
+let p = {1, 2, 3}
+let q = {3, 4, 5}
+
+assert(p.size() == 3)
+assert(p.contains(2))
+let has_99 = p.contains(99)
+assert(has_99 == false)
+
+let u = p.union(q)
+assert(u.size() == 5)
+assert(u.contains(1))
+assert(u.contains(5))
+
+let i = p.intersect(q)
+assert(i.size() == 1)
+assert(i.contains(3))
+
+let d = p.diff(q)
+assert(d.size() == 2)
+assert(d.contains(1))
+assert(d.contains(2))
+let d_has_3 = d.contains(3)
+assert(d_has_3 == false)
+
+IO.puts("test_set OK")

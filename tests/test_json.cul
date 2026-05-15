@@ -1,5 +1,4 @@
-// JSON.stringify / JSON.parse round-trip (Phase 7-F, interp-only).
-// JIT does not bind JSON yet (no JIT-side helper).
+// JSON.stringify / JSON.parse round-trip (Phase 8-C — JIT binding added).
 
 let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}
 let s = JSON.stringify(v)

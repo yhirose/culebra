@@ -1,0 +1,42 @@
+// Tuple literal — runs on both interp and JIT (Phase 8-A).
+
+// Type tag.
+let pair = (3, 4)
+let one  = (1,)
+let trip = (1, "two", 3.14)
+assert(type_of(pair) == "Tuple")
+assert(type_of(one)  == "Tuple")
+assert(type_of(trip) == "Tuple")
+
+// Equality is element-wise.
+let a = (1, 2)
+let b = (1, 2)
+let c = (1, 3)
+assert(a == b)
+let ne = (a == c)
+assert(ne == false)
+
+// Tuple as Object key.
+let grid = {(0,0): "origin", (1,0): "east"}
+assert(grid[(0,0)] == "origin")
+assert(grid[(1,0)] == "east")
+
+// Indexing.
+let t = (10, 20, 30)
+assert(t[0] == 10)
+assert(t[1] == 20)
+assert(t[2] == 30)
+
+// Iteration.
+mut s = 0
+for x in (1, 2, 3, 4) {
+  s = s + x
+}
+assert(s == 10)
+
+// Nested tuple equality.
+let n1 = ((1, 2), (3, 4))
+let n2 = ((1, 2), (3, 4))
+assert(n1 == n2)
+
+IO.puts("test_tuple OK")

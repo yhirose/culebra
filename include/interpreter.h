@@ -503,6 +503,11 @@ struct ObjectValue {
   // Lazy-allocated for non-String keys.
   std::shared_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
       non_string_props;
+  // Insertion order for `non_string_props`. Lazy-allocated alongside.
+  // String keys keep their order in `properties`; this vector holds the
+  // non-string keys in the order they were first set. Used by str() so
+  // mixed-key Objects render their non-string entries deterministically.
+  std::shared_ptr<std::vector<Value>> non_string_order;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -1221,8 +1226,15 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
   if (!non_string_props) {
     non_string_props = std::make_shared<
         std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
+    non_string_order = std::make_shared<std::vector<Value>>();
   }
-  (*non_string_props)[key] = Symbol{val, mut};
+  auto [it, inserted] =
+      non_string_props->try_emplace(key, Symbol{val, mut});
+  if (inserted) {
+    non_string_order->push_back(key);
+  } else {
+    it->second = Symbol{val, mut};
+  }
 }
 
 // Build the structured-error Object surfaced to user `catch` blocks.
@@ -1268,6 +1280,8 @@ inline bool type_matches(const Value& val, std::string_view name) {
     }
     case Value::Function: return name == "Function";
     case Value::Tensor:   return name == "Tensor";
+    case Value::Tuple:    return name == "Tuple";
+    case Value::Set:      return name == "Set";
   }
   return false;
 }
@@ -1311,6 +1325,19 @@ inline std::string Value::str_object() const {
     s += name;
     s += ": ";
     s += sym.val.str();
+  }
+  // Non-String keys (Long/Float/Bool/Nil/Tuple etc.) render after the
+  // string keys, in the order they were first set.
+  if (obj.non_string_order) {
+    for (const auto& key : *obj.non_string_order) {
+      const auto& sym = obj.non_string_props->at(key);
+      if (!first) s += ", ";
+      first = false;
+      if (sym.mut) s += "mut ";
+      s += key.str();
+      s += ": ";
+      s += sym.val.str();
+    }
   }
   s += "}";
   return s;
@@ -1501,6 +1528,17 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     if (iterable.to_object().has("iter")) {
       iter_fn = iterable.to_object().get("iter");
     }
+  } else if (iterable.type == Value::Tuple) {
+    // Tuple has no Object/methods sidecar — wire up an inline iterator
+    // closure that walks `elements` in order.
+    auto elements = iterable.get<TupleValue>().elements;  // shared_ptr copy
+    auto index = std::make_shared<size_t>(0);
+    return _make_iterator([elements, index](std::shared_ptr<Environment>) {
+      if (*index >= elements->size()) return _iter_step_done();
+      auto v = (*elements)[*index];
+      (*index)++;
+      return _iter_step_value(std::move(v));
+    });
   }
   if (iter_fn.type != Value::Function) {
     throw CulebraError("TypeError", std::format(
@@ -2459,6 +2497,79 @@ inline std::map<std::string_view, Value>& string_builtins() {
            }
          });
        }))}};
+  return props_;
+}
+
+// Method lookup table for primitive Set values. Mirrors string_builtins;
+// SetValue is not an ObjectValue so dispatch goes through a dedicated
+// path in eval_property.
+inline std::map<std::string_view, Value>& set_builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& self = callEnv->get("this").get<SetValue>();
+         return Value(static_cast<long>(self.members->size()));
+       }))},
+      {"contains"sv,
+       Value(FunctionValue(
+           {{"x", false}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& self = callEnv->get("this").get<SetValue>();
+             const auto& x = callEnv->get("x");
+             return Value(self.index->contains(x));
+           },
+           "Bool"sv))},
+      {"union"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             SetValue out;
+             auto add = [&](const Value& v) {
+               if (out.index->contains(v)) return;
+               out.index->emplace(v, out.members->size());
+               out.members->push_back(v);
+             };
+             for (const auto& v : *a.members) add(v);
+             for (const auto& v : *b.members) add(v);
+             return Value(std::move(out));
+           },
+           "Set"sv))},
+      {"intersect"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             SetValue out;
+             for (const auto& v : *a.members) {
+               if (b.index->contains(v) && !out.index->contains(v)) {
+                 out.index->emplace(v, out.members->size());
+                 out.members->push_back(v);
+               }
+             }
+             return Value(std::move(out));
+           },
+           "Set"sv))},
+      {"diff"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             SetValue out;
+             for (const auto& v : *a.members) {
+               if (!b.index->contains(v) && !out.index->contains(v)) {
+                 out.index->emplace(v, out.members->size());
+                 out.members->push_back(v);
+               }
+             }
+             return Value(std::move(out));
+           },
+           "Set"sv))},
+  };
   return props_;
 }
 
@@ -3627,6 +3738,16 @@ struct Interpreter {
       if (obj.has(key)) return obj.get(key);
       throw CulebraError("KeyError", "key not present");
     }
+    // Tuple[i]: same Long-indexed access as Array, but read-only.
+    if (val.type == Value::Tuple) {
+      const auto& elems = *val.get<TupleValue>().elements;
+      auto idx = key.to_long();
+      if (idx < 0) idx = static_cast<long>(elems.size()) + idx;
+      if (0 <= idx && idx < static_cast<long>(elems.size())) {
+        return elems[idx];
+      }
+      throw CulebraError("IndexError", "index out of range.");
+    }
     const auto& arr = val.to_array();
     auto idx = key.to_long();
     if (idx < 0) {
@@ -3711,6 +3832,14 @@ struct Interpreter {
       return _wrap_method_with_this(it->second, val);
     }
 
+    // Set is also not an ObjectValue; same dedicated-table dispatch.
+    if (val.type == Value::Set) {
+      const auto& methods = set_builtins();
+      auto it = methods.find(name);
+      if (it == methods.end()) return Value();
+      return _wrap_method_with_this(it->second, val);
+    }
+
     const auto& obj = val.to_object();
     if (obj.has(name)) {
       const auto& prop = obj.get(name);
@@ -3749,6 +3878,9 @@ struct Interpreter {
   bool receiver_has_property(const Value& val, std::string_view name) {
     if (val.type == Value::String) {
       return string_builtins().count(name) > 0;
+    }
+    if (val.type == Value::Set) {
+      return set_builtins().count(name) > 0;
     }
     if (val.type == Value::Object || val.type == Value::Array) {
       if (val.to_object().has(name)) return true;

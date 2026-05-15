@@ -292,6 +292,235 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
   return r;
 }
 
+// --- JSON ---
+
+inline std::string _jit_json_escape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out += '"';
+  for (char c : s) {
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof buf, "\\u%04x", c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  out += '"';
+  return out;
+}
+
+inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
+  switch (tag) {
+    case TAG_NIL:    return "null";
+    case TAG_BOOL:   return data ? "true" : "false";
+    case TAG_LONG:   return std::to_string(data);
+    case TAG_FLOAT: {
+      double d = _culebra_float_to_double(data);
+      if (!std::isfinite(d)) {
+        throw culebra::CulebraError("ValueError",
+            "JSON.stringify: non-finite Float");
+      }
+      return culebra::format_float_shortest(d);
+    }
+    case TAG_STRING:
+      return _jit_json_escape(reinterpret_cast<const char*>(data));
+    case TAG_ARRAY: {
+      auto* arr = reinterpret_cast<JitArray*>(data);
+      std::string s = "[";
+      for (size_t i = 0; i < arr->size; i++) {
+        if (i) s += ",";
+        s += _jit_json_stringify(arr->items[i].tag, arr->items[i].data);
+      }
+      return s + "]";
+    }
+    case TAG_OBJECT: {
+      auto* obj = reinterpret_cast<JitObject*>(data);
+      std::string s = "{";
+      if (obj->shape) {
+        for (size_t i = 0; i < obj->shape->names.size(); i++) {
+          if (i) s += ",";
+          s += _jit_json_escape(obj->shape->names[i]) + ":" +
+               _jit_json_stringify(obj->slots[i].value.tag,
+                                   obj->slots[i].value.data);
+        }
+      }
+      return s + "}";
+    }
+  }
+  throw culebra::CulebraError("TypeError", std::format(
+      "JSON.stringify: cannot serialize {}", _culebra_tag_name(tag)));
+}
+
+__attribute__((used)) inline const char* culebra_runtime_json_stringify(
+    int8_t tag, int64_t data) {
+  return _culebra_heap_str(_jit_json_stringify(tag, data));
+}
+
+// Minimal recursive-descent JSON parser producing JitValues. Each
+// returned heap object (JitArray, JitObject, allocated String) is +1
+// owned by the caller, who hands ownership to the user binding.
+struct _JitJsonParser {
+  const char* p;
+  const char* end;
+  void skip_ws() {
+    while (p < end &&
+           (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+  }
+  [[noreturn]] void fail(const char* msg) {
+    throw culebra::CulebraError("ValueError",
+                                std::format("JSON.parse: {}", msg));
+  }
+  JitValue parse_value() {
+    skip_ws();
+    if (p >= end) fail("unexpected end");
+    char c = *p;
+    if (c == '{') return parse_object();
+    if (c == '[') return parse_array();
+    if (c == '"') return parse_string();
+    if (c == 't' || c == 'f') return parse_bool();
+    if (c == 'n') return parse_null();
+    return parse_number();
+  }
+  JitValue parse_object() {
+    ++p; skip_ws();
+    auto* obj = culebra_runtime_object_new();
+    if (p < end && *p == '}') {
+      ++p;
+      return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+    }
+    while (p < end) {
+      skip_ws();
+      auto key = parse_string_raw();
+      skip_ws();
+      if (p >= end || *p != ':') fail("expected ':'");
+      ++p;
+      auto val = parse_value();
+      culebra_runtime_object_set(obj, key.c_str(), false, val.tag, val.data,
+                                 0, 0);
+      skip_ws();
+      if (p < end && *p == ',') { ++p; continue; }
+      if (p < end && *p == '}') {
+        ++p;
+        return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+      }
+      fail("expected ',' or '}'");
+    }
+    fail("unterminated object");
+  }
+  JitValue parse_array() {
+    ++p; skip_ws();
+    auto* arr = culebra_runtime_array_new();
+    if (p < end && *p == ']') {
+      ++p;
+      return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+    }
+    while (p < end) {
+      auto v = parse_value();
+      culebra_runtime_array_push(arr, v.tag, v.data);
+      skip_ws();
+      if (p < end && *p == ',') { ++p; continue; }
+      if (p < end && *p == ']') {
+        ++p;
+        return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+      }
+      fail("expected ',' or ']'");
+    }
+    fail("unterminated array");
+  }
+  JitValue parse_string() {
+    auto raw = parse_string_raw();
+    return {TAG_STRING,
+            reinterpret_cast<int64_t>(_culebra_heap_str(raw))};
+  }
+  std::string parse_string_raw() {
+    if (*p != '"') fail("expected string");
+    ++p;
+    std::string out;
+    while (p < end && *p != '"') {
+      if (*p == '\\' && p + 1 < end) {
+        ++p;
+        switch (*p) {
+          case '"':  out += '"'; break;
+          case '\\': out += '\\'; break;
+          case '/':  out += '/'; break;
+          case 'n':  out += '\n'; break;
+          case 'r':  out += '\r'; break;
+          case 't':  out += '\t'; break;
+          case 'b':  out += '\b'; break;
+          case 'f':  out += '\f'; break;
+          default:   fail("bad escape");
+        }
+        ++p;
+      } else {
+        out += *p++;
+      }
+    }
+    if (p >= end) fail("unterminated string");
+    ++p;
+    return out;
+  }
+  JitValue parse_bool() {
+    if (end - p >= 4 && std::string_view(p, 4) == "true") {
+      p += 4;
+      return {TAG_BOOL, 1};
+    }
+    if (end - p >= 5 && std::string_view(p, 5) == "false") {
+      p += 5;
+      return {TAG_BOOL, 0};
+    }
+    fail("bad bool");
+  }
+  JitValue parse_null() {
+    if (end - p >= 4 && std::string_view(p, 4) == "null") {
+      p += 4;
+      return {TAG_NIL, 0};
+    }
+    fail("bad null");
+  }
+  JitValue parse_number() {
+    const char* start = p;
+    if (*p == '-') ++p;
+    bool is_float = false;
+    while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    if (p < end && *p == '.') {
+      is_float = true; ++p;
+      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    }
+    if (p < end && (*p == 'e' || *p == 'E')) {
+      is_float = true; ++p;
+      if (p < end && (*p == '+' || *p == '-')) ++p;
+      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    }
+    std::string buf(start, p);
+    if (is_float) {
+      return {TAG_FLOAT, _culebra_double_to_bits(std::stod(buf))};
+    }
+    return {TAG_LONG, static_cast<int64_t>(std::stoll(buf))};
+  }
+};
+
+__attribute__((used)) inline JitValue culebra_runtime_json_parse(
+    const char* s) {
+  _JitJsonParser jp{s, s + std::strlen(s)};
+  auto v = jp.parse_value();
+  jp.skip_ws();
+  if (jp.p != jp.end) {
+    throw culebra::CulebraError("ValueError",
+                                "JSON.parse: trailing characters");
+  }
+  return v;
+}
+
 }  // extern "C"
 
 // --- JIT compile-side dispatch (extension hook implementation) ---
@@ -490,6 +719,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
+
+  // JSON: stringify takes (tag, data) -> String, parse takes (String) -> Value.
+  jit.module_->getOrInsertFunction(rt::json_stringify, ptrTy,
+                                jit.builder_.getInt8Ty(),
+                                jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::json_parse, jit.valueType_, ptrTy);
 }
 
 inline llvm::Value* JitExtension::compile_global(JIT& jit,
@@ -897,6 +1132,25 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
   }
 
+  if (ns == "JSON") {
+    if (method == "stringify" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      auto s = emit_call(
+          module_->getFunction(rt::json_stringify),
+          {extract_tag(arg), extract_data(arg)});
+      emit_value_release(arg);
+      return make_string(s);
+    }
+    if (method == "parse" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "JSON.parse argument");
+      auto sp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto v = emit_call(module_->getFunction(rt::json_parse), {sp});
+      emit_value_release(arg);
+      return v;
+    }
+  }
+
   if (ns == "Sys") {
     if (method == "exit" && argsAst.nodes.size() == 1) {
       auto code = value_to_long(compile(*argsAst.nodes[0]));
@@ -1037,7 +1291,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",     "assert",
       "to_long", "to_float",  "to_string", "type_of",
-      "Math",    "IO",        "Random",    "Sys"};
+      "Math",    "IO",        "Random",    "Sys",     "JSON"};
   return names.contains(name);
 }
 
