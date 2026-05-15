@@ -25,4 +25,27 @@ assert(p[2] == 3.0)
 let nested = JSON.parse('{"a":[1,2,{"b":"c"}]}')
 assert(nested.a[2].b == "c")
 
+// --- Pretty stringify ---
+let pretty = JSON.stringify({a: 1, b: [2, 3]}, 2)
+// The pretty output round-trips back to the same logical value.
+let pp = JSON.parse(pretty)
+assert(pp.a == 1)
+assert(pp.b[0] == 2)
+assert(pp.b[1] == 3)
+
+// --- Tuple → JSON array ---
+let tup = (1, 2, 3)
+assert(JSON.stringify(tup) == JSON.stringify([1, 2, 3]))
+
+// --- Set → JSON array (insertion order) ---
+let st = {7, 8, 9}
+assert(JSON.stringify(st) == JSON.stringify([7, 8, 9]))
+
+// Empty collections. Single quotes dodge culebra's `"{}"` string
+// interpolation, which treats braces as an embedded expression.
+let empty_arr = []
+let empty_obj = {}
+assert(JSON.stringify(empty_arr) == '[]')
+assert(JSON.stringify(empty_obj) == '{}')
+
 IO.puts("test_json OK")

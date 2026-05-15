@@ -294,7 +294,14 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
 
 // --- JSON ---
 
-inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
+// `indent` > 0 pretty-prints with that many spaces per level; 0 is
+// compact. `depth` tracks recursion for indentation only.
+inline std::string _jit_json_stringify(int8_t tag, int64_t data,
+                                        int indent = 0, int depth = 0) {
+  auto sep = [&](int level) -> std::string {
+    if (indent <= 0) return "";
+    return std::string("\n") + std::string(indent * level, ' ');
+  };
   switch (tag) {
     case TAG_NIL:    return "null";
     case TAG_BOOL:   return data ? "true" : "false";
@@ -309,32 +316,55 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
     }
     case TAG_STRING:
       return culebra::json_escape(reinterpret_cast<const char*>(data));
-    case TAG_ARRAY: {
+    case TAG_ARRAY:
+    case TAG_TUPLE: {
+      // Both Array and Tuple share JitArray storage and render as
+      // JSON arrays.
       auto* arr = reinterpret_cast<JitArray*>(data);
+      if (arr->size == 0) return "[]";
       std::string s = "[";
       for (size_t i = 0; i < arr->size; i++) {
         if (i) s += ",";
-        s += _jit_json_stringify(arr->items[i].tag, arr->items[i].data);
+        s += sep(depth + 1);
+        s += _jit_json_stringify(arr->items[i].tag, arr->items[i].data,
+                                 indent, depth + 1);
       }
+      s += sep(depth);
+      return s + "]";
+    }
+    case TAG_SET: {
+      auto* set = reinterpret_cast<JitSet*>(data);
+      if (set->members.empty()) return "[]";
+      std::string s = "[";
+      for (size_t i = 0; i < set->members.size(); i++) {
+        if (i) s += ",";
+        s += sep(depth + 1);
+        s += _jit_json_stringify(set->members[i].tag,
+                                 set->members[i].data, indent, depth + 1);
+      }
+      s += sep(depth);
       return s + "]";
     }
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
-      // Non-String keys are not representable in JSON; reject loudly so
-      // round-trip with `JSON.parse` stays consistent.
+      // Non-String keys are not representable in JSON; reject loudly
+      // so round-trip with `JSON.parse` stays consistent.
       if (obj->non_string_props && !obj->non_string_props->empty()) {
         throw culebra::CulebraError("TypeError",
             "JSON.stringify: Object has non-String keys");
       }
+      if (!obj->shape || obj->shape->names.empty()) return "{}";
       std::string s = "{";
-      if (obj->shape) {
-        for (size_t i = 0; i < obj->shape->names.size(); i++) {
-          if (i) s += ",";
-          s += culebra::json_escape(obj->shape->names[i]) + ":" +
-               _jit_json_stringify(obj->slots[i].value.tag,
-                                   obj->slots[i].value.data);
-        }
+      std::string colon = indent > 0 ? ": " : ":";
+      for (size_t i = 0; i < obj->shape->names.size(); i++) {
+        if (i) s += ",";
+        s += sep(depth + 1);
+        s += culebra::json_escape(obj->shape->names[i]) + colon +
+             _jit_json_stringify(obj->slots[i].value.tag,
+                                 obj->slots[i].value.data, indent,
+                                 depth + 1);
       }
+      s += sep(depth);
       return s + "}";
     }
   }
@@ -343,8 +373,9 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
 }
 
 __attribute__((used)) inline const char* culebra_runtime_json_stringify(
-    int8_t tag, int64_t data) {
-  return _culebra_heap_str(_jit_json_stringify(tag, data));
+    int8_t tag, int64_t data, int64_t indent) {
+  return _culebra_heap_str(
+      _jit_json_stringify(tag, data, static_cast<int>(indent), 0));
 }
 
 // Minimal recursive-descent JSON parser producing JitValues. Each
@@ -701,9 +732,11 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 
-  // JSON: stringify takes (tag, data) -> String, parse takes (String) -> Value.
+  // JSON: stringify takes (tag, data, indent) -> String; parse takes
+  // (String) -> Value. `indent` is 0 for compact, > 0 for pretty.
   jit.module_->getOrInsertFunction(rt::json_stringify, ptrTy,
                                 jit.builder_.getInt8Ty(),
+                                jit.builder_.getInt64Ty(),
                                 jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::json_parse, jit.valueType_, ptrTy);
 }
@@ -1114,12 +1147,22 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   }
 
   if (ns == "JSON") {
-    if (method == "stringify" && argsAst.nodes.size() == 1) {
+    if (method == "stringify" &&
+        (argsAst.nodes.size() == 1 || argsAst.nodes.size() == 2)) {
       auto arg = compile(*argsAst.nodes[0]);
+      llvm::Value* indent = builder_.getInt64(0);
+      llvm::Value* indent_val = nullptr;
+      if (argsAst.nodes.size() == 2) {
+        indent_val = compile(*argsAst.nodes[1]);
+        emit_type_check(indent_val, "Long",
+                        "JSON.stringify indent argument");
+        indent = extract_data(indent_val);
+      }
       auto s = emit_call(
           module_->getFunction(rt::json_stringify),
-          {extract_tag(arg), extract_data(arg)});
+          {extract_tag(arg), extract_data(arg), indent});
       emit_value_release(arg);
+      if (indent_val) emit_value_release(indent_val);
       return make_string(s);
     }
     if (method == "parse" && argsAst.nodes.size() == 1) {

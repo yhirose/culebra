@@ -615,7 +615,15 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
 
 // --- JSON stringify/parse ---
 
-inline std::string json_stringify(const Value& v) {
+// `indent` > 0 pretty-prints with that many spaces per level; 0 emits
+// the compact form. `depth` tracks recursion for indentation only.
+inline std::string json_stringify(const Value& v, int indent = 0,
+                                   int depth = 0) {
+  auto sep = [&](int level) -> std::string {
+    if (indent <= 0) return "";
+    return std::string("\n") + std::string(indent * level, ' ');
+  };
+  const char* colon = indent > 0 ? ": " : ":";
   switch (v.type) {
     case Value::Nil:    return "null";
     case Value::Bool:   return v.get<bool>() ? "true" : "false";
@@ -629,13 +637,23 @@ inline std::string json_stringify(const Value& v) {
       return format_float_shortest(d);
     }
     case Value::String: return culebra::json_escape(v.get<std::string>());
-    case Value::Array: {
+    case Value::Array:
+    case Value::Tuple:
+    case Value::Set: {
+      // Array, Tuple, and Set all render as JSON arrays. Set uses the
+      // members vector (insertion order).
+      const std::vector<Value>* xs = nullptr;
+      if (v.type == Value::Array) xs = v.to_array().values.get();
+      else if (v.type == Value::Tuple) xs = v.template get<TupleValue>().elements.get();
+      else                       xs = v.template get<SetValue>().members.get();
+      if (xs->empty()) return "[]";
       std::string s = "[";
-      const auto& xs = *v.to_array().values;
-      for (size_t i = 0; i < xs.size(); i++) {
+      for (size_t i = 0; i < xs->size(); i++) {
         if (i) s += ",";
-        s += json_stringify(xs[i]);
+        s += sep(depth + 1);
+        s += json_stringify((*xs)[i], indent, depth + 1);
       }
+      s += sep(depth);
       return s + "]";
     }
     case Value::Object: {
@@ -646,13 +664,17 @@ inline std::string json_stringify(const Value& v) {
         throw CulebraError("TypeError",
             "JSON.stringify: Object has non-String keys");
       }
+      if (obj.properties->empty()) return "{}";
       std::string s = "{";
       bool first = true;
       for (const auto& [k, sym] : *obj.properties) {
         if (!first) s += ",";
         first = false;
-        s += culebra::json_escape(k) + ":" + json_stringify(sym.val);
+        s += sep(depth + 1);
+        s += culebra::json_escape(k) + colon +
+             json_stringify(sym.val, indent, depth + 1);
       }
+      s += sep(depth);
       return s + "}";
     }
     default:
@@ -787,11 +809,24 @@ inline Value json_parse(std::string_view s) {
 inline Value make_json_namespace() {
   using namespace std::literals;
   ObjectValue ns;
+  // `JSON.stringify(v)` is compact; `JSON.stringify(v, n)` indents
+  // nested entries by n spaces. The optional indent rides in __ARGS__.
   ns.initialize(
       "stringify",
       Value(FunctionValue({{"v", false}},
           [](std::shared_ptr<Environment> env) {
-            return Value(json_stringify(env->get("v")));
+            int indent = 0;
+            if (env->has("__ARGS__")) {
+              const auto& extras = *env->get("__ARGS__").to_array().values;
+              if (!extras.empty()) {
+                if (extras[0].type != Value::Long) {
+                  throw CulebraError("TypeError",
+                      "JSON.stringify: indent must be Long");
+                }
+                indent = static_cast<int>(extras[0].get<long>());
+              }
+            }
+            return Value(json_stringify(env->get("v"), indent));
           }, "String"sv)),
       false);
   ns.initialize(
