@@ -30,8 +30,9 @@ Conventions used below:
 3. [`Random`](#3-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
 4. [`Sys`](#4-sys) — argv, exit, env
 5. [`Tensor`](#5-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
-6. [Design notes](#6-design-notes)
-7. [Not included (yet)](#7-not-included-yet)
+6. [`JSON`](#6-json) — stringify / parse round-trip
+7. [Design notes](#7-design-notes)
+8. [Not included (yet)](#8-not-included-yet)
 
 **Where to find what**
 
@@ -527,7 +528,48 @@ target.
 
 ---
 
-## 6. Design notes
+## 6. `JSON`
+
+Round-trip between Culebra values and JSON text. Both backends ship
+the same surface.
+
+### `JSON.stringify(v: Any) -> String`
+
+Serialize `v` to a compact JSON string. Supported value types:
+
+| Culebra            | JSON                            |
+|--------------------|---------------------------------|
+| `Nil`              | `null`                          |
+| `Bool`             | `true` / `false`                |
+| `Long`, `Float`    | number (non-finite Float raises `ValueError`) |
+| `String`           | quoted string with `\n`, `\t`, `\r`, `\"`, `\\`, `\u00xx` escapes |
+| `Array`            | JSON array                      |
+| `Object` (String keys only) | JSON object, keys in insertion order |
+
+`Function`, `Tensor`, `Tuple`, and `Set` are not serializable —
+`stringify` throws `TypeError` for these, and for an Object that
+carries non-String keys.
+
+### `JSON.parse(s: String) -> Any`
+
+Parse a JSON string into a Culebra value. Numbers without a decimal
+point or exponent are read as `Long`; the rest are read as `Float`.
+Objects come back with the keys in source order.
+
+Malformed input raises `ValueError` with a short message
+(`JSON.parse: unterminated string`, `expected ':'`, etc.).
+
+```culebra
+let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
+let s = JSON.stringify(v)
+puts(s)                              # {"name":"alice","age":30,...}
+let back = JSON.parse(s)
+puts(back.name)                      # alice
+```
+
+---
+
+## 7. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -562,7 +604,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 7. Not included (yet)
+## 8. Not included (yet)
 
 ### Trigonometry
 

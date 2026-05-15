@@ -18,6 +18,8 @@ tracks its behavior.
 8. [Strings and interpolation](#8-strings-and-interpolation)
 9. [Arrays](#9-arrays)
 10. [Objects](#10-objects)
+    * [Tuples](#tuples)
+    * [Sets](#sets)
 11. [Functions and closures](#11-functions-and-closures)
 12. [Control flow (`if`, `while`, `for`)](#12-control-flow)
 13. [Pattern matching (`match`)](#13-pattern-matching)
@@ -184,18 +186,21 @@ Most constructs are expressions that yield a value:
 
 ## 4. Types
 
-Culebra has exactly eight types:
+Culebra has exactly eleven types:
 
-| Type       | Description                             |
-|------------|-----------------------------------------|
-| `Nil`      | Single value `nil`                      |
-| `Bool`     | `true` or `false`                       |
-| `Long`     | 64-bit signed integer                   |
-| `Float`    | IEEE 754 binary64 (double precision)    |
-| `String`   | Immutable heap-allocated byte string    |
-| `Array`    | Mutable ordered collection of values    |
-| `Object`   | Mutable map of string keys to values    |
-| `Function` | Closure (function pointer + captures)   |
+| Type       | Description                                                                          |
+|------------|--------------------------------------------------------------------------------------|
+| `Nil`      | Single value `nil`                                                                   |
+| `Bool`     | `true` or `false`                                                                    |
+| `Long`     | 64-bit signed integer                                                                |
+| `Float`    | IEEE 754 binary64 (double precision)                                                 |
+| `String`   | Immutable heap-allocated byte string                                                 |
+| `Array`    | Mutable ordered collection of values                                                 |
+| `Object`   | Mutable map of hashable keys to values (String keys go through a fast shape path)    |
+| `Function` | Closure (function pointer + captures)                                                |
+| `Tensor`   | N-dimensional numeric tensor with BLAS-backed lazy graph (see [stdlib §5](stdlib.md#5-tensor)) |
+| `Tuple`    | Immutable, hashable sequence (`(1, 2)`) — usable as an Object/Set key                |
+| `Set`      | Insertion-ordered collection of unique hashable values (`{1, 2, 3}`)                 |
 
 Arithmetic and comparison between `Long` and `Float` promote the
 `Long` operand to `Float` automatically — see §7. Outside that
@@ -673,14 +678,38 @@ property.
 
     obj.key              # read, returns nil if absent
     obj.key = v          # set (creates if absent); mut required on existing
+    obj[k]               # subscript read with a non-String key (see below)
     obj.size()           # property count (Long)
     obj.has(key)         # not built in; use method call on user object
 
 Assigning to an existing property that was declared without `mut`
 raises `immutable property 'key' at L:C`.
 
-Property names are identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
-Computed / string-indexed properties are not supported.
+Dot-form names (`obj.key`) are identifiers (`[A-Za-z_][A-Za-z0-9_]*`)
+that go through the fast shape path. Non-identifier keys reach the
+subscript path below.
+
+### Non-String keys
+
+In addition to String keys (`{name: 'alice'}`), Object literals accept
+`Long`, `Float`, `Bool`, `Nil`, and `Tuple` keys:
+
+    let grid = {(0, 0): 'origin', (1, 0): 'east'}
+    let by_id = {1: 'one', 2: 'two', 3.14: 'pi'}
+    let by_nil = {nil: 'unknown'}
+
+Non-String keys go into a lazy sidecar map and are read with `obj[k]`:
+
+    grid[(0, 0)]   # 'origin'
+    by_id[1]       # 'one'
+
+Numerically-equivalent keys collide following Python's rule:
+`hash(1) == hash(1.0) == hash(true)`, so `{1: 'a', 1.0: 'b'}` keeps
+only one entry (the last write wins).
+
+String keys are preserved in insertion order. Non-String keys keep
+their own insertion order and render after the String block in
+`to_string` output.
 
 ### Methods and UFCS
 
@@ -886,6 +915,72 @@ precedence over the synthesized one — useful when the field walk is
 not the intended enumeration. Both the interpreter and the JIT
 synthesize the method through the same walker; output ordering is
 identical.
+
+---
+
+## Tuples
+
+A `Tuple` is an immutable, fixed-arity sequence — the hashable
+counterpart of `Array`. Literal syntax uses parentheses with at least
+one comma so it doesn't collide with a parenthesized expression:
+
+    let pair    = (3, 4)
+    let single  = (1,)              # trailing comma marks a 1-tuple
+    let triple  = (1, 'two', 3.14)
+
+Element access is by index, same as `Array`:
+
+    pair[0]                          # 3
+    triple[-1]                       # 3.14
+
+Equality is element-wise (in contrast to `Array`, which is by
+reference identity):
+
+    (1, 2) == (1, 2)                 # true
+    ([1], 2) == ([1], 2)             # false  (inner Arrays compare by reference)
+
+Tuples are hashable when their elements are, so they double as Object
+and Set keys:
+
+    let grid = {(0, 0): 'origin', (1, 0): 'east'}
+    let visited = {(0, 0), (1, 1)}   # Set of Tuples
+
+Iteration with `for x in t { ... }` walks the elements in order. Both
+backends implement these semantics identically.
+
+---
+
+## Sets
+
+A `Set` is an insertion-ordered collection of unique hashable values.
+Literal syntax uses braces with at least two elements (or a trailing
+comma) so it doesn't collide with the empty-Object literal `{}` or the
+`{key: value}` Object shorthand:
+
+    let s   = {1, 2, 3}
+    let one = {42,}                  # trailing comma forces a 1-element Set
+    let mixed = {1, 'two', 3.14, true}
+
+Duplicate elements collapse on construction; numerically-equivalent
+keys collide the same way Object keys do (`{1, 1.0, true}` keeps one
+element).
+
+Equality ignores order:
+
+    {1, 2, 3} == {3, 2, 1}           # true
+
+Built-in methods:
+
+| Method        | Description                                        |
+|---------------|----------------------------------------------------|
+| `size()`      | Element count (`Long`)                             |
+| `contains(x)` | `Bool` — is `x` a member?                          |
+| `union(b)`    | New `Set` of all elements from this and `b`        |
+| `intersect(b)`| New `Set` of elements present in both              |
+| `diff(b)`     | New `Set` of elements in this but not in `b`       |
+
+The set-operation methods preserve the left operand's insertion order
+for elements that survive. Both backends ship with these methods.
 
 ---
 
@@ -1815,13 +1910,15 @@ puts(to_string('hi'))       # 'hi'
 
 Return the runtime type name of `v`. One of
 `'Nil'`, `'Bool'`, `'Long'`, `'Float'`, `'String'`, `'Array'`,
-`'Object'`, `'Function'`.
+`'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'`.
 
 ```culebra
 puts(type_of(42))          # 'Long'
 puts(type_of(1.5))         # 'Float'
 puts(type_of('hi'))        # 'String'
 puts(type_of([1, 2]))      # 'Array'
+puts(type_of((1, 2)))      # 'Tuple'
+puts(type_of({1, 2}))      # 'Set'
 ```
 
 ### `range(n: Long) -> Iterator` / `range(start: Long, end: Long) -> Iterator`

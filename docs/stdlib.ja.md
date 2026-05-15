@@ -29,8 +29,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 3. [`Random`](#3-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
 4. [`Sys`](#4-sys) — argv / exit / env
 5. [`Tensor`](#5-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
-6. [設計上の注記](#6-設計上の注記)
-7. [未収録（将来検討）](#7-未収録将来検討)
+6. [`JSON`](#6-json) — stringify / parse の相互変換
+7. [設計上の注記](#7-設計上の注記)
+8. [未収録（将来検討）](#8-未収録将来検討)
 
 **目的別索引**
 
@@ -508,7 +509,47 @@ Phase 1 では **CPU** のみ。
 
 ---
 
-## 6. 設計上の注記
+## 6. `JSON`
+
+Culebra の値と JSON テキストの相互変換。両バックエンドで同じ API
+を提供します。
+
+### `JSON.stringify(v: Any) -> String`
+
+`v` をコンパクトな JSON 文字列にシリアライズします。サポート対象:
+
+| Culebra            | JSON                              |
+|--------------------|-----------------------------------|
+| `Nil`              | `null`                            |
+| `Bool`             | `true` / `false`                  |
+| `Long`, `Float`    | 数値（非有限 Float は `ValueError` を投げる） |
+| `String`           | クォート文字列、`\n`/`\t`/`\r`/`\"`/`\\`/`\u00xx` エスケープ |
+| `Array`            | JSON 配列                          |
+| `Object`（String キーのみ）| JSON オブジェクト、キーは挿入順       |
+
+`Function`, `Tensor`, `Tuple`, `Set` はシリアライズ不可。また
+非 String キーを含む Object に対しても `TypeError` を投げます。
+
+### `JSON.parse(s: String) -> Any`
+
+JSON 文字列を Culebra の値に変換します。小数点や指数表記を含まない
+数値は `Long`、それ以外は `Float` として読み込まれます。Object の
+キーは入力順に保持されます。
+
+不正な入力には短いメッセージ付きで `ValueError` が投げられます
+（`JSON.parse: unterminated string`, `expected ':'` など）。
+
+```culebra
+let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
+let s = JSON.stringify(v)
+puts(s)                              # {"name":"alice","age":30,...}
+let back = JSON.parse(s)
+puts(back.name)                      # alice
+```
+
+---
+
+## 7. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -541,7 +582,7 @@ Phase 1 では **CPU** のみ。
 
 ---
 
-## 7. 未収録（将来検討）
+## 8. 未収録（将来検討）
 
 ### 三角関数
 
