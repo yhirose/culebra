@@ -38,4 +38,32 @@ let n  = {10: "x", 5: "y", 1: "z"}
 let n2 = {10: "x", 5: "y", 1: "z"}
 assert(to_string(n) == to_string(n2))
 
+// --- Runtime keys via `obj[k] = v` ---
+// Object subscript-assignment routes every key (Long, Float, Bool,
+// Nil, Tuple, runtime String) through the non-String sidecar.
+mut bag = {}
+let sk = "alpha"
+bag[sk] = 100
+bag[42] = "long"
+bag[(1, 2)] = "tuple"
+bag[true] = "bool"
+assert(bag[sk] == 100)
+assert(bag[42] == "long")
+assert(bag[(1, 2)] == "tuple")
+assert(bag[true] == "bool")
+
+// String literal keys via subscript work too.
+mut named = {}
+named["foo"] = 1
+named["bar"] = 2
+assert(named["foo"] == 1)
+assert(named["bar"] == 2)
+
+// Subscript writes don't unify with shape-based `obj.foo` access —
+// runtime String keys live in the sidecar, static identifiers in
+// the shape, so `obj.foo` after `obj["foo"] = v` is still nil.
+mut split = {}
+split["x"] = 99
+assert(split.x == nil)
+
 IO.puts("test_object_keys OK")

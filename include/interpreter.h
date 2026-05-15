@@ -501,13 +501,18 @@ struct ObjectValue {
   virtual std::map<std::string_view, Value>& builtins();
 
   std::shared_ptr<OrderedSymbolMap> properties;
-  // Lazy-allocated for non-String keys.
+  // Non-String key sidecar. Eager-allocated (empty) by the ctor so
+  // `obj[k] = v` writes through a Value copy reach the same storage
+  // as later reads — lazy alloc would mutate a per-copy shared_ptr
+  // field and never propagate.
   std::shared_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
       non_string_props;
-  // Unified key insertion order — records every key (String and
-  // non-String alike) in the order it was first set. str() and iter
-  // walk this single list so mixed-key Objects render with a true
-  // interleaved order. The maps above stay for O(1) lookup.
+  // Unified key insertion order: every key (String and non-String) in
+  // the order it was first set. str() walks this so mixed-key Objects
+  // render with a true interleaved order. Eager-allocated for the same
+  // copy-propagation reason. Class instances bypass `initialize()` and
+  // leave this empty; str() falls back to the `properties` walk in that
+  // case.
   std::shared_ptr<std::vector<Value>> key_order;
 };
 
@@ -1085,6 +1090,12 @@ inline ObjectValue::ObjectValue() {
   properties = std::shared_ptr<OrderedSymbolMap>(raw, &_destroy_prop_map);
   // properties map is intentionally not GC-tracked — see the InterpGC
   // class header. Cycles are detected via the contained ArrayValues.
+  // Sidecar maps are eager-allocated so `obj[k] = v` writes through a
+  // Value copy reach the same storage as later reads. Lazy alloc would
+  // mutate a per-copy shared_ptr field and never propagate.
+  non_string_props = std::make_shared<
+      std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
+  key_order = std::make_shared<std::vector<Value>>();
 }
 
 
@@ -1215,21 +1226,16 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
   _check_drop_contract(name, val);
   bool new_key = !properties->contains(name);
   (*properties)[name] = Symbol{val, mut};
-  // `key_order` is lazy: String-only Objects keep it null and recover
-  // insertion order from `properties->entries` at str time. Once a
-  // non-String key arrives the order vector is activated and tracks
-  // every subsequent insert.
-  if (new_key && key_order) {
+  if (new_key) {
     key_order->push_back(Value(std::string(name)));
   }
 }
 
-// Non-String key overloads — dispatch to non_string_props (lazy
-// alloc). Phase 7-B handles Long/Float/Bool/Nil keys; runtime String
-// keys (e.g. `obj[some_var]` where some_var is a String) need
-// stable string storage and are out of scope for this phase.
+// Non-String key overloads dispatch to non_string_props. Long, Float,
+// Bool, Nil, Tuple, and runtime String keys all land here; static
+// String identifiers (`obj.foo`) take the shape-based path instead.
 inline bool ObjectValue::has(const Value& key) const {
-  if (!non_string_props) return false;
+  if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
 }
 
@@ -1239,18 +1245,6 @@ inline const Value& ObjectValue::get(const Value& key) const {
 
 inline void ObjectValue::initialize(const Value& key, const Value& val,
                                     bool mut) {
-  if (!non_string_props) {
-    non_string_props = std::make_shared<
-        std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
-    // First non-String key: activate key_order and back-fill the
-    // String keys that arrived before this one, so subsequent str()
-    // sees them in the correct interleaved order.
-    key_order = std::make_shared<std::vector<Value>>();
-    key_order->reserve(properties->size() + 1);
-    for (const auto& [name, _] : *properties) {
-      key_order->push_back(Value(std::string(name)));
-    }
-  }
   auto [it, inserted] =
       non_string_props->try_emplace(key, Symbol{val, mut});
   if (inserted) {
@@ -1351,20 +1345,16 @@ inline std::string Value::str_object() const {
     s += ": ";
     s += sym.val.str();
   };
-  if (obj.key_order) {
-    for (const auto& key : *obj.key_order) {
-      if (key.type == Value::String) {
-        const auto& name = key.template get<std::string>();
-        if (tag && name == "class") continue;
-        emit_entry(key, properties.at(std::string_view(name)));
-      } else {
-        emit_entry(key, obj.non_string_props->at(key));
-      }
-    }
-  } else {
-    // No non-String keys ever set: walk `properties` directly. This is
-    // the hot path for string-keyed Objects (class instances, plain
-    // literals, etc.) — no key_order allocation, no per-insert push.
+  // Walk `properties` first (covers class instances and other objects
+  // built via direct `properties->emplace`, which bypass `initialize()`
+  // and never push to key_order). Then append the non-String sidecar
+  // entries from `key_order`. For Objects built entirely through
+  // `initialize()`, key_order interleaves both — so we emit the
+  // sidecar entries inline at their recorded positions instead.
+  if (obj.key_order->empty() ||
+      obj.key_order->size() < properties.size()) {
+    // No key_order, or key_order is incomplete (class-instance hybrid):
+    // fall back to property-map walk, then append sidecar entries.
     for (const auto& [name, sym] : properties) {
       if (tag && name == "class") continue;
       if (!first) s += ", ";
@@ -1373,6 +1363,19 @@ inline std::string Value::str_object() const {
       s += name;
       s += ": ";
       s += sym.val.str();
+    }
+    for (const auto& [key, sym] : *obj.non_string_props) {
+      emit_entry(key, sym);
+    }
+  } else {
+    for (const auto& key : *obj.key_order) {
+      if (key.type == Value::String) {
+        const auto& name = key.template get<std::string>();
+        if (tag && name == "class") continue;
+        emit_entry(key, properties.at(std::string_view(name)));
+      } else {
+        emit_entry(key, obj.non_string_props->at(key));
+      }
     }
   }
   s += "}";
@@ -4624,6 +4627,26 @@ struct Interpreter {
 
       switch (postfix.original_tag) {
         case "INDEX"_: {
+          // `obj[k] = v` on an Object: routes through the non-String
+          // sidecar regardless of k's type. Runtime String keys also
+          // land here — they are NOT unified with `obj.foo` shape
+          // properties (those go through the DOT path above).
+          if (lval.type == Value::Object) {
+            auto key = eval(postfix, env);
+            auto& obj = lval.to_object();
+            if (compound) {
+              if (!obj.has(key)) {
+                throw CulebraError("KeyError",
+                    "compound assignment on missing key.");
+              }
+              auto cur = obj.get(key);
+              auto new_val = apply_compound_op(cur, rval, base_op, env);
+              obj.initialize(key, new_val, true);
+              return new_val;
+            }
+            obj.initialize(key, rval, mut);
+            return rval;
+          }
           const auto& arr = lval.to_array();
           auto idx = eval(postfix, env).to_long();
           if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
