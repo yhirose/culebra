@@ -2192,6 +2192,12 @@ If no script is provided, the REPL is launched automatically. The JIT
 REPL does not preserve state between inputs (each input is a fresh
 compilation), while the interpreter REPL does.
 
+The REPL persists input history across sessions. The path is
+`$CULEBRA_HISTFILE` if set, otherwise `$XDG_STATE_HOME/culebra/history`
+when defined, otherwise `~/.culebra_history`. History is rewritten
+after each accepted line so a crash mid-session doesn't lose it
+(matching Python and Node REPL convention).
+
 ### CLI-installed globals
 
 The CLI binary adds two globals to the script environment before
@@ -2234,8 +2240,11 @@ built-ins from §18.
 * Pattern matching has no exhaustiveness check.
 * `match` arm bodies must be single expressions — `{ ... }` in an arm
   body is parsed as an `Object` literal, not a block.
-* Property names are identifiers only; computed / string-indexed
-  property access is not supported.
+* Dot-form property names are identifiers only (`obj.foo`). Runtime
+  String / Long / Float / Bool / Nil / Tuple keys reach the Object via
+  the subscript path (`obj[k]`) and live in a separate sidecar map —
+  they do not unify with the shape-based `obj.foo` namespace.
+  See §10 "Subscript assignment" for the runtime semantics.
 
 ---
 

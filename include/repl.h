@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+#include <filesystem>
 #include <linenoise.hpp>
 #include "interpreter.h"
 
@@ -8,6 +10,23 @@
 #endif
 
 namespace culebra {
+
+// Persistent REPL history path. Honors `CULEBRA_HISTFILE` if set, else
+// `XDG_STATE_HOME/culebra/history`, else `~/.culebra_history`. Returns
+// an empty string when `$HOME` is unset (e.g. some sandboxed runs) —
+// callers must treat that as "skip persistence".
+inline std::string repl_history_path() {
+  if (const char* override_ = std::getenv("CULEBRA_HISTFILE");
+      override_ && *override_) {
+    return override_;
+  }
+  if (const char* xdg = std::getenv("XDG_STATE_HOME"); xdg && *xdg) {
+    return std::string(xdg) + "/culebra/history";
+  }
+  const char* home = std::getenv("HOME");
+  if (!home || !*home) return {};
+  return std::string(home) + "/.culebra_history";
+}
 
 inline int repl(std::shared_ptr<Environment> env, bool print_ast,
                 bool jit_mode = false) {
@@ -18,6 +37,31 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
             "output)"
          << endl;
   }
+
+  // Default linenoise cap is 100 entries, which is small by REPL
+  // convention (bash ≈ 500, python / node ≈ 1000). Bump before
+  // LoadHistory so newly-loaded entries aren't truncated.
+  linenoise::SetHistoryMaxLen(1000);
+
+  auto histfile = repl_history_path();
+  if (!histfile.empty()) {
+    // Ensure the parent directory exists (matters for the XDG_STATE_HOME
+    // path, which can land at a fresh-box location like
+    // ~/.local/state/culebra/history). Errors are ignored — SaveHistory
+    // will fail silently if the path is genuinely unwritable, matching
+    // python / readline behavior.
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(histfile).parent_path(), ec);
+    linenoise::LoadHistory(histfile.c_str());
+  }
+
+  // Save after each accepted line so a crash mid-session doesn't lose
+  // history (matches the python / node REPL convention).
+  auto add_history = [&](const std::string& line) {
+    linenoise::AddHistory(line.c_str());
+    if (!histfile.empty()) linenoise::SaveHistory(histfile.c_str());
+  };
 
   for (;;) {
     auto prompt = jit_mode ? "jit> " : "cul> ";
@@ -39,7 +83,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
         if (jit_mode) {
           try {
             JIT::run(ast, false, false);
-            linenoise::AddHistory(line.c_str());
+            add_history(line);
             continue;
           } catch (exception& e) {
             cout << e.what() << endl;
@@ -51,7 +95,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
         Value val;
         if (interpret(ast, env, val, msgs)) {
           cout << val << endl;
-          linenoise::AddHistory(line.c_str());
+          add_history(line);
           continue;
         }
       }
