@@ -183,8 +183,15 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
       return;
     }
     case "OBJECT_PATTERN"_:
-      for (auto& key_node : pattern.nodes) {
-        emit(key_node->token, key_node->line, key_node->column);
+      for (auto& entry : pattern.nodes) {
+        // `OBJECT_PAT_ENTRY` carries [IDENTIFIER, PATTERN]; recurse
+        // into the sub-pattern. Bare IDENTIFIER is the shorthand form
+        // — bind the key as the slot name.
+        if (entry->tag == "OBJECT_PAT_ENTRY"_) {
+          for_each_pattern_binding(*entry->nodes[1], f);
+        } else {
+          emit(entry->token, entry->line, entry->column);
+        }
       }
       return;
     default:
@@ -3465,10 +3472,28 @@ struct Interpreter {
       case "OBJECT_PATTERN"_: {
         if (val.type != Value::Object) return false;
         const auto& obj = val.to_object();
-        for (const auto& key_node : pattern.nodes) {
-          auto key = key_node->token;
+        for (const auto& entry : pattern.nodes) {
+          // Two shapes per entry:
+          //   - shorthand: bare IDENTIFIER, hoisted by the optimizer →
+          //     bind that name to obj[name]
+          //   - full: OBJECT_PAT_ENTRY with [IDENTIFIER, PATTERN] →
+          //     bind/match PATTERN against obj[key]
+          std::string_view key;
+          const peg::Ast* sub_pattern = nullptr;
+          if (entry->tag == "OBJECT_PAT_ENTRY"_) {
+            key = entry->nodes[0]->token;
+            sub_pattern = entry->nodes[1].get();
+          } else {
+            key = entry->token;
+          }
           if (!obj.has(key)) return false;
-          bind_pattern_name(env, *key_node, obj.get(key), mut);
+          if (sub_pattern) {
+            if (!try_pattern(*sub_pattern, obj.get(key), env, mut)) {
+              return false;
+            }
+          } else {
+            bind_pattern_name(env, *entry, obj.get(key), mut);
+          }
         }
         return true;
       }

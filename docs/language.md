@@ -260,8 +260,11 @@ Ordering values of different types (outside the numeric pair) raises
     let y = 20       # let binding (immutable)
     mut z = 30       # mut binding (mutable)
     let mut w = 40   # equivalent to `mut w = 40`
-    let {name, age} = person           # object destructure
+    let {name, age} = person           # object destructure (shorthand)
+    let {name: nm, age: a} = person    # rename / value-match per entry
+    let {user: {name}} = req           # nested destructure
     let [a, b, ...rest] = xs           # array destructure (rest allowed)
+    let (x, y) = pair                  # tuple destructure
     let mut {x, y} = point             # destructure with mutable bindings
 
 Assignment with a simple identifier LHS is handled as follows:
@@ -1266,8 +1269,10 @@ the value is `nil`.
 | `[p1, p2, ...]`   | `Array` of exactly the same length       |
 | `[p1, ...rest]`   | `Array` of ≥ `n−1` elements; `rest` is a fresh `Array` of the remainder |
 | `[a, ...m, z]`    | Rest can be in the middle; pre/post positions match fixed elements |
-| `{k1, k2}`        | `Object` containing at least those keys; binds each `ki` to `obj.ki` |
+| `{k1, k2}`        | `Object` containing at least those keys; binds each `ki` to `obj.ki` (shorthand) |
+| `{k1: p1, k2: p2}` | `Object` whose `k1` matches `p1` and `k2` matches `p2`. Nests freely (`{user: {name}}`). Mixes with shorthand. |
 | `{}`              | Any `Object` (keys ignored)              |
+| `(p1, p2, ...)`   | `Tuple` of exactly the same arity; element-wise sub-patterns |
 
 ### Semantics
 

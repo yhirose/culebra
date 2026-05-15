@@ -97,7 +97,11 @@ const auto grammar_ = R"(
   ARRAY_PAT_ELEM           <-  REST_PATTERN / PATTERN
   REST_PATTERN             <-  '...' _ IDENTIFIER
 
-  OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+  # OBJECT_PAT_ENTRY: either `key: PATTERN` (value match / nested) or
+  # a bare identifier (shorthand for `name: name`).
+  OBJECT_PATTERN           <-  '{' _ (OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)*)? _ '}'
+  OBJECT_PAT_ENTRY         <-  IDENTIFIER _ ':' _ PATTERN
+                            /  IDENTIFIER
 
   # Tuple pattern: at least one comma, optional trailing comma. No
   # rest pattern (Tuple is fixed-arity). Mirrors the TUPLE literal.

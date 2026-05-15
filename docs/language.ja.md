@@ -249,8 +249,11 @@ LLVM ORC JIT のどちらでも完全にサポートされています。Long �
     let y = 20       # let 宣言（イミュータブル）
     mut z = 30       # mut 宣言（ミュータブル）
     let mut w = 40   # `mut w = 40` と同等
-    let {name, age} = person           # オブジェクト分解束縛
+    let {name, age} = person           # オブジェクト分解束縛（省略形）
+    let {name: nm, age: a} = person    # 改名 / 値マッチ
+    let {user: {name}} = req           # ネスト分解
     let [a, b, ...rest] = xs           # 配列分解束縛（rest 可）
+    let (x, y) = pair                  # タプル分解
     let mut {x, y} = point             # 分解も let mut で可変に
 
 単純な識別子を左辺とする代入の扱い:
@@ -1212,8 +1215,10 @@ for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 | `[p1, p2, ...]`  | 同じ長さの `Array`                         |
 | `[p1, ...rest]`  | `n−1` 以上の長さの `Array`。`rest` は残りの新しい `Array` |
 | `[a, ...m, z]`   | 中間位置の rest も可                       |
-| `{k1, k2}`       | 指定キーを持つ `Object`。各 `ki` に `obj.ki` を束縛 |
+| `{k1, k2}`       | 指定キーを持つ `Object`。各 `ki` に `obj.ki` を束縛（省略形） |
+| `{k1: p1, k2: p2}` | `k1` が `p1` に、`k2` が `p2` に一致する `Object`。入れ子可（`{user: {name}}`）。省略形と混在可 |
 | `{}`             | 任意の `Object`（キー無視）                  |
+| `(p1, p2, ...)`  | 同じ要素数の `Tuple`。要素ごとに部分パターン |
 
 ### セマンティクス
 

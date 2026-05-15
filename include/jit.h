@@ -8302,6 +8302,7 @@ struct JIT {
 
   llvm::Value* emit_object_pattern(const peg::Ast& pattern,
                                    llvm::Value* subject) {
+    using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto failBB = llvm::BasicBlock::Create(ctx_, "obj.fail", fn);
@@ -8316,9 +8317,16 @@ struct JIT {
 
     auto objPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
 
-    // For each key: has + get + bind
-    for (const auto& key_node : pattern.nodes) {
-      auto key = std::string(key_node->token);
+    // For each entry: has + get + (bind | recurse into sub-pattern)
+    for (const auto& entry : pattern.nodes) {
+      std::string key;
+      const peg::Ast* sub_pattern = nullptr;
+      if (entry->tag == "OBJECT_PAT_ENTRY"_) {
+        key = std::string(entry->nodes[0]->token);
+        sub_pattern = entry->nodes[1].get();
+      } else {
+        key = std::string(entry->token);  // shorthand IDENTIFIER
+      }
       auto keyPtr = get_or_create_global_str(key, ".obj.key");
       auto has = emit_object_has(objPtr, keyPtr);
       auto next = llvm::BasicBlock::Create(ctx_, "obj.bind", fn);
@@ -8341,7 +8349,13 @@ struct JIT {
       llvm::Value* v = llvm::UndefValue::get(valueType_);
       v = builder_.CreateInsertValue(v, t, {0});
       v = builder_.CreateInsertValue(v, d, {1});
-      if (is_sink_name(key)) {
+      if (sub_pattern) {
+        // Full `key: PATTERN` form: recursively match the value.
+        auto m = emit_pattern(*sub_pattern, v);
+        auto contBB = llvm::BasicBlock::Create(ctx_, "obj.cont", fn);
+        builder_.CreateCondBr(m, contBB, failBB);
+        builder_.SetInsertPoint(contBB);
+      } else if (is_sink_name(key)) {
         // sink: presence of the key still gates the match (matching
         // the interpreter), but no binding is introduced.
       } else {

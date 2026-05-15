@@ -247,6 +247,30 @@ test_destructure = fn () {
   let {first, last} = {first: 'A', last: 'Z'}
   p = {first, last}
   assert(p.first == 'A' && p.last == 'Z')
+
+  # Object pattern with value matching and nesting (C cycle).
+  let {name: nm, age: ag} = {name: 'bob', age: 42}
+  assert(nm == 'bob')
+  assert(ag == 42)
+
+  let {user: {name: uname}} = {user: {name: 'carol'}, role: 'admin'}
+  assert(uname == 'carol')
+
+  # Mix shorthand and full forms in the same pattern.
+  let {a, b: bv} = {a: 1, b: 2, c: 3}
+  assert(a == 1)
+  assert(bv == 2)
+
+  # Empty object pattern matches any Object.
+  let empty_ok = match {} { {} => true, _ => false }
+  assert(empty_ok == true)
+
+  let r = match {name: 'alice', age: 30} {
+    {name: 'bob'} => 'bob',
+    {name: 'alice', age: a} => a,
+    _ => -1,
+  }
+  assert(r == 30)
 }
 
 test_object_factory = fn () {
