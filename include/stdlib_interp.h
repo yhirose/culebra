@@ -615,31 +615,6 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
 
 // --- JSON stringify/parse ---
 
-inline std::string _json_escape(std::string_view s) {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out += '"';
-  for (char c : s) {
-    switch (c) {
-      case '"':  out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof buf, "\\u%04x", c);
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
-  out += '"';
-  return out;
-}
-
 inline std::string json_stringify(const Value& v) {
   switch (v.type) {
     case Value::Nil:    return "null";
@@ -653,7 +628,7 @@ inline std::string json_stringify(const Value& v) {
       }
       return format_float_shortest(d);
     }
-    case Value::String: return _json_escape(v.get<std::string>());
+    case Value::String: return culebra::json_escape(v.get<std::string>());
     case Value::Array: {
       std::string s = "[";
       const auto& xs = *v.to_array().values;
@@ -664,12 +639,17 @@ inline std::string json_stringify(const Value& v) {
       return s + "]";
     }
     case Value::Object: {
+      const auto& obj = v.to_object();
+      if (obj.non_string_order && !obj.non_string_order->empty()) {
+        throw CulebraError("TypeError",
+            "JSON.stringify: Object has non-String keys");
+      }
       std::string s = "{";
       bool first = true;
-      for (const auto& [k, sym] : *v.to_object().properties) {
+      for (const auto& [k, sym] : *obj.properties) {
         if (!first) s += ",";
         first = false;
-        s += _json_escape(k) + ":" + json_stringify(sym.val);
+        s += culebra::json_escape(k) + ":" + json_stringify(sym.val);
       }
       return s + "}";
     }

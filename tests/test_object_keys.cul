@@ -22,10 +22,10 @@ assert(mix.a == 1)
 assert(mix[99] == "ninety-nine")
 
 // Mixed-key str rendering: string keys first in insertion order, then
-// non-string keys in their own insertion order (Phase 8-E). String
-// literals can't embed `{` or `'` cleanly, so the assertion compares
-// against another to_string call of the same logical Object — proving
-// equal renderings rather than a baked-in expected string.
+// non-string keys in their own insertion order. String literals can't
+// embed `{` or `'` cleanly, so the assertion compares against another
+// to_string call of the same logical Object — proving equal renderings
+// rather than a baked-in expected string.
 let m2 = {a: 1, 2: "two", b: 3, 4: "four"}
 let m3 = {a: 1, 2: "two", b: 3, 4: "four"}
 assert(to_string(m2) == to_string(m3))

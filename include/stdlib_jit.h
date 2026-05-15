@@ -294,31 +294,6 @@ __attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
 
 // --- JSON ---
 
-inline std::string _jit_json_escape(std::string_view s) {
-  std::string out;
-  out.reserve(s.size() + 2);
-  out += '"';
-  for (char c : s) {
-    switch (c) {
-      case '"':  out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof buf, "\\u%04x", c);
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
-  out += '"';
-  return out;
-}
-
 inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
   switch (tag) {
     case TAG_NIL:    return "null";
@@ -333,7 +308,7 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
       return culebra::format_float_shortest(d);
     }
     case TAG_STRING:
-      return _jit_json_escape(reinterpret_cast<const char*>(data));
+      return culebra::json_escape(reinterpret_cast<const char*>(data));
     case TAG_ARRAY: {
       auto* arr = reinterpret_cast<JitArray*>(data);
       std::string s = "[";
@@ -345,11 +320,17 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
     }
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
+      // Non-String keys are not representable in JSON; reject loudly so
+      // round-trip with `JSON.parse` stays consistent.
+      if (obj->non_string_order && !obj->non_string_order->empty()) {
+        throw culebra::CulebraError("TypeError",
+            "JSON.stringify: Object has non-String keys");
+      }
       std::string s = "{";
       if (obj->shape) {
         for (size_t i = 0; i < obj->shape->names.size(); i++) {
           if (i) s += ",";
-          s += _jit_json_escape(obj->shape->names[i]) + ":" +
+          s += culebra::json_escape(obj->shape->names[i]) + ":" +
                _jit_json_stringify(obj->slots[i].value.tag,
                                    obj->slots[i].value.data);
         }

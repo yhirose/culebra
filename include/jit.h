@@ -607,6 +607,20 @@ struct _GcTracker {
         for (auto& entry : o->slots) {
           push_if_refcounted(out, entry.value.tag, entry.value.data);
         }
+        // Non-String keys (Tuple) and their values: both can be
+        // refcounted (a `{(1,2): some_arr}` literal carries refs from
+        // both halves). Walk via the order vector so the key is seen
+        // once, and use it to look up the entry's value.
+        if (o->non_string_order && o->non_string_props) {
+          for (const auto& k : *o->non_string_order) {
+            push_if_refcounted(out, k.tag, k.data);
+            auto it = o->non_string_props->find(k);
+            if (it != o->non_string_props->end()) {
+              push_if_refcounted(out, it->second.value.tag,
+                                 it->second.value.data);
+            }
+          }
+        }
         // Reach the shared class meta via proto so GC sees it as live
         // while any instance is alive (and discovers methods through
         // it on subsequent walks).
@@ -685,6 +699,21 @@ struct _GcTracker {
         o->shape = nullptr;
         for (auto& entry : slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
+        }
+        // Non-String sidecar: same teardown as the normal release path.
+        if (o->non_string_order) {
+          for (auto& k : *o->non_string_order) {
+            _culebra_value_release_impl(k.tag, k.data);
+          }
+          delete o->non_string_order;
+          o->non_string_order = nullptr;
+        }
+        if (o->non_string_props) {
+          for (auto& [_, entry] : *o->non_string_props) {
+            _culebra_value_release_impl(entry.value.tag, entry.value.data);
+          }
+          delete o->non_string_props;
+          o->non_string_props = nullptr;
         }
         break;
       }
@@ -948,7 +977,8 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         }
       }
       s += "{";
-      // Render in alphabetical key order (matches interp's str_object).
+      // Render in declaration (shape insertion) order to match
+      // interp's str_object.
       std::vector<size_t> order;
       order.reserve(obj->prop_size());
       for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
@@ -1795,11 +1825,10 @@ __attribute__((used)) inline void culebra_runtime_set_add(JitSet* set,
                                                           int8_t tag,
                                                           int64_t data) {
   JitValue v{tag, data};
-  if (set->index->contains(v)) {
+  if (!set->index->insert(v).second) {
     _culebra_value_release_impl(tag, data);
     return;
   }
-  set->index->insert(v);
   set->members.push_back(v);
 }
 
@@ -1815,32 +1844,28 @@ __attribute__((used)) inline int64_t culebra_runtime_set_size(JitSet* set) {
 
 // Returns a fresh +1 Set whose members are the union / intersection /
 // (a - b) of `a` and `b`. Each member is retained once into the result.
-// Returns a fresh +1 Set whose members are the union / intersection /
-// (a - b) of `a` and `b`. Each member is retained once into the result.
+// Common tail for set_union/intersect/diff: take +1 ownership of `v`
+// into `out` if not already present. Source members are unique within
+// their own set, so the dedup check is only meaningful for `union`.
+inline void _set_take(JitSet* out, const JitValue& v) {
+  if (!out->index->insert(v).second) return;
+  culebra_runtime_value_retain(v.tag, v.data);
+  out->members.push_back(v);
+}
+
 __attribute__((used)) inline JitSet* culebra_runtime_set_union(JitSet* a,
                                                                JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  auto add = [&](const JitValue& v) {
-    if (out->index->contains(v)) return;
-    culebra_runtime_value_retain(v.tag, v.data);
-    out->index->insert(v);
-    out->members.push_back(v);
-  };
-  for (auto& v : a->members) add(v);
-  for (auto& v : b->members) add(v);
+  for (auto& v : a->members) _set_take(out, v);
+  for (auto& v : b->members) _set_take(out, v);
   return out;
 }
 
 __attribute__((used)) inline JitSet* culebra_runtime_set_intersect(JitSet* a,
                                                                    JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  if (!b->index) return out;
   for (auto& v : a->members) {
-    if (b->index->contains(v) && !out->index->contains(v)) {
-      culebra_runtime_value_retain(v.tag, v.data);
-      out->index->insert(v);
-      out->members.push_back(v);
-    }
+    if (b->index->contains(v)) _set_take(out, v);
   }
   return out;
 }
@@ -1849,12 +1874,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
                                                               JitSet* b) {
   auto* out = culebra_runtime_set_new();
   for (auto& v : a->members) {
-    if ((!b->index || !b->index->contains(v)) &&
-        !out->index->contains(v)) {
-      culebra_runtime_value_retain(v.tag, v.data);
-      out->index->insert(v);
-      out->members.push_back(v);
-    }
+    if (!b->index->contains(v)) _set_take(out, v);
   }
   return out;
 }
@@ -4327,9 +4347,9 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
-        // Drop the +1 key references held by `non_string_order` so
-        // refcounted keys (e.g. Tuples) don't leak. The map keys alias
-        // the same JitValues, but the order vector is the owner.
+        // Non-String sidecar teardown. `non_string_order` owns the +1
+        // key references (the AnyKeyMap aliases them); the map owns
+        // the entry values that the setter helper retained on insert.
         if (o->non_string_order) {
           for (auto& k : *o->non_string_order) {
             _culebra_value_release_impl(k.tag, k.data);
@@ -4337,8 +4357,13 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           delete o->non_string_order;
           o->non_string_order = nullptr;
         }
-        delete o->non_string_props;
-        o->non_string_props = nullptr;
+        if (o->non_string_props) {
+          for (auto& [_, entry] : *o->non_string_props) {
+            _culebra_value_release_impl(entry.value.tag, entry.value.data);
+          }
+          delete o->non_string_props;
+          o->non_string_props = nullptr;
+        }
         _gc().remove(o, GC_TAG_OBJECT);
         delete o;
       }
@@ -5110,7 +5135,6 @@ struct JIT {
         "shape",       "pow",        "transpose",  "reshape",
         "mean",        "argmax",     "to_array",   "dot",
         "linear_sigmoid", "clone",
-        // Set operations (Phase 8-F).
         "union",       "intersect",  "diff"};
     return known;
   }
@@ -10792,7 +10816,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_long(phi);
   }
 
-  // --- Set methods (Phase 8-F) ---
+  // --- Set methods ---
   // union/intersect/diff: receiver+arg must both be Set, returns Set.
   if ((method == "union" || method == "intersect" || method == "diff") &&
       argsAst.nodes.size() == 1) {

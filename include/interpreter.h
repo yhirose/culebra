@@ -946,6 +946,13 @@ struct SetValue {
       : members(std::make_shared<std::vector<Value>>()),
         index(std::make_shared<
               std::unordered_map<Value, size_t, ValueHash, ValueEq>>()) {}
+
+  // Insert `v` if not already present. Returns true on insert.
+  bool add(const Value& v) {
+    if (!index->emplace(v, members->size()).second) return false;
+    members->push_back(v);
+    return true;
+  }
 };
 
 inline Value::Value(SetValue&& s) : type(Set), v(std::move(s)) {}
@@ -1387,6 +1394,19 @@ inline Value _make_iterator(NextFn&& next_impl) {
   return Value(std::move(iter_obj));
 }
 
+// Build an iterator that yields elements of a shared Value vector in
+// index order. Used by Tuple's `for x in t` path and other places that
+// snapshot keys/values into a vector before iterating.
+inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
+  auto index = std::make_shared<size_t>(0);
+  return _make_iterator([vec, index](std::shared_ptr<Environment>) {
+    if (*index >= vec->size()) return _iter_step_done();
+    auto v = (*vec)[*index];
+    (*index)++;
+    return _iter_step_value(std::move(v));
+  });
+}
+
 // Decode one UTF-8 codepoint at `s + off` into `cp`, advancing `off` by
 // the consumed byte count. Invalid / truncated sequences fall back to
 // the raw byte value and advance by one — matching the permissive
@@ -1529,16 +1549,7 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
       iter_fn = iterable.to_object().get("iter");
     }
   } else if (iterable.type == Value::Tuple) {
-    // Tuple has no Object/methods sidecar — wire up an inline iterator
-    // closure that walks `elements` in order.
-    auto elements = iterable.get<TupleValue>().elements;  // shared_ptr copy
-    auto index = std::make_shared<size_t>(0);
-    return _make_iterator([elements, index](std::shared_ptr<Environment>) {
-      if (*index >= elements->size()) return _iter_step_done();
-      auto v = (*elements)[*index];
-      (*index)++;
-      return _iter_step_value(std::move(v));
-    });
+    return _iter_over_vector(iterable.get<TupleValue>().elements);
   }
   if (iter_fn.type != Value::Function) {
     throw CulebraError("TypeError", std::format(
@@ -2094,15 +2105,7 @@ inline std::map<std::string_view, Value>& ArrayValue::builtins() {
       // Iterator protocol: yield elements in index order.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
-         auto values = val.to_array().values;  // shared_ptr copy
-         auto index = std::make_shared<size_t>(0);
-         return _make_iterator([values, index](std::shared_ptr<Environment>) {
-           if (*index >= values->size()) return _iter_step_done();
-           auto v = (*values)[*index];
-           (*index)++;
-           return _iter_step_value(std::move(v));
-         });
+         return _iter_over_vector(callEnv->get("this").to_array().values);
        }))}};
   return props_;
 }
@@ -2527,13 +2530,8 @@ inline std::map<std::string_view, Value>& set_builtins() {
              const auto& a = callEnv->get("this").get<SetValue>();
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
-             auto add = [&](const Value& v) {
-               if (out.index->contains(v)) return;
-               out.index->emplace(v, out.members->size());
-               out.members->push_back(v);
-             };
-             for (const auto& v : *a.members) add(v);
-             for (const auto& v : *b.members) add(v);
+             for (const auto& v : *a.members) out.add(v);
+             for (const auto& v : *b.members) out.add(v);
              return Value(std::move(out));
            },
            "Set"sv))},
@@ -2545,10 +2543,7 @@ inline std::map<std::string_view, Value>& set_builtins() {
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) {
-               if (b.index->contains(v) && !out.index->contains(v)) {
-                 out.index->emplace(v, out.members->size());
-                 out.members->push_back(v);
-               }
+               if (b.index->contains(v)) out.add(v);
              }
              return Value(std::move(out));
            },
@@ -2561,10 +2556,7 @@ inline std::map<std::string_view, Value>& set_builtins() {
              const auto& b = callEnv->get("other").get<SetValue>();
              SetValue out;
              for (const auto& v : *a.members) {
-               if (!b.index->contains(v) && !out.index->contains(v)) {
-                 out.index->emplace(v, out.members->size());
-                 out.members->push_back(v);
-               }
+               if (!b.index->contains(v)) out.add(v);
              }
              return Value(std::move(out));
            },
@@ -3046,12 +3038,7 @@ struct Interpreter {
       }
       case "SET"_: {
         SetValue s;
-        for (const auto& n : ast.nodes) {
-          auto v = eval(*n, env);
-          if (s.index->contains(v)) continue;  // dedupe
-          s.index->emplace(v, s.members->size());
-          s.members->push_back(std::move(v));
-        }
+        for (const auto& n : ast.nodes) s.add(eval(*n, env));
         return Value(std::move(s));
       }
       case "NIL"_:

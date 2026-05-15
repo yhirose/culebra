@@ -53,6 +53,33 @@ inline std::string format_float_shortest(double d) {
   return s;
 }
 
+// JSON.stringify quote escaping. Shared by both backends' stringify
+// implementations. Control bytes (<0x20) emit as `\u00xx`.
+inline std::string json_escape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out += '"';
+  for (char c : s) {
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof buf, "\\u%04x", c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  out += '"';
+  return out;
+}
+
 [[noreturn]] inline void throw_type_error_at(long line, long col) {
   throw CulebraError("TypeError",
                      std::format("type error at {}:{}.", line, col), line,
