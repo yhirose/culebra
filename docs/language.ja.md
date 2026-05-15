@@ -651,7 +651,10 @@ String 型の `class:` プロパティを先頭に持ち上げ、プロパティ
     obj.key              # 読み取り（存在しなければ nil）
     obj.key = v          # 設定（存在しなければ作成、既存には mut 必要）
     obj[k]               # 非 String キーでの読み取り（下記参照）
-    obj.size()           # プロパティ数（Long）
+    obj.size()           # プロパティ数（Long）、非 String キーも数える
+    obj.has(key)         # Bool — String / Long / Float / Bool / Nil / Tuple を受け付け
+    obj.keys()           # 挿入順（interleave）のキー配列
+    obj.remove(key)      # `key` の項目を削除（任意のハッシュ可能キー）。なければ no-op
 
 `mut` 指定なしで既存プロパティに代入すると
 `immutable property 'key' at L:C` になります。
@@ -944,6 +947,18 @@ class インスタンスは leaf 扱いで、ウォーカーはそこで停止�
 | `contains(x)`| `Bool` — `x` が要素に含まれているか                 |
 | `to_array()`| 同じ要素を持つ新しい `Array`                        |
 | `iter()`    | 要素を添字順に返すイテレータ                          |
+
+### 連結
+
+`t1 + t2` は 2 つの Tuple を新しい Tuple に連結します（Python 流）。
+Tuple-Tuple 分岐はユーザ定義 `__add__` より先にチェックされるため、
+オペランドがどちらも生 Tuple なら、ラッパークラスの `+` は発火しま
+せん。明示的に包んで上書きしてください。
+
+    (1, 2) + (3, 4, 5)        # (1, 2, 3, 4, 5)
+    (1,) + ('end',)           # (1, 'end')
+
+Tuple `+` 非 Tuple は `TypeError`（暗黙の coercion なし）。
 
 ### Destructuring
 

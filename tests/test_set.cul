@@ -71,4 +71,17 @@ assert((A ^ B).size() == 2)
 // Precedence: `|` binds tighter than `==`.
 assert((A | B) == {1, 2, 3, 4})
 
+// --- Mutating add / remove (G-3 — JIT now supports these) ---
+mut m = {1, 2}
+let added = m.add(3)
+assert(added == true)
+assert(m.size() == 3)
+let dup = m.add(2)
+assert(dup == false)
+let rm = m.remove(1)
+assert(rm == true)
+assert(m.size() == 2)
+let rm_absent = m.remove(99)
+assert(rm_absent == false)
+
 IO.puts("test_set OK")

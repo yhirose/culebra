@@ -1606,36 +1606,84 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
   static std::map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
-         long n = val.to_object().properties->size();
+         const auto& obj = callEnv->get("this").to_object();
+         long n = static_cast<long>(obj.properties->size());
+         if (obj.non_string_props) {
+           n += static_cast<long>(obj.non_string_props->size());
+         }
          return Value(n);
        }))},
       {"keys"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& val = callEnv->get("this");
-         const auto& props = *val.to_object().properties;
+         const auto& obj = callEnv->get("this").to_object();
          ArrayValue arr;
-         arr.values->reserve(props.size());
-         for (const auto& [k, _] : props) {
-           arr.values->push_back(Value(std::string(k)));
+         // Walk key_order when populated so String and non-String keys
+         // come out interleaved in their actual insertion order. Fall
+         // back to the property-map walk for objects built via direct
+         // emplace (class instances).
+         if (obj.key_order && !obj.key_order->empty()) {
+           arr.values->reserve(obj.key_order->size());
+           for (const auto& k : *obj.key_order) arr.values->push_back(k);
+         } else {
+           arr.values->reserve(obj.properties->size());
+           for (const auto& [k, _] : *obj.properties) {
+             arr.values->push_back(Value(std::string(k)));
+           }
          }
          return Value(std::move(arr));
        }))},
-      {"has"sv, Value(FunctionValue({{"key", false, "String"sv}},
+      {"has"sv, Value(FunctionValue({{"key", false}},
                                     [](std::shared_ptr<Environment> callEnv) {
-                                      const auto& val = callEnv->get("this");
-                                      const auto& k =
-                                          callEnv->get("key").to_string();
-                                      return Value(
-                                          val.to_object().properties->contains(
-                                              k));
+                                      const auto& obj = callEnv->get("this").to_object();
+                                      const auto& key = callEnv->get("key");
+                                      // Hashable keys of any type:
+                                      // String tries the shape map,
+                                      // others go to the sidecar.
+                                      if (key.type == Value::String) {
+                                        if (obj.properties->contains(
+                                                std::string_view(
+                                                    key.template get<std::string>()))) {
+                                          return Value(true);
+                                        }
+                                      }
+                                      return Value(obj.has(key));
                                     }))},
       {"remove"sv,
-       Value(FunctionValue({{"key", false, "String"sv}},
+       Value(FunctionValue({{"key", false}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& val = callEnv->get("this");
-                             const auto& k = callEnv->get("key").to_string();
-                             val.to_object().properties->erase(k);
+                             auto& obj = val.to_object();
+                             const auto& key = callEnv->get("key");
+                             // String keys live in `properties`;
+                             // everything else (Long/Float/Bool/Nil/
+                             // Tuple/runtime String set via subscript)
+                             // lives in `non_string_props`. Try the
+                             // String fast path first, then fall back.
+                             if (key.type == Value::String) {
+                               const auto& k = key.template get<std::string>();
+                               if (obj.properties->contains(k)) {
+                                 obj.properties->erase(k);
+                                 // Drop from key_order if tracked.
+                                 if (obj.key_order) {
+                                   auto& ko = *obj.key_order;
+                                   ko.erase(std::remove_if(
+                                       ko.begin(), ko.end(),
+                                       [&](const Value& v) {
+                                         return v.type == Value::String &&
+                                                v.template get<std::string>() == k;
+                                       }), ko.end());
+                                 }
+                                 return Value();
+                               }
+                             }
+                             if (obj.non_string_props->erase(key) > 0) {
+                               // Same: drop matching entry from key_order.
+                               auto& ko = *obj.key_order;
+                               ko.erase(std::remove_if(
+                                   ko.begin(), ko.end(),
+                                   [&](const Value& v) { return v == key; }),
+                                   ko.end());
+                             }
                              return Value();
                            }))},
       // Iterator protocol: yield keys in std::map order (ascending).
@@ -4393,6 +4441,18 @@ struct Interpreter {
         if (!b.index->contains(v)) out.add(v);
       }
       return Value(std::move(out));
+    }
+    // `a + b` between two Tuples concatenates element-wise into a
+    // fresh Tuple. Matches Python's tuple + tuple semantics.
+    if (ope == '+' && lhs.type == Value::Tuple &&
+        rhs.type == Value::Tuple) {
+      const auto& a = *lhs.get<TupleValue>().elements;
+      const auto& b = *rhs.get<TupleValue>().elements;
+      std::vector<Value> elems;
+      elems.reserve(a.size() + b.size());
+      for (const auto& v : a) elems.push_back(v);
+      for (const auto& v : b) elems.push_back(v);
+      return Value(TupleValue(std::move(elems)));
     }
     if (auto* special = arith_op_to_special(ope)) {
       if (auto r = try_special_binop(lhs, rhs, special, env)) return *r;

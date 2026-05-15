@@ -682,8 +682,10 @@ property.
     obj.key              # read, returns nil if absent
     obj.key = v          # set (creates if absent); mut required on existing
     obj[k]               # subscript read with a non-String key (see below)
-    obj.size()           # property count (Long)
-    obj.has(key)         # not built in; use method call on user object
+    obj.size()           # property count (Long), includes non-String keys
+    obj.has(key)         # Bool — accepts String, Long, Float, Bool, Nil, Tuple
+    obj.keys()           # Array of keys in insertion order (interleaved)
+    obj.remove(key)      # remove the entry for `key` (any hashable key); no-op if absent
 
 Assigning to an existing property that was declared without `mut`
 raises `immutable property 'key' at L:C`.
@@ -981,6 +983,18 @@ Built-in methods:
 | `contains(x)` | `Bool` — is `x` an element?                        |
 | `to_array()`  | Fresh `Array` with the same elements               |
 | `iter()`      | Iterator yielding elements in index order          |
+
+### Concatenation
+
+`t1 + t2` concatenates two tuples into a fresh tuple (Python
+convention). The Tuple-Tuple branch is checked before user-defined
+`__add__`, so a wrapping class that holds tuples doesn't fire if its
+`+` operands are both raw tuples — wrap explicitly to override.
+
+    (1, 2) + (3, 4, 5)        # (1, 2, 3, 4, 5)
+    (1,) + ('end',)           # (1, 'end')
+
+Tuple `+` non-Tuple raises `TypeError` (no implicit coercion).
 
 ### Destructuring
 

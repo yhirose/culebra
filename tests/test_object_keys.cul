@@ -66,4 +66,26 @@ mut split = {}
 split["x"] = 99
 assert(split.x == nil)
 
+// --- G-1/G-2: size/has/keys/remove cover both key kinds ---
+mut bag2 = {a: 1, b: 2}
+bag2[10] = "ten"
+bag2[(1, 2)] = "tup"
+assert(bag2.size() == 4)
+assert(bag2.has("a"))
+assert(bag2.has(10))
+assert(bag2.has((1, 2)))
+let absent = bag2.has("zzz")
+assert(absent == false)
+let ks = bag2.keys()
+assert(ks.size() == 4)
+assert(ks[0] == "a")
+assert(ks[2] == 10)
+assert(ks[3] == (1, 2))
+bag2.remove(10)
+assert(bag2.size() == 3)
+bag2.remove("a")
+assert(bag2.size() == 2)
+bag2.remove((1, 2))
+assert(bag2.size() == 1)
+
 IO.puts("test_object_keys OK")

@@ -1584,6 +1584,11 @@ CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 // Forward decl: `a - b` between two Sets dispatches to set_diff.
 __attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
                                                               JitSet* b);
+// Forward decls for Tuple concat (a + b where both Tuple).
+__attribute__((used)) inline JitArray* culebra_runtime_tuple_new();
+__attribute__((used)) inline void culebra_runtime_tuple_push(JitArray* arr,
+                                                              int8_t tag,
+                                                              int64_t data);
 
 // Wrap the macro-generated sub to add the Set-Set path. Calls the
 // underlying numeric helper for anything else (which keeps Tensor and
@@ -1597,6 +1602,27 @@ __attribute__((used)) inline JitValue culebra_runtime_num_sub_set_aware(
     return {TAG_SET, reinterpret_cast<int64_t>(out)};
   }
   return culebra_runtime_num_sub(lt, ld, rt, rd);
+}
+
+// Wrap `num_add` to support Tuple concatenation. `a + b` where both
+// are Tuples produces a fresh Tuple with concatenated elements.
+__attribute__((used)) inline JitValue culebra_runtime_num_add_tuple_aware(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (lt == TAG_TUPLE && rt == TAG_TUPLE) {
+    auto* a = reinterpret_cast<JitArray*>(ld);
+    auto* b = reinterpret_cast<JitArray*>(rd);
+    auto* out = culebra_runtime_tuple_new();
+    for (size_t i = 0; i < a->size; i++) {
+      culebra_runtime_value_retain(a->items[i].tag, a->items[i].data);
+      culebra_runtime_tuple_push(out, a->items[i].tag, a->items[i].data);
+    }
+    for (size_t i = 0; i < b->size; i++) {
+      culebra_runtime_value_retain(b->items[i].tag, b->items[i].data);
+      culebra_runtime_tuple_push(out, b->items[i].tag, b->items[i].data);
+    }
+    return {TAG_TUPLE, reinterpret_cast<int64_t>(out)};
+  }
+  return culebra_runtime_num_add(lt, ld, rt, rd);
 }
 
 __attribute__((used)) inline JitValue culebra_runtime_num_div(
@@ -2699,6 +2725,20 @@ __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
   return _find_property(obj, key) != nullptr;
 }
 
+// Generic `obj.has(k)`. String keys try the shape path first (matches
+// `_find_property`'s proto walk), then fall back to the non-String
+// sidecar (which is also where runtime String keys set via `obj[k] = v`
+// live). Non-String keys go straight to the sidecar.
+__attribute__((used)) inline bool culebra_runtime_object_has_value(
+    JitObject* obj, int8_t tag, int64_t data) {
+  if (tag == TAG_STRING) {
+    auto* cstr = reinterpret_cast<const char*>(data);
+    if (_find_property(obj, cstr) != nullptr) return true;
+  }
+  if (!obj->non_string_props) return false;
+  return obj->non_string_props->contains({tag, data});
+}
+
 // Build a "class meta" object that holds shared method closures for
 // proto delegation. Called once per class declaration (compile-time
 // emission, runtime allocation), captured in the constructor closure
@@ -2788,7 +2828,11 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
 
 __attribute__((used)) inline int64_t culebra_runtime_object_size(
     JitObject* obj) {
-  return static_cast<int64_t>(obj->prop_size());
+  int64_t n = static_cast<int64_t>(obj->prop_size());
+  if (obj->non_string_props) {
+    n += static_cast<int64_t>(obj->non_string_props->size());
+  }
+  return n;
 }
 
 // --- Multimethod dispatch (interp-parity, see eval_multifn_decl) ---
@@ -4429,7 +4473,16 @@ __attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
 __attribute__((used)) inline JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
-  // Insertion order (Shape stores names in declaration order).
+  // Walk key_order when populated so String and non-String keys come
+  // out interleaved in insertion order. Fall back to the shape walk
+  // for objects built via direct slot append (class instances).
+  if (obj->key_order && !obj->key_order->empty()) {
+    for (auto& k : *obj->key_order) {
+      culebra_runtime_value_retain(k.tag, k.data);
+      culebra_runtime_array_push(r, k.tag, k.data);
+    }
+    return r;
+  }
   for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
     auto& k = obj->shape->names[i];
     auto* buf = _culebra_heap_str(k);
@@ -4446,6 +4499,47 @@ __attribute__((used)) inline void culebra_runtime_object_remove(
                               obj->slots[idx].value.data);
   obj->erase(key);
   if (std::string_view(key) == "drop") obj->has_drop = false;
+}
+
+// Drop a key from `key_order` if present. Matches by JitValueEq so
+// numerically-equivalent keys (e.g. `1`/`1.0`/`true`) all resolve to
+// the same slot — same rule the AnyKeyMap uses on insert.
+inline void _key_order_erase(JitObject* obj, const JitValue& key) {
+  if (!obj->key_order) return;
+  JitValueEq eq;
+  auto& ko = *obj->key_order;
+  for (auto it = ko.begin(); it != ko.end(); ++it) {
+    if (eq(*it, key)) {
+      // Refcounted (Tuple) keys hold a +1 here — release before erasing.
+      if (_GcTracker::is_refcounted_value_tag(it->tag)) {
+        _culebra_value_release_impl(it->tag, it->data);
+      }
+      ko.erase(it);
+      return;
+    }
+  }
+}
+
+// Generic remove: String keys try the shape path first, then the
+// non-String sidecar (which is also where subscript-set runtime
+// Strings live). Non-String keys go straight to the sidecar.
+__attribute__((used)) inline void culebra_runtime_object_remove_any(
+    JitObject* obj, int8_t tag, int64_t data) {
+  if (tag == TAG_STRING) {
+    auto* cstr = reinterpret_cast<const char*>(data);
+    if (obj->find_slot(cstr) != static_cast<size_t>(-1)) {
+      culebra_runtime_object_remove(obj, cstr);
+      _key_order_erase(obj, {TAG_STRING, data});
+      return;
+    }
+  }
+  if (!obj->non_string_props) return;
+  JitValue key{tag, data};
+  auto it = obj->non_string_props->find(key);
+  if (it == obj->non_string_props->end()) return;
+  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
+  obj->non_string_props->erase(it);
+  _key_order_erase(obj, key);
 }
 
 }  // extern "C" (close briefly for C++ impl helpers)
@@ -4747,7 +4841,7 @@ inline constexpr auto math_round          = "culebra_runtime_math_round";
 inline constexpr auto math_abs            = "culebra_runtime_math_abs";
 inline constexpr auto math_min            = "culebra_runtime_math_min";
 inline constexpr auto math_max            = "culebra_runtime_math_max";
-inline constexpr auto num_add             = "culebra_runtime_num_add";
+inline constexpr auto num_add             = "culebra_runtime_num_add_tuple_aware";
 inline constexpr auto num_sub             = "culebra_runtime_num_sub_set_aware";
 inline constexpr auto num_mul             = "culebra_runtime_num_mul";
 inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
@@ -4778,9 +4872,11 @@ inline constexpr auto io_exists           = "culebra_runtime_io_exists";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
+inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
 inline constexpr auto build_class_meta
@@ -9794,6 +9890,16 @@ struct JIT {
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
+    // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
+    // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
+    // a runtime tag dispatch here so both worlds coexist: Set receiver
+    // → set_add_method / set_remove; Object receiver → user property.
+    if ((method == "add" || method == "remove") &&
+        argsAst.nodes.size() == 1) {
+      if (auto* r = compile_set_mutate_dispatch(method, argsAst, receiver)) {
+        return r;
+      }
+    }
     if (auto* r =
             compile_builtin_method(method, argsAst, receiver)) {
       return r;
@@ -9892,6 +9998,83 @@ struct JIT {
     auto phi = builder_.CreatePHI(valueType_, 2, "params.result");
     phi->addIncoming(walkResult, autoEnd);
     phi->addIncoming(fbResult, fbEnd);
+    return phi;
+  }
+
+  // `.add(x)` / `.remove(x)`: runtime tag dispatch.
+  //   - TAG_SET    → set_add_method / set_remove (returns Bool)
+  //   - TAG_OBJECT → for `remove`, the built-in object_remove_any
+  //                  (returns Nil); for `add`, a user-defined property
+  //                  with `this` bound to the receiver.
+  //   - other      → type error
+  // The argument is compiled once before the branch so side effects
+  // don't duplicate.
+  llvm::Value* compile_set_mutate_dispatch(const std::string& method,
+                                           const peg::Ast& argsAst,
+                                           llvm::Value* receiver) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto arg = compile(*argsAst.nodes[0]);
+
+    auto tag = extract_tag(receiver);
+    auto setBB = llvm::BasicBlock::Create(ctx_, "ma.set", fn);
+    auto objBB = llvm::BasicBlock::Create(ctx_, "ma.obj", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "ma.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ma.merge", fn);
+
+    auto isSet =
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_SET));
+    auto chkObjBB = llvm::BasicBlock::Create(ctx_, "ma.chk_obj", fn);
+    builder_.CreateCondBr(isSet, setBB, chkObjBB);
+    builder_.SetInsertPoint(chkObjBB);
+    auto isObj =
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+    builder_.CreateCondBr(isObj, objBB, errBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("Set or Object", tag);
+    builder_.CreateUnreachable();
+
+    // Set: mutating runtime helper.
+    builder_.SetInsertPoint(setBB);
+    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    const char* set_rt = method == "add" ? rt::set_add_method
+                                         : rt::set_remove;
+    auto setR = emit_call(
+        module_->getOrInsertFunction(
+            set_rt, builder_.getInt8Ty(), ptrTy,
+            builder_.getInt8Ty(), builder_.getInt64Ty()),
+        {setPtr, extract_tag(arg), extract_data(arg)});
+    auto setRes = make_bool(builder_.CreateICmpNE(setR, builder_.getInt8(0)));
+    // `set_remove` borrows the arg; `set_add_method` absorbs the +1.
+    if (method == "remove") emit_value_release(arg);
+    auto setEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    // Object: `remove` calls the built-in helper (returns Nil); `add`
+    // routes to the user-defined property `this.add` (no built-in).
+    builder_.SetInsertPoint(objBB);
+    llvm::Value* objRes = nullptr;
+    if (method == "remove") {
+      auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::object_remove_any, builder_.getVoidTy(), ptrTy,
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {objPtr, extract_tag(arg), extract_data(arg)});
+      emit_value_release(arg);
+      objRes = make_nil();
+    } else {
+      auto methodVal = compile_property_get(receiver, method);
+      objRes = compile_function_call_raw(methodVal, receiver, {arg});
+    }
+    auto objEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "ma.res");
+    phi->addIncoming(setRes, setEnd);
+    phi->addIncoming(objRes, objEnd);
     return phi;
   }
 
@@ -11532,24 +11715,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "has" && argsAst.nodes.size() == 1) {
     auto objPtr = expect_tag(receiver, TAG_OBJECT, "has");
     auto key = compile(*argsAst.nodes[0]);
-    emit_type_check(key, "String", "has argument");
-    auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
+    // Any hashable key. String tries the shape path first (so user
+    // `obj.has("foo")` matches `obj.foo`); non-String / runtime
+    // String land in the sidecar.
     auto r = emit_call(
-        module_->getFunction(rt::object_has), {objPtr, keyPtr});
+        module_->getOrInsertFunction(
+            rt::object_has_value, builder_.getInt1Ty(), ptrTy,
+            builder_.getInt8Ty(), builder_.getInt64Ty()),
+        {objPtr, extract_tag(key), extract_data(key)});
     emit_value_release(key);
     return make_bool(r);
   }
 
-  if (method == "remove" && argsAst.nodes.size() == 1) {
-    auto objPtr = expect_tag(receiver, TAG_OBJECT, "rm");
-    auto key = compile(*argsAst.nodes[0]);
-    emit_type_check(key, "String", "remove argument");
-    auto keyPtr = builder_.CreateIntToPtr(extract_data(key), ptrTy);
-    emit_call(module_->getFunction(rt::object_remove),
-                        {objPtr, keyPtr});
-    emit_value_release(key);
-    return make_nil();
-  }
+  // Note: `.remove(x)` is routed through compile_set_mutate_dispatch
+  // (called from compile_method_call before this function) so that the
+  // Set and Object cases share the same runtime tag check. Same for
+  // `.add(x)`.
 
   // --- Higher-order methods (§17.2 Array methods + §17.5 Iterator) ---
   //
