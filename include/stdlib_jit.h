@@ -322,7 +322,7 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data) {
       auto* obj = reinterpret_cast<JitObject*>(data);
       // Non-String keys are not representable in JSON; reject loudly so
       // round-trip with `JSON.parse` stays consistent.
-      if (obj->non_string_order && !obj->non_string_order->empty()) {
+      if (obj->non_string_props && !obj->non_string_props->empty()) {
         throw culebra::CulebraError("TypeError",
             "JSON.stringify: Object has non-String keys");
       }

@@ -174,6 +174,7 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
       return;
     }
     case "ARRAY_PATTERN"_:
+    case "TUPLE_PATTERN"_:
       for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
       return;
     case "REST_PATTERN"_: {
@@ -503,11 +504,11 @@ struct ObjectValue {
   // Lazy-allocated for non-String keys.
   std::shared_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
       non_string_props;
-  // Insertion order for `non_string_props`. Lazy-allocated alongside.
-  // String keys keep their order in `properties`; this vector holds the
-  // non-string keys in the order they were first set. Used by str() so
-  // mixed-key Objects render their non-string entries deterministically.
-  std::shared_ptr<std::vector<Value>> non_string_order;
+  // Unified key insertion order — records every key (String and
+  // non-String alike) in the order it was first set. str() and iter
+  // walk this single list so mixed-key Objects render with a true
+  // interleaved order. The maps above stay for O(1) lookup.
+  std::shared_ptr<std::vector<Value>> key_order;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -1212,7 +1213,15 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
 inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
   _check_drop_contract(name, val);
+  bool new_key = !properties->contains(name);
   (*properties)[name] = Symbol{val, mut};
+  // `key_order` is lazy: String-only Objects keep it null and recover
+  // insertion order from `properties->entries` at str time. Once a
+  // non-String key arrives the order vector is activated and tracks
+  // every subsequent insert.
+  if (new_key && key_order) {
+    key_order->push_back(Value(std::string(name)));
+  }
 }
 
 // Non-String key overloads — dispatch to non_string_props (lazy
@@ -1233,12 +1242,19 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
   if (!non_string_props) {
     non_string_props = std::make_shared<
         std::unordered_map<Value, Symbol, ValueHash, ValueEq>>();
-    non_string_order = std::make_shared<std::vector<Value>>();
+    // First non-String key: activate key_order and back-fill the
+    // String keys that arrived before this one, so subsequent str()
+    // sees them in the correct interleaved order.
+    key_order = std::make_shared<std::vector<Value>>();
+    key_order->reserve(properties->size() + 1);
+    for (const auto& [name, _] : *properties) {
+      key_order->push_back(Value(std::string(name)));
+    }
   }
   auto [it, inserted] =
       non_string_props->try_emplace(key, Symbol{val, mut});
   if (inserted) {
-    non_string_order->push_back(key);
+    key_order->push_back(key);
   } else {
     it->second = Symbol{val, mut};
   }
@@ -1320,28 +1336,41 @@ inline std::string Value::str_object() const {
   }
   s += "{";
   bool first = true;
-  for (const auto& [name, sym] : properties) {
-    if (tag && name == "class") continue;
-    if (!first) {
-      s += ", ";
-    }
+  // Walk `key_order` so String and non-String keys interleave by
+  // insertion. The `class:` tag is hoisted to the prefix above and
+  // skipped here.
+  auto emit_entry = [&](const Value& key, const Symbol& sym) {
+    if (!first) s += ", ";
     first = false;
-    if (sym.mut) {
-      s += "mut ";
+    if (sym.mut) s += "mut ";
+    if (key.type == Value::String) {
+      s += key.template get<std::string>();
+    } else {
+      s += key.str();
     }
-    s += name;
     s += ": ";
     s += sym.val.str();
-  }
-  // Non-String keys (Long/Float/Bool/Nil/Tuple etc.) render after the
-  // string keys, in the order they were first set.
-  if (obj.non_string_order) {
-    for (const auto& key : *obj.non_string_order) {
-      const auto& sym = obj.non_string_props->at(key);
+  };
+  if (obj.key_order) {
+    for (const auto& key : *obj.key_order) {
+      if (key.type == Value::String) {
+        const auto& name = key.template get<std::string>();
+        if (tag && name == "class") continue;
+        emit_entry(key, properties.at(std::string_view(name)));
+      } else {
+        emit_entry(key, obj.non_string_props->at(key));
+      }
+    }
+  } else {
+    // No non-String keys ever set: walk `properties` directly. This is
+    // the hot path for string-keyed Objects (class instances, plain
+    // literals, etc.) — no key_order allocation, no per-insert push.
+    for (const auto& [name, sym] : properties) {
+      if (tag && name == "class") continue;
       if (!first) s += ", ";
       first = false;
       if (sym.mut) s += "mut ";
-      s += key.str();
+      s += name;
       s += ": ";
       s += sym.val.str();
     }
@@ -1550,6 +1579,8 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     }
   } else if (iterable.type == Value::Tuple) {
     return _iter_over_vector(iterable.get<TupleValue>().elements);
+  } else if (iterable.type == Value::Set) {
+    return _iter_over_vector(iterable.get<SetValue>().members);
   }
   if (iter_fn.type != Value::Function) {
     throw CulebraError("TypeError", std::format(
@@ -2561,7 +2592,132 @@ inline std::map<std::string_view, Value>& set_builtins() {
              return Value(std::move(out));
            },
            "Set"sv))},
+      {"sym_diff"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             SetValue out;
+             for (const auto& v : *a.members) {
+               if (!b.index->contains(v)) out.add(v);
+             }
+             for (const auto& v : *b.members) {
+               if (!a.index->contains(v)) out.add(v);
+             }
+             return Value(std::move(out));
+           },
+           "Set"sv))},
+      {"subset"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             for (const auto& v : *a.members) {
+               if (!b.index->contains(v)) return Value(false);
+             }
+             return Value(true);
+           },
+           "Bool"sv))},
+      {"superset"sv,
+       Value(FunctionValue(
+           {{"other", false, "Set"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& a = callEnv->get("this").get<SetValue>();
+             const auto& b = callEnv->get("other").get<SetValue>();
+             for (const auto& v : *b.members) {
+               if (!a.index->contains(v)) return Value(false);
+             }
+             return Value(true);
+           },
+           "Bool"sv))},
+      {"add"sv,
+       Value(FunctionValue(
+           {{"x", false}},
+           [](std::shared_ptr<Environment> callEnv) {
+             auto& self = const_cast<SetValue&>(
+                 callEnv->get("this").get<SetValue>());
+             return Value(self.add(callEnv->get("x")));
+           },
+           "Bool"sv))},
+      {"remove"sv,
+       Value(FunctionValue(
+           {{"x", false}},
+           [](std::shared_ptr<Environment> callEnv) {
+             auto& self = const_cast<SetValue&>(
+                 callEnv->get("this").get<SetValue>());
+             auto it = self.index->find(callEnv->get("x"));
+             if (it == self.index->end()) return Value(false);
+             size_t idx = it->second;
+             self.index->erase(it);
+             self.members->erase(self.members->begin() + idx);
+             // Shift indices that came after the removed slot.
+             for (auto& [_, i] : *self.index) {
+               if (i > idx) --i;
+             }
+             return Value(true);
+           },
+           "Bool"sv))},
+      {"to_array"sv,
+       Value(FunctionValue(
+           {},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& self = callEnv->get("this").get<SetValue>();
+             ArrayValue out;
+             out.values->reserve(self.members->size());
+             for (const auto& v : *self.members) out.values->push_back(v);
+             return Value(std::move(out));
+           },
+           "Array"sv))},
+      {"iter"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return _iter_over_vector(
+             callEnv->get("this").get<SetValue>().members);
+       }))},
   };
+  return props_;
+}
+
+// Method lookup table for primitive Tuple values. Mirrors set_builtins;
+// TupleValue is not an ObjectValue so dispatch goes through the same
+// dedicated path in eval_property.
+inline std::map<std::string_view, Value>& tuple_builtins() {
+  using namespace std::literals;
+  static std::map<std::string_view, Value> props_ = {
+      {"size"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& self = callEnv->get("this").get<TupleValue>();
+         return Value(static_cast<long>(self.elements->size()));
+       }))},
+      {"contains"sv,
+       Value(FunctionValue(
+           {{"x", false}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& self = callEnv->get("this").get<TupleValue>();
+             const auto& x = callEnv->get("x");
+             for (const auto& e : *self.elements) {
+               if (e == x) return Value(true);
+             }
+             return Value(false);
+           },
+           "Bool"sv))},
+      {"to_array"sv,
+       Value(FunctionValue(
+           {},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& self = callEnv->get("this").get<TupleValue>();
+             ArrayValue out;
+             out.values->reserve(self.elements->size());
+             for (const auto& e : *self.elements) out.values->push_back(e);
+             return Value(std::move(out));
+           },
+           "Array"sv))},
+      {"iter"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return _iter_over_vector(
+             callEnv->get("this").get<TupleValue>().elements);
+       }))}};
   return props_;
 }
 
@@ -3018,6 +3174,8 @@ struct Interpreter {
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_:
         return eval_bin_expression(ast, env);
+      case "SET_BIN_OP"_:
+        return eval_set_bin_expression(ast, env);
       case "RANGE"_:
         return eval_range(ast, env);
       case "DESTRUCTURE_ASSIGN"_:
@@ -3308,6 +3466,16 @@ struct Interpreter {
           auto key = key_node->token;
           if (!obj.has(key)) return false;
           bind_pattern_name(env, *key_node, obj.get(key), mut);
+        }
+        return true;
+      }
+      case "TUPLE_PATTERN"_: {
+        if (val.type != Value::Tuple) return false;
+        const auto& items = *val.get<TupleValue>().elements;
+        const auto& elems = pattern.nodes;
+        if (items.size() != elems.size()) return false;
+        for (size_t i = 0; i < elems.size(); i++) {
+          if (!try_pattern(*elems[i], items[i], env, mut)) return false;
         }
         return true;
       }
@@ -3819,9 +3987,15 @@ struct Interpreter {
       return _wrap_method_with_this(it->second, val);
     }
 
-    // Set is also not an ObjectValue; same dedicated-table dispatch.
+    // Set / Tuple are not ObjectValues either; same dedicated-table dispatch.
     if (val.type == Value::Set) {
       const auto& methods = set_builtins();
+      auto it = methods.find(name);
+      if (it == methods.end()) return Value();
+      return _wrap_method_with_this(it->second, val);
+    }
+    if (val.type == Value::Tuple) {
+      const auto& methods = tuple_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
       return _wrap_method_with_this(it->second, val);
@@ -3868,6 +4042,9 @@ struct Interpreter {
     }
     if (val.type == Value::Set) {
       return set_builtins().count(name) > 0;
+    }
+    if (val.type == Value::Tuple) {
+      return tuple_builtins().count(name) > 0;
     }
     if (val.type == Value::Object || val.type == Value::Array) {
       if (val.to_object().has(name)) return true;
@@ -4166,6 +4343,17 @@ struct Interpreter {
       if (!l || !r) throw CulebraError("TypeError", "type error.");
       return Value(TensorValue(tensor_binop(*tensor_op, l, r)));
     }
+    // `a - b` between two Sets is set difference. Other operators on
+    // Set go through SET_BIN_OP (`|` / `&` / `^`).
+    if (ope == '-' && lhs.type == Value::Set && rhs.type == Value::Set) {
+      const auto& a = lhs.get<SetValue>();
+      const auto& b = rhs.get<SetValue>();
+      SetValue out;
+      for (const auto& v : *a.members) {
+        if (!b.index->contains(v)) out.add(v);
+      }
+      return Value(std::move(out));
+    }
     if (auto* special = arith_op_to_special(ope)) {
       if (auto r = try_special_binop(lhs, rhs, special, env)) return *r;
       if (op_reflects(ope)) {
@@ -4213,6 +4401,52 @@ struct Interpreter {
       auto rhs = eval(*ast.nodes[i + 1], env);
       auto ope = eval(*ast.nodes[i], env).to_string()[0];
       ret = eval_bin_op_step(ret, rhs, ope, env);
+    }
+    return ret;
+  }
+
+  // `|` / `&` / `^` between two Sets. Each yields a fresh Set.
+  // Mirrors set_builtins() union / intersect / sym_diff.
+  static Value eval_set_bin_op(const Value& lhs, const Value& rhs, char op) {
+    if (lhs.type != Value::Set || rhs.type != Value::Set) {
+      throw CulebraError("TypeError", std::format(
+          "type error: cannot apply '{}' to {} and {}",
+          op, lhs.type_name(), rhs.type_name()));
+    }
+    const auto& a = lhs.get<SetValue>();
+    const auto& b = rhs.get<SetValue>();
+    SetValue out;
+    switch (op) {
+      case '|':
+        for (const auto& v : *a.members) out.add(v);
+        for (const auto& v : *b.members) out.add(v);
+        break;
+      case '&':
+        for (const auto& v : *a.members) {
+          if (b.index->contains(v)) out.add(v);
+        }
+        break;
+      case '^':
+        for (const auto& v : *a.members) {
+          if (!b.index->contains(v)) out.add(v);
+        }
+        for (const auto& v : *b.members) {
+          if (!a.index->contains(v)) out.add(v);
+        }
+        break;
+      default:
+        throw std::logic_error("invalid set operator");
+    }
+    return Value(std::move(out));
+  }
+
+  Value eval_set_bin_expression(const peg::Ast& ast,
+                                std::shared_ptr<Environment> env) {
+    auto ret = eval(*ast.nodes[0], env);
+    for (auto i = 1u; i < ast.nodes.size(); i += 2) {
+      auto op = eval(*ast.nodes[i], env).to_string()[0];
+      auto rhs = eval(*ast.nodes[i + 1], env);
+      ret = eval_set_bin_op(ret, rhs, op);
     }
     return ret;
   }
@@ -4464,8 +4698,7 @@ struct Interpreter {
       } else {
         val = eval(*prop.nodes[2], env);
       }
-      _check_drop_contract(name, val);
-      obj.properties->emplace(name, Symbol{std::move(val), mut});
+      obj.initialize(name, val, mut);
     }
     return Value(std::move(obj));
   }

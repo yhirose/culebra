@@ -35,7 +35,7 @@ const auto grammar_ = R"(
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
-  DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
+  DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
   # ASSIGN_OP captures the literal so eval_assignment can dispatch on
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
   # alternation chooses the longer match.
@@ -45,7 +45,13 @@ const auto grammar_ = R"(
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
   CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
-  RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
+  RANGE                    <-  SET_BIN_OP (_ RANGE_OPERATOR _ SET_BIN_OP)?
+  # Set operators: `|` (union), `&` (intersection), `^` (symmetric
+  # difference). All three share one precedence layer (left-assoc),
+  # placed between RANGE and ADDITIVE so `a | b == c` parses as
+  # `(a | b) == c` — Python's convention. Negative lookahead on the
+  # second character keeps `&&` / `||` from being chewed by this layer.
+  SET_BIN_OP               <-  ADDITIVE (_ SET_BIN_OPERATOR _ ADDITIVE)*
   # Newline before `+`/`-` does NOT continue the current expression:
   # `let v = X` followed by a line starting with `-y` is two statements.
   # Continuation across newlines requires the operator at line end
@@ -83,7 +89,7 @@ const auto grammar_ = R"(
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
   PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
-                               ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
+                               ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
   WILDCARD                 <-  '_' !IdentChar
   TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
 
@@ -92,6 +98,11 @@ const auto grammar_ = R"(
   REST_PATTERN             <-  '...' _ IDENTIFIER
 
   OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+
+  # Tuple pattern: at least one comma, optional trailing comma. No
+  # rest pattern (Tuple is fixed-arity). Mirrors the TUPLE literal.
+  TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
+                            /  '(' _ PATTERN _ ',' _ ')'
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
                                STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
@@ -119,6 +130,7 @@ const auto grammar_ = R"(
   CONDITION_OPERATOR       <-  '==' / '!=' / '<=' / '<' / '>=' / '>'
   RANGE_OPERATOR           <-  < '..=' / '..' >
   ADDITIVE_OPERATOR        <-  [-+]
+  SET_BIN_OPERATOR         <-  '|' !'|' / '&' !'&' / '^'
   UNARY_PLUS_OPERATOR      <-  '+'
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'
@@ -315,6 +327,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "DEFAULT_VALUE",
                "CLASS_DECL", "METHOD",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
+               "TUPLE_PATTERN",
                "REST_PATTERN"});
 
     return opt.optimize(ast);

@@ -46,4 +46,29 @@ assert(d.contains(2))
 let d_has_3 = d.contains(3)
 assert(d_has_3 == false)
 
+// --- Additional methods (a-2) ---
+assert(p.sym_diff(q).size() == 4)         // {1, 2, 4, 5}
+assert(p.subset({1, 2, 3, 4}))
+assert(p.superset({1, 2}))
+let nosup = p.superset({1, 9})
+assert(nosup == false)
+
+// to_array / iter / for-in
+let arr = p.to_array()
+assert(type_of(arr) == "Array")
+assert(arr.size() == 3)
+mut sum = 0
+for x in p { sum = sum + x }
+assert(sum == 6)
+
+// --- Operators (a-3) ---
+let A = {1, 2, 3}
+let B = {2, 3, 4}
+assert((A | B).size() == 4)
+assert((A & B).size() == 2)
+assert((A - B).size() == 1)
+assert((A ^ B).size() == 2)
+// Precedence: `|` binds tighter than `==`.
+assert((A | B) == {1, 2, 3, 4})
+
 IO.puts("test_set OK")

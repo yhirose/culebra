@@ -640,7 +640,9 @@ inline std::string json_stringify(const Value& v) {
     }
     case Value::Object: {
       const auto& obj = v.to_object();
-      if (obj.non_string_order && !obj.non_string_order->empty()) {
+      // Reject Objects carrying non-String keys (Long/Tuple/etc.) so
+      // stringify ↔ parse stays a clean round trip.
+      if (obj.non_string_props && !obj.non_string_props->empty()) {
         throw CulebraError("TypeError",
             "JSON.stringify: Object has non-String keys");
       }

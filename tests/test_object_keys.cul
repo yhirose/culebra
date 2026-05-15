@@ -21,14 +21,17 @@ let mix = {a: 1, 99: "ninety-nine"}
 assert(mix.a == 1)
 assert(mix[99] == "ninety-nine")
 
-// Mixed-key str rendering: string keys first in insertion order, then
-// non-string keys in their own insertion order. String literals can't
-// embed `{` or `'` cleanly, so the assertion compares against another
-// to_string call of the same logical Object — proving equal renderings
-// rather than a baked-in expected string.
+// Mixed-key str rendering: String and non-String keys interleave in
+// their true insertion order. String literals can't embed `{` or `'`
+// cleanly, so the assertion compares against another to_string call
+// of the same logical Object.
 let m2 = {a: 1, 2: "two", b: 3, 4: "four"}
 let m3 = {a: 1, 2: "two", b: 3, 4: "four"}
 assert(to_string(m2) == to_string(m3))
+// Distinct insertion orders render differently.
+let m4 = {2: "two", a: 1, 4: "four", b: 3}
+let diff = (to_string(m2) == to_string(m4))
+assert(diff == false)
 
 // And the same insertion order yields the same render.
 let n  = {10: "x", 5: "y", 1: "z"}

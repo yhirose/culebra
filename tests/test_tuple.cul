@@ -39,4 +39,30 @@ let n1 = ((1, 2), (3, 4))
 let n2 = ((1, 2), (3, 4))
 assert(n1 == n2)
 
+// --- Methods (a-1) ---
+assert(t.size() == 3)
+assert(t.contains(20))
+let nope = t.contains(99)
+assert(nope == false)
+let arr = t.to_array()
+assert(type_of(arr) == "Array")
+assert(arr.size() == 3)
+assert(arr[0] == 10)
+
+// --- Destructuring (a-4) ---
+let (da, db) = (1, 2)
+assert(da == 1)
+assert(db == 2)
+// Nested destructuring.
+let (p, (q, r)) = (1, (2, 3))
+assert(p == 1)
+assert(q == 2)
+assert(r == 3)
+// Match-arm tuple pattern.
+let kind = match (1, 2) {
+  (0, 0) => "origin",
+  (mx, my) => "other",
+}
+assert(kind == "other")
+
 IO.puts("test_tuple OK")

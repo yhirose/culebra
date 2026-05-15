@@ -200,16 +200,19 @@ struct JitObject {
   culebra::Shape* shape = nullptr;
   std::vector<JitObjectEntry> slots;
   // Sidecar for non-String literal keys (Phase 7-C). Lazy-allocated;
-  // small objects pay nothing. GC walks values during cycle collection
-  // (see GcTracker), but keys are primitive (Long/Float/Bool/Nil) and
-  // hold no references, so no key tracking is needed.
+  // small objects pay nothing. Values live here; insertion order is
+  // tracked in the unified `key_order` below.
   struct AnyKeyMap;  // forward decl; full definition below
   AnyKeyMap* non_string_props = nullptr;
-  // Insertion order for `non_string_props`, mirroring the interp's
-  // non_string_order. String keys keep their order in `shape->names`;
-  // this vector tracks the non-string subset for stable str output.
-  // Tuple keys are refcounted: GC walks this vector when collecting.
-  std::vector<JitValue>* non_string_order = nullptr;
+  // Unified key insertion order — every key (String and non-String)
+  // in the order it was first set. String keys are stored as
+  // TAG_STRING JitValues pointing into the shared shape name pool
+  // (no retain). Non-String keys are stored as their literal
+  // JitValue; Tuple keys hold a +1 retain so the cycle GC and
+  // destruction paths can release them via this vector. The shape
+  // (for String) and `non_string_props` (for non-String) remain for
+  // O(1) lookup.
+  std::vector<JitValue>* key_order = nullptr;
   int64_t gc_slot = -1;  // see JitArray::gc_slot
 
   // --- Shape-based property access helpers ---
@@ -237,6 +240,16 @@ struct JitObject {
     shape = culebra::shape_registry().transition_add(shape, key);
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
+    // `key_order` is lazy: String-only objects recover insertion
+    // order from `shape->names` directly at str() time. Only after a
+    // non-String key activates the vector do String inserts also push
+    // here (so the interleaved order survives). Tag literal 4 matches
+    // TAG_STRING (defined further down).
+    if (key_order) {
+      auto* name_cstr = shape->names.back().c_str();
+      key_order->push_back(
+          {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(name_cstr)});
+    }
     return slots.size() - 1;
   }
 
@@ -608,12 +621,13 @@ struct _GcTracker {
           push_if_refcounted(out, entry.value.tag, entry.value.data);
         }
         // Non-String keys (Tuple) and their values: both can be
-        // refcounted (a `{(1,2): some_arr}` literal carries refs from
-        // both halves). Walk via the order vector so the key is seen
-        // once, and use it to look up the entry's value.
-        if (o->non_string_order && o->non_string_props) {
-          for (const auto& k : *o->non_string_order) {
+        // refcounted. Walk `key_order` for the keys; String entries
+        // are filtered by `push_if_refcounted` since TAG_STRING isn't
+        // a refcounted tag.
+        if (o->key_order && o->non_string_props) {
+          for (const auto& k : *o->key_order) {
             push_if_refcounted(out, k.tag, k.data);
+            if (k.tag == TAG_STRING) continue;
             auto it = o->non_string_props->find(k);
             if (it != o->non_string_props->end()) {
               push_if_refcounted(out, it->second.value.tag,
@@ -701,12 +715,16 @@ struct _GcTracker {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
         // Non-String sidecar: same teardown as the normal release path.
-        if (o->non_string_order) {
-          for (auto& k : *o->non_string_order) {
-            _culebra_value_release_impl(k.tag, k.data);
+        if (o->key_order) {
+          for (auto& k : *o->key_order) {
+            // String entries are unretained shape-name pointers; only
+            // refcounted keys (currently Tuple) hold a +1 here.
+            if (_GcTracker::is_refcounted_value_tag(k.tag)) {
+              _culebra_value_release_impl(k.tag, k.data);
+            }
           }
-          delete o->non_string_order;
-          o->non_string_order = nullptr;
+          delete o->key_order;
+          o->key_order = nullptr;
         }
         if (o->non_string_props) {
           for (auto& [_, entry] : *o->non_string_props) {
@@ -977,36 +995,52 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         }
       }
       s += "{";
-      // Render in declaration (shape insertion) order to match
-      // interp's str_object.
-      std::vector<size_t> order;
-      order.reserve(obj->prop_size());
-      for (size_t i = 0; obj->shape && i < obj->shape->names.size(); i++) {
-        if (has_class_tag && obj->shape->names[i] == "class") continue;
-        order.push_back(i);
-      }
       bool first = true;
-      for (auto i : order) {
-        const auto& entry = obj->slots[i];
-        if (!first) s += ", ";
-        first = false;
-        if (entry.mut) s += "mut ";
-        s += obj->shape->names[i];
-        s += ": ";
-        s += _culebra_value_to_str_impl(entry.value.tag, entry.value.data);
-      }
-      // Non-String keys after the string-key block, in insertion order.
-      if (obj->non_string_order && obj->non_string_props) {
-        for (const auto& key : *obj->non_string_order) {
-          auto it = obj->non_string_props->find(key);
-          if (it == obj->non_string_props->end()) continue;
+      if (obj->key_order) {
+        // Mixed-key path: walk the unified vector so String and
+        // non-String keys interleave in true insertion order.
+        for (const auto& key : *obj->key_order) {
+          if (key.tag == TAG_STRING) {
+            auto name = reinterpret_cast<const char*>(key.data);
+            if (has_class_tag && std::string_view(name) == "class") continue;
+            auto idx = obj->shape ? obj->shape->offset(name)
+                                  : static_cast<size_t>(-1);
+            if (idx == static_cast<size_t>(-1)) continue;
+            const auto& entry = obj->slots[idx];
+            if (!first) s += ", ";
+            first = false;
+            if (entry.mut) s += "mut ";
+            s += name;
+            s += ": ";
+            s += _culebra_value_to_str_impl(entry.value.tag,
+                                            entry.value.data);
+          } else {
+            if (!obj->non_string_props) continue;
+            auto it = obj->non_string_props->find(key);
+            if (it == obj->non_string_props->end()) continue;
+            if (!first) s += ", ";
+            first = false;
+            if (it->second.mut) s += "mut ";
+            s += _culebra_value_to_str_impl(key.tag, key.data);
+            s += ": ";
+            s += _culebra_value_to_str_impl(it->second.value.tag,
+                                            it->second.value.data);
+          }
+        }
+      } else if (obj->shape) {
+        // String-only fast path: walk shape->names directly, skipping
+        // the per-property key_order push that mixed-key objects need.
+        for (size_t i = 0; i < obj->shape->names.size(); i++) {
+          const auto& name = obj->shape->names[i];
+          if (has_class_tag && name == "class") continue;
+          const auto& entry = obj->slots[i];
           if (!first) s += ", ";
           first = false;
-          if (it->second.mut) s += "mut ";
-          s += _culebra_value_to_str_impl(key.tag, key.data);
+          if (entry.mut) s += "mut ";
+          s += name;
           s += ": ";
-          s += _culebra_value_to_str_impl(it->second.value.tag,
-                                          it->second.value.data);
+          s += _culebra_value_to_str_impl(entry.value.tag,
+                                          entry.value.data);
         }
       }
       s += "}";
@@ -1547,6 +1581,24 @@ CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
 CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
+// Forward decl: `a - b` between two Sets dispatches to set_diff.
+__attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
+                                                              JitSet* b);
+
+// Wrap the macro-generated sub to add the Set-Set path. Calls the
+// underlying numeric helper for anything else (which keeps Tensor and
+// `__sub__` special-method dispatch working). Operands are borrowed
+// (caller releases); the set_diff result is +1 owned by the caller.
+__attribute__((used)) inline JitValue culebra_runtime_num_sub_set_aware(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (lt == TAG_SET && rt == TAG_SET) {
+    auto* out = culebra_runtime_set_diff(reinterpret_cast<JitSet*>(ld),
+                                          reinterpret_cast<JitSet*>(rd));
+    return {TAG_SET, reinterpret_cast<int64_t>(out)};
+  }
+  return culebra_runtime_num_sub(lt, ld, rt, rd);
+}
+
 __attribute__((used)) inline JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
@@ -1877,6 +1929,98 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
     if (!b->index->contains(v)) _set_take(out, v);
   }
   return out;
+}
+
+__attribute__((used)) inline JitSet* culebra_runtime_set_sym_diff(JitSet* a,
+                                                                  JitSet* b) {
+  auto* out = culebra_runtime_set_new();
+  for (auto& v : a->members) {
+    if (!b->index->contains(v)) _set_take(out, v);
+  }
+  for (auto& v : b->members) {
+    if (!a->index->contains(v)) _set_take(out, v);
+  }
+  return out;
+}
+
+__attribute__((used)) inline int8_t culebra_runtime_set_subset(JitSet* a,
+                                                               JitSet* b) {
+  for (auto& v : a->members) {
+    if (!b->index->contains(v)) return 0;
+  }
+  return 1;
+}
+
+__attribute__((used)) inline int8_t culebra_runtime_set_superset(JitSet* a,
+                                                                 JitSet* b) {
+  for (auto& v : b->members) {
+    if (!a->index->contains(v)) return 0;
+  }
+  return 1;
+}
+
+// Mutating add: returns 1 on insert, 0 if already present. Hands the
+// caller's +1 reference into the set on insert; releases it on dup.
+__attribute__((used)) inline int8_t culebra_runtime_set_add_method(
+    JitSet* set, int8_t tag, int64_t data) {
+  JitValue v{tag, data};
+  if (!set->index->insert(v).second) {
+    _culebra_value_release_impl(tag, data);
+    return 0;
+  }
+  set->members.push_back(v);
+  return 1;
+}
+
+// Mutating remove: returns 1 if removed, 0 if absent.
+__attribute__((used)) inline int8_t culebra_runtime_set_remove(JitSet* set,
+                                                               int8_t tag,
+                                                               int64_t data) {
+  JitValue key{tag, data};
+  if (!set->index->erase(key)) return 0;
+  // Find and erase from the members vector (O(n) — same as the interp's
+  // OrderedSymbolMap erase pattern).
+  for (auto it = set->members.begin(); it != set->members.end(); ++it) {
+    if (JitValueEq{}(*it, key)) {
+      _culebra_value_release_impl(it->tag, it->data);
+      set->members.erase(it);
+      return 1;
+    }
+  }
+  return 0;  // unreachable if index and members stayed in sync
+}
+
+// Materialize a Set as a fresh Array, retaining each element.
+__attribute__((used)) inline JitArray* culebra_runtime_set_to_array(
+    JitSet* set) {
+  auto* arr = culebra_runtime_array_new();
+  for (auto& v : set->members) {
+    culebra_runtime_value_retain(v.tag, v.data);
+    culebra_runtime_array_push(arr, v.tag, v.data);
+  }
+  return arr;
+}
+
+// Materialize a Tuple as a fresh Array, retaining each element.
+__attribute__((used)) inline JitArray* culebra_runtime_tuple_to_array(
+    JitArray* tup) {
+  auto* arr = culebra_runtime_array_new();
+  for (size_t i = 0; i < tup->size; i++) {
+    auto& e = tup->items[i];
+    culebra_runtime_value_retain(e.tag, e.data);
+    culebra_runtime_array_push(arr, e.tag, e.data);
+  }
+  return arr;
+}
+
+// Tuple element search (linear). Returns 1 if `v` is present, 0 otherwise.
+__attribute__((used)) inline int8_t culebra_runtime_tuple_contains(
+    JitArray* tup, int8_t tag, int64_t data) {
+  for (size_t i = 0; i < tup->size; i++) {
+    if (_culebra_value_equal(tup->items[i].tag, tup->items[i].data,
+                              tag, data)) return 1;
+  }
+  return 0;
 }
 
 }  // extern "C"
@@ -2313,17 +2457,26 @@ __attribute__((used)) inline void culebra_runtime_object_set_any(
     int8_t val_tag, int64_t val_data) {
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
-    obj->non_string_order = new std::vector<JitValue>();
+    // First non-String key: activate key_order and back-fill with the
+    // String keys already in `shape->names` so interleaved order survives.
+    obj->key_order = new std::vector<JitValue>();
+    if (obj->shape) {
+      obj->key_order->reserve(obj->shape->names.size() + 1);
+      for (const auto& name : obj->shape->names) {
+        obj->key_order->push_back(
+            {TAG_STRING, reinterpret_cast<int64_t>(name.c_str())});
+      }
+    }
   }
   JitValue key{key_tag, key_data};
   auto& m = *obj->non_string_props;
   auto it = m.find(key);
   if (it == m.end()) {
     m.emplace(key, JitObjectEntry{JitValue{val_tag, val_data}, mut});
-    // Retain a +1 of the key so the order vector keeps refcounted
-    // entries (e.g. Tuple keys) alive without an aliasing reference.
+    // Retain a +1 of the key so `key_order` keeps refcounted entries
+    // (e.g. Tuple keys) alive; the map aliases the same value.
     culebra_runtime_value_retain(key_tag, key_data);
-    obj->non_string_order->push_back(key);
+    obj->key_order->push_back(key);
     return;
   }
   if (!it->second.mut) {
@@ -2384,6 +2537,11 @@ __attribute__((used)) inline void culebra_runtime_object_set_fast(
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
     obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
+    if (obj->key_order) {
+      obj->key_order->push_back(
+          {TAG_STRING,
+           reinterpret_cast<int64_t>(obj->shape->names.back().c_str())});
+    }
   }
 }
 
@@ -2409,6 +2567,11 @@ __attribute__((used)) inline void culebra_runtime_object_set_ic(
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, mut});
     obj->shape = result;
+    if (obj->key_order) {
+      obj->key_order->push_back(
+          {TAG_STRING,
+           reinterpret_cast<int64_t>(result->names.back().c_str())});
+    }
   } else {
     auto& entry = obj->slots[idx];
     if (!entry.mut) {
@@ -4347,15 +4510,17 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
-        // Non-String sidecar teardown. `non_string_order` owns the +1
-        // key references (the AnyKeyMap aliases them); the map owns
-        // the entry values that the setter helper retained on insert.
-        if (o->non_string_order) {
-          for (auto& k : *o->non_string_order) {
-            _culebra_value_release_impl(k.tag, k.data);
+        // Sidecar teardown. `key_order` owns the +1 refs for any
+        // refcounted (Tuple) keys; the AnyKeyMap aliases them. The
+        // map owns the entry values that the setter retained on insert.
+        if (o->key_order) {
+          for (auto& k : *o->key_order) {
+            if (_GcTracker::is_refcounted_value_tag(k.tag)) {
+              _culebra_value_release_impl(k.tag, k.data);
+            }
           }
-          delete o->non_string_order;
-          o->non_string_order = nullptr;
+          delete o->key_order;
+          o->key_order = nullptr;
         }
         if (o->non_string_props) {
           for (auto& [_, entry] : *o->non_string_props) {
@@ -4519,6 +4684,14 @@ inline constexpr auto set_size            = "culebra_runtime_set_size";
 inline constexpr auto set_union           = "culebra_runtime_set_union";
 inline constexpr auto set_intersect       = "culebra_runtime_set_intersect";
 inline constexpr auto set_diff            = "culebra_runtime_set_diff";
+inline constexpr auto set_sym_diff        = "culebra_runtime_set_sym_diff";
+inline constexpr auto set_subset          = "culebra_runtime_set_subset";
+inline constexpr auto set_superset        = "culebra_runtime_set_superset";
+inline constexpr auto set_add_method      = "culebra_runtime_set_add_method";
+inline constexpr auto set_remove          = "culebra_runtime_set_remove";
+inline constexpr auto set_to_array        = "culebra_runtime_set_to_array";
+inline constexpr auto tuple_to_array      = "culebra_runtime_tuple_to_array";
+inline constexpr auto tuple_contains      = "culebra_runtime_tuple_contains";
 inline constexpr auto json_stringify      = "culebra_runtime_json_stringify";
 inline constexpr auto json_parse          = "culebra_runtime_json_parse";
 // Trailing underscore on `assert_` / `throw_` dodges C++ keyword
@@ -4545,7 +4718,7 @@ inline constexpr auto math_abs            = "culebra_runtime_math_abs";
 inline constexpr auto math_min            = "culebra_runtime_math_min";
 inline constexpr auto math_max            = "culebra_runtime_math_max";
 inline constexpr auto num_add             = "culebra_runtime_num_add";
-inline constexpr auto num_sub             = "culebra_runtime_num_sub";
+inline constexpr auto num_sub             = "culebra_runtime_num_sub_set_aware";
 inline constexpr auto num_mul             = "culebra_runtime_num_mul";
 inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
 inline constexpr auto num_div             = "culebra_runtime_num_div";
@@ -5135,7 +5308,9 @@ struct JIT {
         "shape",       "pow",        "transpose",  "reshape",
         "mean",        "argmax",     "to_array",   "dot",
         "linear_sigmoid", "clone",
-        "union",       "intersect",  "diff"};
+        "union",       "intersect",  "diff",
+        "sym_diff",    "subset",     "superset",
+        "to_array"};
     return known;
   }
   // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
@@ -6436,6 +6611,8 @@ struct JIT {
         return compile_unary_not(ast);
       case "ADDITIVE"_:
         return compile_additive(ast);
+      case "SET_BIN_OP"_:
+        return compile_set_bin_op(ast);
       case "MULTIPLICATIVE"_:
         return compile_multiplicative(ast);
       case "POWER"_:
@@ -7283,6 +7460,33 @@ struct JIT {
         });
   }
 
+  // `a | b`, `a & b`, `a ^ b` over Sets. Both operands must be TAG_SET
+  // at runtime — emit a type check then call the matching runtime
+  // helper. Each step produces a fresh +1 Set; prior intermediates
+  // are released between steps.
+  llvm::Value* compile_set_bin_op(const peg::Ast& ast) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto lhs = compile(*ast.nodes[0]);
+    emit_type_check(lhs, "Set", "set operator LHS");
+    for (auto i = 1u; i < ast.nodes.size(); i += 2) {
+      auto rhs = compile(*ast.nodes[i + 1]);
+      emit_type_check(rhs, "Set", "set operator RHS");
+      auto op = ast.nodes[i]->token[0];
+      const char* rt_name = op == '|' ? rt::set_union
+                          : op == '&' ? rt::set_intersect
+                                      : rt::set_sym_diff;
+      auto aPtr = builder_.CreateIntToPtr(extract_data(lhs), ptrTy);
+      auto bPtr = builder_.CreateIntToPtr(extract_data(rhs), ptrTy);
+      auto out = emit_call(
+          module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
+          {aPtr, bPtr}, "set.binop");
+      emit_value_release(lhs);
+      emit_value_release(rhs);
+      lhs = make_set(out);
+    }
+    return lhs;
+  }
+
   llvm::Value* compile_additive(const peg::Ast& ast) {
     auto lhs = compile(*ast.nodes[0]);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
@@ -7848,6 +8052,8 @@ struct JIT {
         return emit_array_pattern(pattern, subject);
       case "OBJECT_PATTERN"_:
         return emit_object_pattern(pattern, subject);
+      case "TUPLE_PATTERN"_:
+        return emit_tuple_pattern(pattern, subject);
     }
     return builder_.getFalse();
   }
@@ -7976,6 +8182,77 @@ struct JIT {
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "arr.match");
+    phi->addIncoming(builder_.getTrue(), okEnd);
+    phi->addIncoming(builder_.getFalse(), failEnd);
+    return phi;
+  }
+
+  // Tuple destructuring: same JitArray layout as Array, but tag-checked
+  // for TAG_TUPLE and fixed arity (grammar forbids REST_PATTERN here).
+  llvm::Value* emit_tuple_pattern(const peg::Ast& pattern,
+                                  llvm::Value* subject) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto failBB = llvm::BasicBlock::Create(ctx_, "tup.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "tup.ok", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "tup.end", fn);
+
+    auto isTup = builder_.CreateICmpEQ(extract_tag(subject),
+                                       builder_.getInt8(TAG_TUPLE));
+    auto sizeBB = llvm::BasicBlock::Create(ctx_, "tup.size", fn);
+    builder_.CreateCondBr(isTup, sizeBB, failBB);
+    builder_.SetInsertPoint(sizeBB);
+
+    auto arrPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+    auto size = emit_call(
+        module_->getOrInsertFunction(rt::array_size,
+                                     builder_.getInt64Ty(), ptrTy),
+        {arrPtr}, "tup.n");
+
+    const auto& elems = pattern.nodes;
+    auto size_ok = builder_.CreateICmpEQ(size,
+                                         builder_.getInt64(elems.size()));
+    auto elemBB = llvm::BasicBlock::Create(ctx_, "tup.elem", fn);
+    builder_.CreateCondBr(size_ok, elemBB, failBB);
+    builder_.SetInsertPoint(elemBB);
+
+    for (size_t i = 0; i < elems.size(); i++) {
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                        "tp.tag");
+      auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                         "tp.data");
+      emit_call(
+          module_->getOrInsertFunction(
+              rt::array_get, builder_.getVoidTy(), ptrTy,
+              builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
+              builder_.getInt64Ty()),
+          {arrPtr, builder_.getInt64(i), outTag, outData,
+           current_line_val(), current_column_val()});
+      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, t, {0});
+      v = builder_.CreateInsertValue(v, d, {1});
+      auto m = emit_pattern(*elems[i], v);
+      auto contBB = llvm::BasicBlock::Create(ctx_, "tup.cont", fn);
+      builder_.CreateCondBr(m, contBB, failBB);
+      builder_.SetInsertPoint(contBB);
+    }
+
+    builder_.CreateBr(okBB);
+
+    builder_.SetInsertPoint(okBB);
+    auto okEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(failBB);
+    auto failEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "tup.match");
     phi->addIncoming(builder_.getTrue(), okEnd);
     phi->addIncoming(builder_.getFalse(), failEnd);
     return phi;
@@ -8179,24 +8456,38 @@ struct JIT {
     auto data = extract_data(iterable);
 
     auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
+    auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
     auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
     auto stringBB = llvm::BasicBlock::Create(ctx_, "for.string", fn);
     auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
     auto endBB = llvm::BasicBlock::Create(ctx_, "for.end", fn);
 
-    auto sw = builder_.CreateSwitch(tag, badBB, 4);
+    auto sw = builder_.CreateSwitch(tag, badBB, 5);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrayBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), arrayBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objectBB);
     sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
 
     builder_.SetInsertPoint(badBB);
-    emit_type_error_typed("Array, Object, or String", tag);
+    emit_type_error_typed("Array, Tuple, Set, Object, or String", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrayBB);
     compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
                            var_name, body, endBB);
+
+    // Set: materialize members into a fresh Array, then reuse the
+    // array walker. The temporary Array is owned by this scope and
+    // released at endBB.
+    builder_.SetInsertPoint(setBB);
+    auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
+    auto setMembersArr = emit_call(
+        module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
+        {setSrcPtr}, "for.set.arr");
+    compile_for_array_loop(setMembersArr, var_name, body, endBB);
+    // The temporary Array survives until end-of-loop; release in endBB.
+    // (set_to_array returns +1, the loop borrows it.)
 
     // Object branch splits on whether the receiver carries its own
     // `iter` property:
@@ -10726,10 +11017,52 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return v;
   }
   if (method == "to_array" && argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "to_array");
-    auto arrPtr = emit_call(
-        module_->getFunction(rt::tensor_to_array), {tPtr}, "tta");
-    return make_array(arrPtr);
+    auto tenBB = llvm::BasicBlock::Create(ctx_, "ta.ten", fn);
+    auto tupBB = llvm::BasicBlock::Create(ctx_, "ta.tup", fn);
+    auto setBB = llvm::BasicBlock::Create(ctx_, "ta.set", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "ta.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ta.merge", fn);
+    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), tupBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("Tensor, Tuple, or Set", tag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(tenBB);
+    auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto tenArr = emit_call(
+        module_->getFunction(rt::tensor_to_array), {tenPtr}, "tta");
+    auto tenVal = make_array(tenArr);
+    auto tenEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(tupBB);
+    auto tupPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto tupArr = emit_call(
+        module_->getOrInsertFunction(rt::tuple_to_array, ptrTy, ptrTy),
+        {tupPtr}, "ta.tup.arr");
+    auto tupVal = make_array(tupArr);
+    auto tupEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(setBB);
+    auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto setArr = emit_call(
+        module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
+        {setPtr}, "ta.set.arr");
+    auto setVal = make_array(setArr);
+    auto setEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 3, "ta.r");
+    phi->addIncoming(tenVal, tenEnd);
+    phi->addIncoming(tupVal, tupEnd);
+    phi->addIncoming(setVal, setEnd);
+    return phi;
   }
   if (method == "dot" && argsAst.nodes.size() == 1) {
     auto aPtr = expect_tag(receiver, TAG_TENSOR, "dot");
@@ -10817,8 +11150,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   // --- Set methods ---
-  // union/intersect/diff: receiver+arg must both be Set, returns Set.
-  if ((method == "union" || method == "intersect" || method == "diff") &&
+  // union/intersect/diff/sym_diff: both operands Set, returns Set.
+  if ((method == "union" || method == "intersect" ||
+       method == "diff"  || method == "sym_diff") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
@@ -10826,13 +11160,35 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
                         : method == "intersect" ? rt::set_intersect
-                                                : rt::set_diff;
+                        : method == "diff"      ? rt::set_diff
+                                                : rt::set_sym_diff;
     auto out = emit_call(
         module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
         {aPtr, bPtr}, "set.op");
     emit_value_release(other);
     return make_set(out);
   }
+  // subset/superset: both operands Set, returns Bool.
+  if ((method == "subset" || method == "superset") &&
+      argsAst.nodes.size() == 1) {
+    auto aPtr = expect_tag(receiver, TAG_SET, method.c_str());
+    auto other = compile(*argsAst.nodes[0]);
+    emit_type_check(other, "Set", "Set predicate argument");
+    auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
+    const char* rt_name = method == "subset" ? rt::set_subset
+                                             : rt::set_superset;
+    auto r = emit_call(
+        module_->getOrInsertFunction(
+            rt_name, builder_.getInt8Ty(), ptrTy, ptrTy),
+        {aPtr, bPtr}, "set.pred");
+    emit_value_release(other);
+    return make_bool(builder_.CreateICmpNE(r, builder_.getInt8(0)));
+  }
+  // Note: Set's mutating `.add(x)` / `.remove(x)` are interp-only for
+  // now. They would collide with user-defined Object methods of the
+  // same name (e.g. a Calculator class with `.add(n)`) since JIT
+  // dispatch happens by name, not by receiver type. Resolving that
+  // needs runtime tag dispatch in the method call site — deferred.
 
   // --- Array methods ---
 
@@ -10943,18 +11299,20 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_long(idx);
   }
 
-  // contains works on Array, String, and Set (different arg types).
+  // contains works on Array, String, Set, and Tuple (different arg types).
   if (method == "contains" && argsAst.nodes.size() == 1) {
     auto arrBB = llvm::BasicBlock::Create(ctx_, "ct.arr", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "ct.str", fn);
     auto setBB = llvm::BasicBlock::Create(ctx_, "ct.set", fn);
+    auto tupBB = llvm::BasicBlock::Create(ctx_, "ct.tup", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "ct.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "ct.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    auto sw = builder_.CreateSwitch(tag, errBB, 4);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), tupBB);
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
@@ -10993,15 +11351,30 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto setEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
+    builder_.SetInsertPoint(tupBB);
+    auto tupPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto vt = compile(*argsAst.nodes[0]);
+    auto tupFound = emit_call(
+        module_->getOrInsertFunction(
+            rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
+            builder_.getInt8Ty(), builder_.getInt64Ty()),
+        {tupPtr, extract_tag(vt), extract_data(vt)});
+    emit_value_release(vt);
+    auto tupBoolVal = make_bool(
+        builder_.CreateICmpNE(tupFound, builder_.getInt8(0)));
+    auto tupEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, String, or Set", tag);
+    emit_type_error_typed("Array, String, Set, or Tuple", tag);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "ct");
+    auto phi = builder_.CreatePHI(valueType_, 4, "ct");
     phi->addIncoming(arrBoolVal, arrEnd);
     phi->addIncoming(strBoolVal, strEnd);
     phi->addIncoming(setBoolVal, setEnd);
+    phi->addIncoming(tupBoolVal, tupEnd);
     return phi;
   }
 
@@ -11581,24 +11954,26 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "iter" && argsAst.nodes.size() == 0) {
-    // Tag-dispatch on receiver: Array → array_iter, Object → if own
-    // iter call it, else object_iter (keys); String → str's iter
-    // (one-scalar walk via code_points analog). For simplicity here
-    // we route Array/Object/String to dedicated runtime helpers.
+    // Tag-dispatch on receiver: Array/Tuple/Set → array_iter on the
+    // underlying members; Object → user `iter` if present, else
+    // object_iter (keys); String → code_points walker.
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto arrBB = llvm::BasicBlock::Create(ctx_, "iter.arr", fn);
+    auto setBB = llvm::BasicBlock::Create(ctx_, "iter.set", fn);
     auto objBB = llvm::BasicBlock::Create(ctx_, "iter.obj", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "iter.str", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "iter.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "iter.merge", fn);
-    auto sw = builder_.CreateSwitch(t, errBB, 3);
+    auto sw = builder_.CreateSwitch(t, errBB, 5);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
+    sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
+    sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, Object, or String", t);
+    emit_type_error_typed("Array, Tuple, Set, Object, or String", t);
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(arrBB);
@@ -11607,6 +11982,17 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                              {arrPtr});
     auto arrVal = make_object(arrIter);
     auto arrEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(setBB);
+    auto setPtr = builder_.CreateIntToPtr(d, ptrTy);
+    auto setAsArr = emit_call(
+        module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
+        {setPtr});
+    auto setIter = emit_call(module_->getFunction(rt::array_iter),
+                             {setAsArr});
+    auto setVal = make_object(setIter);
+    auto setEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
@@ -11632,8 +12018,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 3, "iter.res");
+    auto phi = builder_.CreatePHI(valueType_, 4, "iter.res");
     phi->addIncoming(arrVal, arrEnd);
+    phi->addIncoming(setVal, setEnd);
     phi->addIncoming(objVal, objEnd);
     phi->addIncoming(strVal, strEnd);
     return phi;
