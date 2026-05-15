@@ -4332,6 +4332,18 @@ struct Interpreter {
     return nullptr;
   }
 
+  // `|` / `&` / `^` overloads for user-defined types. Both backends
+  // first try the LHS special method; the SET_BIN_OP layer only kicks
+  // in when neither operand carries one.
+  static const char* set_op_to_special(char op) {
+    switch (op) {
+      case '|': return "__or__";
+      case '&': return "__and__";
+      case '^': return "__xor__";
+    }
+    return nullptr;
+  }
+
   // `**` is only valid for in-place; regular binop uses `compute_power`.
   static std::optional<Op> op_to_tensor_op(std::string_view op) {
     if (op == "+") return Op::Add;
@@ -4474,6 +4486,15 @@ struct Interpreter {
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto op = eval(*ast.nodes[i], env).to_string()[0];
       auto rhs = eval(*ast.nodes[i + 1], env);
+      // User-defined overload on the LHS wins. Returns std::nullopt
+      // when the LHS doesn't carry the special method; then the
+      // built-in Set dispatch handles native Sets, otherwise throws.
+      if (auto* special = set_op_to_special(op)) {
+        if (auto r = try_special_binop(ret, rhs, special, env)) {
+          ret = *r;
+          continue;
+        }
+      }
       ret = eval_set_bin_op(ret, rhs, op);
     }
     return ret;

@@ -1943,6 +1943,35 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_sym_diff(JitSet* a,
   return out;
 }
 
+// `a | b`, `a & b`, `a ^ b` with user-defined-overload dispatch.
+// `op` is the operator character ('|', '&', '^'). LHS special method
+// wins; otherwise both operands must be Set and the built-in op runs.
+// Operands are borrowed; result is +1 owned.
+__attribute__((used)) inline JitValue culebra_runtime_set_binop(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t op) {
+  const char* method = op == '|' ? "__or__"
+                     : op == '&' ? "__and__"
+                                 : "__xor__";
+  if (auto r = _try_special_binop(lt, ld, rt, rd, method)) {
+    return *r;
+  }
+  if (lt != TAG_SET || rt != TAG_SET) {
+    throw culebra::CulebraError("TypeError", std::format(
+        "type error: cannot apply '{}' to {} and {}",
+        static_cast<char>(op), _culebra_tag_name(lt),
+        _culebra_tag_name(rt)));
+  }
+  auto* a = reinterpret_cast<JitSet*>(ld);
+  auto* b = reinterpret_cast<JitSet*>(rd);
+  JitSet* out = nullptr;
+  switch (op) {
+    case '|': out = culebra_runtime_set_union(a, b); break;
+    case '&': out = culebra_runtime_set_intersect(a, b); break;
+    case '^': out = culebra_runtime_set_sym_diff(a, b); break;
+  }
+  return {TAG_SET, reinterpret_cast<int64_t>(out)};
+}
+
 __attribute__((used)) inline int8_t culebra_runtime_set_subset(JitSet* a,
                                                                JitSet* b) {
   for (auto& v : a->members) {
@@ -4685,6 +4714,7 @@ inline constexpr auto set_union           = "culebra_runtime_set_union";
 inline constexpr auto set_intersect       = "culebra_runtime_set_intersect";
 inline constexpr auto set_diff            = "culebra_runtime_set_diff";
 inline constexpr auto set_sym_diff        = "culebra_runtime_set_sym_diff";
+inline constexpr auto set_binop           = "culebra_runtime_set_binop";
 inline constexpr auto set_subset          = "culebra_runtime_set_subset";
 inline constexpr auto set_superset        = "culebra_runtime_set_superset";
 inline constexpr auto set_add_method      = "culebra_runtime_set_add_method";
@@ -7502,29 +7532,27 @@ struct JIT {
         });
   }
 
-  // `a | b`, `a & b`, `a ^ b` over Sets. Both operands must be TAG_SET
-  // at runtime — emit a type check then call the matching runtime
-  // helper. Each step produces a fresh +1 Set; prior intermediates
-  // are released between steps.
+  // `a | b`, `a & b`, `a ^ b`: dispatched through a runtime helper
+  // that first tries the LHS's `__or__` / `__and__` / `__xor__`
+  // special method, then falls back to the built-in Set ops. Result
+  // is +1 owned; intermediates are released between steps.
   llvm::Value* compile_set_bin_op(const peg::Ast& ast) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i8 = builder_.getInt8Ty();
+    auto i64 = builder_.getInt64Ty();
     auto lhs = compile(*ast.nodes[0]);
-    emit_type_check(lhs, "Set", "set operator LHS");
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto rhs = compile(*ast.nodes[i + 1]);
-      emit_type_check(rhs, "Set", "set operator RHS");
       auto op = ast.nodes[i]->token[0];
-      const char* rt_name = op == '|' ? rt::set_union
-                          : op == '&' ? rt::set_intersect
-                                      : rt::set_sym_diff;
-      auto aPtr = builder_.CreateIntToPtr(extract_data(lhs), ptrTy);
-      auto bPtr = builder_.CreateIntToPtr(extract_data(rhs), ptrTy);
       auto out = emit_call(
-          module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
-          {aPtr, bPtr}, "set.binop");
+          module_->getOrInsertFunction(
+              rt::set_binop, valueType_, i8, i64, i8, i64, i64),
+          {extract_tag(lhs), extract_data(lhs),
+           extract_tag(rhs), extract_data(rhs),
+           builder_.getInt64(op)},
+          "set.binop");
       emit_value_release(lhs);
       emit_value_release(rhs);
-      lhs = make_set(out);
+      lhs = out;
     }
     return lhs;
   }

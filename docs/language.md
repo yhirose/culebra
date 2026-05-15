@@ -832,6 +832,9 @@ their instances are plain `Object`s with methods attached.
 | `a % b`      | `__mod__`      |                                       |
 | `a ** b`     | `__pow__`      |                                       |
 | `a @ b`      | `__matmul__`   | Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
+| `a \| b`     | `__or__`       | LHS overload wins; falls back to native Set union. No auto-reflect. |
+| `a & b`      | `__and__`      | Same dispatch as `\|`. Native Set intersection on fallback. |
+| `a ^ b`      | `__xor__`      | Same dispatch as `\|`. Native Set symmetric-difference on fallback. |
 | `-a`         | `__neg__`      | 0-arg method on `a`                   |
 | `a == b`     | `__eq__`       | `!=` derives by negation              |
 | `a < b`      | `__lt__`       | `>=` derives by negation              |
@@ -1624,7 +1627,7 @@ features. They are checked by name on both backends:
 
 | Method | Purpose | Defined in |
 |---|---|---|
-| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
+| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__or__`, `__and__`, `__xor__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
 | `__str__` | Custom display form | §10 |
 | `drop` | RAII cleanup hook | §16 |
 | `iter`, `next` | Iterator protocol | §17.5 |

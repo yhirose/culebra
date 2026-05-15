@@ -127,6 +127,33 @@ test_auto_reflect = fn () {
   assert(Vec.new(3, 4) == v)
 }
 
+test_setop_overload = fn () {
+  # __or__ / __and__ / __xor__ on user-defined types (E cycle). Each
+  # returns a simple count to avoid recursive `Bag.new` capture issues.
+  class Bag {
+    new(items) { this.items = items }
+    __or__(r)  { this.items.size() + r.items.size() }
+    __and__(r) { this.items.filter(|x| r.items.contains(x)).size() }
+    __xor__(r) {
+      let only_self = this.items.filter(|x| !r.items.contains(x)).size()
+      let only_other = r.items.filter(|x| !this.items.contains(x)).size()
+      only_self + only_other
+    }
+  }
+  bag_a = Bag.new([1, 2, 3])
+  bag_b = Bag.new([3, 4, 5])
+  assert((bag_a | bag_b) == 6)
+  assert((bag_a & bag_b) == 1)
+  assert((bag_a ^ bag_b) == 4)
+
+  # Native Set still uses the built-in dispatch (no overload).
+  let s1 = {1, 2, 3}
+  let s2 = {2, 3, 4}
+  assert((s1 | s2).size() == 4)
+  assert((s1 & s2).size() == 2)
+  assert((s1 ^ s2).size() == 2)
+}
+
 test_matmul_overload = fn () {
   class Mat {
     new(data) { this.data = data }
@@ -203,6 +230,7 @@ test_op_overload()
 test_pow_overload()
 test_auto_reflect()
 test_matmul_overload()
+test_setop_overload()
 test_str_special()
 test_default_display()
 
