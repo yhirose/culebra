@@ -974,15 +974,25 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                                                     const peg::Ast& callAst) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   // JSON.{stringify, parse} accept kwargs (indent / sort_keys / lines /
-  // number_mode) and parse the ARG_LIST themselves. Other namespace
-  // entries still parse positionally; route kwarg/splat calls against
-  // them to a clean SyntaxError.
+  // number_mode) and parse the ARG_LIST themselves. Other registered
+  // namespaces (Math/IO/Random/Sys) parse positionally and don't
+  // accept kwargs. For an IDENTIFIER.method() call whose `ns` is NOT
+  // one of these, fall through to nullptr so the regular dispatch
+  // (compile_call → compile_method_call → user-method / UFCS) can
+  // handle it — that path supports kwargs against user closures.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
-    if (ns != "JSON") {
+    static const std::set<std::string_view> kwarg_aware_ns = {"JSON"};
+    static const std::set<std::string_view> positional_only_ns = {
+        "Math", "IO", "Random", "Sys", "Tensor",
+    };
+    if (positional_only_ns.contains(ns)) {
       throw culebra::CulebraError("SyntaxError",
-          "JIT does not yet support keyword arguments at this call site "
-          "(use positional or run without --jit)",
+          std::format("namespace '{}' does not accept keyword arguments",
+                      ns),
           argsAst.line, argsAst.column);
+    }
+    if (!kwarg_aware_ns.contains(ns)) {
+      return nullptr;  // unknown namespace → let compile_call dispatch
     }
   }
   auto ptrTy = llvm::PointerType::get(ctx_, 0);

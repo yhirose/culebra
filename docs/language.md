@@ -1173,15 +1173,36 @@ Rules:
 * Defaults are re-evaluated on every call (Ruby/Scala flavor — no
   Python-style "evaluated at def time" trap).
 
-JIT support: kwargs and `**` splat work for **directly-named user
-functions** (i.e. `f(x, y: 2)` where `f` was bound by a `let f = fn
-(...) {...}` literal in scope) and for built-in dispatchers like
-`JSON.stringify`. The JIT resolver fills any missing defaulted slot
-(including middle gaps) via a `TAG_UNFILLED` sentinel and the callee's
-existing inline default-expression. Dynamic `**variable` splat and
-kwargs through indirect callees (captured / method-fetched closures)
-are still rejected at compile time — fall back to `--jit`-off for
-those patterns.
+JIT support: kwargs and `**` splat work on both backends for the
+common patterns:
+
+* Direct calls to user functions: `f(x, y: 2)` where `f` is in scope.
+* Captured / passed-around closures: `let g = make_fn(...); g(y: 2)`.
+* UFCS: `x.free_fn(y: 2)` becomes `free_fn(x, y: 2)`.
+* Object methods: `obj.method(y: 2)`.
+* Built-in `JSON.{stringify, parse}`: kwargs for `indent`,
+  `sort_keys`, `lines`, `number_mode`.
+* Dynamic `**variable` splat against user functions: resolved at
+  runtime through closure-attached parameter metadata.
+
+Middle-gap defaults (e.g. `f(1, z: 3)` against `(x, y=10, z=20)`)
+work in JIT via a `TAG_UNFILLED` sentinel passed through the slab;
+the callee prologue picks up the inline default expression.
+
+JIT limitations:
+
+* Other namespace built-ins (`Math`, `IO`, `Random`, `Sys`) take only
+  positional arguments — kwargs against them surface a clean
+  `SyntaxError` at compile time.
+* Dynamic `**variable` splat against built-in dispatchers (e.g.
+  `JSON.stringify(v, **opts)` where `opts` is a runtime value) is
+  interp-only; literal `**{...}` against the same dispatchers works
+  on both backends. Pass each kwarg explicitly in JIT-compiled code,
+  or run without `--jit`.
+* Compile-time JIT errors (e.g. `positional argument follows keyword
+  argument`) are detected during IR emission and bypass `try/catch`;
+  interp throws the same errors at runtime where they can be caught.
+  This is a structural difference between the two execution models.
 
 ### Return
 

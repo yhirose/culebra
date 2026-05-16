@@ -1131,14 +1131,35 @@ kwargs として展開（`**obj`）できます:
 * デフォルト値は呼び出しごとに再評価されます（Ruby / Scala 流。
   Python の「def 時に 1 回評価」トラップは回避）。
 
-JIT サポート: kwargs と `**` splat は **直接名前で参照される
-ユーザ関数** （`let f = fn (...) {...}` でその場のスコープに束縛
-された `f` を `f(x, y: 2)` で呼ぶ形）および `JSON.stringify` 等の
-ビルトイン経由で動きます。JIT の解決器は middle gap を含む不足
-スロットを `TAG_UNFILLED` センチネル + 既存の inline default 式
-で埋めます。動的 `**variable` splat と間接呼び出し（キャプチャ /
-メソッド経由のクロージャ）への kwargs はコンパイル時に拒否
-しますので、その用途では `--jit` を外して実行してください。
+JIT サポート: kwargs と `**` splat は次の主要パターンで両バック
+エンド共に動作します:
+
+* 直接呼び出し: スコープ内の `f(x, y: 2)`
+* キャプチャ / 引き渡されるクロージャ: `let g = make_fn(...); g(y: 2)`
+* UFCS: `x.free_fn(y: 2)` → `free_fn(x, y: 2)`
+* Object メソッド: `obj.method(y: 2)`
+* ビルトイン `JSON.{stringify, parse}` の `indent` / `sort_keys` /
+  `lines` / `number_mode` kwargs
+* ユーザ関数に対する動的 `**variable` splat: クロージャに付随
+  したパラメータメタデータを使い実行時に解決
+
+middle-gap default（`f(1, z: 3)` を `(x, y=10, z=20)` に対して呼ぶ等）
+は `TAG_UNFILLED` センチネル経由で動き、callee プロローグの inline
+default 式が埋めます。
+
+JIT 制限:
+
+* 他の名前空間ビルトイン（`Math`, `IO`, `Random`, `Sys`）は位置引数
+  のみ対応で、kwargs を渡すとコンパイル時に `SyntaxError` で拒否
+  されます。
+* ビルトイン dispatch（例: `JSON.stringify(v, **opts)` で opts が
+  実行時 Object）への動的 `**variable` splat はインタプリタ専用です。
+  リテラル `**{...}` splat なら両対応。JIT で実行したい場合は各
+  kwarg を明示的に渡すか、`--jit` を外して実行してください。
+* JIT のコンパイル時エラー（例: `positional argument follows keyword
+  argument`）は IR 生成段階で検出され `try/catch` ではキャッチ
+  できません。インタプリタは同じエラーを実行時に投げるためキャッチ
+  可能。両実行モデルの構造的な違いに起因します。
 
 ### 戻り値
 

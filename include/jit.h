@@ -2905,6 +2905,41 @@ __attribute__((used)) inline int64_t culebra_runtime_object_size(
 __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity);
 
+// Parameter metadata attached to JIT-compiled user functions. The side
+// table below is keyed by `fn_ptr` (the underlying JitFn pointer) and
+// populated at JIT-module init time for each FUNCTION literal. It lets
+// `culebra_runtime_call_with_kwargs` resolve names → slab positions
+// at runtime — supporting indirect callees (captures, method values,
+// UFCS) and dynamic `**variable` splats. Built-in closures created by
+// `culebra_runtime_closure_new` from runtime helpers (iter wrappers
+// etc.) never register meta and so reject kwargs.
+struct JitParamMeta {
+  const char* const* names;  // pointers into module-level globals
+  // Bit i is set if param i has a default expression. The callee
+  // prologue handles defaults inline; the resolver only uses this to
+  // decide whether an unfilled middle slot is OK (default) or an
+  // ArityError (required).
+  const uint8_t* has_default_bits;
+  size_t n_params;
+};
+
+inline std::unordered_map<void*, const JitParamMeta*>&
+_jit_param_meta_table() {
+  static std::unordered_map<void*, const JitParamMeta*> tbl;
+  return tbl;
+}
+
+__attribute__((used)) inline void culebra_runtime_register_param_meta(
+    void* fn_ptr, const JitParamMeta* meta) {
+  _jit_param_meta_table()[fn_ptr] = meta;
+}
+
+inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
+  auto& tbl = _jit_param_meta_table();
+  auto it = tbl.find(fn_ptr);
+  return it == tbl.end() ? nullptr : it->second;
+}
+
 struct JitMultiMethodEntry {
   std::vector<std::string> param_types;  // empty = "Any"
   JitClosure* body;                       // +1 owned by this entry
@@ -3138,6 +3173,196 @@ __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
   c->arity = arity;
   _gc().add(c, GC_TAG_FUNC);
   return c;
+}
+
+// Runtime kwarg resolver: routes a call carrying keyword arguments
+// and/or dynamic `**splat` operands against a closure whose parameter
+// names live in the JitParamMeta side table. Mirrors the interp's
+// `bind_call_args` algorithm — splats merge first (later wins),
+// explicit kwargs layer on top. Missing defaulted slots get the
+// `TAG_UNFILLED` sentinel; the callee prologue's existing default
+// branch picks them up. The slab also carries any overflow positional
+// args past the formal arity so `__ARGS__` continues to work.
+//
+// Refcount contract: caller transfers +1 on each positional, kwargs
+// value, and splat Object. All transferred values either flow into
+// the dispatched call (consumed by the callee frame) or are released
+// here on the throw paths.
+__attribute__((used)) inline JitValue culebra_runtime_call_with_kwargs(
+    JitClosure* cls, JitValue this_val,
+    int64_t n_pos, JitValue* positional,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs,
+    int64_t line, int64_t col) {
+  auto release_owned = [&](size_t skip_pos = 0) {
+    // Drop every +1 the caller transferred to us that hasn't already
+    // been consumed downstream. `skip_pos` lets us skip positionals
+    // that have already been moved into a slab cell about to be
+    // handed to the callee.
+    for (int64_t i = static_cast<int64_t>(skip_pos); i < n_pos; i++) {
+      _culebra_value_release_impl(positional[i].tag, positional[i].data);
+    }
+    for (int64_t i = 0; i < n_kw; i++) {
+      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
+    }
+    for (int64_t i = 0; i < n_splat; i++) {
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+    }
+  };
+
+  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+  if (!meta) {
+    release_owned();
+    throw culebra::CulebraError("TypeError",
+        "function does not accept keyword arguments", line, col);
+  }
+
+  // Validate splat operands and merge each Object's String-keyed
+  // entries into a single name → JitValue map.
+  std::unordered_map<std::string_view, JitValue> merged;
+  for (int64_t i = 0; i < n_splat; i++) {
+    auto sv = splat_objs[i];
+    if (sv.tag != TAG_OBJECT) {
+      release_owned();
+      throw culebra::CulebraError("TypeError", std::format(
+          "**: splat operand must be Object, got {}",
+          _culebra_tag_name(sv.tag)), line, col);
+    }
+    auto* obj = reinterpret_cast<JitObject*>(sv.data);
+    if (obj->non_string_props && !obj->non_string_props->empty()) {
+      release_owned();
+      throw culebra::CulebraError("TypeError",
+          "**: splat key must be String", line, col);
+    }
+    if (!obj->shape) continue;
+    for (size_t k = 0; k < obj->shape->names.size(); k++) {
+      // Retain each value so the merged map owns +1; the matching
+      // release lands either on the slab transfer or in the catch
+      // paths below.
+      auto& sv_entry = obj->slots[k].value;
+      culebra_runtime_value_retain(sv_entry.tag, sv_entry.data);
+      auto it = merged.find(obj->shape->names[k]);
+      if (it != merged.end()) {
+        _culebra_value_release_impl(it->second.tag, it->second.data);
+        it->second = sv_entry;
+      } else {
+        merged.emplace(obj->shape->names[k], sv_entry);
+      }
+    }
+  }
+
+  // Layer explicit kwargs on top (overwriting any splat-contributed
+  // binding for the same key; duplicate among explicit names was
+  // already rejected at the IR scan).
+  for (int64_t i = 0; i < n_kw; i++) {
+    auto it = merged.find(kw_keys[i]);
+    if (it != merged.end()) {
+      _culebra_value_release_impl(it->second.tag, it->second.data);
+      it->second = kw_vals[i];
+    } else {
+      merged.emplace(kw_keys[i], kw_vals[i]);
+    }
+  }
+
+  // Build resolved slab: one entry per formal param, plus extras.
+  // Required slots must be filled by positional or merged kwargs.
+  size_t arity = meta->n_params;
+  size_t n_extras = (n_pos > static_cast<int64_t>(arity))
+                        ? static_cast<size_t>(n_pos) - arity
+                        : 0;
+  std::vector<JitValue> slab(arity + n_extras);
+  std::vector<bool> filled(arity, false);
+
+  for (size_t i = 0; i < arity && i < static_cast<size_t>(n_pos); i++) {
+    auto it = merged.find(meta->names[i]);
+    if (it != merged.end()) {
+      _culebra_value_release_impl(it->second.tag, it->second.data);
+      merged.erase(it);
+      // Release everything we still own and the splat refs we already
+      // dropped via release_owned were not in scope yet.
+      for (size_t k = 0; k < i; k++) {
+        _culebra_value_release_impl(slab[k].tag, slab[k].data);
+      }
+      for (size_t k = i; k < static_cast<size_t>(n_pos); k++) {
+        _culebra_value_release_impl(positional[k].tag, positional[k].data);
+      }
+      for (auto& [_, v] : merged) {
+        _culebra_value_release_impl(v.tag, v.data);
+      }
+      for (int64_t k = 0; k < n_splat; k++) {
+        _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
+      }
+      throw culebra::CulebraError("TypeError",
+          std::format("got argument '{}' both positionally and as a "
+                      "keyword", meta->names[i]), line, col);
+    }
+    slab[i] = positional[i];
+    filled[i] = true;
+  }
+
+  for (size_t i = static_cast<size_t>(n_pos); i < arity; i++) {
+    auto it = merged.find(meta->names[i]);
+    if (it != merged.end()) {
+      slab[i] = it->second;
+      filled[i] = true;
+      merged.erase(it);
+    }
+  }
+
+  // Surface unknown kwargs.
+  if (!merged.empty()) {
+    auto bad_name = std::string(merged.begin()->first);
+    for (auto& [_, v] : merged) {
+      _culebra_value_release_impl(v.tag, v.data);
+    }
+    for (size_t i = 0; i < slab.size(); i++) {
+      if (i < arity && !filled[i]) continue;
+      _culebra_value_release_impl(slab[i].tag, slab[i].data);
+    }
+    for (int64_t i = 0; i < n_splat; i++) {
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+    }
+    throw culebra::CulebraError("TypeError",
+        std::format("unknown keyword argument '{}'", bad_name),
+        line, col);
+  }
+
+  // Validate required slots are filled. Defaulted slots get
+  // TAG_UNFILLED so the callee prologue takes the default branch.
+  for (size_t i = 0; i < arity; i++) {
+    if (filled[i]) continue;
+    bool defaulted =
+        meta->has_default_bits[i / 8] & (1u << (i % 8));
+    if (!defaulted) {
+      auto missing = meta->names[i];
+      for (size_t k = 0; k < arity; k++) {
+        if (filled[k]) _culebra_value_release_impl(slab[k].tag,
+                                                    slab[k].data);
+      }
+      for (int64_t k = 0; k < n_splat; k++) {
+        _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
+      }
+      throw culebra::CulebraError("ArityError",
+          std::format("missing required argument '{}'", missing),
+          line, col);
+    }
+    slab[i] = {TAG_UNFILLED, 0};
+  }
+
+  // Extras past the formal arity flow into `__ARGS__`.
+  for (size_t i = 0; i < n_extras; i++) {
+    slab[arity + i] = positional[arity + i];
+  }
+
+  // Splat Objects are no longer needed: their values were retained on
+  // entry to merged and either consumed into the slab or released
+  // above. Drop our +1 to each Object itself.
+  for (int64_t i = 0; i < n_splat; i++) {
+    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+  }
+
+  return reinterpret_cast<JitFn>(cls->fn_ptr)(
+      cls, this_val, static_cast<int64_t>(slab.size()), slab.data());
 }
 
 // --- Iterator protocol runtime --------------------------------------------
@@ -4894,6 +5119,8 @@ inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";
+inline constexpr auto register_param_meta = "culebra_runtime_register_param_meta";
+inline constexpr auto call_with_kwargs    = "culebra_runtime_call_with_kwargs";
 inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
 inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
 inline constexpr auto defer_push          = "culebra_runtime_defer_push";
@@ -9661,7 +9888,74 @@ struct JIT {
     // Restore outer context before emitting the closure at the caller's
     // insertion point — the cell captures come from the outer scope.
     saver.restore();
-    return emit_closure_build(fn, info, paramNames.size());
+    auto* paramMeta =
+        emit_param_meta_global(fn, paramNames, paramDefaults);
+    return emit_closure_build(fn, info, paramNames.size(), paramMeta);
+  }
+
+  // Emit module-level globals describing this function's parameter
+  // list, then return a constant pointer to a JitParamMeta struct. The
+  // runtime resolver `culebra_runtime_call_with_kwargs` consults this
+  // table via the side map keyed by `fn_ptr`. Returns nullptr when
+  // there are no params — built-in closures and zero-arg functions
+  // skip metadata entirely (kwargs against them error cleanly).
+  llvm::Constant* emit_param_meta_global(
+      llvm::Function* fn,
+      const std::vector<std::string>& paramNames,
+      const std::vector<const peg::Ast*>& paramDefaults) {
+    if (paramNames.empty()) return nullptr;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto i8Ty = builder_.getInt8Ty();
+
+    // Names array: one cstring per param.
+    std::vector<llvm::Constant*> name_consts;
+    name_consts.reserve(paramNames.size());
+    for (const auto& nm : paramNames) {
+      name_consts.push_back(builder_.CreateGlobalString(
+          nm, std::string(".param.name.") + std::string(fn->getName()) +
+                  "." + nm));
+    }
+    auto namesArrTy = llvm::ArrayType::get(ptrTy, name_consts.size());
+    auto namesInit = llvm::ConstantArray::get(namesArrTy, name_consts);
+    auto namesGlobal = new llvm::GlobalVariable(
+        *module_, namesArrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, namesInit,
+        std::string(fn->getName()) + ".pmeta.names");
+
+    // has_default bitmask: ceil(N/8) bytes, bit i = paramDefaults[i].
+    size_t n_bytes = (paramNames.size() + 7) / 8;
+    std::vector<llvm::Constant*> bit_consts(n_bytes,
+                                             builder_.getInt8(0));
+    for (size_t i = 0; i < paramDefaults.size(); i++) {
+      if (paramDefaults[i]) {
+        auto byte_idx = i / 8;
+        auto cur = llvm::cast<llvm::ConstantInt>(bit_consts[byte_idx])
+                       ->getZExtValue();
+        bit_consts[byte_idx] =
+            builder_.getInt8(cur | (1u << (i % 8)));
+      }
+    }
+    auto bitsArrTy = llvm::ArrayType::get(i8Ty, n_bytes);
+    auto bitsInit = llvm::ConstantArray::get(bitsArrTy, bit_consts);
+    auto bitsGlobal = new llvm::GlobalVariable(
+        *module_, bitsArrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, bitsInit,
+        std::string(fn->getName()) + ".pmeta.bits");
+
+    // Meta struct: {names_ptr, bits_ptr, n_params}.
+    auto metaTy = llvm::StructType::get(ctx_, {ptrTy, ptrTy, i64Ty});
+    auto metaInit = llvm::ConstantStruct::get(
+        metaTy,
+        {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
+         llvm::ConstantExpr::getBitCast(bitsGlobal, ptrTy),
+         llvm::ConstantInt::get(i64Ty,
+                                static_cast<int64_t>(paramNames.size()))});
+    auto metaGlobal = new llvm::GlobalVariable(
+        *module_, metaTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, metaInit,
+        std::string(fn->getName()) + ".pmeta");
+    return metaGlobal;
   }
 
   // Construct a JitClosure for `fn` at the current insertion point:
@@ -9670,7 +9964,8 @@ struct JIT {
   // closure as a %Value (TAG_FUNC). Shared by compile_function and
   // compile_defer (defer uses arity=0).
   llvm::Value* emit_closure_build(llvm::Function* fn, const FuncInfo& info,
-                                  size_t arity) {
+                                  size_t arity,
+                                  llvm::Constant* paramMeta = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto n = info.free_vars.size();
     auto closurePtr = emit_call(
@@ -9678,6 +9973,16 @@ struct JIT {
                                      ptrTy, builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {fn, builder_.getInt64(n), builder_.getInt64(arity)}, "closure");
+    // Register `fn` → param metadata once per closure instantiation.
+    // The registration is idempotent (overwrites the same key with the
+    // same pointer), so calling it on every `let f = fn` execution is
+    // cheap; the kwargs resolver looks it up by `fn_ptr` at call time.
+    if (paramMeta) {
+      emit_call(
+          module_->getOrInsertFunction(rt::register_param_meta,
+                                       builder_.getVoidTy(), ptrTy, ptrTy),
+          {fn, paramMeta});
+    }
     if (n > 0) {
       auto capturesFieldPtr =
           builder_.CreateStructGEP(closureType_, closurePtr, 3);
@@ -9717,14 +10022,26 @@ struct JIT {
         case "ARGUMENTS"_: {
           // First postfix on an `f(x, y: 2)`-style call: if `f` is an
           // IDENTIFIER bound directly to a `fn (...) {...}` literal in
-          // scope, route kwargs/splats through the compile-time
-          // resolver. Indirect callees (captured closures, chained
-          // postfix results) hit the basic path which rejects kwargs.
+          // scope AND every splat is a literal Object, route through
+          // the compile-time resolver (zero runtime overhead). Any
+          // dynamic splat or indirect callee falls back to the
+          // runtime resolver via `compile_function_call`.
           const peg::Ast* fnAst = nullptr;
           if (i == 1 && calleeNode->tag == "IDENTIFIER"_) {
             fnAst = lookup_fn_ast(std::string(calleeNode->token));
           }
-          if (fnAst && !arg_list_is_positional_only(postfix)) {
+          bool has_dynamic_splat = false;
+          if (fnAst) {
+            for (auto& c : postfix.nodes) {
+              if (c->tag == "KWARG_SPLAT"_ &&
+                  c->nodes[0]->tag != "OBJECT"_) {
+                has_dynamic_splat = true;
+                break;
+              }
+            }
+          }
+          if (fnAst && !arg_list_is_positional_only(postfix) &&
+              !has_dynamic_splat) {
             callee = compile_function_call_with_kwargs(
                 postfix, callee, *fnAst);
           } else {
@@ -9977,14 +10294,14 @@ struct JIT {
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
-    // Method dispatch (builtins, UFCS, user methods) all walk argsAst
-    // positionally; kwargs/splats would crash downstream. Until each
-    // builtin learns to accept kwargs (planned per-method), reject
-    // them at the entry — interp still works.
-    if (!arg_list_is_positional_only(argsAst)) {
+    // Method dispatch: built-ins parse argsAst positionally and can't
+    // accept kwargs; UFCS and user methods route through the runtime
+    // resolver via the dispatched closure's param metadata.
+    bool has_kwargs = !arg_list_is_positional_only(argsAst);
+    if (has_kwargs && known_builtin_methods().contains(method)) {
       throw culebra::CulebraError("SyntaxError",
-          "JIT does not yet support keyword arguments at this call site "
-          "(use positional or run without --jit)",
+          std::format("built-in method '{}' does not accept keyword "
+                      "arguments", method),
           argsAst.line, argsAst.column);
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
@@ -10185,6 +10502,58 @@ struct JIT {
                                       llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
+
+    // Kwargs path: runtime resolver per-branch — receiver flows into
+    // `this_val` on the user-method branch and into `positional[0]` on
+    // the UFCS branch, with the rest of the ARG_LIST compiled once and
+    // routed through `culebra_runtime_call_with_kwargs`.
+    if (!arg_list_is_positional_only(argsAst)) {
+      auto methodHasBB =
+          llvm::BasicBlock::Create(ctx_, "ufcs.kw.method", fn);
+      auto ufcsHasBB =
+          llvm::BasicBlock::Create(ctx_, "ufcs.kw.free", fn);
+      auto mergeBB = llvm::BasicBlock::Create(ctx_, "ufcs.kw.merge", fn);
+
+      auto rtag = extract_tag(receiver);
+      auto isObj = builder_.CreateICmpEQ(rtag,
+                                          builder_.getInt8(TAG_OBJECT));
+      auto checkBB =
+          llvm::BasicBlock::Create(ctx_, "ufcs.kw.check", fn);
+      builder_.CreateCondBr(isObj, checkBB, ufcsHasBB);
+
+      builder_.SetInsertPoint(checkBB);
+      auto objPtr =
+          builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      auto keyPtr = get_or_create_global_str(method, ".mkey");
+      auto hasProp = emit_object_has(objPtr, keyPtr);
+      builder_.CreateCondBr(hasProp, methodHasBB, ufcsHasBB);
+
+      builder_.SetInsertPoint(methodHasBB);
+      // Receiver becomes `this_val`; retain so the +1 the helper
+      // consumes is independent of the caller's reference.
+      emit_value_retain(receiver);
+      auto methodVal = compile_property_get(receiver, method);
+      auto methodRes = compile_function_call_runtime_kwargs(
+          argsAst, methodVal, receiver);
+      auto methodEndBB = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(ufcsHasBB);
+      // UFCS: receiver is positional[0]; retain separately.
+      emit_value_retain(receiver);
+      auto freeFn = load_slot(freeFnSlot, method);
+      auto ufcsRes = compile_function_call_runtime_kwargs(
+          argsAst, freeFn, /*thisVal=*/nullptr, {receiver});
+      auto ufcsEndBB = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(mergeBB);
+      auto phi = builder_.CreatePHI(valueType_, 2, "ufcs.kw.res");
+      phi->addIncoming(methodRes, methodEndBB);
+      phi->addIncoming(ufcsRes, ufcsEndBB);
+      emit_value_release(receiver);
+      return phi;
+    }
 
     std::vector<llvm::Value*> userArgs;
     userArgs.reserve(argsAst.nodes.size());
@@ -10476,14 +10845,8 @@ struct JIT {
                                      llvm::Value* callee,
                                      llvm::Value* thisVal = nullptr) {
     if (!arg_list_is_positional_only(argsAst)) {
-      // Indirect callees (captured / returned closures, method values)
-      // are rejected here — only `compile_call` knows the caller's AST
-      // and routes statically-named user functions through
-      // `compile_function_call_with_kwargs`.
-      throw culebra::CulebraError("SyntaxError",
-          "JIT does not yet support keyword arguments for indirect "
-          "callees (use positional or run without --jit)",
-          argsAst.line, argsAst.column);
+      return compile_function_call_runtime_kwargs(
+          argsAst, callee, thisVal);
     }
     std::vector<llvm::Value*> userArgs;
     userArgs.reserve(argsAst.nodes.size());
@@ -10491,6 +10854,141 @@ struct JIT {
       userArgs.push_back(compile(*argNode));
     }
     return compile_function_call_raw(callee, thisVal, userArgs);
+  }
+
+  // Indirect / UFCS / method kwargs path. Compiles ARG_LIST into
+  // separate positional / kwarg-key / kwarg-val / splat slabs and
+  // hands them to `culebra_runtime_call_with_kwargs`, which consults
+  // the closure's registered param metadata to resolve names. Splat
+  // operands can be runtime Objects (the helper enumerates them).
+  //
+  // `positional_prefix` lets UFCS prepend the receiver as positional
+  // arg #0 — the prefix values are already-compiled +1 Values; they
+  // join the ARG_LIST's positional entries (which are compiled here)
+  // ahead of any kwarg or splat.
+  llvm::Value* compile_function_call_runtime_kwargs(
+      const peg::Ast& argsAst, llvm::Value* callee,
+      llvm::Value* thisVal,
+      const std::vector<llvm::Value*>& positional_prefix = {}) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+
+    // Scan ARG_LIST. Two-pass merge happens inside the runtime helper
+    // so the IR scan only enforces structural rules.
+    std::vector<const peg::Ast*> positional;
+    std::vector<std::pair<std::string_view, const peg::Ast*>>
+        explicit_kwargs;
+    std::set<std::string_view> seen_explicit;
+    std::vector<const peg::Ast*> splats;
+    bool saw_named = false;
+    for (auto& child : argsAst.nodes) {
+      if (child->tag == "KWARG_SPLAT"_) {
+        saw_named = true;
+        splats.push_back(child->nodes[0].get());
+      } else if (child->tag == "KWARG"_) {
+        saw_named = true;
+        auto name = child->nodes[0]->token;
+        if (!seen_explicit.insert(name).second) {
+          throw culebra::CulebraError("TypeError",
+              std::format("duplicate keyword argument '{}'", name),
+              argsAst.line, argsAst.column);
+        }
+        explicit_kwargs.emplace_back(name, child->nodes[1].get());
+      } else {
+        if (saw_named) {
+          throw culebra::CulebraError("SyntaxError",
+              "positional argument follows keyword argument",
+              argsAst.line, argsAst.column);
+        }
+        positional.push_back(child.get());
+      }
+    }
+
+    // Compile each value (caller-side +1 transfer to the slab).
+    std::vector<llvm::Value*> posVals;
+    posVals.reserve(positional_prefix.size() + positional.size());
+    for (auto* v : positional_prefix) posVals.push_back(v);
+    for (auto* ast : positional) posVals.push_back(compile(*ast));
+
+    std::vector<llvm::Value*> kwVals;
+    kwVals.reserve(explicit_kwargs.size());
+    std::vector<llvm::Constant*> kwKeyConsts;
+    kwKeyConsts.reserve(explicit_kwargs.size());
+    for (auto& [name, ast] : explicit_kwargs) {
+      kwVals.push_back(compile(*ast));
+      kwKeyConsts.push_back(builder_.CreateGlobalString(
+          std::string(name), ".kwkey"));
+    }
+
+    std::vector<llvm::Value*> splatVals;
+    splatVals.reserve(splats.size());
+    for (auto* ast : splats) splatVals.push_back(compile(*ast));
+
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                              fn->getEntryBlock().begin());
+
+    auto alloc_slab = [&](llvm::Type* ty, size_t n, const char* name)
+        -> llvm::Value* {
+      if (n == 0) return llvm::ConstantPointerNull::get(ptrTy);
+      return entryB.CreateAlloca(
+          ty, builder_.getInt64(static_cast<int64_t>(n)), name);
+    };
+    auto posSlab = alloc_slab(valueType_, posVals.size(), "kwc.pos");
+    auto kwKeysSlab = alloc_slab(ptrTy, kwKeyConsts.size(), "kwc.keys");
+    auto kwValsSlab = alloc_slab(valueType_, kwVals.size(), "kwc.vals");
+    auto splatSlab = alloc_slab(valueType_, splatVals.size(), "kwc.splat");
+
+    auto store_at = [&](llvm::Value* base, llvm::Type* ty, size_t i,
+                         llvm::Value* v) {
+      auto slot = builder_.CreateInBoundsGEP(
+          ty, base, {builder_.getInt64(static_cast<int64_t>(i))});
+      builder_.CreateStore(v, slot);
+    };
+    for (size_t i = 0; i < posVals.size(); i++) {
+      store_at(posSlab, valueType_, i, posVals[i]);
+    }
+    for (size_t i = 0; i < kwKeyConsts.size(); i++) {
+      store_at(kwKeysSlab, ptrTy, i, kwKeyConsts[i]);
+      store_at(kwValsSlab, valueType_, i, kwVals[i]);
+    }
+    for (size_t i = 0; i < splatVals.size(); i++) {
+      store_at(splatSlab, valueType_, i, splatVals[i]);
+    }
+
+    // Callee must be a closure; type-check at the IR level (matches
+    // `compile_function_call_raw`'s guard).
+    auto tag = extract_tag(callee);
+    auto isFunc = builder_.CreateICmpEQ(tag,
+                                         builder_.getInt8(TAG_FUNC));
+    auto okBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.ok", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.err", fn);
+    builder_.CreateCondBr(isFunc, okBB, errBB);
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("Function", tag);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+    auto clsPtr = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
+
+    auto thisVV = thisVal ? thisVal : make_nil();
+
+    auto result = emit_call(
+        module_->getOrInsertFunction(
+            rt::call_with_kwargs, valueType_, ptrTy, valueType_,
+            i64Ty, ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy,
+            i64Ty, i64Ty),
+        {clsPtr, thisVV,
+         builder_.getInt64(static_cast<int64_t>(posVals.size())), posSlab,
+         builder_.getInt64(static_cast<int64_t>(kwVals.size())),
+         kwKeysSlab, kwValsSlab,
+         builder_.getInt64(static_cast<int64_t>(splatVals.size())),
+         splatSlab, current_line_val(), current_column_val()});
+    // The callee ref follows `compile_function_call_raw`'s convention:
+    // it is borrowed for the duration of the dispatch, not released
+    // here. Outer compile_call leaks one ref per call as a pre-existing
+    // limitation independent of kwargs.
+    return result;
   }
 
   // Lower `range(N)` / `range(start, end)` / `iota(N)` / `iota(start,

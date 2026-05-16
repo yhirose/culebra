@@ -36,6 +36,37 @@ assert(f(1, **{z: 999}, z: 3) == 14)
 let to_long = fn (n, base = 10) { n * base }
 assert(to_long(5, base: 2) == 10)
 
+# Indirect callee: captured closure carries the param metadata so the
+# JIT runtime resolver finds it via cls->fn_ptr.
+let make_adder = fn (base) { fn (x, mult = 1) { (x + base) * mult } }
+let add10 = make_adder(10)
+assert(add10(5) == 15)
+assert(add10(5, mult: 2) == 30)
+assert(add10(5, **{mult: 3}) == 45)
+
+# Dynamic `**variable` splat (not a literal Object): resolves at
+# runtime via the helper's enumeration of the splat operand.
+let dyn_opts = {mult: 4}
+assert(add10(5, **dyn_opts) == 60)
+
+# UFCS path with kwargs: `x.f(...)` becomes `f(x, ...)`.
+let greet = fn (name, greeting = 'hi') { "{greeting}, {name}" }
+assert('alice'.greet() == 'hi, alice')
+assert('alice'.greet(greeting: 'yo') == 'yo, alice')
+
+# Object method with kwargs (including a middle-gap default).
+let counter = fn (start) {
+  {
+    val: start,
+    bump: fn (by = 1, mult = 1) { (this.val + by) * mult }
+  }
+}
+let c = counter(10)
+assert(c.bump() == 11)
+assert(c.bump(by: 5) == 15)
+assert(c.bump(mult: 2) == 22)         # middle gap on by
+assert(c.bump(by: 5, mult: 3) == 45)
+
 # Default eval is per-call (Ruby flavor — not Python's def-time trap).
 mut counter = 0
 let inc = fn () { counter = counter + 1; counter }
