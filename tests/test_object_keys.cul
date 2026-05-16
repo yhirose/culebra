@@ -39,8 +39,9 @@ let n2 = {10: "x", 5: "y", 1: "z"}
 assert(to_string(n) == to_string(n2))
 
 // --- Runtime keys via `obj[k] = v` ---
-// Object subscript-assignment routes every key (Long, Float, Bool,
-// Nil, Tuple, runtime String) through the non-String sidecar.
+// Object subscript-assignment routes String keys through the shape
+// (same slot as `obj.x`) and everything else (Long, Float, Bool, Nil,
+// Tuple) through the non-String sidecar.
 mut bag = {}
 let sk = "alpha"
 bag[sk] = 100
@@ -59,12 +60,23 @@ named["bar"] = 2
 assert(named["foo"] == 1)
 assert(named["bar"] == 2)
 
-// Subscript writes don't unify with shape-based `obj.foo` access —
-// runtime String keys live in the sidecar, static identifiers in
-// the shape, so `obj.foo` after `obj["foo"] = v` is still nil.
+// Subscript writes with String keys unify with shape-based `obj.foo`
+// access — `obj["x"] = v` and `obj.x = v` reach the same slot, so
+// either form of read sees the other's write.
 mut split = {}
 split["x"] = 99
-assert(split.x == nil)
+assert(split.x == 99)
+split.y = 7
+assert(split["y"] == 7)
+
+// `mut` on subscript-set makes the slot mutable, so a later write
+// (subscript or dot, either flow into the same shape slot) succeeds.
+mut split2 = {}
+mut split2["x"] = 1
+split2["x"] = 2     // update via subscript
+split2.x = 3        // update via dot — same slot
+assert(split2.x == 3)
+assert(split2["x"] == 3)
 
 // --- G-1/G-2: size/has/keys/remove cover both key kinds ---
 mut bag2 = {a: 1, b: 2}

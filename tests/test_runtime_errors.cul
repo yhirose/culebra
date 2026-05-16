@@ -57,6 +57,15 @@ expect('drop with arg', 'DropContractError', r10)
 # track per-variable mutability. ImmutableError on object properties
 # fires on both backends (covered by `o.b += 1` cases nearby).
 
+# Subscript-set on an immutable shape slot raises ImmutableError —
+# verifies the K unification surfaces the mut check on both backends.
+let r11b = try {
+  let o = {x: 1}
+  o['x'] = 2
+  nil
+} catch e { e }
+expect("obj['x']= on immutable", 'ImmutableError', r11b)
+
 # --- ValueError ---
 let r12 = try { let _ = [].min(); nil } catch e { e }
 expect('empty Array.min', 'ValueError', r12)

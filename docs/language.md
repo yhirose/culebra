@@ -719,7 +719,7 @@ their actual write order — matching Python and Ruby Hash semantics.
 ### Subscript assignment
 
 `obj[k] = v` writes any hashable key — `Long`, `Float`, `Bool`, `Nil`,
-`Tuple`, or a runtime `String` — into the sidecar map:
+`Tuple`, or a runtime `String`:
 
     mut bag = {}
     let k = 'alpha'
@@ -729,11 +729,27 @@ their actual write order — matching Python and Ruby Hash semantics.
     puts(bag[k])                    # 1
     puts(bag[(1,2)])                # 'tuple'
 
-Subscript writes do **not** unify with the shape-based `obj.foo` path.
-A runtime `obj["foo"] = 1` lands in the sidecar and `obj.foo` (which
-goes through the shape fast path) still returns `nil`. To set a static
-property, use `obj.foo = 1` directly. Compound forms (`obj[k] += v`)
-are Array-only.
+String keys unify with the shape-based `obj.foo` path — both forms
+reach the same slot:
+
+    mut o = {}
+    o['x'] = 1
+    puts(o.x)                       # 1
+    o.y = 2
+    puts(o['y'])                    # 2
+
+Existing slots honor their `mut` flag, regardless of which form the
+write uses; `obj[k] = v` on an immutable slot raises `ImmutableError`.
+Non-String keys live in a sidecar map. Compound forms (`obj[k] += v`)
+work on Objects only via the interpreter; the JIT restricts them to
+Array receivers.
+
+Caveat — JIT shape growth: each *unique* runtime `String` key used as
+an Object property name allocates a `Shape` in a process-wide registry
+that is never reclaimed. Programs that feed unbounded user-supplied
+strings into `obj[k] = v` will accumulate shapes monotonically. For
+that kind of workload use a non-String key (e.g. wrap in a `Tuple`)
+to keep the data in the sidecar instead.
 
 ### Methods and UFCS
 
@@ -2240,11 +2256,11 @@ built-ins from §18.
 * Pattern matching has no exhaustiveness check.
 * `match` arm bodies must be single expressions — `{ ... }` in an arm
   body is parsed as an `Object` literal, not a block.
-* Dot-form property names are identifiers only (`obj.foo`). Runtime
-  String / Long / Float / Bool / Nil / Tuple keys reach the Object via
-  the subscript path (`obj[k]`) and live in a separate sidecar map —
-  they do not unify with the shape-based `obj.foo` namespace.
-  See §10 "Subscript assignment" for the runtime semantics.
+* Dot-form property names are identifiers only (`obj.foo`). Non-String
+  hashable keys (`Long`, `Float`, `Bool`, `Nil`, `Tuple`) reach the
+  Object via the subscript path (`obj[k]`) and live in a sidecar map.
+  Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
+  and `obj.x` reach the same slot. See §10 "Subscript assignment".
 
 ---
 

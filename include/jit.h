@@ -2504,12 +2504,20 @@ __attribute__((used)) inline void culebra_runtime_object_set(
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
-// Non-String key access into the sidecar AnyKeyMap. Used by JIT code
-// emitted for `{1: "x"}` literals and `obj[k]` postfix where k is not
-// a String.
+// Hashable-key access into an Object. String keys unify with the
+// shape-based `obj.foo` path so `obj["x"] = v` and `obj.x = v` reach
+// the same slot; everything else (Long/Float/Bool/Nil/Tuple) lands in
+// the sidecar AnyKeyMap. The Object-literal `{1: "x"}` emit path never
+// passes TAG_STRING (grammar forbids String literal keys), so the
+// dispatch only matters for runtime-keyed subscript writes.
 __attribute__((used)) inline void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
+  if (key_tag == TAG_STRING) {
+    culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
+                               mut, val_tag, val_data, 0, 0);
+    return;
+  }
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
     // First non-String key: activate key_order and back-fill with the
@@ -2547,6 +2555,17 @@ __attribute__((used)) inline void culebra_runtime_object_set_any(
 __attribute__((used)) inline void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
+  // String keys: unified with shape access (see object_set_any).
+  if (key_tag == TAG_STRING) {
+    auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
+    if (idx == static_cast<size_t>(-1)) {
+      throw culebra::CulebraError("KeyError", "key not present");
+    }
+    *out_tag = obj->slots[idx].value.tag;
+    *out_data = obj->slots[idx].value.data;
+    culebra_runtime_value_retain(*out_tag, *out_data);
+    return;
+  }
   if (!obj->non_string_props) {
     throw culebra::CulebraError("KeyError", "key not present");
   }
@@ -7369,8 +7388,9 @@ struct JIT {
 
         llvm::BasicBlock* objEnd = nullptr;
         if (!compound) {
-          // Object path: any hashable key into the non_string_props
-          // sidecar. Runtime String keys land here too.
+          // Object path: object_set_any dispatches on key tag — String
+          // keys flow into the shape (same slot as `obj.foo`); others
+          // live in the non_string_props sidecar.
           builder_.SetInsertPoint(objBB);
           auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
           auto keyVal = compile(finalPostfix);

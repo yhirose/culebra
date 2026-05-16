@@ -503,6 +503,7 @@ struct ObjectValue {
   // unaffected.
   bool has(const Value& key) const;
   const Value& get(const Value& key) const;
+  void assign(const Value& key, const Value& val);
   void initialize(const Value& key, const Value& val, bool mut);
 
   virtual std::map<std::string_view, Value>& builtins();
@@ -996,21 +997,49 @@ inline bool _set_eq(const Value& a, const Value& b) {
 //   typically AST tokens or class-tag string pool entries.
 // - find/contains/insert are O(1) avg; erase is O(n) (entries shift +
 //   index recompute), which is acceptable since Object.remove is rare.
+// Insertion-ordered string-to-Symbol map.
+//
+// `index_` owns the canonical key strings — unordered_map nodes are
+// stable across rehashes, so the `string_view` aliases stored in
+// `entries_` remain valid for the entry's lifetime. Erase is the only
+// op that invalidates a node, and it removes the matching entry first.
+// This lets `obj["x"] = v` insert runtime-allocated key strings
+// safely (the Value-owned std::string passed at the call site would
+// otherwise dangle once the call returns).
+//
+// `is_transparent` typedefs enable heterogeneous std::string_view
+// lookups without forcing a string copy on every read.
 struct OrderedSymbolMap {
   using Entry = std::pair<std::string_view, Symbol>;
 
+  struct sv_hash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const noexcept {
+      return std::hash<std::string_view>{}(sv);
+    }
+  };
+  struct sv_equal {
+    using is_transparent = void;
+    bool operator()(std::string_view a, std::string_view b) const noexcept {
+      return a == b;
+    }
+  };
+
   bool contains(std::string_view k) const { return index_.contains(k); }
 
-  Symbol& at(std::string_view k) { return entries_[index_.at(k)].second; }
+  Symbol& at(std::string_view k) {
+    return entries_[index_.find(k)->second].second;
+  }
   const Symbol& at(std::string_view k) const {
-    return entries_[index_.at(k)].second;
+    return entries_[index_.find(k)->second].second;
   }
 
   Symbol& operator[](std::string_view k) {
     auto it = index_.find(k);
     if (it != index_.end()) return entries_[it->second].second;
-    index_.emplace(k, entries_.size());
-    entries_.emplace_back(k, Symbol{});
+    auto [new_it, _] =
+        index_.emplace(std::string(k), entries_.size());
+    entries_.emplace_back(std::string_view(new_it->first), Symbol{});
     return entries_.back().second;
   }
 
@@ -1021,8 +1050,10 @@ struct OrderedSymbolMap {
     if (it != index_.end()) {
       return {entries_.begin() + it->second, false};
     }
-    index_.emplace(k, entries_.size());
-    entries_.emplace_back(k, std::forward<S>(s));
+    auto [new_it, _] =
+        index_.emplace(std::string(k), entries_.size());
+    entries_.emplace_back(std::string_view(new_it->first),
+                          std::forward<S>(s));
     return {entries_.begin() + (entries_.size() - 1), true};
   }
 
@@ -1032,8 +1063,10 @@ struct OrderedSymbolMap {
     if (it != index_.end()) {
       entries_[it->second].second = std::forward<S>(s);
     } else {
-      index_.emplace(k, entries_.size());
-      entries_.emplace_back(k, std::forward<S>(s));
+      auto [new_it, _] =
+          index_.emplace(std::string(k), entries_.size());
+      entries_.emplace_back(std::string_view(new_it->first),
+                            std::forward<S>(s));
     }
   }
 
@@ -1073,7 +1106,7 @@ struct OrderedSymbolMap {
 
  private:
   std::vector<Entry> entries_;
-  std::unordered_map<std::string_view, size_t> index_;
+  std::unordered_map<std::string, size_t, sv_hash, sv_equal> index_;
 };
 
 // Internal control-flow signal for `return expr`. Kept distinct from
@@ -1238,20 +1271,32 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
   }
 }
 
-// Non-String key overloads dispatch to non_string_props. Long, Float,
-// Bool, Nil, Tuple, and runtime String keys all land here; static
-// String identifiers (`obj.foo`) take the shape-based path instead.
+// Value-keyed overloads. String keys are unified with the shape-based
+// `obj.foo` path so `obj["foo"] = v` and `obj.foo = v` reach the same
+// slot; every other hashable key (Long/Float/Bool/Nil/Tuple) goes to
+// the sidecar.
 inline bool ObjectValue::has(const Value& key) const {
+  if (key.type == Value::String) {
+    return properties->contains(
+        std::string_view(key.template get<std::string>()));
+  }
   if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
 }
 
 inline const Value& ObjectValue::get(const Value& key) const {
+  if (key.type == Value::String) {
+    return properties->at(key.template get<std::string>()).val;
+  }
   return non_string_props->at(key).val;
 }
 
 inline void ObjectValue::initialize(const Value& key, const Value& val,
                                     bool mut) {
+  if (key.type == Value::String) {
+    initialize(std::string_view(key.template get<std::string>()), val, mut);
+    return;
+  }
   auto [it, inserted] =
       non_string_props->try_emplace(key, Symbol{val, mut});
   if (inserted) {
@@ -1259,6 +1304,23 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
   } else {
     it->second = Symbol{val, mut};
   }
+}
+
+inline void ObjectValue::assign(const Value& key, const Value& val) {
+  if (key.type == Value::String) {
+    assign(std::string_view(key.template get<std::string>()), val);
+    return;
+  }
+  auto it = non_string_props->find(key);
+  // Caller has already checked has(); this is defensive.
+  if (it == non_string_props->end()) {
+    throw CulebraError("KeyError", "key not present");
+  }
+  if (!it->second.mut) {
+    throw CulebraError("ImmutableError",
+                       "immutable entry on non-String key");
+  }
+  it->second.val = val;
 }
 
 // Build the structured-error Object surfaced to user `catch` blocks.
@@ -4733,10 +4795,10 @@ struct Interpreter {
 
       switch (postfix.original_tag) {
         case "INDEX"_: {
-          // `obj[k] = v` on an Object: routes through the non-String
-          // sidecar regardless of k's type. Runtime String keys also
-          // land here — they are NOT unified with `obj.foo` shape
-          // properties (those go through the DOT path above).
+          // `obj[k] = v` on an Object. String keys flow into the same
+          // slot as `obj.foo`; other hashable keys live in the sidecar.
+          // Existing slots honor their `mut` flag (matches the DOT path
+          // above and the JIT's `object_set` behavior).
           if (lval.type == Value::Object) {
             auto key = eval(postfix, env);
             auto& obj = lval.to_object();
@@ -4747,10 +4809,14 @@ struct Interpreter {
               }
               auto cur = obj.get(key);
               auto new_val = apply_compound_op(cur, rval, base_op, env);
-              obj.initialize(key, new_val, true);
+              obj.assign(key, new_val);
               return new_val;
             }
-            obj.initialize(key, rval, mut);
+            if (obj.has(key)) {
+              obj.assign(key, rval);
+            } else {
+              obj.initialize(key, rval, mut);
+            }
             return rval;
           }
           const auto& arr = lval.to_array();
