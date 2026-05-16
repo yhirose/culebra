@@ -1,0 +1,62 @@
+# Keyword arguments and `**` splat — dual-backend covered subset.
+# The interp-only `tests/interp/test_kwargs.cul` covers patterns the
+# JIT does not yet resolve (dynamic **var splat, UFCS kwargs against a
+# free function). Anything in this file runs on both backends.
+
+let f = fn (x, y = 10, z = 100) { x + y + z }
+
+# Positional only (defaults fill trailing)
+assert(f(1, 2, 3) == 6)
+assert(f(1) == 111)
+assert(f(1, 2) == 103)
+
+# Direct kwargs — including a middle gap (y skipped, z provided).
+assert(f(1, z: 5) == 16)
+assert(f(1, y: 2, z: 3) == 6)
+assert(f(z: 3, y: 2, x: 1) == 6)
+
+# Literal Object splat — flattened at compile time.
+assert(f(1, **{y: 7, z: 8}) == 16)
+assert(f(1, **{y: 7}, z: 100) == 108)
+assert(f(1, **{y: 2}, **{y: 5}) == 106)   # multiple splats: later wins
+assert(f(**{x: 1}, **{y: 2}, z: 3) == 6)
+
+# Explicit kwarg always wins regardless of source order, including
+# when an explicit comes BEFORE the splat with the same key.
+assert(f(1, z: 3, **{z: 999}) == 14)
+assert(f(1, **{z: 999}, z: 3) == 14)
+
+# Shadowing a built-in global name with a user fn that takes kwargs:
+# the JIT must route the kwargs call through the user fn, not bail to
+# "this builtin doesn't accept kwargs" or to the built-in's positional
+# fast path. (Positional-only shadowing of names like `range` is a
+# pre-existing JIT limitation — JIT fast-paths intercept before name
+# resolution. Kwargs calls bypass those fast paths and reach the
+# user fn correctly.)
+let to_long = fn (n, base = 10) { n * base }
+assert(to_long(5, base: 2) == 10)
+
+# Default eval is per-call (Ruby flavor — not Python's def-time trap).
+mut counter = 0
+let inc = fn () { counter = counter + 1; counter }
+let h = fn (x = inc()) { x }
+assert(h() == 1)
+assert(h() == 2)
+assert(h(100) == 100)   # explicit arg skips default eval
+assert(h() == 3)
+
+# Earlier-param visibility in default eval.
+let g = fn (a, b = a + 1) { a + b }
+assert(g(10) == 21)
+assert(g(10, b: 5) == 15)
+
+# __ARGS__ catches extra positional only; kwargs never contribute.
+let varfn = fn (a) { __ARGS__ }
+let extras = varfn(1, 2, 3)
+assert(extras.size() == 2 && extras[0] == 2 && extras[1] == 3)
+
+let g2 = fn (a, b = 0) { __ARGS__ }
+let e2 = g2(1, b: 9)
+assert(e2.size() == 0)
+
+IO.puts('test_kwargs OK')

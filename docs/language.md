@@ -1173,11 +1173,15 @@ Rules:
 * Defaults are re-evaluated on every call (Ruby/Scala flavor — no
   Python-style "evaluated at def time" trap).
 
-JIT note: this milestone wires kwargs end-to-end in the interpreter.
-The JIT rejects keyword arguments against user-defined function calls
-at compile time (built-in dispatchers such as `JSON.stringify` handle
-their own kwargs natively). Run without `--jit` to use kwargs against
-your own functions until the JIT-side resolver lands.
+JIT support: kwargs and `**` splat work for **directly-named user
+functions** (i.e. `f(x, y: 2)` where `f` was bound by a `let f = fn
+(...) {...}` literal in scope) and for built-in dispatchers like
+`JSON.stringify`. The JIT resolver fills any missing defaulted slot
+(including middle gaps) via a `TAG_UNFILLED` sentinel and the callee's
+existing inline default-expression. Dynamic `**variable` splat and
+kwargs through indirect callees (captured / method-fetched closures)
+are still rejected at compile time — fall back to `--jit`-off for
+those patterns.
 
 ### Return
 

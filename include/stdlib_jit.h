@@ -852,14 +852,25 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                                                   const std::string& name,
                                                   const peg::Ast& argsAst,
                                                   const peg::Ast& callAst) {
-  // Global builtins (puts, assert, etc.) parse positionally. Until
-  // any one wants kwargs, surface a clean SyntaxError here so the
-  // downstream argsAst walk doesn't crash on KWARG/KWARG_SPLAT nodes.
+  // Global builtins (puts, assert, etc.) parse positionally. None of
+  // them accept kwargs today; if the call carries kwargs/splats and
+  // matches a built-in name surface a clean SyntaxError. If the user
+  // shadowed the name with their own `let X = fn (...) {...}` binding,
+  // defer to the downstream user-fn resolver (mirrors interp's
+  // name-resolution-first behavior). Otherwise return nullptr so
+  // downstream call dispatch can take over.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
-    throw culebra::CulebraError("SyntaxError",
-        "JIT does not yet support keyword arguments at this call site "
-        "(use positional or run without --jit)",
-        argsAst.line, argsAst.column);
+    if (jit.lookup_fn_ast(name) != nullptr) return nullptr;
+    static const std::set<std::string_view> known_globals = {
+        "puts", "print", "assert", "to_long", "to_float",
+        "to_string", "type_of", "iota", "range",
+    };
+    if (known_globals.contains(name)) {
+      throw culebra::CulebraError("SyntaxError",
+          std::format("'{}' does not accept keyword arguments", name),
+          argsAst.line, argsAst.column);
+    }
+    return nullptr;
   }
   auto line = jit.builder_.getInt64(callAst.line);
   auto col = jit.builder_.getInt64(callAst.column);
@@ -1276,32 +1287,61 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
   if (ns == "JSON") {
     using namespace peg::udl;
-    // Split ARG_LIST into positional + kwargs. Splats aren't supported
-    // here yet — the IR-emit time can't unroll a dynamic Object — so
-    // surface a clean SyntaxError if one appears.
+    // Two-pass scan matching the interp resolver: splats merge first
+    // (later splat wins), then explicit kwargs layer on top regardless
+    // of source order. Literal `**{...}` only; dynamic splats are
+    // deferred since IR-emit can't enumerate a runtime Object's keys
+    // against compile-time-known param names.
     std::vector<const peg::Ast*> positional;
     std::map<std::string_view, const peg::Ast*> kwargs;
+    std::vector<std::pair<std::string_view, const peg::Ast*>>
+        explicit_kwargs;
+    std::set<std::string_view> seen_explicit;
+    bool saw_named = false;
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
-        throw culebra::CulebraError("SyntaxError",
-            "JIT JSON does not yet support **splat at the call site",
-            argsAst.line, argsAst.column);
+        saw_named = true;
+        const auto& operand = *child->nodes[0];
+        if (operand.tag != "OBJECT"_) {
+          throw culebra::CulebraError("SyntaxError",
+              "JIT JSON does not yet support dynamic **splat "
+              "(use a literal Object or run without --jit)",
+              argsAst.line, argsAst.column);
+        }
+        for (auto& prop : operand.nodes) {
+          const auto& key_node = *prop->nodes[1];
+          if (key_node.tag != "IDENTIFIER"_) {
+            throw culebra::CulebraError("TypeError",
+                "**: splat Object key must be an identifier",
+                argsAst.line, argsAst.column);
+          }
+          const peg::Ast* val_ast = prop->nodes.size() >= 3
+              ? prop->nodes[2].get()
+              : &key_node;
+          kwargs[key_node.token] = val_ast;
+        }
+        continue;
       }
       if (child->tag == "KWARG"_) {
+        saw_named = true;
         auto name = child->nodes[0]->token;
-        if (!kwargs.emplace(name, child->nodes[1].get()).second) {
+        if (!seen_explicit.insert(name).second) {
           throw culebra::CulebraError("TypeError",
               std::format("duplicate keyword argument '{}'", name),
               argsAst.line, argsAst.column);
         }
+        explicit_kwargs.emplace_back(name, child->nodes[1].get());
       } else {
-        if (!kwargs.empty()) {
+        if (saw_named) {
           throw culebra::CulebraError("SyntaxError",
               "positional argument follows keyword argument",
               argsAst.line, argsAst.column);
         }
         positional.push_back(child.get());
       }
+    }
+    for (const auto& [name, val] : explicit_kwargs) {
+      kwargs[name] = val;
     }
     auto take_kwarg = [&](std::string_view name) -> const peg::Ast* {
       auto it = kwargs.find(name);

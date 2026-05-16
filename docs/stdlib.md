@@ -604,9 +604,10 @@ puts(arr)                                            # [1, 2, 3]
 ```
 
 JIT note: built-in `JSON.{stringify, parse}` accept kwargs directly in
-both backends. `**splat` at the call site is not yet supported in the
-JIT path for JSON — pass each kwarg explicitly, or run without
-`--jit`.
+both backends, including literal `**{key: val, ...}` splats. Dynamic
+`**variable` splats (where the operand is a runtime Object) are still
+interp-only — pass each kwarg explicitly in JIT-compiled code, or run
+without `--jit`.
 
 ---
 

@@ -402,6 +402,11 @@ static constexpr int8_t TAG_TUPLE = 9;
 // Insertion-ordered unique-membership collection. Backed by a custom
 // JitSet struct (parallel to JitArray) with an O(1) sidecar index.
 static constexpr int8_t TAG_SET = 10;
+// Sentinel tag used in the kwargs-resolved slab to mark a middle gap
+// (a defaulted slot that the caller did not fill while a later slot
+// is filled). The callee prologue treats it as "fall back to default";
+// it is NOT a valid value tag and must never escape into user values.
+static constexpr int8_t TAG_UNFILLED = 127;
 
 static constexpr int8_t GC_TAG_FUNC = TAG_FUNC;
 static constexpr int8_t GC_TAG_ARRAY = TAG_ARRAY;
@@ -5072,6 +5077,11 @@ struct JIT {
     using Slots = std::map<std::string, VarSlot>;
     Slots slots;
     std::vector<Slots::iterator> order;
+    // `let f = fn (...) {...}` records the FUNCTION AST here so a
+    // later `f(x, y: 2)` can resolve kwargs against `f`'s parameter
+    // list at compile time. Only same-scope direct bindings populate
+    // this map; captured / reassigned closures do not.
+    std::map<std::string, const peg::Ast*> fn_asts;
   };
 
   // RAII snapshot of compiler per-function state. Entering a nested
@@ -7321,6 +7331,17 @@ struct JIT {
 
       declare_local(name, rval);
       emit_value_retain(rval);
+      // Record direct `let f = fn (...) {...}` bindings so a later
+      // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
+      // compile time. The RHS lives at ast.nodes.back(); its `tag`
+      // (post-optimizer) is "FUNCTION" for a function literal.
+      {
+        using namespace peg::udl;
+        const auto& rhs = *ast.nodes.back();
+        if (rhs.tag == "FUNCTION"_ && !scopes_.empty()) {
+          scopes_.back().fn_asts[name] = &rhs;
+        }
+      }
       return rval;
     }
 
@@ -9508,8 +9529,10 @@ struct JIT {
 
     // Declared parameters: for non-defaulted params, load from args[i]
     // (the caller transferred each +1 into the slab). For defaulted
-    // params, branch on `i < n_args`: either take the slab entry or
-    // compile the default expression inline, then PHI-merge.
+    // params, branch on `i < n_args && slab[i].tag != TAG_UNFILLED`:
+    // either take the slab entry or compile the default expression
+    // inline, then PHI-merge. TAG_UNFILLED is the kwargs-resolver's
+    // middle-gap sentinel.
     for (size_t i = 0; i < paramNames.size(); i++) {
       const auto& name = paramNames[i];
       llvm::Value* argVal = nullptr;
@@ -9519,18 +9542,29 @@ struct JIT {
             name + ".slot");
         argVal = builder_.CreateLoad(valueType_, slotPtr, name);
       } else {
-        auto hasArg = builder_.CreateICmpUGT(
+        auto hasIdx = builder_.CreateICmpUGT(
             nArgsArg, builder_.getInt64(static_cast<int64_t>(i)),
             name + ".has");
         auto takeBB = BasicBlock::Create(ctx_, name + ".take", fn);
+        auto checkBB = BasicBlock::Create(ctx_, name + ".check", fn);
         auto defBB = BasicBlock::Create(ctx_, name + ".def", fn);
         auto mergeBB = BasicBlock::Create(ctx_, name + ".merge", fn);
-        builder_.CreateCondBr(hasArg, takeBB, defBB);
+        builder_.CreateCondBr(hasIdx, checkBB, defBB);
 
-        builder_.SetInsertPoint(takeBB);
+        builder_.SetInsertPoint(checkBB);
         auto slotPtr = builder_.CreateInBoundsGEP(
             valueType_, argsArg, {builder_.getInt64(static_cast<int64_t>(i))},
             name + ".slot");
+        // Load tag first; if TAG_UNFILLED, fall through to default. The
+        // value-load happens after the tag check so we never observe
+        // the sentinel's data.
+        auto slotTag = builder_.CreateLoad(builder_.getInt8Ty(),
+                                            slotPtr, name + ".tag");
+        auto isUnfilled = builder_.CreateICmpEQ(
+            slotTag, builder_.getInt8(TAG_UNFILLED), name + ".unf");
+        builder_.CreateCondBr(isUnfilled, defBB, takeBB);
+
+        builder_.SetInsertPoint(takeBB);
         auto fromArgs = builder_.CreateLoad(valueType_, slotPtr, name);
         auto takeEndBB = builder_.GetInsertBlock();
         builder_.CreateBr(mergeBB);
@@ -9680,9 +9714,24 @@ struct JIT {
       const auto& postfix = *ast.nodes[i];
 
       switch (postfix.original_tag) {
-        case "ARGUMENTS"_:
-          callee = compile_function_call(postfix, callee);
+        case "ARGUMENTS"_: {
+          // First postfix on an `f(x, y: 2)`-style call: if `f` is an
+          // IDENTIFIER bound directly to a `fn (...) {...}` literal in
+          // scope, route kwargs/splats through the compile-time
+          // resolver. Indirect callees (captured closures, chained
+          // postfix results) hit the basic path which rejects kwargs.
+          const peg::Ast* fnAst = nullptr;
+          if (i == 1 && calleeNode->tag == "IDENTIFIER"_) {
+            fnAst = lookup_fn_ast(std::string(calleeNode->token));
+          }
+          if (fnAst && !arg_list_is_positional_only(postfix)) {
+            callee = compile_function_call_with_kwargs(
+                postfix, callee, *fnAst);
+          } else {
+            callee = compile_function_call(postfix, callee);
+          }
           break;
+        }
         case "INDEX"_: {
           // INDEX/DOT return borrowed slot values; promote them to +1
           // so chained access like `a.b[i].c` doesn't over-release the
@@ -10248,8 +10297,7 @@ struct JIT {
 
   // True if every ARG_LIST child is a plain positional expression
   // (no `name:` kwarg and no `**splat`). Lets the JIT take its fast
-  // path; the slow path (currently a compile-time error for user
-  // functions) only fires when this is false.
+  // path; the kwargs path is only entered when this is false.
   static bool arg_list_is_positional_only(const peg::Ast& argsAst) {
     using namespace peg::udl;
     for (auto& child : argsAst.nodes) {
@@ -10260,17 +10308,181 @@ struct JIT {
     return true;
   }
 
+  // Walk scopes inner-to-outer for a `let f = fn (...) {...}` style
+  // binding the JIT can statically resolve kwargs against. Returns
+  // null for captured / reassigned / built-in callees.
+  const peg::Ast* lookup_fn_ast(const std::string& name) const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      auto found = it->fn_asts.find(name);
+      if (found != it->fn_asts.end()) return found->second;
+    }
+    return nullptr;
+  }
+
+  // Compile-time resolution of kwargs/splats for a directly-named user
+  // function whose FUNCTION AST we have. Reorders the ARG_LIST into
+  // positional form matching the formal parameters, then calls through
+  // the regular slab ABI. Trailing-defaulted-only — a middle gap (an
+  // unfilled defaulted slot followed by a filled one) is an ArityError.
+  llvm::Value* compile_function_call_with_kwargs(
+      const peg::Ast& argsAst, llvm::Value* callee,
+      const peg::Ast& fnAst, llvm::Value* thisVal = nullptr) {
+    using namespace peg::udl;
+
+    // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
+    // PARAMETER child: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?,
+    // (DEFAULT_VALUE)?].
+    const auto& paramsAst = *fnAst.nodes[0];
+    struct ParamInfo {
+      std::string_view name;
+      bool has_default;
+    };
+    std::vector<ParamInfo> params;
+    params.reserve(paramsAst.nodes.size());
+    for (auto& p : paramsAst.nodes) {
+      params.push_back({
+          p->nodes[1]->token,
+          culebra::extract_default_expr(*p) != nullptr,
+      });
+    }
+
+    // Scan ARG_LIST → positional + kwargs.
+    //
+    // Two passes so the semantics match the interp resolver
+    // (`bind_call_args` in interpreter.h): all splats merge first
+    // (later splat overrides earlier), then explicit kwargs layer on
+    // top regardless of source order. So `f(c: 3, **{c: 5})` always
+    // resolves to `c = 3` because the explicit wins, just like
+    // `f(**{c: 5}, c: 3)`.
+    std::vector<const peg::Ast*> positional;
+    std::map<std::string_view, const peg::Ast*> kwargs;
+    std::vector<std::pair<std::string_view, const peg::Ast*>>
+        explicit_kwargs;
+    std::set<std::string_view> seen_explicit;
+    bool saw_named = false;
+    for (auto& child : argsAst.nodes) {
+      if (child->tag == "KWARG_SPLAT"_) {
+        saw_named = true;
+        const auto& operand = *child->nodes[0];
+        if (operand.tag != "OBJECT"_) {
+          throw culebra::CulebraError("SyntaxError",
+              "JIT does not yet support dynamic **splat against a user "
+              "function (use a literal Object or run without --jit)",
+              argsAst.line, argsAst.column);
+        }
+        for (auto& prop : operand.nodes) {
+          const auto& key_node = *prop->nodes[1];
+          if (key_node.tag != "IDENTIFIER"_) {
+            throw culebra::CulebraError("TypeError",
+                "**: splat Object key must be an identifier",
+                argsAst.line, argsAst.column);
+          }
+          const peg::Ast* val_ast = prop->nodes.size() >= 3
+              ? prop->nodes[2].get()
+              : &key_node;
+          kwargs[key_node.token] = val_ast;
+        }
+      } else if (child->tag == "KWARG"_) {
+        saw_named = true;
+        auto name = child->nodes[0]->token;
+        if (!seen_explicit.insert(name).second) {
+          throw culebra::CulebraError("TypeError",
+              std::format("duplicate keyword argument '{}'", name),
+              argsAst.line, argsAst.column);
+        }
+        explicit_kwargs.emplace_back(name, child->nodes[1].get());
+      } else {
+        if (saw_named) {
+          throw culebra::CulebraError("SyntaxError",
+              "positional argument follows keyword argument",
+              argsAst.line, argsAst.column);
+        }
+        positional.push_back(child.get());
+      }
+    }
+    // Layer explicit kwargs on top of the splat-merged map.
+    for (const auto& [name, val] : explicit_kwargs) {
+      kwargs[name] = val;
+    }
+
+    // Resolve to positional order. Each slot gets filled from either
+    // positional or kwargs; if neither, the slot must have a default
+    // and is marked with TAG_UNFILLED so the callee prologue falls
+    // back to its inline default expression. Middle gaps work the
+    // same way as trailing gaps — both use the sentinel.
+    enum class Source { None, Positional, Kwarg };
+    std::vector<Source> sources(params.size(), Source::None);
+    std::vector<const peg::Ast*> resolved(params.size(), nullptr);
+    for (size_t i = 0; i < params.size(); i++) {
+      if (i < positional.size()) {
+        if (kwargs.contains(params[i].name)) {
+          throw culebra::CulebraError("TypeError",
+              std::format("got argument '{}' both positionally and as "
+                          "a keyword", params[i].name),
+              argsAst.line, argsAst.column);
+        }
+        resolved[i] = positional[i];
+        sources[i] = Source::Positional;
+      } else if (auto it = kwargs.find(params[i].name); it != kwargs.end()) {
+        resolved[i] = it->second;
+        sources[i] = Source::Kwarg;
+        kwargs.erase(it);
+      } else if (!params[i].has_default) {
+        throw culebra::CulebraError("ArityError",
+            std::format("missing required argument '{}'", params[i].name),
+            argsAst.line, argsAst.column);
+      }
+    }
+    if (!kwargs.empty()) {
+      throw culebra::CulebraError("TypeError",
+          std::format("unknown keyword argument '{}'",
+                      kwargs.begin()->first),
+          argsAst.line, argsAst.column);
+    }
+
+    std::vector<llvm::Value*> userArgs;
+    userArgs.reserve(params.size() +
+                     (positional.size() > params.size()
+                          ? positional.size() - params.size()
+                          : 0));
+    // Trim trailing TAG_UNFILLED slots — the callee prologue's
+    // existing `n_args > i` check handles them via the default path
+    // without needing the sentinel.
+    size_t fill_end = params.size();
+    while (fill_end > 0 && sources[fill_end - 1] == Source::None) {
+      fill_end--;
+    }
+    for (size_t i = 0; i < fill_end; i++) {
+      if (sources[i] == Source::None) {
+        // Middle gap with a default — emit TAG_UNFILLED sentinel.
+        llvm::Value* v = llvm::UndefValue::get(valueType_);
+        v = builder_.CreateInsertValue(
+            v, builder_.getInt8(TAG_UNFILLED), {0});
+        v = builder_.CreateInsertValue(
+            v, builder_.getInt64(0), {1});
+        userArgs.push_back(v);
+      } else {
+        userArgs.push_back(compile(*resolved[i]));
+      }
+    }
+    // Extras (past the formal arity) flow through to __ARGS__.
+    for (size_t i = params.size(); i < positional.size(); i++) {
+      userArgs.push_back(compile(*positional[i]));
+    }
+    return compile_function_call_raw(callee, thisVal, userArgs);
+  }
+
   llvm::Value* compile_function_call(const peg::Ast& argsAst,
                                      llvm::Value* callee,
                                      llvm::Value* thisVal = nullptr) {
     if (!arg_list_is_positional_only(argsAst)) {
-      // Phase 1 of kwargs lands on the interpreter only; a JIT-side
-      // resolver (closure-attached param metadata + a runtime helper)
-      // is queued as a follow-up. Built-in dispatchers (`compile_ns_call`
-      // etc.) handle their own kwargs without reaching this path.
+      // Indirect callees (captured / returned closures, method values)
+      // are rejected here — only `compile_call` knows the caller's AST
+      // and routes statically-named user functions through
+      // `compile_function_call_with_kwargs`.
       throw culebra::CulebraError("SyntaxError",
-          "JIT does not yet support keyword arguments at this call site "
-          "(use positional or run without --jit)",
+          "JIT does not yet support keyword arguments for indirect "
+          "callees (use positional or run without --jit)",
           argsAst.line, argsAst.column);
     }
     std::vector<llvm::Value*> userArgs;

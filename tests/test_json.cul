@@ -89,4 +89,9 @@ assert(n_float == 1.0)
 let arr_float = JSON.parse('[1, 2.5, 3]', number_mode: 'float')
 assert(arr_float[0] == 1.0 && arr_float[2] == 3.0)
 
+// Literal Object splat works on both backends. Dynamic `**var` splat
+// against built-ins is interp-only for now.
+let pretty_splat = JSON.stringify({a: 1, b: 2}, **{indent: 2})
+assert(pretty_splat == JSON.stringify({a: 1, b: 2}, indent: 2))
+
 IO.puts("test_json OK")
