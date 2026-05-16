@@ -745,6 +745,15 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                                                   const std::string& name,
                                                   const peg::Ast& argsAst,
                                                   const peg::Ast& callAst) {
+  // Global builtins (puts, assert, etc.) parse positionally. Until
+  // any one wants kwargs, surface a clean SyntaxError here so the
+  // downstream argsAst walk doesn't crash on KWARG/KWARG_SPLAT nodes.
+  if (!JIT::arg_list_is_positional_only(argsAst)) {
+    throw culebra::CulebraError("SyntaxError",
+        "JIT does not yet support keyword arguments at this call site "
+        "(use positional or run without --jit)",
+        argsAst.line, argsAst.column);
+  }
   auto line = jit.builder_.getInt64(callAst.line);
   auto col = jit.builder_.getInt64(callAst.column);
 
@@ -846,6 +855,16 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                                                     const peg::Ast& argsAst,
                                                     const peg::Ast& callAst) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
+  // Namespace builtins all parse argsAst positionally for now. The H
+  // cycle will let individual entries (e.g. JSON.stringify) accept
+  // kwargs by special-casing themselves before this guard fires; until
+  // then, surface a clean SyntaxError.
+  if (!JIT::arg_list_is_positional_only(argsAst)) {
+    throw culebra::CulebraError("SyntaxError",
+        "JIT does not yet support keyword arguments at this call site "
+        "(use positional or run without --jit)",
+        argsAst.line, argsAst.column);
+  }
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);

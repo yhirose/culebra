@@ -9928,6 +9928,16 @@ struct JIT {
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
+    // Method dispatch (builtins, UFCS, user methods) all walk argsAst
+    // positionally; kwargs/splats would crash downstream. Until each
+    // builtin learns to accept kwargs (planned per-method), reject
+    // them at the entry — interp still works.
+    if (!arg_list_is_positional_only(argsAst)) {
+      throw culebra::CulebraError("SyntaxError",
+          "JIT does not yet support keyword arguments at this call site "
+          "(use positional or run without --jit)",
+          argsAst.line, argsAst.column);
+    }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
     // a runtime tag dispatch here so both worlds coexist: Set receiver
@@ -10236,9 +10246,33 @@ struct JIT {
     return emit_call(calleeType, fnPtr, args, "call.result");
   }
 
+  // True if every ARG_LIST child is a plain positional expression
+  // (no `name:` kwarg and no `**splat`). Lets the JIT take its fast
+  // path; the slow path (currently a compile-time error for user
+  // functions) only fires when this is false.
+  static bool arg_list_is_positional_only(const peg::Ast& argsAst) {
+    using namespace peg::udl;
+    for (auto& child : argsAst.nodes) {
+      if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   llvm::Value* compile_function_call(const peg::Ast& argsAst,
                                      llvm::Value* callee,
                                      llvm::Value* thisVal = nullptr) {
+    if (!arg_list_is_positional_only(argsAst)) {
+      // Phase 1 of kwargs lands on the interpreter only; a JIT-side
+      // resolver (closure-attached param metadata + a runtime helper)
+      // is queued as a follow-up. Built-in dispatchers (`compile_ns_call`
+      // etc.) handle their own kwargs without reaching this path.
+      throw culebra::CulebraError("SyntaxError",
+          "JIT does not yet support keyword arguments at this call site "
+          "(use positional or run without --jit)",
+          argsAst.line, argsAst.column);
+    }
     std::vector<llvm::Value*> userArgs;
     userArgs.reserve(argsAst.nodes.size());
     for (auto& argNode : argsAst.nodes) {
@@ -10253,6 +10287,10 @@ struct JIT {
   // dispatch take over.
   llvm::Value* try_compile_core_global(const std::string& name,
                                         const peg::Ast& argsAst) {
+    // Fast paths assume positional args. Bail out so the regular call
+    // dispatch (compile_function_call / compile_method_call) handles
+    // kwargs with its own SyntaxError.
+    if (!arg_list_is_positional_only(argsAst)) return nullptr;
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
       if (argsAst.nodes.size() == 1) {
         s = builder_.getInt64(0);
@@ -10290,6 +10328,14 @@ struct JIT {
     const auto& calleeNode = *ast.nodes[0];
     if (calleeNode.tag != "IDENTIFIER"_) return nullptr;
     if (calleeNode.token != "range") return nullptr;
+    // Bail out on any kwarg/splat in either ARGUMENTS so the normal
+    // dispatch's guard surfaces a clean error.
+    for (size_t i = 1; i < ast.nodes.size(); i++) {
+      if (ast.nodes[i]->original_tag == "ARGUMENTS"_ &&
+          !arg_list_is_positional_only(*ast.nodes[i])) {
+        return nullptr;
+      }
+    }
     if (ast.nodes.size() < 4 ||
         ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
         ast.nodes[1]->nodes.size() != 1 ||

@@ -3908,34 +3908,122 @@ struct Interpreter {
   // comes from — lazily evaluating AST args for a direct call, or
   // returning a pre-evaluated receiver at index 0 for a UFCS call.
   // `call_line`/`call_column` point at the call site for error messages.
-  template <typename ArgVal, typename ArgLoc>
-  Value invoke_user_function(const Value& fn_val,
-                             std::shared_ptr<Environment> env, size_t total,
-                             ArgVal arg_value, ArgLoc arg_loc,
-                             size_t call_line, size_t call_column) {
+  // Bundle of call arguments split into the three forms culebra
+  // recognizes at a call site. Built by `split_call_args` from an
+  // ARGUMENTS / ARG_LIST AST.
+  struct CallArgs {
+    std::vector<Value> positional;
+    std::vector<std::pair<size_t, size_t>> positional_locs;
+    std::vector<std::pair<std::string_view, Value>> kwargs;
+    std::vector<std::pair<size_t, size_t>> kwarg_locs;
+    std::vector<Value> splats;
+  };
+
+  // Walks an ARGUMENTS node (post-optimization, so it's the ARG_LIST
+  // body). Splits children into positional / kwarg / splat buckets,
+  // enforcing "positional must precede any kwarg/splat" at the AST
+  // scan (yields a real line/col for the SyntaxError).
+  void split_call_args(const peg::Ast& args_ast,
+                       std::shared_ptr<Environment> env,
+                       CallArgs& out) {
+    using namespace peg::udl;
+    bool saw_named = false;
+    for (auto& child : args_ast.nodes) {
+      // ARG_ITEM is not in the AstOptimizer keep-list, so an item
+      // collapses to its inner KWARG / KWARG_SPLAT / expression node
+      // (its `original_tag` stays "ARG_ITEM" but `tag` reveals the
+      // concrete form).
+      switch (child->tag) {
+        case "KWARG_SPLAT"_: {
+          saw_named = true;
+          out.splats.push_back(eval(*child->nodes[0], env));
+          break;
+        }
+        case "KWARG"_: {
+          saw_named = true;
+          out.kwargs.emplace_back(child->nodes[0]->token,
+                                  eval(*child->nodes[1], env));
+          out.kwarg_locs.emplace_back(child->line, child->column);
+          break;
+        }
+        default: {
+          if (saw_named) {
+            throw CulebraError("SyntaxError",
+                "positional argument follows keyword argument",
+                child->line, child->column);
+          }
+          out.positional.push_back(eval(*child, env));
+          out.positional_locs.emplace_back(child->line, child->column);
+          break;
+        }
+      }
+    }
+  }
+
+  // Resolves the three argument buckets against `fn_val`'s formal
+  // parameters and populates a fresh function frame. Out-of-scope for
+  // this cycle: a `**rest` catch-all at the definition side, so any
+  // unconsumed kwarg names raise TypeError.
+  Value invoke_user_function_with_args(
+      const Value& fn_val, std::shared_ptr<Environment> env,
+      CallArgs args, size_t call_line, size_t call_column) {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
 
-    // A parameter with a default is optional; all others are required.
-    size_t required = 0;
-    for (const auto& p : params) {
-      if (!p.default_expr) required++;
+    // A. Merge splats into a single name→value map (later splat wins).
+    std::unordered_map<std::string_view, Value> merged;
+    for (const auto& sv : args.splats) {
+      if (sv.type != Value::Object) {
+        throw CulebraError("TypeError", std::format(
+            "**: splat operand must be Object, got {}", sv.type_name()),
+            call_line, call_column);
+      }
+      const auto& obj = sv.to_object();
+      if (obj.non_string_props && !obj.non_string_props->empty()) {
+        throw CulebraError("TypeError",
+            "**: splat key must be String",
+            call_line, call_column);
+      }
+      for (const auto& [k, sym] : *obj.properties) {
+        merged[k] = sym.val;
+      }
     }
-    if (total < required) {
-      throw CulebraError("ArityError", "arguments error...");
+
+    // B. Layer explicit kwargs on top; duplicates within explicit are
+    //    rejected. Explicit always overrides a splat's contribution.
+    std::unordered_set<std::string_view> seen_explicit;
+    for (size_t i = 0; i < args.kwargs.size(); i++) {
+      const auto& [name, val] = args.kwargs[i];
+      if (!seen_explicit.insert(name).second) {
+        auto [ln, col] = args.kwarg_locs[i];
+        throw CulebraError("TypeError",
+            std::format("duplicate keyword argument '{}'", name),
+            static_cast<long>(ln), static_cast<long>(col));
+      }
+      merged[name] = val;
     }
 
     auto callEnv = std::make_shared<Environment>(env);
     callEnv->is_function_frame = true;
     callEnv->initialize("self", fn_val, false);
 
+    // C. Walk formal params in declaration order; consume positional
+    //    first, then merged map, then default.
     for (size_t p = 0; p < params.size(); p++) {
       Value v;
       size_t ln = call_line, col = call_column;
-      if (p < total) {
-        v = arg_value(p);
-        std::tie(ln, col) = arg_loc(p);
-      } else {
+      if (p < args.positional.size()) {
+        v = std::move(args.positional[p]);
+        std::tie(ln, col) = args.positional_locs[p];
+        if (merged.contains(params[p].name)) {
+          throw CulebraError("TypeError", std::format(
+              "got argument '{}' both positionally and as a keyword",
+              params[p].name), call_line, call_column);
+        }
+      } else if (auto it = merged.find(params[p].name); it != merged.end()) {
+        v = std::move(it->second);
+        merged.erase(it);
+      } else if (params[p].default_expr) {
         // Default needs access to the FUNCTION's definition env (for any
         // closure-captured names) plus any earlier params. Build a fresh
         // env over def_env and copy already-bound earlier params in.
@@ -3947,19 +4035,27 @@ struct Interpreter {
                              false);
         }
         v = eval(*params[p].default_expr, defEnv);
+      } else {
+        throw CulebraError("ArityError", std::format(
+            "missing required argument '{}'", params[p].name),
+            call_line, call_column);
       }
       check_type(v, params[p].type_name,
                  std::format("parameter '{}'", params[p].name), ln, col);
       callEnv->initialize(params[p].name, v, params[p].mut);
     }
 
-    // Overflow args (incl. variadic built-ins' sink) bind to __ARGS__.
-    // Always bind — the Array is empty when no overflow — so a body that
-    // checks `__ARGS__.size()` works whether or not the caller passes
-    // extras. This matches the JIT's unified calling convention.
+    // D. Any leftover kwargs are unknown to this function.
+    if (!merged.empty()) {
+      throw CulebraError("TypeError", std::format(
+          "unknown keyword argument '{}'", merged.begin()->first),
+          call_line, call_column);
+    }
+
+    // E. Overflow positional bind to __ARGS__; kwargs never contribute.
     ArrayValue extras;
-    for (size_t idx = params.size(); idx < total; idx++) {
-      extras.values->push_back(arg_value(idx));
+    for (size_t idx = params.size(); idx < args.positional.size(); idx++) {
+      extras.values->push_back(std::move(args.positional[idx]));
     }
     callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
 
@@ -3976,16 +4072,31 @@ struct Interpreter {
     return result;
   }
 
+  // Legacy positional-only callback entry. Kept for callers that build
+  // arguments programmatically (iterator protocol, helper invocations).
+  template <typename ArgVal, typename ArgLoc>
+  Value invoke_user_function(const Value& fn_val,
+                             std::shared_ptr<Environment> env, size_t total,
+                             ArgVal arg_value, ArgLoc arg_loc,
+                             size_t call_line, size_t call_column) {
+    CallArgs args;
+    args.positional.reserve(total);
+    args.positional_locs.reserve(total);
+    for (size_t i = 0; i < total; i++) {
+      args.positional.push_back(arg_value(i));
+      auto [ln, col] = arg_loc(i);
+      args.positional_locs.emplace_back(ln, col);
+    }
+    return invoke_user_function_with_args(fn_val, env, std::move(args),
+                                          call_line, call_column);
+  }
+
   Value eval_function_call(const peg::Ast& ast,
                            std::shared_ptr<Environment> env, const Value& val) {
-    const auto& args = ast.nodes;
-    return invoke_user_function(
-        val, env, args.size(),
-        [&](size_t i) { return eval(*args[i], env); },
-        [&](size_t i) -> std::pair<size_t, size_t> {
-          return {args[i]->line, args[i]->column};
-        },
-        ast.line, ast.column);
+    CallArgs args;
+    split_call_args(ast, env, args);
+    return invoke_user_function_with_args(val, env, std::move(args),
+                                          ast.line, ast.column);
   }
 
   // UFCS (D / Nim style): call `fn_val` as if `receiver` were its first
@@ -3996,17 +4107,12 @@ struct Interpreter {
                        std::shared_ptr<Environment> env,
                        const Value& fn_val, const Value& receiver,
                        size_t dot_line, size_t dot_column) {
-    const auto& args = args_ast.nodes;
-    return invoke_user_function(
-        fn_val, env, 1 + args.size(),
-        [&](size_t i) {
-          return i == 0 ? receiver : eval(*args[i - 1], env);
-        },
-        [&](size_t i) -> std::pair<size_t, size_t> {
-          return i == 0 ? std::pair{dot_line, dot_column}
-                        : std::pair{args[i - 1]->line, args[i - 1]->column};
-        },
-        args_ast.line, args_ast.column);
+    CallArgs args;
+    args.positional.push_back(receiver);
+    args.positional_locs.emplace_back(dot_line, dot_column);
+    split_call_args(args_ast, env, args);
+    return invoke_user_function_with_args(fn_val, env, std::move(args),
+                                          args_ast.line, args_ast.column);
   }
 
   Value eval_array_reference(const peg::Ast& ast,

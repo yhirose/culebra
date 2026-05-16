@@ -72,7 +72,11 @@ const auto grammar_ = R"(
   #   xs.map(...)
   #     .filter(...)   # OK
   CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
-  ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
+  ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
+  ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)*)?
+  ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
+  KWARG_SPLAT              <-  '**' _ EXPRESSION
+  KWARG                    <-  IDENTIFIER _ ':' _ EXPRESSION
   INDEX                    <-  '[' _ EXPRESSION _ ']'
   DOT                      <-  '.' _ IDENTIFIER
 
@@ -329,6 +333,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "THROW", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
                "DEFAULT_VALUE",
+               "ARG_LIST", "KWARG", "KWARG_SPLAT",
                "CLASS_DECL", "METHOD",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN",

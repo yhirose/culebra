@@ -1145,6 +1145,40 @@ an expression).
   parameter bindings — so `fn (a, b = a + 1)` works. Default
   parameters must follow all required parameters.
 
+### Keyword arguments and `**` splat
+
+A call site may pass arguments by name (`name: value`) and/or expand
+an Object as kwargs (`**obj`). Forms:
+
+    let f = fn (x, y = 10, z = 100) { x + y + z }
+
+    f(1, 2, 3)                  # positional
+    f(1, z: 5)                  # kwargs (y defaults)
+    f(z: 3, y: 2, x: 1)         # any order
+
+    let opts = {y: 7, z: 8}
+    f(1, **opts)                # splat an Object as kwargs
+    f(1, **opts, z: 100)        # explicit kwarg overrides splat
+    f(1, **{y: 2}, **{y: 5})    # multiple splats: later wins
+
+Rules:
+
+* Positional arguments must come before any kwarg or splat. Mixing
+  the other way (`f(x: 1, 2)`) is a `SyntaxError`.
+* The same name may not appear twice as an explicit kwarg.
+* A name cannot appear both positionally and as a kwarg.
+* Unknown kwarg names are a `TypeError` — there is no `**rest`
+  catch-all on the definition side in this milestone.
+* A `**` splat operand must be an `Object` with `String` keys only.
+* Defaults are re-evaluated on every call (Ruby/Scala flavor — no
+  Python-style "evaluated at def time" trap).
+
+JIT note: this milestone wires kwargs end-to-end in the interpreter.
+The JIT rejects keyword arguments against user-defined function calls
+at compile time (built-in dispatchers such as `JSON.stringify` handle
+their own kwargs natively). Run without `--jit` to use kwargs against
+your own functions until the JIT-side resolver lands.
+
 ### Return
 
 * The body is a block. The last expression of the block is the
