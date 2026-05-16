@@ -8224,63 +8224,69 @@ struct JIT {
     return builder_.getFalse();
   }
 
-  // Element-by-element destructuring with short-circuit on first mismatch.
-  llvm::Value* emit_array_pattern(const peg::Ast& pattern,
-                                  llvm::Value* subject) {
+  // Element-by-element destructuring against a JitArray-backed value
+  // (Array or Tuple — same storage, different tag). `allow_rest`
+  // toggles `...rest` recognition: Array allows it, Tuple's grammar
+  // forbids it (the loop simply ignores any REST_PATTERN nodes when
+  // false, which is unreachable in practice).
+  llvm::Value* emit_indexed_pattern(const peg::Ast& pattern,
+                                    llvm::Value* subject,
+                                    int8_t expected_tag,
+                                    const char* prefix,
+                                    bool allow_rest) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto failBB = llvm::BasicBlock::Create(ctx_, "arr.fail", fn);
-    auto okBB = llvm::BasicBlock::Create(ctx_, "arr.ok", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "arr.end", fn);
+    std::string p(prefix);
+    auto failBB = llvm::BasicBlock::Create(ctx_, p + ".fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, p + ".ok", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, p + ".end", fn);
 
-    // 1. Tag must be Array
-    auto isArr = builder_.CreateICmpEQ(extract_tag(subject),
-                                       builder_.getInt8(TAG_ARRAY));
-    auto sizeBB = llvm::BasicBlock::Create(ctx_, "arr.size", fn);
-    builder_.CreateCondBr(isArr, sizeBB, failBB);
+    auto isExpected =
+        builder_.CreateICmpEQ(extract_tag(subject),
+                              builder_.getInt8(expected_tag));
+    auto sizeBB = llvm::BasicBlock::Create(ctx_, p + ".size", fn);
+    builder_.CreateCondBr(isExpected, sizeBB, failBB);
     builder_.SetInsertPoint(sizeBB);
 
     auto arrPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
     auto size = emit_call(
         module_->getOrInsertFunction(rt::array_size,
                                      builder_.getInt64Ty(), ptrTy),
-        {arrPtr}, "arr.n");
+        {arrPtr}, p + ".n");
 
     const auto& elems = pattern.nodes;
     int rest_idx = -1;
-    for (size_t i = 0; i < elems.size(); i++) {
-      if (elems[i]->tag == "REST_PATTERN"_) {
-        rest_idx = static_cast<int>(i);
-        break;
+    if (allow_rest) {
+      for (size_t i = 0; i < elems.size(); i++) {
+        if (elems[i]->tag == "REST_PATTERN"_) {
+          rest_idx = static_cast<int>(i);
+          break;
+        }
       }
     }
     auto fixed = elems.size() - (rest_idx >= 0 ? 1 : 0);
 
-    // 2. Size check
-    llvm::Value* size_ok;
-    if (rest_idx < 0) {
-      size_ok = builder_.CreateICmpEQ(size, builder_.getInt64(fixed));
-    } else {
-      size_ok = builder_.CreateICmpSGE(size, builder_.getInt64(fixed));
-    }
-    auto elemBB = llvm::BasicBlock::Create(ctx_, "arr.elem", fn);
+    llvm::Value* size_ok =
+        rest_idx < 0
+            ? builder_.CreateICmpEQ(size, builder_.getInt64(fixed))
+            : builder_.CreateICmpSGE(size, builder_.getInt64(fixed));
+    auto elemBB = llvm::BasicBlock::Create(ctx_, p + ".elem", fn);
     builder_.CreateCondBr(size_ok, elemBB, failBB);
     builder_.SetInsertPoint(elemBB);
 
-    // Helper: fetch arr[i] as a Value
     auto get_elem = [&](llvm::Value* idx) {
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                                fn->getEntryBlock().begin());
-      auto outTag =
-          entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "ap.tag");
-      auto outData =
-          entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "ap.data");
+      auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
+                                        p + ".tag");
+      auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
+                                         p + ".data");
       emit_call(
           module_->getOrInsertFunction(
               rt::array_get, builder_.getVoidTy(), ptrTy,
-              builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-              builder_.getInt64Ty()),
+              builder_.getInt64Ty(), ptrTy, ptrTy,
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
           {arrPtr, idx, outTag, outData, current_line_val(),
            current_column_val()});
       auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
@@ -8291,19 +8297,17 @@ struct JIT {
       return v;
     };
 
-    // 3. Match each element, short-circuit on failure
     auto pre_count =
         rest_idx < 0 ? elems.size() : static_cast<size_t>(rest_idx);
     for (size_t i = 0; i < pre_count; i++) {
       auto v = get_elem(builder_.getInt64(i));
       auto m = emit_pattern(*elems[i], v);
-      auto contBB = llvm::BasicBlock::Create(ctx_, "arr.cont", fn);
+      auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont", fn);
       builder_.CreateCondBr(m, contBB, failBB);
       builder_.SetInsertPoint(contBB);
     }
 
     if (rest_idx >= 0) {
-      // Slice rest: start = rest_idx, len = size - fixed
       auto rest_start = builder_.getInt64(rest_idx);
       auto rest_len =
           builder_.CreateSub(size, builder_.getInt64(fixed), "rest.len");
@@ -8313,8 +8317,7 @@ struct JIT {
                                        builder_.getInt64Ty()),
           {arrPtr, rest_start, rest_len}, "rest.arr");
       auto rest_val = make_array(rest_arr_ptr);
-      auto rest_name =
-          std::string(elems[rest_idx]->nodes[0]->token);
+      auto rest_name = std::string(elems[rest_idx]->nodes[0]->token);
       if (is_sink_name(rest_name)) {
         // `[a, ...] = arr` / `[a, ..._, b] = arr`: still slice the
         // tail (so post-rest elements get the right indices), but
@@ -8323,14 +8326,12 @@ struct JIT {
       } else {
         declare_local(rest_name, rest_val);
       }
-
-      // Match post-rest elements (from end of array)
       for (size_t i = rest_idx + 1; i < elems.size(); i++) {
         auto off = static_cast<int64_t>(elems.size() - i);
         auto idx = builder_.CreateSub(size, builder_.getInt64(off));
         auto v = get_elem(idx);
         auto m = emit_pattern(*elems[i], v);
-        auto contBB = llvm::BasicBlock::Create(ctx_, "arr.cont2", fn);
+        auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont2", fn);
         builder_.CreateCondBr(m, contBB, failBB);
         builder_.SetInsertPoint(contBB);
       }
@@ -8347,81 +8348,22 @@ struct JIT {
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "arr.match");
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, p + ".match");
     phi->addIncoming(builder_.getTrue(), okEnd);
     phi->addIncoming(builder_.getFalse(), failEnd);
     return phi;
   }
 
-  // Tuple destructuring: same JitArray layout as Array, but tag-checked
-  // for TAG_TUPLE and fixed arity (grammar forbids REST_PATTERN here).
+  llvm::Value* emit_array_pattern(const peg::Ast& pattern,
+                                  llvm::Value* subject) {
+    return emit_indexed_pattern(pattern, subject, TAG_ARRAY, "arr",
+                                /*allow_rest=*/true);
+  }
+
   llvm::Value* emit_tuple_pattern(const peg::Ast& pattern,
                                   llvm::Value* subject) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto failBB = llvm::BasicBlock::Create(ctx_, "tup.fail", fn);
-    auto okBB = llvm::BasicBlock::Create(ctx_, "tup.ok", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "tup.end", fn);
-
-    auto isTup = builder_.CreateICmpEQ(extract_tag(subject),
-                                       builder_.getInt8(TAG_TUPLE));
-    auto sizeBB = llvm::BasicBlock::Create(ctx_, "tup.size", fn);
-    builder_.CreateCondBr(isTup, sizeBB, failBB);
-    builder_.SetInsertPoint(sizeBB);
-
-    auto arrPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
-    auto size = emit_call(
-        module_->getOrInsertFunction(rt::array_size,
-                                     builder_.getInt64Ty(), ptrTy),
-        {arrPtr}, "tup.n");
-
-    const auto& elems = pattern.nodes;
-    auto size_ok = builder_.CreateICmpEQ(size,
-                                         builder_.getInt64(elems.size()));
-    auto elemBB = llvm::BasicBlock::Create(ctx_, "tup.elem", fn);
-    builder_.CreateCondBr(size_ok, elemBB, failBB);
-    builder_.SetInsertPoint(elemBB);
-
-    for (size_t i = 0; i < elems.size(); i++) {
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr,
-                                        "tp.tag");
-      auto outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr,
-                                         "tp.data");
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::array_get, builder_.getVoidTy(), ptrTy,
-              builder_.getInt64Ty(), ptrTy, ptrTy, builder_.getInt64Ty(),
-              builder_.getInt64Ty()),
-          {arrPtr, builder_.getInt64(i), outTag, outData,
-           current_line_val(), current_column_val()});
-      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
-      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, t, {0});
-      v = builder_.CreateInsertValue(v, d, {1});
-      auto m = emit_pattern(*elems[i], v);
-      auto contBB = llvm::BasicBlock::Create(ctx_, "tup.cont", fn);
-      builder_.CreateCondBr(m, contBB, failBB);
-      builder_.SetInsertPoint(contBB);
-    }
-
-    builder_.CreateBr(okBB);
-
-    builder_.SetInsertPoint(okBB);
-    auto okEnd = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(failBB);
-    auto failEnd = builder_.GetInsertBlock();
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "tup.match");
-    phi->addIncoming(builder_.getTrue(), okEnd);
-    phi->addIncoming(builder_.getFalse(), failEnd);
-    return phi;
+    return emit_indexed_pattern(pattern, subject, TAG_TUPLE, "tup",
+                                /*allow_rest=*/false);
   }
 
   llvm::Value* emit_object_pattern(const peg::Ast& pattern,
@@ -8658,16 +8600,20 @@ struct JIT {
                            var_name, body, endBB);
 
     // Set: materialize members into a fresh Array, then reuse the
-    // array walker. The temporary Array is owned by this scope and
-    // released at endBB.
+    // array walker. The temporary Array is +1-owned by this scope;
+    // the loop's exits funnel through a cleanup BB that releases it
+    // before jumping to endBB. `break` inside the body also lands in
+    // the cleanup BB so the release fires regardless of exit path.
     builder_.SetInsertPoint(setBB);
     auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
     auto setMembersArr = emit_call(
         module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
         {setSrcPtr}, "for.set.arr");
-    compile_for_array_loop(setMembersArr, var_name, body, endBB);
-    // The temporary Array survives until end-of-loop; release in endBB.
-    // (set_to_array returns +1, the loop borrows it.)
+    auto setCleanupBB = llvm::BasicBlock::Create(ctx_, "for.set.cleanup", fn);
+    compile_for_array_loop(setMembersArr, var_name, body, setCleanupBB);
+    builder_.SetInsertPoint(setCleanupBB);
+    emit_value_release(make_array(setMembersArr));
+    builder_.CreateBr(endBB);
 
     // Object branch splits on whether the receiver carries its own
     // `iter` property:
@@ -8688,7 +8634,12 @@ struct JIT {
     auto keysArr = emit_call(
         module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy),
         {objPtr}, "obj.keys");
-    compile_for_array_loop(keysArr, var_name, body, endBB);
+    auto keysCleanupBB =
+        llvm::BasicBlock::Create(ctx_, "for.obj.keys.cleanup", fn);
+    compile_for_array_loop(keysArr, var_name, body, keysCleanupBB);
+    builder_.SetInsertPoint(keysCleanupBB);
+    emit_value_release(make_array(keysArr));
+    builder_.CreateBr(endBB);
 
     builder_.SetInsertPoint(protoBB);
     llvm::Value* objVal = llvm::UndefValue::get(valueType_);
