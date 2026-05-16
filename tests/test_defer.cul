@@ -1,0 +1,69 @@
+// Defer semantics: scope-level and function-level, normal exit and
+// throw exit. Dual-backend. User `throw v` binds the caught `e`
+// directly to `v` (no auto-Error wrap for non-Error user values).
+//
+// Test uses a mut String trace so we don't depend on Array concat,
+// keeping the assertion-comparison logic minimal.
+
+mut log = ''
+
+# Scope-level defer on throw (already worked — sanity baseline)
+let r1 = try {
+  {
+    defer { log = "{log}scope-defer;" }
+    throw 'sx'
+  }
+  nil
+} catch e { e }
+assert(r1 == 'sx')
+assert(log == 'scope-defer;')
+
+# Function-level defer on normal exit
+log = ''
+let f_normal = fn () {
+  defer { log = "{log}fn-defer;" }
+  log = "{log}body;"
+  42
+}
+assert(f_normal() == 42)
+assert(log == 'body;fn-defer;')
+
+# Function-level defer on throw exit. JIT previously skipped these —
+# the cleanup landingpad introduced in this cycle restores parity
+# with the interp.
+log = ''
+let f_throw = fn () {
+  defer { log = "{log}fn-defer;" }
+  throw 'boom'
+}
+let r2 = try { f_throw(); nil } catch e { e }
+assert(r2 == 'boom')
+assert(log == 'fn-defer;')
+
+# Multiple fn-level defers run in LIFO on throw
+log = ''
+let f_multi = fn () {
+  defer { log = "{log}A;" }
+  defer { log = "{log}B;" }
+  defer { log = "{log}C;" }
+  throw 'multi'
+}
+let r3 = try { f_multi(); nil } catch e { e }
+assert(r3 == 'multi')
+assert(log == 'C;B;A;')
+
+# Mixed: fn-level + nested scope-level, throw from inside the nested
+# scope. Inner defers run first, then outer.
+log = ''
+let f_mixed = fn () {
+  defer { log = "{log}outer;" }
+  {
+    defer { log = "{log}inner;" }
+    throw 'mixed'
+  }
+}
+let r4 = try { f_mixed(); nil } catch e { e }
+assert(r4 == 'mixed')
+assert(log == 'inner;outer;')
+
+IO.puts('test_defer OK')

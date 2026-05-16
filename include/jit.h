@@ -6642,7 +6642,13 @@ struct JIT {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return false;
     if (node.tag == "DEFER"_) {
-      if (at_fn_top) info.has_fn_defer = true;
+      if (at_fn_top) {
+        info.has_fn_defer = true;
+        // Function-level defers run on throw via a cleanup landingpad
+        // emitted in compile_fn_common; the IR requires a personality
+        // function, gated by `has_eh`.
+        info.has_eh = true;
+      }
       return true;
     }
     if (node.tag == "TRY"_) {
@@ -9676,15 +9682,22 @@ struct JIT {
     builder_.SetInsertPoint(entryBB);
     push_scope();
 
-    // Function-level defers (not inside a nested `{}`) run on normal
-    // fall-through and on `return`; for throw-path cleanup, wrap them
-    // in a block (`{ defer { ... } ... }`) which emits a proper scope
-    // cleanup landingpad.
+    // Function-level cleanup landingpad. Emitted only when the body
+    // contains a fn-level `defer` — that's the case the JIT used to
+    // skip on throw, and is the user-visible Phase 1 fix. Functions
+    // without fn-level defer still rely on (a) the cycle GC for
+    // throw-unwound locals and (b) per-`try`/scope landingpads for
+    // localized cleanup. Making this unconditional is appealing but
+    // currently destabilizes class-ctor and dispatcher emit paths
+    // that synthesize closures without going through compile_fn_common.
     llvm::Value* fnMark = nullptr;
+    llvm::BasicBlock* fnCleanupBB = nullptr;
     if (info.has_fn_defer) {
       fnMark = builder_.CreateCall(
           module_->getFunction(rt::defer_mark), {}, "fn.mark");
       current_fn_defer_mark_ = fnMark;
+      fnCleanupBB = BasicBlock::Create(ctx_, "fn.cleanup", fn);
+      current_lpad_ = fnCleanupBB;
     }
 
     argIt = fn->arg_begin();
@@ -9880,6 +9893,33 @@ struct JIT {
       }
       release_all_scopes_for_exit();
       builder_.CreateRet(bodyVal);
+    }
+
+    // Throw-path cleanup landingpad for the function frame. Releases
+    // the owned slots (params / locals are zero-init'd in entry so
+    // pre-init throws release nil, a no-op), runs any fn-level defers
+    // back to `fn.mark`, then rethrows. This pairs with the
+    // `current_lpad_ = fnCleanupBB` wired at function entry so every
+    // throw-capable invoke in the body unwinds through here.
+    if (fnCleanupBB) {
+      auto ptrTy = PointerType::get(ctx_, 0);
+      builder_.SetInsertPoint(fnCleanupBB);
+      auto lpadTy =
+          llvm::StructType::get(ptrTy, builder_.getInt32Ty());
+      auto lpad =
+          builder_.CreateLandingPad(lpadTy, 1, "fn.exc");
+      lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
+      auto excPtr = builder_.CreateExtractValue(lpad, {0});
+      builder_.CreateCall(
+          module_->getOrInsertFunction(
+              "__cxa_begin_catch", ptrTy, ptrTy),
+          {excPtr});
+      if (fnMark) {
+        builder_.CreateCall(
+            module_->getFunction(rt::defer_run_to), {fnMark});
+      }
+      release_all_scopes_for_exit();
+      emit_rethrow(/*outerLpad=*/nullptr);
     }
 
     pop_scope();
