@@ -7364,10 +7364,11 @@ struct JIT {
           llvm::Value* cur = llvm::UndefValue::get(valueType_);
           cur = builder_.CreateInsertValue(cur, curTag, {0});
           cur = builder_.CreateInsertValue(cur, curData, {1});
-          emit_value_retain(cur);
+          // array_get returns a +0 borrow; emit_arith_step does not consume
+          // operands; the Tensor in-place path retains lhs itself before
+          // returning. So no retain/release is needed on `cur`.
           to_store_arr = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
           emit_value_release(rval);
-          emit_value_release(cur);
         }
         emit_call(
             module_->getOrInsertFunction(
