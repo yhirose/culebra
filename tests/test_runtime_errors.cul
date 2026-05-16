@@ -66,6 +66,25 @@ let r11b = try {
 } catch e { e }
 expect("obj['x']= on immutable", 'ImmutableError', r11b)
 
+# Compound subscript-set on a missing key raises KeyError on both
+# backends (interp's `obj.has(key)` precondition + JIT's object_get_any
+# throw match up).
+let r11c = try {
+  mut o = {mut a: 1}
+  o['missing'] += 1
+  nil
+} catch e { e }
+expect("obj['k']+= on missing", 'KeyError', r11c)
+
+# Compound subscript-set on an immutable shape slot raises
+# ImmutableError — the write back via object_set_any honors mut.
+let r11d = try {
+  let o = {x: 1}
+  o['x'] += 1
+  nil
+} catch e { e }
+expect("obj['x']+= on immutable", 'ImmutableError', r11d)
+
 # --- ValueError ---
 let r12 = try { let _ = [].min(); nil } catch e { e }
 expect('empty Array.min', 'ValueError', r12)

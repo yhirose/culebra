@@ -7319,32 +7319,26 @@ struct JIT {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         auto tag = extract_tag(lval);
         auto fn = builder_.GetInsertBlock()->getParent();
-        // Dispatch on receiver type. Array supports both plain and
-        // compound assignment; Object supports plain only (any hashable
-        // key, including runtime String). For compound on a non-Array
-        // we fall through to a single Array-typed type error.
+        // Dispatch on receiver type. Array + Object support both plain
+        // and compound assignment; the Object compound path uses
+        // object_get_any (throws KeyError on missing) and routes the
+        // updated value back through object_set_any (mut-checked).
         auto arrBB = llvm::BasicBlock::Create(ctx_, "set.arr", fn);
-        auto objBB = compound ? nullptr
-                              : llvm::BasicBlock::Create(ctx_, "set.obj", fn);
+        auto objBB = llvm::BasicBlock::Create(ctx_, "set.obj", fn);
         auto errBB = llvm::BasicBlock::Create(ctx_, "set.err", fn);
         auto mergeBB = llvm::BasicBlock::Create(ctx_, "set.merge", fn);
         auto isArr =
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
-        if (compound) {
-          builder_.CreateCondBr(isArr, arrBB, errBB);
-        } else {
-          auto chkObjBB =
-              llvm::BasicBlock::Create(ctx_, "set.chk_obj", fn);
-          builder_.CreateCondBr(isArr, arrBB, chkObjBB);
-          builder_.SetInsertPoint(chkObjBB);
-          auto isObj =
-              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-          builder_.CreateCondBr(isObj, objBB, errBB);
-        }
+        auto chkObjBB =
+            llvm::BasicBlock::Create(ctx_, "set.chk_obj", fn);
+        builder_.CreateCondBr(isArr, arrBB, chkObjBB);
+        builder_.SetInsertPoint(chkObjBB);
+        auto isObj =
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+        builder_.CreateCondBr(isObj, objBB, errBB);
 
         builder_.SetInsertPoint(errBB);
-        emit_type_error_typed(compound ? "Array" : "Array or Object",
-                              tag);
+        emit_type_error_typed("Array or Object", tag);
         builder_.CreateUnreachable();
 
         // Array path
@@ -7391,32 +7385,57 @@ struct JIT {
         auto arrEnd = builder_.GetInsertBlock();
         builder_.CreateBr(mergeBB);
 
-        llvm::BasicBlock* objEnd = nullptr;
-        if (!compound) {
-          // Object path: see culebra_runtime_object_set_any.
-          builder_.SetInsertPoint(objBB);
-          auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
-          auto keyVal = compile(finalPostfix);
+        // Object path: see culebra_runtime_object_set_any. Compound
+        // form reads the current value first via object_get_any (which
+        // throws KeyError on a missing slot, matching interp's
+        // `obj.has(key)` precondition) and applies the arith step in
+        // place before writing back.
+        builder_.SetInsertPoint(objBB);
+        auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
+        auto keyVal = compile(finalPostfix);
+        llvm::Value* to_store_obj = rval;
+        if (compound) {
+          auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
+                                              nullptr, "cobj.out.tag");
+          auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
+                                               nullptr, "cobj.out.data");
           emit_call(
               module_->getOrInsertFunction(
-                  rt::object_set_any, builder_.getVoidTy(), ptrTy,
-                  builder_.getInt8Ty(), builder_.getInt64Ty(),
-                  builder_.getInt1Ty(), builder_.getInt8Ty(),
-                  builder_.getInt64Ty()),
+                  rt::object_get_any, builder_.getVoidTy(), ptrTy,
+                  builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy,
+                  ptrTy),
               {objPtr, extract_tag(keyVal), extract_data(keyVal),
-               builder_.getInt1(mut),
-               extract_tag(rval), extract_data(rval)});
-          // object_set_any consumed rval's +1; re-retain for the merge.
-          emit_value_retain(rval);
-          objEnd = builder_.GetInsertBlock();
-          builder_.CreateBr(mergeBB);
+               outTag, outData});
+          auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+          auto curData =
+              builder_.CreateLoad(builder_.getInt64Ty(), outData);
+          llvm::Value* cur = llvm::UndefValue::get(valueType_);
+          cur = builder_.CreateInsertValue(cur, curTag, {0});
+          cur = builder_.CreateInsertValue(cur, curData, {1});
+          to_store_obj =
+              emit_arith_step(cur, rval, base_op, /*inplace=*/true);
+          emit_value_release(rval);
+          emit_value_release(cur);
         }
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::object_set_any, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt1Ty(), builder_.getInt8Ty(),
+                builder_.getInt64Ty()),
+            {objPtr, extract_tag(keyVal), extract_data(keyVal),
+             builder_.getInt1(mut), extract_tag(to_store_obj),
+             extract_data(to_store_obj)});
+        // object_set_any consumed to_store_obj's +1; re-retain for the
+        // merge so callers see a +1 result.
+        emit_value_retain(to_store_obj);
+        auto objEnd = builder_.GetInsertBlock();
+        builder_.CreateBr(mergeBB);
 
         builder_.SetInsertPoint(mergeBB);
-        auto phi = builder_.CreatePHI(valueType_, compound ? 1 : 2,
-                                      "set.r");
+        auto phi = builder_.CreatePHI(valueType_, 2, "set.r");
         phi->addIncoming(to_store_arr, arrEnd);
-        if (!compound) phi->addIncoming(rval, objEnd);
+        phi->addIncoming(to_store_obj, objEnd);
         emit_value_release(lval);
         return phi;
       }

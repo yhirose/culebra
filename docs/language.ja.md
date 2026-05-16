@@ -710,8 +710,8 @@ String キーは shape ベースの `obj.foo` パスと統合されます — �
 既存スロットはどちらの書き込み形式でも `mut` フラグを尊重し、
 immutable なスロットへの `obj[k] = v` は `ImmutableError` を投げます。
 非 String キーはサイドカーマップに入ります。複合形式（`obj[k] += v`）は
-インタプリタでは Object でも動きますが、JIT は Array 受信者のみに
-制限されます。
+スロットをその場で更新し、キーが既に存在し（無ければ `KeyError`）かつ
+スロットが mutable であることを要求します。
 
 注意（JIT の shape 成長）: Object のプロパティ名として使われる
 *ユニークな*ランタイム `String` キーは、プロセス全体の shape

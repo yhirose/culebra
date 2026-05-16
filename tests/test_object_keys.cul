@@ -100,4 +100,28 @@ assert(bag2.size() == 2)
 bag2.remove((1, 2))
 assert(bag2.size() == 1)
 
+// --- Compound subscript-set (interp + JIT) ---
+// Both forms (`obj[k] += v` and `obj.k += v`) reach the same slot for
+// String keys and honor the slot's `mut` flag; non-String keys live in
+// the sidecar but compound updates work there too.
+mut counts = {mut a: 10, mut b: 20}
+counts['a'] += 5            // shape slot via subscript
+assert(counts.a == 15)
+counts.b -= 3               // dot reaches the same slot
+assert(counts['b'] == 17)
+counts['a'] *= 2
+assert(counts.a == 30)
+
+mut sidebag = {}
+mut sidebag[42] = 100
+sidebag[42] += 7
+assert(sidebag[42] == 107)
+sidebag[42] /= 7
+assert(sidebag[42] == 15)
+
+mut tally = {}
+mut tally[(1, 2)] = 50
+tally[(1, 2)] -= 10
+assert(tally[(1, 2)] == 40)
+
 IO.puts("test_object_keys OK")

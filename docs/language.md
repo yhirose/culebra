@@ -741,8 +741,8 @@ reach the same slot:
 Existing slots honor their `mut` flag, regardless of which form the
 write uses; `obj[k] = v` on an immutable slot raises `ImmutableError`.
 Non-String keys live in a sidecar map. Compound forms (`obj[k] += v`)
-work on Objects only via the interpreter; the JIT restricts them to
-Array receivers.
+update the slot in place and require the key to already exist
+(`KeyError` otherwise) and the slot to be mutable.
 
 Caveat — JIT shape growth: each *unique* runtime `String` key used as
 an Object property name allocates a `Shape` in a process-wide registry
