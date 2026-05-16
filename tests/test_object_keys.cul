@@ -124,4 +124,24 @@ mut tally[(1, 2)] = 50
 tally[(1, 2)] -= 10
 assert(tally[(1, 2)] == 40)
 
+// Tuple-key refcount stress: repeated insert/update/has/remove on the
+// same Tuple-shaped key. The JIT runtime previously leaked one ref
+// per update / remove / has call against refcounted keys; this loop
+// would have grown unbounded garbage. Now the helpers consume the
+// caller's +1 in every path so the loop runs flat.
+mut bag3 = {}
+mut i = 0
+while i < 20 {
+  let k = (i, i + 1)
+  mut bag3[k] = i             // insert
+  bag3[k] = i * 2             // update
+  assert(bag3.has((i, i + 1)))
+  assert(bag3[(i, i + 1)] == i * 2)
+  bag3[k] += 1
+  assert(bag3[(i, i + 1)] == i * 2 + 1)
+  bag3.remove((i, i + 1))
+  i = i + 1
+}
+assert(bag3.size() == 0)
+
 IO.puts("test_object_keys OK")

@@ -85,6 +85,16 @@ let r11d = try {
 } catch e { e }
 expect("obj['x']+= on immutable", 'ImmutableError', r11d)
 
+# Subscript-set on an immutable Tuple-keyed sidecar slot also raises
+# ImmutableError — exercises the throw path of object_set_any that
+# now also releases the caller's +1 to the key.
+let r11e = try {
+  let m = {(1, 2): 10}
+  m[(1, 2)] = 20
+  nil
+} catch e { e }
+expect("obj[(1,2)]= on immutable", 'ImmutableError', r11e)
+
 # --- ValueError ---
 let r12 = try { let _ = [].min(); nil } catch e { e }
 expect('empty Array.min', 'ValueError', r12)

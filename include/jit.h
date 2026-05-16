@@ -727,8 +727,13 @@ struct _GcTracker {
           o->key_order = nullptr;
         }
         if (o->non_string_props) {
-          for (auto& [_, entry] : *o->non_string_props) {
+          // Release both the entry's value AND the entry's stored key.
+          // The key release drops the +1 transferred from the original
+          // `object_set_any` insert; `key_order` separately released
+          // its own +1 above, so the two stored refs are balanced.
+          for (auto& [k, entry] : *o->non_string_props) {
             _culebra_value_release_impl(entry.value.tag, entry.value.data);
+            _culebra_value_release_impl(k.tag, k.data);
           }
           delete o->non_string_props;
           o->non_string_props = nullptr;
@@ -2514,6 +2519,12 @@ __attribute__((used)) inline void culebra_runtime_object_set(
 // The shape-path call below passes 0/0 for the IC slot, so a String-
 // keyed subscript write never inline-caches. Hot loops should still
 // prefer `obj.x = v` over `obj["x"] = v` for that reason.
+//
+// Refcount contract: this helper consumes the caller's +1 to the key.
+// On insert, the +1 transfers to the map's stored alias; the helper
+// adds a second +1 for the key_order entry. On update / throw it
+// explicitly releases the caller's +1 since the existing stored alias
+// already covers the slot.
 __attribute__((used)) inline void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
@@ -2540,22 +2551,27 @@ __attribute__((used)) inline void culebra_runtime_object_set_any(
   auto it = m.find(key);
   if (it == m.end()) {
     m.emplace(key, JitObjectEntry{JitValue{val_tag, val_data}, mut});
-    // Retain a +1 of the key so `key_order` keeps refcounted entries
-    // (e.g. Tuple keys) alive; the map aliases the same value.
+    // Caller's +1 transferred to the map's stored alias. Add a second
+    // +1 for the key_order entry.
     culebra_runtime_value_retain(key_tag, key_data);
     obj->key_order->push_back(key);
     return;
   }
   if (!it->second.mut) {
     _culebra_value_release_impl(val_tag, val_data);
+    _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("ImmutableError",
                                 "immutable entry on non-String key");
   }
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
   it->second.value.tag = val_tag;
   it->second.value.data = val_data;
+  _culebra_value_release_impl(key_tag, key_data);
 }
 
+// Consumes the caller's +1 to the key on the refcounted (sidecar)
+// path so a Tuple-keyed `obj[k]` read does not leak. TAG_STRING keys
+// are non-refcounted (just borrowed cstrings), so they need no release.
 __attribute__((used)) inline void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
@@ -2571,16 +2587,19 @@ __attribute__((used)) inline void culebra_runtime_object_get_any(
     return;
   }
   if (!obj->non_string_props) {
+    _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("KeyError", "key not present");
   }
   JitValue key{key_tag, key_data};
   auto it = obj->non_string_props->find(key);
   if (it == obj->non_string_props->end()) {
+    _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("KeyError", "key not present");
   }
   *out_tag = it->second.value.tag;
   *out_data = it->second.value.data;
   culebra_runtime_value_retain(*out_tag, *out_data);
+  _culebra_value_release_impl(key_tag, key_data);
 }
 
 __attribute__((used)) inline int8_t culebra_runtime_object_has_any(
@@ -2750,17 +2769,21 @@ __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
 
 // Generic `obj.has(k)`. String keys go through the shape path (matches
 // `_find_property`'s proto walk); non-String keys check the sidecar.
-// The post-K sidecar fallback for String keys is unreachable but kept
-// as a belt-and-braces check in case future paths bypass the unified
-// `object_set_any` and leave a stray String entry there.
+//
+// Consumes the caller's +1 to the key on the refcounted (sidecar)
+// path so a Tuple-keyed `obj.has(k)` does not leak. TAG_STRING data is
+// a borrowed cstring (non-refcounted) and needs no release.
 __attribute__((used)) inline bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
-    if (_find_property(obj, cstr) != nullptr) return true;
+    return _find_property(obj, cstr) != nullptr;
   }
-  if (!obj->non_string_props) return false;
-  return obj->non_string_props->contains({tag, data});
+  bool result = obj->non_string_props
+                    ? obj->non_string_props->contains({tag, data})
+                    : false;
+  _culebra_value_release_impl(tag, data);
+  return result;
 }
 
 // Build a "class meta" object that holds shared method closures for
@@ -4544,9 +4567,12 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
   }
 }
 
-// Generic remove. Same dispatch as `object_has_value` — String keys go
-// through the shape, others through the sidecar; the String-key sidecar
-// fallback is unreachable after K but kept as belt-and-braces.
+// Generic remove. String keys go through the shape (TAG_STRING data
+// is a borrowed cstring, no refcount to manage); non-String keys go
+// through the sidecar where the caller's +1 to the lookup key is
+// consumed, and the stored map-entry key's +1 (transferred from the
+// original `object_set_any` insert) is also released before erase.
+// `_key_order_erase` drops the key_order entry's +1 separately.
 __attribute__((used)) inline void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
@@ -4554,16 +4580,24 @@ __attribute__((used)) inline void culebra_runtime_object_remove_any(
     if (obj->find_slot(cstr) != static_cast<size_t>(-1)) {
       culebra_runtime_object_remove(obj, cstr);
       _key_order_erase(obj, {TAG_STRING, data});
-      return;
     }
+    return;
   }
-  if (!obj->non_string_props) return;
+  if (!obj->non_string_props) {
+    _culebra_value_release_impl(tag, data);
+    return;
+  }
   JitValue key{tag, data};
   auto it = obj->non_string_props->find(key);
-  if (it == obj->non_string_props->end()) return;
+  if (it == obj->non_string_props->end()) {
+    _culebra_value_release_impl(tag, data);
+    return;
+  }
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
+  _culebra_value_release_impl(it->first.tag, it->first.data);
   obj->non_string_props->erase(it);
   _key_order_erase(obj, key);
+  _culebra_value_release_impl(tag, data);
 }
 
 }  // extern "C" (close briefly for C++ impl helpers)
@@ -4657,9 +4691,10 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
-        // Sidecar teardown. `key_order` owns the +1 refs for any
-        // refcounted (Tuple) keys; the AnyKeyMap aliases them. The
-        // map owns the entry values that the setter retained on insert.
+        // Sidecar teardown. Both `key_order` and the AnyKeyMap hold
+        // a +1 ref on each refcounted (Tuple) key, plus the map holds
+        // a +1 on each entry value. Each loop drops its own ref so the
+        // refcount lands at zero for keys that go fully unreachable.
         if (o->key_order) {
           for (auto& k : *o->key_order) {
             if (_GcTracker::is_refcounted_value_tag(k.tag)) {
@@ -4670,8 +4705,13 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           o->key_order = nullptr;
         }
         if (o->non_string_props) {
-          for (auto& [_, entry] : *o->non_string_props) {
+          // Release both the entry's value AND the entry's stored key.
+          // The key release drops the +1 transferred from the original
+          // `object_set_any` insert; `key_order` separately released
+          // its own +1 above, so the two stored refs are balanced.
+          for (auto& [k, entry] : *o->non_string_props) {
             _culebra_value_release_impl(entry.value.tag, entry.value.data);
+            _culebra_value_release_impl(k.tag, k.data);
           }
           delete o->non_string_props;
           o->non_string_props = nullptr;
@@ -7396,6 +7436,10 @@ struct JIT {
         auto keyVal = compile(finalPostfix);
         llvm::Value* to_store_obj = rval;
         if (compound) {
+          // object_get_any and object_set_any both consume the caller's
+          // +1 to the key. Retain once up front so each call sees a
+          // separate +1.
+          emit_value_retain(keyVal);
           auto outTag = builder_.CreateAlloca(builder_.getInt8Ty(),
                                               nullptr, "cobj.out.tag");
           auto outData = builder_.CreateAlloca(builder_.getInt64Ty(),
@@ -10051,12 +10095,12 @@ struct JIT {
     llvm::Value* objRes = nullptr;
     if (method == "remove") {
       auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      // object_remove_any consumes the key's +1 (see runtime helper).
       emit_call(
           module_->getOrInsertFunction(
               rt::object_remove_any, builder_.getVoidTy(), ptrTy,
               builder_.getInt8Ty(), builder_.getInt64Ty()),
           {objPtr, extract_tag(arg), extract_data(arg)});
-      emit_value_release(arg);
       objRes = make_nil();
     } else {
       auto methodVal = compile_property_get(receiver, method);
@@ -11711,13 +11755,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto key = compile(*argsAst.nodes[0]);
     // Any hashable key. String tries the shape path first (so user
     // `obj.has("foo")` matches `obj.foo`); non-String / runtime
-    // String land in the sidecar.
+    // String land in the sidecar. The helper consumes the key's +1.
     auto r = emit_call(
         module_->getOrInsertFunction(
             rt::object_has_value, builder_.getInt1Ty(), ptrTy,
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key)});
-    emit_value_release(key);
     return make_bool(r);
   }
 
