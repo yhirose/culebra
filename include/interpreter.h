@@ -992,11 +992,6 @@ inline bool _set_eq(const Value& a, const Value& b) {
   return true;
 }
 
-// Insertion-ordered keyed-by-string_view map.
-// - keys (string_view) must remain valid for the map's lifetime —
-//   typically AST tokens or class-tag string pool entries.
-// - find/contains/insert are O(1) avg; erase is O(n) (entries shift +
-//   index recompute), which is acceptable since Object.remove is rare.
 // Insertion-ordered string-to-Symbol map.
 //
 // `index_` owns the canonical key strings — unordered_map nodes are
@@ -1009,6 +1004,9 @@ inline bool _set_eq(const Value& a, const Value& b) {
 //
 // `is_transparent` typedefs enable heterogeneous std::string_view
 // lookups without forcing a string copy on every read.
+//
+// find/contains/insert are O(1) avg; erase is O(n) — entries shift
+// down and indices recompute. Acceptable since Object.remove is rare.
 struct OrderedSymbolMap {
   using Entry = std::pair<std::string_view, Symbol>;
 
@@ -1698,16 +1696,6 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
                                     [](std::shared_ptr<Environment> callEnv) {
                                       const auto& obj = callEnv->get("this").to_object();
                                       const auto& key = callEnv->get("key");
-                                      // Hashable keys of any type:
-                                      // String tries the shape map,
-                                      // others go to the sidecar.
-                                      if (key.type == Value::String) {
-                                        if (obj.properties->contains(
-                                                std::string_view(
-                                                    key.template get<std::string>()))) {
-                                          return Value(true);
-                                        }
-                                      }
                                       return Value(obj.has(key));
                                     }))},
       {"remove"sv,
@@ -1717,10 +1705,10 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
                              auto& obj = val.to_object();
                              const auto& key = callEnv->get("key");
                              // String keys live in `properties`;
-                             // everything else (Long/Float/Bool/Nil/
-                             // Tuple/runtime String set via subscript)
-                             // lives in `non_string_props`. Try the
-                             // String fast path first, then fall back.
+                             // Long/Float/Bool/Nil/Tuple keys live in
+                             // `non_string_props`. The String-key
+                             // sidecar fallback below is unreachable
+                             // after K but kept as belt-and-braces.
                              if (key.type == Value::String) {
                                const auto& k = key.template get<std::string>();
                                if (obj.properties->contains(k)) {

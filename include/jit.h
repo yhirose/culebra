@@ -2507,9 +2507,13 @@ __attribute__((used)) inline void culebra_runtime_object_set(
 // Hashable-key access into an Object. String keys unify with the
 // shape-based `obj.foo` path so `obj["x"] = v` and `obj.x = v` reach
 // the same slot; everything else (Long/Float/Bool/Nil/Tuple) lands in
-// the sidecar AnyKeyMap. The Object-literal `{1: "x"}` emit path never
-// passes TAG_STRING (grammar forbids String literal keys), so the
-// dispatch only matters for runtime-keyed subscript writes.
+// the sidecar AnyKeyMap. Object-literal keys are pre-filtered by the
+// grammar (no String literal keys), so the TAG_STRING branch only
+// fires for runtime-keyed subscript ops.
+//
+// The shape-path call below passes 0/0 for the IC slot, so a String-
+// keyed subscript write never inline-caches. Hot loops should still
+// prefer `obj.x = v` over `obj["x"] = v` for that reason.
 __attribute__((used)) inline void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
@@ -2744,10 +2748,11 @@ __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
   return _find_property(obj, key) != nullptr;
 }
 
-// Generic `obj.has(k)`. String keys try the shape path first (matches
-// `_find_property`'s proto walk), then fall back to the non-String
-// sidecar (which is also where runtime String keys set via `obj[k] = v`
-// live). Non-String keys go straight to the sidecar.
+// Generic `obj.has(k)`. String keys go through the shape path (matches
+// `_find_property`'s proto walk); non-String keys check the sidecar.
+// The post-K sidecar fallback for String keys is unreachable but kept
+// as a belt-and-braces check in case future paths bypass the unified
+// `object_set_any` and leave a stray String entry there.
 __attribute__((used)) inline bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
@@ -4539,9 +4544,9 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
   }
 }
 
-// Generic remove: String keys try the shape path first, then the
-// non-String sidecar (which is also where subscript-set runtime
-// Strings live). Non-String keys go straight to the sidecar.
+// Generic remove. Same dispatch as `object_has_value` — String keys go
+// through the shape, others through the sidecar; the String-key sidecar
+// fallback is unreachable after K but kept as belt-and-braces.
 __attribute__((used)) inline void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
@@ -7388,9 +7393,7 @@ struct JIT {
 
         llvm::BasicBlock* objEnd = nullptr;
         if (!compound) {
-          // Object path: object_set_any dispatches on key tag — String
-          // keys flow into the shape (same slot as `obj.foo`); others
-          // live in the non_string_props sidecar.
+          // Object path: see culebra_runtime_object_set_any.
           builder_.SetInsertPoint(objBB);
           auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
           auto keyVal = compile(finalPostfix);
