@@ -533,12 +533,24 @@ target.
 Round-trip between Culebra values and JSON text. Both backends ship
 the same surface.
 
-### `JSON.stringify(v: Any) -> String` / `JSON.stringify(v: Any, indent: Long) -> String`
+### `JSON.stringify(v, indent=0, sort_keys=false, lines=false) -> String`
 
-Serialize `v` to a JSON string. With one argument the output is
-compact (no whitespace); with a positive `indent` it pretty-prints
-with that many spaces per nesting level (newline after each comma,
-`": "` separator). `indent <= 0` is equivalent to the compact form.
+Serialize `v` to a JSON string.
+
+* `indent > 0` pretty-prints with that many spaces per nesting level
+  (newline after each comma, `": "` separator). `indent <= 0` is the
+  compact form.
+* `sort_keys=true` walks `Object` keys alphabetically instead of
+  insertion order — useful for deterministic diff / hash output.
+* `lines=true` emits **JSON Lines**: each element of an `Array` /
+  `Tuple` / `Set` becomes its own compact line, terminated by `\n`.
+  An empty collection yields the empty string. Incompatible with
+  `indent > 0` and with non-list receivers (`TypeError` in either
+  case).
+
+For backwards compatibility, a positional 2nd argument is still
+accepted as `indent`: `JSON.stringify(v, 2)` is `JSON.stringify(v,
+indent: 2)`.
 
 Supported value types:
 
@@ -556,22 +568,45 @@ Supported value types:
 `Function`, `Tensor`, and Objects carrying non-String keys are not
 serializable — `stringify` throws `TypeError` for these.
 
-### `JSON.parse(s: String) -> Any`
+### `JSON.parse(s, lines=false, number_mode='auto') -> Any`
 
-Parse a JSON string into a Culebra value. Numbers without a decimal
-point or exponent are read as `Long`; the rest are read as `Float`.
-Objects come back with the keys in source order.
+Parse a JSON string into a Culebra value.
 
-Malformed input raises `ValueError` with a short message
-(`JSON.parse: unterminated string`, `expected ':'`, etc.).
+* `number_mode='auto'` (default): integers (no decimal point or
+  exponent) read as `Long`; everything else as `Float`.
+* `number_mode='float'` reads every number as `Float` — useful for
+  round-trip safety when the producer treats numbers uniformly.
+* `lines=true` parses **JSON Lines**: split `s` on `\n`, parse each
+  non-empty line, return an `Array` of the per-line values.
+
+Malformed input raises `ValueError` and the structured Error Object
+exposes the JSON-internal position via `e.line` / `e.col` (both
+1-based, pointing at the offending character):
+
+```culebra
+let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+puts(r.message)           # JSON.parse: expected value at 1:7.
+puts("{r.line}:{r.col}")  # 1:7
+```
+
+Examples:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-puts(JSON.stringify(v))              # compact: {"name":"alice",...}
-puts(JSON.stringify(v, 2))           # pretty, 2-space indent
+puts(JSON.stringify(v))                              # compact
+puts(JSON.stringify(v, indent: 2))                   # pretty
+puts(JSON.stringify(v, sort_keys: true))             # alphabetical
+puts(JSON.stringify([1, 2, 3], lines: true))         # JSONL
 let back = JSON.parse(JSON.stringify(v))
-puts(back.name)                      # alice
+puts(back.name)                                      # alice
+let arr = JSON.parse("1\n2\n3\n", lines: true)
+puts(arr)                                            # [1, 2, 3]
 ```
+
+JIT note: built-in `JSON.{stringify, parse}` accept kwargs directly in
+both backends. `**splat` at the call site is not yet supported in the
+JIT path for JSON — pass each kwarg explicitly, or run without
+`--jit`.
 
 ---
 

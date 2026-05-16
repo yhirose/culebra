@@ -615,9 +615,13 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
 
 // --- JSON stringify/parse ---
 
-// `indent` > 0 pretty-prints with that many spaces per level; 0 emits
-// the compact form. `depth` tracks recursion for indentation only.
+// Serialize `v`. With `indent > 0` pretty-prints with `indent` spaces
+// per nesting level (and a `": "` separator); 0 emits the compact form.
+// `sort_keys` walks Object keys alphabetically instead of insertion
+// order (for deterministic diff / hash friendliness). `depth` tracks
+// recursion for indentation only.
 inline std::string json_stringify(const Value& v, int indent = 0,
+                                   bool sort_keys = false,
                                    int depth = 0) {
   auto sep = [&](int level) -> std::string {
     if (indent <= 0) return "";
@@ -651,7 +655,7 @@ inline std::string json_stringify(const Value& v, int indent = 0,
       for (size_t i = 0; i < xs->size(); i++) {
         if (i) s += ",";
         s += sep(depth + 1);
-        s += json_stringify((*xs)[i], indent, depth + 1);
+        s += json_stringify((*xs)[i], indent, sort_keys, depth + 1);
       }
       s += sep(depth);
       return s + "]";
@@ -665,14 +669,24 @@ inline std::string json_stringify(const Value& v, int indent = 0,
             "JSON.stringify: Object has non-String keys");
       }
       if (obj.properties->empty()) return "{}";
+      // Collect entries in iteration order, then sort if requested.
+      std::vector<std::pair<std::string_view, const Value*>> entries;
+      entries.reserve(obj.properties->size());
+      for (const auto& [k, sym] : *obj.properties) {
+        entries.emplace_back(k, &sym.val);
+      }
+      if (sort_keys) {
+        std::sort(entries.begin(), entries.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+      }
       std::string s = "{";
       bool first = true;
-      for (const auto& [k, sym] : *obj.properties) {
+      for (const auto& [k, val_ptr] : entries) {
         if (!first) s += ",";
         first = false;
         s += sep(depth + 1);
         s += culebra::json_escape(k) + colon +
-             json_stringify(sym.val, indent, depth + 1);
+             json_stringify(*val_ptr, indent, sort_keys, depth + 1);
       }
       s += sep(depth);
       return s + "}";
@@ -683,14 +697,55 @@ inline std::string json_stringify(const Value& v, int indent = 0,
   }
 }
 
-// Minimal recursive-descent JSON parser.
+// JSON Lines: each element on its own compact line, terminated by `\n`.
+// `v` must be an Array/Tuple/Set; mixing with `indent > 0` is illegal.
+inline std::string json_stringify_lines(const Value& v, bool sort_keys = false) {
+  const std::vector<Value>* xs = nullptr;
+  if (v.type == Value::Array) xs = v.to_array().values.get();
+  else if (v.type == Value::Tuple) xs = v.template get<TupleValue>().elements.get();
+  else if (v.type == Value::Set) xs = v.template get<SetValue>().members.get();
+  else {
+    throw CulebraError("TypeError", std::format(
+        "JSON.stringify(lines: true): expects Array/Tuple/Set, got {}",
+        v.type_name()));
+  }
+  std::string s;
+  for (const auto& elem : *xs) {
+    s += json_stringify(elem, /*indent=*/0, sort_keys);
+    s += '\n';
+  }
+  return s;
+}
+
+// Minimal recursive-descent JSON parser. Tracks 1-based line/col so
+// `JSON.parse(bad).catch e` exposes `e.line` / `e.col` pointing at the
+// offending character.
 struct _JsonParser {
   const char* p;
   const char* end;
-  void skip_ws() { while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p; }
+  long line = 1;
+  long col = 1;
+  // 'auto' (default): integer-shaped → Long, otherwise Float.
+  // 'float'         : every number → Float.
+  std::string_view number_mode = "auto";
+
+  void advance() {
+    if (*p == '\n') { line++; col = 1; }
+    else            { col++; }
+    ++p;
+  }
+  void skip_ws() {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+      advance();
+    }
+  }
   [[noreturn]] void fail(const char* msg) {
+    // Format with " at L:C." inline so eval()'s catch doesn't replace
+    // our JSON-internal location with the caller AST's location.
     throw CulebraError("ValueError",
-                       std::format("JSON.parse: {}", msg));
+                       std::format("JSON.parse: {} at {}:{}.", msg,
+                                   line, col),
+                       line, col);
   }
   Value parse_value() {
     skip_ws();
@@ -704,36 +759,35 @@ struct _JsonParser {
     return parse_number();
   }
   Value parse_object() {
-    ++p; skip_ws();
+    advance(); skip_ws();
     ObjectValue obj;
-    if (p < end && *p == '}') { ++p; return Value(std::move(obj)); }
+    if (p < end && *p == '}') { advance(); return Value(std::move(obj)); }
     while (p < end) {
       skip_ws();
       auto key = parse_string_raw();
       skip_ws();
       if (p >= end || *p != ':') fail("expected ':'");
-      ++p;
+      advance();
       auto val = parse_value();
-      // Heap-stable storage for the key string_view.
-      static thread_local std::deque<std::string> pool;
-      pool.push_back(std::move(key));
-      obj.initialize(std::string_view(pool.back()), val, false);
+      // OrderedSymbolMap owns keys (post-K) so a transient std::string
+      // is safe — its bytes are copied into the map's stable index.
+      obj.initialize(std::string_view(key), val, false);
       skip_ws();
-      if (p < end && *p == ',') { ++p; continue; }
-      if (p < end && *p == '}') { ++p; return Value(std::move(obj)); }
+      if (p < end && *p == ',') { advance(); continue; }
+      if (p < end && *p == '}') { advance(); return Value(std::move(obj)); }
       fail("expected ',' or '}'");
     }
     fail("unterminated object");
   }
   Value parse_array() {
-    ++p; skip_ws();
+    advance(); skip_ws();
     ArrayValue arr;
-    if (p < end && *p == ']') { ++p; return Value(std::move(arr)); }
+    if (p < end && *p == ']') { advance(); return Value(std::move(arr)); }
     while (p < end) {
       arr.values->push_back(parse_value());
       skip_ws();
-      if (p < end && *p == ',') { ++p; continue; }
-      if (p < end && *p == ']') { ++p; return Value(std::move(arr)); }
+      if (p < end && *p == ',') { advance(); continue; }
+      if (p < end && *p == ']') { advance(); return Value(std::move(arr)); }
       fail("expected ',' or ']'");
     }
     fail("unterminated array");
@@ -741,11 +795,11 @@ struct _JsonParser {
   Value parse_string() { return Value(parse_string_raw()); }
   std::string parse_string_raw() {
     if (*p != '"') fail("expected string");
-    ++p;
+    advance();
     std::string out;
     while (p < end && *p != '"') {
       if (*p == '\\' && p + 1 < end) {
-        ++p;
+        advance();
         switch (*p) {
           case '"':  out += '"'; break;
           case '\\': out += '\\'; break;
@@ -757,83 +811,172 @@ struct _JsonParser {
           case 'f':  out += '\f'; break;
           default:   fail("bad escape");
         }
-        ++p;
+        advance();
       } else {
-        out += *p++;
+        out += *p; advance();
       }
     }
     if (p >= end) fail("unterminated string");
-    ++p;
+    advance();
     return out;
   }
   Value parse_bool() {
-    if (end - p >= 4 && std::string_view(p, 4) == "true")  { p += 4; return Value(true); }
-    if (end - p >= 5 && std::string_view(p, 5) == "false") { p += 5; return Value(false); }
+    if (end - p >= 4 && std::string_view(p, 4) == "true") {
+      for (int i = 0; i < 4; i++) advance();
+      return Value(true);
+    }
+    if (end - p >= 5 && std::string_view(p, 5) == "false") {
+      for (int i = 0; i < 5; i++) advance();
+      return Value(false);
+    }
     fail("bad bool");
   }
   Value parse_null() {
-    if (end - p >= 4 && std::string_view(p, 4) == "null") { p += 4; return Value(); }
+    if (end - p >= 4 && std::string_view(p, 4) == "null") {
+      for (int i = 0; i < 4; i++) advance();
+      return Value();
+    }
     fail("bad null");
   }
   Value parse_number() {
     const char* start = p;
-    if (*p == '-') ++p;
+    if (*p == '-') advance();
     bool is_float = false;
-    while (p < end && (*p >= '0' && *p <= '9')) ++p;
+    const char* digits_start = p;
+    while (p < end && (*p >= '0' && *p <= '9')) advance();
+    if (p == digits_start) fail("expected value");
     if (p < end && *p == '.') {
-      is_float = true; ++p;
-      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+      is_float = true; advance();
+      while (p < end && (*p >= '0' && *p <= '9')) advance();
     }
     if (p < end && (*p == 'e' || *p == 'E')) {
-      is_float = true; ++p;
-      if (p < end && (*p == '+' || *p == '-')) ++p;
-      while (p < end && (*p >= '0' && *p <= '9')) ++p;
+      is_float = true; advance();
+      if (p < end && (*p == '+' || *p == '-')) advance();
+      while (p < end && (*p >= '0' && *p <= '9')) advance();
     }
     std::string buf(start, p);
+    if (number_mode == "float") {
+      return Value(std::stod(buf));
+    }
     if (is_float) return Value(std::stod(buf));
     return Value(static_cast<long>(std::stoll(buf)));
   }
 };
 
-inline Value json_parse(std::string_view s) {
+inline Value json_parse(std::string_view s,
+                         std::string_view number_mode = "auto") {
   _JsonParser jp{s.data(), s.data() + s.size()};
+  jp.number_mode = number_mode;
   auto v = jp.parse_value();
   jp.skip_ws();
   if (jp.p != jp.end) {
     throw CulebraError("ValueError",
-                       "JSON.parse: trailing characters");
+                       std::format("JSON.parse: trailing characters at {}:{}.",
+                                   jp.line, jp.col),
+                       jp.line, jp.col);
   }
   return v;
+}
+
+// JSON Lines: split `s` on `\n`, parse each non-empty line as its own
+// JSON value, return an Array. The outer-error line number aligns with
+// the JSONL line that failed (the inner parser sees 1-based line within
+// the slice; we shift back to the overall line on error).
+inline Value json_parse_lines(std::string_view s,
+                               std::string_view number_mode = "auto") {
+  ArrayValue arr;
+  long lineno = 1;
+  size_t i = 0;
+  while (i < s.size()) {
+    size_t j = s.find('\n', i);
+    auto slice =
+        s.substr(i, j == std::string_view::npos ? s.size() - i : j - i);
+    if (!slice.empty()) {
+      _JsonParser jp{slice.data(), slice.data() + slice.size()};
+      jp.line = lineno;
+      jp.number_mode = number_mode;
+      arr.values->push_back(jp.parse_value());
+      jp.skip_ws();
+      if (jp.p != jp.end) {
+        throw CulebraError("ValueError",
+                           std::format("JSON.parse(lines: true): trailing "
+                                       "characters at {}:{}.",
+                                       jp.line, jp.col),
+                           jp.line, jp.col);
+      }
+    }
+    if (j == std::string_view::npos) break;
+    i = j + 1;
+    lineno++;
+  }
+  return Value(std::move(arr));
 }
 
 inline Value make_json_namespace() {
   using namespace std::literals;
   ObjectValue ns;
-  // `JSON.stringify(v)` is compact; `JSON.stringify(v, n)` indents
-  // nested entries by n spaces. The optional indent rides in __ARGS__.
+  // `JSON.stringify(v, indent=0, sort_keys=false, lines=false)`:
+  //   * indent > 0 pretty-prints; indent == 0 is compact.
+  //   * sort_keys walks Object keys alphabetically (deterministic
+  //     output for diffs / hashing).
+  //   * lines emits JSON Lines from an Array/Tuple/Set — each element
+  //     compact on its own line. Incompatible with indent > 0.
   ns.initialize(
       "stringify",
-      Value(FunctionValue({{"v", false}},
+      Value(FunctionValue(
+          {
+              {"v", false},
+              {"indent", false, ""sv, nullptr,
+               std::make_shared<Value>(Value((long)0))},
+              {"sort_keys", false, ""sv, nullptr,
+               std::make_shared<Value>(Value(false))},
+              {"lines", false, ""sv, nullptr,
+               std::make_shared<Value>(Value(false))},
+          },
           [](std::shared_ptr<Environment> env) {
-            int indent = 0;
-            if (env->has("__ARGS__")) {
-              const auto& extras = *env->get("__ARGS__").to_array().values;
-              if (!extras.empty()) {
-                if (extras[0].type != Value::Long) {
-                  throw CulebraError("TypeError",
-                      "JSON.stringify: indent must be Long");
-                }
-                indent = static_cast<int>(extras[0].get<long>());
-              }
+            const auto& v = env->get("v");
+            auto indent_v = env->get("indent");
+            if (indent_v.type != Value::Long) {
+              throw CulebraError("TypeError",
+                  "JSON.stringify: indent must be Long");
             }
-            return Value(json_stringify(env->get("v"), indent));
+            int indent = static_cast<int>(indent_v.get<long>());
+            bool sort_keys = env->get("sort_keys").to_bool();
+            bool lines = env->get("lines").to_bool();
+            if (lines) {
+              if (indent > 0) {
+                throw CulebraError("TypeError",
+                    "JSON.stringify: lines=true is incompatible with indent>0");
+              }
+              return Value(json_stringify_lines(v, sort_keys));
+            }
+            return Value(json_stringify(v, indent, sort_keys));
           }, "String"sv)),
       false);
+  // `JSON.parse(s, lines=false, number_mode='auto')`:
+  //   * lines splits on `\n` and returns an Array, one entry per line.
+  //   * number_mode='float' forces every number to Float (round-trip
+  //     friendly when the producer treats numbers uniformly).
   ns.initialize(
       "parse",
-      Value(FunctionValue({{"s", false, "String"sv}},
+      Value(FunctionValue(
+          {
+              {"s", false, "String"sv},
+              {"lines", false, ""sv, nullptr,
+               std::make_shared<Value>(Value(false))},
+              {"number_mode", false, "String"sv, nullptr,
+               std::make_shared<Value>(Value(std::string("auto")))},
+          },
           [](std::shared_ptr<Environment> env) {
-            return json_parse(env->get("s").to_string());
+            const auto& s = env->get("s").to_string();
+            bool lines = env->get("lines").to_bool();
+            const auto& mode = env->get("number_mode").to_string();
+            if (mode != "auto" && mode != "float") {
+              throw CulebraError("ValueError",
+                  "JSON.parse: number_mode must be 'auto' or 'float'");
+            }
+            if (lines) return json_parse_lines(s, mode);
+            return json_parse(s, mode);
           })),
       false);
   return Value(std::move(ns));

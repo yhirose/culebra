@@ -514,12 +514,22 @@ Phase 1 では **CPU** のみ。
 Culebra の値と JSON テキストの相互変換。両バックエンドで同じ API
 を提供します。
 
-### `JSON.stringify(v: Any) -> String` / `JSON.stringify(v: Any, indent: Long) -> String`
+### `JSON.stringify(v, indent=0, sort_keys=false, lines=false) -> String`
 
-`v` を JSON 文字列にシリアライズします。引数 1 つだとコンパクト出力
-（空白なし）、正の `indent` を渡すとそのスペース数でインデントし
-pretty-print します（カンマの後に改行、`":"` の代わりに `": "`）。
-`indent <= 0` はコンパクトと等価です。
+`v` を JSON 文字列にシリアライズします。
+
+* `indent > 0` でそのスペース数でインデントし pretty-print します
+  （カンマの後に改行、`":"` の代わりに `": "`）。`indent <= 0` は
+  コンパクト出力。
+* `sort_keys=true` で `Object` のキーを挿入順ではなく辞書順で
+  出力します。diff / ハッシュ向けの決定論的出力に有用。
+* `lines=true` で **JSON Lines** を出力します。`Array` / `Tuple` /
+  `Set` の各要素をそれぞれ独立した行として compact 形式で出力し、
+  末尾 `\n` 付き。空コレクションは空文字列を返します。`indent > 0`
+  との併用や、Array/Tuple/Set 以外への指定はどちらも `TypeError`。
+
+旧 API との互換: 位置引数 2 番目 を `indent` として受けます。
+`JSON.stringify(v, 2)` は `JSON.stringify(v, indent: 2)` と等価。
 
 サポート対象:
 
@@ -537,22 +547,44 @@ pretty-print します（カンマの後に改行、`":"` の代わりに `": "`
 `Function`, `Tensor`、および非 String キーを持つ Object は
 シリアライズ不可で `TypeError` を投げます。
 
-### `JSON.parse(s: String) -> Any`
+### `JSON.parse(s, lines=false, number_mode='auto') -> Any`
 
-JSON 文字列を Culebra の値に変換します。小数点や指数表記を含まない
-数値は `Long`、それ以外は `Float` として読み込まれます。Object の
-キーは入力順に保持されます。
+JSON 文字列を Culebra の値に変換します。
 
-不正な入力には短いメッセージ付きで `ValueError` が投げられます
-（`JSON.parse: unterminated string`, `expected ':'` など）。
+* `number_mode='auto'`（既定）: 小数点や指数を含まない数値は `Long`、
+  それ以外は `Float`。
+* `number_mode='float'`: すべての数値を `Float` に。生産者側が
+  数値型を統一している場合の round-trip 安全性向上に。
+* `lines=true`: 入力を `\n` で分割し、空でない各行を独立した JSON
+  値として解析、`Array` を返します。
+
+不正な入力には `ValueError` が投げられ、構造化 Error の
+`e.line` / `e.col`（共に 1-based、エラー位置の文字）に JSON 内部の
+位置が乗ります:
+
+```culebra
+let r = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+puts(r.message)           # JSON.parse: expected value at 1:7.
+puts("{r.line}:{r.col}")  # 1:7
+```
+
+例:
 
 ```culebra
 let v = {name: 'alice', age: 30, tags: ['admin', 'staff']}
-puts(JSON.stringify(v))              # コンパクト: {"name":"alice",...}
-puts(JSON.stringify(v, 2))           # pretty, 2 スペースインデント
+puts(JSON.stringify(v))                              # コンパクト
+puts(JSON.stringify(v, indent: 2))                   # pretty
+puts(JSON.stringify(v, sort_keys: true))             # 辞書順
+puts(JSON.stringify([1, 2, 3], lines: true))         # JSONL
 let back = JSON.parse(JSON.stringify(v))
-puts(back.name)                      # alice
+puts(back.name)                                      # alice
+let arr = JSON.parse("1\n2\n3\n", lines: true)
+puts(arr)                                            # [1, 2, 3]
 ```
+
+JIT メモ: ビルトインの `JSON.{stringify, parse}` は両バックエンドで
+kwargs を直接受け付けます。JIT の JSON 経路では `**splat` は未対応
+（各 kwarg を個別に渡すか、`--jit` を外して実行してください）。
 
 ---
 

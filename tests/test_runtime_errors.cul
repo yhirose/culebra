@@ -99,6 +99,28 @@ expect("obj[(1,2)]= on immutable", 'ImmutableError', r11e)
 let r12 = try { let _ = [].min(); nil } catch e { e }
 expect('empty Array.min', 'ValueError', r12)
 
+# JSON.parse errors carry the JSON-internal line:col (1-based, within
+# the parsed string — not the caller's source line). The structured
+# Error exposes the position via e.line / e.col.
+let r_json = try { JSON.parse('{"a": ,}'); nil } catch e { e }
+expect('JSON.parse bad value', 'ValueError', r_json)
+if r_json.line != 1 || r_json.col != 7 {
+  puts("  FAIL [JSON.parse line:col] expected 1:7 got {r_json.line}:{r_json.col}")
+} else {
+  puts('  PASS [JSON.parse line:col] 1:7')
+}
+
+# JSON.stringify(lines: true) requires Array/Tuple/Set
+let r_json2 = try { JSON.stringify({a: 1}, lines: true); nil } catch e { e }
+expect('lines on Object', 'TypeError', r_json2)
+
+# lines + indent is incompatible
+let r_json3 = try {
+  JSON.stringify([1, 2], lines: true, indent: 2)
+  nil
+} catch e { e }
+expect('lines+indent', 'TypeError', r_json3)
+
 # Note: `o.b += 1` on a missing property yields different kinds across
 # backends — interp explicitly checks `obj.has(name)` and throws
 # AttributeError, JIT reads `o.b` as nil and then raises TypeError on

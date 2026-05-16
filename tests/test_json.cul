@@ -48,4 +48,45 @@ let empty_obj = {}
 assert(JSON.stringify(empty_arr) == '[]')
 assert(JSON.stringify(empty_obj) == '{}')
 
+// --- H cycle: kwargs API (indent / sort_keys / lines / number_mode) ---
+
+// kwargs form: equivalent to the legacy positional indent
+let pretty_kw = JSON.stringify({a: 1, b: 2}, indent: 2)
+assert(pretty_kw == JSON.stringify({a: 1, b: 2}, 2))
+
+// sort_keys: deterministic alphabetical order regardless of insertion
+let sorted = JSON.stringify({z: 1, a: 2, m: 3}, sort_keys: true)
+assert(sorted == '{"a":2,"m":3,"z":1}')
+let sorted_pretty = JSON.stringify({b: 1, a: 2}, indent: 2, sort_keys: true)
+let sorted_pretty_expected = JSON.stringify({a: 2, b: 1}, indent: 2)
+assert(sorted_pretty == sorted_pretty_expected)
+
+// JSON Lines round-trip
+let xs = [1, 'two', {x: 3}, true, nil]
+let jsonl = JSON.stringify(xs, lines: true)
+let parsed_lines = JSON.parse(jsonl, lines: true)
+assert(parsed_lines.size() == 5)
+assert(parsed_lines[0] == 1)
+assert(parsed_lines[1] == 'two')
+assert(parsed_lines[2].x == 3)
+
+// Empty-array JSONL → "" (no terminating newline; lines == 0).
+assert(JSON.stringify([], lines: true) == '')
+assert(JSON.parse('', lines: true).size() == 0)
+
+// Dynamic Bool for `lines` (variable, not literal). The JIT path
+// resolves at runtime, so this exercises the non-constant slot.
+let do_lines = true
+assert(JSON.stringify([1, 2], lines: do_lines) == "1\n2\n")
+let do_lines_off = false
+assert(JSON.stringify([1, 2], lines: do_lines_off) == '[1,2]')
+
+// number_mode: 'float' forces every number to Float
+let n_auto = JSON.parse('1')
+assert(n_auto == 1)
+let n_float = JSON.parse('1', number_mode: 'float')
+assert(n_float == 1.0)
+let arr_float = JSON.parse('[1, 2.5, 3]', number_mode: 'float')
+assert(arr_float[0] == 1.0 && arr_float[2] == 3.0)
+
 IO.puts("test_json OK")

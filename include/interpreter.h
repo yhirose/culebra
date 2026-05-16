@@ -462,6 +462,12 @@ struct FunctionValue {
     // Default expression AST (nullptr = no default). Points into the
     // root AST, which outlives all FunctionValues for a given eval.
     const peg::Ast* default_expr = nullptr;
+    // Literal default for C++-built FunctionValues (e.g. stdlib
+    // entries). Used when `default_expr` is null and the slot is
+    // unfilled. A null pointer means "no default" → ArityError.
+    // shared_ptr (rather than `std::optional<Value>`) avoids the
+    // incomplete-type cycle — Value is forward-declared at this point.
+    std::shared_ptr<Value> default_value;
   };
 
   FunctionValue(
@@ -4035,7 +4041,9 @@ struct Interpreter {
                              false);
         }
         v = eval(*params[p].default_expr, defEnv);
-      } else {
+      } else if (params[p].default_value) {
+        v = *params[p].default_value;
+      } else {  // No default — required and missing.
         throw CulebraError("ArityError", std::format(
             "missing required argument '{}'", params[p].name),
             call_line, call_column);
