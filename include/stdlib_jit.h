@@ -385,62 +385,138 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data,
       "JSON.stringify: cannot serialize {}", _culebra_tag_name(tag)));
 }
 
-// Splat / explicit kwarg merge — same algorithm as the user-fn
-// runtime resolver (`culebra_runtime_call_with_kwargs`): splats merge
-// left-to-right (later wins), then explicit kwargs layer on top
-// regardless of order. Each map entry owns a +1 ref to its value
-// (splat values are retained on entry; kwarg values transfer
-// caller's +1). Splat Objects themselves remain owned by the caller
-// — drop them after this returns.
-inline std::unordered_map<std::string_view, JitValue> _jit_kw_merge(
-    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
-    int64_t n_splat, JitValue* splat_objs,
-    int64_t line, int64_t col) {
-  std::unordered_map<std::string_view, JitValue> merged;
-  for (int64_t i = 0; i < n_splat; i++) {
-    auto sv = splat_objs[i];
-    if (sv.tag != TAG_OBJECT) {
-      throw culebra::CulebraError("TypeError",
-          std::format("**: splat operand must be Object, got {}",
-                      _culebra_tag_name(sv.tag)),
-          line, col);
+// RAII guard for a transferred-+1 JitValue. Releases on scope exit
+// (normal or throw), so adapter code that takes ownership of a
+// positional argument doesn't have to plumb the release through every
+// error path. Use `.disarm()` to opt out of the auto-release when the
+// value is forwarded into a callee that consumes it.
+struct _JitValueGuard {
+  int8_t tag;
+  int64_t data;
+  bool armed = true;
+  ~_JitValueGuard() {
+    if (armed) _culebra_value_release_impl(tag, data);
+  }
+  void disarm() { armed = false; }
+};
+
+// Splat / explicit kwarg resolver shared between every built-in
+// kwarg adapter. The constructor merges splats+kwargs into a single
+// name-keyed map (same algorithm as the user-fn runtime resolver:
+// splats merge left-to-right with later wins, then explicit kwargs
+// layer on top regardless of order). Each map entry owns a +1 ref to
+// its value — the destructor drops any leftover entries on every
+// exit path, so error throws during typed-take don't leak.
+class _JitKwargResolver {
+ public:
+  _JitKwargResolver(int64_t n_kw, const char* const* kw_keys,
+                    JitValue* kw_vals, int64_t n_splat,
+                    JitValue* splat_objs, int64_t line, int64_t col,
+                    std::string_view ctx)
+      : line_(line), col_(col), ctx_(ctx) {
+    try {
+      build_merged(n_kw, kw_keys, kw_vals, n_splat, splat_objs);
+    } catch (...) {
+      // build_merged threw mid-loop. The map holds whatever entries
+      // we already retained; release them so we don't leak. Caller
+      // still owns the un-consumed kwarg / splat slots — those are
+      // its responsibility to release on rethrow.
+      release_merged();
+      throw;
     }
-    auto* obj = reinterpret_cast<JitObject*>(sv.data);
-    if (obj->non_string_props && !obj->non_string_props->empty()) {
-      throw culebra::CulebraError("TypeError",
-          "**: splat key must be String", line, col);
+    // Splat operand +1s served their purpose (we retained the values
+    // they contained); drop them now.
+    for (int64_t i = 0; i < n_splat; i++) {
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
     }
-    if (!obj->shape) continue;
-    for (size_t k = 0; k < obj->shape->names.size(); k++) {
-      auto& v = obj->slots[k].value;
-      culebra_runtime_value_retain(v.tag, v.data);
-      auto it = merged.find(obj->shape->names[k]);
-      if (it != merged.end()) {
-        _culebra_value_release_impl(it->second.tag, it->second.data);
-        it->second = v;
-      } else {
-        merged.emplace(obj->shape->names[k], v);
+  }
+  ~_JitKwargResolver() { release_merged(); }
+
+  _JitKwargResolver(const _JitKwargResolver&) = delete;
+  _JitKwargResolver& operator=(const _JitKwargResolver&) = delete;
+
+  // Look up `name` and verify its tag matches `want_tag`. On a tag
+  // mismatch raises a TypeError via `fail`. Absent → nullopt.
+  std::optional<JitValue> take_typed(std::string_view name, int8_t want_tag,
+                                      std::string_view want_name) {
+    auto it = merged_.find(name);
+    if (it == merged_.end()) return std::nullopt;
+    auto v = it->second;
+    merged_.erase(it);
+    if (v.tag != want_tag) {
+      _culebra_value_release_impl(v.tag, v.data);
+      fail(std::format("{}: '{}' must be {}", ctx_, name, want_name));
+    }
+    return v;
+  }
+
+  // Throw if any kwargs went unread — i.e. unknown to this built-in.
+  void validate_consumed() {
+    if (merged_.empty()) return;
+    fail(std::format("unknown keyword argument '{}'",
+                      merged_.begin()->first));
+  }
+
+  // Format and throw a structured CulebraError with " at L:C." in the
+  // message (so eval's outer catch doesn't relocate it). Releases the
+  // merged map's remaining values before throwing.
+  [[noreturn]] void fail(const std::string& msg,
+                          std::string_view kind = "TypeError") {
+    release_merged();
+    throw culebra::CulebraError(std::string(kind),
+        std::format("{} at {}:{}.", msg, line_, col_),
+        line_, col_);
+  }
+
+ private:
+  void build_merged(int64_t n_kw, const char* const* kw_keys,
+                    JitValue* kw_vals, int64_t n_splat,
+                    JitValue* splat_objs) {
+    for (int64_t i = 0; i < n_splat; i++) {
+      auto sv = splat_objs[i];
+      if (sv.tag != TAG_OBJECT) {
+        throw culebra::CulebraError("TypeError",
+            std::format("**: splat operand must be Object, got {}",
+                        _culebra_tag_name(sv.tag)),
+            line_, col_);
+      }
+      auto* obj = reinterpret_cast<JitObject*>(sv.data);
+      if (obj->non_string_props && !obj->non_string_props->empty()) {
+        throw culebra::CulebraError("TypeError",
+            "**: splat key must be String", line_, col_);
+      }
+      if (!obj->shape) continue;
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        auto& v = obj->slots[k].value;
+        culebra_runtime_value_retain(v.tag, v.data);
+        insert_or_replace(obj->shape->names[k], v);
       }
     }
-  }
-  for (int64_t i = 0; i < n_kw; i++) {
-    auto it = merged.find(kw_keys[i]);
-    if (it != merged.end()) {
-      _culebra_value_release_impl(it->second.tag, it->second.data);
-      it->second = kw_vals[i];
-    } else {
-      merged.emplace(kw_keys[i], kw_vals[i]);
+    for (int64_t i = 0; i < n_kw; i++) {
+      insert_or_replace(kw_keys[i], kw_vals[i]);
     }
   }
-  return merged;
-}
-
-inline void _jit_kw_release_map(
-    std::unordered_map<std::string_view, JitValue>& m) {
-  for (auto& [_, v] : m) {
-    _culebra_value_release_impl(v.tag, v.data);
+  void insert_or_replace(std::string_view name, JitValue v) {
+    auto it = merged_.find(name);
+    if (it == merged_.end()) {
+      merged_.emplace(name, v);
+    } else {
+      _culebra_value_release_impl(it->second.tag, it->second.data);
+      it->second = v;
+    }
   }
-}
+  void release_merged() {
+    for (auto& [_, v] : merged_) {
+      _culebra_value_release_impl(v.tag, v.data);
+    }
+    merged_.clear();
+  }
+
+  std::unordered_map<std::string_view, JitValue> merged_;
+  int64_t line_;
+  int64_t col_;
+  std::string_view ctx_;
+};
 
 // Single dispatcher for the JIT side: `lines != 0` switches into the
 // JSON-Lines emitter (requires Array/Tuple/Set, rejects indent > 0).
@@ -482,76 +558,31 @@ __attribute__((used)) inline const char* culebra_runtime_json_stringify(
 
 // Kwarg adapter for JSON.stringify. Used by the JIT when the call
 // carries a dynamic `**splat` operand whose keys can't be enumerated
-// at IR-emit time. Consumes the caller's +1 on `v`, every kwarg
-// value, and every splat Object; calls the typed inner helper, then
-// drops the value's +1 before returning.
+// at IR-emit time. RAII guards take care of every +1 release path
+// (the value, leftover kwargs in the resolver, etc.) so the body
+// reads as a flat sequence of takes.
 __attribute__((used)) inline const char*
 culebra_runtime_json_stringify_kw(
     int8_t v_tag, int64_t v_data,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs,
     int64_t line, int64_t col) {
-  std::unordered_map<std::string_view, JitValue> merged;
-  try {
-    merged = _jit_kw_merge(n_kw, kw_keys, kw_vals,
-                            n_splat, splat_objs, line, col);
-  } catch (...) {
-    _culebra_value_release_impl(v_tag, v_data);
-    for (int64_t i = 0; i < n_kw; i++) {
-      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
-    }
-    for (int64_t i = 0; i < n_splat; i++) {
-      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
-    }
-    throw;
-  }
-  // Splat operand +1s are no longer needed (values were retained).
-  for (int64_t i = 0; i < n_splat; i++) {
-    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
-  }
-
-  auto fail = [&](const std::string& msg, const char* kind = "TypeError") {
-    _jit_kw_release_map(merged);
-    _culebra_value_release_impl(v_tag, v_data);
-    // Embed " at L:C." inline so the eval-time wrapper doesn't replace
-    // our location (matches the interp's user-facing message shape).
-    throw culebra::CulebraError(kind,
-        std::format("{} at {}:{}.", msg, line, col), line, col);
-  };
-  auto take_typed = [&](std::string_view name, int8_t want_tag,
-                         const char* want_name) -> std::optional<JitValue> {
-    auto it = merged.find(name);
-    if (it == merged.end()) return std::nullopt;
-    auto v = it->second;
-    merged.erase(it);
-    if (v.tag != want_tag) {
-      _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("JSON.stringify: '{}' must be {}", name, want_name));
-    }
-    return v;
-  };
-
+  _JitValueGuard v_guard{v_tag, v_data};
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs,
+                       line, col, "JSON.stringify");
   int64_t indent = 0;
   int8_t sort_keys = 0;
   int8_t lines = 0;
-  if (auto v = take_typed("indent", TAG_LONG, "Long")) {
-    indent = v->data;
-  }
-  if (auto v = take_typed("sort_keys", TAG_BOOL, "Bool")) {
+  if (auto v = kw.take_typed("indent", TAG_LONG, "Long")) indent = v->data;
+  if (auto v = kw.take_typed("sort_keys", TAG_BOOL, "Bool")) {
     sort_keys = v->data ? 1 : 0;
   }
-  if (auto v = take_typed("lines", TAG_BOOL, "Bool")) {
+  if (auto v = kw.take_typed("lines", TAG_BOOL, "Bool")) {
     lines = v->data ? 1 : 0;
   }
-  if (!merged.empty()) {
-    fail(std::format("unknown keyword argument '{}'",
-                      merged.begin()->first));
-  }
-
-  auto result = culebra_runtime_json_stringify(v_tag, v_data, indent,
-                                                 sort_keys, lines);
-  _culebra_value_release_impl(v_tag, v_data);
-  return result;
+  kw.validate_consumed();
+  return culebra_runtime_json_stringify(v_tag, v_data, indent,
+                                         sort_keys, lines);
 }
 
 // Minimal recursive-descent JSON parser producing JitValues. Each
@@ -767,67 +798,25 @@ __attribute__((used)) inline JitValue culebra_runtime_json_parse(
   return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
 }
 
-// Kwarg adapter for JSON.parse. Mirrors json_stringify_kw — consumes
-// `s` and every kwarg / splat ref, validates against the parse-side
-// kwarg surface (lines, number_mode), then calls the typed helper.
+// Kwarg adapter for JSON.parse. `s` is a non-refcounted TAG_STRING
+// cstring — no value guard needed. Everything else (splat values,
+// merged map) is handled by `_JitKwargResolver`.
 __attribute__((used)) inline JitValue culebra_runtime_json_parse_kw(
     const char* s,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs,
     int64_t line, int64_t col) {
-  std::unordered_map<std::string_view, JitValue> merged;
-  try {
-    merged = _jit_kw_merge(n_kw, kw_keys, kw_vals,
-                            n_splat, splat_objs, line, col);
-  } catch (...) {
-    for (int64_t i = 0; i < n_kw; i++) {
-      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
-    }
-    for (int64_t i = 0; i < n_splat; i++) {
-      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
-    }
-    // Note: `s` is a borrowed cstring (TAG_STRING) — non-refcounted,
-    // no release needed here.
-    throw;
-  }
-  for (int64_t i = 0; i < n_splat; i++) {
-    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
-  }
-
-  auto fail = [&](const std::string& msg, const char* kind = "TypeError") {
-    _jit_kw_release_map(merged);
-    throw culebra::CulebraError(kind,
-        std::format("{} at {}:{}.", msg, line, col), line, col);
-  };
-  auto take_typed = [&](std::string_view name, int8_t want_tag,
-                         const char* want_name) -> std::optional<JitValue> {
-    auto it = merged.find(name);
-    if (it == merged.end()) return std::nullopt;
-    auto v = it->second;
-    merged.erase(it);
-    if (v.tag != want_tag) {
-      _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("JSON.parse: '{}' must be {}", name, want_name));
-    }
-    return v;
-  };
-
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs,
+                       line, col, "JSON.parse");
   const char* number_mode = "auto";
   int8_t lines = 0;
-  std::string mode_storage;  // keeps the cstring alive past the call
-  if (auto v = take_typed("number_mode", TAG_STRING, "String")) {
-    mode_storage = reinterpret_cast<const char*>(v->data);
-    number_mode = mode_storage.c_str();
-    // The String tag is non-refcounted; no release needed for v.
+  if (auto v = kw.take_typed("number_mode", TAG_STRING, "String")) {
+    number_mode = reinterpret_cast<const char*>(v->data);
   }
-  if (auto v = take_typed("lines", TAG_BOOL, "Bool")) {
+  if (auto v = kw.take_typed("lines", TAG_BOOL, "Bool")) {
     lines = v->data ? 1 : 0;
   }
-  if (!merged.empty()) {
-    fail(std::format("unknown keyword argument '{}'",
-                      merged.begin()->first));
-  }
-
+  kw.validate_consumed();
   return culebra_runtime_json_parse(s, number_mode, lines);
 }
 
