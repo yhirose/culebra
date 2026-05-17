@@ -1153,9 +1153,10 @@ JIT 制限:
   のみ対応で、kwargs を渡すとコンパイル時に `SyntaxError` で拒否
   されます。
 * ビルトイン dispatch（例: `JSON.stringify(v, **opts)` で opts が
-  実行時 Object）への動的 `**variable` splat はインタプリタ専用です。
-  リテラル `**{...}` splat なら両対応。JIT で実行したい場合は各
-  kwarg を明示的に渡すか、`--jit` を外して実行してください。
+  実行時 Object）への動的 `**variable` splat は両バックエンド対応
+  （per-built-in kwarg adapter 経由）。現在 `JSON.stringify` /
+  `JSON.parse` が adapter を持ち、他のネームスペース（Math, IO,
+  Random, Sys）は positional-only でコンパイル時に拒否されます。
 * JIT のコンパイル時エラー（例: `positional argument follows keyword
   argument`）は IR 生成段階で検出され `try/catch` ではキャッチ
   できません。インタプリタは同じエラーを実行時に投げるためキャッチ

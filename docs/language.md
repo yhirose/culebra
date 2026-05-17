@@ -1195,10 +1195,10 @@ JIT limitations:
   positional arguments — kwargs against them surface a clean
   `SyntaxError` at compile time.
 * Dynamic `**variable` splat against built-in dispatchers (e.g.
-  `JSON.stringify(v, **opts)` where `opts` is a runtime value) is
-  interp-only; literal `**{...}` against the same dispatchers works
-  on both backends. Pass each kwarg explicitly in JIT-compiled code,
-  or run without `--jit`.
+  `JSON.stringify(v, **opts)`) works on both backends via a
+  per-built-in kwarg adapter (`JSON.stringify` and `JSON.parse`
+  ship adapters; other namespaces are positional-only and still
+  reject kwargs at compile time).
 * Compile-time JIT errors (e.g. `positional argument follows keyword
   argument`) are detected during IR emission and bypass `try/catch`;
   interp throws the same errors at runtime where they can be caught.

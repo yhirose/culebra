@@ -603,11 +603,12 @@ let arr = JSON.parse("1\n2\n3\n", lines: true)
 puts(arr)                                            # [1, 2, 3]
 ```
 
-JIT note: built-in `JSON.{stringify, parse}` accept kwargs directly in
-both backends, including literal `**{key: val, ...}` splats. Dynamic
-`**variable` splats (where the operand is a runtime Object) are still
-interp-only — pass each kwarg explicitly in JIT-compiled code, or run
-without `--jit`.
+JIT note: built-in `JSON.{stringify, parse}` accept kwargs on both
+backends, including literal `**{key: val, ...}` splats AND dynamic
+`**variable` splats. Literal splats flatten at compile time (no
+runtime overhead); dynamic splats route through a per-built-in
+runtime adapter that enumerates the splat Object's keys on the
+fly — same algorithm interp uses.
 
 ---
 

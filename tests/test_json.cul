@@ -89,9 +89,32 @@ assert(n_float == 1.0)
 let arr_float = JSON.parse('[1, 2.5, 3]', number_mode: 'float')
 assert(arr_float[0] == 1.0 && arr_float[2] == 3.0)
 
-// Literal Object splat works on both backends. Dynamic `**var` splat
-// against built-ins is interp-only for now.
+// Literal Object splat works on both backends.
 let pretty_splat = JSON.stringify({a: 1, b: 2}, **{indent: 2})
 assert(pretty_splat == JSON.stringify({a: 1, b: 2}, indent: 2))
+
+// Dynamic `**variable` splat against the built-in dispatch (Option Y
+// kwarg adapter). Pre-Option Y this was JIT-rejected; now both
+// backends enumerate the runtime Object's keys.
+let str_opts = {indent: 2, sort_keys: true}
+let dyn_pretty = JSON.stringify({z: 1, a: 2}, **str_opts)
+assert(dyn_pretty == JSON.stringify({z: 1, a: 2}, indent: 2, sort_keys: true))
+
+let mixed = JSON.stringify({x: 1}, **{sort_keys: true}, indent: 4)
+assert(mixed == JSON.stringify({x: 1}, indent: 4, sort_keys: true))
+
+let parse_opts = {number_mode: 'float'}
+assert(JSON.parse('1', **parse_opts) == 1.0)
+
+let line_opts = {lines: true}
+let parsed = JSON.parse("1\n2\n3\n", **line_opts)
+assert(parsed.size() == 3 && parsed[0] == 1)
+
+// Unknown kwarg via dynamic splat — catchable at runtime on both
+// backends (compile-time path's literal splats throw before catch in
+// JIT, but the runtime adapter throws after entry).
+let bad = {bogus: 1}
+let r = try { JSON.stringify({a: 1}, **bad); nil } catch e { e }
+assert(r.kind == 'TypeError' && r.message.contains('bogus'))
 
 IO.puts("test_json OK")

@@ -583,10 +583,11 @@ puts(arr)                                            # [1, 2, 3]
 ```
 
 JIT メモ: ビルトインの `JSON.{stringify, parse}` は両バックエンドで
-kwargs を直接受け付け、リテラル `**{key: val, ...}` splat も動作
-します。動的 `**variable` splat（実行時 Object を展開する形）は
-インタプリタ専用です。JIT で実行したいコードでは各 kwarg を
-明示的に渡すか、`--jit` を外して実行してください。
+kwargs を直接受け付け、リテラル `**{key: val, ...}` splat と動的
+`**variable` splat の両方が動作します。リテラル splat は
+コンパイル時にフラット化されオーバーヘッドゼロ、動的 splat は
+built-in 専用 runtime adapter が Object のキーを実行時に列挙
+（インタプリタと同じアルゴリズム）。
 
 ---
 

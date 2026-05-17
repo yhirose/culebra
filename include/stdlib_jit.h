@@ -385,6 +385,63 @@ inline std::string _jit_json_stringify(int8_t tag, int64_t data,
       "JSON.stringify: cannot serialize {}", _culebra_tag_name(tag)));
 }
 
+// Splat / explicit kwarg merge — same algorithm as the user-fn
+// runtime resolver (`culebra_runtime_call_with_kwargs`): splats merge
+// left-to-right (later wins), then explicit kwargs layer on top
+// regardless of order. Each map entry owns a +1 ref to its value
+// (splat values are retained on entry; kwarg values transfer
+// caller's +1). Splat Objects themselves remain owned by the caller
+// — drop them after this returns.
+inline std::unordered_map<std::string_view, JitValue> _jit_kw_merge(
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs,
+    int64_t line, int64_t col) {
+  std::unordered_map<std::string_view, JitValue> merged;
+  for (int64_t i = 0; i < n_splat; i++) {
+    auto sv = splat_objs[i];
+    if (sv.tag != TAG_OBJECT) {
+      throw culebra::CulebraError("TypeError",
+          std::format("**: splat operand must be Object, got {}",
+                      _culebra_tag_name(sv.tag)),
+          line, col);
+    }
+    auto* obj = reinterpret_cast<JitObject*>(sv.data);
+    if (obj->non_string_props && !obj->non_string_props->empty()) {
+      throw culebra::CulebraError("TypeError",
+          "**: splat key must be String", line, col);
+    }
+    if (!obj->shape) continue;
+    for (size_t k = 0; k < obj->shape->names.size(); k++) {
+      auto& v = obj->slots[k].value;
+      culebra_runtime_value_retain(v.tag, v.data);
+      auto it = merged.find(obj->shape->names[k]);
+      if (it != merged.end()) {
+        _culebra_value_release_impl(it->second.tag, it->second.data);
+        it->second = v;
+      } else {
+        merged.emplace(obj->shape->names[k], v);
+      }
+    }
+  }
+  for (int64_t i = 0; i < n_kw; i++) {
+    auto it = merged.find(kw_keys[i]);
+    if (it != merged.end()) {
+      _culebra_value_release_impl(it->second.tag, it->second.data);
+      it->second = kw_vals[i];
+    } else {
+      merged.emplace(kw_keys[i], kw_vals[i]);
+    }
+  }
+  return merged;
+}
+
+inline void _jit_kw_release_map(
+    std::unordered_map<std::string_view, JitValue>& m) {
+  for (auto& [_, v] : m) {
+    _culebra_value_release_impl(v.tag, v.data);
+  }
+}
+
 // Single dispatcher for the JIT side: `lines != 0` switches into the
 // JSON-Lines emitter (requires Array/Tuple/Set, rejects indent > 0).
 __attribute__((used)) inline const char* culebra_runtime_json_stringify(
@@ -421,6 +478,80 @@ __attribute__((used)) inline const char* culebra_runtime_json_stringify(
     s += '\n';
   }
   return _culebra_heap_str(s);
+}
+
+// Kwarg adapter for JSON.stringify. Used by the JIT when the call
+// carries a dynamic `**splat` operand whose keys can't be enumerated
+// at IR-emit time. Consumes the caller's +1 on `v`, every kwarg
+// value, and every splat Object; calls the typed inner helper, then
+// drops the value's +1 before returning.
+__attribute__((used)) inline const char*
+culebra_runtime_json_stringify_kw(
+    int8_t v_tag, int64_t v_data,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs,
+    int64_t line, int64_t col) {
+  std::unordered_map<std::string_view, JitValue> merged;
+  try {
+    merged = _jit_kw_merge(n_kw, kw_keys, kw_vals,
+                            n_splat, splat_objs, line, col);
+  } catch (...) {
+    _culebra_value_release_impl(v_tag, v_data);
+    for (int64_t i = 0; i < n_kw; i++) {
+      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
+    }
+    for (int64_t i = 0; i < n_splat; i++) {
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+    }
+    throw;
+  }
+  // Splat operand +1s are no longer needed (values were retained).
+  for (int64_t i = 0; i < n_splat; i++) {
+    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+  }
+
+  auto fail = [&](const std::string& msg, const char* kind = "TypeError") {
+    _jit_kw_release_map(merged);
+    _culebra_value_release_impl(v_tag, v_data);
+    // Embed " at L:C." inline so the eval-time wrapper doesn't replace
+    // our location (matches the interp's user-facing message shape).
+    throw culebra::CulebraError(kind,
+        std::format("{} at {}:{}.", msg, line, col), line, col);
+  };
+  auto take_typed = [&](std::string_view name, int8_t want_tag,
+                         const char* want_name) -> std::optional<JitValue> {
+    auto it = merged.find(name);
+    if (it == merged.end()) return std::nullopt;
+    auto v = it->second;
+    merged.erase(it);
+    if (v.tag != want_tag) {
+      _culebra_value_release_impl(v.tag, v.data);
+      fail(std::format("JSON.stringify: '{}' must be {}", name, want_name));
+    }
+    return v;
+  };
+
+  int64_t indent = 0;
+  int8_t sort_keys = 0;
+  int8_t lines = 0;
+  if (auto v = take_typed("indent", TAG_LONG, "Long")) {
+    indent = v->data;
+  }
+  if (auto v = take_typed("sort_keys", TAG_BOOL, "Bool")) {
+    sort_keys = v->data ? 1 : 0;
+  }
+  if (auto v = take_typed("lines", TAG_BOOL, "Bool")) {
+    lines = v->data ? 1 : 0;
+  }
+  if (!merged.empty()) {
+    fail(std::format("unknown keyword argument '{}'",
+                      merged.begin()->first));
+  }
+
+  auto result = culebra_runtime_json_stringify(v_tag, v_data, indent,
+                                                 sort_keys, lines);
+  _culebra_value_release_impl(v_tag, v_data);
+  return result;
 }
 
 // Minimal recursive-descent JSON parser producing JitValues. Each
@@ -636,6 +767,70 @@ __attribute__((used)) inline JitValue culebra_runtime_json_parse(
   return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
 }
 
+// Kwarg adapter for JSON.parse. Mirrors json_stringify_kw — consumes
+// `s` and every kwarg / splat ref, validates against the parse-side
+// kwarg surface (lines, number_mode), then calls the typed helper.
+__attribute__((used)) inline JitValue culebra_runtime_json_parse_kw(
+    const char* s,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs,
+    int64_t line, int64_t col) {
+  std::unordered_map<std::string_view, JitValue> merged;
+  try {
+    merged = _jit_kw_merge(n_kw, kw_keys, kw_vals,
+                            n_splat, splat_objs, line, col);
+  } catch (...) {
+    for (int64_t i = 0; i < n_kw; i++) {
+      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
+    }
+    for (int64_t i = 0; i < n_splat; i++) {
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+    }
+    // Note: `s` is a borrowed cstring (TAG_STRING) — non-refcounted,
+    // no release needed here.
+    throw;
+  }
+  for (int64_t i = 0; i < n_splat; i++) {
+    _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+  }
+
+  auto fail = [&](const std::string& msg, const char* kind = "TypeError") {
+    _jit_kw_release_map(merged);
+    throw culebra::CulebraError(kind,
+        std::format("{} at {}:{}.", msg, line, col), line, col);
+  };
+  auto take_typed = [&](std::string_view name, int8_t want_tag,
+                         const char* want_name) -> std::optional<JitValue> {
+    auto it = merged.find(name);
+    if (it == merged.end()) return std::nullopt;
+    auto v = it->second;
+    merged.erase(it);
+    if (v.tag != want_tag) {
+      _culebra_value_release_impl(v.tag, v.data);
+      fail(std::format("JSON.parse: '{}' must be {}", name, want_name));
+    }
+    return v;
+  };
+
+  const char* number_mode = "auto";
+  int8_t lines = 0;
+  std::string mode_storage;  // keeps the cstring alive past the call
+  if (auto v = take_typed("number_mode", TAG_STRING, "String")) {
+    mode_storage = reinterpret_cast<const char*>(v->data);
+    number_mode = mode_storage.c_str();
+    // The String tag is non-refcounted; no release needed for v.
+  }
+  if (auto v = take_typed("lines", TAG_BOOL, "Bool")) {
+    lines = v->data ? 1 : 0;
+  }
+  if (!merged.empty()) {
+    fail(std::format("unknown keyword argument '{}'",
+                      merged.begin()->first));
+  }
+
+  return culebra_runtime_json_parse(s, number_mode, lines);
+}
+
 }  // extern "C"
 
 // --- JIT compile-side dispatch (extension hook implementation) ---
@@ -661,6 +856,13 @@ struct JitExtension {
   static llvm::Value* compile_ns_prop(JIT& jit,
                                         std::string_view ns,
                                         std::string_view prop);
+
+  // Dynamic `**variable` splat path for JSON.{stringify, parse}.
+  // Materializes the ARG_LIST as slabs (positional[0], kwarg keys+vals,
+  // splat objects) and hands them to the runtime adapter so splat
+  // enumeration happens at runtime.
+  static llvm::Value* compile_json_kwargs_adapter(
+      JIT& jit, std::string_view method, const peg::Ast& argsAst);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
                                          const peg::Ast& argsAst);
@@ -836,8 +1038,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 
   // JSON: stringify takes (tag, data, indent, sort_keys, lines) ->
-  // String; parse takes (String, number_mode_cstr) -> Value. The Lines
-  // path on parse is a separate helper since it returns an Array.
+  // String; parse takes (String, number_mode_cstr, lines) -> Value.
   jit.module_->getOrInsertFunction(rt::json_stringify, ptrTy,
                                 jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt64Ty(),
@@ -846,6 +1047,20 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                 jit.builder_.getInt8Ty());
   jit.module_->getOrInsertFunction(rt::json_parse, jit.valueType_, ptrTy,
                                 ptrTy, jit.builder_.getInt8Ty());
+  // Kwarg adapters: route dynamic `**splat` calls through these so
+  // splat enumeration happens at runtime. See
+  // `culebra_runtime_json_stringify_kw` / `_parse_kw`.
+  jit.module_->getOrInsertFunction(
+      rt::json_stringify_kw, ptrTy,
+      jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+      jit.builder_.getInt64Ty(), ptrTy, ptrTy,
+      jit.builder_.getInt64Ty(), ptrTy,
+      jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(
+      rt::json_parse_kw, jit.valueType_, ptrTy,
+      jit.builder_.getInt64Ty(), ptrTy, ptrTy,
+      jit.builder_.getInt64Ty(), ptrTy,
+      jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
 }
 
 inline llvm::Value* JitExtension::compile_global(JIT& jit,
@@ -1297,11 +1512,26 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
   if (ns == "JSON") {
     using namespace peg::udl;
+
+    // Dynamic `**variable` splat: enumerate at runtime via the
+    // kwarg adapter (`culebra_runtime_json_{stringify,parse}_kw`).
+    // Literal `**{...}` flattens at compile time below.
+    bool has_dynamic_splat = false;
+    for (auto& child : argsAst.nodes) {
+      if (child->tag == "KWARG_SPLAT"_ &&
+          child->nodes[0]->tag != "OBJECT"_) {
+        has_dynamic_splat = true;
+        break;
+      }
+    }
+    if (has_dynamic_splat && (method == "stringify" || method == "parse")) {
+      return compile_json_kwargs_adapter(jit, method, argsAst);
+    }
+
     // Two-pass scan matching the interp resolver: splats merge first
     // (later splat wins), then explicit kwargs layer on top regardless
-    // of source order. Literal `**{...}` only; dynamic splats are
-    // deferred since IR-emit can't enumerate a runtime Object's keys
-    // against compile-time-known param names.
+    // of source order. Literal `**{...}` only; dynamic splats handled
+    // above through the runtime adapter.
     std::vector<const peg::Ast*> positional;
     std::map<std::string_view, const peg::Ast*> kwargs;
     std::vector<std::pair<std::string_view, const peg::Ast*>>
@@ -1555,6 +1785,120 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   }
 
   return nullptr;
+}
+
+inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
+    JIT& jit, std::string_view method, const peg::Ast& argsAst) {
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
+  using namespace peg::udl;
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto i64Ty = builder_.getInt64Ty();
+
+  // Scan ARG_LIST. JSON adapters expect exactly one positional (v/s).
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>>
+      explicit_kwargs;
+  std::set<std::string_view> seen_explicit;
+  std::vector<const peg::Ast*> splats;
+  bool saw_named = false;
+  for (auto& child : argsAst.nodes) {
+    if (child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+      splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      saw_named = true;
+      auto name = child->nodes[0]->token;
+      if (!seen_explicit.insert(name).second) {
+        throw culebra::CulebraError("TypeError",
+            std::format("duplicate keyword argument '{}'", name),
+            argsAst.line, argsAst.column);
+      }
+      explicit_kwargs.emplace_back(name, child->nodes[1].get());
+    } else {
+      if (saw_named) {
+        throw culebra::CulebraError("SyntaxError",
+            "positional argument follows keyword argument",
+            argsAst.line, argsAst.column);
+      }
+      positional.push_back(child.get());
+    }
+  }
+  if (positional.size() != 1) {
+    throw culebra::CulebraError("ArityError",
+        std::format("JSON.{}: expected exactly one positional argument "
+                    "(the value)", method),
+        argsAst.line, argsAst.column);
+  }
+
+  // Compile every value once.
+  auto v_val = compile(*positional[0]);
+  std::vector<llvm::Constant*> kwKeys;
+  std::vector<llvm::Value*> kwVals;
+  for (auto& [name, ast] : explicit_kwargs) {
+    kwKeys.push_back(builder_.CreateGlobalString(
+        std::string(name), ".kwkey"));
+    kwVals.push_back(compile(*ast));
+  }
+  std::vector<llvm::Value*> splatVals;
+  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+
+  auto fn = builder_.GetInsertBlock()->getParent();
+  llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                            fn->getEntryBlock().begin());
+  auto alloc_slab = [&](llvm::Type* ty, size_t n,
+                         const char* name) -> llvm::Value* {
+    if (n == 0) return llvm::ConstantPointerNull::get(ptrTy);
+    return entryB.CreateAlloca(
+        ty, builder_.getInt64(static_cast<int64_t>(n)), name);
+  };
+  auto store_at = [&](llvm::Value* base, llvm::Type* ty, size_t i,
+                       llvm::Value* val) {
+    auto slot = builder_.CreateInBoundsGEP(
+        ty, base, {builder_.getInt64(static_cast<int64_t>(i))});
+    builder_.CreateStore(val, slot);
+  };
+  auto keysSlab = alloc_slab(ptrTy, kwKeys.size(), "json.kw.keys");
+  auto valsSlab = alloc_slab(jit.valueType_, kwVals.size(), "json.kw.vals");
+  auto splatSlab = alloc_slab(jit.valueType_, splatVals.size(),
+                               "json.kw.splat");
+  for (size_t i = 0; i < kwKeys.size(); i++) {
+    store_at(keysSlab, ptrTy, i, kwKeys[i]);
+    store_at(valsSlab, jit.valueType_, i, kwVals[i]);
+  }
+  for (size_t i = 0; i < splatVals.size(); i++) {
+    store_at(splatSlab, jit.valueType_, i, splatVals[i]);
+  }
+
+  auto lineV = jit.current_line_val();
+  auto colV = jit.current_column_val();
+  if (method == "stringify") {
+    auto s = emit_call(
+        module_->getOrInsertFunction(
+            rt::json_stringify_kw, ptrTy, builder_.getInt8Ty(), i64Ty,
+            i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
+        {extract_tag(v_val), extract_data(v_val),
+         builder_.getInt64(static_cast<int64_t>(kwVals.size())),
+         keysSlab, valsSlab,
+         builder_.getInt64(static_cast<int64_t>(splatVals.size())),
+         splatSlab, lineV, colV});
+    return make_string(s);
+  }
+  // method == "parse"
+  emit_type_check(v_val, "String", "JSON.parse argument");
+  auto sPtr = builder_.CreateIntToPtr(extract_data(v_val), ptrTy);
+  auto v = emit_call(
+      module_->getOrInsertFunction(
+          rt::json_parse_kw, jit.valueType_, ptrTy,
+          i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
+      {sPtr,
+       builder_.getInt64(static_cast<int64_t>(kwVals.size())),
+       keysSlab, valsSlab,
+       builder_.getInt64(static_cast<int64_t>(splatVals.size())),
+       splatSlab, lineV, colV});
+  // parse_kw doesn't consume the cstring (TAG_STRING is non-refcounted);
+  // matches plain json_parse semantics.
+  emit_value_release(v_val);
+  return v;
 }
 
 inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
