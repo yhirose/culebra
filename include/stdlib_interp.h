@@ -926,12 +926,9 @@ inline Value make_json_namespace() {
       Value(FunctionValue(
           {
               {"v", false},
-              {"indent", false, ""sv, nullptr,
-               std::make_shared<Value>(Value((long)0))},
-              {"sort_keys", false, ""sv, nullptr,
-               std::make_shared<Value>(Value(false))},
-              {"lines", false, ""sv, nullptr,
-               std::make_shared<Value>(Value(false))},
+              {"indent", false, ""sv, nullptr, kw_default_zero()},
+              {"sort_keys", false, ""sv, nullptr, kw_default_false()},
+              {"lines", false, ""sv, nullptr, kw_default_false()},
           },
           [](std::shared_ptr<Environment> env) {
             const auto& v = env->get("v");
@@ -957,15 +954,18 @@ inline Value make_json_namespace() {
   //   * lines splits on `\n` and returns an Array, one entry per line.
   //   * number_mode='float' forces every number to Float (round-trip
   //     friendly when the producer treats numbers uniformly).
+  // `number_mode` default is "auto" — no shared canonical for
+  // strings since user code could compare by identity in theory.
+  static const auto json_number_mode_auto =
+      std::make_shared<Value>(Value(std::string("auto")));
   ns.initialize(
       "parse",
       Value(FunctionValue(
           {
               {"s", false, "String"sv},
-              {"lines", false, ""sv, nullptr,
-               std::make_shared<Value>(Value(false))},
+              {"lines", false, ""sv, nullptr, kw_default_false()},
               {"number_mode", false, "String"sv, nullptr,
-               std::make_shared<Value>(Value(std::string("auto")))},
+               json_number_mode_auto},
           },
           [](std::shared_ptr<Environment> env) {
             const auto& s = env->get("s").to_string();

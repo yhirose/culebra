@@ -467,6 +467,9 @@ struct FunctionValue {
     // unfilled. A null pointer means "no default" → ArityError.
     // shared_ptr (rather than `std::optional<Value>`) avoids the
     // incomplete-type cycle — Value is forward-declared at this point.
+    // Use the `kw_default_*` helpers below to share canonical
+    // instances of common values (false/true/0/"") so multiple
+    // stdlib entries don't each allocate their own.
     std::shared_ptr<Value> default_value;
   };
 
@@ -1145,6 +1148,28 @@ inline ObjectValue::ObjectValue() {
 
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
+}
+
+// Canonical defaults for stdlib FunctionValue parameter lists. Each
+// helper returns the SAME shared_ptr<Value> across calls, so multiple
+// stdlib entries that take `lines = false` (etc.) share one allocation.
+// Custom literal defaults still need a fresh `std::make_shared<Value>`
+// at the call site.
+inline const std::shared_ptr<Value>& kw_default_false() {
+  static const auto v = std::make_shared<Value>(Value(false));
+  return v;
+}
+inline const std::shared_ptr<Value>& kw_default_true() {
+  static const auto v = std::make_shared<Value>(Value(true));
+  return v;
+}
+inline const std::shared_ptr<Value>& kw_default_zero() {
+  static const auto v = std::make_shared<Value>(Value((long)0));
+  return v;
+}
+inline const std::shared_ptr<Value>& kw_default_nil() {
+  static const auto v = std::make_shared<Value>(Value{});
+  return v;
 }
 
 struct Environment {
