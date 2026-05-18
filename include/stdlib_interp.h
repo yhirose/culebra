@@ -278,6 +278,134 @@ inline Value make_io_namespace() {
   return Value(std::move(ns));
 }
 
+inline Value make_fs_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  auto throw_io = [](const std::string& what, long line, long col,
+                     const std::error_code& ec = {}) {
+    auto msg = ec ? std::format("{} at {}:{}: {}.", what, line, col, ec.message())
+                  : std::format("{} at {}:{}.", what, line, col);
+    throw CulebraError("IOError", std::move(msg), line, col);
+  };
+
+  // `FS.join(parts...)` — varargs path concat. Empty arg list -> "".
+  ns.initialize(
+      "join",
+      Value(FunctionValue({}, [throw_io](std::shared_ptr<Environment> env) {
+        long line = env->get("__LINE__").to_long();
+        long col = env->get("__COLUMN__").to_long();
+        if (!env->has("__ARGS__")) return Value(std::string(""));
+        const auto& args = *env->get("__ARGS__").to_array().values;
+        std::filesystem::path out;
+        for (const auto& v : args) {
+          if (v.type != Value::String) throw_io("FS.join: non-String arg", line, col);
+          out /= std::string(v.to_string());
+        }
+        return Value(out.string());
+      })),
+      false);
+
+  auto string_to_string = [](auto fn) {
+    return Value(FunctionValue(
+        {{"path", false, "String"sv}},
+        [fn](std::shared_ptr<Environment> env) {
+          const auto& p = env->get("path").to_string();
+          return Value(fn(std::filesystem::path(p)));
+        },
+        "String"sv));
+  };
+
+  ns.initialize("basename",  string_to_string([](const std::filesystem::path& p) { return p.filename().string(); }), false);
+  ns.initialize("dirname",   string_to_string([](const std::filesystem::path& p) { return p.parent_path().string(); }), false);
+  ns.initialize("extension", string_to_string([](const std::filesystem::path& p) { return p.extension().string(); }), false);
+  ns.initialize("stem",      string_to_string([](const std::filesystem::path& p) { return p.stem().string(); }), false);
+
+  auto path_query_bool = [](auto fn) {
+    return Value(FunctionValue(
+        {{"path", false, "String"sv}},
+        [fn](std::shared_ptr<Environment> env) {
+          const auto& p = env->get("path").to_string();
+          std::error_code ec;
+          return Value(fn(std::filesystem::path(p), ec));
+        },
+        "Bool"sv));
+  };
+
+  ns.initialize("exists",  path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::exists(p, ec); }), false);
+  ns.initialize("is_file", path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::is_regular_file(p, ec); }), false);
+  ns.initialize("is_dir",  path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::is_directory(p, ec); }), false);
+
+  ns.initialize(
+      "size",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            auto sz = std::filesystem::file_size(p, ec);
+            if (ec) throw_io(std::format("FS.size('{}')", p), line, col, ec);
+            return Value(static_cast<long>(sz));
+          },
+          "Long"sv)),
+      false);
+
+  ns.initialize(
+      "list_dir",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            auto it = std::filesystem::directory_iterator(p, ec);
+            if (ec) throw_io(std::format("FS.list_dir('{}')", p), line, col, ec);
+            ArrayValue av;
+            for (const auto& entry : it) {
+              av.values->emplace_back(entry.path().filename().string());
+            }
+            return Value(std::move(av));
+          },
+          "Array"sv)),
+      false);
+
+  ns.initialize(
+      "mkdir",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            std::filesystem::create_directories(p, ec);
+            if (ec) throw_io(std::format("FS.mkdir('{}')", p), line, col, ec);
+            return Value();
+          })),
+      false);
+
+  ns.initialize(
+      "remove",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            if (!std::filesystem::remove(p, ec) || ec) {
+              throw_io(std::format("FS.remove('{}')", p), line, col, ec);
+            }
+            return Value();
+          })),
+      false);
+
+  return Value(std::move(ns));
+}
+
 inline Value make_random_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -1072,6 +1200,7 @@ inline void setup_built_in_functions(
 
   env.initialize("Math", make_math_namespace(), false);
   env.initialize("IO", make_io_namespace(), false);
+  env.initialize("FS", make_fs_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
   env.initialize("Tensor", make_tensor_namespace(), false);

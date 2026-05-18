@@ -5263,6 +5263,17 @@ inline constexpr auto random_shuffle      = "culebra_runtime_random_shuffle";
 inline constexpr auto random_weighted_choice =
     "culebra_runtime_random_weighted_choice";
 inline constexpr auto io_exists           = "culebra_runtime_io_exists";
+inline constexpr auto fs_join             = "culebra_runtime_fs_join";
+inline constexpr auto fs_basename         = "culebra_runtime_fs_basename";
+inline constexpr auto fs_dirname          = "culebra_runtime_fs_dirname";
+inline constexpr auto fs_extension        = "culebra_runtime_fs_extension";
+inline constexpr auto fs_stem             = "culebra_runtime_fs_stem";
+inline constexpr auto fs_is_file          = "culebra_runtime_fs_is_file";
+inline constexpr auto fs_is_dir           = "culebra_runtime_fs_is_dir";
+inline constexpr auto fs_size             = "culebra_runtime_fs_size";
+inline constexpr auto fs_list_dir         = "culebra_runtime_fs_list_dir";
+inline constexpr auto fs_mkdir            = "culebra_runtime_fs_mkdir";
+inline constexpr auto fs_remove           = "culebra_runtime_fs_remove";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto object_has          = "culebra_runtime_object_has";

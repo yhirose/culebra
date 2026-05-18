@@ -264,6 +264,108 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_io_exists(
   return std::filesystem::exists(path, ec) ? 1 : 0;
 }
 
+// --- FS namespace ---
+
+[[noreturn]] inline void _fs_throw_io(const std::string& msg, int64_t line,
+                                      int64_t col,
+                                      const std::error_code& ec) {
+  throw culebra::CulebraError(
+      "IOError",
+      std::format("{} at {}:{}: {}.", msg, line, col, ec.message()),
+      line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
+    const JitValue* args, int64_t n, int64_t line, int64_t col) {
+  std::filesystem::path out;
+  for (int64_t i = 0; i < n; ++i) {
+    if (args[i].tag != TAG_STRING) {
+      throw_type_error_at(line, col);
+    }
+    out /= reinterpret_cast<const char*>(args[i].data);
+  }
+  return _culebra_heap_str(out.string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_basename(
+    const char* path) {
+  std::filesystem::path p(path ? path : "");
+  return _culebra_heap_str(p.filename().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_dirname(
+    const char* path) {
+  std::filesystem::path p(path ? path : "");
+  return _culebra_heap_str(p.parent_path().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_extension(
+    const char* path) {
+  std::filesystem::path p(path ? path : "");
+  return _culebra_heap_str(p.extension().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_stem(
+    const char* path) {
+  std::filesystem::path p(path ? path : "");
+  return _culebra_heap_str(p.stem().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_file(
+    const char* path) {
+  if (!path) return 0;
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) ? 1 : 0;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_dir(
+    const char* path) {
+  if (!path) return 0;
+  std::error_code ec;
+  return std::filesystem::is_directory(path, ec) ? 1 : 0;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_size(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto sz = std::filesystem::file_size(path ? path : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.size('{}')", path ? path : ""),
+                                line, col, ec);
+  return static_cast<int64_t>(sz);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_list_dir(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto it = std::filesystem::directory_iterator(path ? path : "", ec);
+  if (ec) _fs_throw_io(
+      std::format("FS.list_dir('{}')", path ? path : ""), line, col, ec);
+  auto* arr = culebra_runtime_array_new();
+  for (const auto& entry : it) {
+    auto* s = _culebra_heap_str(entry.path().filename().string());
+    culebra_runtime_array_push(arr, TAG_STRING,
+                                reinterpret_cast<int64_t>(s));
+  }
+  return arr;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_mkdir(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::create_directories(path ? path : "", ec);
+  if (ec) _fs_throw_io(
+      std::format("FS.mkdir('{}')", path ? path : ""), line, col, ec);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  if (!std::filesystem::remove(path ? path : "", ec) || ec) {
+    _fs_throw_io(
+        std::format("FS.remove('{}')", path ? path : ""), line, col, ec);
+  }
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_exit(int64_t code) {
   std::exit(static_cast<int>(code));
 }
@@ -943,6 +1045,31 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                ptrTy, ptrTy, jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::io_exists, jit.builder_.getInt64Ty(), ptrTy);
+  // FS: (path) -> string for path manipulators, (path) -> i64 for queries,
+  // (path, line, col) -> i64/void/ptr for ops that throw on error.
+  jit.module_->getOrInsertFunction(rt::fs_join, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  for (auto name : {rt::fs_basename, rt::fs_dirname, rt::fs_extension,
+                    rt::fs_stem}) {
+    jit.module_->getOrInsertFunction(name, ptrTy, ptrTy);
+  }
+  for (auto name : {rt::fs_is_file, rt::fs_is_dir}) {
+    jit.module_->getOrInsertFunction(name, jit.builder_.getInt64Ty(), ptrTy);
+  }
+  jit.module_->getOrInsertFunction(rt::fs_size,
+                               jit.builder_.getInt64Ty(), ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::fs_list_dir, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  for (auto name : {rt::fs_mkdir, rt::fs_remove}) {
+    jit.module_->getOrInsertFunction(name, jit.builder_.getVoidTy(), ptrTy,
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
+  }
 
   // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
   // -> ptr signature; from takes a single Array (ptr, line, col);
@@ -1187,7 +1314,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (!JIT::arg_list_is_positional_only(argsAst)) {
     static const std::set<std::string_view> kwarg_aware_ns = {"JSON"};
     static const std::set<std::string_view> positional_only_ns = {
-        "Math", "IO", "Random", "Sys", "Tensor",
+        "Math", "IO", "FS", "Random", "Sys", "Tensor",
     };
     if (positional_only_ns.contains(ns)) {
       throw culebra::CulebraError("SyntaxError",
@@ -1441,6 +1568,99 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_value_release(arg);
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
       return make_bool(b);
+    }
+  }
+
+  if (ns == "FS") {
+    // (path) -> String for the four path-manipulation helpers.
+    auto path_to_string = [&](const char* rt_name) -> llvm::Value* {
+      if (argsAst.nodes.size() != 1) return nullptr;
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "FS path argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto s = emit_call(module_->getFunction(rt_name), {p});
+      emit_value_release(arg);
+      return make_string(s);
+    };
+    if (method == "basename")  if (auto v = path_to_string(rt::fs_basename)) return v;
+    if (method == "dirname")   if (auto v = path_to_string(rt::fs_dirname)) return v;
+    if (method == "extension") if (auto v = path_to_string(rt::fs_extension)) return v;
+    if (method == "stem")      if (auto v = path_to_string(rt::fs_stem)) return v;
+
+    // (path) -> Bool query helpers.
+    auto path_to_bool = [&](const char* rt_name) -> llvm::Value* {
+      if (argsAst.nodes.size() != 1) return nullptr;
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "FS path argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto i = emit_call(module_->getFunction(rt_name), {p});
+      emit_value_release(arg);
+      auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
+      return make_bool(b);
+    };
+    if (method == "exists")  if (auto v = path_to_bool(rt::io_exists)) return v;
+    if (method == "is_file") if (auto v = path_to_bool(rt::fs_is_file)) return v;
+    if (method == "is_dir")  if (auto v = path_to_bool(rt::fs_is_dir)) return v;
+
+    // (path, line, col) -> Long. IOError on missing.
+    if (method == "size" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "FS.size argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto n = emit_call(module_->getFunction(rt::fs_size),
+                         {p, line, col});
+      emit_value_release(arg);
+      return make_long(n);
+    }
+
+    // (path, line, col) -> Array*.
+    if (method == "list_dir" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "FS.list_dir argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto a = emit_call(module_->getFunction(rt::fs_list_dir),
+                         {p, line, col});
+      emit_value_release(arg);
+      return make_array(a);
+    }
+
+    // (path, line, col) -> void mutators.
+    auto path_to_void = [&](const char* rt_name) -> llvm::Value* {
+      if (argsAst.nodes.size() != 1) return nullptr;
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "FS path argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      emit_call(module_->getFunction(rt_name), {p, line, col});
+      emit_value_release(arg);
+      return make_nil();
+    };
+    if (method == "mkdir")  if (auto v = path_to_void(rt::fs_mkdir)) return v;
+    if (method == "remove") if (auto v = path_to_void(rt::fs_remove)) return v;
+
+    // (args*) -> String join; build a slab of JitValues then call.
+    if (method == "join") {
+      auto n = argsAst.nodes.size();
+      llvm::IRBuilder<> entryB(
+          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
+          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
+      auto slab = entryB.CreateAlloca(
+          valueType_, builder_.getInt64(static_cast<int64_t>(n)),
+          "fs.join.args");
+      std::vector<llvm::Value*> compiled;
+      compiled.reserve(n);
+      for (size_t i = 0; i < n; i++) {
+        auto v = compile(*argsAst.nodes[i]);
+        auto slot = builder_.CreateGEP(valueType_, slab,
+                                       builder_.getInt64(i));
+        builder_.CreateStore(v, slot);
+        compiled.push_back(v);
+      }
+      auto s = emit_call(
+          module_->getFunction(rt::fs_join),
+          {slab, builder_.getInt64(static_cast<int64_t>(n)),
+           line, col});
+      for (auto v : compiled) emit_value_release(v);
+      return make_string(s);
     }
   }
 
@@ -1924,7 +2144,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",     "assert",
       "to_long", "to_float",  "to_string", "type_of",
-      "Math",    "IO",        "Random",    "Sys",     "JSON"};
+      "Math",    "IO",        "FS",        "Random",  "Sys",  "JSON"};
   return names.contains(name);
 }
 
