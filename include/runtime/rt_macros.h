@@ -23,3 +23,11 @@
 #define CULEBRA_RT_KEEP __attribute__((used))
 #define CULEBRA_RT_INLINE inline
 #endif
+
+// `CULEBRA_RT_NO_TENSOR` flips tensor entry points into nullptr / no-op
+// stubs so the static reachability chain from `culebra_runtime_num_add`
+// → `_try_tensor_binop` → `culebra::tensor_binop` → cblas is broken.
+// `src/runtime/culebra_rt.cc` builds the regular `libculebra_rt.a`;
+// the same source compiled with this macro becomes
+// `libculebra_rt_no_tensor.a`, which AOT-built CLIs that never
+// reference Tensor link against (skipping Accelerate / BLAS entirely).

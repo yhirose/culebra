@@ -107,10 +107,27 @@ if(CULEBRA_ENABLE_JIT)
   # .data section and the linker can't drop them.
   target_compile_options(culebra_rt PRIVATE
     -ffunction-sections -fdata-sections)
-  # The `culebra build` driver needs to know where to find the
-  # archive at link time. Override at runtime with $CULEBRA_RT_LIB.
+
+  # Tensor-free variant. `culebra build` picks this when AST scan
+  # reports no Tensor references — `culebra_runtime_tensor_binop` and
+  # the tensor cases in value-release / value-to-str fall through to
+  # nullptr / no-op stubs, breaking the static reachability chain to
+  # cblas / tensor.h kernels so Accelerate / BLAS can be dropped too.
+  add_library(culebra_rt_no_tensor STATIC ./src/runtime/culebra_rt.cc)
+  target_compile_features(culebra_rt_no_tensor PRIVATE cxx_std_23)
+  target_compile_definitions(culebra_rt_no_tensor PRIVATE
+    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
+    CULEBRA_RT_DEFINE_RUNTIME=1
+    CULEBRA_RT_NO_TENSOR=1)
+  target_compile_options(culebra_rt_no_tensor PRIVATE
+    -ffunction-sections -fdata-sections)
+
+  # The `culebra build` driver needs to know where to find both
+  # archives at link time. Override at runtime with $CULEBRA_RT_LIB /
+  # $CULEBRA_RT_NO_TENSOR_LIB.
   target_compile_definitions(culebra PRIVATE
-    CULEBRA_RT_LIBPATH="$<TARGET_FILE:culebra_rt>")
+    CULEBRA_RT_LIBPATH="$<TARGET_FILE:culebra_rt>"
+    CULEBRA_RT_NO_TENSOR_LIBPATH="$<TARGET_FILE:culebra_rt_no_tensor>")
 endif()
 
 # Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in

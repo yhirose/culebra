@@ -1,6 +1,7 @@
 #include <culebra.h>
 #include <stdlib_interp.h>
 #ifdef CULEBRA_JIT_ENABLED
+#include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
 #endif
 #include <cstdlib>
@@ -128,32 +129,36 @@ int run_build(const BuildOptions& opts) {
                                        opts.emit_llvm);
   if (rc != 0) return rc;
 
-  const char* lib = std::getenv("CULEBRA_RT_LIB");
-  if (!lib) lib = CULEBRA_RT_LIBPATH;
+  // Tensor reachability drives both the archive choice and whether
+  // BLAS is on the link line. `aot_uses_tensor` is conservative: any
+  // bare `Tensor` identifier flips it. Tensor-free programs link
+  // libculebra_rt_no_tensor.a, whose tensor entry points are stubbed
+  // (see `CULEBRA_RT_NO_TENSOR` in rt_macros.h), so the static
+  // reachability chain to cblas is broken.
+  bool uses_tensor = culebra::aot_uses_tensor(*ast);
+
+  const char* lib_env = uses_tensor ? "CULEBRA_RT_LIB"
+                                    : "CULEBRA_RT_NO_TENSOR_LIB";
+  const char* lib = std::getenv(lib_env);
+  if (!lib) lib = uses_tensor ? CULEBRA_RT_LIBPATH
+                              : CULEBRA_RT_NO_TENSOR_LIBPATH;
   if (!std::filesystem::exists(lib)) {
     std::println(stderr,
         "culebra build: runtime archive not found at '{}'\n"
-        "  override with CULEBRA_RT_LIB=<path-to-libculebra_rt.a>", lib);
+        "  override with {}=<path-to-archive>", lib, lib_env);
     return 1;
   }
 
   const char* cc = std::getenv("CULEBRA_CC");
   if (!cc) cc = "cc";
 
-  // Dead-strip prunes the ~200 culebra_runtime_* helpers a typical
-  // program doesn't call (paired with -ffunction-sections on the
-  // archive). BLAS framework must stay linked unconditionally: even
-  // a Tensor-free program reaches `_try_tensor_binop` from
-  // `culebra_runtime_num_add`, which transitively pulls in cblas
-  // refs. A future phase would split tensor handling into its own
-  // archive so this gating becomes practical.
   const char* dead_strip =
 #if defined(__APPLE__)
       "-Wl,-dead_strip";
 #else
       "-Wl,--gc-sections";
 #endif
-  std::string blas = CULEBRA_BLAS_LINK;
+  std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
 #if defined(__APPLE__)
   std::string libcxx = "-lc++";
 #else
