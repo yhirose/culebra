@@ -2987,6 +2987,93 @@ _jit_multifn_dispatcher_names() {
   return tbl;
 }
 
+// Persistent top-level binding storage for the JIT REPL. Each entry
+// owns +1 on its stored JitValue; the destructor drops every ref so
+// REPL session teardown leaves the runtime clean.
+//
+// Variables defined at REPL top-level (`let x = expr`, `mut y = ...`,
+// `fn name(...) {...}`) compile to `culebra_runtime_repl_set` against
+// this dict; references emit `culebra_runtime_repl_get`. Function
+// bodies and nested blocks keep using the SSA/cell machinery — only
+// the REPL-prompt boundary touches this map.
+struct JitReplGlobals {
+  std::vector<std::string> order;   // insertion order
+  std::unordered_map<std::string, JitValue> by_name;
+  std::unordered_map<std::string, bool> is_mut;
+
+  ~JitReplGlobals() {
+    for (auto& [_, v] : by_name) {
+      _culebra_value_release_impl(v.tag, v.data);
+    }
+  }
+};
+
+// Thread-local active REPL globals dict. `run_repl` sets this before
+// invoking the input function and clears it on return; runtime
+// helpers and any JIT-compiled function body — top-level or nested
+// closure — consult it without needing the dict threaded through
+// their signature. One REPL session per thread.
+inline thread_local JitReplGlobals* _jit_repl_globals_current = nullptr;
+
+// Out-parameter style avoids any ABI surprise around 16-byte struct
+// return on ARM64 macOS (where LLVM's regs-vs-sret choice for
+// `{i8, i64}` didn't agree with the C++ side for this entry).
+__attribute__((used)) inline void
+culebra_runtime_repl_get(const char* name,
+                          int64_t line, int64_t col,
+                          int8_t* out_tag, int64_t* out_data) {
+  auto* g = _jit_repl_globals_current;
+  if (!g) {
+    throw culebra::CulebraError("NameError",
+        std::format("undefined variable '{}'", name), line, col);
+  }
+  auto it = g->by_name.find(name);
+  if (it == g->by_name.end()) {
+    throw culebra::CulebraError("NameError",
+        std::format("undefined variable '{}'", name), line, col);
+  }
+  culebra_runtime_value_retain(it->second.tag, it->second.data);
+  *out_tag = it->second.tag;
+  *out_data = it->second.data;
+}
+
+// Caller transfers +1 on (tag, data). On overwrite of an existing
+// (mutable) binding the previous +1 is released here. Re-binding via
+// `let` is allowed for any name (matches interp REPL shadow semantics);
+// `mut`-vs-immutable enforcement only kicks in for plain assignment.
+__attribute__((used)) inline void
+culebra_runtime_repl_set(const char* name,
+                          int8_t tag, int64_t data,
+                          int8_t is_let, int8_t is_mut,
+                          int64_t line, int64_t col) {
+  auto* g = _jit_repl_globals_current;
+  if (!g) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("RuntimeError",
+        "repl_set called outside REPL session", line, col);
+  }
+  auto it = g->by_name.find(name);
+  if (it != g->by_name.end()) {
+    if (!is_let) {
+      // Plain assignment: enforce mutability.
+      auto m = g->is_mut.find(name);
+      if (m == g->is_mut.end() || !m->second) {
+        _culebra_value_release_impl(tag, data);
+        throw culebra::CulebraError("ImmutableError",
+            std::format("cannot reassign immutable '{}'", name),
+            line, col);
+      }
+    }
+    _culebra_value_release_impl(it->second.tag, it->second.data);
+    it->second = {tag, data};
+    if (is_let) g->is_mut[name] = static_cast<bool>(is_mut);
+  } else {
+    g->order.push_back(name);
+    g->by_name.emplace(name, JitValue{tag, data});
+    g->is_mut.emplace(name, static_cast<bool>(is_mut));
+  }
+}
+
 // Runtime type name for dispatch. For primitives this is the same as
 // `_culebra_tag_name`, but for class instances (TAG_OBJECT with a
 // `class:` String slot) we substitute the class name — that's why
@@ -5273,6 +5360,8 @@ inline constexpr auto puts                = "culebra_runtime_puts";
 inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
 inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";
+inline constexpr auto repl_get             = "culebra_runtime_repl_get";
+inline constexpr auto repl_set             = "culebra_runtime_repl_set";
 inline constexpr auto iter_collect         = "culebra_runtime_iter_collect";
 inline constexpr auto iter_count           = "culebra_runtime_iter_count";
 inline constexpr auto iter_for_each        = "culebra_runtime_iter_for_each";
@@ -5410,6 +5499,7 @@ struct JIT {
     std::string_view return_type;
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
+    bool is_repl_top_level;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -5419,7 +5509,9 @@ struct JIT {
           closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
           return_type(std::exchange(j.current_return_type_, {})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
-          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)) {}
+          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
+          is_repl_top_level(
+              std::exchange(j.is_repl_top_level_, false)) {}
 
     void restore() {
       if (!jit) return;
@@ -5433,6 +5525,7 @@ struct JIT {
       jit->current_info_ = info;
       jit->scopes_ = std::move(scopes);
       jit->builder_.SetInsertPoint(insert_block);
+      jit->is_repl_top_level_ = is_repl_top_level;
       jit = nullptr;
     }
 
@@ -5563,6 +5656,20 @@ struct JIT {
     return false;
   }
 
+  // Build a fresh, ready-to-use LLJIT instance with the host's process
+  // symbols available. Shared between one-shot `exec` (script mode)
+  // and the persistent REPL JIT.
+  static std::unique_ptr<llvm::orc::LLJIT> create_jit_instance() {
+    using namespace llvm;
+    auto jit = cantFail(orc::LLJITBuilder().create());
+    auto& jd = jit->getMainJITDylib();
+    auto gen = cantFail(
+        orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            jit->getDataLayout().getGlobalPrefix()));
+    jd.addGenerator(std::move(gen));
+    return jit;
+  }
+
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
                          int opt_level = 2) {
@@ -5649,6 +5756,132 @@ struct JIT {
       mod->print(outs(), nullptr);
     } else {
       exec(std::move(ctx), std::move(mod));
+    }
+  }
+
+  // REPL-mode compile-and-run for a single input. State (top-level
+  // bindings, user-defined functions, multimethods) persists between
+  // calls via `globals` + the per-session `jit_handle`. Each call
+  // builds a fresh module named `__repl_input_N` and addIRModules it
+  // to the shared `LLJIT`, so prior inputs' compiled code stays live.
+  //
+  // Returns the value of the input's final expression (or a nil
+  // JitValue if the input had no expression result). Caller owns the
+  // +1 — typically prints and releases. Throws CulebraError /
+  // std::exception on parse-survived failures so the REPL loop can
+  // catch and continue.
+  static JitValue run_repl(const std::shared_ptr<peg::Ast>& ast,
+                           JitReplGlobals& globals,
+                           llvm::orc::LLJIT& jit_handle) {
+    using namespace llvm;
+    ensure_native_target_init();
+
+    static std::atomic<int> input_counter{0};
+    int input_n = input_counter.fetch_add(1);
+    auto fn_name = std::format("__repl_input_{}", input_n);
+    auto mod_name = std::format("repl_{}", input_n);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>(mod_name, *ctx);
+    {
+      llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+      std::string err;
+      auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
+      if (target) {
+        std::unique_ptr<llvm::TargetMachine> tm(
+            target->createTargetMachine(triple, "", "", {}, {}));
+        if (tm) {
+          mod->setDataLayout(tm->createDataLayout());
+          mod->setTargetTriple(triple);
+        }
+      }
+    }
+    IRBuilder<> builder(*ctx);
+
+    JIT jit(ctx.get(), mod.get(), builder);
+    jit.declare_runtime_functions();
+    jit.main_info_ = jit.analyze_program(*ast);
+    jit.current_info_ = &jit.main_info_;
+    jit.any_kw_only_in_program_ = scan_for_kw_only_marker(*ast);
+    jit.is_repl_session_ = true;
+
+    // `__repl_input_N() -> Value`. The active globals dict is reached
+    // via `_jit_repl_globals_current`, set just before invocation.
+    auto fnType = FunctionType::get(jit.valueType_, {}, false);
+    auto fn = Function::Create(fnType, GlobalValue::ExternalLinkage,
+                               fn_name, mod.get());
+    if (jit.main_info_.has_eh) {
+      fn->setPersonalityFn(jit.get_personality_fn());
+    }
+
+    auto entryBB = BasicBlock::Create(*ctx, "entry", fn);
+    builder.SetInsertPoint(entryBB);
+    jit.push_scope();
+    jit.is_repl_top_level_ = true;
+
+    llvm::Value* mainMark = nullptr;
+    if (jit.main_info_.has_fn_defer) {
+      mainMark = builder.CreateCall(
+          mod->getFunction(rt::defer_mark), {}, "repl.mark");
+      jit.current_fn_defer_mark_ = mainMark;
+    }
+
+    auto last = jit.compile(*ast);
+
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      if (mainMark) {
+        builder.CreateCall(mod->getFunction(rt::defer_run_to),
+                           {mainMark});
+      }
+      jit.release_all_scopes_for_exit();
+      // `compile` for STATEMENTS returns the last statement's value
+      // with a +1. Hand it back to the caller for printing/release.
+      if (!last) {
+        last = jit.make_nil();
+      }
+      builder.CreateRet(last);
+    }
+
+    jit.current_fn_defer_mark_ = nullptr;
+    jit.is_repl_top_level_ = false;
+    jit.pop_scope();
+    jit.current_info_ = nullptr;
+
+    verifyFunction(*fn);
+    // O0 keeps per-input compile latency interactive — the optimizer
+    // pipeline (~10-30ms at O2) dominates user-perceived REPL lag,
+    // and run-once REPL bodies don't amortize the cost. Functions
+    // defined at the prompt are still callable from later inputs;
+    // they just won't be inlined/scalar-replaced.
+    optimize_module(*mod, 0);
+
+    orc::ThreadSafeContext tsctx(std::move(ctx));
+    cantFail(jit_handle.addIRModule(
+        orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));
+
+    using ReplFn = JitValue (*)();
+    auto reply_fn =
+        cantFail(jit_handle.lookup(fn_name)).toPtr<ReplFn>();
+    // Scoped activation of the thread-local globals pointer. The
+    // dtor restores the previous value on every exit path (normal
+    // return, CulebraException rethrow, or generic catch-and-throw),
+    // so a future fourth path can't accidentally leak a dangling ptr.
+    struct ReplGlobalsScope {
+      JitReplGlobals* saved;
+      ReplGlobalsScope(JitReplGlobals* g)
+          : saved(_jit_repl_globals_current) {
+        _jit_repl_globals_current = g;
+      }
+      ~ReplGlobalsScope() { _jit_repl_globals_current = saved; }
+    } scope(&globals);
+
+    try {
+      return reply_fn();
+    } catch (const CulebraException& e) {
+      _culebra_value_release_impl(e.tag, e.data);
+      auto s = _culebra_value_to_str_impl(e.tag, e.data);
+      try { culebra_runtime_defer_run_to(0); } catch (...) {}
+      throw std::runtime_error(std::format("uncaught: {}", s));
     }
   }
 
@@ -5920,6 +6153,24 @@ struct JIT {
   // `culebra_runtime_check_pos_count` emit entirely.
   bool any_kw_only_in_program_ = false;
 
+  // REPL codegen flags. The actual globals dict lives in the
+  // thread-local `_jit_repl_globals_current`; these two fields only
+  // tell codegen *which variant* to emit at each binding/lookup site.
+  //
+  // `is_repl_session_` — true while compiling any REPL input. Gates
+  //   the REPL-aware variants of compile_identifier (read through
+  //   `repl_get` from any nesting depth) and of let / multifn at
+  //   top-level. CompilerStateSaver does NOT touch this — nested
+  //   closure bodies still need to resolve top-level reads.
+  //
+  // `is_repl_top_level_` — true only at the prompt's top level.
+  //   CompilerStateSaver flips it false when codegen descends into a
+  //   function body, so let-bindings inside a function become local
+  //   cells (not REPL globals). Read sites use the broader
+  //   `is_repl_session_` flag instead.
+  bool is_repl_session_ = false;
+  bool is_repl_top_level_ = false;
+
   // Currently compiling function's info (to know which locals are cells)
   const FuncInfo* current_info_ = nullptr;
 
@@ -5942,8 +6193,11 @@ struct JIT {
   // function's own defers run regardless of where the return sits.
   llvm::Value* current_fn_defer_mark_ = nullptr;
 
-  // Counter for generating unique function names
-  int funcCounter_ = 0;
+  // Counter for generating unique function names. Process-wide so
+  // names stay unique across separate `JIT::run_repl` calls that
+  // share an `LLJIT` instance — a fresh JIT counter would collide
+  // with prior REPL inputs' `__culebra_fn_0` symbols.
+  static inline std::atomic<int> funcCounter_{0};
 
   // Counter for per-callsite property-get inline-cache globals.
   int prop_ic_counter_ = 0;
@@ -7091,6 +7345,23 @@ struct JIT {
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+    // REPL top-level binding storage. The active globals dict is
+    // resolved via a thread-local, so neither helper takes it as an
+    // argument. repl_get uses out-parameter shape to dodge the
+    // 16-byte {i8, i64} struct return ABI quirk seen earlier.
+    module_->getOrInsertFunction(rt::repl_get, builder_.getVoidTy(),
+                                 ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::repl_set, builder_.getVoidTy(),
+                                 ptrTy,
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
 
     auto& h = current_hooks();
     if (h.declare_runtime) h.declare_runtime(*this);
@@ -7550,11 +7821,36 @@ struct JIT {
   llvm::Value* compile_identifier(const peg::Ast& ast) {
     auto name = std::string(ast.token);
     auto slot = lookup_var(name);
-    if (!slot) {
-      throw culebra::CulebraError("NameError",
-          std::format("undefined variable '{}'...", name));
+    if (slot) return load_slot(*slot, name);
+    if (is_repl_session_) {
+      // Resolve through REPL session globals at runtime. The helper
+      // consults a thread-local `_jit_repl_globals_current` so nested
+      // closure bodies can use the same path as top-level lookups
+      // without needing the globals dict threaded through their
+      // signature. Out-params dodge the 16-byte aggregate-return ABI.
+      auto fn = builder_.GetInsertBlock()->getParent();
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto tagSlot = entryB.CreateAlloca(builder_.getInt8Ty(),
+                                         nullptr, "repl.tag");
+      auto dataSlot = entryB.CreateAlloca(builder_.getInt64Ty(),
+                                          nullptr, "repl.data");
+      auto namePtr = get_or_create_global_str(name, ".repl.id");
+      emit_call(
+          module_->getFunction(rt::repl_get),
+          {namePtr, current_line_val(), current_column_val(),
+           tagSlot, dataSlot});
+      auto tag = builder_.CreateLoad(builder_.getInt8Ty(), tagSlot,
+                                     "repl.tag.v");
+      auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
+                                      "repl.data.v");
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, tag, {0});
+      v = builder_.CreateInsertValue(v, data, {1});
+      return v;
     }
-    return load_slot(*slot, name);
+    throw culebra::CulebraError("NameError",
+        std::format("undefined variable '{}'...", name));
   }
 
   // Create an alloca + cell for a new captured variable.
@@ -7641,6 +7937,23 @@ struct JIT {
       // it. Caller (compile_statements) drops the result like any other
       // unused value.
       if (is_sink_name(name)) {
+        return rval;
+      }
+
+      // REPL top-level binding: persist into the session globals dict
+      // instead of building a local alloca. The runtime helper takes
+      // ownership of the +1; we still want to return a +1 for callers
+      // that consume the assignment's value, so retain once more.
+      if (is_repl_top_level_ && is_repl_session_ && !compound) {
+        auto namePtr = get_or_create_global_str(name, ".repl.let");
+        emit_value_retain(rval);
+        emit_call(
+            module_->getFunction(rt::repl_set),
+            {namePtr,
+             extract_tag(rval), extract_data(rval),
+             builder_.getInt8(let ? 1 : 0),
+             builder_.getInt8(mut ? 1 : 0),
+             current_line_val(), current_column_val()});
         return rval;
       }
 
@@ -9704,6 +10017,21 @@ struct JIT {
 
     auto dispatcherVal = make_func(dispatcherPtr);
 
+    // REPL: persist the dispatcher into session globals. Subsequent
+    // `fn name(...)` decls in later inputs return the same dispatcher
+    // pointer (the runtime caches by name), so repl_set's overwrite
+    // semantics keep the binding stable across re-decls.
+    if (is_repl_top_level_ && is_repl_session_) {
+      auto namePtr = get_or_create_global_str(name, ".repl.multifn");
+      emit_call(
+          module_->getFunction(rt::repl_set),
+          {namePtr,
+           extract_tag(dispatcherVal), extract_data(dispatcherVal),
+           builder_.getInt8(1), builder_.getInt8(0),
+           current_line_val(), current_column_val()});
+      return make_nil();
+    }
+
     // Bind the dispatcher in the surrounding scope. First decl per name
     // creates a cell slot; subsequent decls overwrite (the runtime
     // returns the same cached dispatcher pointer, so this is a +1
@@ -11678,15 +12006,7 @@ struct JIT {
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
                    std::unique_ptr<llvm::Module> mod) {
     using namespace llvm;
-
-    auto jit = cantFail(orc::LLJITBuilder().create());
-
-    auto& jd = jit->getMainJITDylib();
-    auto gen = cantFail(
-        orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            jit->getDataLayout().getGlobalPrefix()));
-    jd.addGenerator(std::move(gen));
-
+    auto jit = create_jit_instance();
     orc::ThreadSafeContext tsctx(std::move(ctx));
     cantFail(jit->addIRModule(
         orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));

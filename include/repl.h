@@ -32,11 +32,18 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
                 bool jit_mode = false) {
   using namespace std;
 
+#ifdef CULEBRA_JIT_ENABLED
+  // Per-session JIT instance + globals dict. addIRModule of each input
+  // keeps the prior input's compiled functions live, and run_repl
+  // reads/writes `jit_globals` so `let x = 1` followed by `puts(x)`
+  // works across inputs (mirrors other JIT-backed REPLs).
+  std::unique_ptr<llvm::orc::LLJIT> jit_handle;
+  JitReplGlobals jit_globals;
   if (jit_mode) {
-    cout << "JIT REPL (state not preserved between inputs; use puts() for "
-            "output)"
-         << endl;
+    JIT::ensure_native_target_init();
+    jit_handle = JIT::create_jit_instance();
   }
+#endif
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before
@@ -82,7 +89,11 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
 #ifdef CULEBRA_JIT_ENABLED
         if (jit_mode) {
           try {
-            JIT::run(ast, false, false);
+            auto v = JIT::run_repl(ast, jit_globals, *jit_handle);
+            if (v.tag != TAG_NIL) {
+              cout << _culebra_value_to_str_impl(v.tag, v.data) << endl;
+            }
+            _culebra_value_release_impl(v.tag, v.data);
             add_history(line);
             continue;
           } catch (exception& e) {

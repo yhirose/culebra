@@ -2310,9 +2310,21 @@ a `--`, `Sys.argv` is empty.
 | `--emit-llvm`  | With `--jit`, print the generated IR and exit.            |
 | `-O0`..`-O3`   | With `--jit`, select the LLVM optimization level. Default `-O2`. |
 
-If no script is provided, the REPL is launched automatically. The JIT
-REPL does not preserve state between inputs (each input is a fresh
-compilation), while the interpreter REPL does.
+If no script is provided, the REPL is launched automatically. Both
+the interpreter REPL and the JIT REPL preserve session state across
+inputs — `let`, `mut`, and `fn` declarations from one input are
+visible to subsequent inputs, including from inside nested closures.
+The JIT REPL keeps a single `LLJIT` instance alive for the session
+and adds each input as a new module; top-level bindings are stored
+in a per-session dictionary that runtime helpers read through a
+thread-local pointer, so closures defined at the prompt can resolve
+top-level names at call time.
+
+Free-variable references inside REPL-defined closures pay one hash
+lookup per access (the closure body emits a `repl_get` call instead
+of capturing a cell). Bodies declared inside a function literal —
+not at the prompt — keep the normal capture machinery and are
+unaffected.
 
 The REPL persists input history across sessions. The path is
 `$CULEBRA_HISTFILE` if set, otherwise `$XDG_STATE_HOME/culebra/history`
@@ -2418,8 +2430,6 @@ semantics, but a few operational differences are worth knowing.
   the throw-unwind path; wrap such defers in a nested `{ ... }`
   block for throw-safe cleanup. Inside nested blocks, defers fire on
   every exit path as specified.
-* `--shell --jit` does not preserve state between inputs (each line
-  is a fresh compilation). The interpreter REPL does preserve state.
 * Top-level bindings to `drop`-bearing objects may live until program
   exit due to env-level cycles (see §16). Use `defer` or a factory
   function for script-wide resources.
