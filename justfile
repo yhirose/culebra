@@ -71,9 +71,42 @@ test-all: build
 test-embed: build
     cd build && ctest --output-on-failure
 
+# Run every test file through the AOT build path and assert the
+# produced binary's stdout matches `culebra --jit`. Catches
+# regressions in `culebra build` (object emission, runtime archive,
+# bootstrap) that the JIT-only paths don't see.
+test-aot: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    failed=()
+    out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
+    rm -rf "$out_dir" && mkdir -p "$out_dir"
+    for f in tests/*.cul; do
+      name=$(basename "$f" .cul)
+      bin="$out_dir/$name"
+      if ! ./build/culebra build "$f" -o "$bin" 2>"$out_dir/err"; then
+        echo "build failed: $f"
+        cat "$out_dir/err"
+        failed+=("$f")
+        continue
+      fi
+      out_aot=$("$bin")
+      out_jit=$(./build/culebra --jit "$f")
+      if [[ "$out_aot" != "$out_jit" ]]; then
+        echo "AOT and JIT outputs differ for $f:"
+        diff <(printf '%s' "$out_aot") <(printf '%s' "$out_jit") || true
+        failed+=("$f")
+      fi
+    done
+    if (( ${#failed[@]} > 0 )); then
+      echo "test-aot FAIL: ${#failed[@]} file(s) diverge"
+      exit 1
+    fi
+    echo "test-aot OK: AOT binaries match --jit"
+
 # Full verification: differential test (.cul on both backends) +
-# embedding C++ smoke tests. Run before every commit.
-verify: test-all test-embed
+# embedding C++ smoke tests + AOT build path. Run before every commit.
+verify: test-all test-embed test-aot
     @echo "verify OK"
 
 # Smoke: run microgpt 5 training steps (no inference) on both backends

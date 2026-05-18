@@ -86,6 +86,24 @@ if(CULEBRA_ENABLE_JIT)
   # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
   # platform (no-op on macOS).
   set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
+
+  # Static archive of the runtime helpers used by AOT-built CLI
+  # binaries. `culebra build foo.cul -o foo` emits an object that
+  # references `culebra_runtime_*` symbols; the link step pulls those
+  # definitions out of this archive (no LLVM dependency required for
+  # the produced binary).
+  add_library(culebra_rt STATIC ./src/runtime/culebra_rt.cc)
+  target_compile_features(culebra_rt PRIVATE cxx_std_23)
+  # The runtime archive is intended to be linked into binaries that
+  # do NOT depend on LLVM. Suppress the abi-breaking-check witness
+  # symbol (`llvm::DisableABIBreakingChecks`) that every LLVM-header
+  # TU would otherwise pull in.
+  target_compile_definitions(culebra_rt PRIVATE
+    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1)
+  # The `culebra build` driver needs to know where to find the
+  # archive at link time. Override at runtime with $CULEBRA_RT_LIB.
+  target_compile_definitions(culebra PRIVATE
+    CULEBRA_RT_LIBPATH="$<TARGET_FILE:culebra_rt>")
 endif()
 
 # Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
@@ -98,9 +116,15 @@ if(CULEBRA_ENABLE_TENSOR)
   add_compile_definitions(CULEBRA_TENSOR_ENABLED)
   if(APPLE)
     target_link_libraries(culebra "-framework Accelerate")
+    if(CULEBRA_ENABLE_JIT)
+      target_link_libraries(culebra_rt INTERFACE "-framework Accelerate")
+    endif()
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(BLAS REQUIRED)
     target_link_libraries(culebra ${BLAS_LIBRARIES})
+    if(CULEBRA_ENABLE_JIT)
+      target_link_libraries(culebra_rt INTERFACE ${BLAS_LIBRARIES})
+    endif()
   endif()
 endif()
 

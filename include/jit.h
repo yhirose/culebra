@@ -11,10 +11,12 @@
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
@@ -5683,6 +5685,127 @@ struct JIT {
     } else {
       exec(std::move(ctx), std::move(mod));
     }
+  }
+
+  // AOT codegen path. Mirrors `run()` up through `compile(ast)` but
+  // emits an object file via TargetMachine instead of handing the
+  // module to ORC. Also adds a `int main(int, char**)` IR function
+  // that calls `culebra_aot_bootstrap` (defined in libculebra_rt.a)
+  // with the program's `__culebra_main` as the user-main pointer.
+  // Returns 0 on success, non-zero on emission failure.
+  static inline int build_object(const std::shared_ptr<peg::Ast>& ast,
+                                 const std::string& out_path,
+                                 int opt_level = 2,
+                                 bool emit_llvm = false) {
+    using namespace llvm;
+
+    ensure_native_target_init();
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("culebra", *ctx);
+
+    llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+    std::string err;
+    auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
+    if (!target) {
+      std::fprintf(stderr, "culebra build: target lookup failed: %s\n",
+                   err.c_str());
+      return 1;
+    }
+    std::unique_ptr<llvm::TargetMachine> tm(
+        target->createTargetMachine(triple, "", "", {}, {}));
+    if (!tm) {
+      std::fprintf(stderr,
+                   "culebra build: target machine creation failed\n");
+      return 1;
+    }
+    mod->setDataLayout(tm->createDataLayout());
+    mod->setTargetTriple(triple);
+
+    IRBuilder<> builder(*ctx);
+    JIT jit(ctx.get(), mod.get(), builder);
+    jit.declare_runtime_functions();
+
+    jit.main_info_ = jit.analyze_program(*ast);
+    jit.current_info_ = &jit.main_info_;
+    jit.any_kw_only_in_program_ = scan_for_kw_only_marker(*ast);
+
+    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
+    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
+                                   "__culebra_main", mod.get());
+    if (jit.main_info_.has_eh) {
+      mainFn->setPersonalityFn(jit.get_personality_fn());
+    }
+    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
+    builder.SetInsertPoint(entryBB);
+    jit.push_scope();
+    llvm::Value* mainMark = nullptr;
+    if (jit.main_info_.has_fn_defer) {
+      mainMark = builder.CreateCall(
+          mod->getFunction(rt::defer_mark), {}, "main.mark");
+      jit.current_fn_defer_mark_ = mainMark;
+    }
+    jit.compile(*ast);
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      if (mainMark) {
+        builder.CreateCall(
+            mod->getFunction(rt::defer_run_to), {mainMark});
+      }
+      jit.release_all_scopes_for_exit();
+      builder.CreateRetVoid();
+    }
+    jit.current_fn_defer_mark_ = nullptr;
+    jit.pop_scope();
+    jit.current_info_ = nullptr;
+    verifyFunction(*mainFn);
+
+    // Emit C entry: `int main(int argc, char** argv)` that
+    // tail-calls `culebra_aot_bootstrap(argc, argv, __culebra_main)`.
+    auto i32 = builder.getInt32Ty();
+    auto ptrTy = PointerType::get(*ctx, 0);
+    auto bootstrapTy = FunctionType::get(i32, {i32, ptrTy, ptrTy}, false);
+    auto bootstrapFn = Function::Create(
+        bootstrapTy, GlobalValue::ExternalLinkage,
+        "culebra_aot_bootstrap", mod.get());
+
+    auto cMainTy = FunctionType::get(i32, {i32, ptrTy}, false);
+    auto cMain = Function::Create(
+        cMainTy, GlobalValue::ExternalLinkage, "main", mod.get());
+    auto cEntry = BasicBlock::Create(*ctx, "entry", cMain);
+    builder.SetInsertPoint(cEntry);
+    auto argIt = cMain->arg_begin();
+    llvm::Value* argcArg = &*argIt++;
+    llvm::Value* argvArg = &*argIt;
+    auto callRet = builder.CreateCall(
+        bootstrapFn, {argcArg, argvArg, mainFn});
+    builder.CreateRet(callRet);
+    verifyFunction(*cMain);
+
+    if (opt_level > 0) {
+      optimize_module(*mod, opt_level);
+    }
+
+    if (emit_llvm) {
+      mod->print(outs(), nullptr);
+    }
+
+    std::error_code EC;
+    llvm::raw_fd_ostream OS(out_path, EC, llvm::sys::fs::OF_None);
+    if (EC) {
+      std::fprintf(stderr, "culebra build: cannot open %s: %s\n",
+                   out_path.c_str(), EC.message().c_str());
+      return 1;
+    }
+    llvm::legacy::PassManager pm;
+    if (tm->addPassesToEmitFile(pm, OS, nullptr,
+                                llvm::CodeGenFileType::ObjectFile)) {
+      std::fprintf(stderr,
+                   "culebra build: target does not support object emission\n");
+      return 1;
+    }
+    pm.run(*mod);
+    OS.flush();
+    return 0;
   }
 
   // REPL-mode compile-and-run for a single input. State (top-level
