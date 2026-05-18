@@ -3365,8 +3365,6 @@ struct Interpreter {
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_:
         return eval_bin_expression(ast, env);
-      case "SET_BIN_OP"_:
-        return eval_set_bin_expression(ast, env);
       case "RANGE"_:
         return eval_range(ast, env);
       case "DESTRUCTURE_ASSIGN"_:
@@ -4692,18 +4690,6 @@ struct Interpreter {
     return nullptr;
   }
 
-  // `|` / `&` / `^` overloads for user-defined types. Both backends
-  // first try the LHS special method; the SET_BIN_OP layer only kicks
-  // in when neither operand carries one.
-  static const char* set_op_to_special(char op) {
-    switch (op) {
-      case '|': return "__or__";
-      case '&': return "__and__";
-      case '^': return "__xor__";
-    }
-    return nullptr;
-  }
-
   // `**` is only valid for in-place; regular binop uses `compute_power`.
   static std::optional<Op> op_to_tensor_op(std::string_view op) {
     if (op == "+") return Op::Add;
@@ -4743,29 +4729,9 @@ struct Interpreter {
       if (!l || !r) throw CulebraError("TypeError", "type error.");
       return Value(TensorValue(tensor_binop(*tensor_op, l, r)));
     }
-    // `a - b` between two Sets is set difference. Other operators on
-    // Set go through SET_BIN_OP (`|` / `&` / `^`).
-    if (ope == '-' && lhs.type == Value::Set && rhs.type == Value::Set) {
-      const auto& a = lhs.get<SetValue>();
-      const auto& b = rhs.get<SetValue>();
-      SetValue out;
-      for (const auto& v : *a.members) {
-        if (!b.index->contains(v)) out.add(v);
-      }
-      return Value(std::move(out));
-    }
-    // `a + b` between two Tuples concatenates element-wise into a
-    // fresh Tuple. Matches Python's tuple + tuple semantics.
-    if (ope == '+' && lhs.type == Value::Tuple &&
-        rhs.type == Value::Tuple) {
-      const auto& a = *lhs.get<TupleValue>().elements;
-      const auto& b = *rhs.get<TupleValue>().elements;
-      std::vector<Value> elems;
-      elems.reserve(a.size() + b.size());
-      for (const auto& v : a) elems.push_back(v);
-      for (const auto& v : b) elems.push_back(v);
-      return Value(TupleValue(std::move(elems)));
-    }
+    // Container operations on Set / Tuple use method form
+    // (`.union`, `.intersect`, `.diff`, `.concat`) — `+ - | & ^` on
+    // these container types throws below via the type-error branch.
     if (auto* special = arith_op_to_special(ope)) {
       if (auto r = try_special_binop(lhs, rhs, special, env)) return *r;
       if (op_reflects(ope)) {
@@ -4813,61 +4779,6 @@ struct Interpreter {
       auto rhs = eval(*ast.nodes[i + 1], env);
       auto ope = eval(*ast.nodes[i], env).to_string()[0];
       ret = eval_bin_op_step(ret, rhs, ope, env);
-    }
-    return ret;
-  }
-
-  // `|` / `&` / `^` between two Sets. Each yields a fresh Set.
-  // Mirrors set_builtins() union / intersect / sym_diff.
-  static Value eval_set_bin_op(const Value& lhs, const Value& rhs, char op) {
-    if (lhs.type != Value::Set || rhs.type != Value::Set) {
-      throw CulebraError("TypeError", std::format(
-          "type error: cannot apply '{}' to {} and {}",
-          op, lhs.type_name(), rhs.type_name()));
-    }
-    const auto& a = lhs.get<SetValue>();
-    const auto& b = rhs.get<SetValue>();
-    SetValue out;
-    switch (op) {
-      case '|':
-        for (const auto& v : *a.members) out.add(v);
-        for (const auto& v : *b.members) out.add(v);
-        break;
-      case '&':
-        for (const auto& v : *a.members) {
-          if (b.index->contains(v)) out.add(v);
-        }
-        break;
-      case '^':
-        for (const auto& v : *a.members) {
-          if (!b.index->contains(v)) out.add(v);
-        }
-        for (const auto& v : *b.members) {
-          if (!a.index->contains(v)) out.add(v);
-        }
-        break;
-      default:
-        throw std::logic_error("invalid set operator");
-    }
-    return Value(std::move(out));
-  }
-
-  Value eval_set_bin_expression(const peg::Ast& ast,
-                                std::shared_ptr<Environment> env) {
-    auto ret = eval(*ast.nodes[0], env);
-    for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto op = eval(*ast.nodes[i], env).to_string()[0];
-      auto rhs = eval(*ast.nodes[i + 1], env);
-      // User-defined overload on the LHS wins. Returns std::nullopt
-      // when the LHS doesn't carry the special method; then the
-      // built-in Set dispatch handles native Sets, otherwise throws.
-      if (auto* special = set_op_to_special(op)) {
-        if (auto r = try_special_binop(ret, rhs, special, env)) {
-          ret = *r;
-          continue;
-        }
-      }
-      ret = eval_set_bin_op(ret, rhs, op);
     }
     return ret;
   }

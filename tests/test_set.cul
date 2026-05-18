@@ -61,15 +61,18 @@ mut sum = 0
 for x in p { sum = sum + x }
 assert(sum == 6)
 
-// --- Operators (a-3) ---
+// --- Method-form set ops. Operator forms (`|`/`&`/`^`/`-`) were
+// removed: `|` collided with the lambda close delimiter, and the
+// other three were grouped with `|` for API consistency. `.union`
+// `.intersect` `.diff` `.sym_diff` already existed (lines 33-53)
+// and now serve as the only entry points to these operations.
 let A = {1, 2, 3}
 let B = {2, 3, 4}
-assert((A | B).size() == 4)
-assert((A & B).size() == 2)
-assert((A - B).size() == 1)
-assert((A ^ B).size() == 2)
-// Precedence: `|` binds tighter than `==`.
-assert((A | B) == {1, 2, 3, 4})
+assert(A.union(B).size() == 4)
+assert(A.intersect(B).size() == 2)
+assert(A.diff(B).size() == 1)
+assert(A.sym_diff(B).size() == 2)
+assert(A.union(B) == {1, 2, 3, 4})
 
 // --- Mutating add / remove (G-3 — JIT now supports these) ---
 mut m = {1, 2}

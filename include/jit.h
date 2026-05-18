@@ -1591,50 +1591,6 @@ CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
 CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
-// Forward decl: `a - b` between two Sets dispatches to set_diff.
-__attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
-                                                              JitSet* b);
-// Forward decls for Tuple concat (a + b where both Tuple).
-__attribute__((used)) inline JitArray* culebra_runtime_tuple_new();
-__attribute__((used)) inline void culebra_runtime_tuple_push(JitArray* arr,
-                                                              int8_t tag,
-                                                              int64_t data);
-
-// Wrap the macro-generated sub to add the Set-Set path. Calls the
-// underlying numeric helper for anything else (which keeps Tensor and
-// `__sub__` special-method dispatch working). Operands are borrowed
-// (caller releases); the set_diff result is +1 owned by the caller.
-__attribute__((used)) inline JitValue culebra_runtime_num_sub_set_aware(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (lt == TAG_SET && rt == TAG_SET) {
-    auto* out = culebra_runtime_set_diff(reinterpret_cast<JitSet*>(ld),
-                                          reinterpret_cast<JitSet*>(rd));
-    return {TAG_SET, reinterpret_cast<int64_t>(out)};
-  }
-  return culebra_runtime_num_sub(lt, ld, rt, rd);
-}
-
-// Wrap `num_add` to support Tuple concatenation. `a + b` where both
-// are Tuples produces a fresh Tuple with concatenated elements.
-__attribute__((used)) inline JitValue culebra_runtime_num_add_tuple_aware(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  if (lt == TAG_TUPLE && rt == TAG_TUPLE) {
-    auto* a = reinterpret_cast<JitArray*>(ld);
-    auto* b = reinterpret_cast<JitArray*>(rd);
-    auto* out = culebra_runtime_tuple_new();
-    for (size_t i = 0; i < a->size; i++) {
-      culebra_runtime_value_retain(a->items[i].tag, a->items[i].data);
-      culebra_runtime_tuple_push(out, a->items[i].tag, a->items[i].data);
-    }
-    for (size_t i = 0; i < b->size; i++) {
-      culebra_runtime_value_retain(b->items[i].tag, b->items[i].data);
-      culebra_runtime_tuple_push(out, b->items[i].tag, b->items[i].data);
-    }
-    return {TAG_TUPLE, reinterpret_cast<int64_t>(out)};
-  }
-  return culebra_runtime_num_add(lt, ld, rt, rd);
-}
-
 __attribute__((used)) inline JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
@@ -1977,35 +1933,6 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_sym_diff(JitSet* a,
     if (!a->index->contains(v)) _set_take(out, v);
   }
   return out;
-}
-
-// `a | b`, `a & b`, `a ^ b` with user-defined-overload dispatch.
-// `op` is the operator character ('|', '&', '^'). LHS special method
-// wins; otherwise both operands must be Set and the built-in op runs.
-// Operands are borrowed; result is +1 owned.
-__attribute__((used)) inline JitValue culebra_runtime_set_binop(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t op) {
-  const char* method = op == '|' ? "__or__"
-                     : op == '&' ? "__and__"
-                                 : "__xor__";
-  if (auto r = _try_special_binop(lt, ld, rt, rd, method)) {
-    return *r;
-  }
-  if (lt != TAG_SET || rt != TAG_SET) {
-    throw culebra::CulebraError("TypeError", std::format(
-        "type error: cannot apply '{}' to {} and {}",
-        static_cast<char>(op), _culebra_tag_name(lt),
-        _culebra_tag_name(rt)));
-  }
-  auto* a = reinterpret_cast<JitSet*>(ld);
-  auto* b = reinterpret_cast<JitSet*>(rd);
-  JitSet* out = nullptr;
-  switch (op) {
-    case '|': out = culebra_runtime_set_union(a, b); break;
-    case '&': out = culebra_runtime_set_intersect(a, b); break;
-    case '^': out = culebra_runtime_set_sym_diff(a, b); break;
-  }
-  return {TAG_SET, reinterpret_cast<int64_t>(out)};
 }
 
 __attribute__((used)) inline int8_t culebra_runtime_set_subset(JitSet* a,
@@ -5269,7 +5196,6 @@ inline constexpr auto set_union           = "culebra_runtime_set_union";
 inline constexpr auto set_intersect       = "culebra_runtime_set_intersect";
 inline constexpr auto set_diff            = "culebra_runtime_set_diff";
 inline constexpr auto set_sym_diff        = "culebra_runtime_set_sym_diff";
-inline constexpr auto set_binop           = "culebra_runtime_set_binop";
 inline constexpr auto set_subset          = "culebra_runtime_set_subset";
 inline constexpr auto set_superset        = "culebra_runtime_set_superset";
 inline constexpr auto set_add_method      = "culebra_runtime_set_add_method";
@@ -5306,8 +5232,8 @@ inline constexpr auto math_round          = "culebra_runtime_math_round";
 inline constexpr auto math_abs            = "culebra_runtime_math_abs";
 inline constexpr auto math_min            = "culebra_runtime_math_min";
 inline constexpr auto math_max            = "culebra_runtime_math_max";
-inline constexpr auto num_add             = "culebra_runtime_num_add_tuple_aware";
-inline constexpr auto num_sub             = "culebra_runtime_num_sub_set_aware";
+inline constexpr auto num_add             = "culebra_runtime_num_add";
+inline constexpr auto num_sub             = "culebra_runtime_num_sub";
 inline constexpr auto num_mul             = "culebra_runtime_num_mul";
 inline constexpr auto num_matmul          = "culebra_runtime_num_matmul";
 inline constexpr auto num_div             = "culebra_runtime_num_div";
@@ -7449,8 +7375,6 @@ struct JIT {
         return compile_unary_not(ast);
       case "ADDITIVE"_:
         return compile_additive(ast);
-      case "SET_BIN_OP"_:
-        return compile_set_bin_op(ast);
       case "MULTIPLICATIVE"_:
         return compile_multiplicative(ast);
       case "POWER"_:
@@ -8426,31 +8350,6 @@ struct JIT {
           }
           return nullptr;
         });
-  }
-
-  // `a | b`, `a & b`, `a ^ b`: dispatched through a runtime helper
-  // that first tries the LHS's `__or__` / `__and__` / `__xor__`
-  // special method, then falls back to the built-in Set ops. Result
-  // is +1 owned; intermediates are released between steps.
-  llvm::Value* compile_set_bin_op(const peg::Ast& ast) {
-    auto i8 = builder_.getInt8Ty();
-    auto i64 = builder_.getInt64Ty();
-    auto lhs = compile(*ast.nodes[0]);
-    for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]);
-      auto op = ast.nodes[i]->token[0];
-      auto out = emit_call(
-          module_->getOrInsertFunction(
-              rt::set_binop, valueType_, i8, i64, i8, i64, i64),
-          {extract_tag(lhs), extract_data(lhs),
-           extract_tag(rhs), extract_data(rhs),
-           builder_.getInt64(op)},
-          "set.binop");
-      emit_value_release(lhs);
-      emit_value_release(rhs);
-      lhs = out;
-    }
-    return lhs;
   }
 
   llvm::Value* compile_additive(const peg::Ast& ast) {

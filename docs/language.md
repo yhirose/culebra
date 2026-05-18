@@ -850,9 +850,6 @@ their instances are plain `Object`s with methods attached.
 | `a % b`      | `__mod__`      |                                       |
 | `a ** b`     | `__pow__`      |                                       |
 | `a @ b`      | `__matmul__`   | Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
-| `a \| b`     | `__or__`       | LHS overload wins; falls back to native Set union. No auto-reflect. |
-| `a & b`      | `__and__`      | Same dispatch as `\|`. Native Set intersection on fallback. |
-| `a ^ b`      | `__xor__`      | Same dispatch as `\|`. Native Set symmetric-difference on fallback. |
 | `-a`         | `__neg__`      | 0-arg method on `a`                   |
 | `a == b`     | `__eq__`       | `!=` derives by negation              |
 | `a < b`      | `__lt__`       | `>=` derives by negation              |
@@ -1000,18 +997,6 @@ Built-in methods:
 | `to_array()`  | Fresh `Array` with the same elements               |
 | `iter()`      | Iterator yielding elements in index order          |
 
-### Concatenation
-
-`t1 + t2` concatenates two tuples into a fresh tuple (Python
-convention). The Tuple-Tuple branch is checked before user-defined
-`__add__`, so a wrapping class that holds tuples doesn't fire if its
-`+` operands are both raw tuples — wrap explicitly to override.
-
-    (1, 2) + (3, 4, 5)        # (1, 2, 3, 4, 5)
-    (1,) + ('end',)           # (1, 'end')
-
-Tuple `+` non-Tuple raises `TypeError` (no implicit coercion).
-
 ### Destructuring
 
 A tuple binding `let (a, b) = t` unpacks the tuple into named slots.
@@ -1070,19 +1055,13 @@ moment — they collide with user-defined Object methods of the same
 name on the JIT side (e.g. a `Calculator.add(1)` class method), and
 resolving that needs runtime tag dispatch in the method call site.
 
-### Operators
-
-| Operator | Equivalent       |
-|----------|------------------|
-| `a \| b` | `a.union(b)`     |
-| `a & b`  | `a.intersect(b)` |
-| `a - b`  | `a.diff(b)`      |
-| `a ^ b`  | `a.sym_diff(b)`  |
-
-Set operators sit at their own precedence layer between range and
-additive operators (matching Python's bitwise precedence: `a | b == c`
-parses as `(a | b) == c`). All four operators require both operands
-to be Sets; `-` falls back to numeric subtraction otherwise.
+Set operations are method-only: `union`, `intersect`, `diff`,
+`sym_diff`. There are no `|` / `&` / `-` / `^` operator forms —
+the `|` close delimiter of lambda parameters made the operator
+ambiguous to a stateless PEG parser, so all four operations route
+through methods for consistency. Operators stay reserved for math
+types (Long, Float, Tensor, user numeric classes via `__add__`
+etc.).
 
 ---
 
@@ -1737,7 +1716,7 @@ features. They are checked by name on both backends:
 
 | Method | Purpose | Defined in |
 |---|---|---|
-| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__or__`, `__and__`, `__xor__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
+| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
 | `__str__` | Custom display form | §10 |
 | `drop` | RAII cleanup hook | §16 |
 | `iter`, `next` | Iterator protocol | §17.5 |

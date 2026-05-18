@@ -20,14 +20,6 @@ expect('compare String<Long', 'TypeError', r1)
 let r2 = try { let _ = 1 + 'b'; nil } catch e { e }
 expect("arith Long+String", 'TypeError', r2)
 
-# Set operator on mismatched types without an overload.
-let r2b = try {
-  let _set = {1, 2}
-  let _bad = _set | 3
-  nil
-} catch e { e }
-expect('set | Long', 'TypeError', r2b)
-
 # --- ZeroDivisionError ---
 let r3 = try { let _ = 1 / 0; nil } catch e { e }
 expect('1/0 Long', 'ZeroDivisionError', r3)

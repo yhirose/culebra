@@ -46,13 +46,15 @@ const auto grammar_ = R"(
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
   CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
-  RANGE                    <-  SET_BIN_OP (_ RANGE_OPERATOR _ SET_BIN_OP)?
-  # Set operators: `|` (union), `&` (intersection), `^` (symmetric
-  # difference). All three share one precedence layer (left-assoc),
-  # placed between RANGE and ADDITIVE so `a | b == c` parses as
-  # `(a | b) == c` — Python's convention. Negative lookahead on the
-  # second character keeps `&&` / `||` from being chewed by this layer.
-  SET_BIN_OP               <-  ADDITIVE (_ SET_BIN_OPERATOR _ ADDITIVE)*
+  RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
+  # Container operations use method form: Set has `.union(b)` /
+  # `.intersect(b)` / `.diff(b)` / `.sym_diff(b)`; Tuple has no
+  # concat by design (multi-value returns + fixed records were the
+  # primary use case). Numeric / Tensor types keep operators
+  # (`+ - * / % ** @`). Set `|` used to be a binary operator here
+  # but conflicted with the `|` lambda-close delimiter — routing
+  # all four set ops through methods keeps the grammar stateless
+  # and unambiguous.
   # Newline before `+`/`-` does NOT continue the current expression:
   # `let v = X` followed by a line starting with `-y` is two statements.
   # Continuation across newlines requires the operator at line end
@@ -141,7 +143,6 @@ const auto grammar_ = R"(
   CONDITION_OPERATOR       <-  '==' / '!=' / '<=' / '<' / '>=' / '>'
   RANGE_OPERATOR           <-  < '..=' / '..' >
   ADDITIVE_OPERATOR        <-  [-+]
-  SET_BIN_OPERATOR         <-  '|' !'|' / '&' !'&' / '^'
   UNARY_PLUS_OPERATOR      <-  '+'
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'

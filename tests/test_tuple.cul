@@ -65,17 +65,9 @@ let kind = match (1, 2) {
 }
 assert(kind == "other")
 
-// --- Concatenation (G-4) ---
-let c = (1, 2) + (3, 4, 5)
-assert(type_of(c) == "Tuple")
-assert(c.size() == 5)
-assert(c[0] == 1 && c[4] == 5)
-let one_plus = (1,) + (2,)
-assert(one_plus.size() == 2)
-
-// Tuple + non-Tuple is a type error (no implicit coercion).
+// Tuple has no `+` concat — raises TypeError.
 let err = try {
-  let _bad = (1, 2) + "x"
+  let _bad = (1, 2) + (3, 4)
   false
 } catch e {
   e.kind == "TypeError"
