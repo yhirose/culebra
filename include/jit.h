@@ -5765,6 +5765,12 @@ struct JIT {
   // builds a fresh module named `__repl_input_N` and addIRModules it
   // to the shared `LLJIT`, so prior inputs' compiled code stays live.
   //
+  // Each input's module is added under its own `ResourceTracker`,
+  // which makes future bounded eviction (e.g. drop the oldest K
+  // tracker's symbols when a session has compiled many inputs)
+  // mechanically possible without revisiting the addIRModule
+  // sites. We don't evict today; sessions are typically short.
+  //
   // Returns the value of the input's final expression (or a nil
   // JitValue if the input had no expression result). Caller owns the
   // +1 — typically prints and releases. Throws CulebraError /
@@ -5856,7 +5862,8 @@ struct JIT {
     optimize_module(*mod, 0);
 
     orc::ThreadSafeContext tsctx(std::move(ctx));
-    cantFail(jit_handle.addIRModule(
+    auto rt = jit_handle.getMainJITDylib().createResourceTracker();
+    cantFail(jit_handle.addIRModule(rt,
         orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));
 
     using ReplFn = JitValue (*)();
@@ -6392,6 +6399,23 @@ struct JIT {
   }
   llvm::Value* current_column_val() {
     return builder_.getInt64(static_cast<int64_t>(current_column_));
+  }
+
+  // Persist `val` into the REPL session globals dict at runtime.
+  // The +1 ABI on `val` flows into `repl_set` (which takes ownership);
+  // callers that still need a usable copy upstream must emit a
+  // `value_retain` before calling. `name_hint` only annotates the
+  // module-level string constant for IR readability.
+  void emit_repl_persist(llvm::Value* val, std::string_view name,
+                          const char* name_hint, bool is_let,
+                          bool is_mut) {
+    auto namePtr = get_or_create_global_str(name, name_hint);
+    emit_call(
+        module_->getFunction(rt::repl_set),
+        {namePtr, extract_tag(val), extract_data(val),
+         builder_.getInt8(is_let ? 1 : 0),
+         builder_.getInt8(is_mut ? 1 : 0),
+         current_line_val(), current_column_val()});
   }
 
   void emit_type_error() {
@@ -7941,19 +7965,12 @@ struct JIT {
       }
 
       // REPL top-level binding: persist into the session globals dict
-      // instead of building a local alloca. The runtime helper takes
-      // ownership of the +1; we still want to return a +1 for callers
-      // that consume the assignment's value, so retain once more.
+      // instead of building a local alloca. +1 source: `rval` carries
+      // a single +1 from `compile(...)`; we retain so the caller's
+      // copy survives `repl_set` taking ownership.
       if (is_repl_top_level_ && is_repl_session_ && !compound) {
-        auto namePtr = get_or_create_global_str(name, ".repl.let");
         emit_value_retain(rval);
-        emit_call(
-            module_->getFunction(rt::repl_set),
-            {namePtr,
-             extract_tag(rval), extract_data(rval),
-             builder_.getInt8(let ? 1 : 0),
-             builder_.getInt8(mut ? 1 : 0),
-             current_line_val(), current_column_val()});
+        emit_repl_persist(rval, name, ".repl.let", let, mut);
         return rval;
       }
 
@@ -9946,8 +9963,23 @@ struct JIT {
     auto classVal = make_object(classObj);
 
     // Patch the pre-allocated cell with the real class namespace.
+    // `store_slot` transfers `classVal`'s +1 into the cell. Any
+    // further use of `classVal` (REPL persist below) must retain
+    // its own reference; nothing else here consumes the SSA value.
     store_slot(classSlot, classVal);
-    emit_value_retain(classVal);
+
+    // REPL: also persist the class namespace into session globals so
+    // subsequent inputs can reference `Name.new(...)` etc. The local
+    // cell stays live because compiled methods captured it; the
+    // globals entry is the channel later inputs read through. +1
+    // source: `classVal`'s +1 was already consumed by the
+    // `store_slot` above (writing into the method-capture cell), so
+    // we retain to give `repl_set` its own ownership.
+    if (is_repl_top_level_ && is_repl_session_) {
+      emit_value_retain(classVal);
+      emit_repl_persist(classVal, class_name, ".repl.class",
+                        /*is_let=*/true, /*is_mut=*/false);
+    }
     return make_nil();
   }
 
@@ -10020,15 +10052,14 @@ struct JIT {
     // REPL: persist the dispatcher into session globals. Subsequent
     // `fn name(...)` decls in later inputs return the same dispatcher
     // pointer (the runtime caches by name), so repl_set's overwrite
-    // semantics keep the binding stable across re-decls.
+    // semantics keep the binding stable across re-decls. +1 source:
+    // `dispatcherVal` carries the +1 returned by
+    // `culebra_runtime_multifn_register_and_install`; it flows
+    // straight into `repl_set` and the decl returns nil, so no
+    // additional retain is needed.
     if (is_repl_top_level_ && is_repl_session_) {
-      auto namePtr = get_or_create_global_str(name, ".repl.multifn");
-      emit_call(
-          module_->getFunction(rt::repl_set),
-          {namePtr,
-           extract_tag(dispatcherVal), extract_data(dispatcherVal),
-           builder_.getInt8(1), builder_.getInt8(0),
-           current_line_val(), current_column_val()});
+      emit_repl_persist(dispatcherVal, name, ".repl.multifn",
+                        /*is_let=*/true, /*is_mut=*/false);
       return make_nil();
     }
 

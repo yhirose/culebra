@@ -1201,7 +1201,7 @@ struct Environment {
   }
 
   bool has(std::string_view s) const {
-    if (dictionary.contains(s)) {
+    if (dictionary.find(s) != dictionary.end()) {
       return true;
     }
     return outer && outer->has(s);
@@ -1213,8 +1213,8 @@ struct Environment {
   // `check_shadow_static` (see top of file) before evaluation begins.
 
   const Value& get(std::string_view s) const {
-    if (dictionary.contains(s)) {
-      return dictionary.at(s).val;
+    if (auto it = dictionary.find(s); it != dictionary.end()) {
+      return it->second.val;
     } else if (outer) {
       return outer->get(s);
     }
@@ -1224,8 +1224,8 @@ struct Environment {
 
   void assign(std::string_view s, Value val) {
     assert(has(s));
-    if (dictionary.contains(s)) {
-      auto& sym = dictionary[s];
+    if (auto it = dictionary.find(s); it != dictionary.end()) {
+      auto& sym = it->second;
       if (!sym.mut) {
         throw CulebraError("ImmutableError",
                            std::format("immutable variable '{}'...", s));
@@ -1239,12 +1239,20 @@ struct Environment {
 
   void initialize(std::string_view s, Value val, bool mut) {
     if (is_sink_name(s)) return;
-    dictionary[s] = Symbol{std::move(val), mut};
+    if (auto it = dictionary.find(s); it != dictionary.end()) {
+      it->second = Symbol{std::move(val), mut};
+    } else {
+      dictionary.emplace(std::string(s), Symbol{std::move(val), mut});
+    }
   }
 
   size_t level;
   std::shared_ptr<Environment> outer;
-  std::map<std::string_view, Symbol> dictionary;
+  // Owned-string keys so REPL bindings survive after each input's
+  // AST is destroyed. Heterogeneous lookup (`std::less<>`) lets
+  // every callsite keep its `string_view` argument shape — only
+  // new-entry insertion in `initialize` allocates.
+  std::map<std::string, Symbol, std::less<>> dictionary;
   bool is_function_frame = false;
   // Deferred callables registered in this scope via `defer { ... }`.
   // Fired in LIFO order when the scope exits (normally or via throw).
