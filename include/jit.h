@@ -2921,7 +2921,21 @@ struct JitParamMeta {
   // ArityError (required).
   const uint8_t* has_default_bits;
   size_t n_params;
+  // Index of the `**rest` catch-all parameter, or -1 if none. The
+  // runtime resolver builds an Object from unconsumed kwargs and
+  // places it in slab[kwargs_rest_idx].
+  int64_t kwargs_rest_idx;
+  // Index of the first keyword-only parameter (after a `*` separator
+  // with regular params before it), or -1. Used by dynamic-callee
+  // dispatch to enforce kw-only at runtime when a closure is captured
+  // and called positionally (`let g = f; g(1, 2)` where f is kw-only).
+  int64_t first_kw_only_idx;
 };
+
+// Layout matches the LLVM struct emitted in emit_param_meta_global.
+// Adding a field requires updating both — the assert catches drift.
+static_assert(sizeof(JitParamMeta) == 5 * sizeof(int64_t),
+              "JitParamMeta C++ / LLVM layout drift");
 
 inline std::unordered_map<void*, const JitParamMeta*>&
 _jit_param_meta_table() {
@@ -2938,6 +2952,18 @@ inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
   auto& tbl = _jit_param_meta_table();
   auto it = tbl.find(fn_ptr);
   return it == tbl.end() ? nullptr : it->second;
+}
+
+// Enforce kw-only at runtime for dynamic-callee positional calls.
+// `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
+// kw-only slot positionally without the compile-time static check
+// firing — this runtime guard catches that case to match the interp.
+__attribute__((used)) inline void culebra_runtime_check_pos_count(
+    void* fn_ptr, int64_t n_pos, int64_t line, int64_t col) {
+  const JitParamMeta* meta = _jit_lookup_param_meta(fn_ptr);
+  if (!meta) return;
+  culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
+                                          line, col);
 }
 
 struct JitMultiMethodEntry {
@@ -3005,44 +3031,61 @@ inline int64_t _jit_multifn_pick(
       });
 }
 
+// Recover (body, name) for a multifn dispatcher closure given the
+// positional arg types. Throws DispatchError on no-match / ambiguous;
+// `release` runs before every throw, letting the kwargs-path caller
+// drop the +1s it owns. Returns the picked method's body closure.
+struct MultifnPick {
+  JitClosure* body;
+  std::string_view name;
+};
+inline MultifnPick _jit_multifn_resolve(
+    JitClosure* cls, JitValue* positional, int64_t n_pos,
+    int64_t line, int64_t col,
+    std::function<void()> release = nullptr) {
+  auto name_it = _jit_multifn_dispatcher_names().find(cls);
+  if (name_it == _jit_multifn_dispatcher_names().end()) {
+    if (release) release();
+    throw std::runtime_error("internal: multimethod dispatcher missing name");
+  }
+  auto& tbl = _jit_multimethods();
+  auto m_it = tbl.find(name_it->second);
+  auto fail = [&](const char* what) -> std::string {
+    if (release) release();
+    return std::format("{} for `{}`", what, name_it->second);
+  };
+  if (m_it == tbl.end()) {
+    throw culebra::CulebraError("DispatchError",
+        fail("no matching method"), line, col);
+  }
+  std::vector<std::string_view> arg_types(static_cast<size_t>(n_pos));
+  for (size_t i = 0; i < arg_types.size(); i++) {
+    arg_types[i] = _jit_value_dyn_type(positional[i]);
+  }
+  auto pick = _jit_multifn_pick(m_it->second, arg_types);
+  if (pick == -1) {
+    throw culebra::CulebraError("DispatchError",
+        fail("no matching method"), line, col);
+  }
+  if (pick == -2) {
+    throw culebra::CulebraError("DispatchError",
+        fail("ambiguous dispatch"), line, col);
+  }
+  return {m_it->second[static_cast<size_t>(pick)].body, name_it->second};
+}
+
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
-// dispatcher closure. The `cls` pointer keys into the dispatcher-name
-// side table to recover which multimethod to dispatch.
+// dispatcher closure. The `cls` identity (load-bearing comparison in
+// `culebra_runtime_call_with_kwargs` to intercept the kwargs path) is
+// resolved through `_jit_multifn_dispatcher_names()` to recover the
+// multimethod name, then dispatched via `_jit_multifn_resolve`.
 inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
                                               JitValue /*this_val*/,
                                               int64_t n_args,
                                               JitValue* args) {
-  auto name_it = _jit_multifn_dispatcher_names().find(cls);
-  if (name_it == _jit_multifn_dispatcher_names().end()) {
-    throw std::runtime_error("internal: multimethod dispatcher missing name");
-  }
-  const std::string& name = name_it->second;
-
-  auto& tbl = _jit_multimethods();
-  auto m_it = tbl.find(name);
-  if (m_it == tbl.end()) {
-    throw culebra::CulebraError("DispatchError", std::format(
-        "no matching method for `{}`", name));
-  }
-
-  std::vector<std::string_view> arg_types(static_cast<size_t>(n_args));
-  for (size_t i = 0; i < arg_types.size(); i++) {
-    arg_types[i] = _jit_value_dyn_type(args[i]);
-  }
-
-  auto pick = _jit_multifn_pick(m_it->second, arg_types);
-  if (pick == -1) {
-    throw culebra::CulebraError("DispatchError", std::format(
-        "no matching method for `{}`", name));
-  }
-  if (pick == -2) {
-    throw culebra::CulebraError("DispatchError", std::format(
-        "ambiguous dispatch for `{}`", name));
-  }
-
-  auto* body = m_it->second[static_cast<size_t>(pick)].body;
-  return reinterpret_cast<JitFn>(body->fn_ptr)(body, {TAG_NIL, 0}, n_args,
-                                                args);
+  auto picked = _jit_multifn_resolve(cls, args, n_args, 0, 0);
+  return reinterpret_cast<JitFn>(picked.body->fn_ptr)(
+      picked.body, {TAG_NIL, 0}, n_args, args);
 }
 
 // Append a method to the named multimethod table (replacing an entry
@@ -3210,6 +3253,20 @@ __attribute__((used)) inline JitValue culebra_runtime_call_with_kwargs(
     }
   };
 
+  // Multifn dispatchers route through here too: their fn_ptr has no
+  // JitParamMeta (kwargs flow on top of the existing positional pick,
+  // Julia kwsorter style). Pick on positional types, then recurse
+  // into the picked method — which is a regular user fn, never a
+  // dispatcher, so the recursion bottoms out in the meta-lookup
+  // branch below.
+  if (cls->fn_ptr == reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk)) {
+    auto picked = _jit_multifn_resolve(
+        cls, positional, n_pos, line, col, release_owned);
+    return culebra_runtime_call_with_kwargs(
+        picked.body, this_val, n_pos, positional, n_kw, kw_keys, kw_vals,
+        n_splat, splat_objs, line, col);
+  }
+
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
   if (!meta) {
     release_owned();
@@ -3301,6 +3358,7 @@ __attribute__((used)) inline JitValue culebra_runtime_call_with_kwargs(
   }
 
   for (size_t i = static_cast<size_t>(n_pos); i < arity; i++) {
+    if (static_cast<int64_t>(i) == meta->kwargs_rest_idx) continue;
     auto it = merged.find(meta->names[i]);
     if (it != merged.end()) {
       slab[i] = it->second;
@@ -3309,8 +3367,21 @@ __attribute__((used)) inline JitValue culebra_runtime_call_with_kwargs(
     }
   }
 
-  // Surface unknown kwargs.
-  if (!merged.empty()) {
+  // Leftover kwargs flow into a `**rest` slot if declared, otherwise
+  // they are unknown to this function. The rest slot is always
+  // populated (even with an empty Object) so the callee always sees
+  // a bound variable.
+  if (meta->kwargs_rest_idx >= 0) {
+    auto* rest_obj = culebra_runtime_object_new();
+    for (auto& [k, v] : merged) {
+      culebra_runtime_object_set(rest_obj, std::string(k).c_str(),
+                                  /*mut=*/false, v.tag, v.data, line, col);
+    }
+    merged.clear();
+    slab[meta->kwargs_rest_idx] = {TAG_OBJECT,
+                                    reinterpret_cast<int64_t>(rest_obj)};
+    filled[meta->kwargs_rest_idx] = true;
+  } else if (!merged.empty()) {
     auto bad_name = std::string(merged.begin()->first);
     for (auto& [_, v] : merged) {
       _culebra_value_release_impl(v.tag, v.data);
@@ -4250,16 +4321,19 @@ inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* current_cell = cls->captures[0];
   auto* end_cell = cls->captures[1];
+  auto* step_cell = cls->captures[2];
   int64_t current = current_cell->value.data;
   int64_t end = end_cell->value.data;
-  if (current >= end) {
+  int64_t step = step_cell->value.data;
+  bool finished = step > 0 ? current >= end : current <= end;
+  if (finished) {
     *done = true;
     return;
   }
   *done = false;
   *out_tag = TAG_LONG;
   *out_data = current;
-  current_cell->value.data = current + 1;
+  current_cell->value.data = current + step;
 }
 
 // Entry point called from for-in codegen (`rt::iter_advance`): returns
@@ -4273,10 +4347,16 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_advance(
 }
 
 __attribute__((used)) inline JitObject* culebra_runtime_math_range(
-    int64_t start, int64_t end) {
+    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
+  if (step == 0) {
+    throw culebra::CulebraError("ValueError",
+        "range() step must not be zero", line, col);
+  }
   auto* current_cell = culebra_runtime_cell_new(TAG_LONG, start);
   auto* end_cell = culebra_runtime_cell_new(TAG_LONG, end);
-  return _iter_wrap_fast<&_math_range_fast_fn>({current_cell, end_cell});
+  auto* step_cell = culebra_runtime_cell_new(TAG_LONG, step);
+  return _iter_wrap_fast<&_math_range_fast_fn>(
+      {current_cell, end_cell, step_cell});
 }
 
 __attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
@@ -5192,6 +5272,7 @@ inline constexpr auto print               = "culebra_runtime_print";
 inline constexpr auto puts                = "culebra_runtime_puts";
 inline constexpr auto iota                = "culebra_runtime_iota";
 inline constexpr auto math_range           = "culebra_runtime_math_range";
+inline constexpr auto check_pos_count      = "culebra_runtime_check_pos_count";
 inline constexpr auto iter_collect         = "culebra_runtime_iter_collect";
 inline constexpr auto iter_count           = "culebra_runtime_iter_count";
 inline constexpr auto iter_for_each        = "culebra_runtime_iter_for_each";
@@ -5471,6 +5552,17 @@ struct JIT {
     });
   }
 
+  // True if the AST contains any `*` keyword-only separator. Used to
+  // elide the dynamic-callee kw-only runtime guard when no function
+  // in the program declares kw-only params (the common case).
+  static inline bool scan_for_kw_only_marker(const peg::Ast& node) {
+    if (culebra::is_kw_only_sep(node)) return true;
+    for (auto& c : node.nodes) {
+      if (scan_for_kw_only_marker(*c)) return true;
+    }
+    return false;
+  }
+
   static inline void run(const std::shared_ptr<peg::Ast>& ast,
                          bool emit_llvm = false, bool debug = false,
                          int opt_level = 2) {
@@ -5507,6 +5599,7 @@ struct JIT {
     // Pre-pass: free variable analysis for the whole program
     jit.main_info_ = jit.analyze_program(*ast);
     jit.current_info_ = &jit.main_info_;
+    jit.any_kw_only_in_program_ = scan_for_kw_only_marker(*ast);
 
     // Create __culebra_main: void ()
     auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
@@ -5820,6 +5913,12 @@ struct JIT {
   // Analysis results for each FUNCTION AST node (plus the main program)
   std::map<const peg::Ast*, FuncInfo> func_info_;
   FuncInfo main_info_;
+
+  // Program-wide pre-scan: true when any FUNCTION/MULTIFN/METHOD AST
+  // has a `*` keyword-only separator. When false, every dynamic-callee
+  // kw-only runtime guard is dead and the call-site IR can skip the
+  // `culebra_runtime_check_pos_count` emit entirely.
+  bool any_kw_only_in_program_ = false;
 
   // Currently compiling function's info (to know which locals are cells)
   const FuncInfo* current_info_ = nullptr;
@@ -6686,15 +6785,17 @@ struct JIT {
       std::vector<const std::set<std::string>*>& outer) {
     std::set<std::string> my_locals;
     for (auto& p : params_ast.nodes) {
-      auto& id = *p->nodes[1];
-      auto name = std::string(id.token);
-      check_shadow_against_captures(name, outer, id.line, id.column);
+      if (culebra::is_kw_only_sep(*p)) continue;
+      auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
+      auto name = std::string(name_sv);
+      check_shadow_against_captures(name, outer, line, col);
       my_locals.insert(name);
     }
     collect_fn_locals(body_ast, my_locals, outer);
 
     FuncInfo info;
     for (auto& p : params_ast.nodes) {
+      if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) continue;
       if (auto* def = extract_default_expr(*p)) {
         visit_for_frees(*def, my_locals, outer, info);
       }
@@ -6981,6 +7082,13 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::math_range, ptrTy,
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::check_pos_count, builder_.getVoidTy(),
+                                 ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
@@ -7334,6 +7442,23 @@ struct JIT {
         module_->getOrInsertFunction(rt::object_has, builder_.getInt1Ty(),
                                      ptrTy, ptrTy),
         {objPtr, keyPtr}, name);
+  }
+
+  // Build a +1 Object containing the kwargs `merged` collected at a
+  // call site that targets a `**rest` catch-all. Returns a Value
+  // (TAG_OBJECT) suitable to drop into the user-arg slab.
+  llvm::Value* emit_kwargs_rest_object(
+      const std::map<std::string_view, const peg::Ast*>& kwargs,
+      const peg::Ast& argsAst) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto objPtr = emit_call(
+        module_->getOrInsertFunction(rt::object_new, ptrTy), {}, "rest");
+    for (const auto& [name, val_ast] : kwargs) {
+      auto val = compile(*val_ast);
+      emit_object_set(objPtr, std::string(name), /*mut=*/false,
+                      extract_tag(val), extract_data(val));
+    }
+    return make_object(objPtr);
   }
 
   llvm::Value* compile_object(const peg::Ast& ast) {
@@ -7786,7 +7911,9 @@ struct JIT {
       end = builder_.CreateAdd(end, builder_.getInt64(1), "range.incl");
     }
     auto obj = builder_.CreateCall(
-        module_->getFunction(rt::math_range), {start, end});
+        module_->getFunction(rt::math_range),
+        {start, end, builder_.getInt64(1),
+         current_line_val(), current_column_val()});
     return make_object(obj);
   }
 
@@ -9539,11 +9666,13 @@ struct JIT {
         builder_.CreateIntToPtr(extract_data(bodyVal), ptrTy);
 
     // Collect param-type annotations as a global array of C strings.
-    // Empty annotations map to a null pointer; the runtime treats null
-    // identically to the empty string ("Any").
+    // Only regular params participate in multifn type dispatch —
+    // kw-only and `**rest` params are not part of the dispatch key.
     std::vector<llvm::Constant*> typePtrs;
     typePtrs.reserve(params_ast->nodes.size());
     for (auto& p : params_ast->nodes) {
+      if (culebra::is_kw_only_sep(*p)) break;
+      if (culebra::is_kwargs_rest(*p)) continue;
       auto t = extract_type_annotation(*p, 2);
       if (t.empty()) {
         typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
@@ -9638,7 +9767,20 @@ struct JIT {
     std::vector<std::string_view> paramTypeNames;
     std::vector<const peg::Ast*> paramDefaults;
     std::optional<size_t> firstDefaulted;
+    std::optional<size_t> kwargsRestIdx;
+    std::optional<size_t> firstKwOnlyIdx;
     for (auto& node : params_ast.nodes) {
+      if (culebra::is_kw_only_sep(*node)) {
+        if (!firstKwOnlyIdx) firstKwOnlyIdx = paramNames.size();
+        continue;
+      }
+      if (culebra::is_kwargs_rest(*node)) {
+        paramNames.push_back(std::string(node->token));
+        paramTypeNames.push_back({});
+        paramDefaults.push_back(nullptr);
+        kwargsRestIdx = paramNames.size() - 1;
+        continue;
+      }
       paramNames.push_back(std::string(node->nodes[1]->token));
       paramTypeNames.push_back(extract_type_annotation(*node, 2));
       auto* def = extract_default_expr(*node);
@@ -9930,8 +10072,8 @@ struct JIT {
     // Restore outer context before emitting the closure at the caller's
     // insertion point — the cell captures come from the outer scope.
     saver.restore();
-    auto* paramMeta =
-        emit_param_meta_global(fn, paramNames, paramDefaults);
+    auto* paramMeta = emit_param_meta_global(
+        fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx);
     return emit_closure_build(fn, info, paramNames.size(), paramMeta);
   }
 
@@ -9944,7 +10086,9 @@ struct JIT {
   llvm::Constant* emit_param_meta_global(
       llvm::Function* fn,
       const std::vector<std::string>& paramNames,
-      const std::vector<const peg::Ast*>& paramDefaults) {
+      const std::vector<const peg::Ast*>& paramDefaults,
+      std::optional<size_t> kwargsRestIdx = std::nullopt,
+      std::optional<size_t> firstKwOnlyIdx = std::nullopt) {
     if (paramNames.empty()) return nullptr;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
@@ -9985,14 +10129,20 @@ struct JIT {
         llvm::GlobalValue::PrivateLinkage, bitsInit,
         std::string(fn->getName()) + ".pmeta.bits");
 
-    // Meta struct: {names_ptr, bits_ptr, n_params}.
-    auto metaTy = llvm::StructType::get(ctx_, {ptrTy, ptrTy, i64Ty});
+    // Meta struct: {names_ptr, bits_ptr, n_params, kwargs_rest_idx,
+    //               first_kw_only_idx}.
+    auto metaTy = llvm::StructType::get(ctx_,
+        {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty});
     auto metaInit = llvm::ConstantStruct::get(
         metaTy,
         {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
          llvm::ConstantExpr::getBitCast(bitsGlobal, ptrTy),
          llvm::ConstantInt::get(i64Ty,
-                                static_cast<int64_t>(paramNames.size()))});
+                                static_cast<int64_t>(paramNames.size())),
+         llvm::ConstantInt::get(i64Ty,
+             kwargsRestIdx ? static_cast<int64_t>(*kwargsRestIdx) : -1),
+         llvm::ConstantInt::get(i64Ty,
+             firstKwOnlyIdx ? static_cast<int64_t>(*firstKwOnlyIdx) : -1)});
     auto metaGlobal = new llvm::GlobalVariable(
         *module_, metaTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, metaInit,
@@ -10073,6 +10223,7 @@ struct JIT {
             fnAst = lookup_fn_ast(std::string(calleeNode->token));
           }
           bool has_dynamic_splat = false;
+          bool fn_has_kw_marker = false;
           if (fnAst) {
             for (auto& c : postfix.nodes) {
               if (c->tag == "KWARG_SPLAT"_ &&
@@ -10081,9 +10232,17 @@ struct JIT {
                 break;
               }
             }
+            for (auto& p : fnAst->nodes[0]->nodes) {
+              if (culebra::is_kw_only_sep(*p) ||
+                  culebra::is_kwargs_rest(*p)) {
+                fn_has_kw_marker = true;
+                break;
+              }
+            }
           }
-          if (fnAst && !arg_list_is_positional_only(postfix) &&
-              !has_dynamic_splat) {
+          bool need_kwarg_path =
+              !arg_list_is_positional_only(postfix) || fn_has_kw_marker;
+          if (fnAst && !has_dynamic_splat && need_kwarg_path) {
             callee = compile_function_call_with_kwargs(
                 postfix, callee, *fnAst);
           } else {
@@ -10652,9 +10811,15 @@ struct JIT {
   // `args` slab is a stack alloca owned by this call; each entry
   // carries a +1 that the callee transfers into its param slot or
   // into `__ARGS__`.
+  // `check_kw_only` triggers the runtime guard that throws when a
+  // dynamic callee with a `*` separator receives more positionals
+  // than allowed. Only the user-facing direct-call path enables it;
+  // internal callers (static kwargs resolver, iter protocol, method
+  // dispatch) drive pre-resolved slabs where the check would misfire.
   llvm::Value* compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
-      llvm::ArrayRef<llvm::Value*> userArgs) {
+      llvm::ArrayRef<llvm::Value*> userArgs,
+      bool check_kw_only = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto tag = extract_tag(callee);
@@ -10674,6 +10839,14 @@ struct JIT {
     auto fnFieldPtr =
         builder_.CreateStructGEP(closureType_, clsPtr, 1, "fn.ptr");
     auto fnPtr = builder_.CreateLoad(ptrTy, fnFieldPtr, "fn");
+
+    if (check_kw_only) {
+      emit_call(
+          module_->getFunction(rt::check_pos_count),
+          {fnPtr,
+           builder_.getInt64(static_cast<int64_t>(userArgs.size())),
+           current_line_val(), current_column_val()});
+    }
 
     // Build the args slab in the entry block (hoisted) so repeated
     // calls within a loop don't grow the stack frame per iteration.
@@ -10747,13 +10920,28 @@ struct JIT {
     struct ParamInfo {
       std::string_view name;
       bool has_default;
+      bool kw_only;
+      bool kwargs_rest;
     };
     std::vector<ParamInfo> params;
     params.reserve(paramsAst.nodes.size());
+    bool kw_only = false;
+    std::optional<size_t> rest_idx;
     for (auto& p : paramsAst.nodes) {
+      if (culebra::is_kw_only_sep(*p)) {
+        kw_only = true;
+        continue;
+      }
+      if (culebra::is_kwargs_rest(*p)) {
+        params.push_back({p->token, false, false, true});
+        rest_idx = params.size() - 1;
+        continue;
+      }
       params.push_back({
           p->nodes[1]->token,
           culebra::extract_default_expr(*p) != nullptr,
+          kw_only,
+          false,
       });
     }
 
@@ -10821,11 +11009,20 @@ struct JIT {
     // and is marked with TAG_UNFILLED so the callee prologue falls
     // back to its inline default expression. Middle gaps work the
     // same way as trailing gaps — both use the sentinel.
-    enum class Source { None, Positional, Kwarg };
+    enum class Source { None, Positional, Kwarg, KwargsRest };
     std::vector<Source> sources(params.size(), Source::None);
     std::vector<const peg::Ast*> resolved(params.size(), nullptr);
+    {
+      auto cap = culebra::first_kw_only_index(params);
+      culebra::throw_if_too_many_positionals(
+          cap ? static_cast<long>(*cap) : -1,
+          static_cast<long>(positional.size()),
+          static_cast<long>(argsAst.line),
+          static_cast<long>(argsAst.column));
+    }
     for (size_t i = 0; i < params.size(); i++) {
-      if (i < positional.size()) {
+      if (params[i].kwargs_rest) continue;
+      if (i < positional.size() && !params[i].kw_only) {
         if (kwargs.contains(params[i].name)) {
           throw culebra::CulebraError("TypeError",
               std::format("got argument '{}' both positionally and as "
@@ -10844,7 +11041,10 @@ struct JIT {
             argsAst.line, argsAst.column);
       }
     }
-    if (!kwargs.empty()) {
+    if (rest_idx) {
+      sources[*rest_idx] = Source::KwargsRest;
+      // The rest slot is always emitted (Object), even when empty.
+    } else if (!kwargs.empty()) {
       throw culebra::CulebraError("TypeError",
           std::format("unknown keyword argument '{}'",
                       kwargs.begin()->first),
@@ -10872,6 +11072,8 @@ struct JIT {
         v = builder_.CreateInsertValue(
             v, builder_.getInt64(0), {1});
         userArgs.push_back(v);
+      } else if (sources[i] == Source::KwargsRest) {
+        userArgs.push_back(emit_kwargs_rest_object(kwargs, argsAst));
       } else {
         userArgs.push_back(compile(*resolved[i]));
       }
@@ -10895,7 +11097,8 @@ struct JIT {
     for (auto& argNode : argsAst.nodes) {
       userArgs.push_back(compile(*argNode));
     }
-    return compile_function_call_raw(callee, thisVal, userArgs);
+    return compile_function_call_raw(callee, thisVal, userArgs,
+                                     /*check_kw_only=*/any_kw_only_in_program_);
   }
 
   // Indirect / UFCS / method kwargs path. Compiles ARG_LIST into
@@ -11034,36 +11237,50 @@ struct JIT {
   }
 
   // Lower `range(N)` / `range(start, end)` / `iota(N)` / `iota(start,
-  // end)` to a single runtime call. Returns nullptr if the callee is
-  // not one of these or the arity is wrong, letting the regular
-  // dispatch take over.
+  // end)` to a single runtime call. `range` additionally accepts a
+  // `step:` kw-only argument. Returns nullptr if the callee is not
+  // one of these or the shape is wrong, letting the regular dispatch
+  // take over.
   llvm::Value* try_compile_core_global(const std::string& name,
                                         const peg::Ast& argsAst) {
-    // Fast paths assume positional args. Bail out so the regular call
-    // dispatch (compile_function_call / compile_method_call) handles
-    // kwargs with its own SyntaxError.
-    if (!arg_list_is_positional_only(argsAst)) return nullptr;
+    using namespace peg::udl;
+    // Collect positional args + any `step:` kwarg (range-only). Any
+    // splat or unknown kwarg bails to the regular dispatch.
+    std::vector<const peg::Ast*> positional;
+    const peg::Ast* step_ast = nullptr;
+    for (auto& c : argsAst.nodes) {
+      if (c->tag == "KWARG_SPLAT"_) return nullptr;
+      if (c->tag == "KWARG"_) {
+        if (name != "range" || c->nodes[0]->token != "step") return nullptr;
+        step_ast = c->nodes[1].get();
+      } else {
+        positional.push_back(c.get());
+      }
+    }
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
-      if (argsAst.nodes.size() == 1) {
+      if (positional.size() == 1) {
         s = builder_.getInt64(0);
-        e = value_to_long(compile(*argsAst.nodes[0]));
+        e = value_to_long(compile(*positional[0]));
         return true;
       }
-      if (argsAst.nodes.size() == 2) {
-        s = value_to_long(compile(*argsAst.nodes[0]));
-        e = value_to_long(compile(*argsAst.nodes[1]));
+      if (positional.size() == 2) {
+        s = value_to_long(compile(*positional[0]));
+        e = value_to_long(compile(*positional[1]));
         return true;
       }
       return false;
     };
     llvm::Value *s = nullptr, *e = nullptr;
-    if (name == "iota" && two_args(s, e)) {
+    if (name == "iota" && !step_ast && two_args(s, e)) {
       auto arr = builder_.CreateCall(module_->getFunction(rt::iota), {s, e});
       return make_array(arr);
     }
     if (name == "range" && two_args(s, e)) {
-      auto obj = builder_.CreateCall(module_->getFunction(rt::math_range),
-                                      {s, e});
+      auto step = step_ast ? value_to_long(compile(*step_ast))
+                           : builder_.getInt64(1);
+      auto obj = emit_call(
+          module_->getFunction(rt::math_range),
+          {s, e, step, current_line_val(), current_column_val()});
       return make_object(obj);
     }
     return nullptr;
@@ -11503,6 +11720,13 @@ inline bool JIT::is_inlinable_lambda(const peg::Ast& ast,
   if (ast.tag != "LAMBDA"_ && ast.tag != "FUNCTION"_) return false;
   if (ast.nodes.size() < 2) return false;
   const auto& params = *ast.nodes[0];
+  // Inlined calls hand args positionally only — either `*` separator
+  // or `**rest` catch-all forces the slow path.
+  for (const auto& p : params.nodes) {
+    if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) {
+      return false;
+    }
+  }
   if (params.nodes.size() != expected_arity) return false;
   for (const auto& p : params.nodes) {
     // PARAMETER: [MUTABLE, IDENTIFIER, (TYPE)?, (DEFAULT)?]. Any node

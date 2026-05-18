@@ -85,4 +85,32 @@ class Box {
 let b = Box.new(5)
 assert(b.squared() == 25)
 
+# --- kwargs flow through dispatch (Julia-flavored kwsorter) ---
+#
+# Multifn dispatch picks on positional types only; kwargs flow into
+# the picked method's signature like any other call.
+
+fn greet(name: String, *, prefix: String = 'hi') { "{prefix}, {name}" }
+fn greet(n: Long, *, prefix: String = 'num') { "{prefix}:{n}" }
+
+assert(greet('alice') == 'hi, alice')
+assert(greet('alice', prefix: 'yo') == 'yo, alice')
+assert(greet(42) == 'num:42')
+assert(greet(42, prefix: 'got') == 'got:42')
+
+# Splat into a multifn
+let opts = {prefix: 'splat'}
+assert(greet('bob', **opts) == 'splat, bob')
+
+# Methods can have their own kw-only defaults
+fn paint(shape: String, *, color: String = 'red') { "{color} {shape}" }
+fn paint(n: Long, *, color: String = 'blue') { "{color} {n}" }
+assert(paint('circle') == 'red circle')
+assert(paint(7) == 'blue 7')
+assert(paint('box', color: 'green') == 'green box')
+
+# **rest inside a multifn method body
+fn collect(tag: String, **opts) { "{tag}:{opts.a}" }
+assert(collect('hi', a: 99, b: 5) == 'hi:99')
+
 puts("test_multidispatch: OK")

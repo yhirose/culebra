@@ -364,9 +364,10 @@ inline void analyze_fn_body(
     std::vector<const std::set<std::string, std::less<>>*>& outer) {
   std::set<std::string, std::less<>> my_locals;
   for (auto& p : params_ast.nodes) {
-    auto& id = *p->nodes[1];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
+    if (is_kw_only_sep(*p)) continue;
+    auto [name_sv, line, col] = extract_param_name_loc(*p);
+    auto name = std::string(name_sv);
+    check(name, line, col, outer);
     if (!is_sink_name(name)) my_locals.insert(name);
   }
   collect_locals(body_ast, my_locals, outer);
@@ -471,6 +472,17 @@ struct FunctionValue {
     // instances of common values (false/true/0/"") so multiple
     // stdlib entries don't each allocate their own.
     std::shared_ptr<Value> default_value;
+    bool kw_only = false;
+    bool kwargs_rest = false;
+
+    // Convenience constructor for a synthetic `**rest` catch-all
+    // parameter (used by the multifn dispatcher to forward unknown
+    // kwargs into the picked method).
+    static Parameter make_kwargs_rest(std::string_view name) {
+      return {name, /*mut=*/false, /*type_name=*/{},
+              /*default_expr=*/nullptr, /*default_value=*/{},
+              /*kw_only=*/false, /*kwargs_rest=*/true};
+    }
   };
 
   FunctionValue(
@@ -1167,6 +1179,10 @@ inline const std::shared_ptr<Value>& kw_default_zero() {
   static const auto v = std::make_shared<Value>(Value((long)0));
   return v;
 }
+inline const std::shared_ptr<Value>& kw_default_one() {
+  static const auto v = std::make_shared<Value>(Value((long)1));
+  return v;
+}
 inline const std::shared_ptr<Value>& kw_default_nil() {
   static const auto v = std::make_shared<Value>(Value{});
   return v;
@@ -1823,21 +1839,39 @@ inline Value call(std::shared_ptr<Environment> env, std::string_view name,
   }
   const auto& f = fn_val.get<FunctionValue>();
   const auto& params = *f.params;
-  if (args.size() < params.size()) {
+  // Positional-only embedder API: kw-only and `**rest` params are
+  // not bindable from C++ here, so they're seeded with empty defaults
+  // (rest → empty Object, kw-only → default if any). Only the
+  // regular-param count gates the arity check.
+  size_t regulars = regular_param_count(params);
+  if (args.size() < regulars) {
     throw CulebraError("ArityError",
         std::format("'{}' expects {} args, got {}",
-                    name, params.size(), args.size()));
+                    name, regulars, args.size()));
   }
 
   auto callEnv = std::make_shared<Environment>(env);
   callEnv->is_function_frame = true;
   callEnv->initialize("self", fn_val, false);
 
+  size_t pos = 0;
   for (size_t i = 0; i < params.size(); ++i) {
-    callEnv->initialize(params[i].name, std::move(args[i]), params[i].mut);
+    if (params[i].kwargs_rest) {
+      callEnv->initialize(params[i].name, Value(ObjectValue{}), false);
+      continue;
+    }
+    if (params[i].kw_only) {
+      if (params[i].default_value) {
+        callEnv->initialize(params[i].name, *params[i].default_value,
+                            params[i].mut);
+      }
+      continue;
+    }
+    callEnv->initialize(params[i].name, std::move(args[pos]), params[i].mut);
+    pos++;
   }
   ArrayValue extras;
-  for (size_t i = params.size(); i < args.size(); ++i) {
+  for (size_t i = regulars; i < args.size(); ++i) {
     extras.values->push_back(std::move(args[i]));
   }
   callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
@@ -3209,20 +3243,30 @@ inline void setup_core_globals(Environment& env) {
           })),
       false);
 
-  // range(n) / range(start, end): lazy integer iterator (constant
-  // additional memory). Yields successive integers via the iterator
+  // range(n) / range(start, end) / range(..., step: N): lazy integer
+  // iterator (constant additional memory). Step is keyword-only and
+  // must be non-zero. Yields successive integers via the iterator
   // protocol (see language.md §17.5).
   env.initialize(
       "range",
       Value(FunctionValue(
-          {}, [](std::shared_ptr<Environment> callEnv) {
+          {{"step", false, {}, nullptr, kw_default_one(), true}},
+          [](std::shared_ptr<Environment> callEnv) {
             auto [start, end] = _parse_range_args(callEnv);
+            auto step = callEnv->get("step").to_long();
+            if (step == 0) {
+              auto line = callEnv->get("__LINE__").to_long();
+              auto col = callEnv->get("__COLUMN__").to_long();
+              throw CulebraError("ValueError",
+                  "range() step must not be zero", line, col);
+            }
             auto current = std::make_shared<long>(start);
             return _make_iterator(
-                [current, end](std::shared_ptr<Environment>) {
-                  if (*current >= end) return _iter_step_done();
+                [current, end, step](std::shared_ptr<Environment>) {
+                  bool done = step > 0 ? *current >= end : *current <= end;
+                  if (done) return _iter_step_done();
                   auto v = Value(*current);
-                  (*current)++;
+                  *current += step;
                   return _iter_step_value(std::move(v));
                 });
           })),
@@ -3668,7 +3712,36 @@ struct Interpreter {
       const peg::Ast& params_ast, std::shared_ptr<Environment> env) {
     std::vector<FunctionValue::Parameter> params;
     bool seen_default = false;
+    bool kw_only = false;
+    bool seen_sep = false;
+    bool seen_rest = false;
+    size_t kw_only_count = 0;
     for (auto node : params_ast.nodes) {
+      if (seen_rest) {
+        throw CulebraError("SyntaxError",
+            "'**' catch-all must be the last parameter",
+            static_cast<long>(node->line),
+            static_cast<long>(node->column));
+      }
+      if (is_kw_only_sep(*node)) {
+        if (seen_sep) {
+          throw CulebraError("SyntaxError",
+              "duplicate '*' keyword-only separator",
+              static_cast<long>(node->line),
+              static_cast<long>(node->column));
+        }
+        seen_sep = true;
+        kw_only = true;
+        // Keyword-only params can have any default pattern, so reset
+        // the "non-default follows default" check at the separator.
+        seen_default = false;
+        continue;
+      }
+      if (is_kwargs_rest(*node)) {
+        params.push_back({node->token, false, {}, nullptr, {}, false, true});
+        seen_rest = true;
+        continue;
+      }
       auto mut = node->nodes[0]->token == "mut";
       auto& id = *node->nodes[1];
       const auto& name = id.token;
@@ -3676,13 +3749,20 @@ struct Interpreter {
       auto* default_expr = extract_default_expr(*node);
       if (default_expr) {
         seen_default = true;
-      } else if (seen_default) {
+      } else if (seen_default && !kw_only) {
         throw CulebraError("SyntaxError", std::format(
             "non-default parameter '{}' follows a default parameter at {}:{}.",
             std::string(name), id.line, id.column),
             static_cast<long>(id.line), static_cast<long>(id.column));
       }
-      params.push_back({name, mut, type_name, default_expr});
+      params.push_back({name, mut, type_name, default_expr, {}, kw_only});
+      if (kw_only) kw_only_count++;
+    }
+    if (seen_sep && kw_only_count == 0 && !seen_rest) {
+      throw CulebraError("SyntaxError",
+          "named arguments must follow '*' separator",
+          static_cast<long>(params_ast.line),
+          static_cast<long>(params_ast.column));
     }
     return params;
   }
@@ -3788,7 +3868,11 @@ struct Interpreter {
 
     MultiMethod method;
     method.body = fn_val;
+    // Only regular positionally-bindable params participate in
+    // multifn type dispatch — kw-only and `**rest` are sorted into
+    // the picked method via the kwsorter side of the dispatcher.
     for (const auto& p : *fn_val.to_function().params) {
+      if (p.kw_only || p.kwargs_rest) continue;
       method.param_types.emplace_back(p.type_name);
     }
 
@@ -3798,8 +3882,12 @@ struct Interpreter {
       methods->push_back(std::move(method));
       multimethods_[name_owned] = methods;
 
+      // Synthetic `**__KWARGS__` catch-all on the dispatcher so kwargs
+      // pass through to method dispatch (Julia-flavored kwsorter:
+      // multimethod picks on positional types, then the picked
+      // method's signature absorbs kwargs / splats).
       auto dispatcher = Value(FunctionValue(
-          {},
+          {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
           [this, methods, name_owned](std::shared_ptr<Environment> callEnv) {
             auto line = callEnv->get("__LINE__").to_long();
             auto col = callEnv->get("__COLUMN__").to_long();
@@ -3815,13 +3903,14 @@ struct Interpreter {
                   "ambiguous dispatch for `{}` at {}:{}.", name_owned, line,
                   col), line, col);
             }
-            return invoke_user_function(
-                (*methods)[pick.idx].body, callEnv, args.size(),
-                [&](size_t i) { return args[i]; },
-                [&](size_t) -> std::pair<size_t, size_t> {
-                  return {static_cast<size_t>(line),
-                          static_cast<size_t>(col)};
-                },
+            CallArgs call_args;
+            call_args.positional = args;
+            call_args.positional_locs.assign(
+                args.size(),
+                {static_cast<size_t>(line), static_cast<size_t>(col)});
+            call_args.splats.push_back(callEnv->get("__KWARGS__"));
+            return invoke_user_function_with_args(
+                (*methods)[pick.idx].body, callEnv, std::move(call_args),
                 static_cast<size_t>(line), static_cast<size_t>(col));
           }));
       env->initialize(name_view, dispatcher, false);
@@ -3992,9 +4081,7 @@ struct Interpreter {
   }
 
   // Resolves the three argument buckets against `fn_val`'s formal
-  // parameters and populates a fresh function frame. Out-of-scope for
-  // this cycle: a `**rest` catch-all at the definition side, so any
-  // unconsumed kwarg names raise TypeError.
+  // parameters and populates a fresh function frame.
   Value invoke_user_function_with_args(
       const Value& fn_val, std::shared_ptr<Environment> env,
       CallArgs args, size_t call_line, size_t call_column) {
@@ -4034,16 +4121,27 @@ struct Interpreter {
       merged[name] = val;
     }
 
+    // A mid-list `*` separator caps positional count; check before
+    // the per-param walk so this fires before "missing required" on a
+    // kw-only slot when too many positionals were given.
+    auto cap = first_kw_only_index(params);
+    throw_if_too_many_positionals(
+        cap ? static_cast<long>(*cap) : -1,
+        static_cast<long>(args.positional.size()),
+        static_cast<long>(call_line), static_cast<long>(call_column));
+
     auto callEnv = std::make_shared<Environment>(env);
     callEnv->is_function_frame = true;
     callEnv->initialize("self", fn_val, false);
 
     // C. Walk formal params in declaration order; consume positional
-    //    first, then merged map, then default.
+    //    first, then merged map, then default. The `**rest` catch-all
+    //    is handled in step D.
     for (size_t p = 0; p < params.size(); p++) {
+      if (params[p].kwargs_rest) continue;
       Value v;
       size_t ln = call_line, col = call_column;
-      if (p < args.positional.size()) {
+      if (p < args.positional.size() && !params[p].kw_only) {
         v = std::move(args.positional[p]);
         std::tie(ln, col) = args.positional_locs[p];
         if (merged.contains(params[p].name)) {
@@ -4078,16 +4176,33 @@ struct Interpreter {
       callEnv->initialize(params[p].name, v, params[p].mut);
     }
 
-    // D. Any leftover kwargs are unknown to this function.
-    if (!merged.empty()) {
+    // D. Leftover kwargs flow into a `**rest` catch-all if declared,
+    //    otherwise they are unknown to this function. The rest is
+    //    always bound (even with empty merged) so the callee always
+    //    sees the rest variable — matches the JIT prologue contract.
+    auto rest_it = std::find_if(params.begin(), params.end(),
+        [](auto& p) { return p.kwargs_rest; });
+    if (rest_it != params.end()) {
+      ObjectValue rest;
+      for (auto& [k, v] : merged) {
+        rest.initialize(k, std::move(v), false);
+      }
+      callEnv->initialize(rest_it->name, Value(std::move(rest)), false);
+      merged.clear();
+    } else if (!merged.empty()) {
       throw CulebraError("TypeError", std::format(
           "unknown keyword argument '{}'", merged.begin()->first),
           call_line, call_column);
     }
 
-    // E. Overflow positional bind to __ARGS__; kwargs never contribute.
+    // E. Overflow positional bind to __ARGS__. Extras start at the
+    //    regular-param count — anything past the last positional-
+    //    bindable slot flows into __ARGS__, regardless of whether the
+    //    fn also declares kw-only params or a `**rest` catch-all.
+    size_t extras_start = regular_param_count(params);
     ArrayValue extras;
-    for (size_t idx = params.size(); idx < args.positional.size(); idx++) {
+    for (size_t idx = extras_start;
+         idx < args.positional.size(); idx++) {
       extras.values->push_back(std::move(args.positional[idx]));
     }
     callEnv->initialize("__ARGS__", Value(std::move(extras)), false);

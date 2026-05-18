@@ -1161,6 +1161,27 @@ an Object as kwargs (`**obj`). Forms:
     f(1, **opts, z: 100)        # explicit kwarg overrides splat
     f(1, **{y: 2}, **{y: 5})    # multiple splats: later wins
 
+Catch-all `**rest` collects every kwarg that isn't claimed by a
+declared parameter into an Object, bound to the rest parameter's
+name. It must be the last parameter.
+
+    let route = fn (path, **opts) {
+      route_internal(path, opts.method, opts.headers, opts.body)
+    }
+
+    route('/users', method: 'GET')             # opts = {method: 'GET'}
+    route('/users', method: 'POST', body: '…') # opts = {method, body}
+
+Keyword-only parameters: a bare `*` in the parameter list marks the
+boundary; parameters after it can only be passed by name.
+
+    let g = fn (x, *, y, z = 10) { x + y + z }
+
+    g(1, y: 2)            # 13
+    g(1, y: 2, z: 3)      # 6
+    g(1, 2)               # TypeError: takes 1 positional argument but 2 given
+    g(1)                  # ArityError: missing required argument 'y'
+
 Rules:
 
 * Positional arguments must come before any kwarg or splat. Mixing
@@ -2084,7 +2105,7 @@ puts(type_of((1, 2)))      # 'Tuple'
 puts(type_of({1, 2}))      # 'Set'
 ```
 
-### `range(n: Long) -> Iterator` / `range(start: Long, end: Long) -> Iterator`
+### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
 
 Lazy integer-sequence factory: returns an Iterator (§17.5) that
 yields integers one at a time. Use with `for`-in or iterator method
@@ -2095,10 +2116,15 @@ the range size.
   completes immediately.
 * `range(start, end)` yields `start, start+1, ..., end-1`. If
   `start >= end`, completes immediately.
+* `step:` is keyword-only. Positive values count up (exclusive end);
+  negative values count down (exclusive end). `step: 0` raises
+  `ValueError`.
 
 ```culebra
-for i in range(5)     { puts(i) }     # 0, 1, 2, 3, 4
-for i in range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+for i in range(5)              { puts(i) }   # 0, 1, 2, 3, 4
+for i in range(2, 6)           { puts(i) }   # 2, 3, 4, 5
+for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
 
 # Constant memory even for huge bounds
 for i in range(1_000_000_000) {
@@ -2241,6 +2267,27 @@ greet("alice")  # → "hello, alice"
   `no matching method`; with a tie in specificity it raises
   `ambiguous dispatch`. Both halt the program immediately rather than
   surfacing as catchable runtime exceptions (§15, §22).
+
+### Keyword arguments and multimethods
+
+Dispatch picks on the **positional** argument types only (Julia-style
+kwsorter). Keyword arguments and `**` splats flow through dispatch
+into the picked method's signature, where they bind via the regular
+kwargs rules (§11).
+
+```
+fn paint(s: String, *, color = "red")  { "{color} {s}" }
+fn paint(n: Long,   *, color = "blue") { "{color} {n}" }
+
+paint("circle")              # → "red circle"     (String)
+paint(7)                     # → "blue 7"         (Long)
+paint("box", color: "green") # → "green box"
+paint(7, **{color: "gold"})  # → "gold 7"
+```
+
+Each method's own kw-only defaults, `**rest` catch-all, and parameter
+names are independent — only the positional signature participates in
+dispatch.
 
 ---
 

@@ -132,6 +132,26 @@ for i in range(3, 7) { coll.push(i) }
 assert(coll.size() == 4)
 assert(coll[0] == 3 && coll[3] == 6)
 
+# step: kwarg — keyword-only.
+let evens = range(0, 10, step: 2).collect()
+assert(evens.size() == 5)
+assert(evens[0] == 0 && evens[4] == 8)
+
+let ones = range(10, step: 1).collect()
+assert(ones.size() == 10 && ones[9] == 9)
+
+let triples = range(10, step: 3).collect()
+assert(triples.size() == 4 && triples[3] == 9)
+
+# Negative step counts down (exclusive end).
+let down = range(5, 0, step: -1).collect()
+assert(down.size() == 5)
+assert(down[0] == 5 && down[4] == 1)
+
+# step: 0 raises ValueError.
+let err = try { range(10, step: 0).collect() } catch e { e }
+assert(err.kind == 'ValueError' && err.message.contains('step'))
+
 # --- Phase 3: non-terminal Iterator methods ---
 
 # map

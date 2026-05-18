@@ -1118,6 +1118,27 @@ kwargs として展開（`**obj`）できます:
     f(1, **opts, z: 100)        # 明示 kwarg が splat より優先
     f(1, **{y: 2}, **{y: 5})    # 複数 splat: 後勝ち
 
+`**rest` キャッチオール: 宣言したパラメータに吸収されなかった
+kwargs を Object として受け取ります。位置はパラメータリストの末尾
+である必要があります。
+
+    let route = fn (path, **opts) {
+      route_internal(path, opts.method, opts.headers, opts.body)
+    }
+
+    route('/users', method: 'GET')             # opts = {method: 'GET'}
+    route('/users', method: 'POST', body: '…') # opts = {method, body}
+
+キーワード専用パラメータ: パラメータリスト中の単独の `*` 以降の
+パラメータは名前付きでのみ渡せます。
+
+    let g = fn (x, *, y, z = 10) { x + y + z }
+
+    g(1, y: 2)            # 13
+    g(1, y: 2, z: 3)      # 6
+    g(1, 2)               # TypeError: takes 1 positional argument but 2 given
+    g(1)                  # ArityError: missing required argument 'y'
+
 ルール:
 
 * 位置引数は kwarg/splat より前に置きます。逆順（`f(x: 1, 2)`）は
@@ -2010,7 +2031,7 @@ puts(type_of((1, 2)))      # 'Tuple'
 puts(type_of({1, 2}))      # 'Set'
 ```
 
-### `range(n: Long) -> Iterator` / `range(start: Long, end: Long) -> Iterator`
+### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
 
 遅延評価の整数列ファクトリ。Iterator（§17.5）を返し、整数を 1 つずつ
 yield します。`for`-in やイテレータメソッドチェーンと組み合わせると、
@@ -2019,10 +2040,14 @@ yield します。`for`-in やイテレータメソッドチェーンと組み�
 * `range(n)` は `0, 1, ..., n-1` を yield。`n <= 0` なら即座に完了。
 * `range(start, end)` は `start, start+1, ..., end-1` を yield。
   `start >= end` なら即座に完了。
+* `step:` はキーワード専用。正の値で昇順 (exclusive end)、負の値で
+  降順 (exclusive end)。`step: 0` は `ValueError`。
 
 ```culebra
-for i in range(5)     { puts(i) }     # 0, 1, 2, 3, 4
-for i in range(2, 6)  { puts(i) }     # 2, 3, 4, 5
+for i in range(5)              { puts(i) }   # 0, 1, 2, 3, 4
+for i in range(2, 6)           { puts(i) }   # 2, 3, 4, 5
+for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
+for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
 
 # 巨大な上限でも定数メモリで動く
 for i in range(1_000_000_000) {
@@ -2164,6 +2189,26 @@ greet("alice")  # → "hello, alice"
   特異度が完全に並んだ場合は `ambiguous dispatch` を投げます。
   どちらもランタイム例外ではなく即座にプログラムを中断します
   （§15、§22）。
+
+### キーワード引数とマルチメソッド
+
+ディスパッチは**位置引数**の型だけで行われます（Julia 風の
+kwsorter）。キーワード引数や `**` splat はディスパッチには
+参加せず、選ばれたメソッドのシグネチャに対して通常の kwargs ルール
+（§11）で bind されます。
+
+```
+fn paint(s: String, *, color = "red")  { "{color} {s}" }
+fn paint(n: Long,   *, color = "blue") { "{color} {n}" }
+
+paint("circle")              # → "red circle"
+paint(7)                     # → "blue 7"
+paint("box", color: "green") # → "green box"
+paint(7, **{color: "gold"})  # → "gold 7"
+```
+
+各メソッドの kw-only デフォルト、`**rest` キャッチオール、パラメータ
+名はそれぞれ独立で、ディスパッチに使われるのは位置シグネチャだけです。
 
 ---
 

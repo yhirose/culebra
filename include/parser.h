@@ -3,6 +3,7 @@
 #include <peglib.h>
 
 #include <format>
+#include <optional>
 #include <print>
 #include <string>
 #include <vector>
@@ -127,7 +128,9 @@ const auto grammar_ = R"(
   LAMBDA                   <-  LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
   LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  KW_ONLY_SEP              <-  '*' !'*'
+  KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
 
   TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* >
@@ -285,6 +288,55 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
     return node.nodes[index]->token;
   }
   return {};
+}
+
+inline bool is_kw_only_sep(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.tag == "KW_ONLY_SEP"_;
+}
+
+inline bool is_kwargs_rest(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.tag == "KWARGS_REST"_;
+}
+
+// Returns (name, line, col) for a PARAMETER-shaped AST node. The
+// KWARGS_REST shape stores the name as the node's own token; normal
+// parameters keep it on the IDENTIFIER child at index 1.
+struct ParamNameLoc {
+  std::string_view name;
+  size_t line;
+  size_t column;
+};
+inline ParamNameLoc extract_param_name_loc(const peg::Ast& p) {
+  if (is_kwargs_rest(p)) return {p.token, p.line, p.column};
+  const auto& id = *p.nodes[1];
+  return {id.token, id.line, id.column};
+}
+
+// Returns the index of the first kw-only parameter (the cap on
+// allowed positional arguments), or nullopt if there is no `*`
+// separator. Templated so it works for both FunctionValue::Parameter
+// (interp) and JIT-local ParamInfo, which share a `kw_only` field.
+template <class P>
+inline std::optional<size_t> first_kw_only_index(
+    const std::vector<P>& params) {
+  for (size_t i = 0; i < params.size(); i++) {
+    if (params[i].kw_only) return i;
+  }
+  return std::nullopt;
+}
+
+// Count of regular (positional-bindable) params — those with neither
+// `kw_only` nor `kwargs_rest` set. This is where overflow positionals
+// stop being consumed by formal slots and start flowing to __ARGS__.
+template <class P>
+inline size_t regular_param_count(const std::vector<P>& params) {
+  size_t n = 0;
+  for (auto& p : params) {
+    if (!p.kw_only && !p.kwargs_rest) n++;
+  }
+  return n;
 }
 
 // For a PARAMETER AST node, returns the DEFAULT_VALUE's inner expression

@@ -32,6 +32,20 @@ class CulebraError : public std::runtime_error {
         col(c) {}
 };
 
+// Throw TypeError "takes N positional argument(s) but M given" when M
+// exceeds the cap. `cap < 0` means no `*` separator (no cap); `cap ==
+// 0` means a leading `*` (variadic via __ARGS__, no overflow error).
+// Shared by interp's bind_call_args, the JIT static kwargs resolver,
+// and the JIT dynamic-callee runtime guard — all three throw the same
+// shape.
+inline void throw_if_too_many_positionals(long cap, long n_pos,
+                                           long line, long col) {
+  if (cap <= 0 || n_pos <= cap) return;
+  throw CulebraError("TypeError", std::format(
+      "takes {} positional argument{} but {} given",
+      cap, cap == 1 ? "" : "s", n_pos), line, col);
+}
+
 // --- Numeric formatting / parsing ---
 
 // Shortest round-trip decimal for a double, with a forced decimal point

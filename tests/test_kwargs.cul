@@ -90,4 +90,58 @@ let g2 = fn (a, b = 0) { __ARGS__ }
 let e2 = g2(1, b: 9)
 assert(e2.size() == 0)
 
+# Keyword-only parameters: anything after `*` must be passed by name.
+let kw1 = fn (x, *, y) { x + y }
+assert(kw1(1, y: 2) == 3)
+assert(kw1(1, **{y: 4}) == 5)
+
+let kw2 = fn (x, *, y = 100, z = 200) { x + y + z }
+assert(kw2(1) == 301)                 # both kw-only defaults
+assert(kw2(1, y: 2) == 203)           # z still defaults
+assert(kw2(1, z: 3) == 104)           # middle gap on kw-only
+assert(kw2(1, z: 3, y: 2) == 6)
+assert(kw2(1, **{y: 2, z: 3}) == 6)
+
+# UFCS + kw-only.
+let greet_kw = fn (name, *, greeting = 'hi') { "{greeting}, {name}" }
+assert('alice'.greet_kw() == 'hi, alice')
+assert('alice'.greet_kw(greeting: 'yo') == 'yo, alice')
+
+# `**rest` catch-all: unconsumed kwargs are collected into an Object.
+let rest1 = fn (**opts) { opts }
+let r = rest1(a: 1, b: 2)
+assert(r.a == 1 && r.b == 2)
+assert(rest1().a == nil)              # empty rest is an empty Object
+
+# Mixed: declared params take their share, rest catches the leftovers.
+let mix = fn (x, **opts) { x + opts.a }
+assert(mix(10, a: 5) == 15)
+assert(mix(10, a: 5, b: 100) == 15)   # b stays in opts, untouched
+
+# Combined with `*` and defaults.
+let full = fn (x, y = 10, *, z, **kw) { x + y + z + kw.bonus }
+assert(full(1, z: 100, bonus: 7) == 118)
+assert(full(1, 2, z: 100, bonus: 7) == 110)
+
+# Splat into a function with `**rest` — declared params bind first,
+# the rest of the keys flow into the rest Object.
+let dyn = {z: 50, bonus: 8, extra: 'x'}
+assert(full(1, **dyn) == 69)          # 1+10+50+8 (extra captured in kw)
+
+# A user-passed kwarg whose name matches the rest param itself is
+# still treated as a name to put INTO the rest Object (the rest slot
+# is filled with the constructed Object, not by name lookup).
+let r2 = fn (**opts) { opts.opts }
+assert(r2(opts: 5) == 5)
+
+# Dynamic callee with kw-only param: a positional past the `*`
+# separator must be a TypeError even when the callee is captured into
+# a variable (JIT runtime guard via param meta, mirroring the interp).
+let kw_dyn_src = fn (x, *, y) { x + y }
+let kw_dyn_dst = kw_dyn_src
+assert(kw_dyn_dst(1, y: 2) == 3)
+let dyn_err = try { kw_dyn_dst(1, 2); nil } catch e { e }
+assert(dyn_err.kind == 'TypeError')
+assert(dyn_err.message.contains('positional'))
+
 IO.puts('test_kwargs OK')
