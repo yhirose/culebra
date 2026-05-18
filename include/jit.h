@@ -3,6 +3,7 @@
 #ifdef CULEBRA_JIT_ENABLED
 
 #include <parser.h>
+#include <runtime/rt_macros.h>
 #include <shared.h>
 #include <tensor.h>
 #include <unicodelib.h>
@@ -1186,7 +1187,7 @@ extern "C" {
 // enclosing extern "C" block).
 inline std::optional<std::string> _try_str_special(int8_t type, int64_t data);
 
-__attribute__((used)) inline void culebra_runtime_puts(int8_t type,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
                                                        int64_t data) {
   if (auto s = _try_str_special(type, data)) {
     std::cout << *s << std::endl;
@@ -1222,14 +1223,14 @@ __attribute__((used)) inline void culebra_runtime_puts(int8_t type,
 
 // For interpolation / print / to_string: strings unquoted, Objects
 // with `__str__` return their custom form.
-__attribute__((used)) inline const char* culebra_runtime_value_to_display(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
     int8_t type, int64_t data) {
   if (auto s = _try_str_special(type, data)) return _culebra_heap_str(*s);
   if (type == 4) return reinterpret_cast<const char*>(data);
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
 }
 
-__attribute__((used)) inline const char* culebra_runtime_str_concat(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_concat(
     const char* a, const char* b) {
   auto la = std::strlen(a);
   auto lb = std::strlen(b);
@@ -1240,17 +1241,17 @@ __attribute__((used)) inline const char* culebra_runtime_str_concat(
   return r;
 }
 
-__attribute__((used)) inline bool culebra_runtime_str_eq(const char* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_eq(const char* a,
                                                          const char* b) {
   return std::strcmp(a, b) == 0;
 }
 
-__attribute__((used)) inline int32_t culebra_runtime_str_cmp(const char* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int32_t culebra_runtime_str_cmp(const char* a,
                                                              const char* b) {
   return std::strcmp(a, b);
 }
 
-__attribute__((used)) inline void culebra_runtime_assert(int8_t type,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_assert(int8_t type,
                                                          int64_t data,
                                                          int64_t line,
                                                          int64_t col) {
@@ -1274,7 +1275,7 @@ __attribute__((used)) inline void culebra_runtime_assert(int8_t type,
   }
 }
 
-__attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error(int64_t line,
                                                              int64_t col) {
   culebra::throw_type_error_at(line, col);
 }
@@ -1283,7 +1284,7 @@ __attribute__((used)) inline void culebra_runtime_type_error(int64_t line,
 // expected type as a string-literal global and the runtime tag of the
 // actual value. Used by leaf JIT accessors (value_to_long etc.) where
 // both pieces of context are statically available at the throw site.
-__attribute__((used)) inline void culebra_runtime_type_error_typed(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
     int64_t line, int64_t col, const char* expected, int8_t got_tag) {
   const char* got = "?";
   switch (got_tag) {
@@ -1304,7 +1305,7 @@ __attribute__((used)) inline void culebra_runtime_type_error_typed(
       line, col);
 }
 
-__attribute__((used)) inline void culebra_runtime_arity_error(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
     int64_t got, int64_t declared, int64_t line, int64_t col) {
   throw culebra::CulebraError("ArityError", std::format(
       "arguments error: called with {} argument(s), expected at least {} "
@@ -1328,7 +1329,7 @@ class CulebraException : public std::exception {
   const char* what() const noexcept override { return "CulebraException"; }
 };
 
-__attribute__((used)) void culebra_runtime_value_retain(int8_t tag,
+CULEBRA_RT_KEEP void culebra_runtime_value_retain(int8_t tag,
                                                         int64_t data);
 
 // Culebra is single-threaded, so plain globals are fine. Populated
@@ -1338,20 +1339,20 @@ __attribute__((used)) void culebra_runtime_value_retain(int8_t tag,
 // JIT IR reaches the carriers through these accessors — ORC's emutls
 // can't resolve `__emutls_v.*` from JIT modules, so a regular call
 // into C++ (where Runtime lookup just works) is the portable path.
-__attribute__((used)) inline int8_t culebra_runtime_get_is_throw() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_get_is_throw() {
   return culebra::current_runtime().is_throw;
 }
-__attribute__((used)) inline void culebra_runtime_clear_is_throw() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_clear_is_throw() {
   culebra::current_runtime().is_throw = 0;
 }
-__attribute__((used)) inline int8_t culebra_runtime_get_thrown_tag() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_get_thrown_tag() {
   return culebra::current_runtime().thrown_tag;
 }
-__attribute__((used)) inline int64_t culebra_runtime_get_thrown_data() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_data() {
   return culebra::current_runtime().thrown_data;
 }
 
-__attribute__((used)) inline void culebra_runtime_throw(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
                                                         int64_t data) {
   // Retain so the payload stays alive through stack unwinding. The
   // matching catch handler is responsible for the balancing release.
@@ -1369,7 +1370,7 @@ __attribute__((used)) inline void culebra_runtime_throw(int8_t tag,
 // landingpad via an `invoke` unwind edge (LLVM's `resume` alone
 // abandons the current function, skipping outer landingpads in the
 // same function).
-__attribute__((used)) inline void culebra_runtime_rethrow() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow() {
   throw;
 }
 
@@ -1385,18 +1386,18 @@ inline std::vector<JitValue>& _culebra_defer_stack() {
       culebra::kSlotDeferStack);
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_defer_mark() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_defer_mark() {
   return static_cast<int64_t>(_culebra_defer_stack().size());
 }
 
-__attribute__((used)) inline void culebra_runtime_defer_push(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_push(int8_t tag,
                                                              int64_t data) {
   // Retain: stack owns a reference until run_to drops it.
   culebra_runtime_value_retain(tag, data);
   _culebra_defer_stack().push_back(JitValue{tag, data});
 }
 
-__attribute__((used)) inline void culebra_runtime_defer_run_to(int64_t mark) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark) {
   auto& s = _culebra_defer_stack();
   while (static_cast<int64_t>(s.size()) > mark) {
     auto v = s.back();
@@ -1440,7 +1441,7 @@ inline const char* _culebra_tag_name(int8_t tag) {
 // For class-instance arguments (TAG_OBJECT with a `class:` String
 // property), also accept the matching class name — without this the
 // JIT can't validate `s: Square` annotations against `Square.new(...)`.
-__attribute__((used)) inline void culebra_runtime_type_check(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
     int8_t tag, int64_t data, const char* expected, const char* context,
     int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
@@ -1463,7 +1464,7 @@ __attribute__((used)) inline void culebra_runtime_type_check(
       line, col);
 }
 
-__attribute__((used)) inline void culebra_runtime_div_zero(int64_t line,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
                                                            int64_t col) {
   throw culebra::CulebraError("ZeroDivisionError",
       std::format("divide by 0 error at {}:{}.", line, col), line, col);
@@ -1564,7 +1565,7 @@ inline std::optional<JitValue> _dispatch_arith_special(int8_t lt, int64_t ld,
 }
 
 // Forward decl — body is further down with the other Tensor runtime entries.
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_binop(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_binop(
     int8_t lt, int64_t ld, int8_t rt_, int64_t rd, int64_t op_id);
 
 // Routes binop through the Tensor runtime when either operand is a
@@ -1578,7 +1579,7 @@ inline std::optional<JitValue> _try_tensor_binop(
 }
 
 #define CUL_NUM_BINOP(name, method, expr, reflect, op_id)               \
-  __attribute__((used)) inline JitValue culebra_runtime_num_##name(     \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_##name(     \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
@@ -1593,7 +1594,7 @@ CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
 CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
-__attribute__((used)) inline JitValue culebra_runtime_num_div(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Div)))
@@ -1606,7 +1607,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_div(
   return {TAG_FLOAT, _culebra_double_to_bits(a / b)};
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_num_mod(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
     return *r;
@@ -1618,7 +1619,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_mod(
 
 // `@` (matmul) has no numeric meaning — always dispatches through
 // `__matmul__`. Non-commutative, so no reflection.
-__attribute__((used)) inline JitValue culebra_runtime_num_matmul(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
   throw culebra::CulebraError("TypeError", "type error.");
@@ -1643,7 +1644,7 @@ inline bool _extract_bool_and_release(JitValue v) {
 
 // extern "C" entry points for the comparison helpers. One per
 // operator so the JIT can look them up by name.
-__attribute__((used)) inline bool culebra_runtime_value_equal(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   // `==` is commutative, so try either side's `__eq__`.
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
@@ -1668,7 +1669,7 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 }
 
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
-  __attribute__((used)) inline bool culebra_runtime_value_##name(       \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_##name(       \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2) {                   \
     fast_path                                                           \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
@@ -1721,7 +1722,7 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
 }
 
 #define CUL_NUM_INPLACE(name, op_enum)                                  \
-  __attribute__((used)) inline JitValue                                 \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
   culebra_runtime_num_inplace_##name(                                   \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
     if (lt == TAG_TENSOR) {                                             \
@@ -1736,7 +1737,7 @@ CUL_NUM_INPLACE(mul, Op::Mul)
 CUL_NUM_INPLACE(div, Op::Div)
 // Pow expansion is further down — it needs `culebra_runtime_num_pow`.
 
-__attribute__((used)) inline JitValue culebra_runtime_num_pow(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
@@ -1757,7 +1758,7 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 
 // Unary negation: Long → Long (wraps), Float → Float. Non-numeric
 // raises type error. Called only from the unary-minus slow path.
-__attribute__((used)) inline JitValue culebra_runtime_num_neg(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg(
     int8_t t, int64_t d) {
   if (auto r = _try_special_unary(t, d, "__neg__")) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
@@ -1768,7 +1769,7 @@ __attribute__((used)) inline JitValue culebra_runtime_num_neg(
   throw culebra::CulebraError("TypeError", "type error.");
 }
 
-__attribute__((used)) inline void culebra_runtime_debugger_break(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(
     const char* path, int64_t line, int64_t col) {
   std::println(stderr, "\nBreak in {}:{}:{}", path, line, col);
   // Show a few lines of source around the break point, if we can open it
@@ -1800,7 +1801,7 @@ __attribute__((used)) inline void culebra_runtime_debugger_break(
 
 // --- Array runtime ---
 
-__attribute__((used)) inline JitArray* culebra_runtime_array_new() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new() {
   auto* arr = new JitArray();
   arr->refcount = 1;
   arr->size = 0;
@@ -1814,7 +1815,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_new() {
 // inlined HOF loops (see emit_inlined_array_map) so per-iteration
 // `array_push` doesn't re-grow the buffer log(N) times. `size`
 // stays 0 — push fills it as elements arrive.
-__attribute__((used)) inline JitArray* culebra_runtime_array_new_reserved(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
     int64_t capacity) {
   auto* arr = new JitArray();
   arr->refcount = 1;
@@ -1825,7 +1826,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_new_reserved(
   return arr;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_set_or_push(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data);
 
 // Tuple sits on the same JitArray storage but is tracked under
@@ -1833,7 +1834,7 @@ __attribute__((used)) inline void culebra_runtime_array_set_or_push(
 // `_gc_slot_of` path. Caller-visible immutability is enforced by the
 // IR (mutation ops only accept TAG_ARRAY) — there is no mutating
 // runtime entry for Tuple.
-__attribute__((used)) inline JitArray* culebra_runtime_tuple_new() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new() {
   auto* arr = new JitArray();
   arr->refcount = 1;
   arr->size = 0;
@@ -1846,17 +1847,17 @@ __attribute__((used)) inline JitArray* culebra_runtime_tuple_new() {
 // Build-time element append. Reuses array_push internals (forward
 // declared and defined below) because the layout is identical; only
 // the GC tag differs.
-__attribute__((used)) inline void culebra_runtime_array_push(JitArray* arr,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
                                                              int8_t tag,
                                                              int64_t data);
-__attribute__((used)) inline void culebra_runtime_tuple_push(JitArray* arr,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tuple_push(JitArray* arr,
                                                              int8_t tag,
                                                              int64_t data) {
   culebra_runtime_array_push(arr, tag, data);
 }
 
 // Set runtime: insertion-ordered with O(1) membership.
-__attribute__((used)) inline JitSet* culebra_runtime_set_new() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_new() {
   auto* s = new JitSet();
   s->refcount = 1;
   s->index = new JitSetIndex();
@@ -1867,7 +1868,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_new() {
 // Add `value` to `set` unless already present. The set absorbs the
 // +1 reference on hit; on a duplicate we release it so the caller's
 // ownership transfer balances out.
-__attribute__((used)) inline void culebra_runtime_set_add(JitSet* set,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_add(JitSet* set,
                                                           int8_t tag,
                                                           int64_t data) {
   JitValue v{tag, data};
@@ -1878,13 +1879,13 @@ __attribute__((used)) inline void culebra_runtime_set_add(JitSet* set,
   set->members.push_back(v);
 }
 
-__attribute__((used)) inline bool culebra_runtime_set_contains(JitSet* set,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_set_contains(JitSet* set,
                                                                int8_t tag,
                                                                int64_t data) {
   return set->index && set->index->contains(JitValue{tag, data});
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_set_size(JitSet* set) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_set_size(JitSet* set) {
   return static_cast<int64_t>(set->members.size());
 }
 
@@ -1899,7 +1900,7 @@ inline void _set_take(JitSet* out, const JitValue& v) {
   out->members.push_back(v);
 }
 
-__attribute__((used)) inline JitSet* culebra_runtime_set_union(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_union(JitSet* a,
                                                                JitSet* b) {
   auto* out = culebra_runtime_set_new();
   for (auto& v : a->members) _set_take(out, v);
@@ -1907,7 +1908,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_union(JitSet* a,
   return out;
 }
 
-__attribute__((used)) inline JitSet* culebra_runtime_set_intersect(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_intersect(JitSet* a,
                                                                    JitSet* b) {
   auto* out = culebra_runtime_set_new();
   for (auto& v : a->members) {
@@ -1916,7 +1917,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_intersect(JitSet* a,
   return out;
 }
 
-__attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_diff(JitSet* a,
                                                               JitSet* b) {
   auto* out = culebra_runtime_set_new();
   for (auto& v : a->members) {
@@ -1925,7 +1926,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_diff(JitSet* a,
   return out;
 }
 
-__attribute__((used)) inline JitSet* culebra_runtime_set_sym_diff(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_sym_diff(JitSet* a,
                                                                   JitSet* b) {
   auto* out = culebra_runtime_set_new();
   for (auto& v : a->members) {
@@ -1937,7 +1938,7 @@ __attribute__((used)) inline JitSet* culebra_runtime_set_sym_diff(JitSet* a,
   return out;
 }
 
-__attribute__((used)) inline int8_t culebra_runtime_set_subset(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_subset(JitSet* a,
                                                                JitSet* b) {
   for (auto& v : a->members) {
     if (!b->index->contains(v)) return 0;
@@ -1945,7 +1946,7 @@ __attribute__((used)) inline int8_t culebra_runtime_set_subset(JitSet* a,
   return 1;
 }
 
-__attribute__((used)) inline int8_t culebra_runtime_set_superset(JitSet* a,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
                                                                  JitSet* b) {
   for (auto& v : b->members) {
     if (!a->index->contains(v)) return 0;
@@ -1955,7 +1956,7 @@ __attribute__((used)) inline int8_t culebra_runtime_set_superset(JitSet* a,
 
 // Mutating add: returns 1 on insert, 0 if already present. Hands the
 // caller's +1 reference into the set on insert; releases it on dup.
-__attribute__((used)) inline int8_t culebra_runtime_set_add_method(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
     JitSet* set, int8_t tag, int64_t data) {
   JitValue v{tag, data};
   if (!set->index->insert(v).second) {
@@ -1967,7 +1968,7 @@ __attribute__((used)) inline int8_t culebra_runtime_set_add_method(
 }
 
 // Mutating remove: returns 1 if removed, 0 if absent.
-__attribute__((used)) inline int8_t culebra_runtime_set_remove(JitSet* set,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(JitSet* set,
                                                                int8_t tag,
                                                                int64_t data) {
   JitValue key{tag, data};
@@ -1985,7 +1986,7 @@ __attribute__((used)) inline int8_t culebra_runtime_set_remove(JitSet* set,
 }
 
 // Materialize a Set as a fresh Array, retaining each element.
-__attribute__((used)) inline JitArray* culebra_runtime_set_to_array(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_set_to_array(
     JitSet* set) {
   auto* arr = culebra_runtime_array_new();
   for (auto& v : set->members) {
@@ -1996,7 +1997,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_set_to_array(
 }
 
 // Materialize a Tuple as a fresh Array, retaining each element.
-__attribute__((used)) inline JitArray* culebra_runtime_tuple_to_array(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_to_array(
     JitArray* tup) {
   auto* arr = culebra_runtime_array_new();
   for (size_t i = 0; i < tup->size; i++) {
@@ -2008,7 +2009,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_tuple_to_array(
 }
 
 // Tuple element search (linear). Returns 1 if `v` is present, 0 otherwise.
-__attribute__((used)) inline int8_t culebra_runtime_tuple_contains(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_tuple_contains(
     JitArray* tup, int8_t tag, int64_t data) {
   for (size_t i = 0; i < tup->size; i++) {
     if (_culebra_value_equal(tup->items[i].tag, tup->items[i].data,
@@ -2024,7 +2025,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 
 extern "C" {
 
-__attribute__((used)) inline void culebra_runtime_array_push(JitArray* arr,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
                                                              int8_t tag,
                                                              int64_t data) {
   if (arr->size >= arr->capacity) {
@@ -2044,7 +2045,7 @@ __attribute__((used)) inline void culebra_runtime_array_push(JitArray* arr,
   arr->size++;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_resize(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
     JitArray* arr, int64_t count, int8_t def_tag, int64_t def_data) {
   while (arr->size < static_cast<size_t>(count)) {
     culebra_runtime_array_push(arr, def_tag, def_data);
@@ -2054,7 +2055,7 @@ __attribute__((used)) inline void culebra_runtime_array_resize(
   }
 }
 
-__attribute__((used)) inline void culebra_runtime_array_get(JitArray* arr,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_get(JitArray* arr,
                                                             int64_t idx,
                                                             int8_t* out_tag,
                                                             int64_t* out_data,
@@ -2069,7 +2070,7 @@ __attribute__((used)) inline void culebra_runtime_array_get(JitArray* arr,
   *out_data = arr->items[idx].data;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_set(JitArray* arr,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set(JitArray* arr,
                                                             int64_t idx,
                                                             int8_t tag,
                                                             int64_t data,
@@ -2084,17 +2085,17 @@ __attribute__((used)) inline void culebra_runtime_array_set(JitArray* arr,
   arr->items[idx].data = data;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_size(JitArray* arr) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_size(JitArray* arr) {
   return static_cast<int64_t>(arr->size);
 }
 
 // Forward decl (defined later alongside the refcount runtime).
-__attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
                                                                int64_t data);
 
 // Create a new array by copying [start, start+len) from src. Each copied
 // element is retained (new array holds another reference).
-__attribute__((used)) inline JitArray* culebra_runtime_array_slice(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_slice(
     JitArray* src, int64_t start, int64_t len) {
   auto* r = culebra_runtime_array_new();
   for (int64_t i = 0; i < len; i++) {
@@ -2105,7 +2106,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_slice(
   return r;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_set_or_push(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data) {
   if (static_cast<size_t>(idx) < arr->size) {
     _culebra_value_release_impl(arr->items[idx].tag, arr->items[idx].data);
@@ -2155,19 +2156,19 @@ inline JitTensor* _culebra_jit_tensor_register(culebra::TensorPtr impl) {
   return t;
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_zeros(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_zeros(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
   return _culebra_jit_tensor_register(culebra::tensor_zeros(std::move(shape), dt));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_ones(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_ones(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
   return _culebra_jit_tensor_register(culebra::tensor_ones(std::move(shape), dt));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_randn(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_randn(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   auto [dt, shape] = _culebra_parse_tensor_ctor_args(args, n, line, col);
   return _culebra_jit_tensor_register(culebra::tensor_randn(std::move(shape), dt));
@@ -2175,7 +2176,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_randn(
 
 // Tensor.from(arr): walk a 1D or 2D nested JitArray. M1 only F32; an
 // optional dtype tag arrives in M2.
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_from(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from(
     JitArray* a, int64_t line, int64_t col) {
   auto type_err = [&]() {
     culebra::throw_type_error_at(line, col);
@@ -2222,7 +2223,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_from(
 }
 
 // .shape() — returns a fresh JitArray of Long.
-__attribute__((used)) inline JitArray* culebra_runtime_tensor_shape(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_shape(
     JitTensor* t) {
   auto* a = culebra_runtime_array_new();
   for (auto d : t->impl->shape.dims) {
@@ -2234,7 +2235,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_tensor_shape(
 // Build a lazy elementwise binop. At least one operand must be
 // TAG_TENSOR; scalars (Long/Float) are lifted to a rank-0 Tensor with
 // the other side's dtype, then broadcast handles the rest.
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_binop(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_binop(
     int8_t lt, int64_t ld, int8_t rt_, int64_t rd, int64_t op_id) {
   culebra::Dtype dt =
       reinterpret_cast<JitTensor*>(lt == TAG_TENSOR ? ld : rd)->impl->dtype;
@@ -2246,22 +2247,22 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_binop(
       static_cast<culebra::Op>(op_id), lift(lt, ld), lift(rt_, rd)));
 }
 
-__attribute__((used)) inline void culebra_runtime_tensor_eval_one(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tensor_eval_one(
     JitTensor* t) {
   culebra::tensor_eval_node(*t->impl);
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_transpose(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_transpose(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_transpose(t->impl));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_clone(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_slice(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_slice(
     JitTensor* t, int64_t start, int64_t end) {
   return _culebra_jit_tensor_register(
       culebra::tensor_slice(t->impl, start, end));
@@ -2270,7 +2271,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_slice(
 // Forces eval and returns a Culebra Array. Rank 1 → flat Array of
 // Float; rank 2 → Array of Array of Float. Higher ranks are not
 // supported in Phase 1.
-__attribute__((used)) inline JitArray* culebra_runtime_tensor_to_array(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
     JitTensor* t) {
   culebra::tensor_eval_node(*t->impl);
   const auto& impl = *t->impl;
@@ -2307,37 +2308,37 @@ __attribute__((used)) inline JitArray* culebra_runtime_tensor_to_array(
       "Tensor.to_array: rank > 2 not supported.");
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_from_csv(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from_csv(
     const char* path) {
   return _culebra_jit_tensor_register(
       culebra::tensor_from_csv(std::string(path), culebra::Dtype::F32));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_dot(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_dot(
     JitTensor* a, JitTensor* b) {
   return _culebra_jit_tensor_register(culebra::tensor_dot(a->impl, b->impl));
 }
 
 // Unary activations (sigmoid / relu / softmax). op_id selects which.
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_unary(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_unary(
     JitTensor* a, int64_t op_id) {
   return _culebra_jit_tensor_register(
       culebra::tensor_unary(static_cast<culebra::Op>(op_id), a->impl));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_linear_sigmoid(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_linear_sigmoid(
     JitTensor* W, JitTensor* x, JitTensor* b) {
   return _culebra_jit_tensor_register(
       culebra::tensor_linear_sigmoid(W->impl, x->impl, b->impl));
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_reduce_axis(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reduce_axis(
     JitTensor* t, int64_t op_id, int64_t axis) {
   return _culebra_jit_tensor_register(culebra::tensor_reduce_axis(
       static_cast<culebra::Op>(op_id), t->impl, axis));
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_tensor_reduce_all(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_reduce_all(
     JitTensor* t, int64_t op_id) {
   using culebra::Op;
   double v = 0.0;
@@ -2350,7 +2351,7 @@ __attribute__((used)) inline JitValue culebra_runtime_tensor_reduce_all(
   return {TAG_FLOAT, _culebra_double_to_bits(v)};
 }
 
-__attribute__((used)) inline JitTensor* culebra_runtime_tensor_reshape(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
     JitTensor* t, JitArray* dims) {
   std::vector<int64_t> new_dims;
   new_dims.reserve(dims->size);
@@ -2366,7 +2367,7 @@ __attribute__((used)) inline JitTensor* culebra_runtime_tensor_reshape(
 
 // --- Object runtime ---
 
-__attribute__((used)) inline JitObject* culebra_runtime_object_new() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   auto* o = new JitObject();
   o->refcount = 1;
   _gc().add(o, GC_TAG_OBJECT);
@@ -2377,7 +2378,7 @@ __attribute__((used)) inline JitObject* culebra_runtime_object_new() {
 // transferred +1 ownership of each arg via the stack-allocated slab;
 // Array takes over (object_set-style: no extra retain, slot owns +1).
 // Returns a fresh JitArray with refcount 1.
-__attribute__((used)) inline JitArray* culebra_runtime_args_slice_to_array(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_args_slice_to_array(
     const JitValue* args, int64_t start, int64_t n) {
   auto* a = culebra_runtime_array_new();
   for (int64_t i = start; i < n; i++) {
@@ -2391,7 +2392,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_args_slice_to_array(
 // +1 retains on every overflow arg via the slab, so those refs must
 // be released to balance the call. Cheap loop, called only when
 // `n_args > declaredArity`.
-__attribute__((used)) inline void culebra_runtime_release_overflow_args(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_release_overflow_args(
     const JitValue* args, int64_t start, int64_t n) {
   for (int64_t i = start; i < n; i++) {
     _culebra_value_release_impl(args[i].tag, args[i].data);
@@ -2418,12 +2419,12 @@ inline void _culebra_check_well_known_prop(std::string_view name,
 // when the property name is statically "drop" / "iter" / "next".
 // Frees the regular object_set hot path from a name comparison on
 // every property bind.
-__attribute__((used)) inline void culebra_runtime_check_well_known_prop(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_well_known_prop(
     const char* key, int8_t tag, int64_t data) {
   _culebra_check_well_known_prop(key, tag, data);
 }
 
-__attribute__((used)) inline void culebra_runtime_object_set(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col) {
   auto idx = obj->find_slot(key);
@@ -2459,7 +2460,7 @@ __attribute__((used)) inline void culebra_runtime_object_set(
 // adds a second +1 for the key_order entry. On update / throw it
 // explicitly releases the caller's +1 since the existing stored alias
 // already covers the slot.
-__attribute__((used)) inline void culebra_runtime_object_set_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
   if (key_tag == TAG_STRING) {
@@ -2506,7 +2507,7 @@ __attribute__((used)) inline void culebra_runtime_object_set_any(
 // Consumes the caller's +1 to the key on the refcounted (sidecar)
 // path so a Tuple-keyed `obj[k]` read does not leak. TAG_STRING keys
 // are non-refcounted (just borrowed cstrings), so they need no release.
-__attribute__((used)) inline void culebra_runtime_object_get_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
   // String keys: unified with shape access (see object_set_any).
@@ -2536,7 +2537,7 @@ __attribute__((used)) inline void culebra_runtime_object_get_any(
   _culebra_value_release_impl(key_tag, key_data);
 }
 
-__attribute__((used)) inline int8_t culebra_runtime_object_has_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
     JitObject* obj, int8_t key_tag, int64_t key_data) {
   if (!obj->non_string_props) return 0;
   return obj->non_string_props->contains({key_tag, key_data}) ? 1 : 0;
@@ -2551,7 +2552,7 @@ __attribute__((used)) inline int8_t culebra_runtime_object_has_any(
 //     reserved capacity from append_slot's first-call reserve(8)
 //     usually means no realloc), bump shape to result_shape.
 // `key` is borrowed only for the immutable-error message; never freed.
-__attribute__((used)) inline void culebra_runtime_object_set_fast(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
     int64_t data, int64_t line, int64_t col) {
   if (ic->expected_shape == ic->result_shape) {
@@ -2583,7 +2584,7 @@ __attribute__((used)) inline void culebra_runtime_object_set_fast(
 // nullptr) so fresh-Object writes can hit the fast path on the
 // second instance — overwriting it with `root()` would mean a
 // permanent miss for objects that always start out with no shape.
-__attribute__((used)) inline void culebra_runtime_object_set_ic(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   auto* before = obj->shape;
@@ -2628,7 +2629,7 @@ __attribute__((used)) inline void culebra_runtime_object_set_ic(
 // the user had run `throw error_object` and sets `is_throw=1`. Foreign
 // exceptions (anything we can't classify) leave `is_throw=0` so the
 // caller will propagate them with __cxa_rethrow.
-__attribute__((used)) inline void culebra_runtime_try_translate() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   auto& rt = culebra::current_runtime();
   if (rt.is_throw) return;
   auto build = [&rt](std::string_view kind, std::string_view msg,
@@ -2669,7 +2670,7 @@ inline void _write_value_out(const JitObjectEntry* entry, int8_t* out_tag,
   }
 }
 
-__attribute__((used)) inline void culebra_runtime_object_get(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
     JitObject* obj, const char* key, int8_t* out_tag, int64_t* out_data) {
   _write_value_out(_find_property(obj, key), out_tag, out_data);
 }
@@ -2680,7 +2681,7 @@ __attribute__((used)) inline void culebra_runtime_object_get(
 // hits don't update the cache because the fast path keys on
 // `obj->shape`; caching the proto's offset there would load the wrong
 // slot. `ic` is borrowed; never released.
-__attribute__((used)) inline void culebra_runtime_object_get_ic(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
     JitObject* obj, const char* key, JitPropIC* ic, int8_t* out_tag,
     int64_t* out_data) {
   if (obj->shape) {
@@ -2696,7 +2697,7 @@ __attribute__((used)) inline void culebra_runtime_object_get_ic(
                    out_tag, out_data);
 }
 
-__attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
   return _find_property(obj, key) != nullptr;
 }
@@ -2707,7 +2708,7 @@ __attribute__((used)) inline bool culebra_runtime_object_has(JitObject* obj,
 // Consumes the caller's +1 to the key on the refcounted (sidecar)
 // path so a Tuple-keyed `obj.has(k)` does not leak. TAG_STRING data is
 // a borrowed cstring (non-refcounted) and needs no release.
-__attribute__((used)) inline bool culebra_runtime_object_has_value(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
@@ -2724,7 +2725,7 @@ __attribute__((used)) inline bool culebra_runtime_object_has_value(
 // proto delegation. Called once per class declaration (compile-time
 // emission, runtime allocation), captured in the constructor closure
 // so each instance can point its `proto` at the same meta.
-__attribute__((used)) inline JitObject* culebra_runtime_build_class_meta(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* const* method_names, const JitValue* method_vals,
     int64_t n_methods) {
   auto* meta = culebra_runtime_object_new();
@@ -2757,7 +2758,7 @@ __attribute__((used)) inline JitObject* culebra_runtime_build_class_meta(
 // TAG_NIL for a class with no `new` method. `class_meta` is borrowed;
 // this helper retains it once per instance to balance the matching
 // release in the Object destructor.
-__attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     const char* class_name, JitObject* class_meta, int8_t body_tag,
     int64_t body_data, int64_t n_args, JitValue* args) {
   auto* inst = culebra_runtime_object_new();
@@ -2807,7 +2808,7 @@ __attribute__((used)) inline JitValue culebra_runtime_build_class_instance(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_object_size(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
     JitObject* obj) {
   int64_t n = static_cast<int64_t>(obj->prop_size());
   if (obj->non_string_props) {
@@ -2831,7 +2832,7 @@ __attribute__((used)) inline int64_t culebra_runtime_object_size(
 
 // Forward declarations — closure_new and value_release_impl are
 // defined later in this file but used by the multimethod runtime.
-__attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity);
 
 // Parameter metadata attached to JIT-compiled user functions. The side
@@ -2872,7 +2873,7 @@ _jit_param_meta_table() {
   return tbl;
 }
 
-__attribute__((used)) inline void culebra_runtime_register_param_meta(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
     void* fn_ptr, const JitParamMeta* meta) {
   _jit_param_meta_table()[fn_ptr] = meta;
 }
@@ -2887,7 +2888,7 @@ inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
 // `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
 // kw-only slot positionally without the compile-time static check
 // firing — this runtime guard catches that case to match the interp.
-__attribute__((used)) inline void culebra_runtime_check_pos_count(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count(
     void* fn_ptr, int64_t n_pos, int64_t line, int64_t col) {
   const JitParamMeta* meta = _jit_lookup_param_meta(fn_ptr);
   if (!meta) return;
@@ -2947,7 +2948,7 @@ inline thread_local JitReplGlobals* _jit_repl_globals_current = nullptr;
 // Out-parameter style avoids any ABI surprise around 16-byte struct
 // return on ARM64 macOS (where LLVM's regs-vs-sret choice for
 // `{i8, i64}` didn't agree with the C++ side for this entry).
-__attribute__((used)) inline void
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_repl_get(const char* name,
                           int64_t line, int64_t col,
                           int8_t* out_tag, int64_t* out_data) {
@@ -2970,7 +2971,7 @@ culebra_runtime_repl_get(const char* name,
 // (mutable) binding the previous +1 is released here. Re-binding via
 // `let` is allowed for any name (matches interp REPL shadow semantics);
 // `mut`-vs-immutable enforcement only kicks in for plain assignment.
-__attribute__((used)) inline void
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_repl_set(const char* name,
                           int8_t tag, int64_t data,
                           int8_t is_let, int8_t is_mut,
@@ -3109,7 +3110,7 @@ inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
 // Returns the dispatcher closure for `name`, creating it on first
 // call and caching it across re-decls. Caller takes a +1 reference
 // (the env binding) and is responsible for the matching release.
-__attribute__((used)) inline JitClosure*
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_multifn_register_and_install(const char* name_cstr,
                                              JitClosure* body,
                                              const char* const* param_types,
@@ -3198,7 +3199,7 @@ inline void _jit_walk_collect_params(JitValue v, JitArray* out) {
 // Entry point invoked from JIT IR for `model.parameters()` when the
 // receiver is a class instance and has no user-defined `parameters`
 // method. Returns a fresh +1 Array of class-instance Values.
-__attribute__((used)) inline JitValue culebra_runtime_class_parameters_walk(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_parameters_walk(
     JitObject* obj) {
   auto* result = culebra_runtime_array_new();
   _jit_walk_collect_params_object(obj, result);
@@ -3207,7 +3208,7 @@ __attribute__((used)) inline JitValue culebra_runtime_class_parameters_walk(
 
 // --- Cell runtime ---
 
-__attribute__((used)) inline JitCell* culebra_runtime_cell_new(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(int8_t tag,
                                                                int64_t data) {
   auto* c = new JitCell();
   c->refcount = 1;
@@ -3219,7 +3220,7 @@ __attribute__((used)) inline JitCell* culebra_runtime_cell_new(int8_t tag,
 
 // --- Closure runtime ---
 
-__attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity) {
   auto* c = new JitClosure();
   c->refcount = 1;
@@ -3247,7 +3248,7 @@ __attribute__((used)) inline JitClosure* culebra_runtime_closure_new(
 // value, and splat Object. All transferred values either flow into
 // the dispatched call (consumed by the callee frame) or are released
 // here on the throw paths.
-__attribute__((used)) inline JitValue culebra_runtime_call_with_kwargs(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     JitClosure* cls, JitValue this_val,
     int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
@@ -3475,7 +3476,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col);
-extern "C" __attribute__((used)) inline JitArray*
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
 // Generic "iter returns self" — used by every wrapper we build.
@@ -3646,7 +3647,7 @@ extern "C" {
 
 // --- Terminal iterator methods --------------------------------------------
 
-__attribute__((used)) inline JitArray* culebra_runtime_iter_collect(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
     int8_t it, int64_t id) {
   auto* out = culebra_runtime_array_new();
   JitValue v;
@@ -3657,7 +3658,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_iter_collect(
   return out;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_count(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
     int8_t it, int64_t id) {
   int64_t n = 0;
   JitValue v;
@@ -3669,7 +3670,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_count(
   return n;
 }
 
-__attribute__((used)) inline void culebra_runtime_iter_for_each(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "for_each", line, col);
   JitValue v;
@@ -3680,7 +3681,7 @@ __attribute__((used)) inline void culebra_runtime_iter_for_each(
   }
 }
 
-__attribute__((used)) inline void culebra_runtime_iter_reduce(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
     int8_t it, int64_t id, int8_t init_tag, int64_t init_data,
     int8_t ft, int64_t fd, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
@@ -3695,7 +3696,7 @@ __attribute__((used)) inline void culebra_runtime_iter_reduce(
   *out_data = acc.data;
 }
 
-__attribute__((used)) inline void culebra_runtime_iter_find(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "find", line, col);
@@ -3717,7 +3718,7 @@ __attribute__((used)) inline void culebra_runtime_iter_find(
   *out_data = 0;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "any", line, col);
   JitValue v;
@@ -3731,7 +3732,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_any(
   return 0;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_all(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "all", line, col);
   JitValue v;
@@ -3750,7 +3751,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_all(
 // `Value::to_long`. `min` / `max` on an empty input also throw, since
 // there's no natural identity for them.
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_sum(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_sum(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   int64_t acc = 0;
   JitValue v;
@@ -3765,7 +3766,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_sum(
   return acc;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_product(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_product(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   int64_t acc = 1;
   JitValue v;
@@ -3780,7 +3781,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_product(
   return acc;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_min(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitValue v;
   auto* next_cls = _iter_next_closure({it, id});
@@ -3803,7 +3804,7 @@ __attribute__((used)) inline int64_t culebra_runtime_iter_min(
   return best;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_iter_max(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitValue v;
   auto* next_cls = _iter_next_closure({it, id});
@@ -3853,7 +3854,7 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = mapped.data;
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_map(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd) {
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
@@ -3893,7 +3894,7 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
   }
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_filter(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
     int8_t it, int64_t id, int8_t ft, int64_t fd) {
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
@@ -3927,7 +3928,7 @@ inline void _iter_take_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = data;
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_take(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take(
     int8_t it, int64_t id, int64_t n) {
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -3960,7 +3961,7 @@ inline void _iter_skip_fast_fn(JitClosure* cls, JitValue, bool* done,
   *done = false;
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_skip(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip(
     int8_t it, int64_t id, int64_t n) {
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -4005,7 +4006,7 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = v.data;
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_take_while(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
     int8_t it, int64_t id, int8_t ft, int64_t fd) {
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
@@ -4040,7 +4041,7 @@ inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(pair);
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_enumerate(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_enumerate(
     int8_t it, int64_t id) {
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -4100,7 +4101,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
       "type error: target is not iterable at {}:{}.", line, col), line, col);
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_chain(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
     int8_t it1, int64_t id1, int8_t it2, int64_t id2, int64_t line,
     int64_t col) {
   // Coerce both inputs so raw Arrays can be chained without the caller
@@ -4143,7 +4144,7 @@ inline void _iter_zip_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(pair);
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_zip(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
     int8_t it1, int64_t id1, int8_t it2, int64_t id2, int64_t line,
     int64_t col) {
   auto iv1 = _iter_coerce_iterable(it1, id1, line, col);
@@ -4187,7 +4188,7 @@ inline void _iter_code_points_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = static_cast<int64_t>(cp);
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_str_code_points(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
     const char* s) {
   // Strings are not refcounted in JIT; the pointer stays valid as long
   // as the source String stays rooted somewhere (usually via the
@@ -4208,7 +4209,7 @@ __attribute__((used)) inline JitObject* culebra_runtime_str_code_points(
 // trade-off is a single O(n) decode up front instead of streaming —
 // acceptable because user code that wants streaming usually prefers
 // `.code_points()` anyway.
-__attribute__((used)) inline JitObject* culebra_runtime_str_graphemes(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
     const char* s) {
   std::u32string u32;
   size_t buf_size = std::strlen(s);
@@ -4256,14 +4257,14 @@ inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad) {
   return _iter_wrap_fast<&_iter_from_array_fast_fn>({arr_cell, idx_cell});
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_array_iter(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_iter(
     JitArray* arr) {
   return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
 }
 
 // Object.iter(): yield keys (ascending std::map order) as Strings.
 // Uses the same array-walker as array_iter.
-__attribute__((used)) inline JitObject* culebra_runtime_object_iter(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
     JitObject* obj) {
   auto* keys = culebra_runtime_object_keys(obj);
   return _iter_from_array_obj(TAG_ARRAY,
@@ -4315,7 +4316,7 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
   }
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_iter_flat_map(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line,
     int64_t col) {
   culebra_runtime_value_retain(it, id);
@@ -4356,13 +4357,13 @@ inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
 // 1 on a value step with `*out_tag`/`*out_data` holding a +1 Value, 0
 // on done. `next_cls` is the `iter.next` closure resolved once before
 // the loop; forwarded as the `this` capture slab on the fast path.
-__attribute__((used)) inline int64_t culebra_runtime_iter_advance(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_advance(
     JitClosure* next_cls, int8_t it, int64_t id, int8_t* out_tag,
     int64_t* out_data) {
   return _iter_advance_raw(next_cls, {it, id}, out_tag, out_data) ? 1 : 0;
 }
 
-__attribute__((used)) inline JitObject* culebra_runtime_math_range(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
     int64_t start, int64_t end, int64_t step, int64_t line, int64_t col) {
   if (step == 0) {
     throw culebra::CulebraError("ValueError",
@@ -4375,7 +4376,7 @@ __attribute__((used)) inline JitObject* culebra_runtime_math_range(
       {current_cell, end_cell, step_cell});
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_iota(int64_t start,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
                                                             int64_t end) {
   auto* r = culebra_runtime_array_new();
   for (int64_t i = start; i < end; i++) {
@@ -4414,7 +4415,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   return fn;
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_array_map(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"map", line, col);
   auto* out = culebra_runtime_array_new();
@@ -4427,7 +4428,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_map(
   return out;
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_array_filter(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"filter", line, col);
   auto* out = culebra_runtime_array_new();
@@ -4445,7 +4446,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_filter(
   return out;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_for_each(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"for_each", line, col);
   for (size_t i = 0; i < arr->size; i++) {
@@ -4457,7 +4458,7 @@ __attribute__((used)) inline void culebra_runtime_array_for_each(
 }
 
 // find returns the first matching element (or nil) via out-params.
-__attribute__((used)) inline void culebra_runtime_array_find(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"find", line, col);
@@ -4478,7 +4479,7 @@ __attribute__((used)) inline void culebra_runtime_array_find(
   *out_data = 0;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"any", line, col);
   for (size_t i = 0; i < arr->size; i++) {
@@ -4492,7 +4493,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_any(
   return 0;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_all(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"all", line, col);
   for (size_t i = 0; i < arr->size; i++) {
@@ -4506,7 +4507,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_all(
   return 1;
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_array_flat_map(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"flat_map", line, col);
   auto* out = culebra_runtime_array_new();
@@ -4534,7 +4535,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_flat_map(
 // sort_by: evaluates the key function on each element once, stable-sorts
 // in place by those keys. Mutates. Keys are released on every exit path
 // (including during a throw from the key comparison).
-__attribute__((used)) inline void culebra_runtime_array_sort_by(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"sort_by", line, col);
   std::vector<std::pair<JitValue, size_t>> keyed;
@@ -4569,7 +4570,7 @@ __attribute__((used)) inline void culebra_runtime_array_sort_by(
 
 // reduce returns the final accumulator via out-params (avoids relying on
 // cross-language struct-return ABI).
-__attribute__((used)) inline void culebra_runtime_array_reduce(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
     JitArray* arr, int8_t init_tag, int64_t init_data, int8_t fn_tag,
     int64_t fn_data, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
@@ -4588,7 +4589,7 @@ __attribute__((used)) inline void culebra_runtime_array_reduce(
 // iterator methods above; non-Long elements and empty min/max raise a
 // type error at L:C.
 
-__attribute__((used)) inline int64_t culebra_runtime_array_sum(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_sum(
     JitArray* arr, int64_t line, int64_t col) {
   int64_t acc = 0;
   for (size_t i = 0; i < arr->size; i++) {
@@ -4601,7 +4602,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_sum(
   return acc;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_product(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_product(
     JitArray* arr, int64_t line, int64_t col) {
   int64_t acc = 1;
   for (size_t i = 0; i < arr->size; i++) {
@@ -4614,7 +4615,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_product(
   return acc;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_min(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_min(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
     throw culebra::CulebraError("ValueError", std::format(
@@ -4634,7 +4635,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_min(
   return best;
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_max(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_max(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
     throw culebra::CulebraError("ValueError", std::format(
@@ -4658,7 +4659,7 @@ __attribute__((used)) inline int64_t culebra_runtime_array_max(
 // once `offset >= len`; on an invalid lead byte, returns 1 (emit the
 // raw byte to avoid stalling the iterator). Mirrors the interpreter's
 // String.iter semantics.
-__attribute__((used)) inline int64_t culebra_runtime_utf8_scalar_len(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_utf8_scalar_len(
     const char* s, int64_t offset, int64_t len) {
   if (offset >= len) return 0;
   auto r = peg::codepoint_length(s + offset, len - offset);
@@ -4667,17 +4668,17 @@ __attribute__((used)) inline int64_t culebra_runtime_utf8_scalar_len(
 
 // Heap-copy `scalar_len` bytes from `s + offset` into a new String.
 // Used by JIT for-in over String to yield one-scalar Strings.
-__attribute__((used)) inline const char* culebra_runtime_str_scalar_at(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_scalar_at(
     const char* s, int64_t offset, int64_t scalar_len) {
   return _culebra_heap_str(std::string_view(s + offset,
                                             static_cast<size_t>(scalar_len)));
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_str_size(const char* s) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_size(const char* s) {
   return static_cast<int64_t>(std::strlen(s));
 }
 
-__attribute__((used)) inline const char* culebra_runtime_str_upper(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_upper(
     const char* s) {
   auto n = std::strlen(s);
   auto* buf = static_cast<char*>(std::malloc(n + 1));
@@ -4689,7 +4690,7 @@ __attribute__((used)) inline const char* culebra_runtime_str_upper(
   return buf;
 }
 
-__attribute__((used)) inline const char* culebra_runtime_str_lower(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_lower(
     const char* s) {
   auto n = std::strlen(s);
   auto* buf = static_cast<char*>(std::malloc(n + 1));
@@ -4701,7 +4702,7 @@ __attribute__((used)) inline const char* culebra_runtime_str_lower(
   return buf;
 }
 
-__attribute__((used)) inline const char* culebra_runtime_str_trim(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(
     const char* s) {
   auto trimmed = culebra::trim_ascii(std::string_view(s, std::strlen(s)));
   auto* buf = static_cast<char*>(std::malloc(trimmed.size() + 1));
@@ -4710,7 +4711,7 @@ __attribute__((used)) inline const char* culebra_runtime_str_trim(
   return buf;
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_str_split(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
     const char* s, const char* sep) {
   auto* r = culebra_runtime_array_new();
   std::string_view sv(s);
@@ -4736,18 +4737,18 @@ __attribute__((used)) inline JitArray* culebra_runtime_str_split(
   return r;
 }
 
-__attribute__((used)) inline bool culebra_runtime_str_contains(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_contains(
     const char* s, const char* sub) {
   return std::strstr(s, sub) != nullptr;
 }
 
-__attribute__((used)) inline bool culebra_runtime_str_starts_with(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_starts_with(
     const char* s, const char* prefix) {
   auto lp = std::strlen(prefix);
   return std::strncmp(s, prefix, lp) == 0;
 }
 
-__attribute__((used)) inline bool culebra_runtime_str_ends_with(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_ends_with(
     const char* s, const char* suffix) {
   auto ls = std::strlen(s);
   auto lsuf = std::strlen(suffix);
@@ -4755,7 +4756,7 @@ __attribute__((used)) inline bool culebra_runtime_str_ends_with(
   return std::strncmp(s + (ls - lsuf), suffix, lsuf) == 0;
 }
 
-__attribute__((used)) inline const char* culebra_runtime_str_slice(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_slice(
     const char* s, int64_t start, int64_t end) {
   int64_t size = static_cast<int64_t>(std::strlen(s));
   if (start < 0) start += size;
@@ -4771,7 +4772,7 @@ __attribute__((used)) inline const char* culebra_runtime_str_slice(
   return buf;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_pop(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_pop(
     JitArray* arr, int8_t* out_tag, int64_t* out_data) {
   if (arr->size == 0) {
     *out_tag = 0;
@@ -4786,7 +4787,7 @@ __attribute__((used)) inline void culebra_runtime_array_pop(
 
 // Slice with negative indices and clamping. Returns a new array with retained
 // elements (independent refcount).
-__attribute__((used)) inline JitArray* culebra_runtime_array_slice2(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_slice2(
     JitArray* src, int64_t start, int64_t end) {
   int64_t size = static_cast<int64_t>(src->size);
   if (start < 0) start += size;
@@ -4804,7 +4805,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_array_slice2(
   return r;
 }
 
-__attribute__((used)) inline const char* culebra_runtime_array_join(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_array_join(
     JitArray* arr, const char* sep) {
   std::string out;
   for (size_t i = 0; i < arr->size; i++) {
@@ -4820,7 +4821,7 @@ __attribute__((used)) inline const char* culebra_runtime_array_join(
   return _culebra_heap_str(out);
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_array_index_of(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_index_of(
     JitArray* arr, int8_t tag, int64_t data) {
   for (size_t i = 0; i < arr->size; i++) {
     if (_culebra_value_equal(arr->items[i].tag, arr->items[i].data, tag, data))
@@ -4829,12 +4830,12 @@ __attribute__((used)) inline int64_t culebra_runtime_array_index_of(
   return -1;
 }
 
-__attribute__((used)) inline bool culebra_runtime_array_contains(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_array_contains(
     JitArray* arr, int8_t tag, int64_t data) {
   return culebra_runtime_array_index_of(arr, tag, data) >= 0;
 }
 
-__attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reverse(JitArray* arr) {
   if (arr->size < 2) return;
   for (size_t i = 0, j = arr->size - 1; i < j; i++, j--) {
     auto tmp = arr->items[i];
@@ -4843,7 +4844,7 @@ __attribute__((used)) inline void culebra_runtime_array_reverse(JitArray* arr) {
   }
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_object_keys(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
   // Walk key_order when populated so String and non-String keys come
@@ -4864,7 +4865,7 @@ __attribute__((used)) inline JitArray* culebra_runtime_object_keys(
   return r;
 }
 
-__attribute__((used)) inline void culebra_runtime_object_remove(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
     JitObject* obj, const char* key) {
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) return;
@@ -4899,7 +4900,7 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
 // consumed, and the stored map-entry key's +1 (transferred from the
 // original `object_set_any` insert) is also released before erase.
 // `_key_order_erase` drops the key_order entry's +1 separately.
-__attribute__((used)) inline void culebra_runtime_object_remove_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
@@ -5083,7 +5084,7 @@ inline void _culebra_cell_release(JitCell* c) {
 
 extern "C" {
 
-__attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
                                                                int64_t data) {
   if (data == 0) return;
   switch (tag) {
@@ -5106,24 +5107,24 @@ __attribute__((used)) inline void culebra_runtime_value_retain(int8_t tag,
   }
 }
 
-__attribute__((used)) inline void culebra_runtime_value_release(int8_t tag,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_release(int8_t tag,
                                                                 int64_t data) {
   _culebra_value_release_impl(tag, data);
 }
 
 // Fused retain(rhs) + release(lhs); halves runtime call overhead in
 // the postfix loop's per-step ownership swap.
-__attribute__((used)) inline void culebra_runtime_value_swap_owned(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_swap_owned(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
   culebra_runtime_value_retain(rt, rd);
   _culebra_value_release_impl(lt, ld);
 }
 
-__attribute__((used)) inline void culebra_runtime_cell_retain(JitCell* c) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_cell_retain(JitCell* c) {
   if (c) c->refcount++;
 }
 
-__attribute__((used)) inline void culebra_runtime_cell_release(JitCell* c) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_cell_release(JitCell* c) {
   _culebra_cell_release(c);
 }
 

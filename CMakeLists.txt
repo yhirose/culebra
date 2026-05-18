@@ -99,7 +99,14 @@ if(CULEBRA_ENABLE_JIT)
   # symbol (`llvm::DisableABIBreakingChecks`) that every LLVM-header
   # TU would otherwise pull in.
   target_compile_definitions(culebra_rt PRIVATE
-    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1)
+    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
+    CULEBRA_RT_DEFINE_RUNTIME=1)
+  # One section per function/data so the AOT link can `-dead_strip`
+  # the ~200 `culebra_runtime_*` helpers a typical program doesn't
+  # touch. Without this every runtime helper is in the same .text /
+  # .data section and the linker can't drop them.
+  target_compile_options(culebra_rt PRIVATE
+    -ffunction-sections -fdata-sections)
   # The `culebra build` driver needs to know where to find the
   # archive at link time. Override at runtime with $CULEBRA_RT_LIB.
   target_compile_definitions(culebra PRIVATE
@@ -115,17 +122,24 @@ option(CULEBRA_ENABLE_TENSOR "Enable builtin Tensor type" ON)
 if(CULEBRA_ENABLE_TENSOR)
   add_compile_definitions(CULEBRA_TENSOR_ENABLED)
   if(APPLE)
+    set(_blas_link "-framework Accelerate")
     target_link_libraries(culebra "-framework Accelerate")
-    if(CULEBRA_ENABLE_JIT)
-      target_link_libraries(culebra_rt INTERFACE "-framework Accelerate")
-    endif()
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(BLAS REQUIRED)
+    string(REPLACE ";" " " _blas_link "${BLAS_LIBRARIES}")
     target_link_libraries(culebra ${BLAS_LIBRARIES})
-    if(CULEBRA_ENABLE_JIT)
-      target_link_libraries(culebra_rt INTERFACE ${BLAS_LIBRARIES})
-    endif()
+  else()
+    set(_blas_link "")
   endif()
+  # The `culebra build` driver appends this to the link command only
+  # when the program references Tensor (see `aot_scan_namespaces`).
+  # Programs that never touch Tensor avoid the BLAS dependency.
+  if(CULEBRA_ENABLE_JIT)
+    target_compile_definitions(culebra PRIVATE
+      CULEBRA_BLAS_LINK="${_blas_link}")
+  endif()
+elseif(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_BLAS_LINK="")
 endif()
 
 # Embedding smoke tests. mt_smoke exercises thread_local isolation

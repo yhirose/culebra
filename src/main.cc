@@ -140,18 +140,27 @@ int run_build(const BuildOptions& opts) {
   const char* cc = std::getenv("CULEBRA_CC");
   if (!cc) cc = "cc";
 
-  // Conservative link line: always pull in Accelerate / BLAS so that
-  // Tensor-using programs link without extra flags. Phase B will gate
-  // this on `aot_scan_namespaces(*ast).tensor` to drop the framework
-  // when Tensor isn't referenced.
-  std::string cmd;
+  // Dead-strip prunes the ~200 culebra_runtime_* helpers a typical
+  // program doesn't call (paired with -ffunction-sections on the
+  // archive). BLAS framework must stay linked unconditionally: even
+  // a Tensor-free program reaches `_try_tensor_binop` from
+  // `culebra_runtime_num_add`, which transitively pulls in cblas
+  // refs. A future phase would split tensor handling into its own
+  // archive so this gating becomes practical.
+  const char* dead_strip =
 #if defined(__APPLE__)
-  cmd = std::format("{} {} {} -framework Accelerate -lc++ -o {}",
-                    cc, obj, lib, opts.output);
+      "-Wl,-dead_strip";
 #else
-  cmd = std::format("{} {} {} -lstdc++ -lm -o {}",
-                    cc, obj, lib, opts.output);
+      "-Wl,--gc-sections";
 #endif
+  std::string blas = CULEBRA_BLAS_LINK;
+#if defined(__APPLE__)
+  std::string libcxx = "-lc++";
+#else
+  std::string libcxx = "-lstdc++ -lm";
+#endif
+  std::string cmd = std::format("{} {} {} {} {} {} -o {}", cc, obj, lib,
+                                dead_strip, libcxx, blas, opts.output);
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

@@ -31,13 +31,13 @@ using culebra::throw_type_error_at;
 
 extern "C" {
 
-__attribute__((used)) inline int64_t culebra_runtime_to_long(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_to_long(
     const char* s, int64_t line, int64_t col) {
   if (!s) throw_type_error_at(line, col);
   return parse_long_strict(s, line, col);
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_to_long_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_long_any(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_LONG) return {TAG_LONG, data};
   if (tag == TAG_FLOAT) {
@@ -50,7 +50,7 @@ __attribute__((used)) inline JitValue culebra_runtime_to_long_any(
   throw_type_error_at(line, col);
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_to_float_any(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_float_any(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_FLOAT) return {TAG_FLOAT, data};
   if (tag == TAG_LONG) {
@@ -63,11 +63,11 @@ __attribute__((used)) inline JitValue culebra_runtime_to_float_any(
   throw_type_error_at(line, col);
 }
 
-__attribute__((used)) inline const char* culebra_runtime_type_of(int8_t tag) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_type_of(int8_t tag) {
   return _culebra_tag_name(tag);
 }
 
-__attribute__((used)) inline void culebra_runtime_print(int8_t type,
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
                                                         int64_t data) {
   if (auto s = _try_str_special(type, data)) {
     std::cout << *s;
@@ -80,7 +80,7 @@ __attribute__((used)) inline void culebra_runtime_print(int8_t type,
   }
 }
 
-__attribute__((used)) inline const char* culebra_runtime_input() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
   std::string line;
   if (!std::getline(std::cin, line)) {
     return _culebra_heap_str(std::string(""));
@@ -88,7 +88,7 @@ __attribute__((used)) inline const char* culebra_runtime_input() {
   return _culebra_heap_str(line);
 }
 
-__attribute__((used)) inline const char* culebra_runtime_read_file(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
     const char* path, int64_t line, int64_t col) {
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
@@ -101,7 +101,7 @@ __attribute__((used)) inline const char* culebra_runtime_read_file(
   return _culebra_heap_str(s);
 }
 
-__attribute__((used)) inline void culebra_runtime_write_file(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
     const char* path, const char* content, int64_t line, int64_t col) {
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
@@ -113,14 +113,14 @@ __attribute__((used)) inline void culebra_runtime_write_file(
   ofs.write(content, static_cast<std::streamsize>(len));
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_math_pow(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_pow(
     int64_t base, int64_t exp, int64_t line, int64_t col) {
   if (exp < 0) culebra::throw_type_error_at(line, col);
   return culebra::ipow_nonneg(base, exp);
 }
 
 #define CUL_MATH_F2F(name, call)                                        \
-  __attribute__((used)) inline JitValue culebra_runtime_math_##name(    \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
     double x;                                                           \
     if (tag == TAG_LONG)        x = static_cast<double>(data);          \
@@ -136,7 +136,7 @@ CUL_MATH_F2F(sqrt, std::sqrt(x))
 // Long input is identity (not coerced through Float, which would lose
 // precision on values past 2^53).
 #define CUL_MATH_F2L(name, call)                                        \
-  __attribute__((used)) inline JitValue culebra_runtime_math_##name(    \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
     if (tag == TAG_LONG) return {TAG_LONG, data};                       \
     if (tag != TAG_FLOAT) throw_type_error_at(line, col);               \
@@ -148,7 +148,7 @@ CUL_MATH_F2L(ceil,  std::ceil(x))
 CUL_MATH_F2L(round, std::rint(x))
 #undef CUL_MATH_F2L
 
-__attribute__((used)) inline JitValue culebra_runtime_math_abs(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_abs(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_LONG) return {TAG_LONG, data < 0 ? -data : data};
   if (tag == TAG_FLOAT) {
@@ -187,23 +187,23 @@ inline JitValue _culebra_numeric_reduce(const JitValue* args, int64_t n,
   return {TAG_LONG, acc};
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_math_min(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_min(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   return _culebra_numeric_reduce(args, n, line, col, /*pick_less=*/true);
 }
 
-__attribute__((used)) inline JitValue culebra_runtime_math_max(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_max(
     const JitValue* args, int64_t n, int64_t line, int64_t col) {
   return _culebra_numeric_reduce(args, n, line, col, /*pick_less=*/false);
 }
 
 // --- Random ---
 
-__attribute__((used)) inline void culebra_runtime_random_seed(int64_t n) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_random_seed(int64_t n) {
   culebra::random_engine().seed(static_cast<uint64_t>(n));
 }
 
-__attribute__((used)) inline int64_t culebra_runtime_random_int(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_random_int(
     int64_t lo, int64_t hi, int64_t line, int64_t col) {
   if (hi <= lo) throw_type_error_at(line, col);
   std::uniform_int_distribution<int64_t> d(lo, hi - 1);
@@ -211,7 +211,7 @@ __attribute__((used)) inline int64_t culebra_runtime_random_int(
 }
 
 #define CUL_RANDOM_PAIR(name, Dist)                                     \
-  __attribute__((used)) inline JitValue culebra_runtime_random_##name(  \
+  CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_##name(  \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
@@ -223,7 +223,7 @@ CUL_RANDOM_PAIR(uniform, std::uniform_real_distribution<double>)
 CUL_RANDOM_PAIR(gauss,   std::normal_distribution<double>)
 #undef CUL_RANDOM_PAIR
 
-__attribute__((used)) inline void culebra_runtime_random_shuffle(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_random_shuffle(
     JitArray* arr) {
   std::shuffle(arr->items, arr->items + arr->size, culebra::random_engine());
 }
@@ -231,7 +231,7 @@ __attribute__((used)) inline void culebra_runtime_random_shuffle(
 // weighted_choice(pop, weights): returns one element from pop. Pop
 // and weights must be equal-length Arrays. Returned value is +1 owned
 // by the caller (we retain the picked element before returning).
-__attribute__((used)) inline JitValue culebra_runtime_random_weighted_choice(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_weighted_choice(
     JitArray* pop, JitArray* weights, int64_t line, int64_t col) {
   if (!pop || !weights || pop->size == 0 ||
       pop->size != weights->size) {
@@ -257,31 +257,31 @@ __attribute__((used)) inline JitValue culebra_runtime_random_weighted_choice(
 
 // --- IO.exists ---
 
-__attribute__((used)) inline int64_t culebra_runtime_io_exists(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_io_exists(
     const char* path) {
   if (!path) return 0;
   std::error_code ec;
   return std::filesystem::exists(path, ec) ? 1 : 0;
 }
 
-__attribute__((used)) inline void culebra_runtime_sys_exit(int64_t code) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_exit(int64_t code) {
   std::exit(static_cast<int>(code));
 }
 
-__attribute__((used)) inline const char* culebra_runtime_sys_env(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_sys_env(
     const char* name) {
   const char* v = std::getenv(name);
   return _culebra_heap_str(std::string(v ? v : ""));
 }
 
-__attribute__((used)) inline double culebra_runtime_sys_time() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_sys_time() {
   using clock = std::chrono::steady_clock;
   static const auto t0 = clock::now();
   auto now = clock::now();
   return std::chrono::duration<double>(now - t0).count();
 }
 
-__attribute__((used)) inline JitArray* culebra_runtime_sys_argv() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
   auto& argv = culebra::_culebra_sys_argv_holder();
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {
@@ -520,7 +520,7 @@ class _JitKwargResolver {
 
 // Single dispatcher for the JIT side: `lines != 0` switches into the
 // JSON-Lines emitter (requires Array/Tuple/Set, rejects indent > 0).
-__attribute__((used)) inline const char* culebra_runtime_json_stringify(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_json_stringify(
     int8_t tag, int64_t data, int64_t indent, int8_t sort_keys,
     int8_t lines) {
   if (!lines) {
@@ -561,7 +561,7 @@ __attribute__((used)) inline const char* culebra_runtime_json_stringify(
 // at IR-emit time. RAII guards take care of every +1 release path
 // (the value, leftover kwargs in the resolver, etc.) so the body
 // reads as a flat sequence of takes.
-__attribute__((used)) inline const char*
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
 culebra_runtime_json_stringify_kw(
     int8_t v_tag, int64_t v_data,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
@@ -750,7 +750,7 @@ struct _JitJsonParser {
   }
 };
 
-__attribute__((used)) inline JitValue culebra_runtime_json_parse(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
     const char* s, const char* number_mode, int8_t lines) {
   if (!lines) {
     _JitJsonParser jp{s, s + std::strlen(s)};
@@ -801,7 +801,7 @@ __attribute__((used)) inline JitValue culebra_runtime_json_parse(
 // Kwarg adapter for JSON.parse. `s` is a non-refcounted TAG_STRING
 // cstring — no value guard needed. Everything else (splat values,
 // merged map) is handled by `_JitKwargResolver`.
-__attribute__((used)) inline JitValue culebra_runtime_json_parse_kw(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse_kw(
     const char* s,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs,

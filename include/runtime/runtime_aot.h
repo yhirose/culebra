@@ -19,7 +19,7 @@
 #include <exception>
 #include <stdexcept>
 
-extern "C" __attribute__((used)) inline int culebra_aot_bootstrap(
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     int argc, char** argv, void (*main_fn)()) {
   // Skip argv[0] (program name) so `Sys.argv` matches the
   // `culebra --jit script.cul -- a b c` convention where the holder
