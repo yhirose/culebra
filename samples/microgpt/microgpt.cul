@@ -110,13 +110,19 @@ matrix = |nout, nin, std = 0.08|
   ).collect()
 
 # Wrap the parameters in a class so that `model.parameters()` returns
-# every Value automatically (see the explicit override below — that
-# also keeps this file runnable under `--jit`). Field declaration
-# order preserves the original Random.gauss() call sequence — layers'
-# matrices first, then wte/wpe/lm_head — so the initial weights are
-# bit-identical to the pre-class version.
+# every Value automatically (the walker descends Arrays and plain
+# Object dicts in alphabetical-key order). Matrix construction order
+# mirrors the upstream Python's `state_dict.values()` iteration
+# (`wte`, `wpe`, `lm_head`, then per-layer attn/mlp) for structural
+# fidelity. Loss curves still diverge step-by-step because
+# `Random.shuffle` / `Random.gauss` use different PRNG algorithms
+# than Python (Mersenne Twister state isn't portable), but the
+# overall convergence behavior matches.
 class GPT {
   new() {
+    this.wte = matrix(vocab_size, n_embd)
+    this.wpe = matrix(block_size, n_embd)
+    this.lm_head = matrix(vocab_size, n_embd)
     mut layers = []
     for _ in 0..n_layer {
       layers.push({
@@ -129,14 +135,7 @@ class GPT {
       })
     }
     this.layers = layers
-    this.wte = matrix(vocab_size, n_embd)
-    this.wpe = matrix(block_size, n_embd)
-    this.lm_head = matrix(vocab_size, n_embd)
   }
-  # `parameters()` is auto-synthesized by the runtime — the walker
-  # descends Arrays and plain Object dicts and collects every
-  # class-instance Value, in alphabetical-key order matching the
-  # interpreter's std::map iteration.
 }
 
 let model = GPT.new()
