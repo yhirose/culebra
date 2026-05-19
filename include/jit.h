@@ -5657,6 +5657,20 @@ struct JIT {
     });
   }
 
+  // Cross-compile: register every target LLVM was built with so
+  // `culebra build --target=<triple>` can look up arbitrary triples.
+  // Lazy + idempotent; only the AOT path needs to pay this cost.
+  static void ensure_all_targets_init() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+      llvm::InitializeAllTargetInfos();
+      llvm::InitializeAllTargets();
+      llvm::InitializeAllTargetMCs();
+      llvm::InitializeAllAsmPrinters();
+      llvm::InitializeAllAsmParsers();
+    });
+  }
+
   // True if the AST contains any `*` keyword-only separator. Used to
   // elide the dynamic-callee kw-only runtime guard when no function
   // in the program declares kw-only params (the common case).
@@ -5780,20 +5794,28 @@ struct JIT {
   static inline int build_object(const std::shared_ptr<peg::Ast>& ast,
                                  const std::string& out_path,
                                  int opt_level = 2,
-                                 bool emit_llvm = false) {
+                                 bool emit_llvm = false,
+                                 const std::string& target_triple = "") {
     using namespace llvm;
 
-    ensure_native_target_init();
+    if (target_triple.empty()) {
+      ensure_native_target_init();
+    } else {
+      ensure_all_targets_init();
+    }
 
     auto ctx = std::make_unique<LLVMContext>();
     auto mod = std::make_unique<Module>("culebra", *ctx);
 
-    llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+    llvm::Triple triple(target_triple.empty()
+                            ? llvm::sys::getDefaultTargetTriple()
+                            : target_triple);
     std::string err;
     auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
     if (!target) {
-      std::fprintf(stderr, "culebra build: target lookup failed: %s\n",
-                   err.c_str());
+      std::fprintf(stderr,
+                   "culebra build: target lookup failed for '%s': %s\n",
+                   triple.str().c_str(), err.c_str());
       return 1;
     }
     std::unique_ptr<llvm::TargetMachine> tm(

@@ -70,8 +70,14 @@ if(CULEBRA_ENABLE_JIT)
   include_directories(${LLVM_INCLUDE_DIRS})
   add_definitions(${LLVM_DEFINITIONS})
 
+  # Native components keep the JIT path lean. AllTargets* extend the
+  # codegen + asm tables so `culebra build --target=<triple>` can emit
+  # for any LLVM-supported target (Phase E). These only inflate the
+  # `culebra` driver binary; AOT-built executables don't carry LLVM.
   llvm_map_components_to_libnames(llvm_libs
-    core support orcjit native passes)
+    core support orcjit native passes
+    AllTargetsAsmParsers AllTargetsCodeGens AllTargetsDescs
+    AllTargetsInfos)
 
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
