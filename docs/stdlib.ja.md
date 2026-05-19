@@ -26,12 +26,13 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 
 1. [`Math`](#1-math) — 数値ユーティリティ・定数・整数列
 2. [`IO`](#2-io) — 出力・標準入力・ファイル I/O
-3. [`Random`](#3-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
-4. [`Sys`](#4-sys) — argv / exit / env
-5. [`Tensor`](#5-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
-6. [`JSON`](#6-json) — stringify / parse の相互変換
-7. [設計上の注記](#7-設計上の注記)
-8. [未収録（将来検討）](#8-未収録将来検討)
+3. [`FS`](#3-fs) — パス操作・ファイル/ディレクトリ問い合わせ・更新
+4. [`Random`](#4-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
+5. [`Sys`](#5-sys) — argv / exit / env
+6. [`Tensor`](#6-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
+7. [`JSON`](#7-json) — stringify / parse の相互変換
+8. [設計上の注記](#8-設計上の注記)
+9. [未収録（将来検討）](#9-未収録将来検討)
 
 **目的別索引**
 
@@ -41,9 +42,11 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
 | ファイル読込 | `IO.read`（失敗時 throw） |
+| パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
+| ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
-| 行列・テンソル演算（BLAS 対応） | [§5 Tensor](#5-tensor) |
+| 行列・テンソル演算（BLAS 対応） | [§6 Tensor](#6-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
 | 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
@@ -255,9 +258,114 @@ if !IO.exists('data.txt') {
 }
 ```
 
+`FS.exists` は同じ判定を `FS` 名前空間下で提供するもので、新規
+コードではそちらを推奨します。`IO.exists` は後方互換用に残して
+あります。
+
 ---
 
-## 3. `Random`
+## 3. `FS`
+
+ファイルシステムのパス操作とディレクトリ操作。実装は
+`std::filesystem`。変更系の呼び出しは失敗時に構造化された
+`IOError`（`{kind: "IOError", message, line, col}`）を throw し、
+埋め込み側でソース位置に紐づけてエラー処理できます。
+
+### パス操作
+
+#### `FS.join(parts...: String) -> String`
+
+プラットフォームの区切り文字でパス要素を結合します。引数 0 個は
+`""` を返します。`std::filesystem::path::operator/=` と同じく、
+途中要素の末尾区切り文字は尊重されます。
+
+```culebra
+FS.join('a', 'b', 'c.txt')      # => 'a/b/c.txt'
+FS.join('/usr', 'local', 'bin') # => '/usr/local/bin'
+FS.join()                        # => ''
+```
+
+#### `FS.basename(path: String) -> String`
+
+最終要素（ファイル名＋拡張子）。末尾区切り文字のみのパスは `""`。
+
+```culebra
+FS.basename('a/b/c.txt')  # => 'c.txt'
+FS.basename('/')          # => ''
+```
+
+#### `FS.dirname(path: String) -> String`
+
+親パス。親が無い場合は `""`（`'c.txt' -> ''`）。
+
+#### `FS.extension(path: String) -> String`
+
+拡張子（先頭ドット込み）。無ければ `""`。ドットファイル
+（`.hidden`）は拡張子なしとして扱います — `std::filesystem` 仕様
+通り。
+
+```culebra
+FS.extension('a/b/c.txt')  # => '.txt'
+FS.extension('.hidden')    # => ''
+```
+
+#### `FS.stem(path: String) -> String`
+
+拡張子を除いた basename。
+
+```culebra
+FS.stem('a/b/c.txt')  # => 'c'
+```
+
+### 問い合わせ
+
+#### `FS.exists(path: String) -> Bool`
+
+`path` に何かが存在するか。ファイル／ディレクトリ／シンボリック
+リンクの区別なし。`IO.exists` と同じセマンティクス。
+
+#### `FS.is_file(path: String) -> Bool`
+
+`path` が通常ファイルなら true。シンボリックリンクは follow。
+
+#### `FS.is_dir(path: String) -> Bool`
+
+`path` がディレクトリなら true。シンボリックリンクは follow。
+
+#### `FS.size(path: String) -> Long`
+
+ファイルサイズ（バイト）。`path` が存在しない／通常ファイルで
+ない場合は `IOError` を throw。
+
+### ディレクトリ変更系
+
+#### `FS.list_dir(path: String) -> Array<String>`
+
+`path` の直下エントリをファイル名（プレフィックスなし、`.` /
+`..` 除く）の配列で返します。順序はファイルシステム任せなので
+必要なら明示的にソートしてください。`path` がディレクトリでなけ
+れば `IOError` を throw。
+
+```culebra
+let names = FS.list_dir('/tmp/build')
+assert(names.contains('out.o'))
+```
+
+#### `FS.mkdir(path: String) -> Nil`
+
+ディレクトリを作成。途中の親ディレクトリも含めて作成
+（`mkdir -p` セマンティクス）。既存なら no-op。パスがファイル
+として存在する／作成に失敗した場合は `IOError` を throw。
+
+#### `FS.remove(path: String) -> Nil`
+
+ファイル、または空ディレクトリを削除。対象が存在しない／削除
+できない／非空ディレクトリの場合は `IOError` を throw。再帰削除
+は提供しません — 必要なら明示的に列挙して削除してください。
+
+---
+
+## 4. `Random`
 
 乱数生成。プロセスごとに単一の Mersenne-Twister-64 エンジンを
 持ち、インタプリタと JIT で共有しています。`Random.seed(n)` は
@@ -314,7 +422,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-## 4. `Sys`
+## 5. `Sys`
 
 プロセスレベルの情報。
 
@@ -351,7 +459,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 5. `Tensor`
+## 6. `Tensor`
 
 N 次元数値テンソル。lazy 計算グラフを構築し、`Tensor.eval(...)` で
 BLAS / vDSP 経由のカーネルを起動して値を確定します。dtype は
@@ -509,7 +617,7 @@ Phase 1 では **CPU** のみ。
 
 ---
 
-## 6. `JSON`
+## 7. `JSON`
 
 Culebra の値と JSON テキストの相互変換。両バックエンドで同じ API
 を提供します。
@@ -591,7 +699,7 @@ built-in 専用 runtime adapter が Object のキーを実行時に列挙
 
 ---
 
-## 7. 設計上の注記
+## 8. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -624,7 +732,7 @@ built-in 専用 runtime adapter が Object のキーを実行時に列挙
 
 ---
 
-## 8. 未収録（将来検討）
+## 9. 未収録（将来検討）
 
 ### 三角関数
 

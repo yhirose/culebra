@@ -64,6 +64,28 @@ puts(c())                  # 1
 puts(c())                  # 2
 ```
 
+**キーワード引数と `**splat`** を使うと、呼び出し側は位置の順番を
+覚えずに名前で値を渡せます。パラメータにはデフォルト値を付けら
+れます。位置パラメータの末尾に `*` を入れると、それ以降は
+キーワード専用になります。`**rest` は未知のキーワード引数を
+Object にまとめて受け取ります:
+
+```culebra
+greet = fn (name, *, greeting = 'hi', **opts) {
+  prefix = if opts.formal { 'Mr./Ms. ' } else { '' }
+  "{greeting}, {prefix}{name}"
+}
+puts(greet('alice'))                      # 'hi, alice'
+puts(greet('alice', greeting: 'hello'))   # 'hello, alice'
+puts(greet('bob', formal: true))          # 'hi, Mr./Ms. bob'
+
+# `**` で Object を呼び出しに展開:
+let common = {greeting: 'yo', formal: false}
+puts(greet('carol', **common))            # 'yo, carol'
+```
+
+kwargs / splat の全ルールは [言語仕様 §11](language.ja.md) を参照。
+
 3. 制御フロー
 --------------
 

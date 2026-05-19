@@ -27,12 +27,13 @@ Conventions used below:
 
 1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
 2. [`IO`](#2-io) — output, stdin, file I/O
-3. [`Random`](#3-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-4. [`Sys`](#4-sys) — argv, exit, env
-5. [`Tensor`](#5-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
-6. [`JSON`](#6-json) — stringify / parse round-trip
-7. [Design notes](#7-design-notes)
-8. [Not included (yet)](#8-not-included-yet)
+3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
+4. [`Random`](#4-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
+5. [`Sys`](#5-sys) — argv, exit, env
+6. [`Tensor`](#6-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
+7. [`JSON`](#7-json) — stringify / parse round-trip
+8. [Design notes](#8-design-notes)
+9. [Not included (yet)](#9-not-included-yet)
 
 **Where to find what**
 
@@ -42,6 +43,8 @@ Conventions used below:
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
 | Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
 | Read a file | `IO.read` (throws on failure) |
+| Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
+| Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -263,9 +266,114 @@ if !IO.exists('data.txt') {
 }
 ```
 
+`FS.exists` is the same predicate under the FS namespace and is the
+preferred form for new code; `IO.exists` is retained for backward
+compatibility.
+
 ---
 
-## 3. `Random`
+## 3. `FS`
+
+Filesystem path manipulation and directory operations. Backed by
+`std::filesystem`; mutating calls throw structured `IOError`
+(`{kind: "IOError", message, line, col}`) on failure so an embedder
+can attribute the error to its source location.
+
+### Path manipulation
+
+#### `FS.join(parts...: String) -> String`
+
+Concatenate path components with the platform separator. Zero
+arguments returns `""`. Trailing separators in components are
+respected — the operator behaves like `std::filesystem::path::operator/=`.
+
+```culebra
+FS.join('a', 'b', 'c.txt')      # => 'a/b/c.txt'
+FS.join('/usr', 'local', 'bin') # => '/usr/local/bin'
+FS.join()                        # => ''
+```
+
+#### `FS.basename(path: String) -> String`
+
+Final path component (filename + extension). Trailing separator
+yields `""`.
+
+```culebra
+FS.basename('a/b/c.txt')  # => 'c.txt'
+FS.basename('/')          # => ''
+```
+
+#### `FS.dirname(path: String) -> String`
+
+Parent path. `""` for paths with no parent (`'c.txt' -> ''`).
+
+#### `FS.extension(path: String) -> String`
+
+File extension *including the leading dot*, or `""` for paths with
+none. Dotfiles (`.hidden`) are treated as having no extension —
+matches `std::filesystem::path::extension`.
+
+```culebra
+FS.extension('a/b/c.txt')  # => '.txt'
+FS.extension('.hidden')    # => ''
+```
+
+#### `FS.stem(path: String) -> String`
+
+Basename without the trailing extension.
+
+```culebra
+FS.stem('a/b/c.txt')  # => 'c'
+```
+
+### Queries
+
+#### `FS.exists(path: String) -> Bool`
+
+Whether anything exists at `path`. Does not distinguish files,
+directories or symlinks. Same semantics as `IO.exists`.
+
+#### `FS.is_file(path: String) -> Bool`
+
+True iff `path` is a regular file. Symlinks are followed.
+
+#### `FS.is_dir(path: String) -> Bool`
+
+True iff `path` is a directory. Symlinks are followed.
+
+#### `FS.size(path: String) -> Long`
+
+File size in bytes. Throws `IOError` if `path` is missing or not a
+regular file.
+
+### Directory mutations
+
+#### `FS.list_dir(path: String) -> Array<String>`
+
+Direct children of `path` as bare filenames (no `.` / `..`, no
+prefix). Order is filesystem-defined — sort explicitly if needed.
+Throws `IOError` if `path` is not a directory.
+
+```culebra
+let names = FS.list_dir('/tmp/build')
+assert(names.contains('out.o'))
+```
+
+#### `FS.mkdir(path: String) -> Nil`
+
+Create a directory at `path`, including any missing parents
+(`mkdir -p` semantics). No-op if the directory already exists.
+Throws `IOError` if the path exists as a file or creation fails.
+
+#### `FS.remove(path: String) -> Nil`
+
+Remove a file or empty directory. Throws `IOError` if the path
+doesn't exist, isn't removable, or is a non-empty directory. There
+is no recursive variant — list and remove explicitly if needed.
+
+---
+
+## 4. `Random`
 
 Random-number generation. The process has a single shared
 Mersenne-Twister-64 engine, shared between the interpreter and JIT
@@ -323,7 +431,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-## 4. `Sys`
+## 5. `Sys`
 
 Process-level information.
 
@@ -361,7 +469,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 5. `Tensor`
+## 6. `Tensor`
 
 N-dimensional numeric tensor. Builds a lazy computation graph and
 launches BLAS / vDSP kernels through `Tensor.eval(...)` to materialize
@@ -528,7 +636,7 @@ target.
 
 ---
 
-## 6. `JSON`
+## 7. `JSON`
 
 Round-trip between Culebra values and JSON text. Both backends ship
 the same surface.
@@ -612,7 +720,7 @@ fly — same algorithm interp uses.
 
 ---
 
-## 7. Design notes
+## 8. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -647,7 +755,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 8. Not included (yet)
+## 9. Not included (yet)
 
 ### Trigonometry
 

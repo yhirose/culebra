@@ -117,6 +117,49 @@ auto v = culebra::call(env, "update",
 デフォルト値付きパラメータの解決はこのヘルパーでは行わないので、
 位置引数はすべて明示的に渡してください。
 
+## スクリプトエラーの扱い
+
+スクリプト内で発生した失敗は `culebra::CulebraError`（`<shared.h>`
+で定義、`std::runtime_error` のサブクラス）として送出されます。
+スクリプト側 `try`/`catch` で見える構造化フィールドをそのまま保
+持します:
+
+```cpp
+class CulebraError : public std::runtime_error {
+public:
+  std::string kind;   // 例: "TypeError"、"ArityError"、ユーザ throw した kind
+  long line = 0, col = 0;
+};
+```
+
+`culebra::interpret` / `culebra::call` / `culebra::JIT::run` など
+ユーザコードを駆動する経路をくるむ形で catch します:
+
+```cpp
+try {
+  culebra::call(env, "update", {culebra::Value(1L), culebra::Value("oops")});
+} catch (const culebra::CulebraError& e) {
+  std::println(stderr, "{}: {} at {}:{}",
+               e.kind, e.what(), e.line, e.col);
+} catch (const std::exception& e) {
+  // culebra 由来でない例外（ホスト側のバグ、std 失敗など）
+  std::println(stderr, "host: {}", e.what());
+}
+```
+
+スクリプト側ではこれと同じ値が `catch e { ... }` の `e` として
+バインドされ、`e.kind` / `e.message` / `e.line` / `e.col` プロ
+パティでアクセスできます — ユーザ側仕様と標準 kind 一覧
+（`TypeError`, `ArityError`, `IOError`, `ValueError`, `NameError`,
+`IndexError`, `KeyError`, `AssertionError`, `InternalError`）は
+[言語仕様 §15](language.ja.md) を参照。
+
+スクリプト側 `throw expr` でユーザが投げた値は別の
+`culebra::CulebraException` として届きます（生の `JitValue` を保
+持）。通常は埋め込み側でこれを直接 catch せず、スクリプト側で
+`try`/`catch` してから kind 付きの `CulebraError` として届けるの
+が定石です。
+
 ## ホスト関数の定義
 
 `culebra::define` で C++ の callable をスクリプトから見える関数

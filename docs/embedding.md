@@ -114,6 +114,48 @@ into `__ARGS__`, and translates a top-level `return` into the return
 value. Default-valued parameters aren't resolved through this helper —
 supply all positional arguments explicitly.
 
+## Handling script errors
+
+Failures inside script code surface as `culebra::CulebraError`
+(declared in `<shared.h>`), a `std::runtime_error` subclass carrying
+the structured fields exposed to script `try`/`catch`:
+
+```cpp
+class CulebraError : public std::runtime_error {
+public:
+  std::string kind;   // e.g. "TypeError", "ArityError", user-thrown kind
+  long line = 0, col = 0;
+};
+```
+
+Catch it around `culebra::interpret`, `culebra::call`,
+`culebra::JIT::run`, or any path that drives user code:
+
+```cpp
+try {
+  culebra::call(env, "update", {culebra::Value(1L), culebra::Value("oops")});
+} catch (const culebra::CulebraError& e) {
+  std::println(stderr, "{}: {} at {}:{}",
+               e.kind, e.what(), e.line, e.col);
+} catch (const std::exception& e) {
+  // Anything not raised by culebra itself (host bug, std failure)
+  std::println(stderr, "host: {}", e.what());
+}
+```
+
+Inside script code the same value appears as the `e` bound by
+`catch e { ... }` with properties `e.kind` / `e.message` / `e.line` /
+`e.col` — see [§15 of the language spec](language.md) for the user-side
+shape and the standard kinds (`TypeError`, `ArityError`, `IOError`,
+`ValueError`, `NameError`, `IndexError`, `KeyError`, `AssertionError`,
+`InternalError`).
+
+User-thrown values via script `throw expr` arrive as a separate
+`culebra::CulebraException` carrying the raw `JitValue`; embedders
+typically don't catch this directly — wrap the script-side `throw`
+in a `try`/`catch` so it lands as a `CulebraError` with a chosen
+`kind`.
+
 ## Defining host functions
 
 `culebra::define` registers a C++ callable as a script-visible

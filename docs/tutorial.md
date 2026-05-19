@@ -66,6 +66,27 @@ puts(c())                  # 1
 puts(c())                  # 2
 ```
 
+**Keyword arguments and `**splat`** let callers pass named options
+without remembering positional order. Parameters can declare default
+values; a `*` marker after the last positional makes the rest
+keyword-only; `**rest` collects unknown keywords into an Object:
+
+```culebra
+greet = fn (name, *, greeting = 'hi', **opts) {
+  prefix = if opts.formal { 'Mr./Ms. ' } else { '' }
+  "{greeting}, {prefix}{name}"
+}
+puts(greet('alice'))                      # 'hi, alice'
+puts(greet('alice', greeting: 'hello'))   # 'hello, alice'
+puts(greet('bob', formal: true))          # 'hi, Mr./Ms. bob'
+
+# `**` splats an Object into a call:
+let common = {greeting: 'yo', formal: false}
+puts(greet('carol', **common))            # 'yo, carol'
+```
+
+See [language spec §11](language.md) for the full kwargs / splat rules.
+
 3. Control flow
 ---------------
 

@@ -2134,6 +2134,25 @@ puts(iota(2, 5))      # [2, 3, 4]
 puts(iota(5, 2))      # []
 ```
 
+### `__ARGS__` (variadic catch-all binding)
+
+Inside any function body, the implicit local `__ARGS__` is bound to
+an `Array` of positional arguments that overflowed the declared
+parameters. Use it when a fn takes a variable number of trailing
+values without declaring an explicit `**rest` (which catches
+*keyword* args, not positional).
+
+```culebra
+let logger = fn (level) {
+  puts("[{level}] " + __ARGS__.join(' '))
+}
+logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
+```
+
+`__ARGS__` does **not** receive keyword arguments — those go through
+the explicit param list or `**rest`. If a fn declares no params and
+is called with arguments, every argument lands in `__ARGS__`.
+
 ---
 
 ## 19. Multimethods
