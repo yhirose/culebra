@@ -150,6 +150,8 @@ Documentation
   / [日本語](docs/stdlib.ja.md)
 * Embedding from C++: [`docs/embedding.md`](docs/embedding.md)
   / [日本語](docs/embedding.ja.md)
+* Standalone binary build: [`docs/binary_build.md`](docs/binary_build.md)
+  / [日本語](docs/binary_build.ja.md)
 
 Build
 -----
@@ -163,11 +165,29 @@ just build              # with JIT
 just build-no-jit       # interpreter only, ~1 MB binary
 just test               # run .cul tests on interpreter
 just test-jit           # run .cul tests on JIT
-just verify             # diff interp vs JIT + embedding smoke tests
+just verify             # diff interp vs JIT + embedding smoke + AOT smoke
 ./build/culebra --shell                # REPL  (--jit for JIT REPL)
 ./build/culebra        samples/fib.cul # interpreter
 ./build/culebra --jit  samples/fib.cul # JIT
 ```
+
+### Standalone binaries
+
+`culebra build` compiles a `.cul` source ahead-of-time into a
+self-contained executable. No LLVM at runtime; tree-shaking drops
+the ~200 runtime helpers a program doesn't reference. Tensor-free
+programs also drop the Accelerate / BLAS framework dependency.
+
+```bash
+./build/culebra build samples/fizzbuzz.cul -o ./fizzbuzz
+./fizzbuzz                                              # standalone, ~350 KB on macOS
+otool -L ./fizzbuzz                                     # no Accelerate, no LLVM
+```
+
+Cross-compile is supported via `--target=<triple>` (LLVM triple)
+with user-provided `--sysroot=` and `--rt-lib=`. See
+[`docs/binary_build.md`](docs/binary_build.md) for the full
+workflow.
 
 License
 -------

@@ -53,8 +53,8 @@ jobs:
       - name: Build (interpreter + JIT)
         run: just build
 
-      - name: Run tests on both backends
-        run: just test-all
+      - name: Verify (interp/JIT diff + embedding smoke + AOT smoke)
+        run: just verify
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
