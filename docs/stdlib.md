@@ -28,12 +28,13 @@ Conventions used below:
 1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
 2. [`IO`](#2-io) — output, stdin, file I/O
 3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
-4. [`Random`](#4-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-5. [`Sys`](#5-sys) — argv, exit, env
-6. [`Tensor`](#6-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
-7. [`JSON`](#7-json) — stringify / parse round-trip
-8. [Design notes](#8-design-notes)
-9. [Not included (yet)](#9-not-included-yet)
+4. [`Time`](#4-time) — wall-clock / monotonic time, ISO 8601, calendar accessors and arithmetic
+5. [`Random`](#5-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
+6. [`Sys`](#6-sys) — argv, exit, env
+7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
+8. [`JSON`](#8-json) — stringify / parse round-trip
+9. [Design notes](#9-design-notes)
+10. [Not included (yet)](#10-not-included-yet)
 
 **Where to find what**
 
@@ -45,6 +46,7 @@ Conventions used below:
 | Read a file | `IO.read` (throws on failure) |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
+| Wall-clock / monotonic time, ISO 8601, calendar | [§4 Time](#4-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -373,7 +375,164 @@ is no recursive variant — list and remove explicitly if needed.
 
 ---
 
-## 4. `Random`
+## 4. `Time`
+
+Wall-clock and monotonic time, ISO 8601 round-trip, calendar
+accessors, and calendar arithmetic. Phase 1 uses **`Float` Unix
+seconds** as the primary representation (sub-microsecond precision
+at the current epoch); a future phase may add Object types for
+type-safe `Instant` / `Duration`.
+
+Timezone handling is **UTC + local only** in this phase (named
+zones like `Asia/Tokyo` are deferred). Methods accept a kw-only
+`utc:` flag; `iso` defaults to UTC (`utc: true`) because Z-suffixed
+ISO 8601 is the common interop wire form, the others default to
+local (`utc: false`).
+
+### Acquisition
+
+#### `Time.now() -> Float`
+
+Current wall-clock time as Unix epoch seconds (with sub-second
+precision via the host clock). Subject to NTP / manual clock
+adjustments — use `Time.monotonic` for measuring elapsed time.
+
+#### `Time.monotonic() -> Float`
+
+Seconds elapsed since the first call (or process start). Strictly
+non-decreasing; immune to wall-clock changes. The primary tool for
+benchmarking and timeouts.
+
+```culebra
+let t0 = Time.monotonic()
+do_work()
+puts("elapsed: {Time.monotonic() - t0} s")
+```
+
+#### `Time.sleep(secs: Float) -> Nil`
+
+Block the current thread for at least `secs` seconds. Negative or
+zero is a no-op. Backed by `std::this_thread::sleep_for`.
+
+### Constructors (String / parts → Float)
+
+#### `Time.from_iso(s: String) -> Float`
+
+Parse an ISO 8601 timestamp. Accepts the variants `strftime` can't
+express in a single format string:
+
+- `2026-05-20T15:30:00Z`
+- `2026-05-20T15:30:00.123Z`
+- `2026-05-20T15:30:00.000123456Z` (nanosecond precision in input)
+- `2026-05-20T15:30:00+09:00`
+- `2026-05-20T15:30:00-0900`
+- `2026-05-20` (date only — treated as UTC midnight)
+- `2026-05-20T15:30` (seconds omitted)
+
+Throws `ValueError` on a malformed input.
+
+#### `Time.parse(s: String, fmt: String) -> Float`
+
+Strict strftime parse for non-ISO inputs (RFC 822, locale strings,
+etc.). The format string follows POSIX `strptime`. Throws
+`ValueError` if `s` doesn't match `fmt`. Result is interpreted as
+local time.
+
+```culebra
+Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")
+```
+
+#### `Time.from_parts(p: Object, *, utc: false) -> Float`
+
+Compose a timestamp from a parts dict — the inverse of
+`Time.parts`. Recognised keys: `year`, `month`, `day`, `hour`,
+`minute`, `second` (defaults: `month=1`, `day=1`, others 0). Extra
+keys are ignored.
+
+### Formatting (Float → String)
+
+#### `Time.iso(t: Float, *, utc: true) -> String`
+
+Format as ISO 8601 with microsecond precision. UTC by default
+(`...Z`); pass `utc: false` for local time with `±HH:MM` offset.
+
+#### `Time.format(t: Float, fmt: String, *, utc: false) -> String`
+
+Format with a strftime format string. Local time by default.
+
+```culebra
+Time.format(Time.now(), "%Y-%m-%d %H:%M:%S")   # local
+Time.format(Time.now(), "%Y%m%d", utc: true)   # 20260520
+```
+
+### Calendar accessors
+
+#### `Time.parts(t: Float, *, utc: false) -> Object`
+
+Decompose into `{year, month, day, hour, minute, second, weekday,
+dayofyear}`. `weekday` follows ISO 8601 — `0=Mon`, `6=Sun`.
+`dayofyear` is 1-based (`1..366`).
+
+```culebra
+let p = Time.parts(Time.now())
+if p.hour >= 9 && p.hour < 17 { puts("business hours") }
+```
+
+#### `Time.weekday(t: Float, *, utc: false) -> Long`
+
+Just the weekday component (0=Mon..6=Sun), avoiding a full
+`parts()` allocation when only weekday is needed.
+
+### Calendar arithmetic
+
+#### `Time.add(t: Float, *, years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Float`
+
+Add calendar deltas. `years` / `months` use **clamp-to-end-of-month**
+semantics: `2026-01-31 + 1 month → 2026-02-28`,
+`2024-01-31 + 1 month → 2024-02-29` (leap year). Uniform fields
+(`days` / `hours` / `minutes` / `seconds`) compose as straightforward
+addition — for those, plain Float arithmetic via the duration
+constants below is equally idiomatic.
+
+```culebra
+let next_month   = Time.add(Time.now(), months: 1)
+let next_quarter = Time.add(Time.now(), months: 3)
+let next_year    = Time.add(Time.now(), years: 1)
+let in_30_min    = Time.now() + 30.0 * Time.MINUTE
+```
+
+#### `Time.start_of(t: Float, unit: String, *, utc: false) -> Float`
+
+Truncate to the start of a calendar unit. `unit` ∈
+`"year"` / `"month"` / `"day"` / `"hour"` / `"minute"`. Throws
+`ValueError` on any other unit.
+
+```culebra
+let day_bucket  = Time.start_of(t, "day")
+let hour_bucket = Time.start_of(t, "hour")
+```
+
+### Duration constants
+
+Float seconds in each unit. Plain Float arithmetic handles uniform
+durations:
+
+| Constant | Value |
+|---|---|
+| `Time.SECOND` | 1.0 |
+| `Time.MINUTE` | 60.0 |
+| `Time.HOUR` | 3600.0 |
+| `Time.DAY` | 86400.0 |
+| `Time.WEEK` | 604800.0 |
+
+```culebra
+let deadline = Time.now() + 30.0 * Time.MINUTE
+let elapsed_days = (Time.now() - start_t) / Time.DAY
+```
+
+---
+
+## 5. `Random`
 
 Random-number generation. The process has a single shared
 Mersenne-Twister-64 engine, shared between the interpreter and JIT
@@ -431,7 +590,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-## 5. `Sys`
+## 6. `Sys`
 
 Process-level information.
 
@@ -469,7 +628,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 6. `Tensor`
+## 7. `Tensor`
 
 N-dimensional numeric tensor. Builds a lazy computation graph and
 launches BLAS / vDSP kernels through `Tensor.eval(...)` to materialize
@@ -636,7 +795,7 @@ target.
 
 ---
 
-## 7. `JSON`
+## 8. `JSON`
 
 Round-trip between Culebra values and JSON text. Both backends ship
 the same surface.
@@ -720,7 +879,7 @@ fly — same algorithm interp uses.
 
 ---
 
-## 8. Design notes
+## 9. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -755,7 +914,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 9. Not included (yet)
+## 10. Not included (yet)
 
 ### Trigonometry
 

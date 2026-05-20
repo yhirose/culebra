@@ -1,0 +1,112 @@
+# Time namespace (Phase 1 — function-style, Float Unix seconds).
+
+# --- now / monotonic ---
+let now = Time.now()
+assert(now > 1700000000.0)               # post-2023
+assert(now < 9999999999.0)               # before year 2286
+
+let m1 = Time.monotonic()
+let m2 = Time.monotonic()
+assert(m2 >= m1)                          # monotonic non-decreasing
+
+# --- ISO 8601 round-trip ---
+let iso_z = Time.iso(now, utc: true)
+assert(iso_z.ends_with("Z"))
+let back = Time.from_iso(iso_z)
+# ISO format truncates to microseconds — allow that tolerance.
+assert(Math.abs((now - back)) < 1e-3)
+
+# --- from_iso flexibility ---
+let t1 = Time.from_iso("2026-05-20T15:30:00Z")
+let t2 = Time.from_iso("2026-05-20T15:30:00.123Z")
+let t3 = Time.from_iso("2026-05-20T15:30:00.000123456Z")  # ns precision in string
+let t4 = Time.from_iso("2026-05-20T15:30:00+09:00")
+let t5 = Time.from_iso("2026-05-20")                        # date only
+
+assert(Math.abs((t2 - t1 - 0.123)) < 1e-6)
+assert(t4 < t1)                                              # +09:00 is 9h earlier in UTC
+assert(t1 - t5 == 15.0 * 3600.0 + 30.0 * 60.0)              # same date, 15:30 vs 00:00
+
+# --- format / parse (strftime) ---
+let s = Time.format(t1, "%Y-%m-%d %H:%M:%S", utc: true)
+assert(s == "2026-05-20 15:30:00")
+let parsed = Time.parse(s, "%Y-%m-%d %H:%M:%S")
+# parse uses local time; we compare day to dodge tz differences.
+let p_local = Time.parts(parsed)
+let t1_utc = Time.parts(t1, utc: true)
+assert(p_local.year == t1_utc.year && p_local.month == t1_utc.month)
+
+# --- parts ---
+let p = Time.parts(t1, utc: true)
+assert(p.year == 2026)
+assert(p.month == 5)
+assert(p.day == 20)
+assert(p.hour == 15)
+assert(p.minute == 30)
+assert(p.second == 0)
+# 2026-05-20 is a Wednesday — weekday 2 (0=Mon)
+assert(p.weekday == 2)
+assert(p.dayofyear == 140)
+
+# --- from_parts round-trip ---
+let composed = Time.from_parts(
+  {year: 2026, month: 5, day: 20, hour: 15, minute: 30, second: 0},
+  utc: true)
+assert(Math.abs((composed - t1)) < 1e-6)
+
+# --- weekday accessor ---
+assert(Time.weekday(t1, utc: true) == 2)
+
+# --- add (calendar) ---
+let plus_year = Time.add(t1, years: 1, utc: true)
+let pp = Time.parts(plus_year, utc: true)
+assert(pp.year == 2027 && pp.month == 5 && pp.day == 20)
+
+# Month-end clamp: 2026-01-31 + 1 month -> 2026-02-28
+let jan31 = Time.from_parts({year: 2026, month: 1, day: 31}, utc: true)
+let feb_end = Time.add(jan31, months: 1, utc: true)
+let fp = Time.parts(feb_end, utc: true)
+assert(fp.year == 2026 && fp.month == 2 && fp.day == 28)
+
+# Leap year clamp: 2024-01-31 + 1 month -> 2024-02-29
+let jan31_24 = Time.from_parts({year: 2024, month: 1, day: 31}, utc: true)
+let feb29 = Time.add(jan31_24, months: 1, utc: true)
+let lp = Time.parts(feb29, utc: true)
+assert(lp.year == 2024 && lp.month == 2 && lp.day == 29)
+
+# Uniform fields propagate
+let plus_day = Time.add(t1, days: 5, utc: true)
+assert(Math.abs((plus_day - t1 - 5.0 * Time.DAY)) < 1.0)         # may shift by DST in local but we used utc
+
+# --- start_of ---
+let som = Time.start_of(t1, "month", utc: true)
+let smp = Time.parts(som, utc: true)
+assert(smp.year == 2026 && smp.month == 5 && smp.day == 1)
+assert(smp.hour == 0 && smp.minute == 0 && smp.second == 0)
+
+let sod = Time.start_of(t1, "day", utc: true)
+let sdp = Time.parts(sod, utc: true)
+assert(sdp.day == 20 && sdp.hour == 0)
+
+# --- start_of bad unit raises ValueError ---
+let err = try { Time.start_of(t1, "fortnight"); "no-error" } catch e { e.kind }
+assert(err == "ValueError")
+
+# --- Duration constants enable Float arithmetic ---
+let plus_30min = t1 + 30.0 * Time.MINUTE
+let pm = Time.parts(plus_30min, utc: true)
+assert(pm.hour == 16 && pm.minute == 0)
+
+assert(Time.WEEK == 7.0 * Time.DAY)
+assert(Time.DAY  == 24.0 * Time.HOUR)
+assert(Time.HOUR == 60.0 * Time.MINUTE)
+assert(Time.MINUTE == 60.0 * Time.SECOND)
+assert(Time.SECOND == 1.0)
+
+# --- sleep (very small to keep the test fast) ---
+let s0 = Time.monotonic()
+Time.sleep(0.01)
+let s1 = Time.monotonic()
+assert(s1 - s0 >= 0.01)
+
+IO.puts("test_time OK")
