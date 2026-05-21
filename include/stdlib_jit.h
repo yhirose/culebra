@@ -366,16 +366,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
   }
 }
 
-// --- Time namespace ---
+// --- _Time primitives ---
 // Calendar logic is shared with the interpreter via `culebra::_time_detail`
-// (see stdlib_interp.h). Runtime entry points below convert between the
-// JIT's primitive types (double / const char* / JitObject*) and the
-// detail helpers.
+// (see stdlib_interp.h). The user-facing `Time` module (Instant /
+// Duration classes) is built from culebra source (`STDLIB_PREAMBLE_SOURCE`
+// in stdlib_interp.h) and prepended by `culebra::prepend_stdlib_preamble`
+// in the CLI's run paths. Timestamps are i64 nanos since Unix epoch;
+// `monotonic` / `sleep` stay Float (measurement, precision-insensitive).
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_now() {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_now_nanos() {
   using clock = std::chrono::system_clock;
   auto d = clock::now().time_since_epoch();
-  return std::chrono::duration<double>(d).count();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_monotonic() {
@@ -389,141 +391,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_time_sleep(double secs) {
   if (secs > 0) {
     std::this_thread::sleep_for(std::chrono::duration<double>(secs));
   }
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_from_iso(
-    const char* s, int64_t line, int64_t col) {
-  auto r = culebra::_time_detail::parse_iso(s ? s : "");
-  if (!r) {
-    throw culebra::CulebraError(
-        "ValueError",
-        std::format("Time.from_iso: invalid ISO 8601 '{}' at {}:{}.",
-                    s ? s : "", line, col),
-        line, col);
-  }
-  return *r;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_parse(
-    const char* s, const char* fmt, int64_t line, int64_t col) {
-  std::tm tm{};
-  if (!strptime(s ? s : "", fmt ? fmt : "", &tm)) {
-    throw culebra::CulebraError(
-        "ValueError",
-        std::format("Time.parse: '{}' does not match '{}' at {}:{}.",
-                    s ? s : "", fmt ? fmt : "", line, col),
-        line, col);
-  }
-  tm.tm_isdst = -1;
-  return static_cast<double>(std::mktime(&tm));
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_time_iso(
-    double t, int64_t utc) {
-  return _culebra_heap_str(culebra::_time_detail::format_iso(t, utc != 0));
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_time_format(
-    double t, const char* fmt, int64_t utc) {
-  return _culebra_heap_str(
-      culebra::_time_detail::format_strftime(t, fmt ? fmt : "", utc != 0));
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_weekday(
-    double t, int64_t utc) {
-  return culebra::_time_detail::iso_weekday(
-      culebra::_time_detail::to_tm(t, utc != 0));
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_time_parts(
-    double t, int64_t utc) {
-  auto tm = culebra::_time_detail::to_tm(t, utc != 0);
-  auto* o = culebra_runtime_object_new();
-  auto put = [&](const char* k, int64_t v) {
-    culebra_runtime_object_set(o, k, /*mut=*/false, TAG_LONG, v, 0, 0);
-  };
-  put("year",      tm.tm_year + 1900);
-  put("month",     tm.tm_mon + 1);
-  put("day",       tm.tm_mday);
-  put("hour",      tm.tm_hour);
-  put("minute",    tm.tm_min);
-  put("second",    tm.tm_sec);
-  put("weekday",   culebra::_time_detail::iso_weekday(tm));
-  put("dayofyear", tm.tm_yday + 1);
-  return o;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_from_parts(
-    JitObject* o, int64_t utc) {
-  auto get_long = [&](const char* k, int64_t fallback) -> int64_t {
-    auto* entry = _find_property(o, k);
-    if (!entry) return fallback;
-    return entry->value.tag == TAG_LONG ? entry->value.data : fallback;
-  };
-  std::tm tm{};
-  tm.tm_year = static_cast<int>(get_long("year", 1970) - 1900);
-  tm.tm_mon  = static_cast<int>(get_long("month", 1) - 1);
-  tm.tm_mday = static_cast<int>(get_long("day", 1));
-  tm.tm_hour = static_cast<int>(get_long("hour", 0));
-  tm.tm_min  = static_cast<int>(get_long("minute", 0));
-  tm.tm_sec  = static_cast<int>(get_long("second", 0));
-  return culebra::_time_detail::from_tm(tm, 0.0, utc != 0);
-}
-
-// Long signed deltas packed in a slab so the IR can pass them as one alloca.
-struct JitTimeAddDelta {
-  int64_t years, months, days, hours, minutes, seconds;
-};
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_add(
-    double t, const JitTimeAddDelta* delta, int64_t utc) {
-  auto tm = culebra::_time_detail::to_tm(t, utc != 0);
-  double sub = culebra::_time_detail::subsec(t);
-  if (delta->years || delta->months) {
-    int target_year = tm.tm_year + 1900 + static_cast<int>(delta->years);
-    int target_month_total = tm.tm_mon + static_cast<int>(delta->months);
-    target_year += target_month_total / 12;
-    int target_month = target_month_total % 12;
-    if (target_month < 0) { target_month += 12; target_year -= 1; }
-    int last = culebra::_time_detail::days_in_month(target_year, target_month + 1);
-    int target_day = tm.tm_mday > last ? last : tm.tm_mday;
-    tm.tm_year = target_year - 1900;
-    tm.tm_mon = target_month;
-    tm.tm_mday = target_day;
-  }
-  tm.tm_mday += static_cast<int>(delta->days);
-  tm.tm_hour += static_cast<int>(delta->hours);
-  tm.tm_min  += static_cast<int>(delta->minutes);
-  tm.tm_sec  += static_cast<int>(delta->seconds);
-  return culebra::_time_detail::from_tm(tm, sub, utc != 0);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_start_of(
-    double t, const char* unit, int64_t utc, int64_t line, int64_t col) {
-  auto tm = culebra::_time_detail::to_tm(t, utc != 0);
-  std::string_view u(unit ? unit : "");
-  if      (u == "year")   { tm.tm_mon = 0; tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-  else if (u == "month")  { tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-  else if (u == "day")    { tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-  else if (u == "hour")   { tm.tm_min = 0; tm.tm_sec = 0; }
-  else if (u == "minute") { tm.tm_sec = 0; }
-  else {
-    throw culebra::CulebraError(
-        "ValueError",
-        std::format("Time.start_of: unknown unit '{}' "
-                    "(year/month/day/hour/minute) at {}:{}.",
-                    std::string(u), line, col),
-        line, col);
-  }
-  return culebra::_time_detail::from_tm(tm, 0.0, utc != 0);
-}
-
-// --- Phase 2 _Time primitives: Long-nanos counterparts -------------------
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_now_nanos() {
-  using clock = std::chrono::system_clock;
-  auto d = clock::now().time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
@@ -1356,45 +1223,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                  jit.builder_.getInt64Ty(),
                                  jit.builder_.getInt64Ty());
   }
-  // Time: a few signatures.
-  jit.module_->getOrInsertFunction(rt::time_now, jit.builder_.getDoubleTy());
+  // _Time (Long-nanos primitives + Float monotonic / sleep).
+  {
+  auto i64 = jit.builder_.getInt64Ty();
   jit.module_->getOrInsertFunction(rt::time_monotonic, jit.builder_.getDoubleTy());
   jit.module_->getOrInsertFunction(rt::time_sleep, jit.builder_.getVoidTy(),
                                    jit.builder_.getDoubleTy());
-  jit.module_->getOrInsertFunction(rt::time_from_iso, jit.builder_.getDoubleTy(),
-                                   ptrTy, jit.builder_.getInt64Ty(),
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_parse, jit.builder_.getDoubleTy(),
-                                   ptrTy, ptrTy, jit.builder_.getInt64Ty(),
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_iso, ptrTy,
-                                   jit.builder_.getDoubleTy(),
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_format, ptrTy,
-                                   jit.builder_.getDoubleTy(), ptrTy,
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_weekday, jit.builder_.getInt64Ty(),
-                                   jit.builder_.getDoubleTy(),
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_parts, ptrTy,
-                                   jit.builder_.getDoubleTy(),
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_from_parts,
-                                   jit.builder_.getDoubleTy(), ptrTy,
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_add, jit.builder_.getDoubleTy(),
-                                   jit.builder_.getDoubleTy(), ptrTy,
-                                   jit.builder_.getInt64Ty());
-  jit.module_->getOrInsertFunction(rt::time_start_of,
-                                   jit.builder_.getDoubleTy(),
-                                   jit.builder_.getDoubleTy(), ptrTy,
-                                   jit.builder_.getInt64Ty(),
-                                   jit.builder_.getInt64Ty(),
-                                   jit.builder_.getInt64Ty());
-
-  // _Time (Phase 2 nanos-based primitives).
-  {
-  auto i64 = jit.builder_.getInt64Ty();
   jit.module_->getOrInsertFunction(rt::time_now_nanos, i64);
   jit.module_->getOrInsertFunction(rt::time_from_iso_nanos, i64,
                                    ptrTy, i64, i64);
@@ -1654,7 +1488,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   // (compile_call → compile_method_call → user-method / UFCS) can
   // handle it — that path supports kwargs against user closures.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
-    static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Time"};
+    static const std::set<std::string_view> kwarg_aware_ns = {"JSON"};
     static const std::set<std::string_view> positional_only_ns = {
         "Math", "IO", "FS", "Random", "Sys", "Tensor", "_Time",
     };
@@ -2003,200 +1837,6 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
            line, col});
       for (auto v : compiled) emit_value_release(v);
       return make_string(s);
-    }
-  }
-
-  if (ns == "Time") {
-    using namespace peg::udl;
-    // Split argsAst into (positional, kwargs map by name). `utc` is
-    // common to most methods; method-specific kwargs (e.g. `years` on
-    // `add`) are consumed in the method's branch. `**splat` is the
-    // one form we don't try to handle here — fall back via nullptr.
-    std::vector<const peg::Ast*> pos_args;
-    std::unordered_map<std::string_view, const peg::Ast*> kw_args;
-    bool splat_seen = false;
-    for (const auto& child : argsAst.nodes) {
-      if (child->tag == "KWARG"_) {
-        kw_args[child->nodes[0]->token] = child->nodes[1].get();
-      } else if (child->tag == "KWARG_SPLAT"_) {
-        splat_seen = true;
-        break;
-      } else {
-        pos_args.push_back(child.get());
-      }
-    }
-    if (splat_seen) return nullptr;
-    const peg::Ast* utc_ast = nullptr;
-    if (auto it = kw_args.find("utc"); it != kw_args.end()) {
-      utc_ast = it->second;
-    }
-    // For all methods except `add`, the only accepted kwarg is `utc`.
-    // Validate up front so unknown kwargs fall back via nullptr.
-    bool extra_kwargs = (kw_args.size() > (utc_ast ? 1 : 0));
-    bool extra_kwargs_strict = extra_kwargs && method != "add";
-    if (extra_kwargs_strict) return nullptr;
-
-    auto utc_value = [&](bool default_utc) -> llvm::Value* {
-      if (!utc_ast) return builder_.getInt64(default_utc ? 1 : 0);
-      auto v = compile(*utc_ast);
-      auto b = builder_.CreateZExt(extract_data(v), builder_.getInt64Ty());
-      emit_value_release(v);
-      return b;
-    };
-
-    if (method == "now" && pos_args.size() == 0 && !utc_ast) {
-      auto d = emit_call(module_->getFunction(rt::time_now), {});
-      return make_float(d);
-    }
-    if (method == "monotonic" && pos_args.size() == 0 && !utc_ast) {
-      auto d = emit_call(module_->getFunction(rt::time_monotonic), {});
-      return make_float(d);
-    }
-    if (method == "sleep" && pos_args.size() == 1 && !utc_ast) {
-      auto secs = compile(*pos_args[0]);
-      auto d = jit.coerce_to_double(secs);
-      emit_call(module_->getFunction(rt::time_sleep), {d});
-      emit_value_release(secs);
-      return make_nil();
-    }
-    if (method == "from_iso" && pos_args.size() == 1 && !utc_ast) {
-      auto arg = compile(*pos_args[0]);
-      emit_type_check(arg, "String", "Time.from_iso argument");
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto d = emit_call(module_->getFunction(rt::time_from_iso),
-                         {p, line, col});
-      emit_value_release(arg);
-      return make_float(d);
-    }
-    if (method == "parse" && pos_args.size() == 2 && !utc_ast) {
-      auto s = compile(*pos_args[0]);
-      emit_type_check(s, "String", "Time.parse argument");
-      auto f = compile(*pos_args[1]);
-      emit_type_check(f, "String", "Time.parse format");
-      auto sp = builder_.CreateIntToPtr(extract_data(s), ptrTy);
-      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
-      auto d = emit_call(module_->getFunction(rt::time_parse),
-                         {sp, fp, line, col});
-      emit_value_release(s);
-      emit_value_release(f);
-      return make_float(d);
-    }
-    if (method == "iso" && pos_args.size() == 1) {
-      auto t = compile(*pos_args[0]);
-      auto td = jit.coerce_to_double(t);
-      auto utc = utc_value(/*default_utc=*/true);
-      auto s = emit_call(module_->getFunction(rt::time_iso), {td, utc});
-      emit_value_release(t);
-      return make_string(s);
-    }
-    if (method == "format" && pos_args.size() == 2) {
-      auto t = compile(*pos_args[0]);
-      auto f = compile(*pos_args[1]);
-      emit_type_check(f, "String", "Time.format format");
-      auto td = jit.coerce_to_double(t);
-      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
-      auto utc = utc_value(/*default_utc=*/false);
-      auto s = emit_call(module_->getFunction(rt::time_format),
-                         {td, fp, utc});
-      emit_value_release(t);
-      emit_value_release(f);
-      return make_string(s);
-    }
-    if (method == "weekday" && pos_args.size() == 1) {
-      auto t = compile(*pos_args[0]);
-      auto td = jit.coerce_to_double(t);
-      auto utc = utc_value(/*default_utc=*/false);
-      auto w = emit_call(module_->getFunction(rt::time_weekday), {td, utc});
-      emit_value_release(t);
-      return make_long(w);
-    }
-    if (method == "parts" && pos_args.size() == 1) {
-      auto t = compile(*pos_args[0]);
-      auto td = jit.coerce_to_double(t);
-      auto utc = utc_value(/*default_utc=*/false);
-      auto o = emit_call(module_->getFunction(rt::time_parts), {td, utc});
-      emit_value_release(t);
-      return make_object(o);
-    }
-    if (method == "from_parts" && pos_args.size() == 1) {
-      auto p = compile(*pos_args[0]);
-      emit_type_check(p, "Object", "Time.from_parts argument");
-      auto op = builder_.CreateIntToPtr(extract_data(p), ptrTy);
-      auto utc = utc_value(/*default_utc=*/false);
-      auto d = emit_call(module_->getFunction(rt::time_from_parts),
-                         {op, utc});
-      emit_value_release(p);
-      return make_float(d);
-    }
-    if (method == "start_of" && pos_args.size() == 2) {
-      auto t = compile(*pos_args[0]);
-      auto u = compile(*pos_args[1]);
-      emit_type_check(u, "String", "Time.start_of unit");
-      auto td = jit.coerce_to_double(t);
-      auto up = builder_.CreateIntToPtr(extract_data(u), ptrTy);
-      auto utc = utc_value(/*default_utc=*/false);
-      auto d = emit_call(module_->getFunction(rt::time_start_of),
-                         {td, up, utc, line, col});
-      emit_value_release(t);
-      emit_value_release(u);
-      return make_float(d);
-    }
-    if (method == "add" && pos_args.size() == 1) {
-      // Reject unknown kwargs up front (the method accepts only
-      // years/months/days/hours/minutes/seconds/utc).
-      for (auto& [k, _] : kw_args) {
-        if (k != "years" && k != "months" && k != "days" && k != "hours" &&
-            k != "minutes" && k != "seconds" && k != "utc") {
-          return nullptr;
-        }
-      }
-      auto t = compile(*pos_args[0]);
-      auto td = jit.coerce_to_double(t);
-      auto utc = utc_value(/*default_utc=*/false);
-
-      auto get_kw = [&](const char* name) -> const peg::Ast* {
-        auto it = kw_args.find(name);
-        return it == kw_args.end() ? nullptr : it->second;
-      };
-      const peg::Ast* years_ast   = get_kw("years");
-      const peg::Ast* months_ast  = get_kw("months");
-      const peg::Ast* days_ast    = get_kw("days");
-      const peg::Ast* hours_ast   = get_kw("hours");
-      const peg::Ast* minutes_ast = get_kw("minutes");
-      const peg::Ast* seconds_ast = get_kw("seconds");
-
-      // Stack-allocate { i64 years, months, days, hours, minutes, seconds }.
-      auto i64 = builder_.getInt64Ty();
-      auto delta_ty = llvm::StructType::get(ctx_,
-          {i64, i64, i64, i64, i64, i64});
-      llvm::IRBuilder<> entryB(
-          &builder_.GetInsertBlock()->getParent()->getEntryBlock(),
-          builder_.GetInsertBlock()->getParent()->getEntryBlock().begin());
-      auto slab = entryB.CreateAlloca(delta_ty, nullptr, "time.add.delta");
-
-      auto store_field = [&](int idx, const peg::Ast* ast) {
-        llvm::Value* v;
-        if (ast) {
-          auto a = compile(*ast);
-          v = value_to_long(a);
-          emit_value_release(a);
-        } else {
-          v = builder_.getInt64(0);
-        }
-        auto p = builder_.CreateStructGEP(delta_ty, slab, idx);
-        builder_.CreateStore(v, p);
-      };
-      store_field(0, years_ast);
-      store_field(1, months_ast);
-      store_field(2, days_ast);
-      store_field(3, hours_ast);
-      store_field(4, minutes_ast);
-      store_field(5, seconds_ast);
-
-      auto d = emit_call(module_->getFunction(rt::time_add),
-                         {td, slab, utc});
-      emit_value_release(t);
-      return make_float(d);
     }
   }
 
@@ -2777,16 +2417,6 @@ inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
     if (prop == "inf") return emit(std::numeric_limits<double>::infinity());
     if (prop == "nan") return emit(std::numeric_limits<double>::quiet_NaN());
   }
-  if (ns == "Time") {
-    auto emit = [&](double d) {
-      return make_float(llvm::ConstantFP::get(builder_.getDoubleTy(), d));
-    };
-    if (prop == "SECOND") return emit(1.0);
-    if (prop == "MINUTE") return emit(60.0);
-    if (prop == "HOUR")   return emit(3600.0);
-    if (prop == "DAY")    return emit(86400.0);
-    if (prop == "WEEK")   return emit(604800.0);
-  }
   return nullptr;
 }
 
@@ -2804,7 +2434,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",     "assert",
       "to_long", "to_float",  "to_string", "type_of",
-      "Math",    "IO",        "FS",        "Time",      "_Time",
+      "Math",    "IO",        "FS",        "_Time",
       "Random",  "Sys",       "JSON"};
   return names.contains(name);
 }

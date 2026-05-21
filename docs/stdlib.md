@@ -28,7 +28,7 @@ Conventions used below:
 1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
 2. [`IO`](#2-io) — output, stdin, file I/O
 3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
-4. [`Time`](#4-time) — wall-clock / monotonic time, ISO 8601, calendar accessors and arithmetic
+4. [`Time`](#4-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
 5. [`Random`](#5-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
 6. [`Sys`](#6-sys) — argv, exit, env
 7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
@@ -46,7 +46,7 @@ Conventions used below:
 | Read a file | `IO.read` (throws on failure) |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
-| Wall-clock / monotonic time, ISO 8601, calendar | [§4 Time](#4-time) |
+| `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§4 Time](#4-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -377,31 +377,29 @@ is no recursive variant — list and remove explicitly if needed.
 
 ## 4. `Time`
 
-Wall-clock and monotonic time, ISO 8601 round-trip, calendar
-accessors, and calendar arithmetic. Phase 1 uses **`Float` Unix
-seconds** as the primary representation (sub-microsecond precision
-at the current epoch); a future phase may add Object types for
-type-safe `Instant` / `Duration`.
+Wall-clock + monotonic time, ISO 8601 round-trip, calendar
+arithmetic. The module exposes two classes — `Instant` (a point in
+time) and `Duration` (an interval) — backed internally by `i64`
+nanoseconds since the Unix epoch (range ±292 years, full nanosecond
+precision).
 
-Timezone handling is **UTC + local only** in this phase (named
-zones like `Asia/Tokyo` are deferred). Methods accept a kw-only
-`utc:` flag; `iso` defaults to UTC (`utc: true`) because Z-suffixed
-ISO 8601 is the common interop wire form, the others default to
-local (`utc: false`).
+Timezone handling is **UTC + local only** (named zones like
+`Asia/Tokyo` are deferred). Methods accept a kw-only `utc:` flag;
+`iso` defaults to UTC (`utc: true`) because Z-suffixed ISO 8601 is
+the common interop wire form, others default to local.
 
 ### Acquisition
 
-#### `Time.now() -> Float`
+#### `Time.now() -> Instant`
 
-Current wall-clock time as Unix epoch seconds (with sub-second
-precision via the host clock). Subject to NTP / manual clock
-adjustments — use `Time.monotonic` for measuring elapsed time.
+Current wall-clock time. Subject to NTP / manual clock adjustments —
+use `Time.monotonic` for measuring elapsed time.
 
 #### `Time.monotonic() -> Float`
 
-Seconds elapsed since the first call (or process start). Strictly
-non-decreasing; immune to wall-clock changes. The primary tool for
-benchmarking and timeouts.
+Seconds (with sub-second precision) elapsed since the first call /
+process start. Strictly non-decreasing; immune to wall-clock
+changes. The primary tool for benchmarks and timeouts.
 
 ```culebra
 let t0 = Time.monotonic()
@@ -412,122 +410,147 @@ puts("elapsed: {Time.monotonic() - t0} s")
 #### `Time.sleep(secs: Float) -> Nil`
 
 Block the current thread for at least `secs` seconds. Negative or
-zero is a no-op. Backed by `std::this_thread::sleep_for`.
+zero is a no-op.
 
-### Constructors (String / parts → Float)
+### `Instant` constructors
 
-#### `Time.from_iso(s: String) -> Float`
+#### `Time.from_iso(s: String) -> Instant`
 
-Parse an ISO 8601 timestamp. Accepts the variants `strftime` can't
-express in a single format string:
+Parse an ISO 8601 timestamp. Accepted variants:
 
 - `2026-05-20T15:30:00Z`
 - `2026-05-20T15:30:00.123Z`
-- `2026-05-20T15:30:00.000123456Z` (nanosecond precision in input)
+- `2026-05-20T15:30:00.000123456Z` (full nanosecond precision)
 - `2026-05-20T15:30:00+09:00`
 - `2026-05-20T15:30:00-0900`
-- `2026-05-20` (date only — treated as UTC midnight)
+- `2026-05-20` (date only — UTC midnight)
 - `2026-05-20T15:30` (seconds omitted)
 
 Throws `ValueError` on a malformed input.
 
-#### `Time.parse(s: String, fmt: String) -> Float`
+#### `Time.from_unix(secs: Long|Float) -> Instant`
 
-Strict strftime parse for non-ISO inputs (RFC 822, locale strings,
-etc.). The format string follows POSIX `strptime`. Throws
-`ValueError` if `s` doesn't match `fmt`. Result is interpreted as
-local time.
+From Unix epoch seconds (Float gives sub-second precision).
+
+#### `Time.from_parts(p: Object, utc: false) -> Instant`
+
+Compose from a parts dict — the inverse of `Instant.parts`.
+Recognised keys: `year`, `month`, `day`, `hour`, `minute`, `second`,
+`nanosecond` (defaults: `month=1`, `day=1`, others 0). Extra keys
+are ignored.
+
+#### `Time.parse(s: String, fmt: String) -> Instant`
+
+Strict strftime parse for non-ISO inputs. The format follows POSIX
+`strptime`. Throws `ValueError` if `s` doesn't match `fmt`. Result
+is interpreted as local time.
 
 ```culebra
 Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")
 ```
 
-#### `Time.from_parts(p: Object, *, utc: false) -> Float`
+### `Instant` methods
 
-Compose a timestamp from a parts dict — the inverse of
-`Time.parts`. Recognised keys: `year`, `month`, `day`, `hour`,
-`minute`, `second` (defaults: `month=1`, `day=1`, others 0). Extra
-keys are ignored.
+#### `t.iso(utc: true) -> String`
 
-### Formatting (Float → String)
+Format as ISO 8601 with full nanosecond precision (fractional
+component omitted when zero). UTC by default (`...Z`); pass
+`utc: false` for local time with `±HH:MM` offset.
 
-#### `Time.iso(t: Float, *, utc: true) -> String`
-
-Format as ISO 8601 with microsecond precision. UTC by default
-(`...Z`); pass `utc: false` for local time with `±HH:MM` offset.
-
-#### `Time.format(t: Float, fmt: String, *, utc: false) -> String`
+#### `t.format(fmt: String, utc: false) -> String`
 
 Format with a strftime format string. Local time by default.
 
 ```culebra
-Time.format(Time.now(), "%Y-%m-%d %H:%M:%S")   # local
-Time.format(Time.now(), "%Y%m%d", utc: true)   # 20260520
+t.format("%Y-%m-%d %H:%M:%S")             # local
+t.format("%Y%m%d", utc: true)             # 20260520
 ```
 
-### Calendar accessors
+#### `t.parts(utc: false) -> Object`
 
-#### `Time.parts(t: Float, *, utc: false) -> Object`
-
-Decompose into `{year, month, day, hour, minute, second, weekday,
-dayofyear}`. `weekday` follows ISO 8601 — `0=Mon`, `6=Sun`.
-`dayofyear` is 1-based (`1..366`).
+Decompose into `{year, month, day, hour, minute, second,
+nanosecond, weekday, dayofyear}`. `weekday` follows ISO 8601
+(`0=Mon`, `6=Sun`); `dayofyear` is 1-based (`1..366`).
 
 ```culebra
-let p = Time.parts(Time.now())
+let p = Time.now().parts()
 if p.hour >= 9 && p.hour < 17 { puts("business hours") }
 ```
 
-#### `Time.weekday(t: Float, *, utc: false) -> Long`
+#### `t.weekday(utc: false) -> Long`
 
-Just the weekday component (0=Mon..6=Sun), avoiding a full
-`parts()` allocation when only weekday is needed.
+Just the weekday component (0=Mon..6=Sun) — avoids the `parts()`
+allocation when only the weekday is needed.
 
-### Calendar arithmetic
+#### `t.add(years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Instant`
 
-#### `Time.add(t: Float, *, years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Float`
-
-Add calendar deltas. `years` / `months` use **clamp-to-end-of-month**
+Calendar arithmetic. `years` / `months` use **clamp-to-end-of-month**
 semantics: `2026-01-31 + 1 month → 2026-02-28`,
-`2024-01-31 + 1 month → 2024-02-29` (leap year). Uniform fields
-(`days` / `hours` / `minutes` / `seconds`) compose as straightforward
-addition — for those, plain Float arithmetic via the duration
-constants below is equally idiomatic.
+`2024-01-31 + 1 month → 2024-02-29` (leap year). Sub-day fields
+compose as straightforward addition.
 
 ```culebra
-let next_month   = Time.add(Time.now(), months: 1)
-let next_quarter = Time.add(Time.now(), months: 3)
-let next_year    = Time.add(Time.now(), years: 1)
-let in_30_min    = Time.now() + 30.0 * Time.MINUTE
+let next_month   = Time.now().add(months: 1)
+let next_quarter = Time.now().add(months: 3)
+let next_year    = Time.now().add(years: 1)
 ```
 
-#### `Time.start_of(t: Float, unit: String, *, utc: false) -> Float`
+#### `t.start_of(unit: String, utc: false) -> Instant`
 
-Truncate to the start of a calendar unit. `unit` ∈
-`"year"` / `"month"` / `"day"` / `"hour"` / `"minute"`. Throws
-`ValueError` on any other unit.
+Truncate to the start of a calendar unit. `unit` ∈ `"year"` /
+`"month"` / `"day"` / `"hour"` / `"minute"`. Throws `ValueError`
+on any other unit.
 
 ```culebra
-let day_bucket  = Time.start_of(t, "day")
-let hour_bucket = Time.start_of(t, "hour")
+let day_bucket  = t.start_of("day")
+let hour_bucket = t.start_of("hour")
 ```
 
-### Duration constants
+#### `t.unix() -> Float`, `t.unix_nanos() -> Long`
 
-Float seconds in each unit. Plain Float arithmetic handles uniform
-durations:
+Unix epoch as Float seconds (lossy past ~400ns near current epoch)
+or Long nanoseconds (lossless).
 
-| Constant | Value |
-|---|---|
-| `Time.SECOND` | 1.0 |
-| `Time.MINUTE` | 60.0 |
-| `Time.HOUR` | 3600.0 |
-| `Time.DAY` | 86400.0 |
-| `Time.WEEK` | 604800.0 |
+### `Duration` constructors
 
 ```culebra
-let deadline = Time.now() + 30.0 * Time.MINUTE
-let elapsed_days = (Time.now() - start_t) / Time.DAY
+Time.seconds(n)        # n seconds
+Time.milliseconds(n)
+Time.minutes(n)
+Time.hours(n)
+Time.days(n)
+```
+
+`n` may be Long or Float — fractional units round to the nearest
+nanosecond.
+
+### `Duration` methods
+
+#### `d.seconds() / .milliseconds() / .minutes() / .hours() / .days() -> Float`
+
+Express the duration in the requested unit (always Float so
+fractional units round-trip).
+
+#### `d.abs() -> Duration`
+
+Absolute value of a (possibly negative) duration.
+
+### Operator overloads
+
+```culebra
+let t = Time.now()
+let one_hour = Time.hours(1)
+
+t + one_hour            # Instant + Duration → Instant
+t - one_hour            # Instant - Duration → Instant
+t1 - t2                 # Instant - Instant → Duration
+
+Time.minutes(1) + Time.seconds(30)   # → Duration (90s)
+one_hour * 2                          # → Duration
+one_hour / 2                          # → Duration
+-one_hour                             # → Duration
+
+a < b, a <= b, a == b                 # natural ordering on both types
 ```
 
 ---

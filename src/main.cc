@@ -125,8 +125,10 @@ int run_build(const BuildOptions& opts) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
+  auto combined = culebra::prepend_stdlib_preamble(
+      std::string_view(buff.data(), buff.size()));
   vector<string> msgs;
-  auto ast = culebra::parse(opts.input, buff.data(), buff.size(), msgs);
+  auto ast = culebra::parse(opts.input, combined.data(), combined.size(), msgs);
   if (!ast) {
     for (const auto& msg : msgs) cerr << msg << endl;
     return 1;
@@ -272,7 +274,12 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     }
 
     vector<string> msgs;
-    auto ast = culebra::parse(path, buff.data(), buff.size(), msgs);
+
+    // Prepend the stdlib preamble so `Time.*` resolves through normal
+    // user-binding lookup (no namespace dispatch hack required).
+    auto combined = culebra::prepend_stdlib_preamble(
+        std::string_view(buff.data(), buff.size()));
+    auto ast = culebra::parse(path, combined.data(), combined.size(), msgs);
 
     if (ast) {
       if (options.print_ast) {

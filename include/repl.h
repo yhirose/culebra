@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <linenoise.hpp>
 #include "interpreter.h"
+#include "stdlib_interp.h"  // STDLIB_PREAMBLE_SOURCE
 
 #ifdef CULEBRA_JIT_ENABLED
 #include "jit.h"
@@ -93,14 +94,35 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
   // Per-session JIT instance + globals dict. addIRModule of each input
   // keeps the prior input's compiled functions live, and run_repl
   // reads/writes `jit_globals` so `let x = 1` followed by `puts(x)`
-  // works across inputs (mirrors other JIT-backed REPLs).
+  // works across inputs (mirrors other JIT-backed REPLs). Preamble
+  // (stdlib `Time` module) is compiled into `jit_globals` once at
+  // session start so subsequent inputs resolve `Time.*` normally.
   std::unique_ptr<llvm::orc::LLJIT> jit_handle;
   JitReplGlobals jit_globals;
   if (jit_mode) {
     JIT::ensure_native_target_init();
     jit_handle = JIT::create_jit_instance();
-  }
+    std::vector<std::string> pre_msgs;
+    auto pre_src = STDLIB_PREAMBLE_SOURCE;
+    auto pre_ast = parse("<stdlib>", pre_src, std::strlen(pre_src), pre_msgs);
+    if (!pre_ast) {
+      std::fprintf(stderr, "culebra: stdlib preamble failed to parse\n");
+      for (auto& m : pre_msgs) std::fprintf(stderr, "  %s", m.c_str());
+      std::abort();
+    }
+    try {
+      auto v = JIT::run_repl(pre_ast, jit_globals, *jit_handle);
+      _culebra_value_release_impl(v.tag, v.data);
+    } catch (std::exception& e) {
+      std::fprintf(stderr, "culebra: stdlib preamble failed in JIT REPL: %s\n",
+                   e.what());
+      std::abort();
+    }
+  } else
 #endif
+  {
+    load_stdlib_modules(env);
+  }
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before

@@ -413,31 +413,6 @@ inline Value make_fs_namespace() {
 
 namespace _time_detail {
 
-// Convert Float Unix seconds (with sub-sec) to struct tm (local or UTC).
-inline std::tm to_tm(double secs, bool utc) {
-  auto t = static_cast<std::time_t>(secs);
-  std::tm tm{};
-  if (utc) {
-    gmtime_r(&t, &tm);
-  } else {
-    localtime_r(&t, &tm);
-  }
-  return tm;
-}
-
-// Recover sub-second remainder; lossy past ~400ns at current epoch.
-inline double subsec(double secs) {
-  auto whole = std::floor(secs);
-  return secs - whole;
-}
-
-// Compose tm + subsec back to Float Unix seconds.
-inline double from_tm(std::tm& tm, double subsec, bool utc) {
-  tm.tm_isdst = -1;  // let mktime decide for local; ignored by timegm
-  auto t = utc ? timegm(&tm) : std::mktime(&tm);
-  return static_cast<double>(t) + subsec;
-}
-
 // Days-in-month with leap year support.
 inline int days_in_month(int year, int month) {
   static constexpr int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -459,122 +434,7 @@ inline long iso_weekday(const std::tm& tm) {
   return (tm.tm_wday + 6) % 7;
 }
 
-// Parse ISO 8601 timestamps with the flexibility strftime can't:
-// fractional seconds of any digit count, optional Z / +HH:MM / +HHMM,
-// optional date-only or time-omitted forms.
-inline std::optional<double> parse_iso(std::string_view s) {
-  // Minimal acceptable: YYYY-MM-DD
-  if (s.size() < 10) return std::nullopt;
-  std::tm tm{};
-  auto parse_int = [&](size_t off, int n, int& out) -> bool {
-    if (off + n > s.size()) return false;
-    int v = 0;
-    for (int i = 0; i < n; i++) {
-      auto c = s[off + i];
-      if (c < '0' || c > '9') return false;
-      v = v * 10 + (c - '0');
-    }
-    out = v;
-    return true;
-  };
-  int y, mo, d, h = 0, mi = 0, se = 0;
-  if (!parse_int(0, 4, y) || s[4] != '-' || !parse_int(5, 2, mo) ||
-      s[7] != '-' || !parse_int(8, 2, d)) {
-    return std::nullopt;
-  }
-  tm.tm_year = y - 1900;
-  tm.tm_mon = mo - 1;
-  tm.tm_mday = d;
-  double sub = 0.0;
-  long offset_seconds = 0;
-  bool has_tz = false;
-  size_t i = 10;
-  if (i < s.size() && (s[i] == 'T' || s[i] == ' ')) {
-    i++;
-    if (!parse_int(i, 2, h) || (i + 2 < s.size() && s[i + 2] != ':')) {
-      return std::nullopt;
-    }
-    i += 3;
-    if (!parse_int(i, 2, mi)) return std::nullopt;
-    i += 2;
-    if (i < s.size() && s[i] == ':') {
-      i++;
-      if (!parse_int(i, 2, se)) return std::nullopt;
-      i += 2;
-    }
-    if (i < s.size() && s[i] == '.') {
-      i++;
-      double mult = 0.1;
-      while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
-        sub += (s[i] - '0') * mult;
-        mult *= 0.1;
-        i++;
-      }
-    }
-    if (i < s.size()) {
-      auto c = s[i];
-      if (c == 'Z') {
-        has_tz = true;
-        i++;
-      } else if (c == '+' || c == '-') {
-        int sign = (c == '+') ? 1 : -1;
-        i++;
-        int oh, om = 0;
-        if (!parse_int(i, 2, oh)) return std::nullopt;
-        i += 2;
-        if (i < s.size() && s[i] == ':') i++;
-        if (i + 2 <= s.size() && s[i] >= '0' && s[i] <= '9') {
-          if (!parse_int(i, 2, om)) return std::nullopt;
-          i += 2;
-        }
-        offset_seconds = sign * (oh * 3600 + om * 60);
-        has_tz = true;
-      }
-    }
-  }
-  if (i != s.size()) return std::nullopt;
-  tm.tm_hour = h;
-  tm.tm_min = mi;
-  tm.tm_sec = se;
-  tm.tm_isdst = 0;
-  // Date-only and tz-less strings: treat as UTC. (ISO 8601 leaves
-  // the timezone unspecified there; assuming UTC keeps the behaviour
-  // deterministic across hosts.)
-  std::time_t t = has_tz ? timegm(&tm) : timegm(&tm);
-  if (has_tz) t -= offset_seconds;
-  return static_cast<double>(t) + sub;
-}
-
-inline std::string format_iso(double secs, bool utc) {
-  auto tm = to_tm(secs, utc);
-  double sub = subsec(secs);
-  // Use 6-digit microseconds — enough for typical Float precision (~400ns at current epoch).
-  long usec = static_cast<long>(std::round(sub * 1e6));
-  if (usec >= 1'000'000) { usec = 0; /* rare overflow from rounding */ }
-  std::string tz_str = "Z";
-  if (!utc) {
-    auto offset = tm.tm_gmtoff;
-    int sign = offset < 0 ? -1 : 1;
-    long abs_off = std::abs(static_cast<long>(offset));
-    tz_str = std::format("{}{:02d}:{:02d}",
-                         sign < 0 ? '-' : '+',
-                         static_cast<int>(abs_off / 3600),
-                         static_cast<int>((abs_off % 3600) / 60));
-  }
-  return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{}",
-                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                     tm.tm_hour, tm.tm_min, tm.tm_sec,
-                     static_cast<int>(usec), tz_str);
-}
-
-inline std::string format_strftime(double secs, const std::string& fmt, bool utc) {
-  auto tm = to_tm(secs, utc);
-  char buf[256];
-  auto n = std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
-  return std::string(buf, n);
-}
-
-// --- Long-nanos helpers (Phase 2 _Time primitives) ----------------------
+// --- Long-nanos helpers ------------------------------------------------
 //
 // i64 nanoseconds since Unix epoch, covers ±292 years from 1970 — ample
 // for any practical use, and preserves full nanosecond precision (Float
@@ -728,277 +588,11 @@ inline std::string format_strftime_nanos(int64_t nanos,
 
 }  // namespace _time_detail
 
-inline Value make_time_namespace() {
-  using namespace std::literals;
-  ObjectValue ns;
-
-  // Time.now() -> Float (Unix epoch seconds, sub-sec)
-  ns.initialize("now",
-      Value(FunctionValue({},
-          [](std::shared_ptr<Environment>) {
-            using clock = std::chrono::system_clock;
-            auto d = clock::now().time_since_epoch();
-            return Value(std::chrono::duration<double>(d).count());
-          },
-          "Float"sv)),
-      false);
-
-  // Time.monotonic() -> Float (seconds since first call / process start).
-  ns.initialize("monotonic",
-      Value(FunctionValue({},
-          [](std::shared_ptr<Environment>) {
-            using clock = std::chrono::steady_clock;
-            static const auto t0 = clock::now();
-            auto d = clock::now() - t0;
-            return Value(std::chrono::duration<double>(d).count());
-          },
-          "Float"sv)),
-      false);
-
-  // Time.sleep(secs: Float) -> Nil
-  ns.initialize("sleep",
-      Value(FunctionValue({{"secs", false, "Float"sv}},
-          [](std::shared_ptr<Environment> env) {
-            auto secs = env->get("secs").to_double_coerce();
-            if (secs > 0) {
-              std::this_thread::sleep_for(std::chrono::duration<double>(secs));
-            }
-            return Value();
-          })),
-      false);
-
-  // Time.from_iso(s: String) -> Float
-  ns.initialize("from_iso",
-      Value(FunctionValue({{"s", false, "String"sv}},
-          [](std::shared_ptr<Environment> env) {
-            const auto& s = env->get("s").to_string();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
-            auto r = _time_detail::parse_iso(s);
-            if (!r) _time_detail::throw_value(
-                std::format("Time.from_iso: invalid ISO 8601 '{}'", s),
-                line, col);
-            return Value(*r);
-          },
-          "Float"sv)),
-      false);
-
-  // Time.parse(s, fmt) -> Float (strftime format)
-  ns.initialize("parse",
-      Value(FunctionValue(
-          {{"s", false, "String"sv}, {"fmt", false, "String"sv}},
-          [](std::shared_ptr<Environment> env) {
-            const auto& s = env->get("s").to_string();
-            const auto& fmt = env->get("fmt").to_string();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
-            std::tm tm{};
-            // strptime is POSIX; macOS / Linux have it. char* return is end-of-match.
-            if (!strptime(s.c_str(), fmt.c_str(), &tm)) {
-              _time_detail::throw_value(
-                  std::format("Time.parse: '{}' does not match '{}'", s, fmt),
-                  line, col);
-            }
-            tm.tm_isdst = -1;
-            auto t = std::mktime(&tm);
-            return Value(static_cast<double>(t));
-          },
-          "Float"sv)),
-      false);
-
-  // Time.iso(t, utc: true) -> String
-  ns.initialize("iso",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(true)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            auto utc = env->get("utc").to_bool();
-            return Value(_time_detail::format_iso(t, utc));
-          },
-          "String"sv)),
-      false);
-
-  // Time.format(t, fmt, utc: false) -> String
-  ns.initialize("format",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           {"fmt", false, "String"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(false)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            const auto& fmt = env->get("fmt").to_string();
-            auto utc = env->get("utc").to_bool();
-            return Value(_time_detail::format_strftime(t, fmt, utc));
-          },
-          "String"sv)),
-      false);
-
-  // Time.parts(t, utc: false) -> Object{year, month, day, hour, minute, second, weekday, dayofyear}
-  ns.initialize("parts",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(false)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            auto utc = env->get("utc").to_bool();
-            auto tm = _time_detail::to_tm(t, utc);
-            ObjectValue p;
-            p.initialize("year",      Value(static_cast<long>(tm.tm_year + 1900)), false);
-            p.initialize("month",     Value(static_cast<long>(tm.tm_mon + 1)),     false);
-            p.initialize("day",       Value(static_cast<long>(tm.tm_mday)),        false);
-            p.initialize("hour",      Value(static_cast<long>(tm.tm_hour)),        false);
-            p.initialize("minute",    Value(static_cast<long>(tm.tm_min)),         false);
-            p.initialize("second",    Value(static_cast<long>(tm.tm_sec)),         false);
-            p.initialize("weekday",   Value(_time_detail::iso_weekday(tm)),        false);
-            p.initialize("dayofyear", Value(static_cast<long>(tm.tm_yday + 1)),    false);
-            return Value(std::move(p));
-          },
-          "Object"sv)),
-      false);
-
-  // Time.from_parts(p: Object, utc: false) -> Float
-  ns.initialize("from_parts",
-      Value(FunctionValue(
-          {{"p", false, "Object"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(false)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            const auto& obj = env->get("p").to_object();
-            auto utc = env->get("utc").to_bool();
-            auto get = [&](const char* k, long fallback) -> long {
-              if (obj.has(k)) return obj.get(k).to_long();
-              return fallback;
-            };
-            std::tm tm{};
-            tm.tm_year = static_cast<int>(get("year", 1970) - 1900);
-            tm.tm_mon  = static_cast<int>(get("month", 1) - 1);
-            tm.tm_mday = static_cast<int>(get("day", 1));
-            tm.tm_hour = static_cast<int>(get("hour", 0));
-            tm.tm_min  = static_cast<int>(get("minute", 0));
-            tm.tm_sec  = static_cast<int>(get("second", 0));
-            return Value(_time_detail::from_tm(tm, 0.0, utc));
-          },
-          "Float"sv)),
-      false);
-
-  // Time.weekday(t, utc: false) -> Long (0=Mon..6=Sun)
-  ns.initialize("weekday",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(false)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            auto utc = env->get("utc").to_bool();
-            return Value(_time_detail::iso_weekday(_time_detail::to_tm(t, utc)));
-          },
-          "Long"sv)),
-      false);
-
-  // Time.add(t, *, years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false)
-  ns.initialize("add",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           FunctionValue::Parameter{"years",   false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"months",  false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"days",    false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"hours",   false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"minutes", false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"seconds", false, {}, nullptr, std::make_shared<Value>(Value(0L)), true, false},
-           FunctionValue::Parameter{"utc",     false, {}, nullptr, std::make_shared<Value>(Value(false)), true, false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            auto utc = env->get("utc").to_bool();
-            auto tm = _time_detail::to_tm(t, utc);
-            double sub = _time_detail::subsec(t);
-
-            // Calendar-aware fields (years / months): handle clamp-to-end-of-month.
-            long years_add = env->get("years").to_long();
-            long months_add = env->get("months").to_long();
-            if (years_add || months_add) {
-              int target_year = tm.tm_year + 1900 + static_cast<int>(years_add);
-              int target_month_total = tm.tm_mon + static_cast<int>(months_add);
-              target_year += target_month_total / 12;
-              int target_month = target_month_total % 12;
-              if (target_month < 0) { target_month += 12; target_year -= 1; }
-              int last = _time_detail::days_in_month(target_year, target_month + 1);
-              int target_day = tm.tm_mday > last ? last : tm.tm_mday;
-              tm.tm_year = target_year - 1900;
-              tm.tm_mon = target_month;
-              tm.tm_mday = target_day;
-            }
-
-            // Uniform fields propagate as tm field increments; mktime normalises.
-            tm.tm_mday += static_cast<int>(env->get("days").to_long());
-            tm.tm_hour += static_cast<int>(env->get("hours").to_long());
-            tm.tm_min  += static_cast<int>(env->get("minutes").to_long());
-            tm.tm_sec  += static_cast<int>(env->get("seconds").to_long());
-
-            return Value(_time_detail::from_tm(tm, sub, utc));
-          },
-          "Float"sv)),
-      false);
-
-  // Time.start_of(t, unit, utc: false) -> Float
-  ns.initialize("start_of",
-      Value(FunctionValue(
-          {{"t", false, "Float"sv},
-           {"unit", false, "String"sv},
-           FunctionValue::Parameter{
-               "utc", false, {}, nullptr,
-               std::make_shared<Value>(Value(false)),
-               /*kw_only=*/true, /*kwargs_rest=*/false}},
-          [](std::shared_ptr<Environment> env) {
-            auto t = env->get("t").to_double_coerce();
-            const auto& unit = env->get("unit").to_string();
-            auto utc = env->get("utc").to_bool();
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
-            auto tm = _time_detail::to_tm(t, utc);
-            if (unit == "year")        { tm.tm_mon = 0; tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-            else if (unit == "month")  { tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-            else if (unit == "day")    { tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
-            else if (unit == "hour")   { tm.tm_min = 0; tm.tm_sec = 0; }
-            else if (unit == "minute") { tm.tm_sec = 0; }
-            else {
-              _time_detail::throw_value(
-                  std::format("Time.start_of: unknown unit '{}' "
-                              "(year/month/day/hour/minute)", unit),
-                  line, col);
-            }
-            return Value(_time_detail::from_tm(tm, 0.0, utc));
-          },
-          "Float"sv)),
-      false);
-
-  // --- Duration constants (Float seconds) ---
-  ns.initialize("SECOND", Value(1.0),       false);
-  ns.initialize("MINUTE", Value(60.0),      false);
-  ns.initialize("HOUR",   Value(3600.0),    false);
-  ns.initialize("DAY",    Value(86400.0),   false);
-  ns.initialize("WEEK",   Value(604800.0),  false);
-
-  return Value(std::move(ns));
-}
-
-// `_Time`: thin Long-nanos primitives that the user-facing `Time` module
-// (Instant / Duration classes, defined in culebra source — Phase 2-2)
-// will wrap. Underscore prefix marks it as internal: ABI for the
-// wrapper, not a stable surface for direct use.
+// `_Time`: thin Long-nanos primitives. The user-facing `Time` module
+// (Instant / Duration classes — `STDLIB_PREAMBLE_SOURCE` below) wraps
+// these to deliver natural calendar arithmetic + operator overloads.
+// Underscore prefix marks it as the wrapper's ABI, not a stable
+// surface for direct use.
 //
 // All functions are positional-only so the JIT path stays simple.
 inline Value make_time_primitives_namespace() {
@@ -2032,12 +1626,110 @@ inline void setup_built_in_functions(
   env.initialize("Math", make_math_namespace(), false);
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
-  env.initialize("Time", make_time_namespace(), false);
   env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
+}
+
+// Embedded culebra source for stdlib modules that are easier to express
+// in culebra than in C++. Loaded into the env by `load_stdlib_modules`
+// (interp) and prepended to the user program by `JIT::run` /
+// `JIT::build_object` (JIT). Single-line so user-code error positions
+// are only off-by-one.
+//
+// Modules:
+//   * `Time` — Instant / Duration classes wrapping `_Time` primitives.
+//     Operator overloads (`__add__` / `__sub__` / `__mul__` / `__div__`
+//     / `__neg__` / `__lt__` / `__le__` / `__eq__`) give natural
+//     timestamp arithmetic.
+inline constexpr const char* STDLIB_PREAMBLE_SOURCE =
+    "let _time_module = fn () { "
+    "class Duration { "
+    "new(nanos) { this._nanos = nanos } "
+    "seconds() { to_float(this._nanos) / 1000000000.0 } "
+    "milliseconds() { to_float(this._nanos) / 1000000.0 } "
+    "minutes() { this.seconds() / 60.0 } "
+    "hours() { this.seconds() / 3600.0 } "
+    "days() { this.seconds() / 86400.0 } "
+    "abs() { if this._nanos < 0 { Duration.new(-this._nanos) } else { Duration.new(this._nanos) } } "
+    "__add__(o) { Duration.new(this._nanos + o._nanos) } "
+    "__sub__(o) { Duration.new(this._nanos - o._nanos) } "
+    "__mul__(n) { Duration.new(to_long(to_float(this._nanos) * to_float(n))) } "
+    "__div__(n) { Duration.new(to_long(to_float(this._nanos) / to_float(n))) } "
+    "__neg__() { Duration.new(-this._nanos) } "
+    "__lt__(o) { this._nanos < o._nanos } "
+    "__le__(o) { this._nanos <= o._nanos } "
+    "__eq__(o) { this._nanos == o._nanos } "
+    "}; "
+    "class Instant { "
+    "new(nanos) { this._nanos = nanos } "
+    "iso(utc = true) { _Time.iso_nanos(this._nanos, utc) } "
+    "format(fmt, utc = false) { _Time.format_nanos(this._nanos, fmt, utc) } "
+    "parts(utc = false) { _Time.parts_nanos(this._nanos, utc) } "
+    "weekday(utc = false) { _Time.weekday_nanos(this._nanos, utc) } "
+    "add(years = 0, months = 0, days = 0, hours = 0, minutes = 0, seconds = 0, utc = false) "
+    "{ Instant.new(_Time.add_nanos(this._nanos, years, months, days, hours, minutes, seconds, utc)) } "
+    "start_of(unit, utc = false) { Instant.new(_Time.start_of_nanos(this._nanos, unit, utc)) } "
+    "unix() { to_float(this._nanos) / 1000000000.0 } "
+    "unix_nanos() { this._nanos } "
+    "__add__(o) { Instant.new(this._nanos + o._nanos) } "
+    "__sub__(o) { if o.class == \"Duration\" { Instant.new(this._nanos - o._nanos) } "
+                                          "else { Duration.new(this._nanos - o._nanos) } } "
+    "__lt__(o) { this._nanos < o._nanos } "
+    "__le__(o) { this._nanos <= o._nanos } "
+    "__eq__(o) { this._nanos == o._nanos } "
+    "}; "
+    "{ now: fn() { Instant.new(_Time.now_nanos()) }, "
+    "monotonic: fn() { _Time.monotonic() }, "
+    "sleep: fn(secs) { _Time.sleep(secs) }, "
+    "from_iso: fn(s) { Instant.new(_Time.from_iso_nanos(s)) }, "
+    "from_unix: fn(secs) { Instant.new(to_long(to_float(secs) * 1000000000.0)) }, "
+    "from_parts: fn(p, utc = false) { Instant.new(_Time.from_parts_nanos(p, utc)) }, "
+    "parse: fn(s, fmt) { Instant.new(_Time.parse_nanos(s, fmt)) }, "
+    "seconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000000.0)) }, "
+    "milliseconds: fn(n) { Duration.new(to_long(to_float(n) * 1000000.0)) }, "
+    "minutes: fn(n) { Duration.new(to_long(to_float(n) * 60000000000.0)) }, "
+    "hours: fn(n) { Duration.new(to_long(to_float(n) * 3600000000000.0)) }, "
+    "days: fn(n) { Duration.new(to_long(to_float(n) * 86400000000000.0)) }, "
+    "Instant: Instant, Duration: Duration "
+    "} "
+    "}; "
+    "let Time = _time_module()\n";
+
+// Concatenate the stdlib preamble in front of `user_src` so a single
+// parse + analyze + compile pass sees the full program. Used by the
+// CLI (`run_scripts` / `run_build`) — embedders that build their env
+// via `culebra::environment()` and feed user source through `parse`
+// + `interpret` can wrap their source the same way.
+inline std::string prepend_stdlib_preamble(std::string_view user_src) {
+  std::string combined;
+  combined.reserve(std::strlen(STDLIB_PREAMBLE_SOURCE) + user_src.size());
+  combined.append(STDLIB_PREAMBLE_SOURCE);
+  combined.append(user_src);
+  return combined;
+}
+
+// Parse + interpret-eval the stdlib preamble into `env`. Used at REPL
+// session start (interp mode) where each input is parsed separately
+// so we can't pre-concat. Aborts on internal failure — the preamble
+// is hard-coded so a failure means the binary itself is broken.
+inline void load_stdlib_modules(std::shared_ptr<Environment> env) {
+  std::vector<std::string> msgs;
+  auto src = STDLIB_PREAMBLE_SOURCE;
+  auto ast = parse("<stdlib>", src, std::strlen(src), msgs);
+  if (!ast) {
+    std::fprintf(stderr, "culebra: internal stdlib preamble failed to parse\n");
+    for (auto& m : msgs) std::fprintf(stderr, "  %s", m.c_str());
+    std::abort();
+  }
+  Value v;
+  if (!interpret(ast, env, v, msgs)) {
+    std::fprintf(stderr, "culebra: internal stdlib preamble failed to eval\n");
+    for (auto& m : msgs) std::fprintf(stderr, "  %s", m.c_str());
+    std::abort();
+  }
 }
 
 inline std::shared_ptr<Environment> environment(

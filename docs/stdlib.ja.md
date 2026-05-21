@@ -27,7 +27,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 1. [`Math`](#1-math) — 数値ユーティリティ・定数・整数列
 2. [`IO`](#2-io) — 出力・標準入力・ファイル I/O
 3. [`FS`](#3-fs) — パス操作・ファイル/ディレクトリ問い合わせ・更新
-4. [`Time`](#4-time) — wall-clock / monotonic / ISO 8601 / カレンダー
+4. [`Time`](#4-time) — `Instant` / `Duration` クラス、ISO 8601、カレンダー算術、ナノ秒精度
 5. [`Random`](#5-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
 6. [`Sys`](#6-sys) — argv / exit / env
 7. [`Tensor`](#7-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
@@ -45,7 +45,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | ファイル読込 | `IO.read`（失敗時 throw） |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
-| 時刻（wall-clock / monotonic / ISO 8601 / カレンダー） | [§4 Time](#4-time) |
+| `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§4 Time](#4-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | 行列・テンソル演算（BLAS 対応） | [§6 Tensor](#6-tensor) |
@@ -369,28 +369,28 @@ assert(names.contains('out.o'))
 
 ## 4. `Time`
 
-Wall-clock と monotonic 時刻、ISO 8601 入出力、カレンダーアクセサ
-と算術。Phase 1 では **`Float` Unix 秒** を主表現として使用（現在
-時点の epoch で sub-microsecond 精度）。将来の Phase で型安全な
-`Instant` / `Duration` Object を追加検討する。
+Wall-clock + monotonic 時刻、ISO 8601 入出力、カレンダー算術。
+モジュールが提供する 2 つのクラス — `Instant`（時点）と
+`Duration`（時間幅）— 内部表現は Unix epoch 起点の `i64`
+ナノ秒（範囲 ±292 年、完全ナノ秒精度）。
 
 タイムゾーンは **UTC + local のみ**（`Asia/Tokyo` 等の名前付き
-ゾーンは v2 で）。各関数は kw-only `utc:` フラグを取り、`iso` は
-`utc: true` がデフォルト（Z 付き ISO 8601 が interop の wire form）、
-それ以外は `utc: false`（local）デフォルト。
+ゾーンは将来対応）。各 method は kw-only `utc:` フラグを取り、
+`iso` は `utc: true` がデフォルト（Z 付き ISO 8601 が interop の
+wire form のため）、それ以外は `utc: false`（local）デフォルト。
 
 ### 取得
 
-#### `Time.now() -> Float`
+#### `Time.now() -> Instant`
 
-現在の wall-clock 時刻（Unix epoch 秒、host クロック精度の sub-秒
-込み）。NTP や手動時計調整の影響を受ける — 経過計測には
-`Time.monotonic` を使うこと。
+現在の wall-clock 時刻。NTP や手動時計調整の影響を受けるので、
+経過計測には `Time.monotonic` を使うこと。
 
 #### `Time.monotonic() -> Float`
 
-最初の呼出（プロセス起動）からの経過秒数。厳密に非減少、壁時計
-変更の影響を受けない。ベンチや timeout の基本ツール。
+最初の呼出（プロセス起動）からの経過秒数（sub-秒精度）。厳密に
+非減少、壁時計変更の影響を受けない。ベンチや timeout の基本ツー
+ル。
 
 ```culebra
 let t0 = Time.monotonic()
@@ -401,14 +401,12 @@ puts("elapsed: {Time.monotonic() - t0} s")
 #### `Time.sleep(secs: Float) -> Nil`
 
 現在スレッドを `secs` 秒以上ブロック。負値や 0 は no-op。
-`std::this_thread::sleep_for` 実装。
 
-### コンストラクタ（String / parts → Float）
+### `Instant` コンストラクタ
 
-#### `Time.from_iso(s: String) -> Float`
+#### `Time.from_iso(s: String) -> Instant`
 
-ISO 8601 タイムスタンプを parse。strftime では 1 つの format
-string で表現できない variant を受け付ける:
+ISO 8601 タイムスタンプを parse。受け付ける variant:
 
 - `2026-05-20T15:30:00Z`
 - `2026-05-20T15:30:00.123Z`
@@ -420,100 +418,125 @@ string で表現できない variant を受け付ける:
 
 不正な入力は `ValueError` を throw。
 
-#### `Time.parse(s: String, fmt: String) -> Float`
+#### `Time.from_unix(secs: Long|Float) -> Instant`
 
-非 ISO 入力（RFC 822、locale 文字列等）向けの厳格 strftime
-parse。format は POSIX `strptime` 準拠。`s` が `fmt` に一致しなけ
-れば `ValueError` を throw。結果は local time として解釈。
+Unix epoch 秒から構築（Float なら sub-秒精度）。
+
+#### `Time.from_parts(p: Object, utc: false) -> Instant`
+
+parts dict から timestamp を組み立て — `Instant.parts` の逆操作。
+認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`、
+`nanosecond`（デフォルト: `month=1`、`day=1`、その他 0）。それ
+以外のキーは無視。
+
+#### `Time.parse(s: String, fmt: String) -> Instant`
+
+非 ISO 入力向けの厳格 strftime parse。format は POSIX `strptime`
+準拠。`s` が `fmt` に一致しなければ `ValueError` を throw。結果は
+local time として解釈。
 
 ```culebra
 Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")
 ```
 
-#### `Time.from_parts(p: Object, *, utc: false) -> Float`
+### `Instant` method
 
-parts dict から timestamp を組み立て — `Time.parts` の逆操作。
-認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`
-（デフォルト: `month=1`、`day=1`、その他 0）。それ以外のキーは
-無視。
+#### `t.iso(utc: true) -> String`
 
-### フォーマット（Float → String）
+ISO 8601 形式、完全ナノ秒精度（小数部が 0 の場合は省略）。デフォ
+ルト UTC（`...Z`）、`utc: false` で local time + `±HH:MM` offset。
 
-#### `Time.iso(t: Float, *, utc: true) -> String`
-
-ISO 8601 形式、microsecond 精度。デフォルト UTC（`...Z`）、
-`utc: false` で local time + `±HH:MM` offset。
-
-#### `Time.format(t: Float, fmt: String, *, utc: false) -> String`
+#### `t.format(fmt: String, utc: false) -> String`
 
 strftime format で整形。デフォルトは local time。
 
 ```culebra
-Time.format(Time.now(), "%Y-%m-%d %H:%M:%S")   # local
-Time.format(Time.now(), "%Y%m%d", utc: true)   # 20260520
+t.format("%Y-%m-%d %H:%M:%S")             # local
+t.format("%Y%m%d", utc: true)             # 20260520
 ```
 
-### カレンダーアクセサ
+#### `t.parts(utc: false) -> Object`
 
-#### `Time.parts(t: Float, *, utc: false) -> Object`
-
-`{year, month, day, hour, minute, second, weekday, dayofyear}`
-に分解。`weekday` は ISO 8601 起点（`0=Mon`、`6=Sun`）、
+`{year, month, day, hour, minute, second, nanosecond, weekday,
+dayofyear}` に分解。`weekday` は ISO 8601 起点（`0=Mon`、`6=Sun`）、
 `dayofyear` は 1-based（`1..366`）。
 
 ```culebra
-let p = Time.parts(Time.now())
+let p = Time.now().parts()
 if p.hour >= 9 && p.hour < 17 { puts("business hours") }
 ```
 
-#### `Time.weekday(t: Float, *, utc: false) -> Long`
+#### `t.weekday(utc: false) -> Long`
 
 weekday 単体（0=Mon..6=Sun）。`parts()` の Object allocation を
 避けたい場合用。
 
-### カレンダー算術
+#### `t.add(years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Instant`
 
-#### `Time.add(t: Float, *, years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Float`
-
-カレンダー delta を加算。`years` / `months` は **月末 clamp**
-セマンティクス: `2026-01-31 + 1 ヶ月 → 2026-02-28`、
-`2024-01-31 + 1 ヶ月 → 2024-02-29`（うるう年）。均等場（`days` /
-`hours` / `minutes` / `seconds`）は単純加算 — 下記の duration
-定数を使った Float 演算と等価。
+カレンダー算術。`years` / `months` は **月末 clamp** セマンティ
+クス: `2026-01-31 + 1 ヶ月 → 2026-02-28`、
+`2024-01-31 + 1 ヶ月 → 2024-02-29`（うるう年）。日以下の場は単純
+加算。
 
 ```culebra
-let next_month   = Time.add(Time.now(), months: 1)
-let next_quarter = Time.add(Time.now(), months: 3)
-let next_year    = Time.add(Time.now(), years: 1)
-let in_30_min    = Time.now() + 30.0 * Time.MINUTE
+let next_month   = Time.now().add(months: 1)
+let next_quarter = Time.now().add(months: 3)
+let next_year    = Time.now().add(years: 1)
 ```
 
-#### `Time.start_of(t: Float, unit: String, *, utc: false) -> Float`
+#### `t.start_of(unit: String, utc: false) -> Instant`
 
-カレンダー単位の先頭に丸める。`unit` ∈
-`"year"` / `"month"` / `"day"` / `"hour"` / `"minute"`。それ以外
-は `ValueError`。
+カレンダー単位の先頭に丸める。`unit` ∈ `"year"` / `"month"` /
+`"day"` / `"hour"` / `"minute"`。それ以外は `ValueError`。
 
 ```culebra
-let day_bucket  = Time.start_of(t, "day")
-let hour_bucket = Time.start_of(t, "hour")
+let day_bucket  = t.start_of("day")
+let hour_bucket = t.start_of("hour")
 ```
 
-### Duration 定数
+#### `t.unix() -> Float`、`t.unix_nanos() -> Long`
 
-Float 秒数。均等な duration は Float 演算で扱う:
+Unix epoch を Float 秒（現在時点で ~400ns 精度）または Long ns
+（loss-less）で取得。
 
-| 定数 | 値 |
-|---|---|
-| `Time.SECOND` | 1.0 |
-| `Time.MINUTE` | 60.0 |
-| `Time.HOUR` | 3600.0 |
-| `Time.DAY` | 86400.0 |
-| `Time.WEEK` | 604800.0 |
+### `Duration` コンストラクタ
 
 ```culebra
-let deadline = Time.now() + 30.0 * Time.MINUTE
-let elapsed_days = (Time.now() - start_t) / Time.DAY
+Time.seconds(n)        # n 秒
+Time.milliseconds(n)
+Time.minutes(n)
+Time.hours(n)
+Time.days(n)
+```
+
+`n` は Long でも Float でも可 — 小数単位はナノ秒に丸める。
+
+### `Duration` method
+
+#### `d.seconds() / .milliseconds() / .minutes() / .hours() / .days() -> Float`
+
+指定単位での値（小数単位を round-trip するため常に Float）。
+
+#### `d.abs() -> Duration`
+
+絶対値（負の duration を正に）。
+
+### 演算子オーバーロード
+
+```culebra
+let t = Time.now()
+let one_hour = Time.hours(1)
+
+t + one_hour            # Instant + Duration → Instant
+t - one_hour            # Instant - Duration → Instant
+t1 - t2                 # Instant - Instant → Duration
+
+Time.minutes(1) + Time.seconds(30)   # → Duration (90s)
+one_hour * 2                          # → Duration
+one_hour / 2                          # → Duration
+-one_hour                             # → Duration
+
+a < b, a <= b, a == b                 # 両クラスで自然な順序
 ```
 
 ---
