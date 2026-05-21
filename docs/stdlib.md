@@ -33,8 +33,9 @@ Conventions used below:
 6. [`Sys`](#6-sys) — argv, exit, env
 7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 8. [`JSON`](#8-json) — stringify / parse round-trip
-9. [Design notes](#9-design-notes)
-10. [Not included (yet)](#10-not-included-yet)
+9. [`Args`](#9-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
+10. [Design notes](#10-design-notes)
+11. [Not included (yet)](#11-not-included-yet)
 
 **Where to find what**
 
@@ -48,6 +49,7 @@ Conventions used below:
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§4 Time](#4-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
+| CLI argument parsing | [§9 Args](#9-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
@@ -902,7 +904,136 @@ fly — same algorithm interp uses.
 
 ---
 
-## 9. Design notes
+## 9. `Args`
+
+Declarative CLI argument parser. The spec is a culebra `Object`
+listing positionals, options, and subcommands; `Args.parse` returns
+an `Object` whose fields match the spec, prints help on `--help`,
+and exits with status 2 on parse errors. For programmatic control,
+`Args.try_parse` raises an `{kind: "ArgParseError", message}` or
+`{kind: "ArgParseHelp", help}` value instead.
+
+### `Args.parse(argv: Array<String>, spec: Object) -> Object`
+
+Parse `argv` (typically `Sys.argv`) against `spec`. On `--help` or
+`-h`, prints help to stdout and `Sys.exit(0)`. On any parse error,
+prints `error: <message>` to stderr and `Sys.exit(2)`.
+
+### `Args.try_parse(argv, spec) -> Object`
+
+Same engine, but raises on error / help instead of exiting. Use
+this from tests or when wrapping into a custom UX.
+
+### `Args.help(spec: Object) -> String`
+
+Produce the help text the parser would print on `--help`, without
+parsing or exiting. Useful for embedding into a wider message.
+
+### Spec format
+
+Each argument is an `Object` with these fields:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | `String` | (required) | field name in the parsed result |
+| `type` | `String` | `"String"` | `"String"` / `"Long"` / `"Float"` / `"Bool"` |
+| `short` | `String` | (none) | short flag letter (e.g. `"v"` → `-v`). Marks it as an option. |
+| `default` | `Any` | (none) | default value. Marks it as optional. |
+| `doc` | `String` | `""` | help-text description |
+| `repeated` | `Bool` | `false` | collect multiple values into an `Array` |
+
+Argument **type** of `Bool` means the option is a **flag** that
+consumes no value (`--verbose` / `-v`). All other types consume the
+next token (`--count 5` / `--count=5`).
+
+An argument is **positional** unless it has `short` or `default`.
+Positional args are matched in spec order; a positional with a
+`default` is optional.
+
+### Example
+
+```culebra
+let spec = {
+  name: "wc-lite",
+  doc:  "count lines and words",
+  args: [
+    {name: "input",   type: "String", doc: "input file"},
+    {name: "lines",   short: "l", type: "Bool", default: false, doc: "count lines"},
+    {name: "words",   short: "w", type: "Bool", default: false, doc: "count words"},
+    {name: "encoding",            type: "String", default: "utf-8"}
+  ]
+}
+
+let args = Args.parse(Sys.argv, spec)
+puts(args.input)            # String
+if args.lines { puts("lines: ...") }
+if args.words { puts("words: ...") }
+puts("encoding: {args.encoding}")
+```
+
+```
+$ ./wc-lite -l file.txt
+lines: ...
+encoding: utf-8
+
+$ ./wc-lite --help
+wc-lite - count lines and words
+
+Usage: wc-lite [options] <input>
+
+Arguments:
+  input    input file
+
+Options:
+  -l, --lines        count lines
+  -w, --words        count words
+      --encoding
+  -h, --help         show this help and exit
+```
+
+### Subcommands
+
+`spec.subcommands` is an `Array<Object>` where each element is a
+sub-spec (same shape as the top-level spec, minus its own
+`subcommands` typically). When present, the first positional token
+selects a subcommand; the parsed result has a `subcommand` field
+naming the selected command, and the rest of the spec's args are
+parsed as that subcommand's:
+
+```culebra
+let spec = {
+  name: "git-lite",
+  subcommands: [
+    {name: "add",    args: [{name: "files",   type: "String", repeated: true}]},
+    {name: "commit", args: [{name: "message", short: "m", type: "String"}]}
+  ]
+}
+
+match Args.parse(Sys.argv, spec).subcommand {
+  "add"    => stage_files(args.files),
+  "commit" => commit_with_message(args.message)
+}
+```
+
+### Error handling
+
+`Args.parse` exits on any error. `Args.try_parse` instead throws:
+
+```culebra
+let r = try { Args.try_parse(["--bogus"], spec) } catch e { e }
+# r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
+```
+
+The `kind` of a thrown value is one of:
+
+| `kind` | Meaning | Extra fields |
+|---|---|---|
+| `ArgParseError` | parse failure (unknown opt, type mismatch, missing required, etc.) | `message` |
+| `ArgParseHelp` | user passed `--help` / `-h` | `help` (the help-text string) |
+
+---
+
+## 10. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -937,7 +1068,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 10. Not included (yet)
+## 11. Not included (yet)
 
 ### Trigonometry
 

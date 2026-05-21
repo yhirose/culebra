@@ -32,8 +32,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 6. [`Sys`](#6-sys) — argv / exit / env
 7. [`Tensor`](#7-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
 8. [`JSON`](#8-json) — stringify / parse の相互変換
-9. [設計上の注記](#9-設計上の注記)
-10. [未収録（将来検討）](#10-未収録将来検討)
+9. [`Args`](#9-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
+10. [設計上の注記](#10-設計上の注記)
+11. [未収録（将来検討）](#11-未収録将来検討)
 
 **目的別索引**
 
@@ -47,6 +48,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§4 Time](#4-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
+| CLI 引数解析 | [§9 Args](#9-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | 行列・テンソル演算（BLAS 対応） | [§6 Tensor](#6-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
@@ -875,7 +877,130 @@ built-in 専用 runtime adapter が Object のキーを実行時に列挙
 
 ---
 
-## 9. 設計上の注記
+## 9. `Args`
+
+宣言的な CLI 引数パーサ。spec は culebra `Object` で positional / option /
+subcommand を列挙し、`Args.parse` は parse 結果を `Object` で返す。
+`--help` 指定で help を stdout に出して `Sys.exit(0)`、パースエラー時は
+stderr に error 表示 + `Sys.exit(2)`。プログラム制御したい場合は
+`Args.try_parse` を使うと `{kind: "ArgParseError", message}` または
+`{kind: "ArgParseHelp", help}` を throw する。
+
+### `Args.parse(argv: Array<String>, spec: Object) -> Object`
+
+`argv` (通常 `Sys.argv`) を `spec` に従って parse。`--help` / `-h` で help
+を stdout 出力 + `Sys.exit(0)`、パースエラーで stderr 出力 + `Sys.exit(2)`。
+
+### `Args.try_parse(argv, spec) -> Object`
+
+同じエンジンだが exit せず例外を throw。テストや独自 UX 構築用。
+
+### `Args.help(spec: Object) -> String`
+
+parse / exit せずに help 文字列だけ取得。広めのメッセージに埋め込みたい
+時など。
+
+### Spec 形式
+
+各引数は次のフィールドを持つ `Object`:
+
+| field | 型 | デフォルト | 意味 |
+|---|---|---|---|
+| `name` | `String` | (必須) | parse 結果の key |
+| `type` | `String` | `"String"` | `"String"` / `"Long"` / `"Float"` / `"Bool"` |
+| `short` | `String` | (なし) | 短縮形 (`"v"` → `-v`)。指定すると option 扱い。 |
+| `default` | `Any` | (なし) | 省略時の値。指定すると optional。 |
+| `doc` | `String` | `""` | help 用説明文 |
+| `repeated` | `Bool` | `false` | 複数指定可、`Array` で集約 |
+
+`type: "Bool"` の場合は値を取らない **flag** (`--verbose` / `-v`)。それ以外
+の型は次のトークンを値として消費する (`--count 5` / `--count=5`)。
+
+`short` も `default` も無い引数は **positional** 扱い。spec 順にマッチし、
+`default` 付きの positional は optional。
+
+### 例
+
+```culebra
+let spec = {
+  name: "wc-lite",
+  doc:  "count lines and words",
+  args: [
+    {name: "input",   type: "String", doc: "input file"},
+    {name: "lines",   short: "l", type: "Bool", default: false, doc: "count lines"},
+    {name: "words",   short: "w", type: "Bool", default: false, doc: "count words"},
+    {name: "encoding",            type: "String", default: "utf-8"}
+  ]
+}
+
+let args = Args.parse(Sys.argv, spec)
+puts(args.input)
+if args.lines { puts("lines: ...") }
+if args.words { puts("words: ...") }
+puts("encoding: {args.encoding}")
+```
+
+```
+$ ./wc-lite -l file.txt
+lines: ...
+encoding: utf-8
+
+$ ./wc-lite --help
+wc-lite - count lines and words
+
+Usage: wc-lite [options] <input>
+
+Arguments:
+  input    input file
+
+Options:
+  -l, --lines        count lines
+  -w, --words        count words
+      --encoding
+  -h, --help         show this help and exit
+```
+
+### サブコマンド
+
+`spec.subcommands` は `Array<Object>` で各要素が sub-spec (top-level と
+同形)。指定すると最初の positional トークンが subcommand 名として扱われ、
+parse 結果の `subcommand` フィールドに名前が入り、残りの引数は selected
+subcommand の spec に従って parse される:
+
+```culebra
+let spec = {
+  name: "git-lite",
+  subcommands: [
+    {name: "add",    args: [{name: "files",   type: "String", repeated: true}]},
+    {name: "commit", args: [{name: "message", short: "m", type: "String"}]}
+  ]
+}
+
+match Args.parse(Sys.argv, spec).subcommand {
+  "add"    => stage_files(args.files),
+  "commit" => commit_with_message(args.message)
+}
+```
+
+### エラーハンドリング
+
+`Args.parse` はエラー時に exit する。`Args.try_parse` は throw:
+
+```culebra
+let r = try { Args.try_parse(["--bogus"], spec) } catch e { e }
+# r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
+```
+
+throw 値の `kind` は次のいずれか:
+
+| `kind` | 意味 | 付随フィールド |
+|---|---|---|
+| `ArgParseError` | parse 失敗（不明オプション、型不一致、必須欠落、etc.） | `message` |
+| `ArgParseHelp` | `--help` / `-h` 指定 | `help`（help 文字列） |
+
+---
+
+## 10. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -908,7 +1033,7 @@ built-in 専用 runtime adapter が Object のキーを実行時に列挙
 
 ---
 
-## 10. 未収録（将来検討）
+## 11. 未収録（将来検討）
 
 ### 三角関数
 
