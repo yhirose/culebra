@@ -518,6 +518,140 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_start_of(
   return culebra::_time_detail::from_tm(tm, 0.0, utc != 0);
 }
 
+// --- Phase 2 _Time primitives: Long-nanos counterparts -------------------
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_now_nanos() {
+  using clock = std::chrono::system_clock;
+  auto d = clock::now().time_since_epoch();
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
+    const char* s, int64_t line, int64_t col) {
+  auto r = culebra::_time_detail::parse_iso_nanos(s ? s : "");
+  if (!r) {
+    throw culebra::CulebraError("ValueError",
+        std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}' at {}:{}.",
+                    s ? s : "", line, col),
+        line, col);
+  }
+  return *r;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
+    const char* s, const char* fmt, int64_t line, int64_t col) {
+  std::tm tm{};
+  if (!strptime(s ? s : "", fmt ? fmt : "", &tm)) {
+    throw culebra::CulebraError("ValueError",
+        std::format("_Time.parse_nanos: '{}' does not match '{}' at {}:{}.",
+                    s ? s : "", fmt ? fmt : "", line, col),
+        line, col);
+  }
+  tm.tm_isdst = -1;
+  auto t = std::mktime(&tm);
+  return culebra::_time_detail::combine_nanos(t, 0);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_time_iso_nanos(
+    int64_t nanos, int64_t utc) {
+  return _culebra_heap_str(culebra::_time_detail::format_iso_nanos(nanos, utc != 0));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_time_format_nanos(
+    int64_t nanos, const char* fmt, int64_t utc) {
+  return _culebra_heap_str(culebra::_time_detail::format_strftime_nanos(
+      nanos, fmt ? fmt : "", utc != 0));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_weekday_nanos(
+    int64_t nanos, int64_t utc) {
+  return culebra::_time_detail::iso_weekday(
+      culebra::_time_detail::to_tm_nanos(nanos, utc != 0));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_time_parts_nanos(int64_t nanos, int64_t utc) {
+  auto tm = culebra::_time_detail::to_tm_nanos(nanos, utc != 0);
+  auto sub = culebra::_time_detail::split_nanos(nanos).second;
+  auto* o = culebra_runtime_object_new();
+  auto put = [&](const char* k, int64_t v) {
+    culebra_runtime_object_set(o, k, /*mut=*/false, TAG_LONG, v, 0, 0);
+  };
+  put("year",       tm.tm_year + 1900);
+  put("month",      tm.tm_mon + 1);
+  put("day",        tm.tm_mday);
+  put("hour",       tm.tm_hour);
+  put("minute",     tm.tm_min);
+  put("second",     tm.tm_sec);
+  put("nanosecond", sub);
+  put("weekday",    culebra::_time_detail::iso_weekday(tm));
+  put("dayofyear",  tm.tm_yday + 1);
+  return o;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_parts_nanos(
+    JitObject* o, int64_t utc) {
+  auto get_long = [&](const char* k, int64_t fallback) -> int64_t {
+    auto* entry = _find_property(o, k);
+    if (!entry) return fallback;
+    return entry->value.tag == TAG_LONG ? entry->value.data : fallback;
+  };
+  std::tm tm{};
+  tm.tm_year = static_cast<int>(get_long("year", 1970) - 1900);
+  tm.tm_mon  = static_cast<int>(get_long("month", 1) - 1);
+  tm.tm_mday = static_cast<int>(get_long("day", 1));
+  tm.tm_hour = static_cast<int>(get_long("hour", 0));
+  tm.tm_min  = static_cast<int>(get_long("minute", 0));
+  tm.tm_sec  = static_cast<int>(get_long("second", 0));
+  auto sub_ns = get_long("nanosecond", 0);
+  return culebra::_time_detail::from_tm_nanos(tm, sub_ns, utc != 0);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_add_nanos(
+    int64_t nanos, int64_t years, int64_t months,
+    int64_t days, int64_t hours, int64_t minutes, int64_t seconds,
+    int64_t utc) {
+  auto tm = culebra::_time_detail::to_tm_nanos(nanos, utc != 0);
+  auto sub = culebra::_time_detail::split_nanos(nanos).second;
+  if (years || months) {
+    int target_year = tm.tm_year + 1900 + static_cast<int>(years);
+    int target_month_total = tm.tm_mon + static_cast<int>(months);
+    target_year += target_month_total / 12;
+    int target_month = target_month_total % 12;
+    if (target_month < 0) { target_month += 12; target_year -= 1; }
+    int last = culebra::_time_detail::days_in_month(target_year, target_month + 1);
+    int target_day = tm.tm_mday > last ? last : tm.tm_mday;
+    tm.tm_year = target_year - 1900;
+    tm.tm_mon = target_month;
+    tm.tm_mday = target_day;
+  }
+  tm.tm_mday += static_cast<int>(days);
+  tm.tm_hour += static_cast<int>(hours);
+  tm.tm_min  += static_cast<int>(minutes);
+  tm.tm_sec  += static_cast<int>(seconds);
+  return culebra::_time_detail::from_tm_nanos(tm, sub, utc != 0);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_start_of_nanos(
+    int64_t nanos, const char* unit, int64_t utc, int64_t line, int64_t col) {
+  auto tm = culebra::_time_detail::to_tm_nanos(nanos, utc != 0);
+  std::string_view u(unit ? unit : "");
+  if      (u == "year")   { tm.tm_mon = 0; tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+  else if (u == "month")  { tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+  else if (u == "day")    { tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+  else if (u == "hour")   { tm.tm_min = 0; tm.tm_sec = 0; }
+  else if (u == "minute") { tm.tm_sec = 0; }
+  else {
+    throw culebra::CulebraError(
+        "ValueError",
+        std::format("_Time.start_of_nanos: unknown unit '{}' "
+                    "(year/month/day/hour/minute) at {}:{}.",
+                    std::string(u), line, col),
+        line, col);
+  }
+  return culebra::_time_detail::from_tm_nanos(tm, 0, utc != 0);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_exit(int64_t code) {
   std::exit(static_cast<int>(code));
 }
@@ -1258,6 +1392,27 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    jit.builder_.getInt64Ty(),
                                    jit.builder_.getInt64Ty());
 
+  // _Time (Phase 2 nanos-based primitives).
+  {
+  auto i64 = jit.builder_.getInt64Ty();
+  jit.module_->getOrInsertFunction(rt::time_now_nanos, i64);
+  jit.module_->getOrInsertFunction(rt::time_from_iso_nanos, i64,
+                                   ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_parse_nanos, i64,
+                                   ptrTy, ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_iso_nanos, ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_format_nanos, ptrTy,
+                                   i64, ptrTy, i64);
+  jit.module_->getOrInsertFunction(rt::time_weekday_nanos, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_parts_nanos, ptrTy, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_from_parts_nanos, i64,
+                                   ptrTy, i64);
+  jit.module_->getOrInsertFunction(rt::time_add_nanos, i64,
+                                   i64, i64, i64, i64, i64, i64, i64, i64);
+  jit.module_->getOrInsertFunction(rt::time_start_of_nanos, i64,
+                                   i64, ptrTy, i64, i64, i64);
+  }
+
   // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
   // -> ptr signature; from takes a single Array (ptr, line, col);
   // shape is just (Tensor*) -> Array*.
@@ -1501,7 +1656,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (!JIT::arg_list_is_positional_only(argsAst)) {
     static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Time"};
     static const std::set<std::string_view> positional_only_ns = {
-        "Math", "IO", "FS", "Random", "Sys", "Tensor",
+        "Math", "IO", "FS", "Random", "Sys", "Tensor", "_Time",
     };
     if (positional_only_ns.contains(ns)) {
       throw culebra::CulebraError("SyntaxError",
@@ -2045,6 +2200,120 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
   }
 
+  if (ns == "_Time") {
+    // Positional-only Long-nanos primitives. All `utc` args are
+    // treated as i64 (Bool data extracts as 0/1).
+    auto& a = argsAst.nodes;
+    auto i64 = builder_.getInt64Ty();
+    auto eat_bool_i64 = [&](const peg::Ast& ast) -> llvm::Value* {
+      auto v = compile(ast);
+      auto b = builder_.CreateZExt(extract_data(v), i64);
+      emit_value_release(v);
+      return b;
+    };
+
+    if (method == "now_nanos" && a.empty()) {
+      auto n = emit_call(module_->getFunction(rt::time_now_nanos), {});
+      return make_long(n);
+    }
+    if (method == "monotonic" && a.empty()) {
+      auto d = emit_call(module_->getFunction(rt::time_monotonic), {});
+      return make_float(d);
+    }
+    if (method == "sleep" && a.size() == 1) {
+      auto secs = compile(*a[0]);
+      auto d = jit.coerce_to_double(secs);
+      emit_call(module_->getFunction(rt::time_sleep), {d});
+      emit_value_release(secs);
+      return make_nil();
+    }
+    if (method == "from_iso_nanos" && a.size() == 1) {
+      auto arg = compile(*a[0]);
+      emit_type_check(arg, "String", "_Time.from_iso_nanos argument");
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto n = emit_call(module_->getFunction(rt::time_from_iso_nanos),
+                         {p, line, col});
+      emit_value_release(arg);
+      return make_long(n);
+    }
+    if (method == "parse_nanos" && a.size() == 2) {
+      auto s = compile(*a[0]);
+      emit_type_check(s, "String", "_Time.parse_nanos argument");
+      auto f = compile(*a[1]);
+      emit_type_check(f, "String", "_Time.parse_nanos format");
+      auto sp = builder_.CreateIntToPtr(extract_data(s), ptrTy);
+      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
+      auto n = emit_call(module_->getFunction(rt::time_parse_nanos),
+                         {sp, fp, line, col});
+      emit_value_release(s);
+      emit_value_release(f);
+      return make_long(n);
+    }
+    if (method == "iso_nanos" && a.size() == 2) {
+      auto n = value_to_long(compile(*a[0]));
+      auto u = eat_bool_i64(*a[1]);
+      auto s = emit_call(module_->getFunction(rt::time_iso_nanos), {n, u});
+      return make_string(s);
+    }
+    if (method == "weekday_nanos" && a.size() == 2) {
+      auto n = value_to_long(compile(*a[0]));
+      auto u = eat_bool_i64(*a[1]);
+      auto w = emit_call(module_->getFunction(rt::time_weekday_nanos), {n, u});
+      return make_long(w);
+    }
+    if (method == "parts_nanos" && a.size() == 2) {
+      auto n = value_to_long(compile(*a[0]));
+      auto u = eat_bool_i64(*a[1]);
+      auto o = emit_call(module_->getFunction(rt::time_parts_nanos), {n, u});
+      return make_object(o);
+    }
+    if (method == "format_nanos" && a.size() == 3) {
+      auto n = value_to_long(compile(*a[0]));
+      auto f = compile(*a[1]);
+      emit_type_check(f, "String", "_Time.format_nanos format");
+      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
+      auto u = eat_bool_i64(*a[2]);
+      auto s = emit_call(module_->getFunction(rt::time_format_nanos),
+                         {n, fp, u});
+      emit_value_release(f);
+      return make_string(s);
+    }
+    if (method == "from_parts_nanos" && a.size() == 2) {
+      auto obj = compile(*a[0]);
+      emit_type_check(obj, "Object", "_Time.from_parts_nanos argument");
+      auto op = builder_.CreateIntToPtr(extract_data(obj), ptrTy);
+      auto u = eat_bool_i64(*a[1]);
+      auto n = emit_call(module_->getFunction(rt::time_from_parts_nanos),
+                         {op, u});
+      emit_value_release(obj);
+      return make_long(n);
+    }
+    if (method == "add_nanos" && a.size() == 8) {
+      auto n  = value_to_long(compile(*a[0]));
+      auto y  = value_to_long(compile(*a[1]));
+      auto mo = value_to_long(compile(*a[2]));
+      auto d  = value_to_long(compile(*a[3]));
+      auto h  = value_to_long(compile(*a[4]));
+      auto mi = value_to_long(compile(*a[5]));
+      auto se = value_to_long(compile(*a[6]));
+      auto u  = eat_bool_i64(*a[7]);
+      auto r = emit_call(module_->getFunction(rt::time_add_nanos),
+                         {n, y, mo, d, h, mi, se, u});
+      return make_long(r);
+    }
+    if (method == "start_of_nanos" && a.size() == 3) {
+      auto n = value_to_long(compile(*a[0]));
+      auto unit = compile(*a[1]);
+      emit_type_check(unit, "String", "_Time.start_of_nanos unit");
+      auto up = builder_.CreateIntToPtr(extract_data(unit), ptrTy);
+      auto u = eat_bool_i64(*a[2]);
+      auto r = emit_call(module_->getFunction(rt::time_start_of_nanos),
+                         {n, up, u, line, col});
+      emit_value_release(unit);
+      return make_long(r);
+    }
+  }
+
   if (ns == "Random") {
     if (method == "seed" && argsAst.nodes.size() == 1) {
       auto n = value_to_long(compile(*argsAst.nodes[0]));
@@ -2535,7 +2804,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",     "assert",
       "to_long", "to_float",  "to_string", "type_of",
-      "Math",    "IO",        "FS",        "Time",
+      "Math",    "IO",        "FS",        "Time",      "_Time",
       "Random",  "Sys",       "JSON"};
   return names.contains(name);
 }

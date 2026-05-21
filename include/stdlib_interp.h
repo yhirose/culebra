@@ -574,6 +574,158 @@ inline std::string format_strftime(double secs, const std::string& fmt, bool utc
   return std::string(buf, n);
 }
 
+// --- Long-nanos helpers (Phase 2 _Time primitives) ----------------------
+//
+// i64 nanoseconds since Unix epoch, covers ±292 years from 1970 — ample
+// for any practical use, and preserves full nanosecond precision (Float
+// Unix seconds only get ~400ns near current epoch).
+
+inline constexpr int64_t NS_PER_SEC = 1'000'000'000;
+
+// Floor-divide nanos into (whole_seconds, sub_seconds_nanos in [0, 1e9)).
+// Truncating `%` in C++ misbehaves for negative `nanos`, hence the fixup.
+inline std::pair<std::time_t, int64_t> split_nanos(int64_t nanos) {
+  auto secs = nanos / NS_PER_SEC;
+  auto sub  = nanos % NS_PER_SEC;
+  if (sub < 0) { secs -= 1; sub += NS_PER_SEC; }
+  return {static_cast<std::time_t>(secs), sub};
+}
+
+inline int64_t combine_nanos(std::time_t secs, int64_t sub_nanos) {
+  return static_cast<int64_t>(secs) * NS_PER_SEC + sub_nanos;
+}
+
+inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
+  auto t = split_nanos(nanos).first;
+  std::tm tm{};
+  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  return tm;
+}
+
+inline int64_t from_tm_nanos(std::tm& tm, int64_t sub_nanos, bool utc) {
+  tm.tm_isdst = -1;
+  auto t = utc ? timegm(&tm) : std::mktime(&tm);
+  return combine_nanos(t, sub_nanos);
+}
+
+inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
+  // Mirror parse_iso() but accumulate sub-second as i64 nanos with up to
+  // 9 digits of precision (trailing digits past 9 are discarded).
+  if (s.size() < 10) return std::nullopt;
+  std::tm tm{};
+  auto parse_int = [&](size_t off, int n, int& out) -> bool {
+    if (off + n > s.size()) return false;
+    int v = 0;
+    for (int i = 0; i < n; i++) {
+      auto c = s[off + i];
+      if (c < '0' || c > '9') return false;
+      v = v * 10 + (c - '0');
+    }
+    out = v;
+    return true;
+  };
+  int y, mo, d, h = 0, mi = 0, se = 0;
+  if (!parse_int(0, 4, y) || s[4] != '-' || !parse_int(5, 2, mo) ||
+      s[7] != '-' || !parse_int(8, 2, d)) {
+    return std::nullopt;
+  }
+  tm.tm_year = y - 1900;
+  tm.tm_mon = mo - 1;
+  tm.tm_mday = d;
+  int64_t sub_ns = 0;
+  long offset_seconds = 0;
+  bool has_tz = false;
+  size_t i = 10;
+  if (i < s.size() && (s[i] == 'T' || s[i] == ' ')) {
+    i++;
+    if (!parse_int(i, 2, h) || (i + 2 < s.size() && s[i + 2] != ':')) {
+      return std::nullopt;
+    }
+    i += 3;
+    if (!parse_int(i, 2, mi)) return std::nullopt;
+    i += 2;
+    if (i < s.size() && s[i] == ':') {
+      i++;
+      if (!parse_int(i, 2, se)) return std::nullopt;
+      i += 2;
+    }
+    if (i < s.size() && s[i] == '.') {
+      i++;
+      int digit_count = 0;
+      while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        if (digit_count < 9) {
+          sub_ns = sub_ns * 10 + (s[i] - '0');
+          digit_count++;
+        }
+        i++;
+      }
+      while (digit_count < 9) { sub_ns *= 10; digit_count++; }
+    }
+    if (i < s.size()) {
+      auto c = s[i];
+      if (c == 'Z') { has_tz = true; i++; }
+      else if (c == '+' || c == '-') {
+        int sign = (c == '+') ? 1 : -1;
+        i++;
+        int oh, om = 0;
+        if (!parse_int(i, 2, oh)) return std::nullopt;
+        i += 2;
+        if (i < s.size() && s[i] == ':') i++;
+        if (i + 2 <= s.size() && s[i] >= '0' && s[i] <= '9') {
+          if (!parse_int(i, 2, om)) return std::nullopt;
+          i += 2;
+        }
+        offset_seconds = sign * (oh * 3600 + om * 60);
+        has_tz = true;
+      }
+    }
+  }
+  if (i != s.size()) return std::nullopt;
+  tm.tm_hour = h;
+  tm.tm_min = mi;
+  tm.tm_sec = se;
+  tm.tm_isdst = 0;
+  // Date-only / tz-less → treat as UTC (deterministic across hosts).
+  std::time_t t = timegm(&tm);
+  if (has_tz) t -= offset_seconds;
+  return combine_nanos(t, sub_ns);
+}
+
+inline std::string format_iso_nanos(int64_t nanos, bool utc) {
+  auto [t, sub] = split_nanos(nanos);
+  std::tm tm{};
+  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  std::string tz_str = "Z";
+  if (!utc) {
+    auto offset = tm.tm_gmtoff;
+    int sign = offset < 0 ? -1 : 1;
+    long abs_off = std::abs(static_cast<long>(offset));
+    tz_str = std::format("{}{:02d}:{:02d}",
+                         sign < 0 ? '-' : '+',
+                         static_cast<int>(abs_off / 3600),
+                         static_cast<int>((abs_off % 3600) / 60));
+  }
+  if (sub == 0) {
+    return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}{}",
+                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                       tm.tm_hour, tm.tm_min, tm.tm_sec, tz_str);
+  }
+  return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:09d}{}",
+                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec,
+                     static_cast<int>(sub), tz_str);
+}
+
+inline std::string format_strftime_nanos(int64_t nanos,
+                                         const std::string& fmt, bool utc) {
+  auto t = split_nanos(nanos).first;
+  std::tm tm{};
+  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  char buf[256];
+  auto n = std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
+  return std::string(buf, n);
+}
+
 }  // namespace _time_detail
 
 inline Value make_time_namespace() {
@@ -839,6 +991,248 @@ inline Value make_time_namespace() {
   ns.initialize("HOUR",   Value(3600.0),    false);
   ns.initialize("DAY",    Value(86400.0),   false);
   ns.initialize("WEEK",   Value(604800.0),  false);
+
+  return Value(std::move(ns));
+}
+
+// `_Time`: thin Long-nanos primitives that the user-facing `Time` module
+// (Instant / Duration classes, defined in culebra source — Phase 2-2)
+// will wrap. Underscore prefix marks it as internal: ABI for the
+// wrapper, not a stable surface for direct use.
+//
+// All functions are positional-only so the JIT path stays simple.
+inline Value make_time_primitives_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  // _Time.now_nanos() -> Long (Unix epoch nanos)
+  ns.initialize("now_nanos",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            using clock = std::chrono::system_clock;
+            auto d = clock::now().time_since_epoch();
+            auto ns_count = std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
+            return Value(static_cast<long>(ns_count));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.monotonic() -> Float (seconds since first call / process start)
+  ns.initialize("monotonic",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            using clock = std::chrono::steady_clock;
+            static const auto t0 = clock::now();
+            auto d = clock::now() - t0;
+            return Value(std::chrono::duration<double>(d).count());
+          },
+          "Float"sv)),
+      false);
+
+  // _Time.sleep(secs: Float) -> Nil
+  ns.initialize("sleep",
+      Value(FunctionValue({{"secs", false, "Float"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto secs = env->get("secs").to_double_coerce();
+            if (secs > 0) {
+              std::this_thread::sleep_for(std::chrono::duration<double>(secs));
+            }
+            return Value();
+          })),
+      false);
+
+  // _Time.from_iso_nanos(s: String) -> Long
+  ns.initialize("from_iso_nanos",
+      Value(FunctionValue({{"s", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& s = env->get("s").to_string();
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto r = _time_detail::parse_iso_nanos(s);
+            if (!r) _time_detail::throw_value(
+                std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'", s),
+                line, col);
+            return Value(static_cast<long>(*r));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.parse_nanos(s, fmt) -> Long (strftime)
+  ns.initialize("parse_nanos",
+      Value(FunctionValue(
+          {{"s", false, "String"sv}, {"fmt", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& s = env->get("s").to_string();
+            const auto& fmt = env->get("fmt").to_string();
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::tm tm{};
+            if (!strptime(s.c_str(), fmt.c_str(), &tm)) {
+              _time_detail::throw_value(
+                  std::format("_Time.parse_nanos: '{}' does not match '{}'", s, fmt),
+                  line, col);
+            }
+            tm.tm_isdst = -1;
+            auto t = std::mktime(&tm);
+            return Value(static_cast<long>(_time_detail::combine_nanos(t, 0)));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.iso_nanos(nanos: Long, utc: Bool) -> String
+  ns.initialize("iso_nanos",
+      Value(FunctionValue(
+          {{"nanos", false, "Long"sv}, {"utc", false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            auto utc = env->get("utc").to_bool();
+            return Value(_time_detail::format_iso_nanos(nanos, utc));
+          },
+          "String"sv)),
+      false);
+
+  // _Time.format_nanos(nanos, fmt, utc) -> String
+  ns.initialize("format_nanos",
+      Value(FunctionValue(
+          {{"nanos", false, "Long"sv},
+           {"fmt", false, "String"sv},
+           {"utc", false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            const auto& fmt = env->get("fmt").to_string();
+            auto utc = env->get("utc").to_bool();
+            return Value(_time_detail::format_strftime_nanos(nanos, fmt, utc));
+          },
+          "String"sv)),
+      false);
+
+  // _Time.parts_nanos(nanos, utc) -> Object
+  ns.initialize("parts_nanos",
+      Value(FunctionValue(
+          {{"nanos", false, "Long"sv}, {"utc", false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            auto utc = env->get("utc").to_bool();
+            auto tm = _time_detail::to_tm_nanos(nanos, utc);
+            auto sub = _time_detail::split_nanos(nanos).second;
+            ObjectValue p;
+            p.initialize("year",      Value(static_cast<long>(tm.tm_year + 1900)), false);
+            p.initialize("month",     Value(static_cast<long>(tm.tm_mon + 1)),     false);
+            p.initialize("day",       Value(static_cast<long>(tm.tm_mday)),        false);
+            p.initialize("hour",      Value(static_cast<long>(tm.tm_hour)),        false);
+            p.initialize("minute",    Value(static_cast<long>(tm.tm_min)),         false);
+            p.initialize("second",    Value(static_cast<long>(tm.tm_sec)),         false);
+            p.initialize("nanosecond",Value(static_cast<long>(sub)),               false);
+            p.initialize("weekday",   Value(_time_detail::iso_weekday(tm)),        false);
+            p.initialize("dayofyear", Value(static_cast<long>(tm.tm_yday + 1)),    false);
+            return Value(std::move(p));
+          },
+          "Object"sv)),
+      false);
+
+  // _Time.from_parts_nanos(p: Object, utc: Bool) -> Long
+  ns.initialize("from_parts_nanos",
+      Value(FunctionValue(
+          {{"p", false, "Object"sv}, {"utc", false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& obj = env->get("p").to_object();
+            auto utc = env->get("utc").to_bool();
+            auto get = [&](const char* k, long fallback) -> long {
+              if (obj.has(k)) return obj.get(k).to_long();
+              return fallback;
+            };
+            std::tm tm{};
+            tm.tm_year = static_cast<int>(get("year", 1970) - 1900);
+            tm.tm_mon  = static_cast<int>(get("month", 1) - 1);
+            tm.tm_mday = static_cast<int>(get("day", 1));
+            tm.tm_hour = static_cast<int>(get("hour", 0));
+            tm.tm_min  = static_cast<int>(get("minute", 0));
+            tm.tm_sec  = static_cast<int>(get("second", 0));
+            auto sub_ns = get("nanosecond", 0);
+            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, sub_ns, utc)));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.weekday_nanos(nanos, utc) -> Long (0=Mon..6=Sun)
+  ns.initialize("weekday_nanos",
+      Value(FunctionValue(
+          {{"nanos", false, "Long"sv}, {"utc", false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            auto utc = env->get("utc").to_bool();
+            return Value(_time_detail::iso_weekday(_time_detail::to_tm_nanos(nanos, utc)));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.add_nanos(nanos, years, months, days, hours, minutes, seconds, utc) -> Long
+  ns.initialize("add_nanos",
+      Value(FunctionValue(
+          {{"nanos",   false, "Long"sv},
+           {"years",   false, "Long"sv},
+           {"months",  false, "Long"sv},
+           {"days",    false, "Long"sv},
+           {"hours",   false, "Long"sv},
+           {"minutes", false, "Long"sv},
+           {"seconds", false, "Long"sv},
+           {"utc",     false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            auto utc = env->get("utc").to_bool();
+            auto tm = _time_detail::to_tm_nanos(nanos, utc);
+            auto sub = _time_detail::split_nanos(nanos).second;
+            long years_add  = env->get("years").to_long();
+            long months_add = env->get("months").to_long();
+            if (years_add || months_add) {
+              int target_year = tm.tm_year + 1900 + static_cast<int>(years_add);
+              int target_month_total = tm.tm_mon + static_cast<int>(months_add);
+              target_year += target_month_total / 12;
+              int target_month = target_month_total % 12;
+              if (target_month < 0) { target_month += 12; target_year -= 1; }
+              int last = _time_detail::days_in_month(target_year, target_month + 1);
+              int target_day = tm.tm_mday > last ? last : tm.tm_mday;
+              tm.tm_year = target_year - 1900;
+              tm.tm_mon = target_month;
+              tm.tm_mday = target_day;
+            }
+            tm.tm_mday += static_cast<int>(env->get("days").to_long());
+            tm.tm_hour += static_cast<int>(env->get("hours").to_long());
+            tm.tm_min  += static_cast<int>(env->get("minutes").to_long());
+            tm.tm_sec  += static_cast<int>(env->get("seconds").to_long());
+            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, sub, utc)));
+          },
+          "Long"sv)),
+      false);
+
+  // _Time.start_of_nanos(nanos, unit, utc) -> Long
+  ns.initialize("start_of_nanos",
+      Value(FunctionValue(
+          {{"nanos", false, "Long"sv},
+           {"unit",  false, "String"sv},
+           {"utc",   false, "Bool"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto nanos = env->get("nanos").to_long();
+            const auto& unit = env->get("unit").to_string();
+            auto utc = env->get("utc").to_bool();
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto tm = _time_detail::to_tm_nanos(nanos, utc);
+            if (unit == "year")        { tm.tm_mon = 0; tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+            else if (unit == "month")  { tm.tm_mday = 1; tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+            else if (unit == "day")    { tm.tm_hour = 0; tm.tm_min = 0; tm.tm_sec = 0; }
+            else if (unit == "hour")   { tm.tm_min = 0; tm.tm_sec = 0; }
+            else if (unit == "minute") { tm.tm_sec = 0; }
+            else {
+              _time_detail::throw_value(
+                  std::format("_Time.start_of_nanos: unknown unit '{}' "
+                              "(year/month/day/hour/minute)", unit),
+                  line, col);
+            }
+            return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, 0, utc)));
+          },
+          "Long"sv)),
+      false);
 
   return Value(std::move(ns));
 }
@@ -1639,6 +2033,7 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
   env.initialize("Time", make_time_namespace(), false);
+  env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
   env.initialize("Tensor", make_tensor_namespace(), false);

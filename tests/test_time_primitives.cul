@@ -1,0 +1,113 @@
+# _Time primitives — Long-nanos building blocks for the user-facing
+# Time module (Instant/Duration classes, Phase 2-2). These verify that
+# the interpreter and JIT paths produce the same Long-nanos values for
+# every primitive.
+
+# --- now_nanos / monotonic / sleep ---
+let now = _Time.now_nanos()
+assert(now > 1700000000000000000)        # post-2023 in nanos
+assert(now < 2147483648000000000)         # well below i64 max (year 2038 not relevant; ample)
+
+let m1 = _Time.monotonic()
+_Time.sleep(0.001)
+let m2 = _Time.monotonic()
+assert(m2 >= m1)
+
+# --- ISO 8601 round-trip with full ns precision ---
+let t = _Time.from_iso_nanos("2026-05-21T15:30:45.123456789Z")
+let s = _Time.iso_nanos(t, true)
+assert(s == "2026-05-21T15:30:45.123456789Z")
+
+# Date-only / sub-second-less inputs.
+let t0 = _Time.from_iso_nanos("2026-05-21T15:30:45Z")
+assert(_Time.iso_nanos(t0, true) == "2026-05-21T15:30:45Z")
+assert(t - t0 == 123456789)
+
+# Offset handling: +09:00 is 9h earlier in UTC than the same wall clock.
+let t_jp = _Time.from_iso_nanos("2026-05-21T15:30:00+09:00")
+let t_utc = _Time.from_iso_nanos("2026-05-21T15:30:00Z")
+assert(t_utc - t_jp == 9 * 3600 * 1000000000)
+
+# Date-only treated as UTC midnight (deterministic across hosts).
+let date_only = _Time.from_iso_nanos("2026-05-21")
+let utc_mid = _Time.from_iso_nanos("2026-05-21T00:00:00Z")
+assert(date_only == utc_mid)
+
+# --- parts_nanos / from_parts_nanos round-trip ---
+let p = _Time.parts_nanos(t, true)
+assert(p.year == 2026)
+assert(p.month == 5)
+assert(p.day == 21)
+assert(p.hour == 15)
+assert(p.minute == 30)
+assert(p.second == 45)
+assert(p.nanosecond == 123456789)
+assert(p.weekday == 3)                   # Thursday — ISO weekday 0=Mon..6=Sun
+assert(p.dayofyear == 141)
+
+let composed = _Time.from_parts_nanos(
+  {year: 2026, month: 5, day: 21, hour: 15, minute: 30, second: 45, nanosecond: 123456789},
+  true)
+assert(composed == t)
+
+# from_parts_nanos with missing fields defaults to epoch components.
+let only_date = _Time.from_parts_nanos({year: 2026, month: 5, day: 21}, true)
+assert(only_date == utc_mid)
+
+# --- weekday_nanos ---
+assert(_Time.weekday_nanos(t, true) == 3)
+
+# --- add_nanos: calendar arithmetic ---
+# +1 year, same month/day
+let plus_year = _Time.add_nanos(t, 1, 0, 0, 0, 0, 0, true)
+let py = _Time.parts_nanos(plus_year, true)
+assert(py.year == 2027 && py.month == 5 && py.day == 21)
+assert(py.nanosecond == 123456789)        # sub-second preserved
+
+# +1 month: month-end clamp (2024-01-31 → 2024-02-29)
+let jan31 = _Time.from_iso_nanos("2024-01-31T00:00:00Z")
+let feb_end = _Time.add_nanos(jan31, 0, 1, 0, 0, 0, 0, true)
+let fp = _Time.parts_nanos(feb_end, true)
+assert(fp.year == 2024 && fp.month == 2 && fp.day == 29)
+
+# Non-leap clamp (2026-01-31 → 2026-02-28)
+let jan31_26 = _Time.from_iso_nanos("2026-01-31T00:00:00Z")
+let feb28 = _Time.add_nanos(jan31_26, 0, 1, 0, 0, 0, 0, true)
+let fp2 = _Time.parts_nanos(feb28, true)
+assert(fp2.year == 2026 && fp2.month == 2 && fp2.day == 28)
+
+# Uniform field propagation (days adds DAY * n nanoseconds modulo DST).
+let plus_5d = _Time.add_nanos(t, 0, 0, 5, 0, 0, 0, true)
+assert(plus_5d - t == 5 * 86400 * 1000000000)
+
+# Negative months: 2026-03-15 - 1 month = 2026-02-15
+let mar15 = _Time.from_iso_nanos("2026-03-15T00:00:00Z")
+let prev = _Time.add_nanos(mar15, 0, -1, 0, 0, 0, 0, true)
+let pp = _Time.parts_nanos(prev, true)
+assert(pp.year == 2026 && pp.month == 2 && pp.day == 15)
+
+# --- start_of_nanos ---
+let sod_day = _Time.start_of_nanos(t, "day", true)
+let sd = _Time.parts_nanos(sod_day, true)
+assert(sd.year == 2026 && sd.month == 5 && sd.day == 21)
+assert(sd.hour == 0 && sd.minute == 0 && sd.second == 0 && sd.nanosecond == 0)
+
+let sod_year = _Time.start_of_nanos(t, "year", true)
+let sy = _Time.parts_nanos(sod_year, true)
+assert(sy.year == 2026 && sy.month == 1 && sy.day == 1)
+assert(sy.hour == 0 && sy.minute == 0 && sy.second == 0)
+
+let sod_hour = _Time.start_of_nanos(t, "hour", true)
+let sh = _Time.parts_nanos(sod_hour, true)
+assert(sh.hour == 15 && sh.minute == 0 && sh.second == 0 && sh.nanosecond == 0)
+
+# --- format_nanos (strftime) ---
+assert(_Time.format_nanos(t, "%Y-%m-%d", true) == "2026-05-21")
+assert(_Time.format_nanos(t, "%H:%M:%S", true) == "15:30:45")
+
+# --- parse_nanos ---
+let parsed = _Time.parse_nanos("2026-05-21 15:30:45", "%Y-%m-%d %H:%M:%S")
+# parse_nanos uses local mktime; compare via local parts to avoid tz shift.
+let pp_local = _Time.parts_nanos(parsed, false)
+assert(pp_local.year == 2026 && pp_local.month == 5 && pp_local.day == 21)
+assert(pp_local.hour == 15 && pp_local.minute == 30 && pp_local.second == 45)
