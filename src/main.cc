@@ -204,14 +204,22 @@ int run_build(const BuildOptions& opts) {
                                            : "-Wl,--gc-sections";
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
+  // LLVM's TargetMachine emits a non-PIC object by default. Modern
+  // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
+  // PIE executable unconditionally, which then refuses the non-PIC
+  // .o with `failed to set dynamic section sizes: bad value`.
+  // Force `-no-pie` on non-macOS to match the object's reloc model.
+  // (macOS clang/ld take the PIE choice from the .o; no override
+  // needed.)
+  const char* no_pie = target_is_macho ? "" : "-no-pie";
 
   std::string extra;
   if (cross) extra += std::format(" --target={}", opts.target);
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", opts.sysroot);
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} -o {}", cc, extra,
-                                obj, lib, dead_strip, libcxx, blas,
+  std::string cmd = std::format("{}{} {} {} {} {} {} {} -o {}", cc, extra,
+                                obj, lib, dead_strip, no_pie, libcxx, blas,
                                 opts.output);
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
