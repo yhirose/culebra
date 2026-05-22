@@ -198,6 +198,52 @@ env->initialize("custom",
 `include/stdlib_interp.h` has many examples of the raw form (Math.abs,
 IO.print, Random.uniform, ...).
 
+## AOT runtime archive (`libculebra_rt.a`)
+
+The header-only path above includes every `culebra_runtime_*` helper
+as `inline` into the embedder's TUs — fine for one binary, but if you
+also want to **ship binaries produced by `culebra build`** (the AOT
+mode, see [`binary_build.md`](binary_build.md)), those need a static
+archive of the same helpers without the LLVM dependency. CMake emits
+two such archives when configured with `-DCULEBRA_ENABLE_JIT=ON`:
+
+| Archive | Includes |
+|---|---|
+| `libculebra_rt.a` | Every stdlib runtime helper (Math / IO / FS / Time / Random / Sys / Tensor / JSON) |
+| `libculebra_rt_no_tensor.a` | Tensor entry points stubbed to abort — drops the BLAS / Accelerate link from your binary |
+
+`culebra build` picks between them automatically: if the source AST
+references the `Tensor` namespace, the full archive is used;
+otherwise the no-tensor variant. The smaller fizzbuzz-class binary
+ends up around 350 KB instead of 1.2 MB.
+
+### Embedders that bundle the AOT pathway
+
+If you want your own embedder to also drive `culebra::JIT::build_object`
+for AOT compilation, link in the same archive and tell `culebra build`
+where to find it via `CULEBRA_RT_LIBPATH` (set at compile time by
+CMake — see [`CMakeLists.txt`](../CMakeLists.txt) for the macro
+definition).
+
+For most embedders the archive is irrelevant — header-only inclusion
+is the supported path. The archive only matters for the AOT subprocess
+that links the standalone binary.
+
+### `CULEBRA_RT_DEFINE_RUNTIME`
+
+The macro `CULEBRA_RT_DEFINE_RUNTIME` switches every
+`CULEBRA_RT_INLINE`-tagged helper from `inline` to `extern "C"` so
+the archive's TU is the single owner of those symbols. Header-only
+embedders **must not** define it; the AOT archive's source
+(`src/runtime/culebra_rt.cc`) is the only TU that should.
+
+### Cross-compile
+
+`culebra build --target=<triple>` is currently host-archive only —
+the archive on disk is the host's. For cross-targets, supply a
+matching archive via `--rt-lib=<path>` (per-target auto-build is on
+the roadmap, see `docs/binary_build.md`).
+
 ## Smoke tests
 
 The repository includes two small samples that exercise the contract:

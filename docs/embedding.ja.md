@@ -202,6 +202,51 @@ env->initialize("custom",
 raw 形式の実例は `include/stdlib_interp.h` の Math.abs / IO.print /
 Random.uniform 等に多数あります。
 
+## AOT 用 runtime archive (`libculebra_rt.a`)
+
+ヘッダオンリー埋め込みでは `culebra_runtime_*` ヘルパが各 TU に
+`inline` 展開される — ひとつのバイナリなら OK だが、**`culebra build`
+で生成した AOT バイナリも配布したい場合** (詳細は
+[`binary_build.ja.md`](binary_build.ja.md))、LLVM 依存なしの同じヘル
+パ群を **static archive** として持つ必要がある。CMake は
+`-DCULEBRA_ENABLE_JIT=ON` で 2 種類の archive を出力する:
+
+| Archive | 含むもの |
+|---|---|
+| `libculebra_rt.a` | 全 stdlib runtime ヘルパ (Math / IO / FS / Time / Random / Sys / Tensor / JSON) |
+| `libculebra_rt_no_tensor.a` | Tensor エントリポイントを abort スタブ化 — BLAS / Accelerate の link を bin から落とせる |
+
+`culebra build` は AST スキャンで `Tensor` namespace 参照があれば前
+者、なければ後者を自動選択。fizzbuzz 規模のバイナリは 1.2 MB → 350 KB
+に縮む。
+
+### AOT 経路を組み込む embedder
+
+自分の embedder からも `culebra::JIT::build_object` で AOT コンパイ
+ルを駆動したい場合は、同じ archive を link して `culebra build` に
+位置を伝える: `CULEBRA_RT_LIBPATH` を compile-time に渡す
+(CMake は [`CMakeLists.txt`](../CMakeLists.txt) でこの define を自
+動セットしている)。
+
+通常の embedder は archive とは無関係 — ヘッダオンリー include がサ
+ポート経路。archive は AOT subprocess が standalone バイナリを link
+する時だけ必要。
+
+### `CULEBRA_RT_DEFINE_RUNTIME`
+
+`CULEBRA_RT_DEFINE_RUNTIME` マクロは、`CULEBRA_RT_INLINE` タグ付き
+ヘルパを `inline` から `extern "C"` に切り替えて archive 側 TU が唯一
+の owner になるようにする。ヘッダオンリー embedder は **絶対に
+define してはいけない**。AOT archive の生成元 TU
+(`src/runtime/culebra_rt.cc`) のみで define されるべき。
+
+### クロスコンパイル
+
+`culebra build --target=<triple>` 現状はホスト用 archive のみ生成済
+み。target 向けには `--rt-lib=<path>` で対応する archive を別途指
+定する (target ごとの auto-build は roadmap、`docs/binary_build.ja.md`
+参照)。
+
 ## スモークテスト
 
 リポジトリには契約を検証する小さなサンプルが 2 つ含まれます:
