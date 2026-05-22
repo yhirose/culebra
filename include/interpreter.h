@@ -3281,7 +3281,13 @@ inline void setup_core_globals(Environment& env) {
       false);
 }
 
-struct Interpreter {
+// Held by shared_ptr so FunctionValue / multifn dispatcher / class
+// constructor / defer lambdas can keep the Interpreter alive past the
+// stack-scope of `culebra::interpret`. Embedders that build a
+// FunctionValue inside `interpret(ast, env, ...)` and then invoke it
+// later through `culebra::call(env, name, args)` rely on this — the
+// captured `Interpreter*` would otherwise dangle.
+struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
   struct MultiMethod {
@@ -3781,16 +3787,17 @@ struct Interpreter {
                             std::string_view return_type,
                             std::shared_ptr<Environment> env) {
     auto params = parse_parameters(params_ast, env);
+    auto self = shared_from_this();
     return Value(FunctionValue(
         params,
-        [=, this](std::shared_ptr<Environment> callEnv) {
+        [self = std::move(self), body, env](std::shared_ptr<Environment> callEnv) {
           callEnv->append_outer(env);
           try {
-            auto r = eval(*body, callEnv);
-            run_deferred(callEnv);
+            auto r = self->eval(*body, callEnv);
+            self->run_deferred(callEnv);
             return r;
           } catch (...) {
-            run_deferred(callEnv);
+            self->run_deferred(callEnv);
             throw;
           }
         },
@@ -3892,13 +3899,14 @@ struct Interpreter {
       // pass through to method dispatch (Julia-flavored kwsorter:
       // multimethod picks on positional types, then the picked
       // method's signature absorbs kwargs / splats).
+      auto self = shared_from_this();
       auto dispatcher = Value(FunctionValue(
           {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
-          [this, methods, name_owned](std::shared_ptr<Environment> callEnv) {
+          [self = std::move(self), methods, name_owned](std::shared_ptr<Environment> callEnv) {
             auto line = callEnv->get("__LINE__").to_long();
             auto col = callEnv->get("__COLUMN__").to_long();
             const auto& args = *callEnv->get("__ARGS__").to_array().values;
-            auto pick = pick_method(*methods, args);
+            auto pick = self->pick_method(*methods, args);
             if (pick.status == PickResult::NoMatch) {
               throw CulebraError("DispatchError", std::format(
                   "no matching method for `{}` at {}:{}.", name_owned, line,
@@ -3915,7 +3923,7 @@ struct Interpreter {
                 args.size(),
                 {static_cast<size_t>(line), static_cast<size_t>(col)});
             call_args.splats.push_back(callEnv->get("__KWARGS__"));
-            return invoke_user_function_with_args(
+            return self->invoke_user_function_with_args(
                 (*methods)[pick.idx].body, callEnv, std::move(call_args),
                 static_cast<size_t>(line), static_cast<size_t>(col));
           }));
@@ -3989,20 +3997,22 @@ struct Interpreter {
     if (new_ast) {
       auto ctor_params = parse_parameters(*new_ast->nodes[1], env);
       auto body = new_ast->nodes[2];
+      auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,
-          [=, this](std::shared_ptr<Environment> callEnv) {
+          [self = std::move(self), body, env, build_instance, promote_all_mut](
+              std::shared_ptr<Environment> callEnv) {
             callEnv->append_outer(env);
             callEnv->initialize("this", Value(build_instance()), true);
             try {
-              eval(*body, callEnv);
-              run_deferred(callEnv);
+              self->eval(*body, callEnv);
+              self->run_deferred(callEnv);
             } catch (const ReturnValue&) {
               // Explicit `return` inside `new` is fine — we still hand
               // back `this`; the returned value is discarded.
-              run_deferred(callEnv);
+              self->run_deferred(callEnv);
             } catch (...) {
-              run_deferred(callEnv);
+              self->run_deferred(callEnv);
               throw;
             }
             auto this_val = callEnv->get("this");
@@ -5186,7 +5196,8 @@ struct Interpreter {
     // weakly so the scope can be destroyed without a cycle.
     auto body = ast.nodes[0];
     std::weak_ptr<Environment> wenv = env;
-    env->deferred.push_back([this, body, wenv]() {
+    auto self = shared_from_this();
+    env->deferred.push_back([self = std::move(self), body, wenv]() {
       auto e = wenv.lock();
       if (!e) return;
       auto scopeEnv = make_scope(e);
@@ -5195,7 +5206,7 @@ struct Interpreter {
       // (the defer body compiles to its own LLVM function whose `ret`
       // stays local).
       try {
-        eval(*body, scopeEnv);
+        self->eval(*body, scopeEnv);
       } catch (const ReturnValue&) {}
     });
   }
@@ -5218,7 +5229,11 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
   };
   try {
     check_shadow_static(*ast);
-    val = Interpreter(debugger).eval(*ast, env);
+    // Held by shared_ptr so FunctionValues created during eval (which
+    // capture `shared_from_this()`) can keep the Interpreter alive
+    // past this call's stack scope — see comment on `Interpreter`.
+    auto interp = std::make_shared<Interpreter>(debugger);
+    val = interp->eval(*ast, env);
     flush_top_defers();
     return true;
   } catch (const ReturnValue& r) {
