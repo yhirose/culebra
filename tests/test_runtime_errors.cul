@@ -3,32 +3,22 @@
 # Each case here pins the expected `kind` for one of the throw sites
 # converted in shared.h / interpreter.h / tensor.h / stdlib_interp.h.
 
-let expect = fn (label: String, kind: String, e) {
-  if e.kind == kind {
-    puts("  PASS [{label}] {kind}")
-  } else {
-    puts("  FAIL [{label}] expected {kind} got {e.kind}: {e.message}")
-  }
-}
-
-puts("== runtime error catch tests ==")
-
 # --- TypeError ---
 let r1 = try { let _ = 'a' < 1; nil } catch e { e }
-expect('compare String<Long', 'TypeError', r1)
+assert(r1.kind == 'TypeError')
 
 let r2 = try { let _ = 1 + 'b'; nil } catch e { e }
-expect("arith Long+String", 'TypeError', r2)
+assert(r2.kind == 'TypeError')
 
 # --- ZeroDivisionError ---
 let r3 = try { let _ = 1 / 0; nil } catch e { e }
-expect('1/0 Long', 'ZeroDivisionError', r3)
+assert(r3.kind == 'ZeroDivisionError')
 
 let r4 = try { let _ = 1.0 / 0.0; nil } catch e { e }
-expect('1.0/0.0 Float', 'ZeroDivisionError', r4)
+assert(r4.kind == 'ZeroDivisionError')
 
 let r5 = try { let _ = 1 % 0; nil } catch e { e }
-expect('1%0', 'ZeroDivisionError', r5)
+assert(r5.kind == 'ZeroDivisionError')
 
 # Note: NameError ("undefined variable") and ShadowError are detected
 # at compile time on both backends — the whole module is rejected
@@ -36,14 +26,14 @@ expect('1%0', 'ZeroDivisionError', r5)
 
 # --- IndexError ---
 let r7 = try { let a = [1, 2, 3]; let _ = a[10]; nil } catch e { e }
-expect('arr[10]', 'IndexError', r7)
+assert(r7.kind == 'IndexError')
 
 # --- DropContractError ---
 let r9 = try { let _ = { drop: 42 }; nil } catch e { e }
-expect('drop=42', 'DropContractError', r9)
+assert(r9.kind == 'DropContractError')
 
 let r10 = try { let _ = { drop: fn (x) { x } }; nil } catch e { e }
-expect('drop with arg', 'DropContractError', r10)
+assert(r10.kind == 'DropContractError')
 
 # Note: ImmutableError on plain variables is interp-only — JIT does not
 # track per-variable mutability. ImmutableError on object properties
@@ -56,7 +46,7 @@ let r11b = try {
   o['x'] = 2
   nil
 } catch e { e }
-expect("obj['x']= on immutable", 'ImmutableError', r11b)
+assert(r11b.kind == 'ImmutableError')
 
 # Compound subscript-set on a missing key raises KeyError on both
 # backends (interp's `obj.has(key)` precondition + JIT's object_get_any
@@ -66,7 +56,7 @@ let r11c = try {
   o['missing'] += 1
   nil
 } catch e { e }
-expect("obj['k']+= on missing", 'KeyError', r11c)
+assert(r11c.kind == 'KeyError')
 
 # Compound subscript-set on an immutable shape slot raises
 # ImmutableError — the write back via object_set_any honors mut.
@@ -75,7 +65,7 @@ let r11d = try {
   o['x'] += 1
   nil
 } catch e { e }
-expect("obj['x']+= on immutable", 'ImmutableError', r11d)
+assert(r11d.kind == 'ImmutableError')
 
 # Subscript-set on an immutable Tuple-keyed sidecar slot also raises
 # ImmutableError — exercises the throw path of object_set_any that
@@ -85,33 +75,30 @@ let r11e = try {
   m[(1, 2)] = 20
   nil
 } catch e { e }
-expect("obj[(1,2)]= on immutable", 'ImmutableError', r11e)
+assert(r11e.kind == 'ImmutableError')
 
 # --- ValueError ---
 let r12 = try { let _ = [].min(); nil } catch e { e }
-expect('empty Array.min', 'ValueError', r12)
+assert(r12.kind == 'ValueError')
 
 # JSON.parse errors carry the JSON-internal line:col (1-based, within
 # the parsed string — not the caller's source line). The structured
 # Error exposes the position via e.line / e.col.
 let r_json = try { JSON.parse('{"a": ,}'); nil } catch e { e }
-expect('JSON.parse bad value', 'ValueError', r_json)
-if r_json.line != 1 || r_json.col != 7 {
-  puts("  FAIL [JSON.parse line:col] expected 1:7 got {r_json.line}:{r_json.col}")
-} else {
-  puts('  PASS [JSON.parse line:col] 1:7')
-}
+assert(r_json.kind == 'ValueError')
+assert(r_json.line == 1)
+assert(r_json.col == 7)
 
 # JSON.stringify(lines: true) requires Array/Tuple/Set
 let r_json2 = try { JSON.stringify({a: 1}, lines: true); nil } catch e { e }
-expect('lines on Object', 'TypeError', r_json2)
+assert(r_json2.kind == 'TypeError')
 
 # lines + indent is incompatible
 let r_json3 = try {
   JSON.stringify([1, 2], lines: true, indent: 2)
   nil
 } catch e { e }
-expect('lines+indent', 'TypeError', r_json3)
+assert(r_json3.kind == 'TypeError')
 
 # Note: `o.b += 1` on a missing property yields different kinds across
 # backends — interp explicitly checks `obj.has(name)` and throws
@@ -120,34 +107,31 @@ expect('lines+indent', 'TypeError', r_json3)
 
 # --- AssertionError ---
 let r14 = try { assert(false); nil } catch e { e }
-expect('assert false', 'AssertionError', r14)
+assert(r14.kind == 'AssertionError')
 
 # --- Runtime helpers (throwing stdlib functions) ---
 # Verify the JIT sweep that routes runtime-helper calls through the
 # landingpad: Math.pow with a negative exp, to_long on bad input,
 # Random.int with hi <= lo all surface to user catch as TypeError.
 let r_pow = try { Math.pow(2, -1); nil } catch e { e }
-expect('Math.pow(2, -1)', 'TypeError', r_pow)
+assert(r_pow.kind == 'TypeError')
 
 let r_tolong = try { to_long('not a number'); nil } catch e { e }
-expect('to_long bad input', 'TypeError', r_tolong)
+assert(r_tolong.kind == 'TypeError')
 
 let r_rand = try { Random.int(5, 1); nil } catch e { e }
-expect('Random.int hi<=lo', 'TypeError', r_rand)
+assert(r_rand.kind == 'TypeError')
 
 # --- structure introspection: fields are usable ---
-puts("== field introspection ==")
 let e_ = try { let _ = 1 / 0; nil } catch e { e }
 assert(e_.kind == 'ZeroDivisionError')
 assert(e_.message != '')
 assert(e_.line > 0)   # location is attached by eval() wrapper
 assert(e_.col > 0)
-puts('  PASS fields populated')
 
 # --- user `throw expr` is unaffected ---
 let r15 = try { throw 'plain string'; nil } catch e { e }
 assert(type_of(r15) == 'String' && r15 == 'plain string')
-puts('  PASS user throw untouched')
 
 # --- catch can re-throw the structured error ---
 let r16 = try {
@@ -156,6 +140,3 @@ let r16 = try {
   outer.kind
 }
 assert(r16 == 'ZeroDivisionError')
-puts('  PASS rethrow preserves kind')
-
-puts('test_runtime_errors: OK')
