@@ -6567,21 +6567,23 @@ struct JIT {
     auto& slots = scopes_.empty()
                       ? scopes_.emplace_back().slots
                       : scopes_.back().slots;
-    auto pre = [&](std::string_view name_sv) {
+    auto pre = [&](std::string_view name_sv, bool is_mut) {
       std::string name(name_sv);
       if (!captured.contains(name)) return;
       if (slots.find(name) != slots.end()) return;
       auto nil_val = make_nil();
-      auto slot = make_cell_slot(name, nil_val);
+      auto slot = make_cell_slot(name, nil_val, is_mut);
       define_var(name, slot);
     };
-    auto extract_decl_name = [](const peg::Ast& node) -> std::string_view {
+    struct DeclInfo { std::string_view name; bool is_mut; };
+    auto extract_decl = [](const peg::Ast& node) -> DeclInfo {
       if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_) {
-        // Skip leading DECORATOR children.
+        // Skip leading DECORATOR children. multifn / class bindings
+        // are not mutable in interp (no `mut` form), so is_mut=false.
         size_t i = 0;
         while (i < node.nodes.size() &&
                node.nodes[i]->tag == "DECORATOR"_) i++;
-        return node.nodes[i]->token;
+        return {node.nodes[i]->token, false};
       }
       if (node.tag == "ASSIGNMENT"_ && !node.nodes.empty() &&
           node.nodes[0]->token == "let") {
@@ -6595,20 +6597,27 @@ struct JIT {
         }
         if (lvalcnt == 1) {
           const auto& lval = *node.nodes[2];
-          if (lval.tag == "IDENTIFIER"_) return lval.token;
+          if (lval.tag == "IDENTIFIER"_) {
+            // The MUTABLE child carries "mut" (or empty); read it so
+            // forward-ref pre-allocation matches the user's intent
+            // even when the `let mut x` line is compiled after a
+            // closure that captures x.
+            bool is_mut = node.nodes[1]->token == "mut";
+            return {lval.token, is_mut};
+          }
         }
       }
       return {};
     };
+    auto handle = [&](const peg::Ast& node) {
+      auto d = extract_decl(node);
+      if (!d.name.empty()) pre(d.name, d.is_mut);
+    };
     if (statements_ast.tag == "STATEMENTS"_) {
-      for (auto& node : statements_ast.nodes) {
-        auto name = extract_decl_name(*node);
-        if (!name.empty()) pre(name);
-      }
+      for (auto& node : statements_ast.nodes) handle(*node);
     } else {
       // Single-statement body (e.g. lambda body is an EXPRESSION).
-      auto name = extract_decl_name(statements_ast);
-      if (!name.empty()) pre(name);
+      handle(statements_ast);
     }
   }
 
@@ -8385,9 +8394,16 @@ struct JIT {
       if (compound) {
         auto slot = lookup_var(name);
         if (!slot) {
-          throw culebra::CulebraError("NameError",
+          // Match interp's eval-time NameError (interpreter.h:5000)
+          // so `try { x += 1 } catch e { e.kind }` is symmetric.
+          emit_throw_error("NameError",
               std::format("compound assignment on undefined name '{}'",
-                          name));
+                          name),
+              ast.line, ast.column);
+          // The throw is the terminal effect; emit a dummy nil so
+          // surrounding IR stays well-formed (the runtime unwinds
+          // before any of it runs).
+          return make_nil();
         }
         auto cur = load_slot(*slot, name);
         // In-place fast path is requested for Tensor lhs; the runtime
@@ -9773,7 +9789,11 @@ struct JIT {
       push_scope();
 
       auto subj_val = builder_.CreateLoad(valueType_, subjAlloca);
-      auto match_cond = emit_pattern(*arms[ai]->nodes[0], subj_val);
+      // Match interp's eval_match → try_pattern (interpreter.h:3728)
+      // which uses the default mut=true. Arm-bound names are mutable
+      // inside the arm body.
+      auto match_cond = emit_pattern(*arms[ai]->nodes[0], subj_val,
+                                     /*is_mut=*/true);
       // Either head for guard check or straight to body
       size_t next_idx = 1;
       bool has_guard = arms[ai]->nodes.size() > 1 &&
@@ -11960,11 +11980,18 @@ struct JIT {
     std::vector<const peg::Ast*> resolved(params.size(), nullptr);
     {
       auto cap = culebra::first_kw_only_index(params);
-      culebra::throw_if_too_many_positionals(
-          cap ? static_cast<long>(*cap) : -1,
-          static_cast<long>(positional.size()),
-          static_cast<long>(argsAst.line),
-          static_cast<long>(argsAst.column));
+      long cap_long = cap ? static_cast<long>(*cap) : -1;
+      long n_pos = static_cast<long>(positional.size());
+      // Match throw_if_too_many_positionals' compile-time predicate
+      // but route through emit_throw_error so the runtime throw is
+      // catchable by `try { ... } catch e { ... }`, the same way
+      // interp's eval-time call at interpreter.h:4220 is.
+      if (cap_long > 0 && n_pos > cap_long) {
+        emit_throw_error("TypeError",
+            std::format("takes {} positional argument{} but {} given",
+                        cap_long, cap_long == 1 ? "" : "s", n_pos),
+            argsAst.line, argsAst.column);
+      }
     }
     for (size_t i = 0; i < params.size(); i++) {
       if (params[i].kwargs_rest) continue;
@@ -12620,8 +12647,11 @@ struct JIT {
     builder_.SetInsertPoint(catchBB);
     push_scope();
     auto caughtName = std::string(ast.nodes[1]->token);
+    // Match interp's bind_pattern_name (interpreter.h:5264 → mut=true
+    // default): the `catch e { ... }` binding is mutable so handlers
+    // can do `catch e { e = transformed(e); ... }`.
     auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
-    declare_local(caughtName, caughtValue);
+    declare_local(caughtName, caughtValue, /*is_mut=*/true);
     auto catchVal = compile(*ast.nodes[2]);
     pop_scope();
     if (!builder_.GetInsertBlock()->getTerminator()) {
@@ -12646,6 +12676,18 @@ struct JIT {
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
+    // Force a cycle collect while the LLJIT (and therefore every
+    // closure's `fn_ptr`) is still alive — on BOTH success and
+    // throw paths. Without this, top-level object cycles that carry
+    // a `drop` survive until ~_GcTracker runs at process exit; by
+    // then the JIT module has been torn down and the drop closure's
+    // native code is dangling, which segfaults. RAII guard covers
+    // the throw-rethrow branch too (the catch below converts the
+    // CulebraException to std::runtime_error, which unwinds before
+    // any plain trailing statement would run).
+    struct CollectGuard {
+      ~CollectGuard() { _GcTracker::instance().collect(); }
+    } collect_guard;
     try {
       mainFn();
     } catch (const CulebraException& e) {
@@ -12659,16 +12701,6 @@ struct JIT {
       } catch (...) {}
       throw std::runtime_error(std::format("uncaught: {}", s));
     }
-    // Force a cycle collect while the LLJIT (and therefore every
-    // closure's `fn_ptr`) is still alive. Without this, top-level
-    // object cycles that carry a `drop` survive until ~_GcTracker
-    // runs at process exit — by then the JIT module has been torn
-    // down and the drop closure's native code is dangling, which
-    // segfaults. Running collect here matches interp's "drop is
-    // not invoked for cycle members" timing as a side effect: the
-    // collector simply releases each member's children, which can
-    // trigger drop on whichever ordering it visits.
-    _GcTracker::instance().collect();
   }
 };
 
