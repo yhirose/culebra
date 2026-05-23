@@ -5783,6 +5783,7 @@ struct JIT {
       jit.current_fn_defer_mark_ = mainMark;
     }
 
+    jit.pre_allocate_forward_refs(*ast);
     jit.compile(*ast);
 
     if (!builder.GetInsertBlock()->getTerminator()) {
@@ -5877,6 +5878,7 @@ struct JIT {
           mod->getFunction(rt::defer_mark), {}, "main.mark");
       jit.current_fn_defer_mark_ = mainMark;
     }
+    jit.pre_allocate_forward_refs(*ast);
     jit.compile(*ast);
     if (!builder.GetInsertBlock()->getTerminator()) {
       if (mainMark) {
@@ -6486,6 +6488,71 @@ struct JIT {
     bool captured = current_info_ &&
                     current_info_->captured_locals.contains(name);
     define_var(name, make_var_slot(captured, name, val));
+  }
+
+  // Forward-reference support: before compiling a scope's statements,
+  // pre-allocate Cell slots for every directly-declared name that any
+  // nested closure captures. A nested `let g = fn () { f() }` followed
+  // by `let f = ...` then resolves `f`'s slot via this pre-allocated
+  // cell (initially nil — overwritten by the eventual `let f = ...`
+  // assignment). The interp gets this for free via lazy env binding;
+  // the JIT must materialise the slot eagerly because closure
+  // compilation reads it at IR-emit time.
+  //
+  // Walks only the direct statements of `statements_ast` — nested
+  // blocks (if / while / for-in bodies) introduce their own scopes
+  // and are handled by their own compile-time entry points.
+  void pre_allocate_forward_refs(const peg::Ast& statements_ast) {
+    using namespace peg::udl;
+    if (!current_info_) return;
+    const auto& captured = current_info_->captured_locals;
+    if (captured.empty()) return;
+    auto& slots = scopes_.empty()
+                      ? scopes_.emplace_back().slots
+                      : scopes_.back().slots;
+    auto pre = [&](std::string_view name_sv) {
+      std::string name(name_sv);
+      if (!captured.contains(name)) return;
+      if (slots.find(name) != slots.end()) return;
+      auto nil_val = make_nil();
+      auto slot = make_cell_slot(name, nil_val);
+      define_var(name, slot);
+    };
+    auto extract_decl_name = [](const peg::Ast& node) -> std::string_view {
+      if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_) {
+        // Skip leading DECORATOR children.
+        size_t i = 0;
+        while (i < node.nodes.size() &&
+               node.nodes[i]->tag == "DECORATOR"_) i++;
+        return node.nodes[i]->token;
+      }
+      if (node.tag == "ASSIGNMENT"_ && !node.nodes.empty() &&
+          node.nodes[0]->token == "let") {
+        // ASSIGNMENT [LET, MUTABLE, lval-chain..., ASSIGN_OP, EXPRESSION].
+        // Only single-name lvalues (lvalcnt == 1) get a name here.
+        auto total = static_cast<int>(node.nodes.size());
+        auto lvalcnt = total - 4;
+        // The slot before ASSIGN_OP may carry a TYPE_ANNOTATION; subtract it.
+        if (lvalcnt >= 1 && node.nodes[total - 3]->tag == "TYPE_ANNOTATION"_) {
+          lvalcnt--;
+        }
+        if (lvalcnt == 1) {
+          const auto& lval = *node.nodes[2];
+          if (lval.tag == "IDENTIFIER"_) return lval.token;
+        }
+      }
+      return {};
+    };
+    if (statements_ast.tag == "STATEMENTS"_) {
+      for (auto& node : statements_ast.nodes) {
+        auto name = extract_decl_name(*node);
+        if (!name.empty()) pre(name);
+      }
+    } else {
+      // Single-statement body (e.g. lambda body is an EXPRESSION).
+      auto name = extract_decl_name(statements_ast);
+      if (!name.empty()) pre(name);
+    }
   }
 
   // Raw load (no retain) - for internal ownership transfer
@@ -10087,9 +10154,25 @@ struct JIT {
     // tagging — can capture it before the namespace itself exists.
     // The cell starts nil; we patch it to the real class value once
     // the methods have been compiled and the ctor closure is built.
-    auto nilVal = make_nil();
-    auto classSlot = make_cell_slot(class_name, nilVal);
-    define_var(class_name, classSlot);
+    // Reuse a forward-ref pre-allocated slot if one already exists in
+    // the current scope (statements above this class may have captured
+    // it). Otherwise create a fresh cell.
+    VarSlot classSlot;
+    if (!scopes_.empty()) {
+      auto& curSlots = scopes_.back().slots;
+      auto it = curSlots.find(class_name);
+      if (it != curSlots.end() && it->second.kind == VarSlot::Cell) {
+        classSlot = it->second;
+      } else {
+        auto nilVal = make_nil();
+        classSlot = make_cell_slot(class_name, nilVal);
+        define_var(class_name, classSlot);
+      }
+    } else {
+      auto nilVal = make_nil();
+      classSlot = make_cell_slot(class_name, nilVal);
+      define_var(class_name, classSlot);
+    }
 
     // Compile each method into a closure %Value (+1 owned).
     std::vector<llvm::Value*> method_vals;
@@ -10660,6 +10743,10 @@ struct JIT {
       builder_.CreateBr(skipBB);
       builder_.SetInsertPoint(skipBB);
     }
+
+    // Forward-reference support: closure capture happens lazily through
+    // pre-allocated cells. See `pre_allocate_forward_refs` doc.
+    pre_allocate_forward_refs(*body_ast);
 
     auto bodyVal = compile(*body_ast);
 
@@ -11599,13 +11686,11 @@ struct JIT {
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
         saw_named = true;
+        // Caller (the CALL postfix dispatcher) only routes here when
+        // every splat is a literal OBJECT — dynamic splats fall back
+        // to `compile_function_call_runtime_kwargs`. So we can read
+        // the OBJECT literal's properties straight from the AST.
         const auto& operand = *child->nodes[0];
-        if (operand.tag != "OBJECT"_) {
-          throw culebra::CulebraError("SyntaxError",
-              "JIT does not yet support dynamic **splat against a user "
-              "function (use a literal Object or run without --jit)",
-              argsAst.line, argsAst.column);
-        }
         for (auto& prop : operand.nodes) {
           const auto& key_node = *prop->nodes[1];
           if (key_node.tag != "IDENTIFIER"_) {

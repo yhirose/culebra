@@ -1,7 +1,8 @@
 # Keyword arguments and `**` splat — dual-backend covered subset.
-# The interp-only `tests/interp/test_kwargs.cul` covers patterns the
-# JIT does not yet resolve (dynamic **var splat, UFCS kwargs against a
-# free function). Anything in this file runs on both backends.
+# The interp-only `tests/interp/test_kwargs.cul` pins runtime-catchable
+# kwarg error shapes that the JIT detects at IR-emit time instead.
+# Happy-path coverage (including dynamic **var splat and UFCS kwargs
+# against a free function) runs on both backends from this file.
 
 let f = fn (x, y = 10, z = 100) { x + y + z }
 
@@ -143,5 +144,19 @@ assert(kw_dyn_dst(1, y: 2) == 3)
 let dyn_err = try { kw_dyn_dst(1, 2); nil } catch e { e }
 assert(dyn_err.kind == 'TypeError')
 assert(dyn_err.message.contains('positional'))
+
+# Dynamic `**var` splat: splat operand is a runtime Object rather
+# than a literal. Both backends route through the runtime kwarg
+# resolver.
+let dyn_target = fn (a, b = 10, c = 100) { a + b + c }
+let opts = {b: 30, c: 300}
+assert(dyn_target(1, **opts) == 331)
+# Splat from a fn return — also dynamic.
+let mkopts = fn() { {b: 40, c: 400} }
+assert(dyn_target(1, **mkopts()) == 441)
+
+# UFCS + kwargs against a free function.
+let fmt = fn (s, prefix = "[", suffix = "]") { "{prefix}{s}{suffix}" }
+assert("hello".fmt(prefix: "<", suffix: ">") == "<hello>")
 
 IO.puts('test_kwargs OK')
