@@ -1008,13 +1008,14 @@ class インスタンスは leaf 扱いで、ウォーカーはそこで停止�
 | `superset(b)`| `Bool` — `b` の全要素が自身に含まれているか           |
 | `to_array()` | 挿入順のメンバーを持つ新しい `Array`                 |
 | `iter()`     | 挿入順にメンバーを返すイテレータ                       |
-| `add(x)`     | `x` を挿入。新規追加なら `true` (interp のみ)         |
-| `remove(x)`  | `x` を削除。存在していれば `true` (interp のみ)        |
+| `add(x)`     | `x` を挿入。新規追加なら `true`                       |
+| `remove(x)`  | `x` を削除。存在していれば `true`                      |
 
 集合演算のメソッドは左オペランドの挿入順を残存要素に対して保ちます。
-`add` / `remove` は現状 interp のみ実装 — JIT 側ではユーザー定義
-Object メソッド (例: `Calculator.add(1)`) と名前衝突するため、呼び
-出し点での実行時タグ振り分けが必要で延期しています。
+`.add(x)` / `.remove(x)` は user 定義 Object メソッド (例:
+`Calculator.add(1)`) と名前衝突しうるので、呼び出し点で実行時タグ振
+り分け: Set レシーバは set primitive へ、Object レシーバは user
+プロパティへ。両 backend (interp + JIT + AOT) で動作。
 
 Set 操作はメソッド形のみ: `union`, `intersect`, `diff`, `sym_diff`。
 `|` / `&` / `-` / `^` の演算子形は提供しません。lambda パラメータの

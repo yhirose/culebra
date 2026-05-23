@@ -13271,11 +13271,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     emit_value_release(other);
     return make_bool(builder_.CreateICmpNE(r, builder_.getInt8(0)));
   }
-  // Note: Set's mutating `.add(x)` / `.remove(x)` are interp-only for
-  // now. They would collide with user-defined Object methods of the
-  // same name (e.g. a Calculator class with `.add(n)`) since JIT
-  // dispatch happens by name, not by receiver type. Resolving that
-  // needs runtime tag dispatch in the method call site — deferred.
+  // Set's mutating `.add(x)` / `.remove(x)` are routed through
+  // `compile_set_mutate_dispatch` higher up in this file — that path
+  // does a runtime tag dispatch so Set receivers hit the set primitive
+  // and Object receivers fall through to a user-defined method.
 
   // --- Array methods ---
 

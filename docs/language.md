@@ -1047,14 +1047,15 @@ Built-in methods:
 | `superset(b)`  | `Bool` — every element of `b` is in self           |
 | `to_array()`   | Fresh `Array` with the members in insertion order  |
 | `iter()`       | Iterator yielding members in insertion order       |
-| `add(x)`       | Insert `x`; returns `true` if newly added (interp only) |
-| `remove(x)`    | Remove `x`; returns `true` if present (interp only) |
+| `add(x)`       | Insert `x`; returns `true` if newly added |
+| `remove(x)`    | Remove `x`; returns `true` if present |
 
 The set-operation methods preserve the left operand's insertion order
-for elements that survive. `add` / `remove` are interp-only at the
-moment — they collide with user-defined Object methods of the same
-name on the JIT side (e.g. a `Calculator.add(1)` class method), and
-resolving that needs runtime tag dispatch in the method call site.
+for elements that survive. `.add(x)` and `.remove(x)` may shadow a
+user-defined Object method of the same name (e.g. a `Calculator.add(1)`
+class method), so both backends emit a runtime tag dispatch at the
+call site: Set receivers go to the set primitive, Object receivers go
+to the user property. Works on interp and JIT (and AOT).
 
 Set operations are method-only: `union`, `intersect`, `diff`,
 `sym_diff`. There are no `|` / `&` / `-` / `^` operator forms —
