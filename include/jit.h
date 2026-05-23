@@ -6988,8 +6988,14 @@ struct JIT {
     if (node.tag == "CLASS_DECL"_) {
       // `class Name { ... }` binds `Name` in the enclosing scope.
       // Method bodies are analyzed separately (visit_for_frees), not
-      // as part of the enclosing function's local set.
-      auto& id = *node.nodes[0];
+      // as part of the enclosing function's local set. Optional
+      // leading DECORATOR children precede the IDENTIFIER.
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        collect_fn_locals(*node.nodes[i], locals, outer);
+        i++;
+      }
+      auto& id = *node.nodes[i];
       auto name = std::string(id.token);
       check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
@@ -7000,7 +7006,12 @@ struct JIT {
       // `fn name(params) body` binds `name` in the enclosing scope.
       // Body is analyzed separately by visit_for_frees as a nested
       // function. Same shape as CLASS_DECL above.
-      auto& id = *node.nodes[0];
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        collect_fn_locals(*node.nodes[i], locals, outer);
+        i++;
+      }
+      auto& id = *node.nodes[i];
       auto name = std::string(id.token);
       check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
@@ -7028,6 +7039,16 @@ struct JIT {
       // RETURN_TYPE slot). MULTIFN_DECL has [name, params, body] —
       // analyze_multifn picks params/body off nodes[1] and the last
       // child.
+      // MULTIFN_DECL may carry leading DECORATOR children whose
+      // expressions live in the enclosing scope (not the fn's inner
+      // scope) — visit them directly so any free vars they reference
+      // surface to `info`.
+      if (node.tag == "MULTIFN_DECL"_) {
+        for (auto& child : node.nodes) {
+          if (child->tag != "DECORATOR"_) break;
+          visit_for_frees(*child, my_locals, outer, info);
+        }
+      }
       outer.push_back(&my_locals);
       FuncInfo nested_info;
       if (node.tag == "DEFER"_) {
@@ -7054,9 +7075,15 @@ struct JIT {
     if (node.tag == "CLASS_DECL"_) {
       // Each METHOD is a nested function (params + body) that captures
       // from the enclosing scope. Propagate their free_vars exactly
-      // like the FUNCTION branch above.
-      for (size_t i = 1; i < node.nodes.size(); i++) {
-        const auto& method = *node.nodes[i];
+      // like the FUNCTION branch above. Leading DECORATOR children
+      // live in the enclosing scope.
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        visit_for_frees(*node.nodes[i], my_locals, outer, info);
+        i++;
+      }
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        const auto& method = *node.nodes[j];
         outer.push_back(&my_locals);
         auto method_info = analyze_method(method, outer);
         outer.pop_back();
@@ -7276,8 +7303,17 @@ struct JIT {
   FuncInfo analyze_multifn(
       const peg::Ast& multifnAst,
       std::vector<const std::set<std::string>*>& outer) {
+    using namespace peg::udl;
+    // Skip leading DECORATOR children — params live right after the
+    // IDENTIFIER (which is itself right after the decorators).
+    size_t name_idx = 0;
+    while (name_idx < multifnAst.nodes.size() &&
+           multifnAst.nodes[name_idx]->tag == "DECORATOR"_) {
+      name_idx++;
+    }
+    auto paramsIdx = name_idx + 1;
     auto bodyIdx = multifnAst.nodes.size() - 1;
-    return analyze_fn_common(&multifnAst, *multifnAst.nodes[1],
+    return analyze_fn_common(&multifnAst, *multifnAst.nodes[paramsIdx],
                              *multifnAst.nodes[bodyIdx], outer);
   }
 
@@ -9971,12 +10007,20 @@ struct JIT {
   llvm::Value* compile_class_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    std::string class_name(ast.nodes[0]->token);
+
+    // AST: [DECORATOR*, IDENTIFIER, METHOD ...]
+    size_t dec_end = 0;
+    while (dec_end < ast.nodes.size() &&
+           ast.nodes[dec_end]->tag == "DECORATOR"_) {
+      dec_end++;
+    }
+
+    std::string class_name(ast.nodes[dec_end]->token);
 
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
-    for (size_t i = 1; i < ast.nodes.size(); i++) {
+    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto name = std::string(m.nodes[0]->token);
       if (name == "new") {
@@ -10102,6 +10146,16 @@ struct JIT {
                     extract_data(ctorVal));
     auto classVal = make_object(classObj);
 
+    // Apply decorators (bottom-up): each takes the current class
+    // value and returns the new one. Decorated class still ends up
+    // in the same `classSlot` so method-capture references resolve
+    // to the decorated value at call time.
+    for (size_t i = dec_end; i > 0; --i) {
+      const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
+      auto decoCallee = compile(dec_expr);
+      classVal = compile_function_call_raw(decoCallee, nullptr, {classVal});
+    }
+
     // Patch the pre-allocated cell with the real class namespace.
     // `store_slot` transfers `classVal`'s +1 into the cell. Any
     // further use of `classVal` (REPL persist below) must retain
@@ -10134,19 +10188,52 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
 
-    // AST: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK]
-    std::string name(ast.nodes[0]->token);
-    const peg::Ast* params_ast = ast.nodes[1].get();
-    size_t body_idx = 2;
+    // AST: [DECORATOR*, IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK]
+    size_t dec_end = 0;
+    while (dec_end < ast.nodes.size() &&
+           ast.nodes[dec_end]->tag == "DECORATOR"_) {
+      dec_end++;
+    }
+    bool has_decorators = dec_end > 0;
+
+    std::string name(ast.nodes[dec_end]->token);
+    const peg::Ast* params_ast = ast.nodes[dec_end + 1].get();
+    size_t body_idx = dec_end + 2;
     std::string_view returnType;
-    if (ast.nodes.size() == 4 && ast.nodes[2]->tag == "RETURN_TYPE"_) {
-      returnType = ast.nodes[2]->token;
-      body_idx = 3;
+    if (body_idx < ast.nodes.size() &&
+        ast.nodes[body_idx]->tag == "RETURN_TYPE"_) {
+      returnType = ast.nodes[body_idx]->token;
+      body_idx++;
     }
     auto body_ast = ast.nodes[body_idx];
 
     // Compile body — returns +1 Value(TAG_FUNC) wrapping a JitClosure.
     auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType);
+
+    // Decorated fns bypass the multimethod register/install path —
+    // the decorator's return value is bound directly under `name`.
+    if (has_decorators) {
+      llvm::Value* fnVal = bodyVal;
+      for (size_t i = dec_end; i > 0; --i) {
+        const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
+        auto decoCallee = compile(dec_expr);
+        fnVal = compile_function_call_raw(decoCallee, nullptr, {fnVal});
+      }
+      if (is_repl_top_level_ && is_repl_session_) {
+        emit_repl_persist(fnVal, name, ".repl.decfn",
+                          /*is_let=*/true, /*is_mut=*/false);
+        return make_nil();
+      }
+      auto* existing = lookup_var(name);
+      if (!existing) {
+        auto slot = make_cell_slot(name, fnVal);
+        define_var(name, slot);
+      } else {
+        store_slot(*existing, fnVal);
+      }
+      return make_nil();
+    }
+
     auto bodyClosurePtr =
         builder_.CreateIntToPtr(extract_data(bodyVal), ptrTy);
 

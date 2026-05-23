@@ -18,10 +18,22 @@ const auto grammar_ = R"(
   # Top-level named function declaration. Multiple declarations with
   # the same name and different parameter type signatures form a
   # multimethod (free fn only). Anonymous `fn(...) {...}` keeps its
-  # existing role inside expressions.
-  MULTIFN_DECL             <-  fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+  # existing role inside expressions. Optional leading decorators
+  # transform the declared fn value before binding it to the name —
+  # see DECORATOR below.
+  MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 
-  CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+  CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+
+  # `@expr` before a `fn` / `class` declaration. The expression is any
+  # CALL chain (`@deco`, `@deco(arg)`, `@module.deco(arg)`); it must
+  # evaluate to a callable that takes the declared value and returns
+  # the value to bind under the original name. Stacked decorators
+  # apply bottom-up (innermost first), mirroring Python.
+  # `@` as a binary matmul operator only matches inside expressions,
+  # never at statement-prefix position, so the two uses are
+  # unambiguous.
+  DECORATOR                <-  '@' _ CALL
   METHOD                   <-  IDENTIFIER _ PARAMETERS _ BLOCK
 
   DEBUGGER                 <-  debugger
@@ -63,7 +75,10 @@ const auto grammar_ = R"(
   UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
   UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
   UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
-  MULTIPLICATIVE           <-  POWER (_ MULTIPLICATIVE_OPERATOR _ POWER)*
+  # `_h_` (no newline) before the operator matches ADDITIVE's rule
+  # so `}\n@deco fn ...` is two statements (decorator on a fresh fn),
+  # not a matmul continuation of the preceding expression.
+  MULTIPLICATIVE           <-  POWER (_h_ MULTIPLICATIVE_OPERATOR _ POWER)*
   # '**' RHS recurses through UNARY_PLUS so `2 ** -1` and `2 ** 3 ** 4`
   # both parse as in Python (unary prefix allowed, right-associative).
   POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
@@ -387,7 +402,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
                "DEFAULT_VALUE",
                "ARG_LIST", "KWARG", "KWARG_SPLAT",
-               "CLASS_DECL", "METHOD",
+               "CLASS_DECL", "METHOD", "DECORATOR",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN",
                "REST_PATTERN"});

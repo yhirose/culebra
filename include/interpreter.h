@@ -290,7 +290,14 @@ inline void collect_locals(
   }
 
   if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_) {
-    auto& id = *node.nodes[0];
+    // Skip leading DECORATOR children (added grammar form
+    // `@expr ... fn name() {...}` / `@expr ... class Name {...}`).
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+      collect_locals(*node.nodes[i], locals, outer);
+      i++;
+    }
+    auto& id = *node.nodes[i];
     auto name = std::string(id.token);
     check(name, id.line, id.column, outer);
     if (!is_sink_name(name)) locals.insert(name);
@@ -328,9 +335,16 @@ inline void descend_into_nested(
   }
 
   if (node.tag == "MULTIFN_DECL"_) {
-    // [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK]
+    // [DECORATOR*, IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK]
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+      // Decorators are evaluated in the outer scope, not the fn's
+      // inner scope — descend with the current `outer`.
+      descend_into_nested(*node.nodes[i], my_locals, outer);
+      i++;
+    }
     outer.push_back(&my_locals);
-    analyze_fn_body(*node.nodes[1], *node.nodes.back(), outer);
+    analyze_fn_body(*node.nodes[i + 1], *node.nodes.back(), outer);
     outer.pop_back();
     return;
   }
@@ -346,9 +360,15 @@ inline void descend_into_nested(
   }
 
   if (node.tag == "CLASS_DECL"_) {
-    // [IDENTIFIER, METHOD ...] — each METHOD is [IDENTIFIER, PARAMETERS, BLOCK].
-    for (size_t i = 1; i < node.nodes.size(); i++) {
-      const auto& method = *node.nodes[i];
+    // [DECORATOR*, IDENTIFIER, METHOD ...] — each METHOD is
+    // [IDENTIFIER, PARAMETERS, BLOCK].
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+      descend_into_nested(*node.nodes[i], my_locals, outer);
+      i++;
+    }
+    for (size_t j = i + 1; j < node.nodes.size(); j++) {
+      const auto& method = *node.nodes[j];
       outer.push_back(&my_locals);
       analyze_fn_body(*method.nodes[1], *method.nodes[2], outer);
       outer.pop_back();
@@ -3866,18 +3886,50 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_multifn_decl(const peg::Ast& ast,
                           std::shared_ptr<Environment> env) {
     using namespace peg::udl;
-    auto name_view = ast.nodes[0]->token;
+
+    // Optional leading DECORATOR children. Decorator inside MULTIFN_DECL
+    // is mutually exclusive with multimethod dispatch in this phase —
+    // a decorated `fn name(...)` is bound directly under `name` and
+    // does not participate in same-name overload accumulation.
+    size_t i = 0;
+    std::vector<const peg::Ast*> decorators;
+    while (i < ast.nodes.size() && ast.nodes[i]->tag == "DECORATOR"_) {
+      decorators.push_back(ast.nodes[i].get());
+      i++;
+    }
+
+    auto name_view = ast.nodes[i]->token;
     auto name_owned = std::string(name_view);
 
     // Children: IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK
-    size_t body_idx = 2;
+    size_t params_idx = i + 1;
+    size_t body_idx = i + 2;
     std::string_view return_type;
-    if (ast.nodes.size() == 4 && ast.nodes[2]->tag == "RETURN_TYPE"_) {
-      return_type = ast.nodes[2]->token;
-      body_idx = 3;
+    if (body_idx < ast.nodes.size() &&
+        ast.nodes[body_idx]->tag == "RETURN_TYPE"_) {
+      return_type = ast.nodes[body_idx]->token;
+      body_idx++;
     }
-    auto fn_val = make_function_value(*ast.nodes[1], ast.nodes[body_idx],
+    auto fn_val = make_function_value(*ast.nodes[params_idx],
+                                       ast.nodes[body_idx],
                                        return_type, env);
+
+    if (!decorators.empty()) {
+      // Apply decorators bottom-up: the closest to the `fn` keyword
+      // (last in source order) wraps the raw value first, the
+      // topmost decorator wraps the outermost.
+      for (auto it = decorators.rbegin(); it != decorators.rend(); ++it) {
+        const auto& dec_expr = *(*it)->nodes[0];
+        Value deco_val = eval(dec_expr, env);
+        CallArgs args;
+        args.positional.push_back(std::move(fn_val));
+        args.positional_locs.emplace_back(dec_expr.line, dec_expr.column);
+        fn_val = invoke_user_function_with_args(
+            deco_val, env, std::move(args), dec_expr.line, dec_expr.column);
+      }
+      env->initialize(name_view, std::move(fn_val), false);
+      return Value();
+    }
 
     MultiMethod method;
     method.body = fn_val;
@@ -3950,16 +4002,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // over the defining scope but `this` is bound fresh per method call
   // via the existing method-dispatch protocol.
   Value eval_class_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+
+    // Optional leading DECORATOR children. Apply them to the final
+    // class Object before binding.
+    size_t k = 0;
+    std::vector<const peg::Ast*> decorators;
+    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
+      decorators.push_back(ast.nodes[k].get());
+      k++;
+    }
+
     // Method names and class name are kept as `string_view` into the
     // source AST (stable for the program's lifetime). This matches how
     // Environment and ObjectValue store keys, and avoids dangling
     // `string_view`s caused by moving std::strings inside captured
     // lambdas.
-    auto class_name = ast.nodes[0]->token;
+    auto class_name = ast.nodes[k]->token;
 
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
-    for (size_t i = 1; i < ast.nodes.size(); i++) {
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto name_view = m.nodes[0]->token;
       if (name_view == "new") {
@@ -4035,7 +4098,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     ObjectValue class_obj;
     class_obj.properties->emplace("new", Symbol{constructor, false});
-    env->initialize(class_name, Value(std::move(class_obj)), false);
+    Value class_val(std::move(class_obj));
+
+    // Apply decorators bottom-up to the class value before binding.
+    for (auto it = decorators.rbegin(); it != decorators.rend(); ++it) {
+      const auto& dec_expr = *(*it)->nodes[0];
+      Value deco_val = eval(dec_expr, env);
+      CallArgs args;
+      args.positional.push_back(std::move(class_val));
+      args.positional_locs.emplace_back(dec_expr.line, dec_expr.column);
+      class_val = invoke_user_function_with_args(
+          deco_val, env, std::move(args), dec_expr.line, dec_expr.column);
+    }
+
+    env->initialize(class_name, std::move(class_val), false);
     return Value();
   }
 

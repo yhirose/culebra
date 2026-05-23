@@ -29,9 +29,10 @@ tracks its behavior.
 17. [Built-in type methods (incl. iterator protocol)](#17-built-in-type-methods)
 18. [Core built-in functions](#18-core-built-in-functions)
 19. [Multimethods](#19-multimethods)
-20. [Command-line interface](#20-command-line-interface)
-21. [Known limitations](#21-known-limitations)
-22. [Appendix: interpreter ↔ JIT divergence](#22-appendix-interpreter--jit-divergence)
+20. [Decorators](#20-decorators)
+21. [Command-line interface](#21-command-line-interface)
+22. [Known limitations](#22-known-limitations)
+23. [Appendix: interpreter ↔ JIT divergence](#23-appendix-interpreter--jit-divergence)
 
 ---
 
@@ -2002,7 +2003,7 @@ factories; both backends recognise them for fusion / specialisation,
 and they are the standard form used in `for`-in loops throughout the
 language. The broader standard library (namespaced under `Math`,
 `IO`, `Sys`) is documented in [`docs/stdlib.md`](stdlib.md). Output
-primitives `puts` and `print` are CLI-installed globals (§20).
+primitives `puts` and `print` are CLI-installed globals (§21).
 
 ### `assert(cond: Bool) -> Nil`
 
@@ -2264,7 +2265,7 @@ greet("alice")  # → "hello, alice"
 * **Errors.** With no matching method the runtime raises
   `no matching method`; with a tie in specificity it raises
   `ambiguous dispatch`. Both halt the program immediately rather than
-  surfacing as catchable runtime exceptions (§15, §22).
+  surfacing as catchable runtime exceptions (§15, §23).
 
 ### Keyword arguments and multimethods
 
@@ -2289,7 +2290,76 @@ dispatch.
 
 ---
 
-## 20. Command-line interface
+## 20. Decorators
+
+A `@expr` line before a `fn` or `class` declaration wraps the
+declared value through `expr` before binding it to the original name.
+Stacked decorators apply bottom-up — the one closest to the
+declaration runs first, the topmost runs last:
+
+```culebra
+@a
+@b
+fn foo() { ... }
+```
+
+is sugar for `foo = a(b(<original fn value>))`.
+
+### Decorator expression
+
+Each `@` is followed by any expression of the form `name`,
+`name.attr`, or `name(args)` — i.e. a `CALL` chain. The expression
+is evaluated **once** at declaration time in the enclosing scope;
+its result must be callable (a function or a class with a single
+positional parameter). Multi-arg factories — `@combine(a, b)` — work
+by returning a one-argument decorator from the factory call.
+
+### Bindings
+
+The decorator receives the **unbound** declared value and returns
+the value that ends up in the variable:
+
+```culebra
+let tag = fn(f) { fn() { "[{f()}]" } }
+
+@tag
+fn greet() { "hello" }
+
+greet()  # "[hello]"
+```
+
+For a class, the decorator gets the class object and returns the
+object the variable will hold:
+
+```culebra
+let mark = fn(cls) { cls.marked = true; cls }
+
+@mark
+class Point { new(x, y) { this.x = x; this.y = y } }
+
+Point.marked  # true
+```
+
+### Interaction with multimethods
+
+A decorated `fn name(...)` does **not** participate in multimethod
+dispatch — the decorator's return value binds directly to `name`.
+Combine the patterns by writing the multimethod first and then a
+separate decorated wrapper if you need both.
+
+### Why `@` doesn't collide with the matmul operator
+
+`@` is also the binary matrix-multiplication operator (PEP 465).
+The two uses never overlap: decorator `@` only matches at statement
+prefix position, while matmul `@` is parsed inside an expression
+between two operands and never crosses a newline. So
+`}\n@deco fn ...` is unambiguously two statements (a decorator on a
+fresh declaration), not a matmul continuation of the preceding
+expression.
+
+---
+
+## 21. Command-line interface
 
     culebra [flags] [script.cul ...] [-- arg ...]
 
@@ -2349,7 +2419,7 @@ built-ins from §18.
 
 ---
 
-## 21. Known limitations
+## 22. Known limitations
 
 * No big integers or bignums; `Long` overflow wraps.
 * Single-quoted `'...'` strings are raw (no escapes, no interpolation,
@@ -2380,7 +2450,7 @@ built-ins from §18.
 
 ---
 
-## 22. Appendix: interpreter ↔ JIT divergence
+## 23. Appendix: interpreter ↔ JIT divergence
 
 The interpreter (`include/interpreter.h`) is normative. The JIT
 (`include/jit.h`) compiles the same AST and tracks the same
