@@ -5090,8 +5090,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           auto name = postfix.token;
           if (compound) {
             if (!obj.has(name)) {
-              throw CulebraError("AttributeError",
-                  "compound assignment on missing property.");
+              // Shared helper so the JIT path (see jit.h
+              // `compile_assignment` DOT-compound branch) raises
+              // the same AttributeError with location attached.
+              throw_compound_missing_property_at(
+                  static_cast<long>(postfix.line),
+                  static_cast<long>(postfix.column));
             }
             auto cur = obj.get(name);
             if (try_tensor_inplace(cur, base_op, rval)) {

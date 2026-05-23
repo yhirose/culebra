@@ -1287,6 +1287,11 @@ culebra_runtime_destructure_mismatch(int64_t line, int64_t col) {
   culebra::throw_destructure_mismatch_at(line, col);
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_compound_missing_property(int64_t line, int64_t col) {
+  culebra::throw_compound_missing_property_at(line, col);
+}
+
 // Like type_error but includes "expected X, got Y" — caller passes the
 // expected type as a string-literal global and the runtime tag of the
 // actual value. Used by leaf JIT accessors (value_to_long etc.) where
@@ -5440,6 +5445,8 @@ inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
+inline constexpr auto compound_missing_property
+    = "culebra_runtime_compound_missing_property";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
 inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
@@ -8423,6 +8430,31 @@ struct JIT {
         // For compound (`o.x += rhs`), read current → apply op → write back.
         llvm::Value* to_store = rval;
         if (compound) {
+          // Pre-check that the property exists. Without this the
+          // JIT would read a missing slot as nil and then `emit_arith_step`
+          // would throw TypeError ("nil + N"), whereas the interp throws
+          // AttributeError with a more specific message. Match interp.
+          auto namePtr = get_or_create_global_str(name, ".propname");
+          auto has = emit_call(
+              module_->getOrInsertFunction(rt::object_has,
+                                           builder_.getInt1Ty(),
+                                           ptrTy, ptrTy),
+              {objPtr, namePtr}, "propset.has");
+          auto hasBB = llvm::BasicBlock::Create(ctx_, "propset.has", fn);
+          auto missBB = llvm::BasicBlock::Create(ctx_, "propset.miss", fn);
+          builder_.CreateCondBr(has, hasBB, missBB);
+
+          builder_.SetInsertPoint(missBB);
+          emit_call(
+              module_->getOrInsertFunction(rt::compound_missing_property,
+                                           builder_.getVoidTy(),
+                                           builder_.getInt64Ty(),
+                                           builder_.getInt64Ty()),
+              {builder_.getInt64(finalPostfix.line),
+               builder_.getInt64(finalPostfix.column)});
+          builder_.CreateUnreachable();
+
+          builder_.SetInsertPoint(hasBB);
           // compile_property_get returns +0 borrowed (no slot retain),
           // so cur does not need a matching release; only rval does.
           auto cur = compile_property_get(lval, name);

@@ -100,10 +100,16 @@ let r_json3 = try {
 } catch e { e }
 assert(r_json3.kind == 'TypeError')
 
-# Note: `o.b += 1` on a missing property yields different kinds across
-# backends — interp explicitly checks `obj.has(name)` and throws
-# AttributeError, JIT reads `o.b` as nil and then raises TypeError on
-# `nil + 1`. Both are catchable; the kind differs.
+# `o.b += 1` on a missing property — interp and JIT both throw
+# AttributeError (interp pre-checks `obj.has(name)`; JIT emits an
+# equivalent has-check in the compound-DOT codegen).
+let r_attr = try {
+  let mut o_attr = {a: 1}
+  o_attr.b += 1
+  nil
+} catch e { e }
+assert(r_attr.kind == 'AttributeError')
+assert(r_attr.message.contains('compound assignment on missing property'))
 
 # --- AssertionError ---
 let r14 = try { assert(false); nil } catch e { e }

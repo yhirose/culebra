@@ -112,6 +112,17 @@ inline std::string json_escape(std::string_view s) {
                      line, col);
 }
 
+// `o.x += rhs` against a missing property `x`. Both backends used to
+// diverge here — interp checked existence and threw AttributeError,
+// JIT read the missing slot as nil and then threw TypeError on
+// `nil + rhs`. This helper unifies the kind + message + location.
+[[noreturn]] inline void throw_compound_missing_property_at(
+    long line, long col) {
+  throw CulebraError("AttributeError",
+                     "compound assignment on missing property.",
+                     line, col);
+}
+
 // Integer power by squaring. `exp` must be non-negative; result wraps
 // on overflow (matches the rest of Long arithmetic — no bignum).
 inline long ipow_nonneg(long base, long exp) {

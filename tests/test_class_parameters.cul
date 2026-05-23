@@ -1,4 +1,4 @@
-# Auto-synthesized class.parameters() — Phase 1 / interp-only.
+# Auto-synthesized class.parameters() — works on both interp and JIT.
 #
 # Every class instance gets a built-in `parameters()` method that
 # walks its fields and returns a flat Array of class-instance Values.
