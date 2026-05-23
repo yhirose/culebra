@@ -1292,6 +1292,28 @@ culebra_runtime_compound_missing_property(int64_t line, int64_t col) {
   culebra::throw_compound_missing_property_at(line, col);
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_immutable_assign(const char* name, int64_t line, int64_t col) {
+  culebra::throw_immutable_assign_at(name ? name : "", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_unknown_kwarg(const char* name, int64_t line, int64_t col) {
+  culebra::throw_unknown_kwarg_at(name ? name : "", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_missing_required_arg(const char* name, int64_t line, int64_t col) {
+  culebra::throw_missing_required_arg_at(name ? name : "", line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_throw_error(const char* kind, const char* msg,
+                             int64_t line, int64_t col) {
+  culebra::throw_runtime_error_at(kind ? kind : "", msg ? msg : "",
+                                   line, col);
+}
+
 // Like type_error but includes "expected X, got Y" — caller passes the
 // expected type as a string-literal global and the runtime tag of the
 // actual value. Used by leaf JIT accessors (value_to_long etc.) where
@@ -5461,6 +5483,14 @@ inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
 inline constexpr auto compound_missing_property
     = "culebra_runtime_compound_missing_property";
+inline constexpr auto immutable_assign
+    = "culebra_runtime_immutable_assign";
+inline constexpr auto unknown_kwarg
+    = "culebra_runtime_unknown_kwarg";
+inline constexpr auto missing_required_arg
+    = "culebra_runtime_missing_required_arg";
+inline constexpr auto throw_error
+    = "culebra_runtime_throw_error";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
 inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
@@ -5499,11 +5529,21 @@ struct JIT {
     // count is managed elsewhere. Required to keep callers honest;
     // every binding has a clear ownership story.
     bool owned;
+    // True if declared via `let mut`. Reassigning a non-mut binding
+    // raises ImmutableError, matching the interp; forward-ref
+    // pre-allocated cells default to false and get updated when the
+    // eventual `let mut` lands.
+    bool mut = false;
   };
 
   // Analysis result for a function (including top-level __culebra_main).
   struct FuncInfo {
     std::vector<std::string> free_vars;   // captured from outer
+    // Parallel to free_vars: mut flag of the outer slot at the moment the
+    // closure was instantiated. Populated by emit_closure_build, consumed
+    // by the inner function's free-var binding so ImmutableError fires on
+    // writes to captured non-mut bindings.
+    std::vector<bool> free_var_mut;
     std::set<std::string> captured_locals;  // my locals captured by nested
     // EH/defer emission flags (populated by scan_eh_defer):
     bool has_eh = false;        // contains TRY or any scope with defers
@@ -6497,11 +6537,14 @@ struct JIT {
   }
 
   // Allocate a slot and bind it: picks cell vs stack from the enclosing
-  // function's capture set (or stack if no enclosing function).
-  void declare_local(const std::string& name, llvm::Value* val) {
+  // function's capture set (or stack if no enclosing function). `is_mut`
+  // = true for `let mut x = ...`; reassigning a non-mut binding raises
+  // ImmutableError downstream.
+  void declare_local(const std::string& name, llvm::Value* val,
+                     bool is_mut = false) {
     bool captured = current_info_ &&
                     current_info_->captured_locals.contains(name);
-    define_var(name, make_var_slot(captured, name, val));
+    define_var(name, make_var_slot(captured, name, val, is_mut));
   }
 
   // Forward-reference support: before compiling a scope's statements,
@@ -6687,6 +6730,73 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {current_line_val(), current_column_val()});
+  }
+
+  // Emit a `culebra_runtime_immutable_assign(name, line, col)` call
+  // that always throws — `compile_assignment` uses this to halt the
+  // current path before storing into a non-mut slot.
+  void emit_immutable_assign_throw(const std::string& name,
+                                    size_t line, size_t col) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto namePtr = get_or_create_global_str(name, ".imm.name");
+    emit_call(
+        module_->getOrInsertFunction(rt::immutable_assign,
+                                     builder_.getVoidTy(),
+                                     ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
+  }
+
+  // Throw an "unknown keyword argument 'name'" TypeError at runtime,
+  // matching interp's catchable behavior. The static kwargs resolver
+  // routes through here when it detects a leftover kwarg name; the
+  // dynamic resolver already throws from inside a runtime helper.
+  void emit_unknown_kwarg_throw(const std::string& name,
+                                 size_t line, size_t col) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto namePtr = get_or_create_global_str(name, ".kw.name");
+    emit_call(
+        module_->getOrInsertFunction(rt::unknown_kwarg,
+                                     builder_.getVoidTy(),
+                                     ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
+  }
+
+  // Throw a "missing required argument 'name'" ArityError at runtime.
+  // Same rationale as emit_unknown_kwarg_throw.
+  void emit_missing_required_arg_throw(const std::string& name,
+                                        size_t line, size_t col) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto namePtr = get_or_create_global_str(name, ".arg.name");
+    emit_call(
+        module_->getOrInsertFunction(rt::missing_required_arg,
+                                     builder_.getVoidTy(),
+                                     ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
+  }
+
+  // Generic compile-time-detected error → runtime throw. Used to
+  // migrate previously-uncatchable `throw culebra::CulebraError(...)`
+  // sites in `compile_*` so `try { ... } catch e { ... }` can observe
+  // them the same way interp does.
+  void emit_throw_error(const char* kind, const std::string& msg,
+                         size_t line, size_t col) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto kindPtr = get_or_create_global_str(kind, ".thr.kind");
+    auto msgPtr = get_or_create_global_str(msg, ".thr.msg");
+    emit_call(
+        module_->getOrInsertFunction(rt::throw_error,
+                                     builder_.getVoidTy(),
+                                     ptrTy, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {kindPtr, msgPtr,
+         builder_.getInt64(line), builder_.getInt64(col)});
   }
 
   // Emit a typed type-error throw with "expected X, got Y" context.
@@ -8176,7 +8286,8 @@ struct JIT {
   // Create an alloca + cell for a new captured variable.
   // Alloca is pre-initialized to null in entry block for safe release on
   // re-execution (e.g., let inside a loop body).
-  VarSlot make_cell_slot(const std::string& name, llvm::Value* initValue) {
+  VarSlot make_cell_slot(const std::string& name, llvm::Value* initValue,
+                         bool is_mut = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
@@ -8196,10 +8307,11 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {tag, data}, "cell");
     builder_.CreateStore(cellPtr, cellSlotAlloca);
-    return VarSlot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true};
+    return VarSlot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
   }
 
-  VarSlot make_stack_slot(const std::string& name, llvm::Value* initValue) {
+  VarSlot make_stack_slot(const std::string& name, llvm::Value* initValue,
+                          bool is_mut = false) {
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                              fn->getEntryBlock().begin());
@@ -8207,15 +8319,15 @@ struct JIT {
     entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_), alloca);
     // At declaration point: use store_slot (releases old = nil first run, else
     // previous iteration's value).
-    VarSlot slot{VarSlot::Stack, alloca, /*owned=*/true};
+    VarSlot slot{VarSlot::Stack, alloca, /*owned=*/true, is_mut};
     store_slot(slot, initValue);
     return slot;
   }
 
   VarSlot make_var_slot(bool captured, const std::string& name,
-                        llvm::Value* initValue) {
-    return captured ? make_cell_slot(name, initValue)
-                    : make_stack_slot(name, initValue);
+                        llvm::Value* initValue, bool is_mut = false) {
+    return captured ? make_cell_slot(name, initValue, is_mut)
+                    : make_stack_slot(name, initValue, is_mut);
   }
 
   // --- Assignment ---
@@ -8280,42 +8392,85 @@ struct JIT {
         auto cur = load_slot(*slot, name);
         // In-place fast path is requested for Tensor lhs; the runtime
         // helper falls back to the plain binop otherwise. When it
-        // succeeds, new_val is the same handle as cur (mutated buffer),
-        // and store_slot still works correctly — it releases the slot's
-        // old ref (== cur's underlying) and absorbs new_val.
+        // succeeds for Tensor, new_val is the same handle as cur (mutated
+        // buffer in place) — in that case interp skips the env->assign
+        // check entirely, so the JIT must also skip rebinding (and the
+        // mut check that would gate it).
         auto new_val = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
         // Both cur (from load_slot) and rval (from compile) carry a +1
         // that emit_arith_step did not consume. Drop them here so the
         // path is leak-balanced for refcounted operands (Tensor/Object).
         emit_value_release(rval);
         emit_value_release(cur);
+
+        // Detect Tensor in-place: tag == TAG_TENSOR && handle unchanged.
+        // Any other combination (Long, String, Float, fresh Tensor) is
+        // a logical rebind and must enforce the slot's mut flag.
+        auto isTensor = builder_.CreateICmpEQ(
+            extract_tag(cur), builder_.getInt8(TAG_TENSOR));
+        auto sameData = builder_.CreateICmpEQ(
+            extract_data(cur), extract_data(new_val));
+        auto isInPlace = builder_.CreateAnd(isTensor, sameData);
+
+        auto fn = builder_.GetInsertBlock()->getParent();
+        auto rebindBB =
+            llvm::BasicBlock::Create(ctx_, "compound.rebind", fn);
+        auto doneBB =
+            llvm::BasicBlock::Create(ctx_, "compound.done", fn);
+        builder_.CreateCondBr(isInPlace, doneBB, rebindBB);
+
+        builder_.SetInsertPoint(rebindBB);
+        if (!slot->mut) {
+          emit_immutable_assign_throw(name, ast.line, ast.column);
+        }
         store_slot(*slot, new_val);
         emit_value_retain(new_val);
+        builder_.CreateBr(doneBB);
+
+        builder_.SetInsertPoint(doneBB);
         return new_val;
       }
 
+      // `mut x = ...` (no `let`) is also a declaration, matching the
+      // interp's `declare = let || mut` rule. Implicit `x = ...`
+      // first-occurrence is also a declaration.
+      bool declare = let || mut;
       // Check if the variable already exists in the current (innermost) scope.
       // If so, reuse the slot (avoid alloca accumulation in loops with `let`).
       if (!scopes_.empty()) {
         auto& slots = scopes_.back().slots;
         auto it = slots.find(name);
         if (it != slots.end()) {
+          if (declare) {
+            // Forward-ref pre-allocation or loop re-entry: this is the
+            // first / re-running binding. Honor the user-declared mut
+            // flag from the source.
+            it->second.mut = mut;
+          } else {
+            // Reassignment (`x = expr`) on an existing same-scope slot.
+            if (!it->second.mut) {
+              emit_immutable_assign_throw(name, ast.line, ast.column);
+            }
+          }
           store_slot(it->second, rval);
           emit_value_retain(rval);
           return rval;
         }
       }
 
-      if (!let) {
+      if (!declare) {
         auto existing = lookup_var(name);
         if (existing) {
+          if (!existing->mut) {
+            emit_immutable_assign_throw(name, ast.line, ast.column);
+          }
           store_slot(*existing, rval);
           emit_value_retain(rval);
           return rval;
         }
       }
 
-      declare_local(name, rval);
+      declare_local(name, rval, /*is_mut=*/mut);
       emit_value_retain(rval);
       // Record direct `let f = fn (...) {...}` bindings so a later
       // `f(x, y: 2)` can resolve kwargs against the FUNCTION AST at
@@ -8572,6 +8727,7 @@ struct JIT {
   // Reuses the match-pattern emitter. On runtime mismatch, throws via
   // emit_type_error (same channel used by other "shape mismatch" cases).
   llvm::Value* compile_destructure_assign(const peg::Ast& ast) {
+    bool is_mut = ast.nodes[0]->token == "mut";
     const auto& pattern = *ast.nodes[1];
     // Stash the DESTRUCTURE_ASSIGN's own location before compiling the
     // rval — `compile(rval)` advances `current_line_ / current_column_`
@@ -8582,7 +8738,7 @@ struct JIT {
     auto stmt_col = builder_.getInt64(ast.column);
     auto rval = compile(*ast.nodes[2]);
 
-    auto matched = emit_pattern(pattern, rval);
+    auto matched = emit_pattern(pattern, rval, is_mut);
 
     auto fn = builder_.GetInsertBlock()->getParent();
     auto failBB = llvm::BasicBlock::Create(ctx_, "destr.fail", fn);
@@ -9207,7 +9363,8 @@ struct JIT {
   // On success, emits variable bindings (via define_var) visible from the
   // current scope; returns i1 true. On failure, returns i1 false; any
   // bindings emitted speculatively are not read because the arm is skipped.
-  llvm::Value* emit_pattern(const peg::Ast& pattern, llvm::Value* subject) {
+  llvm::Value* emit_pattern(const peg::Ast& pattern, llvm::Value* subject,
+                            bool is_mut = false) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
@@ -9217,7 +9374,7 @@ struct JIT {
       auto mergeBB = llvm::BasicBlock::Create(ctx_, "or.match", fn);
       std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
       for (size_t i = 0; i < pattern.nodes.size(); i++) {
-        auto m = emit_pattern(*pattern.nodes[i], subject);
+        auto m = emit_pattern(*pattern.nodes[i], subject, is_mut);
         incoming.push_back({m, builder_.GetInsertBlock()});
         if (i + 1 < pattern.nodes.size()) {
           auto nextBB = llvm::BasicBlock::Create(ctx_, "or.try", fn);
@@ -9286,7 +9443,7 @@ struct JIT {
         // matches but introduces no binding (subject is borrowed here,
         // so there's nothing to release on this path).
         auto name = std::string(pattern.token);
-        if (!is_sink_name(name)) declare_local(name, subject);
+        if (!is_sink_name(name)) declare_local(name, subject, is_mut);
         return builder_.getTrue();
       }
       case "TYPED_IDENT"_: {
@@ -9351,15 +9508,15 @@ struct JIT {
         // the sink — the type tag still gates the match, but no slot
         // is allocated.
         auto name = std::string(pattern.nodes[0]->token);
-        if (!is_sink_name(name)) declare_local(name, subject);
+        if (!is_sink_name(name)) declare_local(name, subject, is_mut);
         return tag_match;
       }
       case "ARRAY_PATTERN"_:
-        return emit_array_pattern(pattern, subject);
+        return emit_array_pattern(pattern, subject, is_mut);
       case "OBJECT_PATTERN"_:
-        return emit_object_pattern(pattern, subject);
+        return emit_object_pattern(pattern, subject, is_mut);
       case "TUPLE_PATTERN"_:
-        return emit_tuple_pattern(pattern, subject);
+        return emit_tuple_pattern(pattern, subject, is_mut);
     }
     return builder_.getFalse();
   }
@@ -9373,7 +9530,8 @@ struct JIT {
                                     llvm::Value* subject,
                                     int8_t expected_tag,
                                     const char* prefix,
-                                    bool allow_rest) {
+                                    bool allow_rest,
+                                    bool is_mut = false) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -9441,7 +9599,7 @@ struct JIT {
         rest_idx < 0 ? elems.size() : static_cast<size_t>(rest_idx);
     for (size_t i = 0; i < pre_count; i++) {
       auto v = get_elem(builder_.getInt64(i));
-      auto m = emit_pattern(*elems[i], v);
+      auto m = emit_pattern(*elems[i], v, is_mut);
       auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont", fn);
       builder_.CreateCondBr(m, contBB, failBB);
       builder_.SetInsertPoint(contBB);
@@ -9464,13 +9622,13 @@ struct JIT {
         // drop the resulting Array's +1 instead of holding it.
         emit_value_release(rest_val);
       } else {
-        declare_local(rest_name, rest_val);
+        declare_local(rest_name, rest_val, is_mut);
       }
       for (size_t i = rest_idx + 1; i < elems.size(); i++) {
         auto off = static_cast<int64_t>(elems.size() - i);
         auto idx = builder_.CreateSub(size, builder_.getInt64(off));
         auto v = get_elem(idx);
-        auto m = emit_pattern(*elems[i], v);
+        auto m = emit_pattern(*elems[i], v, is_mut);
         auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont2", fn);
         builder_.CreateCondBr(m, contBB, failBB);
         builder_.SetInsertPoint(contBB);
@@ -9495,19 +9653,22 @@ struct JIT {
   }
 
   llvm::Value* emit_array_pattern(const peg::Ast& pattern,
-                                  llvm::Value* subject) {
+                                  llvm::Value* subject,
+                                  bool is_mut = false) {
     return emit_indexed_pattern(pattern, subject, TAG_ARRAY, "arr",
-                                /*allow_rest=*/true);
+                                /*allow_rest=*/true, is_mut);
   }
 
   llvm::Value* emit_tuple_pattern(const peg::Ast& pattern,
-                                  llvm::Value* subject) {
+                                  llvm::Value* subject,
+                                  bool is_mut = false) {
     return emit_indexed_pattern(pattern, subject, TAG_TUPLE, "tup",
-                                /*allow_rest=*/false);
+                                /*allow_rest=*/false, is_mut);
   }
 
   llvm::Value* emit_object_pattern(const peg::Ast& pattern,
-                                   llvm::Value* subject) {
+                                   llvm::Value* subject,
+                                   bool is_mut = false) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -9557,7 +9718,7 @@ struct JIT {
       v = builder_.CreateInsertValue(v, d, {1});
       if (sub_pattern) {
         // Full `key: PATTERN` form: recursively match the value.
-        auto m = emit_pattern(*sub_pattern, v);
+        auto m = emit_pattern(*sub_pattern, v, is_mut);
         auto contBB = llvm::BasicBlock::Create(ctx_, "obj.cont", fn);
         builder_.CreateCondBr(m, contBB, failBB);
         builder_.SetInsertPoint(contBB);
@@ -9567,7 +9728,7 @@ struct JIT {
       } else {
         // Retain since we're creating a new owning reference in the slot
         emit_value_retain(v);
-        declare_local(key, v);
+        declare_local(key, v, is_mut);
       }
     }
 
@@ -10527,11 +10688,23 @@ struct JIT {
     if (infoIt == func_info_.end()) {
       throw std::runtime_error("missing func_info for function");
     }
-    const FuncInfo& info = infoIt->second;
+    FuncInfo& info = infoIt->second;
+
+    // Snapshot outer mut flags for each captured free var *before* we
+    // descend into the body. emit_closure_build later re-populates this
+    // (also from the outer scope), but the inner body's free-var
+    // bindings consume it during their own compilation, which happens
+    // first — so the snapshot must be taken here.
+    info.free_var_mut.assign(info.free_vars.size(), false);
+    for (size_t i = 0; i < info.free_vars.size(); i++) {
+      auto outer_slot = lookup_var(info.free_vars[i]);
+      if (outer_slot) info.free_var_mut[i] = outer_slot->mut;
+    }
 
     std::vector<std::string> paramNames;
     std::vector<std::string_view> paramTypeNames;
     std::vector<const peg::Ast*> paramDefaults;
+    std::vector<bool> paramMuts;
     std::optional<size_t> firstDefaulted;
     std::optional<size_t> kwargsRestIdx;
     std::optional<size_t> firstKwOnlyIdx;
@@ -10544,6 +10717,7 @@ struct JIT {
         paramNames.push_back(std::string(node->token));
         paramTypeNames.push_back({});
         paramDefaults.push_back(nullptr);
+        paramMuts.push_back(false);
         kwargsRestIdx = paramNames.size() - 1;
         continue;
       }
@@ -10551,6 +10725,7 @@ struct JIT {
       paramTypeNames.push_back(extract_type_annotation(*node, 2));
       auto* def = extract_default_expr(*node);
       paramDefaults.push_back(def);
+      paramMuts.push_back(node->nodes[0]->token == "mut");
       if (def && !firstDefaulted) {
         firstDefaulted = paramNames.size() - 1;
       }
@@ -10674,7 +10849,8 @@ struct JIT {
       llvm::IRBuilder<> entryB(entryBB, entryBB->begin());
       auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
       builder_.CreateStore(cellPtr, holder);
-      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
+      bool fv_mut = i < info.free_var_mut.size() ? info.free_var_mut[i] : false;
+      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
     }
 
     // Declared parameters: for non-defaulted params, load from args[i]
@@ -10740,9 +10916,9 @@ struct JIT {
         // binding it. Allows repeated `_` params without slot collision.
         emit_value_release(argVal);
       } else if (info.captured_locals.contains(name)) {
-        define_var(name, make_cell_slot(name, argVal));
+        define_var(name, make_cell_slot(name, argVal, /*is_mut=*/paramMuts[i]));
       } else {
-        define_var(name, make_stack_slot(name, argVal));
+        define_var(name, make_stack_slot(name, argVal, /*is_mut=*/paramMuts[i]));
       }
     }
 
@@ -10925,7 +11101,7 @@ struct JIT {
   // pointers from the caller's scope (each retained). Returns the
   // closure as a %Value (TAG_FUNC). Shared by compile_function and
   // compile_defer (defer uses arity=0).
-  llvm::Value* emit_closure_build(llvm::Function* fn, const FuncInfo& info,
+  llvm::Value* emit_closure_build(llvm::Function* fn, FuncInfo& info,
                                   size_t arity,
                                   llvm::Constant* paramMeta = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -10945,6 +11121,7 @@ struct JIT {
                                        builder_.getVoidTy(), ptrTy, ptrTy),
           {fn, paramMeta});
     }
+    info.free_var_mut.assign(n, false);
     if (n > 0) {
       auto capturesFieldPtr =
           builder_.CreateStructGEP(closureType_, closurePtr, 3);
@@ -10960,6 +11137,7 @@ struct JIT {
           throw std::runtime_error(
               std::format("free var '{}' is not a cell", fv));
         }
+        info.free_var_mut[i] = slot->mut;
         auto cellPtr = cell_ptr_of(*slot);
         auto dstSlot = builder_.CreateInBoundsGEP(
             ptrTy, capturesArr, {builder_.getInt64(i)});
@@ -11270,7 +11448,7 @@ struct JIT {
     // resolver via the dispatched closure's param metadata.
     bool has_kwargs = !arg_list_is_positional_only(argsAst);
     if (has_kwargs && known_builtin_methods().contains(method)) {
-      throw culebra::CulebraError("SyntaxError",
+      emit_throw_error("SyntaxError",
           std::format("built-in method '{}' does not accept keyword "
                       "arguments", method),
           argsAst.line, argsAst.column);
@@ -11740,7 +11918,7 @@ struct JIT {
         for (auto& prop : operand.nodes) {
           const auto& key_node = *prop->nodes[1];
           if (key_node.tag != "IDENTIFIER"_) {
-            throw culebra::CulebraError("TypeError",
+            emit_throw_error("TypeError",
                 "**: splat Object key must be an identifier",
                 argsAst.line, argsAst.column);
           }
@@ -11753,14 +11931,14 @@ struct JIT {
         saw_named = true;
         auto name = child->nodes[0]->token;
         if (!seen_explicit.insert(name).second) {
-          throw culebra::CulebraError("TypeError",
+          emit_throw_error("TypeError",
               std::format("duplicate keyword argument '{}'", name),
               argsAst.line, argsAst.column);
         }
         explicit_kwargs.emplace_back(name, child->nodes[1].get());
       } else {
         if (saw_named) {
-          throw culebra::CulebraError("SyntaxError",
+          emit_throw_error("SyntaxError",
               "positional argument follows keyword argument",
               argsAst.line, argsAst.column);
         }
@@ -11792,7 +11970,7 @@ struct JIT {
       if (params[i].kwargs_rest) continue;
       if (i < positional.size() && !params[i].kw_only) {
         if (kwargs.contains(params[i].name)) {
-          throw culebra::CulebraError("TypeError",
+          emit_throw_error("TypeError",
               std::format("got argument '{}' both positionally and as "
                           "a keyword", params[i].name),
               argsAst.line, argsAst.column);
@@ -11804,19 +11982,25 @@ struct JIT {
         sources[i] = Source::Kwarg;
         kwargs.erase(it);
       } else if (!params[i].has_default) {
-        throw culebra::CulebraError("ArityError",
-            std::format("missing required argument '{}'", params[i].name),
-            argsAst.line, argsAst.column);
+        // Defer to runtime so `try { f(...) } catch e { ... }` can
+        // observe the same ArityError interp produces. The IR after
+        // the throw is dead at runtime; we leave the slot as
+        // Source::None so the surrounding slab-fill logic emits a
+        // syntactically valid TAG_UNFILLED placeholder.
+        emit_missing_required_arg_throw(std::string(params[i].name),
+                                         argsAst.line, argsAst.column);
       }
     }
     if (rest_idx) {
       sources[*rest_idx] = Source::KwargsRest;
       // The rest slot is always emitted (Object), even when empty.
     } else if (!kwargs.empty()) {
-      throw culebra::CulebraError("TypeError",
-          std::format("unknown keyword argument '{}'",
-                      kwargs.begin()->first),
-          argsAst.line, argsAst.column);
+      // Same rationale as the missing-required throw above — emit at
+      // runtime so the error is catchable. Clear the map so subsequent
+      // resolution paths see a consistent empty state.
+      auto bad_name = std::string(kwargs.begin()->first);
+      emit_unknown_kwarg_throw(bad_name, argsAst.line, argsAst.column);
+      kwargs.clear();
     }
 
     std::vector<llvm::Value*> userArgs;
@@ -11903,14 +12087,14 @@ struct JIT {
         saw_named = true;
         auto name = child->nodes[0]->token;
         if (!seen_explicit.insert(name).second) {
-          throw culebra::CulebraError("TypeError",
+          emit_throw_error("TypeError",
               std::format("duplicate keyword argument '{}'", name),
               argsAst.line, argsAst.column);
         }
         explicit_kwargs.emplace_back(name, child->nodes[1].get());
       } else {
         if (saw_named) {
-          throw culebra::CulebraError("SyntaxError",
+          emit_throw_error("SyntaxError",
               "positional argument follows keyword argument",
               argsAst.line, argsAst.column);
         }
@@ -12245,7 +12429,15 @@ struct JIT {
     if (infoIt == func_info_.end()) {
       throw std::runtime_error("missing func_info for defer");
     }
-    const FuncInfo& info = infoIt->second;
+    FuncInfo& info = infoIt->second;
+
+    // Snapshot outer mut flags before compiling the defer body — the
+    // body's free-var bindings read this. Mirrors compile_fn_common.
+    info.free_var_mut.assign(info.free_vars.size(), false);
+    for (size_t i = 0; i < info.free_vars.size(); i++) {
+      auto outer_slot = lookup_var(info.free_vars[i]);
+      if (outer_slot) info.free_var_mut[i] = outer_slot->mut;
+    }
 
     // Same uniform ABI as compile_function; defer thunks ignore
     // n_args/args (callers always pass 0/null).
@@ -12293,7 +12485,8 @@ struct JIT {
       auto holder = entryB.CreateAlloca(ptrTy, nullptr, fv);
       builder_.CreateStore(cellPtr, holder);
       // Borrowed: the defer closure object owns the cell ref.
-      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false});
+      bool fv_mut = i < info.free_var_mut.size() ? info.free_var_mut[i] : false;
+      define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
     }
 
     compile(*ast.nodes[0]);

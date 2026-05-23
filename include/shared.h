@@ -123,6 +123,48 @@ inline std::string json_escape(std::string_view s) {
                      line, col);
 }
 
+// Reassigning a `let` (non-mut) binding. Interp tracks per-binding
+// mut via the `Symbol`'s `mut` flag; the JIT carries `mut` on
+// `VarSlot` and routes here when a write hits a non-mut slot.
+[[noreturn]] inline void throw_immutable_assign_at(
+    const std::string& name, long line, long col) {
+  throw CulebraError("ImmutableError",
+                     std::format("cannot reassign '{}' (declared without 'mut')",
+                                 name),
+                     line, col);
+}
+
+// Call site passed a keyword the callee doesn't accept. Both backends
+// used to diverge: interp threw at runtime (catchable by try/catch),
+// JIT raised at IR-emit time (uncatchable). This helper unifies them
+// to runtime throws.
+[[noreturn]] inline void throw_unknown_kwarg_at(
+    const std::string& name, long line, long col) {
+  throw CulebraError("TypeError",
+                     std::format("unknown keyword argument '{}'", name),
+                     line, col);
+}
+
+// Call site failed to bind a required parameter (no positional, no
+// kwarg, no default). Same backend-asymmetry rationale as the unknown-
+// kwarg helper above.
+[[noreturn]] inline void throw_missing_required_arg_at(
+    const std::string& name, long line, long col) {
+  throw CulebraError("ArityError",
+                     std::format("missing required argument '{}'", name),
+                     line, col);
+}
+
+// Generic runtime throw for cases where the JIT used to detect the
+// error at IR-emit time (uncatchable) while the interp threw at
+// eval time (catchable). Both backends now route through this helper
+// to keep `try { ... } catch e { e.kind }` semantics symmetric.
+[[noreturn]] inline void throw_runtime_error_at(
+    const std::string& kind, const std::string& msg,
+    long line, long col) {
+  throw CulebraError(kind, msg, line, col);
+}
+
 // Integer power by squaring. `exp` must be non-negative; result wraps
 // on overflow (matches the rest of Long arithmetic — no bignum).
 inline long ipow_nonneg(long base, long exp) {
