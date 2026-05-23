@@ -100,6 +100,18 @@ inline std::string json_escape(std::string_view s) {
                      col);
 }
 
+// Shared by interp's `eval_destructure_assign` and JIT's
+// `compile_destructure_assign` so both backends report the same
+// structured error (`ValueError` + descriptive message + location)
+// when an Object / Array / Tuple pattern fails to match its rval.
+[[noreturn]] inline void throw_destructure_mismatch_at(long line, long col) {
+  throw CulebraError("ValueError",
+                     std::format(
+                         "destructure pattern did not match value at {}:{}.",
+                         line, col),
+                     line, col);
+}
+
 // Integer power by squaring. `exp` must be non-negative; result wraps
 // on overflow (matches the rest of Long arithmetic — no bignum).
 inline long ipow_nonneg(long base, long exp) {

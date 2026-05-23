@@ -109,6 +109,14 @@ assert(r_json3.kind == 'TypeError')
 let r14 = try { assert(false); nil } catch e { e }
 assert(r14.kind == 'AssertionError')
 
+# --- Destructure mismatch (interp + JIT agree on kind / message) ---
+let r_destr = try {
+  let {present, missing} = {present: 1}
+  nil
+} catch e { e }
+assert(r_destr.kind == 'ValueError')
+assert(r_destr.message.contains('destructure pattern did not match value'))
+
 # --- Runtime helpers (throwing stdlib functions) ---
 # Verify the JIT sweep that routes runtime-helper calls through the
 # landingpad: Math.pow with a negative exp, to_long on bad input,

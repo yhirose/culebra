@@ -4946,8 +4946,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& pattern = *ast.nodes[1];
     auto rval = eval(*ast.nodes[2], env);
     if (!try_pattern(pattern, rval, env, mut)) {
-      throw CulebraError("ValueError",
-                         "destructure pattern did not match value");
+      // Helper carries line:col so the structured error has the same
+      // location the JIT path attaches — see shared.h.
+      throw_destructure_mismatch_at(static_cast<long>(ast.line),
+                                    static_cast<long>(ast.column));
     }
     return rval;
   }

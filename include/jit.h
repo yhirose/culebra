@@ -1282,6 +1282,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error(int64_t line,
   culebra::throw_type_error_at(line, col);
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_destructure_mismatch(int64_t line, int64_t col) {
+  culebra::throw_destructure_mismatch_at(line, col);
+}
+
 // Like type_error but includes "expected X, got Y" — caller passes the
 // expected type as a string-literal global and the runtime tag of the
 // actual value. Used by leaf JIT accessors (value_to_long etc.) where
@@ -5433,6 +5438,8 @@ inline constexpr auto to_long_any         = "culebra_runtime_to_long_any";
 inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
+inline constexpr auto destructure_mismatch
+    = "culebra_runtime_destructure_mismatch";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
 inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
@@ -8453,6 +8460,13 @@ struct JIT {
   // emit_type_error (same channel used by other "shape mismatch" cases).
   llvm::Value* compile_destructure_assign(const peg::Ast& ast) {
     const auto& pattern = *ast.nodes[1];
+    // Stash the DESTRUCTURE_ASSIGN's own location before compiling the
+    // rval — `compile(rval)` advances `current_line_ / current_column_`
+    // to inside the rval expression, but the structured error should
+    // report the statement-level position so it matches the interp
+    // path's `ast.line / ast.column`.
+    auto stmt_line = builder_.getInt64(ast.line);
+    auto stmt_col = builder_.getInt64(ast.column);
     auto rval = compile(*ast.nodes[2]);
 
     auto matched = emit_pattern(pattern, rval);
@@ -8463,7 +8477,12 @@ struct JIT {
     builder_.CreateCondBr(matched, okBB, failBB);
 
     builder_.SetInsertPoint(failBB);
-    emit_type_error();
+    emit_call(
+        module_->getOrInsertFunction(rt::destructure_mismatch,
+                                     builder_.getVoidTy(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {stmt_line, stmt_col});
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(okBB);
