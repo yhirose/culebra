@@ -1248,7 +1248,7 @@ struct Environment {
       auto& sym = it->second;
       if (!sym.mut) {
         throw CulebraError("ImmutableError",
-                           std::format("immutable variable '{}'...", s));
+                           std::format("cannot reassign '{}' (declared without 'mut')", s));
       }
       sym.val = std::move(val);
       return;

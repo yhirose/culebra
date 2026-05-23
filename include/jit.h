@@ -3103,9 +3103,7 @@ culebra_runtime_repl_set(const char* name,
       auto m = g->is_mut.find(name);
       if (m == g->is_mut.end() || !m->second) {
         _culebra_value_release_impl(tag, data);
-        throw culebra::CulebraError("ImmutableError",
-            std::format("cannot reassign immutable '{}'", name),
-            line, col);
+        culebra::throw_immutable_assign_at(name, line, col);
       }
     }
     _culebra_value_release_impl(it->second.tag, it->second.data);
@@ -6182,11 +6180,17 @@ struct JIT {
   void emit_unary_lambda_body(const peg::Ast& lambda_ast,
                               llvm::Value* elem, PerIter&& per_iter) {
     const auto& info = func_info_.at(&lambda_ast);
+    // PARAMETER layout: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?, (DEFAULT)?].
+    // Honor `|mut x|` so the inlined HOF body matches compile_fn_common's
+    // paramMuts handling and interp's per-param mut flag.
     auto param_name =
         std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
+    bool param_mut =
+        lambda_ast.nodes[0]->nodes[0]->nodes[0]->token == "mut";
     push_scope();
     bool captured = info.captured_locals.contains(param_name);
-    define_var(param_name, make_var_slot(captured, param_name, elem));
+    define_var(param_name,
+               make_var_slot(captured, param_name, elem, param_mut));
     auto result = compile(*lambda_ast.nodes[1]);
     per_iter(elem, result);
     pop_scope();
@@ -6200,13 +6204,19 @@ struct JIT {
     const auto& info = func_info_.at(&lambda_ast);
     auto acc_name =
         std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
+    bool acc_mut =
+        lambda_ast.nodes[0]->nodes[0]->nodes[0]->token == "mut";
     auto val_name =
         std::string(lambda_ast.nodes[0]->nodes[1]->nodes[1]->token);
+    bool val_mut =
+        lambda_ast.nodes[0]->nodes[1]->nodes[0]->token == "mut";
     push_scope();
     bool acc_captured = info.captured_locals.contains(acc_name);
-    define_var(acc_name, make_var_slot(acc_captured, acc_name, acc_val));
+    define_var(acc_name,
+               make_var_slot(acc_captured, acc_name, acc_val, acc_mut));
     bool val_captured = info.captured_locals.contains(val_name);
-    define_var(val_name, make_var_slot(val_captured, val_name, val_val));
+    define_var(val_name,
+               make_var_slot(val_captured, val_name, val_val, val_mut));
     auto result = compile(*lambda_ast.nodes[1]);
     store_result(result);
     pop_scope();
@@ -11938,9 +11948,14 @@ struct JIT {
         for (auto& prop : operand.nodes) {
           const auto& key_node = *prop->nodes[1];
           if (key_node.tag != "IDENTIFIER"_) {
+            // Emit a runtime throw and skip this entry — inserting a
+            // non-identifier token into the kwargs map would corrupt
+            // the subsequent resolver state for downstream IR even
+            // though the throw fires first at runtime.
             emit_throw_error("TypeError",
                 "**: splat Object key must be an identifier",
                 argsAst.line, argsAst.column);
+            continue;
           }
           const peg::Ast* val_ast = prop->nodes.size() >= 3
               ? prop->nodes[2].get()
