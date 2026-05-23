@@ -12659,6 +12659,16 @@ struct JIT {
       } catch (...) {}
       throw std::runtime_error(std::format("uncaught: {}", s));
     }
+    // Force a cycle collect while the LLJIT (and therefore every
+    // closure's `fn_ptr`) is still alive. Without this, top-level
+    // object cycles that carry a `drop` survive until ~_GcTracker
+    // runs at process exit — by then the JIT module has been torn
+    // down and the drop closure's native code is dangling, which
+    // segfaults. Running collect here matches interp's "drop is
+    // not invoked for cycle members" timing as a side effect: the
+    // collector simply releases each member's children, which can
+    // trigger drop on whichever ordering it visits.
+    _GcTracker::instance().collect();
   }
 };
 
