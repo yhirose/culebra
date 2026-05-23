@@ -2782,6 +2782,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
   return _find_property(obj, key) != nullptr;
 }
 
+// `match v { x: ClassName => ... }` predicate. Returns true when
+// `obj` carries a String `class` property whose value equals
+// `expected`. Mirrors `culebra::class_tag()` + name comparison in
+// the interp's `type_matches`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
+    JitObject* obj, const char* expected) {
+  auto* entry = _find_property(obj, "class");
+  if (!entry || entry->value.tag != TAG_STRING) return false;
+  auto* cls = reinterpret_cast<const char*>(entry->value.data);
+  return cls && expected && std::strcmp(cls, expected) == 0;
+}
+
 // Generic `obj.has(k)`. String keys go through the shape path (matches
 // `_find_property`'s proto walk); non-String keys check the sidecar.
 //
@@ -5371,6 +5383,8 @@ inline constexpr auto time_start_of_nanos  = "culebra_runtime_time_start_of_nano
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto object_class_matches
+    = "culebra_runtime_object_class_matches";
 inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
@@ -9299,7 +9313,39 @@ struct JIT {
         } else if (type_name == "Function") {
           tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
         } else {
-          tag_match = builder_.getFalse();
+          // Non-builtin type name → treat as a user class name. The
+          // subject matches when it's an Object whose `class` property
+          // (a String) equals the type name. Skip the runtime probe
+          // when the subject isn't Object — short-circuits to false.
+          auto ptrTy = llvm::PointerType::get(ctx_, 0);
+          auto isObj =
+              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+          auto fn = builder_.GetInsertBlock()->getParent();
+          auto probeBB =
+              llvm::BasicBlock::Create(ctx_, "typed.probe", fn);
+          auto endBB =
+              llvm::BasicBlock::Create(ctx_, "typed.end", fn);
+          auto entryBB = builder_.GetInsertBlock();
+          builder_.CreateCondBr(isObj, probeBB, endBB);
+
+          builder_.SetInsertPoint(probeBB);
+          auto objPtr =
+              builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+          auto expectedStr =
+              get_or_create_global_str(std::string(type_name), ".typed.cls");
+          auto probe = emit_call(
+              module_->getOrInsertFunction(rt::object_class_matches,
+                                           builder_.getInt1Ty(), ptrTy, ptrTy),
+              {objPtr, expectedStr}, "typed.classmatch");
+          auto probeEnd = builder_.GetInsertBlock();
+          builder_.CreateBr(endBB);
+
+          builder_.SetInsertPoint(endBB);
+          auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2,
+                                         "typed.match");
+          phi->addIncoming(builder_.getFalse(), entryBB);
+          phi->addIncoming(probe, probeEnd);
+          tag_match = phi;
         }
         // Bind unconditionally; only used if arm actually runs. `_` is
         // the sink — the type tag still gates the match, but no slot

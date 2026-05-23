@@ -1,0 +1,47 @@
+# `match v { x: ClassName => ... }` — type-pattern arms against
+# user-defined classes. Works on both interp and JIT.
+
+class Dog { new(name) { this.name = name } }
+class Cat { new(name) { this.name = name } }
+class Bird { new(name) { this.name = name } }
+
+let describe = fn(animal) {
+  match animal {
+    d: Dog  => "dog: {d.name}",
+    c: Cat  => "cat: {c.name}",
+    b: Bird => "bird: {b.name}",
+    _ => "unknown"
+  }
+}
+
+assert(describe(Dog.new("Rex")) == "dog: Rex")
+assert(describe(Cat.new("Mia")) == "cat: Mia")
+assert(describe(Bird.new("Tweety")) == "bird: Tweety")
+assert(describe("not an animal") == "unknown")
+assert(describe(42) == "unknown")
+assert(describe(nil) == "unknown")
+
+# Type pattern + plain Object — Object matches even when class tag absent
+let o = {x: 1}
+let r = match o {
+  obj: Object => "obj",
+  _ => "?"
+}
+assert(r == "obj")
+
+# Type pattern with the same class name on a non-Object value falls through
+let r2 = match 42 {
+  x: Dog => "is dog",
+  _ => "fallback"
+}
+assert(r2 == "fallback")
+
+# Nested: array pattern with TYPED_IDENT inside
+let pair_classify = fn(v) {
+  match v {
+    [x: Dog, _] => "first is dog: {x.name}",
+    _ => "no"
+  }
+}
+assert(pair_classify([Dog.new("Buddy"), 99]) == "first is dog: Buddy")
+assert(pair_classify([99, 100]) == "no")
