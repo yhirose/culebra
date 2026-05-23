@@ -367,7 +367,11 @@ int main(int argc, const char** argv) {
 #endif
     }
   } catch (const culebra::CulebraError& e) {
-    cerr << e.kind << ": " << e.what() << endl;
+    cerr << e.kind << ": " << e.what();
+    if (e.line > 0 || e.col > 0) {
+      cerr << " at " << e.line << ":" << e.col << ".";
+    }
+    cerr << endl;
     return -1;
   } catch (const exception& e) {
     cerr << e.what() << endl;

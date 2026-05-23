@@ -3325,17 +3325,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     try {
       return _eval_dispatch(ast, env);
-    } catch (const CulebraError& e) {
-      // Attach the AST location of the deepest eval() that threw — only
-      // once, by checking whether the message already carries " at ".
-      // Re-throw as CulebraError so kind/line/col reach eval_try intact.
-      std::string_view msg = e.what();
-      if (msg.find(" at ") != std::string_view::npos) throw;
-      throw CulebraError(
-          e.kind, std::format("{} at {}:{}.", msg, ast.line, ast.column),
-          static_cast<long>(ast.line), static_cast<long>(ast.column));
+    } catch (CulebraError& e) {
+      // Stamp the deepest eval()'s AST location onto the CulebraError
+      // line/col fields (only when they are still zero). Keep the
+      // message untouched so `e.message` is identical across interp
+      // and JIT; main.cc prints line/col separately from the fields.
+      if (e.line == 0 && e.col == 0) {
+        e.line = static_cast<long>(ast.line);
+        e.col = static_cast<long>(ast.column);
+      }
+      throw;
     } catch (const std::runtime_error& e) {
-      // Legacy path for any C++ throw site not yet converted.
+      // Legacy path for any C++ throw site not yet converted to
+      // CulebraError. Preserve location stamping in the message since
+      // there's no structured field to populate.
       std::string_view msg = e.what();
       if (msg.find(" at ") != std::string_view::npos) throw;
       throw std::runtime_error(
@@ -5329,7 +5332,15 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     msgs.push_back(std::format("uncaught: {}", e.str_display()));
   } catch (const CulebraError& e) {
     flush_top_defers();
-    msgs.push_back(std::format("{}: {}", e.kind, e.what()));
+    // Mirror main.cc's CulebraError formatter: append the source
+    // location from the structured fields when present so both
+    // backends produce identical uncaught-error output.
+    if (e.line > 0 || e.col > 0) {
+      msgs.push_back(std::format("{}: {} at {}:{}.",
+                                  e.kind, e.what(), e.line, e.col));
+    } else {
+      msgs.push_back(std::format("{}: {}", e.kind, e.what()));
+    }
   } catch (const std::runtime_error& e) {
     flush_top_defers();
     msgs.push_back(std::format("RuntimeError: {}", e.what()));
