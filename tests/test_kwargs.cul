@@ -159,4 +159,19 @@ assert(dyn_target(1, **mkopts()) == 441)
 let fmt = fn (s, prefix = "[", suffix = "]") { "{prefix}{s}{suffix}" }
 assert("hello".fmt(prefix: "<", suffix: ">") == "<hello>")
 
+# Mixed positional / **splat / kwarg arguments must evaluate
+# left-to-right in source order on both backends — the JIT used
+# to evaluate positional first, then kwargs, then splats, which
+# diverged from interp when any argument expression had side
+# effects. After the fix, both honor the user-written order.
+mut order_log = []
+let trace = fn (label, v) { order_log.push(label); v }
+let order_target = fn (a, b, c) { a + b + c }
+assert(order_target(trace("pos", 1), **trace("splat", {b: 2}),
+                    c: trace("kw", 3)) == 6)
+assert(order_log.size() == 3 &&
+       order_log[0] == 'pos' &&
+       order_log[1] == 'splat' &&
+       order_log[2] == 'kw')
+
 IO.puts('test_kwargs OK')

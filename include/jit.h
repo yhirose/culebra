@@ -12191,25 +12191,40 @@ struct JIT {
       }
     }
 
-    // Compile each value (caller-side +1 transfer to the slab).
-    std::vector<llvm::Value*> posVals;
-    posVals.reserve(positional_prefix.size() + positional.size());
-    for (auto* v : positional_prefix) posVals.push_back(v);
-    for (auto* ast : positional) posVals.push_back(compile(*ast));
-
-    std::vector<llvm::Value*> kwVals;
-    kwVals.reserve(explicit_kwargs.size());
+    // Pre-size the per-bucket value vectors and pre-build kwarg key
+    // global strings (these have no side effects). The actual value
+    // expressions are compiled in a single source-order pass below
+    // so the interp's left-to-right evaluation order is preserved
+    // even when positional / kwarg / **splat are interleaved.
+    std::vector<llvm::Value*> posVals(
+        positional_prefix.size() + positional.size(), nullptr);
+    for (size_t i = 0; i < positional_prefix.size(); i++) {
+      posVals[i] = positional_prefix[i];
+    }
+    std::vector<llvm::Value*> kwVals(explicit_kwargs.size(), nullptr);
     std::vector<llvm::Constant*> kwKeyConsts;
     kwKeyConsts.reserve(explicit_kwargs.size());
-    for (auto& [name, ast] : explicit_kwargs) {
-      kwVals.push_back(compile(*ast));
+    for (auto& [name, _ast] : explicit_kwargs) {
       kwKeyConsts.push_back(builder_.CreateGlobalString(
           std::string(name), ".kwkey"));
     }
+    std::vector<llvm::Value*> splatVals(splats.size(), nullptr);
 
-    std::vector<llvm::Value*> splatVals;
-    splatVals.reserve(splats.size());
-    for (auto* ast : splats) splatVals.push_back(compile(*ast));
+    // Source-order evaluation: walk the original ARG_LIST and compile
+    // each value where it appears, storing into the right bucket
+    // index. Matches interp's `split_call_args` + sequential eval.
+    size_t pos_i = positional_prefix.size();
+    size_t kw_i = 0;
+    size_t splat_i = 0;
+    for (auto& child : argsAst.nodes) {
+      if (child->tag == "KWARG_SPLAT"_) {
+        splatVals[splat_i++] = compile(*child->nodes[0]);
+      } else if (child->tag == "KWARG"_) {
+        kwVals[kw_i++] = compile(*child->nodes[1]);
+      } else {
+        posVals[pos_i++] = compile(*child);
+      }
+    }
 
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
