@@ -28,6 +28,20 @@ struct LoadedModule {
   std::vector<std::filesystem::path> deps;
 };
 
+// Resolve a relative module path against an importing module's
+// directory into a stable absolute key. Used by the loader, interp,
+// and JIT — they must all agree on the same key so the module table
+// lookup matches the register call.
+inline std::filesystem::path resolve_module_path(
+    const std::string& rel, const std::filesystem::path& from_dir) {
+  std::filesystem::path abs(rel);
+  if (!abs.is_absolute()) abs = from_dir / abs;
+  std::error_code ec;
+  auto canon = std::filesystem::weakly_canonical(abs, ec);
+  if (ec) canon = std::filesystem::absolute(abs).lexically_normal();
+  return canon;
+}
+
 // Walks the dependency graph reachable from an entry module, returning
 // every loaded module in topological order (every module appears after
 // all of its dependencies). interp / JIT / AOT all share this loader
@@ -158,11 +172,8 @@ inline std::vector<std::filesystem::path> ModuleLoader::extract_imports(
   for (const auto& child : stmts->nodes) {
     const peg::Ast* node = child.get();
     if (node->tag != "IMPORT_STMT"_) continue;
-    std::filesystem::path rel(std::string(node->nodes[1]->token));
-    std::filesystem::path abs = rel.is_absolute() ? rel : (from_dir / rel);
-    std::error_code ec;
-    auto canon = std::filesystem::weakly_canonical(abs, ec);
-    if (ec) canon = std::filesystem::absolute(abs);
+    auto canon = resolve_module_path(
+        std::string(node->nodes[1]->token), from_dir);
     if (seen.insert(canon.string()).second) out.push_back(canon);
   }
   return out;

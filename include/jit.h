@@ -10991,19 +10991,10 @@ struct JIT {
   llvm::Value* compile_import_stmt(const peg::Ast& ast) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
-
-    // Resolve the dependency's absolute path at compile time — the
-    // path is a literal STRING so we don't need a runtime resolver.
-    std::filesystem::path abs(rel);
-    if (!abs.is_absolute()) {
-      auto from_dir = current_module_path_.empty()
-                          ? std::filesystem::current_path()
-                          : current_module_path_.parent_path();
-      abs = from_dir / abs;
-    }
-    std::error_code ec;
-    auto canon = std::filesystem::weakly_canonical(abs, ec);
-    if (ec) canon = std::filesystem::absolute(abs);
+    auto from_dir = current_module_path_.empty()
+                        ? std::filesystem::current_path()
+                        : current_module_path_.parent_path();
+    auto canon = culebra::resolve_module_path(rel, from_dir);
 
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();

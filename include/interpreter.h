@@ -3962,16 +3962,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                          std::shared_ptr<Environment> env) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
-    std::filesystem::path abs(rel);
-    if (!abs.is_absolute()) {
-      auto from_dir = module_stack_.empty()
-                          ? std::filesystem::current_path()
-                          : module_stack_.back().parent_path();
-      abs = from_dir / abs;
-    }
-    std::error_code ec;
-    auto canon = std::filesystem::weakly_canonical(abs, ec);
-    if (ec) canon = std::filesystem::absolute(abs);
+    auto from_dir = module_stack_.empty()
+                        ? std::filesystem::current_path()
+                        : module_stack_.back().parent_path();
+    auto canon = resolve_module_path(rel, from_dir);
     auto it = module_cache_.find(canon.string());
     if (it == module_cache_.end()) {
       throw CulebraError(
