@@ -189,11 +189,11 @@ inline void ModuleLoader::validate_module(const peg::Ast& ast) {
     for (const auto& child : stmts->nodes) walk(*child, true);
   }
 
-  // Reject duplicate names within any one EXPORT_STMT.
+  // Reject duplicate names across all EXPORT_STMTs in the module.
   if (stmts) {
+    std::unordered_set<std::string_view> seen;
     for (const auto& child : stmts->nodes) {
       if (child->tag != "EXPORT_STMT"_) continue;
-      std::unordered_set<std::string_view> seen;
       for (const auto& id : child->nodes) {
         auto name = id->token;
         if (!seen.insert(name).second) {

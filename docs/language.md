@@ -2625,9 +2625,10 @@ for both bundled AOT builds and tree-shaking analysis.
 * Multiple `export { ... }` statements in a single file are
   merged. This lets a file declare a few helpers, export them,
   declare more, export more.
-* Listing the same name twice within one `EXPORT_STMT` is a
-  `SyntaxError` (parse-time). The name must be defined as a
-  local binding in the module before the export references it.
+* Listing the same name twice — whether in one `EXPORT_STMT` or
+  spread across multiple — is a `SyntaxError` (parse-time). The
+  name must be defined as a local binding in the module before the
+  export references it.
 
 ### Errors
 

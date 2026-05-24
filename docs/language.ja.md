@@ -2518,9 +2518,10 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
   有用。
 * 1 ファイルに複数の `export { ... }` を書くとマージされます。
   ヘルパを定義→公開、追加で定義→追加で公開、を分けて書けます。
-* 1 つの `EXPORT_STMT` の中で同じ名前を 2 回書くと parse 時に
-  `SyntaxError`。export 対象は module 内で先に local 束縛として
-  定義されている必要があります。
+* 同じ名前を 2 回書くと（1 つの `EXPORT_STMT` 内でも複数の
+  `EXPORT_STMT` をまたいでも）parse 時に `SyntaxError`。
+  export 対象は module 内で先に local 束縛として定義されている
+  必要があります。
 
 ### エラー
 
