@@ -911,6 +911,24 @@ test_drop = fn () {
     let _id = r.id
   }
   assert(events.size() == 1 && events[0] == 'cs3')
+
+  // Cyclic references: drop is intentionally NOT fired for cycle
+  // members on either backend. The interp has no cycle collector
+  // (cycles leak), and the JIT's cycle collector skips drop calls
+  // so observable behavior matches Python's __del__ rule.
+  events = []
+  make_pair = fn () {
+    mut a = nil; mut b = nil
+    a = { id: 'cyc-a', drop: fn () { events.push('cyc-a') } }
+    b = { id: 'cyc-b', drop: fn () { events.push('cyc-b') } }
+    a.other = b
+    b.other = a
+    a
+  }
+  {
+    let _cyc = make_pair()
+  }
+  assert(events.size() == 0)
 }
 
 // JIT-safe subset of UFCS tests. Broader coverage including the

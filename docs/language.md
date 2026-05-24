@@ -1698,11 +1698,17 @@ single parent's properties is **not specified** (currently follows
 **Exceptions**: an exception thrown from `drop` is logged to stderr
 and swallowed so that the rest of the cleanup cascade proceeds.
 
-**Cycles**: cyclic references among `Object`s participate in the
-cycle collector (see above). When a cycle is collected, `drop` is
-called on each member once, with order unspecified. Resurrecting
-`this` (storing it somewhere that outlives the `drop` call) is
-undefined behaviour in this implementation.
+**Cycles**: cyclic references among `Object`s are reclaimed by the
+cycle collector (see above), but `drop` is **not** called on cycle
+members. This matches Python's `__del__` rule for cyclic garbage —
+the order of finalization across cycle members would be
+non-deterministic, so the rule is "no finalizers in cycles." The
+guarantee applies on both backends: the interpreter has no cycle
+collector and leaks cycles (so drops never fire either way), and the
+JIT's cycle collector explicitly skips drop calls. To run cleanup
+on a resource held by a cyclic structure, break the cycle manually
+before the last reference is released (e.g. `a.other = nil`), or use
+`defer` (§15) at the scope that owns the resource.
 
 **Binding-scope caveat**: `drop` fires reliably when the object is
 held in a **block-scoped** binding whose `drop` function was produced

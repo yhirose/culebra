@@ -706,10 +706,16 @@ struct _GcTracker {
       }
       case GC_TAG_OBJECT: {
         auto* o = static_cast<JitObject*>(ptr);
-        // Fire drop before tearing down the prop map. Order among
-        // cycle members is undefined; each drop still runs exactly
-        // once because the helper short-circuits on missing drop.
-        _culebra_call_drop_if_present(o);
+        // `drop` is intentionally NOT fired for cycle members. The
+        // interpreter has no cycle collector and therefore never runs
+        // user drops on cycles either; firing them only in the JIT
+        // would diverge observable behavior (drop side-effects:
+        // puts, file close, counter decrement, ...). This matches
+        // Python's __del__ rule for cyclic garbage: the collector
+        // breaks the cycle but skips finalizers because their order
+        // would be non-deterministic. Non-cyclic objects still hit
+        // their drop via the normal _culebra_value_release_impl
+        // refcount-to-zero path.
         if (o->proto) {
           auto* proto = o->proto;
           o->proto = nullptr;
