@@ -1132,71 +1132,435 @@ struct JitExtension {
 // Convenience wrapper for embedders. Call once before JIT::run().
 inline void install_jit_stdlib() { JitExtension::install(); }
 
-// --- Stdlib namespace as first-class JIT object (#174) ---
+// --- Stdlib namespace as first-class JIT object ---
 //
 // `let m = IO; m.puts(x)` needs IO to be a value, not just a
-// compile-time syntactic pattern. The namespace pool below builds
-// a JitObject per stdlib namespace lazily and stores closures that
-// trampoline into the matching `culebra_runtime_*` helper. Fast
-// path `IO.puts(x)` still goes through compile_global as before.
+// compile-time syntactic pattern. Each stdlib namespace gets a
+// lazy JitObject whose method slots are closures that trampoline
+// into a single dispatcher table. Fast path (`IO.puts(x)` as
+// IDENTIFIER.DOT.ARGUMENTS) still goes through compile_ns_call
+// in JitExtension and bypasses this entirely.
+//
+// To add a method: append one row to `kNsMethods` below. The drift
+// check in debug builds verifies that every namespace bound by
+// `culebra::setup_built_in_functions` is covered here. _Time is
+// an internal Time-class ABI, intentionally excluded.
+//
+// Each adapter is a thin wrapper that unmarshals positional args
+// and calls the matching `culebra_runtime_*` helper. line/col are
+// passed as 0 — slow path is rare enough that losing call-site
+// location in helper errors is acceptable (the fast path keeps
+// line/col via `compile_ns_call`).
+
+namespace _ns_adapt {
+
+[[noreturn]] inline void arity_error(const char* ns, const char* method,
+                                       int expected, int64_t got) {
+  culebra::throw_runtime_error_at(
+      "ArityError",
+      std::format("{}.{}: expected {} positional argument{}, got {}",
+                  ns, method, expected, expected == 1 ? "" : "s", got),
+      0, 0);
+}
+
+inline const char* take_str(JitValue v) {
+  return v.tag == TAG_STRING ? reinterpret_cast<const char*>(v.data) : "";
+}
+inline JitArray* take_array(JitValue v) {
+  return v.tag == TAG_ARRAY ? reinterpret_cast<JitArray*>(v.data) : nullptr;
+}
+#ifndef CULEBRA_RT_NO_TENSOR
+inline JitTensor* take_tensor(JitValue v) {
+  return v.tag == TAG_TENSOR ? reinterpret_cast<JitTensor*>(v.data) : nullptr;
+}
+#endif
+inline JitObject* take_object(JitValue v) {
+  return v.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(v.data) : nullptr;
+}
+inline int64_t take_long(JitValue v) { return v.data; }
+inline double take_double(JitValue v) {
+  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
+  return static_cast<double>(v.data);
+}
+inline int64_t take_bool(JitValue v) { return v.data != 0 ? 1 : 0; }
+
+inline JitValue v_nil()                  { return {TAG_NIL, 0}; }
+inline JitValue v_long(int64_t x)        { return {TAG_LONG, x}; }
+inline JitValue v_bool(int64_t x)        { return {TAG_BOOL, x != 0 ? 1 : 0}; }
+inline JitValue v_float(double x)        {
+  return {TAG_FLOAT, _culebra_double_to_bits(x)};
+}
+inline JitValue v_string(const char* s)  {
+  return {TAG_STRING, reinterpret_cast<int64_t>(s)};
+}
+inline JitValue v_array(JitArray* a)     {
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
+}
+inline JitValue v_object(JitObject* o)   {
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+#ifndef CULEBRA_RT_NO_TENSOR
+inline JitValue v_tensor(JitTensor* t)   {
+  return {TAG_TENSOR, reinterpret_cast<int64_t>(t)};
+}
+#endif
+
+}  // namespace _ns_adapt
+
+// --- Per-method adapters ---
+
+// IO
+inline JitValue _ns_io_puts(JitValue* a, int64_t) {
+  culebra_runtime_puts(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_print(JitValue* a, int64_t) {
+  culebra_runtime_print(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_input(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_input());
+}
+inline JitValue _ns_io_read(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_read_file(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_io_write(JitValue* a, int64_t) {
+  culebra_runtime_write_file(_ns_adapt::take_str(a[0]),
+                              _ns_adapt::take_str(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_exists(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_io_exists(_ns_adapt::take_str(a[0])));
+}
+
+// Math
+inline JitValue _ns_math_abs(JitValue* a, int64_t) {
+  return culebra_runtime_math_abs(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_log(JitValue* a, int64_t) {
+  return culebra_runtime_math_log(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_exp(JitValue* a, int64_t) {
+  return culebra_runtime_math_exp(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_sqrt(JitValue* a, int64_t) {
+  return culebra_runtime_math_sqrt(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_floor(JitValue* a, int64_t) {
+  return culebra_runtime_math_floor(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_ceil(JitValue* a, int64_t) {
+  return culebra_runtime_math_ceil(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_round(JitValue* a, int64_t) {
+  return culebra_runtime_math_round(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_min(JitValue* a, int64_t n) {
+  return culebra_runtime_math_min(a, n, 0, 0);
+}
+inline JitValue _ns_math_max(JitValue* a, int64_t n) {
+  return culebra_runtime_math_max(a, n, 0, 0);
+}
+inline JitValue _ns_math_pow(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_math_pow(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
+}
+inline JitValue _ns_math_sign(JitValue* a, int64_t) {
+  auto x = _ns_adapt::take_long(a[0]);
+  return _ns_adapt::v_long(x > 0 ? 1 : (x < 0 ? -1 : 0));
+}
+inline JitValue _ns_math_clamp(JitValue* a, int64_t) {
+  auto x = _ns_adapt::take_long(a[0]);
+  auto lo = _ns_adapt::take_long(a[1]);
+  auto hi = _ns_adapt::take_long(a[2]);
+  return _ns_adapt::v_long(x < lo ? lo : (x > hi ? hi : x));
+}
+
+// FS
+inline JitValue _ns_fs_join(JitValue* a, int64_t n) {
+  return _ns_adapt::v_string(culebra_runtime_fs_join(a, n, 0, 0));
+}
+inline JitValue _ns_fs_basename(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_basename(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_dirname(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_dirname(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_extension(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_extension(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_stem(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_fs_stem(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_exists(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_io_exists(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_is_file(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_file(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_is_dir(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_dir(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_size(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_fs_size(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_list_dir(JitValue* a, int64_t) {
+  return _ns_adapt::v_array(
+      culebra_runtime_fs_list_dir(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_mkdir(JitValue* a, int64_t) {
+  culebra_runtime_fs_mkdir(_ns_adapt::take_str(a[0]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_fs_remove(JitValue* a, int64_t) {
+  culebra_runtime_fs_remove(_ns_adapt::take_str(a[0]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+
+// Random
+inline JitValue _ns_random_seed(JitValue* a, int64_t) {
+  culebra_runtime_random_seed(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_random_int(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_random_int(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), 0, 0));
+}
+inline JitValue _ns_random_uniform(JitValue* a, int64_t) {
+  return culebra_runtime_random_uniform(a[0].tag, a[0].data,
+                                         a[1].tag, a[1].data);
+}
+inline JitValue _ns_random_gauss(JitValue* a, int64_t) {
+  return culebra_runtime_random_gauss(a[0].tag, a[0].data,
+                                       a[1].tag, a[1].data);
+}
+inline JitValue _ns_random_shuffle(JitValue* a, int64_t) {
+  culebra_runtime_random_shuffle(_ns_adapt::take_array(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_random_weighted_choice(JitValue* a, int64_t) {
+  return culebra_runtime_random_weighted_choice(
+      _ns_adapt::take_array(a[0]), _ns_adapt::take_array(a[1]), 0, 0);
+}
+
+// Sys
+inline JitValue _ns_sys_exit(JitValue* a, int64_t) {
+  culebra_runtime_sys_exit(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_sys_env(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_sys_env(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_sys_time(JitValue*, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_sys_time());
+}
+
+// JSON. Slow path is positional-only; the kwargs form goes through
+// compile_json_kwargs_adapter on the fast path.
+inline JitValue _ns_json_stringify(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_json_stringify(a[0].tag, a[0].data, 0, false, 0));
+}
+inline JitValue _ns_json_parse(JitValue* a, int64_t) {
+  return culebra_runtime_json_parse(_ns_adapt::take_str(a[0]),
+                                     /*number_mode=*/"auto", /*lines=*/0);
+}
+
+#ifndef CULEBRA_RT_NO_TENSOR
+// Tensor
+inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
+}
+inline JitValue _ns_tensor_ones(JitValue* a, int64_t n) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_ones(a, n, 0, 0));
+}
+inline JitValue _ns_tensor_randn(JitValue* a, int64_t n) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_randn(a, n, 0, 0));
+}
+inline JitValue _ns_tensor_from(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(
+      culebra_runtime_tensor_from(_ns_adapt::take_array(a[0]), 0, 0));
+}
+inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(
+      culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_tensor_sigmoid(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
+      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Sigmoid)));
+}
+inline JitValue _ns_tensor_relu(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
+      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Relu)));
+}
+inline JitValue _ns_tensor_softmax(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
+      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Softmax)));
+}
+inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
+  for (int64_t i = 0; i < n; i++) {
+    if (auto* t = _ns_adapt::take_tensor(a[i])) {
+      culebra_runtime_tensor_eval_one(t);
+    }
+  }
+  return _ns_adapt::v_nil();
+}
+#endif  // CULEBRA_RT_NO_TENSOR
+
+// --- The dispatch table ---
+
+struct NsMethod {
+  const char* ns;
+  const char* name;
+  int8_t arity;  // -1 = variadic
+  JitValue (*adapter)(JitValue* args, int64_t n);
+};
+
+inline const NsMethod kNsMethods[] = {
+  {"IO",     "puts",      1, &_ns_io_puts},
+  {"IO",     "print",     1, &_ns_io_print},
+  {"IO",     "input",     0, &_ns_io_input},
+  {"IO",     "read",      1, &_ns_io_read},
+  {"IO",     "write",     2, &_ns_io_write},
+  {"IO",     "exists",    1, &_ns_io_exists},
+
+  {"Math",   "abs",       1, &_ns_math_abs},
+  {"Math",   "log",       1, &_ns_math_log},
+  {"Math",   "exp",       1, &_ns_math_exp},
+  {"Math",   "sqrt",      1, &_ns_math_sqrt},
+  {"Math",   "floor",     1, &_ns_math_floor},
+  {"Math",   "ceil",      1, &_ns_math_ceil},
+  {"Math",   "round",     1, &_ns_math_round},
+  {"Math",   "min",      -1, &_ns_math_min},
+  {"Math",   "max",      -1, &_ns_math_max},
+  {"Math",   "pow",       2, &_ns_math_pow},
+  {"Math",   "sign",      1, &_ns_math_sign},
+  {"Math",   "clamp",     3, &_ns_math_clamp},
+
+  {"FS",     "join",     -1, &_ns_fs_join},
+  {"FS",     "basename",  1, &_ns_fs_basename},
+  {"FS",     "dirname",   1, &_ns_fs_dirname},
+  {"FS",     "extension", 1, &_ns_fs_extension},
+  {"FS",     "stem",      1, &_ns_fs_stem},
+  {"FS",     "exists",    1, &_ns_fs_exists},
+  {"FS",     "is_file",   1, &_ns_fs_is_file},
+  {"FS",     "is_dir",    1, &_ns_fs_is_dir},
+  {"FS",     "size",      1, &_ns_fs_size},
+  {"FS",     "list_dir",  1, &_ns_fs_list_dir},
+  {"FS",     "mkdir",     1, &_ns_fs_mkdir},
+  {"FS",     "remove",    1, &_ns_fs_remove},
+
+  {"Random", "seed",            1, &_ns_random_seed},
+  {"Random", "int",             2, &_ns_random_int},
+  {"Random", "uniform",         2, &_ns_random_uniform},
+  {"Random", "gauss",           2, &_ns_random_gauss},
+  {"Random", "shuffle",         1, &_ns_random_shuffle},
+  {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
+
+  {"Sys",    "exit", 1, &_ns_sys_exit},
+  {"Sys",    "env",  1, &_ns_sys_env},
+  {"Sys",    "time", 0, &_ns_sys_time},
+
+  {"JSON",   "stringify", 1, &_ns_json_stringify},
+  {"JSON",   "parse",     1, &_ns_json_parse},
+
+#ifndef CULEBRA_RT_NO_TENSOR
+  {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
+  {"Tensor", "ones",     -1, &_ns_tensor_ones},
+  {"Tensor", "randn",    -1, &_ns_tensor_randn},
+  {"Tensor", "from",      1, &_ns_tensor_from},
+  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv},
+  {"Tensor", "sigmoid",   1, &_ns_tensor_sigmoid},
+  {"Tensor", "relu",      1, &_ns_tensor_relu},
+  {"Tensor", "softmax",   1, &_ns_tensor_softmax},
+  {"Tensor", "eval",     -1, &_ns_tensor_eval},
+#endif
+};
+
+// Namespace-level constants (Math.pi, etc). Slot values are immutable
+// at the language level; we register them once when building the
+// namespace object. Sys.argv is built dynamically (process arg list)
+// — see `_jit_build_namespace_object`.
+struct NsConstant {
+  const char* ns;
+  const char* name;
+  JitValue (*build)();  // late-bound so M_PI etc. evaluate at build time
+};
+
+inline JitValue _ns_const_pi()  { return _ns_adapt::v_float(M_PI); }
+inline JitValue _ns_const_e()   { return _ns_adapt::v_float(M_E); }
+inline JitValue _ns_const_inf() {
+  return _ns_adapt::v_float(std::numeric_limits<double>::infinity());
+}
+inline JitValue _ns_const_nan() {
+  return _ns_adapt::v_float(std::numeric_limits<double>::quiet_NaN());
+}
+
+inline const NsConstant kNsConstants[] = {
+  {"Math", "pi",  &_ns_const_pi},
+  {"Math", "e",   &_ns_const_e},
+  {"Math", "inf", &_ns_const_inf},
+  {"Math", "nan", &_ns_const_nan},
+};
+
+// --- Trampoline + factory + lazy table ---
 
 inline JitValue _jit_ns_method_trampoline(
     JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
-  const char* ns =
-      reinterpret_cast<const char*>(cls->captures[0]->value.data);
-  const char* method =
-      reinterpret_cast<const char*>(cls->captures[1]->value.data);
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
   auto release_args = [&]() {
     for (int64_t i = 0; i < n_args; i++) {
       _culebra_value_release_impl(args[i].tag, args[i].data);
     }
   };
-
-  if (std::strcmp(ns, "IO") == 0) {
-    if (std::strcmp(method, "puts") == 0) {
-      if (n_args >= 1) culebra_runtime_puts(args[0].tag, args[0].data);
-      release_args();
-      return {TAG_NIL, 0};
-    }
-    if (std::strcmp(method, "print") == 0) {
-      if (n_args >= 1) culebra_runtime_print(args[0].tag, args[0].data);
-      release_args();
-      return {TAG_NIL, 0};
-    }
+  if (m->arity >= 0 && n_args != m->arity) {
+    release_args();
+    _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args);
   }
-
-  release_args();
-  culebra::throw_runtime_error_at(
-      "AttributeError",
-      std::format("'{}' namespace has no method '{}'", ns, method),
-      0, 0);
+  try {
+    auto r = m->adapter(args, n_args);
+    release_args();
+    return r;
+  } catch (...) {
+    release_args();
+    throw;
+  }
 }
 
-inline JitClosure* _jit_make_ns_method_closure(
-    const char* ns, const char* method, size_t arity) {
+inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   auto* cls = new JitClosure();
   cls->refcount = 1;
   cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
-  cls->n_captures = 2;
-  cls->captures = new JitCell*[2];
+  cls->n_captures = 1;
+  cls->captures = new JitCell*[1];
   cls->captures[0] = culebra_runtime_cell_new(
-      TAG_STRING, reinterpret_cast<int64_t>(ns));
-  cls->captures[1] = culebra_runtime_cell_new(
-      TAG_STRING, reinterpret_cast<int64_t>(method));
-  cls->arity = arity;
+      TAG_LONG, reinterpret_cast<int64_t>(m));
+  cls->arity = m->arity < 0 ? 0 : static_cast<size_t>(m->arity);
   _gc().add(cls, GC_TAG_FUNC);
   return cls;
 }
 
-inline JitObject* _jit_build_io_namespace() {
+inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
   auto* obj = culebra_runtime_object_new();
-  auto bind = [&](const char* name, size_t arity) {
-    auto* fn = _jit_make_ns_method_closure("IO", name, arity);
-    obj->append_slot(name, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)},
+  for (auto& m : kNsMethods) {
+    if (ns_name != m.ns) continue;
+    auto* fn = _jit_make_ns_method_closure(&m);
+    obj->append_slot(m.name,
+                     JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)},
                      /*mut=*/false);
-  };
-  bind("puts", 1);
-  bind("print", 1);
+  }
+  for (auto& c : kNsConstants) {
+    if (ns_name != c.ns) continue;
+    obj->append_slot(c.name, c.build(), /*mut=*/false);
+  }
+  if (ns_name == "Sys") {
+    auto* a = culebra_runtime_sys_argv();
+    obj->append_slot(
+        "argv", JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(a)},
+        /*mut=*/false);
+  }
   return obj;
 }
 
@@ -1210,24 +1574,63 @@ struct _JitNamespaceTable {
   }
 };
 
+// Namespace names this dispatcher knows how to build. Kept in sync
+// with interp's `setup_built_in_functions` by the drift check below.
+// `_Time` is the Time-class ABI primitive — internal, not user-facing
+// — and intentionally excluded.
+inline bool _is_known_ns(std::string_view name) {
+  for (auto& m : kNsMethods) if (name == m.ns) return true;
+  for (auto& c : kNsConstants) if (name == c.ns) return true;
+  return name == "Sys";  // Sys has only constants in some configs
+}
+
 inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
                     culebra::kSlotJitNamespaceTable).entries;
   auto it = table.find(name);
   if (it != table.end()) return it->second;
-  JitObject* obj = nullptr;
-  if (name == "IO") obj = _jit_build_io_namespace();
-  // Other namespaces (Math, Sys, FS, ...) will register here as
-  // MVP coverage grows.
-  if (!obj) return nullptr;
+  if (!_is_known_ns(name)) return nullptr;
+  auto* obj = _jit_build_namespace_object(name);
   table.emplace(name, obj);
   return obj;
 }
+
+#ifndef NDEBUG
+// One-shot drift detector: if interp's setup_built_in_functions
+// binds a namespace this dispatcher doesn't know about, abort the
+// process with a clear message at first slow-path resolve. Catches
+// the case where someone adds a new stdlib namespace (e.g. `Net`)
+// to stdlib_interp.h and forgets to update kNsMethods here.
+inline void _check_ns_drift_once() {
+  static const bool checked = []() {
+    static const std::set<std::string_view> kInternalNs = {"_Time"};
+    auto env = culebra::environment();
+    for (const auto& [key, sym] : env->dictionary) {
+      if (sym.val.type != culebra::Value::Object) continue;
+      std::string_view n(key);
+      if (kInternalNs.contains(n)) continue;
+      if (!_is_known_ns(n)) {
+        std::fprintf(stderr,
+            "culebra: JIT namespace drift — interp binds '%s' but "
+            "stdlib_jit.h::kNsMethods does not cover it. Add adapters "
+            "and table rows for it.\n",
+            std::string(n).c_str());
+        std::abort();
+      }
+    }
+    return true;
+  }();
+  (void)checked;
+}
+#else
+inline void _check_ns_drift_once() {}
+#endif
 
 extern "C" {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
+  _check_ns_drift_once();
   auto* obj = _jit_namespace_get_or_build(std::string(name ? name : ""));
   if (!obj) {
     culebra::throw_runtime_error_at(
@@ -2545,7 +2948,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "puts",    "print",     "assert",
       "to_long", "to_float",  "to_string", "type_of",
       "Math",    "IO",        "FS",        "_Time",
-      "Random",  "Sys",       "JSON"};
+      "Random",  "Sys",       "JSON",      "Tensor"};
   return names.contains(name);
 }
 

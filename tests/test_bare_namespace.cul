@@ -1,0 +1,73 @@
+// Conformance: each stdlib namespace must be addressable as a first-class
+// value. `let m = NS; m.method(...)` (slow path, via _jit_ns_method_trampoline
+// on JIT/AOT) must return the same observable behavior as `NS.method(...)`
+// (fast path, via compile_ns_call). See stdlib_jit.h::kNsMethods.
+
+// --- IO ---
+let io = IO
+io.puts("IO bare resolve")
+assert(io.exists("tests/test_bare_namespace.cul") == true)
+assert(io.exists("/nonexistent_path_xyz") == false)
+
+// --- Math ---
+let math = Math
+assert(math.abs(-5) == 5)
+assert(math.abs(-3.5) == 3.5)
+assert(math.sqrt(16.0) == 4.0)
+assert(math.floor(3.7) == 3)
+assert(math.ceil(3.2) == 4)
+assert(math.round(3.5) == 4)
+assert(math.pow(2, 10) == 1024)
+assert(math.sign(-7) == -1)
+assert(math.sign(7) == 1)
+assert(math.sign(0) == 0)
+assert(math.clamp(15, 0, 10) == 10)
+assert(math.clamp(-5, 0, 10) == 0)
+assert(math.min(3, 1, 4, 1, 5) == 1)
+assert(math.max(3, 1, 4, 1, 5) == 5)
+assert(math.pi > 3.14 && math.pi < 3.15)
+assert(math.e > 2.71 && math.e < 2.72)
+
+// --- FS ---
+let fs = FS
+assert(fs.basename("/tmp/foo.txt") == "foo.txt")
+assert(fs.dirname("/tmp/foo.txt") == "/tmp")
+assert(fs.extension("/tmp/foo.txt") == ".txt")
+assert(fs.stem("/tmp/foo.txt") == "foo")
+assert(fs.join("a", "b", "c.txt") == "a/b/c.txt")
+assert(fs.exists("tests/test_bare_namespace.cul") == true)
+
+// --- Random ---
+let r = Random
+r.seed(42)
+let n = r.int(0, 100)
+assert(n >= 0 && n < 100)
+let f = r.uniform(0.0, 1.0)
+assert(f >= 0.0 && f <= 1.0)
+let a = [1, 2, 3, 4, 5]
+r.shuffle(a)
+assert(a.size() == 5)  // shuffle in place — size unchanged
+
+// --- Sys ---
+let s = Sys
+assert(s.time() >= 0.0)
+assert(type_of(s.argv) == "Array")  // s.argv is a slot, not a method
+
+// --- JSON ---
+let j = JSON
+assert(j.stringify({a: 1}) == '{"a":1}')
+assert(j.parse('{"x":42}').x == 42)
+
+// --- Tensor ---
+let t = Tensor
+let z = t.zeros(2, 3)
+let zs = z.shape()
+assert(zs.size() == 2 && zs[0] == 2 && zs[1] == 3)
+let o = t.ones(3)
+let os = o.shape()
+assert(os.size() == 1 && os[0] == 3)
+let arr = t.from([1.0, 2.0, 3.0])
+let as = arr.shape()
+assert(as.size() == 1 && as[0] == 3)
+
+"OK".puts()
