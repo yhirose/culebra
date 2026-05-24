@@ -163,9 +163,9 @@ llvm-devel` / `winget install LLVM.LLVM`).
 ```bash
 just build              # with JIT
 just build-no-jit       # interpreter only, ~1 MB binary
-just test               # run .cul tests on interpreter
-just test-jit           # run .cul tests on JIT
-just verify             # diff interp vs JIT + embedding smoke + AOT smoke
+just test               # all backends + embedding smoke (commit gate)
+just test interp        # tests/*.cul on interpreter only (debugging)
+just test jit           # tests/*.cul on JIT only (debugging)
 ./build/culebra --shell                # REPL  (--jit for JIT REPL)
 ./build/culebra        samples/fib.cul # interpreter
 ./build/culebra --jit  samples/fib.cul # JIT

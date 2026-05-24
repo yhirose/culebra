@@ -2533,9 +2533,10 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 ## 24. 付録: conformance test 対応表
 
 本 spec の各セクションには対応するテストファイルが `tests/` に
-あります。`just verify` で両 backend、`just test-aot` で AOT
-ビルドに対しても回ります。下表は主要オーナを示しますが、複数
-セクションに跨がるものは "(broad)" と表記します。
+あります。`just test` で interp/JIT 差分・AOT 差分・埋め込み C++
+smoke を 1 度に回します。AOT 差分のみなら `just test aot`。下表
+は主要オーナを示しますが、複数セクションに跨がるものは
+"(broad)" と表記します。
 
 | テストファイル | 検証する spec セクション |
 |---|---|
@@ -2561,7 +2562,7 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
 
 `tests/` 配下のすべてのテストファイルは両 backend で同一 stdout
-を出すことが要求されます — `just test-all` がそれを強制します。
+を出すことが要求されます — `just test` がそれを強制します。
 backend 固有の対話的機能（REPL state を駆動するデバッガ hook 等）
 は `.cul` スクリプトではなく `tests/embedding/` の C++ smoke
 テストで検証します。

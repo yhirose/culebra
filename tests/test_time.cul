@@ -1,7 +1,7 @@
 # Conformance: stdlib §4 (Time). See docs/stdlib.md and docs/language.md §24.
 #
 # Time module — Instant + Duration classes over `_Time` Long-nanos
-# primitives. Tested on both backends; identical stdout per test-all.
+# primitives. Tested on both backends; identical stdout via `just test`.
 
 # --- now / monotonic / sleep ---
 let now = Time.now()

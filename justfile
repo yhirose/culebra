@@ -20,93 +20,90 @@ build-no-jit:
 clean:
     rm -rf build
 
-# Run the test suite on the tree-walking interpreter. Picks up
-# everything under tests/, including any interp-only subdirectory if
-# one is later re-introduced.
-test: build
+# Run the test suite. BACKEND selects what to run:
+#   all     (default) — interp vs JIT diff + AOT vs JIT diff + C++
+#                       embedding smoke. Run before every commit.
+#   interp            — every tests/*.cul on the tree-walking interp.
+#   jit               — every tests/*.cul on the LLVM ORC JIT.
+#   aot               — every tests/*.cul through `culebra build`,
+#                       assert stdout matches `--jit`.
+#   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
+# The single-backend modes are for focused debugging.
+test BACKEND='all': build
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
-    for f in tests/*.cul; do
-      ./build/culebra "$f"
-    done
 
-# Run the test suite under the LLVM ORC JIT backend. Every test file
-# under tests/ is required to pass on both interp and JIT (see
-# test-all for the per-file equality check).
-test-jit: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for f in tests/*.cul; do
-      ./build/culebra --jit "$f"
-    done
+    run_interp() {
+        for f in tests/*.cul; do
+          ./build/culebra "$f"
+        done
+    }
 
-# Run every test file on both backends and assert their stdout is
-# identical per file. Catches regressions where one backend diverges
-# from the other (e.g. a new feature implemented in one place only).
-test-all: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    failed=()
-    for f in tests/*.cul; do
-      out_interp=$(./build/culebra "$f")
-      out_jit=$(./build/culebra --jit "$f")
-      if [[ "$out_interp" != "$out_jit" ]]; then
-          echo "interpreter and JIT outputs differ for $f:"
-          diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
-          failed+=("$f")
-      fi
-    done
-    if (( ${#failed[@]} > 0 )); then
-      echo "test-all FAIL: ${#failed[@]} file(s) diverge"
-      exit 1
-    fi
-    echo "test-all OK: interpreter and JIT match"
+    run_jit() {
+        for f in tests/*.cul; do
+          ./build/culebra --jit "$f"
+        done
+    }
 
-# Run embedding-API smoke tests via ctest (mt_smoke, mi_smoke,
-# define_smoke). These C++ tests verify thread_local isolation, the
-# RuntimeScope / per-Runtime hooks story, and the culebra::define
-# helper end-to-end.
-test-embed: build
-    cd build && ctest --output-on-failure
+    run_diff_interp_jit() {
+        local failed=()
+        for f in tests/*.cul; do
+          out_interp=$(./build/culebra "$f")
+          out_jit=$(./build/culebra --jit "$f")
+          if [[ "$out_interp" != "$out_jit" ]]; then
+              echo "interpreter and JIT outputs differ for $f:"
+              diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
+              failed+=("$f")
+          fi
+        done
+        if (( ${#failed[@]} > 0 )); then
+          echo "test (interp vs jit) FAIL: ${#failed[@]} file(s) diverge"
+          exit 1
+        fi
+        echo "test (interp vs jit) OK"
+    }
 
-# Run every test file through the AOT build path and assert the
-# produced binary's stdout matches `culebra --jit`. Catches
-# regressions in `culebra build` (object emission, runtime archive,
-# bootstrap) that the JIT-only paths don't see.
-test-aot: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    failed=()
-    out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
-    rm -rf "$out_dir" && mkdir -p "$out_dir"
-    for f in tests/*.cul; do
-      name=$(basename "$f" .cul)
-      bin="$out_dir/$name"
-      if ! ./build/culebra build "$f" -o "$bin" 2>"$out_dir/err"; then
-        echo "build failed: $f"
-        cat "$out_dir/err"
-        failed+=("$f")
-        continue
-      fi
-      out_aot=$("$bin")
-      out_jit=$(./build/culebra --jit "$f")
-      if [[ "$out_aot" != "$out_jit" ]]; then
-        echo "AOT and JIT outputs differ for $f:"
-        diff <(printf '%s' "$out_aot") <(printf '%s' "$out_jit") || true
-        failed+=("$f")
-      fi
-    done
-    if (( ${#failed[@]} > 0 )); then
-      echo "test-aot FAIL: ${#failed[@]} file(s) diverge"
-      exit 1
-    fi
-    echo "test-aot OK: AOT binaries match --jit"
+    run_aot() {
+        local failed=()
+        local out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
+        rm -rf "$out_dir" && mkdir -p "$out_dir"
+        for f in tests/*.cul; do
+          name=$(basename "$f" .cul)
+          bin="$out_dir/$name"
+          if ! ./build/culebra build "$f" -o "$bin" 2>"$out_dir/err"; then
+            echo "build failed: $f"
+            cat "$out_dir/err"
+            failed+=("$f")
+            continue
+          fi
+          out_aot=$("$bin")
+          out_jit=$(./build/culebra --jit "$f")
+          if [[ "$out_aot" != "$out_jit" ]]; then
+            echo "AOT and JIT outputs differ for $f:"
+            diff <(printf '%s' "$out_aot") <(printf '%s' "$out_jit") || true
+            failed+=("$f")
+          fi
+        done
+        if (( ${#failed[@]} > 0 )); then
+          echo "test aot FAIL: ${#failed[@]} file(s) diverge"
+          exit 1
+        fi
+        echo "test aot OK: AOT binaries match --jit"
+    }
 
-# Full verification: differential test (.cul on both backends) +
-# embedding C++ smoke tests + AOT build path. Run before every commit.
-verify: test-all test-embed test-aot
-    @echo "verify OK"
+    run_embed() {
+        (cd build && ctest --output-on-failure)
+    }
+
+    case "{{BACKEND}}" in
+      all)    run_diff_interp_jit; run_embed; run_aot; echo "test OK" ;;
+      interp) run_interp ;;
+      jit)    run_jit ;;
+      aot)    run_aot ;;
+      embed)  run_embed ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|interp|jit|aot|embed)" >&2; exit 2 ;;
+    esac
 
 # Microbenchmark regression check: every tests/perf/*.cul on interp
 # and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`

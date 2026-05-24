@@ -2638,9 +2638,10 @@ in observable behavior is treated as a bug.
 ## 24. Appendix: conformance test mapping
 
 Every section of this spec has at least one corresponding test file
-under `tests/`. Tests run on both backends via `just verify` and on
-the AOT build via `just test-aot`. The mapping below points to the
-primary owner; some tests touch multiple sections, marked "(broad)".
+under `tests/`. `just test` runs interp/JIT diff, AOT diff, and
+embedding C++ smoke in one pass; `just test aot` runs only the AOT
+diff. The mapping below points to the primary owner; some tests
+touch multiple sections, marked "(broad)".
 
 | Test file | Spec sections verified |
 |---|---|
@@ -2666,7 +2667,7 @@ primary owner; some tests touch multiple sections, marked "(broad)".
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
 
 Every test file in `tests/` is required to pass on both backends
-with identical stdout — `just test-all` enforces it. Interactive
+with identical stdout — `just test` enforces it. Interactive
 features that are inherently backend-specific (debugger hooks
 exercised by REPL state) are tested through `tests/embedding/`
 C++ smoke tests rather than as `.cul` scripts.

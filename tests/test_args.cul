@@ -1,7 +1,7 @@
 # Conformance: stdlib §9 (Args). See docs/stdlib.md and docs/language.md §24.
 #
 # Args module — declarative CLI argument parser.
-# Tested on both backends via test-all; identical stdout per backend.
+# Tested on both backends via `just test`; identical stdout per backend.
 
 # --- Basic positional + flag + option value ---
 let spec = {
