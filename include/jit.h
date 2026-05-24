@@ -11056,16 +11056,10 @@ struct JIT {
         if (s->tag != "EXPORT_STMT"_) continue;
         for (const auto& id : s->nodes) {
           auto name = std::string(id->token);
-          auto slot = lookup_var(name);
-          if (!slot) {
-            // Mirror interp's extract_export NameError.
-            emit_throw_error(
-                "NameError",
-                std::format("export '{}' is not defined in module", name),
-                id->line, id->column);
-            continue;
-          }
-          auto val = load_slot(*slot, name);
+          // compile_identifier walks locals → builtin namespace → REPL
+          // globals and raises NameError at runtime on a miss, matching
+          // interp's env->get / NameError path in extract_export.
+          auto val = compile_identifier(*id);
           emit_object_set(objPtr, name, /*mut=*/false,
                           extract_tag(val), extract_data(val));
         }
