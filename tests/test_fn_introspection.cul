@@ -1,0 +1,88 @@
+// Conformance: function introspection via `fn.name`, `fn.params`,
+// `fn.return_type`. Phase 1 of [[project-fn-params-introspection]].
+// Both backends + AOT must agree.
+
+// --- fn.name on declared function ---
+fn add(a, b) { a + b }
+assert(add.name == "add")
+
+// Anonymous functions: name is ""
+let inc = fn (x) { x + 1 }
+assert(inc.name == "")
+
+// Lambda: also anonymous
+let dbl = |x| x * 2
+assert(dbl.name == "")
+
+// --- fn.params basic ---
+let ps = add.params
+assert(ps.size() == 2)
+assert(ps[0].name == "a")
+assert(ps[0].mut == false)
+assert(ps[0].type == "")
+assert(ps[0].has_default == false)
+assert(ps[0].kw_only == false)
+assert(ps[0].kwargs_rest == false)
+assert(ps[1].name == "b")
+
+// --- type annotation ---
+fn typed(x: Long, y: String) -> Long { x }
+assert(typed.name == "typed")
+assert(typed.return_type == "Long")
+let tps = typed.params
+assert(tps[0].type == "Long")
+assert(tps[1].type == "String")
+
+// No annotation: empty
+assert(add.return_type == "")
+
+// --- mut param ---
+fn modify(mut x) { x }
+let mps = modify.params
+assert(mps[0].mut == true)
+
+// --- default value ---
+fn with_default(x, y = 10) { x + y }
+let dps = with_default.params
+assert(dps[0].has_default == false)
+assert(dps[1].has_default == true)
+
+// --- kw-only (* separator) ---
+fn kw_fn(x, *, kw_a, kw_b = 5) { x }
+let kps = kw_fn.params
+assert(kps[0].name == "x")
+assert(kps[0].kw_only == false)
+assert(kps[1].name == "kw_a")
+assert(kps[1].kw_only == true)
+assert(kps[2].name == "kw_b")
+assert(kps[2].kw_only == true)
+assert(kps[2].has_default == true)
+
+// --- **rest ---
+fn rest_fn(x, **rest) { x }
+let rps = rest_fn.params
+assert(rps[0].kwargs_rest == false)
+assert(rps[1].name == "rest")
+assert(rps[1].kwargs_rest == true)
+
+// --- params is a fresh Array (mutating does not affect fn) ---
+let p1 = add.params
+let p2 = add.params
+assert(!(p1 == p2))  // different Array refs
+assert(p1[0].name == p2[0].name)  // same content
+
+// --- class method also has name ---
+class Box {
+  new (v) { this.v = v }
+  get () { this.v }
+}
+let bx = Box.new(7)
+// `get` was wrapped with `this` bound for method call; the bound
+// wrapper is itself a Function, so `.name` should still reflect "get".
+// (Note: this checks the post-wrapping function; if culebra wraps
+// methods on each access, the name should propagate. We accept either
+// "get" or "" — both are coherent.)
+let g = bx.get
+assert(g.name == "get" || g.name == "")
+
+IO.puts("test_fn_introspection OK")

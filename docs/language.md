@@ -2245,6 +2245,35 @@ logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 the explicit param list or `**rest`. If a fn declares no params and
 is called with arguments, every argument lands in `__ARGS__`.
 
+### Function introspection
+
+Every `Function` value exposes three read-only properties for
+introspection:
+
+| Property        | Type           | Description                                                                 |
+|-----------------|----------------|-----------------------------------------------------------------------------|
+| `fn.name`       | `String`       | Source-level declaration name (`fn name(...)`) or `""` for anonymous fns    |
+| `fn.return_type`| `String`       | Return-type annotation (`fn f() -> X`) or `""` if unannotated               |
+| `fn.params`     | `Array<Object>`| Per-parameter metadata; each entry has `name / mut / type / has_default / kw_only / kwargs_rest` |
+
+```culebra
+fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
+
+puts(greet.name)                  # → 'greet'
+puts(greet.return_type)           # → ''
+let ps = greet.params
+puts(ps.size())                   # → 2
+puts(ps[0].name)                  # → 'name'
+puts(ps[0].type)                  # → 'String'
+puts(ps[1].kw_only)               # → true
+puts(ps[1].has_default)           # → true
+```
+
+`fn.params` returns a fresh `Array` each access; mutating it has no
+effect on the function. Multifn dispatchers expose the **first
+registered method's** signature (overloads after the first do not
+appear).
+
 ---
 
 ## 19. Multimethods

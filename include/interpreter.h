@@ -531,6 +531,16 @@ struct FunctionValue {
   // Definition environment — used only to evaluate parameter defaults
   // (for body execution, `eval` closes over this env itself).
   std::shared_ptr<Environment> def_env;
+  // Declared name for introspection (`fn.name`). Empty for anonymous
+  // expressions (lambdas, `fn (x) { ... }`). Set by the caller after
+  // construction so stdlib FunctionValues stay one-liners.
+  std::string_view name;
+  // Multifn dispatcher view-of-source: when set, `fn.params` and
+  // `fn.return_type` look through to this snapshot of the first
+  // registered method body. The dispatcher itself keeps a synthetic
+  // `__KWARGS__` param list for the dispatch protocol — without this
+  // redirect, introspection would expose that internal detail.
+  std::shared_ptr<FunctionValue> introspection_target;
 };
 
 struct ObjectValue {
@@ -4022,6 +4032,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto fn_val = make_function_value(*ast.nodes[params_idx],
                                        ast.nodes[body_idx],
                                        return_type, env);
+    fn_val.get<FunctionValue>().name = name_view;
 
     if (!decorators.empty()) {
       // Apply decorators bottom-up: the closest to the `fn` keyword
@@ -4061,6 +4072,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // multimethod picks on positional types, then the picked
       // method's signature absorbs kwargs / splats).
       auto self = shared_from_this();
+      auto first_method_snapshot =
+          std::make_shared<FunctionValue>(fn_val.get<FunctionValue>());
       auto dispatcher = Value(FunctionValue(
           {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
           [self = std::move(self), methods, name_owned](std::shared_ptr<Environment> callEnv) {
@@ -4088,6 +4101,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                 (*methods)[pick.idx].body, callEnv, std::move(call_args),
                 static_cast<size_t>(line), static_cast<size_t>(col));
           }));
+      // Surface the first method on the dispatcher for introspection.
+      // The dispatcher keeps its synthetic `__KWARGS__` params for the
+      // multifn protocol; eval_property reads `introspection_target`
+      // instead of `params` so callers see the user-facing signature.
+      dispatcher.get<FunctionValue>().name = name_view;
+      dispatcher.get<FunctionValue>().introspection_target =
+          first_method_snapshot;
       env->initialize(name_view, dispatcher, false);
       return Value();
     }
@@ -4149,6 +4169,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       auto fn_val =
           make_function_value(*m.nodes[2], m.nodes[3], {}, env);
+      fn_val.get<FunctionValue>().name = name_view;
       if (is_static) {
         static_template.push_back({name_view, std::move(fn_val)});
       } else {
@@ -4612,6 +4633,36 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return _wrap_method_with_this(it->second, val);
     }
 
+    // Function introspection: `fn.name`, `fn.params`, `fn.return_type`.
+    // The `params` form is a fresh Array<Object>; mutating it does not
+    // affect the function. Anonymous functions return "" for `.name`.
+    // Multifn dispatchers read params/return_type from their
+    // introspection_target snapshot so the dispatch-only `__KWARGS__`
+    // synthetic param doesn't leak to user code.
+    if (val.type == Value::Function) {
+      const auto& fn = val.get<FunctionValue>();
+      const auto& source = fn.introspection_target ? *fn.introspection_target : fn;
+      if (name == "name") return Value(std::string(fn.name));
+      if (name == "return_type") return Value(std::string(source.return_type));
+      if (name == "params") {
+        ArrayValue arr;
+        for (const auto& p : *source.params) {
+          ObjectValue o;
+          o.initialize("name", Value(std::string(p.name)), false);
+          o.initialize("mut", Value(p.mut), false);
+          o.initialize("type", Value(std::string(p.type_name)), false);
+          bool has_default =
+              p.default_expr != nullptr || p.default_value != nullptr;
+          o.initialize("has_default", Value(has_default), false);
+          o.initialize("kw_only", Value(p.kw_only), false);
+          o.initialize("kwargs_rest", Value(p.kwargs_rest), false);
+          arr.values->push_back(Value(std::move(o)));
+        }
+        return Value(std::move(arr));
+      }
+      return Value();
+    }
+
     const auto& obj = val.to_object();
     if (obj.has(name)) {
       const auto& prop = obj.get(name);
@@ -4656,6 +4707,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     if (val.type == Value::Tuple) {
       return tuple_builtins().count(name) > 0;
+    }
+    if (val.type == Value::Function) {
+      return name == "name" || name == "params" || name == "return_type";
     }
     if (val.type == Value::Object || val.type == Value::Array) {
       if (val.to_object().has(name)) return true;

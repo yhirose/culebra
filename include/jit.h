@@ -3055,11 +3055,20 @@ struct JitParamMeta {
   // dispatch to enforce kw-only at runtime when a closure is captured
   // and called positionally (`let g = f; g(1, 2)` where f is kw-only).
   int64_t first_kw_only_idx;
+  // Introspection-only fields appended at the end so existing kwargs
+  // dispatch consumers stay unaffected. `fn_name`/`return_type` are
+  // always non-null cstrings (empty string if unset). `mut_bits` is a
+  // bitmap (one bit per param). `type_names` is an array of n_params
+  // cstrings (each non-null, "" if unannotated).
+  const char* fn_name;
+  const char* return_type;
+  const uint8_t* mut_bits;
+  const char* const* type_names;
 };
 
 // Layout matches the LLVM struct emitted in emit_param_meta_global.
 // Adding a field requires updating both — the assert catches drift.
-static_assert(sizeof(JitParamMeta) == 5 * sizeof(int64_t),
+static_assert(sizeof(JitParamMeta) == 9 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
 inline std::unordered_map<void*, const JitParamMeta*>&
@@ -3110,6 +3119,78 @@ inline std::map<JitClosure*, std::string>&
 _jit_multifn_dispatcher_names() {
   static std::map<JitClosure*, std::string> tbl;
   return tbl;
+}
+
+// Function-value introspection. `cls` is a JitClosure*; `prop` is
+// one of "name" / "return_type" / "params". Mirrors the interp side's
+// Value::eval_property dispatch for Value::Function. Unknown
+// properties return Nil. Used by compile_property_get when the
+// receiver tag is TAG_FUNC.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
+culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
+  const JitParamMeta* meta =
+      cls ? _jit_lookup_param_meta(cls->fn_ptr) : nullptr;
+  // Multifn dispatcher fallback: dispatchers share a single thunk
+  // address, so per-name body meta isn't keyed by fn_ptr. Walk the
+  // dispatcher→name registry to find the body's meta — surfaces the
+  // first registered method's signature (interp parity with the
+  // dispatcher exposing the first method's params/name/return_type).
+  if (!meta && cls) {
+    auto& dispatchers = _jit_multifn_dispatcher_names();
+    auto disp_it = dispatchers.find(cls);
+    if (disp_it != dispatchers.end()) {
+      auto& tbl = _jit_multimethods();
+      auto method_it = tbl.find(disp_it->second);
+      if (method_it != tbl.end() && !method_it->second.empty()) {
+        meta = _jit_lookup_param_meta(method_it->second.front().body->fn_ptr);
+      }
+    }
+  }
+  if (std::strcmp(prop, "name") == 0) {
+    const char* n = (meta && meta->fn_name) ? meta->fn_name : "";
+    auto* heap = _culebra_heap_str(std::string(n));
+    return {TAG_STRING, reinterpret_cast<int64_t>(heap)};
+  }
+  if (std::strcmp(prop, "return_type") == 0) {
+    const char* r = (meta && meta->return_type) ? meta->return_type : "";
+    auto* heap = _culebra_heap_str(std::string(r));
+    return {TAG_STRING, reinterpret_cast<int64_t>(heap)};
+  }
+  if (std::strcmp(prop, "params") == 0) {
+    auto* arr = culebra_runtime_array_new();
+    if (meta) {
+      for (size_t i = 0; i < meta->n_params; i++) {
+        auto* o = culebra_runtime_object_new();
+        auto* nname = _culebra_heap_str(std::string(meta->names[i]));
+        culebra_runtime_object_set(o, "name", false, TAG_STRING,
+                                    reinterpret_cast<int64_t>(nname), 0, 0);
+        bool m = meta->mut_bits &&
+                 (meta->mut_bits[i / 8] & (1u << (i % 8)));
+        culebra_runtime_object_set(o, "mut", false, TAG_BOOL,
+                                    m ? 1 : 0, 0, 0);
+        const char* tn =
+            (meta->type_names && meta->type_names[i]) ? meta->type_names[i] : "";
+        auto* tname = _culebra_heap_str(std::string(tn));
+        culebra_runtime_object_set(o, "type", false, TAG_STRING,
+                                    reinterpret_cast<int64_t>(tname), 0, 0);
+        bool hd = meta->has_default_bits[i / 8] & (1u << (i % 8));
+        culebra_runtime_object_set(o, "has_default", false, TAG_BOOL,
+                                    hd ? 1 : 0, 0, 0);
+        bool ko = meta->first_kw_only_idx >= 0 &&
+                  static_cast<int64_t>(i) >= meta->first_kw_only_idx;
+        culebra_runtime_object_set(o, "kw_only", false, TAG_BOOL,
+                                    ko ? 1 : 0, 0, 0);
+        bool kr = meta->kwargs_rest_idx >= 0 &&
+                  static_cast<int64_t>(i) == meta->kwargs_rest_idx;
+        culebra_runtime_object_set(o, "kwargs_rest", false, TAG_BOOL,
+                                    kr ? 1 : 0, 0, 0);
+        culebra_runtime_array_push(arr, TAG_OBJECT,
+                                    reinterpret_cast<int64_t>(o));
+      }
+    }
+    return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  }
+  return {TAG_NIL, 0};
 }
 
 // Persistent top-level binding storage for the JIT REPL. Each entry
@@ -5413,6 +5494,7 @@ inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";
 inline constexpr auto register_param_meta = "culebra_runtime_register_param_meta";
+inline constexpr auto fn_introspect_get    = "culebra_runtime_fn_introspect_get";
 inline constexpr auto call_with_kwargs    = "culebra_runtime_call_with_kwargs";
 inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
 inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
@@ -11140,7 +11222,10 @@ struct JIT {
     auto body_ast = ast.nodes[body_idx];
 
     // Compile body — returns +1 Value(TAG_FUNC) wrapping a JitClosure.
-    auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType);
+    // Pass `name` so introspection (fn.name) reflects the source-level
+    // identifier rather than the internal __culebra_fn_N symbol.
+    auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType,
+                                      name);
 
     // Decorated fns bypass the multimethod register/install path —
     // the decorator's return value is bound directly under `name`.
@@ -11244,8 +11329,10 @@ struct JIT {
     const peg::Ast* params_ast;
     std::shared_ptr<peg::Ast> body_ast;
     std::string_view returnType;
+    std::string_view declName;
     if (ast.tag == "METHOD"_) {
       // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
+      declName = ast.nodes[1]->token;
       params_ast = ast.nodes[2].get();
       body_ast = ast.nodes[3];
       returnType = {};
@@ -11255,14 +11342,15 @@ struct JIT {
       returnType = extract_return_type(ast, bodyIdx);
       body_ast = ast.nodes[bodyIdx];
     }
-    return compile_fn_common(&ast, *params_ast, body_ast, returnType);
+    return compile_fn_common(&ast, *params_ast, body_ast, returnType,
+                              declName);
   }
 
   // LAMBDA ast: [LAMBDA_PARAMS, BODY]. No declared return type. BODY
   // may be any expression — compile_fn_common's generic dispatch handles
   // both BLOCK and bare expressions.
   llvm::Value* compile_lambda(const peg::Ast& ast) {
-    return compile_fn_common(&ast, *ast.nodes[0], ast.nodes[1], {});
+    return compile_fn_common(&ast, *ast.nodes[0], ast.nodes[1], {}, {});
   }
 
   // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.
@@ -11272,7 +11360,8 @@ struct JIT {
       const peg::Ast* info_key,
       const peg::Ast& params_ast,
       std::shared_ptr<peg::Ast> body_ast,
-      std::string_view returnType) {
+      std::string_view returnType,
+      std::string_view declName = {}) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
@@ -11625,8 +11714,13 @@ struct JIT {
     // Restore outer context before emitting the closure at the caller's
     // insertion point — the cell captures come from the outer scope.
     saver.restore();
+    std::vector<std::string> paramTypeStrs;
+    paramTypeStrs.reserve(paramTypeNames.size());
+    for (auto& t : paramTypeNames) paramTypeStrs.emplace_back(t);
     auto* paramMeta = emit_param_meta_global(
-        fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx);
+        fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx,
+        std::string(declName), std::string(returnType), paramMuts,
+        paramTypeStrs);
     return emit_closure_build(fn, info, paramNames.size(), paramMeta);
   }
 
@@ -11641,26 +11735,30 @@ struct JIT {
       const std::vector<std::string>& paramNames,
       const std::vector<const peg::Ast*>& paramDefaults,
       std::optional<size_t> kwargsRestIdx = std::nullopt,
-      std::optional<size_t> firstKwOnlyIdx = std::nullopt) {
+      std::optional<size_t> firstKwOnlyIdx = std::nullopt,
+      const std::string& fnName = {},
+      const std::string& returnType = {},
+      const std::vector<bool>& paramMuts = {},
+      const std::vector<std::string>& paramTypes = {}) {
     if (paramNames.empty()) return nullptr;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
+    auto fnBase = std::string(fn->getName());
 
     // Names array: one cstring per param.
     std::vector<llvm::Constant*> name_consts;
     name_consts.reserve(paramNames.size());
     for (const auto& nm : paramNames) {
       name_consts.push_back(builder_.CreateGlobalString(
-          nm, std::string(".param.name.") + std::string(fn->getName()) +
-                  "." + nm));
+          nm, ".param.name." + fnBase + "." + nm));
     }
     auto namesArrTy = llvm::ArrayType::get(ptrTy, name_consts.size());
     auto namesInit = llvm::ConstantArray::get(namesArrTy, name_consts);
     auto namesGlobal = new llvm::GlobalVariable(
         *module_, namesArrTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, namesInit,
-        std::string(fn->getName()) + ".pmeta.names");
+        fnBase + ".pmeta.names");
 
     // has_default bitmask: ceil(N/8) bytes, bit i = paramDefaults[i].
     size_t n_bytes = (paramNames.size() + 7) / 8;
@@ -11680,12 +11778,49 @@ struct JIT {
     auto bitsGlobal = new llvm::GlobalVariable(
         *module_, bitsArrTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, bitsInit,
-        std::string(fn->getName()) + ".pmeta.bits");
+        fnBase + ".pmeta.bits");
 
-    // Meta struct: {names_ptr, bits_ptr, n_params, kwargs_rest_idx,
-    //               first_kw_only_idx}.
+    // Introspection-only globals (fn name, return type, param mut bits,
+    // param type names). Empty strings replace nullptr so the runtime
+    // can always deref these without a null check.
+    auto fnNameG = builder_.CreateGlobalString(fnName, fnBase + ".pmeta.fn");
+    auto retTyG = builder_.CreateGlobalString(
+        returnType, fnBase + ".pmeta.ret");
+
+    std::vector<llvm::Constant*> mut_consts(n_bytes, builder_.getInt8(0));
+    for (size_t i = 0; i < paramMuts.size(); i++) {
+      if (paramMuts[i]) {
+        auto byte_idx = i / 8;
+        auto cur = llvm::cast<llvm::ConstantInt>(mut_consts[byte_idx])
+                       ->getZExtValue();
+        mut_consts[byte_idx] = builder_.getInt8(cur | (1u << (i % 8)));
+      }
+    }
+    auto mutBitsInit = llvm::ConstantArray::get(bitsArrTy, mut_consts);
+    auto mutBitsGlobal = new llvm::GlobalVariable(
+        *module_, bitsArrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, mutBitsInit,
+        fnBase + ".pmeta.muts");
+
+    std::vector<llvm::Constant*> type_consts;
+    type_consts.reserve(paramNames.size());
+    for (size_t i = 0; i < paramNames.size(); i++) {
+      const std::string& t = i < paramTypes.size() ? paramTypes[i] : "";
+      type_consts.push_back(builder_.CreateGlobalString(
+          t, ".param.type." + fnBase + "." + paramNames[i]));
+    }
+    auto typesArrTy = llvm::ArrayType::get(ptrTy, type_consts.size());
+    auto typesInit = llvm::ConstantArray::get(typesArrTy, type_consts);
+    auto typesGlobal = new llvm::GlobalVariable(
+        *module_, typesArrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, typesInit,
+        fnBase + ".pmeta.types");
+
+    // Layout matches JitParamMeta in declaration order — append new
+    // fields at the end so kwargs dispatch consumers stay unaffected.
     auto metaTy = llvm::StructType::get(ctx_,
-        {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty});
+        {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
+         ptrTy, ptrTy, ptrTy, ptrTy});
     auto metaInit = llvm::ConstantStruct::get(
         metaTy,
         {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
@@ -11695,11 +11830,15 @@ struct JIT {
          llvm::ConstantInt::get(i64Ty,
              kwargsRestIdx ? static_cast<int64_t>(*kwargsRestIdx) : -1),
          llvm::ConstantInt::get(i64Ty,
-             firstKwOnlyIdx ? static_cast<int64_t>(*firstKwOnlyIdx) : -1)});
+             firstKwOnlyIdx ? static_cast<int64_t>(*firstKwOnlyIdx) : -1),
+         llvm::ConstantExpr::getBitCast(fnNameG, ptrTy),
+         llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
+         llvm::ConstantExpr::getBitCast(mutBitsGlobal, ptrTy),
+         llvm::ConstantExpr::getBitCast(typesGlobal, ptrTy)});
     auto metaGlobal = new llvm::GlobalVariable(
         *module_, metaTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, metaInit,
-        std::string(fn->getName()) + ".pmeta");
+        fnBase + ".pmeta");
     return metaGlobal;
   }
 
@@ -11862,9 +12001,44 @@ struct JIT {
     auto i64Ty = builder_.getInt64Ty();
 
     auto tag = extract_tag(receiver);
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    // Function introspection: `.name` / `.params` / `.return_type` on a
+    // function value follow a separate runtime path. Object IC stays
+    // intact for receivers tagged TAG_OBJECT (a user-defined property
+    // named `name` still resolves through the IC).
+    bool fn_mode =
+        name == "name" || name == "params" || name == "return_type";
+    llvm::BasicBlock* finalMergeBB = nullptr;
+    llvm::BasicBlock* fnEnd = nullptr;
+    llvm::Value* introResult = nullptr;
+    if (fn_mode) {
+      auto isFn =
+          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC), "is.fn");
+      auto fnBB = llvm::BasicBlock::Create(ctx_, "prop.fn", fn);
+      auto notFnBB = llvm::BasicBlock::Create(ctx_, "prop.not_fn", fn);
+      finalMergeBB = llvm::BasicBlock::Create(ctx_, "prop.final", fn);
+      builder_.CreateCondBr(isFn, fnBB, notFnBB);
+
+      builder_.SetInsertPoint(fnBB);
+      auto clsPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      auto keyPtr = builder_.CreateGlobalString(name, ".fn.prop");
+      introResult = emit_call(
+          module_->getOrInsertFunction(rt::fn_introspect_get,
+                                       valueType_, ptrTy, ptrTy),
+          {clsPtr, keyPtr}, "fn.intro");
+      // Caller (compile_call_with_builtins) runs swap_owned on the
+      // returned value, which retains `introResult` and releases the
+      // original receiver. The Object path leaves receiver alive too —
+      // mirror that contract here.
+      fnEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(finalMergeBB);
+
+      builder_.SetInsertPoint(notFnBB);
+    }
+
     auto isObj =
         builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT), "is.obj");
-    auto fn = builder_.GetInsertBlock()->getParent();
     auto okBB = llvm::BasicBlock::Create(ctx_, "prop.ok", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "prop.err", fn);
     builder_.CreateCondBr(isObj, okBB, errBB);
@@ -11956,6 +12130,17 @@ struct JIT {
     llvm::Value* result = llvm::UndefValue::get(valueType_);
     result = builder_.CreateInsertValue(result, tagPhi, {0});
     result = builder_.CreateInsertValue(result, dataPhi, {1});
+
+    // Merge with the function-introspection branch when active.
+    if (fn_mode) {
+      auto objEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(finalMergeBB);
+      builder_.SetInsertPoint(finalMergeBB);
+      auto finalPhi = builder_.CreatePHI(valueType_, 2, "prop.result");
+      finalPhi->addIncoming(introResult, fnEnd);
+      finalPhi->addIncoming(result, objEnd);
+      return finalPhi;
+    }
     return result;
   }
 

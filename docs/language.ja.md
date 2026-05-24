@@ -2158,6 +2158,35 @@ logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 パラメータリストか `**rest` 経由です。引数を取らないと宣言した
 fn が引数付きで呼ばれた場合、全ての引数が `__ARGS__` に入ります。
 
+### 関数イントロスペクション
+
+全ての `Function` 値は読み取り専用のイントロスペクション用プロパティを
+3 つ公開します:
+
+| プロパティ      | 型             | 説明                                                                |
+|-----------------|----------------|---------------------------------------------------------------------|
+| `fn.name`       | `String`       | ソース上の宣言名 (`fn name(...)`)。無名関数は `""`                     |
+| `fn.return_type`| `String`       | 戻り型注釈 (`fn f() -> X`) または注釈なしなら `""`                    |
+| `fn.params`     | `Array<Object>`| 各パラメータの metadata。`name / mut / type / has_default / kw_only / kwargs_rest` |
+
+```culebra
+fn greet(name: String, *, prefix = "hi") { "{prefix}, {name}" }
+
+puts(greet.name)                  # → 'greet'
+puts(greet.return_type)           # → ''
+let ps = greet.params
+puts(ps.size())                   # → 2
+puts(ps[0].name)                  # → 'name'
+puts(ps[0].type)                  # → 'String'
+puts(ps[1].kw_only)               # → true
+puts(ps[1].has_default)           # → true
+```
+
+`fn.params` はアクセス毎に新規 `Array` を返します。これを書き換えても
+関数自体には影響しません。多重ディスパッチ用ディスパッチャは
+**最初に登録されたメソッドの**シグネチャを露出します (それ以降の
+オーバーロードは見えません)。
+
 ---
 
 ## 19. 多重ディスパッチ
