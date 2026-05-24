@@ -67,6 +67,10 @@ static std::string asset_fingerprint() {
 }
 
 static std::filesystem::path culebra_cache_dir() {
+  // Explicit override wins — useful for CI, sandboxes that can't
+  // write under $HOME, or hermetic test runs that want a clean
+  // cache per invocation.
+  if (const char* c = std::getenv("CULEBRA_CACHE"); c && *c) return c;
   const char* home = std::getenv("HOME");
   if (!home || !*home) {
     const char* tmp = std::getenv("TMPDIR");
@@ -203,11 +207,21 @@ int run_build(const BuildOptions& opts) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
-  auto combined = culebra::prepend_stdlib_preamble(
+  auto entry_src = culebra::prepend_stdlib_preamble(
       std::string_view(buff.data(), buff.size()));
   vector<string> msgs;
-  auto ast = culebra::parse(opts.input, combined.data(), combined.size(), msgs);
-  if (!ast) {
+  culebra::ModuleLoader loader;
+  std::vector<culebra::LoadedModule> modules;
+  try {
+    modules = loader.load_program(opts.input, entry_src, msgs);
+  } catch (const culebra::CulebraError& e) {
+    cerr << e.kind << ": " << e.what();
+    if (e.line > 0 || e.col > 0)
+      cerr << " at " << e.line << ":" << e.col << ".";
+    cerr << endl;
+    return 1;
+  }
+  if (modules.empty()) {
     for (const auto& msg : msgs) cerr << msg << endl;
     return 1;
   }
@@ -223,15 +237,24 @@ int run_build(const BuildOptions& opts) {
 
   bool cross = !opts.target.empty();
 
+  // Tensor reachability across the whole dependency graph drives both
+  // the cross-compile reject and the runtime-archive choice below.
+  auto any_uses_tensor = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_tensor(*m.ast)) return true;
+    }
+    return false;
+  };
+
   // Reject early: cross-compile + Tensor would need a target-specific
-  // BLAS link flag, which Phase E doesn't bundle. Skipping the AST
-  // walk for this case keeps `culebra build --target=...` fast on
-  // the failure path.
+  // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
+  // for this case keeps `culebra build --target=...` fast on the
+  // failure path.
   if (cross) {
     auto host_triple = llvm::sys::getDefaultTargetTriple();
     if (opts.target == host_triple) {
       cross = false;  // no-op cross is just a host build
-    } else if (culebra::aot_uses_tensor(*ast)) {
+    } else if (any_uses_tensor()) {
       std::println(stderr,
           "culebra build: --target=<triple> with Tensor not yet "
           "supported. Drop Tensor references for now.");
@@ -239,11 +262,11 @@ int run_build(const BuildOptions& opts) {
     }
   }
 
-  int rc = culebra::JIT::build_object(ast, obj, opts.opt_level,
+  int rc = culebra::JIT::build_object(modules, obj, opts.opt_level,
                                        opts.emit_llvm, opts.target);
   if (rc != 0) return rc;
 
-  bool uses_tensor = cross ? false : culebra::aot_uses_tensor(*ast);
+  bool uses_tensor = cross ? false : any_uses_tensor();
 
   // Tensor reachability drives the archive choice. The no-tensor
   // archive's stubbed tensor entry points break the static
