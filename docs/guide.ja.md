@@ -1197,9 +1197,10 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 16. テスト (`culebra test`)
 ---------------------------
 
-> **Status: Draft.** `culebra test` サブコマンドは別作業サイクル
-> で設計中。 この章は placeholder で、内容は最終 CLI ではなく
-> *方向性*。 本ガイドで使われている doctest 規約は確定。
+> **Status: Planned.** `culebra test` サブコマンドは未実装。
+> 16.2 / 16.3 に示す形は確定した設計。 16.1 の doctest 規約は
+> 既に確定しており、本ガイド・ `language.ja.md` ・ `stdlib.ja.md`
+> で実運用中。
 
 ### 16.1 doctest 規約 (確定)
 
@@ -1216,29 +1217,68 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 
 ブロック間は独立、`setup` / `teardown` は無し。
 
-### 16.2 ユニットテスト (計画中の形)
+### 16.2 テストの書き方
 
-> **Planned.** `tests/*_spec.cul` 内のフラットな `test "..." { }`
-> ブロック。 `describe` ネストは不採用 — 階層はディレクトリで表現。
-> `assert` は既にコア組み込み。
+> **Planned.** 通常の関数呼び出し形。 `assert` はコア組み込み。
 
 ```culebra
 # doctest: skip
-# tests/string_spec.cul (例示)
-test "interpolation embeds Long" {
+# tests/test_string.cul
+test("interpolation embeds Long", fn() {
   let x = 42
-  assert "hi {x}" == "hi 42"
+  assert("hi {x}" == "hi 42")
+})
+
+test("interpolation embeds Float", fn() {
+  let pi = 3.14
+  assert("π = {pi}" == "π = 3.14")
+})
+```
+
+**`describe` ネストは採用しない。** グルーピングはディレクトリ
+(`tests/strings/`) とテスト名の `/` 区切り (`"Array/push: appends
+element"`) で表現する。 共有 setup が要るときは小さなヘルパを書く:
+
+```culebra
+# doctest: skip
+fn with_tmpfile(body) {
+  let path = "/tmp/test-{Random.int(0, 1000000)}"
+  IO.write(path, "")
+  defer FS.remove(path)
+  body(path)
 }
+
+test("read empty file", fn() {
+  with_tmpfile(fn(p) { assert(IO.read(p) == "") })
+})
 ```
 
 ### 16.3 実行
 
-> **Planned.** `culebra test [path]` は `*_spec.cul` を発見、
-> `culebra test --doc <markdown>` は doctest ブロックを実行。
-> filter、並列度、レポータフォーマットは未確定の設計事項。
+> **Planned.** `culebra test [path]` は `tests/**/*.cul` および
+> プロジェクト内任意の `test_*.cul` を discover する。 このサブコマンド
+> 経由で起動した場合のみ、 `test` が **ambient global** として注入される
+> — `import` 不要。 これは script 実行モード下でだけ `puts` / `print`
+> が ambient で、 `culebra::environment()` には注入されない設計と
+> 同じ流儀 ([stdlib.ja.md §10](stdlib.ja.md) 参照)。
 
-それまでは `just test` がビルドシステム経由で従来の `tests/*.cul`
-スイートを回す。
+```sh
+culebra test                       # 全テストを発見・実行
+culebra test tests/strings/        # サブツリー指定
+culebra test --filter "Array/push" # テスト名部分一致
+culebra test --doc docs/           # markdown から doctest ブロックを実行
+```
+
+明示派は import を書いてもよい。両形は等価:
+
+```culebra
+# doctest: skip
+import { test } from "std/test"
+test("explicit form", fn() { assert(true) })
+```
+
+サブコマンド完成までは `just test` がビルドシステム経由で従来の
+`tests/*.cul` スイートを回す。
 
 17. AOT バイナリビルド
 ----------------------

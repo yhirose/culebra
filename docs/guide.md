@@ -1222,10 +1222,10 @@ Part IV — Verification and deployment
 16. Testing (`culebra test`)
 ----------------------------
 
-> **Status: Draft.** The `culebra test` subcommand is being designed
-> in a parallel work cycle. This chapter is a placeholder; the
-> contents below describe the *direction*, not the final CLI. The
-> doctest convention used throughout this guide is final.
+> **Status: Planned.** The `culebra test` subcommand is not yet
+> implemented. The shape shown in 16.2 / 16.3 is the decided design.
+> The doctest convention in 16.1 is final and already in use across
+> this guide, `language.md`, and `stdlib.md`.
 
 ### 16.1 Doctest convention (final)
 
@@ -1242,29 +1242,69 @@ Every ` ```culebra ` block in this guide, in `language.md`, and in
 
 Blocks are independent; no `setup`/`teardown` across blocks.
 
-### 16.2 Unit tests (planned shape)
+### 16.2 Writing tests
 
-> **Planned.** Flat `test "..." { }` blocks in `tests/*_spec.cul`.
-> No `describe` nesting — hierarchy comes from directories. `assert`
-> is already a core built-in.
+> **Planned.** Plain function-call form. `assert` is a core built-in.
 
 ```culebra
 # doctest: skip
-# tests/string_spec.cul (illustrative)
-test "interpolation embeds Long" {
+# tests/test_string.cul
+test("interpolation embeds Long", fn() {
   let x = 42
-  assert "hi {x}" == "hi 42"
+  assert("hi {x}" == "hi 42")
+})
+
+test("interpolation embeds Float", fn() {
+  let pi = 3.14
+  assert("π = {pi}" == "π = 3.14")
+})
+```
+
+**No `describe` nesting.** Group by file path (`tests/strings/`) and
+by `/` in the test name (`"Array/push: appends element"`). When
+shared setup is needed, write a small helper:
+
+```culebra
+# doctest: skip
+fn with_tmpfile(body) {
+  let path = "/tmp/test-{Random.int(0, 1000000)}"
+  IO.write(path, "")
+  defer FS.remove(path)
+  body(path)
 }
+
+test("read empty file", fn() {
+  with_tmpfile(fn(p) { assert(IO.read(p) == "") })
+})
 ```
 
 ### 16.3 Running
 
-> **Planned.** `culebra test [path]` discovers `*_spec.cul`;
-> `culebra test --doc <markdown>` runs doctest blocks. Filter,
-> parallelism, and reporter format are open design questions.
+> **Planned.** `culebra test [path]` discovers `tests/**/*.cul` plus
+> any `test_*.cul` anywhere in the project. When invoked through this
+> subcommand, `test` becomes an **ambient global** — no `import`
+> required. This mirrors how `puts` / `print` are ambient under
+> script-execution mode but absent from `culebra::environment()`
+> (see [stdlib §10](stdlib.md)).
 
-Until then, `just test` runs the legacy `tests/*.cul` suite via the
-build system.
+```sh
+culebra test                       # discover & run all tests
+culebra test tests/strings/        # run a subtree
+culebra test --filter "Array/push" # name-substring filter
+culebra test --doc docs/           # run doctest blocks from markdown
+```
+
+Tests that prefer to be explicit can write the import; both forms
+are equivalent:
+
+```culebra
+# doctest: skip
+import { test } from "std/test"
+test("explicit form", fn() { assert(true) })
+```
+
+Until the subcommand lands, `just test` runs the legacy
+`tests/*.cul` suite via the build system.
 
 17. AOT binary build
 --------------------
