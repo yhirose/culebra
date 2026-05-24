@@ -1,8 +1,13 @@
 # Culebra 標準ライブラリ
 
-本書は Culebra の**組み込みライブラリ**を規定します。ランタイム
-ユーティリティをまとめた名前空間オブジェクト（`Math`, `IO`, `Sys`）
-を対象とします。ここに記載のものは `import` 文なしで利用できます。
+本書は Culebra の**組み込みライブラリの API リファレンス**です。
+ランタイムユーティリティをまとめた名前空間オブジェクト
+（`Math`, `IO`, `Sys`, `FS`, `Time`, `Args`, `Random`, `String`）
+を対象とします。 ここに記載のものは `import` 文なしで利用できます。
+
+実例つきの導入とイディオムは [`guide.ja.md` §14](guide.ja.md#14-標準ライブラリ巡り)、
+ライブラリの実装詳細と設計理由は [`internals.md`](internals.md) (英語) を
+参照してください。
 
 言語レベルの組み込み関数（`assert`, `to_long`, `to_float`,
 `to_string`, `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
@@ -1015,6 +1020,26 @@ throw 値の `kind` は次のいずれか:
 指す関数値は `IO` 配下と同一なので重複はありません。V8 が同様の
 アプローチを採っており、エンジン自体は `print` を提供せず、`d8`
 シェルが後付けで導入しています。
+
+### 名前空間はファーストクラス値
+
+すべての stdlib 名前空間（`Math`, `IO`, `FS`, `Random`, `Sys`,
+`Tensor`, `JSON`）は `Object` です。変数に束縛したり、関数引数
+として渡したり、コレクションに格納でき、そのバインディング経由
+のメソッド呼出は直接呼出と同じ意味論を保ちます:
+
+```culebra
+let io = IO
+io.puts("hello")              # IO.puts("hello") と同じ
+
+fn run_with(ns, x) { ns.puts(x) }
+run_with(IO, "via parameter")
+```
+
+両 backend がこれを保証します。JIT/AOT のスローパスは runtime
+ディスパッチャ（`stdlib_jit.h::kNsMethods`）を経由し、構文的
+ファストパス（`IO.puts(x)` 直接呼出）は従来の inline IR 生成を
+保ちます。
 
 ### 自由関数 vs メソッド
 

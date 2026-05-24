@@ -1,9 +1,15 @@
 # Culebra Standard Library
 
-This document specifies the **built-in library** of Culebra: the
-namespace objects (`Math`, `IO`, `Sys`) that group the runtime
-utilities. Everything described here is available without any
-`import` statement.
+This document is the **API reference** for Culebra's built-in
+library: the namespace objects (`Math`, `IO`, `Sys`, `FS`, `Time`,
+`Args`, `Random`, `String`) that group the runtime utilities.
+Everything described here is available without any `import`
+statement.
+
+For an introductory tour and usage idioms see
+[`guide.md` §14](guide.md#14-standard-library-tour). For library
+implementation details and rationale see
+[`internals.md`](internals.md).
 
 Language-level built-ins — `assert`, `to_long`, `to_float`,
 `to_string`, `type_of`, `range`, `iota` — are specified in
@@ -1049,6 +1055,25 @@ the environment — pointing to the same function values that live
 under `IO`, so there is no duplication. V8 takes an analogous
 approach: the engine provides no `print`, and the `d8` shell
 installs one.
+
+### Namespaces as first-class values
+
+Every stdlib namespace (`Math`, `IO`, `FS`, `Random`, `Sys`,
+`Tensor`, `JSON`) is an `Object`. You can bind it to a name, pass
+it as an argument, or store it in a collection, and method calls
+on that binding observe the same semantics as direct calls:
+
+```culebra
+let io = IO
+io.puts("hello")              # same as IO.puts("hello")
+
+fn run_with(ns, x) { ns.puts(x) }
+run_with(IO, "via parameter")
+```
+
+Both backends honor this. The JIT/AOT slow path goes through a
+runtime dispatcher (`stdlib_jit.h::kNsMethods`) while the syntactic
+fast path (`IO.puts(x)` directly) keeps its inlined IR emission.
 
 ### Free function vs method
 

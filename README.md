@@ -17,6 +17,29 @@ interpreter and an LLVM ORC JIT.
 * Type-annotated operator overloading, intended for users coming
   from Ruby or Python.
 
+Design choices
+--------------
+
+The rationale lives in [`docs/internals.md`](docs/internals.md)
+(rejected designs in §13). Headline decisions:
+
+* **Two backends, one AST.** Interpreter and JIT both maintained;
+  no plan to consolidate.
+* **UFCS, not pipeline.** `x.f(...)` doubles as the resolution path
+  for free functions over user types.
+* **Implicit imports.** No explicit `import` statement — the resolver
+  walks unresolved identifiers across sibling files.
+* **Blocking I/O + threads.** No `async`/`await`; HTTP and similar
+  stacks target a few-thousand-connection ceiling.
+* **Batteries-included, tiered.** Core stdlib (Math/IO/Sys/FS/Time/
+  Args/Random/String) ships today; Tier 1 (Regex/HTTP/Hash+Encoding)
+  is next.
+* **Optional type annotations.** Runtime-checked at boundaries today;
+  Union/Optional/Tuple/Trait/Generic are decided and pre-1.0
+  required.
+* **Pre-1.0.** No version tags, CHANGELOG, or Homebrew formula yet —
+  surface still moves.
+
 Performance
 -----------
 
@@ -137,13 +160,13 @@ describe = fn (v) {
 [1, 2, 3, 4].map(|x| x * x).filter(|x| x > 4)   # [9, 16]
 ```
 
-More examples in [`samples/`](samples/).
+More examples in [`docs/guide.md`](docs/guide.md).
 
 Documentation
 -------------
 
-* Tutorial (5 min): [`docs/tutorial.md`](docs/tutorial.md)
-  / [日本語](docs/tutorial.ja.md)
+* The Culebra Guide: [`docs/guide.md`](docs/guide.md)
+  / [日本語](docs/guide.ja.md)
 * Language specification: [`docs/language.md`](docs/language.md)
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
@@ -152,6 +175,7 @@ Documentation
   / [日本語](docs/embedding.ja.md)
 * Standalone binary build: [`docs/binary_build.md`](docs/binary_build.md)
   / [日本語](docs/binary_build.ja.md)
+* Implementation internals (en only): [`docs/internals.md`](docs/internals.md)
 
 Build
 -----
@@ -167,8 +191,8 @@ just test               # all backends + embedding smoke (commit gate)
 just test interp        # tests/*.cul on interpreter only (debugging)
 just test jit           # tests/*.cul on JIT only (debugging)
 ./build/culebra --shell                # REPL  (--jit for JIT REPL)
-./build/culebra        samples/fib.cul # interpreter
-./build/culebra --jit  samples/fib.cul # JIT
+./build/culebra        path/to/script.cul # interpreter
+./build/culebra --jit  path/to/script.cul # JIT
 ```
 
 ### Standalone binaries
@@ -179,9 +203,9 @@ the ~200 runtime helpers a program doesn't reference. Tensor-free
 programs also drop the Accelerate / BLAS framework dependency.
 
 ```bash
-./build/culebra build samples/fizzbuzz.cul -o ./fizzbuzz
-./fizzbuzz                                              # standalone, ~350 KB on macOS
-otool -L ./fizzbuzz                                     # no Accelerate, no LLVM
+./build/culebra build path/to/script.cul -o ./out
+./out                                                   # standalone, ~350 KB on macOS
+otool -L ./out                                          # no Accelerate, no LLVM
 ```
 
 Cross-compile is supported via `--target=<triple>` (LLVM triple)

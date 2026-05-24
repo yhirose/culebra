@@ -58,9 +58,9 @@ binary also drops the `Accelerate` / BLAS dependency.
 Verify with `otool -L` (macOS) / `ldd` (Linux):
 
 ```sh
-$ culebra build samples/fizzbuzz.cul -o /tmp/fizzbuzz
-$ otool -L /tmp/fizzbuzz
-/tmp/fizzbuzz:
+$ culebra build my-program.cul -o /tmp/my-program     # no Tensor use
+$ otool -L /tmp/my-program
+/tmp/my-program:
         /usr/lib/libc++.1.dylib
         /usr/lib/libSystem.B.dylib
 ```
@@ -118,13 +118,13 @@ cmake -B build-linux-x86_64 \
 cmake --build build-linux-x86_64 --target culebra_rt_no_tensor
 
 # 2. Cross-compile the program.
-culebra build samples/fizzbuzz.cul \
+culebra build my-program.cul \
   --target=x86_64-unknown-linux-gnu \
   --sysroot=$LINUX_SYSROOT \
   --rt-lib=$PWD/build-linux-x86_64/libculebra_rt_no_tensor.a \
-  -o ./fizzbuzz-linux
+  -o ./my-program-linux
 
 # 3. Verify (on a Linux host or via emulation).
-file ./fizzbuzz-linux
+file ./my-program-linux
 # ELF 64-bit LSB executable, x86-64, ...
 ```

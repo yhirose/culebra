@@ -6,6 +6,12 @@ programming language. It is normative: where the two backends
 disagree, the interpreter is considered authoritative and the JIT
 tracks its behavior.
 
+For an introductory tour with runnable examples, see
+[`guide.md`](guide.md). For API reference of the standard library see
+[`stdlib.md`](stdlib.md). For implementation internals (parser, JIT
+codegen, AOT tree-shaking, rejected designs) see
+[`internals.md`](internals.md).
+
 ## Table of contents
 
 1. [Overview and philosophy](#1-overview-and-philosophy)
@@ -443,7 +449,7 @@ Culebra splits them because each axis serves a different purpose in a
 Scheme-influenced, closure-as-object idiom:
 
 * **Captured state is object state.** In the closure-based object
-  pattern (see `samples/class.cul`), an enclosing function's mutable
+  pattern (see [`guide.md` §8.2](guide.md#82-the-closure-based-alternative)), an enclosing function's mutable
   binding is the object's private field. Accidentally shadowing it —
   typically by writing `mut x = ...` intending a new local — silently
   breaks the object. Making this a compile-time error is worth the
