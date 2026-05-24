@@ -1988,12 +1988,10 @@ inline std::shared_ptr<Environment> environment(
   auto env = std::make_shared<Environment>();
   setup_core_globals(*env);
   setup_built_in_functions(*env, argv);
-  // Load the culebra-source preamble (Time, Args, ...) into the env
-  // so import-graph modules see those classes in their outer scope.
-  // Callers that already pre-concat the preamble into user source
-  // (legacy JIT path, AOT build) skip a `load_stdlib_modules` here
-  // and instead rely on the source-level concat.
-  load_stdlib_modules(env);
+  // Caller invokes `load_stdlib_modules(env)` if it intends to run
+  // interp scripts (so Time / Args become visible in the outer scope
+  // for dep modules). JIT / AOT paths bypass this since they pre-
+  // concat the preamble into the entry source.
   return env;
 }
 

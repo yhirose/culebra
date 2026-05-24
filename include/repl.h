@@ -119,9 +119,15 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
       std::abort();
     }
   }
+  else
 #endif
-  // Interp REPL skips the explicit preamble load — `environment()`
-  // already eval'd it into the env once.
+  {
+    // `environment()` returns an env without the culebra-source
+    // preamble; load it here so Time / Args are visible in the REPL.
+    // Idempotent: load_stdlib_modules's initialize calls overwrite
+    // any prior binding silently.
+    load_stdlib_modules(env);
+  }
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before

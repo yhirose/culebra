@@ -376,6 +376,13 @@ Options parse_command_line(int argc, const char** argv) {
 }
 
 bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
+#ifdef CULEBRA_JIT_ENABLED
+  bool needs_preamble = !options.jit;
+#else
+  bool needs_preamble = true;
+#endif
+  if (needs_preamble) culebra::load_stdlib_modules(env);
+
   for (auto path : options.script_path_list) {
     vector<char> buff;
     if (!read_file(path.c_str(), buff)) {
