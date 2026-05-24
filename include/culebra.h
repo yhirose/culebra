@@ -2,6 +2,7 @@
 
 #include "interpreter.h"
 #include "debugger.h"
+#include "module_loader.h"
 #include "repl.h"
 
 #ifdef CULEBRA_JIT_ENABLED
