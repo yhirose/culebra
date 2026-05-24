@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,11 +17,13 @@ namespace culebra {
 // One module after parse: absolute on-disk path, parsed AST, and the
 // absolute paths of every module it `import`s. `deps` is in source
 // order — the loader's topological sort uses it to schedule evaluation.
-// `source` retains the read buffer because the AST's tokens reference
-// it as string_views — dropping the buffer would dangle.
+// `source` retains the read buffer through a shared_ptr because the
+// AST's tokens reference it as string_views; using a heap allocation
+// pins the bytes against std::string SSO / std::vector reallocation
+// that would otherwise relocate them and dangle the views.
 struct LoadedModule {
   std::filesystem::path abs_path;
-  std::string source;
+  std::shared_ptr<std::string> source;
   std::shared_ptr<peg::Ast> ast;
   std::vector<std::filesystem::path> deps;
 };
@@ -52,6 +55,15 @@ class ModuleLoader {
 
   static std::vector<std::filesystem::path> extract_imports(
       const peg::Ast& ast, const std::filesystem::path& from_dir);
+
+  // Enforce two rules that the grammar can't express directly:
+  // (1) IMPORT_STMT / EXPORT_STMT only at PROGRAM/STATEMENTS top level
+  //     — nested forms (inside fn bodies, if branches, etc.) are
+  //     parse-rejected because a static dependency graph requires
+  //     import positions to be deterministic.
+  // (2) An EXPORT_STMT may not list the same name twice.
+  // Both fire as SyntaxError at module load time.
+  static void validate_module(const peg::Ast& ast);
 
   [[noreturn]] static void throw_io_error(const std::filesystem::path& p);
   [[noreturn]] static void throw_cycle_error(
@@ -86,29 +98,32 @@ inline size_t ModuleLoader::load_recursive(
 
   stack_.push_back(abs_path);
 
-  // Read the source unless the caller already provided it (entry file).
-  // The buffer is retained inside LoadedModule because the AST stores
-  // tokens as string_views into it.
-  std::string buf;
+  // Heap-allocate the source so its data() pointer survives moves of
+  // the enclosing LoadedModule — the AST tokens are string_views into
+  // these bytes.
+  auto src_buf = std::make_shared<std::string>();
   if (source) {
-    buf.assign(source->data(), source->size());
+    src_buf->assign(source->data(), source->size());
   } else {
     std::ifstream ifs(abs_path, std::ios::binary);
     if (!ifs) throw_io_error(abs_path);
     ifs.seekg(0, std::ios::end);
-    buf.resize(static_cast<size_t>(ifs.tellg()));
+    src_buf->resize(static_cast<size_t>(ifs.tellg()));
     ifs.seekg(0, std::ios::beg);
-    if (!buf.empty()) ifs.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+    if (!src_buf->empty()) {
+      ifs.read(src_buf->data(),
+                static_cast<std::streamsize>(src_buf->size()));
+    }
   }
 
-  auto ast = culebra::parse(abs_path.string(), buf.data(), buf.size(),
-                             parse_msgs);
+  auto ast = culebra::parse(abs_path.string(), src_buf->data(),
+                             src_buf->size(), parse_msgs);
   if (!ast) {
     throw CulebraError("SyntaxError",
                        std::format("failed to parse module '{}'",
                                    abs_path.string()));
   }
-
+  validate_module(*ast);
   auto deps = extract_imports(*ast, abs_path.parent_path());
 
   // Recurse before recording self so dependencies sit at lower indices
@@ -118,7 +133,7 @@ inline size_t ModuleLoader::load_recursive(
   }
 
   size_t idx = loaded_.size();
-  loaded_.push_back(LoadedModule{abs_path, std::move(buf), ast, deps});
+  loaded_.push_back(LoadedModule{abs_path, src_buf, ast, deps});
   index_[key] = idx;
   stack_.pop_back();
   return idx;
@@ -148,6 +163,52 @@ inline std::vector<std::filesystem::path> ModuleLoader::extract_imports(
     if (seen.insert(canon.string()).second) out.push_back(canon);
   }
   return out;
+}
+
+inline void ModuleLoader::validate_module(const peg::Ast& ast) {
+  using namespace peg::udl;
+  const peg::Ast* stmts =
+      ast.tag == "STATEMENTS"_ || ast.original_tag == "STATEMENTS"_
+          ? &ast
+          : (ast.nodes.empty() ? nullptr : ast.nodes[0].get());
+
+  // Recursive walk that flags an IMPORT_STMT / EXPORT_STMT found
+  // anywhere off the toplevel STATEMENTS chain.
+  std::function<void(const peg::Ast&, bool)> walk =
+      [&](const peg::Ast& node, bool toplevel) {
+        if (!toplevel &&
+            (node.tag == "IMPORT_STMT"_ || node.tag == "EXPORT_STMT"_)) {
+          const char* kind = node.tag == "IMPORT_STMT"_ ? "import" : "export";
+          throw CulebraError(
+              "SyntaxError",
+              std::format("`{}` statement must be at the top level",
+                          kind),
+              static_cast<long>(node.line),
+              static_cast<long>(node.column));
+        }
+        for (const auto& c : node.nodes) walk(*c, false);
+      };
+  if (stmts) {
+    for (const auto& child : stmts->nodes) walk(*child, true);
+  }
+
+  // Reject duplicate names within any one EXPORT_STMT.
+  if (stmts) {
+    for (const auto& child : stmts->nodes) {
+      if (child->tag != "EXPORT_STMT"_) continue;
+      std::unordered_set<std::string_view> seen;
+      for (const auto& id : child->nodes) {
+        auto name = id->token;
+        if (!seen.insert(name).second) {
+          throw CulebraError(
+              "SyntaxError",
+              std::format("duplicate export name '{}'", name),
+              static_cast<long>(id->line),
+              static_cast<long>(id->column));
+        }
+      }
+    }
+  }
 }
 
 [[noreturn]] inline void ModuleLoader::throw_io_error(
