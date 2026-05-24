@@ -1573,24 +1573,29 @@ User code can branch on `e.kind`:
       else { throw e }
     }
 
-Standard `kind` values:
+Standard `kind` values, with the exact trigger condition and
+catchability for each. Every kind populates `e.kind`, `e.message`,
+`e.line`, and `e.col` identically on the interpreter, the JIT, and
+AOT builds (unless noted).
 
-* `TypeError` — type mismatch in operator / coercion / annotation.
-* `NameError` — undefined variable; runtime-throw on both backends so
-  `try { ... } catch e { e.kind == 'NameError' }` works.
-* `IndexError` — array / tensor index out of range.
-* `ValueError` — semantic value problem (`[].min()`, shape mismatch).
-* `ArityError` — function called with too few arguments.
-* `ZeroDivisionError` — `/` or `%` with zero RHS.
-* `DropContractError` — `drop` / `iter` / `next` not a 0-arg Function.
-* `ImmutableError` — assignment to a `let` binding or immutable property.
-* `AttributeError` — compound assignment to a missing property (interp).
-* `AssertionError` — `assert(falsy)`.
-* `DispatchError` — multimethod has no match / ambiguous match.
-* `SyntaxError` — `break` / `continue` outside loop, etc.
-* `IOError` — `IO.read` / `IO.write` open failure.
-* `ShadowError` — uncatchable; raised before `try` blocks run (see below).
-* `RuntimeError` — fallback for any unconverted internal error site.
+| Kind | Trigger | Catchable |
+|---|---|---|
+| `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword. | yes |
+| `ZeroDivisionError` | Integer `/`, `%`, `**` with negative exponent collapsing to division; float `/` or `%` with RHS == 0. | yes |
+| `NameError` | Read of undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. | yes |
+| `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `this` inside a constructor body. | yes |
+| `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
+| `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
+| `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure. | yes |
+| `AttributeError` | Compound assignment (`o.x += ...`) on a missing property. | yes |
+| `ArityError` | Call missing a required argument; too few or too many positional args; class instantiation arity mismatch. | yes |
+| `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§19). | yes |
+| `AssertionError` | `assert(expr)` builtin with falsy condition. Message `assert failed at L:C.`. | yes |
+| `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
+| `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
+| `IOError` | `read_file` / `write_file` / stdlib file ops failing; `Tensor.load` failure. | yes |
+| `DropContractError` | `drop` / `iter` / `next` property bound to a non-Function or non-zero-arity function. | yes |
+| `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site; JIT REPL `repl_set` outside a session. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message` and exit with non-zero
 status. User-thrown values via `throw expr` print as `uncaught: {value}`.

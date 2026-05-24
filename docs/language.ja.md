@@ -1508,24 +1508,29 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
       else { throw e }
     }
 
-標準の `kind` 一覧:
+標準の `kind` 一覧。各 kind について発生条件と catch 可能性を
+明記します。すべての kind は `e.kind` / `e.message` / `e.line` /
+`e.col` をインタプリタ・JIT・AOT 全 backend で同一に populated します
+（注記がある場合を除く）。
 
-* `TypeError` — 演算子・型強制・型注釈での型不一致
-* `NameError` — 未定義変数。両バックエンドで runtime throw のため
-  `try { ... } catch e { e.kind == 'NameError' }` で catch 可能
-* `IndexError` — 配列／テンソルの範囲外アクセス
-* `ValueError` — 値起源のセマンティック誤り（`[].min()`、shape 不一致）
-* `ArityError` — 引数数不足
-* `ZeroDivisionError` — `/` または `%` の右辺が 0
-* `DropContractError` — `drop` / `iter` / `next` が 0 引数 Function でない
-* `ImmutableError` — `let` 束縛 / immutable プロパティへの再代入
-* `AttributeError` — 不在プロパティへの複合代入（interp）
-* `AssertionError` — `assert(falsy)`
-* `DispatchError` — 多重ディスパッチで一致なし／曖昧
-* `SyntaxError` — ループ外の `break` / `continue` 等
-* `IOError` — `IO.read` / `IO.write` のオープン失敗
-* `ShadowError` — uncatchable; `try` ブロックが走る前に発生（下記）
-* `RuntimeError` — 未変換の内部エラーサイトのフォールバック
+| Kind | 発生条件 | catch 可能 |
+|---|---|---|
+| `TypeError` | 演算子・比較における型不一致；非 callable の呼出；`: T` 型注釈失敗；`to_long`/`to_float` の非変換可能値；`__str__` が String 以外を返す；`*` splat の非 Array / `**` splat の非 Object；組み込み引数チェックの失敗；同一パラメータへ positional + keyword 重複；duplicate keyword | はい |
+| `ZeroDivisionError` | 整数 `/`, `%`, 負指数の `**` で除算になるケース；浮動小数 `/` または `%` の RHS == 0 | はい |
+| `NameError` | 未定義識別子の読み取り；compound 代入（`x += rhs`）の `x` が未定義；REPL global 検索の miss | はい |
+| `ImmutableError` | `let`（非 `mut`）束縛への代入；immutable Object プロパティまたは Dict エントリへの代入；コンストラクタ本体内の `this` 再代入 | はい |
+| `KeyError` | Dict の存在しないキー subscript；Object の存在しないキー subscript | はい |
+| `IndexError` | Array / String / Tensor の範囲外 index；Tensor slice 範囲外；Tensor reduction axis 範囲外 | はい |
+| `ValueError` | Destructure pattern mismatch；Tensor の shape / dtype 不一致；`[].min()` 等空コレクションへの reduce；不正な数値文字列；JSON parse 失敗 | はい |
+| `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない | はい |
+| `ArityError` | 必須引数の欠如；positional の過不足；class new の arity 不一致 | はい |
+| `DispatchError` | 多重ディスパッチ（§19）でマッチなし、または specificity 同点 | はい |
+| `AssertionError` | `assert(expr)` で expr が falsy。message は `assert failed at L:C.` | はい |
+| `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
+| `ShadowError` | §6 のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの `try` が走る前に発火 | **いいえ**（eval 前の analyzer） |
+| `IOError` | `read_file` / `write_file` 等 stdlib ファイル操作失敗；`Tensor.load` 失敗 | はい |
+| `DropContractError` | `drop` / `iter` / `next` プロパティが非 Function または非 0 引数 Function | はい |
+| `RuntimeError` | 未変換 throw site から伝播した `std::runtime_error` をインタプリタが拾うフォールバック；JIT REPL の session 外 `repl_set`。この場合のみ `e.line == 0` / `e.col == 0` がありうる | はい |
 
 未 catch のエラーは `Kind: message` 形式で表示し非ゼロ終了します。
 ユーザが `throw expr` で投げた値は `uncaught: {value}` で表示されます。
