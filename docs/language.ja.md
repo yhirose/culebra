@@ -32,6 +32,7 @@
 21. [コマンドラインインタフェース](#21-コマンドラインインタフェース)
 22. [既知の制約](#22-既知の制約)
 23. [付録: インタプリタ ↔ JIT の差分](#23-付録-インタプリタ--jit-の差分)
+24. [付録: conformance test 対応表](#24-付録-conformance-test-対応表)
 
 ---
 
@@ -2526,3 +2527,39 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 
 疑わしい場合はインタプリタが正。観測可能挙動が分岐する JIT 実装
 はバグとして扱います。
+
+---
+
+## 24. 付録: conformance test 対応表
+
+本 spec の各セクションには対応するテストファイルが `tests/` に
+あります。`just verify` で両 backend、`just test-aot` で AOT
+ビルドに対しても回ります。下表は主要オーナを示しますが、複数
+セクションに跨がるものは "(broad)" と表記します。
+
+| テストファイル | 検証する spec セクション |
+|---|---|
+| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §17, §18 (broad — 主要 unit-test まとめ) |
+| `tests/test_class.cul` | §10 (class 構文、演算子オーバーロード、`__str__`、auto-reflection、static methods)、§11 |
+| `tests/test_class_parameters.cul` | §10 (自動合成 `parameters()`) |
+| `tests/test_decorator.cul` | §20 |
+| `tests/test_defer.cul` | §15 (`defer`、scope-guard パターン) |
+| `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§19 |
+| `tests/test_iter.cul` | §12 (`for ... in`)、§17 (iterator protocol、String メソッド)、§18 (`range`、`iota`) |
+| `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§19 (kwargs in 多重 dispatch)、§7 (mixed call の評価順) |
+| `tests/test_match_class.cul` | §13 (型パターン) |
+| `tests/test_multidispatch.cul` | §19 |
+| `tests/test_object_keys.cul` | §10 (非 String キー) |
+| `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`、すべての `kind` の catch 可能性) |
+| `tests/test_set.cul` | §10 (Set) |
+| `tests/test_tuple.cul` | §10 (Tuple、destructuring) |
+| `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§18 (`__ARGS__`) |
+| `tests/test_args.cul` | stdlib §9 (`Args`) |
+| `tests/test_fs.cul` | stdlib §3 (`FS`) |
+| `tests/test_json.cul` | stdlib §8 (`JSON`) |
+| `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
+| `tests/test_time.cul` | stdlib §4 (`Time`) |
+
+`tests/interp/` 以下の interp 専用 suite は tree-walking backend
+でしか意味を持たない動作（デバッガ hook、REPL session state 等）
+を pin しています。§23 が「対称性契約の外側」を列挙しています。

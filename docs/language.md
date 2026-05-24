@@ -33,6 +33,7 @@ tracks its behavior.
 21. [Command-line interface](#21-command-line-interface)
 22. [Known limitations](#22-known-limitations)
 23. [Appendix: interpreter ↔ JIT divergence](#23-appendix-interpreter--jit-divergence)
+24. [Appendix: conformance test mapping](#24-appendix-conformance-test-mapping)
 
 ---
 
@@ -2631,3 +2632,39 @@ backend you run on.
 
 When in doubt, the interpreter is authoritative — any JIT deviation
 in observable behavior is treated as a bug.
+
+---
+
+## 24. Appendix: conformance test mapping
+
+Every section of this spec has at least one corresponding test file
+under `tests/`. Tests run on both backends via `just verify` and on
+the AOT build via `just test-aot`. The mapping below points to the
+primary owner; some tests touch multiple sections, marked "(broad)".
+
+| Test file | Spec sections verified |
+|---|---|
+| `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §17, §18 (broad — primary unit-test catch-all) |
+| `tests/test_class.cul` | §10 (class sugar, operator overloading, `__str__`, auto-reflection, static methods), §11 |
+| `tests/test_class_parameters.cul` | §10 (auto-synthesized `parameters()`) |
+| `tests/test_decorator.cul` | §20 |
+| `tests/test_defer.cul` | §15 (`defer`, scope-guard pattern) |
+| `tests/test_forward_ref.cul` | §6 (scope), §11 (closures), §19 |
+| `tests/test_iter.cul` | §12 (`for ... in`), §17 (iterator protocol, String methods), §18 (`range`, `iota`) |
+| `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §19 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
+| `tests/test_match_class.cul` | §13 (type patterns) |
+| `tests/test_multidispatch.cul` | §19 |
+| `tests/test_object_keys.cul` | §10 (non-String keys) |
+| `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`, all `kind` values catchable) |
+| `tests/test_set.cul` | §10 (sets) |
+| `tests/test_tuple.cul` | §10 (tuples, destructuring) |
+| `tests/test_ufcs.cul` | §10 (methods, UFCS), §18 (`__ARGS__`) |
+| `tests/test_args.cul` | stdlib §9 (`Args`) |
+| `tests/test_fs.cul` | stdlib §3 (`FS`) |
+| `tests/test_json.cul` | stdlib §8 (`JSON`) |
+| `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
+| `tests/test_time.cul` | stdlib §4 (`Time`) |
+
+The interp-only suite under `tests/interp/` pins behavior that only
+makes sense in the tree-walking backend (debugger hooks, REPL
+session state); §23 lists what falls outside the symmetry contract.
