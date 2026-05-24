@@ -3962,10 +3962,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                          std::shared_ptr<Environment> env) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
-    auto from_dir = module_stack_.empty()
-                        ? std::filesystem::current_path()
-                        : module_stack_.back().parent_path();
-    auto canon = resolve_module_path(rel, from_dir);
+    if (module_stack_.empty()) {
+      throw CulebraError(
+          "ImportError",
+          "`import` is not supported in this context (REPL or direct "
+          "eval); run via `culebra script.cul`");
+    }
+    auto canon = resolve_module_path(rel, module_stack_.back().parent_path());
     auto it = module_cache_.find(canon.string());
     if (it == module_cache_.end()) {
       throw CulebraError(

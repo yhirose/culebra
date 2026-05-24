@@ -10991,10 +10991,15 @@ struct JIT {
   llvm::Value* compile_import_stmt(const peg::Ast& ast) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
-    auto from_dir = current_module_path_.empty()
-                        ? std::filesystem::current_path()
-                        : current_module_path_.parent_path();
-    auto canon = culebra::resolve_module_path(rel, from_dir);
+    if (current_module_path_.empty()) {
+      throw culebra::CulebraError(
+          "ImportError",
+          "`import` is not supported in this context (REPL or direct "
+          "eval); run via `culebra script.cul`",
+          ast.line, ast.column);
+    }
+    auto canon = culebra::resolve_module_path(
+        rel, current_module_path_.parent_path());
 
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
