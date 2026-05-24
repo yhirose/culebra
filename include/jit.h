@@ -7518,8 +7518,9 @@ struct JIT {
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
       std::vector<const std::set<std::string>*>& outer) {
-    return analyze_fn_common(&methodAst, *methodAst.nodes[1],
-                             *methodAst.nodes[2], outer);
+    // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
+    return analyze_fn_common(&methodAst, *methodAst.nodes[2],
+                             *methodAst.nodes[3], outer);
   }
 
   // MULTIFN_DECL ast: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK].
@@ -10372,14 +10373,25 @@ struct JIT {
 
     std::string class_name(ast.nodes[dec_end]->token);
 
+    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
+    // Instance methods live in the per-class meta object (shared
+    // prototype). Static methods are installed directly on the class
+    // namespace object so `Name.method(...)` resolves via standard
+    // property access. Same split as eval_class_decl (interp).
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
+    std::vector<std::string> static_names;
+    std::vector<const peg::Ast*> static_asts;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      auto name = std::string(m.nodes[0]->token);
-      if (name == "new") {
+      bool is_static = m.nodes[0]->token == "static";
+      auto name = std::string(m.nodes[1]->token);
+      if (!is_static && name == "new") {
         new_ast = &m;
+      } else if (is_static) {
+        static_names.push_back(std::move(name));
+        static_asts.push_back(&m);
       } else {
         method_names.push_back(std::move(name));
         method_asts.push_back(&m);
@@ -10421,7 +10433,16 @@ struct JIT {
     size_t new_arity = 0;
     if (new_ast) {
       body_val = compile_function(*new_ast);
-      new_arity = new_ast->nodes[1]->nodes.size();
+      // PARAMETERS lives at nodes[2] in the new METHOD layout.
+      new_arity = new_ast->nodes[2]->nodes.size();
+    }
+
+    // Static methods compile like regular FUNCTION closures and get
+    // installed on the class namespace below.
+    std::vector<llvm::Value*> static_vals;
+    static_vals.reserve(static_asts.size());
+    for (auto* m : static_asts) {
+      static_vals.push_back(compile_function(*m));
     }
 
     // Build the shared class meta object once per class declaration:
@@ -10515,6 +10536,15 @@ struct JIT {
         "class.ns");
     emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
                     extract_data(ctorVal));
+    // Install static methods as immutable class-namespace properties.
+    // Each static_vals[i] carries +1; emit_object_set transfers that
+    // ownership into the namespace object (mut=false matches the `new`
+    // slot above and the interp registration via Symbol{val, false}).
+    for (size_t i = 0; i < static_vals.size(); i++) {
+      emit_object_set(classObj, static_names[i], /*mut=*/false,
+                      extract_tag(static_vals[i]),
+                      extract_data(static_vals[i]));
+    }
     auto classVal = make_object(classObj);
 
     // Apply decorators (bottom-up): each takes the current class
@@ -10684,8 +10714,9 @@ struct JIT {
     std::shared_ptr<peg::Ast> body_ast;
     std::string_view returnType;
     if (ast.tag == "METHOD"_) {
-      params_ast = ast.nodes[1].get();
-      body_ast = ast.nodes[2];
+      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
+      params_ast = ast.nodes[2].get();
+      body_ast = ast.nodes[3];
       returnType = {};
     } else {
       params_ast = ast.nodes[0].get();

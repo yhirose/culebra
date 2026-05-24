@@ -225,6 +225,49 @@ test_ctor_return_ignored = fn () {
   assert(c.tag == 'allocated')
 }
 
+# `static` methods live on the class object itself (not the instance),
+# providing class-as-namespace. Resolved via standard property access
+# (Shape.create(...)) on both backends.
+test_static_methods = fn () {
+  class Shape {
+    new () {}
+    static make_circle (r) {
+      let s = Shape.new()
+      s.kind = 'circle'
+      s.radius = r
+      s
+    }
+    area () {
+      if this.kind == 'circle' { 3 * this.radius * this.radius } else { 0 }
+    }
+  }
+  let circle = Shape.make_circle(4)
+  assert(circle.kind == 'circle')
+  assert(circle.area() == 48)
+  # Static methods are *not* on the instance.
+  let inst_call_kind = try { circle.make_circle(1); 'no error' }
+                       catch e { "kind={e.kind}" }
+  assert(inst_call_kind == 'kind=AttributeError' ||
+         inst_call_kind == 'kind=TypeError')
+}
+
+# Multiple statics + interop with the regular constructor.
+test_static_multiple = fn () {
+  class Counter {
+    new (start) { this.n = start }
+    bump () { this.n = this.n + 1; this }
+    static zero () { Counter.new(0) }
+    static from_array (arr) { Counter.new(arr.size()) }
+  }
+  let a = Counter.zero()
+  let b = Counter.from_array([1, 2, 3])
+  assert(a.n == 0)
+  assert(b.n == 3)
+  a.bump().bump()
+  assert(a.n == 2)
+  assert(b.n == 3)
+}
+
 test_class_basic()
 test_class_default_ctor()
 test_class_independent_instances()
@@ -238,5 +281,7 @@ test_str_special()
 test_default_display()
 test_this_immutable_in_ctor()
 test_ctor_return_ignored()
+test_static_methods()
+test_static_multiple()
 
 puts('class-sugar OK')

@@ -824,8 +824,34 @@ Semantics:
   `this = newObj` raises `ImmutableError` (matching Java, Crystal,
   Ruby). The constructor always returns the originally allocated
   instance — an explicit `return value` discards `value`. Identity-swap
-  factories live as plain functions outside the class:
-  `let make_circle = fn (r) { let s = Shape.new(); s.radius = r; s }`.
+  factories live as `static` methods (below) or as plain top-level
+  functions.
+* Methods prefixed with `static` live on the class object itself
+  (not on instances), providing class-as-namespace for factories,
+  constants-as-functions, and helpers. `Shape.create(...)` resolves
+  via the usual property-access mechanism; the receiver is the
+  class object, not an instance, so `this` is unavailable inside
+  a static body:
+
+      class Shape {
+        new ()                  { this.kind = 'unknown' }
+        area ()                 { 0 }
+        static circle (r)       {
+          let s = Shape.new()
+          s.kind = 'circle'; s.radius = r; s
+        }
+        static square (side)    {
+          let s = Shape.new()
+          s.kind = 'square'; s.side = side; s
+        }
+      }
+      let c = Shape.circle(4)   # static factory
+      let s = Shape.square(3)
+      puts(c.kind)              # 'circle'
+
+  Static methods are not visible through instances (`c.circle(...)`
+  raises `TypeError` because the instance has no `circle` property).
+  This mirrors Java / C# / Kotlin / Crystal class-method semantics.
 * Both the interpreter and the JIT compile classes. Instance
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's

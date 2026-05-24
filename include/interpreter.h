@@ -361,7 +361,7 @@ inline void descend_into_nested(
 
   if (node.tag == "CLASS_DECL"_) {
     // [DECORATOR*, IDENTIFIER, METHOD ...] — each METHOD is
-    // [IDENTIFIER, PARAMETERS, BLOCK].
+    // [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     size_t i = 0;
     while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
       descend_into_nested(*node.nodes[i], my_locals, outer);
@@ -370,7 +370,7 @@ inline void descend_into_nested(
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
       const auto& method = *node.nodes[j];
       outer.push_back(&my_locals);
-      analyze_fn_body(*method.nodes[1], *method.nodes[2], outer);
+      analyze_fn_body(*method.nodes[2], *method.nodes[3], outer);
       outer.pop_back();
     }
     return;
@@ -4023,16 +4023,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // lambdas.
     auto class_name = ast.nodes[k]->token;
 
+    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
+    // STATIC_MOD.token is "static" when present, empty otherwise.
+    // Instance methods (no `static`) populate the per-instance method
+    // template (copied into each new object via build_instance). Static
+    // methods are registered as plain properties of the class object
+    // itself — `Shape.create(...)` resolves them via the usual property
+    // access mechanism, providing class-as-namespace.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
+    std::vector<std::pair<std::string_view, Value>> static_template;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      auto name_view = m.nodes[0]->token;
-      if (name_view == "new") {
+      bool is_static = m.nodes[0]->token == "static";
+      auto name_view = m.nodes[1]->token;
+      if (!is_static && name_view == "new") {
         new_ast = &m;
+        continue;
+      }
+      auto fn_val =
+          make_function_value(*m.nodes[2], m.nodes[3], {}, env);
+      if (is_static) {
+        static_template.push_back({name_view, std::move(fn_val)});
       } else {
-        auto fn_val =
-            make_function_value(*m.nodes[1], m.nodes[2], {}, env);
         method_template.push_back({name_view, std::move(fn_val)});
       }
     }
@@ -4061,8 +4074,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     Value constructor;
     if (new_ast) {
-      auto ctor_params = parse_parameters(*new_ast->nodes[1], env);
-      auto body = new_ast->nodes[2];
+      // METHOD layout after grammar update: [STATIC_MOD, IDENTIFIER,
+      // PARAMETERS, BLOCK].
+      auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
+      auto body = new_ast->nodes[3];
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,
@@ -4109,6 +4124,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     ObjectValue class_obj;
     class_obj.properties->emplace("new", Symbol{constructor, false});
+    // Register static methods as class-level properties so call sites
+    // like `Shape.create(...)` resolve them through the usual Object
+    // property access. Stored as immutable bindings (mut=false) since
+    // they are class-level definitions, not user-mutable state.
+    for (auto& [name, fn_val] : static_template) {
+      class_obj.properties->emplace(name, Symbol{std::move(fn_val), false});
+    }
     Value class_val(std::move(class_obj));
 
     // Apply decorators bottom-up to the class value before binding.

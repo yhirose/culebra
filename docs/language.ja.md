@@ -792,8 +792,33 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   代入は `ImmutableError` を投げます（Java / Crystal / Ruby と同じ
   方針）。コンストラクタは常に最初に確保されたインスタンスを返し、
   明示的な `return value` は `value` を捨てます。識別子差し替えが
-  必要な factory はクラス外の関数として書いてください:
-  `let make_circle = fn (r) { let s = Shape.new(); s.radius = r; s }`。
+  必要な factory は `static` メソッド（下記）またはクラス外の関数
+  として書いてください。
+* `static` 修飾子を付けたメソッドはクラスオブジェクト自身に登録
+  され（インスタンスには付かない）、factory・定数的なヘルパ・
+  名前空間としての用途に使えます。`Shape.create(...)` 形式で
+  通常のプロパティ参照と同じく解決され、receiver はクラスオブジェクト
+  そのものなので static 本体内で `this` は使えません:
+
+      class Shape {
+        new ()                  { this.kind = 'unknown' }
+        area ()                 { 0 }
+        static circle (r)       {
+          let s = Shape.new()
+          s.kind = 'circle'; s.radius = r; s
+        }
+        static square (side)    {
+          let s = Shape.new()
+          s.kind = 'square'; s.side = side; s
+        }
+      }
+      let c = Shape.circle(4)   # 静的 factory
+      let s = Shape.square(3)
+      puts(c.kind)              # 'circle'
+
+  static メソッドはインスタンス経由では参照できません（`c.circle(...)`
+  は instance に `circle` プロパティが無いため `TypeError` を投げる）。
+  Java / C# / Kotlin / Crystal のクラスメソッド規則と同じです。
 * インタプリタ・JIT の両方でクラス宣言をコンパイルします。
   インスタンス生成は軽いランタイム呼出: `new` 自体は通常の JIT
   closure で、captures にメソッド closure 群とユーザの `new` 本体
