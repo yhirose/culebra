@@ -2,6 +2,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
+#include <module_loader.h>
 #include <parser.h>
 #include <runtime/rt_macros.h>
 #include <shared.h>
@@ -28,6 +29,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -381,6 +383,15 @@ inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 inline void _culebra_cell_release(JitCell* c);
 inline void _culebra_call_drop_if_present(JitObject* o);
+
+// Forward decls for the refcount helpers — `culebra_runtime_module_*`
+// is emitted before the helper definitions further down (line 1430-ish)
+// because the runtime header is one big TU and the module table sits
+// near the throw helpers.
+extern "C" {
+CULEBRA_RT_KEEP void culebra_runtime_value_retain(int8_t tag, int64_t data);
+CULEBRA_RT_KEEP void culebra_runtime_value_release(int8_t tag, int64_t data);
+}
 
 // JitValue::tag values. The refcounted subset (Func/Array/Object)
 // doubles as GC tracker tags; cells get a distinct GC-only tag below.
@@ -1318,6 +1329,52 @@ culebra_runtime_throw_error(const char* kind, const char* msg,
                              int64_t line, int64_t col) {
   culebra::throw_runtime_error_at(kind ? kind : "", msg ? msg : "",
                                    line, col);
+}
+
+// JIT module table — keyed by absolute module path, value is the
+// module's export Object packed into a JitValue. Dependencies register
+// their export with culebra_runtime_module_register at the tail of
+// their init code; `import` sites pull it back out via _module_get.
+// thread_local so multiple JIT sessions on different threads do not
+// step on each other (matches _GcTracker's storage model).
+inline std::unordered_map<std::string, JitValue>& _jit_module_table() {
+  thread_local std::unordered_map<std::string, JitValue> t;
+  return t;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_module_register(const char* path, int8_t tag, int64_t data) {
+  auto& t = _jit_module_table();
+  auto key = std::string(path ? path : "");
+  auto it = t.find(key);
+  if (it != t.end()) {
+    // Replace: drop the old entry's +1 before overwriting so the slot
+    // never holds two refs at once.
+    culebra_runtime_value_release(it->second.tag, it->second.data);
+    it->second = JitValue{tag, data};
+  } else {
+    t.emplace(std::move(key), JitValue{tag, data});
+  }
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_module_get(const char* path, int8_t* out_tag,
+                            int64_t* out_data, int64_t line, int64_t col) {
+  auto& t = _jit_module_table();
+  auto it = t.find(std::string(path ? path : ""));
+  if (it == t.end()) {
+    culebra::throw_runtime_error_at(
+        "ImportError",
+        std::format("module '{}' was not loaded — `import` statements "
+                    "must be reachable from the entry point's "
+                    "dependency graph", path ? path : ""),
+        line, col);
+  }
+  // Hand the caller a fresh +1 so the importing scope owns its own
+  // reference (table retains the original).
+  culebra_runtime_value_retain(it->second.tag, it->second.data);
+  *out_tag = it->second.tag;
+  *out_data = it->second.data;
 }
 
 // Like type_error but includes "expected X, got Y" — caller passes the
@@ -5503,6 +5560,10 @@ inline constexpr auto compound_missing_property
     = "culebra_runtime_compound_missing_property";
 inline constexpr auto immutable_assign
     = "culebra_runtime_immutable_assign";
+inline constexpr auto module_register
+    = "culebra_runtime_module_register";
+inline constexpr auto module_get
+    = "culebra_runtime_module_get";
 inline constexpr auto unknown_kwarg
     = "culebra_runtime_unknown_kwarg";
 inline constexpr auto missing_required_arg
@@ -5878,6 +5939,114 @@ struct JIT {
       optimize_module(*mod, opt_level);
     }
 
+    if (emit_llvm) {
+      mod->print(outs(), nullptr);
+    } else {
+      exec(std::move(ctx), std::move(mod));
+    }
+  }
+
+  // Multi-module variant. `modules` comes from ModuleLoader in
+  // topological order (deps first, entry last). Dependencies compile
+  // into a private scope inside __culebra_main, build their export
+  // Object, and hand it to `culebra_runtime_module_register`. The
+  // entry module compiles last and shares the caller-facing scope.
+  // IMPORT_STMT sites in any module fetch from the module table via
+  // `culebra_runtime_module_get`.
+  static inline void run_modules(
+      const std::vector<LoadedModule>& modules,
+      bool emit_llvm = false, bool debug = false, int opt_level = 2) {
+    using namespace llvm;
+    if (modules.empty()) return;
+
+    ensure_native_target_init();
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("culebra", *ctx);
+    {
+      llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+      std::string err;
+      auto* target = llvm::TargetRegistry::lookupTarget(triple, err);
+      if (target) {
+        std::unique_ptr<llvm::TargetMachine> tm(
+            target->createTargetMachine(triple, "", "", {}, {}));
+        if (tm) {
+          mod->setDataLayout(tm->createDataLayout());
+          mod->setTargetTriple(triple);
+        }
+      }
+    }
+    IRBuilder<> builder(*ctx);
+
+    JIT jit(ctx.get(), mod.get(), builder);
+    jit.debug_enabled_ = debug;
+    jit.declare_runtime_functions();
+
+    // Per-module FuncInfo. Pre-compute before any IR emission so we
+    // know the aggregate EH / fn-defer flags for the main fn header.
+    std::vector<FuncInfo> infos;
+    infos.reserve(modules.size());
+    bool any_eh = false;
+    bool any_kw_only = false;
+    for (const auto& m : modules) {
+      infos.push_back(jit.analyze_program(*m.ast));
+      any_eh = any_eh || infos.back().has_eh;
+      any_kw_only = any_kw_only || scan_for_kw_only_marker(*m.ast);
+    }
+    jit.any_kw_only_in_program_ = any_kw_only;
+
+    auto mainFnType = FunctionType::get(builder.getVoidTy(), {}, false);
+    auto mainFn = Function::Create(mainFnType, GlobalValue::ExternalLinkage,
+                                    "__culebra_main", mod.get());
+    if (any_eh) mainFn->setPersonalityFn(jit.get_personality_fn());
+
+    auto entryBB = BasicBlock::Create(*ctx, "entry", mainFn);
+    builder.SetInsertPoint(entryBB);
+
+    // Dependencies. Each module compiles inside a fresh scope so its
+    // top-level bindings don't leak into the entry; the export Object
+    // is registered in the module table before the scope closes.
+    for (size_t i = 0; i + 1 < modules.size(); ++i) {
+      const auto& m = modules[i];
+      jit.current_module_path_ = m.abs_path;
+      jit.main_info_ = std::move(infos[i]);
+      jit.current_info_ = &jit.main_info_;
+      jit.push_scope();
+      jit.pre_allocate_forward_refs(*m.ast);
+      jit.compile(*m.ast);
+      jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
+      jit.pop_scope();
+      jit.current_info_ = nullptr;
+    }
+
+    // Entry module — shares the rest of __culebra_main (defer mark,
+    // top-level scope cleanup, ret void).
+    const auto& entry = modules.back();
+    jit.current_module_path_ = entry.abs_path;
+    jit.main_info_ = std::move(infos.back());
+    jit.current_info_ = &jit.main_info_;
+    jit.push_scope();
+    llvm::Value* mainMark = nullptr;
+    if (jit.main_info_.has_fn_defer) {
+      mainMark = builder.CreateCall(
+          mod->getFunction(rt::defer_mark), {}, "main.mark");
+      jit.current_fn_defer_mark_ = mainMark;
+    }
+    jit.pre_allocate_forward_refs(*entry.ast);
+    jit.compile(*entry.ast);
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      if (mainMark) {
+        builder.CreateCall(
+            mod->getFunction(rt::defer_run_to), {mainMark});
+      }
+      jit.release_all_scopes_for_exit();
+      builder.CreateRetVoid();
+    }
+    jit.current_fn_defer_mark_ = nullptr;
+    jit.pop_scope();
+    jit.current_info_ = nullptr;
+
+    verifyFunction(*mainFn);
+    if (opt_level > 0) optimize_module(*mod, opt_level);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
@@ -6421,6 +6590,13 @@ struct JIT {
   // Analysis results for each FUNCTION AST node (plus the main program)
   std::map<const peg::Ast*, FuncInfo> func_info_;
   FuncInfo main_info_;
+
+  // Absolute on-disk path of the module currently being compiled.
+  // `compile_import_stmt` resolves its relative path string against
+  // this module's directory, mirroring the interp's module_stack_
+  // top entry. Set by `run_modules` per module; empty when running
+  // through the single-AST `run` path.
+  std::filesystem::path current_module_path_;
 
   // Program-wide pre-scan: true when any FUNCTION/MULTIFN/METHOD AST
   // has a `*` keyword-only separator. When false, every dynamic-callee
@@ -7263,6 +7439,15 @@ struct JIT {
       return;
     }
 
+    if (node.tag == "IMPORT_STMT"_) {
+      // `import name from "path"` binds `name` in the enclosing scope.
+      auto& id = *node.nodes[0];
+      auto name = std::string(id.token);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
+      return;
+    }
+
     for (auto& c : node.nodes) {
       collect_fn_locals(*c, locals, outer);
     }
@@ -7882,6 +8067,13 @@ struct JIT {
         return compile_class_decl(ast);
       case "MULTIFN_DECL"_:
         return compile_multifn_decl(ast);
+      case "IMPORT_STMT"_:
+        return compile_import_stmt(ast);
+      case "EXPORT_STMT"_:
+        // No-op at compile site. `compile_module` walks the module's
+        // AST after the body and builds the export Object explicitly,
+        // so the in-place EXPORT_STMT just falls through.
+        return make_nil();
       case "LOGICAL_OR"_:
         return compile_logical_or(ast);
       case "NIL_COALESCE"_:
@@ -10607,6 +10799,105 @@ struct JIT {
                         /*is_let=*/true, /*is_mut=*/false);
     }
     return make_nil();
+  }
+
+  // IMPORT_STMT: [IDENTIFIER, STRING]. The dependency was loaded and
+  // registered (in `_jit_module_table`) by run_modules before this
+  // module's IR was emitted; the helper just pulls the export Object
+  // back out, retains it for the importing scope, and the local cell
+  // takes ownership.
+  llvm::Value* compile_import_stmt(const peg::Ast& ast) {
+    auto name = std::string(ast.nodes[0]->token);
+    auto rel = std::string(ast.nodes[1]->token);
+
+    // Resolve the dependency's absolute path at compile time — the
+    // path is a literal STRING so we don't need a runtime resolver.
+    std::filesystem::path abs(rel);
+    if (!abs.is_absolute()) {
+      auto from_dir = current_module_path_.empty()
+                          ? std::filesystem::current_path()
+                          : current_module_path_.parent_path();
+      abs = from_dir / abs;
+    }
+    std::error_code ec;
+    auto canon = std::filesystem::weakly_canonical(abs, ec);
+    if (ec) canon = std::filesystem::absolute(abs);
+
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto tagSlot =
+        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "mod.tag");
+    auto dataSlot =
+        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "mod.data");
+    auto pathPtr = get_or_create_global_str(canon.string(), ".modpath");
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::module_get, builder_.getVoidTy(),
+            ptrTy, ptrTy, ptrTy,
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {pathPtr, tagSlot, dataSlot,
+         builder_.getInt64(ast.line), builder_.getInt64(ast.column)});
+
+    auto tag = builder_.CreateLoad(builder_.getInt8Ty(), tagSlot,
+                                    "mod.tag.v");
+    auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
+                                     "mod.data.v");
+    llvm::Value* v = llvm::UndefValue::get(valueType_);
+    v = builder_.CreateInsertValue(v, tag, {0});
+    v = builder_.CreateInsertValue(v, data, {1});
+    declare_local(name, v);
+    return make_nil();
+  }
+
+  // After a dependency module's body has been compiled, walk its AST
+  // for EXPORT_STMT entries, build a single Object holding every named
+  // binding, and hand it to the runtime module table. Subsequent
+  // IMPORT_STMT compilations (in dependents) load the table back out.
+  void emit_build_and_register_export(const peg::Ast& module_ast,
+                                       const std::string& abs_path) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto objPtr = emit_call(
+        module_->getOrInsertFunction(rt::object_new, ptrTy), {},
+        "mod.export");
+
+    const peg::Ast* stmts =
+        module_ast.tag == "STATEMENTS"_ ||
+                module_ast.original_tag == "STATEMENTS"_
+            ? &module_ast
+            : (module_ast.nodes.empty() ? nullptr
+                                         : module_ast.nodes[0].get());
+    if (stmts) {
+      for (const auto& s : stmts->nodes) {
+        if (s->tag != "EXPORT_STMT"_) continue;
+        for (const auto& id : s->nodes) {
+          auto name = std::string(id->token);
+          auto slot = lookup_var(name);
+          if (!slot) {
+            // Mirror interp's extract_export NameError.
+            emit_throw_error(
+                "NameError",
+                std::format("export '{}' is not defined in module", name),
+                id->line, id->column);
+            continue;
+          }
+          auto val = load_slot(*slot, name);
+          emit_object_set(objPtr, name, /*mut=*/false,
+                          extract_tag(val), extract_data(val));
+        }
+      }
+    }
+
+    auto objVal = make_object(objPtr);
+    auto pathPtr = get_or_create_global_str(abs_path, ".modpath");
+    emit_call(
+        module_->getOrInsertFunction(rt::module_register,
+                                      builder_.getVoidTy(),
+                                      ptrTy, builder_.getInt8Ty(),
+                                      builder_.getInt64Ty()),
+        {pathPtr, extract_tag(objVal), extract_data(objVal)});
   }
 
   // `fn name(params) body` — top-level multimethod declaration. Compiles

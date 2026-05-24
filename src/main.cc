@@ -363,32 +363,17 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     vector<string> msgs;
     std::string_view user_src(buff.data(), buff.size());
 
-#ifdef CULEBRA_JIT_ENABLED
-    if (options.jit) {
-      // JIT path keeps the preamble-concat shape for now; multi-module
-      // support lands in the JIT in a later milestone.
-      auto combined = culebra::prepend_stdlib_preamble(user_src);
-      auto ast = culebra::parse(path, combined.data(), combined.size(), msgs);
-      if (ast) {
-        if (options.print_ast) cout << peg::ast_to_s(ast);
-        culebra::_culebra_sys_argv_holder() = options.script_argv;
-        culebra::JIT::run(ast, options.emit_llvm, options.debug,
-                          options.opt_level);
-        continue;
-      }
-      for (const auto& msg : msgs) cerr << msg << endl;
-      return false;
-    }
-#endif
-
-    // Interp path: walk the dependency graph via ModuleLoader, then
-    // run interpret_modules. The stdlib preamble was already eval'd
-    // into `env` by `culebra::environment()`, so dependency modules
-    // see Time/Args via the outer scope.
+    // Walk the dependency graph via ModuleLoader. The same vector
+    // feeds both backends — JIT bundles every module into one IR,
+    // interp evaluates them sequentially.
     culebra::ModuleLoader loader;
     std::vector<culebra::LoadedModule> modules;
+    // Entry source goes in with the stdlib preamble already prepended
+    // so the JIT path (which doesn't pre-load Time / Args via env)
+    // sees those classes as ordinary top-level declarations.
+    auto entry_src = culebra::prepend_stdlib_preamble(user_src);
     try {
-      modules = loader.load_program(path, user_src, msgs);
+      modules = loader.load_program(path, entry_src, msgs);
     } catch (const culebra::CulebraError& e) {
       cerr << e.kind << ": " << e.what();
       if (e.line > 0 || e.col > 0) cerr << " at " << e.line << ":" << e.col << ".";
@@ -406,6 +391,15 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
         cout << peg::ast_to_s(m.ast);
       }
     }
+
+#ifdef CULEBRA_JIT_ENABLED
+    if (options.jit) {
+      culebra::_culebra_sys_argv_holder() = options.script_argv;
+      culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
+                                 options.opt_level);
+      continue;
+    }
+#endif
 
     culebra::Value val;
     auto dbg =

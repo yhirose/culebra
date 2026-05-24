@@ -305,6 +305,15 @@ inline void collect_locals(
     return;
   }
 
+  // IMPORT_STMT introduces a local binding for the imported namespace.
+  if (node.tag == "IMPORT_STMT"_) {
+    auto& id = *node.nodes[0];
+    auto name = std::string(id.token);
+    check(name, id.line, id.column, outer);
+    if (!is_sink_name(name)) locals.insert(name);
+    return;
+  }
+
   // DESTRUCTURE_ASSIGN binds a pattern to a value.
   if (node.tag == "DESTRUCTURE_ASSIGN"_) {
     const auto& pattern = *node.nodes[1];
