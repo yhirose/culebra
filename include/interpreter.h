@@ -5465,6 +5465,8 @@ inline bool interpret_modules(const std::vector<LoadedModule>& modules,
       interp->module_stack_.pop_back();
     }
 
+    // Entry runs against the caller-supplied env so REPL / embedding
+    // sessions can read its top-level bindings afterwards.
     const auto& entry = modules.back();
     interp->module_stack_.push_back(entry.abs_path);
     val = interp->eval(*entry.ast, env);

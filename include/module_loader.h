@@ -202,27 +202,31 @@ inline void ModuleLoader::validate_module(const peg::Ast& ast) {
         }
         for (const auto& c : node.nodes) walk(*c, false);
       };
-  if (stmts) {
-    for (const auto& child : stmts->nodes) walk(*child, true);
-  }
+  // Iterate either the STATEMENTS children or — when AstOptimizer
+  // folded the wrapper for a single-statement program — `ast` itself.
+  auto for_each_toplevel = [&](auto&& fn) {
+    if (stmts) {
+      for (const auto& child : stmts->nodes) fn(*child);
+    } else {
+      fn(ast);
+    }
+  };
+  for_each_toplevel([&](const peg::Ast& s) { walk(s, true); });
 
-  // Reject duplicate names across all EXPORT_STMTs in the module.
-  if (stmts) {
-    std::unordered_set<std::string_view> seen;
-    for (const auto& child : stmts->nodes) {
-      if (child->tag != "EXPORT_STMT"_) continue;
-      for (const auto& id : child->nodes) {
-        auto name = id->token;
-        if (!seen.insert(name).second) {
-          throw CulebraError(
-              "SyntaxError",
-              std::format("duplicate export name '{}'", name),
-              static_cast<long>(id->line),
-              static_cast<long>(id->column));
-        }
+  std::unordered_set<std::string_view> seen;
+  for_each_toplevel([&](const peg::Ast& s) {
+    if (s.tag != "EXPORT_STMT"_) return;
+    for (const auto& id : s.nodes) {
+      auto name = id->token;
+      if (!seen.insert(name).second) {
+        throw CulebraError(
+            "SyntaxError",
+            std::format("duplicate export name '{}'", name),
+            static_cast<long>(id->line),
+            static_cast<long>(id->column));
       }
     }
-  }
+  });
 }
 
 [[noreturn]] inline void ModuleLoader::throw_io_error(
