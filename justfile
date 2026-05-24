@@ -29,6 +29,7 @@ clean:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
+[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all)")]
 test BACKEND='all': build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -107,14 +108,16 @@ test BACKEND='all': build
 
 # Microbenchmark regression check: every tests/perf/*.cul on interp
 # and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`
-# directive declared in the file header. Not part of `verify` because
-# runtimes are noisy and machine-dependent.
+# directive declared in the file header. Not part of `just test`
+# because runtimes are noisy and machine-dependent.
+[doc("Microbench regression check (per-bench thresholds in tests/perf/*.cul)")]
 perf: build
     ./tests/perf/run.sh
 
 # Smoke: run microgpt 5 training steps (no inference) on both backends
 # to catch regressions in the JIT value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.
+[doc("Run microgpt 5 training steps on both backends (large-scale JIT smoke)")]
 smoke-microgpt: build fetch-names
     ./build/culebra       benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
     ./build/culebra --jit benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
