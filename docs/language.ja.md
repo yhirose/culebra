@@ -2560,6 +2560,8 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
 
-`tests/interp/` 以下の interp 専用 suite は tree-walking backend
-でしか意味を持たない動作（デバッガ hook、REPL session state 等）
-を pin しています。§23 が「対称性契約の外側」を列挙しています。
+`tests/` 配下のすべてのテストファイルは両 backend で同一 stdout
+を出すことが要求されます — `just test-all` がそれを強制します。
+backend 固有の対話的機能（REPL state を駆動するデバッガ hook 等）
+は `.cul` スクリプトではなく `tests/embedding/` の C++ smoke
+テストで検証します。

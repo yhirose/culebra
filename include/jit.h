@@ -1347,10 +1347,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
     int64_t got, int64_t declared, int64_t line, int64_t col) {
+  // Legacy entry point (kept for ABI continuity in JIT runtimes that
+  // were compiled before culebra_runtime_arity_missing existed).
   throw culebra::CulebraError("ArityError", std::format(
       "arguments error: called with {} argument(s), expected at least {} "
       "at {}:{}.",
       got, declared, line, col), line, col);
+}
+
+// Name-aware arity error: callee passes its declared parameter name
+// table (a const char* array, NUL-terminated entries) and the runtime
+// throws "missing required argument 'X'" where X is the first slot
+// that wasn't filled. Matches interp's eval-time message exactly so
+// `e.message.contains('missing required')` works on both backends.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_arity_missing(const char* const* names, int64_t got,
+                               int64_t line, int64_t col) {
+  const char* missing = (names && names[got]) ? names[got] : "";
+  culebra::throw_missing_required_arg_at(missing, line, col);
 }
 
 // C++ exception thrown by `culebra_runtime_throw` when user code runs
@@ -5501,6 +5515,7 @@ inline constexpr auto class_parameters_walk =
 inline constexpr auto multifn_register_and_install =
     "culebra_runtime_multifn_register_and_install";
 inline constexpr auto arity_error         = "culebra_runtime_arity_error";
+inline constexpr auto arity_missing       = "culebra_runtime_arity_missing";
 inline constexpr auto args_slice_to_array =
     "culebra_runtime_args_slice_to_array";
 inline constexpr auto release_overflow_args =
@@ -10883,12 +10898,27 @@ struct JIT {
       builder_.CreateCondBr(tooFew, errBB, okBB);
 
       builder_.SetInsertPoint(errBB);
+      // Build a constant char* array of declared param names so the
+      // runtime can name the first missing slot ("missing required
+      // argument 'X'"). Matches interp's bind_call_args message.
+      std::vector<llvm::Constant*> nameConsts;
+      nameConsts.reserve(paramNames.size());
+      for (const auto& n : paramNames) {
+        nameConsts.push_back(llvm::cast<llvm::Constant>(
+            get_or_create_global_str(n, ".paramname")));
+      }
+      auto nameArrayTy = llvm::ArrayType::get(ptrTy, nameConsts.size());
+      auto nameArrayConst = llvm::ConstantArray::get(nameArrayTy, nameConsts);
+      auto namesGlobal = new llvm::GlobalVariable(
+          *module_, nameArrayTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, nameArrayConst, ".paramnames");
       emit_call(
           module_->getOrInsertFunction(
-              rt::arity_error, builder_.getVoidTy(),
-              builder_.getInt64Ty(), builder_.getInt64Ty(),
+              rt::arity_missing, builder_.getVoidTy(),
+              ptrTy, builder_.getInt64Ty(),
               builder_.getInt64Ty(), builder_.getInt64Ty()),
-          {nArgsArg, need, current_line_val(), current_column_val()});
+          {namesGlobal, nArgsArg,
+           current_line_val(), current_column_val()});
       builder_.CreateUnreachable();
       builder_.SetInsertPoint(okBB);
     }

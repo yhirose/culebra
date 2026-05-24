@@ -2665,6 +2665,8 @@ primary owner; some tests touch multiple sections, marked "(broad)".
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
 
-The interp-only suite under `tests/interp/` pins behavior that only
-makes sense in the tree-walking backend (debugger hooks, REPL
-session state); §23 lists what falls outside the symmetry contract.
+Every test file in `tests/` is required to pass on both backends
+with identical stdout — `just test-all` enforces it. Interactive
+features that are inherently backend-specific (debugger hooks
+exercised by REPL state) are tested through `tests/embedding/`
+C++ smoke tests rather than as `.cul` scripts.

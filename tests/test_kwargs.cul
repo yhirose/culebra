@@ -177,4 +177,37 @@ assert(order_log.size() == 3 &&
        order_log[1] == 'splat' &&
        order_log[2] == 'kw')
 
+# Error shapes. All raise catchable structured errors on both backends
+# with identical kind + message text. The JIT used to detect several
+# of these at IR-emit time (uncatchable); they now route through the
+# same runtime throw helpers as interp so `try { ... } catch e { ... }`
+# observes the same error consistently.
+let err_f = fn (x, y = 10) { x + y }
+
+let e1 = try { err_f(1, zzz: 9); nil } catch e { e }
+assert(e1.kind == 'TypeError' && e1.message.contains('zzz'))
+
+let e2 = try { err_f(x: 1, x: 2); nil } catch e { e }
+assert(e2.kind == 'TypeError' && e2.message.contains('duplicate'))
+
+let e3 = try { err_f(1, x: 2); nil } catch e { e }
+assert(e3.kind == 'TypeError' && e3.message.contains('both positionally'))
+
+let e4 = try { err_f(); nil } catch e { e }
+assert(e4.kind == 'ArityError' && e4.message.contains("missing required"))
+
+let e5 = try { err_f(1, **[1, 2]); nil } catch e { e }
+assert(e5.kind == 'TypeError' && e5.message.contains('splat operand'))
+
+let e6 = try { err_f(x: 1, 2); nil } catch e { e }
+assert(e6.kind == 'SyntaxError' &&
+       e6.message.contains('positional argument follows'))
+
+let e7 = try {
+  let bad = {1: 'a'}
+  err_f(1, **bad)
+  nil
+} catch e { e }
+assert(e7.kind == 'TypeError' && e7.message.contains('splat key'))
+
 IO.puts('test_kwargs OK')
