@@ -898,9 +898,20 @@ struct Value {
         return true;
       }
       case Set: return _set_eq(*this, rhs);
-      // TODO: Object and Array support
-      default:
-        throw std::logic_error("invalid internal condition.");
+      // Reference equality for the heap-backed types — same as the
+      // JIT (`_culebra_value_equal` default branch). Spec §16.
+      case Array:
+        return get<ArrayValue>().values.get() ==
+               rhs.get<ArrayValue>().values.get();
+      case Object:
+        return get<ObjectValue>().properties.get() ==
+               rhs.get<ObjectValue>().properties.get();
+      case Function:
+        return get<FunctionValue>().params.get() ==
+               rhs.get<FunctionValue>().params.get();
+      case Tensor:
+        return get<TensorValue>().impl.get() ==
+               rhs.get<TensorValue>().impl.get();
     }
     std::unreachable();
   }
