@@ -6011,9 +6011,22 @@ struct JIT {
       jit.main_info_ = std::move(infos[i]);
       jit.current_info_ = &jit.main_info_;
       jit.push_scope();
+      // Per-dep defer mark so top-level defers in the dep fire at
+      // dep-end, matching interp's interpret_modules.
+      llvm::Value* depMark = nullptr;
+      if (jit.main_info_.has_fn_defer) {
+        depMark = builder.CreateCall(
+            mod->getFunction(rt::defer_mark), {}, "dep.mark");
+        jit.current_fn_defer_mark_ = depMark;
+      }
       jit.pre_allocate_forward_refs(*m.ast);
       jit.compile(*m.ast);
       jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
+      if (depMark) {
+        builder.CreateCall(
+            mod->getFunction(rt::defer_run_to), {depMark});
+      }
+      jit.current_fn_defer_mark_ = nullptr;
       jit.pop_scope();
       jit.current_info_ = nullptr;
     }
@@ -6259,9 +6272,20 @@ struct JIT {
       jit.main_info_ = std::move(infos[i]);
       jit.current_info_ = &jit.main_info_;
       jit.push_scope();
+      llvm::Value* depMark = nullptr;
+      if (jit.main_info_.has_fn_defer) {
+        depMark = builder.CreateCall(
+            mod->getFunction(rt::defer_mark), {}, "dep.mark");
+        jit.current_fn_defer_mark_ = depMark;
+      }
       jit.pre_allocate_forward_refs(*m.ast);
       jit.compile(*m.ast);
       jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
+      if (depMark) {
+        builder.CreateCall(
+            mod->getFunction(rt::defer_run_to), {depMark});
+      }
+      jit.current_fn_defer_mark_ = nullptr;
       jit.pop_scope();
       jit.current_info_ = nullptr;
     }
