@@ -13,7 +13,12 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / MULTIFN_DECL / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+
+  # Module system (§25). `import name from "./path"` binds the file's
+  # `export { ... }` value to `name`. String-literal paths only.
+  IMPORT_STMT              <-  import _ IDENTIFIER _ from _ STRING
+  EXPORT_STMT              <-  export _ '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
 
   # Top-level named function declaration. Multiple declarations with
   # the same name and different parameter type signatures form a
@@ -216,6 +221,9 @@ const auto grammar_ = R"(
   ~break                   <-  K('break')
   ~continue                <-  K('continue')
   ~defer                   <-  K('defer')
+  ~import                  <-  K('import')
+  ~export                  <-  K('export')
+  ~from                    <-  K('from')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
@@ -406,7 +414,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "CLASS_DECL", "METHOD", "DECORATOR",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN",
-               "REST_PATTERN"});
+               "REST_PATTERN",
+               "IMPORT_STMT", "EXPORT_STMT"});
 
     return opt.optimize(ast);
   }
