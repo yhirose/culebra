@@ -5,18 +5,21 @@ default:
     @just --list
 
 # Configure and build with LLVM JIT enabled (Release)
+[group("build")]
 build:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON .. > /dev/null
     cd build && make
 
 # Build without JIT (Release)
+[group("build")]
 build-no-jit:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
     cd build && make
 
 # Clean build directory
+[group("build")]
 clean:
     rm -rf build
 
@@ -30,6 +33,7 @@ clean:
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
 [doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all)")]
+[group("test")]
 test BACKEND='all': build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -111,6 +115,7 @@ test BACKEND='all': build
 # directive declared in the file header. Not part of `just test`
 # because runtimes are noisy and machine-dependent.
 [doc("Microbench regression check (per-bench thresholds in tests/perf/*.cul)")]
+[group("test")]
 perf: build
     ./tests/perf/run.sh
 
@@ -118,12 +123,14 @@ perf: build
 # to catch regressions in the JIT value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.
 [doc("Run microgpt 5 training steps on both backends (large-scale JIT smoke)")]
+[group("bench")]
 smoke-microgpt: build fetch-names
     ./build/culebra       benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
     ./build/culebra --jit benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
     @echo "smoke-microgpt OK: 5 steps completed on both backends"
 
 # Download Karpathy's names dataset for benchmarks/microgpt.
+[group("bench")]
 fetch-names:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -139,6 +146,7 @@ fetch-names:
     echo "saved $path ($(wc -l < "$path") lines)"
 
 # Download MNIST IDX files for benchmarks/mnist.
+[group("bench")]
 fetch-mnist:
     #!/usr/bin/env bash
     set -euo pipefail
