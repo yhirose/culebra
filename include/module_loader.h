@@ -105,7 +105,9 @@ inline size_t ModuleLoader::load_recursive(
     std::ifstream ifs(abs_path, std::ios::binary);
     if (!ifs) throw_io_error(abs_path);
     ifs.seekg(0, std::ios::end);
-    src_buf->resize(static_cast<size_t>(ifs.tellg()));
+    auto pos = ifs.tellg();
+    if (pos < 0) throw_io_error(abs_path);  // dir / FIFO / unseekable
+    src_buf->resize(static_cast<size_t>(pos));
     ifs.seekg(0, std::ios::beg);
     if (!src_buf->empty()) {
       ifs.read(src_buf->data(),
