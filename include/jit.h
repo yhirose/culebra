@@ -5568,6 +5568,8 @@ inline constexpr auto module_register
     = "culebra_runtime_module_register";
 inline constexpr auto module_get
     = "culebra_runtime_module_get";
+inline constexpr auto namespace_get
+    = "culebra_runtime_namespace_get";
 inline constexpr auto unknown_kwarg
     = "culebra_runtime_unknown_kwarg";
 inline constexpr auto missing_required_arg
@@ -8701,6 +8703,35 @@ struct JIT {
                                      "repl.tag.v");
       auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
                                       "repl.data.v");
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, tag, {0});
+      v = builder_.CreateInsertValue(v, data, {1});
+      return v;
+    }
+    // bare stdlib namespace (e.g. `let m = IO`) — fetch its lazy-built
+    // sentinel Object so the value can be passed around like any user
+    // Object. `IO.method(...)` still goes through the fast compile_global
+    // path; only this slow path runs when the namespace is used as a
+    // value.
+    if (is_builtin_var(name)) {
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      auto fn = builder_.GetInsertBlock()->getParent();
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto tagSlot = entryB.CreateAlloca(builder_.getInt8Ty(),
+                                          nullptr, "ns.tag");
+      auto dataSlot = entryB.CreateAlloca(builder_.getInt64Ty(),
+                                           nullptr, "ns.data");
+      auto namePtr = get_or_create_global_str(name, ".ns.name");
+      emit_call(
+          module_->getOrInsertFunction(rt::namespace_get,
+                                       builder_.getVoidTy(),
+                                       ptrTy, ptrTy, ptrTy),
+          {namePtr, tagSlot, dataSlot});
+      auto tag = builder_.CreateLoad(builder_.getInt8Ty(), tagSlot,
+                                      "ns.tag.v");
+      auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
+                                       "ns.data.v");
       llvm::Value* v = llvm::UndefValue::get(valueType_);
       v = builder_.CreateInsertValue(v, tag, {0});
       v = builder_.CreateInsertValue(v, data, {1});

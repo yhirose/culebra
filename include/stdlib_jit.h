@@ -1132,6 +1132,116 @@ struct JitExtension {
 // Convenience wrapper for embedders. Call once before JIT::run().
 inline void install_jit_stdlib() { JitExtension::install(); }
 
+// --- Stdlib namespace as first-class JIT object (#174) ---
+//
+// `let m = IO; m.puts(x)` needs IO to be a value, not just a
+// compile-time syntactic pattern. The namespace pool below builds
+// a JitObject per stdlib namespace lazily and stores closures that
+// trampoline into the matching `culebra_runtime_*` helper. Fast
+// path `IO.puts(x)` still goes through compile_global as before.
+
+inline JitValue _jit_ns_method_trampoline(
+    JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
+  const char* ns =
+      reinterpret_cast<const char*>(cls->captures[0]->value.data);
+  const char* method =
+      reinterpret_cast<const char*>(cls->captures[1]->value.data);
+  auto release_args = [&]() {
+    for (int64_t i = 0; i < n_args; i++) {
+      _culebra_value_release_impl(args[i].tag, args[i].data);
+    }
+  };
+
+  if (std::strcmp(ns, "IO") == 0) {
+    if (std::strcmp(method, "puts") == 0) {
+      if (n_args >= 1) culebra_runtime_puts(args[0].tag, args[0].data);
+      release_args();
+      return {TAG_NIL, 0};
+    }
+    if (std::strcmp(method, "print") == 0) {
+      if (n_args >= 1) culebra_runtime_print(args[0].tag, args[0].data);
+      release_args();
+      return {TAG_NIL, 0};
+    }
+  }
+
+  release_args();
+  culebra::throw_runtime_error_at(
+      "AttributeError",
+      std::format("'{}' namespace has no method '{}'", ns, method),
+      0, 0);
+}
+
+inline JitClosure* _jit_make_ns_method_closure(
+    const char* ns, const char* method, size_t arity) {
+  auto* cls = new JitClosure();
+  cls->refcount = 1;
+  cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
+  cls->n_captures = 2;
+  cls->captures = new JitCell*[2];
+  cls->captures[0] = culebra_runtime_cell_new(
+      TAG_STRING, reinterpret_cast<int64_t>(ns));
+  cls->captures[1] = culebra_runtime_cell_new(
+      TAG_STRING, reinterpret_cast<int64_t>(method));
+  cls->arity = arity;
+  _gc().add(cls, GC_TAG_FUNC);
+  return cls;
+}
+
+inline JitObject* _jit_build_io_namespace() {
+  auto* obj = culebra_runtime_object_new();
+  auto bind = [&](const char* name, size_t arity) {
+    auto* fn = _jit_make_ns_method_closure("IO", name, arity);
+    obj->append_slot(name, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)},
+                     /*mut=*/false);
+  };
+  bind("puts", 1);
+  bind("print", 1);
+  return obj;
+}
+
+struct _JitNamespaceTable {
+  std::unordered_map<std::string, JitObject*> entries;
+  ~_JitNamespaceTable() {
+    for (auto& [_, obj] : entries) {
+      _culebra_value_release_impl(TAG_OBJECT,
+                                  reinterpret_cast<int64_t>(obj));
+    }
+  }
+};
+
+inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
+  auto& table = culebra::runtime_substate<_JitNamespaceTable>(
+                    culebra::kSlotJitNamespaceTable).entries;
+  auto it = table.find(name);
+  if (it != table.end()) return it->second;
+  JitObject* obj = nullptr;
+  if (name == "IO") obj = _jit_build_io_namespace();
+  // Other namespaces (Math, Sys, FS, ...) will register here as
+  // MVP coverage grows.
+  if (!obj) return nullptr;
+  table.emplace(name, obj);
+  return obj;
+}
+
+extern "C" {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_namespace_get(const char* name,
+                               int8_t* out_tag, int64_t* out_data) {
+  auto* obj = _jit_namespace_get_or_build(std::string(name ? name : ""));
+  if (!obj) {
+    culebra::throw_runtime_error_at(
+        "NameError",
+        std::format("undefined variable '{}'...", name ? name : ""),
+        0, 0);
+  }
+  culebra_runtime_value_retain(TAG_OBJECT,
+                                reinterpret_cast<int64_t>(obj));
+  *out_tag = TAG_OBJECT;
+  *out_data = reinterpret_cast<int64_t>(obj);
+}
+}  // extern "C"
+
 inline void JitExtension::declare_runtime(JIT& jit) {
   auto ptrTy = llvm::PointerType::get(jit.ctx_, 0);
 
