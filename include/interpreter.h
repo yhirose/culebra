@@ -5453,7 +5453,8 @@ inline bool interpret_modules(const std::vector<LoadedModule>& modules,
     for (size_t i = 0; i + 1 < modules.size(); ++i) {
       const auto& m = modules[i];
       interp->module_stack_.push_back(m.abs_path);
-      auto mod_env = std::make_shared<Environment>(env);
+      // make_scope sets `outer`; bare Environment(parent) only sets `level`.
+      auto mod_env = make_scope(env);
       try {
         interp->eval(*m.ast, mod_env);
         interp->run_deferred(mod_env);

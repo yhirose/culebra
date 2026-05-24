@@ -87,14 +87,11 @@ inline size_t ModuleLoader::load_recursive(
     std::optional<std::string_view> source,
     std::vector<std::string>& parse_msgs) {
   auto key = abs_path.string();
-  if (auto it = index_.find(key); it != index_.end()) {
-    // Already loaded (or currently loading). A re-enter on the active
-    // stack is a cycle.
-    for (const auto& on_stack : stack_) {
-      if (on_stack == abs_path) throw_cycle_error(stack_, abs_path);
-    }
-    return it->second;
+  // In-progress modules are on `stack_` but not yet in `index_`.
+  for (const auto& on_stack : stack_) {
+    if (on_stack == abs_path) throw_cycle_error(stack_, abs_path);
   }
+  if (auto it = index_.find(key); it != index_.end()) return it->second;
 
   stack_.push_back(abs_path);
 
