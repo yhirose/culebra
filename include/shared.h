@@ -238,6 +238,7 @@ enum RuntimeSlot : size_t {
   kSlotShapeRegistry,
   kSlotDeferStack,
   kSlotJitHooks,
+  kSlotJitModuleTable,
   kRuntimeSlotCount
 };
 

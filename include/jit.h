@@ -1332,14 +1332,18 @@ culebra_runtime_throw_error(const char* kind, const char* msg,
 }
 
 // JIT module table — keyed by absolute module path, value is the
-// module's export Object packed into a JitValue. Dependencies register
-// their export with culebra_runtime_module_register at the tail of
-// their init code; `import` sites pull it back out via _module_get.
-// thread_local so multiple JIT sessions on different threads do not
-// step on each other (matches _GcTracker's storage model).
+// module's export Object packed into a JitValue. Lives in the active
+// Runtime so it dies with the Runtime (releasing each held +1) rather
+// than persisting as thread-local state across embedding sessions.
+struct _JitModuleTable {
+  std::unordered_map<std::string, JitValue> entries;
+  ~_JitModuleTable() {
+    for (auto& [_, v] : entries) _culebra_value_release_impl(v.tag, v.data);
+  }
+};
 inline std::unordered_map<std::string, JitValue>& _jit_module_table() {
-  thread_local std::unordered_map<std::string, JitValue> t;
-  return t;
+  return culebra::runtime_substate<_JitModuleTable>(
+             culebra::kSlotJitModuleTable).entries;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
