@@ -1,0 +1,10 @@
+# Re-export pattern: depends on math_utils and surfaces a derived
+# helper plus a passthrough Pair constructor. Verifies that chained
+# imports load in topological order on both backends.
+
+import math from './math_utils.cul'
+
+let triple_sum = fn (a, b, c) { math.add(math.add(a, b), c) }
+let make_pair = fn (x, y) { math.Pair.new(x, y) }
+
+export { triple_sum, make_pair }

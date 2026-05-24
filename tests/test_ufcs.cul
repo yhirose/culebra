@@ -1,4 +1,4 @@
-# Conformance: §10 (methods, UFCS), §18 (__ARGS__). See docs/language.md §24.
+# Conformance: §10 (methods, UFCS), §18 (__ARGS__). See docs/language.md §25.
 #
 # UFCS regression tests. Runs under both the interpreter and `--jit`.
 #

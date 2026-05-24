@@ -1,4 +1,4 @@
-// Conformance: stdlib §8 (JSON). See docs/stdlib.md and docs/language.md §24.
+// Conformance: stdlib §8 (JSON). See docs/stdlib.md and docs/language.md §25.
 //
 // JSON.stringify / JSON.parse round-trip (Phase 8-C — JIT binding added).
 

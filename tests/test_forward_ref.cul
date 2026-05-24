@@ -1,5 +1,5 @@
 # Conformance: §6 (scope), §11 (closures), §19 (multimethod forward refs).
-# See docs/language.md §24.
+# See docs/language.md §25.
 #
 # Forward function references: a let-bound closure may reference a
 # name defined later in the same scope. interp resolves through env

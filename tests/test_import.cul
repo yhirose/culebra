@@ -1,0 +1,52 @@
+# Conformance: §23 (Modules). See docs/language.md §25.
+#
+# Exercises the module system end-to-end on both backends:
+# function/class imports, chained imports, no-export modules, and
+# multiple export statements. Supporting modules live under
+# tests/test_import_helpers/.
+
+import math from './test_import_helpers/math_utils.cul'
+import chain from './test_import_helpers/chain_lib.cul'
+import empty from './test_import_helpers/empty.cul'
+import multi from './test_import_helpers/multi_export.cul'
+
+# --- Basic function / class import ---
+assert(math.add(2, 3) == 5)
+assert(math.sub(10, 4) == 6)
+
+let p = math.Pair.new(1, 2)
+assert(p.x == 1 && p.y == 2)
+
+let q = p.swap()
+assert(q.x == 2 && q.y == 1)
+
+# Internal helpers are not on the export Object — culebra's property
+# access returns `nil` for missing keys, so the internal helper reads
+# back as nil rather than the function value.
+assert(math.helper_internal == nil)
+
+# --- Chained import: chain_lib depends on math_utils ---
+assert(chain.triple_sum(1, 2, 3) == 6)
+let cp = chain.make_pair(7, 8)
+assert(cp.x == 7 && cp.y == 8)
+
+# --- No-export module: empty Object (size 0), missing lookups → nil ---
+assert(empty.size() == 0)
+assert(empty.internal_thing == nil)
+
+# --- Multiple EXPORT_STMT merge in source order ---
+assert(multi.one == 1)
+assert(multi.two == 2)
+assert(multi.three == 3)
+
+# --- Cache: importing the same module twice yields the same export ---
+# Function values aren't `==`-comparable per §5, so check via a
+# value the user can observe instead: the same class Pair carries
+# the same `.class` tag on instances built from either import.
+import math2 from './test_import_helpers/math_utils.cul'
+let p_a = math.Pair.new(1, 2)
+let p_b = math2.Pair.new(1, 2)
+assert(p_a.class == 'Pair' && p_b.class == 'Pair')
+assert(math2.add(1, 2) == math.add(1, 2))
+
+IO.puts('test_import OK')

@@ -1,4 +1,4 @@
-// Conformance: §10 (Tuples, destructuring). See docs/language.md §24.
+// Conformance: §10 (Tuples, destructuring). See docs/language.md §25.
 //
 // Tuple literal — runs on both interp and JIT (Phase 8-A).
 

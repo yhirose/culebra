@@ -1,5 +1,5 @@
 # Conformance: §10 (class sugar, operator overloading, __str__,
-# auto-reflection, static methods), §11. See docs/language.md §24.
+# auto-reflection, static methods), §11. See docs/language.md §25.
 #
 # Class-sugar regression tests. Runs on both the tree interpreter and
 # the JIT.

@@ -1,4 +1,4 @@
-# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §24.
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §25.
 #
 # Tensor primitive — Phase 1 / M1 (interpreter side).
 # Construction + .shape() + display only. Elementwise / BLAS land in M2+.

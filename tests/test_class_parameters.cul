@@ -1,4 +1,4 @@
-# Conformance: §10 (auto-synthesized parameters()). See docs/language.md §24.
+# Conformance: §10 (auto-synthesized parameters()). See docs/language.md §25.
 #
 # Auto-synthesized class.parameters() — works on both interp and JIT.
 #

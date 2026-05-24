@@ -1,4 +1,4 @@
-# Conformance: §19 (multimethods). See docs/language.md §24.
+# Conformance: §19 (multimethods). See docs/language.md §25.
 #
 # Multiple dispatch (multimethod). Top-level `fn name(...) body`
 # declarations with type-annotated params build a multimethod; the

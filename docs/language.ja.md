@@ -31,8 +31,9 @@
 20. [デコレータ](#20-デコレータ)
 21. [コマンドラインインタフェース](#21-コマンドラインインタフェース)
 22. [既知の制約](#22-既知の制約)
-23. [付録: インタプリタ ↔ JIT の差分](#23-付録-インタプリタ--jit-の差分)
-24. [付録: conformance test 対応表](#24-付録-conformance-test-対応表)
+23. [モジュール](#23-モジュール)
+24. [付録: インタプリタ ↔ JIT の差分](#24-付録-インタプリタ--jit-の差分)
+25. [付録: conformance test 対応表](#25-付録-conformance-test-対応表)
 
 ---
 
@@ -2439,7 +2440,129 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 
 ---
 
-## 23. 付録: インタプリタ ↔ JIT の差分
+## 23. モジュール
+
+複数ファイルにまたがるプログラムは、ファイル単位の `import` /
+`export` で繋ぎます。設計は静的かつ最小限 — パスは文字列リテラル、
+import/export はトップレベル限定、実行時に名前を解決し直すことは
+ありません。
+
+### モジュール構文
+
+モジュール側は通常の culebra ファイル。`export` 文で公開する名前を
+列挙します:
+
+    # math_utils.cul
+    let add = fn (a, b) { a + b }
+    let sub = fn (a, b) { a - b }
+    let helper = fn () { ... }      # 公開しない
+
+    class Pair {
+      new (x, y) { this.x = x; this.y = y }
+    }
+
+    export { add, sub, Pair }
+
+呼出側はモジュールを 1 つの名前で受け取ります:
+
+    # main.cul
+    import math from './math_utils.cul'
+
+    math.add(2, 3)            # 5
+    let p = math.Pair.new(1, 2)
+    math.helper               # nil — export Object に無い
+
+### 文法
+
+| 形 | 意味 |
+|---|---|
+| `import NAME from 'path'` | `path` のモジュールを読み込み、その export Object を現在のファイルで `NAME` に束縛 |
+| `export { N1, N2, ... }` | 列挙した名前をモジュールの export Object に追加 |
+
+パスは STRING リテラル（シングルクォート、補間なし）。import 元
+モジュールのディレクトリ基準で解決します。絶対パスはそのまま使われます。
+
+### トップレベルのみ
+
+`import` / `export` はモジュールのトップレベルでしか書けません。
+関数本体、`if` の枝、ブロック等の内側に書くと文法エラー:
+
+    let f = fn () {
+      import lib from './lib.cul'    # SyntaxError
+    }
+
+依存グラフと export 名の集合を parse 時に確定するための制約で、
+AOT バンドリングと tree-shaking 解析が成り立つ前提になります。
+
+### 評価規則
+
+1. **依存解決.** ドライバはエントリモジュールを読み込み、`import`
+   文を辿って依存を再帰収集します。結果はトポロジカル順
+   （依存が依存先より前）に整列。
+2. **モジュール毎のスコープ.** 各依存モジュールは新しいスコープ
+   で評価され、内部の top-level 束縛はそのファイル＋ export
+   Object の中だけで見えます。importer 側へは漏れません。
+3. **キャッシュ.** 同じ絶対パスはプログラム実行中に高々 1 回だけ
+   評価されます。以降の import はキャッシュ済み Object を取得。
+4. **export Object.** モジュール本体終了後、ランタイムが全
+   `EXPORT_STMT` の名前をひとつの Object に集めます（プロパティ
+   は immutable）。複数の `export` 文はソース順に**マージ**されます。
+5. **エントリモジュール.** 最後に呼出側のスコープと共有する形で
+   評価され、top-level の bindings がそのまま外側に見えます。
+
+### export について
+
+* `export` 文が無いモジュールは空の Object を返します。`import x
+  from "..."` は成功し、存在しないメンバ参照は通常の Object 規則
+  (§10) に従って `nil` を返します。side-effect のみのモジュールに
+  有用。
+* 1 ファイルに複数の `export { ... }` を書くとマージされます。
+  ヘルパを定義→公開、追加で定義→追加で公開、を分けて書けます。
+* 1 つの `EXPORT_STMT` の中で同じ名前を 2 回書くと parse 時に
+  `SyntaxError`。export 対象は module 内で先に local 束縛として
+  定義されている必要があります。
+
+### エラー
+
+| 発生条件 | `kind` |
+|---|---|
+| `import` 先ファイルが存在しない | `IOError` |
+| import 先が parse 失敗 | `SyntaxError` |
+| 循環 import (A → B → A) | `ImportError` |
+| `import` / `export` がトップレベル外 | `SyntaxError` |
+| 1 つの `export` 内に重複名 | `SyntaxError` |
+| `export { foo }` の `foo` が module 内に未定義 | `NameError` |
+
+（import した namespace の存在しないメンバ参照はエラーでは
+ありません — `mod.unknown` は通常の Object 規則 §10 と同じく
+`nil` を返します。）
+
+全エラーは `kind` / `message` / `line` / `col` を持ち、両 backend
+で同一に発生します。`ImportError` (循環依存) は §15 のカタログに
+追加された catchable kind です。
+
+### 両 backend で同一動作
+
+両 backend は任意のモジュールプログラムについて観測可能な振る舞いを
+完全に一致させます。内部の繋ぎ方だけが異なります:
+
+* **インタプリタ.** ローダーが返す vector を順に新しい
+  `Environment` で評価し、`Interpreter::module_cache_` に絶対パス
+  をキーとして export Object を格納。`IMPORT_STMT` はキャッシュを
+  読んで importer のスコープに Object を束縛。
+* **JIT / AOT.** 全モジュールの本体を同じ `__culebra_main` 関数に
+  スコープ分離してコンパイル。各依存モジュール本体の後で
+  `culebra_runtime_module_register` を呼んで絶対パスと export
+  Object を登録。`IMPORT_STMT` は `culebra_runtime_module_get`
+  を呼んで取り出します。
+
+モジュールテーブルは絶対パスをキーとする `thread_local` map なので、
+同一スレッド上で複数の JIT セッションが走っても互いに干渉せず、
+スレッド間で状態を共有することもありません。
+
+---
+
+## 24. 付録: インタプリタ ↔ JIT の差分
 
 インタプリタ（`include/interpreter.h`）が規範的です。JIT
 （`include/jit.h`）は同じ AST をコンパイルし、すべてのプログラム
@@ -2530,7 +2653,7 @@ CLI バイナリはユーザコード実行前に、以下 2 つのグローバ�
 
 ---
 
-## 24. 付録: conformance test 対応表
+## 25. 付録: conformance test 対応表
 
 本 spec の各セクションには対応するテストファイルが `tests/` に
 あります。`just test` で interp/JIT 差分・AOT 差分・埋め込み C++
@@ -2560,6 +2683,7 @@ smoke を 1 度に回します。AOT 差分のみなら `just test aot`。下表
 | `tests/test_json.cul` | stdlib §8 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
+| `tests/test_import.cul` | §23 (モジュール) — `tests/test_import_helpers/*.cul` が依存先 |
 
 `tests/` 配下のすべてのテストファイルは両 backend で同一 stdout
 を出すことが要求されます — `just test` がそれを強制します。

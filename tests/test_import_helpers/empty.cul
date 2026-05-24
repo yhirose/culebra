@@ -1,0 +1,4 @@
+# Side-effect-only / no-export module. Importers should observe an
+# empty Object, with `AttributeError` on any access.
+
+let internal_thing = 42

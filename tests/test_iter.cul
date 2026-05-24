@@ -1,5 +1,5 @@
 # Conformance: §12 (for ... in), §17 (iterator protocol, String methods),
-# §18 (range, iota). See docs/language.md §24.
+# §18 (range, iota). See docs/language.md §25.
 #
 # For-in / iterator protocol regression tests.
 #

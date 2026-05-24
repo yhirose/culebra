@@ -1,0 +1,13 @@
+# Helper module for tests/test_import.cul. Exports a small function
+# library plus a class so the consumer can exercise both binding shapes.
+
+let add = fn (a, b) { a + b }
+let sub = fn (a, b) { a - b }
+let helper_internal = fn () { 'should not be visible' }
+
+class Pair {
+  new (x, y) { this.x = x; this.y = y }
+  swap ()    { Pair.new(this.y, this.x) }
+}
+
+export { add, sub, Pair }

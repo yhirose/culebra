@@ -1,5 +1,5 @@
 # Conformance: §11 (keyword arguments, ** splat), §19 (kwargs in
-# multimethods), §7 (mixed-call evaluation order). See docs/language.md §24.
+# multimethods), §7 (mixed-call evaluation order). See docs/language.md §25.
 #
 # Keyword arguments and `**` splat — dual-backend covered subset.
 # The interp-only `tests/interp/test_kwargs.cul` pins runtime-catchable

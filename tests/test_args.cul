@@ -1,4 +1,4 @@
-# Conformance: stdlib §9 (Args). See docs/stdlib.md and docs/language.md §24.
+# Conformance: stdlib §9 (Args). See docs/stdlib.md and docs/language.md §25.
 #
 # Args module — declarative CLI argument parser.
 # Tested on both backends via `just test`; identical stdout per backend.

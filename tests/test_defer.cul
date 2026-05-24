@@ -1,4 +1,4 @@
-// Conformance: §15 (defer, scope-guard pattern). See docs/language.md §24.
+// Conformance: §15 (defer, scope-guard pattern). See docs/language.md §25.
 //
 // Defer semantics: scope-level and function-level, normal exit and
 // throw exit. Dual-backend. User `throw v` binds the caught `e`

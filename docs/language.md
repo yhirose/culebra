@@ -32,8 +32,9 @@ tracks its behavior.
 20. [Decorators](#20-decorators)
 21. [Command-line interface](#21-command-line-interface)
 22. [Known limitations](#22-known-limitations)
-23. [Appendix: interpreter ↔ JIT divergence](#23-appendix-interpreter--jit-divergence)
-24. [Appendix: conformance test mapping](#24-appendix-conformance-test-mapping)
+23. [Modules](#23-modules)
+24. [Appendix: interpreter ↔ JIT divergence](#24-appendix-interpreter--jit-divergence)
+25. [Appendix: conformance test mapping](#25-appendix-conformance-test-mapping)
 
 ---
 
@@ -2534,7 +2535,156 @@ built-ins from §18.
 
 ---
 
-## 23. Appendix: interpreter ↔ JIT divergence
+## 23. Modules
+
+A program may span multiple files. One file `imports` another by
+name; the imported file may `export` selected bindings to expose
+them to importers. The system is static and minimal — paths are
+literal strings, imports and exports appear only at the top level,
+and the runtime never resolves a name across files at call time.
+
+### Module syntax
+
+A module's source is an ordinary culebra file. It exposes bindings
+through one or more `export` statements:
+
+    # math_utils.cul
+    let add = fn (a, b) { a + b }
+    let sub = fn (a, b) { a - b }
+    let helper = fn () { ... }      # internal, not exported
+
+    class Pair {
+      new (x, y) { this.x = x; this.y = y }
+    }
+
+    export { add, sub, Pair }
+
+A consumer of the module imports it through a single name:
+
+    # main.cul
+    import math from './math_utils.cul'
+
+    math.add(2, 3)            # 5
+    let p = math.Pair.new(1, 2)
+    math.helper               # nil — not on the export Object
+
+### Statements
+
+| Form | Meaning |
+|---|---|
+| `import NAME from 'path'` | Loads the module at `path` and binds its export Object under `NAME` in the current file. |
+| `export { N1, N2, ... }` | Adds each listed local name to the exporting module's export Object. |
+
+The path is a STRING literal (single-quoted, non-interpolated). It
+is resolved relative to the importing module's directory. Absolute
+paths are accepted unchanged.
+
+### Top-level only
+
+Both `import` and `export` may only appear as top-level statements
+of a module. They are syntactically rejected inside functions,
+`if` branches, blocks, and so on:
+
+    let f = fn () {
+      import lib from './lib.cul'    # SyntaxError
+    }
+
+This rule guarantees that the dependency graph and the set of
+exported names are determined at parse time, which is required
+for both bundled AOT builds and tree-shaking analysis.
+
+### Evaluation rules
+
+1. **Dependency resolution.** The driver loads the entry module,
+   walks its `import` statements to find dependencies, recurses,
+   and records absolute paths in load order. The resulting graph
+   is topologically sorted (every module appears after its
+   dependencies).
+2. **Per-module scope.** Each dependency is evaluated in its own
+   fresh scope. Top-level bindings inside the module are visible
+   only within that file plus its export Object — they do not
+   leak into the importer.
+3. **Caching.** The same absolute path is evaluated at most once
+   per program; subsequent imports retrieve the cached export
+   Object.
+4. **Export Object.** After a dependency's body finishes, the
+   runtime collects every name listed in its `EXPORT_STMT`s into
+   a single Object (immutable properties). Multiple `export`
+   statements are **merged** in source order — a file may issue
+   `export` more than once.
+5. **Entry module.** The entry module evaluates last and shares
+   the caller-facing scope, so its top-level bindings remain
+   visible to whoever invoked the program.
+
+### Exports
+
+* A module without any `export` statement produces an empty
+  Object. `import x from "..."` still succeeds; missing members
+  read back as `nil` per the standard Object property rule
+  (§10). Useful for side-effect-only modules.
+* Multiple `export { ... }` statements in a single file are
+  merged. This lets a file declare a few helpers, export them,
+  declare more, export more.
+* Listing the same name twice within one `EXPORT_STMT` is a
+  `SyntaxError` (parse-time). The name must be defined as a
+  local binding in the module before the export references it.
+
+### Errors
+
+| Trigger | `kind` |
+|---|---|
+| `import` from a file that doesn't exist | `IOError` |
+| Imported file fails to parse | `SyntaxError` |
+| Circular import (A imports B which imports A) | `ImportError` |
+| `import` or `export` outside top level | `SyntaxError` |
+| Duplicate name in one `export` statement | `SyntaxError` |
+| `export { foo }` but `foo` is not defined in the module | `NameError` |
+
+(Missing-member lookup on an imported namespace is *not* an
+error — `mod.unknown` returns `nil`, matching the rule for
+plain Objects in §10.)
+
+All errors carry `kind` / `message` / `line` / `col` and are
+surfaced identically by both backends. `IOError`, `SyntaxError`,
+and `NameError` join the existing catalog in §15; `ImportError`
+is added for the circular-dependency case (catchable).
+
+### Backend equivalence
+
+Both backends produce identical observable behavior for any
+module program. They differ only in how dependencies are wired
+internally:
+
+* **Interpreter.** Walks the loader's vector, evaluates each
+  dependency in a fresh `Environment`, and stores its export
+  Object in `Interpreter::module_cache_` keyed by absolute path.
+  `IMPORT_STMT` reads the cache and binds the resulting Object
+  in the importer's scope.
+* **JIT / AOT.** Compiles every module's body into the same
+  `__culebra_main` function, scope-isolated. After each
+  dependency's body, IR emits `culebra_runtime_module_register`
+  with the absolute path and the export Object. `IMPORT_STMT`
+  IR emits `culebra_runtime_module_get` with the same path and
+  binds the result.
+
+The module table is a `thread_local` keyed by absolute path, so
+the same module compiled into different JIT sessions on the
+same thread observes the same caching rules without sharing
+state between threads.
+
+### Conformance tests
+
+`tests/test_import.cul` exercises the happy path on both
+backends (basic import, mixed function / class exports, multiple
+`export` statements, chained imports). The supporting modules
+live under `tests/test_import_helpers/`. Error cases
+(circular imports, top-level violations, duplicate exports) are
+covered by inline `try { ... } catch { ... }` in the same file
+where the failing source is itself another helper.
+
+---
+
+## 24. Appendix: interpreter ↔ JIT divergence
 
 The interpreter (`include/interpreter.h`) is normative. The JIT
 (`include/jit.h`) compiles the same AST and is required to produce
@@ -2635,7 +2785,7 @@ in observable behavior is treated as a bug.
 
 ---
 
-## 24. Appendix: conformance test mapping
+## 25. Appendix: conformance test mapping
 
 Every section of this spec has at least one corresponding test file
 under `tests/`. `just test` runs interp/JIT diff, AOT diff, and
@@ -2665,6 +2815,7 @@ touch multiple sections, marked "(broad)".
 | `tests/test_json.cul` | stdlib §8 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §7 (`Tensor`) |
 | `tests/test_time.cul` | stdlib §4 (`Time`) |
+| `tests/test_import.cul` | §23 (Modules) — uses `tests/test_import_helpers/*.cul` as dependencies |
 
 Every test file in `tests/` is required to pass on both backends
 with identical stdout — `just test` enforces it. Interactive

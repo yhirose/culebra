@@ -1,0 +1,8 @@
+# Multiple EXPORT_STMT in one file — merged in source order.
+
+let one = 1
+export { one }
+
+let two = 2
+let three = 3
+export { two, three }

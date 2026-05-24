@@ -1,5 +1,5 @@
 # Conformance: §15 (throw/try/catch, all 'kind' values catchable).
-# See docs/language.md §24.
+# See docs/language.md §25.
 #
 # Internal runtime errors are surfaced to user `try/catch` as
 # structured Error Objects: `{kind, message, line, col}`.
