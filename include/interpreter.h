@@ -1,5 +1,6 @@
 #pragma once
 
+#include <module_loader.h>
 #include <parser.h>
 #include <shared.h>
 #include <tensor.h>
@@ -3310,6 +3311,15 @@ inline void setup_core_globals(Environment& env) {
 struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
+  // The multi-module driver lives outside the class for symmetry with
+  // `interpret(...)` but needs to drive per-module defer flushes and
+  // export extraction.
+  friend bool interpret_modules(const std::vector<LoadedModule>& modules,
+                                std::shared_ptr<Environment> env,
+                                Value& val,
+                                std::vector<std::string>& msgs,
+                                Debugger debugger);
+
   struct MultiMethod {
     std::vector<std::string> param_types;
     Value body;
@@ -3321,6 +3331,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // synthesized table key has to outlive any such view.
   std::map<std::string, std::shared_ptr<std::vector<MultiMethod>>>
       multimethods_;
+
+  // Cached module values keyed by absolute on-disk path. The driver
+  // walks the dependency graph (ModuleLoader), evaluates each module
+  // in topological order, and stores its `export { ... }` Object here.
+  // `IMPORT_STMT` then binds the cached entry in the importing scope.
+  std::unordered_map<std::string, Value> module_cache_;
+  // Absolute paths of the modules currently being evaluated. The top
+  // entry is the active module; `eval_import_stmt` uses its directory
+  // to resolve relative paths in `import name from "./..."`.
+  std::vector<std::filesystem::path> module_stack_;
 
   Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     try {
@@ -3448,6 +3468,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_class_decl(ast, env);
       case "MULTIFN_DECL"_:
         return eval_multifn_decl(ast, env);
+      case "IMPORT_STMT"_:
+        return eval_import_stmt(ast, env);
+      case "EXPORT_STMT"_:
+        // No-op at eval time. `run_program` extracts the export object
+        // from the module's AST after the body finishes, so the binding
+        // dance lives in one place.
+        return Value();
     }
 
     if (ast.is_token) {
@@ -3886,6 +3913,68 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // `fn name(params) body` — first decl registers a dispatcher under
   // `name`; subsequent decls append (or overwrite a same-signature
   // entry).
+  // Build a module's export Object by collecting every name listed in
+  // each `EXPORT_STMT` from the module's env. Empty when the module
+  // has no export statement — the resulting Object is the value
+  // `import name from "..."` binds in the caller.
+  Value extract_export(const peg::Ast& module_ast,
+                       std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    ObjectValue obj;
+    const peg::Ast* stmts =
+        module_ast.tag == "STATEMENTS"_ ||
+                module_ast.original_tag == "STATEMENTS"_
+            ? &module_ast
+            : (module_ast.nodes.empty() ? nullptr
+                                         : module_ast.nodes[0].get());
+    if (!stmts) return Value(std::move(obj));
+    for (const auto& s : stmts->nodes) {
+      if (s->tag != "EXPORT_STMT"_) continue;
+      for (const auto& id : s->nodes) {
+        auto name = std::string(id->token);
+        if (!env->has(name)) {
+          throw CulebraError(
+              "NameError",
+              std::format("export '{}' is not defined in module", name),
+              static_cast<long>(id->line),
+              static_cast<long>(id->column));
+        }
+        obj.properties->emplace(name, Symbol{env->get(name), false});
+      }
+    }
+    return Value(std::move(obj));
+  }
+
+  // IMPORT_STMT: [IDENTIFIER, STRING]. The relative path is resolved
+  // against the active module's directory (`module_stack_.back()`); the
+  // resulting absolute path keys into `module_cache_`, which the driver
+  // populated when it evaluated the dependency before this module.
+  Value eval_import_stmt(const peg::Ast& ast,
+                         std::shared_ptr<Environment> env) {
+    auto name = std::string(ast.nodes[0]->token);
+    auto rel = std::string(ast.nodes[1]->token);
+    std::filesystem::path abs(rel);
+    if (!abs.is_absolute()) {
+      auto from_dir = module_stack_.empty()
+                          ? std::filesystem::current_path()
+                          : module_stack_.back().parent_path();
+      abs = from_dir / abs;
+    }
+    std::error_code ec;
+    auto canon = std::filesystem::weakly_canonical(abs, ec);
+    if (ec) canon = std::filesystem::absolute(abs);
+    auto it = module_cache_.find(canon.string());
+    if (it == module_cache_.end()) {
+      throw CulebraError(
+          "ImportError",
+          std::format("module '{}' was not loaded — `import` statements "
+                      "must be reachable from the entry point's "
+                      "dependency graph", rel));
+    }
+    env->initialize(name, it->second, false);
+    return Value();
+  }
+
   Value eval_multifn_decl(const peg::Ast& ast,
                           std::shared_ptr<Environment> env) {
     using namespace peg::udl;
@@ -5328,6 +5417,74 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   Debugger debugger_;
 };
+
+// Drives a multi-module program: evaluates dependencies in
+// topological order into fresh per-module scopes, caches each
+// module's export Object, and finally evaluates the entry module
+// against `env` so its top-level bindings stay visible to the
+// caller. `modules.back()` is the entry. Error handling matches
+// `interpret` for the single-AST path.
+inline bool interpret_modules(const std::vector<LoadedModule>& modules,
+                              std::shared_ptr<Environment> env,
+                              Value& val,
+                              std::vector<std::string>& msgs,
+                              Debugger debugger = nullptr) {
+  if (modules.empty()) return true;
+  auto interp = std::make_shared<Interpreter>(debugger);
+  auto flush_top_defers = [&] {
+    while (!env->deferred.empty()) {
+      auto fn = std::move(env->deferred.back());
+      env->deferred.pop_back();
+      try { fn(); } catch (...) {}
+    }
+  };
+  try {
+    for (const auto& m : modules) check_shadow_static(*m.ast);
+
+    for (size_t i = 0; i + 1 < modules.size(); ++i) {
+      const auto& m = modules[i];
+      interp->module_stack_.push_back(m.abs_path);
+      auto mod_env = std::make_shared<Environment>(env);
+      try {
+        interp->eval(*m.ast, mod_env);
+        interp->run_deferred(mod_env);
+      } catch (...) {
+        interp->run_deferred(mod_env);
+        interp->module_stack_.pop_back();
+        throw;
+      }
+      interp->module_cache_[m.abs_path.string()] =
+          interp->extract_export(*m.ast, mod_env);
+      interp->module_stack_.pop_back();
+    }
+
+    const auto& entry = modules.back();
+    interp->module_stack_.push_back(entry.abs_path);
+    val = interp->eval(*entry.ast, env);
+    interp->module_stack_.pop_back();
+    flush_top_defers();
+    return true;
+  } catch (const ReturnValue& r) {
+    val = r.value;
+    flush_top_defers();
+    return true;
+  } catch (const Value& e) {
+    flush_top_defers();
+    msgs.push_back(std::format("uncaught: {}", e.str_display()));
+  } catch (const CulebraError& e) {
+    flush_top_defers();
+    if (e.line > 0 || e.col > 0) {
+      msgs.push_back(std::format("{}: {} at {}:{}.",
+                                  e.kind, e.what(), e.line, e.col));
+    } else {
+      msgs.push_back(std::format("{}: {}", e.kind, e.what()));
+    }
+  } catch (const std::runtime_error& e) {
+    flush_top_defers();
+    msgs.push_back(std::format("RuntimeError: {}", e.what()));
+  }
+  return false;
+}
 
 inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
                       std::shared_ptr<Environment> env, Value& val,

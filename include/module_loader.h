@@ -16,8 +16,11 @@ namespace culebra {
 // One module after parse: absolute on-disk path, parsed AST, and the
 // absolute paths of every module it `import`s. `deps` is in source
 // order — the loader's topological sort uses it to schedule evaluation.
+// `source` retains the read buffer because the AST's tokens reference
+// it as string_views — dropping the buffer would dangle.
 struct LoadedModule {
   std::filesystem::path abs_path;
+  std::string source;
   std::shared_ptr<peg::Ast> ast;
   std::vector<std::filesystem::path> deps;
 };
@@ -84,10 +87,11 @@ inline size_t ModuleLoader::load_recursive(
   stack_.push_back(abs_path);
 
   // Read the source unless the caller already provided it (entry file).
+  // The buffer is retained inside LoadedModule because the AST stores
+  // tokens as string_views into it.
   std::string buf;
-  std::string_view src;
   if (source) {
-    src = *source;
+    buf.assign(source->data(), source->size());
   } else {
     std::ifstream ifs(abs_path, std::ios::binary);
     if (!ifs) throw_io_error(abs_path);
@@ -95,10 +99,9 @@ inline size_t ModuleLoader::load_recursive(
     buf.resize(static_cast<size_t>(ifs.tellg()));
     ifs.seekg(0, std::ios::beg);
     if (!buf.empty()) ifs.read(buf.data(), static_cast<std::streamsize>(buf.size()));
-    src = buf;
   }
 
-  auto ast = culebra::parse(abs_path.string(), src.data(), src.size(),
+  auto ast = culebra::parse(abs_path.string(), buf.data(), buf.size(),
                              parse_msgs);
   if (!ast) {
     throw CulebraError("SyntaxError",
@@ -115,7 +118,7 @@ inline size_t ModuleLoader::load_recursive(
   }
 
   size_t idx = loaded_.size();
-  loaded_.push_back(LoadedModule{abs_path, ast, deps});
+  loaded_.push_back(LoadedModule{abs_path, std::move(buf), ast, deps});
   index_[key] = idx;
   stack_.pop_back();
   return idx;
@@ -126,12 +129,15 @@ inline std::vector<std::filesystem::path> ModuleLoader::extract_imports(
   using namespace peg::udl;
   std::vector<std::filesystem::path> out;
   std::unordered_set<std::string> seen;
-  // Only top-level statements may carry IMPORT_STMT — the grammar
-  // accepts it inside STATEMENT, but the loader treats it as toplevel-
-  // only. Walk PROGRAM's STATEMENTS direct children.
-  if (ast.nodes.empty()) return out;
-  const auto& stmts = *ast.nodes[0];
-  for (const auto& child : stmts.nodes) {
+  // AstOptimizer folds PROGRAM into its sole STATEMENTS child, so the
+  // top-level node is already STATEMENTS itself; degenerate single-
+  // statement programs come through wrapped, hence the fallback.
+  const peg::Ast* stmts =
+      ast.tag == "STATEMENTS"_ || ast.original_tag == "STATEMENTS"_
+          ? &ast
+          : (ast.nodes.empty() ? nullptr : ast.nodes[0].get());
+  if (!stmts) return out;
+  for (const auto& child : stmts->nodes) {
     const peg::Ast* node = child.get();
     if (node->tag != "IMPORT_STMT"_) continue;
     std::filesystem::path rel(std::string(node->nodes[1]->token));

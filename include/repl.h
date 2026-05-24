@@ -118,11 +118,10 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
                    e.what());
       std::abort();
     }
-  } else
-#endif
-  {
-    load_stdlib_modules(env);
   }
+#endif
+  // Interp REPL skips the explicit preamble load — `environment()`
+  // already eval'd it into the env once.
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before
