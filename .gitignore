@@ -42,6 +42,8 @@ build/
 # macOS metadata
 .DS_Store
 
-# Claude Code local artifacts (per-clone permission allowlist,
-# scheduled-tasks runtime lock, etc.)
-.claude/
+# Claude Code: ignore local artifacts (permission allowlist,
+# scheduled-tasks lock, plan dir, etc.) but track team-shared
+# settings (plansDirectory, etc.).
+.claude/*
+!.claude/settings.json
