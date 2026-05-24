@@ -116,9 +116,13 @@ inline size_t ModuleLoader::load_recursive(
   auto ast = culebra::parse(abs_path.string(), src_buf->data(),
                              src_buf->size(), parse_msgs);
   if (!ast) {
+    // PEG diagnostics live in parse_msgs (path:line:col: ...). Fold them
+    // into the error so the CLI catch handler prints the actual hint.
+    std::string detail;
+    for (const auto& m : parse_msgs) detail += "\n  " + m;
     throw CulebraError("SyntaxError",
-                       std::format("failed to parse module '{}'",
-                                   abs_path.string()));
+                       std::format("failed to parse module '{}'{}",
+                                   abs_path.string(), detail));
   }
   validate_module(*ast);
   auto deps = extract_imports(*ast, abs_path.parent_path());
