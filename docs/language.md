@@ -2497,54 +2497,98 @@ built-ins from §18.
 ## 23. Appendix: interpreter ↔ JIT divergence
 
 The interpreter (`include/interpreter.h`) is normative. The JIT
-(`include/jit.h`) compiles the same AST and tracks the same
-semantics, but a few operational differences are worth knowing.
+(`include/jit.h`) compiles the same AST and is required to produce
+**identical observable behavior** for every program — same return
+values, same side-effect ordering, same error `kind` / `message` /
+location. Internal representation is free to differ as long as the
+externally observable behavior matches; any deviation in observable
+behavior is a bug in the JIT.
 
-**Equivalent semantics:**
+### Identical observable behavior
 
-* All numeric arithmetic, comparison, truthiness, and overflow rules
-  (§7) match bit-for-bit, including division-by-zero, `Long` overflow
-  wrap, and `Float` IEEE-754 behavior.
-* Method dispatch and UFCS (§10), operator special methods (§10), `__str__`
-  display (§10), and the iterator protocol (§17.5) drive both
-  backends through the same protocol.
-* `throw` / `try` / `catch` / `defer` (§15) propagate across function
-  boundaries (the JIT lowers to LLVM `invoke` / `landingpad` plus the
-  Itanium personality).
-* Auto-drop fires at the same points (§16): scope exit and cycle
-  collection.
-* Class sugar (§10), per-callsite property lookups, and built-in
-  type methods produce identical observable behavior.
+The following are guaranteed identical across interpreter, JIT, and
+AOT builds:
 
-**Operational differences (semantics-preserving):**
+* **Numerics (§7).** Long overflow wrap, Float IEEE-754 (NaN, inf,
+  signed zero), division/modulo by zero raising
+  `ZeroDivisionError`, comparison and truthiness rules.
+* **Argument evaluation order.** Left-to-right in source order for
+  positional, keyword, and `**`-splat arguments, with `||` / `&&` /
+  `??` short-circuiting at the first decisive operand. The same
+  rule applies to array and object literals.
+* **Method dispatch and UFCS (§10), operator special methods (§10),
+  `__str__` display (§10), and the iterator protocol (§17.5).**
+* **`throw` / `try` / `catch` / `defer` (§15).** Including
+  function-level and top-level `defer` firing on the throw-unwind
+  path. The JIT lowers throws to LLVM `invoke` / `landingpad` with
+  the Itanium personality; observable propagation is identical.
+* **Auto-drop (§16).** Fires on every refcount-to-zero transition,
+  whether triggered by scope exit, property overwrite, or array
+  rebind. Cascade order — parent before child — is the same. Drop
+  is **not** invoked on cycle members on either backend (see §16).
+* **Error reporting.** Every `kind` listed in §15 fires under the
+  same trigger condition on both backends; `e.message`, `e.line`,
+  and `e.col` are populated identically. Uncaught errors print as
+  `Kind: message at L:C.`.
+* **Class sugar (§10), `static` methods, immutable `this`, and the
+  auto-synthesized `parameters()` reflection.**
+* **Module-scope evaluation.** Statement order, top-level closures,
+  forward-reference resolution, and decorator application all
+  follow the same rules.
+
+### Permitted internal optimizations
+
+These change how the program executes but not what it observes:
 
 * **Object property storage.** The JIT uses a process-interned
   hidden-class (Shape) layout with vector-backed slots and
   per-callsite inline caches. The interpreter uses an insertion-
   ordered map. Iteration order over an Object's keys is insertion
   order on both.
-* **HOF fusion.** The JIT fuses many `range(N).<HOF>(...)` and
-  `iter.map(λ).collect()` patterns into bare counter loops. The
-  interpreter dispatches each closure step-by-step. Effects fire in
-  the same order on both.
+* **HOF inlining.** `array.map / filter / for_each / reduce` and
+  `range(N).<HOF>(...)` / `iter.map(λ).collect()` compile their
+  lambda bodies directly into the iteration loop. Side-effect
+  order is preserved.
 * **Class method storage.** The JIT places methods on a shared
   per-class meta object reached via prototype delegation; the
   interpreter copies methods onto each instance. `obj.m` returns a
   bound function on either backend.
-* **Cycle GC cadence.** Both backends run a mark-and-sweep over the
-  young set every 10,000 new allocations. The JIT additionally uses
-  a generational young/old split with vector-backed tracking
-  (transparent to user code).
+* **Generational cycle collector.** Both backends mark-and-sweep
+  the young set every 10,000 new allocations; the JIT additionally
+  splits young/old with vector-backed tracking.
+* **Forward-reference pre-allocation.** The JIT scans each function
+  body and pre-allocates capture cells so closures compiled before
+  their `let` declaration still see the post-declaration value.
+  The interpreter resolves names dynamically against the live env.
 
-**Known JIT-only caveats:**
+### Technical differences without behavioral impact
 
-* `defer` registered at function / top-level scope does not fire on
-  the throw-unwind path; wrap such defers in a nested `{ ... }`
-  block for throw-safe cleanup. Inside nested blocks, defers fire on
-  every exit path as specified.
-* Top-level bindings to `drop`-bearing objects may live until program
-  exit due to env-level cycles (see §16). Use `defer` or a factory
-  function for script-wide resources.
+These do not affect any program-visible behavior, but operators
+embedding Culebra should be aware:
 
-When in doubt, the interpreter is authoritative — diverging JIT
-behavior is treated as a bug.
+* **Cycle collector tracking scope.** The interpreter's `InterpGC`
+  tracks `Array` (so cycles routed through an array are reclaimed).
+  The JIT's `_GcTracker` additionally tracks `Object`, `Closure`,
+  and `Cell`. Cycles formed purely between `Object`s without
+  passing through an array leak under the interpreter, but neither
+  backend invokes `drop` on cycle members either way.
+* **REPL persistence storage.** The interpreter persists session
+  globals in the top-level `Environment` scope. The JIT uses a
+  thread-local `JitReplGlobals` dict accessed via
+  `culebra_runtime_repl_{get,set}`. User code observes the same
+  binding behavior across statements.
+* **Thread safety.** Neither backend is thread-safe: `_GcTracker`,
+  `InterpGC`, `ShapeRegistry`, and the deferred-stack state are
+  process-wide. Embedders that share a Culebra runtime across
+  threads must serialize calls themselves.
+
+### Top-level drop note (§16)
+
+Top-level bindings to `drop`-bearing objects may live until program
+exit due to environment-level cycles on either backend (see §16 for
+the worked example). The mechanism is not JIT-specific; use `defer`
+or a factory function for script-wide resources regardless of which
+backend you run on.
+
+When in doubt, the interpreter is authoritative — any JIT deviation
+in observable behavior is treated as a bug.
