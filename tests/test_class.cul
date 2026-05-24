@@ -194,6 +194,37 @@ test_default_display = fn () {
   assert(to_string(plain) == '{a: 1, b: 2}')
 }
 
+# `this` is immutable inside the constructor body. interp and JIT
+# both raise ImmutableError when user code attempts `this = newObj`,
+# matching Java/Crystal/Ruby. Identity-swap factories live as plain
+# top-level functions instead (see samples/drop.cul guideline).
+test_this_immutable_in_ctor = fn () {
+  class C {
+    new () {
+      let r = try { this = {hijacked: true}; "no error" }
+                catch e { "kind={e.kind}" }
+      this.result = r
+    }
+  }
+  c = C.new()
+  assert(c.result == 'kind=ImmutableError')
+  # The original instance survives; the would-be replacement is discarded.
+  assert(!c.has('hijacked'))
+}
+
+# Constructor return value is always the allocated instance regardless
+# of an explicit `return` inside the body.
+test_ctor_return_ignored = fn () {
+  class C {
+    new () {
+      this.tag = 'allocated'
+      return {tag: 'returned'}
+    }
+  }
+  c = C.new()
+  assert(c.tag == 'allocated')
+}
+
 test_class_basic()
 test_class_default_ctor()
 test_class_independent_instances()
@@ -205,5 +236,7 @@ test_auto_reflect()
 test_matmul_overload()
 test_str_special()
 test_default_display()
+test_this_immutable_in_ctor()
+test_ctor_return_ignored()
 
 puts('class-sugar OK')

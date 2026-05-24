@@ -788,6 +788,12 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   クラスの慣習に合わせています。
 * `new` メソッドは省略可能で、省略時は無引数・メソッドと `class:` のみ
   を持つインスタンスを返します。
+* コンストラクタ本体内の `this` は不変です。`this = newObj` への
+  代入は `ImmutableError` を投げます（Java / Crystal / Ruby と同じ
+  方針）。コンストラクタは常に最初に確保されたインスタンスを返し、
+  明示的な `return value` は `value` を捨てます。識別子差し替えが
+  必要な factory はクラス外の関数として書いてください:
+  `let make_circle = fn (r) { let s = Shape.new(); s.radius = r; s }`。
 * インタプリタ・JIT の両方でクラス宣言をコンパイルします。
   インスタンス生成は軽いランタイム呼出: `new` 自体は通常の JIT
   closure で、captures にメソッド closure 群とユーザの `new` 本体

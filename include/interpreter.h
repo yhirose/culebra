@@ -4069,21 +4069,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           [self = std::move(self), body, env, build_instance, promote_all_mut](
               std::shared_ptr<Environment> callEnv) {
             callEnv->append_outer(env);
-            callEnv->initialize("this", Value(build_instance()), true);
+            // `this` is immutable inside the constructor body — match
+            // Java / Crystal / Ruby and the JIT backend. Attempts to
+            // write `this = newObj` raise ImmutableError instead of
+            // silently swapping the returned instance, and the
+            // constructor's return value is always the originally
+            // allocated object (so `this.x = ...` is the supported way
+            // to populate fields). See project_constructor_semantics.md.
+            auto inst = Value(build_instance());
+            callEnv->initialize("this", inst, false);
             try {
               self->eval(*body, callEnv);
               self->run_deferred(callEnv);
             } catch (const ReturnValue&) {
               // Explicit `return` inside `new` is fine — we still hand
-              // back `this`; the returned value is discarded.
+              // back the allocated instance; the returned value is
+              // discarded.
               self->run_deferred(callEnv);
             } catch (...) {
               self->run_deferred(callEnv);
               throw;
             }
-            auto this_val = callEnv->get("this");
-            promote_all_mut(this_val);
-            return this_val;
+            promote_all_mut(inst);
+            return inst;
           },
           {},
           env));

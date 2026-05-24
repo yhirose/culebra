@@ -820,6 +820,12 @@ Semantics:
   routinely mutate instance state.
 * The `new` method is optional; without it the class accepts no
   arguments and returns an instance with only methods and `class:`.
+* `this` is immutable inside the constructor body. Attempting
+  `this = newObj` raises `ImmutableError` (matching Java, Crystal,
+  Ruby). The constructor always returns the originally allocated
+  instance — an explicit `return value` discards `value`. Identity-swap
+  factories live as plain functions outside the class:
+  `let make_circle = fn (r) { let s = Shape.new(); s.radius = r; s }`.
 * Both the interpreter and the JIT compile classes. Instance
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's
