@@ -7130,6 +7130,20 @@ struct JIT {
         {current_line_val(), current_column_val()});
   }
 
+  // Declare (or fetch) a runtime helper and stamp `noreturn` on it.
+  // Every emit_*_throw goes through here so the optimizer treats the
+  // call site as terminating.
+  llvm::FunctionCallee declare_noreturn(
+      const char* name,
+      llvm::ArrayRef<llvm::Type*> args) {
+    auto fnTy = llvm::FunctionType::get(builder_.getVoidTy(), args, false);
+    auto callee = module_->getOrInsertFunction(name, fnTy);
+    if (auto* fn = llvm::dyn_cast<llvm::Function>(callee.getCallee())) {
+      fn->setDoesNotReturn();
+    }
+    return callee;
+  }
+
   // Emit a `culebra_runtime_immutable_assign(name, line, col)` call
   // that always throws — `compile_assignment` uses this to halt the
   // current path before storing into a non-mut slot.
@@ -7138,11 +7152,9 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto namePtr = get_or_create_global_str(name, ".imm.name");
     emit_call(
-        module_->getOrInsertFunction(rt::immutable_assign,
-                                     builder_.getVoidTy(),
-                                     ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
+        declare_noreturn(rt::immutable_assign,
+                         {ptrTy, builder_.getInt64Ty(),
+                          builder_.getInt64Ty()}),
         {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
   }
 
@@ -7155,11 +7167,9 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto namePtr = get_or_create_global_str(name, ".kw.name");
     emit_call(
-        module_->getOrInsertFunction(rt::unknown_kwarg,
-                                     builder_.getVoidTy(),
-                                     ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
+        declare_noreturn(rt::unknown_kwarg,
+                         {ptrTy, builder_.getInt64Ty(),
+                          builder_.getInt64Ty()}),
         {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
   }
 
@@ -7170,11 +7180,9 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto namePtr = get_or_create_global_str(name, ".arg.name");
     emit_call(
-        module_->getOrInsertFunction(rt::missing_required_arg,
-                                     builder_.getVoidTy(),
-                                     ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
+        declare_noreturn(rt::missing_required_arg,
+                         {ptrTy, builder_.getInt64Ty(),
+                          builder_.getInt64Ty()}),
         {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
   }
 
@@ -7188,11 +7196,9 @@ struct JIT {
     auto kindPtr = get_or_create_global_str(kind, ".thr.kind");
     auto msgPtr = get_or_create_global_str(msg, ".thr.msg");
     emit_call(
-        module_->getOrInsertFunction(rt::throw_error,
-                                     builder_.getVoidTy(),
-                                     ptrTy, ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
+        declare_noreturn(rt::throw_error,
+                         {ptrTy, ptrTy, builder_.getInt64Ty(),
+                          builder_.getInt64Ty()}),
         {kindPtr, msgPtr,
          builder_.getInt64(line), builder_.getInt64(col)});
   }
