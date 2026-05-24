@@ -3,11 +3,14 @@
 #ifdef CULEBRA_JIT_ENABLED
 #include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
+#include "culebra_rt_assets.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <print>
 
 using namespace std;
@@ -42,6 +45,81 @@ struct Options {
 };
 
 #ifdef CULEBRA_JIT_ENABLED
+// Content-fingerprint of the embedded runtime archives, used as a
+// cache-directory name so a freshly-built culebra picks up its own
+// runtime instead of an older one left behind on disk. FNV-1a 64-bit,
+// truncated to 8 hex chars; computed once per process.
+static std::string asset_fingerprint() {
+  static const std::string cached = []() {
+    std::uint64_t h = 0xcbf29ce484222325ULL;
+    for (const auto& entry : CulebraRT::FS) {
+      if (!entry.is_file()) continue;
+      auto data = entry.bytes();
+      if (!data) continue;
+      for (auto b : *data) {
+        h ^= b;
+        h *= 0x100000001b3ULL;
+      }
+    }
+    return std::format("{:016x}", h).substr(0, 8);
+  }();
+  return cached;
+}
+
+static std::filesystem::path culebra_cache_dir() {
+  const char* home = std::getenv("HOME");
+  if (!home || !*home) {
+    const char* tmp = std::getenv("TMPDIR");
+    home = (tmp && *tmp) ? tmp : "/tmp";
+  }
+  return std::filesystem::path(home) / ".cache" / "culebra"
+       / asset_fingerprint();
+}
+
+// Materialize one of the embedded runtime archives to the on-disk
+// cache and return its path. The linker needs a real file, so the
+// driver writes the archive once per (culebra binary × machine) and
+// reuses it on subsequent invocations.
+static std::filesystem::path materialize_rt_archive(
+    bool uses_tensor, std::string& err) {
+  const char* name =
+      uses_tensor ? "libculebra_rt.a" : "libculebra_rt_no_tensor.a";
+  auto cache = culebra_cache_dir() / name;
+  if (std::filesystem::exists(cache)) return cache;
+
+  auto it = CulebraRT::FS.find(name);
+  if (it == CulebraRT::FS.end()) {
+    err = std::format("embedded runtime archive '{}' not found", name);
+    return {};
+  }
+  auto data = (*it).bytes();
+  if (!data) {
+    err = std::format("embedded runtime archive '{}' has no data", name);
+    return {};
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(cache.parent_path(), ec);
+  if (ec) {
+    err = std::format("can't create cache dir '{}': {}",
+                      cache.parent_path().string(), ec.message());
+    return {};
+  }
+
+  std::ofstream out(cache, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    err = std::format("can't write '{}'", cache.string());
+    return {};
+  }
+  out.write(reinterpret_cast<const char*>(data->data()),
+            static_cast<std::streamsize>(data->size()));
+  if (!out) {
+    err = std::format("write failed for '{}'", cache.string());
+    return {};
+  }
+  return cache;
+}
+
 struct BuildOptions {
   string input;
   string output;
@@ -178,11 +256,13 @@ int run_build(const BuildOptions& opts) {
         "culebra build: --target=<triple> requires --rt-lib=<path>");
     return 1;
   } else {
-    const char* lib_env = uses_tensor ? "CULEBRA_RT_LIB"
-                                      : "CULEBRA_RT_NO_TENSOR_LIB";
-    const char* env = std::getenv(lib_env);
-    lib = env ? env : (uses_tensor ? CULEBRA_RT_LIBPATH
-                                   : CULEBRA_RT_NO_TENSOR_LIBPATH);
+    std::string err;
+    auto path = materialize_rt_archive(uses_tensor, err);
+    if (path.empty()) {
+      std::println(stderr, "culebra build: {}", err);
+      return 1;
+    }
+    lib = path.string();
   }
   if (!std::filesystem::exists(lib)) {
     std::println(stderr,
@@ -190,8 +270,7 @@ int run_build(const BuildOptions& opts) {
     return 1;
   }
 
-  const char* cc = std::getenv("CULEBRA_CC");
-  if (!cc) cc = "cc";
+  const char* cc = "cc";
 
   // Link-DCE flag follows the *target* object format. LLVM's Triple
   // knows that "*-apple-*" is Mach-O and everything else is ELF;

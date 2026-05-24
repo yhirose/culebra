@@ -30,11 +30,20 @@ culebra build path/to/program.cul -o ./program
 
 | 変数 | 効果 |
 |---|---|
-| `CULEBRA_CC` | リンカドライバ（デフォルト `cc`） |
-| `CULEBRA_RT_LIB` | ホスト用ランタイムアーカイブ（`libculebra_rt.a`）を上書き |
-| `CULEBRA_RT_NO_TENSOR_LIB` | ホスト用 tensor-free アーカイブを上書き |
 | `CULEBRA_VERBOSE=1` | 中間オブジェクトのパスと完全なリンクコマンドを表示 |
 | `TMPDIR` | 中間オブジェクトファイル置き場（デフォルト `/tmp`） |
+
+### ランタイムアーカイブの配布
+
+両方のランタイムアーカイブ（`libculebra_rt.a`、
+`libculebra_rt_no_tensor.a`）は cpp-embedlib によって **`culebra`
+ドライバに直接埋め込まれています**。ドライバは単体で完結する 1
+バイナリで、サイドカーの `.a` ファイルを別途インストールする必要
+はありません。`culebra build` の初回呼び出し時に必要なアーカイ
+ブを `$HOME/.cache/culebra/<fingerprint>/lib*.a` に展開します。
+2 回目以降はキャッシュを再利用します。fingerprint は埋め込みアーカイブのコンテンツハッシュなの
+で、`culebra` を再ビルドすると自動的に旧版のキャッシュと分離さ
+れます。
 
 ## Tensor-free バイナリ
 

@@ -7,3 +7,6 @@
 [submodule "vendor/cpp-unicodelib"]
 	path = vendor/cpp-unicodelib
 	url = https://github.com/yhirose/cpp-unicodelib
+[submodule "vendor/cpp-embedlib"]
+	path = vendor/cpp-embedlib
+	url = https://github.com/yhirose/cpp-embedlib

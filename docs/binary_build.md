@@ -30,11 +30,20 @@ The default invocation targets the host platform.
 
 | Variable | Effect |
 |---|---|
-| `CULEBRA_CC` | Linker driver (default `cc`). |
-| `CULEBRA_RT_LIB` | Override the host runtime archive (`libculebra_rt.a`). |
-| `CULEBRA_RT_NO_TENSOR_LIB` | Override the host tensor-free archive. |
 | `CULEBRA_VERBOSE=1` | Print the object path and full link command. |
 | `TMPDIR` | Directory for the intermediate object file (default `/tmp`). |
+
+### Runtime archive distribution
+
+Both runtime archives (`libculebra_rt.a`, `libculebra_rt_no_tensor.a`)
+are **embedded directly into the `culebra` driver** via cpp-embedlib.
+The driver is a single self-contained binary — no sibling `.a` files
+need to be installed. On first invocation of `culebra build`, the
+required archive is materialized to
+`$HOME/.cache/culebra/<fingerprint>/lib*.a`. Subsequent invocations
+reuse the cached file. The fingerprint
+is a content-hash of the embedded archives, so a freshly-built
+`culebra` automatically isolates its cache from older copies.
 
 ## Tensor-free binaries
 

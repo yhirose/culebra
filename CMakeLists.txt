@@ -21,6 +21,12 @@ include_directories(./vendor/cpp-peglib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 
+# cpp-embedlib provides the cpp_embedlib_add() macro used below to bake
+# the runtime archives into the `culebra` driver, so `culebra build` can
+# operate as a single self-contained binary (no sibling .a files needed).
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-embedlib/cmake")
+include(cpp-embedlib)
+
 if(CULEBRA_ENABLE_JIT)
   # Homebrew installs LLVM keg-only so find_package can't see it without
   # a hint. When the user didn't pass CMAKE_PREFIX_PATH themselves,
@@ -128,12 +134,34 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_options(culebra_rt_no_tensor PRIVATE
     -ffunction-sections -fdata-sections)
 
-  # The `culebra build` driver needs to know where to find both
-  # archives at link time. Override at runtime with $CULEBRA_RT_LIB /
-  # $CULEBRA_RT_NO_TENSOR_LIB.
-  target_compile_definitions(culebra PRIVATE
-    CULEBRA_RT_LIBPATH="$<TARGET_FILE:culebra_rt>"
-    CULEBRA_RT_NO_TENSOR_LIBPATH="$<TARGET_FILE:culebra_rt_no_tensor>")
+  # Embed both runtime archives into the `culebra` driver via
+  # cpp-embedlib. `culebra build` materializes them to
+  # ~/.cache/culebra/<fingerprint>/ on first use, so the driver is a
+  # single self-contained binary. `--rt-lib=<path>` overrides the
+  # archive for cross-compile (env override removed — the flag is
+  # explicit and covers every case).
+  #
+  # cpp-embedlib computes relative paths at configure time, so passing
+  # $<TARGET_FILE:...> generator expressions doesn't work. Reconstruct
+  # the archive paths from CMake's static library naming convention
+  # instead — these resolve to libculebra_rt.a / libculebra_rt_no_tensor.a
+  # in the build dir, which is where CMake writes STATIC libraries by
+  # default.
+  set(_rt_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_no_tensor_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  cpp_embedlib_add(culebra_rt_assets
+    FILES
+      "${_rt_archive}"
+      "${_rt_no_tensor_archive}"
+    BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
+    NAMESPACE CulebraRT)
+  # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
+  # the asset library to wait for the real archive targets too, so the
+  # .a files actually exist when the embed step runs.
+  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_no_tensor)
+  target_link_libraries(culebra culebra_rt_assets)
 endif()
 
 # Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
