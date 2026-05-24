@@ -1,3 +1,5 @@
+// Conformance: stdlib §8 (JSON). See docs/stdlib.md and docs/language.md §24.
+//
 // JSON.stringify / JSON.parse round-trip (Phase 8-C — JIT binding added).
 
 let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}

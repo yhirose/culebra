@@ -1,3 +1,5 @@
+// Conformance: §10 (Sets). See docs/language.md §24.
+//
 // Set literal — runs on both interp and JIT (Phase 8-B).
 
 let s = {1, 2, 3}

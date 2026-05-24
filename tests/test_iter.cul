@@ -1,3 +1,6 @@
+# Conformance: §12 (for ... in), §17 (iterator protocol, String methods),
+# §18 (range, iota). See docs/language.md §24.
+#
 # For-in / iterator protocol regression tests.
 #
 # Exercised on both the tree interpreter and the JIT. Direct for-in

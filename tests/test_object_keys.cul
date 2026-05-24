@@ -1,3 +1,5 @@
+// Conformance: §10 (non-String keys). See docs/language.md §24.
+//
 // Non-String literal keys on Object (Phase 7-B/C).
 // Both backends accept Long/Float/Bool/Nil as keys and look them up
 // via obj[k].

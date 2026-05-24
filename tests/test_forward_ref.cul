@@ -1,3 +1,6 @@
+# Conformance: §6 (scope), §11 (closures), §19 (multimethod forward refs).
+# See docs/language.md §24.
+#
 # Forward function references: a let-bound closure may reference a
 # name defined later in the same scope. interp resolves through env
 # binding (lazy); the JIT pre-allocates a Cell slot at scope entry

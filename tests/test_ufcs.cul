@@ -1,3 +1,5 @@
+# Conformance: §10 (methods, UFCS), §18 (__ARGS__). See docs/language.md §24.
+#
 # UFCS regression tests. Runs under both the interpreter and `--jit`.
 #
 # A JIT-safe subset is also duplicated in `test_ufcs()` inside

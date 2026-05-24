@@ -1,3 +1,5 @@
+# Conformance: §20 (decorators). See docs/language.md §24.
+#
 # @decorator: prefix syntax that wraps a fn / class declaration with
 # one or more callables. Stacked decorators apply bottom-up — the one
 # closest to the `fn` / `class` runs first, the topmost runs last.

@@ -1,3 +1,5 @@
+# Conformance: §13 (type patterns). See docs/language.md §24.
+#
 # `match v { x: ClassName => ... }` — type-pattern arms against
 # user-defined classes. Works on both interp and JIT.
 

@@ -1,3 +1,5 @@
+// Conformance: stdlib §3 (FS). See docs/stdlib.md and docs/language.md §24.
+//
 // FS namespace — path manipulation, queries, dir/file ops.
 // Tests run on interp and JIT (test-all) and also as AOT bin (test-aot).
 
