@@ -1,4 +1,5 @@
 # Tight iteration loop (integer arithmetic)
+# perf: min_speedup 4.0
 mut i = 0
 mut acc = 0
 while i < 10000000 {

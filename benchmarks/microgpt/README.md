@@ -23,9 +23,9 @@ overloading via special methods, auto-reflection, `Math.*`, `Random.*`).
 
 ```
 just fetch-names
-python3 samples/microgpt/microgpt.py [num_steps]
-./build/culebra       samples/microgpt/microgpt.cul -- [num_steps]
-./build/culebra --jit samples/microgpt/microgpt.cul -- [num_steps]
+python3 benchmarks/microgpt/microgpt.py [num_steps]
+./build/culebra       benchmarks/microgpt/microgpt.cul -- [num_steps]
+./build/culebra --jit benchmarks/microgpt/microgpt.cul -- [num_steps]
 ```
 
 `num_steps` defaults to 1000. Pass a second arg to `n_samples` (default

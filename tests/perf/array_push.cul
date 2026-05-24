@@ -1,4 +1,5 @@
 # Array grow via push, then read-back
+# perf: min_speedup 0.5
 arr = []
 mut i = 0
 while i < 100000 {

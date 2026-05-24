@@ -2,9 +2,9 @@
 Karpathy's microgpt (scalar autograd), unchanged algorithm.
 
 Reference implementation for the Culebra port benchmark. Reads from
-samples/microgpt/names.txt instead of ./input.txt.
+benchmarks/microgpt/names.txt instead of ./input.txt.
 
-Usage: python3 samples/microgpt/microgpt.py [num_steps] [n_samples]
+Usage: python3 benchmarks/microgpt/microgpt.py [num_steps] [n_samples]
 """
 
 import os       # os.path.exists

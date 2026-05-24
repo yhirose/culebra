@@ -63,28 +63,28 @@ python3.11 -m pip install --user torch
 
 ```bash
 just fetch-mnist                             # download MNIST IDX files
-python3.11 samples/mnist/train.py            # full training; dumps weights
-python3.11 samples/mnist/prep_test.py 10000  # dump 10000 test samples
-python3.11 samples/mnist/prep_train.py 10000 # dump 10000 train samples + init weights
+python3.11 benchmarks/mnist/train.py            # full training; dumps weights
+python3.11 benchmarks/mnist/prep_test.py 10000  # dump 10000 test samples
+python3.11 benchmarks/mnist/prep_train.py 10000 # dump 10000 train samples + init weights
 
 # Inference
-python3.11 samples/mnist/infer_numpy.py
-python3    samples/mnist/infer_pure.py
-DEVICE=cpu python3.11 samples/mnist/infer_torch.py
-DEVICE=mps python3.11 samples/mnist/infer_torch.py
-julia      samples/mnist/infer.jl
-./build/culebra --jit  samples/mnist/infer.cul
+python3.11 benchmarks/mnist/infer_numpy.py
+python3    benchmarks/mnist/infer_pure.py
+DEVICE=cpu python3.11 benchmarks/mnist/infer_torch.py
+DEVICE=mps python3.11 benchmarks/mnist/infer_torch.py
+julia      benchmarks/mnist/infer.jl
+./build/culebra --jit  benchmarks/mnist/infer.cul
 
 # Training (single epoch over the 10000-sample subset)
-python3.11 samples/mnist/train_bench_numpy.py
-python3    samples/mnist/train_bench_pure.py
-DEVICE=cpu python3.11 samples/mnist/train_bench_torch.py
-DEVICE=mps python3.11 samples/mnist/train_bench_torch.py
-julia      samples/mnist/train_bench.jl
-./build/culebra --jit  samples/mnist/train_bench.cul
+python3.11 benchmarks/mnist/train_bench_numpy.py
+python3    benchmarks/mnist/train_bench_pure.py
+DEVICE=cpu python3.11 benchmarks/mnist/train_bench_torch.py
+DEVICE=mps python3.11 benchmarks/mnist/train_bench_torch.py
+julia      benchmarks/mnist/train_bench.jl
+./build/culebra --jit  benchmarks/mnist/train_bench.cul
 
 # Or run everything 3× via the bench harness
-./samples/mnist/bench.sh 3
+./benchmarks/mnist/bench.sh 3
 ```
 
 `python3.11` is used for any script that imports numpy or torch; pure
@@ -162,7 +162,7 @@ latency dominates the actual matmul. PyTorch MPS (training) lands at
 **0.273 s warm, ~4.2× slower than PyTorch CPU's 0.065 s warm**. This
 is the expected scaling — GPU pays off once the matmul is large
 enough to amortize launch overhead, which a 30×784 hidden layer does
-not hit. Larger models in `samples/microgpt` are a more honest GPU
+not hit. Larger models in `benchmarks/microgpt` are a more honest GPU
 workload.
 
 ### Dtype note

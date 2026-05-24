@@ -1,13 +1,13 @@
 # Culebra port of karpathy/microgpt (scalar autograd), unchanged
 # algorithm. Reference implementation for the benchmark; reads from
-# samples/microgpt/names.txt.
+# benchmarks/microgpt/names.txt.
 #
-# Usage: ./build/culebra [--jit] samples/microgpt/microgpt.cul -- [num_steps] [n_samples]
+# Usage: ./build/culebra [--jit] benchmarks/microgpt/microgpt.cul -- [num_steps] [n_samples]
 
 Random.seed(42) # Let there be order among chaos
 
 # Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
-data_path = 'samples/microgpt/names.txt'
+data_path = 'benchmarks/microgpt/names.txt'
 if !IO.exists(data_path) {
   puts("error: {data_path} missing. Run `just fetch-names` first.")
   Sys.exit(1)

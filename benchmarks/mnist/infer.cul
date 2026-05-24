@@ -1,9 +1,9 @@
-# Tensor port of samples/mnist/infer.cul. Routes the forward pass
+# Tensor port of benchmarks/mnist/infer.cul. Routes the forward pass
 # through the builtin Tensor type (BLAS sgemm + fused linear_sigmoid).
 # Runs CYCLES cycles in-process and reports cold (cycle 1) vs
 # warm-mean (cycles 2..K).
 
-let DIR = 'samples/mnist'
+let DIR = 'benchmarks/mnist'
 let CYCLES = 3
 
 let load_int_1d = fn (path) {

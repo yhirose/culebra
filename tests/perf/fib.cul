@@ -1,4 +1,5 @@
 # Recursive Fibonacci (compute-bound, function calls)
+# perf: min_speedup 8.0
 fib = fn (x) {
   if x < 2 { x } else { self(x - 2) + self(x - 1) }
 }

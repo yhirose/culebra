@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract the first N MNIST test samples and dump as CSV.
 
-Output (in samples/mnist/):
+Output (in benchmarks/mnist/):
   test_images.csv  shape (N, 784)  pixel values in [0, 1]
   test_labels.csv  shape (N,)      integer labels in [0, 9]
 

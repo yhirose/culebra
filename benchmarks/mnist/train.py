@@ -7,7 +7,7 @@ network.py (sigmoid, MSE loss, mini-batch SGD, 30 epochs, batch=10,
 eta=3.0). Implementation here uses vectorized numpy mini-batches for
 speed; the algorithm is identical.
 
-Output (in samples/mnist/):
+Output (in benchmarks/mnist/):
   W1.csv  shape (30, 784)   hidden weights
   b1.csv  shape (30,)        hidden bias
   W2.csv  shape (10, 30)     output weights

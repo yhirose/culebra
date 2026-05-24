@@ -1,4 +1,5 @@
 # String concatenation via interpolation (heavy allocator churn)
+# perf: min_speedup 0.35
 mut i = 0
 mut s = ''
 while i < 5000 {

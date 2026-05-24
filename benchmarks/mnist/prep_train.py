@@ -2,7 +2,7 @@
 """Dump training subset and deterministic initial weights for the
 cross-language training benchmark.
 
-Outputs (in samples/mnist/):
+Outputs (in benchmarks/mnist/):
   train_images.csv  shape (N, 784)   pixels in [0, 1]
   train_labels.csv  shape (N,)       integer labels
   init_W1.csv       shape (30, 784)  initial hidden weights

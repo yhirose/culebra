@@ -1,8 +1,8 @@
-# Tensor port of samples/mnist/train_bench.cul. Routes BLAS-shaped
+# Tensor port of benchmarks/mnist/train_bench.cul. Routes BLAS-shaped
 # work through the builtin Tensor type. Runs CYCLES epochs from
 # identical init weights in-process.
 
-let DIR = 'samples/mnist'
+let DIR = 'benchmarks/mnist'
 let N_HID = 30
 let N_OUT = 10
 let BATCH = 10

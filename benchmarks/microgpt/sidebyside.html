@@ -196,9 +196,9 @@
 <tr><td class="ln">  2</td><td class="src">Karpathy's microgpt (scalar autograd), unchanged algorithm.</td></tr>
 <tr><td class="ln">  3</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">  4</td><td class="src">Reference implementation <span class="kw">for</span> the Culebra port benchmark. Reads <span class="kw">from</span></td></tr>
-<tr><td class="ln">  5</td><td class="src">samples/microgpt/names.txt instead of ./input.txt.</td></tr>
+<tr><td class="ln">  5</td><td class="src">benchmarks/microgpt/names.txt instead of ./input.txt.</td></tr>
 <tr><td class="ln">  6</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">  7</td><td class="src">Usage: python3 samples/microgpt/microgpt.py [num_steps] [n_samples]</td></tr>
+<tr><td class="ln">  7</td><td class="src">Usage: python3 benchmarks/microgpt/microgpt.py [num_steps] [n_samples]</td></tr>
 <tr><td class="ln">  8</td><td class="src">"""</td></tr>
 <tr><td class="ln">  9</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln"> 10</td><td class="src"><span class="kw">import</span> os       <span class="cmt"># os.path.exists</span></td></tr>
@@ -208,9 +208,9 @@
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln">  1</td><td class="src"><span class="cmt"># Culebra port of karpathy/microgpt (scalar autograd), unchanged</span></td></tr>
 <tr><td class="ln">  2</td><td class="src"><span class="cmt"># algorithm. Reference implementation for the benchmark; reads from</span></td></tr>
-<tr><td class="ln">  3</td><td class="src"><span class="cmt"># samples/microgpt/names.txt.</span></td></tr>
+<tr><td class="ln">  3</td><td class="src"><span class="cmt"># benchmarks/microgpt/names.txt.</span></td></tr>
 <tr><td class="ln">  4</td><td class="src"><span class="cmt">#</span></td></tr>
-<tr><td class="ln">  5</td><td class="src"><span class="cmt"># Usage: ./build/culebra [--jit] samples/microgpt/microgpt.cul -- [num_steps] [n_samples]</span></td></tr>
+<tr><td class="ln">  5</td><td class="src"><span class="cmt"># Usage: ./build/culebra [--jit] benchmarks/microgpt/microgpt.cul -- [num_steps] [n_samples]</span></td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Seed + data file check</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -226,7 +226,7 @@
 <tr><td class="ln">  7</td><td class="src">Random.seed(<span class="num">42</span>) <span class="cmt"># Let there be order among chaos</span></td></tr>
 <tr><td class="ln">  8</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">  9</td><td class="src"><span class="cmt"># Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)</span></td></tr>
-<tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'samples/microgpt/names.txt'</span></td></tr>
+<tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'benchmarks/microgpt/names.txt'</span></td></tr>
 <tr><td class="ln"> 11</td><td class="src"><span class="kw">if</span> !IO.exists(data_path) {</td></tr>
 <tr><td class="ln"> 12</td><td class="src">  <span class="kw">puts</span>(<span class="str">"error: {data_path} missing. Run `just fetch-names` first."</span>)</td></tr>
 <tr><td class="ln"> 13</td><td class="src">  Sys.exit(<span class="num">1</span>)</td></tr>
@@ -744,9 +744,9 @@
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln">  1</td><td class="src"><span class="cmt"># Culebra port of karpathy/microgpt (scalar autograd), unchanged</span></td></tr>
 <tr><td class="ln">  2</td><td class="src"><span class="cmt"># algorithm. Reference implementation for the benchmark; reads from</span></td></tr>
-<tr><td class="ln">  3</td><td class="src"><span class="cmt"># samples/microgpt/names.txt.</span></td></tr>
+<tr><td class="ln">  3</td><td class="src"><span class="cmt"># benchmarks/microgpt/names.txt.</span></td></tr>
 <tr><td class="ln">  4</td><td class="src"><span class="cmt">#</span></td></tr>
-<tr><td class="ln">  5</td><td class="src"><span class="cmt"># Usage: ./build/culebra [--jit] samples/microgpt/microgpt.cul -- [num_steps] [n_samples]</span></td></tr>
+<tr><td class="ln">  5</td><td class="src"><span class="cmt"># Usage: ./build/culebra [--jit] benchmarks/microgpt/microgpt.cul -- [num_steps] [n_samples]</span></td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln">  1</td><td class="src"><span class="cmt"># Tensor port of microgpt with autograd.</span></td></tr>
 <tr><td class="ln">  2</td><td class="src"><span class="cmt">#</span></td></tr>
@@ -763,14 +763,14 @@
 <tr><td class="ln"> 13</td><td class="src"><span class="cmt"># - Otherwise identical: rmsnorm, causal attention with KV cache,</span></td></tr>
 <tr><td class="ln"> 14</td><td class="src"><span class="cmt">#   ReLU MLP, residuals, lm_head + softmax + cross-entropy.</span></td></tr>
 <tr><td class="ln"> 15</td><td class="src"><span class="cmt">#</span></td></tr>
-<tr><td class="ln"> 16</td><td class="src"><span class="cmt"># Usage: ./build/culebra --jit samples/microgpt/microgpt_tensor.cul -- [num_steps]</span></td></tr>
+<tr><td class="ln"> 16</td><td class="src"><span class="cmt"># Usage: ./build/culebra --jit benchmarks/microgpt/microgpt_tensor.cul -- [num_steps]</span></td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Seed + data file check</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln">  7</td><td class="src">Random.seed(<span class="num">42</span>) <span class="cmt"># Let there be order among chaos</span></td></tr>
 <tr><td class="ln">  8</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">  9</td><td class="src"><span class="cmt"># Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)</span></td></tr>
-<tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'samples/microgpt/names.txt'</span></td></tr>
+<tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'benchmarks/microgpt/names.txt'</span></td></tr>
 <tr><td class="ln"> 11</td><td class="src"><span class="kw">if</span> !IO.exists(data_path) {</td></tr>
 <tr><td class="ln"> 12</td><td class="src">  <span class="kw">puts</span>(<span class="str">"error: {data_path} missing. Run `just fetch-names` first."</span>)</td></tr>
 <tr><td class="ln"> 13</td><td class="src">  Sys.exit(<span class="num">1</span>)</td></tr>
@@ -780,7 +780,7 @@
 <tr><td class="ln"> 19</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln"> 20</td><td class="src"><span class="cmt"># --- Data + tokenizer (unchanged from microgpt.cul) ---</span></td></tr>
 <tr><td class="ln"> 21</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln"> 22</td><td class="src"><span class="kw">let</span> data_path = <span class="str">'samples/microgpt/names.txt'</span></td></tr>
+<tr><td class="ln"> 22</td><td class="src"><span class="kw">let</span> data_path = <span class="str">'benchmarks/microgpt/names.txt'</span></td></tr>
 <tr><td class="ln"> 23</td><td class="src"><span class="kw">if</span> !IO.exists(data_path) {</td></tr>
 <tr><td class="ln"> 24</td><td class="src">  <span class="kw">puts</span>(<span class="str">"error: {data_path} missing. Run `just fetch-names` first."</span>)</td></tr>
 <tr><td class="ln"> 25</td><td class="src">  Sys.exit(<span class="num">1</span>)</td></tr>

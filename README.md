@@ -20,7 +20,7 @@ interpreter and an LLVM ORC JIT.
 Performance
 -----------
 
-`just bench-all` on Apple Silicon (`-O2`, LLVM 22):
+`just perf` on Apple Silicon (`-O2`, LLVM 22):
 
 | benchmark          | interp | jit    | speedup |
 |--------------------|-------:|-------:|--------:|
@@ -35,7 +35,7 @@ and trivial code may favor the interpreter.
 
 ### End-to-end: microgpt
 
-[`samples/microgpt`](samples/microgpt/) ports Karpathy's autograd
+[`benchmarks/microgpt`](benchmarks/microgpt/) ports Karpathy's autograd
 microgpt as both a scalar `Value` graph and a Tensor port. Apple
 Silicon, training only:
 
@@ -59,12 +59,12 @@ warmup. Past that, Culebra runs ~17% faster per step.
 The Tensor port is **~15× faster per step** than the scalar
 version: thousands of `Value` allocations per step → a few hundred
 `TNode`s per step plus BLAS-routed linear layers. See
-[`samples/microgpt/README.md`](samples/microgpt/README.md) for the
+[`benchmarks/microgpt/README.md`](benchmarks/microgpt/README.md) for the
 full breakdown.
 
 ### MNIST MLP
 
-[`samples/mnist`](samples/mnist/) trains a 784–30–10 sigmoid MLP on
+[`benchmarks/mnist`](benchmarks/mnist/) trains a 784–30–10 sigmoid MLP on
 MNIST and benchmarks across seven implementations: numpy, pure
 Python, PyTorch CPU/MPS, Julia, Culebra `--jit` (scalar), and Culebra
 Tensor. Mean of 3 external runs.
@@ -101,7 +101,7 @@ reference). The Tensor port routes matmul through Apple Accelerate
 / OpenBLAS and lands in the BLAS-bound cluster — within 1.2× of
 PyTorch CPU on training warm. PyTorch MPS is 3.4× slower than CPU on
 this size: the 30-hidden MLP is too small to amortize GPU launch
-latency. See [`samples/mnist/README.md`](samples/mnist/README.md)
+latency. See [`benchmarks/mnist/README.md`](benchmarks/mnist/README.md)
 for the full analysis.
 
 At a glance

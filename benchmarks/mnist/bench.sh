@@ -4,7 +4,7 @@
 # vs warm-mean (cycles 2..K) on a final `BENCH ...` line; we average
 # those across the external runs and print one row per script.
 #
-# Usage: ./samples/mnist/bench.sh [RUNS]
+# Usage: ./benchmarks/mnist/bench.sh [RUNS]
 #
 # Requires that `just fetch-mnist`, `train.py`, `prep_test.py`, and
 # `prep_train.py` have already been run (W*.csv, b*.csv, init_*.csv,
@@ -57,25 +57,25 @@ bench_cmd() {
   '
 }
 
-N_TEST=$(wc -l < samples/mnist/test_labels.csv | tr -d ' ')
-N_TRAIN=$(wc -l < samples/mnist/train_labels.csv | tr -d ' ')
+N_TEST=$(wc -l < benchmarks/mnist/test_labels.csv | tr -d ' ')
+N_TRAIN=$(wc -l < benchmarks/mnist/train_labels.csv | tr -d ' ')
 echo "=== Inference: $N_TEST test images, $RUNS external runs ==="
 echo "(load = CSV read; cold = cycle 1; warm = mean of cycles 2..K within one process)"
 echo
-bench_cmd "numpy"             python3.11 samples/mnist/infer_numpy.py
-bench_cmd "pure Python"       python3    samples/mnist/infer_pure.py
-bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 samples/mnist/infer_torch.py
-bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 samples/mnist/infer_torch.py
-bench_cmd "Julia"             julia samples/mnist/infer.jl
-bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/infer.cul
+bench_cmd "numpy"             python3.11 benchmarks/mnist/infer_numpy.py
+bench_cmd "pure Python"       python3    benchmarks/mnist/infer_pure.py
+bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 benchmarks/mnist/infer_torch.py
+bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 benchmarks/mnist/infer_torch.py
+bench_cmd "Julia"             julia benchmarks/mnist/infer.jl
+bench_cmd "Culebra Tensor"    ./build/culebra --jit  benchmarks/mnist/infer.cul
 
 echo
 echo "=== Training: 1 epoch, $N_TRAIN samples, mini-batch SGD, $RUNS external runs ==="
 echo "(hand-coded backprop, identical algorithm across implementations)"
 echo
-bench_cmd "numpy"             python3.11 samples/mnist/train_bench_numpy.py
-bench_cmd "pure Python"       python3    samples/mnist/train_bench_pure.py
-bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 samples/mnist/train_bench_torch.py
-bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 samples/mnist/train_bench_torch.py
-bench_cmd "Julia"             julia samples/mnist/train_bench.jl
-bench_cmd "Culebra Tensor"    ./build/culebra --jit  samples/mnist/train_bench.cul
+bench_cmd "numpy"             python3.11 benchmarks/mnist/train_bench_numpy.py
+bench_cmd "pure Python"       python3    benchmarks/mnist/train_bench_pure.py
+bench_cmd "PyTorch CPU"       env DEVICE=cpu python3.11 benchmarks/mnist/train_bench_torch.py
+bench_cmd "PyTorch MPS (GPU)" env DEVICE=mps python3.11 benchmarks/mnist/train_bench_torch.py
+bench_cmd "Julia"             julia benchmarks/mnist/train_bench.jl
+bench_cmd "Culebra Tensor"    ./build/culebra --jit  benchmarks/mnist/train_bench.cul

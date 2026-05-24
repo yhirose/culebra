@@ -5,7 +5,7 @@ Generate sidebyside.html with two tabbed views over the microgpt files:
   - Culebra scalar ↔ Culebra Tensor
 
 Edit the SECTIONS_* tables below when section boundaries shift, then run:
-    python3 samples/microgpt/build_sidebyside.py
+    python3 benchmarks/microgpt/build_sidebyside.py
 """
 
 import re
