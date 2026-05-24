@@ -553,6 +553,40 @@ built-ins interact with user-defined properties — are specified in
 §10 ("Methods and UFCS"). Operator overloading (`+`, `-`, `*`, `==`,
 `@`, …) and `__str__` are also defined there.
 
+### Evaluation order
+
+Sub-expressions are evaluated **left-to-right in source order**.
+This rule is normative on every backend; the JIT may rearrange
+intermediate IR but must preserve the observable effect order.
+
+* **Function call arguments.** `f(p1, p2, **splat, k: kv)` evaluates
+  `p1`, then `p2`, then `splat`, then `kv` — exactly the order they
+  appear at the call site, even when positional, `**` splat, and
+  keyword arguments are interleaved.
+* **Array, object, tuple, and set literals.** Element/property
+  expressions evaluate in source order. For `{a: v1, b: v2}` it is
+  `v1` then `v2`. For `[n; default]` (the size-prefixed form) the
+  count expression evaluates before the default expression.
+* **Binary operators `+`, `-`, `*`, `/`, `%`, `==`, etc.** Left
+  operand first, then right operand, then the operation.
+* **`||`, `&&`, `??`.** Short-circuit at the first decisive operand
+  — `||` stops at the first truthy value, `&&` at the first falsy,
+  `??` at the first non-`nil`. The trailing operands are not
+  evaluated.
+* **Assignment `lval = rhs`.** RHS evaluates first, then the LHS
+  target chain (and its final subscript key for `obj[k] = ...`),
+  then the store is performed. This is the opposite of Python's
+  "LHS targets first" rule — culebra matches Lua / Ruby here.
+* **Compound assignment `lval op= rhs`.** RHS evaluates first; the
+  LHS target chain (including any subscript key) is then evaluated
+  **exactly once**, the implicit read and the store both reuse the
+  same evaluated chain. Subscript keys are not re-evaluated.
+* **Method call.** Receiver evaluates first, then the argument list
+  in source order (as above).
+
+When in doubt, write the expression in steps using temporaries —
+the spec exists so you don't need to.
+
 ---
 
 ## 8. Strings and interpolation
