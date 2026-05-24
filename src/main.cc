@@ -1,5 +1,6 @@
 #include <culebra.h>
 #include <stdlib_interp.h>
+#include <test_runner.h>
 #ifdef CULEBRA_JIT_ENABLED
 #include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
@@ -451,7 +452,41 @@ void install_cli_aliases(culebra::Environment& env) {
   env.initialize("print", io.get("print"), false);
 }
 
+int run_test(int argc, const char** argv) {
+  std::vector<std::string> roots;
+  std::string filter;
+  for (int i = 2; i < argc; i++) {
+    std::string arg(argv[i]);
+    if (arg.starts_with("--filter=")) {
+      filter = arg.substr(9);
+    } else if (arg == "--filter" && i + 1 < argc) {
+      filter = argv[++i];
+    } else if (arg.starts_with("--")) {
+      std::println(stderr, "culebra test: unknown option '{}'", arg);
+      return 2;
+    } else {
+      roots.push_back(arg);
+    }
+  }
+  auto env = culebra::environment({});
+  culebra::install_test_ambient(*env);
+
+  auto files = culebra::discover_test_files(roots);
+  if (files.empty()) {
+    std::println(stderr,
+        "culebra test: no test files found (looking for test_*.cul)");
+    return 1;
+  }
+
+  auto summary = culebra::run_tests(files, filter, env);
+  std::println("{} passed, {} failed", summary.passed, summary.failed);
+  return summary.failed == 0 ? 0 : 1;
+}
+
 int main(int argc, const char** argv) {
+  if (argc >= 2 && string(argv[1]) == "test") {
+    return run_test(argc, argv);
+  }
 #ifdef CULEBRA_JIT_ENABLED
   if (argc >= 2 && string(argv[1]) == "build") {
     culebra::install_jit_stdlib();

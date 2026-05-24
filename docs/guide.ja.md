@@ -1197,10 +1197,10 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 16. テスト (`culebra test`)
 ---------------------------
 
-> **Status: Planned.** `culebra test` サブコマンドは未実装。
-> 16.2 / 16.3 に示す形は確定した設計。 16.1 の doctest 規約は
-> 既に確定しており、本ガイド・ `language.ja.md` ・ `stdlib.ja.md`
-> で実運用中。
+> `test()` 呼出・`@test` デコレータ・fixture DI・`@parametrize` は
+> 実装済、 `culebra test [path]` で動きます。 明示 `import { test }
+> from "std/test"` と `--doc` (markdown doctest 実行) は未実装
+> (16.4 参照)。
 
 ### 16.1 doctest 規約 (確定)
 
@@ -1219,66 +1219,92 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 
 ### 16.2 テストの書き方
 
-> **Planned.** 通常の関数呼び出し形。 `assert` はコア組み込み。
+3 つの書き方があります — `test()` 呼出形と `@test` デコレータ形は
+等価。 `@parametrize` は cases ごとに 1 テストを登録します。
 
 ```culebra
 # doctest: skip
 # tests/test_string.cul
+
+# 呼び出し形
 test("interpolation embeds Long", fn() {
   let x = 42
   assert("hi {x}" == "hi 42")
 })
 
-test("interpolation embeds Float", fn() {
+# デコレータ形 — 関数名がテスト名になる
+@test
+fn interpolation_embeds_float() {
   let pi = 3.14
   assert("π = {pi}" == "π = 3.14")
-})
+}
+
+# Parametrize — case ごとに 1 テスト、`<fn>[i]` という名前
+@parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
+fn adds_correctly(a, b, want) {
+  assert(a + b == want)
+}
 ```
 
-**`describe` ネストは採用しない。** グルーピングはディレクトリ
-(`tests/strings/`) とテスト名の `/` 区切り (`"Array/push: appends
-element"`) で表現する。 共有 setup が要るときは小さなヘルパを書く:
+**Fixture (`@fixture` + 依存性注入)**。 関数に `@fixture` を付けて、
+`@test` の引数で受け取ると、runner が param 名を env から resolve
+して fixture を呼び出します (fixture の依存も再帰的に解決):
 
 ```culebra
 # doctest: skip
-fn with_tmpfile(body) {
-  let path = "/tmp/test-{Random.int(0, 1000000)}"
-  IO.write(path, "")
-  defer FS.remove(path)
-  body(path)
+@fixture
+fn db() {
+  { users: [], next_id: 1 }
 }
 
-test("read empty file", fn() {
-  with_tmpfile(fn(p) { assert(IO.read(p) == "") })
-})
+@fixture
+fn user(db) {                       # fixture が fixture を依存可能
+  db.users.push({ id: 1, name: "alice" })
+  db.users[0]
+}
+
+@test
+fn user_has_name(user) {            # `user` は registry から自動解決
+  assert(user.name == "alice")
+}
 ```
+
+**`describe` ネストは採用しない**。 グルーピングはディレクトリ
+(`tests/strings/`) とテスト名の `/` 区切り
+(`"Array/push: appends element"`) で表現します。
 
 ### 16.3 実行
 
-> **Planned.** `culebra test [path]` は `tests/**/*.cul` および
-> プロジェクト内任意の `test_*.cul` を discover する。 このサブコマンド
-> 経由で起動した場合のみ、 `test` が **ambient global** として注入される
-> — `import` 不要。 これは script 実行モード下でだけ `puts` / `print`
-> が ambient で、 `culebra::environment()` には注入されない設計と
-> 同じ流儀 ([stdlib.ja.md §10](stdlib.ja.md) 参照)。
+`culebra test [path]` がテストファイルを discover します。 このサブコマンド
+経由で起動した場合のみ、 `test` / `@test` / `fixture` / `@fixture` /
+`parametrize` / `@parametrize` が **ambient global** として注入され
+ます — `import` 不要。 これは script 実行モード下でだけ `puts` /
+`print` が ambient で、 `culebra::environment()` には注入されない
+設計と同じ流儀 ([stdlib.ja.md §10](stdlib.ja.md) 参照)。
 
 ```sh
-culebra test                       # 全テストを発見・実行
+culebra test                       # 現在ディレクトリから探索・実行
 culebra test tests/strings/        # サブツリー指定
 culebra test --filter "Array/push" # テスト名部分一致
-culebra test --doc docs/           # markdown から doctest ブロックを実行
 ```
 
-明示派は import を書いてもよい。両形は等価:
+Discovery: 指定されたパスがファイルならそれを使用。 ディレクトリなら
+`test_*.cul` 一致を再帰的に walk。 終了コードは全 pass で `0`、何か
+fail で `1`。
 
-```culebra
-# doctest: skip
-import { test } from "std/test"
-test("explicit form", fn() { assert(true) })
-```
+`just test` 経由の従来 `tests/*.cul` スイート (assert のみ、`test()`
+呼出なし) は変更なしで動き続けます — 新 ambient binding を使いません。
 
-サブコマンド完成までは `just test` がビルドシステム経由で従来の
-`tests/*.cul` スイートを回す。
+### 16.4 今後の拡張
+
+- **明示 `import { test } from "std/test"`** — `culebra test` 経由でない
+  コード (embedded test helper 等) で使うため
+- **`culebra test --doc docs/`** — 16.1 の規約に従って markdown から
+  ` ```culebra ` ブロックを抽出・実行
+- **`--backend interp|jit|aot`** — 現状 runner は interp のみ。
+  backend 選択は今後
+- **並列実行** — 現状逐次。 JIT/AOT が入った時の parallel default は
+  optional
 
 17. AOT バイナリビルド
 ----------------------

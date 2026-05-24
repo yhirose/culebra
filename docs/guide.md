@@ -1222,10 +1222,10 @@ Part IV — Verification and deployment
 16. Testing (`culebra test`)
 ----------------------------
 
-> **Status: Planned.** The `culebra test` subcommand is not yet
-> implemented. The shape shown in 16.2 / 16.3 is the decided design.
-> The doctest convention in 16.1 is final and already in use across
-> this guide, `language.md`, and `stdlib.md`.
+> The `test()` call, `@test` decorator, fixture DI, and `@parametrize`
+> are implemented and work via `culebra test [path]`. Explicit
+> `import { test } from "std/test"` and `--doc` for markdown doctests
+> are still Planned (see 16.4).
 
 ### 16.1 Doctest convention (final)
 
@@ -1244,67 +1244,94 @@ Blocks are independent; no `setup`/`teardown` across blocks.
 
 ### 16.2 Writing tests
 
-> **Planned.** Plain function-call form. `assert` is a core built-in.
+Three forms are available — the call form and the `@test` decorator
+are equivalent; pick whichever reads better at the call site.
+`@parametrize` registers one test per case.
 
 ```culebra
 # doctest: skip
 # tests/test_string.cul
+
+# Call form
 test("interpolation embeds Long", fn() {
   let x = 42
   assert("hi {x}" == "hi 42")
 })
 
-test("interpolation embeds Float", fn() {
+# Decorator form — fn name becomes the test name
+@test
+fn interpolation_embeds_float() {
   let pi = 3.14
   assert("π = {pi}" == "π = 3.14")
-})
+}
+
+# Parametrize — one test per case, named `<fn>[i]`
+@parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
+fn adds_correctly(a, b, want) {
+  assert(a + b == want)
+}
+```
+
+**Fixtures (`@fixture` + dependency injection).** Mark a fn with
+`@fixture` and accept it as a `@test` parameter — the runner
+resolves the param name from the surrounding env and invokes the
+fixture (with its own fixtures recursively resolved):
+
+```culebra
+# doctest: skip
+@fixture
+fn db() {
+  { users: [], next_id: 1 }
+}
+
+@fixture
+fn user(db) {                       # fixtures can depend on fixtures
+  db.users.push({ id: 1, name: "alice" })
+  db.users[0]
+}
+
+@test
+fn user_has_name(user) {            # `user` resolved from registry
+  assert(user.name == "alice")
+}
 ```
 
 **No `describe` nesting.** Group by file path (`tests/strings/`) and
-by `/` in the test name (`"Array/push: appends element"`). When
-shared setup is needed, write a small helper:
-
-```culebra
-# doctest: skip
-fn with_tmpfile(body) {
-  let path = "/tmp/test-{Random.int(0, 1000000)}"
-  IO.write(path, "")
-  defer FS.remove(path)
-  body(path)
-}
-
-test("read empty file", fn() {
-  with_tmpfile(fn(p) { assert(IO.read(p) == "") })
-})
-```
+by `/` in the test name (`"Array/push: appends element"`).
 
 ### 16.3 Running
 
-> **Planned.** `culebra test [path]` discovers `tests/**/*.cul` plus
-> any `test_*.cul` anywhere in the project. When invoked through this
-> subcommand, `test` becomes an **ambient global** — no `import`
-> required. This mirrors how `puts` / `print` are ambient under
-> script-execution mode but absent from `culebra::environment()`
-> (see [stdlib §10](stdlib.md)).
+`culebra test [path]` discovers test files. When invoked through this
+subcommand, `test` / `@test` / `fixture` / `@fixture` / `parametrize`
+/ `@parametrize` become **ambient globals** — no `import` required.
+This mirrors how `puts` / `print` are ambient under script-execution
+mode but absent from `culebra::environment()` (see [stdlib
+§10](stdlib.md)).
 
 ```sh
-culebra test                       # discover & run all tests
+culebra test                       # discover & run from current dir
 culebra test tests/strings/        # run a subtree
 culebra test --filter "Array/push" # name-substring filter
-culebra test --doc docs/           # run doctest blocks from markdown
 ```
 
-Tests that prefer to be explicit can write the import; both forms
-are equivalent:
+Discovery: any path that is a file is included as-is; any path that
+is a directory is walked recursively for files matching `test_*.cul`.
+Exit code is `0` when all tests pass, `1` when any fail.
 
-```culebra
-# doctest: skip
-import { test } from "std/test"
-test("explicit form", fn() { assert(true) })
-```
+The legacy `tests/*.cul` suite under `just test` (assert-only, no
+`test()` calls) continues to work unchanged — it does not use the
+new ambient bindings.
 
-Until the subcommand lands, `just test` runs the legacy
-`tests/*.cul` suite via the build system.
+### 16.4 Planned extensions
+
+- **Explicit `import { test } from "std/test"`** — for code that
+  doesn't run under `culebra test` (e.g. embedded test helpers).
+- **`culebra test --doc docs/`** — extract and run ` ```culebra `
+  blocks from markdown using the convention in 16.1.
+- **`--backend interp|jit|aot`** — currently the runner uses interp;
+  selecting backends per run is on the roadmap.
+- **Parallel execution** — sequential today; parallel default is
+  optional once the JIT/AOT backends are wired in.
 
 17. AOT binary build
 --------------------
