@@ -1576,7 +1576,8 @@ User code can branch on `e.kind`:
 Standard `kind` values:
 
 * `TypeError` — type mismatch in operator / coercion / annotation.
-* `NameError` — undefined variable (compile-time on both backends).
+* `NameError` — undefined variable; runtime-throw on both backends so
+  `try { ... } catch e { e.kind == 'NameError' }` works.
 * `IndexError` — array / tensor index out of range.
 * `ValueError` — semantic value problem (`[].min()`, shape mismatch).
 * `ArityError` — function called with too few arguments.
@@ -1596,10 +1597,14 @@ status. User-thrown values via `throw expr` print as `uncaught: {value}`.
 
 ### Compile-time errors
 
-`ShadowError` and `NameError` are detected when the program is loaded,
-before any `try` block runs — so user code cannot catch them. They
-abort the program with the same `Kind: message` format. The check
-runs in both backends; see "Shadow prohibition" in §6 for the rule.
+`ShadowError` is detected when the program is loaded, before any
+`try` block runs — so user code cannot catch it. It aborts the
+program with the same `Kind: message` format. The check runs in both
+backends; see "Shadow prohibition" in §6 for the rule.
+
+`NameError` (undefined variable), `ImmutableError`, missing/unknown
+kwargs and similar errors are deliberately raised at *runtime* on
+both backends so `try { ... } catch e { ... }` can observe them.
 
 ### `assert(cond)`
 

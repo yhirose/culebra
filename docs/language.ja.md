@@ -1511,7 +1511,8 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 標準の `kind` 一覧:
 
 * `TypeError` — 演算子・型強制・型注釈での型不一致
-* `NameError` — 未定義変数（両バックエンドで compile-time）
+* `NameError` — 未定義変数。両バックエンドで runtime throw のため
+  `try { ... } catch e { e.kind == 'NameError' }` で catch 可能
 * `IndexError` — 配列／テンソルの範囲外アクセス
 * `ValueError` — 値起源のセマンティック誤り（`[].min()`、shape 不一致）
 * `ArityError` — 引数数不足
@@ -1531,9 +1532,14 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 
 ### コンパイル時エラー
 
-`ShadowError` と `NameError` はプログラム読込時、`try` ブロックが
-走る前に検出されるため、ユーザコードでは catch できません。同じ
-`Kind: message` 形式で表示し中断します。両バックエンドで実施。
+`ShadowError` はプログラム読込時、`try` ブロックが走る前に検出
+されるため、ユーザコードでは catch できません。同じ `Kind: message`
+形式で表示し中断します。両バックエンドで実施。詳細は §6 の
+「シャドウ禁止」を参照。
+
+`NameError`（未定義変数）、`ImmutableError`、missing/unknown kwargs
+などのエラーは両バックエンドで意図的に runtime throw となっており、
+`try { ... } catch e { ... }` で観測可能です。
 ルールについては §6 の "Shadow prohibition" を参照。
 
 ### `assert(cond)`

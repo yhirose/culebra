@@ -20,9 +20,16 @@ assert(r4.kind == 'ZeroDivisionError')
 let r5 = try { let _ = 1 % 0; nil } catch e { e }
 assert(r5.kind == 'ZeroDivisionError')
 
-# Note: NameError ("undefined variable") and ShadowError are detected
-# at compile time on both backends — the whole module is rejected
-# before any `try` block runs, so user code cannot catch them.
+# NameError for undefined variables is raised at runtime on both
+# backends, so user code can `try { ... } catch e { e.kind }` it.
+# (ShadowError is still detected at compile time — see the analyzer.)
+let r_nameread = try { undefined_name; nil } catch e { e }
+assert(r_nameread.kind == 'NameError')
+
+let r_namewrite = try {
+  fn () { undefined_local = undefined_rhs; nil }()
+} catch e { e.kind }
+assert(r_namewrite == 'NameError')
 
 # --- IndexError ---
 let r7 = try { let a = [1, 2, 3]; let _ = a[10]; nil } catch e { e }

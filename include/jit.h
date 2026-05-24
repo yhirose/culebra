@@ -8225,10 +8225,16 @@ struct JIT {
       if (prop->nodes.size() < 3) {
         auto slot = lookup_var(name);
         if (!slot) {
-          throw culebra::CulebraError("NameError",
-              std::format("undefined variable '{}'...", name));
+          // Match interp's eval-time NameError so the same source
+          // raises a catchable exception under --jit. The runtime
+          // throw fires before this property would be installed.
+          emit_throw_error("NameError",
+              std::format("undefined variable '{}'...", name),
+              key_node.line, key_node.column);
+          val = make_nil();
+        } else {
+          val = load_slot(*slot, name);
         }
-        val = load_slot(*slot, name);
       } else {
         val = compile(*prop->nodes[2]);
       }
@@ -8305,8 +8311,12 @@ struct JIT {
       v = builder_.CreateInsertValue(v, data, {1});
       return v;
     }
-    throw culebra::CulebraError("NameError",
-        std::format("undefined variable '{}'...", name));
+    // Match interp's eval-time NameError so `try { undefined } catch e
+    // { ... }` works under --jit too.
+    emit_throw_error("NameError",
+        std::format("undefined variable '{}'...", name),
+        ast.line, ast.column);
+    return make_nil();
   }
 
   // Create an alloca + cell for a new captured variable.
