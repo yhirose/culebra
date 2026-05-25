@@ -614,16 +614,26 @@ inline const TraitDef* lookup_trait(std::string_view name) {
 
 // Structural conformance check: `class_methods` maps method name to
 // arity for the class under test. The class conforms when every
-// non-default method on `trait` is matched (name + arity). Default
+// non-default method on `trait` is matched by name and the class
+// method accepts at least `trait_arity` positional args. Default
 // methods don't need a class-side definition — the trait provides
 // them and the dispatcher falls through.
+//
+// The arity check is one-sided (`class_arity >= trait_arity`) to
+// accept class methods that carry extra parameters with defaults
+// or a `**kwargs` rest. Strict equality would reject `class C {
+// foo(a, **rest) }` against `trait T { foo(a) }`, since the
+// class-side walk on the JIT path counts the `**rest` toward
+// JitClosure::arity. The runtime call site still verifies actual
+// argument counts, so an over-strict class signature surfaces as
+// ArityError at call time rather than DispatchError.
 inline bool class_conforms_to_trait(
     const std::unordered_map<std::string, size_t>& class_methods,
     const TraitDef& trait) {
   for (const auto& m : trait.methods) {
     if (m.has_default) continue;
     auto it = class_methods.find(m.name);
-    if (it == class_methods.end() || it->second != m.arity) return false;
+    if (it == class_methods.end() || it->second < m.arity) return false;
   }
   return true;
 }
