@@ -196,6 +196,11 @@ inline void install_test_ambient(Environment& env) {
                     "TypeError",
                     "test(name, fn): name must be a String");
               }
+              if (args[1].type != Value::Function) {
+                throw CulebraError(
+                    "TypeError",
+                    "test(name, fn): fn must be a Function");
+              }
               return register_test(std::string(args[0].to_string()),
                                     args[1]);
             }
