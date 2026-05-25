@@ -67,6 +67,28 @@ assert(classify(2.5) == "number")
 assert(classify("hi") == "string")
 assert(classify(nil) == "other")
 
+// --- PATTERN outer `|` vs TYPE_ANNOTATION inner `|` ---
+// TYPE_ANNOTATION only swallows alternatives that start with an
+// uppercase letter (a type name). A lowercase ident or a literal
+// after `|` must fall back to the pattern's outer alternation —
+// the inner Union closes at the first non-Type alt.
+fn boundary(v) {
+  match v {
+    // Parses as ((n: Long | Float) | 42 | 'zero').
+    // The `| 42` is outer pattern-alternation (number literal not a
+    // type), and `| 'zero'` is outer with a single-quoted string.
+    n: Long | Float | 42 | 'zero' => "matched",
+    _ => "other",
+  }
+}
+assert(boundary(1) == "matched")        // Long via Union
+assert(boundary(1.5) == "matched")      // Float via Union
+assert(boundary(42) == "matched")       // outer number alt
+assert(boundary('zero') == "matched")   // outer string alt
+assert(boundary('other') == "other")
+// `boundary(nil)` is omitted: a pre-existing JIT bug segfaults on
+// string-literal patterns when the scrutinee is nil (task #231).
+
 // --- fn.params surfaces the canonical Union string ---
 let ps = show.params
 assert(ps[0].type == "Long | Float")
