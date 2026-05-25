@@ -10004,19 +10004,37 @@ struct JIT {
       }
       case "STRING"_:
       case "INTERPOLATED_CONTENT"_: {
-        auto is_str = builder_.CreateICmpEQ(extract_tag(subject),
+        // Tag-gate the strcmp via CondBr: an AND would still execute
+        // str_eq on the wrong-tag branch and segfault when subject is
+        // nil (data=0) or any non-string with a non-pointer data slot.
+        auto tag = extract_tag(subject);
+        auto is_str = builder_.CreateICmpEQ(tag,
                                             builder_.getInt8(TAG_STRING));
         auto pat_str = pattern.tag == "INTERPOLATED_CONTENT"_
                            ? decode_interpolated_content(pattern.token)
                            : std::string(pattern.token);
         auto lit = builder_.CreateGlobalString(pat_str, ".pat.str");
+        auto fn = builder_.GetInsertBlock()->getParent();
+        auto eqBB = llvm::BasicBlock::Create(ctx_, "str.eq", fn);
+        auto endBB = llvm::BasicBlock::Create(ctx_, "str.end", fn);
+        auto entryBB = builder_.GetInsertBlock();
+        builder_.CreateCondBr(is_str, eqBB, endBB);
+
+        builder_.SetInsertPoint(eqBB);
         auto subj_ptr =
             builder_.CreateIntToPtr(extract_data(subject), ptrTy);
         auto eq = emit_call(
             module_->getOrInsertFunction(rt::str_eq,
                                          builder_.getInt1Ty(), ptrTy, ptrTy),
             {subj_ptr, lit});
-        return builder_.CreateAnd(is_str, eq);
+        auto eqEnd = builder_.GetInsertBlock();
+        builder_.CreateBr(endBB);
+
+        builder_.SetInsertPoint(endBB);
+        auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "str.match");
+        phi->addIncoming(builder_.getFalse(), entryBB);
+        phi->addIncoming(eq, eqEnd);
+        return phi;
       }
       case "IDENTIFIER"_: {
         // Always matches; bind subject to this name. `_` is the sink:

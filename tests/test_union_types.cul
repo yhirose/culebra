@@ -81,7 +81,7 @@ assert(boundary(1.5) == "matched")
 assert(boundary(42) == "matched")
 assert(boundary('zero') == "matched")
 assert(boundary('other') == "other")
-// nil omitted: pre-existing JIT segfault on string-literal + nil (task #231).
+assert(boundary(nil) == "other")
 
 // --- fn.params surfaces the canonical Union string ---
 let ps = show.params
