@@ -1,36 +1,31 @@
 // Conformance: Generic type annotations (Phase 2 MVP).
-// [[project-type-system]]: Rust/Swift V-Subset.
-// Element check is no-op (matches Rust/Swift monomorphization design);
-// annotations are documentation + multifn dispatch only.
+// Element runtime check is no-op (Rust/Swift design); annotations
+// are documentation + multifn dispatch tie-break.
 
-// --- Generic param annotation accepts the outer type ---
+// --- Outer-only match (element type is documentation) ---
 fn first(xs: Array<Long>) -> Long { xs[0] }
 assert(first([1, 2, 3]) == 1)
-
-// --- Element check is no-op (Long-only-by-promise, not by runtime) ---
-assert(first([1, "two", 3]) == 1)
+assert(first([1, "two", 3]) == 1)  // element check no-op
 
 // --- Nested Generic ---
 fn rows(m: Array<Array<Long>>) -> Long { m.size() }
 assert(rows([[1, 2], [3, 4], [5, 6]]) == 3)
 
-// --- Return-type Generic + Union ---
-// (Array equality is by reference in culebra (§9), so check element-wise.)
+// --- Generic + Union in return type (Array equality is by-ref §9) ---
 fn lookup(k: String) -> Array<Long> | Nil {
   if k == "yes" { [1, 2] } else { nil }
 }
 let hit = lookup("yes")
-assert(hit != nil)
-assert(hit[0] == 1 && hit[1] == 2)
+assert(hit != nil && hit[0] == 1 && hit[1] == 2)
 assert(lookup("no") == nil)
 
-// return_type is canonicalized symmetric to params[i].type.
+// return_type canonicalizes symmetric to params[i].type.
 fn ws_return(xs: Array<Long>) -> Array < Long > { xs }
 assert(ws_return.return_type == "Array<Long>")
 fn union_return(k: Long) -> Long  |  Float { to_float(k) }
 assert(union_return.return_type == "Long | Float")
 
-// --- Whitespace tolerance + canonical form ---
+// --- Whitespace canonicalization in params ---
 fn ws_a(xs: Array<Long>)     { xs[0] }
 fn ws_b(xs: Array < Long >)  { xs[0] }
 fn ws_c(xs: Array<  Long  >) { xs[0] }
@@ -38,15 +33,15 @@ assert(ws_a.params[0].type == "Array<Long>")
 assert(ws_b.params[0].type == "Array<Long>")
 assert(ws_c.params[0].type == "Array<Long>")
 
-// --- Nested canonical form (Union inside Generic) ---
+// Nested canonical (Union inside Generic).
 fn nested_canon(m: Array<Array<Long|Float>>) { m.size() }
 assert(nested_canon.params[0].type == "Array<Array<Long | Float>>")
 
-// --- Duplicate alt dedup with Generic ---
+// Duplicate Union alts dedup at canonicalization.
 fn dup(xs: Array<Long> | Array<Long>) { xs[0] }
 assert(dup.params[0].type == "Array<Long>")
 
-// --- Multifn dispatch tie-break: Generic specific > bare outer ---
+// --- Dispatch tie-break: Generic outranks bare outer ---
 fn handle(xs: Array)       -> String { "bare" }
 fn handle(xs: Array<Long>) -> String { "generic" }
 assert(handle([1, 2, 3]) == "generic")
@@ -56,23 +51,18 @@ class Box<T> {
   new (v) { this.v = v }
 }
 let b = Box.new(42)
-assert(b.class == "Box")
-assert(b.v == 42)
+assert(b.class == "Box" && b.v == 42)
 
-// --- Multi-param Generic class ---
 class Pair<K, V> {
   new (k, v) { this.k = k; this.v = v }
 }
 let p = Pair.new("a", 1)
-assert(p.class == "Pair")
-assert(p.k == "a")
-assert(p.v == 1)
+assert(p.class == "Pair" && p.k == "a" && p.v == 1)
 
-// --- Generic class can be used in annotations like a regular class ---
 fn unbox(b: Box<Long>) -> Long { b.v }
 assert(unbox(Box.new(7)) == 7)
 
-// --- Type param inside method signature is Any-equivalent (no check) ---
+// --- Type-param in method signature is Any-equivalent ---
 class Cell<T> {
   new (v: T) { this.v = v }
   set(v: T) { this.v = v }
@@ -81,17 +71,14 @@ let c = Cell.new(1)
 c.set("now a string")
 assert(c.v == "now a string")
 
-// Introspection: declared type-param survives (fn.params[i].type
-// reports `T`, not the rewritten `Any`).
-let cell = Cell.new(0)
-assert(cell.set.params[0].type == "T")
+// Introspection preserves declared T (runtime sees Any).
+assert(c.set.params[0].type == "T")
 class Bagged<T> {
   fill(xs: Array<T>) { this.xs = xs }
 }
-let bag = Bagged.new()
-assert(bag.fill.params[0].type == "Array<T>")
+assert(Bagged.new().fill.params[0].type == "Array<T>")
 
-// `match v { x: Array<Long> => ... }` strips Generic on both backends.
+// --- match arm strips Generic on both backends ---
 fn classify(v) {
   match v {
     xs: Array<Long> => "array",
@@ -104,8 +91,7 @@ assert(classify(42) == "long")
 assert(classify("hi") == "other")
 assert(classify(nil) == "other")
 
-// Composite type-param annotations (`Array<T>`, `T | Long`) also
-// neutralize — the runtime accepts them without lookups for `T`.
+// --- Composite type-param (Array<T>, T | Long) neutralizes too ---
 class Bag<T> {
   put(v: T | Long) { this.v = v }
   fill(xs: Array<T>) { this.xs = xs }
@@ -116,9 +102,7 @@ assert(bag.v == "anything")
 bag.fill([1, "two", 3.5])
 assert(bag.xs.size() == 3)
 
-// Nested fn / lambda inside a Generic class method does NOT see
-// the class's type-params — symmetric across backends. The method
-// itself still neutralizes its own `: T` params.
+// --- Nested fn/lambda inside Generic method: backend-symmetric ---
 class Holder<T> {
   unwrap(x: T) {
     let lam = |y| y + 1
@@ -128,19 +112,11 @@ class Holder<T> {
 }
 assert(Holder.new().unwrap(3) == 8)
 
-// Inner Union inside a Generic must not infinite-recurse in
-// type_matches / multifn_specificity (depth-aware gate).
+// --- Generic-inner-Union must not recurse forever (depth-aware gate) ---
 fn inner_union(xs: Array<Long | Float>) -> Long { xs.size() }
 assert(inner_union([1, 2.5, 3]) == 3)
 
-// Class declarations directly inside another class body are rejected
-// (Phase 2 MVP — Phase 2b may revisit). fn / lambda / lexical-scope
-// inside a method still re-open scope, so class declarations there
-// keep working (covered by test_class.cul).
-//
-// Verification is split between backends: the interp test runs here
-// inside try/catch; the JIT path raises the SyntaxError at compile
-// time which can't be caught and is exercised by a dedicated
-// rejection script (see tests/test_nested_class_rejected.cul).
+// Class-in-class is rejected at eval/compile time — verified manually
+// (JIT raises pre-runtime, doesn't fit the output-diff harness).
 
 IO.puts("test_generic_types OK")
