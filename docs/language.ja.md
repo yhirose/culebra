@@ -1674,6 +1674,23 @@ trait path のみ match する場合は trait 版が選ばれる。
 * **自己再帰 trait default は user 責任**: `trait X { foo() {
   this.foo() } }` で conform class が `foo` を override しないと
   stack overflow。 depth guard 未実装。
+* **JIT trait default closure の refcount**: 各 default method は
+  JIT module の lifetime ぶん +1 reference を保持。 single-shot JIT
+  / AOT (1 度の main → exit) は影響なし、 long-running JIT host で
+  多 session 再 compile すると slow growth。 Phase 4+ で cleanup
+  予定。
+* **多重 dispatch overhead**: trait 引数を持たない関数でも、 呼び出し
+  毎に trait_registry × args の walk が発生 (cache 後は安いが、
+  warmup 3 × n_args の probe コストがホットループで露呈)。 Phase 4+
+  で trait 参照のない multifn を skip する最適化を検討。
+* **JIT trait-default fallback は IC キャッシュ無し**: trait default
+  経由の property access は毎回 default table を walk。 `instance.
+  default()` ホットループでそのコストを払い続ける。 Phase 4+ で
+  trait-default slot 用 IC を追加予定。
+* **AOT trait 再宣言**: method ごとに runtime upsert で登録するため、
+  preamble の `Eq { eq, neq }` の後に user が `trait Eq { eq(other) }`
+  を再宣言しても `neq` が残る。 REPL / hot-reload 環境では trait を
+  完全に書き直すか restart 推奨。
 * trait もクラスと同様 top-level のみ宣言可能。
 
 ---

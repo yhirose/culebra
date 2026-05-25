@@ -1757,6 +1757,26 @@ chosen when only the trait path matches.
   `trait X { foo() { this.foo() } }` will stack-overflow if a
   conforming class doesn't override `foo`. No depth guard is
   installed yet.
+* **JIT trait-default closure refcount**: each declared default
+  method retains +1 reference for the lifetime of the JIT module.
+  Single-shot JIT or AOT (one main → exit) is unaffected; long-
+  running JIT hosts re-compiling many sessions accumulate slow
+  growth. Phase 4+ refcount cleanup pending.
+* **multifn dispatch overhead**: every call walks the full
+  trait_registry × args matrix once per warmup, even for functions
+  with no trait-typed parameters. Cache amortizes repeats, but
+  ~3 × n_args probes per call show up in hot loops. Phase 4+
+  optimization can skip the warmup when no method references a
+  trait.
+* **JIT trait-default fallback is not IC-cached**: property
+  accesses that resolve through a trait default re-walk the
+  default table on each call. Hot loops on `instance.default()`
+  pay this overhead repeatedly. Phase 4+ adds an inline-cache
+  shape for the trait-default slot.
+* **AOT trait re-declaration**: each method registers via per-
+  method runtime upserts, so re-declaring `trait Eq { eq(other) }`
+  after the preamble's `Eq { eq, neq }` leaves `neq` in place.
+  REPL / hot-reload contexts should declare traits fully or restart.
 * Traits, like classes, may only be declared at top level.
 
 ---
