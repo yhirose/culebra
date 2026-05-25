@@ -268,17 +268,40 @@ inline std::vector<std::string_view> split_generic_args(
 // {"Map", "String, Long"}; `Long` → {"Long", ""}.
 // The args view is the raw inside-the-brackets text (callers split
 // it further with `split_generic_args`).
+//
+// DEFENSIVE: malformed inputs (`<T>` with empty outer, `Array<Long>>`
+// or `Array<<Long>` with unbalanced brackets) fall back to the whole
+// trimmed string as the outer with no args, rather than yielding a
+// degenerate split. Grammar normally prevents these from reaching
+// here, but the helper is exported and may be called on
+// programmatically-constructed type strings.
+//
+// LIFETIME: outer and args alias bytes inside `name`; caller must
+// keep `name`'s underlying storage alive while using them. Do not
+// pass a temporary std::string.
 struct GenericHead {
   std::string_view outer;
   std::string_view args;  // empty if no <...>
 };
 inline GenericHead parse_generic_head(std::string_view name) {
   auto trimmed = trim_ascii(name);
+  if (trimmed.empty()) return {trimmed, {}};
   auto pos = trimmed.find('<');
-  if (pos == std::string_view::npos || trimmed.empty() ||
-      trimmed.back() != '>') {
+  if (pos == std::string_view::npos || trimmed.back() != '>') {
     return {trimmed, {}};
   }
+  // Outer name must be non-empty.
+  if (pos == 0) return {trimmed, {}};
+  // Brackets must balance — reject `Array<Long>>` and `Array<<Long>`.
+  int depth = 0;
+  for (char c : trimmed) {
+    if (c == '<') depth++;
+    else if (c == '>') {
+      depth--;
+      if (depth < 0) return {trimmed, {}};
+    }
+  }
+  if (depth != 0) return {trimmed, {}};
   return {
     trim_ascii(trimmed.substr(0, pos)),
     trimmed.substr(pos + 1, trimmed.size() - pos - 2),
