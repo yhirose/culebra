@@ -1583,6 +1583,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
     int8_t tag, int64_t data, const char* expected, const char* context,
     int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
+  // `Any` annotation accepts every value — bail before the Union split
+  // and per-alt match. Hot when generic helpers carry `: Any` params.
+  if (std::strcmp(expected, "Any") == 0) return;
   // Union types: any-of match across pipe-separated alternatives.
   // Compare on string_view — no per-alternative std::string copy.
   if (std::strchr(expected, '|') != nullptr) {
