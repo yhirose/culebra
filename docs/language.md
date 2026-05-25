@@ -1713,6 +1713,24 @@ A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is
 displayable wherever a `Stringer` is expected.
 
+Built-in primitives also conform via a hard-coded table — no
+class wrapper required:
+
+| Primitive | Stringer | Eq | Comparable |
+|---|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) |
+| Long / Float | ✓ | ✓ | ✓ |
+| String | ✓ | ✓ | ✓ |
+| Array / Tuple / Set / Tensor | ✓ | ✓ | — |
+| Function | ✓ | — | — |
+
+So `fn show(x: Stringer) { to_string(x) }` accepts `show(42)` and
+`show([1, 2, 3])` without requiring a class wrapper. Note that
+trait method calls (`x.to_s()`) only resolve on class instances —
+primitives have no method-dispatch surface, so the trait reaches
+them via `fn` boundaries (`fn show(x: Stringer)`), not via the
+`.method()` syntax.
+
 #### Generic Bound
 
 A type parameter may carry a single trait as its bound, declared

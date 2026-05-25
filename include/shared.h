@@ -612,6 +612,43 @@ inline const TraitDef* lookup_trait(std::string_view name) {
   return it == reg.end() ? nullptr : &it->second;
 }
 
+// Built-in conformance: hard-coded table of which primitive type
+// labels conform to which built-in traits. Lets `fn show(x: Stringer)`
+// accept Long / String / Array / ... without each builtin needing a
+// class-instance wrapper. Only the three built-in traits are
+// supported here — user-declared traits still operate solely on
+// class instances. Returns false for unknown traits, leaving
+// type_matches to fall back to the registered-trait path.
+inline bool builtin_conforms_to_trait(std::string_view type_label,
+                                       std::string_view trait_name) {
+  if (trait_name == "Stringer") {
+    // Every value culebra can produce has a `to_string` interpretation
+    // via the runtime display path; expose that uniformly.
+    return type_label == "Nil" || type_label == "Bool" ||
+           type_label == "Long" || type_label == "Float" ||
+           type_label == "String" || type_label == "Array" ||
+           type_label == "Tuple" || type_label == "Set" ||
+           type_label == "Tensor" || type_label == "Function";
+  }
+  if (trait_name == "Eq") {
+    // Equality is defined on every primitive (value-based) and
+    // reference types compare by identity — covers all builtins.
+    return type_label == "Nil" || type_label == "Bool" ||
+           type_label == "Long" || type_label == "Float" ||
+           type_label == "String" || type_label == "Array" ||
+           type_label == "Tuple" || type_label == "Set" ||
+           type_label == "Tensor";
+  }
+  if (trait_name == "Comparable") {
+    // Ordering is well-defined on the value primitives. Container
+    // types (Array / Tuple / Set / Tensor) do compare lexicographically
+    // in the runtime, but we keep this conservative for the MVP.
+    return type_label == "Bool" || type_label == "Long" ||
+           type_label == "Float" || type_label == "String";
+  }
+  return false;
+}
+
 // Structural conformance check: `class_methods` maps method name to
 // arity for the class under test. The class conforms when every
 // non-default method on `trait` is matched by name and the class

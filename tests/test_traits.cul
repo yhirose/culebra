@@ -84,4 +84,21 @@ assert(render(p) == "P:7")        // concrete wins
 let t = Tag.new("hi")
 assert(render(t) == "S:<hi>")     // only trait path matches
 
+// --- Built-in primitives satisfy the standard traits ---
+// Stringer applies to every value; Eq to most; Comparable to the
+// value primitives (Bool / Long / Float / String). Dispatch sees
+// the conformance via the hard-coded table — primitives don't
+// participate in the structural method-set walk.
+fn stringify(x: Stringer) -> String { to_string(x) }
+assert(stringify(42) == "42")
+assert(stringify(3.14) == "3.14")
+assert(stringify("hi") == "hi")
+assert(stringify([1, 2, 3]) == "[1, 2, 3]")
+
+fn comparable_only(x: Comparable) -> String { "ok" }
+assert(comparable_only(1) == "ok")
+assert(comparable_only("x") == "ok")
+let e_cmp = try { comparable_only([1, 2]); nil } catch e { e }
+assert(e_cmp.kind == "DispatchError")    // Array isn't Comparable here
+
 IO.puts("test_traits OK")

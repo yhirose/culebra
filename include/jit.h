@@ -1570,6 +1570,12 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   }
   std::string_view actual = _culebra_tag_name(tag);
   if (actual == expected) return true;
+  // Built-in trait conformance: primitives (non-Object tags) can
+  // satisfy Stringer / Eq / Comparable via the hard-coded table.
+  if (tag != TAG_OBJECT && culebra::lookup_trait(expected) &&
+      culebra::builtin_conforms_to_trait(actual, expected)) {
+    return true;
+  }
   std::string_view class_tag_view;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);

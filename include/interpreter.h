@@ -146,12 +146,15 @@ inline int multifn_specificity(std::string_view param_type,
   }
   if (param_type == arg_type) return 6;
   // Trait conformance: a registered trait scores below concrete and
-  // below Union exact, but above the bare-Object catch. Primitive
-  // arg types skip the cache walk — a registered trait can't match a
-  // primitive (no class tag).
+  // below Union exact, but above the bare-Object catch.
   if (auto* trait = lookup_trait(param_type)) {
-    if (is_primitive_type_label(arg_type) || arg_type == "Object") {
+    if (arg_type == "Object") {
       return -1;
+    }
+    // Primitive arg: consult the hard-coded built-in conformance
+    // table directly (no instance methods to walk).
+    if (is_primitive_type_label(arg_type)) {
+      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
     }
     auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
     auto it = by_trait.find(std::string(param_type));
@@ -1595,13 +1598,36 @@ inline bool type_matches(const Value& val, std::string_view name) {
   if (name.find('<') != std::string_view::npos) {
     name = parse_generic_head(name).outer;
   }
+  // Built-in trait conformance: a primitive value (Long / String /
+  // ...) can conform to one of the built-in traits (Stringer / Eq /
+  // Comparable). Checked first so the per-case `return` paths below
+  // don't reject before this matches.
+  auto try_builtin_trait = [&](std::string_view label) {
+    if (auto* t = lookup_trait(name)) {
+      (void)t;
+      return builtin_conforms_to_trait(label, name);
+    }
+    return false;
+  };
   switch (val.type) {
-    case Value::Nil:      return name == "Nil";
-    case Value::Bool:     return name == "Bool";
-    case Value::Long:     return name == "Long";
-    case Value::Float:    return name == "Float";
-    case Value::String:   return name == "String";
-    case Value::Array:    return name == "Array";
+    case Value::Nil:
+      if (name == "Nil") return true;
+      return try_builtin_trait("Nil");
+    case Value::Bool:
+      if (name == "Bool") return true;
+      return try_builtin_trait("Bool");
+    case Value::Long:
+      if (name == "Long") return true;
+      return try_builtin_trait("Long");
+    case Value::Float:
+      if (name == "Float") return true;
+      return try_builtin_trait("Float");
+    case Value::String:
+      if (name == "String") return true;
+      return try_builtin_trait("String");
+    case Value::Array:
+      if (name == "Array") return true;
+      return try_builtin_trait("Array");
     case Value::Object: {
       if (name == "Object") return true;
       auto tag = class_tag(val);
@@ -1635,10 +1661,18 @@ inline bool type_matches(const Value& val, std::string_view name) {
       }
       return false;
     }
-    case Value::Function: return name == "Function";
-    case Value::Tensor:   return name == "Tensor";
-    case Value::Tuple:    return name == "Tuple";
-    case Value::Set:      return name == "Set";
+    case Value::Function:
+      if (name == "Function") return true;
+      return try_builtin_trait("Function");
+    case Value::Tensor:
+      if (name == "Tensor") return true;
+      return try_builtin_trait("Tensor");
+    case Value::Tuple:
+      if (name == "Tuple") return true;
+      return try_builtin_trait("Tuple");
+    case Value::Set:
+      if (name == "Set") return true;
+      return try_builtin_trait("Set");
   }
   return false;
 }
