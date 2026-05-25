@@ -262,12 +262,26 @@ inline std::vector<std::filesystem::path> discover_test_files(
                 << "'\n";
       continue;
     }
-    for (auto& ent : fs::recursive_directory_iterator(p, ec)) {
-      if (!ent.is_regular_file()) continue;
-      auto name = ent.path().filename().string();
-      if (name.starts_with("test_") && ent.path().extension() == ".cul") {
-        add(ent.path());
+    std::error_code walk_ec;
+    auto it = fs::recursive_directory_iterator(p, walk_ec);
+    for (; it != fs::end(it); it.increment(walk_ec)) {
+      if (walk_ec) {
+        std::cerr << "culebra test: warning: descent into '"
+                  << it->path().string() << "' failed: "
+                  << walk_ec.message() << "\n";
+        walk_ec.clear();
+        continue;
       }
+      std::error_code stat_ec;
+      if (!it->is_regular_file(stat_ec)) continue;
+      auto name = it->path().filename().string();
+      if (name.starts_with("test_") && it->path().extension() == ".cul") {
+        add(it->path());
+      }
+    }
+    if (walk_ec) {
+      std::cerr << "culebra test: warning: discovery in '" << root
+                << "' aborted early: " << walk_ec.message() << "\n";
     }
   }
   std::sort(out.begin(), out.end());
