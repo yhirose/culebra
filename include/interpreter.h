@@ -401,13 +401,10 @@ inline void collect_locals(
       i++;
     }
     auto& id = *node.nodes[i];
-    // CLASS_DECL's head token may carry Generic params (`Box<T>`);
-    // bind the local under the outer name only.
-    auto raw = id.token;
-    auto bind_view = (node.tag == "CLASS_DECL"_)
-                         ? parse_generic_head(raw).outer
-                         : raw;
-    auto name = std::string(bind_view);
+    // Both CLASS_DECL and MULTIFN_DECL now use CLASS_HEAD, which may
+    // carry Generic params (`Box<T>`, `min<T: Bound>`); strip via
+    // parse_generic_head so the binding lives under the outer name.
+    auto name = std::string(parse_generic_head(id.token).outer);
     check(name, id.line, id.column, outer);
     if (!is_sink_name(name)) locals.insert(name);
     return;
@@ -4208,10 +4205,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       i++;
     }
 
-    auto name_view = ast.nodes[i]->token;
+    // CLASS_HEAD may carry Generic params (`min<T: Comparable>`); the
+    // bound name is the outer only. Mirrors eval_class_decl.
+    auto name_view = parse_generic_head(ast.nodes[i]->token).outer;
     auto name_owned = std::string(name_view);
 
-    // Children: IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK
+    // Children: CLASS_HEAD, PARAMETERS, [RETURN_TYPE,] BLOCK
     size_t params_idx = i + 1;
     size_t body_idx = i + 2;
     std::string_view return_type;

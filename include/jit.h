@@ -7267,10 +7267,14 @@ struct JIT {
       if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_) {
         // Skip leading DECORATOR children. multifn / class bindings
         // are not mutable in interp (no `mut` form), so is_mut=false.
+        // CLASS_HEAD may carry Generic params (`Box<T>`, `min<T: Bound>`);
+        // strip via parse_generic_head — the binding lives under the
+        // outer name only.
         size_t i = 0;
         while (i < node.nodes.size() &&
                node.nodes[i]->tag == "DECORATOR"_) i++;
-        return {node.nodes[i]->token, false};
+        return {culebra::parse_generic_head(node.nodes[i]->token).outer,
+                false};
       }
       if (node.tag == "ASSIGNMENT"_ && !node.nodes.empty() &&
           node.nodes[0]->token == "let") {
@@ -7921,14 +7925,16 @@ struct JIT {
     if (node.tag == "MULTIFN_DECL"_) {
       // `fn name(params) body` binds `name` in the enclosing scope.
       // Body is analyzed separately by visit_for_frees as a nested
-      // function. Same shape as CLASS_DECL above.
+      // function. Same shape as CLASS_DECL above; CLASS_HEAD's
+      // Generic params (`<T: Bound>`) are stripped from the binding.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
         collect_fn_locals(*node.nodes[i], locals, outer);
         i++;
       }
       auto& id = *node.nodes[i];
-      auto name = std::string(id.token);
+      auto name = std::string(
+          culebra::parse_generic_head(id.token).outer);
       check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
@@ -11634,7 +11640,7 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
 
-    // AST: [DECORATOR*, IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK]
+    // AST: [DECORATOR*, CLASS_HEAD, PARAMETERS, [RETURN_TYPE,] BLOCK]
     size_t dec_end = 0;
     while (dec_end < ast.nodes.size() &&
            ast.nodes[dec_end]->tag == "DECORATOR"_) {
@@ -11642,7 +11648,10 @@ struct JIT {
     }
     bool has_decorators = dec_end > 0;
 
-    std::string name(ast.nodes[dec_end]->token);
+    // CLASS_HEAD may carry Generic params (`sort<T: Comparable>`); the
+    // bound name is the outer only. Mirrors compile_class_decl.
+    std::string name(culebra::parse_generic_head(
+        ast.nodes[dec_end]->token).outer);
     const peg::Ast* params_ast = ast.nodes[dec_end + 1].get();
     size_t body_idx = dec_end + 2;
     std::string_view returnType;
