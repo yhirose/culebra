@@ -533,8 +533,11 @@ struct FunctionValue {
   std::shared_ptr<Environment> def_env;
   // Declared name for introspection (`fn.name`). Empty for anonymous
   // expressions (lambdas, `fn (x) { ... }`). Set by the caller after
-  // construction so stdlib FunctionValues stay one-liners.
-  std::string_view name;
+  // construction so stdlib FunctionValues stay one-liners. Owned
+  // std::string because the FunctionValue (e.g. inside a long-lived
+  // closure registered with the test runner or REPL session) may
+  // outlive the AST source backing the original token.
+  std::string name;
   // Multifn dispatcher view-of-source: when set, `fn.params` and
   // `fn.return_type` look through to this snapshot of the first
   // registered method body. The dispatcher itself keeps a synthetic
@@ -4032,7 +4035,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto fn_val = make_function_value(*ast.nodes[params_idx],
                                        ast.nodes[body_idx],
                                        return_type, env);
-    fn_val.get<FunctionValue>().name = name_view;
+    fn_val.get<FunctionValue>().name = std::string(name_view);
 
     if (!decorators.empty()) {
       // Apply decorators bottom-up: the closest to the `fn` keyword
@@ -4105,7 +4108,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // The dispatcher keeps its synthetic `__KWARGS__` params for the
       // multifn protocol; eval_property reads `introspection_target`
       // instead of `params` so callers see the user-facing signature.
-      dispatcher.get<FunctionValue>().name = name_view;
+      dispatcher.get<FunctionValue>().name = std::string(name_view);
       dispatcher.get<FunctionValue>().introspection_target =
           first_method_snapshot;
       env->initialize(name_view, dispatcher, false);
@@ -4169,7 +4172,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       auto fn_val =
           make_function_value(*m.nodes[2], m.nodes[3], {}, env);
-      fn_val.get<FunctionValue>().name = name_view;
+      fn_val.get<FunctionValue>().name = std::string(name_view);
       if (is_static) {
         static_template.push_back({name_view, std::move(fn_val)});
       } else {
