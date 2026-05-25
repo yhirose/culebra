@@ -2904,7 +2904,10 @@ inline std::map<std::string_view, Value>& string_builtins() {
       // Array<StringView> sharing the receiver's bytes through a
       // single shared source — one source-copy alloc total (for a
       // String receiver), then N view payloads that borrow into it.
-      // Returning Array keeps `.size()` / `[i]` backward-compatible.
+      // Returning Array keeps `.size()` / `[i]` backward-compatible
+      // with the prior Array<String> semantics (and matches the
+      // dominant convention in Python / JS / Swift / Ruby / Go).
+      // For early-exit (`take(3)`) over huge inputs, use `split_iter`.
       {"split"sv,
        Value(FunctionValue(
            {{"sep", false, "StringLike"sv}},
@@ -2933,6 +2936,42 @@ inline std::map<std::string_view, Value>& string_builtins() {
                }
              }
              return Value(std::move(out));
+           }))},
+      // Lazy iterator variant of split: yields StringView elements one
+      // at a time, sharing the same source. For early-exit patterns
+      // (`.split_iter(...).take(3).collect()`) the unused tail of the
+      // input is never scanned. Composes with the full iter API
+      // (.map / .filter / .reduce / .take / etc.).
+      {"split_iter"sv,
+       Value(FunctionValue(
+           {{"sep", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             const auto& this_val = callEnv->get("this");
+             auto src = this_val.share_source();
+             std::string_view base =
+                 (this_val.type == Value::String)
+                     ? std::string_view(*src)
+                     : this_val.get<StringViewPayload>().view;
+             auto sep = std::string(callEnv->get("sep").to_string_view());
+             auto pos = std::make_shared<size_t>(0);
+             auto done = std::make_shared<bool>(false);
+             return _make_iterator(
+                 [src, base, sep, pos, done](std::shared_ptr<Environment>) {
+                   if (*done) return _iter_step_done();
+                   if (sep.empty()) {
+                     *done = true;
+                     return _iter_step_value(Value(src, base));
+                   }
+                   auto p = base.find(sep, *pos);
+                   if (p == std::string_view::npos) {
+                     *done = true;
+                     auto sv = base.substr(*pos);
+                     return _iter_step_value(Value(src, sv));
+                   }
+                   auto sv = base.substr(*pos, p - *pos);
+                   *pos = p + sep.size();
+                   return _iter_step_value(Value(src, sv));
+                 });
            }))},
       {"contains"sv,
        Value(FunctionValue({{"sub", false, "String"sv}},
