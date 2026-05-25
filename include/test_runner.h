@@ -301,10 +301,15 @@ inline std::vector<std::filesystem::path> discover_test_files(
 }
 
 // Result of running all collected tests. The driver prints a summary
-// from this struct; main.cc returns 1 if `failed > 0`.
+// from this struct; main.cc returns non-zero if any test failed or
+// any file failed to load/parse/interpret. `errored_files` is kept
+// separate from `failed` so the per-test failure count is faithful
+// (a syntax error in one file shouldn't inflate `failed` by 1 while
+// hiding however many tests that file would have registered).
 struct TestRunSummary {
   int passed = 0;
   int failed = 0;
+  int errored_files = 0;
   std::vector<std::string> failure_messages;
 };
 
@@ -331,7 +336,7 @@ inline TestRunSummary run_tests(
     std::ifstream ifs(path_str, std::ios::binary);
     if (!ifs) {
       std::cerr << "culebra test: can't open '" << path_str << "'\n";
-      summary.failed++;
+      summary.errored_files++;
       continue;
     }
     std::string buff((std::istreambuf_iterator<char>(ifs)),
@@ -351,7 +356,7 @@ inline TestRunSummary run_tests(
     } catch (const CulebraError& e) {
       std::cerr << "culebra test: load failed for " << path_str << ": "
                 << e.kind << ": " << e.what() << "\n";
-      summary.failed++;
+      summary.errored_files++;
       continue;
     }
 
@@ -359,7 +364,7 @@ inline TestRunSummary run_tests(
     Debugger dbg;
     if (!interpret_modules(modules, env, val, msgs, dbg)) {
       for (auto& m : msgs) std::cerr << m << "\n";
-      summary.failed++;
+      summary.errored_files++;
       continue;
     }
 

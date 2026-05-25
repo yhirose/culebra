@@ -479,8 +479,13 @@ int run_test(int argc, const char** argv) {
   }
 
   auto summary = culebra::run_tests(files, filter, env);
-  std::println("{} passed, {} failed", summary.passed, summary.failed);
-  return summary.failed == 0 ? 0 : 1;
+  if (summary.errored_files > 0) {
+    std::println("{} passed, {} failed, {} file(s) errored",
+                  summary.passed, summary.failed, summary.errored_files);
+  } else {
+    std::println("{} passed, {} failed", summary.passed, summary.failed);
+  }
+  return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
 }
 
 int main(int argc, const char** argv) {
