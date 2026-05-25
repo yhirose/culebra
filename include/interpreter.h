@@ -5946,6 +5946,14 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     // capture `shared_from_this()`) can keep the Interpreter alive
     // past this call's stack scope — see comment on `Interpreter`.
     auto interp = std::make_shared<Interpreter>(debugger);
+    // Built-in trait preamble: run once before user code so REPL /
+    // single-AST callers (which bypass interpret_modules) also see
+    // Stringer / Eq / Comparable. trait_registry is process-wide but
+    // each Interpreter needs its own default-method closures (they
+    // capture env), so we eval the preamble per Interpreter.
+    if (auto pre = parse_builtin_traits_preamble()) {
+      try { interp->eval(*pre, env); } catch (...) {}
+    }
     val = interp->eval(*ast, env);
     flush_top_defers();
     return true;
