@@ -46,9 +46,10 @@ try {
 } catch e {
   caught = e.kind
 }
-// Multifn rejects String against Long | Float as DispatchError;
-// non-multifn fn would surface as TypeError. Either is acceptable.
-assert(caught == "DispatchError" || caught == "TypeError")
+// `show` is registered as a multifn (single `fn` decl, no decorator);
+// when no method matches the call, the dispatcher raises
+// DispatchError, not TypeError. Both backends agree.
+assert(caught == "DispatchError")
 
 // --- Single-alternative still works (regression check) ---
 fn single(x: Long) { x }
