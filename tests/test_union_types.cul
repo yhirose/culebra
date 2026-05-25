@@ -1,0 +1,61 @@
+// Conformance: Union types in parameter and return annotations.
+// Phase 1 of [[project-type-system]] (Rust/Swift V-Subset).
+
+// --- Param Union accepts either alternative ---
+fn show(x: Long | Float) -> String {
+  to_string(x)
+}
+assert(show(1) == "1")
+assert(show(2.5) == "2.5")
+
+// --- Whitespace tolerance: no space, one space, multi-space ---
+fn shape_a(x: Long|Float) -> Long { 1 }
+fn shape_b(x: Long  |  Float) -> Long { 2 }
+assert(shape_a(1) == 1)
+assert(shape_a(1.5) == 1)
+assert(shape_b(2) == 2)
+
+// --- Return-type Union (just a permissive annotation, no narrowing) ---
+fn lookup(k: String) -> Long | Nil {
+  if k == "answer" { 42 } else { nil }
+}
+assert(lookup("answer") == 42)
+assert(lookup("missing") == nil)
+
+// --- Class instances in Union ---
+class Square {
+  new (s) { this.side = s }
+}
+class Circle {
+  new (r) { this.r = r }
+}
+fn area(shape: Square | Circle) -> Float {
+  match shape {
+    sq: Square => to_float(sq.side) * to_float(sq.side),
+    c:  Circle => to_float(c.r) * to_float(c.r) * 3.14,
+  }
+}
+assert(area(Square.new(3)) == 9.0)
+let circle_area = area(Circle.new(2))
+assert(circle_area > 12.0 && circle_area < 13.0)
+
+// --- Non-matching type still raises a dispatch/type error ---
+mut caught = ""
+try {
+  show("not a number")
+} catch e {
+  caught = e.kind
+}
+// Multifn rejects String against Long | Float as DispatchError;
+// non-multifn fn would surface as TypeError. Either is acceptable.
+assert(caught == "DispatchError" || caught == "TypeError")
+
+// --- Single-alternative still works (regression check) ---
+fn single(x: Long) { x }
+assert(single(7) == 7)
+
+// --- fn.params surfaces the Union string ---
+let ps = show.params
+assert(ps[0].type == "Long | Float" || ps[0].type == "Long|Float")
+
+IO.puts("test_union_types OK")

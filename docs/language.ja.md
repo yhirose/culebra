@@ -1423,7 +1423,32 @@ Culebra は動的型付けで、型注釈は任意です。注釈は以下 3 つ
     Nil  Bool  Long  Float  String  Array  Object  Function  Any
 
 `Any` は常に一致します。未知の型名は検査失敗で `type error` と
-なります。
+なります。 `class C { ... }` で宣言したクラス名も有効な注釈で、
+そのインスタンスを受け入れます。
+
+### Union 型
+
+注釈に `|` で複数候補を並べると、**いずれか** に一致すれば検査
+成功します。
+
+    fn show(x: Long | Float) -> String { to_string(x) }
+    show(1)      # → '1'
+    show(2.5)    # → '2.5'
+    show("hi")   # !! type error
+
+    fn lookup(k: String) -> Long | Nil {
+      if k == "answer" { 42 } else { nil }
+    }
+
+`|` 周りの空白は許容 (`Long|Float`, `Long | Float`)。 クラス名と
+プリミティブの組み合わせも可 (`Square | Circle`, `String | Nil`)。
+単一候補の注釈は従来通りの動作 — `Long` と `Long|` は等価ではあり
+ません (後者はパース エラー)。
+
+多重ディスパッチ ([§19](#19-多重ディスパッチ)) は Union 型注釈を
+理解し、各候補で score して最良一致を選びます — 例:
+`fn area(s: Square | Circle)` は Square / Circle の双方で
+dispatch 可能。
 
 ### 検査されない箇所
 

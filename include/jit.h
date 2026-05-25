@@ -1556,13 +1556,15 @@ inline const char* _culebra_tag_name(int8_t tag) {
 // For class-instance arguments (TAG_OBJECT with a `class:` String
 // property), also accept the matching class name — without this the
 // JIT can't validate `s: Square` annotations against `Square.new(...)`.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
-    int8_t tag, int64_t data, const char* expected, const char* context,
-    int64_t line, int64_t col) {
-  if (expected == nullptr || expected[0] == '\0') return;
-  if (std::strcmp(expected, "Any") == 0) return;
+// Test whether the runtime value at (tag, data) matches a single
+// non-Union type name. Mirrors interp's type_matches for the
+// primitive + Object/class side; called from culebra_runtime_type_check
+// once per Union alternative.
+inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
+                                          const char* expected) {
+  if (std::strcmp(expected, "Any") == 0) return true;
   auto* actual = _culebra_tag_name(tag);
-  if (std::strcmp(actual, expected) == 0) return;
+  if (std::strcmp(actual, expected) == 0) return true;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);
     if (auto idx = obj->find_slot("class");
@@ -1570,10 +1572,29 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
       const auto& cls_slot = obj->slots[idx].value;
       if (cls_slot.tag == TAG_STRING) {
         auto* cls = reinterpret_cast<const char*>(cls_slot.data);
-        if (std::strcmp(cls, expected) == 0) return;
+        if (std::strcmp(cls, expected) == 0) return true;
       }
     }
   }
+  return false;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
+    int8_t tag, int64_t data, const char* expected, const char* context,
+    int64_t line, int64_t col) {
+  if (expected == nullptr || expected[0] == '\0') return;
+  // Union types: any-of match across pipe-separated alternatives.
+  if (std::strchr(expected, '|') != nullptr) {
+    std::string_view sv(expected);
+    for (auto cand : culebra::split_union_types(sv)) {
+      std::string c(cand);
+      if (_culebra_type_matches_single(tag, data, c.c_str())) return;
+    }
+    throw culebra::CulebraError("TypeError", std::format(
+        "type error: {} expects {} at {}:{}.", context, expected, line, col),
+        line, col);
+  }
+  if (_culebra_type_matches_single(tag, data, expected)) return;
   throw culebra::CulebraError("TypeError", std::format(
       "type error: {} expects {} at {}:{}.", context, expected, line, col),
       line, col);

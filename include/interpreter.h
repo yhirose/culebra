@@ -83,9 +83,21 @@ inline bool is_sink_name(std::string_view s) { return s == "_"; }
 
 // Specificity score for a (param_type, arg_type) pair. Higher = more
 // specific. -1 means no match.
+//
+// Union types (`A | B`) take the BEST score across all alternatives.
+// `Long | Float` against a Long arg scores 2 (exact Long match);
+// against an Object arg scores -1 (neither matches).
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
   if (param_type.empty() || param_type == "Any") return 0;
+  if (param_type.find('|') != std::string_view::npos) {
+    int best = -1;
+    for (auto cand : split_union_types(param_type)) {
+      int s = multifn_specificity(cand, arg_type);
+      if (s > best) best = s;
+    }
+    return best;
+  }
   if (param_type == "Object" && arg_type != "Object") return 1;
   if (param_type == arg_type) return 2;
   return -1;
@@ -1459,6 +1471,14 @@ inline std::optional<std::string_view> class_tag(const Value& val) {
 
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
+  // Union types (e.g. `Long | Float`) — any-of match. Recursively
+  // check each candidate after trimming.
+  if (name.find('|') != std::string_view::npos) {
+    for (auto candidate : split_union_types(name)) {
+      if (type_matches(val, candidate)) return true;
+    }
+    return false;
+  }
   switch (val.type) {
     case Value::Nil:      return name == "Nil";
     case Value::Bool:     return name == "Bool";

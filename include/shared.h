@@ -186,6 +186,26 @@ inline std::string_view trim_ascii(std::string_view s) {
   return s.substr(i, j - i);
 }
 
+// Split a pipe-separated Union type annotation into its component
+// type names. `Long | Float` → ["Long", "Float"]. Whitespace around
+// each candidate is trimmed. A single type name (no pipe) returns
+// the input unchanged as the only element. Empty input yields an
+// empty vector. Shared by both backends' type checks.
+inline std::vector<std::string_view> split_union_types(
+    std::string_view name) {
+  std::vector<std::string_view> out;
+  size_t start = 0;
+  while (start <= name.size()) {
+    size_t end = name.find('|', start);
+    if (end == std::string_view::npos) end = name.size();
+    auto candidate = trim_ascii(name.substr(start, end - start));
+    if (!candidate.empty()) out.push_back(candidate);
+    if (end == name.size()) break;
+    start = end + 1;
+  }
+  return out;
+}
+
 // Parse a full string as a base-10 signed long; whitespace-trim allowed,
 // any other trailing content or invalid form throws `type error at L:C`.
 inline long parse_long_strict(std::string_view s, long line, long col) {

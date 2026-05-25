@@ -1490,7 +1490,33 @@ enforce their invariant at three specific runtime points:
     Nil  Bool  Long  Float  String  Array  Object  Function  Any
 
 `Any` always matches. Unknown type names fail the check and raise
-`type error`.
+`type error`. Class names declared with `class C { ... }` are also
+valid annotations and accept any instance of that class.
+
+### Union types
+
+An annotation may list alternatives separated by `|`. The runtime
+check accepts the value when it matches **any** alternative.
+
+    fn show(x: Long | Float) -> String { to_string(x) }
+    show(1)      # → '1'
+    show(2.5)    # → '2.5'
+    show("hi")   # !! type error
+
+    fn lookup(k: String) -> Long | Nil {
+      if k == "answer" { 42 } else { nil }
+    }
+
+Whitespace around `|` is tolerated (`Long|Float`, `Long | Float`).
+Class names compose with primitives (`Square | Circle`,
+`String | Nil`). Single-alternative annotations remain unchanged in
+behavior — `Long` and `Long|` are not equivalent (the latter is a
+parse error).
+
+Multimethod dispatch ([§19](#19-multimethods)) understands Union
+parameter annotations by scoring each alternative and taking the
+best match — `fn area(s: Square | Circle)` dispatches on either
+exact class.
 
 ### Where annotations are *not* checked
 
