@@ -11740,11 +11740,39 @@ struct JIT {
       const std::string& returnType = {},
       const std::vector<bool>& paramMuts = {},
       const std::vector<std::string>& paramTypes = {}) {
-    if (paramNames.empty()) return nullptr;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
     auto fnBase = std::string(fn->getName());
+
+    // Nullary functions still need a meta global so fn.name and
+    // fn.return_type can be read by introspection. Emit a minimal
+    // meta with null param-array pointers and n_params=0; the
+    // runtime helper's loops skip element access when n_params==0.
+    if (paramNames.empty()) {
+      auto fnNameG = builder_.CreateGlobalString(
+          fnName, fnBase + ".pmeta.fn");
+      auto retTyG = builder_.CreateGlobalString(
+          returnType, fnBase + ".pmeta.ret");
+      auto metaTy = llvm::StructType::get(ctx_,
+          {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
+           ptrTy, ptrTy, ptrTy, ptrTy});
+      auto nullPtr = llvm::ConstantPointerNull::get(ptrTy);
+      auto metaInit = llvm::ConstantStruct::get(
+          metaTy,
+          {nullPtr, nullPtr,
+           llvm::ConstantInt::get(i64Ty, 0),
+           llvm::ConstantInt::get(i64Ty, -1),
+           llvm::ConstantInt::get(i64Ty, -1),
+           llvm::ConstantExpr::getBitCast(fnNameG, ptrTy),
+           llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
+           nullPtr, nullPtr});
+      auto metaGlobal = new llvm::GlobalVariable(
+          *module_, metaTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, metaInit,
+          fnBase + ".pmeta");
+      return metaGlobal;
+    }
 
     // Names array: one cstring per param.
     std::vector<llvm::Constant*> name_consts;
