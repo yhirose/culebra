@@ -1561,18 +1561,18 @@ inline const char* _culebra_tag_name(int8_t tag) {
 // primitive + Object/class side; called from culebra_runtime_type_check
 // once per Union alternative.
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
-                                          const char* expected) {
-  if (std::strcmp(expected, "Any") == 0) return true;
-  auto* actual = _culebra_tag_name(tag);
-  if (std::strcmp(actual, expected) == 0) return true;
+                                          std::string_view expected) {
+  if (expected == "Any") return true;
+  std::string_view actual = _culebra_tag_name(tag);
+  if (actual == expected) return true;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);
     if (auto idx = obj->find_slot("class");
         idx != static_cast<size_t>(-1)) {
       const auto& cls_slot = obj->slots[idx].value;
       if (cls_slot.tag == TAG_STRING) {
-        auto* cls = reinterpret_cast<const char*>(cls_slot.data);
-        if (std::strcmp(cls, expected) == 0) return true;
+        std::string_view cls(reinterpret_cast<const char*>(cls_slot.data));
+        if (cls == expected) return true;
       }
     }
   }
@@ -1584,17 +1584,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
     int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
   // Union types: any-of match across pipe-separated alternatives.
+  // Compare on string_view — no per-alternative std::string copy.
   if (std::strchr(expected, '|') != nullptr) {
     std::string_view sv(expected);
     for (auto cand : culebra::split_union_types(sv)) {
-      std::string c(cand);
-      if (_culebra_type_matches_single(tag, data, c.c_str())) return;
+      if (_culebra_type_matches_single(tag, data, cand)) return;
     }
     throw culebra::CulebraError("TypeError", std::format(
         "type error: {} expects {} at {}:{}.", context, expected, line, col),
         line, col);
   }
-  if (_culebra_type_matches_single(tag, data, expected)) return;
+  if (_culebra_type_matches_single(tag, data, std::string_view(expected))) return;
   throw culebra::CulebraError("TypeError", std::format(
       "type error: {} expects {} at {}:{}.", context, expected, line, col),
       line, col);
