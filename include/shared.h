@@ -191,6 +191,10 @@ inline std::string_view trim_ascii(std::string_view s) {
 // each candidate is trimmed. A single type name (no pipe) returns
 // the input unchanged as the only element. Empty input yields an
 // empty vector. Shared by both backends' type checks.
+//
+// LIFETIME: each returned string_view aliases bytes inside `name`;
+// the caller must keep `name`'s underlying storage alive while
+// using the returned views. Do not pass a temporary.
 inline std::vector<std::string_view> split_union_types(
     std::string_view name) {
   std::vector<std::string_view> out;
@@ -202,6 +206,24 @@ inline std::vector<std::string_view> split_union_types(
     if (!candidate.empty()) out.push_back(candidate);
     if (end == name.size()) break;
     start = end + 1;
+  }
+  return out;
+}
+
+// Canonical form for a (possibly Union) type annotation, used in
+// fn.params introspection and multifn redeclaration matching so
+// whitespace variants of the same Union compare equal.
+// `Long|Float` and `Long  |  Float` both → `Long | Float`.
+// Empty input returns "". Non-Union names are returned unchanged.
+// Owned std::string so storage outlives `name`.
+inline std::string canonicalize_type_annotation(std::string_view name) {
+  if (name.find('|') == std::string_view::npos) {
+    return std::string(trim_ascii(name));
+  }
+  std::string out;
+  for (auto cand : split_union_types(name)) {
+    if (!out.empty()) out += " | ";
+    out.append(cand.data(), cand.size());
   }
   return out;
 }

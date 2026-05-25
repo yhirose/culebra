@@ -67,8 +67,14 @@ assert(classify(2.5) == "number")
 assert(classify("hi") == "string")
 assert(classify(nil) == "other")
 
-// --- fn.params surfaces the Union string ---
+// --- fn.params surfaces the canonical Union string ---
 let ps = show.params
-assert(ps[0].type == "Long | Float" || ps[0].type == "Long|Float")
+assert(ps[0].type == "Long | Float")
+
+// Whitespace variants in source still canonicalize to the same form.
+fn no_space(x: Long|Float) { x }
+fn many_space(x: Long  |   Float) { x }
+assert(no_space.params[0].type == "Long | Float")
+assert(many_space.params[0].type == "Long | Float")
 
 IO.puts("test_union_types OK")

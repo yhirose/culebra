@@ -4695,7 +4695,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           ObjectValue o;
           o.initialize("name", Value(std::string(p.name)), false);
           o.initialize("mut", Value(p.mut), false);
-          o.initialize("type", Value(std::string(p.type_name)), false);
+          o.initialize("type",
+                       Value(canonicalize_type_annotation(p.type_name)),
+                       false);
           bool has_default =
               p.default_expr != nullptr || p.default_value != nullptr;
           o.initialize("has_default", Value(has_default), false);

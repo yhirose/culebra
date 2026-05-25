@@ -3191,7 +3191,8 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
                                     m ? 1 : 0, 0, 0);
         const char* tn =
             (meta->type_names && meta->type_names[i]) ? meta->type_names[i] : "";
-        auto* tname = _culebra_heap_str(std::string(tn));
+        auto* tname = _culebra_heap_str(
+            culebra::canonicalize_type_annotation(tn));
         culebra_runtime_object_set(o, "type", false, TAG_STRING,
                                     reinterpret_cast<int64_t>(tname), 0, 0);
         bool hd = meta->has_default_bits[i / 8] & (1u << (i % 8));
