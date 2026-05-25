@@ -309,6 +309,21 @@ inline GenericHead parse_generic_head(std::string_view name) {
   };
 }
 
+// Parse a type-parameter declaration like `T` or `T: Comparable` into
+// its name and (possibly empty) bound. Used by class / trait / fn
+// declarations to extract Generic params from CLASS_HEAD tokens.
+struct TypeParam {
+  std::string_view name;
+  std::string_view bound;   // empty = no bound
+};
+inline TypeParam parse_type_param(std::string_view raw) {
+  auto trimmed = trim_ascii(raw);
+  auto pos = trimmed.find(':');
+  if (pos == std::string_view::npos) return {trimmed, {}};
+  return {trim_ascii(trimmed.substr(0, pos)),
+          trim_ascii(trimmed.substr(pos + 1))};
+}
+
 // Rewrite every occurrence of a class type-param name (`T`, `K`, ...)
 // inside `tn` with "Any", including nested forms like `Array<T>` and
 // `T | Long`. Used by class-method neutralization so the runtime type
@@ -334,9 +349,10 @@ inline std::string rewrite_type_params_to_any(
   auto head = parse_generic_head(trimmed);
   // Outer alone matches a type-param: the whole annotation becomes Any
   // (so `T`, `T<Long>`, etc. all collapse to "Any" — the args were
-  // documentation anyway).
-  for (auto tp : type_params) {
-    if (head.outer == tp) return "Any";
+  // documentation anyway). Type-params may carry a bound (`T: Foo`);
+  // strip via parse_type_param so comparison sees just the name.
+  for (auto tp_raw : type_params) {
+    if (head.outer == parse_type_param(tp_raw).name) return "Any";
   }
   if (head.args.empty()) return std::string(head.outer);
   // Generic: keep outer, recurse into each arg.
@@ -610,21 +626,6 @@ inline bool class_conforms_to_trait(
     if (it == class_methods.end() || it->second != m.arity) return false;
   }
   return true;
-}
-
-// Parse a type-parameter declaration like `T` or `T: Comparable` into
-// its name and (possibly empty) bound. Used by class / trait / fn
-// declarations to extract Generic params from CLASS_HEAD tokens.
-struct TypeParam {
-  std::string_view name;
-  std::string_view bound;   // empty = no bound
-};
-inline TypeParam parse_type_param(std::string_view raw) {
-  auto trimmed = trim_ascii(raw);
-  auto pos = trimmed.find(':');
-  if (pos == std::string_view::npos) return {trimmed, {}};
-  return {trim_ascii(trimmed.substr(0, pos)),
-          trim_ascii(trimmed.substr(pos + 1))};
 }
 
 // Built-in trait declarations evaluated at the top of every program
