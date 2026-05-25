@@ -626,25 +626,33 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
     // via the runtime display path; expose that uniformly.
     return type_label == "Nil" || type_label == "Bool" ||
            type_label == "Long" || type_label == "Float" ||
-           type_label == "String" || type_label == "Array" ||
-           type_label == "Tuple" || type_label == "Set" ||
-           type_label == "Tensor" || type_label == "Function";
+           type_label == "String" || type_label == "StringView" ||
+           type_label == "Array" || type_label == "Tuple" ||
+           type_label == "Set" || type_label == "Tensor" ||
+           type_label == "Function";
   }
   if (trait_name == "Eq") {
     // Equality is defined on every primitive (value-based) and
     // reference types compare by identity — covers all builtins.
     return type_label == "Nil" || type_label == "Bool" ||
            type_label == "Long" || type_label == "Float" ||
-           type_label == "String" || type_label == "Array" ||
-           type_label == "Tuple" || type_label == "Set" ||
-           type_label == "Tensor";
+           type_label == "String" || type_label == "StringView" ||
+           type_label == "Array" || type_label == "Tuple" ||
+           type_label == "Set" || type_label == "Tensor";
   }
   if (trait_name == "Comparable") {
     // Ordering is well-defined on the value primitives. Container
     // types (Array / Tuple / Set / Tensor) do compare lexicographically
     // in the runtime, but we keep this conservative for the MVP.
     return type_label == "Bool" || type_label == "Long" ||
-           type_label == "Float" || type_label == "String";
+           type_label == "Float" || type_label == "String" ||
+           type_label == "StringView";
+  }
+  if (trait_name == "StringLike") {
+    // Byte-readable string flavors: owning `String` and the borrowed
+    // `StringView`. User classes that want to be string-substitutable
+    // also satisfy this via structural conformance on `to_string_view`.
+    return type_label == "String" || type_label == "StringView";
   }
   return false;
 }
@@ -695,6 +703,9 @@ trait Comparable {
   le(other) -> Bool { this.cmp(other) <= 0 }
   gt(other) -> Bool { this.cmp(other) > 0 }
   ge(other) -> Bool { this.cmp(other) >= 0 }
+}
+trait StringLike {
+  to_string_view() -> StringView
 }
 )culebra";
   return src;

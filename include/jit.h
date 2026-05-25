@@ -416,6 +416,14 @@ static constexpr int8_t TAG_TUPLE = 9;
 // Insertion-ordered unique-membership collection. Backed by a custom
 // JitSet struct (parallel to JitArray) with an O(1) sidecar index.
 static constexpr int8_t TAG_SET = 10;
+// Borrowed-bytes view over an owning TAG_STRING (or any other char
+// buffer the runtime keeps alive for the duration of use). data points
+// at a heap-allocated `JitStringView { const char* ptr; uint64_t len }`
+// struct; the struct itself leaks for the program's lifetime (cycle-
+// bounded leak, identical to TAG_STRING char arrays). Refcounting is
+// a no-op because lifetime is governed by the owning String, not by
+// the view. See [[project_string_model]].
+static constexpr int8_t TAG_STRINGVIEW = 11;
 // Sentinel tag used in the kwargs-resolved slab to mark a middle gap
 // (a defaulted slot that the caller did not fill while a later slot
 // is filled). The callee prologue treats it as "fall back to default";
@@ -1090,6 +1098,45 @@ inline const char* _culebra_heap_str(std::string_view s) {
   return buf;
 }
 
+// 16-byte borrowed-bytes descriptor carried in a TAG_STRINGVIEW
+// JitValue's `data` slot. The pointed-to bytes are owned elsewhere
+// (a TAG_STRING char buffer, an iterator's source string, ...);
+// this struct stores only the (start, length) pair so substr
+// operations don't require null-terminated copies.
+struct JitStringView {
+  const char* ptr;
+  uint64_t len;
+};
+static_assert(sizeof(JitStringView) == 16,
+              "JitStringView layout drift");
+
+// Allocate a JitStringView descriptor for the given byte range.
+// Leaks for the program's lifetime (cycle-bounded, same as
+// _culebra_heap_str). Callers retain no ownership beyond storing
+// the returned pointer in a JitValue.
+inline JitStringView* _culebra_heap_view(const char* ptr, uint64_t len) {
+  auto* v = static_cast<JitStringView*>(std::malloc(sizeof(JitStringView)));
+  v->ptr = ptr;
+  v->len = len;
+  return v;
+}
+
+// Adapter: get a std::string_view over the bytes of either a TAG_STRING
+// (data is `const char*`, null-terminated) or a TAG_STRINGVIEW (data is
+// `JitStringView*`). Other tags return an empty view — callers should
+// pre-check the tag.
+inline std::string_view _culebra_str_view(int8_t tag, int64_t data) {
+  if (tag == TAG_STRING) {
+    auto* s = reinterpret_cast<const char*>(data);
+    return std::string_view(s);
+  }
+  if (tag == TAG_STRINGVIEW) {
+    auto* v = reinterpret_cast<const JitStringView*>(data);
+    return std::string_view(v->ptr, v->len);
+  }
+  return {};
+}
+
 // Bitcast the i64 payload of a Float JitValue back to double.
 inline double _culebra_float_to_double(int64_t data) {
   double d;
@@ -1548,6 +1595,7 @@ inline const char* _culebra_tag_name(int8_t tag) {
     case TAG_TENSOR: return "Tensor";
     case TAG_TUPLE:  return "Tuple";
     case TAG_SET:    return "Set";
+    case TAG_STRINGVIEW: return "StringView";
   }
   return "Unknown";
 }

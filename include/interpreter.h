@@ -86,8 +86,8 @@ inline bool is_sink_name(std::string_view s) { return s == "_"; }
 // so a name that isn't on this list is always a class name.
 inline bool is_primitive_type_label(std::string_view n) {
   return n == "Nil" || n == "Bool" || n == "Long" || n == "Float" ||
-         n == "String" || n == "Array" || n == "Function" ||
-         n == "Tensor" || n == "Tuple" || n == "Set";
+         n == "String" || n == "StringView" || n == "Array" ||
+         n == "Function" || n == "Tensor" || n == "Tuple" || n == "Set";
 }
 
 // Specificity score for a (param_type, arg_type) pair. Higher = more
@@ -745,7 +745,7 @@ struct TensorValue : public ObjectValue {
 };
 
 struct Value {
-  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple, Set };
+  enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple, Set, StringView };
 
   Value() : type(Nil) {}
   Value(const Value& rhs) : type(rhs.type), v(rhs.v) {}
@@ -796,6 +796,7 @@ struct Value {
       case Tensor:   return "Tensor";
       case Tuple:    return "Tuple";
       case Set:      return "Set";
+      case StringView: return "StringView";
     }
     return "?";
   }
@@ -1624,7 +1625,12 @@ inline bool type_matches(const Value& val, std::string_view name) {
       return try_builtin_trait("Float");
     case Value::String:
       if (name == "String") return true;
+      if (name == "StringLike") return true;
       return try_builtin_trait("String");
+    case Value::StringView:
+      if (name == "StringView") return true;
+      if (name == "StringLike") return true;
+      return try_builtin_trait("StringView");
     case Value::Array:
       if (name == "Array") return true;
       return try_builtin_trait("Array");
