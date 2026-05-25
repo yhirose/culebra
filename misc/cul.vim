@@ -31,11 +31,12 @@ syn keyword culClass        class
 syn keyword culConditional  if else match
 syn keyword culRepeat       while for in
 syn keyword culStatement    return break continue throw try catch defer
+syn keyword culInclude      import export from
 syn keyword culDebugger     debugger
 syn keyword culBoolean      true false
 syn keyword culConstant     nil
 syn keyword culSelf         self this __ARGS__
-syn keyword culStorage      let mut
+syn keyword culStorage      let mut static
 
 " Capitalized identifiers — built-in types (Long/Float/String/Bool/...),
 " stdlib namespaces (Math/IO/Random), user class names.
@@ -58,6 +59,7 @@ hi def link culClass         Structure
 hi def link culConditional   Conditional
 hi def link culRepeat        Repeat
 hi def link culStatement     Statement
+hi def link culInclude       Include
 hi def link culDebugger      Debug
 hi def link culBoolean       Boolean
 hi def link culConstant      Constant

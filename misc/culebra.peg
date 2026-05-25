@@ -1,9 +1,17 @@
 PROGRAM                  <-  _ STATEMENTS _
 STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
 
-CLASS_DECL               <-  class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
-METHOD                   <-  IDENTIFIER _ PARAMETERS _ BLOCK
+IMPORT_STMT              <-  import _ IDENTIFIER _ from _ STRING
+EXPORT_STMT              <-  export _ '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+
+MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ CLASS_HEAD _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* )* _sp_ '>' )? >
+
+DECORATOR                <-  '@' _ CALL
+METHOD                   <-  STATIC_MOD _ IDENTIFIER _ PARAMETERS _ BLOCK
+STATIC_MOD               <-  K('static')?
 
 DEBUGGER                 <-  debugger
 RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
@@ -16,8 +24,9 @@ LEXICAL_SCOPE            <-  BLOCK
 EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
 TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
-ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ '=' _ EXPRESSION
-DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN) _ '=' _ EXPRESSION
+ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
+DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
+ASSIGN_OP                <-  < '**=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
 
 NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
 LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
@@ -28,11 +37,15 @@ ADDITIVE                 <-  UNARY_PLUS (_h_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
 UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
 UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
 UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
-MULTIPLICATIVE           <-  POWER (_ MULTIPLICATIVE_OPERATOR _ POWER)*
+MULTIPLICATIVE           <-  POWER (_h_ MULTIPLICATIVE_OPERATOR _ POWER)*
 POWER                    <-  CALL (_ POWER_OPERATOR _ UNARY_PLUS)?
 
 CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
-ARGUMENTS                <-  '(' _ SEQUENCE _ ')'
+ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
+ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)*)?
+ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
+KWARG_SPLAT              <-  '**' _ EXPRESSION
+KWARG                    <-  IDENTIFIER _ ':' _ EXPRESSION
 INDEX                    <-  '[' _ EXPRESSION _ ']'
 DOT                      <-  '.' _ IDENTIFIER
 
@@ -49,7 +62,7 @@ GUARD                    <-  if _ EXPRESSION
 
 PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
 PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
-                             ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
+                             ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
 WILDCARD                 <-  '_' !IdentChar
 TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
 
@@ -57,20 +70,33 @@ ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _
 ARRAY_PAT_ELEM           <-  REST_PATTERN / PATTERN
 REST_PATTERN             <-  '...' _ IDENTIFIER
 
-OBJECT_PATTERN           <-  '{' _ (IDENTIFIER (_ ',' _ IDENTIFIER)*)? _ '}'
+OBJECT_PATTERN           <-  '{' _ (OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)*)? _ '}'
+OBJECT_PAT_ENTRY         <-  IDENTIFIER _ ':' _ PATTERN
+                          /  IDENTIFIER
 
-PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
-                             STRING / INTERPOLATED_STRING / '(' _ EXPRESSION _ ')'
+TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
+                          /  '(' _ PATTERN _ ',' _ ')'
+
+PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
+                             STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
+TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
+                          /  '(' _ EXPRESSION _ ',' _ ')'
+SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'
+                          /  '{' _ EXPRESSION _ ',' _ '}'
 
 FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 LAMBDA                   <-  LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
 LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
 PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-PARAMETER                <-  MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+KW_ONLY_SEP              <-  '*' !'*'
+KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
 DEFAULT_VALUE            <-  EXPRESSION
 
-TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* >
-RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* >
+TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* _sp_ '>' )?
+TYPE_REF                 <-  TYPE_NAME ( _sp_ '|' _sp_ TYPE_NAME )*
+TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >
+RETURN_TYPE              <-  '->' _ < TYPE_REF >
 
 BLOCK                    <-  '{' _ STATEMENTS _ '}'
 
@@ -89,7 +115,8 @@ MUTABLE                  <-  K('mut')?
 IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
 OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
-OBJECT_PROPERTY          <-  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
+OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
+                          /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
 ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?
 
@@ -102,7 +129,7 @@ NUMBER                   <-  < [0-9]+ >
 STRING                   <-  ['] < (!['] .)* > [']
 
 INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
-INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
+INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
 
 ~let                     <-  K('let')
 ~class                   <-  K('class')
@@ -121,6 +148,9 @@ INTERPOLATED_CONTENT     <-  (!["{] .) (!["{] .)*
 ~break                   <-  K('break')
 ~continue                <-  K('continue')
 ~defer                   <-  K('defer')
+~import                  <-  K('import')
+~export                  <-  K('export')
+~from                    <-  K('from')
 
 ~_                       <-  (WhiteSpace / EndOfLine)*
 ~_sp_                    <-  SpaceChar*
