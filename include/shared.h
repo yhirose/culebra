@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace culebra {
@@ -543,6 +544,73 @@ inline bool is_well_known_prop(std::string_view name) {
       "DropContractError",
       std::format("type error: '{}' must be a Function taking no arguments.",
                   name));
+}
+
+// --- trait / protocol registry (§15) ---
+//
+// A trait declares a set of required methods. A class conforms to a
+// trait when it has every required method (matching arity) — Go /
+// Python `__str__` style structural conformance, no `impl` block.
+// Default methods (`has_default = true`) are supplied by the trait
+// itself and do NOT need to be on the class.
+
+struct TraitMethod {
+  std::string name;
+  size_t arity;          // declared positional arity (excluding `this`)
+  bool has_default;
+};
+
+struct TraitDef {
+  std::string name;
+  std::vector<TraitMethod> methods;
+};
+
+// Process-wide registry. Trait declarations register here; type_matches
+// / multifn_specificity consult it on each lookup. Keyed by trait name.
+inline std::unordered_map<std::string, TraitDef>& trait_registry() {
+  static std::unordered_map<std::string, TraitDef> reg;
+  return reg;
+}
+
+inline void register_trait(TraitDef def) {
+  trait_registry()[def.name] = std::move(def);
+}
+
+inline const TraitDef* lookup_trait(std::string_view name) {
+  auto& reg = trait_registry();
+  auto it = reg.find(std::string(name));
+  return it == reg.end() ? nullptr : &it->second;
+}
+
+// Structural conformance check: `class_methods` maps method name to
+// arity for the class under test. The class conforms when every
+// non-default method on `trait` is matched (name + arity). Default
+// methods don't need a class-side definition — the trait provides
+// them and the dispatcher falls through.
+inline bool class_conforms_to_trait(
+    const std::unordered_map<std::string, size_t>& class_methods,
+    const TraitDef& trait) {
+  for (const auto& m : trait.methods) {
+    if (m.has_default) continue;
+    auto it = class_methods.find(m.name);
+    if (it == class_methods.end() || it->second != m.arity) return false;
+  }
+  return true;
+}
+
+// Parse a type-parameter declaration like `T` or `T: Comparable` into
+// its name and (possibly empty) bound. Used by class / trait / fn
+// declarations to extract Generic params from CLASS_HEAD tokens.
+struct TypeParam {
+  std::string_view name;
+  std::string_view bound;   // empty = no bound
+};
+inline TypeParam parse_type_param(std::string_view raw) {
+  auto trimmed = trim_ascii(raw);
+  auto pos = trimmed.find(':');
+  if (pos == std::string_view::npos) return {trimmed, {}};
+  return {trim_ascii(trimmed.substr(0, pos)),
+          trim_ascii(trimmed.substr(pos + 1))};
 }
 
 }  // namespace culebra
