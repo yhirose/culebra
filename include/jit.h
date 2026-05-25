@@ -3176,12 +3176,15 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
         bool hd = meta->has_default_bits[i / 8] & (1u << (i % 8));
         culebra_runtime_object_set(o, "has_default", false, TAG_BOOL,
                                     hd ? 1 : 0, 0, 0);
-        bool ko = meta->first_kw_only_idx >= 0 &&
+        bool kr = meta->kwargs_rest_idx >= 0 &&
+                  static_cast<int64_t>(i) == meta->kwargs_rest_idx;
+        // kwargs_rest is reported via its dedicated flag — exclude it
+        // from kw_only to match interp, which constructs the **rest
+        // Parameter with kw_only=false regardless of separator order.
+        bool ko = !kr && meta->first_kw_only_idx >= 0 &&
                   static_cast<int64_t>(i) >= meta->first_kw_only_idx;
         culebra_runtime_object_set(o, "kw_only", false, TAG_BOOL,
                                     ko ? 1 : 0, 0, 0);
-        bool kr = meta->kwargs_rest_idx >= 0 &&
-                  static_cast<int64_t>(i) == meta->kwargs_rest_idx;
         culebra_runtime_object_set(o, "kwargs_rest", false, TAG_BOOL,
                                     kr ? 1 : 0, 0, 0);
         culebra_runtime_array_push(arr, TAG_OBJECT,
