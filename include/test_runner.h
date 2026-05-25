@@ -247,7 +247,14 @@ inline std::vector<std::filesystem::path> discover_test_files(
   namespace fs = std::filesystem;
   std::vector<fs::path> out;
   auto add = [&](const fs::path& p) {
-    auto canon = fs::weakly_canonical(p);
+    // weakly_canonical's throwing overload would abort the entire
+    // discovery on a single unstatable symlink or permission-denied
+    // segment. Use the ec form and fall back to the un-canonicalized
+    // path so the file at least gets a chance to run (the file path
+    // is informative even when its parents can't be resolved).
+    std::error_code canon_ec;
+    auto canon = fs::weakly_canonical(p, canon_ec);
+    if (canon_ec) canon = p;
     for (const auto& existing : out) {
       if (existing == canon) return;
     }
