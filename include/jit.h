@@ -1570,16 +1570,51 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   }
   std::string_view actual = _culebra_tag_name(tag);
   if (actual == expected) return true;
+  std::string_view class_tag_view;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);
     if (auto idx = obj->find_slot("class");
         idx != static_cast<size_t>(-1)) {
       const auto& cls_slot = obj->slots[idx].value;
       if (cls_slot.tag == TAG_STRING) {
-        std::string_view cls(reinterpret_cast<const char*>(cls_slot.data));
-        if (cls == expected) return true;
+        class_tag_view = std::string_view(
+            reinterpret_cast<const char*>(cls_slot.data));
+        if (class_tag_view == expected) return true;
       }
     }
+  }
+  // Structural trait conformance: when `expected` is a registered
+  // trait, check (and cache) whether this instance's class supplies
+  // every required method (matching arity). Primitive tags can't
+  // conform (no class tag, no method table).
+  if (auto* trait = culebra::lookup_trait(expected)) {
+    if (tag != TAG_OBJECT || class_tag_view.empty()) return false;
+    std::string class_name(class_tag_view);
+    std::string trait_name(expected);
+    auto& by_trait = culebra::trait_conformance_cache()[class_name];
+    auto it = by_trait.find(trait_name);
+    if (it != by_trait.end()) return it->second;
+    auto* obj = reinterpret_cast<JitObject*>(data);
+    std::unordered_map<std::string, size_t> class_methods;
+    auto walk_slots = [&](JitObject* o) {
+      if (!o || !o->shape) return;
+      for (size_t i = 0; i < o->shape->names.size(); i++) {
+        const auto& slot = o->slots[i];
+        if (slot.value.tag != TAG_FUNC) continue;
+        auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
+        // JitClosure::arity counts user-visible params (excluding __cls__
+        // and `this`), matching the interp side's positional count.
+        class_methods.emplace(o->shape->names[i], cls->arity);
+      }
+    };
+    // Methods live on the class meta (proto), data fields on the
+    // instance itself. Walk both so e.g. `to_s` defined on the class
+    // is visible to the conformance check.
+    walk_slots(obj);
+    walk_slots(obj->proto);
+    bool conforms = culebra::class_conforms_to_trait(class_methods, *trait);
+    by_trait[trait_name] = conforms;
+    return conforms;
   }
   return false;
 }
@@ -3147,6 +3182,18 @@ _jit_multimethods() {
   return tbl;
 }
 
+// Trait default-method bodies on the JIT side. Outer map keyed by
+// trait name, inner by method name. JitClosure* is currently nullptr
+// for declared-but-not-JIT-compiled defaults (T4 increment); full LLVM
+// compilation will populate it in a follow-up.
+inline std::unordered_map<std::string,
+                          std::unordered_map<std::string, JitClosure*>>&
+_jit_trait_default_impls() {
+  static std::unordered_map<std::string,
+                            std::unordered_map<std::string, JitClosure*>> tbl;
+  return tbl;
+}
+
 // Side table mapping a dispatcher closure pointer to its multimethod
 // name, so the shared static thunk can recover which name to dispatch
 // for. Dispatchers live for the lifetime of the program (held by the
@@ -3398,6 +3445,17 @@ inline MultifnPick _jit_multifn_resolve(
   std::vector<std::string_view> arg_types(static_cast<size_t>(n_pos));
   for (size_t i = 0; i < arg_types.size(); i++) {
     arg_types[i] = _jit_value_dyn_type(positional[i]);
+  }
+  // Pre-populate trait conformance cache so multifn_specificity can
+  // score `fn show(x: Stringer)` style trait params without holding
+  // the arg instances. Mirrors interp's pick_method warm-up.
+  if (!culebra::trait_registry().empty()) {
+    for (const auto& [trait_name, _trait] : culebra::trait_registry()) {
+      for (size_t i = 0; i < arg_types.size(); i++) {
+        (void)_culebra_type_matches_single(positional[i].tag,
+                                            positional[i].data, trait_name);
+      }
+    }
   }
   auto pick = _jit_multifn_pick(m_it->second, arg_types);
   if (pick == -1) {
@@ -8392,6 +8450,8 @@ struct JIT {
         return compile_range(ast);
       case "CLASS_DECL"_:
         return compile_class_decl(ast);
+      case "TRAIT_DECL"_:
+        return compile_trait_decl(ast);
       case "MULTIFN_DECL"_:
         return compile_multifn_decl(ast);
       case "IMPORT_STMT"_:
@@ -10959,6 +11019,66 @@ struct JIT {
     builder_.restoreIP(savedIP);
     (void)arity;
     return fn;
+  }
+
+  // `trait Name { req(); def() { ... } }` — register a structural
+  // trait contract in the shared `culebra::trait_registry()` so
+  // type_matches / dispatch can see it. Default method bodies are
+  // compiled into JitClosures and stashed in `_jit_trait_default_impls`
+  // for the property-access fallback path.
+  llvm::Value* compile_trait_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    size_t k = 0;
+    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    auto head = culebra::parse_generic_head(ast.nodes[k]->token);
+    std::string trait_name(head.outer);
+
+    culebra::TraitDef def;
+    def.name = trait_name;
+    auto& defaults = _jit_trait_default_impls()[trait_name];
+    defaults.clear();
+
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, (TRAIT_BODY)?]
+      auto name_view = m.nodes[0]->token;
+      const peg::Ast* params_ast = m.nodes[1].get();
+      const peg::Ast* body_block = nullptr;
+      for (size_t j = 2; j < m.nodes.size(); j++) {
+        if (m.nodes[j]->tag == "TRAIT_BODY"_) {
+          body_block = m.nodes[j]->nodes.empty()
+                           ? m.nodes[j].get()
+                           : m.nodes[j]->nodes[0].get();
+          break;
+        }
+      }
+      // Arity count (positional only).
+      size_t arity = 0;
+      for (const auto& p : params_ast->nodes) {
+        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
+          continue;
+        arity++;
+      }
+      def.methods.push_back({std::string(name_view), arity, body_block != nullptr});
+
+      if (body_block) {
+        // Synthesize a METHOD-shape AST node (STATIC_MOD, IDENT, PARAMS,
+        // BLOCK) so compile_function's METHOD branch can compile it.
+        // We can't simply reuse the TRAIT_METHOD AST because its layout
+        // differs (no STATIC_MOD prefix, return type slot in the middle).
+        // Easiest: directly stash the AST address and compile via
+        // compile_fn_common, but that requires func_info_ analysis to
+        // have run for this body. Since trait default bodies aren't in
+        // func_info_, fall back to runtime registration below: register
+        // only the contract here, and let the property-fallback path
+        // call back into the interpreter for default execution.
+        // TODO: full LLVM compile of defaults; for now mark as
+        // declared-but-not-JIT-compiled (handled via interp fallback).
+        defaults.emplace(std::string(name_view), nullptr);
+      }
+    }
+    culebra::register_trait(std::move(def));
+    return llvm::UndefValue::get(valueType_);
   }
 
   // `class Name { new(...){...}  m(...){...} }` — compiles each method
