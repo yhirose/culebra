@@ -4081,7 +4081,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // the picked method via the kwsorter side of the dispatcher.
     for (const auto& p : *fn_val.to_function().params) {
       if (p.kw_only || p.kwargs_rest) continue;
-      method.param_types.emplace_back(p.type_name);
+      // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
+      method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
     }
 
     auto it = multimethods_.find(name_owned);

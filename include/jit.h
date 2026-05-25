@@ -3421,8 +3421,9 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   method.body = body;
   method.param_types.reserve(static_cast<size_t>(n_param_types));
   for (int64_t i = 0; i < n_param_types; i++) {
-    method.param_types.emplace_back(
-        param_types[i] ? param_types[i] : "");
+    // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
+    method.param_types.emplace_back(culebra::canonicalize_type_annotation(
+        param_types[i] ? param_types[i] : ""));
   }
 
   auto& tbl = _jit_multimethods();
