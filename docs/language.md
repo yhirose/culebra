@@ -1649,6 +1649,98 @@ match):
 Annotations are primarily a **documentation and boundary check**
 feature, not a type system.
 
+### Traits and protocols
+
+A `trait` declares a named contract — the set of methods a value
+must provide to be treated under that name in dispatch and Generic
+Bound positions.
+
+    trait Greeter {
+      hello() -> String
+    }
+
+**Structural conformance**: any class whose methods cover the trait's
+required ones (name + arity) automatically satisfies the trait —
+no `impl Foo for Bar` block needed. The model mirrors Go interfaces
+and Python's `__str__`-style magic methods.
+
+    class Bob {
+      new(name) { this.name = name }
+      hello() { "hi, {this.name}" }
+    }
+
+    fn greet(x: Greeter) { IO.puts(x.hello()) }
+    greet(Bob.new("Alice"))                # → "hi, Alice"
+
+A class missing required methods is rejected at the dispatch
+boundary (DispatchError).
+
+#### Default methods
+
+A trait method may carry a body. Conforming classes inherit it for
+free; defining the same name on the class overrides:
+
+    trait Counter {
+      current() -> Long
+      next() -> Long { this.current() + 1 }     # default
+    }
+
+    class Zero {
+      new() {}
+      current() { 0 }
+    }
+    Zero.new().next()                # → 1 (default)
+
+    class Five {
+      new() {}
+      current() { 5 }
+      next() { 99 }                  # override
+    }
+    Five.new().next()                # → 99
+
+#### Built-in traits
+
+The runtime ships three foundational traits as a preamble — they
+are visible without `import`:
+
+| Trait | Required | Defaults |
+|---|---|---|
+| `Stringer` | `to_s() -> String` | — |
+| `Eq` | `eq(other) -> Bool` | `neq` |
+| `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
+
+A class with only `cmp` automatically gets the six-way comparison
+suite; a class with `eq` gets `neq`; a class with `to_s` is
+displayable wherever a `Stringer` is expected.
+
+#### Generic Bound
+
+A type parameter may carry a single trait as its bound, declared
+inline (Rust style):
+
+    fn min<T: Comparable>(a: T, b: T) -> T {
+      if a.lt(b) { a } else { b }
+    }
+
+The Bound is documentation + dispatch (no compile-time check;
+culebra's type checks are runtime). Multiple bounds (`<T: A + B>`)
+and `where` clauses are not yet supported.
+
+#### Dispatch tie-break
+
+A trait param scores between Object and concrete in multifn
+dispatch: a method with `x: Pri` wins over a method with
+`x: Stringer` when the arg is a Pri instance; `x: Stringer` is
+chosen when only the trait path matches.
+
+#### Limitations (Phase 4 MVP)
+
+* `impl Foo for Bar` block is unsupported — conformance is purely
+  structural. (Phase 4+: revisit if explicit conformance is wanted.)
+* Trait inheritance (`trait Ord: Eq`) is not yet supported.
+* Bound composition (`<T: A + B>`) and `where` clauses — Phase 4+.
+* Traits, like classes, may only be declared at top level.
+
 ---
 
 ## 15. Error handling

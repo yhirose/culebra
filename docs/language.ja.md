@@ -1574,6 +1574,92 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 注釈は主に**ドキュメントと境界検査**のための機能であり、型システム
 ではありません。
 
+### trait と protocol
+
+`trait` は「契約」 — ある名前で扱うために値が備えるべき method 集合
+の宣言。 dispatch / Generic Bound でこの契約名を使える。
+
+    trait Greeter {
+      hello() -> String
+    }
+
+**構造的 conformance**: クラスが trait の required method を全て
+(name + arity 一致で) 持てば、 自動的に trait に conform — `impl
+Foo for Bar` block 不要。 Go interface / Python `__str__` 流。
+
+    class Bob {
+      new(name) { this.name = name }
+      hello() { "hi, {this.name}" }
+    }
+
+    fn greet(x: Greeter) { IO.puts(x.hello()) }
+    greet(Bob.new("Alice"))                # → "hi, Alice"
+
+required method を欠くクラスは dispatch 段階で reject (DispatchError)。
+
+#### Default method
+
+trait method に body を付けると default 実装になり、 適合クラスは
+自動継承。 同名 method をクラスに書けば override:
+
+    trait Counter {
+      current() -> Long
+      next() -> Long { this.current() + 1 }     # default
+    }
+
+    class Zero {
+      new() {}
+      current() { 0 }
+    }
+    Zero.new().next()                # → 1 (default)
+
+    class Five {
+      new() {}
+      current() { 5 }
+      next() { 99 }                  # override
+    }
+    Five.new().next()                # → 99
+
+#### Built-in trait
+
+runtime は preamble として 3 つの基本 trait を ship — `import` 不要
+で使える:
+
+| Trait | Required | Default |
+|---|---|---|
+| `Stringer` | `to_s() -> String` | — |
+| `Eq` | `eq(other) -> Bool` | `neq` |
+| `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
+
+`cmp` だけ書けば 6 関係 method が揃い、 `eq` だけ書けば `neq` が
+入り、 `to_s` だけ書けば Stringer の使える場所で受け取れる。
+
+#### Generic Bound
+
+型パラメータに trait 制約を付けられる (Rust inline 流):
+
+    fn min<T: Comparable>(a: T, b: T) -> T {
+      if a.lt(b) { a } else { b }
+    }
+
+Bound はドキュメント + dispatch のみ (compile-time check なし、
+culebra の型 check は runtime)。 複数 Bound (`<T: A + B>`) や
+`where` 節は MVP 範囲外。
+
+#### dispatch tie-break
+
+trait param のスコアは Object と具象の中間。 同じ関数名で `x: Pri`
+と `x: Stringer` の overload があれば、 arg が Pri なら具象が勝つ。
+trait path のみ match する場合は trait 版が選ばれる。
+
+#### 制限 (Phase 4 MVP)
+
+* `impl Foo for Bar` block は未対応 — 構造的のみ。 (Phase 4+ で
+  明示宣言を再検討)
+* trait 継承 (`trait Ord: Eq`) は未対応。
+* 複合 Bound (`<T: A + B>`) と `where` 節 — Phase 4+。
+* trait もクラスと同様 top-level のみ宣言可能。
+
 ---
 
 ## 15. エラー処理
