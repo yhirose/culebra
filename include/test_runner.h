@@ -256,6 +256,14 @@ inline TestRunSummary run_tests(
     std::shared_ptr<Environment> env) {
   TestRunSummary summary;
 
+  // Keep every loaded module alive for the full duration of the run.
+  // LoadedModule owns a shared_ptr<std::string> backing every AST
+  // token's std::string_view; registered FunctionValues reference
+  // those views after the per-file loop ends, so dropping the
+  // modules vector before the execution loop would leave the
+  // registry pointing into freed memory.
+  std::vector<LoadedModule> all_modules;
+
   for (const auto& path : files) {
     auto path_str = path.string();
     std::ifstream ifs(path_str, std::ios::binary);
@@ -292,6 +300,10 @@ inline TestRunSummary run_tests(
       summary.failed++;
       continue;
     }
+
+    // Pin the file's modules (and thus their source buffers and AST
+    // tokens) for the rest of run_tests' lifetime.
+    for (auto& m : modules) all_modules.push_back(std::move(m));
 
     // Tag new entries with source path for nicer failure reporting.
     for (size_t i = pre; i < reg.entries.size(); i++) {
