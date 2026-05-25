@@ -1,0 +1,185 @@
+# `culebra test`-only matchers — exercised via:
+#   ./build/culebra test tests/culebra_test_self/
+# Skipped by `just test` direct-loop (tests/*.cul glob is non-recursive).
+
+# --- assert_throws ---
+
+@test
+fn assert_throws_matches() {
+  assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
+}
+
+@test
+fn assert_throws_user_throw() {
+  assert_throws("MyError", fn() {
+    throw { kind: "MyError", message: "boom" }
+  })
+}
+
+@test
+fn assert_throws_wrong_kind_fails() {
+  let r = try {
+    assert_throws("TypeError", fn() { let _ = 1 / 0 })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected kind 'TypeError'"))
+  assert(r.message.contains("got 'ZeroDivisionError'"))
+}
+
+@test
+fn assert_throws_no_throw_fails() {
+  let r = try {
+    assert_throws("TypeError", fn() { 42 })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected throw but fn returned normally"))
+}
+
+# --- assert_close ---
+
+@test
+fn assert_close_within_tol() {
+  assert_close(3.14, 3.1415, 0.01)
+  assert_close(1.0, 1.0, 0.0)
+  assert_close(100, 100.5, 1.0)   # int+float coerce
+}
+
+@test
+fn assert_close_exceeds_tol_fails() {
+  let r = try {
+    assert_close(1.0, 2.0, 0.5)
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("diff"))
+  assert(r.message.contains("a:"))
+  assert(r.message.contains("b:"))
+}
+
+# NaN must NOT slip through — `NaN > tol` is false under IEEE-754, so
+# without an explicit isnan guard a divergent computation would pass.
+@test
+fn assert_close_rejects_nan() {
+  let nan = (-1.0) ** 0.5    # sqrt of negative — NaN (0.0/0.0 throws)
+  let r = try {
+    assert_close(nan, 1.0, 1e-9)
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# assert_throws must reject non-zero-arity callbacks with a clear
+# ArityError so the user gets a precise diagnostic instead of a
+# misleading NameError on the unbound parameter.
+@test
+fn assert_throws_rejects_nonzero_arity() {
+  let r = try {
+    assert_throws("X", fn(extra) { throw { kind: "X" } })
+    nil
+  } catch e { e }
+  assert(r.kind == "ArityError")
+  assert(r.message.contains("fn must take 0 parameters"))
+}
+
+# A user throw with a non-String `kind` field shouldn't escape as
+# TypeError — the matcher falls back to the display form and reports
+# a clean kind mismatch.
+@test
+fn assert_throws_handles_nonstring_kind() {
+  let r = try {
+    assert_throws("X", fn() { throw { kind: 42, message: "bad" } })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected kind 'X'"))
+}
+
+# --- assert_eq / assert_ne ---
+
+@test
+fn assert_eq_primitives() {
+  assert_eq(1 + 1, 2)
+  assert_eq("foo", "foo")
+  assert_eq((1, 2, 3), (1, 2, 3))
+}
+
+@test
+fn assert_eq_failure_shows_both_sides() {
+  let r = try { assert_eq(41, 42); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("left:  41"))
+  assert(r.message.contains("right: 42"))
+}
+
+@test
+fn assert_ne_succeeds_on_inequality() {
+  assert_ne(1, 2)
+  assert_ne("a", "b")
+}
+
+@test
+fn assert_ne_failure_on_equality() {
+  let r = try { assert_ne(5, 5); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# --- assert_lt / assert_le / assert_gt / assert_ge ---
+
+@test
+fn assert_ordering_matchers() {
+  assert_lt(1, 2)
+  assert_le(2, 2)
+  assert_le(1, 2)
+  assert_gt(3, 2)
+  assert_ge(3, 3)
+  assert_ge(4, 3)
+}
+
+@test
+fn assert_lt_failure() {
+  let r = try { assert_lt(10, 5); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("left:  10"))
+  assert(r.message.contains("right: 5"))
+}
+
+# --- Class instance __eq__ / __lt__ dispatch ---
+
+class Pt {
+  new(x, y) { this.x = x; this.y = y }
+  __eq__(o)  { this.x == o.x && this.y == o.y }
+  __lt__(o)  { (this.x * this.x + this.y * this.y)
+               < (o.x * o.x + o.y * o.y) }
+}
+
+@test
+fn assert_eq_dispatches_user_eq() {
+  let p1 = Pt.new(1, 2)
+  let p2 = Pt.new(1, 2)
+  assert_eq(p1, p2)               # __eq__ returns true, even though refs differ
+}
+
+@test
+fn assert_lt_dispatches_user_lt() {
+  let small = Pt.new(1, 1)
+  let big   = Pt.new(5, 5)
+  assert_lt(small, big)
+}
+
+# --- __str__ honored in failure message ---
+
+class Money {
+  new(c) { this.cents = c }
+  __str__()  { "{this.cents / 100}USD" }
+  __eq__(o)  { this.cents == o.cents }
+}
+
+@test
+fn assert_eq_failure_uses_user_str() {
+  let r = try { assert_eq(Money.new(500), Money.new(700)); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("5USD"))
+  assert(r.message.contains("7USD"))
+}

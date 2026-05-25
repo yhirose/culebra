@@ -102,6 +102,55 @@ inline Value resolve_fixture(std::shared_ptr<Environment> env,
   return resolve_fixture_impl(env, name, visited);
 }
 
+// Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
+// eval_condition dispatches `__eq__`/`__lt__`/`__le__`. Used by the
+// six comparison matchers below so their semantics match `==`/`<` etc.
+inline std::optional<Value> dispatch_special_method(
+    const Value& receiver, std::string_view name, const Value* rhs) {
+  if (receiver.type != Value::Object) return std::nullopt;
+  const auto& obj = receiver.to_object();
+  auto it = obj.properties->find(name);
+  if (it == obj.properties->end()) return std::nullopt;
+  const auto& m = it->second.val;
+  if (m.type != Value::Function) return std::nullopt;
+  const auto& mf = m.get<FunctionValue>();
+  auto inner = std::make_shared<Environment>();
+  inner->is_function_frame = true;
+  inner->initialize("self", m, false);
+  inner->initialize("this", receiver, false);
+  inner->initialize("__LINE__", Value(0L), false);
+  inner->initialize("__COLUMN__", Value(0L), false);
+  if (rhs && !mf.params->empty()) {
+    inner->initialize(mf.params->at(0).name, *rhs, false);
+  }
+  try {
+    return mf.eval(inner);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
+inline bool matcher_equal(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__eq__", &b)) return r->to_bool();
+  if (auto r = dispatch_special_method(b, "__eq__", &a)) return r->to_bool();
+  return a == b;
+}
+
+inline bool matcher_less(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__lt__", &b)) return r->to_bool();
+  return a < b;
+}
+
+inline bool matcher_leq(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__le__", &b)) return r->to_bool();
+  auto lt = dispatch_special_method(a, "__lt__", &b);
+  auto eq = dispatch_special_method(a, "__eq__", &b);
+  if (lt || eq) {
+    return (lt && lt->to_bool()) || (eq && eq->to_bool());
+  }
+  return a <= b;
+}
+
 // `test(name, fn)` runtime helper used by the built-in `test` global
 // (ambient-injected under `culebra test` mode).
 inline Value register_test(std::string name, Value fn,
@@ -236,6 +285,135 @@ inline void install_test_ambient(Environment& env) {
                 "ArityError",
                 "test() expects 1 or 2 arguments");
           })),
+      false);
+
+  // `assert_throws(kind, fn)` — invoke 0-arg `fn` and assert it throws
+  // an error whose `kind` matches. `got_kind` distinguishes an empty
+  // String kind from a fallthrough to v.str_display().
+  env.initialize(
+      "assert_throws",
+      Value(FunctionValue(
+          {{"kind", false, "String"sv}, {"fn", false, "Function"sv}},
+          [](std::shared_ptr<Environment> callEnv) -> Value {
+            auto expected = std::string(callEnv->get("kind").to_string());
+            auto fn_val = callEnv->get("fn");
+            const auto& f = fn_val.to_function();
+            if (!f.params->empty()) {
+              throw CulebraError("ArityError",
+                  std::format("assert_throws: fn must take 0 parameters "
+                              "(got {})", f.params->size()));
+            }
+            auto inner = std::make_shared<Environment>();
+            inner->is_function_frame = true;
+            inner->initialize("self", fn_val, false);
+            inner->initialize("__LINE__", Value(0L), false);
+            inner->initialize("__COLUMN__", Value(0L), false);
+            bool threw = false;
+            bool got_kind = false;
+            std::string actual;
+            try {
+              f.eval(inner);
+            } catch (const ReturnValue&) {
+            } catch (const CulebraError& e) {
+              threw = true;
+              actual = e.kind;
+              got_kind = true;
+            } catch (const Value& v) {
+              threw = true;
+              if (v.type == Value::Object) {
+                const auto& obj = v.to_object();
+                if (obj.has("kind")) {
+                  auto kv = obj.get("kind");
+                  if (kv.type == Value::String) {
+                    actual = std::string(kv.to_string());
+                    got_kind = true;
+                  }
+                }
+              }
+              if (!got_kind) actual = v.str_display();
+            }
+            if (!threw) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_throws('{}', fn): expected throw "
+                              "but fn returned normally", expected));
+            }
+            if (actual != expected) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_throws: expected kind '{}' "
+                              "but got '{}'", expected, actual));
+            }
+            return Value();
+          })),
+      false);
+
+  // `assert_close(a, b, tol)` — `|a - b| <= tol`, with NaN treated as
+  // failure (a naive `diff > tol` check would silently pass NaN).
+  env.initialize(
+      "assert_close",
+      Value(FunctionValue(
+          {{"a", false}, {"b", false}, {"tol", false}},
+          [](std::shared_ptr<Environment> callEnv) -> Value {
+            auto a = callEnv->get("a").to_double_coerce();
+            auto b = callEnv->get("b").to_double_coerce();
+            auto tol = callEnv->get("tol").to_double_coerce();
+            auto diff = std::abs(a - b);
+            if (std::isnan(diff) || diff > tol) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_close failed:\n"
+                              "  a:    {}\n"
+                              "  b:    {}\n"
+                              "  diff: {} (> tol {})",
+                              a, b, diff, tol));
+            }
+            return Value();
+          })),
+      false);
+
+  // Comparison matchers — `assert_eq(a, b)` etc. Each dispatches via
+  // the same `__eq__`/`__lt__`/`__le__` rules as the `==`/`<`/`<=`
+  // operators so `assert_eq(p1, p2)` matches `assert(p1 == p2)` for
+  // class instances. Failure messages name both operands.
+  auto make_cmp_matcher = [](std::string_view name,
+                              std::string_view label,
+                              auto pred) {
+    return Value(FunctionValue(
+        {{"a", false}, {"b", false}},
+        [n = std::string(name), lbl = std::string(label), pred](
+            std::shared_ptr<Environment> callEnv) -> Value {
+          auto a = callEnv->get("a");
+          auto b = callEnv->get("b");
+          if (pred(a, b)) return Value();
+          throw CulebraError("AssertionError",
+              std::format("{} failed:\n  left:  {}\n  right: {}",
+                          n,
+                          str_quoted_with_special(a),
+                          str_quoted_with_special(b)));
+        }));
+  };
+
+  env.initialize("assert_eq",
+      make_cmp_matcher("assert_eq", "==",
+          [](const Value& a, const Value& b) { return matcher_equal(a, b); }),
+      false);
+  env.initialize("assert_ne",
+      make_cmp_matcher("assert_ne", "!=",
+          [](const Value& a, const Value& b) { return !matcher_equal(a, b); }),
+      false);
+  env.initialize("assert_lt",
+      make_cmp_matcher("assert_lt", "<",
+          [](const Value& a, const Value& b) { return matcher_less(a, b); }),
+      false);
+  env.initialize("assert_le",
+      make_cmp_matcher("assert_le", "<=",
+          [](const Value& a, const Value& b) { return matcher_leq(a, b); }),
+      false);
+  env.initialize("assert_gt",
+      make_cmp_matcher("assert_gt", ">",
+          [](const Value& a, const Value& b) { return matcher_less(b, a); }),
+      false);
+  env.initialize("assert_ge",
+      make_cmp_matcher("assert_ge", ">=",
+          [](const Value& a, const Value& b) { return matcher_leq(b, a); }),
       false);
 }
 

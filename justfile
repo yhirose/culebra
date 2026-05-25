@@ -101,8 +101,17 @@ test BACKEND='all': build
         (cd build && ctest --output-on-failure)
     }
 
+    # Exercises `culebra test`-only ambient bindings (test/@test/fixture/
+    # @parametrize, assert_throws, assert_close). The subdir layout keeps
+    # these out of the `tests/*.cul` glob that direct interp/JIT runs use.
+    run_culebra_test_self() {
+        ./build/culebra test tests/culebra_test_self/ > /dev/null
+    }
+
     case "{{BACKEND}}" in
-      all)    run_diff_interp_jit; run_embed; run_aot; echo "test OK" ;;
+      # Order: cheap tests first, then AOT (slowest + most env-sensitive,
+      # so a failure there shouldn't mask matcher regressions).
+      all)    run_diff_interp_jit; run_embed; run_culebra_test_self; run_aot; echo "test OK" ;;
       interp) run_interp ;;
       jit)    run_jit ;;
       aot)    run_aot ;;

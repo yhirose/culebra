@@ -1299,6 +1299,33 @@ fn user_has_name(user) {            # `user` resolved from registry
 **No `describe` nesting.** Group by file path (`tests/strings/`) and
 by `/` in the test name (`"Array/push: appends element"`).
 
+**Matchers.** `assert(expr)` checks a Bool and reports only `assert
+failed at L:C.` on failure. For diagnostics that show both operands,
+use the matchers — ambient under `culebra test` alongside `test` /
+`fixture` / `parametrize`:
+
+```culebra
+# doctest: skip
+assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
+assert_ne(status, "error")              # !=
+assert_lt(elapsed, 1.0)                 # <
+assert_le(count, max)                   # <=
+assert_gt(score, 0)                     # >
+assert_ge(items.len(), 1)               # >=
+assert_throws("TypeError", fn() { let _ = 1 + 'b' })
+assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
+```
+
+- `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
+  `assert_ge` use the same `__eq__` / `__lt__` / `__le__` dispatch as
+  the operators, so `assert_eq(p1, p2)` and `assert(p1 == p2)` agree
+  for class instances.
+- `assert_throws(kind, fn)` invokes 0-arg `fn()` and asserts it throws
+  with the given `kind` (for built-in errors) or `.kind` property (for
+  `throw { kind: ..., message: ... }`).
+- `assert_close(a, b, tol)` asserts `|a - b| <= tol`. NaN counts as
+  failure (a naive `>` would silently pass divergent computations).
+
 ### 16.3 Running
 
 `culebra test [path]` discovers test files. When invoked through this

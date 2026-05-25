@@ -1273,6 +1273,33 @@ fn user_has_name(user) {            # `user` は registry から自動解決
 (`tests/strings/`) とテスト名の `/` 区切り
 (`"Array/push: appends element"`) で表現します。
 
+**matchers**。 `assert(expr)` は Bool 検査で、失敗時は `assert failed
+at L:C.` のみ。 両辺を表示する診断が欲しいときは matcher を使います。
+matcher は `culebra test` 起動時のみ `test` / `fixture` /
+`parametrize` と並んで ambient 注入されます:
+
+```culebra
+# doctest: skip
+assert_eq(arr.len(), 3)                 # == ; 失敗時に両辺を表示
+assert_ne(status, "error")              # !=
+assert_lt(elapsed, 1.0)                 # <
+assert_le(count, max)                   # <=
+assert_gt(score, 0)                     # >
+assert_ge(items.len(), 1)               # >=
+assert_throws("TypeError", fn() { let _ = 1 + 'b' })
+assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
+```
+
+- `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
+  `assert_ge` は `==` / `<` / `<=` 演算子と同じ `__eq__` / `__lt__` /
+  `__le__` dispatch を行います — クラスインスタンスでも `assert_eq(p1,
+  p2)` と `assert(p1 == p2)` は一致します。
+- `assert_throws(kind, fn)` は 0 引数の `fn()` を呼んで throw を検査。
+  組み込みエラーは `kind`、 ユーザの `throw { kind: ..., message: ... }`
+  は `.kind` プロパティを比較。
+- `assert_close(a, b, tol)` は `|a - b| <= tol` を検査。 NaN は失敗扱い
+  (素朴な `>` 検査だと発散計算が silently pass してしまうため)。
+
 ### 16.3 実行
 
 `culebra test [path]` がテストファイルを discover します。 このサブコマンド
