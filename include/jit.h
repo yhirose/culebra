@@ -2930,6 +2930,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
 // hits don't update the cache because the fast path keys on
 // `obj->shape`; caching the proto's offset there would load the wrong
 // slot. `ic` is borrowed; never released.
+// Forward declaration for the trait-default table referenced below.
+inline std::unordered_map<std::string,
+                          std::unordered_map<std::string, JitClosure*>>&
+_jit_trait_default_impls();
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
     JitObject* obj, const char* key, JitPropIC* ic, int8_t* out_tag,
     int64_t* out_data) {
@@ -2942,8 +2947,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
       return;
     }
   }
-  _write_value_out(obj->proto ? _find_property(obj->proto, key) : nullptr,
-                   out_tag, out_data);
+  if (auto* proto_entry = obj->proto ? _find_property(obj->proto, key) : nullptr) {
+    _write_value_out(proto_entry, out_tag, out_data);
+    return;
+  }
+  // Trait default-method fallback (T4 part 2). Walk registered
+  // defaults; for each candidate trait that owns `key`, check whether
+  // this instance conforms (cached). Returns the first matching
+  // default's closure as a TAG_FUNC value.
+  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
+    auto m_it = methods.find(key);
+    if (m_it == methods.end() || !m_it->second) continue;
+    if (_culebra_type_matches_single(TAG_OBJECT,
+                                      reinterpret_cast<int64_t>(obj),
+                                      trait_name)) {
+      *out_tag = TAG_FUNC;
+      *out_data = reinterpret_cast<int64_t>(m_it->second);
+      return;
+    }
+  }
+  *out_tag = TAG_NIL;
+  *out_data = 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
@@ -3183,15 +3207,33 @@ _jit_multimethods() {
 }
 
 // Trait default-method bodies on the JIT side. Outer map keyed by
-// trait name, inner by method name. JitClosure* is currently nullptr
-// for declared-but-not-JIT-compiled defaults (T4 increment); full LLVM
-// compilation will populate it in a follow-up.
+// trait name, inner by method name. Holds a +1 reference on each
+// closure for the program's lifetime.
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls() {
   static std::unordered_map<std::string,
                             std::unordered_map<std::string, JitClosure*>> tbl;
   return tbl;
+}
+
+// Runtime registration hook called from compile_trait_decl's emitted
+// IR. The compiled default-method JitValue is unpacked at the call
+// site; we receive the closure pointer plus the trait/method names
+// as process-lifetime cstrings (module-level globals).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_register_trait_default(const char* trait_name,
+                                        const char* method_name,
+                                        JitClosure* closure) {
+  if (!closure) return;
+  auto& slot = _jit_trait_default_impls()[trait_name][method_name];
+  if (slot) {
+    // Already registered (e.g. trait re-declared at top level on a
+    // REPL reload) — release the old closure and replace.
+    _culebra_value_release_impl(TAG_FUNC, reinterpret_cast<int64_t>(slot));
+  }
+  closure->refcount++;
+  slot = closure;
 }
 
 // Side table mapping a dispatcher closure pointer to its multimethod
@@ -5744,6 +5786,8 @@ inline constexpr auto to_long             = "culebra_runtime_to_long";
 inline constexpr auto to_long_any         = "culebra_runtime_to_long_any";
 inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
+inline constexpr auto register_trait_default
+    = "culebra_runtime_register_trait_default";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
@@ -7808,6 +7852,13 @@ struct JIT {
       return;
     }
 
+    if (node.tag == "TRAIT_DECL"_) {
+      // trait declarations don't bind a name in the value env (they
+      // live in culebra::trait_registry()). Default-method bodies are
+      // analyzed in visit_for_frees, not here.
+      return;
+    }
+
     if (node.tag == "MULTIFN_DECL"_) {
       // `fn name(params) body` binds `name` in the enclosing scope.
       // Body is analyzed separately by visit_for_frees as a nested
@@ -7881,6 +7932,41 @@ struct JIT {
           if (std::find(info.free_vars.begin(), info.free_vars.end(), fv) ==
               info.free_vars.end()) {
             info.free_vars.push_back(fv);
+          }
+        }
+      }
+      return;
+    }
+
+    if (node.tag == "TRAIT_DECL"_) {
+      // Default-impl bodies are nested functions captured from the
+      // enclosing scope. Signature-only methods skip analysis.
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        visit_for_frees(*node.nodes[i], my_locals, outer, info);
+        i++;
+      }
+      // node.nodes[i] is CLASS_HEAD; methods follow.
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        const auto& method = *node.nodes[j];
+        bool has_body = false;
+        for (size_t k = 2; k < method.nodes.size(); k++) {
+          if (method.nodes[k]->tag == "TRAIT_BODY"_) {
+            has_body = true; break;
+          }
+        }
+        if (!has_body) continue;
+        outer.push_back(&my_locals);
+        auto method_info = analyze_trait_method(method, outer);
+        outer.pop_back();
+        for (const auto& fv : method_info.free_vars) {
+          if (my_locals.contains(fv)) {
+            info.captured_locals.insert(fv);
+          } else {
+            if (std::find(info.free_vars.begin(), info.free_vars.end(),
+                          fv) == info.free_vars.end()) {
+              info.free_vars.push_back(fv);
+            }
           }
         }
       }
@@ -8112,6 +8198,28 @@ struct JIT {
     // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     return analyze_fn_common(&methodAst, *methodAst.nodes[2],
                              *methodAst.nodes[3], outer);
+  }
+
+  // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] [TRAIT_BODY]].
+  // Only default-body methods need analysis. The shape isn't fixed
+  // because RETURN_TYPE / TRAIT_BODY are optional, so the body slot
+  // varies — find TRAIT_BODY by tag.
+  FuncInfo analyze_trait_method(
+      const peg::Ast& traitMethodAst,
+      std::vector<const std::set<std::string>*>& outer) {
+    using namespace peg::udl;
+    const peg::Ast* body = nullptr;
+    for (size_t j = 2; j < traitMethodAst.nodes.size(); j++) {
+      if (traitMethodAst.nodes[j]->tag == "TRAIT_BODY"_) {
+        body = traitMethodAst.nodes[j]->nodes.empty()
+                   ? traitMethodAst.nodes[j].get()
+                   : traitMethodAst.nodes[j]->nodes[0].get();
+        break;
+      }
+    }
+    if (!body) return {};
+    return analyze_fn_common(&traitMethodAst,
+                              *traitMethodAst.nodes[1], *body, outer);
   }
 
   // MULTIFN_DECL ast: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK].
@@ -11062,19 +11170,38 @@ struct JIT {
       def.methods.push_back({std::string(name_view), arity, body_block != nullptr});
 
       if (body_block) {
-        // Synthesize a METHOD-shape AST node (STATIC_MOD, IDENT, PARAMS,
-        // BLOCK) so compile_function's METHOD branch can compile it.
-        // We can't simply reuse the TRAIT_METHOD AST because its layout
-        // differs (no STATIC_MOD prefix, return type slot in the middle).
-        // Easiest: directly stash the AST address and compile via
-        // compile_fn_common, but that requires func_info_ analysis to
-        // have run for this body. Since trait default bodies aren't in
-        // func_info_, fall back to runtime registration below: register
-        // only the contract here, and let the property-fallback path
-        // call back into the interpreter for default execution.
-        // TODO: full LLVM compile of defaults; for now mark as
-        // declared-but-not-JIT-compiled (handled via interp fallback).
-        defaults.emplace(std::string(name_view), nullptr);
+        // Compile the default-method body as a closure. analyze_fn_body
+        // has already populated func_info_[&m] via visit_for_frees.
+        std::shared_ptr<peg::Ast> body_shared;
+        for (size_t j = 2; j < m.nodes.size(); j++) {
+          if (m.nodes[j]->tag == "TRAIT_BODY"_) {
+            body_shared = m.nodes[j]->nodes.empty()
+                              ? m.nodes[j]
+                              : m.nodes[j]->nodes[0];
+            break;
+          }
+        }
+        auto* fn_val_ir = compile_fn_common(
+            &m, *m.nodes[1].get(), body_shared, /*returnType=*/{},
+            std::string(name_view));
+        // fn_val_ir is a JitValue (struct {i8 tag, i64 data}); the data
+        // is the JitClosure*. Pull it out and register the default into
+        // the runtime trait-default table.
+        auto ptrTy = llvm::PointerType::get(ctx_, 0);
+        auto closure_data =
+            builder_.CreateExtractValue(fn_val_ir, /*idx=*/1, "td.data");
+        auto closure_ptr =
+            builder_.CreateIntToPtr(closure_data, ptrTy, "td.cls");
+        auto trait_g = builder_.CreateGlobalString(
+            trait_name, ".trait." + trait_name);
+        auto method_g = builder_.CreateGlobalString(
+            std::string(name_view),
+            ".td." + trait_name + "." + std::string(name_view));
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::register_trait_default,
+                builder_.getVoidTy(), ptrTy, ptrTy, ptrTy),
+            {trait_g, method_g, closure_ptr});
       }
     }
     culebra::register_trait(std::move(def));
