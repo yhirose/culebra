@@ -156,8 +156,8 @@ const auto grammar_ = R"(
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
 
-  TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* ( _ '|' _ [A-Z] [a-zA-Z_0-9]* )* >
-  RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* ( _ '|' _ [A-Z] [a-zA-Z_0-9]* )* >
+  TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* ( _sp_ '|' _sp_ [A-Z] [a-zA-Z_0-9]* )* >
+  RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* ( _sp_ '|' _sp_ [A-Z] [a-zA-Z_0-9]* )* >
 
   BLOCK                    <-  '{' _ STATEMENTS _ '}'
 
