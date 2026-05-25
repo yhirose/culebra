@@ -107,6 +107,14 @@ inline bool is_primitive_type_label(std::string_view n) {
 // side in the MVP, so it tie-breaks only against bare `Array`.
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
+  // Tiers (×2 from the pre-trait era so trait can slot strictly
+  // between Object and Union):
+  //   0  Any
+  //   2  Object catch-all (class instance via `Object` param)
+  //   3  trait conformance
+  //   4  Union exact (downgrade from any concrete alt inside)
+  //   6  concrete exact / Generic outer-only / bare dict via Object param
+  //   8  Generic full match (param has args and outer matches concrete)
   if (param_type.empty() || param_type == "Any") return 0;
   // Union branch must use the depth-aware top-level check — a bare
   // `find('|')` on `Array<Long | Float>` triggers the branch but
@@ -118,10 +126,9 @@ inline int multifn_specificity(std::string_view param_type,
       if (s > best) best = s;
     }
     if (best < 0) return -1;
-    // A concrete alt inside a Union scored 3+; downgrade to 2 so a
-    // bare concrete param outranks it. An Object alt scored 1 and
-    // stays 1 — same tier as a bare `Object` catch.
-    return best >= 3 ? 2 : best;
+    // A concrete alt inside a Union scored 6; downgrade to 4 so a
+    // bare concrete param outranks it. Lower-tier alts pass through.
+    return best >= 6 ? 4 : best;
   }
   // Generic: outer-match against arg label (arg side carries no
   // type args today, so the args part only tie-breaks against bare
@@ -130,25 +137,25 @@ inline int multifn_specificity(std::string_view param_type,
     auto outer = parse_generic_head(param_type).outer;
     int base = multifn_specificity(outer, arg_type);
     if (base < 0) return -1;
-    return base == 3 ? 4 : base;
+    return base == 6 ? 8 : base;
   }
   if (param_type == "Object") {
-    if (arg_type == "Object") return 3;        // bare dict — exact
+    if (arg_type == "Object") return 6;        // bare dict — exact
     if (is_primitive_type_label(arg_type)) return -1;
-    return 1;                                  // class instance
+    return 2;                                  // class instance catch
   }
-  if (param_type == arg_type) return 3;
-  // Trait conformance: if `param_type` is a registered trait and the
-  // arg's class structurally conforms, score 2 (below concrete-exact,
-  // above plain Union). Primitive arg types skip the cache walk —
-  // a registered trait can't match a primitive (no class tag).
+  if (param_type == arg_type) return 6;
+  // Trait conformance: a registered trait scores below concrete and
+  // below Union exact, but above the bare-Object catch. Primitive
+  // arg types skip the cache walk — a registered trait can't match a
+  // primitive (no class tag).
   if (auto* trait = lookup_trait(param_type)) {
     if (is_primitive_type_label(arg_type) || arg_type == "Object") {
       return -1;
     }
     auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
     auto it = by_trait.find(std::string(param_type));
-    if (it != by_trait.end()) return it->second ? 2 : -1;
+    if (it != by_trait.end()) return it->second ? 3 : -1;
     // Cache miss: pessimistically -1 here; the actual conformance walk
     // happens in type_matches with the instance in hand, populating
     // the cache for subsequent dispatch lookups.
