@@ -438,6 +438,9 @@ static constexpr int8_t GC_TAG_TUPLE = TAG_TUPLE;
 static constexpr int8_t GC_TAG_SET = TAG_SET;
 static constexpr int8_t GC_TAG_CELL = 100;
 
+// Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.
+inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
+
 // Hash/eq for JitValue keys in JitObject's non-String key sidecar.
 // Numerically-equal Long/Float/Bool share a bucket (Python convention).
 struct JitValueHash {
@@ -456,8 +459,8 @@ struct JitValueHash {
         return std::hash<double>{}(d);
       }
       case TAG_STRING:
-        return std::hash<std::string_view>{}(
-            std::string_view(reinterpret_cast<const char*>(v.data)));
+      case TAG_STRINGVIEW:
+        return std::hash<std::string_view>{}(_culebra_str_view(v.tag, v.data));
       case TAG_TUPLE: {
         auto* a = reinterpret_cast<JitArray*>(v.data);
         size_t h = a->size;
@@ -472,11 +475,12 @@ struct JitValueHash {
 };
 struct JitValueEq {
   bool operator()(const JitValue& a, const JitValue& b) const {
+    if ((a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW) &&
+        (b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW)) {
+      return _culebra_str_view(a.tag, a.data) ==
+             _culebra_str_view(b.tag, b.data);
+    }
     if (a.tag == b.tag) {
-      if (a.tag == TAG_STRING) {
-        return std::strcmp(reinterpret_cast<const char*>(a.data),
-                           reinterpret_cast<const char*>(b.data)) == 0;
-      }
       if (a.tag == TAG_TUPLE) {
         auto* aa = reinterpret_cast<JitArray*>(a.data);
         auto* bb = reinterpret_cast<JitArray*>(b.data);
@@ -2793,9 +2797,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
-  if (key_tag == TAG_STRING) {
-    culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
-                               mut, val_tag, val_data, 0, 0);
+  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
+    const char* key_cstr =
+        (key_tag == TAG_STRING)
+            ? reinterpret_cast<const char*>(key_data)
+            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
+    culebra_runtime_object_set(obj, key_cstr, mut, val_tag, val_data, 0, 0);
     return;
   }
   if (!obj->non_string_props) {
@@ -2840,9 +2847,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
-  // String keys: unified with shape access (see object_set_any).
-  if (key_tag == TAG_STRING) {
-    auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
+  // String / StringView keys: unified with shape access. StringView
+  // materialized to a null-terminated cstr (leak-bounded).
+  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
+    const char* key_cstr =
+        (key_tag == TAG_STRING)
+            ? reinterpret_cast<const char*>(key_data)
+            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
+    auto idx = obj->find_slot(key_cstr);
     if (idx == static_cast<size_t>(-1)) {
       throw culebra::CulebraError("KeyError", "key not present");
     }
@@ -2869,6 +2881,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
     JitObject* obj, int8_t key_tag, int64_t key_data) {
+  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
+    const char* key_cstr =
+        (key_tag == TAG_STRING)
+            ? reinterpret_cast<const char*>(key_data)
+            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
+    return obj->find_slot(key_cstr) != static_cast<size_t>(-1) ? 1 : 0;
+  }
   if (!obj->non_string_props) return 0;
   return obj->non_string_props->contains({key_tag, key_data}) ? 1 : 0;
 }
@@ -3076,8 +3095,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
 // a borrowed cstring (non-refcounted) and needs no release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
-  if (tag == TAG_STRING) {
-    auto* cstr = reinterpret_cast<const char*>(data);
+  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+    const char* cstr = (tag == TAG_STRING)
+                           ? reinterpret_cast<const char*>(data)
+                           : _culebra_heap_str(_culebra_str_view(tag, data));
     return _find_property(obj, cstr) != nullptr;
   }
   bool result = obj->non_string_props
@@ -5371,8 +5392,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_array_join(
     if (i > 0) out += sep;
     auto tag = arr->items[i].tag;
     auto data = arr->items[i].data;
-    if (tag == TAG_STRING) {
-      out += reinterpret_cast<const char*>(data);
+    if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+      out += _culebra_str_view(tag, data);
     } else {
       out += _culebra_value_to_str_impl(tag, data);
     }
@@ -10881,12 +10902,13 @@ struct JIT {
     auto badBB = llvm::BasicBlock::Create(ctx_, "for.bad_type", fn);
     auto endBB = llvm::BasicBlock::Create(ctx_, "for.end", fn);
 
-    auto sw = builder_.CreateSwitch(tag, badBB, 5);
+    auto sw = builder_.CreateSwitch(tag, badBB, 6);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrayBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), arrayBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objectBB);
     sw->addCase(builder_.getInt8(TAG_STRING), stringBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), stringBB);
 
     builder_.SetInsertPoint(badBB);
     emit_type_error_typed("Array, Tuple, Set, Object, or String", tag);
@@ -10946,8 +10968,11 @@ struct JIT {
     compile_for_protocol_loop(objVal, var_name, body, endBB);
 
     builder_.SetInsertPoint(stringBB);
-    compile_for_string_loop(builder_.CreateIntToPtr(data, ptrTy),
-                            var_name, body, endBB);
+    // For StringView, materialize via strlike_to_cstr (TAG_STRING input
+    // returns the same ptr — no copy).
+    auto strDataPtr = emit_call(
+        module_->getFunction(rt::strlike_to_cstr), {tag, data});
+    compile_for_string_loop(strDataPtr, var_name, body, endBB);
 
     builder_.SetInsertPoint(endBB);
     return make_nil();

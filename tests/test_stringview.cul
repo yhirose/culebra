@@ -75,3 +75,21 @@ assert(n_bytes('hello'.slice(0, 3)) == 3)
 // --- Cross-flavor equality + hashing ---
 assert('hello' == 'hello'.view())
 assert('hello'.view() == 'hello')
+
+// --- for-in iterates StringView ---
+let chars = []
+for c in 'abc'.view() { chars.push(c) }
+assert(chars.size() == 3)
+assert(chars[0] == 'a')
+
+// Split + join round-trips without quoting StringView elements.
+assert('a,b,c'.split(',').join('-') == 'a-b-c')
+
+// Object keys: StringView and String of the same bytes are the same key.
+let obj = {name: 'Alice'}
+assert(obj.has('name'.view()))
+assert(obj['name'.view()] == 'Alice')
+mut obj2 = {}
+obj2['k'.view()] = 1
+assert(obj2.has('k'))
+assert(obj2['k'] == 1)

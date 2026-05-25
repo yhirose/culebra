@@ -1593,25 +1593,24 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
 // slot; every other hashable key (Long/Float/Bool/Nil/Tuple) goes to
 // the sidecar.
 inline bool ObjectValue::has(const Value& key) const {
-  if (key.type == Value::String) {
-    return properties->contains(
-        std::string_view(key.template get<std::string>()));
+  if (key.type == Value::String || key.type == Value::StringView) {
+    return properties->contains(key.to_string_view());
   }
   if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
 }
 
 inline const Value& ObjectValue::get(const Value& key) const {
-  if (key.type == Value::String) {
-    return properties->at(key.template get<std::string>()).val;
+  if (key.type == Value::String || key.type == Value::StringView) {
+    return properties->at(std::string(key.to_string_view())).val;
   }
   return non_string_props->at(key).val;
 }
 
 inline void ObjectValue::initialize(const Value& key, const Value& val,
                                     bool mut) {
-  if (key.type == Value::String) {
-    initialize(std::string_view(key.template get<std::string>()), val, mut);
+  if (key.type == Value::String || key.type == Value::StringView) {
+    initialize(key.to_string_view(), val, mut);
     return;
   }
   auto [it, inserted] =
@@ -1624,8 +1623,8 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
 }
 
 inline void ObjectValue::assign(const Value& key, const Value& val) {
-  if (key.type == Value::String) {
-    assign(std::string_view(key.template get<std::string>()), val);
+  if (key.type == Value::String || key.type == Value::StringView) {
+    assign(key.to_string_view(), val);
     return;
   }
   auto it = non_string_props->find(key);
@@ -2037,7 +2036,8 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
 // the given source location if the value is not iterable.
 inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   Value iter_fn;
-  if (iterable.type == Value::String) {
+  if (iterable.type == Value::String ||
+      iterable.type == Value::StringView) {
     const auto& methods = string_builtins();
     auto it = methods.find("iter");
     if (it != methods.end()) iter_fn = it->second;
