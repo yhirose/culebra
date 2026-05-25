@@ -88,6 +88,18 @@ assert(classify(42) == "long")
 assert(classify("hi") == "other")
 assert(classify(nil) == "other")
 
+// Nested fn / lambda inside a Generic class method does NOT see
+// the class's type-params — symmetric across backends. The method
+// itself still neutralizes its own `: T` params.
+class Holder<T> {
+  unwrap(x: T) {
+    let lam = |y| y + 1
+    fn helper(z) { z * 2 }
+    helper(lam(x))
+  }
+}
+assert(Holder.new().unwrap(3) == 8)
+
 // Inner Union inside a Generic must not infinite-recurse in
 // type_matches / multifn_specificity (depth-aware gate).
 fn inner_union(xs: Array<Long | Float>) -> Long { xs.size() }

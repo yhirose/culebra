@@ -11450,6 +11450,20 @@ struct JIT {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
+    // Snapshot class_type_params_ for the *immediate* function's params
+    // and clear the member so nested closures (lambdas / fn inside the
+    // body) don't pick up the outer class's params — matches interp's
+    // neutralize_type_params, which only touches the top-level method.
+    // Restored on scope exit.
+    auto active_class_type_params = std::move(class_type_params_);
+    class_type_params_.clear();
+    struct ClassParamsGuard {
+      std::vector<std::string_view>& slot;
+      std::vector<std::string_view> saved;
+      ~ClassParamsGuard() { slot = std::move(saved); }
+    } class_params_guard{class_type_params_,
+                         std::vector<std::string_view>(active_class_type_params)};
+
     auto infoIt = func_info_.find(info_key);
     if (infoIt == func_info_.end()) {
       throw std::runtime_error("missing func_info for function");
@@ -11490,8 +11504,10 @@ struct JIT {
       paramNames.push_back(std::string(node->nodes[1]->token));
       auto tname = extract_type_annotation(*node, 2);
       // Class type-params (`T`, `K`, ...) become "Any" at the JIT
-      // level — the runtime type check is no-op for them.
-      for (auto tp : class_type_params_) {
+      // level — the runtime type check is no-op for them. Uses the
+      // snapshot from the immediate enclosing class so nested fns
+      // in the body don't inherit the rewrite (matches interp).
+      for (auto tp : active_class_type_params) {
         if (tname == tp) { tname = "Any"; break; }
       }
       paramTypeNames.push_back(tname);
