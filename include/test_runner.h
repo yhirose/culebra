@@ -200,7 +200,7 @@ inline void install_test_ambient(Environment& env) {
                                     args[1]);
             }
             if (args.size() == 1) {
-              if (args[1 - 1].type != Value::Function) {
+              if (args[0].type != Value::Function) {
                 throw CulebraError(
                     "TypeError",
                     "test(fn): argument must be a Function");
@@ -212,6 +212,17 @@ inline void install_test_ambient(Environment& env) {
                     "ValueError",
                     "@test requires a named function (got anonymous); "
                     "use test(\"name\", fn) for anonymous bodies");
+              }
+              // Skip when `@parametrize` already registered `<fname>[i]`
+              // entries for this fn; stacking `@test` over `@parametrize`
+              // would otherwise add a spurious bare entry that fails
+              // fixture DI at run time.
+              const auto& reg = test_registry().entries;
+              std::string prefix = fname + "[";
+              for (const auto& e : reg) {
+                if (e.name.starts_with(prefix)) {
+                  return fn_val;
+                }
               }
               register_test(fname, fn_val);
               return fn_val;  // decorator: return the original fn
