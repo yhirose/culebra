@@ -5074,6 +5074,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // Synthesized `parameters()` is available on every class instance
       // (see eval_property).
       if (name == "parameters" && class_tag(val)) return true;
+      // Trait default-method visibility: if a registered trait owns a
+      // default named `name` and this instance conforms, the property
+      // exists — block UFCS from hijacking via a same-named global fn.
+      if (class_tag(val)) {
+        for (const auto& [trait_name, default_methods] : trait_default_impls_) {
+          if (default_methods.find(std::string(name)) ==
+              default_methods.end()) continue;
+          if (type_matches(val, trait_name)) return true;
+        }
+      }
     }
     return false;
   }
