@@ -46,9 +46,7 @@ try {
 } catch e {
   caught = e.kind
 }
-// `show` is registered as a multifn (single `fn` decl, no decorator);
-// when no method matches the call, the dispatcher raises
-// DispatchError, not TypeError. Both backends agree.
+// multifn dispatcher: no method match → DispatchError (both backends).
 assert(caught == "DispatchError")
 
 // --- Single-alternative still works (regression check) ---
@@ -69,26 +67,21 @@ assert(classify("hi") == "string")
 assert(classify(nil) == "other")
 
 // --- PATTERN outer `|` vs TYPE_ANNOTATION inner `|` ---
-// TYPE_ANNOTATION only swallows alternatives that start with an
-// uppercase letter (a type name). A lowercase ident or a literal
-// after `|` must fall back to the pattern's outer alternation —
-// the inner Union closes at the first non-Type alt.
+// TYPE_ANNOTATION closes at the first non-Type alt; lowercase
+// identifiers and literals fall back to PATTERN outer alternation.
 fn boundary(v) {
   match v {
     // Parses as ((n: Long | Float) | 42 | 'zero').
-    // The `| 42` is outer pattern-alternation (number literal not a
-    // type), and `| 'zero'` is outer with a single-quoted string.
     n: Long | Float | 42 | 'zero' => "matched",
     _ => "other",
   }
 }
-assert(boundary(1) == "matched")        // Long via Union
-assert(boundary(1.5) == "matched")      // Float via Union
-assert(boundary(42) == "matched")       // outer number alt
-assert(boundary('zero') == "matched")   // outer string alt
+assert(boundary(1) == "matched")
+assert(boundary(1.5) == "matched")
+assert(boundary(42) == "matched")
+assert(boundary('zero') == "matched")
 assert(boundary('other') == "other")
-// `boundary(nil)` is omitted: a pre-existing JIT bug segfaults on
-// string-literal patterns when the scrutinee is nil (task #231).
+// nil omitted: pre-existing JIT segfault on string-literal + nil (task #231).
 
 // --- fn.params surfaces the canonical Union string ---
 let ps = show.params
@@ -106,14 +99,14 @@ fn dup_alt2(x: Float | Long | Float) { x }
 assert(dup_alt.params[0].type == "Long")
 assert(dup_alt2.params[0].type == "Float | Long")
 
-// Concrete type wins over a Union that includes it (no Ambiguous error).
+// Concrete type outranks a Union that includes it.
 fn pick(x: Long) -> String { "concrete" }
 fn pick(x: Long | Float) -> String { "union" }
-assert(pick(1) == "concrete")       // concrete Long is more specific
-assert(pick(1.5) == "union")        // only Union matches Float
+assert(pick(1) == "concrete")
+assert(pick(1.5) == "union")
 
-// Union wins over a bare Object catch-all when the arg is in the Union.
-// (Object accepts class instances; primitives go through the Union.)
+// Union outranks bare `Object` when arg is in the Union (Object is
+// class-instance catch-all only; primitives go through the Union).
 class Holder {
   new (v) { this.value = v }
 }
@@ -122,10 +115,7 @@ fn rank(x: Long | Float) -> String { "union" }
 assert(rank(1) == "union")
 assert(rank(Holder.new(0)) == "object")
 
-// Whitespace variants of the same Union dedup to one multifn method —
-// the second decl overwrites the first instead of growing the method
-// table. (If they were separate entries `Long | Float` calls would
-// become ambiguous.)
+// Whitespace-variant redecl overwrites instead of growing the table.
 fn dedup(x: Long|Float) -> String { "first" }
 fn dedup(x: Long | Float) -> String { "second" }
 assert(dedup(1) == "second")
