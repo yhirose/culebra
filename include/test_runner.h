@@ -30,6 +30,32 @@ inline TestRegistry& test_registry() {
   return runtime_substate<TestRegistry>(kSlotTestRegistry);
 }
 
+// RAII redirect of `std::cout` into an internal stringstream. The dtor
+// restores the original rdbuf even if the consumer never calls `take()`
+// (e.g. an unexpected exception type escaped the catch). `take()` is
+// idempotent — repeated calls return "" after the first.
+class StdoutCapture {
+  std::stringstream buf_;
+  std::streambuf* old_ = nullptr;
+
+ public:
+  explicit StdoutCapture(bool active) {
+    if (active) old_ = std::cout.rdbuf(buf_.rdbuf());
+  }
+  ~StdoutCapture() {
+    if (old_) std::cout.rdbuf(old_);
+  }
+  StdoutCapture(const StdoutCapture&) = delete;
+  StdoutCapture& operator=(const StdoutCapture&) = delete;
+
+  std::string take() {
+    if (!old_) return {};
+    std::cout.rdbuf(old_);
+    old_ = nullptr;
+    return buf_.str();
+  }
+};
+
 // Number of newlines in the stdlib preamble — used to map a runtime
 // error's `line` (computed against the prepended buffer) back to the
 // user's file line.
@@ -127,7 +153,12 @@ inline Value resolve_fixture_impl(
 // Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
 // eval_condition dispatches `__eq__`/`__lt__`/`__le__`. Used by the
 // six comparison matchers below so their semantics match `==`/`<` etc.
+// Invoke `receiver.name(rhs?)` via the full dispatch path so default
+// args, type annotations, and multifn `__KWARGS__` unmarshaling all
+// apply — same machinery as the `==`/`<` operators. Returns nullopt
+// when receiver is non-Object or the method is absent.
 inline std::optional<Value> dispatch_special_method(
+    std::shared_ptr<Environment> env,
     const Value& receiver, std::string_view name, const Value* rhs) {
   if (receiver.type != Value::Object) return std::nullopt;
   const auto& obj = receiver.to_object();
@@ -135,42 +166,82 @@ inline std::optional<Value> dispatch_special_method(
   if (it == obj.properties->end()) return std::nullopt;
   const auto& m = it->second.val;
   if (m.type != Value::Function) return std::nullopt;
-  const auto& mf = m.get<FunctionValue>();
-  auto inner = std::make_shared<Environment>();
-  inner->is_function_frame = true;
-  inner->initialize("self", m, false);
-  inner->initialize("this", receiver, false);
-  inner->initialize("__LINE__", Value(0L), false);
-  inner->initialize("__COLUMN__", Value(0L), false);
-  if (rhs && !mf.params->empty()) {
-    inner->initialize(mf.params->at(0).name, *rhs, false);
+
+  // Bind `this` on the method without depending on Interpreter's
+  // private helper — mirrors _wrap_method_with_this in interpreter.h.
+  const auto& pf = m.get<FunctionValue>();
+  Value bound = Value(
+      FunctionValue(*pf.params, [m, receiver](std::shared_ptr<Environment> callEnv) {
+        callEnv->initialize("this", receiver, false);
+        return m.get<FunctionValue>().eval(callEnv);
+      }));
+  {
+    auto& wf = bound.get<FunctionValue>();
+    wf.name = pf.name;
+    wf.return_type = pf.return_type;
+    wf.introspection_target = pf.introspection_target;
   }
-  try {
-    return mf.eval(inner);
-  } catch (const ReturnValue& r) {
-    return r.value;
-  }
+  std::string slot = std::format("__matcher_{}_{}", name,
+                                  reinterpret_cast<uintptr_t>(&m));
+  env->initialize(slot, bound, false);
+  std::vector<Value> args;
+  if (rhs) args.push_back(*rhs);
+  return call(env, slot, std::move(args));
 }
 
-inline bool matcher_equal(const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(a, "__eq__", &b)) return r->to_bool();
-  if (auto r = dispatch_special_method(b, "__eq__", &a)) return r->to_bool();
+inline bool matcher_equal(std::shared_ptr<Environment> env,
+                           const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(env, a, "__eq__", &b))
+    return r->to_bool();
+  if (auto r = dispatch_special_method(env, b, "__eq__", &a))
+    return r->to_bool();
   return a == b;
 }
 
-inline bool matcher_less(const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(a, "__lt__", &b)) return r->to_bool();
+inline bool matcher_less(std::shared_ptr<Environment> env,
+                          const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(env, a, "__lt__", &b))
+    return r->to_bool();
   return a < b;
 }
 
-inline bool matcher_leq(const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(a, "__le__", &b)) return r->to_bool();
-  auto lt = dispatch_special_method(a, "__lt__", &b);
-  auto eq = dispatch_special_method(a, "__eq__", &b);
+inline bool matcher_leq(std::shared_ptr<Environment> env,
+                         const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(env, a, "__le__", &b))
+    return r->to_bool();
+  auto lt = dispatch_special_method(env, a, "__lt__", &b);
+  auto eq = dispatch_special_method(env, a, "__eq__", &b);
   if (lt || eq) {
     return (lt && lt->to_bool()) || (eq && eq->to_bool());
   }
   return a <= b;
+}
+
+// Mirrors `compare_values` for `>`: Object lhs dispatches as `!le`,
+// otherwise falls through to Value::operator>. Swapping operands to
+// reuse matcher_less is wrong (diverges on NaN and on classes that
+// implement only one side of __lt__/__le__).
+inline bool matcher_greater(std::shared_ptr<Environment> env,
+                              const Value& a, const Value& b) {
+  if (a.type == Value::Object) {
+    if (auto r = dispatch_special_method(env, a, "__le__", &b))
+      return !r->to_bool();
+    auto lt = dispatch_special_method(env, a, "__lt__", &b);
+    auto eq = dispatch_special_method(env, a, "__eq__", &b);
+    if (lt || eq) {
+      return !((lt && lt->to_bool()) || (eq && eq->to_bool()));
+    }
+  }
+  return a > b;
+}
+
+inline bool matcher_geq(std::shared_ptr<Environment> env,
+                         const Value& a, const Value& b) {
+  if (a.type == Value::Object) {
+    if (auto r = dispatch_special_method(env, a, "__lt__", &b))
+      return !r->to_bool();
+  }
+  return a >= b;
 }
 
 // `test(name, fn)` runtime helper used by the built-in `test` global
@@ -357,7 +428,7 @@ inline void install_test_ambient(Environment& env) {
             auto b = callEnv->get("b").to_double_coerce();
             auto tol = callEnv->get("tol").to_double_coerce();
             auto diff = std::abs(a - b);
-            if (std::isnan(diff) || diff > tol) {
+            if (std::isnan(diff) || std::isnan(tol) || diff > tol) {
               throw CulebraError("AssertionError",
                   std::format("assert_close failed:\n"
                               "  a:    {}\n"
@@ -373,16 +444,14 @@ inline void install_test_ambient(Environment& env) {
   // the same `__eq__`/`__lt__`/`__le__` rules as the `==`/`<`/`<=`
   // operators so `assert_eq(p1, p2)` matches `assert(p1 == p2)` for
   // class instances. Failure messages name both operands.
-  auto make_cmp_matcher = [](std::string_view name,
-                              std::string_view label,
-                              auto pred) {
+  auto make_cmp_matcher = [](std::string_view name, auto pred) {
     return Value(FunctionValue(
         {{"a", false}, {"b", false}},
-        [n = std::string(name), lbl = std::string(label), pred](
+        [n = std::string(name), pred](
             std::shared_ptr<Environment> callEnv) -> Value {
           auto a = callEnv->get("a");
           auto b = callEnv->get("b");
-          if (pred(a, b)) return Value();
+          if (pred(callEnv, a, b)) return Value();
           throw CulebraError("AssertionError",
               std::format("{} failed:\n  left:  {}\n  right: {}",
                           n,
@@ -392,28 +461,40 @@ inline void install_test_ambient(Environment& env) {
   };
 
   env.initialize("assert_eq",
-      make_cmp_matcher("assert_eq", "==",
-          [](const Value& a, const Value& b) { return matcher_equal(a, b); }),
+      make_cmp_matcher("assert_eq",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return matcher_equal(e, a, b);
+          }),
       false);
   env.initialize("assert_ne",
-      make_cmp_matcher("assert_ne", "!=",
-          [](const Value& a, const Value& b) { return !matcher_equal(a, b); }),
+      make_cmp_matcher("assert_ne",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return !matcher_equal(e, a, b);
+          }),
       false);
   env.initialize("assert_lt",
-      make_cmp_matcher("assert_lt", "<",
-          [](const Value& a, const Value& b) { return matcher_less(a, b); }),
+      make_cmp_matcher("assert_lt",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return matcher_less(e, a, b);
+          }),
       false);
   env.initialize("assert_le",
-      make_cmp_matcher("assert_le", "<=",
-          [](const Value& a, const Value& b) { return matcher_leq(a, b); }),
+      make_cmp_matcher("assert_le",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return matcher_leq(e, a, b);
+          }),
       false);
   env.initialize("assert_gt",
-      make_cmp_matcher("assert_gt", ">",
-          [](const Value& a, const Value& b) { return matcher_less(b, a); }),
+      make_cmp_matcher("assert_gt",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return matcher_greater(e, a, b);
+          }),
       false);
   env.initialize("assert_ge",
-      make_cmp_matcher("assert_ge", ">=",
-          [](const Value& a, const Value& b) { return matcher_leq(b, a); }),
+      make_cmp_matcher("assert_ge",
+          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
+            return matcher_geq(e, a, b);
+          }),
       false);
 }
 
@@ -526,12 +607,15 @@ inline TestRunSummary run_tests(
 
   auto emit_file_error = [&](const std::string& path_str,
                               const std::string& kind,
-                              const std::string& message) {
+                              const std::string& message,
+                              long line = 0, long col = 0) {
     if (reporter == Reporter::Json) {
       std::cout << R"({"event":"file_error","source":)"
                 << json_escape(path_str)
                 << R"(,"kind":)" << json_escape(kind)
                 << R"(,"message":)" << json_escape(message)
+                << R"(,"line":)" << line
+                << R"(,"col":)" << col
                 << "}\n";
     } else {
       std::cerr << "culebra test: " << kind << " for " << path_str
@@ -562,7 +646,7 @@ inline TestRunSummary run_tests(
     try {
       modules = loader.load_program(path_str, entry_src, msgs);
     } catch (const CulebraError& e) {
-      emit_file_error(path_str, e.kind, e.what());
+      emit_file_error(path_str, e.kind, e.what(), e.line, e.col);
       summary.errored_files++;
       continue;
     }
@@ -593,8 +677,10 @@ inline TestRunSummary run_tests(
   auto& reg = test_registry();
 
   if (list_only) {
+    size_t listed = 0;
     for (const auto& e : reg.entries) {
       if (!filter.empty() && e.name.find(filter) == std::string::npos) continue;
+      listed++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"test_list","name":)"
                   << json_escape(e.name)
@@ -605,8 +691,12 @@ inline TestRunSummary run_tests(
       }
     }
     if (reporter == Reporter::Json) {
-      std::cout << R"({"event":"list_end","count":)" << reg.entries.size()
-                << "}\n";
+      std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
+      // Emit run_end too so consumers waiting on it as the stream
+      // terminator don't hang on --list runs.
+      std::cout << R"({"event":"run_end","passed":0,"failed":0,)"
+                << R"("errored_files":)" << summary.errored_files
+                << R"(,"bailed":false})" << "\n";
     }
     return summary;
   }
@@ -640,23 +730,24 @@ inline TestRunSummary run_tests(
       continue;
     }
     std::string slot = "__test_" + std::to_string(i);
-    // Per-test fixture cache; cleared on scope exit so class `drop` fires.
-    std::unordered_map<std::string, Value> fixture_cache;
-    // JSON mode captures stdout so user `puts` doesn't interleave with
-    // the NDJSON stream. Default mode leaves stdout alone so human
-    // reading sees the natural mix of test output and `ok`/`FAIL` lines.
-    std::stringstream capture_buf;
-    std::streambuf* old_cout = nullptr;
-    if (reporter == Reporter::Json) {
-      old_cout = std::cout.rdbuf(capture_buf.rdbuf());
-    }
-    auto restore_cout = [&]() -> std::string {
-      if (!old_cout) return {};
-      std::cout.rdbuf(old_cout);
-      old_cout = nullptr;
-      return capture_buf.str();
-    };
+    // RAII capture so the rdbuf is restored on every exit path (normal
+    // return, any catch, or unwind through an uncaught exception type).
+    // Default mode passes false → no-op guard.
+    StdoutCapture capture(reporter == Reporter::Json);
+    // `result` holds either the captured stdout (success) or both that
+    // string and the error info. Filled inside the try / catch arms;
+    // emitted AFTER the inner scope's fixture_cache destructs so
+    // `drop()`-time puts are captured into the same `stdout` field.
+    enum class Outcome { Pass, FailError, FailValue, FailMisc };
+    Outcome outcome = Outcome::Pass;
+    std::string err_kind, err_what;
+    long err_line = 0, err_col = 0;
+    Value err_value;
     try {
+      // Inner scope so the per-test fixture_cache destructs before
+      // we take() captured stdout — class `drop()` then writes into
+      // the capture rather than into the restored stream.
+      std::unordered_map<std::string, Value> fixture_cache;
       env->initialize(slot, entry_fn, false);
       std::vector<Value> args;
       if (!entry_param_cases.empty()) {
@@ -677,7 +768,50 @@ inline TestRunSummary run_tests(
         }
       }
       call(env, slot, std::move(args));
-      auto captured = restore_cout();
+    } catch (const CulebraError& e) {
+      outcome = Outcome::FailError;
+      err_kind = e.kind;
+      err_what = e.what();
+      err_line = e.line;
+      err_col = e.col;
+    } catch (const Value& v) {
+      // User `throw <value>` lands here. Preserve kind/message when the
+      // payload is an Object with the conventional shape.
+      outcome = Outcome::FailValue;
+      err_value = v;
+      if (v.type == Value::Object) {
+        const auto& obj = v.to_object();
+        if (obj.has("kind")) {
+          auto kv = obj.get("kind");
+          if (kv.type == Value::String) err_kind = std::string(kv.to_string());
+        }
+        if (obj.has("message")) {
+          auto mv = obj.get("message");
+          if (mv.type == Value::String) err_what = std::string(mv.to_string());
+        }
+      }
+      if (err_kind.empty()) err_kind = "UserThrow";
+      if (err_what.empty()) err_what = v.str_display();
+    } catch (const std::exception& e) {
+      outcome = Outcome::FailMisc;
+      err_kind = "InternalError";
+      err_what = e.what();
+    }
+
+    auto captured = capture.take();
+
+    // Heuristic for converting a runtime `line` to a user-file line:
+    // only the entry module gets the stdlib preamble prepended, so
+    // an error whose line falls within the preamble range is most
+    // likely from an imported module and the raw value is already
+    // correct. Above the preamble, subtract.
+    auto to_user_line = [&](long raw) -> int {
+      if (raw <= 0) return 0;
+      int p = stdlib_preamble_line_count();
+      return raw > p ? static_cast<int>(raw - p) : static_cast<int>(raw);
+    };
+
+    if (outcome == Outcome::Pass) {
       summary.passed++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"test_pass","name":)"
@@ -688,15 +822,16 @@ inline TestRunSummary run_tests(
       } else {
         std::cout << "  ok  " << entry_name << "\n";
       }
-    } catch (const CulebraError& e) {
-      auto captured = restore_cout();
+    } else {
       summary.failed++;
-      int user_line = e.line > 0
-          ? static_cast<int>(e.line) - stdlib_preamble_line_count()
-          : 0;
+      int user_line = to_user_line(err_line);
       if (reporter == Reporter::Json) {
+        // Snippet only when the line plausibly maps to the entry
+        // file. For imported modules we don't have the source mapped
+        // here, so leave snippet empty rather than render the wrong
+        // file's lines.
         std::string snippet;
-        if (user_line > 0) {
+        if (err_line > 0 && err_line > stdlib_preamble_line_count()) {
           if (auto it = user_sources.find(entry_source);
               it != user_sources.end()) {
             snippet = source_snippet(it->second, user_line);
@@ -704,39 +839,24 @@ inline TestRunSummary run_tests(
         }
         std::cout << R"({"event":"test_fail","name":)"
                   << json_escape(entry_name)
-                  << R"(,"kind":)" << json_escape(e.kind)
-                  << R"(,"message":)" << json_escape(e.what())
+                  << R"(,"kind":)" << json_escape(err_kind)
+                  << R"(,"message":)" << json_escape(err_what)
                   << R"(,"line":)" << user_line
-                  << R"(,"col":)" << e.col
+                  << R"(,"col":)" << err_col
                   << R"(,"source":)" << json_escape(entry_source)
                   << R"(,"snippet":)" << json_escape(snippet)
                   << R"(,"stdout":)" << json_escape(captured)
                   << "}\n";
       } else {
-        std::string loc = e.line > 0
-            ? " at " + std::to_string(e.line) + ":" + std::to_string(e.col)
+        std::string loc = user_line > 0
+            ? " at " + std::to_string(user_line) +
+              ":" + std::to_string(err_col)
             : "";
         std::string msg = std::string("  FAIL ") + entry_name + " — "
-                          + e.kind + ": " + e.what() + loc
+                          + err_kind + ": " + err_what + loc
                           + " (in " + entry_source + ")";
         summary.failure_messages.push_back(msg);
         std::cout << msg << "\n";
-      }
-    } catch (const std::exception& e) {
-      auto captured = restore_cout();
-      summary.failed++;
-      if (reporter == Reporter::Json) {
-        std::cout << R"({"event":"test_fail","name":)"
-                  << json_escape(entry_name)
-                  << R"(,"kind":"InternalError","message":)"
-                  << json_escape(e.what())
-                  << R"(,"source":)" << json_escape(entry_source)
-                  << R"(,"stdout":)" << json_escape(captured)
-                  << "}\n";
-      } else {
-        summary.failure_messages.push_back(
-            std::string("  FAIL ") + entry_name + " — " + e.what());
-        std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
       }
     }
     if (bail_after > 0 && summary.failed >= bail_after) break;

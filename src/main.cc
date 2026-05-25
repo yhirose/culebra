@@ -490,7 +490,13 @@ int run_test(int argc, const char** argv) {
         bail_after = 1;
       }
     } else if (arg.starts_with("--bail=")) {
-      bail_after = std::stoi(arg.substr(7));
+      try {
+        bail_after = std::stoi(arg.substr(7));
+      } catch (...) {
+        std::println(stderr, "culebra test: invalid --bail value '{}'",
+                      arg.substr(7));
+        return 2;
+      }
     } else if (arg == "--list") {
       list_only = true;
     } else if (arg.starts_with("--")) {

@@ -215,6 +215,53 @@ fn di_memoization(db, bumped) {
   assert(db == bumped)
 }
 
+# --- assert_gt / assert_ge mirror operators on class instances ---
+
+class ByX {
+  new(x) { this.x = x }
+  __lt__(o) { this.x < o.x }
+  __eq__(o) { this.x == o.x }
+}
+
+@test
+fn assert_gt_uses_le_negation_not_operand_swap() {
+  # ByX defines __lt__/__eq__ on LHS only. With operand swap, assert_gt(a,b)
+  # would query b.__lt__(a) and produce a different result when a > b but
+  # b.__lt__(a) returns wrong via NaN-like asymmetry. Here we just verify
+  # ordering parity with the operator.
+  let a = ByX.new(5)
+  let b = ByX.new(3)
+  assert_gt(a, b)
+  assert(a > b)
+}
+
+@test
+fn assert_ge_handles_equal_via_negated_lt() {
+  let a = ByX.new(5)
+  let b = ByX.new(5)
+  assert_ge(a, b)                       # a >= b ↔ !(a < b)
+  let r = try { assert_gt(a, b); nil } catch e { e }
+  assert(r.kind == "AssertionError")    # a > b is false when equal
+}
+
+# --- assert_close rejects NaN tolerance ---
+
+@test
+fn assert_close_rejects_nan_tol() {
+  let nan_tol = (-1.0) ** 0.5
+  let r = try { assert_close(1.0, 2.0, nan_tol); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# --- Raw user `throw <Value>` is caught by the runner and reported ---
+
+@test
+fn user_throw_object_caught_with_kind() {
+  let r = try { throw { kind: "MyError", message: "boom" } ; nil } catch e { e }
+  assert(r.kind == "MyError")
+  assert(r.message == "boom")
+}
+
 # Class `drop` fires when the per-test fixture cache releases its
 # ref at test end. Observed via a counter that holds no ref back.
 class DropCounter {
