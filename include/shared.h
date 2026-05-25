@@ -192,6 +192,10 @@ inline std::string_view trim_ascii(std::string_view s) {
 // the input unchanged as the only element. Empty input yields an
 // empty vector. Shared by both backends' type checks.
 //
+// Generic-aware: `|` inside `<...>` does not split, so
+// `Array<Long | Float>` stays one candidate. Depth is tracked across
+// the whole string; unbalanced `>` are clamped to 0.
+//
 // DEFENSIVE: empty alternatives (e.g. `Long ||  | Float`, leading
 // `|`, trailing `|`) are silently skipped. Grammar prevents these
 // from reaching here in normal source, but the helper is also
@@ -205,40 +209,116 @@ inline std::vector<std::string_view> split_union_types(
     std::string_view name) {
   std::vector<std::string_view> out;
   size_t start = 0;
-  while (start <= name.size()) {
-    size_t end = name.find('|', start);
-    if (end == std::string_view::npos) end = name.size();
-    auto candidate = trim_ascii(name.substr(start, end - start));
-    if (!candidate.empty()) out.push_back(candidate);
-    if (end == name.size()) break;
-    start = end + 1;
+  int depth = 0;
+  for (size_t i = 0; i < name.size(); i++) {
+    char c = name[i];
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == '|' && depth == 0) {
+      auto cand = trim_ascii(name.substr(start, i - start));
+      if (!cand.empty()) out.push_back(cand);
+      start = i + 1;
+    }
   }
+  auto last = trim_ascii(name.substr(start));
+  if (!last.empty()) out.push_back(last);
   return out;
 }
 
-// Canonical form for a (possibly Union) type annotation, used in
-// fn.params introspection and multifn redeclaration matching so
-// whitespace variants of the same Union compare equal.
-// `Long|Float` and `Long  |  Float` both → `Long | Float`.
-// Empty input returns "". Non-Union names are returned unchanged.
-// Owned std::string so storage outlives `name`.
+// Split a comma-separated Generic argument list into its components,
+// respecting nested `<...>`. `Long, Map<String, Long>` →
+// ["Long", "Map<String, Long>"]. Empty args yield empty vector.
+inline std::vector<std::string_view> split_generic_args(
+    std::string_view args) {
+  std::vector<std::string_view> out;
+  size_t start = 0;
+  int depth = 0;
+  for (size_t i = 0; i < args.size(); i++) {
+    char c = args[i];
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == ',' && depth == 0) {
+      auto cand = trim_ascii(args.substr(start, i - start));
+      if (!cand.empty()) out.push_back(cand);
+      start = i + 1;
+    }
+  }
+  auto last = trim_ascii(args.substr(start));
+  if (!last.empty()) out.push_back(last);
+  return out;
+}
+
+// Split a single (non-Union) type name into outer + generic args.
+// `Array<Long>` → {"Array", "Long"}; `Map<String, Long>` →
+// {"Map", "String, Long"}; `Long` → {"Long", ""}.
+// The args view is the raw inside-the-brackets text (callers split
+// it further with `split_generic_args`).
+struct GenericHead {
+  std::string_view outer;
+  std::string_view args;  // empty if no <...>
+};
+inline GenericHead parse_generic_head(std::string_view name) {
+  auto trimmed = trim_ascii(name);
+  auto pos = trimmed.find('<');
+  if (pos == std::string_view::npos || trimmed.empty() ||
+      trimmed.back() != '>') {
+    return {trimmed, {}};
+  }
+  return {
+    trim_ascii(trimmed.substr(0, pos)),
+    trimmed.substr(pos + 1, trimmed.size() - pos - 2),
+  };
+}
+
+// Canonical form for a (possibly Union, possibly Generic) type
+// annotation, used in fn.params introspection and multifn
+// redeclaration matching so whitespace variants of the same
+// type compare equal.
+//
+// `Long|Float`               → `Long | Float`
+// `Array<Long|Float>`        → `Array<Long | Float>`
+// `Array < Long , Float >`   → `Array<Long, Float>`
+// `Long | Long`              → `Long`         (dedup at top level)
+// Empty input                → ""
+//
+// Recursive: nested `<...>` are canonicalized as well. Owned
+// std::string so storage outlives `name`.
 inline std::string canonicalize_type_annotation(std::string_view name) {
-  if (name.find('|') == std::string_view::npos) {
-    return std::string(trim_ascii(name));
+  auto trimmed = trim_ascii(name);
+  if (trimmed.empty()) return "";
+
+  auto cands = split_union_types(trimmed);
+  if (cands.size() > 1) {
+    // Top-level Union — canonicalize each candidate and dedup. Linear
+    // dedup against canonical forms covers `Array<Long> | Array<Long>`
+    // (different whitespace inside the args still collapses).
+    std::string out;
+    std::vector<std::string> seen;
+    for (auto cand : cands) {
+      auto canon = canonicalize_type_annotation(cand);
+      bool dup = false;
+      for (auto& s : seen) if (s == canon) { dup = true; break; }
+      if (dup) continue;
+      seen.push_back(canon);
+      if (!out.empty()) out += " | ";
+      out += canon;
+    }
+    return out;
   }
-  std::string out;
-  // Drop duplicate alternatives keeping first-occurrence order, so
-  // `Long | Long` collapses to `Long` and `Float | Long | Float` to
-  // `Float | Long`. A handful of alts is normal — linear scan is fine.
-  std::vector<std::string_view> seen;
-  for (auto cand : split_union_types(name)) {
-    bool dup = false;
-    for (auto s : seen) if (s == cand) { dup = true; break; }
-    if (dup) continue;
-    seen.push_back(cand);
-    if (!out.empty()) out += " | ";
-    out.append(cand.data(), cand.size());
+
+  // Single type — check for Generic.
+  auto head = parse_generic_head(trimmed);
+  if (head.args.empty()) return std::string(head.outer);
+
+  std::string out(head.outer);
+  out += '<';
+  bool first = true;
+  for (auto a : split_generic_args(head.args)) {
+    if (!first) out += ", ";
+    out += canonicalize_type_annotation(a);
+    first = false;
   }
+  out += '>';
   return out;
 }
 

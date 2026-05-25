@@ -28,7 +28,13 @@ const auto grammar_ = R"(
   # see DECORATOR below.
   MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 
-  CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ IDENTIFIER _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+  CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ CLASS_HEAD _ '{' _ (METHOD (_ METHOD)*)? _ '}'
+
+  # Class name with optional Generic type parameters: `Box`, `Box<T>`,
+  # `Pair<K, V>`. Captured into a single token; eval_class_decl peels
+  # off the outer name via parse_generic_head. Type parameters are
+  # documentation in the MVP — runtime sees them as Any-equivalent.
+  CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* )* _sp_ '>' )? >
 
   # `@expr` before a `fn` / `class` declaration. The expression is any
   # CALL chain (`@deco`, `@deco(arg)`, `@module.deco(arg)`); it must
@@ -156,8 +162,15 @@ const auto grammar_ = R"(
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
 
-  TYPE_ANNOTATION          <-  ':' _ < [A-Z] [a-zA-Z_0-9]* ( _sp_ '|' _sp_ [A-Z] [a-zA-Z_0-9]* )* >
-  RETURN_TYPE              <-  '->' _ < [A-Z] [a-zA-Z_0-9]* ( _sp_ '|' _sp_ [A-Z] [a-zA-Z_0-9]* )* >
+  # TYPE_NAME = single type, optionally Generic. TYPE_REF wraps Union
+  # alternation around it so `Array<Long | Float>` and the outer
+  # `Long | Float` use one shared definition. Captured verbatim into
+  # the surrounding TYPE_ANNOTATION / RETURN_TYPE token — whitespace
+  # is canonicalized later by canonicalize_type_annotation.
+  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* _sp_ '>' )?
+  TYPE_REF                 <-  TYPE_NAME ( _sp_ '|' _sp_ TYPE_NAME )*
+  TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >
+  RETURN_TYPE              <-  '->' _ < TYPE_REF >
 
   BLOCK                    <-  '{' _ STATEMENTS _ '}'
 

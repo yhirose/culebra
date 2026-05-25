@@ -1539,6 +1539,68 @@ it: defining both `fn pick(x: Long)` and `fn pick(x: Long | Float)`
 routes a Long arg to the concrete `pick`, while a Float still goes
 through the Union version.
 
+### Generic types
+
+A type name may carry type parameters in angle brackets:
+`Array<Long>`, `Iterator<String>`, `Option<T>`, `Map<String, Long>`.
+Nesting is allowed (`Array<Array<Long>>`) and Generic args may be
+Unions (`Array<Long | Float>`).
+
+    fn first(xs: Array<Long>) -> Long { xs[0] }
+    fn pairs(m: Map<String, Long>) { ... }
+    fn lookup(k: String) -> Array<Long> | Nil { ... }
+
+Like Rust and Swift's monomorphized generics, **element-level
+runtime checks are no-ops**: only the outer type (`Array`,
+`Iterator`, `Map`, ...) is checked at the boundary. The args
+exist for documentation and for multimethod dispatch tie-breaks.
+
+    fn first(xs: Array<Long>) { xs[0] }
+    first([1, "two", 3])   # OK — element type is not enforced
+
+Whitespace inside `<>` is tolerated and canonicalized:
+`Array < Long >`, `Array<  Long  >` and `Array<Long>` all surface
+as `"Array<Long>"` in `fn.params[i].type`.
+
+Multimethod dispatch tie-break: a Generic param is more specific
+than its bare outer-only form. With both
+`fn show(xs: Array)` and `fn show(xs: Array<Long>)` defined, an
+`Array` arg routes to the Generic version.
+
+#### Generic class declarations
+
+A class can declare type parameters:
+
+    class Box<T> {
+      new (v: T) { this.v = v }
+    }
+
+    class Pair<K, V> {
+      new (k, v) { this.k = k; this.v = v }
+    }
+
+Type parameters are documentation in this phase — they make method
+signatures readable but the runtime sees them as `Any`. The
+class is bound under the outer name (`Box`, `Pair`), and instances
+carry the outer class tag:
+
+    let b = Box.new(42)
+    b.class                 # → 'Box'
+
+Annotations referring to a Generic class use the same `<...>`
+syntax as built-in Generic types and behave the same way (outer
+match):
+
+    fn unbox(b: Box<Long>) -> Long { b.v }
+
+#### Planned (Phase 2b)
+
+* Expression-position type args (`Box<Long>.new(42)`) — the parser
+  currently reserves `<...>` for type-annotation contexts only.
+* Opt-in element runtime check.
+* Bound constraints (`<T: Comparable>`) — depends on trait /
+  protocol introduction.
+
 ### Where annotations are *not* checked
 
 * Arithmetic / boolean operators check their own operand types;

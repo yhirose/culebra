@@ -1470,6 +1470,65 @@ specific 扱い: `fn pick(x: Long)` と `fn pick(x: Long | Float)` を
 両方定義すると、 Long 引数は concrete `pick` に、Float 引数は Union
 版に routed されます。
 
+### Generic 型
+
+型名に角括弧で型パラメータを付けられます:
+`Array<Long>`, `Iterator<String>`, `Option<T>`, `Map<String, Long>`。
+ネスト (`Array<Array<Long>>`) や Union との組み合わせ
+(`Array<Long | Float>`) も可能。
+
+    fn first(xs: Array<Long>) -> Long { xs[0] }
+    fn pairs(m: Map<String, Long>) { ... }
+    fn lookup(k: String) -> Array<Long> | Nil { ... }
+
+Rust / Swift のモノモーフィゼーションと同じく、**要素レベルの
+runtime チェックは行いません** — 境界でチェックされるのは外側の型
+(`Array`, `Iterator`, `Map` 等) のみ。型パラメータはドキュメントと
+多重ディスパッチの tie-break のために存在します。
+
+    fn first(xs: Array<Long>) { xs[0] }
+    first([1, "two", 3])   # OK — 要素型は強制されない
+
+`<>` 内の空白は許容され、canonical 形に正規化されます:
+`Array < Long >`, `Array<  Long  >`, `Array<Long>` はすべて
+`fn.params[i].type` で `"Array<Long>"` として現れます。
+
+多重ディスパッチ tie-break: Generic 引数付きの param は同じ外側型
+だけの bare 形よりも specific。 `fn show(xs: Array)` と
+`fn show(xs: Array<Long>)` を両方定義すると、 Array 引数は Generic
+版に routed されます。
+
+#### Generic クラス宣言
+
+クラスも型パラメータを宣言できます:
+
+    class Box<T> {
+      new (v: T) { this.v = v }
+    }
+
+    class Pair<K, V> {
+      new (k, v) { this.k = k; this.v = v }
+    }
+
+このフェーズでは型パラメータはドキュメント — メソッドのシグネチャを
+読みやすくするためのものであり、 runtime は `Any` として扱います。
+class は外側名 (`Box`, `Pair`) で bind され、インスタンスは外側の
+class tag を持ちます:
+
+    let b = Box.new(42)
+    b.class                 # → 'Box'
+
+Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ:
+
+    fn unbox(b: Box<Long>) -> Long { b.v }
+
+#### 予定 (Phase 2b)
+
+* expression 位置の type args (`Box<Long>.new(42)`) — parser は
+  現状 `<...>` を型注釈 context のみで使用。
+* opt-in 要素 runtime check。
+* Bound 制約 (`<T: Comparable>`) — trait / protocol 導入次第。
+
 ### 検査されない箇所
 
 * 算術・論理演算子は自身のオペランド型を検査しますが、中間値の

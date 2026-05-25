@@ -1,0 +1,78 @@
+// Conformance: Generic type annotations (Phase 2 MVP).
+// [[project-type-system]]: Rust/Swift V-Subset.
+// Element check is no-op (matches Rust/Swift monomorphization design);
+// annotations are documentation + multifn dispatch only.
+
+// --- Generic param annotation accepts the outer type ---
+fn first(xs: Array<Long>) -> Long { xs[0] }
+assert(first([1, 2, 3]) == 1)
+
+// --- Element check is no-op (Long-only-by-promise, not by runtime) ---
+assert(first([1, "two", 3]) == 1)
+
+// --- Nested Generic ---
+fn rows(m: Array<Array<Long>>) -> Long { m.size() }
+assert(rows([[1, 2], [3, 4], [5, 6]]) == 3)
+
+// --- Return-type Generic + Union ---
+// (Array equality is by reference in culebra (§9), so check element-wise.)
+fn lookup(k: String) -> Array<Long> | Nil {
+  if k == "yes" { [1, 2] } else { nil }
+}
+let hit = lookup("yes")
+assert(hit != nil)
+assert(hit[0] == 1 && hit[1] == 2)
+assert(lookup("no") == nil)
+
+// --- Whitespace tolerance + canonical form ---
+fn ws_a(xs: Array<Long>)     { xs[0] }
+fn ws_b(xs: Array < Long >)  { xs[0] }
+fn ws_c(xs: Array<  Long  >) { xs[0] }
+assert(ws_a.params[0].type == "Array<Long>")
+assert(ws_b.params[0].type == "Array<Long>")
+assert(ws_c.params[0].type == "Array<Long>")
+
+// --- Nested canonical form (Union inside Generic) ---
+fn nested_canon(m: Array<Array<Long|Float>>) { m.size() }
+assert(nested_canon.params[0].type == "Array<Array<Long | Float>>")
+
+// --- Duplicate alt dedup with Generic ---
+fn dup(xs: Array<Long> | Array<Long>) { xs[0] }
+assert(dup.params[0].type == "Array<Long>")
+
+// --- Multifn dispatch tie-break: Generic specific > bare outer ---
+fn handle(xs: Array)       -> String { "bare" }
+fn handle(xs: Array<Long>) -> String { "generic" }
+assert(handle([1, 2, 3]) == "generic")
+
+// --- Generic class declaration ---
+class Box<T> {
+  new (v) { this.v = v }
+}
+let b = Box.new(42)
+assert(b.class == "Box")
+assert(b.v == 42)
+
+// --- Multi-param Generic class ---
+class Pair<K, V> {
+  new (k, v) { this.k = k; this.v = v }
+}
+let p = Pair.new("a", 1)
+assert(p.class == "Pair")
+assert(p.k == "a")
+assert(p.v == 1)
+
+// --- Generic class can be used in annotations like a regular class ---
+fn unbox(b: Box<Long>) -> Long { b.v }
+assert(unbox(Box.new(7)) == 7)
+
+// --- Type param inside method signature is Any-equivalent (no check) ---
+class Cell<T> {
+  new (v: T) { this.v = v }
+  set(v: T) { this.v = v }
+}
+let c = Cell.new(1)
+c.set("now a string")
+assert(c.v == "now a string")
+
+IO.puts("test_generic_types OK")

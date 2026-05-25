@@ -94,13 +94,17 @@ inline bool is_primitive_type_label(std::string_view n) {
 // specific. -1 means no match.
 //
 // Ordering: Any (0) < Object catch-all (1) < Union exact (2) <
-// concrete exact (3). A concrete `Long` param therefore wins over a
-// `Long | Float` Union when the arg is a Long — picking the most
-// specific intent and avoiding an Ambiguous error.
+// concrete exact (3) < Generic full match (4). A concrete `Long`
+// param therefore wins over `Long | Float`; `Array<Long>` wins over
+// bare `Array` when both happen to match.
 //
 // `Object` param is a catch-all for class instances ONLY (matches
 // type_matches: primitives stay -1 so pick doesn't claim a match
 // that the post-pick check_type would reject).
+//
+// Generic param (`Array<Long>`) matches an arg whose type label
+// equals the outer name (`Array`) — element info isn't on the arg
+// side in the MVP, so it tie-breaks only against bare `Array`.
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
   if (param_type.empty() || param_type == "Any") return 0;
@@ -111,10 +115,19 @@ inline int multifn_specificity(std::string_view param_type,
       if (s > best) best = s;
     }
     if (best < 0) return -1;
-    // A concrete alt inside a Union scored 3; downgrade to 2 so a
+    // A concrete alt inside a Union scored 3+; downgrade to 2 so a
     // bare concrete param outranks it. An Object alt scored 1 and
     // stays 1 — same tier as a bare `Object` catch.
     return best >= 3 ? 2 : best;
+  }
+  // Generic: outer-match against arg label (arg side carries no
+  // type args today, so the args part only tie-breaks against bare
+  // outer-only annotations).
+  if (param_type.find('<') != std::string_view::npos) {
+    auto outer = parse_generic_head(param_type).outer;
+    int base = multifn_specificity(outer, arg_type);
+    if (base < 0) return -1;
+    return base == 3 ? 4 : base;
   }
   if (param_type == "Object") {
     if (arg_type == "Object") return 3;        // bare dict — exact
@@ -333,7 +346,13 @@ inline void collect_locals(
       i++;
     }
     auto& id = *node.nodes[i];
-    auto name = std::string(id.token);
+    // CLASS_DECL's head token may carry Generic params (`Box<T>`);
+    // bind the local under the outer name only.
+    auto raw = id.token;
+    auto bind_view = (node.tag == "CLASS_DECL"_)
+                         ? parse_generic_head(raw).outer
+                         : raw;
+    auto name = std::string(bind_view);
     check(name, id.line, id.column, outer);
     if (!is_sink_name(name)) locals.insert(name);
     return;
@@ -1494,12 +1513,18 @@ inline std::optional<std::string_view> class_tag(const Value& val) {
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
   // Union types (e.g. `Long | Float`) — any-of match. Recursively
-  // check each candidate after trimming.
+  // check each candidate after trimming. split_union_types is
+  // Generic-aware: `|` inside `<...>` does not split.
   if (name.find('|') != std::string_view::npos) {
     for (auto candidate : split_union_types(name)) {
       if (type_matches(val, candidate)) return true;
     }
     return false;
+  }
+  // Generic outer-match: `Array<Long>` checks `Array` only (element
+  // type is documentation in the MVP, see [[project_type_system]]).
+  if (name.find('<') != std::string_view::npos) {
+    name = parse_generic_head(name).outer;
   }
   switch (val.type) {
     case Value::Nil:      return name == "Nil";
@@ -4206,7 +4231,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Environment and ObjectValue store keys, and avoids dangling
     // `string_view`s caused by moving std::strings inside captured
     // lambdas.
-    auto class_name = ast.nodes[k]->token;
+    //
+    // CLASS_HEAD token may include Generic type parameters
+    // (`Box<T>`, `Pair<K, V>`). The runtime drops them — class is
+    // bound under `Box`, class_tag stores `Box`. Type parameters are
+    // documentation in the MVP; param/return annotations naming a
+    // type-param (e.g. `v: T`) are rewritten to "Any" below so they
+    // pass type_check at invocation.
+    auto class_head = parse_generic_head(ast.nodes[k]->token);
+    auto class_name = class_head.outer;
+    std::vector<std::string_view> type_params;
+    if (!class_head.args.empty()) {
+      type_params = split_generic_args(class_head.args);
+    }
+    auto neutralize_type_params = [&type_params](FunctionValue& fn) {
+      if (type_params.empty()) return;
+      auto matches_param = [&](std::string_view tn) {
+        for (auto tp : type_params) if (tn == tp) return true;
+        return false;
+      };
+      for (auto& p : *fn.params) {
+        if (matches_param(p.type_name)) p.type_name = "Any";
+      }
+      if (matches_param(fn.return_type)) fn.return_type = "Any";
+    };
 
     // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     // STATIC_MOD.token is "static" when present, empty otherwise.
@@ -4229,6 +4277,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       auto fn_val =
           make_function_value(*m.nodes[2], m.nodes[3], {}, env);
       fn_val.get<FunctionValue>().name = std::string(name_view);
+      neutralize_type_params(fn_val.get<FunctionValue>());
       if (is_static) {
         static_template.push_back({name_view, std::move(fn_val)});
       } else {
@@ -4263,6 +4312,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // METHOD layout after grammar update: [STATIC_MOD, IDENTIFIER,
       // PARAMETERS, BLOCK].
       auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
+      // Neutralize class type-params on the constructor signature too
+      // (e.g. `new(v: T)` so `T` doesn't reach check_type as an
+      // undeclared class name).
+      if (!type_params.empty()) {
+        for (auto& p : ctor_params) {
+          for (auto tp : type_params) {
+            if (p.type_name == tp) { p.type_name = "Any"; break; }
+          }
+        }
+      }
       auto body = new_ast->nodes[3];
       auto self = shared_from_this();
       constructor = Value(FunctionValue(

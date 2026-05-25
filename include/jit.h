@@ -1563,6 +1563,11 @@ inline const char* _culebra_tag_name(int8_t tag) {
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
+  // Generic outer-match: `Array<Long>` checks `Array` only. Element
+  // type is documentation in the MVP (matches interp's type_matches).
+  if (expected.find('<') != std::string_view::npos) {
+    expected = culebra::parse_generic_head(expected).outer;
+  }
   std::string_view actual = _culebra_tag_name(tag);
   if (actual == expected) return true;
   if (tag == TAG_OBJECT) {
@@ -6886,6 +6891,12 @@ struct JIT {
   std::map<const peg::Ast*, FuncInfo> func_info_;
   FuncInfo main_info_;
 
+  // When compiling methods of `class Foo<T, U>`, holds {"T", "U"} so
+  // param annotations naming a type-param can be rewritten to "Any"
+  // (Phase 2 MVP: type-params are documentation, runtime sees Any).
+  // Cleared back to empty after the class is done compiling.
+  std::vector<std::string_view> class_type_params_;
+
   // Absolute on-disk path of the module currently being compiled.
   // `compile_import_stmt` resolves its relative path string against
   // this module's directory, mirroring the interp's module_stack_
@@ -7711,14 +7722,16 @@ struct JIT {
       // `class Name { ... }` binds `Name` in the enclosing scope.
       // Method bodies are analyzed separately (visit_for_frees), not
       // as part of the enclosing function's local set. Optional
-      // leading DECORATOR children precede the IDENTIFIER.
+      // leading DECORATOR children precede the CLASS_HEAD. Strip
+      // Generic params so `class Pair<K, V>` binds under `Pair`.
       size_t i = 0;
       while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
         collect_fn_locals(*node.nodes[i], locals, outer);
         i++;
       }
       auto& id = *node.nodes[i];
-      auto name = std::string(id.token);
+      auto name = std::string(
+          culebra::parse_generic_head(id.token).outer);
       check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
@@ -10945,7 +10958,22 @@ struct JIT {
       dec_end++;
     }
 
-    std::string class_name(ast.nodes[dec_end]->token);
+    // CLASS_HEAD may carry Generic type params (`Box<T>`); strip them
+    // — the runtime sees only the outer name, type params are docs.
+    auto class_head = culebra::parse_generic_head(
+        ast.nodes[dec_end]->token);
+    std::string class_name(class_head.outer);
+    auto saved_class_type_params = std::move(class_type_params_);
+    class_type_params_.clear();
+    if (!class_head.args.empty()) {
+      class_type_params_ = culebra::split_generic_args(class_head.args);
+    }
+    struct ClassScopeGuard {
+      std::vector<std::string_view>& slot;
+      std::vector<std::string_view> saved;
+      ~ClassScopeGuard() { slot = std::move(saved); }
+    } class_scope_guard{class_type_params_,
+                        std::move(saved_class_type_params)};
 
     // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     // Instance methods live in the per-class meta object (shared
@@ -11453,7 +11481,13 @@ struct JIT {
         continue;
       }
       paramNames.push_back(std::string(node->nodes[1]->token));
-      paramTypeNames.push_back(extract_type_annotation(*node, 2));
+      auto tname = extract_type_annotation(*node, 2);
+      // Class type-params (`T`, `K`, ...) become "Any" at the JIT
+      // level — the runtime type check is no-op for them.
+      for (auto tp : class_type_params_) {
+        if (tname == tp) { tname = "Any"; break; }
+      }
+      paramTypeNames.push_back(tname);
       auto* def = extract_default_expr(*node);
       paramDefaults.push_back(def);
       paramMuts.push_back(node->nodes[0]->token == "mut");
