@@ -10024,39 +10024,26 @@ struct JIT {
       case "TYPED_IDENT"_: {
         auto type_name = pattern.nodes[1]->token;
         auto tag = extract_tag(subject);
-        llvm::Value* tag_match;
-        if (type_name == "Any") {
-          tag_match = builder_.getTrue();
-        } else if (type_name == "Nil") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL));
-        } else if (type_name == "Bool") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));
-        } else if (type_name == "Long") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
-        } else if (type_name == "Float") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT));
-        } else if (type_name == "String") {
-          tag_match =
-              builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
-        } else if (type_name == "Array") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
-        } else if (type_name == "Object") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-        } else if (type_name == "Function") {
-          tag_match = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
-        } else {
-          // Non-builtin type name → treat as a user class name. The
-          // subject matches when it's an Object whose `class` property
-          // (a String) equals the type name. Skip the runtime probe
-          // when the subject isn't Object — short-circuits to false.
+        // Predicate emitter for a single (non-Union) type name. Pulled
+        // into a lambda so Union arms can OR multiple alternatives.
+        auto match_single = [&](std::string_view tn) -> llvm::Value* {
+          if (tn == "Any")    return builder_.getTrue();
+          if (tn == "Nil")    return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL));
+          if (tn == "Bool")   return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));
+          if (tn == "Long")   return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
+          if (tn == "Float")  return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT));
+          if (tn == "String") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
+          if (tn == "Array")  return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
+          if (tn == "Object") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+          if (tn == "Function") return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
+          // Non-builtin → user class name. Match when Object && class
+          // tag equals tn. Short-circuit to false when not an Object.
           auto ptrTy = llvm::PointerType::get(ctx_, 0);
           auto isObj =
               builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
           auto fn = builder_.GetInsertBlock()->getParent();
-          auto probeBB =
-              llvm::BasicBlock::Create(ctx_, "typed.probe", fn);
-          auto endBB =
-              llvm::BasicBlock::Create(ctx_, "typed.end", fn);
+          auto probeBB = llvm::BasicBlock::Create(ctx_, "typed.probe", fn);
+          auto endBB = llvm::BasicBlock::Create(ctx_, "typed.end", fn);
           auto entryBB = builder_.GetInsertBlock();
           builder_.CreateCondBr(isObj, probeBB, endBB);
 
@@ -10064,7 +10051,7 @@ struct JIT {
           auto objPtr =
               builder_.CreateIntToPtr(extract_data(subject), ptrTy);
           auto expectedStr =
-              get_or_create_global_str(std::string(type_name), ".typed.cls");
+              get_or_create_global_str(std::string(tn), ".typed.cls");
           auto probe = emit_call(
               module_->getOrInsertFunction(rt::object_class_matches,
                                            builder_.getInt1Ty(), ptrTy, ptrTy),
@@ -10073,11 +10060,27 @@ struct JIT {
           builder_.CreateBr(endBB);
 
           builder_.SetInsertPoint(endBB);
-          auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2,
-                                         "typed.match");
+          auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "typed.match");
           phi->addIncoming(builder_.getFalse(), entryBB);
           phi->addIncoming(probe, probeEnd);
-          tag_match = phi;
+          return phi;
+        };
+
+        // Union match: OR the predicate over each alternative. Must
+        // mirror interp's type_matches recursion to keep both backends
+        // in lockstep ([[feedback-check-jit-interp-symmetry]]).
+        llvm::Value* tag_match;
+        if (type_name.find('|') != std::string_view::npos) {
+          tag_match = nullptr;
+          for (auto cand : culebra::split_union_types(type_name)) {
+            auto m = match_single(cand);
+            tag_match = tag_match
+                ? builder_.CreateOr(tag_match, m, "union.or")
+                : m;
+          }
+          if (!tag_match) tag_match = builder_.getFalse();
+        } else {
+          tag_match = match_single(type_name);
         }
         // Bind unconditionally; only used if arm actually runs. `_` is
         // the sink — the type tag still gates the match, but no slot

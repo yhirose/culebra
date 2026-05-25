@@ -54,6 +54,19 @@ assert(caught == "DispatchError" || caught == "TypeError")
 fn single(x: Long) { x }
 assert(single(7) == 7)
 
+// --- Union in `match` arm (`n: Long | Float => ...`) ---
+fn classify(v) {
+  match v {
+    n: Long | Float => "number",
+    s: String => "string",
+    _ => "other",
+  }
+}
+assert(classify(1) == "number")
+assert(classify(2.5) == "number")
+assert(classify("hi") == "string")
+assert(classify(nil) == "other")
+
 // --- fn.params surfaces the Union string ---
 let ps = show.params
 assert(ps[0].type == "Long | Float" || ps[0].type == "Long|Float")
