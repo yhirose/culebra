@@ -572,8 +572,22 @@ inline std::unordered_map<std::string, TraitDef>& trait_registry() {
   return reg;
 }
 
+// Cache: class name → trait name → conforms? Populated lazily by
+// type_matches when it encounters a value of a known class against a
+// known trait. Cleared on new trait registration (later traits may flip
+// earlier "no" answers for already-cached classes).
+inline std::unordered_map<std::string,
+                          std::unordered_map<std::string, bool>>&
+trait_conformance_cache() {
+  static std::unordered_map<std::string,
+                            std::unordered_map<std::string, bool>>
+      cache;
+  return cache;
+}
+
 inline void register_trait(TraitDef def) {
   trait_registry()[def.name] = std::move(def);
+  trait_conformance_cache().clear();
 }
 
 inline const TraitDef* lookup_trait(std::string_view name) {
@@ -611,6 +625,31 @@ inline TypeParam parse_type_param(std::string_view raw) {
   if (pos == std::string_view::npos) return {trimmed, {}};
   return {trim_ascii(trimmed.substr(0, pos)),
           trim_ascii(trimmed.substr(pos + 1))};
+}
+
+// Built-in trait declarations evaluated at the top of every program
+// (interp + JIT). Provides the standard `Stringer`, `Eq`, and
+// `Comparable` abstractions — small enough to inline as a const
+// string, structurally usable by any class that ships the right
+// methods.
+inline std::string_view builtin_traits_preamble() {
+  static constexpr std::string_view src = R"culebra(
+trait Stringer {
+  to_s() -> String
+}
+trait Eq {
+  eq(other) -> Bool
+  neq(other) -> Bool { !this.eq(other) }
+}
+trait Comparable {
+  cmp(other) -> Long
+  lt(other) -> Bool { this.cmp(other) < 0 }
+  le(other) -> Bool { this.cmp(other) <= 0 }
+  gt(other) -> Bool { this.cmp(other) > 0 }
+  ge(other) -> Bool { this.cmp(other) >= 0 }
+}
+)culebra";
+  return src;
 }
 
 }  // namespace culebra

@@ -6191,10 +6191,26 @@ struct JIT {
   // IMPORT_STMT sites in any module fetch from the module table via
   // `culebra_runtime_module_get`.
   static inline void run_modules(
-      const std::vector<LoadedModule>& modules,
+      const std::vector<LoadedModule>& orig_modules,
       bool emit_llvm = false, bool debug = false, int opt_level = 2) {
     using namespace llvm;
-    if (modules.empty()) return;
+    if (orig_modules.empty()) return;
+
+    // Prepend built-in trait preamble (mirrors interp's
+    // interpret_modules). Registers Stringer / Eq / Comparable before
+    // any user code runs; default-method closures compile into the
+    // same JIT module so dispatch works from the first call.
+    std::vector<LoadedModule> modules;
+    modules.reserve(orig_modules.size() + 1);
+    if (auto pre_ast = culebra::parse_builtin_traits_preamble()) {
+      LoadedModule preamble;
+      preamble.abs_path = "<builtin>";
+      preamble.source = std::make_shared<std::string>(
+          std::string(culebra::builtin_traits_preamble()));
+      preamble.ast = pre_ast;
+      modules.push_back(std::move(preamble));
+    }
+    for (const auto& m : orig_modules) modules.push_back(m);
 
     ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();

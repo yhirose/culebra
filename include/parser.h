@@ -6,6 +6,8 @@
 #include <optional>
 #include <print>
 #include <string>
+
+#include "shared.h"
 #include <vector>
 
 namespace culebra {
@@ -421,6 +423,12 @@ inline std::string_view extract_return_type(const peg::Ast& fn_ast,
   return {};
 }
 
+// Parse the built-in trait preamble (`trait Stringer`, `trait Eq`,
+// `trait Comparable` + defaults). Lazily cached so subsequent calls
+// reuse the same AST; the AST is process-lifetime so dependent
+// modules' string_views aliasing the source stay valid.
+inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble();
+
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        const char* expr, size_t len,
                                        std::vector<std::string>& msgs) {
@@ -451,6 +459,15 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   }
 
   return nullptr;
+}
+
+inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble() {
+  static auto cached = [] {
+    auto src = builtin_traits_preamble();
+    std::vector<std::string> ignore;
+    return parse("<builtin>", src.data(), src.size(), ignore);
+  }();
+  return cached;
 }
 
 }  // namespace culebra
