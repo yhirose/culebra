@@ -3442,6 +3442,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // in topological order, and stores its `export { ... }` Object here.
   // `IMPORT_STMT` then binds the cached entry in the importing scope.
   std::unordered_map<std::string, Value> module_cache_;
+
+  // Owning storage for Generic class type-param neutralized strings.
+  // Parameter::type_name is `string_view`; when class-method
+  // neutralization rewrites `Array<T>` → `Array<Any>` we need
+  // long-lived storage backing the view. Lives as long as the
+  // Interpreter so all derived FunctionValues stay safe to introspect.
+  std::vector<std::shared_ptr<std::string>> generic_type_storage_;
   // Absolute paths of the modules currently being evaluated. The top
   // entry is the active module; `eval_import_stmt` uses its directory
   // to resolve relative paths in `import name from "./..."`.
@@ -4249,16 +4256,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (!class_head.args.empty()) {
       type_params = split_generic_args(class_head.args);
     }
-    auto neutralize_type_params = [&type_params](FunctionValue& fn) {
-      if (type_params.empty()) return;
-      auto matches_param = [&](std::string_view tn) {
-        for (auto tp : type_params) if (tn == tp) return true;
-        return false;
-      };
-      for (auto& p : *fn.params) {
-        if (matches_param(p.type_name)) p.type_name = "Any";
-      }
-      if (matches_param(fn.return_type)) fn.return_type = "Any";
+    // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
+    // to "Any" — runtime check sees Any, introspection sees the rewritten
+    // canonical form. Owned storage lives in generic_type_storage_ so
+    // string_views remain valid for the Interpreter's lifetime.
+    auto neutralize_one = [&](std::string_view& slot) {
+      if (type_params.empty() || slot.empty()) return;
+      auto rewritten = culebra::rewrite_type_params_to_any(slot, type_params);
+      if (rewritten == slot) return;
+      if (rewritten == "Any") { slot = "Any"; return; }
+      auto storage = std::make_shared<std::string>(std::move(rewritten));
+      generic_type_storage_.push_back(storage);
+      slot = *storage;
+    };
+    auto neutralize_type_params = [&](FunctionValue& fn) {
+      for (auto& p : *fn.params) neutralize_one(p.type_name);
+      neutralize_one(fn.return_type);
     };
 
     // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
@@ -4317,16 +4330,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // METHOD layout after grammar update: [STATIC_MOD, IDENTIFIER,
       // PARAMETERS, BLOCK].
       auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
-      // Neutralize class type-params on the constructor signature too
-      // (e.g. `new(v: T)` so `T` doesn't reach check_type as an
-      // undeclared class name).
-      if (!type_params.empty()) {
-        for (auto& p : ctor_params) {
-          for (auto tp : type_params) {
-            if (p.type_name == tp) { p.type_name = "Any"; break; }
-          }
-        }
-      }
+      // Neutralize class type-params on the constructor signature.
+      // Same recursive rewrite as method params — `Array<T>` etc.
+      for (auto& p : ctor_params) neutralize_one(p.type_name);
       auto body = new_ast->nodes[3];
       auto self = shared_from_this();
       constructor = Value(FunctionValue(

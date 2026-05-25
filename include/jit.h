@@ -11482,7 +11482,10 @@ struct JIT {
     }
 
     std::vector<std::string> paramNames;
-    std::vector<std::string_view> paramTypeNames;
+    // Owning std::string so rewrite_type_params_to_any (which returns a
+    // fresh string) is safe to push; downstream consumers (emit_type_check,
+    // paramTypeStrs) take string_view and accept either.
+    std::vector<std::string> paramTypeNames;
     std::vector<const peg::Ast*> paramDefaults;
     std::vector<bool> paramMuts;
     std::optional<size_t> firstDefaulted;
@@ -11502,13 +11505,14 @@ struct JIT {
         continue;
       }
       paramNames.push_back(std::string(node->nodes[1]->token));
-      auto tname = extract_type_annotation(*node, 2);
-      // Class type-params (`T`, `K`, ...) become "Any" at the JIT
-      // level — the runtime type check is no-op for them. Uses the
-      // snapshot from the immediate enclosing class so nested fns
-      // in the body don't inherit the rewrite (matches interp).
-      for (auto tp : active_class_type_params) {
-        if (tname == tp) { tname = "Any"; break; }
+      auto tname = std::string(extract_type_annotation(*node, 2));
+      // Recursive rewrite: bare `T`, `Array<T>`, `T | Long`, etc. all
+      // collapse to "Any" / canonical-rewritten. Uses the snapshot
+      // from the immediate enclosing class so nested fns in the body
+      // don't inherit the rewrite (matches interp).
+      if (!active_class_type_params.empty() && !tname.empty()) {
+        tname = culebra::rewrite_type_params_to_any(
+            tname, active_class_type_params);
       }
       paramTypeNames.push_back(tname);
       auto* def = extract_default_expr(*node);

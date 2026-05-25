@@ -285,6 +285,49 @@ inline GenericHead parse_generic_head(std::string_view name) {
   };
 }
 
+// Rewrite every occurrence of a class type-param name (`T`, `K`, ...)
+// inside `tn` with "Any", including nested forms like `Array<T>` and
+// `T | Long`. Used by class-method neutralization so the runtime type
+// check is no-op for the documented parameters. Returns the rewritten
+// string in canonical form (single-space `|`, comma-space-separated
+// generic args).
+inline std::string rewrite_type_params_to_any(
+    std::string_view tn,
+    const std::vector<std::string_view>& type_params) {
+  auto trimmed = trim_ascii(tn);
+  if (trimmed.empty()) return "";
+  // Top-level Union (depth-aware): rewrite each alt, join with " | ".
+  if (has_toplevel_pipe(trimmed)) {
+    std::string out;
+    bool first = true;
+    for (auto cand : split_union_types(trimmed)) {
+      if (!first) out += " | ";
+      out += rewrite_type_params_to_any(cand, type_params);
+      first = false;
+    }
+    return out;
+  }
+  auto head = parse_generic_head(trimmed);
+  // Outer alone matches a type-param: the whole annotation becomes Any
+  // (so `T`, `T<Long>`, etc. all collapse to "Any" — the args were
+  // documentation anyway).
+  for (auto tp : type_params) {
+    if (head.outer == tp) return "Any";
+  }
+  if (head.args.empty()) return std::string(head.outer);
+  // Generic: keep outer, recurse into each arg.
+  std::string out(head.outer);
+  out += '<';
+  bool first = true;
+  for (auto a : split_generic_args(head.args)) {
+    if (!first) out += ", ";
+    out += rewrite_type_params_to_any(a, type_params);
+    first = false;
+  }
+  out += '>';
+  return out;
+}
+
 // Canonical form for a (possibly Union, possibly Generic) type
 // annotation, used in fn.params introspection and multifn
 // redeclaration matching so whitespace variants of the same

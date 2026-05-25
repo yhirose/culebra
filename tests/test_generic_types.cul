@@ -88,6 +88,18 @@ assert(classify(42) == "long")
 assert(classify("hi") == "other")
 assert(classify(nil) == "other")
 
+// Composite type-param annotations (`Array<T>`, `T | Long`) also
+// neutralize — the runtime accepts them without lookups for `T`.
+class Bag<T> {
+  put(v: T | Long) { this.v = v }
+  fill(xs: Array<T>) { this.xs = xs }
+}
+let bag = Bag.new()
+bag.put("anything")
+assert(bag.v == "anything")
+bag.fill([1, "two", 3.5])
+assert(bag.xs.size() == 3)
+
 // Nested fn / lambda inside a Generic class method does NOT see
 // the class's type-params — symmetric across backends. The method
 // itself still neutralizes its own `: T` params.
