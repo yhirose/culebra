@@ -13,7 +13,7 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -26,15 +26,26 @@ const auto grammar_ = R"(
   # existing role inside expressions. Optional leading decorators
   # transform the declared fn value before binding it to the name —
   # see DECORATOR below.
-  MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+  MULTIFN_DECL             <-  (DECORATOR (_ DECORATOR)* _)? fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
 
   CLASS_DECL               <-  (DECORATOR (_ DECORATOR)* _)? class _ CLASS_HEAD _ '{' _ (METHOD (_ METHOD)*)? _ '}'
 
-  # Class name with optional Generic type parameters: `Box`, `Box<T>`,
-  # `Pair<K, V>`. Captured into a single token; eval_class_decl peels
-  # off the outer name via parse_generic_head. Type parameters are
-  # documentation in the MVP — runtime sees them as Any-equivalent.
-  CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* )* _sp_ '>' )? >
+  # `trait` declaration (§15). Methods are either signature-only (must
+  # be supplied by the conforming class) or default-impl. Structural
+  # conformance: any class whose own methods cover the required ones
+  # (arity match) is treated as conforming automatically — no `impl`
+  # block needed in this MVP.
+  TRAIT_DECL               <-  (DECORATOR (_ DECORATOR)* _)? trait _ CLASS_HEAD _ '{' _ (TRAIT_METHOD (_ TRAIT_METHOD)*)? _ '}'
+  TRAIT_METHOD             <-  IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
+
+  # Class / trait / fn head with optional Generic type parameters:
+  # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
+  # a single token; eval_class_decl / eval_trait_decl / multifn_decl
+  # peel off the outer name via parse_generic_head, then split args
+  # into per-param `name: bound` pairs via parse_type_param.
+  # Type parameters are documentation in the MVP — runtime sees them
+  # as Any-equivalent (bound check is dispatch-time only).
+  CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* )? ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* )? )* _sp_ '>' )? >
 
   # `@expr` before a `fn` / `class` declaration. The expression is any
   # CALL chain (`@deco`, `@deco(arg)`, `@module.deco(arg)`); it must
@@ -237,6 +248,7 @@ const auto grammar_ = R"(
   ~import                  <-  K('import')
   ~export                  <-  K('export')
   ~from                    <-  K('from')
+  ~trait                   <-  K('trait')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
