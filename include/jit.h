@@ -10970,17 +10970,19 @@ struct JIT {
     auto class_head = culebra::parse_generic_head(
         ast.nodes[dec_end]->token);
     std::string class_name(class_head.outer);
-    auto saved_class_type_params = std::move(class_type_params_);
-    class_type_params_.clear();
-    if (!class_head.args.empty()) {
-      class_type_params_ = culebra::split_generic_args(class_head.args);
-    }
+    // Construct the guard BEFORE the populate step so any exception
+    // (allocation failure in split_generic_args, etc.) still restores
+    // the outer class's params on unwind.
     struct ClassScopeGuard {
       std::vector<std::string_view>& slot;
       std::vector<std::string_view> saved;
       ~ClassScopeGuard() { slot = std::move(saved); }
     } class_scope_guard{class_type_params_,
-                        std::move(saved_class_type_params)};
+                        std::move(class_type_params_)};
+    class_type_params_.clear();
+    if (!class_head.args.empty()) {
+      class_type_params_ = culebra::split_generic_args(class_head.args);
+    }
 
     // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     // Instance methods live in the per-class meta object (shared
