@@ -11,19 +11,8 @@
 
 namespace culebra {
 
-// Single test case as registered by `test("name", fn() { ... })`.
-// `fn` keeps the closure +1 alive in the registry until the runner
-// invokes it and pops the entry.
-//
-// `param_names` is the runtime-resolvable parameter list — at run time
-// the runner looks each name up in `env` and invokes it as a fixture,
-// passing the result as the corresponding positional argument. Empty
-// for tests with no params (the common case).
-//
-// `param_cases` is populated by `@parametrize(cases)`: each entry is
-// a Tuple/Array of positional args to invoke `fn` with as a separate
-// reported test. When non-empty, fixture DI on `param_names` is
-// skipped (parametrize values fill those slots).
+// A registered test. `param_names` drives DI; `param_cases` (from
+// `@parametrize`) takes precedence and skips DI.
 struct TestEntry {
   std::string name;
   Value fn;
@@ -40,9 +29,7 @@ inline TestRegistry& test_registry() {
   return runtime_substate<TestRegistry>(kSlotTestRegistry);
 }
 
-// Extract the user-facing parameter names from a Function value. The
-// dispatcher's synthetic `__KWARGS__` and kw-only params are skipped
-// — only regular positional params participate in fixture DI.
+// Regular positional param names of `fn` (kw-only / kwargs-rest skipped).
 inline std::vector<std::string> extract_param_names(const Value& fn) {
   std::vector<std::string> out;
   if (fn.type != Value::Function) return out;
@@ -55,19 +42,14 @@ inline std::vector<std::string> extract_param_names(const Value& fn) {
   return out;
 }
 
-// Recursively resolve a fixture by name. The fixture's own
-// parameters are looked up in the same env and resolved before
-// invoking. Plain (non-Function) bindings are returned as-is —
-// they represent already-materialized values. Each call creates a
-// fresh instance; per-test caching is future work.
-//
-// `visited` tracks the in-progress resolution chain; a name already
-// on the chain indicates a fixture cycle (e.g. `db` depends on
-// `user` and `user` depends on `db`) and is reported as a
-// CycleError instead of recursing to stack overflow.
-inline Value resolve_fixture_impl(std::shared_ptr<Environment> env,
-                                   const std::string& name,
-                                   std::set<std::string>& visited) {
+// Per-test memoized fixture resolution. `cache` keeps the same
+// instance across multiple mentions; `visited` catches cycles.
+inline Value resolve_fixture_impl(
+    std::shared_ptr<Environment> env,
+    const std::string& name,
+    std::set<std::string>& visited,
+    std::unordered_map<std::string, Value>& cache) {
+  if (auto it = cache.find(name); it != cache.end()) return it->second;
   if (!env->has(name)) {
     throw CulebraError(
         "NameError",
@@ -80,26 +62,23 @@ inline Value resolve_fixture_impl(std::shared_ptr<Environment> env,
       chain += v;
     }
     chain += " → " + name;
-    throw CulebraError(
-        "CycleError",
-        "fixture cycle detected: " + chain);
+    throw CulebraError("CycleError", "fixture cycle detected: " + chain);
   }
   auto val = env->get(name);
-  if (val.type != Value::Function) return val;
+  if (val.type != Value::Function) {
+    cache.emplace(name, val);
+    return val;
+  }
   visited.insert(name);
   auto params = extract_param_names(val);
   std::vector<Value> args;
   for (const auto& p : params) {
-    args.push_back(resolve_fixture_impl(env, p, visited));
+    args.push_back(resolve_fixture_impl(env, p, visited, cache));
   }
   visited.erase(name);
-  return call(env, name, std::move(args));
-}
-
-inline Value resolve_fixture(std::shared_ptr<Environment> env,
-                              const std::string& name) {
-  std::set<std::string> visited;
-  return resolve_fixture_impl(env, name, visited);
+  auto result = call(env, name, std::move(args));
+  cache.emplace(name, result);
+  return result;
 }
 
 // Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
@@ -166,36 +145,14 @@ inline Value register_test(std::string name, Value fn,
   return Value();
 }
 
-// Inject the test runtime into `env` so user scripts can call
-// `test("...", fn)` (call form) or `@test fn name() {}` (decorator
-// form) without importing anything. Called only when the CLI was
-// invoked as `culebra test ...`. Normal `culebra script.cul` runs
-// do NOT see this binding (it would pollute production code).
+// Inject ambient bindings used only under `culebra test`: `test` /
+// `parametrize` for registration, the matcher family for assertions.
+// Fixtures are plain fns in env, resolved by param name at dispatch
+// (per-test memoized). Cleanup uses class `drop`. See guide §16.
 //
-// Three names get bound in addition to `test`:
-//   - `fixture` — no-op decorator (marker); leaves fn under its own
-//     name in env, the runner looks the param name up there directly
-//   - `parametrize(cases)` — decorator factory; each entry of `cases`
-//     becomes a separate registered test with values unpacked into
-//     the fn's positional params (cases entry can be a Tuple/Array
-//     or a scalar for single-arg tests)
-//
-// `test` is polymorphic over arity to make both forms ergonomic:
-//   - `test("name", fn)` — 2 args, explicit name (call form)
-//   - `test(fn)`         — 1 arg, name from fn.name (decorator form)
+// `test` is polymorphic: `test("name", fn)` or `test(fn)` (decorator).
 inline void install_test_ambient(Environment& env) {
   using namespace std::literals;
-  // `fixture` is a marker decorator. The fn keeps its source-level
-  // env binding (e.g. `@fixture fn db() { ... }` puts `db` in env);
-  // the runner resolves a test's param by name against env at
-  // dispatch time. No separate fixture table required.
-  env.initialize(
-      "fixture",
-      Value(FunctionValue({{"f", false, "Function"sv}},
-                           [](std::shared_ptr<Environment> e) {
-                             return e->get("f");
-                           })),
-      false);
 
   // `parametrize(cases)` returns a decorator that registers one
   // entry per case under `<fn.name>[i]`. Single-arg fns can pass
@@ -595,12 +552,10 @@ inline TestRunSummary run_tests(
       continue;
     }
     std::string slot = "__test_" + std::to_string(i);
+    // Per-test fixture cache; cleared on scope exit so class `drop` fires.
+    std::unordered_map<std::string, Value> fixture_cache;
     try {
       env->initialize(slot, entry_fn, false);
-      // Args resolution priority:
-      //   1. @parametrize-supplied case wins (skip fixture DI)
-      //   2. fixture DI: each param name resolved as a 0-arg fn in env
-      //   3. neither: invoke with no args
       std::vector<Value> args;
       if (!entry_param_cases.empty()) {
         const auto& c = entry_param_cases[0];
@@ -610,11 +565,13 @@ inline TestRunSummary run_tests(
         } else if (c.type == Value::Array) {
           for (const auto& v : *c.to_array().values) args.push_back(v);
         } else {
-          args.push_back(c);  // scalar single-arg
+          args.push_back(c);
         }
       } else if (!entry_param_names.empty()) {
+        std::set<std::string> visited;
         for (const auto& pname : entry_param_names) {
-          args.push_back(resolve_fixture(env, pname));
+          args.push_back(
+              resolve_fixture_impl(env, pname, visited, fixture_cache));
         }
       }
       call(env, slot, std::move(args));

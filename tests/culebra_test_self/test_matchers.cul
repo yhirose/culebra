@@ -183,3 +183,59 @@ fn assert_eq_failure_uses_user_str() {
   assert(r.message.contains("5USD"))
   assert(r.message.contains("7USD"))
 }
+
+# --- DI: plain fn in env is resolved by param name ---
+
+fn answer() { 42 }
+
+@test
+fn di_simple(answer) {
+  assert_eq(answer, 42)
+}
+
+# Fixture chain: a fixture depends on another by parameter name.
+class Counter {
+  new() { this.n = 0 }
+  bump() { this.n = this.n + 1; this.n }
+}
+fn db()      { Counter.new() }
+fn bumped(db) { db.bump(); db }
+
+@test
+fn di_chain(bumped) {
+  assert_eq(bumped.n, 1)
+}
+
+# Per-test memoization: `db` is the same instance whether reached
+# directly or transitively via `bumped`. Without memoization, the
+# direct `db` would still read 0.
+@test
+fn di_memoization(db, bumped) {
+  assert_eq(db.n, 1)
+  assert(db == bumped)
+}
+
+# Class `drop` fires when the per-test fixture cache releases its
+# ref at test end. Observed via a counter that holds no ref back.
+class DropCounter {
+  new() { this.n = 0 }
+  inc()  { this.n = this.n + 1 }
+}
+let drop_count = DropCounter.new()
+
+class Probe {
+  new() { this.open = true }
+  drop() { drop_count.inc() }
+}
+
+fn probe() { Probe.new() }
+
+@test
+fn drop_during_test(probe) {
+  assert(probe.open)
+}
+
+@test
+fn drop_fired_after_previous_test() {
+  assert_eq(drop_count.n, 1)
+}

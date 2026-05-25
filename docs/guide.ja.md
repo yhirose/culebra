@@ -1197,10 +1197,9 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 16. テスト (`culebra test`)
 ---------------------------
 
-> `test()` 呼出・`@test` デコレータ・fixture DI・`@parametrize` は
-> 実装済、 `culebra test [path]` で動きます。 明示 `import { test }
-> from "std/test"` と `--doc` (markdown doctest 実行) は未実装
-> (16.4 参照)。
+> `test()` / `@test` / `@parametrize` と matcher 群、 引数で DI 解決
+> される fixture (decorator 不要、 env 内の任意の fn) が実装済で、
+> `culebra test [path]` で動きます。
 
 ### 16.1 doctest 規約 (確定)
 
@@ -1246,37 +1245,64 @@ fn adds_correctly(a, b, want) {
 }
 ```
 
-**Fixture (`@fixture` + 依存性注入)**。 関数に `@fixture` を付けて、
-`@test` の引数で受け取ると、runner が param 名を env から resolve
-して fixture を呼び出します (fixture の依存も再帰的に解決):
-
-```culebra
-# doctest: skip
-@fixture
-fn db() {
-  { users: [], next_id: 1 }
-}
-
-@fixture
-fn user(db) {                       # fixture が fixture を依存可能
-  db.users.push({ id: 1, name: "alice" })
-  db.users[0]
-}
-
-@test
-fn user_has_name(user) {            # `user` は registry から自動解決
-  assert(user.name == "alice")
-}
-```
-
 **`describe` ネストは採用しない**。 グルーピングはディレクトリ
 (`tests/strings/`) とテスト名の `/` 区切り
 (`"Array/push: appends element"`) で表現します。
 
+**DI による fixture**。 test の positional 引数は名前で env から
+resolve されます — env 内の任意の fn が fixture として使えます
+(decorator 不要)。 fixture が fixture を引数で取ることも可能です。
+
+```culebra
+# doctest: skip
+fn db()       { { users: [], next_id: 1 } }
+fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
+
+@test
+fn user_has_name(user) {
+  assert_eq(user.name, "alice")
+}
+```
+
+1 つの test 内では、 fixture は **1 回だけ評価** されます — 直接 +
+推移的に複数回 mention されても同じ instance を共有します。 test
+間では fresh。
+
+**class `drop` での cleanup**。 teardown が必要なリソースは class に
+ラップして `drop` メソッドを置きます (§7.4)。 ランタイムの ref count
+管理が test 終わりに per-test cache の release を契機に発火します。
+
+```culebra
+# doctest: skip
+class TestDB {
+  new()    { this.conn = Database.connect("memory") }
+  drop()   { this.conn.close() }
+  users()  { this.conn.users }
+}
+
+fn db() { TestDB.new() }
+
+@test
+fn user_count(db) {
+  db.users().create("alice")
+  assert_eq(db.users().count(), 1)
+  # test 末で db が drop → conn.close()
+}
+```
+
+fixture 関数本体内の `defer` は fixture fn が return した瞬間に発火
+してしまう (test 本体実行前) ので、 cleanup には class `drop` を使い
+ます。
+
+複数の test ファイルで共有したい長寿命 state (例: 1 回ロードした
+model) は module top-level に置き、 各 test ファイルで import します。
+モジュールシステムが binding を cache するので、 `import` は常に同一
+インスタンスを返します。
+
 **matchers**。 `assert(expr)` は Bool 検査で、失敗時は `assert failed
 at L:C.` のみ。 両辺を表示する診断が欲しいときは matcher を使います。
-matcher は `culebra test` 起動時のみ `test` / `fixture` /
-`parametrize` と並んで ambient 注入されます:
+matcher は `culebra test` 起動時のみ `test` / `parametrize` と並んで
+ambient 注入されます:
 
 ```culebra
 # doctest: skip
@@ -1303,11 +1329,11 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ### 16.3 実行
 
 `culebra test [path]` がテストファイルを discover します。 このサブコマンド
-経由で起動した場合のみ、 `test` / `@test` / `fixture` / `@fixture` /
-`parametrize` / `@parametrize` が **ambient global** として注入され
-ます — `import` 不要。 これは script 実行モード下でだけ `puts` /
-`print` が ambient で、 `culebra::environment()` には注入されない
-設計と同じ流儀 ([stdlib.ja.md §10](stdlib.ja.md) 参照)。
+経由で起動した場合のみ、 `test` / `@test` / `@parametrize` と matcher
+群が **ambient global** として注入されます — `import` 不要。 これは
+script 実行モード下でだけ `puts` / `print` が ambient で、
+`culebra::environment()` には注入されない設計と同じ流儀
+([stdlib.ja.md §10](stdlib.ja.md) 参照)。
 
 ```sh
 culebra test                       # 現在ディレクトリから探索・実行

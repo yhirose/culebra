@@ -1222,10 +1222,9 @@ Part IV — Verification and deployment
 16. Testing (`culebra test`)
 ----------------------------
 
-> The `test()` call, `@test` decorator, fixture DI, and `@parametrize`
-> are implemented and work via `culebra test [path]`. Explicit
-> `import { test } from "std/test"` and `--doc` for markdown doctests
-> are still Planned (see 16.4).
+> `test()` / `@test` / `@parametrize`, the matcher family, and
+> dependency-injected fixtures (any fn in env, no decorator) are
+> implemented and work via `culebra test [path]`.
 
 ### 16.1 Doctest convention (final)
 
@@ -1272,37 +1271,63 @@ fn adds_correctly(a, b, want) {
 }
 ```
 
-**Fixtures (`@fixture` + dependency injection).** Mark a fn with
-`@fixture` and accept it as a `@test` parameter — the runner
-resolves the param name from the surrounding env and invokes the
-fixture (with its own fixtures recursively resolved):
-
-```culebra
-# doctest: skip
-@fixture
-fn db() {
-  { users: [], next_id: 1 }
-}
-
-@fixture
-fn user(db) {                       # fixtures can depend on fixtures
-  db.users.push({ id: 1, name: "alice" })
-  db.users[0]
-}
-
-@test
-fn user_has_name(user) {            # `user` resolved from registry
-  assert(user.name == "alice")
-}
-```
-
 **No `describe` nesting.** Group by file path (`tests/strings/`) and
 by `/` in the test name (`"Array/push: appends element"`).
 
+**Fixtures by DI.** A test's positional parameters are resolved by
+name against the surrounding env: any fn in env can be a fixture, no
+decorator required. Fixtures can themselves take fixtures.
+
+```culebra
+# doctest: skip
+fn db()       { { users: [], next_id: 1 } }
+fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
+
+@test
+fn user_has_name(user) {
+  assert_eq(user.name, "alice")
+}
+```
+
+Within one test, each fixture is evaluated **once** — multiple
+mentions (direct + transitive) share the same instance. Across tests,
+fixtures are fresh.
+
+**Cleanup via class `drop`.** Resources needing teardown wrap
+themselves in a class with a `drop` method (§7.4). The runtime's
+ref-count finalization fires when the per-test fixture cache is
+released at test end.
+
+```culebra
+# doctest: skip
+class TestDB {
+  new()    { this.conn = Database.connect("memory") }
+  drop()   { this.conn.close() }
+  users()  { this.conn.users }
+}
+
+fn db() { TestDB.new() }
+
+@test
+fn user_count(db) {
+  db.users().create("alice")
+  assert_eq(db.users().count(), 1)
+  # db drops at test end -> conn.close()
+}
+```
+
+`defer` inside a fixture body would fire when the fixture fn returns
+(before the test runs), so class `drop` is the right tool for cleanup.
+
+Long-lived state shared across files — e.g. a model loaded once —
+goes at module top level and is imported by each test file. The
+module system caches the binding, so `import` always returns the
+same instance.
+
 **Matchers.** `assert(expr)` checks a Bool and reports only `assert
 failed at L:C.` on failure. For diagnostics that show both operands,
-use the matchers — ambient under `culebra test` alongside `test` /
-`fixture` / `parametrize`:
+use the matchers — ambient under `culebra test` alongside `test` and
+`parametrize`:
 
 ```culebra
 # doctest: skip
@@ -1329,11 +1354,10 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 ### 16.3 Running
 
 `culebra test [path]` discovers test files. When invoked through this
-subcommand, `test` / `@test` / `fixture` / `@fixture` / `parametrize`
-/ `@parametrize` become **ambient globals** — no `import` required.
-This mirrors how `puts` / `print` are ambient under script-execution
-mode but absent from `culebra::environment()` (see [stdlib
-§10](stdlib.md)).
+subcommand, `test` / `@test` / `@parametrize` and the matcher family
+become **ambient globals** — no `import` required. This mirrors how
+`puts` / `print` are ambient under script-execution mode but absent
+from `culebra::environment()` (see [stdlib §10](stdlib.md)).
 
 ```sh
 culebra test                       # discover & run from current dir
