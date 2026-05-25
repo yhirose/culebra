@@ -435,12 +435,13 @@ inline std::vector<std::filesystem::path> discover_test_files(
   return out;
 }
 
-// Result of running all collected tests. The driver prints a summary
-// from this struct; main.cc returns non-zero if any test failed or
-// any file failed to load/parse/interpret. `errored_files` is kept
-// separate from `failed` so the per-test failure count is faithful
-// (a syntax error in one file shouldn't inflate `failed` by 1 while
-// hiding however many tests that file would have registered).
+// Output format for the runner. `Default` emits human-readable lines;
+// `Json` emits one JSON object per line (NDJSON) for machine consumption.
+enum class Reporter { Default, Json };
+
+// Result of running all collected tests. `errored_files` is kept
+// separate from `failed` so a syntax error in one file doesn't
+// inflate the per-test failure count.
 struct TestRunSummary {
   int passed = 0;
   int failed = 0;
@@ -455,7 +456,8 @@ struct TestRunSummary {
 inline TestRunSummary run_tests(
     const std::vector<std::filesystem::path>& files,
     const std::string& filter,
-    std::shared_ptr<Environment> env) {
+    std::shared_ptr<Environment> env,
+    Reporter reporter = Reporter::Default) {
   TestRunSummary summary;
 
   // Embedders may call run_tests multiple times in the same process
@@ -473,11 +475,26 @@ inline TestRunSummary run_tests(
   // registry pointing into freed memory.
   std::vector<LoadedModule> all_modules;
 
+  auto emit_file_error = [&](const std::string& path_str,
+                              const std::string& kind,
+                              const std::string& message) {
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"file_error","source":)"
+                << json_escape(path_str)
+                << R"(,"kind":)" << json_escape(kind)
+                << R"(,"message":)" << json_escape(message)
+                << "}\n";
+    } else {
+      std::cerr << "culebra test: " << kind << " for " << path_str
+                << ": " << message << "\n";
+    }
+  };
+
   for (const auto& path : files) {
     auto path_str = path.string();
     std::ifstream ifs(path_str, std::ios::binary);
     if (!ifs) {
-      std::cerr << "culebra test: can't open '" << path_str << "'\n";
+      emit_file_error(path_str, "open_failed", "can't open file");
       summary.errored_files++;
       continue;
     }
@@ -496,8 +513,7 @@ inline TestRunSummary run_tests(
     try {
       modules = loader.load_program(path_str, entry_src, msgs);
     } catch (const CulebraError& e) {
-      std::cerr << "culebra test: load failed for " << path_str << ": "
-                << e.kind << ": " << e.what() << "\n";
+      emit_file_error(path_str, e.kind, e.what());
       summary.errored_files++;
       continue;
     }
@@ -505,7 +521,9 @@ inline TestRunSummary run_tests(
     Value val;
     Debugger dbg;
     if (!interpret_modules(modules, env, val, msgs, dbg)) {
-      for (auto& m : msgs) std::cerr << m << "\n";
+      std::string joined;
+      for (auto& m : msgs) { if (!joined.empty()) joined += "; "; joined += m; }
+      emit_file_error(path_str, "interpret_failed", joined);
       summary.errored_files++;
       continue;
     }
@@ -576,25 +594,58 @@ inline TestRunSummary run_tests(
       }
       call(env, slot, std::move(args));
       summary.passed++;
-      std::cout << "  ok  " << entry_name << "\n";
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_pass","name":)"
+                  << json_escape(entry_name)
+                  << R"(,"source":)" << json_escape(entry_source)
+                  << "}\n";
+      } else {
+        std::cout << "  ok  " << entry_name << "\n";
+      }
     } catch (const CulebraError& e) {
       summary.failed++;
-      std::string loc = e.line > 0
-          ? " at " + std::to_string(e.line) + ":" + std::to_string(e.col)
-          : "";
-      std::string msg = std::string("  FAIL ") + entry_name + " — "
-                        + e.kind + ": " + e.what() + loc
-                        + " (in " + entry_source + ")";
-      summary.failure_messages.push_back(msg);
-      std::cout << msg << "\n";
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_fail","name":)"
+                  << json_escape(entry_name)
+                  << R"(,"kind":)" << json_escape(e.kind)
+                  << R"(,"message":)" << json_escape(e.what())
+                  << R"(,"line":)" << e.line
+                  << R"(,"col":)" << e.col
+                  << R"(,"source":)" << json_escape(entry_source)
+                  << "}\n";
+      } else {
+        std::string loc = e.line > 0
+            ? " at " + std::to_string(e.line) + ":" + std::to_string(e.col)
+            : "";
+        std::string msg = std::string("  FAIL ") + entry_name + " — "
+                          + e.kind + ": " + e.what() + loc
+                          + " (in " + entry_source + ")";
+        summary.failure_messages.push_back(msg);
+        std::cout << msg << "\n";
+      }
     } catch (const std::exception& e) {
       summary.failed++;
-      summary.failure_messages.push_back(
-          std::string("  FAIL ") + entry_name + " — " + e.what());
-      std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_fail","name":)"
+                  << json_escape(entry_name)
+                  << R"(,"kind":"InternalError","message":)"
+                  << json_escape(e.what())
+                  << R"(,"source":)" << json_escape(entry_source)
+                  << "}\n";
+      } else {
+        summary.failure_messages.push_back(
+            std::string("  FAIL ") + entry_name + " — " + e.what());
+        std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
+      }
     }
   }
 
+  if (reporter == Reporter::Json) {
+    std::cout << R"({"event":"run_end","passed":)" << summary.passed
+              << R"(,"failed":)" << summary.failed
+              << R"(,"errored_files":)" << summary.errored_files
+              << "}\n";
+  }
   return summary;
 }
 

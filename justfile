@@ -101,11 +101,20 @@ test BACKEND='all': build
         (cd build && ctest --output-on-failure)
     }
 
-    # Exercises `culebra test`-only ambient bindings (test/@test/fixture/
-    # @parametrize, assert_throws, assert_close). The subdir layout keeps
-    # these out of the `tests/*.cul` glob that direct interp/JIT runs use.
+    # Exercises `culebra test`-only ambient bindings (matchers, DI,
+    # @parametrize). The subdir layout keeps these out of the
+    # `tests/*.cul` glob that direct interp/JIT runs use.
     run_culebra_test_self() {
         ./build/culebra test tests/culebra_test_self/ > /dev/null
+        # Sanity-check the JSON reporter: final line is a run_end with
+        # failed=0 and errored_files=0; every other line begins with
+        # one of the documented event tags.
+        local last
+        last=$(./build/culebra test --reporter json tests/culebra_test_self/ | tail -1)
+        case "$last" in
+            *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
+            *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
+        esac
     }
 
     case "{{BACKEND}}" in

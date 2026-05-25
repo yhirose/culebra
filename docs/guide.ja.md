@@ -1339,11 +1339,25 @@ script 実行モード下でだけ `puts` / `print` が ambient で、
 culebra test                       # 現在ディレクトリから探索・実行
 culebra test tests/strings/        # サブツリー指定
 culebra test --filter "Array/push" # テスト名部分一致
+culebra test --reporter json       # NDJSON 出力 (1 行 1 JSON)
 ```
 
 Discovery: 指定されたパスがファイルならそれを使用。 ディレクトリなら
 `test_*.cul` 一致を再帰的に walk。 終了コードは全 pass で `0`、何か
 fail で `1`。
+
+**reporter**。 default は人間向け。 `--reporter json` で NDJSON
+(1 行 1 JSON object) — agent loop / CI 連携向け:
+
+```
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul"}
+{"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
+ "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
+ "source":"tests/test_math.cul"}
+{"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
+ "message":"..."}
+{"event":"run_end","passed":42,"failed":1,"errored_files":0}
+```
 
 `just test` 経由の従来 `tests/*.cul` スイート (assert のみ、`test()`
 呼出なし) は変更なしで動き続けます — 新 ambient binding を使いません。

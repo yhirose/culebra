@@ -1363,11 +1363,25 @@ from `culebra::environment()` (see [stdlib §10](stdlib.md)).
 culebra test                       # discover & run from current dir
 culebra test tests/strings/        # run a subtree
 culebra test --filter "Array/push" # name-substring filter
+culebra test --reporter json       # NDJSON output (one JSON per line)
 ```
 
 Discovery: any path that is a file is included as-is; any path that
 is a directory is walked recursively for files matching `test_*.cul`.
 Exit code is `0` when all tests pass, `1` when any fail.
+
+**Reporters.** Default is human-readable. `--reporter json` emits one
+JSON object per line (NDJSON) — useful for agent loops and CI:
+
+```
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul"}
+{"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
+ "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
+ "source":"tests/test_math.cul"}
+{"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
+ "message":"..."}
+{"event":"run_end","passed":42,"failed":1,"errored_files":0}
+```
 
 The legacy `tests/*.cul` suite under `just test` (assert-only, no
 `test()` calls) continues to work unchanged — it does not use the
