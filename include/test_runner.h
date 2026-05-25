@@ -60,21 +60,46 @@ inline std::vector<std::string> extract_param_names(const Value& fn) {
 // invoking. Plain (non-Function) bindings are returned as-is —
 // they represent already-materialized values. Each call creates a
 // fresh instance; per-test caching is future work.
-inline Value resolve_fixture(std::shared_ptr<Environment> env,
-                              const std::string& name) {
+//
+// `visited` tracks the in-progress resolution chain; a name already
+// on the chain indicates a fixture cycle (e.g. `db` depends on
+// `user` and `user` depends on `db`) and is reported as a
+// CycleError instead of recursing to stack overflow.
+inline Value resolve_fixture_impl(std::shared_ptr<Environment> env,
+                                   const std::string& name,
+                                   std::set<std::string>& visited) {
   if (!env->has(name)) {
     throw CulebraError(
         "NameError",
         "fixture '" + name + "' not found in env");
   }
+  if (visited.count(name)) {
+    std::string chain;
+    for (auto& v : visited) {
+      if (!chain.empty()) chain += " → ";
+      chain += v;
+    }
+    chain += " → " + name;
+    throw CulebraError(
+        "CycleError",
+        "fixture cycle detected: " + chain);
+  }
   auto val = env->get(name);
   if (val.type != Value::Function) return val;
+  visited.insert(name);
   auto params = extract_param_names(val);
   std::vector<Value> args;
   for (const auto& p : params) {
-    args.push_back(resolve_fixture(env, p));
+    args.push_back(resolve_fixture_impl(env, p, visited));
   }
+  visited.erase(name);
   return call(env, name, std::move(args));
+}
+
+inline Value resolve_fixture(std::shared_ptr<Environment> env,
+                              const std::string& name) {
+  std::set<std::string> visited;
+  return resolve_fixture_impl(env, name, visited);
 }
 
 // `test(name, fn)` runtime helper used by the built-in `test` global
