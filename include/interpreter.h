@@ -84,9 +84,10 @@ inline bool is_sink_name(std::string_view s) { return s == "_"; }
 // Specificity score for a (param_type, arg_type) pair. Higher = more
 // specific. -1 means no match.
 //
-// Union types (`A | B`) take the BEST score across all alternatives.
-// `Long | Float` against a Long arg scores 2 (exact Long match);
-// against an Object arg scores -1 (neither matches).
+// Ordering: Any (0) < Object catch-all (1) < Union exact (2) <
+// concrete exact (3). A concrete `Long` param therefore wins over a
+// `Long | Float` Union when the arg is a Long — picking the most
+// specific intent and avoiding an Ambiguous error.
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
   if (param_type.empty() || param_type == "Any") return 0;
@@ -96,10 +97,14 @@ inline int multifn_specificity(std::string_view param_type,
       int s = multifn_specificity(cand, arg_type);
       if (s > best) best = s;
     }
-    return best;
+    if (best < 0) return -1;
+    // A concrete alt inside a Union scored 3; downgrade to 2 so a
+    // bare concrete param outranks it. An Object alt scored 1 and
+    // stays 1 — same tier as a bare `Object` catch.
+    return best >= 3 ? 2 : best;
   }
   if (param_type == "Object" && arg_type != "Object") return 1;
-  if (param_type == arg_type) return 2;
+  if (param_type == arg_type) return 3;
   return -1;
 }
 

@@ -77,6 +77,22 @@ fn many_space(x: Long  |   Float) { x }
 assert(no_space.params[0].type == "Long | Float")
 assert(many_space.params[0].type == "Long | Float")
 
+// Concrete type wins over a Union that includes it (no Ambiguous error).
+fn pick(x: Long) -> String { "concrete" }
+fn pick(x: Long | Float) -> String { "union" }
+assert(pick(1) == "concrete")       // concrete Long is more specific
+assert(pick(1.5) == "union")        // only Union matches Float
+
+// Union wins over a bare Object catch-all when the arg is in the Union.
+// (Object accepts class instances; primitives go through the Union.)
+class Holder {
+  new (v) { this.value = v }
+}
+fn rank(x: Object) -> String { "object" }
+fn rank(x: Long | Float) -> String { "union" }
+assert(rank(1) == "union")
+assert(rank(Holder.new(0)) == "object")
+
 // Whitespace variants of the same Union dedup to one multifn method —
 // the second decl overwrites the first instead of growing the method
 // table. (If they were separate entries `Long | Float` calls would
