@@ -11286,6 +11286,12 @@ struct JIT {
                 rt::register_trait_default,
                 builder_.getVoidTy(), ptrTy, ptrTy, ptrTy),
             {trait_g, method_g, closure_ptr});
+        // compile_fn_common returns the closure at +1; register_trait_default
+        // takes its own retain via `closure->refcount++`. Release our +1 so
+        // the closure ends up at refcount 1 (one reference held by the
+        // trait-default table). Without this, every default-method
+        // registration leaks one refcount per session.
+        emit_value_release(fn_val_ir);
       }
     }
     culebra::register_trait(std::move(def));
