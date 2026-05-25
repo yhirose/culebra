@@ -81,6 +81,15 @@ inline bool is_sink_name(std::string_view s) { return s == "_"; }
 
 // --- Multimethod dispatch (shared between interp and JIT) ---
 
+// True for the reserved type-tag names value_dyn_type returns for
+// non-Object values. Class instances surface their class name here,
+// so a name that isn't on this list is always a class name.
+inline bool is_primitive_type_label(std::string_view n) {
+  return n == "Nil" || n == "Bool" || n == "Long" || n == "Float" ||
+         n == "String" || n == "Array" || n == "Function" ||
+         n == "Tensor" || n == "Tuple" || n == "Set";
+}
+
 // Specificity score for a (param_type, arg_type) pair. Higher = more
 // specific. -1 means no match.
 //
@@ -88,6 +97,10 @@ inline bool is_sink_name(std::string_view s) { return s == "_"; }
 // concrete exact (3). A concrete `Long` param therefore wins over a
 // `Long | Float` Union when the arg is a Long — picking the most
 // specific intent and avoiding an Ambiguous error.
+//
+// `Object` param is a catch-all for class instances ONLY (matches
+// type_matches: primitives stay -1 so pick doesn't claim a match
+// that the post-pick check_type would reject).
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
   if (param_type.empty() || param_type == "Any") return 0;
@@ -103,7 +116,11 @@ inline int multifn_specificity(std::string_view param_type,
     // stays 1 — same tier as a bare `Object` catch.
     return best >= 3 ? 2 : best;
   }
-  if (param_type == "Object" && arg_type != "Object") return 1;
+  if (param_type == "Object") {
+    if (arg_type == "Object") return 3;        // bare dict — exact
+    if (is_primitive_type_label(arg_type)) return -1;
+    return 1;                                  // class instance
+  }
   if (param_type == arg_type) return 3;
   return -1;
 }

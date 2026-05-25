@@ -115,6 +115,15 @@ fn rank(x: Long | Float) -> String { "union" }
 assert(rank(1) == "union")
 assert(rank(Holder.new(0)) == "object")
 
+// Object as sole option: primitives do NOT slip through Object catch
+// (multifn pick agrees with check_type → DispatchError on no match,
+// not a spurious TypeError after a false-positive pick).
+fn only_object(x: Object) -> String { "object" }
+let e = try { only_object("hi"); nil } catch e { e }
+assert(e.kind == "DispatchError")
+assert(only_object(Holder.new(0)) == "object")
+assert(only_object({a: 1}) == "object")
+
 // Whitespace-variant redecl overwrites instead of growing the table.
 fn dedup(x: Long|Float) -> String { "first" }
 fn dedup(x: Long | Float) -> String { "second" }
