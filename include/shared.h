@@ -192,6 +192,12 @@ inline std::string_view trim_ascii(std::string_view s) {
 // the input unchanged as the only element. Empty input yields an
 // empty vector. Shared by both backends' type checks.
 //
+// DEFENSIVE: empty alternatives (e.g. `Long ||  | Float`, leading
+// `|`, trailing `|`) are silently skipped. Grammar prevents these
+// from reaching here in normal source, but the helper is also
+// called on canonicalized strings during multifn dedup so we don't
+// rely on grammar alone.
+//
 // LIFETIME: each returned string_view aliases bytes inside `name`;
 // the caller must keep `name`'s underlying storage alive while
 // using the returned views. Do not pass a temporary.
