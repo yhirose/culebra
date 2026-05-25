@@ -1658,6 +1658,22 @@ trait path のみ match する場合は trait 版が選ばれる。
   明示宣言を再検討)
 * trait 継承 (`trait Ord: Eq`) は未対応。
 * 複合 Bound (`<T: A + B>`) と `where` 節 — Phase 4+。
+* **Bound は構文受理のみ**: `<T: Comparable>` は parse 通るが
+  dispatch / runtime では bound を見ない。 body 内の `T` は `Any`
+  に書き換えられる。 Phase 4+ で multifn dispatch / Generic 呼び出し
+  時 check に連動。
+* **演算子オーバーロードは trait default を bypass する**: `<` /
+  `==` 等は class の `__lt__` / `__eq__` を直接呼ぶ。 Comparable の
+  default `lt` / `le` 等は `x.lt(y)` の form のみ動作。 `cmp` を持つ
+  class で `lo < hi` を使うには別途 `__lt__` (特殊 method) も書くか、
+  `.lt()` を明示。
+* **複数 trait 同名 default の選択は非決定**: 2 つの trait が
+  同名 default (`to_s` 等) を持ち instance が両方に conform するとき、
+  dispatch は内部 hash map の iteration 順で勝者決定。 同名 default
+  を持つ trait の併用は避ける。
+* **自己再帰 trait default は user 責任**: `trait X { foo() {
+  this.foo() } }` で conform class が `foo` を override しないと
+  stack overflow。 depth guard 未実装。
 * trait もクラスと同様 top-level のみ宣言可能。
 
 ---

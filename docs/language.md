@@ -1739,6 +1739,24 @@ chosen when only the trait path matches.
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
 * Trait inheritance (`trait Ord: Eq`) is not yet supported.
 * Bound composition (`<T: A + B>`) and `where` clauses — Phase 4+.
+* **Bound is parse-receipt-only**: `<T: Comparable>` parses, but the
+  dispatch / runtime currently does not consult the bound. T inside
+  the body is rewritten to `Any`. Phase 4+ will tie the bound into
+  multifn dispatch and Generic-call-site checking.
+* **Operator overloads bypass trait defaults**: `<` / `==` etc.
+  invoke `__lt__` / `__eq__` directly on the class; Comparable's
+  default `lt` / `le` etc. only fire when called as `x.lt(y)`. A
+  class that defines `cmp` and uses `lo < hi` must also define
+  `__lt__` (the special-method path), or call `.lt()` explicitly.
+* **Same-name defaults across traits are non-deterministic**: if
+  two registered traits both provide a `to_s` default and an
+  instance conforms to both, the dispatch picks the one the
+  internal hash map iterates first. Avoid declaring same-named
+  defaults across overlapping traits.
+* **Self-recursive trait defaults are user responsibility**:
+  `trait X { foo() { this.foo() } }` will stack-overflow if a
+  conforming class doesn't override `foo`. No depth guard is
+  installed yet.
 * Traits, like classes, may only be declared at top level.
 
 ---
