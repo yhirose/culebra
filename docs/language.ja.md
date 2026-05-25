@@ -1440,15 +1440,35 @@ Culebra は動的型付けで、型注釈は任意です。注釈は以下 3 つ
       if k == "answer" { 42 } else { nil }
     }
 
+Union 注釈は単一型注釈が使える場所ならどこでも使えます — 引数、
+戻り値、`let` / `let mut` 宣言:
+
+    let id: Long | String = "u-42"
+    let mut count: Long | Nil = nil
+    count = 0           # OK: 再代入では再検査は行われません
+
 `|` 周りの空白は許容 (`Long|Float`, `Long | Float`)。 クラス名と
 プリミティブの組み合わせも可 (`Square | Circle`, `String | Nil`)。
 単一候補の注釈は従来通りの動作 — `Long` と `Long|` は等価ではあり
 ません (後者はパース エラー)。
 
+Union 内の `Object` は **クラス インスタンスの catch-all**
+(`class:` タグを持つ値) であって、すべての値の catch-all ではあり
+ません。プリミティブはそこを素通りします。 `Long | Object` は Long と
+任意のクラス インスタンスを受け取りますが、String は依然 fail。
+全部受けたい場合は `Any` を使ってください。
+
+候補が **未宣言のクラス名** の場合は、誰もそのクラスのインスタンス
+ではない通常のクラス注釈と同じ扱い — その候補は何にも一致しないので
+実質 dead alt です。 他の候補は通常通り match します。
+
 多重ディスパッチ ([§19](#19-多重ディスパッチ)) は Union 型注釈を
 理解し、各候補で score して最良一致を選びます — 例:
 `fn area(s: Square | Circle)` は Square / Circle の双方で
-dispatch 可能。
+dispatch 可能。 また、bare concrete type は同型を含む Union よりも
+specific 扱い: `fn pick(x: Long)` と `fn pick(x: Long | Float)` を
+両方定義すると、 Long 引数は concrete `pick` に、Float 引数は Union
+版に routed されます。
 
 ### 検査されない箇所
 

@@ -1507,16 +1507,37 @@ check accepts the value when it matches **any** alternative.
       if k == "answer" { 42 } else { nil }
     }
 
+Union annotations are valid wherever a single type annotation is —
+parameters, return types, and `let` / `let mut` declarations:
+
+    let id: Long | String = "u-42"
+    let mut count: Long | Nil = nil
+    count = 0           # OK: re-check is *not* run on reassignment
+
 Whitespace around `|` is tolerated (`Long|Float`, `Long | Float`).
 Class names compose with primitives (`Square | Circle`,
 `String | Nil`). Single-alternative annotations remain unchanged in
 behavior — `Long` and `Long|` are not equivalent (the latter is a
 parse error).
 
+`Object` inside a Union is a **catch-all for class instances**
+(any value carrying a `class:` tag), not for every value: primitives
+fall through it. So `Long | Object` accepts a Long *and* any class
+instance, but a String still fails. Use `Any` if you want to accept
+everything.
+
+If any alternative is an **undeclared class name**, the runtime
+treats it the same as a class annotation that no instance can
+satisfy — the alt simply never matches, so it's effectively dead.
+Other alternatives in the Union still match normally.
+
 Multimethod dispatch ([§19](#19-multimethods)) understands Union
 parameter annotations by scoring each alternative and taking the
 best match — `fn area(s: Square | Circle)` dispatches on either
-exact class.
+exact class. A bare concrete type outranks any Union that contains
+it: defining both `fn pick(x: Long)` and `fn pick(x: Long | Float)`
+routes a Long arg to the concrete `pick`, while a Float still goes
+through the Union version.
 
 ### Where annotations are *not* checked
 
