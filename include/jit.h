@@ -947,6 +947,14 @@ struct _JitStrGuard {
   }
 };
 
+// Heap-allocated descriptor for TAG_STRINGVIEW. Bytes are owned
+// elsewhere (leak-bounded, same as TAG_STRING).
+struct JitStringView {
+  const char* ptr;
+  uint64_t len;
+};
+static_assert(sizeof(JitStringView) == 16, "JitStringView layout drift");
+
 // Internal helper (C++ - not extern C, but inline to satisfy ODR)
 inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   switch (type) {
@@ -961,6 +969,13 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     case TAG_STRING: {
       std::string s = "'";
       s += reinterpret_cast<const char*>(data);
+      s += "'";
+      return s;
+    }
+    case TAG_STRINGVIEW: {
+      auto* v = reinterpret_cast<const JitStringView*>(data);
+      std::string s = "'";
+      s.append(v->ptr, v->len);
       s += "'";
       return s;
     }
@@ -1098,18 +1113,6 @@ inline const char* _culebra_heap_str(std::string_view s) {
   return buf;
 }
 
-// 16-byte borrowed-bytes descriptor carried in a TAG_STRINGVIEW
-// JitValue's `data` slot. The pointed-to bytes are owned elsewhere
-// (a TAG_STRING char buffer, an iterator's source string, ...);
-// this struct stores only the (start, length) pair so substr
-// operations don't require null-terminated copies.
-struct JitStringView {
-  const char* ptr;
-  uint64_t len;
-};
-static_assert(sizeof(JitStringView) == 16,
-              "JitStringView layout drift");
-
 // Allocate a JitStringView descriptor for the given byte range.
 // Leaks for the program's lifetime (cycle-bounded, same as
 // _culebra_heap_str). Callers retain no ownership beyond storing
@@ -1168,6 +1171,11 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
       return _culebra_coerce_num(t1, d1) == _culebra_coerce_num(t2, d2);
     }
+    // String/StringView byte-equality across flavors.
+    if ((t1 == TAG_STRING || t1 == TAG_STRINGVIEW) &&
+        (t2 == TAG_STRING || t2 == TAG_STRINGVIEW)) {
+      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
+    }
     return false;
   }
   switch (t1) {
@@ -1179,6 +1187,8 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
     case TAG_STRING:
       return std::strcmp(reinterpret_cast<const char*>(d1),
                          reinterpret_cast<const char*>(d2)) == 0;
+    case TAG_STRINGVIEW:
+      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
     case TAG_TUPLE: {
       // Element-wise eq, matching the interp's TupleValue compare.
       auto* a = reinterpret_cast<JitArray*>(d1);
@@ -1273,6 +1283,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
       std::cout << "'" << reinterpret_cast<const char*>(data) << "'"
                 << std::endl;
       break;
+    case TAG_STRINGVIEW: {
+      auto* v = reinterpret_cast<const JitStringView*>(data);
+      std::cout << "'";
+      std::cout.write(v->ptr, static_cast<std::streamsize>(v->len));
+      std::cout << "'" << std::endl;
+      break;
+    }
     case TAG_ARRAY:
     case TAG_OBJECT:
     case TAG_FLOAT:
@@ -1292,7 +1309,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
     int8_t type, int64_t data) {
   if (auto s = _try_str_special(type, data)) return _culebra_heap_str(*s);
-  if (type == 4) return reinterpret_cast<const char*>(data);
+  if (type == TAG_STRING) return reinterpret_cast<const char*>(data);
+  if (type == TAG_STRINGVIEW) {
+    auto* v = reinterpret_cast<const JitStringView*>(data);
+    return _culebra_heap_str(std::string_view(v->ptr, v->len));
+  }
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
 }
 
@@ -1447,6 +1468,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
     case TAG_TENSOR: got = "Tensor";   break;
     case TAG_TUPLE:  got = "Tuple";    break;
     case TAG_SET:    got = "Set";      break;
+    case TAG_STRINGVIEW: got = "StringView"; break;
   }
   throw culebra::CulebraError("TypeError", std::format(
       "type error: expected {}, got {} at {}:{}.", expected, got, line, col),
@@ -5223,22 +5245,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
   auto* r = culebra_runtime_array_new();
   std::string_view sv(s);
   std::string_view sp(sep);
+  auto push_view = [&](std::string_view piece) {
+    auto* v = _culebra_heap_view(piece.data(), piece.size());
+    culebra_runtime_array_push(r, TAG_STRINGVIEW,
+                               reinterpret_cast<int64_t>(v));
+  };
   if (sp.empty()) {
-    culebra_runtime_array_push(
-        r, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(sv)));
+    push_view(sv);
     return r;
   }
   size_t pos = 0;
   while (true) {
     auto p = sv.find(sp, pos);
     if (p == std::string_view::npos) {
-      auto* piece = _culebra_heap_str(sv.substr(pos));
-      culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
+      push_view(sv.substr(pos));
       break;
     }
-    auto* piece = _culebra_heap_str(sv.substr(pos, p - pos));
-    culebra_runtime_array_push(r, 4, reinterpret_cast<int64_t>(piece));
+    push_view(sv.substr(pos, p - pos));
     pos = p + sp.size();
   }
   return r;
@@ -5277,6 +5300,39 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_slice(
   std::memcpy(buf, s + start, len);
   buf[len] = '\0';
   return buf;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView*
+culebra_runtime_strlike_view(int8_t tag, int64_t data) {
+  auto sv = _culebra_str_view(tag, data);
+  return _culebra_heap_view(sv.data(), sv.size());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView*
+culebra_runtime_strlike_slice_view(int8_t tag, int64_t data,
+                                   int64_t start, int64_t end) {
+  auto sv = _culebra_str_view(tag, data);
+  int64_t size = static_cast<int64_t>(sv.size());
+  if (start < 0) start += size;
+  if (end < 0) end += size;
+  if (start < 0) start = 0;
+  if (start > size) start = size;
+  if (end < start) end = start;
+  if (end > size) end = size;
+  return _culebra_heap_view(sv.data() + start,
+                            static_cast<size_t>(end - start));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
+culebra_runtime_strview_to_string(const JitStringView* v) {
+  return _culebra_heap_str(std::string_view(v->ptr, v->len));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
+culebra_runtime_strlike_to_cstr(int8_t tag, int64_t data) {
+  if (tag == TAG_STRING) return reinterpret_cast<const char*>(data);
+  auto* v = reinterpret_cast<const JitStringView*>(data);
+  return _culebra_heap_str(std::string_view(v->ptr, v->len));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_pop(
@@ -5864,6 +5920,10 @@ inline constexpr auto str_size            = "culebra_runtime_str_size";
 inline constexpr auto utf8_scalar_len     = "culebra_runtime_utf8_scalar_len";
 inline constexpr auto str_slice           = "culebra_runtime_str_slice";
 inline constexpr auto str_split           = "culebra_runtime_str_split";
+inline constexpr auto strlike_view        = "culebra_runtime_strlike_view";
+inline constexpr auto strlike_slice_view  = "culebra_runtime_strlike_slice_view";
+inline constexpr auto strview_to_string   = "culebra_runtime_strview_to_string";
+inline constexpr auto strlike_to_cstr     = "culebra_runtime_strlike_to_cstr";
 inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
 inline constexpr auto str_trim            = "culebra_runtime_str_trim";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
@@ -7033,6 +7093,7 @@ struct JIT {
         "collect",     "count",      "take",     "skip",
         "take_while",  "chain",      "zip",      "enumerate",
         "code_points", "graphemes",  "iter",
+        "view",        "split_iter",
         // Tensor methods. (Activations sigmoid/relu/softmax are
         // exposed as `Tensor.sigmoid(t)` namespace functions instead,
         // because they collide with class-method names users
@@ -7685,6 +7746,7 @@ struct JIT {
 
   llvm::Value* make_func(llvm::Value* ptr) { return make_ptr_value(TAG_FUNC, ptr); }
   llvm::Value* make_string(llvm::Value* ptr) { return make_ptr_value(TAG_STRING, ptr); }
+  llvm::Value* make_stringview(llvm::Value* ptr) { return make_ptr_value(TAG_STRINGVIEW, ptr); }
   llvm::Value* make_array(llvm::Value* ptr) { return make_ptr_value(TAG_ARRAY, ptr); }
   llvm::Value* make_tuple(llvm::Value* ptr) { return make_ptr_value(TAG_TUPLE, ptr); }
   llvm::Value* make_set(llvm::Value* ptr) { return make_ptr_value(TAG_SET, ptr); }
@@ -8527,6 +8589,18 @@ struct JIT {
                                  builder_.getInt1Ty(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::strlike_view, ptrTy,
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::strlike_slice_view, ptrTy,
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::strview_to_string, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::strlike_to_cstr, ptrTy,
+                                 builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_pop,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_slice2, ptrTy, ptrTy,
@@ -12820,6 +12894,27 @@ struct JIT {
                                    llvm::PointerType::get(ctx_, 0));
   }
 
+  // Coerce a String/StringView receiver to a null-terminated cstr.
+  // StringView is materialized via strlike_to_cstr (leak-bounded).
+  llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix) {
+    auto tag = extract_tag(val);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto okBB = llvm::BasicBlock::Create(
+        ctx_, std::string(bb_prefix) + ".ok", fn);
+    auto errBB = llvm::BasicBlock::Create(
+        ctx_, std::string(bb_prefix) + ".err", fn);
+    auto isStr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
+    auto isView = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW));
+    auto cond = builder_.CreateOr(isStr, isView);
+    builder_.CreateCondBr(cond, okBB, errBB);
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("String", tag);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+    return emit_call(module_->getFunction(rt::strlike_to_cstr),
+                     {tag, extract_data(val)});
+  }
+
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
@@ -14800,20 +14895,22 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_tensor(resultPtr);
   }
 
-  // .size() — works on Array, Object, String, Set
+  // .size() — works on Array, Object, String, StringView, Set
   if (method == "size" && argsAst.nodes.size() == 0) {
     auto arrBB = llvm::BasicBlock::Create(ctx_, "size.arr", fn);
     auto objBB = llvm::BasicBlock::Create(ctx_, "size.obj", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "size.str", fn);
+    auto svBB  = llvm::BasicBlock::Create(ctx_, "size.sv", fn);
     auto setBB = llvm::BasicBlock::Create(ctx_, "size.set", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "size.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "size.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 5);
+    auto sw = builder_.CreateSwitch(tag, errBB, 6);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
 
     builder_.SetInsertPoint(arrBB);
@@ -14837,6 +14934,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strSizeBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
+    // JitStringView { ptr, len } — load len at offset 8.
+    builder_.SetInsertPoint(svBB);
+    auto svPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto svLenPtr = builder_.CreateConstInBoundsGEP1_64(
+        builder_.getInt8Ty(), svPtr, 8);
+    auto svSize = builder_.CreateLoad(builder_.getInt64Ty(), svLenPtr, "svsz");
+    auto svSizeBB = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
     builder_.SetInsertPoint(setBB);
     auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto setSize = emit_call(
@@ -14851,10 +14957,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 4, "sz");
+    auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz");
     phi->addIncoming(arrSize, arrSizeBB);
     phi->addIncoming(objSize, objSizeBB);
     phi->addIncoming(strSize, strSizeBB);
+    phi->addIncoming(svSize, svSizeBB);
     phi->addIncoming(setSize, setSizeBB);
     return make_long(phi);
   }
@@ -14932,7 +15039,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_nil();
   }
 
-  // slice works on Array, String, and Tensor — all use [start, end).
+  // slice works on Array, String, StringView, and Tensor.
+  // String/StringView return TAG_STRINGVIEW into the source bytes.
   if (method == "slice" && argsAst.nodes.size() == 2) {
     auto start = value_to_long(compile(*argsAst.nodes[0]));
     auto end = value_to_long(compile(*argsAst.nodes[1]));
@@ -14943,9 +15051,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto errBB = llvm::BasicBlock::Create(ctx_, "sl.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "sl.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 3);
+    auto sw = builder_.CreateSwitch(tag, errBB, 4);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
     sw->addCase(builder_.getInt8(TAG_TENSOR), tenBB);
 
     builder_.SetInsertPoint(arrBB);
@@ -14958,11 +15067,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
-    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto newStr = emit_call(
-        module_->getFunction(rt::str_slice),
-        {strPtr, start, end});
-    auto strVal = make_string(newStr);
+    auto newView = emit_call(
+        module_->getFunction(rt::strlike_slice_view),
+        {tag, extract_data(receiver), start, end});
+    auto strVal = make_stringview(newView);
     auto strBBEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -15017,9 +15125,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto errBB = llvm::BasicBlock::Create(ctx_, "ct.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "ct.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 4);
+    auto sw = builder_.CreateSwitch(tag, errBB, 5);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), tupBB);
 
@@ -15035,10 +15144,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
-    auto strPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                            {tag, extract_data(receiver)});
     auto sub = compile(*argsAst.nodes[0]);
-    emit_type_check(sub, "String", "contains argument");
-    auto subPtr = builder_.CreateIntToPtr(extract_data(sub), ptrTy);
+    auto subPtr = coerce_strlike_cstr(sub, "ct.sub");
     auto strFound = emit_call(
         module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
@@ -15089,43 +15198,73 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   // --- String methods ---
 
+  // `.view()` on String/StringView → TAG_STRINGVIEW.
+  if (method == "view" && argsAst.nodes.size() == 0) {
+    auto errBB = llvm::BasicBlock::Create(ctx_, "vw.err", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "vw.ok", fn);
+    auto sw = builder_.CreateSwitch(tag, errBB, 2);
+    sw->addCase(builder_.getInt8(TAG_STRING), okBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), okBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("String or StringView", tag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(okBB);
+    auto v = emit_call(module_->getFunction(rt::strlike_view),
+                       {tag, extract_data(receiver)});
+    return make_stringview(v);
+  }
+
   if (method == "upper" && argsAst.nodes.size() == 0) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "up");
+    auto strPtr = coerce_strlike_cstr(receiver, "up");
     auto s = emit_call(
         module_->getFunction(rt::str_upper), {strPtr});
     return make_string(s);
   }
 
   if (method == "lower" && argsAst.nodes.size() == 0) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "lo");
+    auto strPtr = coerce_strlike_cstr(receiver, "lo");
     auto s = emit_call(
         module_->getFunction(rt::str_lower), {strPtr});
     return make_string(s);
   }
 
   if (method == "trim" && argsAst.nodes.size() == 0) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "tr");
+    auto strPtr = coerce_strlike_cstr(receiver, "tr");
     auto s = emit_call(
         module_->getFunction(rt::str_trim), {strPtr});
     return make_string(s);
   }
 
   if (method == "split" && argsAst.nodes.size() == 1) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "sp");
+    auto strPtr = coerce_strlike_cstr(receiver, "sp");
     auto sep = compile(*argsAst.nodes[0]);
-    emit_type_check(sep, "String", "split separator");
-    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
+    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep");
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
     return make_array(arr);
   }
 
+  // split_iter is "lazy in API, eager underneath" for now: build the
+  // Array via str_split, wrap it in array_iter so the iter protocol
+  // composes. True lazy is a later refinement.
+  if (method == "split_iter" && argsAst.nodes.size() == 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "spli");
+    auto sep = compile(*argsAst.nodes[0]);
+    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep");
+    auto arr = emit_call(
+        module_->getFunction(rt::str_split), {strPtr, sepPtr});
+    emit_value_release(sep);
+    auto iter = emit_call(module_->getFunction(rt::array_iter), {arr});
+    return make_object(iter);
+  }
+
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "sw");
+    auto strPtr = coerce_strlike_cstr(receiver, "sw");
     auto p = compile(*argsAst.nodes[0]);
-    emit_type_check(p, "String", "starts_with argument");
-    auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
+    auto pPtr = coerce_strlike_cstr(p, "sw.pre");
     auto r = emit_call(
         module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
@@ -15134,10 +15273,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "ew");
+    auto strPtr = coerce_strlike_cstr(receiver, "ew");
     auto p = compile(*argsAst.nodes[0]);
-    emit_type_check(p, "String", "ends_with argument");
-    auto pPtr = builder_.CreateIntToPtr(extract_data(p), ptrTy);
+    auto pPtr = coerce_strlike_cstr(p, "ew.suf");
     auto r = emit_call(
         module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
@@ -15646,14 +15784,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "code_points" && argsAst.nodes.size() == 0) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "code_points");
+    auto strPtr = coerce_strlike_cstr(receiver, "code_points");
     auto out =
         emit_call(module_->getFunction(rt::str_code_points), {strPtr});
     return make_object(out);
   }
 
   if (method == "graphemes" && argsAst.nodes.size() == 0) {
-    auto strPtr = expect_tag(receiver, TAG_STRING, "graphemes");
+    auto strPtr = coerce_strlike_cstr(receiver, "graphemes");
     auto out =
         emit_call(module_->getFunction(rt::str_graphemes), {strPtr});
     return make_object(out);
@@ -15671,12 +15809,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strBB = llvm::BasicBlock::Create(ctx_, "iter.str", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "iter.err", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "iter.merge", fn);
-    auto sw = builder_.CreateSwitch(t, errBB, 5);
+    auto sw = builder_.CreateSwitch(t, errBB, 6);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
+    sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
 
     builder_.SetInsertPoint(errBB);
     emit_type_error_typed("Array, Tuple, Set, Object, or String", t);
@@ -15711,12 +15850,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
-    // String.iter() yields 1-scalar substrings — same underlying
-    // walker as `for c in s`. For the iterator-protocol shape we
-    // reuse code_points' runtime but wrap codepoints back as 1-char
-    // Strings... simpler: reuse code_points for now since
+    // String/StringView.iter() reuses code_points for now;
     // test_iter.cul exercises `for c in s` natively, not s.iter().
-    auto strPtr = builder_.CreateIntToPtr(d, ptrTy);
+    auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                            {t, d});
     auto strIter = emit_call(module_->getFunction(rt::str_code_points),
                              {strPtr});
     auto strVal = make_object(strIter);

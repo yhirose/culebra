@@ -43,9 +43,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_long_any(
   if (tag == TAG_FLOAT) {
     return {TAG_LONG, static_cast<int64_t>(_culebra_float_to_double(data))};
   }
-  if (tag == TAG_STRING) {
+  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+    auto sv = _culebra_str_view(tag, data);
     return {TAG_LONG,
-            parse_long_strict(reinterpret_cast<const char*>(data), line, col)};
+            parse_long_strict(std::string(sv).c_str(), line, col)};
   }
   throw_type_error_at(line, col);
 }
@@ -56,8 +57,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_float_any(
   if (tag == TAG_LONG) {
     return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(data))};
   }
-  if (tag == TAG_STRING) {
-    auto d = parse_double_strict(reinterpret_cast<const char*>(data), line, col);
+  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+    auto sv = _culebra_str_view(tag, data);
+    auto d = parse_double_strict(std::string(sv).c_str(), line, col);
     return {TAG_FLOAT, _culebra_double_to_bits(d)};
   }
   throw_type_error_at(line, col);
@@ -73,8 +75,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
     std::cout << *s;
     return;
   }
-  if (type == 4) {
+  if (type == TAG_STRING) {
     std::cout << reinterpret_cast<const char*>(data);
+  } else if (type == TAG_STRINGVIEW) {
+    auto* v = reinterpret_cast<const JitStringView*>(data);
+    std::cout.write(v->ptr, static_cast<std::streamsize>(v->len));
   } else {
     std::cout << _culebra_value_to_str_impl(type, data);
   }
