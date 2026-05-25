@@ -1472,19 +1472,19 @@ specific 扱い: `fn pick(x: Long)` と `fn pick(x: Long | Float)` を
 
 ### Generic 型
 
-型名に角括弧で型パラメータを付けられます:
-`Array<Long>`, `Iterator<String>`, `Option<T>`, `Map<String, Long>`。
-ネスト (`Array<Array<Long>>`) や Union との組み合わせ
-(`Array<Long | Float>`) も可能。
+型名に角括弧で型パラメータを付けられます: `Array<Long>`,
+`Array<Array<Long>>`, `Array<Long | Float>`。 ネスト + 内側 Union
+の組み合わせも可能。組み込みのコンテナ型は現状 `Array` のみで、
+それ以外の Generic 外側名 (`Box<T>`, `Pair<K, V>` 等) は user 定義
+class から (後述「Generic クラス宣言」)。
 
     fn first(xs: Array<Long>) -> Long { xs[0] }
-    fn pairs(m: Map<String, Long>) { ... }
     fn lookup(k: String) -> Array<Long> | Nil { ... }
 
 Rust / Swift のモノモーフィゼーションと同じく、**要素レベルの
 runtime チェックは行いません** — 境界でチェックされるのは外側の型
-(`Array`, `Iterator`, `Map` 等) のみ。型パラメータはドキュメントと
-多重ディスパッチの tie-break のために存在します。
+のみ。型パラメータはドキュメントと多重ディスパッチの tie-break の
+ために存在します。
 
     fn first(xs: Array<Long>) { xs[0] }
     first([1, "two", 3])   # OK — 要素型は強制されない

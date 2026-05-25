@@ -1542,18 +1542,19 @@ through the Union version.
 ### Generic types
 
 A type name may carry type parameters in angle brackets:
-`Array<Long>`, `Iterator<String>`, `Option<T>`, `Map<String, Long>`.
-Nesting is allowed (`Array<Array<Long>>`) and Generic args may be
-Unions (`Array<Long | Float>`).
+`Array<Long>`, `Array<Array<Long>>`, `Array<Long | Float>`. Nesting
+is supported, and Generic args may themselves be Unions. The only
+built-in container type today is `Array`; other Generic outer names
+(`Box<T>`, `Pair<K, V>`, ...) come from user-declared classes
+(see "Generic class declarations" below).
 
     fn first(xs: Array<Long>) -> Long { xs[0] }
-    fn pairs(m: Map<String, Long>) { ... }
     fn lookup(k: String) -> Array<Long> | Nil { ... }
 
 Like Rust and Swift's monomorphized generics, **element-level
-runtime checks are no-ops**: only the outer type (`Array`,
-`Iterator`, `Map`, ...) is checked at the boundary. The args
-exist for documentation and for multimethod dispatch tie-breaks.
+runtime checks are no-ops**: only the outer type is checked at
+the boundary. The args exist for documentation and for multimethod
+dispatch tie-breaks.
 
     fn first(xs: Array<Long>) { xs[0] }
     first([1, "two", 3])   # OK — element type is not enforced
