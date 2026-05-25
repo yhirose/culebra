@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,48 @@ struct TestRegistry {
 
 inline TestRegistry& test_registry() {
   return runtime_substate<TestRegistry>(kSlotTestRegistry);
+}
+
+// Number of newlines in the stdlib preamble — used to map a runtime
+// error's `line` (computed against the prepended buffer) back to the
+// user's file line.
+inline int stdlib_preamble_line_count() {
+  static const int n = []() {
+    int c = 0;
+    for (const char* p = STDLIB_PREAMBLE_SOURCE; *p; p++) {
+      if (*p == '\n') c++;
+    }
+    return c;
+  }();
+  return n;
+}
+
+// Snippet of `source` around `line` (1-based, in user-file coordinates)
+// with `context` lines on either side. Returns "" if line is out of range.
+inline std::string source_snippet(const std::string& source, int line,
+                                   int context = 2) {
+  if (line <= 0 || source.empty()) return {};
+  int start_line = std::max(1, line - context);
+  int end_line = line + context;
+  std::string out;
+  int cur = 1;
+  size_t pos = 0;
+  while (pos < source.size() && cur < start_line) {
+    auto nl = source.find('\n', pos);
+    if (nl == std::string::npos) return out;
+    pos = nl + 1;
+    cur++;
+  }
+  while (pos < source.size() && cur <= end_line) {
+    auto nl = source.find('\n', pos);
+    auto line_end = (nl == std::string::npos) ? source.size() : nl;
+    out += std::format("{:>3}{} {}\n", cur, (cur == line ? '>' : ' '),
+                       source.substr(pos, line_end - pos));
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+    cur++;
+  }
+  return out;
 }
 
 // Regular positional param names of `fn` (kw-only / kwargs-rest skipped).
@@ -450,14 +493,17 @@ struct TestRunSummary {
 };
 
 // Load each test file (so its `test(...)` calls register entries),
-// then walk the registry calling each fn. Filtering happens on
-// substring of the test name. Sequential execution; failures don't
-// stop the run.
+// then walk the registry calling each fn. Sequential execution;
+// failures don't stop the run unless `bail_after > 0`. When
+// `list_only` is true, emit a list of discovered tests without
+// executing them.
 inline TestRunSummary run_tests(
     const std::vector<std::filesystem::path>& files,
     const std::string& filter,
     std::shared_ptr<Environment> env,
-    Reporter reporter = Reporter::Default) {
+    Reporter reporter = Reporter::Default,
+    int bail_after = 0,
+    bool list_only = false) {
   TestRunSummary summary;
 
   // Embedders may call run_tests multiple times in the same process
@@ -474,6 +520,9 @@ inline TestRunSummary run_tests(
   // modules vector before the execution loop would leave the
   // registry pointing into freed memory.
   std::vector<LoadedModule> all_modules;
+  // Original (unprepended) user source per file path — used to render
+  // a failure-site snippet in JSON events.
+  std::unordered_map<std::string, std::string> user_sources;
 
   auto emit_file_error = [&](const std::string& path_str,
                               const std::string& kind,
@@ -531,6 +580,7 @@ inline TestRunSummary run_tests(
     // Pin the file's modules (and thus their source buffers and AST
     // tokens) for the rest of run_tests' lifetime.
     for (auto& m : modules) all_modules.push_back(std::move(m));
+    user_sources.emplace(path_str, std::move(buff));
 
     // Tag new entries with source path for nicer failure reporting.
     for (size_t i = pre; i < reg.entries.size(); i++) {
@@ -540,12 +590,32 @@ inline TestRunSummary run_tests(
     }
   }
 
+  auto& reg = test_registry();
+
+  if (list_only) {
+    for (const auto& e : reg.entries) {
+      if (!filter.empty() && e.name.find(filter) == std::string::npos) continue;
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_list","name":)"
+                  << json_escape(e.name)
+                  << R"(,"source":)" << json_escape(e.source_path)
+                  << "}\n";
+      } else {
+        std::cout << e.source_path << ": " << e.name << "\n";
+      }
+    }
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"list_end","count":)" << reg.entries.size()
+                << "}\n";
+    }
+    return summary;
+  }
+
   // Now execute every registered test. We bind each entry under a
   // private slot name (`__test_<i>`) so the public `culebra::call`
   // helper can invoke it without exposing the Interpreter's private
   // call internals. The slot is overwritten on each pass — minimal
   // env pollution given the runner exits immediately after.
-  auto& reg = test_registry();
   // Snapshot each entry's fields by value before running. A test
   // body may dynamically call `test(...)` (legitimate table-driven
   // pattern) which push_back's onto reg.entries — capacity growth
@@ -572,6 +642,20 @@ inline TestRunSummary run_tests(
     std::string slot = "__test_" + std::to_string(i);
     // Per-test fixture cache; cleared on scope exit so class `drop` fires.
     std::unordered_map<std::string, Value> fixture_cache;
+    // JSON mode captures stdout so user `puts` doesn't interleave with
+    // the NDJSON stream. Default mode leaves stdout alone so human
+    // reading sees the natural mix of test output and `ok`/`FAIL` lines.
+    std::stringstream capture_buf;
+    std::streambuf* old_cout = nullptr;
+    if (reporter == Reporter::Json) {
+      old_cout = std::cout.rdbuf(capture_buf.rdbuf());
+    }
+    auto restore_cout = [&]() -> std::string {
+      if (!old_cout) return {};
+      std::cout.rdbuf(old_cout);
+      old_cout = nullptr;
+      return capture_buf.str();
+    };
     try {
       env->initialize(slot, entry_fn, false);
       std::vector<Value> args;
@@ -593,25 +677,40 @@ inline TestRunSummary run_tests(
         }
       }
       call(env, slot, std::move(args));
+      auto captured = restore_cout();
       summary.passed++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"test_pass","name":)"
                   << json_escape(entry_name)
                   << R"(,"source":)" << json_escape(entry_source)
+                  << R"(,"stdout":)" << json_escape(captured)
                   << "}\n";
       } else {
         std::cout << "  ok  " << entry_name << "\n";
       }
     } catch (const CulebraError& e) {
+      auto captured = restore_cout();
       summary.failed++;
+      int user_line = e.line > 0
+          ? static_cast<int>(e.line) - stdlib_preamble_line_count()
+          : 0;
       if (reporter == Reporter::Json) {
+        std::string snippet;
+        if (user_line > 0) {
+          if (auto it = user_sources.find(entry_source);
+              it != user_sources.end()) {
+            snippet = source_snippet(it->second, user_line);
+          }
+        }
         std::cout << R"({"event":"test_fail","name":)"
                   << json_escape(entry_name)
                   << R"(,"kind":)" << json_escape(e.kind)
                   << R"(,"message":)" << json_escape(e.what())
-                  << R"(,"line":)" << e.line
+                  << R"(,"line":)" << user_line
                   << R"(,"col":)" << e.col
                   << R"(,"source":)" << json_escape(entry_source)
+                  << R"(,"snippet":)" << json_escape(snippet)
+                  << R"(,"stdout":)" << json_escape(captured)
                   << "}\n";
       } else {
         std::string loc = e.line > 0
@@ -624,6 +723,7 @@ inline TestRunSummary run_tests(
         std::cout << msg << "\n";
       }
     } catch (const std::exception& e) {
+      auto captured = restore_cout();
       summary.failed++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"test_fail","name":)"
@@ -631,6 +731,7 @@ inline TestRunSummary run_tests(
                   << R"(,"kind":"InternalError","message":)"
                   << json_escape(e.what())
                   << R"(,"source":)" << json_escape(entry_source)
+                  << R"(,"stdout":)" << json_escape(captured)
                   << "}\n";
       } else {
         summary.failure_messages.push_back(
@@ -638,12 +739,15 @@ inline TestRunSummary run_tests(
         std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
       }
     }
+    if (bail_after > 0 && summary.failed >= bail_after) break;
   }
 
+  bool bailed = bail_after > 0 && summary.failed >= bail_after;
   if (reporter == Reporter::Json) {
     std::cout << R"({"event":"run_end","passed":)" << summary.passed
               << R"(,"failed":)" << summary.failed
               << R"(,"errored_files":)" << summary.errored_files
+              << R"(,"bailed":)" << (bailed ? "true" : "false")
               << "}\n";
   }
   return summary;

@@ -1340,6 +1340,9 @@ culebra test                       # 現在ディレクトリから探索・実�
 culebra test tests/strings/        # サブツリー指定
 culebra test --filter "Array/push" # テスト名部分一致
 culebra test --reporter json       # NDJSON 出力 (1 行 1 JSON)
+culebra test --bail                # 最初の failure で停止
+culebra test --bail 3              # 3 個失敗で停止
+culebra test --list                # 実行せず discovery のみ
 ```
 
 Discovery: 指定されたパスがファイルならそれを使用。 ディレクトリなら
@@ -1350,14 +1353,24 @@ fail で `1`。
 (1 行 1 JSON object) — agent loop / CI 連携向け:
 
 ```
-{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul"}
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul",
+ "stdout":""}
 {"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
  "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
- "source":"tests/test_math.cul"}
+ "source":"tests/test_math.cul",
+ "snippet":" 10  @test\n 11  fn divides_correctly() {\n 12>   assert_eq(6/2, 4)\n 13  }\n",
+ "stdout":""}
 {"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
  "message":"..."}
-{"event":"run_end","passed":42,"failed":1,"errored_files":0}
+{"event":"test_list","name":"divides_correctly","source":"tests/test_math.cul"}
+{"event":"list_end","count":42}
+{"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
 ```
+
+JSON モードでは test 内の `puts(...)` は event の `stdout` フィールド
+に capture され NDJSON ストリームに interleave しません。 失敗 event
+には `snippet` が付き、 失敗行を `>` で marker、 前後 2 行の文脈と共に
+含まれます — consumer が file 再読込なしで該当コードを表示できます。
 
 `just test` 経由の従来 `tests/*.cul` スイート (assert のみ、`test()`
 呼出なし) は変更なしで動き続けます — 新 ambient binding を使いません。
