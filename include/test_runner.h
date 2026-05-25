@@ -355,21 +355,39 @@ inline TestRunSummary run_tests(
   // call internals. The slot is overwritten on each pass — minimal
   // env pollution given the runner exits immediately after.
   auto& reg = test_registry();
+  // Snapshot each entry's fields by value before running. A test
+  // body may dynamically call `test(...)` (legitimate table-driven
+  // pattern) which push_back's onto reg.entries — capacity growth
+  // would invalidate any reference into the vector mid-loop. Loop
+  // bound uses .size() at each iteration so dynamic additions still
+  // run, but the per-test fields are stable.
   for (size_t i = 0; i < reg.entries.size(); i++) {
-    const auto& entry = reg.entries[i];
-    if (!filter.empty() && entry.name.find(filter) == std::string::npos) {
+    std::string entry_name;
+    std::string entry_source;
+    Value entry_fn;
+    std::vector<std::string> entry_param_names;
+    std::vector<Value> entry_param_cases;
+    {
+      const auto& e = reg.entries[i];
+      entry_name = e.name;
+      entry_source = e.source_path;
+      entry_fn = e.fn;
+      entry_param_names = e.param_names;
+      entry_param_cases = e.param_cases;
+    }
+    if (!filter.empty() && entry_name.find(filter) == std::string::npos) {
       continue;
     }
     std::string slot = "__test_" + std::to_string(i);
     try {
-      env->initialize(slot, entry.fn, false);
+      env->initialize(slot, entry_fn, false);
       // Args resolution priority:
       //   1. @parametrize-supplied case wins (skip fixture DI)
       //   2. fixture DI: each param name resolved as a 0-arg fn in env
       //   3. neither: invoke with no args
       std::vector<Value> args;
-      if (!entry.param_cases.empty()) {
-        const auto& c = entry.param_cases[0];
+      if (!entry_param_cases.empty()) {
+        const auto& c = entry_param_cases[0];
         if (c.type == Value::Tuple) {
           for (const auto& v : *c.get<TupleValue>().elements)
             args.push_back(v);
@@ -378,29 +396,29 @@ inline TestRunSummary run_tests(
         } else {
           args.push_back(c);  // scalar single-arg
         }
-      } else if (!entry.param_names.empty()) {
-        for (const auto& pname : entry.param_names) {
+      } else if (!entry_param_names.empty()) {
+        for (const auto& pname : entry_param_names) {
           args.push_back(resolve_fixture(env, pname));
         }
       }
       call(env, slot, std::move(args));
       summary.passed++;
-      std::cout << "  ok  " << entry.name << "\n";
+      std::cout << "  ok  " << entry_name << "\n";
     } catch (const CulebraError& e) {
       summary.failed++;
       std::string loc = e.line > 0
           ? " at " + std::to_string(e.line) + ":" + std::to_string(e.col)
           : "";
-      std::string msg = std::string("  FAIL ") + entry.name + " — "
+      std::string msg = std::string("  FAIL ") + entry_name + " — "
                         + e.kind + ": " + e.what() + loc
-                        + " (in " + entry.source_path + ")";
+                        + " (in " + entry_source + ")";
       summary.failure_messages.push_back(msg);
       std::cout << msg << "\n";
     } catch (const std::exception& e) {
       summary.failed++;
       summary.failure_messages.push_back(
-          std::string("  FAIL ") + entry.name + " — " + e.what());
-      std::cout << "  FAIL " << entry.name << " — " << e.what() << "\n";
+          std::string("  FAIL ") + entry_name + " — " + e.what());
+      std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
     }
   }
 
