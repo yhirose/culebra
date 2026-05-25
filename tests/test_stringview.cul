@@ -93,3 +93,18 @@ mut obj2 = {}
 obj2['k'.view()] = 1
 assert(obj2.has('k'))
 assert(obj2['k'] == 1)
+
+// Match patterns: String literal matches StringView subject.
+fn classify(s: StringLike) -> Long {
+  match s { 'hi' => 1, _ => 0 }
+}
+assert(classify('hi') == 1)
+assert(classify('hi'.view()) == 1)
+assert(classify('bye') == 0)
+
+// __str__ may return either flavor.
+class Tag {
+  new(label) { this.label = label }
+  __str__() { this.label.view() }
+}
+assert(to_string(Tag.new('demo')) == 'demo')

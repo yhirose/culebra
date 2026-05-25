@@ -1801,12 +1801,12 @@ inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
 inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
   auto r = _try_special_unary(type, data, "__str__");
   if (!r) return std::nullopt;
-  if (r->tag != TAG_STRING) {
+  if (r->tag != TAG_STRING && r->tag != TAG_STRINGVIEW) {
     _culebra_value_release_impl(r->tag, r->data);
     throw culebra::CulebraError("TypeError",
                                 "__str__ must return a String");
   }
-  std::string out(reinterpret_cast<const char*>(r->data));
+  std::string out(_culebra_str_view(r->tag, r->data));
   _culebra_value_release_impl(r->tag, r->data);
   return out;
 }
@@ -10415,8 +10415,9 @@ struct JIT {
         // str_eq on the wrong-tag branch and segfault when subject is
         // nil (data=0) or any non-string with a non-pointer data slot.
         auto tag = extract_tag(subject);
-        auto is_str = builder_.CreateICmpEQ(tag,
-                                            builder_.getInt8(TAG_STRING));
+        auto is_str = builder_.CreateOr(
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)));
         auto pat_str = pattern.tag == "INTERPOLATED_CONTENT"_
                            ? decode_interpolated_content(pattern.token)
                            : std::string(pattern.token);
@@ -10428,8 +10429,11 @@ struct JIT {
         builder_.CreateCondBr(is_str, eqBB, endBB);
 
         builder_.SetInsertPoint(eqBB);
-        auto subj_ptr =
-            builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+        // Materialize StringView → cstr (leak-bounded) so str_eq below
+        // can use the existing const char* contract.
+        auto subj_ptr = emit_call(
+            module_->getFunction(rt::strlike_to_cstr),
+            {tag, extract_data(subject)});
         auto eq = emit_call(
             module_->getOrInsertFunction(rt::str_eq,
                                          builder_.getInt1Ty(), ptrTy, ptrTy),

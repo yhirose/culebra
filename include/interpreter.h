@@ -1953,10 +1953,10 @@ inline std::optional<std::string> _try_str_special(const Value& v) {
   const auto& m = obj.get("__str__");
   if (m.type != Value::Function) return std::nullopt;
   auto r = _invoke_method_no_args(v, "__str__");
-  if (r.type != Value::String) {
+  if (r.type != Value::String && r.type != Value::StringView) {
     throw CulebraError("TypeError", "__str__ must return a String");
   }
-  return r.template get<std::string>();
+  return std::string(r.to_string_view());
 }
 
 // Like `v.str_display()` (unquoted strings) but honors `__str__` on
@@ -4029,11 +4029,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return val.type == Value::Float &&
                val.get<double>() == pattern.token_to_number<double>();
       case "STRING"_:
-        return val.type == Value::String &&
-               val.get<std::string>() == std::string(pattern.token);
+        return (val.type == Value::String || val.type == Value::StringView) &&
+               val.to_string_view() == pattern.token;
       case "INTERPOLATED_CONTENT"_:
-        return val.type == Value::String &&
-               val.get<std::string>() ==
+        return (val.type == Value::String || val.type == Value::StringView) &&
+               val.to_string_view() ==
                    decode_interpolated_content(pattern.token);
       case "IDENTIFIER"_: {
         bind_pattern_name(env, pattern, val, mut);
