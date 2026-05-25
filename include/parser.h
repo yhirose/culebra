@@ -36,7 +36,11 @@ const auto grammar_ = R"(
   # (arity match) is treated as conforming automatically — no `impl`
   # block needed in this MVP.
   TRAIT_DECL               <-  (DECORATOR (_ DECORATOR)* _)? trait _ CLASS_HEAD _ '{' _ (TRAIT_METHOD (_ TRAIT_METHOD)*)? _ '}'
-  TRAIT_METHOD             <-  IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
+  TRAIT_METHOD             <-  IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? (_ TRAIT_BODY)?
+  # TRAIT_BODY wraps BLOCK so AstOptimizer keeps a distinct node
+  # indicating "this method has a default impl" — BLOCK itself is
+  # folded away by the optimizer.
+  TRAIT_BODY               <-  BLOCK
 
   # Class / trait / fn head with optional Generic type parameters:
   # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
@@ -437,6 +441,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "DEFAULT_VALUE",
                "ARG_LIST", "KWARG", "KWARG_SPLAT",
                "CLASS_DECL", "METHOD", "DECORATOR",
+               "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN",
                "REST_PATTERN",

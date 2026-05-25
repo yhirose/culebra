@@ -138,6 +138,22 @@ inline int multifn_specificity(std::string_view param_type,
     return 1;                                  // class instance
   }
   if (param_type == arg_type) return 3;
+  // Trait conformance: if `param_type` is a registered trait and the
+  // arg's class structurally conforms, score 2 (below concrete-exact,
+  // above plain Union). Primitive arg types skip the cache walk —
+  // a registered trait can't match a primitive (no class tag).
+  if (auto* trait = lookup_trait(param_type)) {
+    if (is_primitive_type_label(arg_type) || arg_type == "Object") {
+      return -1;
+    }
+    auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
+    auto it = by_trait.find(std::string(param_type));
+    if (it != by_trait.end()) return it->second ? 2 : -1;
+    // Cache miss: pessimistically -1 here; the actual conformance walk
+    // happens in type_matches with the instance in hand, populating
+    // the cache for subsequent dispatch lookups.
+    return -1;
+  }
   return -1;
 }
 
@@ -1585,7 +1601,35 @@ inline bool type_matches(const Value& val, std::string_view name) {
     case Value::Object: {
       if (name == "Object") return true;
       auto tag = class_tag(val);
-      return tag && *tag == name;
+      if (tag && *tag == name) return true;
+      // Structural trait conformance: if `name` is a registered trait
+      // and this instance's class has the required methods, accept.
+      // Cached per (class, trait) for O(1) repeat dispatch.
+      if (auto* trait = lookup_trait(name)) {
+        if (!tag) return false;  // no class tag → not eligible
+        std::string class_name(*tag);
+        std::string trait_name(name);
+        auto& by_trait = trait_conformance_cache()[class_name];
+        auto it = by_trait.find(trait_name);
+        if (it != by_trait.end()) return it->second;
+        // Walk instance methods → (name, arity) map for the check.
+        std::unordered_map<std::string, size_t> class_methods;
+        const auto& obj = val.to_object();
+        for (auto& [k, sym] : *obj.properties) {
+          if (sym.val.type != Value::Function) continue;
+          const auto& fn = sym.val.template get<FunctionValue>();
+          size_t arity = 0;
+          for (const auto& p : *fn.params) {
+            if (p.kw_only || p.kwargs_rest) continue;
+            arity++;
+          }
+          class_methods.emplace(std::string(k), arity);
+        }
+        bool conforms = class_conforms_to_trait(class_methods, *trait);
+        by_trait[trait_name] = conforms;
+        return conforms;
+      }
+      return false;
     }
     case Value::Function: return name == "Function";
     case Value::Tensor:   return name == "Tensor";
@@ -3493,6 +3537,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // long-lived storage backing the view. Lives as long as the
   // Interpreter so all derived FunctionValues stay safe to introspect.
   std::vector<std::shared_ptr<std::string>> generic_type_storage_;
+
+  // Default-impl method bodies declared on traits, owned by this
+  // Interpreter so dispatch can call them with the right closure.
+  // Outer map: trait name → method name → FunctionValue (the default).
+  std::unordered_map<std::string,
+                     std::unordered_map<std::string, Value>>
+      trait_default_impls_;
   // Absolute paths of the modules currently being evaluated. The top
   // entry is the active module; `eval_import_stmt` uses its directory
   // to resolve relative paths in `import name from "./..."`.
@@ -3622,6 +3673,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return Value();
       case "CLASS_DECL"_:
         return eval_class_decl(ast, env);
+      case "TRAIT_DECL"_:
+        return eval_trait_decl(ast, env);
       case "MULTIFN_DECL"_:
         return eval_multifn_decl(ast, env);
       case "IMPORT_STMT"_:
@@ -4057,6 +4110,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (size_t p = 0; p < args.size(); p++) {
       arg_types[p] = value_dyn_type(args[p]);
     }
+    // Pre-populate trait conformance cache so multifn_specificity can
+    // resolve `fn show(x: Stringer)` style traits without holding the
+    // instance. Cheap on first dispatch (O(traits × args)), free on
+    // repeat thanks to the cache; trait_registry is process-wide so
+    // populated entries persist.
+    if (!trait_registry().empty()) {
+      for (const auto& [trait_name, _trait] : trait_registry()) {
+        for (const auto& arg : args) {
+          (void)type_matches(arg, trait_name);
+        }
+      }
+    }
     auto r = multifn_pick(methods, arg_types,
                           [](const MultiMethod& m) -> const std::vector<std::string>& {
                             return m.param_types;
@@ -4467,6 +4532,68 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     env->initialize(class_name, std::move(class_val), false);
+    return Value();
+  }
+
+  // `trait Name { fn req(); fn def() { ... } }` — register a structural
+  // contract. Required methods (no body) must be present on conforming
+  // classes; default-impl methods (with body) are owned by the trait
+  // and become callable on conforming instances even without a class
+  // definition. No new keyword in the value environment — traits live
+  // in `culebra::trait_registry()` keyed by name.
+  Value eval_trait_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    size_t k = 0;
+    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    // CLASS_HEAD may carry Generic params; outer is the trait name.
+    auto head = parse_generic_head(ast.nodes[k]->token);
+    auto trait_name = std::string(head.outer);
+
+    TraitDef def;
+    def.name = trait_name;
+
+    // Per-method default body storage (interp-side). Owned by the trait
+    // — every conforming instance shares one FunctionValue per default.
+    auto& defaults = trait_default_impls_[trait_name];
+    defaults.clear();
+
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, (BLOCK)?]
+      auto name_view = m.nodes[0]->token;
+      const auto& params_ast = *m.nodes[1];
+      const peg::Ast* body_ast = nullptr;
+      std::shared_ptr<peg::Ast> body_shared;
+      std::string_view return_type;
+      for (size_t j = 2; j < m.nodes.size(); j++) {
+        if (m.nodes[j]->tag == "RETURN_TYPE"_) {
+          return_type = m.nodes[j]->token;
+        } else if (m.nodes[j]->tag == "TRAIT_BODY"_) {
+          // TRAIT_BODY wraps the BLOCK so AstOptimizer doesn't fold it
+          // — the actual body content is its first child (BLOCK's body).
+          body_shared = m.nodes[j]->nodes.empty()
+                            ? m.nodes[j]
+                            : m.nodes[j]->nodes[0];
+          body_ast = body_shared.get();
+        }
+      }
+      // Count positional params (kw_only / kwargs_rest excluded).
+      auto params = parse_parameters(params_ast, env);
+      size_t arity = 0;
+      for (const auto& p : params) {
+        if (p.kw_only || p.kwargs_rest) continue;
+        arity++;
+      }
+      def.methods.push_back({std::string(name_view), arity, body_ast != nullptr});
+
+      if (body_ast) {
+        auto fn_val =
+            make_function_value(params_ast, body_shared, return_type, env);
+        fn_val.get<FunctionValue>().name = std::string(name_view);
+        defaults.emplace(std::string(name_view), std::move(fn_val));
+      }
+    }
+    register_trait(std::move(def));
     return Value();
   }
 
@@ -4882,6 +5009,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return _wrap_method_with_this(prop, val);
       }
       return prop;
+    }
+
+    // Trait default-method fallback: if this instance's class doesn't
+    // define `name`, look for a registered trait that (a) has a default
+    // for `name` and (b) the instance structurally conforms to.
+    if (class_tag(val)) {
+      for (const auto& [trait_name, default_methods] : trait_default_impls_) {
+        auto it = default_methods.find(std::string(name));
+        if (it == default_methods.end()) continue;
+        if (type_matches(val, trait_name)) {
+          return _wrap_method_with_this(it->second, val);
+        }
+      }
     }
 
     // Auto-synthesized `parameters()` on class instances: walks the
