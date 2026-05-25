@@ -323,6 +323,13 @@ inline TestRunSummary run_tests(
     std::shared_ptr<Environment> env) {
   TestRunSummary summary;
 
+  // Embedders may call run_tests multiple times in the same process
+  // (watch mode, host applications). Clear the registry on entry so
+  // stale entries from a previous run don't re-execute against the
+  // new env. (The CLI's one-shot path is unaffected — the registry
+  // starts empty either way.)
+  test_registry().entries.clear();
+
   // Keep every loaded module alive for the full duration of the run.
   // LoadedModule owns a shared_ptr<std::string> backing every AST
   // token's std::string_view; registered FunctionValues reference
