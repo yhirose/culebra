@@ -81,6 +81,16 @@ let c = Cell.new(1)
 c.set("now a string")
 assert(c.v == "now a string")
 
+// Introspection: declared type-param survives (fn.params[i].type
+// reports `T`, not the rewritten `Any`).
+let cell = Cell.new(0)
+assert(cell.set.params[0].type == "T")
+class Bagged<T> {
+  fill(xs: Array<T>) { this.xs = xs }
+}
+let bag = Bagged.new()
+assert(bag.fill.params[0].type == "Array<T>")
+
 // `match v { x: Array<Long> => ... }` strips Generic on both backends.
 fn classify(v) {
   match v {

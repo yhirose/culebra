@@ -3095,11 +3095,16 @@ struct JitParamMeta {
   const char* return_type;
   const uint8_t* mut_bits;
   const char* const* type_names;
+  // Original declared annotation per param (before class type-param
+  // neutralization). Used by introspection so `fn.params[i].type`
+  // surfaces `T` / `Array<T>` for Generic class methods. Same layout
+  // as `type_names`; empty string when unannotated.
+  const char* const* declared_type_names;
 };
 
 // Layout matches the LLVM struct emitted in emit_param_meta_global.
 // Adding a field requires updating both — the assert catches drift.
-static_assert(sizeof(JitParamMeta) == 9 * sizeof(int64_t),
+static_assert(sizeof(JitParamMeta) == 10 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
 inline std::unordered_map<void*, const JitParamMeta*>&
@@ -3199,10 +3204,16 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
                  (meta->mut_bits[i / 8] & (1u << (i % 8)));
         culebra_runtime_object_set(o, "mut", false, TAG_BOOL,
                                     m ? 1 : 0, 0, 0);
-        const char* tn =
-            (meta->type_names && meta->type_names[i]) ? meta->type_names[i] : "";
+        // Prefer declared (preserves `T`); fall back to effective.
+        const char* tn = nullptr;
+        if (meta->declared_type_names && meta->declared_type_names[i] &&
+            meta->declared_type_names[i][0] != '\0') {
+          tn = meta->declared_type_names[i];
+        } else if (meta->type_names && meta->type_names[i]) {
+          tn = meta->type_names[i];
+        }
         auto* tname = _culebra_heap_str(
-            culebra::canonicalize_type_annotation(tn));
+            culebra::canonicalize_type_annotation(tn ? tn : ""));
         culebra_runtime_object_set(o, "type", false, TAG_STRING,
                                     reinterpret_cast<int64_t>(tname), 0, 0);
         bool hd = meta->has_default_bits[i / 8] & (1u << (i % 8));
@@ -11488,6 +11499,10 @@ struct JIT {
     // fresh string) is safe to push; downstream consumers (emit_type_check,
     // paramTypeStrs) take string_view and accept either.
     std::vector<std::string> paramTypeNames;
+    // Original declared annotation (pre-neutralization) — used by
+    // introspection so `fn.params[i].type` surfaces `T` / `Array<T>`
+    // for Generic class methods, not the rewritten `Any`.
+    std::vector<std::string> paramDeclaredTypeNames;
     std::vector<const peg::Ast*> paramDefaults;
     std::vector<bool> paramMuts;
     std::optional<size_t> firstDefaulted;
@@ -11501,13 +11516,16 @@ struct JIT {
       if (culebra::is_kwargs_rest(*node)) {
         paramNames.push_back(std::string(node->token));
         paramTypeNames.push_back({});
+        paramDeclaredTypeNames.push_back({});
         paramDefaults.push_back(nullptr);
         paramMuts.push_back(false);
         kwargsRestIdx = paramNames.size() - 1;
         continue;
       }
       paramNames.push_back(std::string(node->nodes[1]->token));
-      auto tname = std::string(extract_type_annotation(*node, 2));
+      auto raw = std::string(extract_type_annotation(*node, 2));
+      paramDeclaredTypeNames.push_back(raw);
+      auto tname = raw;
       // Recursive rewrite: bare `T`, `Array<T>`, `T | Long`, etc. all
       // collapse to "Any" / canonical-rewritten. Uses the snapshot
       // from the immediate enclosing class so nested fns in the body
@@ -11827,13 +11845,10 @@ struct JIT {
     // Restore outer context before emitting the closure at the caller's
     // insertion point — the cell captures come from the outer scope.
     saver.restore();
-    std::vector<std::string> paramTypeStrs;
-    paramTypeStrs.reserve(paramTypeNames.size());
-    for (auto& t : paramTypeNames) paramTypeStrs.emplace_back(t);
     auto* paramMeta = emit_param_meta_global(
         fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx,
         std::string(declName), std::string(returnType), paramMuts,
-        paramTypeStrs);
+        paramTypeNames, paramDeclaredTypeNames);
     return emit_closure_build(fn, info, paramNames.size(), paramMeta);
   }
 
@@ -11852,7 +11867,8 @@ struct JIT {
       const std::string& fnName = {},
       const std::string& returnType = {},
       const std::vector<bool>& paramMuts = {},
-      const std::vector<std::string>& paramTypes = {}) {
+      const std::vector<std::string>& paramTypes = {},
+      const std::vector<std::string>& paramDeclaredTypes = {}) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
@@ -11869,7 +11885,7 @@ struct JIT {
           returnType, fnBase + ".pmeta.ret");
       auto metaTy = llvm::StructType::get(ctx_,
           {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-           ptrTy, ptrTy, ptrTy, ptrTy});
+           ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
       auto nullPtr = llvm::ConstantPointerNull::get(ptrTy);
       auto metaInit = llvm::ConstantStruct::get(
           metaTy,
@@ -11879,7 +11895,7 @@ struct JIT {
            llvm::ConstantInt::get(i64Ty, -1),
            llvm::ConstantExpr::getBitCast(fnNameG, ptrTy),
            llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
-           nullPtr, nullPtr});
+           nullPtr, nullPtr, nullPtr});
       auto metaGlobal = new llvm::GlobalVariable(
           *module_, metaTy, /*isConstant=*/true,
           llvm::GlobalValue::PrivateLinkage, metaInit,
@@ -11957,11 +11973,31 @@ struct JIT {
         llvm::GlobalValue::PrivateLinkage, typesInit,
         fnBase + ".pmeta.types");
 
+    // Declared (pre-neutralization) types for introspection — same
+    // layout as types, falls back to the effective type when missing.
+    std::vector<llvm::Constant*> declared_consts;
+    declared_consts.reserve(paramNames.size());
+    for (size_t i = 0; i < paramNames.size(); i++) {
+      const std::string& t = i < paramDeclaredTypes.size() &&
+                                 !paramDeclaredTypes[i].empty()
+                                 ? paramDeclaredTypes[i]
+                                 : (i < paramTypes.size() ? paramTypes[i]
+                                                          : std::string());
+      declared_consts.push_back(builder_.CreateGlobalString(
+          t, ".param.declared." + fnBase + "." + paramNames[i]));
+    }
+    auto declaredArrTy = llvm::ArrayType::get(ptrTy, declared_consts.size());
+    auto declaredInit = llvm::ConstantArray::get(declaredArrTy, declared_consts);
+    auto declaredGlobal = new llvm::GlobalVariable(
+        *module_, declaredArrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, declaredInit,
+        fnBase + ".pmeta.declared");
+
     // Layout matches JitParamMeta in declaration order — append new
     // fields at the end so kwargs dispatch consumers stay unaffected.
     auto metaTy = llvm::StructType::get(ctx_,
         {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-         ptrTy, ptrTy, ptrTy, ptrTy});
+         ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
     auto metaInit = llvm::ConstantStruct::get(
         metaTy,
         {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
@@ -11975,7 +12011,8 @@ struct JIT {
          llvm::ConstantExpr::getBitCast(fnNameG, ptrTy),
          llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
          llvm::ConstantExpr::getBitCast(mutBitsGlobal, ptrTy),
-         llvm::ConstantExpr::getBitCast(typesGlobal, ptrTy)});
+         llvm::ConstantExpr::getBitCast(typesGlobal, ptrTy),
+         llvm::ConstantExpr::getBitCast(declaredGlobal, ptrTy)});
     auto metaGlobal = new llvm::GlobalVariable(
         *module_, metaTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, metaInit,

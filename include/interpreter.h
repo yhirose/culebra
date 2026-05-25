@@ -545,7 +545,10 @@ struct FunctionValue {
   struct Parameter {
     std::string_view name;
     bool mut;
-    std::string_view type_name;  // empty = no annotation
+    std::string_view type_name;  // empty = no annotation; this is the
+                                  // effective annotation runtime checks
+                                  // use — may be rewritten (e.g. class
+                                  // type-params → "Any").
     // Default expression AST (nullptr = no default). Points into the
     // root AST, which outlives all FunctionValues for a given eval.
     const peg::Ast* default_expr = nullptr;
@@ -560,6 +563,11 @@ struct FunctionValue {
     std::shared_ptr<Value> default_value;
     bool kw_only = false;
     bool kwargs_rest = false;
+    // Declared annotation as written in source — preserved for
+    // introspection (`fn.params[i].type`) when `type_name` has been
+    // neutralized. Empty = falls back to `type_name` (= raw or
+    // un-rewritten).
+    std::string_view declared_type_name;
 
     // Convenience constructor for a synthetic `**rest` catch-all
     // parameter (used by the multifn dispatcher to forward unknown
@@ -4270,7 +4278,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       slot = *storage;
     };
     auto neutralize_type_params = [&](FunctionValue& fn) {
-      for (auto& p : *fn.params) neutralize_one(p.type_name);
+      // Snapshot original declared annotation BEFORE rewriting type_name,
+      // so introspection can recover `T` / `Array<T>` even though runtime
+      // checks see the rewritten form.
+      for (auto& p : *fn.params) {
+        p.declared_type_name = p.type_name;
+        neutralize_one(p.type_name);
+      }
       neutralize_one(fn.return_type);
     };
 
@@ -4331,8 +4345,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // PARAMETERS, BLOCK].
       auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
       // Neutralize class type-params on the constructor signature.
-      // Same recursive rewrite as method params — `Array<T>` etc.
-      for (auto& p : ctor_params) neutralize_one(p.type_name);
+      // Save the declared annotation first for introspection symmetry
+      // with method params.
+      for (auto& p : ctor_params) {
+        p.declared_type_name = p.type_name;
+        neutralize_one(p.type_name);
+      }
       auto body = new_ast->nodes[3];
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
@@ -4790,8 +4808,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           ObjectValue o;
           o.initialize("name", Value(std::string(p.name)), false);
           o.initialize("mut", Value(p.mut), false);
-          o.initialize("type",
-                       Value(canonicalize_type_annotation(p.type_name)),
+          // Prefer the declared annotation (preserves `T` / `Array<T>`
+          // on Generic class methods); fall back to type_name when
+          // declared is empty (non-class, no neutralization).
+          auto src = p.declared_type_name.empty() ? p.type_name
+                                                  : p.declared_type_name;
+          o.initialize("type", Value(canonicalize_type_annotation(src)),
                        false);
           bool has_default =
               p.default_expr != nullptr || p.default_value != nullptr;
