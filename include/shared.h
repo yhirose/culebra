@@ -227,7 +227,15 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
     return std::string(trim_ascii(name));
   }
   std::string out;
+  // Drop duplicate alternatives keeping first-occurrence order, so
+  // `Long | Long` collapses to `Long` and `Float | Long | Float` to
+  // `Float | Long`. A handful of alts is normal — linear scan is fine.
+  std::vector<std::string_view> seen;
   for (auto cand : split_union_types(name)) {
+    bool dup = false;
+    for (auto s : seen) if (s == cand) { dup = true; break; }
+    if (dup) continue;
+    seen.push_back(cand);
     if (!out.empty()) out += " | ";
     out.append(cand.data(), cand.size());
   }
