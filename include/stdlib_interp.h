@@ -1567,8 +1567,11 @@ inline void setup_built_in_functions(
                               // Truncate toward zero (matches Python's int()).
                               return Value(static_cast<long>(v.get<double>()));
                             }
-                            if (v.type != Value::String) throw_type_error_at(line, col);
-                            return Value(parse_long_strict(v.to_string(), line, col));
+                            if (v.type != Value::String &&
+                                v.type != Value::StringView)
+                              throw_type_error_at(line, col);
+                            return Value(parse_long_strict(
+                                std::string(v.to_string_view()), line, col));
                           },
                           "Long"sv)),
       false);
@@ -1584,8 +1587,11 @@ inline void setup_built_in_functions(
                             if (v.type == Value::Long) {
                               return Value(static_cast<double>(v.get<long>()));
                             }
-                            if (v.type != Value::String) throw_type_error_at(line, col);
-                            return Value(parse_double_strict(v.to_string(), line, col));
+                            if (v.type != Value::String &&
+                                v.type != Value::StringView)
+                              throw_type_error_at(line, col);
+                            return Value(parse_double_strict(
+                                std::string(v.to_string_view()), line, col));
                           },
                           "Float"sv)),
       false);
@@ -1617,6 +1623,7 @@ inline void setup_built_in_functions(
                               case Value::Tensor:   n = "Tensor"; break;
                               case Value::Tuple:    n = "Tuple"; break;
                               case Value::Set:      n = "Set"; break;
+                              case Value::StringView: n = "StringView"; break;
                             }
                             return Value(std::string(n));
                           },
