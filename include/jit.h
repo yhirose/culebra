@@ -3184,7 +3184,7 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   }
   if (std::strcmp(prop, "return_type") == 0) {
     const char* r = (meta && meta->return_type) ? meta->return_type : "";
-    auto* heap = _culebra_heap_str(std::string(r));
+    auto* heap = _culebra_heap_str(culebra::canonicalize_type_annotation(r));
     return {TAG_STRING, reinterpret_cast<int64_t>(heap)};
   }
   if (std::strcmp(prop, "params") == 0) {

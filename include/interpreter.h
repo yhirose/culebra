@@ -4781,7 +4781,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& fn = val.get<FunctionValue>();
       const auto& source = fn.introspection_target ? *fn.introspection_target : fn;
       if (name == "name") return Value(std::string(fn.name));
-      if (name == "return_type") return Value(std::string(source.return_type));
+      if (name == "return_type") {
+        return Value(canonicalize_type_annotation(source.return_type));
+      }
       if (name == "params") {
         ArrayValue arr;
         for (const auto& p : *source.params) {

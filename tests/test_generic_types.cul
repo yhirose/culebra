@@ -24,6 +24,12 @@ assert(hit != nil)
 assert(hit[0] == 1 && hit[1] == 2)
 assert(lookup("no") == nil)
 
+// return_type is canonicalized symmetric to params[i].type.
+fn ws_return(xs: Array<Long>) -> Array < Long > { xs }
+assert(ws_return.return_type == "Array<Long>")
+fn union_return(k: Long) -> Long  |  Float { to_float(k) }
+assert(union_return.return_type == "Long | Float")
+
 // --- Whitespace tolerance + canonical form ---
 fn ws_a(xs: Array<Long>)     { xs[0] }
 fn ws_b(xs: Array < Long >)  { xs[0] }
