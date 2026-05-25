@@ -2974,28 +2974,28 @@ inline std::map<std::string_view, Value>& string_builtins() {
                  });
            }))},
       {"contains"sv,
-       Value(FunctionValue({{"sub", false, "String"sv}},
+       Value(FunctionValue({{"sub", false, "StringLike"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
-                             const auto& s = callEnv->get("this").to_string();
-                             const auto& sub =
-                                 callEnv->get("sub").to_string();
-                             return Value(s.find(sub) != std::string::npos);
+                             auto s = callEnv->get("this").to_string_view();
+                             auto sub =
+                                 callEnv->get("sub").to_string_view();
+                             return Value(s.find(sub) != std::string_view::npos);
                            }))},
       {"starts_with"sv,
        Value(FunctionValue(
-           {{"prefix", false, "String"sv}},
+           {{"prefix", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& s = callEnv->get("this").to_string();
-             const auto& prefix = callEnv->get("prefix").to_string();
+             auto s = callEnv->get("this").to_string_view();
+             auto prefix = callEnv->get("prefix").to_string_view();
              return Value(s.size() >= prefix.size() &&
                           s.compare(0, prefix.size(), prefix) == 0);
            }))},
       {"ends_with"sv,
        Value(FunctionValue(
-           {{"suffix", false, "String"sv}},
+           {{"suffix", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& s = callEnv->get("this").to_string();
-             const auto& suf = callEnv->get("suffix").to_string();
+             auto s = callEnv->get("this").to_string_view();
+             auto suf = callEnv->get("suffix").to_string_view();
              return Value(s.size() >= suf.size() &&
                           s.compare(s.size() - suf.size(), suf.size(), suf) ==
                               0);
@@ -4287,14 +4287,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // is valid as long as `v` is.
   static std::string_view value_dyn_type(const Value& v) {
     switch (v.type) {
-      case Value::Nil:      return "Nil";
-      case Value::Bool:     return "Bool";
-      case Value::Long:     return "Long";
-      case Value::Float:    return "Float";
-      case Value::String:   return "String";
-      case Value::Array:    return "Array";
-      case Value::Function: return "Function";
-      case Value::Tensor:   return "Tensor";
+      case Value::Nil:        return "Nil";
+      case Value::Bool:       return "Bool";
+      case Value::Long:       return "Long";
+      case Value::Float:      return "Float";
+      case Value::String:     return "String";
+      case Value::StringView: return "StringView";
+      case Value::Array:      return "Array";
+      case Value::Function:   return "Function";
+      case Value::Tensor:     return "Tensor";
+      case Value::Tuple:      return "Tuple";
+      case Value::Set:        return "Set";
       case Value::Object:
         if (auto tag = class_tag(v)) return *tag;
         return "Object";

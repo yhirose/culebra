@@ -1700,7 +1700,7 @@ free; defining the same name on the class overrides:
 
 #### Built-in traits
 
-The runtime ships three foundational traits as a preamble — they
+The runtime ships four foundational traits as a preamble — they
 are visible without `import`:
 
 | Trait | Required | Defaults |
@@ -1708,21 +1708,24 @@ are visible without `import`:
 | `Stringer` | `to_s() -> String` | — |
 | `Eq` | `eq(other) -> Bool` | `neq` |
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
+| `StringLike` | `to_string_view() -> StringView` | — |
 
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is
-displayable wherever a `Stringer` is expected.
+displayable wherever a `Stringer` is expected. `StringLike` accepts
+any byte-readable string value at API boundaries — `String` and
+`StringView` both conform out of the box.
 
 Built-in primitives also conform via a hard-coded table — no
 class wrapper required:
 
-| Primitive | Stringer | Eq | Comparable |
-|---|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) |
-| Long / Float | ✓ | ✓ | ✓ |
-| String | ✓ | ✓ | ✓ |
-| Array / Tuple / Set / Tensor | ✓ | ✓ | — |
-| Function | ✓ | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike |
+|---|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — |
+| Long / Float | ✓ | ✓ | ✓ | — |
+| String / StringView | ✓ | ✓ | ✓ | ✓ |
+| Array / Tuple / Set / Tensor | ✓ | ✓ | — | — |
+| Function | ✓ | — | — | — |
 
 So `fn show(x: Stringer) { to_string(x) }` accepts `show(42)` and
 `show([1, 2, 3])` without requiring a class wrapper. Note that
@@ -2117,23 +2120,47 @@ Conventions:
 
 ### 17.1 String methods
 
-All string methods return new `String` values; the receiver is never
-mutated.
+All string methods accept `String` or `StringView` as receiver (and
+where shown, as argument — `StringLike`). They return new values; the
+receiver is never mutated.
 
-| Signature                                   | Description                          |
-|---------------------------------------------|--------------------------------------|
-| `s.size() -> Long`                          | Byte length.                         |
-| `s.upper() -> String`                       | ASCII uppercase.                     |
-| `s.lower() -> String`                       | ASCII lowercase.                     |
-| `s.trim() -> String`                        | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
-| `s.split(sep: String) -> Array`             | Split on every occurrence of `sep`. Empty `sep` → `[s]`. |
-| `s.contains(sub: String) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
-| `s.starts_with(prefix: String) -> Bool`     | Whether `s` begins with `prefix`.    |
-| `s.ends_with(suffix: String) -> Bool`       | Whether `s` ends with `suffix`.      |
-| `s.slice(start: Long, end: Long) -> String` | Substring `[start, end)`. Negative indices count from end; `start` clamped to `[0, size()]`, `end` to `[start, size()]`. |
-| `s.iter() -> Iterator<String>`              | Lazy walk yielding **one-scalar Strings** (UTF-8 scalar value, re-encoded). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
-| `s.code_points() -> Iterator<Long>`         | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar `String` allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
-| `s.graphemes() -> Iterator<String>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) as `String` — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
+| Signature                                       | Description                          |
+|-------------------------------------------------|--------------------------------------|
+| `s.size() -> Long`                              | Byte length.                         |
+| `s.upper() -> String`                           | ASCII uppercase.                     |
+| `s.lower() -> String`                           | ASCII lowercase.                     |
+| `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
+| `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
+| `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
+| `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
+| `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
+| `s.ends_with(suffix: StringLike) -> Bool`       | Whether `s` ends with `suffix`.      |
+| `s.slice(start: Long, end: Long) -> StringView` | Substring `[start, end)` borrowing from the receiver's bytes. Negative indices count from end; `start` clamped to `[0, size()]`, `end` to `[start, size()]`. |
+| `s.view() -> StringView`                        | A view aliasing the receiver's bytes (no copy). |
+| `s.to_string() -> String`                       | Materialize an owning `String` (no-op for `String`; copies for `StringView`). |
+| `s.iter() -> Iterator<StringView>`              | Lazy walk yielding **one-scalar `StringView`s** (UTF-8 scalar). What `for c in s { ... }` uses internally. Invalid bytes yield as one-byte substrings. |
+| `s.code_points() -> Iterator<Long>`             | Lazy walk yielding **Unicode scalar values** as `Long` (`U+0000`–`U+10FFFF`). For numeric / range / classification work where the per-scalar allocation of `iter` is wasteful. Invalid bytes yield as `0`–`255`. |
+| `s.graphemes() -> Iterator<StringView>`         | Lazy walk yielding **Extended Grapheme Clusters** (UAX #29) — one user-perceived character per step (e.g. an emoji ZWJ sequence is a single element). |
+
+#### StringView
+
+`StringView` is a borrowed view over an owning `String`'s bytes.
+`slice` / `split` / `view` / `iter` / `graphemes` return `StringView`
+instead of `String` to avoid per-call copies. The view keeps its
+source alive (shared ownership), so a view outlives the temp that
+created it:
+
+```culebra
+let v = 'hello world'.slice(6, 11)
+puts(v)                              # 'world'
+puts(v == 'world')                   # true  (byte equality across flavors)
+puts(type_of(v))                     # 'StringView'
+puts(v.to_string())                  # 'world' (materialized String)
+```
+
+Use `.to_string()` when you need an owning `String` (storing in a
+data structure, returning from a long-lived function, etc.). Most
+APIs declared with `StringLike` accept either flavor directly.
 
 ```culebra
 puts('hello'.size())              # 5

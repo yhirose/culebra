@@ -1622,7 +1622,7 @@ trait method に body を付けると default 実装になり、 適合クラス
 
 #### Built-in trait
 
-runtime は preamble として 3 つの基本 trait を ship — `import` 不要
+runtime は preamble として 4 つの基本 trait を ship — `import` 不要
 で使える:
 
 | Trait | Required | Default |
@@ -1630,20 +1630,23 @@ runtime は preamble として 3 つの基本 trait を ship — `import` 不要
 | `Stringer` | `to_s() -> String` | — |
 | `Eq` | `eq(other) -> Bool` | `neq` |
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
+| `StringLike` | `to_string_view() -> StringView` | — |
 
 `cmp` だけ書けば 6 関係 method が揃い、 `eq` だけ書けば `neq` が
 入り、 `to_s` だけ書けば Stringer の使える場所で受け取れる。
+`StringLike` は API 境界で「バイト列として読める文字列」を受け取る
+契約 — `String` と `StringView` の両方が conform する。
 
 組み込みの primitive (Long / String / Array 等) もハードコード
 された対応表で trait に conform する — class wrapper 不要:
 
-| Primitive | Stringer | Eq | Comparable |
-|---|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) |
-| Long / Float | ✓ | ✓ | ✓ |
-| String | ✓ | ✓ | ✓ |
-| Array / Tuple / Set / Tensor | ✓ | ✓ | — |
-| Function | ✓ | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike |
+|---|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) | — |
+| Long / Float | ✓ | ✓ | ✓ | — |
+| String / StringView | ✓ | ✓ | ✓ | ✓ |
+| Array / Tuple / Set / Tensor | ✓ | ✓ | — | — |
+| Function | ✓ | — | — | — |
 
 `fn show(x: Stringer) { to_string(x) }` は `show(42)` や
 `show([1, 2, 3])` を class wrapper なしで受ける。 ただし trait
@@ -2021,23 +2024,47 @@ make_thing = fn () {
 
 ### 17.1 文字列メソッド
 
-すべての文字列メソッドは新しい `String` を返し、レシーバは変更
-しません。
+すべての文字列メソッドは `String` または `StringView` をレシーバ
+に取り、引数も `StringLike` の場所では両方を受ける。 戻り値は
+新規の値で、 レシーバは変更しません。
 
-| シグネチャ                                   | 説明                                  |
-|---------------------------------------------|--------------------------------------|
-| `s.size() -> Long`                          | バイト長                              |
-| `s.upper() -> String`                       | ASCII の大文字化                      |
-| `s.lower() -> String`                       | ASCII の小文字化                      |
-| `s.trim() -> String`                        | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
-| `s.split(sep: String) -> Array`             | `sep` の出現ごとに分割。`sep` が空なら `[s]` |
-| `s.contains(sub: String) -> Bool`           | `sub` がどこかに現れるか。空の `sub` は `true` |
-| `s.starts_with(prefix: String) -> Bool`     | `prefix` で始まるか                   |
-| `s.ends_with(suffix: String) -> Bool`       | `suffix` で終わるか                   |
-| `s.slice(start: Long, end: Long) -> String` | `[start, end)` の部分文字列。負の値は末尾から、`start` は `[0, size()]`、`end` は `[start, size()]` にクランプ |
-| `s.iter() -> Iterator<String>`              | UTF-8 をスカラー単位で walk し**1 スカラー文字列**を yield するイテレータ。`for c in s { ... }` の内部実装。不正バイトは 1 バイト部分文字列として yield |
-| `s.code_points() -> Iterator<Long>`         | **Unicode スカラー値**を `Long`（`U+0000`–`U+10FFFF`）として yield する遅延イテレータ。`iter` の毎反復 String アロケが無駄になる数値・範囲・分類処理向け。不正バイトは生バイト値（0–255） |
-| `s.graphemes() -> Iterator<String>`         | **Extended Grapheme Cluster**（UAX #29）を 1 つずつ `String` として yield。1 ステップが 1 ユーザー知覚文字（絵文字 ZWJ シーケンス等は 1 要素にまとまる） |
+| シグネチャ                                       | 説明                                  |
+|-------------------------------------------------|--------------------------------------|
+| `s.size() -> Long`                              | バイト長                              |
+| `s.upper() -> String`                           | ASCII の大文字化                      |
+| `s.lower() -> String`                           | ASCII の小文字化                      |
+| `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
+| `s.split(sep: StringLike) -> Array<StringView>` | `sep` の出現ごとに分割。 `sep` が空なら `[s]`。 要素は 1 個の source を共有 |
+| `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split` の遅延版。 巨大入力で `.take(n)` する場合の早期終了に |
+| `s.contains(sub: StringLike) -> Bool`           | `sub` がどこかに現れるか。 空の `sub` は `true` |
+| `s.starts_with(prefix: StringLike) -> Bool`     | `prefix` で始まるか                   |
+| `s.ends_with(suffix: StringLike) -> Bool`       | `suffix` で終わるか                   |
+| `s.slice(start: Long, end: Long) -> StringView` | `[start, end)` の部分ビュー (レシーバのバイトを借用)。 負の値は末尾から、 `start` は `[0, size()]`、 `end` は `[start, size()]` にクランプ |
+| `s.view() -> StringView`                        | レシーバのバイトを alias する view (コピーなし) |
+| `s.to_string() -> String`                       | 所有権付き `String` に materialize (String 受信は no-op、 StringView 受信はコピー) |
+| `s.iter() -> Iterator<StringView>`              | UTF-8 をスカラー単位で walk し**1 スカラー `StringView`** を yield。 `for c in s { ... }` の内部実装。 不正バイトは 1 バイト部分 view |
+| `s.code_points() -> Iterator<Long>`             | **Unicode スカラー値**を `Long`（`U+0000`–`U+10FFFF`）として yield する遅延イテレータ。 `iter` の毎反復アロケが無駄になる数値・範囲・分類処理向け。 不正バイトは生バイト値（0–255） |
+| `s.graphemes() -> Iterator<StringView>`         | **Extended Grapheme Cluster**（UAX #29）を 1 つずつ yield。 1 ステップが 1 ユーザー知覚文字（絵文字 ZWJ シーケンス等は 1 要素にまとまる） |
+
+#### StringView
+
+`StringView` は所有権付き `String` のバイト列を借用する view。
+`slice` / `split` / `view` / `iter` / `graphemes` は per-call コピー
+を避けるため `String` ではなく `StringView` を返す。 view は source
+を生かし続ける (shared ownership) ので、 view を作った temp が消えても
+view は有効:
+
+```culebra
+let v = 'hello world'.slice(6, 11)
+puts(v)                              # 'world'
+puts(v == 'world')                   # true  (両 flavor 間のバイト等価)
+puts(type_of(v))                     # 'StringView'
+puts(v.to_string())                  # 'world' (materialize した String)
+```
+
+所有権付き `String` が必要な場面 (data structure に格納、 長寿命の
+関数から返す等) では `.to_string()` を呼ぶ。 多くの API が
+`StringLike` で宣言されており、 どちらの flavor もそのまま受ける。
 
 ```culebra
 puts('hello'.size())              # 5

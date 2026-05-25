@@ -1,0 +1,77 @@
+// StringView + StringLike trait + zero-copy String API.
+
+// --- .view() and .to_string() ---
+let s = 'hello'
+let v = s.view()
+assert(type_of(v) == 'StringView')
+assert(v == 'hello')
+assert(v.to_string() == 'hello')
+assert(type_of(v.to_string()) == 'String')
+
+// View of an existing view reuses the shared source.
+let v2 = v.view()
+assert(type_of(v2) == 'StringView')
+assert(v2 == 'hello')
+
+// --- slice returns StringView, source kept alive across temps ---
+assert(type_of('hello'.slice(1, 4)) == 'StringView')
+assert('hello'.slice(1, 4) == 'ell')
+assert('hello'.slice(-3, -1) == 'll')
+assert('hello'.slice(2, 10) == 'llo')
+
+// Even from a discarded temp, the shared source keeps the view valid.
+let a = 'hello world'.slice(6, 11)
+assert(a == 'world')
+let b = a.slice(0, 3)
+assert(b == 'wor')
+
+// --- split returns Array<StringView> ---
+let parts = 'a,b,c,d'.split(',')
+assert(type_of(parts) == 'Array')
+assert(parts.size() == 4)
+assert(parts[0] == 'a')
+assert(parts[3] == 'd')
+assert(type_of(parts[0]) == 'StringView')
+
+// Empty separator returns the whole string.
+let whole = 'abc'.split('')
+assert(whole.size() == 1)
+assert(whole[0] == 'abc')
+
+// StringLike sep — accepts both String and StringView.
+assert('a,b'.split(','.view())[0] == 'a')
+
+// --- split_iter is lazy + composable ---
+let three = 'a,b,c,d,e,f'.split_iter(',').take(3).collect()
+assert(three.size() == 3)
+assert(three[0] == 'a')
+assert(three[2] == 'c')
+
+let upper = 'a,b,c'.split_iter(',').map(fn (s) { s.upper() }).collect()
+assert(upper[0] == 'A')
+assert(upper[2] == 'C')
+
+// --- StringLike acceptance for receivers + args ---
+assert(v.upper() == 'HELLO')
+assert(v.lower() == 'hello')
+assert('  x  '.view().trim() == 'x')
+assert(v.contains('ll'))
+assert(v.starts_with('he'))
+assert(v.ends_with('lo'))
+assert(v.size() == 5)
+assert(v.contains('ell'.view()))
+assert(v.starts_with('he'.view()))
+assert(v.ends_with('lo'.view()))
+
+// --- StringLike trait ---
+trait Sized {
+  size() -> Long
+}
+fn n_bytes(x: StringLike) -> Long { x.size() }
+assert(n_bytes('hello') == 5)
+assert(n_bytes('hello'.view()) == 5)
+assert(n_bytes('hello'.slice(0, 3)) == 3)
+
+// --- Cross-flavor equality + hashing ---
+assert('hello' == 'hello'.view())
+assert('hello'.view() == 'hello')

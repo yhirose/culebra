@@ -3528,16 +3528,17 @@ culebra_runtime_repl_set(const char* name,
 // `value_dyn_type` in interpreter.h.
 inline std::string_view _jit_value_dyn_type(JitValue v) {
   switch (v.tag) {
-    case TAG_NIL:    return "Nil";
-    case TAG_BOOL:   return "Bool";
-    case TAG_LONG:   return "Long";
-    case TAG_FLOAT:  return "Float";
-    case TAG_STRING: return "String";
-    case TAG_ARRAY:  return "Array";
-    case TAG_TUPLE:  return "Tuple";
-    case TAG_SET:    return "Set";
-    case TAG_FUNC:   return "Function";
-    case TAG_TENSOR: return "Tensor";
+    case TAG_NIL:        return "Nil";
+    case TAG_BOOL:       return "Bool";
+    case TAG_LONG:       return "Long";
+    case TAG_FLOAT:      return "Float";
+    case TAG_STRING:     return "String";
+    case TAG_STRINGVIEW: return "StringView";
+    case TAG_ARRAY:      return "Array";
+    case TAG_TUPLE:      return "Tuple";
+    case TAG_SET:        return "Set";
+    case TAG_FUNC:       return "Function";
+    case TAG_TENSOR:     return "Tensor";
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(v.data);
       if (auto idx = obj->find_slot("class");
