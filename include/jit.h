@@ -11973,7 +11973,15 @@ struct JIT {
             auto name = std::string(postfix.token);
             auto receiver = callee;
             callee = compile_property_get(receiver, name);
-            emit_value_swap_owned(callee, receiver);
+            // Function introspection (.name / .params / .return_type)
+            // returns a fresh +1 owned value rather than a borrowed
+            // Object IC slot view, so swap_owned would double-retain it
+            // and leak. Release the receiver directly instead.
+            if (name == "name" || name == "params" || name == "return_type") {
+              emit_value_release(receiver);
+            } else {
+              emit_value_swap_owned(callee, receiver);
+            }
           }
           break;
         }
@@ -13184,7 +13192,15 @@ struct JIT {
             auto name = std::string(postfix.token);
             auto receiver = callee;
             callee = compile_property_get(receiver, name);
-            emit_value_swap_owned(callee, receiver);
+            // Function introspection (.name / .params / .return_type)
+            // returns a fresh +1 owned value rather than a borrowed
+            // Object IC slot view, so swap_owned would double-retain it
+            // and leak. Release the receiver directly instead.
+            if (name == "name" || name == "params" || name == "return_type") {
+              emit_value_release(receiver);
+            } else {
+              emit_value_swap_owned(callee, receiver);
+            }
           }
           break;
         }
