@@ -4569,11 +4569,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // eval_property used to inline this for Object/Array methods.
   static Value _wrap_method_with_this(const Value& prop, const Value& val) {
     const auto& pf = prop.to_function();
-    return Value(
+    Value wrapped = Value(
         FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
           callEnv->initialize("this", val, false);
           return pf.eval(callEnv);
         }));
+    // Carry introspection metadata (name / return_type /
+    // introspection_target) through the method-binding wrapper so
+    // `obj.method.name` and friends report the underlying method
+    // info instead of an empty anonymous view.
+    auto& wf = wrapped.get<FunctionValue>();
+    wf.name = pf.name;
+    wf.return_type = pf.return_type;
+    wf.introspection_target = pf.introspection_target;
+    return wrapped;
   }
 
   // Recursively flatten `val` into class-instance leaves: Arrays are
