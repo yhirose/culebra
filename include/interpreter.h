@@ -769,6 +769,10 @@ struct Value {
   explicit Value(long l) : type(Long), v(l) {}
   explicit Value(double d) : type(Float), v(d) {}
   explicit Value(std::string&& s) : type(String), v(s) {}
+  // StringView: borrowed bytes view. Caller is responsible for keeping
+  // the source buffer alive — `parameter-only` lifetime model (see
+  // [[project_string_model]]).
+  explicit Value(std::string_view sv) : type(StringView), v(sv) {}
   explicit Value(ObjectValue&& o) : type(Object), v(o) {}
   explicit Value(ArrayValue&& a) : type(Array), v(a) {}
   explicit Value(TensorValue&& t) : type(Tensor), v(t) {}
@@ -866,6 +870,21 @@ struct Value {
     switch (type) {
       case String:
         return get<std::string>();
+      case StringView:
+        return std::string(get<std::string_view>());
+      default:
+        _throw_type_error("String");
+    }
+  }
+
+  // Borrowed view over either flavor's bytes. Cheap for both:
+  // String wraps its std::string; StringView returns the stored view.
+  std::string_view to_string_view() const {
+    switch (type) {
+      case String:
+        return get<std::string>();
+      case StringView:
+        return get<std::string_view>();
       default:
         _throw_type_error("String");
     }
@@ -963,6 +982,8 @@ struct Value {
         return str_float();
       case String:
         return std::format("'{}'", to_string());
+      case StringView:
+        return std::format("'{}'", to_string_view());
       case Object:
         return str_object();
       case Array:
@@ -1012,6 +1033,13 @@ struct Value {
       if (is_numeric() && rhs.is_numeric()) {
         return to_double_coerce() == rhs.to_double_coerce();
       }
+      // String-flavor cross-equality: String == StringView compares
+      // bytes, so users can write `s.slice(0,3) == "abc"` without
+      // worrying about which flavor came back.
+      if ((type == String && rhs.type == StringView) ||
+          (type == StringView && rhs.type == String)) {
+        return to_string_view() == rhs.to_string_view();
+      }
       return false;
     }
     switch (type) {
@@ -1025,6 +1053,8 @@ struct Value {
         return get<double>() == rhs.get<double>();
       case String:
         return get<std::string>() == rhs.get<std::string>();
+      case StringView:
+        return get<std::string_view>() == rhs.get<std::string_view>();
       case Tuple: {
         const auto& a = *get<TupleValue>().elements;
         const auto& b = *rhs.get<TupleValue>().elements;
@@ -1079,6 +1109,10 @@ struct Value {
         return cmp(get<double>(), rhs.get<double>());
       case String: {
         auto c = get<std::string>().compare(rhs.get<std::string>());
+        return cmp(double(c), 0.0);
+      }
+      case StringView: {
+        auto c = get<std::string_view>().compare(rhs.get<std::string_view>());
         return cmp(double(c), 0.0);
       }
       // TODO: Object and Array support
@@ -2781,7 +2815,22 @@ inline std::map<std::string_view, Value>& string_builtins() {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(static_cast<long>(
-             callEnv->get("this").to_string().size()));
+             callEnv->get("this").to_string_view().size()));
+       }))},
+      // `.view()` on String → StringView aliasing the same bytes.
+      // The caller is responsible for keeping the source alive
+      // (`parameter-only` rule).
+      {"view"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(callEnv->get("this").to_string_view());
+       }))},
+      // `.to_string()` on StringView → owning String (alloc + copy).
+      // No-op when called on a String (returns a new String of the
+      // same bytes). Primary way to escape the parameter-only
+      // lifetime: store as String, not StringView.
+      {"to_string"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         return Value(std::string(callEnv->get("this").to_string_view()));
        }))},
       {"upper"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
