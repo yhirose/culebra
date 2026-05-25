@@ -5325,11 +5325,6 @@ culebra_runtime_strlike_slice_view(int8_t tag, int64_t data,
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
-culebra_runtime_strview_to_string(const JitStringView* v) {
-  return _culebra_heap_str(std::string_view(v->ptr, v->len));
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char*
 culebra_runtime_strlike_to_cstr(int8_t tag, int64_t data) {
   if (tag == TAG_STRING) return reinterpret_cast<const char*>(data);
   auto* v = reinterpret_cast<const JitStringView*>(data);
@@ -5923,7 +5918,6 @@ inline constexpr auto str_slice           = "culebra_runtime_str_slice";
 inline constexpr auto str_split           = "culebra_runtime_str_split";
 inline constexpr auto strlike_view        = "culebra_runtime_strlike_view";
 inline constexpr auto strlike_slice_view  = "culebra_runtime_strlike_slice_view";
-inline constexpr auto strview_to_string   = "culebra_runtime_strview_to_string";
 inline constexpr auto strlike_to_cstr     = "culebra_runtime_strlike_to_cstr";
 inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
 inline constexpr auto str_trim            = "culebra_runtime_str_trim";
@@ -8598,7 +8592,6 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::strview_to_string, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::strlike_to_cstr, ptrTy,
                                  builder_.getInt8Ty(),
                                  builder_.getInt64Ty());

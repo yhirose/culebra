@@ -923,6 +923,18 @@ struct Value {
     _throw_type_error("String");
   }
 
+  // Convenience for split/slice/iter style methods: returns the shared
+  // source and the visible byte window into it (the full source for
+  // String, the existing view for StringView).
+  std::pair<std::shared_ptr<const std::string>, std::string_view>
+  share_source_and_view() const {
+    auto src = share_source();
+    std::string_view base = (type == String)
+                                ? std::string_view(*src)
+                                : get<StringViewPayload>().view;
+    return {std::move(src), base};
+  }
+
   FunctionValue to_function() const {
     switch (type) {
       case Function:
@@ -2857,17 +2869,10 @@ inline std::map<std::string_view, Value>& string_builtins() {
          return Value(static_cast<long>(
              callEnv->get("this").to_string_view().size()));
        }))},
-      // `.view()` → StringView sharing the receiver's bytes. For a
-      // String receiver this allocates a single shared source; for an
-      // existing StringView it returns a new StringView that reuses
-      // the same shared source (no copy).
+      // `.view()` → StringView sharing the receiver's bytes.
       {"view"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& this_val = callEnv->get("this");
-         auto src = this_val.share_source();
-         std::string_view sv = (this_val.type == Value::String)
-                                   ? std::string_view(*src)
-                                   : this_val.get<StringViewPayload>().view;
+         auto [src, sv] = callEnv->get("this").share_source_and_view();
          return Value(std::move(src), sv);
        }))},
       // `.to_string()` on StringView → owning String (alloc + copy).
@@ -2901,23 +2906,13 @@ inline std::map<std::string_view, Value>& string_builtins() {
          const auto& s = callEnv->get("this").to_string();
          return Value(std::string(trim_ascii(s)));
        }))},
-      // Array<StringView> sharing the receiver's bytes through a
-      // single shared source — one source-copy alloc total (for a
-      // String receiver), then N view payloads that borrow into it.
-      // Returning Array keeps `.size()` / `[i]` backward-compatible
-      // with the prior Array<String> semantics (and matches the
-      // dominant convention in Python / JS / Swift / Ruby / Go).
-      // For early-exit (`take(3)`) over huge inputs, use `split_iter`.
+      // Array<StringView>. Returning Array (eager) matches
+      // Python/JS/Swift/Ruby/Go; for early exit use `split_iter`.
       {"split"sv,
        Value(FunctionValue(
            {{"sep", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& this_val = callEnv->get("this");
-             auto src = this_val.share_source();
-             std::string_view base =
-                 (this_val.type == Value::String)
-                     ? std::string_view(*src)
-                     : this_val.get<StringViewPayload>().view;
+             auto [src, base] = callEnv->get("this").share_source_and_view();
              auto sep = std::string(callEnv->get("sep").to_string_view());
              ArrayValue out;
              if (sep.empty()) {
@@ -2937,21 +2932,12 @@ inline std::map<std::string_view, Value>& string_builtins() {
              }
              return Value(std::move(out));
            }))},
-      // Lazy iterator variant of split: yields StringView elements one
-      // at a time, sharing the same source. For early-exit patterns
-      // (`.split_iter(...).take(3).collect()`) the unused tail of the
-      // input is never scanned. Composes with the full iter API
-      // (.map / .filter / .reduce / .take / etc.).
+      // Lazy variant of split. `.take(n).collect()` short-circuits.
       {"split_iter"sv,
        Value(FunctionValue(
            {{"sep", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& this_val = callEnv->get("this");
-             auto src = this_val.share_source();
-             std::string_view base =
-                 (this_val.type == Value::String)
-                     ? std::string_view(*src)
-                     : this_val.get<StringViewPayload>().view;
+             auto [src, base] = callEnv->get("this").share_source_and_view();
              auto sep = std::string(callEnv->get("sep").to_string_view());
              auto pos = std::make_shared<size_t>(0);
              auto done = std::make_shared<bool>(false);
@@ -3000,44 +2986,30 @@ inline std::map<std::string_view, Value>& string_builtins() {
                           s.compare(s.size() - suf.size(), suf.size(), suf) ==
                               0);
            }))},
-      // Returns a StringView sharing the receiver's bytes. For a
-      // String receiver this allocates one source on the first slice;
-      // subsequent slices on the resulting StringView are zero-alloc
-      // (the source pointer is shared).
+      // Sub-view sharing the receiver's bytes. One source-copy alloc
+      // for a String receiver; chained slices reuse the source.
       {"slice"sv,
        Value(FunctionValue(
            {{"start", false, "Long"sv}, {"end", false, "Long"sv}},
            [](std::shared_ptr<Environment> callEnv) {
-             const auto& this_val = callEnv->get("this");
-             auto src = this_val.share_source();
-             std::string_view base = (this_val.type == Value::String)
-                                         ? std::string_view(*src)
-                                         : this_val.get<StringViewPayload>().view;
+             auto [src, base] = callEnv->get("this").share_source_and_view();
              auto [ss, ee] = normalize_slice(callEnv->get("start").to_long(),
                                              callEnv->get("end").to_long(),
                                              static_cast<long>(base.size()));
              return Value(std::move(src), base.substr(ss, ee - ss));
            }))},
-      // Iterator protocol: lazy UTF-8 walk yielding one-scalar
-      // StringViews sharing the receiver's bytes. Culebra does not
-      // currently validate UTF-8 at String construction (e.g. IO.read
-      // returns raw bytes as String), so an invalid or truncated lead
-      // byte must not stall the iterator; in that case we emit the
-      // offending byte as a one-byte view and advance.
+      // Lazy UTF-8 walk yielding one-scalar StringViews. Invalid /
+      // truncated lead bytes yield as 1-byte views and advance.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& this_val = callEnv->get("this");
-         auto src = this_val.share_source();
-         std::string_view base = (this_val.type == Value::String)
-                                     ? std::string_view(*src)
-                                     : this_val.get<StringViewPayload>().view;
+         auto [src, base] = callEnv->get("this").share_source_and_view();
          auto offset = std::make_shared<size_t>(0);
          return _make_iterator(
              [src, base, offset](std::shared_ptr<Environment>) {
                if (*offset >= base.size()) return _iter_step_done();
                size_t len = peg::codepoint_length(base.data() + *offset,
                                                   base.size() - *offset);
-               if (len == 0) len = 1;  // invalid/truncated: emit raw byte
+               if (len == 0) len = 1;
                auto sv = base.substr(*offset, len);
                *offset += len;
                return _iter_step_value(Value(src, sv));
