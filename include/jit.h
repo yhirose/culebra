@@ -10065,6 +10065,11 @@ struct JIT {
         // Predicate emitter for a single (non-Union) type name. Pulled
         // into a lambda so Union arms can OR multiple alternatives.
         auto match_single = [&](std::string_view tn) -> llvm::Value* {
+          // Strip Generic args before matching: `Array<Long>` matches
+          // any Array, mirroring interp's type_matches.
+          if (tn.find('<') != std::string_view::npos) {
+            tn = culebra::parse_generic_head(tn).outer;
+          }
           if (tn == "Any")    return builder_.getTrue();
           if (tn == "Nil")    return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL));
           if (tn == "Bool")   return builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));

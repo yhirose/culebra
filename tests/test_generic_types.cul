@@ -75,6 +75,19 @@ let c = Cell.new(1)
 c.set("now a string")
 assert(c.v == "now a string")
 
+// `match v { x: Array<Long> => ... }` strips Generic on both backends.
+fn classify(v) {
+  match v {
+    xs: Array<Long> => "array",
+    n: Long         => "long",
+    _               => "other",
+  }
+}
+assert(classify([1, 2, 3]) == "array")
+assert(classify(42) == "long")
+assert(classify("hi") == "other")
+assert(classify(nil) == "other")
+
 // Inner Union inside a Generic must not infinite-recurse in
 // type_matches / multifn_specificity (depth-aware gate).
 fn inner_union(xs: Array<Long | Float>) -> Long { xs.size() }
