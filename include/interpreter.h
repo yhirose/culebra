@@ -4116,9 +4116,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     auto& methods = *it->second;
-    for (auto& existing : methods) {
-      if (existing.param_types == method.param_types) {
-        existing = std::move(method);
+    for (size_t i = 0; i < methods.size(); i++) {
+      if (methods[i].param_types == method.param_types) {
+        methods[i] = std::move(method);
+        // Refresh the dispatcher's introspection_target whenever the
+        // FIRST method is redefined — the dispatcher exposes the
+        // first method's signature via `fn.params` / `fn.return_type`,
+        // and stale snapshots would diverge from the JIT path which
+        // re-reads methods.front() at every introspect call.
+        if (i == 0 && env->has(name_owned)) {
+          auto& disp = const_cast<Value&>(env->get(name_owned));
+          if (disp.type == Value::Function) {
+            disp.get<FunctionValue>().introspection_target =
+                std::make_shared<FunctionValue>(
+                    methods[0].body.get<FunctionValue>());
+          }
+        }
         return Value();
       }
     }
