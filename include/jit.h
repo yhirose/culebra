@@ -3228,12 +3228,39 @@ culebra_runtime_register_trait_default(const char* trait_name,
   if (!closure) return;
   auto& slot = _jit_trait_default_impls()[trait_name][method_name];
   if (slot) {
-    // Already registered (e.g. trait re-declared at top level on a
-    // REPL reload) — release the old closure and replace.
     _culebra_value_release_impl(TAG_FUNC, reinterpret_cast<int64_t>(slot));
   }
   closure->refcount++;
   slot = closure;
+}
+
+// Add (or refresh) a method entry on the registered trait. Called
+// once per declared method from compile_trait_decl's emitted IR so
+// trait_registry is populated at AOT-binary runtime (and at JIT
+// runtime — process-global registry survives the JIT phase but AOT
+// has a fresh process).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_register_trait_method(const char* trait_name,
+                                       const char* method_name,
+                                       int64_t arity,
+                                       int8_t has_default) {
+  auto& reg = culebra::trait_registry();
+  std::string name(trait_name);
+  auto& def = reg[name];
+  if (def.name.empty()) def.name = name;
+  // Replace existing entry by method name (REPL re-declaration safety).
+  for (auto& m : def.methods) {
+    if (m.name == method_name) {
+      m.arity = static_cast<size_t>(arity);
+      m.has_default = has_default != 0;
+      culebra::trait_conformance_cache().clear();
+      return;
+    }
+  }
+  def.methods.push_back({std::string(method_name),
+                          static_cast<size_t>(arity),
+                          has_default != 0});
+  culebra::trait_conformance_cache().clear();
 }
 
 // Side table mapping a dispatcher closure pointer to its multimethod
@@ -5788,6 +5815,8 @@ inline constexpr auto to_float_any        = "culebra_runtime_to_float_any";
 inline constexpr auto type_check          = "culebra_runtime_type_check";
 inline constexpr auto register_trait_default
     = "culebra_runtime_register_trait_default";
+inline constexpr auto register_trait_method
+    = "culebra_runtime_register_trait_method";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
@@ -6455,16 +6484,30 @@ struct JIT {
   // the body section follows run_modules — each dependency compiles
   // into its own scope and registers an export Object before the
   // entry module shares the rest of __culebra_main.
-  static inline int build_object(const std::vector<LoadedModule>& modules,
+  static inline int build_object(const std::vector<LoadedModule>& orig_modules,
                                  const std::string& out_path,
                                  int opt_level = 2,
                                  bool emit_llvm = false,
                                  const std::string& target_triple = "") {
     using namespace llvm;
-    if (modules.empty()) {
+    if (orig_modules.empty()) {
       std::fprintf(stderr, "culebra build: empty module list\n");
       return 1;
     }
+
+    // Prepend the built-in trait preamble so AOT binaries also see
+    // Stringer / Eq / Comparable (mirrors run_modules).
+    std::vector<LoadedModule> modules;
+    modules.reserve(orig_modules.size() + 1);
+    if (auto pre_ast = culebra::parse_builtin_traits_preamble()) {
+      LoadedModule preamble;
+      preamble.abs_path = "<builtin>";
+      preamble.source = std::make_shared<std::string>(
+          std::string(culebra::builtin_traits_preamble()));
+      preamble.ast = pre_ast;
+      modules.push_back(std::move(preamble));
+    }
+    for (const auto& m : orig_modules) modules.push_back(m);
 
     if (target_triple.empty()) {
       ensure_native_target_init();
@@ -11184,6 +11227,25 @@ struct JIT {
         arity++;
       }
       def.methods.push_back({std::string(name_view), arity, body_block != nullptr});
+
+      // Emit runtime registration of this method so the trait is
+      // populated when the AOT binary runs (and harmless on JIT).
+      {
+        auto ptrTy = llvm::PointerType::get(ctx_, 0);
+        auto trait_g = builder_.CreateGlobalString(
+            trait_name, ".trait." + trait_name + "." + std::string(name_view) + ".tn");
+        auto method_g = builder_.CreateGlobalString(
+            std::string(name_view),
+            ".trait." + trait_name + "." + std::string(name_view) + ".mn");
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::register_trait_method,
+                builder_.getVoidTy(), ptrTy, ptrTy,
+                builder_.getInt64Ty(), builder_.getInt8Ty()),
+            {trait_g, method_g,
+             builder_.getInt64(static_cast<int64_t>(arity)),
+             builder_.getInt8(body_block != nullptr ? 1 : 0)});
+      }
 
       if (body_block) {
         // Compile the default-method body as a closure. analyze_fn_body

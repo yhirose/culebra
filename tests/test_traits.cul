@@ -1,0 +1,87 @@
+// Conformance: trait / protocol (Phase 4 MVP).
+// Structural conformance — any class with the required methods
+// (matching arity) satisfies a trait. Default-impl methods declared
+// inside the trait are inherited automatically.
+
+// --- User trait: declaration + conformance via dispatch ---
+trait Greeter {
+  hello() -> String
+}
+
+class Bob {
+  new(name) { this.name = name }
+  hello() { "hi, {this.name}" }
+}
+class Mute {
+  new() {}
+}
+
+fn greet(x: Greeter) -> String { x.hello() }
+assert(greet(Bob.new("Alice")) == "hi, Alice")
+
+// Mute lacks hello() — Greeter param rejects the dispatch.
+let e = try { greet(Mute.new()); nil } catch e { e }
+assert(e.kind == "DispatchError")
+
+// --- Default method dispatch ---
+trait Counter {
+  current() -> Long
+  next() -> Long { this.current() + 1 }
+}
+
+class Zero {
+  new() {}
+  current() { 0 }
+}
+class Five {
+  new() {}
+  current() { 5 }
+  next() { 99 }      // override default
+}
+assert(Zero.new().next() == 1)    // from default
+assert(Five.new().next() == 99)   // override wins
+
+// --- Built-in: Stringer ---
+class Tag {
+  new(v) { this.v = v }
+  to_s() { "<{this.v}>" }
+}
+fn show(x: Stringer) -> String { x.to_s() }
+assert(show(Tag.new("ok")) == "<ok>")
+
+// --- Built-in: Eq with default neq ---
+class Box {
+  new(v) { this.v = v }
+  eq(other) { this.v == other.v }
+}
+let a = Box.new(1)
+let b = Box.new(1)
+let c = Box.new(2)
+assert(a.eq(b))
+assert(a.neq(c))     // default
+assert(!a.neq(b))    // default
+
+// --- Built-in: Comparable with full six-way default suite ---
+class Pri {
+  new(v) { this.v = v }
+  cmp(other) { this.v - other.v }
+}
+let lo = Pri.new(1)
+let hi = Pri.new(5)
+assert(lo.lt(hi))
+assert(lo.le(hi))
+assert(lo.le(lo))
+assert(hi.gt(lo))
+assert(hi.ge(lo))
+assert(hi.ge(hi))
+
+// --- Trait param wins dispatch tie when no concrete overload ---
+fn render(x: Stringer) -> String { "S:{x.to_s()}" }
+fn render(x: Pri)      -> String { "P:{x.v}" }   // concrete > trait
+
+let p = Pri.new(7)
+assert(render(p) == "P:7")        // concrete wins
+let t = Tag.new("hi")
+assert(render(t) == "S:<hi>")     // only trait path matches
+
+IO.puts("test_traits OK")
