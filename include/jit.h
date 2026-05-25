@@ -1593,8 +1593,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
   if (std::strcmp(expected, "Any") == 0) return;
   // Union types: any-of match across pipe-separated alternatives.
   // Compare on string_view — no per-alternative std::string copy.
-  if (std::strchr(expected, '|') != nullptr) {
-    std::string_view sv(expected);
+  // Depth-aware gate so `Array<Long | Float>`'s inner `|` doesn't
+  // trigger a Union split that's then never used.
+  std::string_view sv(expected);
+  if (culebra::has_toplevel_pipe(sv)) {
     for (auto cand : culebra::split_union_types(sv)) {
       if (_culebra_type_matches_single(tag, data, cand)) return;
     }
@@ -1602,7 +1604,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
         "type error: {} expects {} at {}:{}.", context, expected, line, col),
         line, col);
   }
-  if (_culebra_type_matches_single(tag, data, std::string_view(expected))) return;
+  if (_culebra_type_matches_single(tag, data, sv)) return;
   throw culebra::CulebraError("TypeError", std::format(
       "type error: {} expects {} at {}:{}.", context, expected, line, col),
       line, col);

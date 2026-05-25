@@ -186,6 +186,21 @@ inline std::string_view trim_ascii(std::string_view s) {
   return s.substr(i, j - i);
 }
 
+// True iff `name` has a `|` at the outermost bracket depth (i.e. a
+// top-level Union alt separator). `Array<Long | Float>` returns
+// false — the `|` lives inside `<...>`. Callers gate the Union
+// branch on this so a single Generic-with-inner-Union doesn't
+// recurse forever via the otherwise-safe `find('|') != npos` check.
+inline bool has_toplevel_pipe(std::string_view name) {
+  int depth = 0;
+  for (char c : name) {
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == '|' && depth == 0) return true;
+  }
+  return false;
+}
+
 // Split a pipe-separated Union type annotation into its component
 // type names. `Long | Float` → ["Long", "Float"]. Whitespace around
 // each candidate is trimmed. A single type name (no pipe) returns

@@ -108,7 +108,10 @@ inline bool is_primitive_type_label(std::string_view n) {
 inline int multifn_specificity(std::string_view param_type,
                                 std::string_view arg_type) {
   if (param_type.empty() || param_type == "Any") return 0;
-  if (param_type.find('|') != std::string_view::npos) {
+  // Union branch must use the depth-aware top-level check — a bare
+  // `find('|')` on `Array<Long | Float>` triggers the branch but
+  // split_union_types yields one candidate, causing self-recursion.
+  if (has_toplevel_pipe(param_type)) {
     int best = -1;
     for (auto cand : split_union_types(param_type)) {
       int s = multifn_specificity(cand, arg_type);
@@ -1513,9 +1516,11 @@ inline std::optional<std::string_view> class_tag(const Value& val) {
 inline bool type_matches(const Value& val, std::string_view name) {
   if (name == "Any") return true;
   // Union types (e.g. `Long | Float`) — any-of match. Recursively
-  // check each candidate after trimming. split_union_types is
-  // Generic-aware: `|` inside `<...>` does not split.
-  if (name.find('|') != std::string_view::npos) {
+  // check each candidate after trimming. Use depth-aware
+  // has_toplevel_pipe: `Array<Long | Float>`'s `|` is nested and
+  // must NOT enter this branch (split_union_types would return a
+  // single candidate, causing infinite recursion).
+  if (has_toplevel_pipe(name)) {
     for (auto candidate : split_union_types(name)) {
       if (type_matches(val, candidate)) return true;
     }
