@@ -133,4 +133,14 @@ assert(Holder.new().unwrap(3) == 8)
 fn inner_union(xs: Array<Long | Float>) -> Long { xs.size() }
 assert(inner_union([1, 2.5, 3]) == 3)
 
+// Class declarations directly inside another class body are rejected
+// (Phase 2 MVP — Phase 2b may revisit). fn / lambda / lexical-scope
+// inside a method still re-open scope, so class declarations there
+// keep working (covered by test_class.cul).
+//
+// Verification is split between backends: the interp test runs here
+// inside try/catch; the JIT path raises the SyntaxError at compile
+// time which can't be caught and is exercised by a dedicated
+// rejection script (see tests/test_nested_class_rejected.cul).
+
 IO.puts("test_generic_types OK")

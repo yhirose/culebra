@@ -1568,6 +1568,27 @@ than its bare outer-only form. With both
 `fn show(xs: Array)` and `fn show(xs: Array<Long>)` defined, an
 `Array` arg routes to the Generic version.
 
+#### Where class declarations may appear
+
+Classes are top-level constructs. `class C { ... }` is rejected
+when it appears directly inside another class's body — declarations
+must live at top level, or inside a fn / lambda / lexical-scope
+(`{ ... }`) block that re-opens a fresh scope. The restriction
+keeps the mental model flat; namespacing is handled by `import`
+and `export`, and inner helpers by free functions / UFCS.
+
+    class Bad {
+      m() {
+        class Inner { ... }       # !! SyntaxError
+      }
+    }
+
+    # OK — fn body is a scope boundary
+    fn make_inner() {
+      class Inner { ... }
+      Inner.new()
+    }
+
 #### Generic class declarations
 
 A class can declare type parameters:
@@ -1594,6 +1615,18 @@ match):
 
     fn unbox(b: Box<Long>) -> Long { b.v }
 
+#### Known limitations
+
+* Two overloads sharing an outer Generic name (`fn show(xs:
+  Array<Long>)` vs `fn show(xs: Array<String>)`) both score
+  4 in dispatch — calls with an Array arg are reported as
+  ambiguous. Resolves naturally once element-level checks ship
+  (Phase 2b).
+* Type parameters in introspection: `fn.params[i].type` reports
+  the declared form (`T`, `Array<T>`) for readability, but the
+  runtime type check only sees the outer / `Any`. Don't rely on
+  introspected `T` as a real type for further dispatch decisions.
+
 #### Planned (Phase 2b)
 
 * Expression-position type args (`Box<Long>.new(42)`) — the parser
@@ -1601,6 +1634,8 @@ match):
 * Opt-in element runtime check.
 * Bound constraints (`<T: Comparable>`) — depends on trait /
   protocol introduction.
+* Class declarations inside another class's body (currently a
+  SyntaxError, see "Where class declarations may appear" above).
 
 ### Where annotations are *not* checked
 

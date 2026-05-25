@@ -1498,6 +1498,26 @@ runtime チェックは行いません** — 境界でチェックされるの�
 `fn show(xs: Array<Long>)` を両方定義すると、 Array 引数は Generic
 版に routed されます。
 
+#### クラス宣言の位置
+
+クラスはトップレベル構築物。 `class C { ... }` を **他のクラスの
+body 直下に書くことは禁止** — 宣言は top level、 もしくは fn /
+lambda / lexical-scope (`{ ... }`) の中 (新しい scope を開く) のみ
+許可。 mental model を flat に保つため。 namespace は `import` /
+`export`、 inner helper は自由関数 / UFCS で。
+
+    class Bad {
+      m() {
+        class Inner { ... }       # !! SyntaxError
+      }
+    }
+
+    # OK — fn body は scope 境界
+    fn make_inner() {
+      class Inner { ... }
+      Inner.new()
+    }
+
 #### Generic クラス宣言
 
 クラスも型パラメータを宣言できます:
@@ -1522,12 +1542,25 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 
     fn unbox(b: Box<Long>) -> Long { b.v }
 
+#### 既知の制限
+
+* 外側 Generic 名が同じ overload (`fn show(xs: Array<Long>)` と
+  `fn show(xs: Array<String>)`) は両方 score 4 で dispatch されるため、
+  Array 引数の呼び出しは曖昧 (DispatchError)。 要素レベル check
+  (Phase 2b) で自然に解消。
+* 内省での型パラメータ: `fn.params[i].type` は宣言通り (`T`,
+  `Array<T>`) を返し、 読みやすさを優先する。 ただし runtime 型 check は
+  外側 / `Any` しか見ない。 内省で得た `T` を本物の型として後段 dispatch
+  に使わないこと。
+
 #### 予定 (Phase 2b)
 
 * expression 位置の type args (`Box<Long>.new(42)`) — parser は
   現状 `<...>` を型注釈 context のみで使用。
 * opt-in 要素 runtime check。
 * Bound 制約 (`<T: Comparable>`) — trait / protocol 導入次第。
+* class body 内 class 宣言 (現状は SyntaxError、 上記「クラス宣言の
+  位置」参照)。
 
 ### 検査されない箇所
 

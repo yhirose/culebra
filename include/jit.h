@@ -10995,6 +10995,15 @@ struct JIT {
       class_type_params_ = culebra::split_generic_args(class_head.args);
     }
 
+    // Reject CLASS_DECL directly inside this class's body — see helper
+    // doc for the rule. Mirrors the interp check in eval_class_decl.
+    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      if (m.nodes.size() >= 4) {
+        culebra::reject_class_decl_in_class_body(*m.nodes[3], class_name);
+      }
+    }
+
     // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
     // Instance methods live in the per-class meta object (shared
     // prototype). Static methods are installed directly on the class

@@ -203,6 +203,42 @@ inline void check(std::string_view name, size_t line, size_t col,
 
 }  // namespace _shadow
 
+// Walk an AST subtree and throw SyntaxError if a CLASS_DECL appears
+// in the current scope. Stops at FUNCTION / LAMBDA / LEXICAL_SCOPE
+// boundaries because those re-open a fresh scope (class declarations
+// inside a fn body or `{ ... }` block are allowed — only direct class
+// body children are restricted).
+//
+// Called from eval_class_decl / compile_class_decl on each METHOD
+// body and the constructor body to enforce "class declarations live
+// at top level or inside fn / lambda / lexical scope, not directly
+// inside another class".
+inline void reject_class_decl_in_class_body(
+    const peg::Ast& node, std::string_view outer_class) {
+  using namespace peg::udl;
+  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
+      node.tag == "LEXICAL_SCOPE"_) {
+    return;
+  }
+  if (node.tag == "CLASS_DECL"_) {
+    size_t k = 0;
+    while (k < node.nodes.size() && node.nodes[k]->tag == "DECORATOR"_) k++;
+    auto inner_name = node.nodes[k]->token;
+    throw CulebraError(
+        "SyntaxError",
+        std::format(
+            "class `{}` cannot be declared inside class `{}` — declare "
+            "classes at top level (or inside a fn / lambda / lexical "
+            "scope), not directly in another class body",
+            inner_name, outer_class),
+        static_cast<long>(node.line),
+        static_cast<long>(node.column));
+  }
+  for (const auto& c : node.nodes) {
+    reject_class_decl_in_class_body(*c, outer_class);
+  }
+}
+
 // Invoke `f(name, line, column)` for each identifier that `pattern`
 // would bind on a successful match. `_` (sink) is skipped.
 template <typename F>
@@ -4263,6 +4299,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     std::vector<std::string_view> type_params;
     if (!class_head.args.empty()) {
       type_params = split_generic_args(class_head.args);
+    }
+
+    // Reject CLASS_DECL directly inside another class body — declares
+    // must live at top level (or inside a fn / lambda / lexical scope
+    // within a method body, which are scope boundaries). Walks every
+    // METHOD body and the constructor.
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
+      if (m.nodes.size() >= 4) {
+        reject_class_decl_in_class_body(*m.nodes[3], class_name);
+      }
     }
     // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
     // to "Any" — runtime check sees Any, introspection sees the rewritten
