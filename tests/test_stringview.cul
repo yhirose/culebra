@@ -108,3 +108,28 @@ class Tag {
   __str__() { this.label.view() }
 }
 assert(to_string(Tag.new('demo')) == 'demo')
+
+// match TYPED_IDENT accepts StringView and StringLike trait.
+fn kind(x) {
+  match x {
+    s: StringView => 'view',
+    s: String => 'string',
+    _ => 'other',
+  }
+}
+assert(kind('hi') == 'string')
+assert(kind('hi'.view()) == 'view')
+assert(kind(42) == 'other')
+
+fn is_stringlike(x) {
+  match x { s: StringLike => true, _ => false }
+}
+assert(is_stringlike('a'))
+assert(is_stringlike('a'.view()))
+assert(!is_stringlike(1))
+
+// iter() yields StringView per UTF-8 scalar (both backends).
+let chs = 'abc'.iter().collect()
+assert(chs.size() == 3)
+assert(type_of(chs[0]) == 'StringView')
+assert(chs[0] == 'a')

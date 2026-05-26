@@ -1908,7 +1908,7 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
 // the consumed byte count. Invalid / truncated sequences fall back to
 // the raw byte value and advance by one — matching the permissive
 // policy used by `String.iter` / `code_points` / `graphemes`.
-inline void _decode_one_utf8(const std::string& s, size_t& off,
+inline void _decode_one_utf8(std::string_view s, size_t& off,
                              char32_t& cp) {
   size_t bytes;
   if (!unicode::utf8::decode_codepoint(s.data() + off, s.size() - off,
@@ -3022,15 +3022,15 @@ inline std::map<std::string_view, Value>& string_builtins() {
       // by one, mirroring `iter`'s permissive policy.
       {"code_points"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto buf = std::make_shared<const std::string>(
-             callEnv->get("this").to_string());
+         auto [src, base] = callEnv->get("this").share_source_and_view();
          auto offset = std::make_shared<size_t>(0);
-         return _make_iterator([buf, offset](std::shared_ptr<Environment>) {
-           if (*offset >= buf->size()) return _iter_step_done();
-           char32_t cp;
-           _decode_one_utf8(*buf, *offset, cp);
-           return _iter_step_value(Value(static_cast<long>(cp)));
-         });
+         return _make_iterator(
+             [src, base, offset](std::shared_ptr<Environment>) {
+               if (*offset >= base.size()) return _iter_step_done();
+               char32_t cp;
+               _decode_one_utf8(base, *offset, cp);
+               return _iter_step_value(Value(static_cast<long>(cp)));
+             });
        }))},
       // Lazy walk yielding Extended Grapheme Cluster boundaries (UAX
       // #29) as Strings — one user-perceived character per step (e.g.
@@ -3045,13 +3045,12 @@ inline std::map<std::string_view, Value>& string_builtins() {
       // interfere.
       {"graphemes"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto buf = std::make_shared<const std::string>(
-             callEnv->get("this").to_string());
+         auto [src, base] = callEnv->get("this").share_source_and_view();
          auto u32 = std::make_shared<std::u32string>();
          auto byte_off = std::make_shared<size_t>(0);
          auto cp_off = std::make_shared<size_t>(0);
          return _make_iterator(
-             [buf, u32, byte_off, cp_off](std::shared_ptr<Environment>) {
+             [src, base, u32, byte_off, cp_off](std::shared_ptr<Environment>) {
            // Chunk size when growing u32 to confirm a cluster boundary.
            // 1 is legal but pays the grapheme_length cost per codepoint;
            // 16 amortizes it across typical cluster lengths.
@@ -3065,9 +3064,9 @@ inline std::map<std::string_view, Value>& string_builtins() {
            constexpr size_t kTrimThreshold = 4096;
 
            auto extend_to = [&](size_t target) {
-             while (u32->size() < target && *byte_off < buf->size()) {
+             while (u32->size() < target && *byte_off < base.size()) {
                char32_t cp;
-               _decode_one_utf8(*buf, *byte_off, cp);
+               _decode_one_utf8(base, *byte_off, cp);
                u32->push_back(cp);
              }
            };
@@ -3083,7 +3082,7 @@ inline std::map<std::string_view, Value>& string_builtins() {
              size_t len = unicode::grapheme_length(
                  u32->data() + *cp_off, avail);
              if (len == 0) len = 1;  // grapheme_length contract says >=1 on avail>=1; belt-and-braces
-             if (len < avail || *byte_off >= buf->size()) {
+             if (len < avail || *byte_off >= base.size()) {
                std::string out;
                unicode::utf8::encode(u32->data() + *cp_off, len, out);
                *cp_off += len;
@@ -3091,13 +3090,12 @@ inline std::map<std::string_view, Value>& string_builtins() {
                  u32->erase(0, *cp_off);
                  *cp_off = 0;
                }
-               // Wrap the per-cluster bytes as a StringView for
-               // type-uniformity with iter / split — truly-zero-copy
-               // graphemes (no per-cluster alloc) requires byte-offset
-               // tracking in the source UTF-8, a later refinement.
-               auto src = std::make_shared<const std::string>(std::move(out));
-               auto sv = std::string_view(*src);
-               return _iter_step_value(Value(std::move(src), sv));
+               // Wrap the per-cluster bytes as a StringView. Truly
+               // zero-copy graphemes (no per-cluster alloc) needs
+               // byte-offset tracking in the source UTF-8.
+               auto cluster_src = std::make_shared<const std::string>(std::move(out));
+               auto sv = std::string_view(*cluster_src);
+               return _iter_step_value(Value(std::move(cluster_src), sv));
              }
              extend_to(u32->size() + kExtendChunk);
            }
