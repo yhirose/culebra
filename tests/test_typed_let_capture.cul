@@ -1,0 +1,25 @@
+# Regression: `let x: T = expr` must register `x` as a local so inner
+# closures can capture it (jit collect_fn_locals + visit_for_frees lvalcnt
+# was off-by-one when the TYPE_ANNOTATION slot was present).
+
+test_typed_let_captured_by_closure = fn () {
+  let outer = fn () {
+    let x: Long = 5
+    let g = fn () { x }
+    g()
+  }
+  assert(outer() == 5)
+}
+
+test_typed_let_inside_lambda = fn () {
+  let f = fn () {
+    let s: String = 'hi'
+    let g = || s
+    g()
+  }
+  assert(f() == 'hi')
+}
+
+test_typed_let_captured_by_closure()
+test_typed_let_inside_lambda()
+puts('typed-let-capture OK')
