@@ -59,7 +59,7 @@ namespace culebra {
 //
 // Shapes are immutable. Adding a property to an Object transitions
 // it to a new Shape via `transition_add`; the source Shape caches
-// the transition so identical (parent, name) pairs always resolve
+// the transition so identical (source, name) pairs always resolve
 // to the same target Shape. Property reads use a linear scan over
 // `names` to translate name -> slot index — for the typical 5–15
 // property count seen in this codebase a flat scan beats both
@@ -67,7 +67,6 @@ namespace culebra {
 // on cache traffic. The slow path is hit only on inline-cache miss.
 struct Shape {
   std::vector<std::string> names;          // insertion order
-  Shape* parent = nullptr;                  // not used yet; reserved for proto chains
   std::map<std::string_view, Shape*> add_transitions;
 
   bool has(std::string_view name) const {
