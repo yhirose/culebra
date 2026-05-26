@@ -1,0 +1,28 @@
+# Regression: object shorthand `{x}` (sugar for `{x: x}`) must mark the
+# identifier as a captured reference inside an enclosing closure
+# (jit visit_for_frees OBJECT_PROPERTY shorthand path was missing).
+
+test_shorthand_captures_outer_var = fn () {
+  let f = fn () {
+    let z = 99
+    let g = fn () { let o = {z}; o }
+    g()
+  }
+  assert(f().z == 99)
+}
+
+test_shorthand_multiple_vars = fn () {
+  let f = fn () {
+    let a = 1
+    let b = 2
+    let g = fn () { {a, b} }
+    g()
+  }
+  let r = f()
+  assert(r.a == 1)
+  assert(r.b == 2)
+}
+
+test_shorthand_captures_outer_var()
+test_shorthand_multiple_vars()
+puts('object-shorthand-capture OK')

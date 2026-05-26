@@ -8292,10 +8292,13 @@ struct JIT {
     }
 
     if (node.tag == "OBJECT_PROPERTY"_) {
-      // [MUTABLE, IDENTIFIER(key), EXPRESSION]
-      // Only visit the value; key is not a variable reference.
+      // Long form `{k: v}` -> [MUTABLE, IDENTIFIER(key), EXPRESSION].
+      // Shorthand `{x}`    -> [MUTABLE, IDENTIFIER]; the identifier is
+      // both the key and the value reference.
       if (node.nodes.size() == 3) {
         visit_for_frees(*node.nodes[2], my_locals, outer, info);
+      } else {
+        visit_for_frees(*node.nodes[1], my_locals, outer, info);
       }
       return;
     }
