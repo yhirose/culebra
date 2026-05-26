@@ -156,6 +156,49 @@ void print_build_usage(ostream& os) {
         "                     target. Defaults to the host build.\n";
 }
 
+// Triple chars per LLVM convention (alnum + `-_.+`). Strict-enough to
+// prevent metacharacters reaching the link command below.
+static bool validate_build_triple(const string& v, string& err) {
+  if (v.empty()) {
+    err = "--target requires a non-empty triple";
+    return false;
+  }
+  for (char c : v) {
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+              c == '.' || c == '+';
+    if (!ok) {
+      err = "--target: invalid character (allowed: alnum, '-', '_', '.', '+')";
+      return false;
+    }
+  }
+  return true;
+}
+
+// Path values are single-quoted before reaching `cc` via std::system,
+// so the validator's job is to reject anything that breaks out of the
+// quote (the quote char itself) plus control chars. Other shell
+// metacharacters are harmless inside single quotes but rejected
+// defensively — none appear in realistic file paths.
+static bool validate_build_path(const char* flag, const string& v, string& err) {
+  if (v.empty()) {
+    err = string(flag) + " requires a non-empty path";
+    return false;
+  }
+  for (unsigned char uc : v) {
+    bool bad = uc < 0x20 || uc == 0x7f || uc == '\'' || uc == '"' ||
+               uc == '`' || uc == '$' || uc == ';' || uc == '|' ||
+               uc == '&' || uc == '<' || uc == '>' || uc == '(' ||
+               uc == ')' || uc == '{' || uc == '}' || uc == '!' ||
+               uc == '*' || uc == '?' || uc == '\\';
+    if (bad) {
+      err = string(flag) + ": path contains unsupported character";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
                               string& err) {
   for (int i = 2; i < argc; ++i) {
@@ -199,6 +242,16 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
     err = "missing -o <output>";
     return false;
   }
+  if (!validate_build_path("input", opts.input, err)) return false;
+  if (!validate_build_path("-o", opts.output, err)) return false;
+  if (!opts.target.empty() && !validate_build_triple(opts.target, err))
+    return false;
+  if (!opts.sysroot.empty() &&
+      !validate_build_path("--sysroot", opts.sysroot, err))
+    return false;
+  if (!opts.rt_lib.empty() &&
+      !validate_build_path("--rt-lib", opts.rt_lib, err))
+    return false;
   return true;
 }
 
@@ -316,14 +369,18 @@ int run_build(const BuildOptions& opts) {
   // needed.)
   const char* no_pie = target_is_macho ? "" : "-no-pie";
 
+  // Single-quote every path so $TMPDIR / paths with spaces survive
+  // verbatim through std::system. validate_build_path() already rejects
+  // the single-quote char itself, so the quoted form can't be escaped.
+  auto shq = [](std::string_view s) { return std::format("'{}'", s); };
   std::string extra;
-  if (cross) extra += std::format(" --target={}", opts.target);
+  if (cross) extra += std::format(" --target={}", shq(opts.target));
   if (!opts.sysroot.empty())
-    extra += std::format(" --sysroot={}", opts.sysroot);
+    extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format("{}{} {} {} {} {} {} {} -o {}", cc, extra,
-                                obj, lib, dead_strip, no_pie, libcxx, blas,
-                                opts.output);
+                                shq(obj), shq(lib), dead_strip, no_pie,
+                                libcxx, blas, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
