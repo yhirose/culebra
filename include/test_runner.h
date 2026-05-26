@@ -70,17 +70,15 @@ inline int stdlib_preamble_line_count() {
   return n;
 }
 
-// Convert a runtime error line (raw, computed against the prepended
-// buffer) to a user-file line. Only the entry module gets the preamble
-// prepended (module_loader.h), so imported-module lines pass through.
-// The raw <= preamble case can't be disambiguated from "imported file"
-// without a source path on the error — we treat it as the latter; the
-// snippet renderer separately checks `raw > preamble` before pulling
-// from the entry source.
+// Convert a runtime error line (raw, against the prepended buffer) to
+// a user-file line. Errors from imported modules (no preamble) come
+// through with `raw <= preamble` and we report 0 (unknown) rather than
+// guess a wrong line — CulebraError doesn't carry the source path so
+// we can't tell which file the error came from.
 inline int to_user_line(long raw) {
   if (raw <= 0) return 0;
-  int p = stdlib_preamble_line_count();
-  return raw > p ? static_cast<int>(raw - p) : static_cast<int>(raw);
+  long adjusted = raw - stdlib_preamble_line_count();
+  return adjusted > 0 ? static_cast<int>(adjusted) : 0;
 }
 
 // Snippet of `source` around `line` (1-based, in user-file coordinates)
@@ -166,23 +164,12 @@ inline Value resolve_fixture_impl(
 // Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
 // eval_condition dispatches `__eq__`/`__lt__`/`__le__`. Used by the
 // six comparison matchers below so their semantics match `==`/`<` etc.
-// Invoke `receiver.name(rhs?)` for matcher use. Wraps the method to
-// bind `this` and dispatches through the embedder `call(env, slot, args)`
-// helper. Returns nullopt when the receiver is non-Object or the method
-// is absent.
-//
-// Limitations vs the `==`/`<` operator path (which goes through
-// `invoke_user_function_with_args`):
-//   - Parameter / return type annotations are NOT enforced (call()
-//     doesn't run check_type).
-//   - AST default-expression defaults (`fn __eq__(o = expr)`) are not
-//     evaluated — call() only honors `default_value` for kw-only params.
-//   - Multifn `__KWARGS__` dispatchers receive rhs in positional[0],
-//     which the dispatcher may not recognize.
-// For typical `__eq__(o) { ... }` / `__lt__(o) { ... }` this path is
-// equivalent to the operator path.
+// Invoke `receiver.name(rhs?)` for matcher use. Returns nullopt when
+// the receiver is non-Object or the method is absent. Covers the common
+// `__eq__(o)` / `__lt__(o)` shape; AST default-expression defaults and
+// param/return type annotations are not enforced here (matches what the
+// operator path actually does for these short methods).
 inline std::optional<Value> dispatch_special_method(
-    std::shared_ptr<Environment> env,
     const Value& receiver, std::string_view name, const Value* rhs) {
   if (receiver.type != Value::Object) return std::nullopt;
   const auto& obj = receiver.to_object();
@@ -190,51 +177,38 @@ inline std::optional<Value> dispatch_special_method(
   if (it == obj.properties->end()) return std::nullopt;
   const auto& m = it->second.val;
   if (m.type != Value::Function) return std::nullopt;
-
-  // Bind `this` on the method without depending on Interpreter's
-  // private helper — mirrors _wrap_method_with_this in interpreter.h.
-  const auto& pf = m.get<FunctionValue>();
-  Value bound = Value(
-      FunctionValue(*pf.params, [m, receiver](std::shared_ptr<Environment> callEnv) {
-        callEnv->initialize("this", receiver, false);
-        return m.get<FunctionValue>().eval(callEnv);
-      }));
-  {
-    auto& wf = bound.get<FunctionValue>();
-    wf.name = pf.name;
-    wf.return_type = pf.return_type;
-    wf.introspection_target = pf.introspection_target;
+  const auto& mf = m.get<FunctionValue>();
+  auto inner = std::make_shared<Environment>();
+  inner->is_function_frame = true;
+  inner->initialize("self", m, false);
+  inner->initialize("this", receiver, false);
+  inner->initialize("__LINE__", Value(0L), false);
+  inner->initialize("__COLUMN__", Value(0L), false);
+  if (rhs && !mf.params->empty()) {
+    inner->initialize(mf.params->at(0).name, *rhs, false);
   }
-  std::string slot = std::format("__matcher_{}_{}", name,
-                                  reinterpret_cast<uintptr_t>(&m));
-  env->initialize(slot, bound, false);
-  std::vector<Value> args;
-  if (rhs) args.push_back(*rhs);
-  return call(env, slot, std::move(args));
+  try {
+    return mf.eval(inner);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
 }
 
-inline bool matcher_equal(std::shared_ptr<Environment> env,
-                           const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(env, a, "__eq__", &b))
-    return r->to_bool();
-  if (auto r = dispatch_special_method(env, b, "__eq__", &a))
-    return r->to_bool();
+inline bool matcher_equal(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__eq__", &b)) return r->to_bool();
+  if (auto r = dispatch_special_method(b, "__eq__", &a)) return r->to_bool();
   return a == b;
 }
 
-inline bool matcher_less(std::shared_ptr<Environment> env,
-                          const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(env, a, "__lt__", &b))
-    return r->to_bool();
+inline bool matcher_less(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__lt__", &b)) return r->to_bool();
   return a < b;
 }
 
-inline bool matcher_leq(std::shared_ptr<Environment> env,
-                         const Value& a, const Value& b) {
-  if (auto r = dispatch_special_method(env, a, "__le__", &b))
-    return r->to_bool();
-  auto lt = dispatch_special_method(env, a, "__lt__", &b);
-  auto eq = dispatch_special_method(env, a, "__eq__", &b);
+inline bool matcher_leq(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__le__", &b)) return r->to_bool();
+  auto lt = dispatch_special_method(a, "__lt__", &b);
+  auto eq = dispatch_special_method(a, "__eq__", &b);
   if (lt || eq) {
     return (lt && lt->to_bool()) || (eq && eq->to_bool());
   }
@@ -243,15 +217,14 @@ inline bool matcher_leq(std::shared_ptr<Environment> env,
 
 // Mirrors `compare_values` for `>`: Object lhs dispatches as `!le`,
 // otherwise falls through to Value::operator>. Swapping operands to
-// reuse matcher_less is wrong (diverges on NaN and on classes that
-// implement only one side of __lt__/__le__).
-inline bool matcher_greater(std::shared_ptr<Environment> env,
-                              const Value& a, const Value& b) {
+// reuse matcher_less is wrong (diverges on NaN-like classes that
+// return false for both __lt__ directions).
+inline bool matcher_greater(const Value& a, const Value& b) {
   if (a.type == Value::Object) {
-    if (auto r = dispatch_special_method(env, a, "__le__", &b))
+    if (auto r = dispatch_special_method(a, "__le__", &b))
       return !r->to_bool();
-    auto lt = dispatch_special_method(env, a, "__lt__", &b);
-    auto eq = dispatch_special_method(env, a, "__eq__", &b);
+    auto lt = dispatch_special_method(a, "__lt__", &b);
+    auto eq = dispatch_special_method(a, "__eq__", &b);
     if (lt || eq) {
       return !((lt && lt->to_bool()) || (eq && eq->to_bool()));
     }
@@ -259,10 +232,9 @@ inline bool matcher_greater(std::shared_ptr<Environment> env,
   return a > b;
 }
 
-inline bool matcher_geq(std::shared_ptr<Environment> env,
-                         const Value& a, const Value& b) {
+inline bool matcher_geq(const Value& a, const Value& b) {
   if (a.type == Value::Object) {
-    if (auto r = dispatch_special_method(env, a, "__lt__", &b))
+    if (auto r = dispatch_special_method(a, "__lt__", &b))
       return !r->to_bool();
   }
   return a >= b;
@@ -475,7 +447,7 @@ inline void install_test_ambient(Environment& env) {
             std::shared_ptr<Environment> callEnv) -> Value {
           auto a = callEnv->get("a");
           auto b = callEnv->get("b");
-          if (pred(callEnv, a, b)) return Value();
+          if (pred(a, b)) return Value();
           throw CulebraError("AssertionError",
               std::format("{} failed:\n  left:  {}\n  right: {}",
                           n,
@@ -486,39 +458,27 @@ inline void install_test_ambient(Environment& env) {
 
   env.initialize("assert_eq",
       make_cmp_matcher("assert_eq",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return matcher_equal(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return matcher_equal(a, b); }),
       false);
   env.initialize("assert_ne",
       make_cmp_matcher("assert_ne",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return !matcher_equal(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return !matcher_equal(a, b); }),
       false);
   env.initialize("assert_lt",
       make_cmp_matcher("assert_lt",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return matcher_less(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return matcher_less(a, b); }),
       false);
   env.initialize("assert_le",
       make_cmp_matcher("assert_le",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return matcher_leq(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return matcher_leq(a, b); }),
       false);
   env.initialize("assert_gt",
       make_cmp_matcher("assert_gt",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return matcher_greater(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return matcher_greater(a, b); }),
       false);
   env.initialize("assert_ge",
       make_cmp_matcher("assert_ge",
-          [](std::shared_ptr<Environment> e, const Value& a, const Value& b) {
-            return matcher_geq(e, a, b);
-          }),
+          [](const Value& a, const Value& b) { return matcher_geq(a, b); }),
       false);
 }
 
@@ -762,15 +722,12 @@ inline TestRunSummary run_tests(
     // return, any catch, or unwind through an uncaught exception type).
     // Default mode passes false → no-op guard.
     StdoutCapture capture(reporter == Reporter::Json);
-    // `result` holds either the captured stdout (success) or both that
-    // string and the error info. Filled inside the try / catch arms;
-    // emitted AFTER the inner scope's fixture_cache destructs so
-    // `drop()`-time puts are captured into the same `stdout` field.
-    enum class Outcome { Pass, FailError, FailValue, FailMisc };
-    Outcome outcome = Outcome::Pass;
+    // The try block fills these on failure; emitted AFTER the inner
+    // scope's fixture_cache destructs so `drop()`-time puts get
+    // captured into the same `stdout` field.
+    bool failed = false;
     std::string err_kind, err_what;
     long err_line = 0, err_col = 0;
-    Value err_value;
     try {
       // Inner scope so the per-test fixture_cache destructs before
       // we take() captured stdout — class `drop()` then writes into
@@ -797,7 +754,7 @@ inline TestRunSummary run_tests(
       }
       call(env, slot, std::move(args));
     } catch (const CulebraError& e) {
-      outcome = Outcome::FailError;
+      failed = true;
       err_kind = e.kind;
       err_what = e.what();
       err_line = e.line;
@@ -805,8 +762,7 @@ inline TestRunSummary run_tests(
     } catch (const Value& v) {
       // User `throw <value>` lands here. Preserve kind/message when the
       // payload is an Object with the conventional shape.
-      outcome = Outcome::FailValue;
-      err_value = v;
+      failed = true;
       if (v.type == Value::Object) {
         const auto& obj = v.to_object();
         if (obj.has("kind")) {
@@ -821,14 +777,14 @@ inline TestRunSummary run_tests(
       if (err_kind.empty()) err_kind = "UserThrow";
       if (err_what.empty()) err_what = v.str_display();
     } catch (const std::exception& e) {
-      outcome = Outcome::FailMisc;
+      failed = true;
       err_kind = "InternalError";
       err_what = e.what();
     }
 
     auto captured = capture.take();
 
-    if (outcome == Outcome::Pass) {
+    if (!failed) {
       summary.passed++;
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"test_pass","name":)"
