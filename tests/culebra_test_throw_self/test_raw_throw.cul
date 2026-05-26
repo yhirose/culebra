@@ -1,0 +1,12 @@
+# Intentionally throws a raw Value (user `throw {...}`) from inside a
+# test body without a surrounding try/catch. The runner's
+# `catch (const Value&)` arm in test_runner.h should capture it and
+# emit a test_fail event with kind/message lifted from the payload.
+#
+# Run separately via justfile `run_culebra_test_self`; the expected
+# outcome is exit 1 (one test failed) — the runner must not crash.
+
+@test
+fn raw_throw_escapes_to_runner() {
+  throw { kind: "RawThrowKind", message: "expected payload" }
+}

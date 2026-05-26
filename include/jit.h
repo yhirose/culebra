@@ -1875,8 +1875,13 @@ inline bool _extract_bool_and_release(JitValue v) {
   else if (v.tag == TAG_LONG) b = v.data != 0;
   else if (v.tag == TAG_FLOAT) b = _culebra_float_to_double(v.data) != 0.0;
   else {
+    // Match interp's `Value::to_bool()` message so cross-backend
+    // try/catch text comparisons stay aligned.
+    auto got = std::string(_culebra_tag_name(v.tag));
     _culebra_value_release_impl(v.tag, v.data);
-    throw culebra::CulebraError("TypeError", "type error.");
+    throw culebra::CulebraError("TypeError",
+        std::format("type error: expected Bool, Long, or Float, got {}",
+                    got));
   }
   _culebra_value_release_impl(v.tag, v.data);
   return b;

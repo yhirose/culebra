@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -11,19 +12,8 @@
 
 namespace culebra {
 
-// Single test case as registered by `test("name", fn() { ... })`.
-// `fn` keeps the closure +1 alive in the registry until the runner
-// invokes it and pops the entry.
-//
-// `param_names` is the runtime-resolvable parameter list — at run time
-// the runner looks each name up in `env` and invokes it as a fixture,
-// passing the result as the corresponding positional argument. Empty
-// for tests with no params (the common case).
-//
-// `param_cases` is populated by `@parametrize(cases)`: each entry is
-// a Tuple/Array of positional args to invoke `fn` with as a separate
-// reported test. When non-empty, fixture DI on `param_names` is
-// skipped (parametrize values fill those slots).
+// A registered test. `param_names` drives DI; `param_cases` (from
+// `@parametrize`) takes precedence and skips DI.
 struct TestEntry {
   std::string name;
   Value fn;
@@ -40,9 +30,86 @@ inline TestRegistry& test_registry() {
   return runtime_substate<TestRegistry>(kSlotTestRegistry);
 }
 
-// Extract the user-facing parameter names from a Function value. The
-// dispatcher's synthetic `__KWARGS__` and kw-only params are skipped
-// — only regular positional params participate in fixture DI.
+// RAII redirect of `std::cout` into an internal stringstream. The dtor
+// restores the original rdbuf even if the consumer never calls `take()`
+// (e.g. an unexpected exception type escaped the catch). `take()` is
+// idempotent — repeated calls return "" after the first.
+class StdoutCapture {
+  std::stringstream buf_;
+  std::streambuf* old_ = nullptr;
+
+ public:
+  explicit StdoutCapture(bool active) {
+    if (active) old_ = std::cout.rdbuf(buf_.rdbuf());
+  }
+  ~StdoutCapture() {
+    if (old_) std::cout.rdbuf(old_);
+  }
+  StdoutCapture(const StdoutCapture&) = delete;
+  StdoutCapture& operator=(const StdoutCapture&) = delete;
+
+  std::string take() {
+    if (!old_) return {};
+    std::cout.rdbuf(old_);
+    old_ = nullptr;
+    return buf_.str();
+  }
+};
+
+// Number of newlines in the stdlib preamble — used to map a runtime
+// error's `line` (computed against the prepended buffer) back to the
+// user's file line.
+inline int stdlib_preamble_line_count() {
+  static const int n = []() {
+    int c = 0;
+    for (const char* p = STDLIB_PREAMBLE_SOURCE; *p; p++) {
+      if (*p == '\n') c++;
+    }
+    return c;
+  }();
+  return n;
+}
+
+// Convert a runtime error line (raw, against the prepended buffer) to
+// a user-file line. Errors from imported modules (no preamble) come
+// through with `raw <= preamble` and we report 0 (unknown) rather than
+// guess a wrong line — CulebraError doesn't carry the source path so
+// we can't tell which file the error came from.
+inline int to_user_line(long raw) {
+  if (raw <= 0) return 0;
+  long adjusted = raw - stdlib_preamble_line_count();
+  return adjusted > 0 ? static_cast<int>(adjusted) : 0;
+}
+
+// Snippet of `source` around `line` (1-based, in user-file coordinates)
+// with `context` lines on either side. Returns "" if line is out of range.
+inline std::string source_snippet(const std::string& source, int line,
+                                   int context = 2) {
+  if (line <= 0 || source.empty()) return {};
+  int start_line = std::max(1, line - context);
+  int end_line = line + context;
+  std::string out;
+  int cur = 1;
+  size_t pos = 0;
+  while (pos < source.size() && cur < start_line) {
+    auto nl = source.find('\n', pos);
+    if (nl == std::string::npos) return out;
+    pos = nl + 1;
+    cur++;
+  }
+  while (pos < source.size() && cur <= end_line) {
+    auto nl = source.find('\n', pos);
+    auto line_end = (nl == std::string::npos) ? source.size() : nl;
+    out += std::format("{:>3}{} {}\n", cur, (cur == line ? '>' : ' '),
+                       source.substr(pos, line_end - pos));
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+    cur++;
+  }
+  return out;
+}
+
+// Regular positional param names of `fn` (kw-only / kwargs-rest skipped).
 inline std::vector<std::string> extract_param_names(const Value& fn) {
   std::vector<std::string> out;
   if (fn.type != Value::Function) return out;
@@ -55,19 +122,14 @@ inline std::vector<std::string> extract_param_names(const Value& fn) {
   return out;
 }
 
-// Recursively resolve a fixture by name. The fixture's own
-// parameters are looked up in the same env and resolved before
-// invoking. Plain (non-Function) bindings are returned as-is —
-// they represent already-materialized values. Each call creates a
-// fresh instance; per-test caching is future work.
-//
-// `visited` tracks the in-progress resolution chain; a name already
-// on the chain indicates a fixture cycle (e.g. `db` depends on
-// `user` and `user` depends on `db`) and is reported as a
-// CycleError instead of recursing to stack overflow.
-inline Value resolve_fixture_impl(std::shared_ptr<Environment> env,
-                                   const std::string& name,
-                                   std::set<std::string>& visited) {
+// Per-test memoized fixture resolution. `cache` keeps the same
+// instance across multiple mentions; `visited` catches cycles.
+inline Value resolve_fixture_impl(
+    std::shared_ptr<Environment> env,
+    const std::string& name,
+    std::set<std::string>& visited,
+    std::unordered_map<std::string, Value>& cache) {
+  if (auto it = cache.find(name); it != cache.end()) return it->second;
   if (!env->has(name)) {
     throw CulebraError(
         "NameError",
@@ -80,26 +142,102 @@ inline Value resolve_fixture_impl(std::shared_ptr<Environment> env,
       chain += v;
     }
     chain += " → " + name;
-    throw CulebraError(
-        "CycleError",
-        "fixture cycle detected: " + chain);
+    throw CulebraError("CycleError", "fixture cycle detected: " + chain);
   }
   auto val = env->get(name);
-  if (val.type != Value::Function) return val;
+  if (val.type != Value::Function) {
+    cache.emplace(name, val);
+    return val;
+  }
   visited.insert(name);
   auto params = extract_param_names(val);
   std::vector<Value> args;
   for (const auto& p : params) {
-    args.push_back(resolve_fixture_impl(env, p, visited));
+    args.push_back(resolve_fixture_impl(env, p, visited, cache));
   }
   visited.erase(name);
-  return call(env, name, std::move(args));
+  auto result = call(env, name, std::move(args));
+  cache.emplace(name, result);
+  return result;
 }
 
-inline Value resolve_fixture(std::shared_ptr<Environment> env,
-                              const std::string& name) {
-  std::set<std::string> visited;
-  return resolve_fixture_impl(env, name, visited);
+// Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
+// eval_condition dispatches `__eq__`/`__lt__`/`__le__`. Used by the
+// six comparison matchers below so their semantics match `==`/`<` etc.
+// Invoke `receiver.name(rhs?)` for matcher use. Returns nullopt when
+// the receiver is non-Object or the method is absent. Covers the common
+// `__eq__(o)` / `__lt__(o)` shape; AST default-expression defaults and
+// param/return type annotations are not enforced here (matches what the
+// operator path actually does for these short methods).
+inline std::optional<Value> dispatch_special_method(
+    const Value& receiver, std::string_view name, const Value* rhs) {
+  if (receiver.type != Value::Object) return std::nullopt;
+  const auto& obj = receiver.to_object();
+  auto it = obj.properties->find(name);
+  if (it == obj.properties->end()) return std::nullopt;
+  const auto& m = it->second.val;
+  if (m.type != Value::Function) return std::nullopt;
+  const auto& mf = m.get<FunctionValue>();
+  auto inner = std::make_shared<Environment>();
+  inner->is_function_frame = true;
+  inner->initialize("self", m, false);
+  inner->initialize("this", receiver, false);
+  inner->initialize("__LINE__", Value(0L), false);
+  inner->initialize("__COLUMN__", Value(0L), false);
+  if (rhs && !mf.params->empty()) {
+    inner->initialize(mf.params->at(0).name, *rhs, false);
+  }
+  try {
+    return mf.eval(inner);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
+inline bool matcher_equal(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__eq__", &b)) return r->to_bool();
+  if (auto r = dispatch_special_method(b, "__eq__", &a)) return r->to_bool();
+  return a == b;
+}
+
+inline bool matcher_less(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__lt__", &b)) return r->to_bool();
+  return a < b;
+}
+
+inline bool matcher_leq(const Value& a, const Value& b) {
+  if (auto r = dispatch_special_method(a, "__le__", &b)) return r->to_bool();
+  auto lt = dispatch_special_method(a, "__lt__", &b);
+  auto eq = dispatch_special_method(a, "__eq__", &b);
+  if (lt || eq) {
+    return (lt && lt->to_bool()) || (eq && eq->to_bool());
+  }
+  return a <= b;
+}
+
+// Mirrors `compare_values` for `>`: Object lhs dispatches as `!le`,
+// otherwise falls through to Value::operator>. Swapping operands to
+// reuse matcher_less is wrong (diverges on NaN-like classes that
+// return false for both __lt__ directions).
+inline bool matcher_greater(const Value& a, const Value& b) {
+  if (a.type == Value::Object) {
+    if (auto r = dispatch_special_method(a, "__le__", &b))
+      return !r->to_bool();
+    auto lt = dispatch_special_method(a, "__lt__", &b);
+    auto eq = dispatch_special_method(a, "__eq__", &b);
+    if (lt || eq) {
+      return !((lt && lt->to_bool()) || (eq && eq->to_bool()));
+    }
+  }
+  return a > b;
+}
+
+inline bool matcher_geq(const Value& a, const Value& b) {
+  if (a.type == Value::Object) {
+    if (auto r = dispatch_special_method(a, "__lt__", &b))
+      return !r->to_bool();
+  }
+  return a >= b;
 }
 
 // `test(name, fn)` runtime helper used by the built-in `test` global
@@ -117,36 +255,14 @@ inline Value register_test(std::string name, Value fn,
   return Value();
 }
 
-// Inject the test runtime into `env` so user scripts can call
-// `test("...", fn)` (call form) or `@test fn name() {}` (decorator
-// form) without importing anything. Called only when the CLI was
-// invoked as `culebra test ...`. Normal `culebra script.cul` runs
-// do NOT see this binding (it would pollute production code).
+// Inject ambient bindings used only under `culebra test`: `test` /
+// `parametrize` for registration, the matcher family for assertions.
+// Fixtures are plain fns in env, resolved by param name at dispatch
+// (per-test memoized). Cleanup uses class `drop`. See guide §16.
 //
-// Three names get bound in addition to `test`:
-//   - `fixture` — no-op decorator (marker); leaves fn under its own
-//     name in env, the runner looks the param name up there directly
-//   - `parametrize(cases)` — decorator factory; each entry of `cases`
-//     becomes a separate registered test with values unpacked into
-//     the fn's positional params (cases entry can be a Tuple/Array
-//     or a scalar for single-arg tests)
-//
-// `test` is polymorphic over arity to make both forms ergonomic:
-//   - `test("name", fn)` — 2 args, explicit name (call form)
-//   - `test(fn)`         — 1 arg, name from fn.name (decorator form)
+// `test` is polymorphic: `test("name", fn)` or `test(fn)` (decorator).
 inline void install_test_ambient(Environment& env) {
   using namespace std::literals;
-  // `fixture` is a marker decorator. The fn keeps its source-level
-  // env binding (e.g. `@fixture fn db() { ... }` puts `db` in env);
-  // the runner resolves a test's param by name against env at
-  // dispatch time. No separate fixture table required.
-  env.initialize(
-      "fixture",
-      Value(FunctionValue({{"f", false, "Function"sv}},
-                           [](std::shared_ptr<Environment> e) {
-                             return e->get("f");
-                           })),
-      false);
 
   // `parametrize(cases)` returns a decorator that registers one
   // entry per case under `<fn.name>[i]`. Single-arg fns can pass
@@ -237,6 +353,133 @@ inline void install_test_ambient(Environment& env) {
                 "test() expects 1 or 2 arguments");
           })),
       false);
+
+  // `assert_throws(kind, fn)` — invoke 0-arg `fn` and assert it throws
+  // an error whose `kind` matches. `got_kind` distinguishes an empty
+  // String kind from a fallthrough to v.str_display().
+  env.initialize(
+      "assert_throws",
+      Value(FunctionValue(
+          {{"kind", false, "String"sv}, {"fn", false, "Function"sv}},
+          [](std::shared_ptr<Environment> callEnv) -> Value {
+            auto expected = std::string(callEnv->get("kind").to_string());
+            auto fn_val = callEnv->get("fn");
+            const auto& f = fn_val.to_function();
+            if (!f.params->empty()) {
+              throw CulebraError("ArityError",
+                  std::format("assert_throws: fn must take 0 parameters "
+                              "(got {})", f.params->size()));
+            }
+            auto inner = std::make_shared<Environment>();
+            inner->is_function_frame = true;
+            inner->initialize("self", fn_val, false);
+            inner->initialize("__LINE__", Value(0L), false);
+            inner->initialize("__COLUMN__", Value(0L), false);
+            bool threw = false;
+            bool got_kind = false;
+            std::string actual;
+            try {
+              f.eval(inner);
+            } catch (const ReturnValue&) {
+            } catch (const CulebraError& e) {
+              threw = true;
+              actual = e.kind;
+              got_kind = true;
+            } catch (const Value& v) {
+              threw = true;
+              if (v.type == Value::Object) {
+                const auto& obj = v.to_object();
+                if (obj.has("kind")) {
+                  auto kv = obj.get("kind");
+                  if (kv.type == Value::String) {
+                    actual = std::string(kv.to_string());
+                    got_kind = true;
+                  }
+                }
+              }
+              if (!got_kind) actual = v.str_display();
+            }
+            if (!threw) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_throws('{}', fn): expected throw "
+                              "but fn returned normally", expected));
+            }
+            if (actual != expected) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_throws: expected kind '{}' "
+                              "but got '{}'", expected, actual));
+            }
+            return Value();
+          })),
+      false);
+
+  // `assert_close(a, b, tol)` — `|a - b| <= tol`, with NaN treated as
+  // failure (a naive `diff > tol` check would silently pass NaN).
+  env.initialize(
+      "assert_close",
+      Value(FunctionValue(
+          {{"a", false}, {"b", false}, {"tol", false}},
+          [](std::shared_ptr<Environment> callEnv) -> Value {
+            auto a = callEnv->get("a").to_double_coerce();
+            auto b = callEnv->get("b").to_double_coerce();
+            auto tol = callEnv->get("tol").to_double_coerce();
+            auto diff = std::abs(a - b);
+            if (std::isnan(diff) || std::isnan(tol) || diff > tol) {
+              throw CulebraError("AssertionError",
+                  std::format("assert_close failed:\n"
+                              "  a:    {}\n"
+                              "  b:    {}\n"
+                              "  diff: {} (> tol {})",
+                              a, b, diff, tol));
+            }
+            return Value();
+          })),
+      false);
+
+  // Comparison matchers — `assert_eq(a, b)` etc. Each dispatches via
+  // the same `__eq__`/`__lt__`/`__le__` rules as the `==`/`<`/`<=`
+  // operators so `assert_eq(p1, p2)` matches `assert(p1 == p2)` for
+  // class instances. Failure messages name both operands.
+  auto make_cmp_matcher = [](std::string_view name, auto pred) {
+    return Value(FunctionValue(
+        {{"a", false}, {"b", false}},
+        [n = std::string(name), pred](
+            std::shared_ptr<Environment> callEnv) -> Value {
+          auto a = callEnv->get("a");
+          auto b = callEnv->get("b");
+          if (pred(a, b)) return Value();
+          throw CulebraError("AssertionError",
+              std::format("{} failed:\n  left:  {}\n  right: {}",
+                          n,
+                          str_quoted_with_special(a),
+                          str_quoted_with_special(b)));
+        }));
+  };
+
+  env.initialize("assert_eq",
+      make_cmp_matcher("assert_eq",
+          [](const Value& a, const Value& b) { return matcher_equal(a, b); }),
+      false);
+  env.initialize("assert_ne",
+      make_cmp_matcher("assert_ne",
+          [](const Value& a, const Value& b) { return !matcher_equal(a, b); }),
+      false);
+  env.initialize("assert_lt",
+      make_cmp_matcher("assert_lt",
+          [](const Value& a, const Value& b) { return matcher_less(a, b); }),
+      false);
+  env.initialize("assert_le",
+      make_cmp_matcher("assert_le",
+          [](const Value& a, const Value& b) { return matcher_leq(a, b); }),
+      false);
+  env.initialize("assert_gt",
+      make_cmp_matcher("assert_gt",
+          [](const Value& a, const Value& b) { return matcher_greater(a, b); }),
+      false);
+  env.initialize("assert_ge",
+      make_cmp_matcher("assert_ge",
+          [](const Value& a, const Value& b) { return matcher_geq(a, b); }),
+      false);
 }
 
 // Discover test files under `roots`. A path that is a directory is
@@ -300,12 +543,13 @@ inline std::vector<std::filesystem::path> discover_test_files(
   return out;
 }
 
-// Result of running all collected tests. The driver prints a summary
-// from this struct; main.cc returns non-zero if any test failed or
-// any file failed to load/parse/interpret. `errored_files` is kept
-// separate from `failed` so the per-test failure count is faithful
-// (a syntax error in one file shouldn't inflate `failed` by 1 while
-// hiding however many tests that file would have registered).
+// Output format for the runner. `Default` emits human-readable lines;
+// `Json` emits one JSON object per line (NDJSON) for machine consumption.
+enum class Reporter { Default, Json };
+
+// Result of running all collected tests. `errored_files` is kept
+// separate from `failed` so a syntax error in one file doesn't
+// inflate the per-test failure count.
 struct TestRunSummary {
   int passed = 0;
   int failed = 0;
@@ -314,13 +558,17 @@ struct TestRunSummary {
 };
 
 // Load each test file (so its `test(...)` calls register entries),
-// then walk the registry calling each fn. Filtering happens on
-// substring of the test name. Sequential execution; failures don't
-// stop the run.
+// then walk the registry calling each fn. Sequential execution;
+// failures don't stop the run unless `bail_after > 0`. When
+// `list_only` is true, emit a list of discovered tests without
+// executing them.
 inline TestRunSummary run_tests(
     const std::vector<std::filesystem::path>& files,
     const std::string& filter,
-    std::shared_ptr<Environment> env) {
+    std::shared_ptr<Environment> env,
+    Reporter reporter = Reporter::Default,
+    int bail_after = 0,
+    bool list_only = false) {
   TestRunSummary summary;
 
   // Embedders may call run_tests multiple times in the same process
@@ -337,12 +585,37 @@ inline TestRunSummary run_tests(
   // modules vector before the execution loop would leave the
   // registry pointing into freed memory.
   std::vector<LoadedModule> all_modules;
+  // Original (unprepended) user source per file path — used to render
+  // a failure-site snippet in JSON events.
+  std::unordered_map<std::string, std::string> user_sources;
+
+  auto emit_file_error = [&](const std::string& path_str,
+                              const std::string& kind,
+                              const std::string& message,
+                              long raw_line = 0, long col = 0) {
+    // raw_line is in entry-buffer coordinates (preamble-included).
+    // Reduce to user-file coordinates so the JSON line value points
+    // into the actual file the user wrote.
+    long line = to_user_line(raw_line);
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"file_error","source":)"
+                << json_escape(path_str)
+                << R"(,"kind":)" << json_escape(kind)
+                << R"(,"message":)" << json_escape(message)
+                << R"(,"line":)" << line
+                << R"(,"col":)" << col
+                << "}\n";
+    } else {
+      std::cerr << "culebra test: " << kind << " for " << path_str
+                << ": " << message << "\n";
+    }
+  };
 
   for (const auto& path : files) {
     auto path_str = path.string();
     std::ifstream ifs(path_str, std::ios::binary);
     if (!ifs) {
-      std::cerr << "culebra test: can't open '" << path_str << "'\n";
+      emit_file_error(path_str, "open_failed", "can't open file");
       summary.errored_files++;
       continue;
     }
@@ -361,8 +634,7 @@ inline TestRunSummary run_tests(
     try {
       modules = loader.load_program(path_str, entry_src, msgs);
     } catch (const CulebraError& e) {
-      std::cerr << "culebra test: load failed for " << path_str << ": "
-                << e.kind << ": " << e.what() << "\n";
+      emit_file_error(path_str, e.kind, e.what(), e.line, e.col);
       summary.errored_files++;
       continue;
     }
@@ -370,7 +642,9 @@ inline TestRunSummary run_tests(
     Value val;
     Debugger dbg;
     if (!interpret_modules(modules, env, val, msgs, dbg)) {
-      for (auto& m : msgs) std::cerr << m << "\n";
+      std::string joined;
+      for (auto& m : msgs) { if (!joined.empty()) joined += "; "; joined += m; }
+      emit_file_error(path_str, "interpret_failed", joined);
       summary.errored_files++;
       continue;
     }
@@ -378,6 +652,7 @@ inline TestRunSummary run_tests(
     // Pin the file's modules (and thus their source buffers and AST
     // tokens) for the rest of run_tests' lifetime.
     for (auto& m : modules) all_modules.push_back(std::move(m));
+    user_sources.emplace(path_str, std::move(buff));
 
     // Tag new entries with source path for nicer failure reporting.
     for (size_t i = pre; i < reg.entries.size(); i++) {
@@ -387,12 +662,38 @@ inline TestRunSummary run_tests(
     }
   }
 
+  auto& reg = test_registry();
+
+  if (list_only) {
+    size_t listed = 0;
+    for (const auto& e : reg.entries) {
+      if (!filter.empty() && e.name.find(filter) == std::string::npos) continue;
+      listed++;
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_list","name":)"
+                  << json_escape(e.name)
+                  << R"(,"source":)" << json_escape(e.source_path)
+                  << "}\n";
+      } else {
+        std::cout << e.source_path << ": " << e.name << "\n";
+      }
+    }
+    if (reporter == Reporter::Json) {
+      std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
+      // Emit run_end too so consumers waiting on it as the stream
+      // terminator don't hang on --list runs.
+      std::cout << R"({"event":"run_end","passed":0,"failed":0,)"
+                << R"("errored_files":)" << summary.errored_files
+                << R"(,"bailed":false})" << "\n";
+    }
+    return summary;
+  }
+
   // Now execute every registered test. We bind each entry under a
   // private slot name (`__test_<i>`) so the public `culebra::call`
   // helper can invoke it without exposing the Interpreter's private
   // call internals. The slot is overwritten on each pass — minimal
   // env pollution given the runner exits immediately after.
-  auto& reg = test_registry();
   // Snapshot each entry's fields by value before running. A test
   // body may dynamically call `test(...)` (legitimate table-driven
   // pattern) which push_back's onto reg.entries — capacity growth
@@ -417,12 +718,22 @@ inline TestRunSummary run_tests(
       continue;
     }
     std::string slot = "__test_" + std::to_string(i);
+    // RAII capture so the rdbuf is restored on every exit path (normal
+    // return, any catch, or unwind through an uncaught exception type).
+    // Default mode passes false → no-op guard.
+    StdoutCapture capture(reporter == Reporter::Json);
+    // The try block fills these on failure; emitted AFTER the inner
+    // scope's fixture_cache destructs so `drop()`-time puts get
+    // captured into the same `stdout` field.
+    bool failed = false;
+    std::string err_kind, err_what;
+    long err_line = 0, err_col = 0;
     try {
+      // Inner scope so the per-test fixture_cache destructs before
+      // we take() captured stdout — class `drop()` then writes into
+      // the capture rather than into the restored stream.
+      std::unordered_map<std::string, Value> fixture_cache;
       env->initialize(slot, entry_fn, false);
-      // Args resolution priority:
-      //   1. @parametrize-supplied case wins (skip fixture DI)
-      //   2. fixture DI: each param name resolved as a 0-arg fn in env
-      //   3. neither: invoke with no args
       std::vector<Value> args;
       if (!entry_param_cases.empty()) {
         const auto& c = entry_param_cases[0];
@@ -432,34 +743,106 @@ inline TestRunSummary run_tests(
         } else if (c.type == Value::Array) {
           for (const auto& v : *c.to_array().values) args.push_back(v);
         } else {
-          args.push_back(c);  // scalar single-arg
+          args.push_back(c);
         }
       } else if (!entry_param_names.empty()) {
+        std::set<std::string> visited;
         for (const auto& pname : entry_param_names) {
-          args.push_back(resolve_fixture(env, pname));
+          args.push_back(
+              resolve_fixture_impl(env, pname, visited, fixture_cache));
         }
       }
       call(env, slot, std::move(args));
-      summary.passed++;
-      std::cout << "  ok  " << entry_name << "\n";
     } catch (const CulebraError& e) {
-      summary.failed++;
-      std::string loc = e.line > 0
-          ? " at " + std::to_string(e.line) + ":" + std::to_string(e.col)
-          : "";
-      std::string msg = std::string("  FAIL ") + entry_name + " — "
-                        + e.kind + ": " + e.what() + loc
-                        + " (in " + entry_source + ")";
-      summary.failure_messages.push_back(msg);
-      std::cout << msg << "\n";
+      failed = true;
+      err_kind = e.kind;
+      err_what = e.what();
+      err_line = e.line;
+      err_col = e.col;
+    } catch (const Value& v) {
+      // User `throw <value>` lands here. Preserve kind/message when the
+      // payload is an Object with the conventional shape.
+      failed = true;
+      if (v.type == Value::Object) {
+        const auto& obj = v.to_object();
+        if (obj.has("kind")) {
+          auto kv = obj.get("kind");
+          if (kv.type == Value::String) err_kind = std::string(kv.to_string());
+        }
+        if (obj.has("message")) {
+          auto mv = obj.get("message");
+          if (mv.type == Value::String) err_what = std::string(mv.to_string());
+        }
+      }
+      if (err_kind.empty()) err_kind = "UserThrow";
+      if (err_what.empty()) err_what = v.str_display();
     } catch (const std::exception& e) {
-      summary.failed++;
-      summary.failure_messages.push_back(
-          std::string("  FAIL ") + entry_name + " — " + e.what());
-      std::cout << "  FAIL " << entry_name << " — " << e.what() << "\n";
+      failed = true;
+      err_kind = "InternalError";
+      err_what = e.what();
     }
+
+    auto captured = capture.take();
+
+    if (!failed) {
+      summary.passed++;
+      if (reporter == Reporter::Json) {
+        std::cout << R"({"event":"test_pass","name":)"
+                  << json_escape(entry_name)
+                  << R"(,"source":)" << json_escape(entry_source)
+                  << R"(,"stdout":)" << json_escape(captured)
+                  << "}\n";
+      } else {
+        std::cout << "  ok  " << entry_name << "\n";
+      }
+    } else {
+      summary.failed++;
+      int user_line = to_user_line(err_line);
+      if (reporter == Reporter::Json) {
+        // Snippet only when the line plausibly maps to the entry
+        // file. For imported modules we don't have the source mapped
+        // here, so leave snippet empty rather than render the wrong
+        // file's lines.
+        std::string snippet;
+        if (err_line > 0 && err_line > stdlib_preamble_line_count()) {
+          if (auto it = user_sources.find(entry_source);
+              it != user_sources.end()) {
+            snippet = source_snippet(it->second, user_line);
+          }
+        }
+        std::cout << R"({"event":"test_fail","name":)"
+                  << json_escape(entry_name)
+                  << R"(,"kind":)" << json_escape(err_kind)
+                  << R"(,"message":)" << json_escape(err_what)
+                  << R"(,"line":)" << user_line
+                  << R"(,"col":)" << err_col
+                  << R"(,"source":)" << json_escape(entry_source)
+                  << R"(,"snippet":)" << json_escape(snippet)
+                  << R"(,"stdout":)" << json_escape(captured)
+                  << "}\n";
+      } else {
+        std::string loc = user_line > 0
+            ? " at " + std::to_string(user_line) +
+              ":" + std::to_string(err_col)
+            : "";
+        std::string msg = std::string("  FAIL ") + entry_name + " — "
+                          + err_kind + ": " + err_what + loc
+                          + " (in " + entry_source + ")";
+        summary.failure_messages.push_back(msg);
+        std::cout << msg << "\n";
+      }
+    }
+    if (bail_after > 0 && summary.failed >= bail_after) break;
   }
 
+  bool bailed = bail_after > 0 && summary.failed >= bail_after;
+  if (reporter == Reporter::Json) {
+    std::cout << R"({"event":"run_end","passed":)" << summary.passed
+              << R"(,"failed":)" << summary.failed
+              << R"(,"errored_files":)" << summary.errored_files
+              << R"(,"bailed":)" << (bailed ? "true" : "false")
+              << "}\n";
+  }
   return summary;
 }
 

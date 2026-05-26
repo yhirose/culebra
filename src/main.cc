@@ -455,12 +455,50 @@ void install_cli_aliases(culebra::Environment& env) {
 int run_test(int argc, const char** argv) {
   std::vector<std::string> roots;
   std::string filter;
+  auto reporter = culebra::Reporter::Default;
+  int bail_after = 0;
+  bool list_only = false;
+  auto parse_reporter = [&](std::string_view v) {
+    if (v == "default") reporter = culebra::Reporter::Default;
+    else if (v == "json") reporter = culebra::Reporter::Json;
+    else {
+      std::println(stderr, "culebra test: unknown reporter '{}'", v);
+      return false;
+    }
+    return true;
+  };
   for (int i = 2; i < argc; i++) {
     std::string arg(argv[i]);
     if (arg.starts_with("--filter=")) {
       filter = arg.substr(9);
     } else if (arg == "--filter" && i + 1 < argc) {
       filter = argv[++i];
+    } else if (arg.starts_with("--reporter=")) {
+      if (!parse_reporter(arg.substr(11))) return 2;
+    } else if (arg == "--reporter" && i + 1 < argc) {
+      if (!parse_reporter(argv[++i])) return 2;
+    } else if (arg == "--bail") {
+      // Optional numeric argument: `--bail` means 1; `--bail 3` means 3.
+      if (i + 1 < argc) {
+        try {
+          bail_after = std::stoi(argv[i + 1]);
+          i++;
+        } catch (...) {
+          bail_after = 1;
+        }
+      } else {
+        bail_after = 1;
+      }
+    } else if (arg.starts_with("--bail=")) {
+      try {
+        bail_after = std::stoi(arg.substr(7));
+      } catch (...) {
+        std::println(stderr, "culebra test: invalid --bail value '{}'",
+                      arg.substr(7));
+        return 2;
+      }
+    } else if (arg == "--list") {
+      list_only = true;
     } else if (arg.starts_with("--")) {
       std::println(stderr, "culebra test: unknown option '{}'", arg);
       return 2;
@@ -469,6 +507,7 @@ int run_test(int argc, const char** argv) {
     }
   }
   auto env = culebra::environment({});
+  install_cli_aliases(*env);
   culebra::install_test_ambient(*env);
 
   auto files = culebra::discover_test_files(roots);
@@ -478,12 +517,18 @@ int run_test(int argc, const char** argv) {
     return 1;
   }
 
-  auto summary = culebra::run_tests(files, filter, env);
-  if (summary.errored_files > 0) {
-    std::println("{} passed, {} failed, {} file(s) errored",
-                  summary.passed, summary.failed, summary.errored_files);
-  } else {
-    std::println("{} passed, {} failed", summary.passed, summary.failed);
+  auto summary = culebra::run_tests(
+      files, filter, env, reporter, bail_after, list_only);
+  if (list_only) {
+    return summary.errored_files == 0 ? 0 : 1;
+  }
+  if (reporter == culebra::Reporter::Default) {
+    if (summary.errored_files > 0) {
+      std::println("{} passed, {} failed, {} file(s) errored",
+                    summary.passed, summary.failed, summary.errored_files);
+    } else {
+      std::println("{} passed, {} failed", summary.passed, summary.failed);
+    }
   }
   return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
 }

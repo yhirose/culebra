@@ -1,0 +1,287 @@
+# `culebra test`-only matchers — exercised via:
+#   ./build/culebra test tests/culebra_test_self/
+# Skipped by `just test` direct-loop (tests/*.cul glob is non-recursive).
+
+# --- assert_throws ---
+
+@test
+fn assert_throws_matches() {
+  assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
+}
+
+@test
+fn assert_throws_user_throw() {
+  assert_throws("MyError", fn() {
+    throw { kind: "MyError", message: "boom" }
+  })
+}
+
+@test
+fn assert_throws_wrong_kind_fails() {
+  let r = try {
+    assert_throws("TypeError", fn() { let _ = 1 / 0 })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected kind 'TypeError'"))
+  assert(r.message.contains("got 'ZeroDivisionError'"))
+}
+
+@test
+fn assert_throws_no_throw_fails() {
+  let r = try {
+    assert_throws("TypeError", fn() { 42 })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected throw but fn returned normally"))
+}
+
+# --- assert_close ---
+
+@test
+fn assert_close_within_tol() {
+  assert_close(3.14, 3.1415, 0.01)
+  assert_close(1.0, 1.0, 0.0)
+  assert_close(100, 100.5, 1.0)   # int+float coerce
+}
+
+@test
+fn assert_close_exceeds_tol_fails() {
+  let r = try {
+    assert_close(1.0, 2.0, 0.5)
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("diff"))
+  assert(r.message.contains("a:"))
+  assert(r.message.contains("b:"))
+}
+
+# NaN must NOT slip through — `NaN > tol` is false under IEEE-754, so
+# without an explicit isnan guard a divergent computation would pass.
+@test
+fn assert_close_rejects_nan() {
+  let nan = (-1.0) ** 0.5    # sqrt of negative — NaN (0.0/0.0 throws)
+  let r = try {
+    assert_close(nan, 1.0, 1e-9)
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# assert_throws must reject non-zero-arity callbacks with a clear
+# ArityError so the user gets a precise diagnostic instead of a
+# misleading NameError on the unbound parameter.
+@test
+fn assert_throws_rejects_nonzero_arity() {
+  let r = try {
+    assert_throws("X", fn(extra) { throw { kind: "X" } })
+    nil
+  } catch e { e }
+  assert(r.kind == "ArityError")
+  assert(r.message.contains("fn must take 0 parameters"))
+}
+
+# A user throw with a non-String `kind` field shouldn't escape as
+# TypeError — the matcher falls back to the display form and reports
+# a clean kind mismatch.
+@test
+fn assert_throws_handles_nonstring_kind() {
+  let r = try {
+    assert_throws("X", fn() { throw { kind: 42, message: "bad" } })
+    nil
+  } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("expected kind 'X'"))
+}
+
+# --- assert_eq / assert_ne ---
+
+@test
+fn assert_eq_primitives() {
+  assert_eq(1 + 1, 2)
+  assert_eq("foo", "foo")
+  assert_eq((1, 2, 3), (1, 2, 3))
+}
+
+@test
+fn assert_eq_failure_shows_both_sides() {
+  let r = try { assert_eq(41, 42); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("left:  41"))
+  assert(r.message.contains("right: 42"))
+}
+
+@test
+fn assert_ne_succeeds_on_inequality() {
+  assert_ne(1, 2)
+  assert_ne("a", "b")
+}
+
+@test
+fn assert_ne_failure_on_equality() {
+  let r = try { assert_ne(5, 5); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# --- assert_lt / assert_le / assert_gt / assert_ge ---
+
+@test
+fn assert_ordering_matchers() {
+  assert_lt(1, 2)
+  assert_le(2, 2)
+  assert_le(1, 2)
+  assert_gt(3, 2)
+  assert_ge(3, 3)
+  assert_ge(4, 3)
+}
+
+@test
+fn assert_lt_failure() {
+  let r = try { assert_lt(10, 5); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("left:  10"))
+  assert(r.message.contains("right: 5"))
+}
+
+# --- Class instance __eq__ / __lt__ dispatch ---
+
+class Pt {
+  new(x, y) { this.x = x; this.y = y }
+  __eq__(o)  { this.x == o.x && this.y == o.y }
+  __lt__(o)  { (this.x * this.x + this.y * this.y)
+               < (o.x * o.x + o.y * o.y) }
+}
+
+@test
+fn assert_eq_dispatches_user_eq() {
+  let p1 = Pt.new(1, 2)
+  let p2 = Pt.new(1, 2)
+  assert_eq(p1, p2)               # __eq__ returns true, even though refs differ
+}
+
+@test
+fn assert_lt_dispatches_user_lt() {
+  let small = Pt.new(1, 1)
+  let big   = Pt.new(5, 5)
+  assert_lt(small, big)
+}
+
+# --- __str__ honored in failure message ---
+
+class Money {
+  new(c) { this.cents = c }
+  __str__()  { "{this.cents / 100}USD" }
+  __eq__(o)  { this.cents == o.cents }
+}
+
+@test
+fn assert_eq_failure_uses_user_str() {
+  let r = try { assert_eq(Money.new(500), Money.new(700)); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+  assert(r.message.contains("5USD"))
+  assert(r.message.contains("7USD"))
+}
+
+# --- DI: plain fn in env is resolved by param name ---
+
+fn answer() { 42 }
+
+@test
+fn di_simple(answer) {
+  assert_eq(answer, 42)
+}
+
+# Fixture chain: a fixture depends on another by parameter name.
+class Counter {
+  new() { this.n = 0 }
+  bump() { this.n = this.n + 1; this.n }
+}
+fn db()      { Counter.new() }
+fn bumped(db) { db.bump(); db }
+
+@test
+fn di_chain(bumped) {
+  assert_eq(bumped.n, 1)
+}
+
+# Per-test memoization: `db` is the same instance whether reached
+# directly or transitively via `bumped`. Without memoization, the
+# direct `db` would still read 0.
+@test
+fn di_memoization(db, bumped) {
+  assert_eq(db.n, 1)
+  assert(db == bumped)
+}
+
+# --- assert_gt / assert_ge mirror operators on class instances ---
+
+# Non-strict comparator: __lt__ and __eq__ both always return false
+# (mimics NaN-like behaviour). Under operand-swap, `assert_gt(a, b)`
+# would query `b.__lt__(a)` = false → fail. The correct semantics
+# (mirroring compare_values) is `!(a.__lt__(b) || a.__eq__(b))` =
+# `!(false || false)` = true → pass. This test fails on the old
+# operand-swap implementation and passes on the fix.
+class NaNLike {
+  new() {}
+  __lt__(o) { false }
+  __eq__(o) { false }
+}
+
+@test
+fn assert_gt_uses_le_negation_not_operand_swap() {
+  let a = NaNLike.new()
+  let b = NaNLike.new()
+  assert_gt(a, b)                       # passes only with the fix
+  assert(a > b)                         # operator agrees
+}
+
+@test
+fn assert_ge_uses_lt_negation() {
+  let a = NaNLike.new()
+  let b = NaNLike.new()
+  assert_ge(a, b)                       # !(a.__lt__(b)) = !false = true
+  assert(a >= b)                        # operator agrees
+}
+
+# --- assert_close rejects NaN tolerance ---
+
+@test
+fn assert_close_rejects_nan_tol() {
+  let nan_tol = (-1.0) ** 0.5
+  let r = try { assert_close(1.0, 2.0, nan_tol); nil } catch e { e }
+  assert(r.kind == "AssertionError")
+}
+
+# Raw user `throw <Value>` escaping a test body is caught by the
+# runner's `catch (const Value&)` arm. Exercising that path from a
+# @test fn means letting the throw escape, which makes the test fail
+# by design — verified at the just-test shell level instead (a
+# dedicated file under tests/culebra_test_throw_self/ produces a
+# test_fail event with kind from the thrown payload).
+
+# Class `drop` fires when the per-test fixture cache releases its
+# ref at test end. Observed via a counter that holds no ref back.
+class DropCounter {
+  new() { this.n = 0 }
+  inc()  { this.n = this.n + 1 }
+}
+let drop_count = DropCounter.new()
+
+class Probe {
+  new() { this.open = true }
+  drop() { drop_count.inc() }
+}
+
+fn probe() { Probe.new() }
+
+@test
+fn drop_during_test(probe) {
+  assert(probe.open)
+}
+
+@test
+fn drop_fired_after_previous_test() {
+  assert_eq(drop_count.n, 1)
+}

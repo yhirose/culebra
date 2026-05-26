@@ -5267,11 +5267,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto lhs = eval(*ast.nodes[0], env);
     auto ope = eval(*ast.nodes[1], env).to_string();
     auto rhs = eval(*ast.nodes[2], env);
+    return compare_values(lhs, rhs, ope, env);
+  }
 
-    // Special-method dispatch for Object LHS. A class that defines just
-    // `__eq__` and `__lt__` gets the full six-way suite: `__le__` is
-    // derived as `lt || eq`, and the three "greater" ops are negations
-    // of the corresponding "less-or-equal" / "less" forms.
+  // Six-way comparison on pre-evaluated operands. Factored out of
+  // eval_condition so the dispatch (Object `__eq__`/`__lt__` + auto
+  // reflection for `==`/`!=`) is callable without re-evaluating sides.
+  Value compare_values(const Value& lhs, const Value& rhs,
+                       std::string_view ope,
+                       std::shared_ptr<Environment> env) {
     auto bool_val = [&](const Value& v) {
       return v.type == Value::Bool ? v.template get<bool>() : v.to_bool();
     };
@@ -5283,9 +5287,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!lt && !eq) return std::nullopt;
       return (lt && bool_val(*lt)) || (eq && bool_val(*eq));
     };
-    // Auto-reflection: `==` is commutative, so if the LHS doesn't
-    // carry `__eq__` but the RHS does, reach over and use it. Ordering
-    // operators (`<`, `<=`) are not commutative and don't reflect.
     auto try_eq = [&]() -> std::optional<Value> {
       if (auto r = try_special_binop(lhs, rhs, "__eq__", env)) return r;
       if (auto r = try_special_binop(rhs, lhs, "__eq__", env)) return r;
@@ -5312,21 +5313,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     }
 
-    if (ope == "==") {
-      return Value(lhs == rhs);
-    } else if (ope == "!=") {
-      return Value(lhs != rhs);
-    } else if (ope == "<=") {
-      return Value(lhs <= rhs);
-    } else if (ope == "<") {
-      return Value(lhs < rhs);
-    } else if (ope == ">=") {
-      return Value(lhs >= rhs);
-    } else if (ope == ">") {
-      return Value(lhs > rhs);
-    } else {
-      throw std::logic_error("invalid internal condition.");
-    }
+    if (ope == "==") return Value(lhs == rhs);
+    if (ope == "!=") return Value(lhs != rhs);
+    if (ope == "<=") return Value(lhs <= rhs);
+    if (ope == "<") return Value(lhs < rhs);
+    if (ope == ">=") return Value(lhs >= rhs);
+    if (ope == ">") return Value(lhs > rhs);
+    throw std::logic_error("invalid internal condition.");
   }
 
   Value eval_unary_plus(const peg::Ast& ast, std::shared_ptr<Environment> env) {

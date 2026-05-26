@@ -101,8 +101,39 @@ test BACKEND='all': build
         (cd build && ctest --output-on-failure)
     }
 
+    # Exercises `culebra test`-only ambient bindings (matchers, DI,
+    # @parametrize). The subdir layout keeps these out of the
+    # `tests/*.cul` glob that direct interp/JIT runs use.
+    run_culebra_test_self() {
+        ./build/culebra test tests/culebra_test_self/ > /dev/null
+        # Sanity-check the JSON reporter: final line is a run_end with
+        # failed=0 and errored_files=0; every other line begins with
+        # one of the documented event tags.
+        local last
+        last=$(./build/culebra test --reporter json tests/culebra_test_self/ | tail -1)
+        case "$last" in
+            *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
+            *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
+        esac
+        # The runner must catch a raw user `throw {...}` from inside a
+        # test body and surface it as a structured test_fail (kind and
+        # message lifted from the thrown Object). Exit code is non-zero
+        # because the test fails by design — what matters is that the
+        # runner itself doesn't crash.
+        local throw_out
+        throw_out=$(./build/culebra test --reporter json \
+            tests/culebra_test_throw_self/ 2>&1) || true
+        case "$throw_out" in
+            *'"event":"test_fail"'*'"kind":"RawThrowKind"'*'"event":"run_end"'*) ;;
+            *) echo "runner did not catch raw user throw:" >&2;
+               echo "$throw_out" >&2; exit 1 ;;
+        esac
+    }
+
     case "{{BACKEND}}" in
-      all)    run_diff_interp_jit; run_embed; run_aot; echo "test OK" ;;
+      # Order: cheap tests first, then AOT (slowest + most env-sensitive,
+      # so a failure there shouldn't mask matcher regressions).
+      all)    run_diff_interp_jit; run_embed; run_culebra_test_self; run_aot; echo "test OK" ;;
       interp) run_interp ;;
       jit)    run_jit ;;
       aot)    run_aot ;;

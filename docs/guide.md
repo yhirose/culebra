@@ -1222,10 +1222,9 @@ Part IV — Verification and deployment
 16. Testing (`culebra test`)
 ----------------------------
 
-> The `test()` call, `@test` decorator, fixture DI, and `@parametrize`
-> are implemented and work via `culebra test [path]`. Explicit
-> `import { test } from "std/test"` and `--doc` for markdown doctests
-> are still Planned (see 16.4).
+> `test()` / `@test` / `@parametrize`, the matcher family, and
+> dependency-injected fixtures (any fn in env, no decorator) are
+> implemented and work via `culebra test [path]`.
 
 ### 16.1 Doctest convention (final)
 
@@ -1272,51 +1271,131 @@ fn adds_correctly(a, b, want) {
 }
 ```
 
-**Fixtures (`@fixture` + dependency injection).** Mark a fn with
-`@fixture` and accept it as a `@test` parameter — the runner
-resolves the param name from the surrounding env and invokes the
-fixture (with its own fixtures recursively resolved):
+**No `describe` nesting.** Group by file path (`tests/strings/`) and
+by `/` in the test name (`"Array/push: appends element"`).
+
+**Fixtures by DI.** A test's positional parameters are resolved by
+name against the surrounding env: any fn in env can be a fixture, no
+decorator required. Fixtures can themselves take fixtures.
 
 ```culebra
 # doctest: skip
-@fixture
-fn db() {
-  { users: [], next_id: 1 }
-}
-
-@fixture
-fn user(db) {                       # fixtures can depend on fixtures
-  db.users.push({ id: 1, name: "alice" })
-  db.users[0]
-}
+fn db()       { { users: [], next_id: 1 } }
+fn user(db)   { db.users.push({ id: 1, name: "alice" }); db.users[0] }
 
 @test
-fn user_has_name(user) {            # `user` resolved from registry
-  assert(user.name == "alice")
+fn user_has_name(user) {
+  assert_eq(user.name, "alice")
 }
 ```
 
-**No `describe` nesting.** Group by file path (`tests/strings/`) and
-by `/` in the test name (`"Array/push: appends element"`).
+Within one test, each fixture is evaluated **once** — multiple
+mentions (direct + transitive) share the same instance. Across tests,
+fixtures are fresh.
+
+**Cleanup via class `drop`.** Resources needing teardown wrap
+themselves in a class with a `drop` method (§7.4). The runtime's
+ref-count finalization fires when the per-test fixture cache is
+released at test end.
+
+```culebra
+# doctest: skip
+class TestDB {
+  new()    { this.conn = Database.connect("memory") }
+  drop()   { this.conn.close() }
+  users()  { this.conn.users }
+}
+
+fn db() { TestDB.new() }
+
+@test
+fn user_count(db) {
+  db.users().create("alice")
+  assert_eq(db.users().count(), 1)
+  # db drops at test end -> conn.close()
+}
+```
+
+`defer` inside a fixture body would fire when the fixture fn returns
+(before the test runs), so class `drop` is the right tool for cleanup.
+
+Long-lived state shared across files — e.g. a model loaded once —
+goes at module top level and is imported by each test file. The
+module system caches the binding, so `import` always returns the
+same instance.
+
+**Matchers.** `assert(expr)` checks a Bool and reports only `assert
+failed at L:C.` on failure. For diagnostics that show both operands,
+use the matchers — ambient under `culebra test` alongside `test` and
+`parametrize`:
+
+```culebra
+# doctest: skip
+assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
+assert_ne(status, "error")              # !=
+assert_lt(elapsed, 1.0)                 # <
+assert_le(count, max)                   # <=
+assert_gt(score, 0)                     # >
+assert_ge(items.len(), 1)               # >=
+assert_throws("TypeError", fn() { let _ = 1 + 'b' })
+assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
+```
+
+- `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
+  `assert_ge` use the same `__eq__` / `__lt__` / `__le__` dispatch as
+  the operators, so `assert_eq(p1, p2)` and `assert(p1 == p2)` agree
+  for class instances.
+- `assert_throws(kind, fn)` invokes 0-arg `fn()` and asserts it throws
+  with the given `kind` (for built-in errors) or `.kind` property (for
+  `throw { kind: ..., message: ... }`).
+- `assert_close(a, b, tol)` asserts `|a - b| <= tol`. NaN counts as
+  failure (a naive `>` would silently pass divergent computations).
 
 ### 16.3 Running
 
 `culebra test [path]` discovers test files. When invoked through this
-subcommand, `test` / `@test` / `fixture` / `@fixture` / `parametrize`
-/ `@parametrize` become **ambient globals** — no `import` required.
-This mirrors how `puts` / `print` are ambient under script-execution
-mode but absent from `culebra::environment()` (see [stdlib
-§10](stdlib.md)).
+subcommand, `test` / `@test` / `@parametrize` and the matcher family
+become **ambient globals** — no `import` required. This mirrors how
+`puts` / `print` are ambient under script-execution mode but absent
+from `culebra::environment()` (see [stdlib §10](stdlib.md)).
 
 ```sh
 culebra test                       # discover & run from current dir
 culebra test tests/strings/        # run a subtree
 culebra test --filter "Array/push" # name-substring filter
+culebra test --reporter json       # NDJSON output (one JSON per line)
+culebra test --bail                # stop after the first failure
+culebra test --bail 3              # stop after 3 failures
+culebra test --list                # discover only; print test names
 ```
 
 Discovery: any path that is a file is included as-is; any path that
 is a directory is walked recursively for files matching `test_*.cul`.
 Exit code is `0` when all tests pass, `1` when any fail.
+
+**Reporters.** Default is human-readable. `--reporter json` emits one
+JSON object per line (NDJSON) — useful for agent loops and CI:
+
+```
+{"event":"test_pass","name":"adds_correctly","source":"tests/test_math.cul",
+ "stdout":""}
+{"event":"test_fail","name":"divides_correctly","kind":"AssertionError",
+ "message":"assert_eq failed:\n  left:  3\n  right: 4","line":12,"col":3,
+ "source":"tests/test_math.cul",
+ "snippet":" 10  @test\n 11  fn divides_correctly() {\n 12>   assert_eq(6/2, 4)\n 13  }\n",
+ "stdout":""}
+{"event":"file_error","source":"tests/test_bad.cul","kind":"SyntaxError",
+ "message":"..."}
+{"event":"test_list","name":"divides_correctly","source":"tests/test_math.cul"}
+{"event":"list_end","count":42}
+{"event":"run_end","passed":42,"failed":1,"errored_files":0,"bailed":false}
+```
+
+In JSON mode, user `puts(...)` from inside a test is captured into the
+event's `stdout` field rather than interleaved with the NDJSON stream.
+Failure events carry a `snippet` with the failing line marked `>` and
+two lines of context on either side, so a consumer can show the
+relevant code without an extra file read.
 
 The legacy `tests/*.cul` suite under `just test` (assert-only, no
 `test()` calls) continues to work unchanged — it does not use the
