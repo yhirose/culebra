@@ -2938,25 +2938,29 @@ inline std::map<std::string_view, Value>& string_builtins() {
        Value(FunctionValue(
            {{"sep", false, "StringLike"sv}},
            [](std::shared_ptr<Environment> callEnv) {
+             struct State {
+               std::string sep;
+               size_t pos = 0;
+               bool done = false;
+             };
              auto [src, base] = callEnv->get("this").share_source_and_view();
-             auto sep = std::string(callEnv->get("sep").to_string_view());
-             auto pos = std::make_shared<size_t>(0);
-             auto done = std::make_shared<bool>(false);
+             auto st = std::make_shared<State>();
+             st->sep = std::string(callEnv->get("sep").to_string_view());
              return _make_iterator(
-                 [src, base, sep, pos, done](std::shared_ptr<Environment>) {
-                   if (*done) return _iter_step_done();
-                   if (sep.empty()) {
-                     *done = true;
+                 [src, base, st](std::shared_ptr<Environment>) {
+                   if (st->done) return _iter_step_done();
+                   if (st->sep.empty()) {
+                     st->done = true;
                      return _iter_step_value(Value(src, base));
                    }
-                   auto p = base.find(sep, *pos);
+                   auto p = base.find(st->sep, st->pos);
                    if (p == std::string_view::npos) {
-                     *done = true;
-                     auto sv = base.substr(*pos);
+                     st->done = true;
+                     auto sv = base.substr(st->pos);
                      return _iter_step_value(Value(src, sv));
                    }
-                   auto sv = base.substr(*pos, p - *pos);
-                   *pos = p + sep.size();
+                   auto sv = base.substr(st->pos, p - st->pos);
+                   st->pos = p + st->sep.size();
                    return _iter_step_value(Value(src, sv));
                  });
            }))},
@@ -3046,12 +3050,17 @@ inline std::map<std::string_view, Value>& string_builtins() {
       // interfere.
       {"graphemes"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         // Single shared_ptr keeps refcount inc/dec to one pair per
+         // step instead of three (was: u32, byte_off, cp_off separately).
+         struct State {
+           std::u32string u32;
+           size_t byte_off = 0;
+           size_t cp_off = 0;
+         };
          auto [src, base] = callEnv->get("this").share_source_and_view();
-         auto u32 = std::make_shared<std::u32string>();
-         auto byte_off = std::make_shared<size_t>(0);
-         auto cp_off = std::make_shared<size_t>(0);
+         auto st = std::make_shared<State>();
          return _make_iterator(
-             [src, base, u32, byte_off, cp_off](std::shared_ptr<Environment>) {
+             [src, base, st](std::shared_ptr<Environment>) {
            // Chunk size when growing u32 to confirm a cluster boundary.
            // 1 is legal but pays the grapheme_length cost per codepoint;
            // 16 amortizes it across typical cluster lengths.
@@ -3065,31 +3074,31 @@ inline std::map<std::string_view, Value>& string_builtins() {
            constexpr size_t kTrimThreshold = 4096;
 
            auto extend_to = [&](size_t target) {
-             while (u32->size() < target && *byte_off < base.size()) {
+             while (st->u32.size() < target && st->byte_off < base.size()) {
                char32_t cp;
-               _decode_one_utf8(base, *byte_off, cp);
-               u32->push_back(cp);
+               _decode_one_utf8(base, st->byte_off, cp);
+               st->u32.push_back(cp);
              }
            };
-           extend_to(*cp_off + 1);
-           if (*cp_off >= u32->size()) return _iter_step_done();
+           extend_to(st->cp_off + 1);
+           if (st->cp_off >= st->u32.size()) return _iter_step_done();
            // Grow the buffer until `grapheme_length` returns strictly
            // less than the available size (a boundary is confirmed to
            // lie inside the buffer) or until the UTF-8 input is
            // exhausted — without lookahead, a `len == avail` return
            // could still be truncated by a continuation codepoint.
            for (;;) {
-             size_t avail = u32->size() - *cp_off;
+             size_t avail = st->u32.size() - st->cp_off;
              size_t len = unicode::grapheme_length(
-                 u32->data() + *cp_off, avail);
+                 st->u32.data() + st->cp_off, avail);
              if (len == 0) len = 1;  // grapheme_length contract says >=1 on avail>=1; belt-and-braces
-             if (len < avail || *byte_off >= base.size()) {
+             if (len < avail || st->byte_off >= base.size()) {
                std::string out;
-               unicode::utf8::encode(u32->data() + *cp_off, len, out);
-               *cp_off += len;
-               if (*cp_off >= kTrimThreshold) {
-                 u32->erase(0, *cp_off);
-                 *cp_off = 0;
+               unicode::utf8::encode(st->u32.data() + st->cp_off, len, out);
+               st->cp_off += len;
+               if (st->cp_off >= kTrimThreshold) {
+                 st->u32.erase(0, st->cp_off);
+                 st->cp_off = 0;
                }
                // Wrap the per-cluster bytes as a StringView. Truly
                // zero-copy graphemes (no per-cluster alloc) needs
@@ -3098,7 +3107,7 @@ inline std::map<std::string_view, Value>& string_builtins() {
                auto sv = std::string_view(*cluster_src);
                return _iter_step_value(Value(std::move(cluster_src), sv));
              }
-             extend_to(u32->size() + kExtendChunk);
+             extend_to(st->u32.size() + kExtendChunk);
            }
          });
        }))}};
