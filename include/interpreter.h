@@ -509,6 +509,33 @@ inline void descend_into_nested(
     return;
   }
 
+  if (node.tag == "TRAIT_DECL"_) {
+    // [DECORATOR*, CLASS_HEAD, TRAIT_METHOD ...] — each TRAIT_METHOD is
+    // [IDENTIFIER, PARAMETERS, RETURN_TYPE?, TRAIT_BODY?]. Default-body
+    // methods are nested fns whose body must pass the shadow check;
+    // signature-only methods have no body to analyze.
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+      descend_into_nested(*node.nodes[i], my_locals, outer);
+      i++;
+    }
+    for (size_t j = i + 1; j < node.nodes.size(); j++) {
+      const auto& method = *node.nodes[j];
+      const peg::Ast* body_ast = nullptr;
+      for (size_t k = 2; k < method.nodes.size(); k++) {
+        if (method.nodes[k]->tag == "TRAIT_BODY"_) {
+          body_ast = method.nodes[k]->nodes[0].get();
+          break;
+        }
+      }
+      if (!body_ast) continue;
+      outer.push_back(&my_locals);
+      analyze_fn_body(*method.nodes[1], *body_ast, outer);
+      outer.pop_back();
+    }
+    return;
+  }
+
   for (auto& c : node.nodes) descend_into_nested(*c, my_locals, outer);
 }
 
