@@ -1605,6 +1605,33 @@ inline void setup_built_in_functions(
                                      "String"sv)),
                  false);
 
+  // `hash(v)`: companion to `to_string` for the Hashable trait. Primitives
+  // go through ValueHash (same path Object/Set keys use); Object with a
+  // user-defined `hash()` method invokes it. Anything else throws.
+  env.initialize(
+      "hash",
+      Value(FunctionValue(
+                {{"v", false}},
+                [](std::shared_ptr<Environment> env) {
+                  const auto& v = env->get("v");
+                  if (v.type == Value::Object) {
+                    const auto& obj = v.to_object();
+                    if (!obj.has("hash")) {
+                      throw CulebraError("TypeError",
+                          "unhashable type: 'Object' (no hash() method)");
+                    }
+                    auto r = _invoke_method_no_args(v, "hash");
+                    if (r.type != Value::Long) {
+                      throw CulebraError("TypeError",
+                          "hash() must return Long");
+                    }
+                    return r;
+                  }
+                  return Value(static_cast<long>(ValueHash{}(v)));
+                },
+                "Long"sv)),
+      false);
+
   env.initialize(
       "type_of",
       Value(FunctionValue({{"v", false}},

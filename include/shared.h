@@ -698,6 +698,16 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
     // also satisfy this via structural conformance on `to_string_view`.
     return type_label == "String" || type_label == "StringView";
   }
+  if (trait_name == "Hashable") {
+    // Mirrors what ValueHash / JitValueHash actually hash: every value
+    // primitive plus Tuple (hash combines element hashes). Mutable
+    // containers (Array / Set / Object / Function / Tensor) stay out
+    // — they throw at hash time today and shouldn't pretend otherwise.
+    return type_label == "Nil" || type_label == "Bool" ||
+           type_label == "Long" || type_label == "Float" ||
+           type_label == "String" || type_label == "StringView" ||
+           type_label == "Tuple";
+  }
   return false;
 }
 
@@ -750,6 +760,9 @@ trait Comparable {
 }
 trait StringLike {
   to_string_view() -> StringView
+}
+trait Hashable {
+  hash() -> Long
 }
 )culebra";
   return src;

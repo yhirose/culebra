@@ -1,0 +1,85 @@
+// Conformance: built-in Hashable trait.
+// `Hashable { hash() -> Long }` — primitives conform via the
+// hard-coded table; user classes via structural conformance
+// (`fn hash()` + `fn eq(other)` for Object key use).
+
+// --- Built-in: every hashable primitive satisfies Hashable ---
+// Use the global `hash(v)` builtin — primitives don't carry callable
+// methods, so the trait body goes through the free function (same
+// pattern as `to_string` for Stringer).
+fn h(x: Hashable) -> Long { hash(x) }
+
+// Primitives produce a stable hash (same input -> same value).
+assert(h(42) == h(42))
+assert(h("abc") == h("abc"))
+assert(h(3.14) == h(3.14))
+assert(h(true) == h(true))
+assert(h(nil) == h(nil))
+assert(h((1, 2)) == h((1, 2)))
+
+// Cross-flavor: String / StringView with same bytes hash equally.
+let s = "hello"
+let v = s.view()
+assert(h(s) == h(v))
+
+// Numeric collapse: 1 / 1.0 / true share a hash bucket (Python dict).
+assert(h(1) == h(1.0))
+assert(h(true) == h(1))
+
+// --- Unhashable primitives: rejected as Hashable param ---
+let e_arr = try { h([1, 2, 3]); nil } catch e { e }
+assert(e_arr.kind == "DispatchError")
+let e_obj = try { h({a: 1}); nil } catch e { e }
+assert(e_obj.kind == "DispatchError")
+
+// --- User class: structural conformance via hash() + eq() ---
+class Point {
+  new(x, y) { this.x = x; this.y = y }
+  hash() { this.x * 31 + this.y }
+  eq(other) { this.x == other.x && this.y == other.y }
+}
+
+let p = Point.new(1, 2)
+assert(h(p) == 33)
+
+// User Hashable + Eq class works as Object key.
+mut bag = {}
+mut bag[Point.new(1, 2)] = "a"
+mut bag[Point.new(3, 4)] = "b"
+assert(bag[Point.new(1, 2)] == "a")
+assert(bag[Point.new(3, 4)] == "b")
+assert(bag.size() == 2)
+
+// Same-content keys collide (single entry retained).
+mut single = {}
+mut single[Point.new(5, 6)] = "first"
+single[Point.new(5, 6)] = "second"
+assert(single.size() == 1)
+assert(single[Point.new(5, 6)] == "second")
+
+// Set with user class.
+mut s2 = {Point.new(1, 1), Point.new(2, 2)}
+s2.add(Point.new(1, 1))   // duplicate -> no growth
+s2.add(Point.new(3, 3))
+assert(s2.size() == 3)
+
+// --- User class without hash() ---
+class Naked {
+  new(v) { this.v = v }
+}
+
+// Rejected as Hashable param.
+let e_naked = try { h(Naked.new(0)); nil } catch e { e }
+assert(e_naked.kind == "DispatchError")
+
+// Rejected as Object key.
+mut bag2 = {}
+let e_key = try { bag2[Naked.new(0)] = 1; nil } catch e { e }
+assert(e_key.kind == "TypeError")
+
+// (Cross-flavor Object key unification: String and StringView still
+// land in different slots due to the dual Shape/sidecar Object storage.
+// See `docs/language.md` / project memory `string-stringview` for the
+// recommended `.to_string()` materialization.)
+
+IO.puts("test_hashable OK")

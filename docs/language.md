@@ -1719,7 +1719,7 @@ free; defining the same name on the class overrides:
 
 #### Built-in traits
 
-The runtime ships four foundational traits as a preamble — they
+The runtime ships five foundational traits as a preamble — they
 are visible without `import`:
 
 | Trait | Required | Defaults |
@@ -1728,30 +1728,40 @@ are visible without `import`:
 | `Eq` | `eq(other) -> Bool` | `neq` |
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
+| `Hashable` | `hash() -> Long` | — |
 
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is
 displayable wherever a `Stringer` is expected. `StringLike` accepts
 any byte-readable string value at API boundaries — `String` and
-`StringView` both conform out of the box.
+`StringView` both conform out of the box. `Hashable` is the
+contract `Object` / `Set` keys check at insertion: a user class
+becomes a valid key by defining `hash()` (returning `Long`) and
+`eq(other)`.
 
 Built-in primitives also conform via a hard-coded table — no
 class wrapper required:
 
-| Primitive | Stringer | Eq | Comparable | StringLike |
-|---|:---:|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — |
-| Long / Float | ✓ | ✓ | ✓ | — |
-| String / StringView | ✓ | ✓ | ✓ | ✓ |
-| Array / Tuple / Set / Tensor | ✓ | ✓ | — | — |
-| Function | ✓ | — | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike | Hashable |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — | ✓ |
+| Long / Float | ✓ | ✓ | ✓ | — | ✓ |
+| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Tuple | ✓ | ✓ | — | — | ✓ |
+| Array / Set / Tensor | ✓ | ✓ | — | — | — |
+| Function | ✓ | — | — | — | — |
 
 So `fn show(x: Stringer) { to_string(x) }` accepts `show(42)` and
 `show([1, 2, 3])` without requiring a class wrapper. Note that
 trait method calls (`x.to_s()`) only resolve on class instances —
 primitives have no method-dispatch surface, so the trait reaches
 them via `fn` boundaries (`fn show(x: Stringer)`), not via the
-`.method()` syntax.
+`.method()` syntax. The same pattern applies to `Hashable`:
+primitives go through the `hash(v)` global builtin (companion to
+`to_string`); class instances also accept the direct `x.hash()`
+call. For Hashable user classes used as Object / Set keys the
+matching `eq(other)` method is required so the container's
+equality check stays consistent with the hash.
 
 #### Generic Bound
 

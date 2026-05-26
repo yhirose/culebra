@@ -447,8 +447,21 @@ static constexpr int8_t GC_TAG_CELL = 100;
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.
 inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
 
+// Forward decls: Object-side `hash()` / `eq()` dispatch used by
+// JitValueHash / JitValueEq. Defined further down once `_try_special_unary`
+// and `_culebra_invoke_method1` are complete (inside the runtime's
+// extern "C" block — match the linkage here). Returning nullopt means
+// "no user method, fall back to reference identity" so existing Object
+// keys without `hash()` keep their previous (identity-based) behavior.
+extern "C" {
+inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
+inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
+}
+
 // Hash/eq for JitValue keys in JitObject's non-String key sidecar.
 // Numerically-equal Long/Float/Bool share a bucket (Python convention).
+// Object keys route through user-defined `hash()` / `eq()` when present
+// (Hashable + Eq structural conformance); otherwise reference identity.
 struct JitValueHash {
   size_t operator()(const JitValue& v) const {
     switch (v.tag) {
@@ -475,6 +488,15 @@ struct JitValueHash {
         }
         return h;
       }
+      case TAG_OBJECT: {
+        auto* obj = reinterpret_cast<JitObject*>(v.data);
+        if (auto h = _jit_object_user_hash(obj)) {
+          return std::hash<int64_t>{}(*h);
+        }
+        throw culebra::CulebraError(
+            "TypeError",
+            "unhashable type: 'Object' (no hash() method)");
+      }
     }
     return std::hash<int64_t>{}(v.data) ^ static_cast<size_t>(v.tag);
   }
@@ -496,6 +518,13 @@ struct JitValueEq {
           if (!(*this)(aa->items[i], bb->items[i])) return false;
         }
         return true;
+      }
+      if (a.tag == TAG_OBJECT) {
+        if (a.data == b.data) return true;
+        auto* oa = reinterpret_cast<JitObject*>(a.data);
+        auto* ob = reinterpret_cast<JitObject*>(b.data);
+        if (auto e = _jit_object_user_eq(oa, ob)) return *e;
+        return false;
       }
       return a.data == b.data;
     }
@@ -1273,6 +1302,14 @@ extern "C" {
 // enclosing extern "C" block).
 inline std::optional<std::string> _try_str_special(int8_t type, int64_t data);
 
+// Forward decls used by `culebra_runtime_hash_any` and the
+// `_jit_object_user_*` helpers (defined alongside the other special-
+// method helpers further down).
+inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
+                                                  const char* name);
+inline const JitObjectEntry* _find_property(JitObject* obj,
+                                            const char* key);
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
                                                        int64_t data) {
   if (auto s = _try_str_special(type, data)) {
@@ -1325,6 +1362,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
     return _culebra_heap_str(std::string_view(v->ptr, v->len));
   }
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
+}
+
+// `hash(v)` builtin runtime entry. Routes Object to a user-defined
+// `hash()` method (Hashable + Eq structural conformance); primitives
+// go through JitValueHash — same path JitObject's AnyKeyMap uses.
+// Throws on unhashable inputs (Array / Set / Function / Tensor, Object
+// without `hash`). Returns a raw int64 (Long payload).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
+    int8_t type, int64_t data, int64_t line, int64_t col) {
+  if (type == TAG_OBJECT) {
+    auto r = _try_special_unary(type, data, "hash");
+    if (!r) {
+      throw culebra::CulebraError(
+          "TypeError",
+          "unhashable type: 'Object' (no hash() method)",
+          static_cast<int>(line), static_cast<int>(col));
+    }
+    if (r->tag != TAG_LONG) {
+      _culebra_value_release_impl(r->tag, r->data);
+      throw culebra::CulebraError("TypeError",
+                                  "hash() must return Long",
+                                  static_cast<int>(line),
+                                  static_cast<int>(col));
+    }
+    return r->data;
+  }
+  // Primitives go through the same hash that JitObject's AnyKeyMap uses.
+  // Unhashable inputs (Array / Set / Function / Tensor) take the default
+  // fallback path (data-bit identity); the Hashable trait dispatch keeps
+  // them out of `hash(v)` callers in practice.
+  return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_concat(
@@ -1763,6 +1831,41 @@ inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
 inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   culebra_runtime_value_retain(self.tag, self.data);
   return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
+}
+
+// Resolve user-defined `hash()` on an Object (Hashable structural
+// conformance). Returns the Long payload on success; nullopt when the
+// method is absent or returns a non-Long value (caller falls back to
+// reference identity).
+inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
+  auto* entry = _find_property(obj, "hash");
+  if (!entry || entry->value.tag != TAG_FUNC) return std::nullopt;
+  auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
+  auto r = _culebra_invoke_method0(
+      cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
+  if (r.tag != TAG_LONG) {
+    _culebra_value_release_impl(r.tag, r.data);
+    return std::nullopt;
+  }
+  return r.data;
+}
+
+// Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
+// conformance). Both sides must expose `eq`; otherwise nullopt so the
+// caller keeps reference equality.
+inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
+  auto* ea = _find_property(a, "eq");
+  auto* eb = _find_property(b, "eq");
+  if (!ea || !eb || ea->value.tag != TAG_FUNC || eb->value.tag != TAG_FUNC) {
+    return std::nullopt;
+  }
+  auto* cls = reinterpret_cast<JitClosure*>(ea->value.data);
+  auto r = _culebra_invoke_method1(
+      cls, {TAG_OBJECT, reinterpret_cast<int64_t>(a)},
+      {TAG_OBJECT, reinterpret_cast<int64_t>(b)});
+  bool result = (r.tag == TAG_BOOL && r.data != 0);
+  _culebra_value_release_impl(r.tag, r.data);
+  return result;
 }
 
 // Look up a Function-typed property on a JitObject by name.
@@ -5865,6 +5968,7 @@ inline constexpr auto random_shuffle      = "culebra_runtime_random_shuffle";
 inline constexpr auto random_weighted_choice =
     "culebra_runtime_random_weighted_choice";
 inline constexpr auto io_exists           = "culebra_runtime_io_exists";
+inline constexpr auto hash_any            = "culebra_runtime_hash_any";
 inline constexpr auto fs_join             = "culebra_runtime_fs_join";
 inline constexpr auto fs_basename         = "culebra_runtime_fs_basename";
 inline constexpr auto fs_dirname          = "culebra_runtime_fs_dirname";

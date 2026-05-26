@@ -37,8 +37,16 @@ struct Environment;
 struct OrderedSymbolMap;
 struct ValueHash;
 struct ValueEq;
+struct Environment;
 inline void _call_drop_if_present(OrderedSymbolMap* m);
 inline void _destroy_prop_map(OrderedSymbolMap* m);
+// Used by ValueHash / ValueEq's Object case to invoke user-defined
+// `hash()` / `eq()` methods (Hashable + Eq structural conformance).
+// Defined further down once Value / Environment / FunctionValue are
+// complete.
+inline Value _invoke_method_no_args(const Value& receiver,
+                                    std::string_view method_name);
+inline bool _invoke_user_eq(const Value& a, const Value& b);
 
 // Forward decls for method tables defined once FunctionValue and Value
 // are complete. `string_builtins()` is the primitive String's method
@@ -1231,7 +1239,10 @@ struct Symbol {
 // Hash + equality for Value as a dictionary key. Numerically-equal
 // Long / Float / Bool fall into the same bucket so `{1: "a", 1.0: "b"}`
 // keeps only the second entry — matches Python's dict semantics.
-// Unhashable inputs (Object / Array / Function / Tensor) throw.
+// Unhashable inputs (Array / Function / Tensor, Object without `hash()`)
+// throw. User class instances become hashable by defining `fn hash()`
+// (returning Long) and `fn eq(other)` — the structural Hashable+Eq
+// conformance pair.
 struct ValueHash {
   size_t operator()(const Value& v) const {
     switch (v.type) {
@@ -1259,6 +1270,18 @@ struct ValueHash {
         }
         return h;
       }
+      case Value::Object: {
+        const auto& obj = v.to_object();
+        if (obj.has("hash")) {
+          auto r = _invoke_method_no_args(v, "hash");
+          if (r.type != Value::Long) {
+            throw CulebraError("TypeError", "hash() must return Long");
+          }
+          return std::hash<long>{}(r.get<long>());
+        }
+        throw CulebraError("TypeError",
+            "unhashable type: 'Object' (no hash() method)");
+      }
       default:
         throw CulebraError("TypeError", std::format(
             "unhashable type: '{}'", v.type_name()));
@@ -1266,8 +1289,24 @@ struct ValueHash {
   }
 };
 
+// Equality for hash-keyed containers. Falls through to `Value::operator==`
+// (numeric coercion + reference equality for heap types), but routes
+// Object-vs-Object through a user-defined `eq(other)` method when both
+// sides expose one — pairing with `ValueHash`'s `hash()` dispatch so a
+// Hashable+Eq user class behaves correctly as an Object/Set/HashMap key.
+// The Object-eq path is implemented in `_invoke_user_eq` (defined later
+// once Environment / FunctionValue are complete).
 struct ValueEq {
-  bool operator()(const Value& a, const Value& b) const { return a == b; }
+  bool operator()(const Value& a, const Value& b) const {
+    if (a.type == Value::Object && b.type == Value::Object) {
+      const auto& oa = a.to_object();
+      const auto& ob = b.to_object();
+      if (oa.has("eq") && ob.has("eq")) {
+        return _invoke_user_eq(a, b);
+      }
+    }
+    return a == b;
+  }
 };
 
 // Unordered collection of unique hashable values.
@@ -1988,6 +2027,18 @@ inline Value _invoke_method_no_args(const Value& receiver,
                                     std::string_view method_name) {
   const auto& fn = receiver.to_object().get(method_name);
   return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
+}
+
+// Pair to `ValueEq` (forward-declared earlier): invoke `a.eq(b)` for
+// user-defined Hashable+Eq classes acting as Object/Set/HashMap keys.
+// Caller guarantees both sides are Object with an `eq` property.
+inline bool _invoke_user_eq(const Value& a, const Value& b) {
+  const auto& fn = a.to_object().get("eq").to_function();
+  auto env = _make_method_call_env(a, 0, 0);
+  if (!fn.params->empty()) {
+    env->initialize((*fn.params)[0].name, b, false);
+  }
+  return fn.eval(env).to_bool();
 }
 
 // Display hook: if `v` is an Object carrying a `__str__` method, run

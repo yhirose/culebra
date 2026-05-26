@@ -1661,6 +1661,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::to_long_any, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
+  // `hash(v)` builtin: (tag, data, line, col) -> int64. The Object
+  // path inside the runtime invokes a user `hash()` method; primitives
+  // share JitValueHash with the AnyKeyMap.
+  jit.module_->getOrInsertFunction(rt::hash_any, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::to_float_any, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
@@ -1888,7 +1894,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     if (jit.lookup_fn_ast(name) != nullptr) return nullptr;
     static const std::set<std::string_view> known_globals = {
         "puts", "print", "assert", "to_long", "to_float",
-        "to_string", "type_of", "iota", "range",
+        "to_string", "type_of", "iota", "range", "hash",
     };
     if (known_globals.contains(name)) {
       throw culebra::CulebraError("SyntaxError",
@@ -1950,6 +1956,15 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                                  {jit.extract_tag(arg)});
     jit.emit_value_release(arg);
     return jit.make_string(s);
+  }
+
+  if (name == "hash" && argsAst.nodes.size() == 1) {
+    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto h = jit.emit_call(
+        jit.module_->getFunction(rt::hash_any),
+        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
+    jit.emit_value_release(arg);
+    return jit.make_long(h);
   }
 
   return nullptr;
@@ -2951,7 +2966,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",     "assert",
-      "to_long", "to_float",  "to_string", "type_of",
+      "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "_Time",
       "Random",  "Sys",       "JSON",      "Tensor"};
   return names.contains(name);

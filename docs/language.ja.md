@@ -1640,7 +1640,7 @@ trait method に body を付けると default 実装になり、 適合クラス
 
 #### Built-in trait
 
-runtime は preamble として 4 つの基本 trait を ship — `import` 不要
+runtime は preamble として 5 つの基本 trait を ship — `import` 不要
 で使える:
 
 | Trait | Required | Default |
@@ -1649,28 +1649,37 @@ runtime は preamble として 4 つの基本 trait を ship — `import` 不要
 | `Eq` | `eq(other) -> Bool` | `neq` |
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
+| `Hashable` | `hash() -> Long` | — |
 
 `cmp` だけ書けば 6 関係 method が揃い、 `eq` だけ書けば `neq` が
 入り、 `to_s` だけ書けば Stringer の使える場所で受け取れる。
 `StringLike` は API 境界で「バイト列として読める文字列」を受け取る
 契約 — `String` と `StringView` の両方が conform する。
+`Hashable` は `Object` / `Set` の key 挿入時にチェックされる契約 —
+user class は `hash()` (戻り値 `Long`) と `eq(other)` を定義すれば
+key として使える。
 
 組み込みの primitive (Long / String / Array 等) もハードコード
 された対応表で trait に conform する — class wrapper 不要:
 
-| Primitive | Stringer | Eq | Comparable | StringLike |
-|---|:---:|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) | — |
-| Long / Float | ✓ | ✓ | ✓ | — |
-| String / StringView | ✓ | ✓ | ✓ | ✓ |
-| Array / Tuple / Set / Tensor | ✓ | ✓ | — | — |
-| Function | ✓ | — | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike | Hashable |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) | — | ✓ |
+| Long / Float | ✓ | ✓ | ✓ | — | ✓ |
+| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Tuple | ✓ | ✓ | — | — | ✓ |
+| Array / Set / Tensor | ✓ | ✓ | — | — | — |
+| Function | ✓ | — | — | — | — |
 
 `fn show(x: Stringer) { to_string(x) }` は `show(42)` や
 `show([1, 2, 3])` を class wrapper なしで受ける。 ただし trait
 method 呼出 (`x.to_s()`) は class instance でのみ resolve — primitive
 には method dispatch がないので、 trait は `fn` 境界経由 (`fn
 show(x: Stringer)`) で扱い、 `.method()` syntax は使えない。
+`Hashable` も同様: primitive は `hash(v)` global builtin (`to_string`
+の対) 経由、 class instance は `x.hash()` 直接呼出も使える。 user
+class を Object / Set key にする場合は対応する `eq(other)` の同時
+定義が必要 (container 内の equality と hash の一貫性のため)。
 
 #### Generic Bound
 
