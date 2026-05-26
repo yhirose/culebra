@@ -1323,6 +1323,7 @@ struct OrderedSymbolMap {
     auto [new_it, _] =
         index_.emplace(std::string(k), entries_.size());
     entries_.emplace_back(std::string_view(new_it->first), Symbol{});
+    ++mut_count_;
     return entries_.back().second;
   }
 
@@ -1337,6 +1338,7 @@ struct OrderedSymbolMap {
         index_.emplace(std::string(k), entries_.size());
     entries_.emplace_back(std::string_view(new_it->first),
                           std::forward<S>(s));
+    ++mut_count_;
     return {entries_.begin() + (entries_.size() - 1), true};
   }
 
@@ -1350,6 +1352,7 @@ struct OrderedSymbolMap {
           index_.emplace(std::string(k), entries_.size());
       entries_.emplace_back(std::string_view(new_it->first),
                             std::forward<S>(s));
+      ++mut_count_;
     }
   }
 
@@ -1363,8 +1366,15 @@ struct OrderedSymbolMap {
     for (auto& [_, i] : index_) {
       if (i > idx) --i;
     }
+    ++mut_count_;
     return 1;
   }
+
+  // Bumps on add/delete only; value overwrites do not (matches Python
+  // dict semantics — `d[k] = v` mid-iter is allowed, `d[new] = v` and
+  // `del d[k]` are not). Iterators snapshot this on init and compare
+  // per step to fail-fast on structural mutation.
+  size_t mut_count() const { return mut_count_; }
 
   size_t size() const { return entries_.size(); }
   bool empty() const { return entries_.empty(); }
@@ -1390,6 +1400,7 @@ struct OrderedSymbolMap {
  private:
   std::vector<Entry> entries_;
   std::unordered_map<std::string, size_t, sv_hash, sv_equal> index_;
+  size_t mut_count_ = 0;
 };
 
 // Internal control-flow signal for `return expr`. Kept distinct from
@@ -2136,21 +2147,34 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
                              }
                              return Value();
                            }))},
-      // Iterator protocol: yield keys in std::map order (ascending).
-      // Snapshot keys up front — avoids invalidation if the map is
-      // mutated mid-iteration, and keeps `next` O(1) per step.
+      // Iterator protocol: yield keys in insertion order. Keys are
+      // snapshotted up front so `next` stays O(1) per step. Structural
+      // mutation of the underlying Object (add/delete) during iteration
+      // raises — matches Python dict semantics. Value updates on
+      // existing keys are allowed and don't bump the counter.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         struct State {
+           std::shared_ptr<OrderedSymbolMap> props;
+           std::vector<std::string> keys;
+           size_t index = 0;
+           size_t version = 0;
+         };
          const auto& val = callEnv->get("this");
-         auto props = val.to_object().properties;  // shared_ptr copy
-         auto keys = std::make_shared<std::vector<std::string>>();
-         keys->reserve(props->size());
-         for (const auto& [k, _] : *props) keys->emplace_back(k);
-         auto index = std::make_shared<size_t>(0);
-         return _make_iterator([keys, index](std::shared_ptr<Environment>) {
-           if (*index >= keys->size()) return _iter_step_done();
-           auto v = Value(std::string((*keys)[*index]));
-           (*index)++;
+         auto st = std::make_shared<State>();
+         st->props = val.to_object().properties;
+         st->version = st->props->mut_count();
+         st->keys.reserve(st->props->size());
+         for (const auto& [k, _] : *st->props) st->keys.emplace_back(k);
+         return _make_iterator([st](std::shared_ptr<Environment>) {
+           if (st->props->mut_count() != st->version) {
+             throw CulebraError(
+                 "RuntimeError",
+                 "Object changed size during iteration");
+           }
+           if (st->index >= st->keys.size()) return _iter_step_done();
+           auto v = Value(std::string(st->keys[st->index]));
+           st->index++;
            return _iter_step_value(std::move(v));
          });
        }))}};

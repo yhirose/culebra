@@ -2332,6 +2332,23 @@ rest. The yielded values are 1-scalar `String`s, not integer code
 points — use `.map` on the iterator to project into whatever shape
 you need.
 
+**Object iter and structural mutation**: rewriting the *value* of an
+existing key during iteration is allowed; adding or removing keys
+raises `RuntimeError` (matches Python `dict` semantics). The `for k in
+obj` sugar uses the same protocol.
+
+```culebra
+mut o = {mut x: 1, mut y: 2}
+for k in o.iter() { o[k] = 99 }
+puts(o.x)            # => 99
+```
+
+```culebra
+mut o = {a: 1}
+for k in o.iter() { o["b"] = 2 }
+                     # !! Object changed size during iteration
+```
+
 **Iterator methods**: any Object that has both `iter` and `next`
 properties (whether built-in or user-defined) picks up the lazy
 iterator method set below. Non-terminal methods return a new

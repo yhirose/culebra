@@ -2232,6 +2232,23 @@ Iterable ラッパなしで動作します。
 値は 1-scalar の `String` で、整数の code point ではありません。
 `.map` で必要な形に変換してください。
 
+**Object iter と構造変更**: 反復中に既存キーの *値* を上書きするのは
+許可されますが、キーの追加・削除は `RuntimeError` を送出します
+（Python `dict` と同じ意味論）。`for k in obj` の sugar も同じ
+プロトコルに従います。
+
+```culebra
+mut o = {mut x: 1, mut y: 2}
+for k in o.iter() { o[k] = 99 }
+puts(o.x)            # => 99
+```
+
+```culebra
+mut o = {a: 1}
+for k in o.iter() { o["b"] = 2 }
+                     # !! Object changed size during iteration
+```
+
 **イテレータメソッド**: `iter` と `next` の両方を持つ Object
 （組み込み / ユーザ定義を問わず）は、以下の遅延メソッド群を獲得
 します。非終端メソッドは新しい Iterator を返し、終端メソッドは

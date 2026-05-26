@@ -218,6 +218,11 @@ struct JitObject {
   // O(1) lookup.
   std::vector<JitValue>* key_order = nullptr;
   int64_t gc_slot = -1;  // see JitArray::gc_slot
+  // Bumps on add/delete (not value updates). object_iter snapshots
+  // this and fails-fast on per-step mismatch — matches Python dict
+  // semantics. Trailing field so existing JitObject IR layout is
+  // undisturbed.
+  int64_t mut_count = 0;
 
   // --- Shape-based property access helpers ---
 
@@ -244,6 +249,7 @@ struct JitObject {
     shape = culebra::shape_registry().transition_add(shape, key);
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
+    ++mut_count;
     // `key_order` is lazy: String-only objects recover insertion
     // order from `shape->names` directly at str() time. Only after a
     // non-String key activates the vector do String inserts also push
@@ -301,6 +307,7 @@ struct JitObject {
     }
     shape = new_shape;
     slots = std::move(new_slots);
+    ++mut_count;
   }
 };
 
@@ -4800,13 +4807,52 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_iter(
   return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
 }
 
-// Object.iter(): yield keys (ascending std::map order) as Strings.
-// Uses the same array-walker as array_iter.
+// Object.iter() fast fn. Captures: [obj_cell, keys_array_cell, idx_cell,
+// snapshot_cell]. Snapshot is obj->mut_count at iter-init; a per-step
+// mismatch raises a RuntimeError (Python dict-iter semantics).
+inline void _iter_from_object_fast_fn(JitClosure* cls, JitValue,
+                                      bool* done, int8_t* out_tag,
+                                      int64_t* out_data) {
+  auto obj_cell = cls->captures[0];
+  auto arr_cell = cls->captures[1];
+  auto idx_cell = cls->captures[2];
+  auto snap_cell = cls->captures[3];
+  auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
+  if (obj->mut_count != snap_cell->value.data) {
+    culebra_runtime_throw_error(
+        "RuntimeError", "Object changed size during iteration", 0, 0);
+    *done = true;
+    return;
+  }
+  auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
+  int64_t idx = idx_cell->value.data;
+  if (static_cast<size_t>(idx) >= arr->size) {
+    *done = true;
+    return;
+  }
+  auto v = arr->items[idx];
+  culebra_runtime_value_retain(v.tag, v.data);
+  idx_cell->value.data = idx + 1;
+  *done = false;
+  *out_tag = v.tag;
+  *out_data = v.data;
+}
+
+// Object.iter(): yield keys in insertion order as Strings. Structural
+// mutation of the underlying Object (add/delete) during iteration
+// raises; value updates on existing keys are allowed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
     JitObject* obj) {
   auto* keys = culebra_runtime_object_keys(obj);
-  return _iter_from_array_obj(TAG_ARRAY,
-                              reinterpret_cast<int64_t>(keys));
+  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* obj_cell = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* arr_cell = culebra_runtime_cell_new(
+      TAG_ARRAY, reinterpret_cast<int64_t>(keys));
+  auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* snap_cell = culebra_runtime_cell_new(TAG_LONG, obj->mut_count);
+  return _iter_wrap_fast<&_iter_from_object_fast_fn>(
+      {obj_cell, arr_cell, idx_cell, snap_cell});
 }
 
 // flat_map captures: upstream, fn, current-inner-iter (nullable),
@@ -10930,15 +10976,18 @@ struct JIT {
     builder_.CreateCondBr(hasIter, protoBB, keysBB);
 
     builder_.SetInsertPoint(keysBB);
-    auto keysArr = emit_call(
-        module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy),
-        {objPtr}, "obj.keys");
-    auto keysCleanupBB =
-        llvm::BasicBlock::Create(ctx_, "for.obj.keys.cleanup", fn);
-    compile_for_array_loop(keysArr, var_name, body, keysCleanupBB);
-    builder_.SetInsertPoint(keysCleanupBB);
-    emit_value_release(make_array(keysArr));
-    builder_.CreateBr(endBB);
+    // No user-defined `iter`: drive the builtin object_iter so the same
+    // mut_count fail-fast that protects `obj.iter()` also covers the
+    // `for k in obj` sugar. Reuses the protocol loop below.
+    auto objIter = emit_call(module_->getFunction(rt::object_iter),
+                             {objPtr});
+    llvm::Value* keysIterVal = llvm::UndefValue::get(valueType_);
+    keysIterVal = builder_.CreateInsertValue(
+        keysIterVal, builder_.getInt8(TAG_OBJECT), {0});
+    keysIterVal = builder_.CreateInsertValue(
+        keysIterVal, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()),
+        {1});
+    compile_for_protocol_loop(keysIterVal, var_name, body, endBB);
 
     builder_.SetInsertPoint(protoBB);
     llvm::Value* objVal = llvm::UndefValue::get(valueType_);
