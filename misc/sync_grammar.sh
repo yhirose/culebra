@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Sync misc/culebra.peg and the AUTO-KEYWORDS block in misc/cul.vim from
+# include/parser.h. Run `misc/sync_grammar.sh` to overwrite both files;
+# `misc/sync_grammar.sh --check` exits non-zero if either is stale.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+
+CHECK=0
+if [[ "${1:-}" == "--check" ]]; then
+  CHECK=1
+fi
+
+PARSER=include/parser.h
+PEG=misc/culebra.peg
+VIM=misc/cul.vim
+MAP=misc/keyword-map.txt
+
+TMP_PEG=$(mktemp)
+TMP_KW=$(mktemp)
+TMP_MAP_KW=$(mktemp)
+TMP_VIM_BLOCK=$(mktemp)
+TMP_VIM=$(mktemp)
+trap 'rm -f "$TMP_PEG" "$TMP_KW" "$TMP_MAP_KW" "$TMP_VIM_BLOCK" "$TMP_VIM"' EXIT
+
+# 1. Extract the embedded grammar block.
+awk '/^const auto grammar_ = R"\(/{flag=1; next} /^\)";/{flag=0; exit} flag{print}' "$PARSER" > "$TMP_PEG"
+
+# 2. Extract all keyword literals from the grammar (skip the wildcard '_').
+grep -oE "'[a-zA-Z_]+'" "$TMP_PEG" | tr -d "'" | grep -v '^_$' | sort -u > "$TMP_KW"
+
+# 3. Warn about K() keywords missing from the map.
+awk -F: '/^cul/{
+  n = split($2, parts, /[[:space:]]+/)
+  for (i = 1; i <= n; i++) if (parts[i] != "") print parts[i]
+}' "$MAP" | sort -u > "$TMP_MAP_KW"
+UNMAPPED=$(comm -23 "$TMP_KW" "$TMP_MAP_KW")
+if [[ -n "$UNMAPPED" ]]; then
+  echo "WARNING: keywords without a category in $MAP:" >&2
+  echo "$UNMAPPED" | sed 's/^/  /' >&2
+  echo "  (add to the appropriate \`culCategory: ...\` line)" >&2
+fi
+
+# 4. Emit the AUTO-KEYWORDS block in the order categories appear in the map.
+awk -F: '/^cul/{
+  cat = $1
+  rest = $2
+  sub(/^[[:space:]]+/, "", rest)
+  printf "syn keyword %-14s %s\n", cat, rest
+}' "$MAP" > "$TMP_VIM_BLOCK"
+
+# 5. Splice the new block into cul.vim between BEGIN/END markers.
+awk -v block_file="$TMP_VIM_BLOCK" '
+  /^" === BEGIN AUTO-KEYWORDS/ {
+    print
+    while ((getline line < block_file) > 0) print line
+    close(block_file)
+    in_block = 1
+    next
+  }
+  /^" === END AUTO-KEYWORDS/ {
+    in_block = 0
+    print
+    next
+  }
+  !in_block { print }
+' "$VIM" > "$TMP_VIM"
+
+if [[ "$CHECK" -eq 1 ]]; then
+  STATUS=0
+  if ! diff -q "$PEG" "$TMP_PEG" > /dev/null 2>&1; then
+    echo "ERROR: $PEG is out of sync with $PARSER. Run \`just sync-grammar\`." >&2
+    diff -u "$PEG" "$TMP_PEG" >&2 || true
+    STATUS=1
+  fi
+  if ! diff -q "$VIM" "$TMP_VIM" > /dev/null 2>&1; then
+    echo "ERROR: $VIM AUTO-KEYWORDS block is out of sync. Run \`just sync-grammar\`." >&2
+    diff -u "$VIM" "$TMP_VIM" >&2 || true
+    STATUS=1
+  fi
+  exit $STATUS
+fi
+
+cp "$TMP_PEG" "$PEG"
+cp "$TMP_VIM" "$VIM"
+echo "synced $PEG and $VIM from $PARSER"

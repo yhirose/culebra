@@ -1,0 +1,16 @@
+# Keyword → cul.vim syntax category mapping for `just sync-grammar`.
+# Lines are `CATEGORY: KEYWORD KEYWORD ...` (or `#` for comments).
+# Categories appear in cul.vim in the same order as listed here.
+# When grammar grows a new K('xxx'), add it to the appropriate line;
+# sync_grammar.sh warns about any K() keyword missing from the map.
+
+culFunction:    fn
+culClass:       class trait
+culConditional: if else match
+culRepeat:      while for in
+culStatement:   return break continue throw try catch defer
+culInclude:     import export from
+culDebugger:    debugger
+culBoolean:     true false
+culConstant:    nil
+culStorage:     let mut static

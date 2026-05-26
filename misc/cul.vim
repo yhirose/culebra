@@ -25,18 +25,23 @@ syn region  culInterp       matchgroup=culInterpDelim
 syn match   culOperator     "&&\|||\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
 syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
 
-" Keywords
-syn keyword culFunction     fn
-syn keyword culClass        class
-syn keyword culConditional  if else match
-syn keyword culRepeat       while for in
-syn keyword culStatement    return break continue throw try catch defer
-syn keyword culInclude      import export from
-syn keyword culDebugger     debugger
-syn keyword culBoolean      true false
-syn keyword culConstant     nil
+" Keywords (PEG-derived keywords are auto-generated from misc/keyword-map.txt
+" by `just sync-grammar`; non-PEG identifiers are below).
+" === BEGIN AUTO-KEYWORDS (from misc/culebra.peg via `just sync-grammar`) ===
+syn keyword culFunction    fn
+syn keyword culClass       class trait
+syn keyword culConditional if else match
+syn keyword culRepeat      while for in
+syn keyword culStatement   return break continue throw try catch defer
+syn keyword culInclude     import export from
+syn keyword culDebugger    debugger
+syn keyword culBoolean     true false
+syn keyword culConstant    nil
+syn keyword culStorage     let mut static
+" === END AUTO-KEYWORDS ===
+
+" Conventional identifiers that aren't grammar keywords.
 syn keyword culSelf         self this __ARGS__
-syn keyword culStorage      let mut static
 
 " Capitalized identifiers — built-in types (Long/Float/String/Bool/...),
 " stdlib namespaces (Math/IO/Random), user class names.
