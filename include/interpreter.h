@@ -373,6 +373,10 @@ inline void collect_locals(
 
   if (node.tag == "ASSIGNMENT"_) {
     auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+    if (!culebra::extract_type_annotation(
+            node, node.nodes.size() - 3).empty()) {
+      lvalcnt--;
+    }
     auto op_tok = node.nodes[node.nodes.size() - 2]->token;
     bool compound = op_tok != "=";
     if (lvalcnt == 1 && !compound) {
