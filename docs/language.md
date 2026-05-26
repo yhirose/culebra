@@ -2162,6 +2162,20 @@ Use `.to_string()` when you need an owning `String` (storing in a
 data structure, returning from a long-lived function, etc.). Most
 APIs declared with `StringLike` accept either flavor directly.
 
+**Known limitations** (cycle B):
+- Object keys: a `StringView` and a `String` with identical bytes are
+  separate keys. Call `.to_string()` on the view before using it as a
+  key. Cross-flavor `==` and hashing still treat the bytes as equal,
+  but storage routing splits them.
+- JIT `s.iter()` yields `Long` codepoints (interp yields `StringView`).
+  For backend-uniform behavior prefer `s.code_points()` (always
+  `Long`) or `for c in s` (native loop, byte-uniform).
+- In long-running JIT programs, calling `.contains()` / `.starts_with()`
+  / `.ends_with()` etc. on a `StringView` materializes a cstr copy
+  that lives until process exit (existing culebra string-leak model).
+  Materialize the view once with `.to_string()` if hot-looping over a
+  large sequence of views.
+
 ```culebra
 puts('hello'.size())              # 5
 puts('HeLLo'.lower())             # 'hello'

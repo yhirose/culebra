@@ -2802,12 +2802,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
-  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-    const char* key_cstr =
-        (key_tag == TAG_STRING)
-            ? reinterpret_cast<const char*>(key_data)
-            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
-    culebra_runtime_object_set(obj, key_cstr, mut, val_tag, val_data, 0, 0);
+  if (key_tag == TAG_STRING) {
+    culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
+                               mut, val_tag, val_data, 0, 0);
     return;
   }
   if (!obj->non_string_props) {
@@ -2852,14 +2849,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
-  // String / StringView keys: unified with shape access. StringView
-  // materialized to a null-terminated cstr (leak-bounded).
-  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-    const char* key_cstr =
-        (key_tag == TAG_STRING)
-            ? reinterpret_cast<const char*>(key_data)
-            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
-    auto idx = obj->find_slot(key_cstr);
+  // String keys: unified with shape access (see object_set_any).
+  if (key_tag == TAG_STRING) {
+    auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
     if (idx == static_cast<size_t>(-1)) {
       throw culebra::CulebraError("KeyError", "key not present");
     }
@@ -2886,13 +2878,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
     JitObject* obj, int8_t key_tag, int64_t key_data) {
-  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-    const char* key_cstr =
-        (key_tag == TAG_STRING)
-            ? reinterpret_cast<const char*>(key_data)
-            : _culebra_heap_str(_culebra_str_view(key_tag, key_data));
-    return obj->find_slot(key_cstr) != static_cast<size_t>(-1) ? 1 : 0;
-  }
   if (!obj->non_string_props) return 0;
   return obj->non_string_props->contains({key_tag, key_data}) ? 1 : 0;
 }
@@ -3100,10 +3085,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
 // a borrowed cstring (non-refcounted) and needs no release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
-  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
-    const char* cstr = (tag == TAG_STRING)
-                           ? reinterpret_cast<const char*>(data)
-                           : _culebra_heap_str(_culebra_str_view(tag, data));
+  if (tag == TAG_STRING) {
+    auto* cstr = reinterpret_cast<const char*>(data);
     return _find_property(obj, cstr) != nullptr;
   }
   bool result = obj->non_string_props
@@ -4744,40 +4727,6 @@ inline void _iter_code_points_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = static_cast<int64_t>(cp);
 }
 
-// Iter step yielding TAG_STRINGVIEW per UTF-8 scalar. Invalid /
-// truncated bytes yield as a 1-byte view (matches interp's iter).
-inline void _iter_str_view_fast_fn(JitClosure* cls, JitValue, bool* done,
-                                   int8_t* out_tag, int64_t* out_data) {
-  auto buf_cell = cls->captures[0];
-  auto off_cell = cls->captures[1];
-  auto len_cell = cls->captures[2];
-  const char* s = reinterpret_cast<const char*>(buf_cell->value.data);
-  int64_t off = off_cell->value.data;
-  int64_t len = len_cell->value.data;
-  if (off >= len) {
-    *done = true;
-    return;
-  }
-  size_t bytes = peg::codepoint_length(s + off, static_cast<size_t>(len - off));
-  if (bytes == 0) bytes = 1;
-  *done = false;
-  *out_tag = TAG_STRINGVIEW;
-  *out_data = reinterpret_cast<int64_t>(_culebra_heap_view(s + off, bytes));
-  off_cell->value.data = off + static_cast<int64_t>(bytes);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
-culebra_runtime_strlike_iter_view(int8_t tag, int64_t data) {
-  auto sv = _culebra_str_view(tag, data);
-  auto* buf_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(sv.data()));
-  auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* len_cell = culebra_runtime_cell_new(
-      TAG_LONG, static_cast<int64_t>(sv.size()));
-  return _iter_wrap_fast<&_iter_str_view_fast_fn>(
-      {buf_cell, off_cell, len_cell});
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
     const char* s) {
   // Strings are not refcounted in JIT; the pointer stays valid as long
@@ -5328,26 +5277,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
   return r;
 }
 
-// StringLike byte-only ops. Both inputs via _culebra_str_view (no alloc).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_strlike_contains(
-    int8_t s_tag, int64_t s_data, int8_t sub_tag, int64_t sub_data) {
-  return _culebra_str_view(s_tag, s_data).find(
-      _culebra_str_view(sub_tag, sub_data)) != std::string_view::npos;
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_contains(
+    const char* s, const char* sub) {
+  return std::strstr(s, sub) != nullptr;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_strlike_starts_with(
-    int8_t s_tag, int64_t s_data, int8_t pre_tag, int64_t pre_data) {
-  auto s = _culebra_str_view(s_tag, s_data);
-  auto p = _culebra_str_view(pre_tag, pre_data);
-  return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_starts_with(
+    const char* s, const char* prefix) {
+  auto lp = std::strlen(prefix);
+  return std::strncmp(s, prefix, lp) == 0;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_strlike_ends_with(
-    int8_t s_tag, int64_t s_data, int8_t suf_tag, int64_t suf_data) {
-  auto s = _culebra_str_view(s_tag, s_data);
-  auto x = _culebra_str_view(suf_tag, suf_data);
-  return s.size() >= x.size() &&
-         s.compare(s.size() - x.size(), x.size(), x) == 0;
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_ends_with(
+    const char* s, const char* suffix) {
+  auto ls = std::strlen(s);
+  auto lsuf = std::strlen(suffix);
+  if (lsuf > ls) return false;
+  return std::strncmp(s + (ls - lsuf), suffix, lsuf) == 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_slice(
@@ -5964,7 +5910,6 @@ inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";
 inline constexpr auto str_graphemes        = "culebra_runtime_str_graphemes";
-inline constexpr auto strlike_iter_view    = "culebra_runtime_strlike_iter_view";
 inline constexpr auto array_iter           = "culebra_runtime_array_iter";
 inline constexpr auto object_iter          = "culebra_runtime_object_iter";
 inline constexpr auto read_file           = "culebra_runtime_read_file";
@@ -5981,9 +5926,9 @@ inline constexpr auto str_split           = "culebra_runtime_str_split";
 inline constexpr auto strlike_view        = "culebra_runtime_strlike_view";
 inline constexpr auto strlike_slice_view  = "culebra_runtime_strlike_slice_view";
 inline constexpr auto strlike_to_cstr     = "culebra_runtime_strlike_to_cstr";
-inline constexpr auto strlike_contains    = "culebra_runtime_strlike_contains";
-inline constexpr auto strlike_starts_with = "culebra_runtime_strlike_starts_with";
-inline constexpr auto strlike_ends_with   = "culebra_runtime_strlike_ends_with";
+inline constexpr auto str_contains        = "culebra_runtime_str_contains";
+inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
+inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
 inline constexpr auto str_trim            = "culebra_runtime_str_trim";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
 inline constexpr auto throw_              = "culebra_runtime_throw";
@@ -8654,18 +8599,12 @@ struct JIT {
     module_->getOrInsertFunction(rt::strlike_to_cstr, ptrTy,
                                  builder_.getInt8Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::strlike_contains,
-                                 builder_.getInt1Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::strlike_starts_with,
-                                 builder_.getInt1Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::strlike_ends_with,
-                                 builder_.getInt1Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
-                                 builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::str_contains,
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_starts_with,
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_ends_with,
+                                 builder_.getInt1Ty(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_pop,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_slice2, ptrTy, ptrTy,
@@ -12955,25 +12894,6 @@ struct JIT {
                                    llvm::PointerType::get(ctx_, 0));
   }
 
-  // Type-only check: ensure `val` is String or StringView; no
-  // materialization. For ops that read bytes via _culebra_str_view.
-  void emit_strlike_check(llvm::Value* val, const char* bb_prefix) {
-    auto tag = extract_tag(val);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto okBB = llvm::BasicBlock::Create(
-        ctx_, std::string(bb_prefix) + ".sl.ok", fn);
-    auto errBB = llvm::BasicBlock::Create(
-        ctx_, std::string(bb_prefix) + ".sl.err", fn);
-    auto isStr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING));
-    auto isView = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW));
-    auto cond = builder_.CreateOr(isStr, isView);
-    builder_.CreateCondBr(cond, okBB, errBB);
-    builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("String", tag);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(okBB);
-  }
-
   // Coerce a String/StringView receiver to a null-terminated cstr.
   // StringView is materialized via strlike_to_cstr (leak-bounded).
   llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix) {
@@ -15224,12 +15144,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
+    auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                            {tag, extract_data(receiver)});
     auto sub = compile(*argsAst.nodes[0]);
-    emit_strlike_check(sub, "ct.sub");
+    auto subPtr = coerce_strlike_cstr(sub, "ct.sub");
     auto strFound = emit_call(
-        module_->getFunction(rt::strlike_contains),
-        {tag, extract_data(receiver),
-         extract_tag(sub), extract_data(sub)});
+        module_->getFunction(rt::str_contains),
+        {strPtr, subPtr});
     emit_value_release(sub);
     auto strBoolVal = make_bool(strFound);
     auto strEnd = builder_.GetInsertBlock();
@@ -15341,25 +15262,23 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
-    emit_strlike_check(receiver, "sw");
+    auto strPtr = coerce_strlike_cstr(receiver, "sw");
     auto p = compile(*argsAst.nodes[0]);
-    emit_strlike_check(p, "sw.pre");
+    auto pPtr = coerce_strlike_cstr(p, "sw.pre");
     auto r = emit_call(
-        module_->getFunction(rt::strlike_starts_with),
-        {extract_tag(receiver), extract_data(receiver),
-         extract_tag(p), extract_data(p)});
+        module_->getFunction(rt::str_starts_with),
+        {strPtr, pPtr});
     emit_value_release(p);
     return make_bool(r);
   }
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
-    emit_strlike_check(receiver, "ew");
+    auto strPtr = coerce_strlike_cstr(receiver, "ew");
     auto p = compile(*argsAst.nodes[0]);
-    emit_strlike_check(p, "ew.suf");
+    auto pPtr = coerce_strlike_cstr(p, "ew.suf");
     auto r = emit_call(
-        module_->getFunction(rt::strlike_ends_with),
-        {extract_tag(receiver), extract_data(receiver),
-         extract_tag(p), extract_data(p)});
+        module_->getFunction(rt::str_ends_with),
+        {strPtr, pPtr});
     emit_value_release(p);
     return make_bool(r);
   }
@@ -15931,13 +15850,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
-    // String/StringView.iter() yields TAG_STRINGVIEW per UTF-8 scalar
-    // (matches interp). For Long codepoints, use .code_points().
-    auto strIter = emit_call(
-        module_->getOrInsertFunction(rt::strlike_iter_view, ptrTy,
-                                     builder_.getInt8Ty(),
-                                     builder_.getInt64Ty()),
-        {t, d});
+    // String/StringView.iter() reuses code_points (Long yield) for
+    // now; for-in goes through compile_for_string_loop, so this path
+    // is only hit by explicit .iter() calls. Documented in §17.1.
+    auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
+                            {t, d});
+    auto strIter = emit_call(module_->getFunction(rt::str_code_points),
+                             {strPtr});
     auto strVal = make_object(strIter);
     auto strEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);

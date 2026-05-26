@@ -1593,24 +1593,25 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
 // slot; every other hashable key (Long/Float/Bool/Nil/Tuple) goes to
 // the sidecar.
 inline bool ObjectValue::has(const Value& key) const {
-  if (key.type == Value::String || key.type == Value::StringView) {
-    return properties->contains(key.to_string_view());
+  if (key.type == Value::String) {
+    return properties->contains(
+        std::string_view(key.template get<std::string>()));
   }
   if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
 }
 
 inline const Value& ObjectValue::get(const Value& key) const {
-  if (key.type == Value::String || key.type == Value::StringView) {
-    return properties->at(std::string(key.to_string_view())).val;
+  if (key.type == Value::String) {
+    return properties->at(key.template get<std::string>()).val;
   }
   return non_string_props->at(key).val;
 }
 
 inline void ObjectValue::initialize(const Value& key, const Value& val,
                                     bool mut) {
-  if (key.type == Value::String || key.type == Value::StringView) {
-    initialize(key.to_string_view(), val, mut);
+  if (key.type == Value::String) {
+    initialize(std::string_view(key.template get<std::string>()), val, mut);
     return;
   }
   auto [it, inserted] =
@@ -1623,8 +1624,8 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
 }
 
 inline void ObjectValue::assign(const Value& key, const Value& val) {
-  if (key.type == Value::String || key.type == Value::StringView) {
-    assign(key.to_string_view(), val);
+  if (key.type == Value::String) {
+    assign(std::string_view(key.template get<std::string>()), val);
     return;
   }
   auto it = non_string_props->find(key);
