@@ -115,6 +115,19 @@ test BACKEND='all': build
             *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
             *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
         esac
+        # The runner must catch a raw user `throw {...}` from inside a
+        # test body and surface it as a structured test_fail (kind and
+        # message lifted from the thrown Object). Exit code is non-zero
+        # because the test fails by design — what matters is that the
+        # runner itself doesn't crash.
+        local throw_out
+        throw_out=$(./build/culebra test --reporter json \
+            tests/culebra_test_throw_self/ 2>&1) || true
+        case "$throw_out" in
+            *'"event":"test_fail"'*'"kind":"RawThrowKind"'*'"event":"run_end"'*) ;;
+            *) echo "runner did not catch raw user throw:" >&2;
+               echo "$throw_out" >&2; exit 1 ;;
+        esac
     }
 
     case "{{BACKEND}}" in

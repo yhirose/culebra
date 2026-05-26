@@ -217,31 +217,32 @@ fn di_memoization(db, bumped) {
 
 # --- assert_gt / assert_ge mirror operators on class instances ---
 
-class ByX {
-  new(x) { this.x = x }
-  __lt__(o) { this.x < o.x }
-  __eq__(o) { this.x == o.x }
+# Non-strict comparator: __lt__ and __eq__ both always return false
+# (mimics NaN-like behaviour). Under operand-swap, `assert_gt(a, b)`
+# would query `b.__lt__(a)` = false → fail. The correct semantics
+# (mirroring compare_values) is `!(a.__lt__(b) || a.__eq__(b))` =
+# `!(false || false)` = true → pass. This test fails on the old
+# operand-swap implementation and passes on the fix.
+class NaNLike {
+  new() {}
+  __lt__(o) { false }
+  __eq__(o) { false }
 }
 
 @test
 fn assert_gt_uses_le_negation_not_operand_swap() {
-  # ByX defines __lt__/__eq__ on LHS only. With operand swap, assert_gt(a,b)
-  # would query b.__lt__(a) and produce a different result when a > b but
-  # b.__lt__(a) returns wrong via NaN-like asymmetry. Here we just verify
-  # ordering parity with the operator.
-  let a = ByX.new(5)
-  let b = ByX.new(3)
-  assert_gt(a, b)
-  assert(a > b)
+  let a = NaNLike.new()
+  let b = NaNLike.new()
+  assert_gt(a, b)                       # passes only with the fix
+  assert(a > b)                         # operator agrees
 }
 
 @test
-fn assert_ge_handles_equal_via_negated_lt() {
-  let a = ByX.new(5)
-  let b = ByX.new(5)
-  assert_ge(a, b)                       # a >= b ↔ !(a < b)
-  let r = try { assert_gt(a, b); nil } catch e { e }
-  assert(r.kind == "AssertionError")    # a > b is false when equal
+fn assert_ge_uses_lt_negation() {
+  let a = NaNLike.new()
+  let b = NaNLike.new()
+  assert_ge(a, b)                       # !(a.__lt__(b)) = !false = true
+  assert(a >= b)                        # operator agrees
 }
 
 # --- assert_close rejects NaN tolerance ---
@@ -253,14 +254,12 @@ fn assert_close_rejects_nan_tol() {
   assert(r.kind == "AssertionError")
 }
 
-# --- Raw user `throw <Value>` is caught by the runner and reported ---
-
-@test
-fn user_throw_object_caught_with_kind() {
-  let r = try { throw { kind: "MyError", message: "boom" } ; nil } catch e { e }
-  assert(r.kind == "MyError")
-  assert(r.message == "boom")
-}
+# Raw user `throw <Value>` escaping a test body is caught by the
+# runner's `catch (const Value&)` arm. Exercising that path from a
+# @test fn means letting the throw escape, which makes the test fail
+# by design — verified at the just-test shell level instead (a
+# dedicated file under tests/culebra_test_throw_self/ produces a
+# test_fail event with kind from the thrown payload).
 
 # Class `drop` fires when the per-test fixture cache releases its
 # ref at test end. Observed via a counter that holds no ref back.

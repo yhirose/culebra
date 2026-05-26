@@ -70,6 +70,19 @@ inline int stdlib_preamble_line_count() {
   return n;
 }
 
+// Convert a runtime error line (raw, computed against the prepended
+// buffer) to a user-file line. Only the entry module gets the preamble
+// prepended (module_loader.h), so imported-module lines pass through.
+// The raw <= preamble case can't be disambiguated from "imported file"
+// without a source path on the error — we treat it as the latter; the
+// snippet renderer separately checks `raw > preamble` before pulling
+// from the entry source.
+inline int to_user_line(long raw) {
+  if (raw <= 0) return 0;
+  int p = stdlib_preamble_line_count();
+  return raw > p ? static_cast<int>(raw - p) : static_cast<int>(raw);
+}
+
 // Snippet of `source` around `line` (1-based, in user-file coordinates)
 // with `context` lines on either side. Returns "" if line is out of range.
 inline std::string source_snippet(const std::string& source, int line,
@@ -153,10 +166,21 @@ inline Value resolve_fixture_impl(
 // Invoke `receiver.<name>(rhs?)` if the method exists, mirroring how
 // eval_condition dispatches `__eq__`/`__lt__`/`__le__`. Used by the
 // six comparison matchers below so their semantics match `==`/`<` etc.
-// Invoke `receiver.name(rhs?)` via the full dispatch path so default
-// args, type annotations, and multifn `__KWARGS__` unmarshaling all
-// apply — same machinery as the `==`/`<` operators. Returns nullopt
-// when receiver is non-Object or the method is absent.
+// Invoke `receiver.name(rhs?)` for matcher use. Wraps the method to
+// bind `this` and dispatches through the embedder `call(env, slot, args)`
+// helper. Returns nullopt when the receiver is non-Object or the method
+// is absent.
+//
+// Limitations vs the `==`/`<` operator path (which goes through
+// `invoke_user_function_with_args`):
+//   - Parameter / return type annotations are NOT enforced (call()
+//     doesn't run check_type).
+//   - AST default-expression defaults (`fn __eq__(o = expr)`) are not
+//     evaluated — call() only honors `default_value` for kw-only params.
+//   - Multifn `__KWARGS__` dispatchers receive rhs in positional[0],
+//     which the dispatcher may not recognize.
+// For typical `__eq__(o) { ... }` / `__lt__(o) { ... }` this path is
+// equivalent to the operator path.
 inline std::optional<Value> dispatch_special_method(
     std::shared_ptr<Environment> env,
     const Value& receiver, std::string_view name, const Value* rhs) {
@@ -608,7 +632,11 @@ inline TestRunSummary run_tests(
   auto emit_file_error = [&](const std::string& path_str,
                               const std::string& kind,
                               const std::string& message,
-                              long line = 0, long col = 0) {
+                              long raw_line = 0, long col = 0) {
+    // raw_line is in entry-buffer coordinates (preamble-included).
+    // Reduce to user-file coordinates so the JSON line value points
+    // into the actual file the user wrote.
+    long line = to_user_line(raw_line);
     if (reporter == Reporter::Json) {
       std::cout << R"({"event":"file_error","source":)"
                 << json_escape(path_str)
@@ -799,17 +827,6 @@ inline TestRunSummary run_tests(
     }
 
     auto captured = capture.take();
-
-    // Heuristic for converting a runtime `line` to a user-file line:
-    // only the entry module gets the stdlib preamble prepended, so
-    // an error whose line falls within the preamble range is most
-    // likely from an imported module and the raw value is already
-    // correct. Above the preamble, subtract.
-    auto to_user_line = [&](long raw) -> int {
-      if (raw <= 0) return 0;
-      int p = stdlib_preamble_line_count();
-      return raw > p ? static_cast<int>(raw - p) : static_cast<int>(raw);
-    };
 
     if (outcome == Outcome::Pass) {
       summary.passed++;
