@@ -5328,28 +5328,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
   return r;
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_contains(
-    const char* s, const char* sub) {
-  return std::strstr(s, sub) != nullptr;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_starts_with(
-    const char* s, const char* prefix) {
-  auto lp = std::strlen(prefix);
-  return std::strncmp(s, prefix, lp) == 0;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_ends_with(
-    const char* s, const char* suffix) {
-  auto ls = std::strlen(s);
-  auto lsuf = std::strlen(suffix);
-  if (lsuf > ls) return false;
-  return std::strncmp(s + (ls - lsuf), suffix, lsuf) == 0;
-}
-
-// StringLike-accepting variants for byte-only ops. Avoid the
-// strlike_to_cstr leak path: both inputs are read via _culebra_str_view
-// (no allocation).
+// StringLike byte-only ops. Both inputs via _culebra_str_view (no alloc).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_strlike_contains(
     int8_t s_tag, int64_t s_data, int8_t sub_tag, int64_t sub_data) {
   return _culebra_str_view(s_tag, s_data).find(
@@ -5992,8 +5971,6 @@ inline constexpr auto read_file           = "culebra_runtime_read_file";
 inline constexpr auto rethrow             = "culebra_runtime_rethrow";
 inline constexpr auto str_cmp             = "culebra_runtime_str_cmp";
 inline constexpr auto str_concat          = "culebra_runtime_str_concat";
-inline constexpr auto str_contains        = "culebra_runtime_str_contains";
-inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
 inline constexpr auto str_eq              = "culebra_runtime_str_eq";
 inline constexpr auto str_lower           = "culebra_runtime_str_lower";
 inline constexpr auto str_scalar_at       = "culebra_runtime_str_scalar_at";
@@ -6004,7 +5981,6 @@ inline constexpr auto str_split           = "culebra_runtime_str_split";
 inline constexpr auto strlike_view        = "culebra_runtime_strlike_view";
 inline constexpr auto strlike_slice_view  = "culebra_runtime_strlike_slice_view";
 inline constexpr auto strlike_to_cstr     = "culebra_runtime_strlike_to_cstr";
-inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
 inline constexpr auto strlike_contains    = "culebra_runtime_strlike_contains";
 inline constexpr auto strlike_starts_with = "culebra_runtime_strlike_starts_with";
 inline constexpr auto strlike_ends_with   = "culebra_runtime_strlike_ends_with";
@@ -8665,12 +8641,6 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_trim, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy,
                                  ptrTy);
-    module_->getOrInsertFunction(rt::str_contains,
-                                 builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction(rt::str_starts_with,
-                                 builder_.getInt1Ty(), ptrTy, ptrTy);
-    module_->getOrInsertFunction(rt::str_ends_with,
-                                 builder_.getInt1Ty(), ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
                                  builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::strlike_view, ptrTy,
@@ -8684,15 +8654,18 @@ struct JIT {
     module_->getOrInsertFunction(rt::strlike_to_cstr, ptrTy,
                                  builder_.getInt8Ty(),
                                  builder_.getInt64Ty());
-    auto i8Ty_ = builder_.getInt8Ty();
-    auto i64Ty_ = builder_.getInt64Ty();
-    auto i1Ty_ = builder_.getInt1Ty();
-    module_->getOrInsertFunction(rt::strlike_contains, i1Ty_,
-                                 i8Ty_, i64Ty_, i8Ty_, i64Ty_);
-    module_->getOrInsertFunction(rt::strlike_starts_with, i1Ty_,
-                                 i8Ty_, i64Ty_, i8Ty_, i64Ty_);
-    module_->getOrInsertFunction(rt::strlike_ends_with, i1Ty_,
-                                 i8Ty_, i64Ty_, i8Ty_, i64Ty_);
+    module_->getOrInsertFunction(rt::strlike_contains,
+                                 builder_.getInt1Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::strlike_starts_with,
+                                 builder_.getInt1Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::strlike_ends_with,
+                                 builder_.getInt1Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::array_pop,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_slice2, ptrTy, ptrTy,
