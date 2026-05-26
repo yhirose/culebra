@@ -1677,6 +1677,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     if (tag != TAG_OBJECT || class_tag_view.empty()) return false;
     std::string class_name(class_tag_view);
     std::string trait_name(expected);
+    std::unique_lock lock(culebra::trait_mutex());
     auto& by_trait = culebra::trait_conformance_cache()[class_name];
     auto it = by_trait.find(trait_name);
     if (it != by_trait.end()) return it->second;
@@ -3340,6 +3341,7 @@ culebra_runtime_register_trait_method(const char* trait_name,
                                        const char* method_name,
                                        int64_t arity,
                                        int8_t has_default) {
+  std::unique_lock lock(culebra::trait_mutex());
   auto& reg = culebra::trait_registry();
   std::string name(trait_name);
   auto& def = reg[name];
@@ -3615,12 +3617,10 @@ inline MultifnPick _jit_multifn_resolve(
   // Pre-populate trait conformance cache so multifn_specificity can
   // score `fn show(x: Stringer)` style trait params without holding
   // the arg instances. Mirrors interp's pick_method warm-up.
-  if (!culebra::trait_registry().empty()) {
-    for (const auto& [trait_name, _trait] : culebra::trait_registry()) {
-      for (size_t i = 0; i < arg_types.size(); i++) {
-        (void)_culebra_type_matches_single(positional[i].tag,
-                                            positional[i].data, trait_name);
-      }
+  for (const auto& trait_name : culebra::snapshot_trait_names()) {
+    for (size_t i = 0; i < arg_types.size(); i++) {
+      (void)_culebra_type_matches_single(positional[i].tag,
+                                          positional[i].data, trait_name);
     }
   }
   auto pick = _jit_multifn_pick(m_it->second, arg_types);
@@ -8019,7 +8019,7 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+      auto lvalcnt = culebra::assignment_lvalcnt(node);
       auto op_tok = node.nodes[node.nodes.size() - 2]->token;
       bool compound = op_tok != "=";
       if (lvalcnt == 1 && !compound) {
@@ -8207,6 +8207,11 @@ struct JIT {
       }
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
+        auto mv = culebra::view_method(method);
+        if (mv.is_field) {
+          visit_for_frees(*mv.value, my_locals, outer, info);
+          continue;
+        }
         outer.push_back(&my_locals);
         auto method_info = analyze_method(method, outer);
         outer.pop_back();
@@ -8284,16 +8289,19 @@ struct JIT {
     }
 
     if (node.tag == "OBJECT_PROPERTY"_) {
-      // [MUTABLE, IDENTIFIER(key), EXPRESSION]
-      // Only visit the value; key is not a variable reference.
+      // Long form `{k: v}` -> [MUTABLE, IDENTIFIER(key), EXPRESSION].
+      // Shorthand `{x}`    -> [MUTABLE, IDENTIFIER]; the identifier is
+      // both the key and the value reference.
       if (node.nodes.size() == 3) {
         visit_for_frees(*node.nodes[2], my_locals, outer, info);
+      } else {
+        visit_for_frees(*node.nodes[1], my_locals, outer, info);
       }
       return;
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+      auto lvalcnt = culebra::assignment_lvalcnt(node);
       auto op_tok = node.nodes[node.nodes.size() - 2]->token;
       bool compound = op_tok != "=";
       if (lvalcnt == 1) {
@@ -8417,9 +8425,8 @@ struct JIT {
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
       std::vector<const std::set<std::string>*>& outer) {
-    // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    return analyze_fn_common(&methodAst, *methodAst.nodes[2],
-                             *methodAst.nodes[3], outer);
+    auto mv = culebra::view_method(methodAst);
+    return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer);
   }
 
   // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] [TRAIT_BODY]].
@@ -11493,32 +11500,32 @@ struct JIT {
       class_type_params_ = culebra::split_generic_args(class_head.args);
     }
 
-    // Reject CLASS_DECL directly inside this class's body — see helper
-    // doc for the rule. Mirrors the interp check in eval_class_decl.
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      if (m.nodes.size() >= 4) {
-        culebra::reject_class_decl_in_class_body(*m.nodes[3], class_name);
-      }
+      auto mv = culebra::view_method(*ast.nodes[i]);
+      culebra::reject_class_decl_in_class_body(
+          mv.is_field ? *mv.value : **mv.body, class_name);
     }
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    // Instance methods live in the per-class meta object (shared
-    // prototype). Static methods are installed directly on the class
-    // namespace object so `Name.method(...)` resolves via standard
-    // property access. Same split as eval_class_decl (interp).
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
     std::vector<std::string> static_names;
     std::vector<const peg::Ast*> static_asts;
+    std::vector<std::string> static_field_names;
+    std::vector<const peg::Ast*> static_field_asts;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      bool is_static = m.nodes[0]->token == "static";
-      auto name = std::string(m.nodes[1]->token);
-      if (!is_static && name == "new") {
+      auto mv = culebra::view_method(m);
+      if (mv.is_field) {
+        culebra::require_static_field(mv, class_name);
+        static_field_names.push_back(std::string(mv.name));
+        static_field_asts.push_back(&m);
+        continue;
+      }
+      auto name = std::string(mv.name);
+      if (!mv.is_static && mv.name == "new") {
         new_ast = &m;
-      } else if (is_static) {
+      } else if (mv.is_static) {
         static_names.push_back(std::move(name));
         static_asts.push_back(&m);
       } else {
@@ -11562,16 +11569,19 @@ struct JIT {
     size_t new_arity = 0;
     if (new_ast) {
       body_val = compile_function(*new_ast);
-      // PARAMETERS lives at nodes[2] in the new METHOD layout.
-      new_arity = new_ast->nodes[2]->nodes.size();
+      new_arity = culebra::view_method(*new_ast).params->nodes.size();
     }
 
-    // Static methods compile like regular FUNCTION closures and get
-    // installed on the class namespace below.
     std::vector<llvm::Value*> static_vals;
     static_vals.reserve(static_asts.size());
     for (auto* m : static_asts) {
       static_vals.push_back(compile_function(*m));
+    }
+
+    std::vector<llvm::Value*> static_field_vals;
+    static_field_vals.reserve(static_field_asts.size());
+    for (auto* m : static_field_asts) {
+      static_field_vals.push_back(compile(*m->nodes[2]));
     }
 
     // Build the shared class meta object once per class declaration:
@@ -11665,14 +11675,15 @@ struct JIT {
         "class.ns");
     emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
                     extract_data(ctorVal));
-    // Install static methods as immutable class-namespace properties.
-    // Each static_vals[i] carries +1; emit_object_set transfers that
-    // ownership into the namespace object (mut=false matches the `new`
-    // slot above and the interp registration via Symbol{val, false}).
     for (size_t i = 0; i < static_vals.size(); i++) {
       emit_object_set(classObj, static_names[i], /*mut=*/false,
                       extract_tag(static_vals[i]),
                       extract_data(static_vals[i]));
+    }
+    for (size_t i = 0; i < static_field_vals.size(); i++) {
+      emit_object_set(classObj, static_field_names[i], /*mut=*/false,
+                      extract_tag(static_field_vals[i]),
+                      extract_data(static_field_vals[i]));
     }
     auto classVal = make_object(classObj);
 
@@ -11939,10 +11950,10 @@ struct JIT {
     std::string_view returnType;
     std::string_view declName;
     if (ast.tag == "METHOD"_) {
-      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
-      declName = ast.nodes[1]->token;
-      params_ast = ast.nodes[2].get();
-      body_ast = ast.nodes[3];
+      auto mv = culebra::view_method(ast);
+      declName = mv.name;
+      params_ast = mv.params;
+      body_ast = *mv.body;
       returnType = {};
     } else {
       params_ast = ast.nodes[0].get();

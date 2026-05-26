@@ -894,6 +894,25 @@ Semantics:
   Static methods are not visible through instances (`c.circle(...)`
   raises `TypeError` because the instance has no `circle` property).
   This mirrors Java / C# / Kotlin / Crystal class-method semantics.
+* `static NAME = EXPRESSION` declares a class-level immutable constant
+  (a static field), evaluated eagerly at class declaration time and
+  installed as a property of the class object alongside static methods:
+
+      class Circle {
+        new (r)         { this.radius = r }
+        static PI       = 3.14
+        static MAX      = 100
+        area ()         { this.radius * this.radius * Circle.PI }
+      }
+      puts(Circle.PI)         # 3.14
+      puts(Circle.MAX)        # 100
+
+  The value expression can be arbitrary (`static SUM = [1,2,3].sum()`),
+  evaluated in the enclosing scope at class declaration time. Field
+  declarations require the `static` keyword — a bare `FOO = expr` in a
+  class body is a syntax error. Like static methods, static fields are
+  immutable (`Circle.PI = 2` raises `ImmutableError`) and not visible
+  through instances.
 * Both the interpreter and the JIT compile classes. Instance
   construction is a small runtime call — `new` itself is a regular
   JIT closure whose captures are the method closures plus the user's

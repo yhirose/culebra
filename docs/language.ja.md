@@ -856,6 +856,24 @@ UFCS は **DOT の直後に引数リストがある場合のみ**適用されま
   static メソッドはインスタンス経由では参照できません（`c.circle(...)`
   は instance に `circle` プロパティが無いため `TypeError` を投げる）。
   Java / C# / Kotlin / Crystal のクラスメソッド規則と同じです。
+* `static NAME = EXPRESSION` でクラスレベルの不変定数（static field）を
+  宣言できます。class 宣言時に eager に評価され、static メソッドと同じ
+  クラスオブジェクトのプロパティとして登録されます:
+
+      class Circle {
+        new (r)         { this.radius = r }
+        static PI       = 3.14
+        static MAX      = 100
+        area ()         { this.radius * this.radius * Circle.PI }
+      }
+      puts(Circle.PI)         # 3.14
+      puts(Circle.MAX)        # 100
+
+  値の式は任意（`static SUM = [1,2,3].sum()` 等）で、class 宣言時の
+  外側スコープで評価されます。field 宣言には `static` キーワードが必須
+  — class 本体内で `FOO = expr` のみは構文エラーです。static メソッドと
+  同じく、static field は immutable（`Circle.PI = 2` は `ImmutableError`
+  を投げる）かつインスタンス経由では参照できません。
 * インタプリタ・JIT の両方でクラス宣言をコンパイルします。
   インスタンス生成は軽いランタイム呼出: `new` 自体は通常の JIT
   closure で、captures にメソッド closure 群とユーザの `new` 本体

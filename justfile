@@ -23,6 +23,16 @@ build-no-jit:
 clean:
     rm -rf build
 
+# Regenerate misc/culebra.peg and misc/cul.vim AUTO-KEYWORDS from include/parser.h
+[group("build")]
+sync-grammar:
+    misc/sync_grammar.sh
+
+# Verify misc/culebra.peg and misc/cul.vim AUTO-KEYWORDS are in sync (CI gate)
+[group("build")]
+check-grammar-sync:
+    misc/sync_grammar.sh --check
+
 # Run the test suite. BACKEND selects what to run:
 #   all     (default) — interp vs JIT diff + AOT vs JIT diff + C++
 #                       embedding smoke. Run before every commit.

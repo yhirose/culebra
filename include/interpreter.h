@@ -156,12 +156,16 @@ inline int multifn_specificity(std::string_view param_type,
     if (is_primitive_type_label(arg_type)) {
       return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
     }
-    auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
-    auto it = by_trait.find(std::string(param_type));
-    if (it != by_trait.end()) return it->second ? 3 : -1;
-    // Cache miss: pessimistically -1 here; the actual conformance walk
-    // happens in type_matches with the instance in hand, populating
-    // the cache for subsequent dispatch lookups.
+    // Read-only path: `multifn_specificity` only reads the cache and
+    // returns -1 on miss. Use `.find()` (not `operator[]`) so a miss
+    // doesn't materialize an empty by_trait entry, and take a shared
+    // lock so dispatchers don't serialize on this hot path.
+    std::shared_lock lock(trait_mutex());
+    auto& cache = trait_conformance_cache();
+    auto outer = cache.find(std::string(arg_type));
+    if (outer == cache.end()) return -1;
+    auto it = outer->second.find(std::string(param_type));
+    if (it != outer->second.end()) return it->second ? 3 : -1;
     return -1;
   }
   return -1;
@@ -372,7 +376,7 @@ inline void collect_locals(
   }
 
   if (node.tag == "ASSIGNMENT"_) {
-    auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
+    auto lvalcnt = culebra::assignment_lvalcnt(node);
     auto op_tok = node.nodes[node.nodes.size() - 2]->token;
     bool compound = op_tok != "=";
     if (lvalcnt == 1 && !compound) {
@@ -485,8 +489,32 @@ inline void descend_into_nested(
   }
 
   if (node.tag == "CLASS_DECL"_) {
-    // [DECORATOR*, IDENTIFIER, METHOD ...] — each METHOD is
-    // [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
+    // [DECORATOR*, CLASS_HEAD, METHOD ...]. Each METHOD is viewed
+    // through `view_method` so size 3 (static field) and size 4
+    // (method) share the same handling.
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+      descend_into_nested(*node.nodes[i], my_locals, outer);
+      i++;
+    }
+    for (size_t j = i + 1; j < node.nodes.size(); j++) {
+      auto mv = culebra::view_method(*node.nodes[j]);
+      if (mv.is_field) {
+        descend_into_nested(*mv.value, my_locals, outer);
+        continue;
+      }
+      outer.push_back(&my_locals);
+      analyze_fn_body(*mv.params, **mv.body, outer);
+      outer.pop_back();
+    }
+    return;
+  }
+
+  if (node.tag == "TRAIT_DECL"_) {
+    // [DECORATOR*, CLASS_HEAD, TRAIT_METHOD ...] — each TRAIT_METHOD is
+    // [IDENTIFIER, PARAMETERS, RETURN_TYPE?, TRAIT_BODY?]. Default-body
+    // methods are nested fns whose body must pass the shadow check;
+    // signature-only methods have no body to analyze.
     size_t i = 0;
     while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
       descend_into_nested(*node.nodes[i], my_locals, outer);
@@ -494,8 +522,16 @@ inline void descend_into_nested(
     }
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
       const auto& method = *node.nodes[j];
+      const peg::Ast* body_ast = nullptr;
+      for (size_t k = 2; k < method.nodes.size(); k++) {
+        if (method.nodes[k]->tag == "TRAIT_BODY"_) {
+          body_ast = method.nodes[k]->nodes[0].get();
+          break;
+        }
+      }
+      if (!body_ast) continue;
       outer.push_back(&my_locals);
-      analyze_fn_body(*method.nodes[2], *method.nodes[3], outer);
+      analyze_fn_body(*method.nodes[1], *body_ast, outer);
       outer.pop_back();
     }
     return;
@@ -1742,6 +1778,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
         if (!tag) return false;  // no class tag → not eligible
         std::string class_name(*tag);
         std::string trait_name(name);
+        std::unique_lock lock(trait_mutex());
         auto& by_trait = trait_conformance_cache()[class_name];
         auto it = by_trait.find(trait_name);
         if (it != by_trait.end()) return it->second;
@@ -4316,14 +4353,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     // Pre-populate trait conformance cache so multifn_specificity can
     // resolve `fn show(x: Stringer)` style traits without holding the
-    // instance. Cheap on first dispatch (O(traits × args)), free on
-    // repeat thanks to the cache; trait_registry is process-wide so
-    // populated entries persist.
-    if (!trait_registry().empty()) {
-      for (const auto& [trait_name, _trait] : trait_registry()) {
-        for (const auto& arg : args) {
-          (void)type_matches(arg, trait_name);
-        }
+    // instance.
+    for (const auto& trait_name : snapshot_trait_names()) {
+      for (const auto& arg : args) {
+        (void)type_matches(arg, trait_name);
       }
     }
     auto r = multifn_pick(methods, arg_types,
@@ -4574,14 +4607,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     // Reject CLASS_DECL directly inside another class body — declares
     // must live at top level (or inside a fn / lambda / lexical scope
-    // within a method body, which are scope boundaries). Walks every
-    // METHOD body and the constructor.
+    // within a method body, which are scope boundaries).
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
-      if (m.nodes.size() >= 4) {
-        reject_class_decl_in_class_body(*m.nodes[3], class_name);
-      }
+      auto mv = culebra::view_method(*ast.nodes[i]);
+      reject_class_decl_in_class_body(mv.is_field ? *mv.value : **mv.body,
+                                       class_name);
     }
     // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
     // to "Any" — runtime check sees Any, introspection sees the rewritten
@@ -4607,32 +4637,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       neutralize_one(fn.return_type);
     };
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    // STATIC_MOD.token is "static" when present, empty otherwise.
-    // Instance methods (no `static`) populate the per-instance method
-    // template (copied into each new object via build_instance). Static
-    // methods are registered as plain properties of the class object
-    // itself — `Shape.create(...)` resolves them via the usual property
-    // access mechanism, providing class-as-namespace.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
+    std::vector<std::pair<std::string_view, Value>> static_field_template;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      bool is_static = m.nodes[0]->token == "static";
-      auto name_view = m.nodes[1]->token;
-      if (!is_static && name_view == "new") {
+      auto mv = culebra::view_method(m);
+      if (mv.is_field) {
+        culebra::require_static_field(mv, class_name);
+        Value val = eval(*mv.value, env);
+        static_field_template.push_back({mv.name, std::move(val)});
+        continue;
+      }
+      if (!mv.is_static && mv.name == "new") {
         new_ast = &m;
         continue;
       }
-      auto fn_val =
-          make_function_value(*m.nodes[2], m.nodes[3], {}, env);
-      fn_val.get<FunctionValue>().name = std::string(name_view);
+      auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
+      fn_val.get<FunctionValue>().name = std::string(mv.name);
       neutralize_type_params(fn_val.get<FunctionValue>());
-      if (is_static) {
-        static_template.push_back({name_view, std::move(fn_val)});
+      if (mv.is_static) {
+        static_template.push_back({mv.name, std::move(fn_val)});
       } else {
-        method_template.push_back({name_view, std::move(fn_val)});
+        method_template.push_back({mv.name, std::move(fn_val)});
       }
     }
 
@@ -4660,9 +4688,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     Value constructor;
     if (new_ast) {
-      // METHOD layout after grammar update: [STATIC_MOD, IDENTIFIER,
-      // PARAMETERS, BLOCK].
-      auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
+      auto ctor_view = culebra::view_method(*new_ast);
+      auto ctor_params = parse_parameters(*ctor_view.params, env);
       // Neutralize class type-params on the constructor signature.
       // Save the declared annotation first for introspection symmetry
       // with method params.
@@ -4670,7 +4697,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         p.declared_type_name = p.type_name;
         neutralize_one(p.type_name);
       }
-      auto body = new_ast->nodes[3];
+      auto body = *ctor_view.body;
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,
@@ -4717,12 +4744,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     ObjectValue class_obj;
     class_obj.properties->emplace("new", Symbol{constructor, false});
-    // Register static methods as class-level properties so call sites
-    // like `Shape.create(...)` resolve them through the usual Object
-    // property access. Stored as immutable bindings (mut=false) since
-    // they are class-level definitions, not user-mutable state.
     for (auto& [name, fn_val] : static_template) {
       class_obj.properties->emplace(name, Symbol{std::move(fn_val), false});
+    }
+    for (auto& [name, val] : static_field_template) {
+      class_obj.properties->emplace(name, Symbol{std::move(val), false});
     }
     Value class_val(std::move(class_obj));
 

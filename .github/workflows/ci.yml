@@ -53,6 +53,9 @@ jobs:
         run: |
           brew install llvm just
 
+      - name: Check grammar sync (misc/culebra.peg and misc/cul.vim)
+        run: just check-grammar-sync
+
       - name: Build (interpreter + JIT)
         run: just build
 

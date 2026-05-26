@@ -62,7 +62,7 @@ const auto grammar_ = R"(
   # never at statement-prefix position, so the two uses are
   # unambiguous.
   DECORATOR                <-  '@' _ CALL
-  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ PARAMETERS _ BLOCK
+  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
   STATIC_MOD               <-  K('static')?
 
   DEBUGGER                 <-  debugger
@@ -344,6 +344,60 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
     return node.nodes[index]->token;
   }
   return {};
+}
+
+// Number of lvalue children in an ASSIGNMENT node, accounting for the
+// optional TYPE_ANNOTATION sibling before ASSIGN_OP. Centralizing the
+// `size - 4` (and optional -1) formula keeps `collect_fn_locals` /
+// `visit_for_frees` / `_shadow::collect_locals` / `compile_assignment`
+// in sync — drift here is what previously broke `let x: T = ...`.
+inline int assignment_lvalcnt(const peg::Ast& node) {
+  int n = static_cast<int>(node.nodes.size()) - 4;
+  if (!extract_type_annotation(node, node.nodes.size() - 3).empty()) n--;
+  return n;
+}
+
+// View of a METHOD AST node — see grammar:
+//   METHOD <- STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
+// `is_field` distinguishes the two tails (size 3 vs 4). One central
+// accessor avoids walker drift when the rule changes again.
+struct MethodView {
+  bool is_static;
+  std::string_view name;
+  size_t name_line;
+  size_t name_col;
+  bool is_field;
+  const peg::Ast* params;                       // nullptr if field
+  const std::shared_ptr<peg::Ast>* body;        // nullptr if field
+  const peg::Ast* value;                        // nullptr if method
+};
+
+inline MethodView view_method(const peg::Ast& m) {
+  const auto& ident = *m.nodes[1];
+  bool is_field = m.nodes.size() == 3;
+  return MethodView{
+      m.nodes[0]->token == "static",
+      ident.token,
+      ident.line,
+      ident.column,
+      is_field,
+      is_field ? nullptr : m.nodes[2].get(),
+      is_field ? nullptr : &m.nodes[3],
+      is_field ? m.nodes[2].get() : nullptr,
+  };
+}
+
+// `static`-modifier check for the field form (size 3). Throws a single
+// canonical SyntaxError so interp and JIT diagnostics stay identical.
+inline void require_static_field(const MethodView& mv,
+                                 std::string_view class_name) {
+  if (mv.is_static) return;
+  throw CulebraError(
+      "SyntaxError",
+      std::format("field `{}` in class `{}` must be declared with `static`",
+                  mv.name, class_name),
+      static_cast<long>(mv.name_line),
+      static_cast<long>(mv.name_col));
 }
 
 inline bool is_kw_only_sep(const peg::Ast& node) {
