@@ -187,6 +187,24 @@ inline std::string_view trim_ascii(std::string_view s) {
   return s.substr(i, j - i);
 }
 
+// ASCII-only case fold. Range-checked so the result is locale-
+// independent — std::toupper/tolower consult the C locale and would
+// fold Latin-1 bytes too under e.g. en_US.UTF-8. Non-ASCII bytes
+// (>= 0x80) pass through unchanged, matching the "ASCII uppercase /
+// lowercase" contract in docs/language.md §17.1.
+inline std::string ascii_upper(std::string s) {
+  for (auto& c : s) {
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+  }
+  return s;
+}
+inline std::string ascii_lower(std::string s) {
+  for (auto& c : s) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return s;
+}
+
 // True iff `name` has a `|` at the outermost bracket depth (i.e. a
 // top-level Union alt separator). `Array<Long | Float>` returns
 // false — the `|` lives inside `<...>`. Callers gate the Union

@@ -5264,26 +5264,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_size(const char* s
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_upper(
     const char* s) {
-  auto n = std::strlen(s);
-  auto* buf = static_cast<char*>(std::malloc(n + 1));
-  for (size_t i = 0; i < n; i++) {
-    buf[i] =
-        static_cast<char>(std::toupper(static_cast<unsigned char>(s[i])));
-  }
-  buf[n] = '\0';
-  return buf;
+  return _culebra_heap_str(culebra::ascii_upper(std::string(s)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_lower(
     const char* s) {
-  auto n = std::strlen(s);
-  auto* buf = static_cast<char*>(std::malloc(n + 1));
-  for (size_t i = 0; i < n; i++) {
-    buf[i] =
-        static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
-  }
-  buf[n] = '\0';
-  return buf;
+  return _culebra_heap_str(culebra::ascii_lower(std::string(s)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(

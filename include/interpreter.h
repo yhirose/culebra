@@ -2910,21 +2910,13 @@ inline std::map<std::string_view, Value>& string_builtins() {
        }))},
       {"upper"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto s = callEnv->get("this").to_string();
-         for (auto& c : s) {
-           c = static_cast<char>(
-               std::toupper(static_cast<unsigned char>(c)));
-         }
-         return Value(std::move(s));
+         return Value(culebra::ascii_upper(
+             callEnv->get("this").to_string()));
        }))},
       {"lower"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         auto s = callEnv->get("this").to_string();
-         for (auto& c : s) {
-           c = static_cast<char>(
-               std::tolower(static_cast<unsigned char>(c)));
-         }
-         return Value(std::move(s));
+         return Value(culebra::ascii_lower(
+             callEnv->get("this").to_string()));
        }))},
       {"trim"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
