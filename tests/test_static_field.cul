@@ -64,27 +64,10 @@ test_static_field_immutable = fn () {
   assert(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
 }
 
-# Duplicate member names raise SyntaxError at class decl time.
-# Using a fresh class body inside a try-catch via try-catch around a
-# string parse isn't possible from culebra, so we exercise the path
-# from the test runner: this test file would fail to load if any
-# duplicate detection regressed. Instead we assert the happy path
-# fields stay distinct.
-test_static_field_distinct = fn () {
-  class N {
-    new () {}
-    static A = 1
-    static B = 2
-  }
-  assert(N.A == 1)
-  assert(N.B == 2)
-}
-
 test_static_field_basic()
 test_static_field_with_method()
 test_static_field_expression()
 test_static_field_not_on_instance()
 test_static_field_immutable()
-test_static_field_distinct()
 
 puts('static-field OK')

@@ -156,13 +156,16 @@ inline int multifn_specificity(std::string_view param_type,
     if (is_primitive_type_label(arg_type)) {
       return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
     }
-    std::unique_lock lock(trait_mutex());
-    auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
-    auto it = by_trait.find(std::string(param_type));
-    if (it != by_trait.end()) return it->second ? 3 : -1;
-    // Cache miss: pessimistically -1 here; the actual conformance walk
-    // happens in type_matches with the instance in hand, populating
-    // the cache for subsequent dispatch lookups.
+    // Read-only path: `multifn_specificity` only reads the cache and
+    // returns -1 on miss. Use `.find()` (not `operator[]`) so a miss
+    // doesn't materialize an empty by_trait entry, and take a shared
+    // lock so dispatchers don't serialize on this hot path.
+    std::shared_lock lock(trait_mutex());
+    auto& cache = trait_conformance_cache();
+    auto outer = cache.find(std::string(arg_type));
+    if (outer == cache.end()) return -1;
+    auto it = outer->second.find(std::string(param_type));
+    if (it != outer->second.end()) return it->second ? 3 : -1;
     return -1;
   }
   return -1;
@@ -373,11 +376,7 @@ inline void collect_locals(
   }
 
   if (node.tag == "ASSIGNMENT"_) {
-    auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
-    if (!culebra::extract_type_annotation(
-            node, node.nodes.size() - 3).empty()) {
-      lvalcnt--;
-    }
+    auto lvalcnt = culebra::assignment_lvalcnt(node);
     auto op_tok = node.nodes[node.nodes.size() - 2]->token;
     bool compound = op_tok != "=";
     if (lvalcnt == 1 && !compound) {
@@ -4354,17 +4353,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     // Pre-populate trait conformance cache so multifn_specificity can
     // resolve `fn show(x: Stringer)` style traits without holding the
-    // instance. Snapshot the trait-name list under a read lock so the
-    // iteration doesn't hold trait_mutex while type_matches re-acquires
-    // it (the inner write path would deadlock).
-    std::vector<std::string> trait_names;
-    {
-      std::shared_lock lock(trait_mutex());
-      auto& reg = trait_registry();
-      trait_names.reserve(reg.size());
-      for (const auto& [n, _] : reg) trait_names.push_back(n);
-    }
-    for (const auto& trait_name : trait_names) {
+    // instance.
+    for (const auto& trait_name : snapshot_trait_names()) {
       for (const auto& arg : args) {
         (void)type_matches(arg, trait_name);
       }
@@ -4655,14 +4645,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       if (mv.is_field) {
-        if (!mv.is_static) {
-          throw CulebraError(
-              "SyntaxError",
-              std::format("field `{}` in class `{}` must be declared with "
-                          "`static`", mv.name, class_name),
-              static_cast<long>(mv.name_line),
-              static_cast<long>(mv.name_col));
-        }
+        culebra::require_static_field(mv, class_name);
         Value val = eval(*mv.value, env);
         static_field_template.push_back({mv.name, std::move(val)});
         continue;

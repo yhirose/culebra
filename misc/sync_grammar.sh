@@ -3,7 +3,7 @@
 # include/parser.h. Run `misc/sync_grammar.sh` to overwrite both files;
 # `misc/sync_grammar.sh --check` exits non-zero if either is stale.
 
-set -uo pipefail
+set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
@@ -37,9 +37,10 @@ awk -F: '/^cul/{
 }' "$MAP" | sort -u > "$TMP_MAP_KW"
 UNMAPPED=$(comm -23 "$TMP_KW" "$TMP_MAP_KW")
 if [[ -n "$UNMAPPED" ]]; then
-  echo "WARNING: keywords without a category in $MAP:" >&2
+  echo "ERROR: keywords without a category in $MAP:" >&2
   echo "$UNMAPPED" | sed 's/^/  /' >&2
-  echo "  (add to the appropriate \`culCategory: ...\` line)" >&2
+  echo "  (add to the appropriate \`culCategory: ...\` line of $MAP)" >&2
+  exit 1
 fi
 
 # 4. Emit the AUTO-KEYWORDS block in the order categories appear in the map.

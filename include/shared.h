@@ -640,6 +640,22 @@ inline const TraitDef* lookup_trait(std::string_view name) {
   return it == reg.end() ? nullptr : &it->second;
 }
 
+// Snapshot every registered trait name under a read lock so the caller
+// can iterate the names without holding trait_mutex. Used by interp /
+// JIT multifn warm-up where the inner `type_matches` call re-acquires
+// the mutex for cache writes — holding it across the loop would
+// deadlock. Returns an empty vector with no allocation if the registry
+// is empty (= the common case for trait-free programs).
+inline std::vector<std::string> snapshot_trait_names() {
+  std::shared_lock lock(trait_mutex());
+  auto& reg = trait_registry();
+  if (reg.empty()) return {};
+  std::vector<std::string> names;
+  names.reserve(reg.size());
+  for (const auto& [n, _] : reg) names.push_back(n);
+  return names;
+}
+
 // Built-in conformance: hard-coded table of which primitive type
 // labels conform to which built-in traits. Lets `fn show(x: Stringer)`
 // accept Long / String / Array / ... without each builtin needing a

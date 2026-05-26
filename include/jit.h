@@ -3617,17 +3617,7 @@ inline MultifnPick _jit_multifn_resolve(
   // Pre-populate trait conformance cache so multifn_specificity can
   // score `fn show(x: Stringer)` style trait params without holding
   // the arg instances. Mirrors interp's pick_method warm-up.
-  // Snapshot the trait-name list under a read lock so the iteration
-  // doesn't hold trait_mutex while _culebra_type_matches_single
-  // re-acquires it (the inner write path would deadlock).
-  std::vector<std::string> trait_names;
-  {
-    std::shared_lock lock(culebra::trait_mutex());
-    auto& reg = culebra::trait_registry();
-    trait_names.reserve(reg.size());
-    for (const auto& [n, _] : reg) trait_names.push_back(n);
-  }
-  for (const auto& trait_name : trait_names) {
+  for (const auto& trait_name : culebra::snapshot_trait_names()) {
     for (size_t i = 0; i < arg_types.size(); i++) {
       (void)_culebra_type_matches_single(positional[i].tag,
                                           positional[i].data, trait_name);
@@ -8029,11 +8019,7 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
-      if (!culebra::extract_type_annotation(
-              node, node.nodes.size() - 3).empty()) {
-        lvalcnt--;
-      }
+      auto lvalcnt = culebra::assignment_lvalcnt(node);
       auto op_tok = node.nodes[node.nodes.size() - 2]->token;
       bool compound = op_tok != "=";
       if (lvalcnt == 1 && !compound) {
@@ -8315,11 +8301,7 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = static_cast<int>(node.nodes.size()) - 4;
-      if (!culebra::extract_type_annotation(
-              node, node.nodes.size() - 3).empty()) {
-        lvalcnt--;
-      }
+      auto lvalcnt = culebra::assignment_lvalcnt(node);
       auto op_tok = node.nodes[node.nodes.size() - 2]->token;
       bool compound = op_tok != "=";
       if (lvalcnt == 1) {
@@ -11535,14 +11517,7 @@ struct JIT {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       if (mv.is_field) {
-        if (!mv.is_static) {
-          throw culebra::CulebraError(
-              "SyntaxError",
-              std::format("field `{}` in class `{}` must be declared with "
-                          "`static`", mv.name, class_name),
-              static_cast<long>(mv.name_line),
-              static_cast<long>(mv.name_col));
-        }
+        culebra::require_static_field(mv, class_name);
         static_field_names.push_back(std::string(mv.name));
         static_field_asts.push_back(&m);
         continue;
