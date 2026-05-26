@@ -1677,6 +1677,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     if (tag != TAG_OBJECT || class_tag_view.empty()) return false;
     std::string class_name(class_tag_view);
     std::string trait_name(expected);
+    std::unique_lock lock(culebra::trait_mutex());
     auto& by_trait = culebra::trait_conformance_cache()[class_name];
     auto it = by_trait.find(trait_name);
     if (it != by_trait.end()) return it->second;
@@ -3340,6 +3341,7 @@ culebra_runtime_register_trait_method(const char* trait_name,
                                        const char* method_name,
                                        int64_t arity,
                                        int8_t has_default) {
+  std::unique_lock lock(culebra::trait_mutex());
   auto& reg = culebra::trait_registry();
   std::string name(trait_name);
   auto& def = reg[name];
@@ -3615,12 +3617,20 @@ inline MultifnPick _jit_multifn_resolve(
   // Pre-populate trait conformance cache so multifn_specificity can
   // score `fn show(x: Stringer)` style trait params without holding
   // the arg instances. Mirrors interp's pick_method warm-up.
-  if (!culebra::trait_registry().empty()) {
-    for (const auto& [trait_name, _trait] : culebra::trait_registry()) {
-      for (size_t i = 0; i < arg_types.size(); i++) {
-        (void)_culebra_type_matches_single(positional[i].tag,
-                                            positional[i].data, trait_name);
-      }
+  // Snapshot the trait-name list under a read lock so the iteration
+  // doesn't hold trait_mutex while _culebra_type_matches_single
+  // re-acquires it (the inner write path would deadlock).
+  std::vector<std::string> trait_names;
+  {
+    std::shared_lock lock(culebra::trait_mutex());
+    auto& reg = culebra::trait_registry();
+    trait_names.reserve(reg.size());
+    for (const auto& [n, _] : reg) trait_names.push_back(n);
+  }
+  for (const auto& trait_name : trait_names) {
+    for (size_t i = 0; i < arg_types.size(); i++) {
+      (void)_culebra_type_matches_single(positional[i].tag,
+                                          positional[i].data, trait_name);
     }
   }
   auto pick = _jit_multifn_pick(m_it->second, arg_types);
@@ -8434,7 +8444,7 @@ struct JIT {
       const peg::Ast& methodAst,
       std::vector<const std::set<std::string>*>& outer) {
     auto mv = culebra::view_method(methodAst);
-    return analyze_fn_common(&methodAst, *mv.params, *mv.body, outer);
+    return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer);
   }
 
   // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] [TRAIT_BODY]].
@@ -11511,7 +11521,7 @@ struct JIT {
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       auto mv = culebra::view_method(*ast.nodes[i]);
       culebra::reject_class_decl_in_class_body(
-          mv.is_field ? *mv.value : *mv.body, class_name);
+          mv.is_field ? *mv.value : **mv.body, class_name);
     }
 
     const peg::Ast* new_ast = nullptr;
@@ -11968,7 +11978,7 @@ struct JIT {
       auto mv = culebra::view_method(ast);
       declName = mv.name;
       params_ast = mv.params;
-      body_ast = mv.body;
+      body_ast = *mv.body;
       returnType = {};
     } else {
       params_ast = ast.nodes[0].get();

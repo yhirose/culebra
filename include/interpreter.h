@@ -156,6 +156,7 @@ inline int multifn_specificity(std::string_view param_type,
     if (is_primitive_type_label(arg_type)) {
       return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
     }
+    std::unique_lock lock(trait_mutex());
     auto& by_trait = trait_conformance_cache()[std::string(arg_type)];
     auto it = by_trait.find(std::string(param_type));
     if (it != by_trait.end()) return it->second ? 3 : -1;
@@ -504,7 +505,7 @@ inline void descend_into_nested(
         continue;
       }
       outer.push_back(&my_locals);
-      analyze_fn_body(*mv.params, *mv.body, outer);
+      analyze_fn_body(*mv.params, **mv.body, outer);
       outer.pop_back();
     }
     return;
@@ -1778,6 +1779,7 @@ inline bool type_matches(const Value& val, std::string_view name) {
         if (!tag) return false;  // no class tag → not eligible
         std::string class_name(*tag);
         std::string trait_name(name);
+        std::unique_lock lock(trait_mutex());
         auto& by_trait = trait_conformance_cache()[class_name];
         auto it = by_trait.find(trait_name);
         if (it != by_trait.end()) return it->second;
@@ -4352,14 +4354,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     // Pre-populate trait conformance cache so multifn_specificity can
     // resolve `fn show(x: Stringer)` style traits without holding the
-    // instance. Cheap on first dispatch (O(traits × args)), free on
-    // repeat thanks to the cache; trait_registry is process-wide so
-    // populated entries persist.
-    if (!trait_registry().empty()) {
-      for (const auto& [trait_name, _trait] : trait_registry()) {
-        for (const auto& arg : args) {
-          (void)type_matches(arg, trait_name);
-        }
+    // instance. Snapshot the trait-name list under a read lock so the
+    // iteration doesn't hold trait_mutex while type_matches re-acquires
+    // it (the inner write path would deadlock).
+    std::vector<std::string> trait_names;
+    {
+      std::shared_lock lock(trait_mutex());
+      auto& reg = trait_registry();
+      trait_names.reserve(reg.size());
+      for (const auto& [n, _] : reg) trait_names.push_back(n);
+    }
+    for (const auto& trait_name : trait_names) {
+      for (const auto& arg : args) {
+        (void)type_matches(arg, trait_name);
       }
     }
     auto r = multifn_pick(methods, arg_types,
@@ -4613,7 +4620,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // within a method body, which are scope boundaries).
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       auto mv = culebra::view_method(*ast.nodes[i]);
-      reject_class_decl_in_class_body(mv.is_field ? *mv.value : *mv.body,
+      reject_class_decl_in_class_body(mv.is_field ? *mv.value : **mv.body,
                                        class_name);
     }
     // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
@@ -4664,7 +4671,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         new_ast = &m;
         continue;
       }
-      auto fn_val = make_function_value(*mv.params, mv.body, {}, env);
+      auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
       fn_val.get<FunctionValue>().name = std::string(mv.name);
       neutralize_type_params(fn_val.get<FunctionValue>());
       if (mv.is_static) {
@@ -4707,7 +4714,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         p.declared_type_name = p.type_name;
         neutralize_one(p.type_name);
       }
-      auto body = ctor_view.body;
+      auto body = *ctor_view.body;
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,

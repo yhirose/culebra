@@ -6,6 +6,7 @@
 #include <cmath>
 #include <format>
 #include <random>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -601,6 +602,13 @@ struct TraitDef {
 
 // Process-wide registry. Trait declarations register here; type_matches
 // / multifn_specificity consult it on each lookup. Keyed by trait name.
+// Guarded by trait_mutex(): host threads can declare traits and look
+// them up concurrently (mt_smoke exercises this).
+inline std::shared_mutex& trait_mutex() {
+  static std::shared_mutex m;
+  return m;
+}
+
 inline std::unordered_map<std::string, TraitDef>& trait_registry() {
   static std::unordered_map<std::string, TraitDef> reg;
   return reg;
@@ -609,7 +617,7 @@ inline std::unordered_map<std::string, TraitDef>& trait_registry() {
 // Cache: class name → trait name → conforms? Populated lazily by
 // type_matches when it encounters a value of a known class against a
 // known trait. Cleared on new trait registration (later traits may flip
-// earlier "no" answers for already-cached classes).
+// earlier "no" answers for already-cached classes). Shares trait_mutex().
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, bool>>&
 trait_conformance_cache() {
@@ -620,11 +628,13 @@ trait_conformance_cache() {
 }
 
 inline void register_trait(TraitDef def) {
+  std::unique_lock lock(trait_mutex());
   trait_registry()[def.name] = std::move(def);
   trait_conformance_cache().clear();
 }
 
 inline const TraitDef* lookup_trait(std::string_view name) {
+  std::shared_lock lock(trait_mutex());
   auto& reg = trait_registry();
   auto it = reg.find(std::string(name));
   return it == reg.end() ? nullptr : &it->second;

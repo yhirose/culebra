@@ -356,9 +356,9 @@ struct MethodView {
   size_t name_line;
   size_t name_col;
   bool is_field;
-  const peg::Ast* params;      // nullptr if field
-  std::shared_ptr<peg::Ast> body;   // null if field
-  const peg::Ast* value;       // nullptr if method
+  const peg::Ast* params;                       // nullptr if field
+  const std::shared_ptr<peg::Ast>* body;        // nullptr if field
+  const peg::Ast* value;                        // nullptr if method
 };
 
 inline MethodView view_method(const peg::Ast& m) {
@@ -371,7 +371,7 @@ inline MethodView view_method(const peg::Ast& m) {
       ident.column,
       is_field,
       is_field ? nullptr : m.nodes[2].get(),
-      is_field ? std::shared_ptr<peg::Ast>{} : m.nodes[3],
+      is_field ? nullptr : &m.nodes[3],
       is_field ? m.nodes[2].get() : nullptr,
   };
 }
