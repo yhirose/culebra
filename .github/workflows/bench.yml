@@ -31,11 +31,14 @@ jobs:
             cmake \
             g++-14 \
             libblas-dev \
-            just \
             wget \
             lsb-release \
             software-properties-common \
             gnupg
+          # Ubuntu 24.04's apt-shipped `just` predates the [group(...)]
+          # attribute (just 1.27.0+). Install from the official script.
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+            | sudo bash -s -- --to /usr/local/bin
           # Ubuntu 24.04's default llvm-dev (17/18) is too old — culebra's
           # JIT uses LLVM 20+ APIs. Pull LLVM 22 from apt.llvm.org to
           # match the local dev environment (README references LLVM 22).
