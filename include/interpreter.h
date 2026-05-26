@@ -494,6 +494,10 @@ inline void descend_into_nested(
     }
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
       const auto& method = *node.nodes[j];
+      if (method.nodes.size() == 3) {
+        descend_into_nested(*method.nodes[2], my_locals, outer);
+        continue;
+      }
       outer.push_back(&my_locals);
       analyze_fn_body(*method.nodes[2], *method.nodes[3], outer);
       outer.pop_back();
@@ -4578,9 +4582,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // METHOD body and the constructor.
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
       if (m.nodes.size() >= 4) {
         reject_class_decl_in_class_body(*m.nodes[3], class_name);
+      } else if (m.nodes.size() == 3) {
+        reject_class_decl_in_class_body(*m.nodes[2], class_name);
       }
     }
     // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
@@ -4607,20 +4612,31 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       neutralize_one(fn.return_type);
     };
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    // STATIC_MOD.token is "static" when present, empty otherwise.
-    // Instance methods (no `static`) populate the per-instance method
-    // template (copied into each new object via build_instance). Static
-    // methods are registered as plain properties of the class object
-    // itself — `Shape.create(...)` resolves them via the usual property
-    // access mechanism, providing class-as-namespace.
+    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK] for
+    // methods (size 4) or [STATIC_MOD, IDENTIFIER, EXPRESSION] for
+    // static fields (size 3). Static field requires `static`.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
+    std::vector<std::pair<std::string_view, Value>> static_field_template;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       bool is_static = m.nodes[0]->token == "static";
       auto name_view = m.nodes[1]->token;
+      bool is_field = m.nodes.size() == 3;
+      if (is_field) {
+        if (!is_static) {
+          throw CulebraError(
+              "SyntaxError",
+              std::format("field `{}` in class `{}` must be declared with "
+                          "`static`", name_view, class_name),
+              static_cast<long>(m.nodes[1]->line),
+              static_cast<long>(m.nodes[1]->column));
+        }
+        Value val = eval(*m.nodes[2], env);
+        static_field_template.push_back({name_view, std::move(val)});
+        continue;
+      }
       if (!is_static && name_view == "new") {
         new_ast = &m;
         continue;
@@ -4717,12 +4733,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     ObjectValue class_obj;
     class_obj.properties->emplace("new", Symbol{constructor, false});
-    // Register static methods as class-level properties so call sites
-    // like `Shape.create(...)` resolve them through the usual Object
-    // property access. Stored as immutable bindings (mut=false) since
-    // they are class-level definitions, not user-mutable state.
     for (auto& [name, fn_val] : static_template) {
       class_obj.properties->emplace(name, Symbol{std::move(fn_val), false});
+    }
+    for (auto& [name, val] : static_field_template) {
+      class_obj.properties->emplace(name, Symbol{std::move(val), false});
     }
     Value class_val(std::move(class_obj));
 

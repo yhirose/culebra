@@ -8207,6 +8207,10 @@ struct JIT {
       }
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
+        if (method.nodes.size() == 3) {
+          visit_for_frees(*method.nodes[2], my_locals, outer, info);
+          continue;
+        }
         outer.push_back(&my_locals);
         auto method_info = analyze_method(method, outer);
         outer.pop_back();
@@ -11493,29 +11497,43 @@ struct JIT {
       class_type_params_ = culebra::split_generic_args(class_head.args);
     }
 
-    // Reject CLASS_DECL directly inside this class's body — see helper
-    // doc for the rule. Mirrors the interp check in eval_class_decl.
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       if (m.nodes.size() >= 4) {
         culebra::reject_class_decl_in_class_body(*m.nodes[3], class_name);
+      } else if (m.nodes.size() == 3) {
+        culebra::reject_class_decl_in_class_body(*m.nodes[2], class_name);
       }
     }
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    // Instance methods live in the per-class meta object (shared
-    // prototype). Static methods are installed directly on the class
-    // namespace object so `Name.method(...)` resolves via standard
-    // property access. Same split as eval_class_decl (interp).
+    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK] for
+    // methods (size 4) or [STATIC_MOD, IDENTIFIER, EXPRESSION] for
+    // static fields (size 3). Static field requires `static`.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
     std::vector<std::string> static_names;
     std::vector<const peg::Ast*> static_asts;
+    std::vector<std::string> static_field_names;
+    std::vector<const peg::Ast*> static_field_asts;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       bool is_static = m.nodes[0]->token == "static";
       auto name = std::string(m.nodes[1]->token);
+      bool is_field = m.nodes.size() == 3;
+      if (is_field) {
+        if (!is_static) {
+          throw culebra::CulebraError(
+              "SyntaxError",
+              std::format("field `{}` in class `{}` must be declared with "
+                          "`static`", name, class_name),
+              static_cast<long>(m.nodes[1]->line),
+              static_cast<long>(m.nodes[1]->column));
+        }
+        static_field_names.push_back(std::move(name));
+        static_field_asts.push_back(&m);
+        continue;
+      }
       if (!is_static && name == "new") {
         new_ast = &m;
       } else if (is_static) {
@@ -11566,12 +11584,16 @@ struct JIT {
       new_arity = new_ast->nodes[2]->nodes.size();
     }
 
-    // Static methods compile like regular FUNCTION closures and get
-    // installed on the class namespace below.
     std::vector<llvm::Value*> static_vals;
     static_vals.reserve(static_asts.size());
     for (auto* m : static_asts) {
       static_vals.push_back(compile_function(*m));
+    }
+
+    std::vector<llvm::Value*> static_field_vals;
+    static_field_vals.reserve(static_field_asts.size());
+    for (auto* m : static_field_asts) {
+      static_field_vals.push_back(compile(*m->nodes[2]));
     }
 
     // Build the shared class meta object once per class declaration:
@@ -11665,14 +11687,15 @@ struct JIT {
         "class.ns");
     emit_object_set(classObj, "new", /*mut=*/false, extract_tag(ctorVal),
                     extract_data(ctorVal));
-    // Install static methods as immutable class-namespace properties.
-    // Each static_vals[i] carries +1; emit_object_set transfers that
-    // ownership into the namespace object (mut=false matches the `new`
-    // slot above and the interp registration via Symbol{val, false}).
     for (size_t i = 0; i < static_vals.size(); i++) {
       emit_object_set(classObj, static_names[i], /*mut=*/false,
                       extract_tag(static_vals[i]),
                       extract_data(static_vals[i]));
+    }
+    for (size_t i = 0; i < static_field_vals.size(); i++) {
+      emit_object_set(classObj, static_field_names[i], /*mut=*/false,
+                      extract_tag(static_field_vals[i]),
+                      extract_data(static_field_vals[i]));
     }
     auto classVal = make_object(classObj);
 

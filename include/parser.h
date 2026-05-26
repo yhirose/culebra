@@ -62,7 +62,7 @@ const auto grammar_ = R"(
   # never at statement-prefix position, so the two uses are
   # unambiguous.
   DECORATOR                <-  '@' _ CALL
-  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ PARAMETERS _ BLOCK
+  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
   STATIC_MOD               <-  K('static')?
 
   DEBUGGER                 <-  debugger

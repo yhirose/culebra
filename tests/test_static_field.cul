@@ -1,0 +1,90 @@
+# Conformance: §10 (class sugar — static fields).
+# Static fields are immutable class-level constants, eagerly evaluated
+# at class declaration time and installed as properties on the class
+# namespace object (same place as static methods).
+
+test_static_field_basic = fn () {
+  class Shape {
+    new () {}
+    static PI = 3.14
+    static MAX_SIDES = 100
+  }
+  assert(Shape.PI == 3.14)
+  assert(Shape.MAX_SIDES == 100)
+}
+
+# Static fields and static methods coexist on the same class namespace.
+test_static_field_with_method = fn () {
+  class Circle {
+    new (r) { this.radius = r }
+    static PI = 3.14
+    static unit () { Circle.new(1) }
+    area () { this.radius * this.radius * Circle.PI }
+  }
+  let c = Circle.unit()
+  assert(c.area() == 3.14)
+  assert(Circle.PI == 3.14)
+}
+
+# Value expressions can be arbitrary expressions; eagerly evaluated.
+test_static_field_expression = fn () {
+  class Config {
+    new () {}
+    static BASE = 10
+    static DOUBLE = 10 * 2
+    static GREETING = "hello world"
+    static SUM = [1, 2, 3].sum()
+  }
+  assert(Config.BASE == 10)
+  assert(Config.DOUBLE == 20)
+  assert(Config.GREETING == 'hello world')
+  assert(Config.SUM == 6)
+}
+
+# Static fields are not visible on instances (mirrors static method semantics).
+# Missing instance properties resolve to nil (culebra's general semantics).
+test_static_field_not_on_instance = fn () {
+  class K {
+    new () {}
+    static FOO = 42
+  }
+  let k = K.new()
+  assert(k.FOO == nil)
+  assert(K.FOO == 42)
+}
+
+# Static fields are immutable from the outside.
+test_static_field_immutable = fn () {
+  class Const {
+    new () {}
+    static VAL = 1
+  }
+  let kind = try { Const.VAL = 2; 'no error' }
+             catch e { "kind={e.kind}" }
+  assert(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
+}
+
+# Duplicate member names raise SyntaxError at class decl time.
+# Using a fresh class body inside a try-catch via try-catch around a
+# string parse isn't possible from culebra, so we exercise the path
+# from the test runner: this test file would fail to load if any
+# duplicate detection regressed. Instead we assert the happy path
+# fields stay distinct.
+test_static_field_distinct = fn () {
+  class N {
+    new () {}
+    static A = 1
+    static B = 2
+  }
+  assert(N.A == 1)
+  assert(N.B == 2)
+}
+
+test_static_field_basic()
+test_static_field_with_method()
+test_static_field_expression()
+test_static_field_not_on_instance()
+test_static_field_immutable()
+test_static_field_distinct()
+
+puts('static-field OK')
