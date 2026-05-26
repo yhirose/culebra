@@ -489,21 +489,22 @@ inline void descend_into_nested(
   }
 
   if (node.tag == "CLASS_DECL"_) {
-    // [DECORATOR*, IDENTIFIER, METHOD ...] — each METHOD is
-    // [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
+    // [DECORATOR*, CLASS_HEAD, METHOD ...]. Each METHOD is viewed
+    // through `view_method` so size 3 (static field) and size 4
+    // (method) share the same handling.
     size_t i = 0;
     while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
       descend_into_nested(*node.nodes[i], my_locals, outer);
       i++;
     }
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      const auto& method = *node.nodes[j];
-      if (method.nodes.size() == 3) {
-        descend_into_nested(*method.nodes[2], my_locals, outer);
+      auto mv = culebra::view_method(*node.nodes[j]);
+      if (mv.is_field) {
+        descend_into_nested(*mv.value, my_locals, outer);
         continue;
       }
       outer.push_back(&my_locals);
-      analyze_fn_body(*method.nodes[2], *method.nodes[3], outer);
+      analyze_fn_body(*mv.params, *mv.body, outer);
       outer.pop_back();
     }
     return;
@@ -4609,15 +4610,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     // Reject CLASS_DECL directly inside another class body — declares
     // must live at top level (or inside a fn / lambda / lexical scope
-    // within a method body, which are scope boundaries). Walks every
-    // METHOD body and the constructor.
+    // within a method body, which are scope boundaries).
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      if (m.nodes.size() >= 4) {
-        reject_class_decl_in_class_body(*m.nodes[3], class_name);
-      } else if (m.nodes.size() == 3) {
-        reject_class_decl_in_class_body(*m.nodes[2], class_name);
-      }
+      auto mv = culebra::view_method(*ast.nodes[i]);
+      reject_class_decl_in_class_body(mv.is_field ? *mv.value : *mv.body,
+                                       class_name);
     }
     // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
     // to "Any" — runtime check sees Any, introspection sees the rewritten
@@ -4643,43 +4640,37 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       neutralize_one(fn.return_type);
     };
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK] for
-    // methods (size 4) or [STATIC_MOD, IDENTIFIER, EXPRESSION] for
-    // static fields (size 3). Static field requires `static`.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
     std::vector<std::pair<std::string_view, Value>> static_field_template;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      bool is_static = m.nodes[0]->token == "static";
-      auto name_view = m.nodes[1]->token;
-      bool is_field = m.nodes.size() == 3;
-      if (is_field) {
-        if (!is_static) {
+      auto mv = culebra::view_method(m);
+      if (mv.is_field) {
+        if (!mv.is_static) {
           throw CulebraError(
               "SyntaxError",
               std::format("field `{}` in class `{}` must be declared with "
-                          "`static`", name_view, class_name),
-              static_cast<long>(m.nodes[1]->line),
-              static_cast<long>(m.nodes[1]->column));
+                          "`static`", mv.name, class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col));
         }
-        Value val = eval(*m.nodes[2], env);
-        static_field_template.push_back({name_view, std::move(val)});
+        Value val = eval(*mv.value, env);
+        static_field_template.push_back({mv.name, std::move(val)});
         continue;
       }
-      if (!is_static && name_view == "new") {
+      if (!mv.is_static && mv.name == "new") {
         new_ast = &m;
         continue;
       }
-      auto fn_val =
-          make_function_value(*m.nodes[2], m.nodes[3], {}, env);
-      fn_val.get<FunctionValue>().name = std::string(name_view);
+      auto fn_val = make_function_value(*mv.params, mv.body, {}, env);
+      fn_val.get<FunctionValue>().name = std::string(mv.name);
       neutralize_type_params(fn_val.get<FunctionValue>());
-      if (is_static) {
-        static_template.push_back({name_view, std::move(fn_val)});
+      if (mv.is_static) {
+        static_template.push_back({mv.name, std::move(fn_val)});
       } else {
-        method_template.push_back({name_view, std::move(fn_val)});
+        method_template.push_back({mv.name, std::move(fn_val)});
       }
     }
 
@@ -4707,9 +4698,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     Value constructor;
     if (new_ast) {
-      // METHOD layout after grammar update: [STATIC_MOD, IDENTIFIER,
-      // PARAMETERS, BLOCK].
-      auto ctor_params = parse_parameters(*new_ast->nodes[2], env);
+      auto ctor_view = culebra::view_method(*new_ast);
+      auto ctor_params = parse_parameters(*ctor_view.params, env);
       // Neutralize class type-params on the constructor signature.
       // Save the declared annotation first for introspection symmetry
       // with method params.
@@ -4717,7 +4707,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         p.declared_type_name = p.type_name;
         neutralize_one(p.type_name);
       }
-      auto body = new_ast->nodes[3];
+      auto body = ctor_view.body;
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,

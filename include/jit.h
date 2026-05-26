@@ -8211,8 +8211,9 @@ struct JIT {
       }
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
-        if (method.nodes.size() == 3) {
-          visit_for_frees(*method.nodes[2], my_locals, outer, info);
+        auto mv = culebra::view_method(method);
+        if (mv.is_field) {
+          visit_for_frees(*mv.value, my_locals, outer, info);
           continue;
         }
         outer.push_back(&my_locals);
@@ -8432,9 +8433,8 @@ struct JIT {
   FuncInfo analyze_method(
       const peg::Ast& methodAst,
       std::vector<const std::set<std::string>*>& outer) {
-    // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK].
-    return analyze_fn_common(&methodAst, *methodAst.nodes[2],
-                             *methodAst.nodes[3], outer);
+    auto mv = culebra::view_method(methodAst);
+    return analyze_fn_common(&methodAst, *mv.params, *mv.body, outer);
   }
 
   // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] [TRAIT_BODY]].
@@ -11509,17 +11509,11 @@ struct JIT {
     }
 
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      if (m.nodes.size() >= 4) {
-        culebra::reject_class_decl_in_class_body(*m.nodes[3], class_name);
-      } else if (m.nodes.size() == 3) {
-        culebra::reject_class_decl_in_class_body(*m.nodes[2], class_name);
-      }
+      auto mv = culebra::view_method(*ast.nodes[i]);
+      culebra::reject_class_decl_in_class_body(
+          mv.is_field ? *mv.value : *mv.body, class_name);
     }
 
-    // METHOD layout: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK] for
-    // methods (size 4) or [STATIC_MOD, IDENTIFIER, EXPRESSION] for
-    // static fields (size 3). Static field requires `static`.
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
@@ -11529,25 +11523,24 @@ struct JIT {
     std::vector<const peg::Ast*> static_field_asts;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      bool is_static = m.nodes[0]->token == "static";
-      auto name = std::string(m.nodes[1]->token);
-      bool is_field = m.nodes.size() == 3;
-      if (is_field) {
-        if (!is_static) {
+      auto mv = culebra::view_method(m);
+      if (mv.is_field) {
+        if (!mv.is_static) {
           throw culebra::CulebraError(
               "SyntaxError",
               std::format("field `{}` in class `{}` must be declared with "
-                          "`static`", name, class_name),
-              static_cast<long>(m.nodes[1]->line),
-              static_cast<long>(m.nodes[1]->column));
+                          "`static`", mv.name, class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col));
         }
-        static_field_names.push_back(std::move(name));
+        static_field_names.push_back(std::string(mv.name));
         static_field_asts.push_back(&m);
         continue;
       }
-      if (!is_static && name == "new") {
+      auto name = std::string(mv.name);
+      if (!mv.is_static && mv.name == "new") {
         new_ast = &m;
-      } else if (is_static) {
+      } else if (mv.is_static) {
         static_names.push_back(std::move(name));
         static_asts.push_back(&m);
       } else {
@@ -11591,8 +11584,7 @@ struct JIT {
     size_t new_arity = 0;
     if (new_ast) {
       body_val = compile_function(*new_ast);
-      // PARAMETERS lives at nodes[2] in the new METHOD layout.
-      new_arity = new_ast->nodes[2]->nodes.size();
+      new_arity = culebra::view_method(*new_ast).params->nodes.size();
     }
 
     std::vector<llvm::Value*> static_vals;
@@ -11973,10 +11965,10 @@ struct JIT {
     std::string_view returnType;
     std::string_view declName;
     if (ast.tag == "METHOD"_) {
-      // METHOD: [STATIC_MOD, IDENTIFIER, PARAMETERS, BLOCK]
-      declName = ast.nodes[1]->token;
-      params_ast = ast.nodes[2].get();
-      body_ast = ast.nodes[3];
+      auto mv = culebra::view_method(ast);
+      declName = mv.name;
+      params_ast = mv.params;
+      body_ast = mv.body;
       returnType = {};
     } else {
       params_ast = ast.nodes[0].get();

@@ -346,6 +346,36 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
   return {};
 }
 
+// View of a METHOD AST node — see grammar:
+//   METHOD <- STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
+// `is_field` distinguishes the two tails (size 3 vs 4). One central
+// accessor avoids walker drift when the rule changes again.
+struct MethodView {
+  bool is_static;
+  std::string_view name;
+  size_t name_line;
+  size_t name_col;
+  bool is_field;
+  const peg::Ast* params;      // nullptr if field
+  std::shared_ptr<peg::Ast> body;   // null if field
+  const peg::Ast* value;       // nullptr if method
+};
+
+inline MethodView view_method(const peg::Ast& m) {
+  const auto& ident = *m.nodes[1];
+  bool is_field = m.nodes.size() == 3;
+  return MethodView{
+      m.nodes[0]->token == "static",
+      ident.token,
+      ident.line,
+      ident.column,
+      is_field,
+      is_field ? nullptr : m.nodes[2].get(),
+      is_field ? std::shared_ptr<peg::Ast>{} : m.nodes[3],
+      is_field ? m.nodes[2].get() : nullptr,
+  };
+}
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;
