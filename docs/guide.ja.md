@@ -86,7 +86,7 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 ```bash
 just build              # JIT 付き
 just build-no-jit       # インタプリタのみ、~1 MB
-just test               # 全 backend + embed スモークテスト
+just test               # 全 backend + embed スモークテスト (並列; JOBS=1 で逐次化)
 ./build/culebra --shell # REPL (--jit で JIT REPL)
 ```
 

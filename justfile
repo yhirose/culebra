@@ -32,67 +32,130 @@ clean:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
-[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all)")]
+[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all). JOBS=N controls parallelism (default: number of CPU cores).")]
 [group("test")]
 test BACKEND='all': build
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
 
-    run_interp() {
+    # Parallelism for per-file test loops. Default = physical cores;
+    # tests are CPU-bound (culebra startup + JIT compile), so this
+    # scales near-linearly. Set JOBS=1 to recover the old serial
+    # behavior when debugging.
+    JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
+
+    # Per-recipe scratch dir for parallel job artifacts (per-file
+    # stdout/stderr, .fail markers). Cleaned on exit.
+    job_dir="${TMPDIR:-/tmp}/culebra-test-$$"
+    rm -rf "$job_dir" && mkdir -p "$job_dir"
+    trap 'rm -rf "$job_dir"' EXIT
+
+    # Replay per-file stdout in tests/*.cul order so output is stable
+    # regardless of completion order. Returns 0 if no .fail markers
+    # exist, otherwise prints stderr for each failed file and returns 1.
+    collect_results() {
+        local d="$1" label="$2"
         for f in tests/*.cul; do
-          ./build/culebra "$f"
+            name=$(basename "$f" .cul)
+            [[ -s "$d/$name.out" ]] && cat "$d/$name.out"
         done
+        local fails=("$d"/*.fail)
+        if (( ${#fails[@]} > 0 )); then
+            echo "test $label FAIL: ${#fails[@]} file(s):" >&2
+            for fail in "${fails[@]}"; do
+                name=$(basename "$fail" .fail)
+                echo "--- $name.cul ---" >&2
+                [[ -s "$d/$name.err" ]] && cat "$d/$name.err" >&2
+            done
+            return 1
+        fi
+        return 0
+    }
+
+    run_interp() {
+        local d="$job_dir/interp"
+        mkdir -p "$d"
+        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"
+            name=$(basename "$f" .cul)
+            if ! ./build/culebra "$f" > "$d/$name.out" 2> "$d/$name.err"; then
+                touch "$d/$name.fail"
+            fi
+        ' _ '{}' "$d"
+        collect_results "$d" "interp"
     }
 
     run_jit() {
-        for f in tests/*.cul; do
-          ./build/culebra --jit "$f"
-        done
+        local d="$job_dir/jit"
+        mkdir -p "$d"
+        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"
+            name=$(basename "$f" .cul)
+            if ! ./build/culebra --jit "$f" > "$d/$name.out" 2> "$d/$name.err"; then
+                touch "$d/$name.fail"
+            fi
+        ' _ '{}' "$d"
+        collect_results "$d" "jit"
     }
 
     run_diff_interp_jit() {
-        local failed=()
-        for f in tests/*.cul; do
-          out_interp=$(./build/culebra "$f")
-          out_jit=$(./build/culebra --jit "$f")
-          if [[ "$out_interp" != "$out_jit" ]]; then
-              echo "interpreter and JIT outputs differ for $f:"
-              diff <(printf '%s' "$out_interp") <(printf '%s' "$out_jit") || true
-              failed+=("$f")
-          fi
-        done
-        if (( ${#failed[@]} > 0 )); then
-          echo "test (interp vs jit) FAIL: ${#failed[@]} file(s) diverge"
-          exit 1
+        local d="$job_dir/diff"
+        mkdir -p "$d"
+        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"
+            name=$(basename "$f" .cul)
+            out_interp=$(./build/culebra "$f" 2> "$d/$name.interp.err") || \
+                { touch "$d/$name.fail"; echo "interp crashed for $f:" > "$d/$name.err"; \
+                  cat "$d/$name.interp.err" >> "$d/$name.err"; exit 0; }
+            out_jit=$(./build/culebra --jit "$f" 2> "$d/$name.jit.err") || \
+                { touch "$d/$name.fail"; echo "jit crashed for $f:" > "$d/$name.err"; \
+                  cat "$d/$name.jit.err" >> "$d/$name.err"; exit 0; }
+            if [[ "$out_interp" != "$out_jit" ]]; then
+                {
+                    echo "interpreter and JIT outputs differ for $f:"
+                    diff <(printf "%s" "$out_interp") <(printf "%s" "$out_jit") || true
+                } > "$d/$name.err"
+                touch "$d/$name.fail"
+            fi
+        ' _ '{}' "$d"
+        if ! collect_results "$d" "(interp vs jit)"; then
+            echo "test (interp vs jit) FAIL" >&2
+            exit 1
         fi
         echo "test (interp vs jit) OK"
     }
 
     run_aot() {
-        local failed=()
         local out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
         rm -rf "$out_dir" && mkdir -p "$out_dir"
-        for f in tests/*.cul; do
-          name=$(basename "$f" .cul)
-          bin="$out_dir/$name"
-          if ! ./build/culebra build "$f" -o "$bin" 2>"$out_dir/err"; then
-            echo "build failed: $f"
-            cat "$out_dir/err"
-            failed+=("$f")
-            continue
-          fi
-          out_aot=$("$bin")
-          out_jit=$(./build/culebra --jit "$f")
-          if [[ "$out_aot" != "$out_jit" ]]; then
-            echo "AOT and JIT outputs differ for $f:"
-            diff <(printf '%s' "$out_aot") <(printf '%s' "$out_jit") || true
-            failed+=("$f")
-          fi
-        done
-        if (( ${#failed[@]} > 0 )); then
-          echo "test aot FAIL: ${#failed[@]} file(s) diverge"
-          exit 1
+        local d="$job_dir/aot"
+        mkdir -p "$d"
+        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"; out_dir="$3"
+            name=$(basename "$f" .cul)
+            bin="$out_dir/$name"
+            if ! ./build/culebra build "$f" -o "$bin" 2> "$d/$name.build.err"; then
+                {
+                    echo "build failed: $f"
+                    cat "$d/$name.build.err"
+                } > "$d/$name.err"
+                touch "$d/$name.fail"
+                exit 0
+            fi
+            out_aot=$("$bin")
+            out_jit=$(./build/culebra --jit "$f")
+            if [[ "$out_aot" != "$out_jit" ]]; then
+                {
+                    echo "AOT and JIT outputs differ for $f:"
+                    diff <(printf "%s" "$out_aot") <(printf "%s" "$out_jit") || true
+                } > "$d/$name.err"
+                touch "$d/$name.fail"
+            fi
+        ' _ '{}' "$d" "$out_dir"
+        if ! collect_results "$d" "aot"; then
+            echo "test aot FAIL" >&2
+            exit 1
         fi
         echo "test aot OK: AOT binaries match --jit"
     }
