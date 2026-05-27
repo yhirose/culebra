@@ -8403,14 +8403,10 @@ struct JIT {
     }
 
     if (node.tag == "OBJECT_PROPERTY"_) {
-      // Long form `{k: v}` -> [MUTABLE, IDENTIFIER(key), EXPRESSION].
-      // Shorthand `{x}`    -> [MUTABLE, IDENTIFIER]; the identifier is
-      // both the key and the value reference.
-      if (node.nodes.size() == 3) {
-        visit_for_frees(*node.nodes[2], my_locals, outer, info);
-      } else {
-        visit_for_frees(*node.nodes[1], my_locals, outer, info);
-      }
+      // `view.value` collapses long form (EXPRESSION) and shorthand
+      // (IDENTIFIER read-from-scope) so the walker doesn't branch.
+      auto pv = culebra::view_object_property(node);
+      visit_for_frees(*pv.value, my_locals, outer, info);
       return;
     }
 
@@ -9250,19 +9246,17 @@ struct JIT {
         module_->getOrInsertFunction(rt::object_new, ptrTy),
         {}, "obj");
 
-    // Each child is OBJECT_PROPERTY: [MUTABLE, KEY, EXPRESSION]
-    // or the shorthand form [MUTABLE, IDENTIFIER] — `{x}` reuses the
-    // identifier as both key and value. KEY is IDENTIFIER for the
-    // common case; Long/Float/Bool/Nil literal keys take a separate
-    // value-keyed sidecar path (object_set_any).
+    // Each child is OBJECT_PROPERTY — `view_object_property` normalizes
+    // the long `{k: v}` and shorthand `{x}` forms. Non-IDENTIFIER keys
+    // (Long/Float/Bool/Nil/Tuple literals) route through the value-
+    // keyed sidecar via `object_set_any`.
     for (auto& prop : ast.nodes) {
-      bool mut = (prop->nodes[0]->token == "mut");
-      const auto& key_node = *prop->nodes[1];
+      auto pv = culebra::view_object_property(*prop);
 
-      if (key_node.tag != "IDENTIFIER"_) {
+      if (pv.key->tag != "IDENTIFIER"_) {
         // Non-IDENTIFIER literal key — emit Value-keyed set.
-        auto key = compile(key_node);
-        auto val = compile(*prop->nodes[2]);
+        auto key = compile(*pv.key);
+        auto val = compile(*pv.value);
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
@@ -9270,13 +9264,13 @@ struct JIT {
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty()),
             {objPtr, extract_tag(key), extract_data(key),
-             builder_.getInt1(mut), extract_tag(val), extract_data(val)});
+             builder_.getInt1(pv.mutable_), extract_tag(val), extract_data(val)});
         continue;
       }
 
-      auto name = std::string(key_node.token);
+      auto name = std::string(pv.key->token);
       llvm::Value* val;
-      if (prop->nodes.size() < 3) {
+      if (pv.is_shorthand) {
         auto slot = lookup_var(name);
         if (!slot) {
           // Match interp's eval-time NameError so the same source
@@ -9284,15 +9278,16 @@ struct JIT {
           // throw fires before this property would be installed.
           emit_throw_error("NameError",
               std::format("undefined variable '{}'...", name),
-              key_node.line, key_node.column);
+              pv.key->line, pv.key->column);
           val = make_nil();
         } else {
           val = load_slot(*slot, name);
         }
       } else {
-        val = compile(*prop->nodes[2]);
+        val = compile(*pv.value);
       }
-      emit_object_set(objPtr, name, mut, extract_tag(val), extract_data(val));
+      emit_object_set(objPtr, name, pv.mutable_,
+                      extract_tag(val), extract_data(val));
     }
 
     return make_object(objPtr);

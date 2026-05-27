@@ -5979,27 +5979,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     ObjectValue obj;
     for (auto i = 0u; i < ast.nodes.size(); i++) {
-      const auto& prop = *ast.nodes[i];
-      auto mut = prop.nodes[0]->token == "mut";
-      const auto& key_node = *prop.nodes[1];
-
+      auto pv = culebra::view_object_property(*ast.nodes[i]);
       // Non-IDENTIFIER literal keys: store under Value-keyed sidecar.
-      if (key_node.tag != "IDENTIFIER"_) {
-        auto key = eval(key_node, env);
-        auto val = eval(*prop.nodes[2], env);
-        obj.initialize(key, std::move(val), mut);
+      if (pv.key->tag != "IDENTIFIER"_) {
+        auto key = eval(*pv.key, env);
+        auto val = eval(*pv.value, env);
+        obj.initialize(key, std::move(val), pv.mutable_);
         continue;
       }
-
-      auto name = key_node.token;
-      Value val;
-      if (prop.nodes.size() < 3) {
-        // Shorthand: name resolves in current scope.
-        val = env->get(name);
-      } else {
-        val = eval(*prop.nodes[2], env);
-      }
-      obj.initialize(name, val, mut);
+      // Shorthand resolves the identifier in current scope; long form
+      // evaluates the EXPRESSION node — `view.value` points to the
+      // right child in either case.
+      Value val = pv.is_shorthand ? env->get(pv.key->token)
+                                  : eval(*pv.value, env);
+      obj.initialize(pv.key->token, val, pv.mutable_);
     }
     return Value(std::move(obj));
   }

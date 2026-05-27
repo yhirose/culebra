@@ -394,6 +394,31 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
   };
 }
 
+// View of an OBJECT_PROPERTY AST node — see grammar:
+//   OBJECT_PROPERTY <- MUTABLE _ (FLOAT/NUMBER/NIL/BOOLEAN/TUPLE/IDENTIFIER) _ ':' _ EXPRESSION
+//   (shorthand) OBJECT_PROPERTY <- MUTABLE _ IDENTIFIER   (no ':' or value)
+// Layouts: long form size 3 `[MUTABLE, KEY, EXPRESSION]`,
+//          shorthand size 2 `[MUTABLE, IDENTIFIER]` (IDENTIFIER doubles
+//          as the key and the read-from-scope value).
+// Normalizing `value` (shorthand collapses to the identifier node) lets
+// closure-capture walkers visit a single child without branching.
+struct ObjectPropertyView {
+  bool is_shorthand;            // size() == 2
+  bool mutable_;                // node[0].token == "mut"
+  const peg::Ast* key;          // node[1]
+  const peg::Ast* value;        // shorthand: same as key; long: node[2]
+};
+
+inline ObjectPropertyView view_object_property(const peg::Ast& p) {
+  bool is_shorthand = p.nodes.size() == 2;
+  return ObjectPropertyView{
+      is_shorthand,
+      p.nodes[0]->token == "mut",
+      p.nodes[1].get(),
+      is_shorthand ? p.nodes[1].get() : p.nodes[2].get(),
+  };
+}
+
 // View of a METHOD AST node — see grammar:
 //   METHOD <- STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
 // `is_field` distinguishes the two tails (size 3 vs 4). One central
