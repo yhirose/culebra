@@ -4108,16 +4108,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
 // --- Iterator protocol runtime --------------------------------------------
 //
-// The iterator protocol uses Objects with `iter` (returns self-like
-// view) and `next` (yields a {done, value} step Object) 0-arg
-// closures. The JIT drives for-in and iterator methods through
-// runtime C++ helpers so each call site emits a single factory /
-// terminal call rather than a full closure body. State is captured
-// via JitCells attached to the wrapper's `next` closure.
+// Kotlin-style protocol: iterator Objects expose three 0-arg closures —
+// `iter` (returns self), `has_next` (Bool), `next` (Any). The JIT
+// drives for-in and the terminal/lazy methods through C++ runtime
+// helpers so each call site emits one factory / terminal call rather
+// than a full closure body. State for built-in factories lives in
+// JitCells attached to both trampolines; the last two cells are a
+// shared lookahead pair (see `_iter_wrap_new`) that lets `has_next()`
+// peek and `next()` consume without re-pulling from `fast_next_fn`.
 //
 // Conventions:
-//   - `_iter_advance` transfers +1 to `this` for the next call.
-//   - `_iter_step_value` returns +1; caller owns.
+//   - `_iter_advance_raw(has_next_cls, next_cls, iter, out_tag, out_data)`
+//     pulls one value via the cached lookahead when present, otherwise
+//     `fast_next_fn` (or the user's has_next/next pair).
 //   - Terminal methods consume the iterator (don't release it; caller
 //     holds the +1 and will release after the terminal returns).
 //   - Lazy wrapper factories transfer upstream's +1 into a capture
@@ -4160,6 +4163,25 @@ inline JitClosure* _iter_has_next_closure(JitValue iter_val) {
 
 inline JitClosure* _iter_next_closure(JitValue iter_val) {
   return _iter_method_closure(iter_val, "next");
+}
+
+// Pre-resolve an upstream's has_next / next closures into a pair of
+// TAG_LONG cells the lazy factories below thread into their captures.
+// Folds the 4-line "cell_new for has_next, cell_new for next" pattern
+// every map/filter/take/etc. factory used to repeat verbatim — and
+// kept their argument order in sync so chain/zip's index shuffle
+// doesn't drift again.
+struct IterClosureCells {
+  JitCell* has_next;
+  JitCell* next;
+};
+inline IterClosureCells _iter_cache_closure_cells(JitValue iv) {
+  return {
+      culebra_runtime_cell_new(
+          TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv))),
+      culebra_runtime_cell_new(
+          TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv))),
+  };
 }
 
 // Lookahead state values stored in the state cell appended by
@@ -4237,14 +4259,6 @@ extern "C" {
 CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
 }
 
-// Build a fresh JitCell holding the given JitValue (with +1 already on
-// it, transferred into the cell). Used by `_iter_wrap_fast` to append
-// the lookahead state + value cells.
-inline JitCell* _iter_make_cell(JitValue v) {
-  auto* c = culebra_runtime_cell_new(v.tag, v.data);
-  return c;
-}
-
 // Build a wrapper iterator Object exposing the Kotlin-style
 // `Iterator { has_next() -> Bool, next() -> Any }` + `Iterable.iter()`
 // protocol. Both has_next / next closures share the SAME captures
@@ -4259,8 +4273,8 @@ inline JitObject* _iter_wrap_new(
     JitValue (*has_next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
     JitValue (*next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
     std::initializer_list<JitCell*> captures) {
-  auto* state_cell = _iter_make_cell({TAG_LONG, _ITER_LA_EMPTY});
-  auto* value_cell = _iter_make_cell({TAG_NIL, 0});
+  auto* state_cell = culebra_runtime_cell_new(TAG_LONG, _ITER_LA_EMPTY);
+  auto* value_cell = culebra_runtime_cell_new(TAG_NIL, 0);
   size_t total = captures.size() + 2;
   auto write_captures = [&](JitClosure* cls) {
     size_t i = 0;
@@ -4591,10 +4605,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_map_fast_fn>(
       {up, f, up_has_next_cell, up_next_cell});
 }
@@ -4635,10 +4648,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_filter_fast_fn>(
       {up, f, up_has_next_cell, up_next_cell});
 }
@@ -4672,10 +4684,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* rem = culebra_runtime_cell_new(TAG_LONG, n);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_fast_fn>(
       {up, rem, up_has_next_cell, up_next_cell});
 }
@@ -4709,10 +4720,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* rem = culebra_runtime_cell_new(TAG_LONG, n);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_skip_fast_fn>(
       {up, rem, up_has_next_cell, up_next_cell});
 }
@@ -4760,10 +4770,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
   auto* up = culebra_runtime_cell_new(it, id);
   auto* p = culebra_runtime_cell_new(ft, fd);
   auto* stopped = culebra_runtime_cell_new(TAG_BOOL, 0);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_while_fast_fn>(
       {up, p, stopped, up_has_next_cell, up_next_cell});
 }
@@ -4796,10 +4805,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_enumerate(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* idx = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* up_has_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next_cell = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
+  auto* up_has_next_cell = up_cells.has_next;
+  auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_enumerate_fast_fn>(
       {up, idx, up_has_next_cell, up_next_cell});
 }
@@ -4866,16 +4874,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);
   auto* phase = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* h1 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv1)));
-  auto* n1 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv1)));
-  auto* h2 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv2)));
-  auto* n2 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv2)));
+  auto c1 = _iter_cache_closure_cells(iv1);
+  auto c2 = _iter_cache_closure_cells(iv2);
   return _iter_wrap_fast<&_iter_chain_fast_fn>(
-      {u1, u2, phase, h1, n1, h2, n2});
+      {u1, u2, phase, c1.has_next, c1.next, c2.has_next, c2.next});
 }
 
 // zip: captures iter1 + iter2 + has_next/next pair for each.
@@ -4913,15 +4915,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
   auto iv2 = _iter_coerce_iterable(it2, id2, line, col);
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);
-  auto* h1 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv1)));
-  auto* n1 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv1)));
-  auto* h2 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv2)));
-  auto* n2 = culebra_runtime_cell_new(
-      TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv2)));
-  return _iter_wrap_fast<&_iter_zip_fast_fn>({u1, u2, h1, n1, h2, n2});
+  auto c1 = _iter_cache_closure_cells(iv1);
+  auto c2 = _iter_cache_closure_cells(iv2);
+  return _iter_wrap_fast<&_iter_zip_fast_fn>(
+      {u1, u2, c1.has_next, c1.next, c2.has_next, c2.next});
 }
 
 // --- String iterator wrappers --------------------------------------------
@@ -5166,18 +5163,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
   auto* inner = culebra_runtime_cell_new(TAG_NIL, 0);
-  auto* up_has_next = culebra_runtime_cell_new(
-      TAG_LONG,
-      reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
-  auto* up_next = culebra_runtime_cell_new(
-      TAG_LONG,
-      reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto up_cells = _iter_cache_closure_cells({it, id});
   auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* loc = culebra_runtime_cell_new(
       TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flat_map_fast_fn>(
-      {up, f, inner, up_has_next, up_next,
+      {up, f, inner, up_cells.has_next, up_cells.next,
        inner_has_next, inner_next, loc});
 }
 
