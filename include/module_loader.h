@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "generator_transform.h"
 #include "parser.h"
 #include "shared.h"
 
@@ -129,8 +130,9 @@ inline size_t ModuleLoader::load_recursive(
     }
   }
 
-  auto ast = culebra::parse(abs_path.string(), src_buf->data(),
-                             src_buf->size(), parse_msgs);
+  auto ast = culebra::parse_with_transforms(abs_path.string(),
+                                            src_buf->data(),
+                                            src_buf->size(), parse_msgs);
   if (!ast) {
     // PEG diagnostics live in parse_msgs (path:line:col: ...). Fold them
     // into the error so the CLI catch handler prints the actual hint.

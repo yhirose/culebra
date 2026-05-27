@@ -1,0 +1,42 @@
+// Conformance: built-in generator functions via `yield`.
+// Stage 0: single yield in a straight-line body — exercises the
+// AST-transformation infrastructure (anonymous class synthesis +
+// factory wrapping). State machine + multi-yield arrive in Stage 1+.
+
+// --- minimal: 1 yield ---
+fn one() { yield 42 }
+
+let g = one()
+assert_eq(g.has_next(), true)
+assert_eq(g.next(), 42)
+assert_eq(g.has_next(), false)
+
+// --- works as an Iterable (Phase 2 protocol auto-conforms) ---
+mut collected = []
+for x in one() { collected.push(x) }
+assert_eq(collected.size(), 1)
+assert_eq(collected[0], 42)
+
+// --- yield expression (non-literal value) ---
+fn computed() { yield 7 * 6 }
+assert_eq(computed().next(), 42)
+
+// --- params flow through to the yielded value ---
+fn echo(v) { yield v }
+assert_eq(echo("hi").next(), "hi")
+assert_eq(echo(nil).next(), nil)   // nil yield works (key advantage)
+
+// --- each call returns a fresh generator instance ---
+let g1 = one()
+let g2 = one()
+g1.next()                              // drain g1
+assert_eq(g1.has_next(), false)
+assert_eq(g2.has_next(), true)         // g2 unaffected
+assert_eq(g2.next(), 42)
+
+// --- pipeline composition (Phase 2 Iterator methods) ---
+let mapped = echo(10).map(fn (x) { x * 3 }).collect()
+assert_eq(mapped.size(), 1)
+assert_eq(mapped[0], 30)
+
+IO.puts('test_generator OK')

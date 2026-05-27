@@ -104,7 +104,8 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
     jit_handle = JIT::create_jit_instance();
     std::vector<std::string> pre_msgs;
     auto pre_src = STDLIB_PREAMBLE_SOURCE;
-    auto pre_ast = parse("<stdlib>", pre_src, std::strlen(pre_src), pre_msgs);
+    auto pre_ast = parse_with_transforms("<stdlib>", pre_src,
+                                         std::strlen(pre_src), pre_msgs);
     if (!pre_ast) {
       std::fprintf(stderr, "culebra: stdlib preamble failed to parse\n");
       for (auto& m : pre_msgs) std::fprintf(stderr, "  %s", m.c_str());
@@ -216,7 +217,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
       // copies the names it cares about into LLVM module globals.
       retained_sources_.push_back(full_line);
       const auto& src = retained_sources_.back();
-      auto ast = parse("(repl)", src.data(), src.size(), msgs);
+      auto ast = parse_with_transforms("(repl)", src.data(), src.size(), msgs);
       if (ast) {
         if (print_ast) {
           cout << peg::ast_to_s(ast);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <generator_transform.h>
 #include <module_loader.h>
 #include <parser.h>
 #include <shared.h>
@@ -2119,7 +2120,15 @@ inline std::shared_ptr<Environment> _make_method_call_env(
 inline Value _invoke_method_no_args(const Value& receiver,
                                     std::string_view method_name) {
   const auto& fn = receiver.to_object().get(method_name);
-  return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
+  // Method bodies use `return X` (generator-synthesized next() does,
+  // and any user iterator with an early return). `FunctionValue::eval`
+  // raises ReturnValue rather than returning the value, so catch it
+  // here — without this, the surrounding for-in would unwind silently.
+  try {
+    return fn.to_function().eval(_make_method_call_env(receiver, 0, 0));
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
 }
 
 // Pair to `ValueEq` (forward-declared earlier): invoke `a.eq(b)` for
@@ -6334,7 +6343,8 @@ inline void Environment::resolve_from_lazy(
   lazy_module_sources.push_back(source);
   std::vector<std::string> parse_msgs;
   auto vpath = std::format("<lazy-{}>", name);
-  auto ast = parse(vpath, source->data(), source->size(), parse_msgs);
+  auto ast = parse_with_transforms(vpath, source->data(), source->size(),
+                                   parse_msgs);
   if (!ast) {
     std::fprintf(stderr, "culebra: lazy module '%s' failed to parse\n",
                  std::string(name).c_str());
