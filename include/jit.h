@@ -12103,12 +12103,13 @@ struct JIT {
     std::optional<size_t> kwargsRestIdx;
     std::optional<size_t> firstKwOnlyIdx;
     for (auto& node : params_ast.nodes) {
-      if (culebra::is_kw_only_sep(*node)) {
+      auto pv = culebra::view_parameter(*node);
+      if (pv.is_kw_only_sep) {
         if (!firstKwOnlyIdx) firstKwOnlyIdx = paramNames.size();
         continue;
       }
-      if (culebra::is_kwargs_rest(*node)) {
-        paramNames.push_back(std::string(node->token));
+      if (pv.is_kwargs_rest) {
+        paramNames.push_back(std::string(pv.name));
         paramTypeNames.push_back({});
         paramDeclaredTypeNames.push_back({});
         paramDefaults.push_back(nullptr);
@@ -12116,8 +12117,8 @@ struct JIT {
         kwargsRestIdx = paramNames.size() - 1;
         continue;
       }
-      paramNames.push_back(std::string(node->nodes[1]->token));
-      auto raw = std::string(extract_type_annotation(*node, 2));
+      paramNames.push_back(std::string(pv.name));
+      auto raw = std::string(pv.type_annotation);
       paramDeclaredTypeNames.push_back(raw);
       auto tname = raw;
       // Recursive rewrite: bare `T`, `Array<T>`, `T | Long`, etc. all
@@ -12129,10 +12130,9 @@ struct JIT {
             tname, active_class_type_params);
       }
       paramTypeNames.push_back(tname);
-      auto* def = extract_default_expr(*node);
-      paramDefaults.push_back(def);
-      paramMuts.push_back(node->nodes[0]->token == "mut");
-      if (def && !firstDefaulted) {
+      paramDefaults.push_back(pv.default_value);
+      paramMuts.push_back(pv.mutable_);
+      if (pv.default_value && !firstDefaulted) {
         firstDefaulted = paramNames.size() - 1;
       }
     }
@@ -13469,18 +13469,19 @@ struct JIT {
     bool kw_only = false;
     std::optional<size_t> rest_idx;
     for (auto& p : paramsAst.nodes) {
-      if (culebra::is_kw_only_sep(*p)) {
+      auto pv = culebra::view_parameter(*p);
+      if (pv.is_kw_only_sep) {
         kw_only = true;
         continue;
       }
-      if (culebra::is_kwargs_rest(*p)) {
-        params.push_back({p->token, false, false, true});
+      if (pv.is_kwargs_rest) {
+        params.push_back({pv.name, false, false, true});
         rest_idx = params.size() - 1;
         continue;
       }
       params.push_back({
-          p->nodes[1]->token,
-          culebra::extract_default_expr(*p) != nullptr,
+          pv.name,
+          pv.default_value != nullptr,
           kw_only,
           false,
       });

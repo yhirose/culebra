@@ -4302,13 +4302,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     bool seen_rest = false;
     size_t kw_only_count = 0;
     for (auto node : params_ast.nodes) {
+      auto pv = culebra::view_parameter(*node);
       if (seen_rest) {
         throw CulebraError("SyntaxError",
             "'**' catch-all must be the last parameter",
             static_cast<long>(node->line),
             static_cast<long>(node->column));
       }
-      if (is_kw_only_sep(*node)) {
+      if (pv.is_kw_only_sep) {
         if (seen_sep) {
           throw CulebraError("SyntaxError",
               "duplicate '*' keyword-only separator",
@@ -4322,25 +4323,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         seen_default = false;
         continue;
       }
-      if (is_kwargs_rest(*node)) {
-        params.push_back({node->token, false, {}, nullptr, {}, false, true});
+      if (pv.is_kwargs_rest) {
+        params.push_back({pv.name, false, {}, nullptr, {}, false, true});
         seen_rest = true;
         continue;
       }
-      auto mut = node->nodes[0]->token == "mut";
-      auto& id = *node->nodes[1];
-      const auto& name = id.token;
-      auto type_name = extract_type_annotation(*node, 2);
-      auto* default_expr = extract_default_expr(*node);
-      if (default_expr) {
+      if (pv.default_value) {
         seen_default = true;
       } else if (seen_default && !kw_only) {
         throw CulebraError("SyntaxError", std::format(
             "non-default parameter '{}' follows a default parameter at {}:{}.",
-            std::string(name), id.line, id.column),
-            static_cast<long>(id.line), static_cast<long>(id.column));
+            std::string(pv.name), pv.name_line, pv.name_col),
+            static_cast<long>(pv.name_line),
+            static_cast<long>(pv.name_col));
       }
-      params.push_back({name, mut, type_name, default_expr, {}, kw_only});
+      params.push_back({pv.name, pv.mutable_, pv.type_annotation,
+                        pv.default_value, {}, kw_only});
       if (kw_only) kw_only_count++;
     }
     if (seen_sep && kw_only_count == 0 && !seen_rest) {

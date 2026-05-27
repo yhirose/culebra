@@ -559,6 +559,43 @@ inline const peg::Ast* extract_default_expr(const peg::Ast& param_node) {
   return nullptr;
 }
 
+// View of a PARAMETER AST node — see grammar:
+//   PARAMETER <- KWARGS_REST / KW_ONLY_SEP
+//              / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+// Three forms collapse to one struct: KW_ONLY_SEP (`*`) carries only the
+// separator flag, KWARGS_REST (`**name`) carries name on the node token
+// itself, normal parameters carry `[MUTABLE, IDENTIFIER, ...]`. Callers
+// that consume multiple fields read through the view; pure boolean
+// predicates (`is_kw_only_sep` / `is_kwargs_rest`) remain available.
+struct ParameterView {
+  bool is_kwargs_rest;          // tag == KWARGS_REST
+  bool is_kw_only_sep;          // tag == KW_ONLY_SEP
+  bool mutable_;                // normal form: node[0].token == "mut"
+  std::string_view name;        // KWARGS_REST: p.token; normal: IDENTIFIER child
+  size_t name_line;
+  size_t name_col;
+  std::string_view type_annotation;   // normal form, "" when absent
+  const peg::Ast* default_value;      // normal form, nullptr when absent
+};
+
+inline ParameterView view_parameter(const peg::Ast& p) {
+  if (is_kw_only_sep(p)) {
+    return ParameterView{false, true, false, {}, p.line, p.column, {}, nullptr};
+  }
+  if (is_kwargs_rest(p)) {
+    return ParameterView{true, false, false, p.token, p.line, p.column,
+                         {}, nullptr};
+  }
+  const auto& id = *p.nodes[1];
+  return ParameterView{
+      false, false,
+      p.nodes[0]->token == "mut",
+      id.token, id.line, id.column,
+      extract_type_annotation(p, 2),
+      extract_default_expr(p),
+  };
+}
+
 // For a FUNCTION AST node, returns the declared return type (or {}) and
 // writes the body's node index to *body_idx.
 inline std::string_view extract_return_type(const peg::Ast& fn_ast,
