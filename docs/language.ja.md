@@ -1640,7 +1640,7 @@ trait method に body を付けると default 実装になり、 適合クラス
 
 #### Built-in trait
 
-runtime は preamble として 5 つの基本 trait を ship — `import` 不要
+runtime は preamble として 7 つの基本 trait を ship — `import` 不要
 で使える:
 
 | Trait | Required | Default |
@@ -1650,6 +1650,8 @@ runtime は preamble として 5 つの基本 trait を ship — `import` 不要
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
 | `Hashable` | `hash() -> Long` | — |
+| `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
+| `Iterable` | `iter() -> Iterator` | — |
 
 `cmp` だけ書けば 6 関係 method が揃い、 `eq` だけ書けば `neq` が
 入り、 `to_s` だけ書けば Stringer の使える場所で受け取れる。
@@ -1659,17 +1661,28 @@ runtime は preamble として 5 つの基本 trait を ship — `import` 不要
 user class は `hash()` (戻り値 `Long`) と `eq(other)` を定義すれば
 key として使える。
 
+`Iterator` + `Iterable` は for-in protocol を formal 化 (Kotlin /
+Java 流)。 `iter() -> Iterator` / `has_next() -> Bool` /
+`next() -> Any` を持つ class は iterable で、全 pipeline method
+(`map` / `filter` / `take` / `collect` / ...) で使える。
+`has_next()` は idempotent (連続呼び出しで次値を消費しない) — runtime
+wrapper が lookahead を 1 つ cache する。 `next()` は `nil` を含む
+任意値を yield 可能 (nil terminator 設計だと nil の区別ができない)、
+終端判定は `has_next()` と pair で行うのが契約。
+
 組み込みの primitive (Long / String / Array 等) もハードコード
 された対応表で trait に conform する — class wrapper 不要:
 
-| Primitive | Stringer | Eq | Comparable | StringLike | Hashable |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) | — | ✓ |
-| Long / Float | ✓ | ✓ | ✓ | — | ✓ |
-| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Tuple | ✓ | ✓ | — | — | ✓ |
-| Array / Set / Tensor | ✓ | ✓ | — | — | — |
-| Function | ✓ | — | — | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike | Hashable | Iterable |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool のみ) | — | ✓ | — |
+| Long / Float | ✓ | ✓ | ✓ | — | ✓ | — |
+| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Tuple | ✓ | ✓ | — | — | ✓ | ✓ |
+| Array / Set | ✓ | ✓ | — | — | — | ✓ |
+| Object (bare literal) | ✓ | ✓ | — | — | — | ✓ |
+| Tensor | ✓ | ✓ | — | — | — | — |
+| Function | ✓ | — | — | — | — | — |
 
 `fn show(x: Stringer) { to_string(x) }` は `show(42)` や
 `show([1, 2, 3])` を class wrapper なしで受ける。 ただし trait

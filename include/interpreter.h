@@ -157,7 +157,10 @@ inline int multifn_specificity(std::string_view param_type,
   // below Union exact, but above the bare-Object catch.
   if (auto* trait = lookup_trait(param_type)) {
     if (arg_type == "Object") {
-      return -1;
+      // Bare Object literal — `ObjectValue::builtins()` provides
+      // default methods (`iter`, etc.) so the built-in table is the
+      // authority on which traits the literal conforms to.
+      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
     }
     // Primitive arg: consult the hard-coded built-in conformance
     // table directly (no instance methods to walk).
@@ -1844,7 +1847,10 @@ inline bool type_matches(const Value& val, std::string_view name) {
       // and this instance's class has the required methods, accept.
       // Cached per (class, trait) for O(1) repeat dispatch.
       if (auto* trait = lookup_trait(name)) {
-        if (!tag) return false;  // no class tag → not eligible
+        // Bare Object literal — `ObjectValue::builtins()` provides
+        // defaults (e.g. `iter()` for Iterable) so the built-in table
+        // is authoritative here.
+        if (!tag) return builtin_conforms_to_trait("Object", name);
         std::string class_name(*tag);
         std::string trait_name(name);
         std::unique_lock lock(trait_mutex());
@@ -1975,26 +1981,50 @@ inline std::pair<long, long> normalize_slice(long start, long end, long size) {
   return {start, end};
 }
 
-// Build an iterator-protocol step Object. Two shapes: {done: true}
-// (end marker) and {done: false, value: v} (yielded value).
-inline Value _iter_step_done() {
-  ObjectValue step;
-  step.initialize("done", Value(true), false);
-  return Value(std::move(step));
+// Sentinels for an advance closure handed to `_make_iterator`. Returning
+// `_iter_step_done()` ends the stream; `_iter_step_value(v)` yields v.
+// (`std::optional<Value>` exposed as inline helpers so the dozens of
+// existing advance closures keep their original return statements; only
+// the wrapper changes shape under the Kotlin-style protocol.)
+inline std::optional<Value> _iter_step_done() {
+  return std::nullopt;
 }
 
-inline Value _iter_step_value(Value v) {
-  ObjectValue step;
-  step.initialize("done", Value(false), false);
-  step.initialize("value", std::move(v), false);
-  return Value(std::move(step));
+inline std::optional<Value> _iter_step_value(Value v) {
+  return std::optional<Value>{std::move(v)};
 }
 
-// Build an Iterator ObjectValue: `iter` returns self (so the iterator
-// is also an Iterable), `next` is the caller-supplied advance function
-// (captures its own state).
-template <typename NextFn>
-inline Value _make_iterator(NextFn&& next_impl) {
+// Build an Iterator ObjectValue conforming to the built-in
+// `Iterator { has_next() -> Bool, next() -> Any }` + `Iterable.iter()`
+// traits. The advance closure yields one value (or done) per call; we
+// cache the lookahead so `has_next()` and `next()` stay idempotent in
+// either order (Kotlin/Java contract) without requiring every advance
+// closure to expose two callbacks.
+template <typename AdvanceFn>
+inline Value _make_iterator(AdvanceFn&& advance) {
+  // - cached empty + ready=false → lookahead not yet pulled.
+  // - cached empty + ready=true  → drained (advance returned nullopt).
+  // - cached filled              → next value to surrender.
+  struct LookaheadState {
+    std::optional<Value> cached;
+    bool ready = false;
+    bool done = false;
+    std::function<std::optional<Value>(std::shared_ptr<Environment>)> advance;
+  };
+  auto state = std::make_shared<LookaheadState>();
+  state->advance = std::forward<AdvanceFn>(advance);
+
+  auto ensure = [state](std::shared_ptr<Environment> callEnv) {
+    if (state->ready) return;
+    auto v = state->advance(callEnv);
+    state->ready = true;
+    if (!v) {
+      state->done = true;
+    } else {
+      state->cached = std::move(*v);
+    }
+  };
+
   ObjectValue iter_obj;
   iter_obj.initialize(
       "iter",
@@ -2003,8 +2033,27 @@ inline Value _make_iterator(NextFn&& next_impl) {
       })),
       false);
   iter_obj.initialize(
+      "has_next",
+      Value(FunctionValue({}, [state, ensure](
+                                  std::shared_ptr<Environment> callEnv) {
+        ensure(callEnv);
+        return Value(!state->done);
+      })),
+      false);
+  iter_obj.initialize(
       "next",
-      Value(FunctionValue({}, std::forward<NextFn>(next_impl))),
+      Value(FunctionValue({}, [state, ensure](
+                                  std::shared_ptr<Environment> callEnv) {
+        ensure(callEnv);
+        if (state->done) {
+          throw CulebraError("StopIteration",
+                             "next() called on a drained iterator");
+        }
+        auto v = std::move(*state->cached);
+        state->cached.reset();
+        state->ready = false;
+        return v;
+      })),
       false);
   return Value(std::move(iter_obj));
 }
@@ -2105,14 +2154,14 @@ inline std::string str_quoted_with_special(const Value& v) {
 }
 
 // Advance an iterator one step. Returns the yielded value, or
-// `std::nullopt` when the iterator is done. Used by iterator
-// methods to replace the repeated 4-line "call next(), check done,
-// extract value" pattern with a single expression.
+// `std::nullopt` when the iterator is drained. Built on the Kotlin-
+// style `Iterator { has_next() -> Bool, next() -> Any }` contract so
+// each upstream advance is one `has_next()` + (when true) `next()`.
 inline std::optional<Value> _iter_next_value(const Value& upstream) {
-  auto step = _invoke_method_no_args(upstream, "next");
-  const auto& s = step.to_object();
-  if (s.get("done").to_bool()) return std::nullopt;
-  return s.get("value");
+  if (!_invoke_method_no_args(upstream, "has_next").to_bool()) {
+    return std::nullopt;
+  }
+  return _invoke_method_no_args(upstream, "next");
 }
 
 // Invoke a user-supplied callable (mapper/predicate/reducer callback)
@@ -4072,30 +4121,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (iter_val.type != Value::Object) {
       throw iter_proto_error("iter() did not return an Object");
     }
+    const auto& iter_obj = iter_val.to_object();
+    if (!iter_obj.has("has_next") || !iter_obj.has("next")) {
+      throw iter_proto_error("iterator missing has_next()/next()");
+    }
 
+    // Drive via the Kotlin-style protocol: `has_next()` gates each
+    // `next()`. `_iter_next_value` already encapsulates that pair.
     for (;;) {
-      // step = iterator.next()
-      const auto& iter_obj = iter_val.to_object();
-      if (!iter_obj.has("next")) {
-        throw iter_proto_error("iterator has no next()");
-      }
-      auto next_fn = iter_obj.get("next");
-      if (next_fn.type != Value::Function) {
-        throw iter_proto_error("iterator.next is not a Function");
-      }
-      auto step = next_fn.to_function().eval(_make_method_call_env(
-          iter_val, iter_expr.line, iter_expr.column));
-      if (step.type != Value::Object) {
-        throw iter_proto_error("next() did not return an Object");
-      }
-      const auto& step_obj = step.to_object();
-      if (step_obj.has("done") && step_obj.get("done").to_bool()) {
-        break;
-      }
-      Value loop_val = step_obj.has("value") ? step_obj.get("value") : Value();
+      auto v = _iter_next_value(iter_val);
+      if (!v) break;
 
       auto scopeEnv = make_scope(env);
-      scopeEnv->initialize(var_name, loop_val, false);
+      scopeEnv->initialize(var_name, std::move(*v), false);
       try {
         eval(body, scopeEnv);
         run_deferred(scopeEnv);

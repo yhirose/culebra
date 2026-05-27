@@ -1742,7 +1742,12 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   // every required method (matching arity). Primitive tags can't
   // conform (no class tag, no method table).
   if (auto* trait = culebra::lookup_trait(expected)) {
-    if (tag != TAG_OBJECT || class_tag_view.empty()) return false;
+    if (tag != TAG_OBJECT) return false;
+    if (class_tag_view.empty()) {
+      // Bare Object literal — ObjectValue::builtins() provides defaults
+      // (e.g. `iter()` for Iterable) so the built-in table answers.
+      return culebra::builtin_conforms_to_trait("Object", expected);
+    }
     std::string class_name(class_tag_view);
     std::string trait_name(expected);
     std::unique_lock lock(culebra::trait_mutex());
@@ -4134,129 +4139,158 @@ inline JitValue _iter_self_iter_fn(JitClosure*, JitValue this_val,
   return this_val;
 }
 
-// Look up an iterator's `next` closure pointer. Used once at entry to
-// a walk so subsequent advances skip the std::map::find per step.
-// Returns nullptr if the receiver isn't a proper iterator (tag must be
-// Object, must carry a Function-typed `next`).
-inline JitClosure* _iter_next_closure(JitValue iter_val) {
+// Look up a 0-arg method closure on an iterator Object. Returns nullptr
+// if the receiver isn't a TAG_OBJECT or doesn't expose `method` as a
+// Function. Used once at walk entry so each step skips the per-iteration
+// std::map::find.
+inline JitClosure* _iter_method_closure(JitValue iter_val,
+                                        const char* method) {
   if (iter_val.tag != TAG_OBJECT) return nullptr;
   auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
-  auto idx = iter_obj->find_slot("next");
+  auto idx = iter_obj->find_slot(method);
   if (idx == static_cast<size_t>(-1)) return nullptr;
   const auto& entry = iter_obj->slots[idx];
   if (entry.value.tag != TAG_FUNC) return nullptr;
   return reinterpret_cast<JitClosure*>(entry.value.data);
 }
 
-// Advance with an on-the-fly next-closure lookup — one std::map::find
-// per step. Used by call sites that don't hold on to the iterator
-// long enough to bother caching.
-inline JitValue _iter_advance(JitValue iter_val) {
-  auto* next_cls = _iter_next_closure(iter_val);
-  culebra_runtime_value_retain(iter_val.tag, iter_val.data);
-  return reinterpret_cast<JitFn>(next_cls->fn_ptr)(
-      next_cls, iter_val, 0, nullptr);
+inline JitClosure* _iter_has_next_closure(JitValue iter_val) {
+  return _iter_method_closure(iter_val, "has_next");
 }
 
-// Advance using a pre-cached `next` closure (fast path). Extern "C"
-// forbids C++ overloading on signature, so the cached variant gets a
-// distinct name.
-inline JitValue _iter_advance_fast(JitClosure* next_cls,
-                                   JitValue iter_val) {
-  culebra_runtime_value_retain(iter_val.tag, iter_val.data);
-  return reinterpret_cast<JitFn>(next_cls->fn_ptr)(
-      next_cls, iter_val, 0, nullptr);
+inline JitClosure* _iter_next_closure(JitValue iter_val) {
+  return _iter_method_closure(iter_val, "next");
 }
 
-inline bool _iter_step_done(JitValue step) {
-  auto* step_obj = reinterpret_cast<JitObject*>(step.data);
-  auto idx = step_obj->find_slot("done");
-  if (idx == static_cast<size_t>(-1)) return false;
-  auto v = step_obj->slots[idx].value;
-  if (v.tag == TAG_NIL) return false;
-  if (v.tag == TAG_BOOL || v.tag == TAG_LONG) return v.data != 0;
-  return true;
-}
+// Lookahead state values stored in the state cell appended by
+// `_iter_wrap_fast`. The cell carries TAG_LONG with these payloads.
+enum : int64_t {
+  _ITER_LA_EMPTY   = 0,   // no cached value; pull on demand
+  _ITER_LA_FILLED  = 1,   // value cell holds a +1 cached lookahead
+  _ITER_LA_DRAINED = 2,   // upstream returned done; has_next stays false
+};
 
-// Returns step.value with +1 retained (caller owns). Nil if missing.
-inline JitValue _iter_step_value(JitValue step) {
-  auto* step_obj = reinterpret_cast<JitObject*>(step.data);
-  auto idx = step_obj->find_slot("value");
-  if (idx == static_cast<size_t>(-1)) return {0, 0};
-  auto v = step_obj->slots[idx].value;
-  culebra_runtime_value_retain(v.tag, v.data);
-  return v;
-}
-
-// Build a {done: true} step Object.
-inline JitObject* _iter_done_step() {
-  auto* step = culebra_runtime_object_new();
-  culebra_runtime_object_set(step, "done", /*mut*/ false, TAG_BOOL, 1, 0,
-                             0);
-  return step;
-}
-
-// Build a {done: false, value: v} step. Transfers v's +1 into the step.
-inline JitObject* _iter_value_step(JitValue v) {
-  auto* step = culebra_runtime_object_new();
-  culebra_runtime_object_set(step, "done", /*mut*/ false, TAG_BOOL, 0, 0,
-                             0);
-  culebra_runtime_object_set(step, "value", /*mut*/ false, v.tag, v.data, 0,
-                             0);
-  return step;
-}
-
-// Pull the next value via out-params; skips the `{done, value}` step
-// Object allocation when the iterator carries a `fast_next_fn`. Returns
-// true on a value step with out_tag/out_data holding a +1 Value, false
-// on done. Falls back to the user-visible `next` closure otherwise.
-inline bool _iter_advance_raw(JitClosure* next_cls, JitValue iter_val,
+// Pull the next value via out-params. For iterators built by
+// `_iter_wrap_fast` (i.e. those exposing `fast_next_fn`), consults the
+// lookahead state cells appended by that factory so a prior
+// `has_next()` peek is consumed transparently. For user-defined
+// iterators (no fast_next_fn) calls `has_next()` then `next()` on the
+// user-visible closures.
+inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
+                              JitValue iter_val,
                               int8_t* out_tag, int64_t* out_data) {
   if (iter_val.tag == TAG_OBJECT) {
     auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
     if (iter_obj->fast_next_fn) {
+      size_t n = next_cls->n_captures;
+      JitCell* state_cell = next_cls->captures[n - 2];
+      JitCell* value_cell = next_cls->captures[n - 1];
+      if (state_cell->value.data == _ITER_LA_FILLED) {
+        // Consume the cached peek; ownership of value_cell's +1
+        // transfers to the caller.
+        *out_tag = value_cell->value.tag;
+        *out_data = value_cell->value.data;
+        state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
+        value_cell->value = {TAG_NIL, 0};
+        return true;
+      }
+      if (state_cell->value.data == _ITER_LA_DRAINED) return false;
       bool done;
-      // fast_next_fn reads state from cls->captures; iter_val is passed
-      // unretained since the fn ignores it.
       iter_obj->fast_next_fn(next_cls, iter_val, &done, out_tag, out_data);
-      return !done;
+      if (done) {
+        state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
+        return false;
+      }
+      return true;
     }
   }
-  auto step = _iter_advance_fast(next_cls, iter_val);
-  if (_iter_step_done(step)) {
-    _culebra_value_release_impl(step.tag, step.data);
-    return false;
-  }
-  auto v = _iter_step_value(step);
+  // Slow path: user-built iterator. Drive its has_next() / next()
+  // closures directly; the user owns any caching they need.
+  culebra_runtime_value_retain(iter_val.tag, iter_val.data);
+  auto hn = reinterpret_cast<JitFn>(has_next_cls->fn_ptr)(
+      has_next_cls, iter_val, 0, nullptr);
+  bool has = (hn.tag == TAG_BOOL && hn.data != 0);
+  _culebra_value_release_impl(hn.tag, hn.data);
+  if (!has) return false;
+  culebra_runtime_value_retain(iter_val.tag, iter_val.data);
+  auto v = reinterpret_cast<JitFn>(next_cls->fn_ptr)(
+      next_cls, iter_val, 0, nullptr);
   *out_tag = v.tag;
   *out_data = v.data;
-  _culebra_value_release_impl(step.tag, step.data);
   return true;
 }
 
-// Pull the next value from an iterator using a pre-cached `next`
-// closure. Returns true with `out_v` holding a +1-retained Value on
-// success; false on done. Uses the raw fast path when available.
-inline bool _iter_pull(JitClosure* next_cls, JitValue iter_val,
-                       JitValue& out_v) {
-  return _iter_advance_raw(next_cls, iter_val, &out_v.tag, &out_v.data);
+// Pull the next value from an iterator using pre-cached `has_next` +
+// `next` closures. Returns true with `out_v` holding a +1-retained
+// Value on success; false on done. Uses the raw fast path when
+// available (see `_iter_advance_raw`).
+inline bool _iter_pull(JitClosure* has_next_cls, JitClosure* next_cls,
+                       JitValue iter_val, JitValue& out_v) {
+  return _iter_advance_raw(has_next_cls, next_cls, iter_val,
+                            &out_v.tag, &out_v.data);
 }
 
-// Build a wrapper iterator Object with `iter: self, next: <next_fn>`
-// where `next_fn` captures the given cells. Transfers each cell's +1
-// into the captures slab; caller does NOT retain afterwards.
+// Forward decl: `culebra_runtime_cell_retain` is defined further down
+// alongside the other refcount entries (one big TU; the iterator
+// factories above need this before that definition is parsed).
+extern "C" {
+CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
+}
+
+// Build a fresh JitCell holding the given JitValue (with +1 already on
+// it, transferred into the cell). Used by `_iter_wrap_fast` to append
+// the lookahead state + value cells.
+inline JitCell* _iter_make_cell(JitValue v) {
+  auto* c = culebra_runtime_cell_new(v.tag, v.data);
+  return c;
+}
+
+// Build a wrapper iterator Object exposing the Kotlin-style
+// `Iterator { has_next() -> Bool, next() -> Any }` + `Iterable.iter()`
+// protocol. Both has_next / next closures share the SAME captures
+// slab (built once from `captures` + 2 trailing lookahead cells so
+// `_iter_advance_raw` and the user-visible trampolines can peek/cache
+// transparently).
+//
+// Captures layout: [user's captures..., state_cell, value_cell].
+// state_cell.value.data ∈ { _ITER_LA_EMPTY, _ITER_LA_FILLED, _ITER_LA_DRAINED }.
+// value_cell holds a +1-owned lookahead while state == FILLED.
 inline JitObject* _iter_wrap_new(
+    JitValue (*has_next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
     JitValue (*next_fn)(JitClosure*, JitValue, int64_t, JitValue*),
     std::initializer_list<JitCell*> captures) {
+  auto* state_cell = _iter_make_cell({TAG_LONG, _ITER_LA_EMPTY});
+  auto* value_cell = _iter_make_cell({TAG_NIL, 0});
+  size_t total = captures.size() + 2;
+  auto write_captures = [&](JitClosure* cls) {
+    size_t i = 0;
+    for (auto* c : captures) {
+      culebra_runtime_cell_retain(c);
+      cls->captures[i++] = c;
+    }
+    culebra_runtime_cell_retain(state_cell);
+    cls->captures[i++] = state_cell;
+    culebra_runtime_cell_retain(value_cell);
+    cls->captures[i++] = value_cell;
+  };
   auto* iter_cls = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0);
+  auto* has_next_cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(has_next_fn), total, 0);
+  write_captures(has_next_cls);
   auto* next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(next_fn), captures.size(), 0);
-  size_t i = 0;
-  for (auto* c : captures) next_cls->captures[i++] = c;
+      reinterpret_cast<void*>(next_fn), total, 0);
+  write_captures(next_cls);
+  // Caller transferred +1 on each user cell — release the originals
+  // since we now hold one retain per cell per closure (above).
+  for (auto* c : captures) _culebra_cell_release(c);
+  _culebra_cell_release(state_cell);
+  _culebra_cell_release(value_cell);
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(obj, "iter", /*mut*/ false, GC_TAG_FUNC,
                              reinterpret_cast<int64_t>(iter_cls), 0, 0);
+  culebra_runtime_object_set(obj, "has_next", /*mut*/ false, GC_TAG_FUNC,
+                             reinterpret_cast<int64_t>(has_next_cls), 0, 0);
   culebra_runtime_object_set(obj, "next", /*mut*/ false, GC_TAG_FUNC,
                              reinterpret_cast<int64_t>(next_cls), 0, 0);
   return obj;
@@ -4264,29 +4298,66 @@ inline JitObject* _iter_wrap_new(
 
 }  // extern "C" (close briefly for the iterator-wrapper templates)
 
-// Trampoline for `user-level iter.next()` that delegates to a fast_fn
-// and wraps the result in a fresh `{done, value}` step Object. Reached
-// only from user code calling `.next()` directly — in-JIT for-in and
-// the terminal/lazy methods go through `_iter_advance_raw` and skip
-// this step-alloc entirely.
+// has_next() trampoline. Peeks one value via FastFn (caching in the
+// state cells) so a subsequent `next()` can consume the cached value
+// without re-invoking FastFn. Idempotent on repeat calls.
 template <JitIterFastFn FastFn>
-inline JitValue _iter_trampoline_next_fn(JitClosure* cls, JitValue iv,
-                                         int64_t, JitValue*) {
+inline JitValue _iter_trampoline_has_next_fn(JitClosure* cls, JitValue iv,
+                                              int64_t, JitValue*) {
+  size_t n = cls->n_captures;
+  JitCell* state_cell = cls->captures[n - 2];
+  JitCell* value_cell = cls->captures[n - 1];
+  if (state_cell->value.data == _ITER_LA_FILLED) return {TAG_BOOL, 1};
+  if (state_cell->value.data == _ITER_LA_DRAINED) return {TAG_BOOL, 0};
   bool done;
   int8_t tag;
   int64_t data;
   FastFn(cls, iv, &done, &tag, &data);
-  if (done) return {TAG_OBJECT, reinterpret_cast<int64_t>(_iter_done_step())};
-  return {TAG_OBJECT,
-          reinterpret_cast<int64_t>(_iter_value_step({tag, data}))};
+  if (done) {
+    state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
+    return {TAG_BOOL, 0};
+  }
+  state_cell->value = {TAG_LONG, _ITER_LA_FILLED};
+  value_cell->value = {tag, data};   // +1 transfers into the cell
+  return {TAG_BOOL, 1};
 }
 
-// Build a wrapper Object whose user-visible `next` trampolines to
-// `FastFn` and whose `fast_next_fn` slot exposes `FastFn` directly for
-// the in-JIT hot path.
+// next() trampoline. Returns the cached lookahead when present (cheap
+// path after has_next()), otherwise pulls a fresh value via FastFn.
+// Calling next() past end yields nil; the contract advises pairing
+// with has_next() to avoid that case.
+template <JitIterFastFn FastFn>
+inline JitValue _iter_trampoline_next_fn(JitClosure* cls, JitValue iv,
+                                          int64_t, JitValue*) {
+  size_t n = cls->n_captures;
+  JitCell* state_cell = cls->captures[n - 2];
+  JitCell* value_cell = cls->captures[n - 1];
+  if (state_cell->value.data == _ITER_LA_FILLED) {
+    auto v = value_cell->value;
+    state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
+    value_cell->value = {TAG_NIL, 0};
+    return v;  // +1 transfers to caller
+  }
+  if (state_cell->value.data == _ITER_LA_DRAINED) return {TAG_NIL, 0};
+  bool done;
+  int8_t tag;
+  int64_t data;
+  FastFn(cls, iv, &done, &tag, &data);
+  if (done) {
+    state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
+    return {TAG_NIL, 0};
+  }
+  return {tag, data};
+}
+
+// Build a wrapper Object whose user-visible has_next / next trampoline
+// to `FastFn` (shared lookahead cells) and whose `fast_next_fn` slot
+// exposes `FastFn` directly so `_iter_advance_raw` can take the fast
+// path while still respecting any cached peek.
 template <JitIterFastFn FastFn>
 inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures) {
-  auto* obj = _iter_wrap_new(&_iter_trampoline_next_fn<FastFn>, captures);
+  auto* obj = _iter_wrap_new(&_iter_trampoline_has_next_fn<FastFn>,
+                              &_iter_trampoline_next_fn<FastFn>, captures);
   obj->fast_next_fn = FastFn;
   return obj;
 }
@@ -4299,8 +4370,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
     int8_t it, int64_t id) {
   auto* out = culebra_runtime_array_new();
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     culebra_runtime_array_push(out, v.tag, v.data);  // consumes +1
   }
   return out;
@@ -4310,8 +4382,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
     int8_t it, int64_t id) {
   int64_t n = 0;
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     _culebra_value_release_impl(v.tag, v.data);
     n++;
   }
@@ -4322,8 +4395,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "for_each", line, col);
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     auto r = _culebra_invoke1(fn, v);
     _culebra_value_release_impl(r.tag, r.data);
   }
@@ -4336,8 +4410,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
   auto* fn = _culebra_expect_callback(ft, fd, 2, "reduce", line, col);
   JitValue acc = {init_tag, init_data};
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     acc = _culebra_invoke2(fn, acc, v);
   }
   *out_tag = acc.tag;
@@ -4349,8 +4424,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
     int8_t* out_tag, int64_t* out_data) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "find", line, col);
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     culebra_runtime_value_retain(v.tag, v.data);  // an extra +1 for the call
     auto r = _culebra_invoke1(fn, v);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
@@ -4370,8 +4446,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "any", line, col);
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     auto r = _culebra_invoke1(fn, v);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
@@ -4384,8 +4461,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(ft, fd, 1, "all", line, col);
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     auto r = _culebra_invoke1(fn, v);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
@@ -4403,8 +4481,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_sum(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   int64_t acc = 0;
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
       culebra::throw_type_error_at(line, col);
@@ -4418,8 +4497,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_product(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   int64_t acc = 1;
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
       culebra::throw_type_error_at(line, col);
@@ -4432,8 +4512,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_product(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  if (!_iter_pull(next_cls, {it, id}, v)) {
+  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     throw culebra::CulebraError("ValueError", std::format(
         "min of empty Iterator at {}:{}.", line, col), line, col);
   }
@@ -4442,7 +4523,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
     culebra::throw_type_error_at(line, col);
   }
   int64_t best = v.data;
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
       culebra::throw_type_error_at(line, col);
@@ -4455,8 +4536,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitValue v;
+  auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
-  if (!_iter_pull(next_cls, {it, id}, v)) {
+  if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     throw culebra::CulebraError("ValueError", std::format(
         "max of empty Iterator at {}:{}.", line, col), line, col);
   }
@@ -4465,7 +4547,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
     culebra::throw_type_error_at(line, col);
   }
   int64_t best = v.data;
-  while (_iter_pull(next_cls, {it, id}, v)) {
+  while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     if (v.tag != TAG_LONG) {
       _culebra_value_release_impl(v.tag, v.data);
       culebra::throw_type_error_at(line, col);
@@ -4488,10 +4570,11 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
                               int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
   int8_t tag;
   int64_t data;
-  if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+  if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
     *done = true;
     return;
   }
@@ -4508,9 +4591,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
-  return _iter_wrap_fast<&_iter_map_fast_fn>({up, f, up_next_cell});
+  return _iter_wrap_fast<&_iter_map_fast_fn>(
+      {up, f, up_has_next_cell, up_next_cell});
 }
 
 // filter: captures upstream + predicate + cached upstream next.
@@ -4518,12 +4604,13 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
   auto* fn_cls = reinterpret_cast<JitClosure*>(fnv.data);
   for (;;) {
     int8_t tag;
     int64_t data;
-    if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
       *done = true;
       return;
     }
@@ -4548,9 +4635,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
-  return _iter_wrap_fast<&_iter_filter_fast_fn>({up, f, up_next_cell});
+  return _iter_wrap_fast<&_iter_filter_fast_fn>(
+      {up, f, up_has_next_cell, up_next_cell});
 }
 
 // take: captures upstream + remaining (Long cell, decremented each step)
@@ -4563,10 +4653,11 @@ inline void _iter_take_fast_fn(JitClosure* cls, JitValue, bool* done,
     return;
   }
   auto upstream = cls->captures[0]->value;
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
   int8_t tag;
   int64_t data;
-  if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+  if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
     *done = true;
     return;
   }
@@ -4581,9 +4672,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* rem = culebra_runtime_cell_new(TAG_LONG, n);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
-  return _iter_wrap_fast<&_iter_take_fast_fn>({up, rem, up_next_cell});
+  return _iter_wrap_fast<&_iter_take_fast_fn>(
+      {up, rem, up_has_next_cell, up_next_cell});
 }
 
 // skip: captures upstream + remaining-to-skip + cached upstream next.
@@ -4591,18 +4685,19 @@ inline void _iter_skip_fast_fn(JitClosure* cls, JitValue, bool* done,
                                int8_t* out_tag, int64_t* out_data) {
   auto* rem_cell = cls->captures[1];
   auto upstream = cls->captures[0]->value;
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
   while (rem_cell->value.data > 0) {
     int8_t t;
     int64_t d;
-    if (!_iter_advance_raw(up_next, upstream, &t, &d)) {
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &t, &d)) {
       *done = true;
       return;
     }
     _culebra_value_release_impl(t, d);
     rem_cell->value.data--;
   }
-  if (!_iter_advance_raw(up_next, upstream, out_tag, out_data)) {
+  if (!_iter_advance_raw(up_has_next, up_next, upstream, out_tag, out_data)) {
     *done = true;
     return;
   }
@@ -4614,9 +4709,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* rem = culebra_runtime_cell_new(TAG_LONG, n);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
-  return _iter_wrap_fast<&_iter_skip_fast_fn>({up, rem, up_next_cell});
+  return _iter_wrap_fast<&_iter_skip_fast_fn>(
+      {up, rem, up_has_next_cell, up_next_cell});
 }
 
 // take_while: captures upstream + predicate + stopped flag + cached upstream
@@ -4630,11 +4728,12 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
   }
   auto upstream = cls->captures[0]->value;
   auto pv = cls->captures[1]->value;
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
   auto* fn_cls = reinterpret_cast<JitClosure*>(pv.data);
   int8_t tag;
   int64_t data;
-  if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+  if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
     *done = true;
     return;
   }
@@ -4661,10 +4760,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
   auto* up = culebra_runtime_cell_new(it, id);
   auto* p = culebra_runtime_cell_new(ft, fd);
   auto* stopped = culebra_runtime_cell_new(TAG_BOOL, 0);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
   return _iter_wrap_fast<&_iter_take_while_fast_fn>(
-      {up, p, stopped, up_next_cell});
+      {up, p, stopped, up_has_next_cell, up_next_cell});
 }
 
 // enumerate: captures upstream + index + cached upstream next.
@@ -4672,10 +4773,11 @@ inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
                                     int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto* idx_cell = cls->captures[1];
-  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_has_next = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* up_next = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
   int8_t tag;
   int64_t data;
-  if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+  if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
     *done = true;
     return;
   }
@@ -4694,27 +4796,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_enumerate(
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* idx = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* up_has_next_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next_cell = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
-  return _iter_wrap_fast<&_iter_enumerate_fast_fn>({up, idx, up_next_cell});
+  return _iter_wrap_fast<&_iter_enumerate_fast_fn>(
+      {up, idx, up_has_next_cell, up_next_cell});
 }
 
-// chain: captures iter1 + iter2 + phase + cached up1 next + cached up2 next.
+// chain: captures iter1 + iter2 + phase + has_next/next pair for each.
 inline void _iter_chain_fast_fn(JitClosure* cls, JitValue, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* phase_cell = cls->captures[2];
-  auto* n1 = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
-  auto* n2 = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  auto* h1 = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* n1 = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  auto* h2 = reinterpret_cast<JitClosure*>(cls->captures[5]->value.data);
+  auto* n2 = reinterpret_cast<JitClosure*>(cls->captures[6]->value.data);
   if (phase_cell->value.data == 0) {
     auto up1 = cls->captures[0]->value;
-    if (_iter_advance_raw(n1, up1, out_tag, out_data)) {
+    if (_iter_advance_raw(h1, n1, up1, out_tag, out_data)) {
       *done = false;
       return;
     }
     phase_cell->value.data = 1;
   }
   auto up2 = cls->captures[1]->value;
-  if (_iter_advance_raw(n2, up2, out_tag, out_data)) {
+  if (_iter_advance_raw(h2, n2, up2, out_tag, out_data)) {
     *done = false;
     return;
   }
@@ -4759,27 +4866,34 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);
   auto* phase = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* h1 = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv1)));
   auto* n1 = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv1)));
+  auto* h2 = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv2)));
   auto* n2 = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv2)));
-  return _iter_wrap_fast<&_iter_chain_fast_fn>({u1, u2, phase, n1, n2});
+  return _iter_wrap_fast<&_iter_chain_fast_fn>(
+      {u1, u2, phase, h1, n1, h2, n2});
 }
 
-// zip: captures iter1 + iter2 + cached up1 next + cached up2 next.
+// zip: captures iter1 + iter2 + has_next/next pair for each.
 inline void _iter_zip_fast_fn(JitClosure* cls, JitValue, bool* done,
                               int8_t* out_tag, int64_t* out_data) {
   auto up1 = cls->captures[0]->value;
   auto up2 = cls->captures[1]->value;
-  auto* n1 = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
-  auto* n2 = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* h1 = reinterpret_cast<JitClosure*>(cls->captures[2]->value.data);
+  auto* n1 = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
+  auto* h2 = reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  auto* n2 = reinterpret_cast<JitClosure*>(cls->captures[5]->value.data);
   int8_t t1, t2;
   int64_t d1, d2;
-  if (!_iter_advance_raw(n1, up1, &t1, &d1)) {
+  if (!_iter_advance_raw(h1, n1, up1, &t1, &d1)) {
     *done = true;
     return;
   }
-  if (!_iter_advance_raw(n2, up2, &t2, &d2)) {
+  if (!_iter_advance_raw(h2, n2, up2, &t2, &d2)) {
     _culebra_value_release_impl(t1, d1);
     *done = true;
     return;
@@ -4799,11 +4913,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
   auto iv2 = _iter_coerce_iterable(it2, id2, line, col);
   auto* u1 = culebra_runtime_cell_new(iv1.tag, iv1.data);
   auto* u2 = culebra_runtime_cell_new(iv2.tag, iv2.data);
+  auto* h1 = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv1)));
   auto* n1 = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv1)));
+  auto* h2 = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv2)));
   auto* n2 = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv2)));
-  return _iter_wrap_fast<&_iter_zip_fast_fn>({u1, u2, n1, n2});
+  return _iter_wrap_fast<&_iter_zip_fast_fn>({u1, u2, h1, n1, h2, n2});
 }
 
 // --- String iterator wrappers --------------------------------------------
@@ -4941,6 +5059,14 @@ inline void _iter_from_object_fast_fn(JitClosure* cls, JitValue,
   *out_data = v.data;
 }
 
+// `obj.iter()` dispatcher used by JIT — prefers a user-defined `iter`
+// method (so an Object that already exposes the Iterator protocol
+// returns itself / its underlying state) and only falls back to the
+// key iterator from `ObjectValue::builtins()` for plain literals
+// without a user iter. Mirrors interp's `_get_iterator`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_object_iter_dispatch(JitObject* obj);
+
 // Object.iter(): yield keys in insertion order as Strings. Structural
 // mutation of the underlying Object (add/delete) during iteration
 // raises; value updates on existing keys are allowed.
@@ -4958,38 +5084,65 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
       {obj_cell, arr_cell, idx_cell, snap_cell});
 }
 
+// Dispatch helper: prefer the user `iter` slot when present so an
+// Object that already implements Iterator returns the right iterator
+// (range/map/etc. all hit this), and fall back to the key iterator for
+// plain `{...}` literals via `ObjectValue::builtins()`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_object_iter_dispatch(JitObject* obj) {
+  auto idx = obj->find_slot("iter");
+  if (idx != static_cast<size_t>(-1) &&
+      obj->slots[idx].value.tag == TAG_FUNC) {
+    auto* cls = reinterpret_cast<JitClosure*>(obj->slots[idx].value.data);
+    auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+    culebra_runtime_value_retain(self.tag, self.data);
+    auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
+    // The user iter() returns an Object (+1) — caller takes that retain.
+    return reinterpret_cast<JitObject*>(r.data);
+  }
+  return culebra_runtime_object_iter(obj);
+}
+
 // flat_map captures: upstream, fn, current-inner-iter (nullable),
-// cached upstream next, cached inner next, and a packed (line << 32 |
-// col) cell for error reporting when the callback returns a
-// non-iterable.
+// has_next/next pair for upstream, has_next/next pair for the current
+// inner (refreshed per-element when fn() returns a new iterable), and
+// a packed (line << 32 | col) cell for error reporting when the
+// callback yields a non-iterable.
 inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
   auto* fn_cls = reinterpret_cast<JitClosure*>(fnv.data);
   auto* inner_cell = cls->captures[2];
-  auto* up_next =
+  auto* up_has_next =
       reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
-  auto* inner_next_cell = cls->captures[4];
-  int64_t packed = cls->captures[5]->value.data;
+  auto* up_next =
+      reinterpret_cast<JitClosure*>(cls->captures[4]->value.data);
+  auto* inner_has_next_cell = cls->captures[5];
+  auto* inner_next_cell = cls->captures[6];
+  int64_t packed = cls->captures[7]->value.data;
   int64_t line = packed >> 32;
   int64_t col = packed & 0xFFFFFFFF;
   for (;;) {
     auto inner_v = inner_cell->value;
     if (inner_v.tag == TAG_OBJECT && inner_v.data != 0) {
+      auto* inner_has_next =
+          reinterpret_cast<JitClosure*>(inner_has_next_cell->value.data);
       auto* inner_next =
           reinterpret_cast<JitClosure*>(inner_next_cell->value.data);
-      if (_iter_advance_raw(inner_next, inner_v, out_tag, out_data)) {
+      if (_iter_advance_raw(inner_has_next, inner_next, inner_v,
+                             out_tag, out_data)) {
         *done = false;
         return;
       }
       _culebra_value_release_impl(inner_v.tag, inner_v.data);
       inner_cell->value = {0, 0};
+      inner_has_next_cell->value = {TAG_LONG, 0};
       inner_next_cell->value = {TAG_LONG, 0};
     }
     int8_t tag;
     int64_t data;
-    if (!_iter_advance_raw(up_next, upstream, &tag, &data)) {
+    if (!_iter_advance_raw(up_has_next, up_next, upstream, &tag, &data)) {
       *done = true;
       return;
     }
@@ -4998,6 +5151,8 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
     auto iv = _iter_coerce_iterable(mapped.tag, mapped.data, line, col);
     _culebra_value_release_impl(mapped.tag, mapped.data);
     inner_cell->value = iv;
+    inner_has_next_cell->value = {
+        TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv))};
     inner_next_cell->value = {
         TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv))};
   }
@@ -5011,14 +5166,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(ft, fd);
   auto* inner = culebra_runtime_cell_new(TAG_NIL, 0);
+  auto* up_has_next = culebra_runtime_cell_new(
+      TAG_LONG,
+      reinterpret_cast<int64_t>(_iter_has_next_closure({it, id})));
   auto* up_next = culebra_runtime_cell_new(
       TAG_LONG,
       reinterpret_cast<int64_t>(_iter_next_closure({it, id})));
+  auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* loc = culebra_runtime_cell_new(
       TAG_LONG, (line << 32) | (col & 0xFFFFFFFF));
   return _iter_wrap_fast<&_iter_flat_map_fast_fn>(
-      {up, f, inner, up_next, inner_next, loc});
+      {up, f, inner, up_has_next, up_next,
+       inner_has_next, inner_next, loc});
 }
 
 inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
@@ -5045,9 +5205,10 @@ inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
 // on done. `next_cls` is the `iter.next` closure resolved once before
 // the loop; forwarded as the `this` capture slab on the fast path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_advance(
-    JitClosure* next_cls, int8_t it, int64_t id, int8_t* out_tag,
-    int64_t* out_data) {
-  return _iter_advance_raw(next_cls, {it, id}, out_tag, out_data) ? 1 : 0;
+    JitClosure* has_next_cls, JitClosure* next_cls,
+    int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
+  return _iter_advance_raw(has_next_cls, next_cls, {it, id},
+                            out_tag, out_data) ? 1 : 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
@@ -11219,7 +11380,13 @@ struct JIT {
                        iterAlloca);
     builder_.CreateStore(iter_val, iterAlloca);
 
-    // `next` is fixed for an iterator's lifetime — hoist the lookup.
+    // `has_next` + `next` are fixed for an iterator's lifetime — hoist
+    // both lookups so each step is a pair of cached closure dispatches
+    // rather than a per-iteration `find_slot`.
+    auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+    auto has_next_cls_ptr =
+        builder_.CreateIntToPtr(extract_data(has_next_fn_val), ptrTy,
+                                "has_next.cls");
     auto next_fn_val = compile_property_get(iter_val, "next");
     auto next_cls_ptr =
         builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "next.cls");
@@ -11241,7 +11408,8 @@ struct JIT {
     auto iterData = extract_data(iterCur);
     auto ok = emit_call(
         module_->getFunction(rt::iter_advance),
-        {next_cls_ptr, iterTag, iterData, outTagAlloca, outDataAlloca},
+        {has_next_cls_ptr, next_cls_ptr, iterTag, iterData,
+         outTagAlloca, outDataAlloca},
         "for.p.ok");
     auto alive = builder_.CreateICmpNE(ok, builder_.getInt64(0),
                                        "for.p.alive");
@@ -14579,6 +14747,9 @@ inline void JIT::emit_iter_unary_inline_loop(
   auto ptrTy = PointerType::get(ctx_, 0);
   auto fn = builder_.GetInsertBlock()->getParent();
 
+  auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+  auto has_next_cls_ptr = builder_.CreateIntToPtr(
+      extract_data(has_next_fn_val), ptrTy, "ihof.has_next.cls");
   auto next_fn_val = compile_property_get(iter_val, "next");
   auto next_cls_ptr =
       builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "ihof.next.cls");
@@ -14600,7 +14771,8 @@ inline void JIT::emit_iter_unary_inline_loop(
   builder_.SetInsertPoint(condBB);
   auto ok = emit_call(
       module_->getFunction(rt::iter_advance),
-      {next_cls_ptr, iterTag, iterData, outTagAlloca, outDataAlloca},
+      {has_next_cls_ptr, next_cls_ptr, iterTag, iterData,
+       outTagAlloca, outDataAlloca},
       "ihofi.ok");
   auto alive =
       builder_.CreateICmpNE(ok, builder_.getInt64(0), "ihofi.alive");
@@ -14809,6 +14981,9 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "iri.acc");
   builder_.CreateStore(init, accAlloca);
 
+  auto has_next_fn_val = compile_property_get(iter_val, "has_next");
+  auto has_next_cls_ptr = builder_.CreateIntToPtr(
+      extract_data(has_next_fn_val), ptrTy, "iri.has_next.cls");
   auto next_fn_val = compile_property_get(iter_val, "next");
   auto next_cls_ptr =
       builder_.CreateIntToPtr(extract_data(next_fn_val), ptrTy, "iri.next.cls");
@@ -14829,7 +15004,8 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   builder_.SetInsertPoint(condBB);
   auto ok = emit_call(
       module_->getFunction(rt::iter_advance),
-      {next_cls_ptr, iterTag, iterData, outTagAlloca, outDataAlloca},
+      {has_next_cls_ptr, next_cls_ptr, iterTag, iterData,
+       outTagAlloca, outDataAlloca},
       "iri.ok");
   auto alive = builder_.CreateICmpNE(ok, builder_.getInt64(0), "iri.alive");
   builder_.CreateCondBr(alive, bodyBB, endBB);
@@ -15959,10 +16135,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
-    // Object.iter() yields keys (matches interp's builtin).
+    // Object.iter() — defer to a user-defined `iter` slot when present
+    // (mirrors interp's `_get_iterator`); a bare `{...}` literal with
+    // no user iter falls back to the key iterator from
+    // `ObjectValue::builtins()`.
     auto objPtr = builder_.CreateIntToPtr(d, ptrTy);
-    auto objIter = emit_call(module_->getFunction(rt::object_iter),
-                             {objPtr});
+    auto objIter = emit_call(
+        module_->getOrInsertFunction(
+            "culebra_runtime_object_iter_dispatch", ptrTy, ptrTy),
+        {objPtr});
     auto objVal = make_object(objIter);
     auto objEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);

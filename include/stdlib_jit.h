@@ -1846,9 +1846,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::iter_enumerate, ptrTy, i8, i64);
   jit.module_->getOrInsertFunction(rt::iter_flat_map, ptrTy, i8, i64, i8, i64,
                                i64, i64);
-  // (next_cls, iter_tag, iter_data, &out_tag, &out_data) -> i64 (1/0)
-  jit.module_->getOrInsertFunction(rt::iter_advance, i64, ptrTy, i8, i64, ptrTy,
-                               ptrTy);
+  // (has_next_cls, next_cls, iter_tag, iter_data, &out_tag, &out_data) -> i64 (1/0)
+  jit.module_->getOrInsertFunction(rt::iter_advance, i64,
+                               ptrTy, ptrTy, i8, i64, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);

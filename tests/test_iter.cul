@@ -40,15 +40,13 @@ for x in [1, 2, 3, 4, 5, 6] {
 }
 assert(evens == 3)
 
-# User-defined iterator
+# User-defined iterator (new Iterator/Iterable protocol)
 once = fn (v) {
   mut emitted = false
   {
     iter: fn () { this },
-    next: fn () {
-      if emitted { { done: true } }
-      else { emitted = true; { done: false, value: v } }
-    }
+    has_next: fn () { !emitted },
+    next: fn () { emitted = true; v }
   }
 }
 mut seen = []
@@ -269,7 +267,7 @@ assert(m[0] == 2 && m[2] == 4)
 
 # collect() on a user-defined iterator that yields zero values
 empty_iter = fn () {
-  { iter: fn () { this }, next: fn () { { done: true } } }
+  { iter: fn () { this }, has_next: fn () { false }, next: fn () { nil } }
 }
 assert(empty_iter().collect().size() == 0)
 assert(empty_iter().count() == 0)
@@ -327,22 +325,21 @@ assert(fm2.size() == 6)
 assert(fm2[0] == 0 && fm2[1] == 0 && fm2[2] == 1
     && fm2[3] == 0 && fm2[4] == 1 && fm2[5] == 2)
 
-# Manually driving a user-defined iterator past done: next() keeps
-# returning {done: true} without throwing.
+# Manually driving a user-defined iterator: has_next() drops to false
+# after the single value is consumed; calling next() past the end is
+# undefined (user-defined behavior) so we only assert the protocol.
 drained = fn () {
   mut emitted = false
   {
     iter: fn () { this },
-    next: fn () {
-      if emitted { { done: true } }
-      else { emitted = true; { done: false, value: 7 } }
-    }
+    has_next: fn () { !emitted },
+    next: fn () { emitted = true; 7 }
   }
 }
 it = drained()
-assert(it.next().value == 7)
-assert(it.next().done == true)
-assert(it.next().done == true)
+assert(it.has_next() == true)
+assert(it.next() == 7)
+assert(it.has_next() == false)
 
 # Nested for-in: outer binding must remain accessible after the inner
 # loop ends. This also pins down that for-in binding scope stays within

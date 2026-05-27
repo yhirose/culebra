@@ -1719,7 +1719,7 @@ free; defining the same name on the class overrides:
 
 #### Built-in traits
 
-The runtime ships five foundational traits as a preamble — they
+The runtime ships seven foundational traits as a preamble — they
 are visible without `import`:
 
 | Trait | Required | Defaults |
@@ -1729,6 +1729,8 @@ are visible without `import`:
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
 | `Hashable` | `hash() -> Long` | — |
+| `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
+| `Iterable` | `iter() -> Iterator` | — |
 
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is
@@ -1739,17 +1741,29 @@ contract `Object` / `Set` keys check at insertion: a user class
 becomes a valid key by defining `hash()` (returning `Long`) and
 `eq(other)`.
 
+`Iterator` + `Iterable` formalize the for-in protocol (Kotlin /
+Java style). A class that exposes `iter() -> Iterator`,
+`has_next() -> Bool`, and `next() -> Any` is iterable and works
+with every pipeline method (`map` / `filter` / `take` / `collect` /
+...). `has_next()` is required to be idempotent on repeat calls —
+runtime wrappers cache one lookahead so a `has_next()` peek doesn't
+consume the next value. `next()` may yield any value including
+`nil` (nil terminator designs lose this); pairing with `has_next()`
+is the contract for end-of-stream detection.
+
 Built-in primitives also conform via a hard-coded table — no
 class wrapper required:
 
-| Primitive | Stringer | Eq | Comparable | StringLike | Hashable |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — | ✓ |
-| Long / Float | ✓ | ✓ | ✓ | — | ✓ |
-| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Tuple | ✓ | ✓ | — | — | ✓ |
-| Array / Set / Tensor | ✓ | ✓ | — | — | — |
-| Function | ✓ | — | — | — | — |
+| Primitive | Stringer | Eq | Comparable | StringLike | Hashable | Iterable |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — | ✓ | — |
+| Long / Float | ✓ | ✓ | ✓ | — | ✓ | — |
+| String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Tuple | ✓ | ✓ | — | — | ✓ | ✓ |
+| Array / Set | ✓ | ✓ | — | — | — | ✓ |
+| Object (bare literal) | ✓ | ✓ | — | — | — | ✓ |
+| Tensor | ✓ | ✓ | — | — | — | — |
+| Function | ✓ | — | — | — | — | — |
 
 So `fn show(x: Stringer) { to_string(x) }` accepts `show(42)` and
 `show([1, 2, 3])` without requiring a class wrapper. Note that

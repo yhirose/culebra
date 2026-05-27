@@ -708,6 +708,16 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
            type_label == "String" || type_label == "StringView" ||
            type_label == "Tuple";
   }
+  if (trait_name == "Iterable") {
+    // Anything `for x in y` accepts. Primitive collections expose
+    // `iter()` — String/StringView via string_builtins, Array via the
+    // array iterator wrapper, Object via ObjectValue::builtins() (a
+    // bare `{...}` literal still has the default key iterator), Set
+    // and Tuple via their runtime-built iterator wrappers.
+    return type_label == "String" || type_label == "StringView" ||
+           type_label == "Array" || type_label == "Tuple" ||
+           type_label == "Set" || type_label == "Object";
+  }
   return false;
 }
 
@@ -763,6 +773,13 @@ trait StringLike {
 }
 trait Hashable {
   hash() -> Long
+}
+trait Iterator {
+  has_next() -> Bool
+  next() -> Any
+}
+trait Iterable {
+  iter() -> Iterator
 }
 )culebra";
   return src;
