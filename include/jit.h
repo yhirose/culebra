@@ -8537,26 +8537,16 @@ struct JIT {
     return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer);
   }
 
-  // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] [TRAIT_BODY]].
-  // Only default-body methods need analysis. The shape isn't fixed
-  // because RETURN_TYPE / TRAIT_BODY are optional, so the body slot
-  // varies — find TRAIT_BODY by tag.
+  // TRAIT_METHOD: only default-body methods need analysis (sig-only
+  // methods carry no body to walk). `view_trait_method` finds the
+  // optional TRAIT_BODY regardless of where it lands relative to the
+  // optional RETURN_TYPE sibling.
   FuncInfo analyze_trait_method(
       const peg::Ast& traitMethodAst,
       std::vector<const std::set<std::string>*>& outer) {
-    using namespace peg::udl;
-    const peg::Ast* body = nullptr;
-    for (size_t j = 2; j < traitMethodAst.nodes.size(); j++) {
-      if (traitMethodAst.nodes[j]->tag == "TRAIT_BODY"_) {
-        body = traitMethodAst.nodes[j]->nodes.empty()
-                   ? traitMethodAst.nodes[j].get()
-                   : traitMethodAst.nodes[j]->nodes[0].get();
-        break;
-      }
-    }
-    if (!body) return {};
-    return analyze_fn_common(&traitMethodAst,
-                              *traitMethodAst.nodes[1], *body, outer);
+    auto tv = culebra::view_trait_method(traitMethodAst);
+    if (!tv.body) return {};
+    return analyze_fn_common(&traitMethodAst, *tv.params, *tv.body, outer);
   }
 
   // MULTIFN_DECL ast: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK].
@@ -11488,36 +11478,27 @@ struct JIT {
 
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
-      // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, (TRAIT_BODY)?]
-      auto name_view = m.nodes[0]->token;
-      const peg::Ast* params_ast = m.nodes[1].get();
-      const peg::Ast* body_block = nullptr;
-      for (size_t j = 2; j < m.nodes.size(); j++) {
-        if (m.nodes[j]->tag == "TRAIT_BODY"_) {
-          body_block = m.nodes[j]->nodes.empty()
-                           ? m.nodes[j].get()
-                           : m.nodes[j]->nodes[0].get();
-          break;
-        }
-      }
+      auto tv = culebra::view_trait_method(m);
       // Arity count (positional only).
       size_t arity = 0;
-      for (const auto& p : params_ast->nodes) {
+      for (const auto& p : tv.params->nodes) {
         if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
           continue;
         arity++;
       }
-      def.methods.push_back({std::string(name_view), arity, body_block != nullptr});
+      bool has_body = static_cast<bool>(tv.body);
+      def.methods.push_back({std::string(tv.name), arity, has_body});
 
       // Emit runtime registration of this method so the trait is
       // populated when the AOT binary runs (and harmless on JIT).
       {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         auto trait_g = builder_.CreateGlobalString(
-            trait_name, ".trait." + trait_name + "." + std::string(name_view) + ".tn");
+            trait_name,
+            ".trait." + trait_name + "." + std::string(tv.name) + ".tn");
         auto method_g = builder_.CreateGlobalString(
-            std::string(name_view),
-            ".trait." + trait_name + "." + std::string(name_view) + ".mn");
+            std::string(tv.name),
+            ".trait." + trait_name + "." + std::string(tv.name) + ".mn");
         emit_call(
             module_->getOrInsertFunction(
                 rt::register_trait_method,
@@ -11525,24 +11506,15 @@ struct JIT {
                 builder_.getInt64Ty(), builder_.getInt8Ty()),
             {trait_g, method_g,
              builder_.getInt64(static_cast<int64_t>(arity)),
-             builder_.getInt8(body_block != nullptr ? 1 : 0)});
+             builder_.getInt8(has_body ? 1 : 0)});
       }
 
-      if (body_block) {
+      if (tv.body) {
         // Compile the default-method body as a closure. analyze_fn_body
         // has already populated func_info_[&m] via visit_for_frees.
-        std::shared_ptr<peg::Ast> body_shared;
-        for (size_t j = 2; j < m.nodes.size(); j++) {
-          if (m.nodes[j]->tag == "TRAIT_BODY"_) {
-            body_shared = m.nodes[j]->nodes.empty()
-                              ? m.nodes[j]
-                              : m.nodes[j]->nodes[0];
-            break;
-          }
-        }
         auto* fn_val_ir = compile_fn_common(
-            &m, *m.nodes[1].get(), body_shared, /*returnType=*/{},
-            std::string(name_view));
+            &m, *tv.params, tv.body, /*returnType=*/{},
+            std::string(tv.name));
         // fn_val_ir is a JitValue (struct {i8 tag, i64 data}); the data
         // is the JitClosure*. Pull it out and register the default into
         // the runtime trait-default table.
@@ -11554,8 +11526,8 @@ struct JIT {
         auto trait_g = builder_.CreateGlobalString(
             trait_name, ".trait." + trait_name);
         auto method_g = builder_.CreateGlobalString(
-            std::string(name_view),
-            ".td." + trait_name + "." + std::string(name_view));
+            std::string(tv.name),
+            ".td." + trait_name + "." + std::string(tv.name));
         emit_call(
             module_->getOrInsertFunction(
                 rt::register_trait_default,

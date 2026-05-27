@@ -525,17 +525,10 @@ inline void descend_into_nested(
       i++;
     }
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      const auto& method = *node.nodes[j];
-      const peg::Ast* body_ast = nullptr;
-      for (size_t k = 2; k < method.nodes.size(); k++) {
-        if (method.nodes[k]->tag == "TRAIT_BODY"_) {
-          body_ast = method.nodes[k]->nodes[0].get();
-          break;
-        }
-      }
-      if (!body_ast) continue;
+      auto tv = culebra::view_trait_method(*node.nodes[j]);
+      if (!tv.body) continue;
       outer.push_back(&my_locals);
-      analyze_fn_body(*method.nodes[1], *body_ast, outer);
+      analyze_fn_body(*tv.params, *tv.body, outer);
       outer.pop_back();
     }
     return;
@@ -4873,39 +4866,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     defaults.clear();
 
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      // TRAIT_METHOD: [IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, (BLOCK)?]
-      auto name_view = m.nodes[0]->token;
-      const auto& params_ast = *m.nodes[1];
-      const peg::Ast* body_ast = nullptr;
-      std::shared_ptr<peg::Ast> body_shared;
-      std::string_view return_type;
-      for (size_t j = 2; j < m.nodes.size(); j++) {
-        if (m.nodes[j]->tag == "RETURN_TYPE"_) {
-          return_type = m.nodes[j]->token;
-        } else if (m.nodes[j]->tag == "TRAIT_BODY"_) {
-          // TRAIT_BODY wraps the BLOCK so AstOptimizer doesn't fold it
-          // — the actual body content is its first child (BLOCK's body).
-          body_shared = m.nodes[j]->nodes.empty()
-                            ? m.nodes[j]
-                            : m.nodes[j]->nodes[0];
-          body_ast = body_shared.get();
-        }
-      }
+      auto tv = culebra::view_trait_method(*ast.nodes[i]);
       // Count positional params (kw_only / kwargs_rest excluded).
-      auto params = parse_parameters(params_ast, env);
+      auto params = parse_parameters(*tv.params, env);
       size_t arity = 0;
       for (const auto& p : params) {
         if (p.kw_only || p.kwargs_rest) continue;
         arity++;
       }
-      def.methods.push_back({std::string(name_view), arity, body_ast != nullptr});
+      def.methods.push_back({std::string(tv.name), arity,
+                             static_cast<bool>(tv.body)});
 
-      if (body_ast) {
+      if (tv.body) {
         auto fn_val =
-            make_function_value(params_ast, body_shared, return_type, env);
-        fn_val.get<FunctionValue>().name = std::string(name_view);
-        defaults.emplace(std::string(name_view), std::move(fn_val));
+            make_function_value(*tv.params, tv.body, tv.return_type, env);
+        fn_val.get<FunctionValue>().name = std::string(tv.name);
+        defaults.emplace(std::string(tv.name), std::move(fn_val));
       }
     }
     register_trait(std::move(def));

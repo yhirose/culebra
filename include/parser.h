@@ -419,6 +419,40 @@ inline ObjectPropertyView view_object_property(const peg::Ast& p) {
   };
 }
 
+// View of a TRAIT_METHOD AST node — see grammar:
+//   TRAIT_METHOD <- IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? (_ TRAIT_BODY)?
+// Both RETURN_TYPE and TRAIT_BODY are optional, so the body slot
+// floats — the loop below tag-tests instead of indexing. `body` is an
+// empty shared_ptr for signature-only methods (required-method form);
+// when present it points at the inner BLOCK (TRAIT_BODY wraps BLOCK so
+// AstOptimizer doesn't fold it).
+struct TraitMethodView {
+  std::string_view name;
+  size_t name_line;
+  size_t name_col;
+  const peg::Ast* params;             // node[1]
+  std::string_view return_type;       // "" when absent
+  std::shared_ptr<peg::Ast> body;     // empty for sig-only methods
+};
+
+inline TraitMethodView view_trait_method(const peg::Ast& m) {
+  using namespace peg::udl;
+  const auto& ident = *m.nodes[0];
+  std::shared_ptr<peg::Ast> body;
+  std::string_view return_type;
+  for (size_t j = 2; j < m.nodes.size(); j++) {
+    if (m.nodes[j]->tag == "RETURN_TYPE"_) {
+      return_type = m.nodes[j]->token;
+    } else if (m.nodes[j]->tag == "TRAIT_BODY"_) {
+      body = m.nodes[j]->nodes.empty() ? m.nodes[j] : m.nodes[j]->nodes[0];
+    }
+  }
+  return TraitMethodView{
+      ident.token, ident.line, ident.column,
+      m.nodes[1].get(), return_type, body,
+  };
+}
+
 // View of a METHOD AST node — see grammar:
 //   METHOD <- STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
 // `is_field` distinguishes the two tails (size 3 vs 4). One central
