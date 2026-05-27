@@ -6342,17 +6342,31 @@ struct JIT {
     });
   }
 
-  // Cross-compile: register every target LLVM was built with so
-  // `culebra build --target=<triple>` can look up arbitrary triples.
-  // Lazy + idempotent; only the AOT path needs to pay this cost.
+  // Cross-compile target init. With CULEBRA_LLVM_ALL_TARGETS the driver
+  // links every LLVM backend (~31 MB) and registers them all so that
+  // `culebra build --target=<triple>` accepts any triple. Without the
+  // option the driver only links Native + WebAssembly (default), so
+  // only those two are registered here. Lazy + idempotent; only the
+  // AOT path pays this cost.
   static void ensure_all_targets_init() {
     static std::once_flag flag;
     std::call_once(flag, []() {
+#ifdef CULEBRA_LLVM_ALL_TARGETS
       llvm::InitializeAllTargetInfos();
       llvm::InitializeAllTargets();
       llvm::InitializeAllTargetMCs();
       llvm::InitializeAllAsmPrinters();
       llvm::InitializeAllAsmParsers();
+#else
+      llvm::InitializeNativeTarget();
+      llvm::InitializeNativeTargetAsmPrinter();
+      llvm::InitializeNativeTargetAsmParser();
+      LLVMInitializeWebAssemblyTargetInfo();
+      LLVMInitializeWebAssemblyTarget();
+      LLVMInitializeWebAssemblyTargetMC();
+      LLVMInitializeWebAssemblyAsmPrinter();
+      LLVMInitializeWebAssemblyAsmParser();
+#endif
     });
   }
 

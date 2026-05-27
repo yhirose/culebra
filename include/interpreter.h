@@ -1538,7 +1538,7 @@ inline const std::shared_ptr<Value>& kw_default_nil() {
   return v;
 }
 
-struct Environment {
+struct Environment : std::enable_shared_from_this<Environment> {
   Environment(std::shared_ptr<Environment> parent = nullptr)
       : level(parent ? parent->level + 1 : 0) {}
 
@@ -1564,6 +1564,14 @@ struct Environment {
 
   const Value& get(std::string_view s) const {
     if (auto it = dictionary.find(s); it != dictionary.end()) {
+      // Fast path: once all lazy modules are resolved, `lazy_pending`
+      // is empty and the lookup is skipped entirely.
+      if (!lazy_pending.empty()) {
+        if (auto lit = lazy_pending.find(s); lit != lazy_pending.end()) {
+          const_cast<Environment*>(this)->resolve_from_lazy(s, lit->second);
+          it = dictionary.find(s);
+        }
+      }
       return it->second.val;
     } else if (outer) {
       return outer->get(s);
@@ -1571,6 +1579,23 @@ struct Environment {
     throw CulebraError("NameError",
                        std::format("undefined variable '{}'...", s));
   }
+
+  // Register `source` to be parsed + evaluated lazily on first
+  // `get(name)`. The source must `let <name> = ...` so the eval pass
+  // overwrites the placeholder binding in `dictionary`. Used for stdlib
+  // modules that are expensive to parse but rarely touched in short
+  // scripts — see [[project-startup-overhead]].
+  void initialize_lazy(std::string_view name, std::string source) {
+    initialize(name, Value{}, /*mut=*/false);
+    if (is_sink_name(name)) return;
+    lazy_pending.insert_or_assign(
+        std::string(name),
+        std::make_shared<std::string>(std::move(source)));
+  }
+
+  // Defined below `interpret` since it parses + evaluates the source.
+  void resolve_from_lazy(std::string_view name,
+                         std::shared_ptr<std::string> source);
 
   void assign(std::string_view s, Value val) {
     assert(has(s));
@@ -1607,6 +1632,17 @@ struct Environment {
   // Deferred callables registered in this scope via `defer { ... }`.
   // Fired in LIFO order when the scope exits (normally or via throw).
   std::vector<std::function<void()>> deferred;
+  // Names not yet resolved, mapped to their source. The first `get` of
+  // a key in this map triggers parse + eval and removes the entry. The
+  // `get` fast path checks `empty()` first so once all modules are
+  // resolved this costs nothing.
+  std::map<std::string, std::shared_ptr<std::string>, std::less<>> lazy_pending;
+  // Source buffers backing lazily-resolved stdlib modules. AST tokens
+  // hold string_views into these; FunctionValue closures over methods
+  // declared in the module survive long after `resolve_from_lazy`
+  // returns, so the buffer must outlive any value bound through that
+  // resolution. Anchored to the env that owns the lazy binding.
+  std::vector<std::shared_ptr<std::string>> lazy_module_sources;
 };
 
 // Lexical scope chained to `outer`. Function frames don't use this —
@@ -6271,6 +6307,36 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
   }
 
   return false;
+}
+
+// Resolve a lazy-registered module: parse + interpret the source against
+// this env so the placeholder binding is replaced by the real value. The
+// pending entry is removed before evaluation to short-circuit re-entry
+// if the source references the same name. The source is anchored in
+// `lazy_module_sources` so AST tokens (string_views into it) stay valid
+// for the lifetime of the env — class methods bound during eval may be
+// invoked long after this call returns.
+inline void Environment::resolve_from_lazy(
+    std::string_view name, std::shared_ptr<std::string> source) {
+  lazy_pending.erase(std::string(name));
+  lazy_module_sources.push_back(source);
+  std::vector<std::string> parse_msgs;
+  auto vpath = std::format("<lazy-{}>", name);
+  auto ast = parse(vpath, source->data(), source->size(), parse_msgs);
+  if (!ast) {
+    std::fprintf(stderr, "culebra: lazy module '%s' failed to parse\n",
+                 std::string(name).c_str());
+    for (auto& m : parse_msgs) std::fprintf(stderr, "  %s", m.c_str());
+    std::abort();
+  }
+  Value dummy;
+  std::vector<std::string> eval_msgs;
+  if (!interpret(ast, shared_from_this(), dummy, eval_msgs)) {
+    std::fprintf(stderr, "culebra: lazy module '%s' failed to eval\n",
+                 std::string(name).c_str());
+    for (auto& m : eval_msgs) std::fprintf(stderr, "  %s", m.c_str());
+    std::abort();
+  }
 }
 
 // --- Cycle collector implementation ---

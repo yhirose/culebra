@@ -1,0 +1,3 @@
+let spec = {name: "x", args: [{name: "foo", doc: "demo"}]}
+let p = Args.try_parse(["hello"], spec)
+print(p.foo)

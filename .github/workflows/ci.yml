@@ -10,7 +10,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            # mold (Rui Ueyama's modern linker, ~2-3x faster than lld on
+            # Linux) for the LLVM-heavy static link step. macOS already
+            # uses Apple's ld-prime (Xcode 15+) by default — fast enough,
+            # no override needed.
+            linker_flag: -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+          - os: macos-latest
+            linker_flag: ""
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -23,9 +31,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            ccache \
             cmake \
             g++-14 \
             libblas-dev \
+            mold \
             wget \
             lsb-release \
             software-properties-common \
@@ -51,13 +61,35 @@ jobs:
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install llvm just
+          brew install llvm just ccache
+
+      # Compiler cache for incremental CI builds. Without it every PR
+      # push re-compiles culebra from scratch (~4 min macOS / 7 min
+      # Ubuntu, dominated by LLVM-header-heavy interpreter.h + jit.h
+      # translation units). LLVM static link itself is not cached.
+      # CCACHE_DIR is pinned under the workspace so the path is
+      # identical between actions/cache and ccache itself (brew
+      # ccache defaults to ~/Library/Caches/ccache on macOS otherwise).
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
 
       - name: Check grammar sync (misc/culebra.peg and misc/cul.vim)
         run: just check-grammar-sync
 
       - name: Build (interpreter + JIT)
-        run: just build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: just build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ${{ matrix.linker_flag }}
+
+      - name: Report ccache stats
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: ccache -s
 
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
         run: just test

@@ -589,7 +589,7 @@ inline std::string format_strftime_nanos(int64_t nanos,
 }  // namespace _time_detail
 
 // `_Time`: thin Long-nanos primitives. The user-facing `Time` module
-// (Instant / Duration classes — `STDLIB_PREAMBLE_SOURCE` below) wraps
+// (Instant / Duration classes — `TIME_MODULE_SOURCE` below) wraps
 // these to deliver natural calendar arithmetic + operator overloads.
 // Underscore prefix marks it as the wrapper's ABI, not a stable
 // surface for direct use.
@@ -1668,17 +1668,17 @@ inline void setup_built_in_functions(
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
-// in culebra than in C++. Loaded into the env by `load_stdlib_modules`
-// (interp) and prepended to the user program by `JIT::run` /
-// `JIT::build_object` (JIT). Single-line so user-code error positions
-// are only off-by-one.
+// in culebra than in C++. Both Time and Args are registered lazily by
+// `environment()` — see [[project-startup-overhead]]. The JIT path
+// still pre-concats them via `STDLIB_PREAMBLE_SOURCE` until it adopts
+// the env's lazy bindings. Each module is single-line so user-code
+// error positions are only off-by-one.
 //
-// Modules:
-//   * `Time` — Instant / Duration classes wrapping `_Time` primitives.
-//     Operator overloads (`__add__` / `__sub__` / `__mul__` / `__div__`
-//     / `__neg__` / `__lt__` / `__le__` / `__eq__`) give natural
-//     timestamp arithmetic.
-inline constexpr const char* STDLIB_PREAMBLE_SOURCE =
+// `Time` — Instant / Duration classes wrapping `_Time` primitives.
+// Operator overloads (`__add__` / `__sub__` / `__mul__` / `__div__`
+// / `__neg__` / `__lt__` / `__le__` / `__eq__`) give natural
+// timestamp arithmetic.
+inline constexpr const char* TIME_MODULE_SOURCE =
     "let _time_module = fn () { "
     "class Duration { "
     "new(nanos) { this._nanos = nanos } "
@@ -1730,13 +1730,14 @@ inline constexpr const char* STDLIB_PREAMBLE_SOURCE =
     "Instant: Instant, Duration: Duration "
     "} "
     "}; "
-    "let Time = _time_module(); "
-    //
-    //   * `Args` — declarative CLI argument parser. Spec is a culebra
-    //     Object listing positionals + options + subcommands; `Args.parse`
-    //     returns an Object with parsed fields, prints help on `--help`,
-    //     and reports errors with `Sys.exit(2)`. `try_parse` raises
-    //     `{kind: \"ArgParseError\", message}` for programmatic control.
+    "let Time = _time_module()\n";
+
+// `Args` — declarative CLI argument parser. Spec is a culebra
+// Object listing positionals + options + subcommands; `Args.parse`
+// returns an Object with parsed fields, prints help on `--help`,
+// and reports errors with `Sys.exit(2)`. `try_parse` raises
+// `{kind: \"ArgParseError\", message}` for programmatic control.
+inline constexpr const char* ARGS_MODULE_SOURCE =
     "let _args_module = fn() { "
     "let _coerce = fn(raw, type, name) { "
     "if type == \"String\" { return raw }; "
@@ -1983,38 +1984,43 @@ inline constexpr const char* STDLIB_PREAMBLE_SOURCE =
     "}; "
     "let Args = _args_module()\n";
 
-// Concatenate the stdlib preamble in front of `user_src` so a single
-// parse + analyze + compile pass sees the full program. Used by the
-// CLI (`run_scripts` / `run_build`) — embedders that build their env
-// via `culebra::environment()` and feed user source through `parse`
-// + `interpret` can wrap their source the same way.
-inline std::string prepend_stdlib_preamble(std::string_view user_src) {
+// Transitional concatenation used by the JIT path until it adopts the
+// env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
+// interp path is already preamble-free.
+inline const char* _stdlib_preamble_concat() {
+  static const std::string s =
+      std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE;
+  return s.c_str();
+}
+inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
+
+// Concatenate `user_src` with the stdlib modules it appears to
+// reference (substring match). Used by the JIT and AOT paths to skip
+// Time/Args parsing when scripts don't touch them. A substring hit is
+// a safe over-approximation: false positives (e.g. `let myTime = 1`)
+// just include an unneeded module; only true negatives skip the
+// prepend, preserving correctness.
+inline std::string prepend_stdlib_preamble_selective(
+    std::string_view user_src) {
+  bool needs_time = user_src.find("Time") != std::string_view::npos;
+  bool needs_args = user_src.find("Args") != std::string_view::npos;
   std::string combined;
-  combined.reserve(std::strlen(STDLIB_PREAMBLE_SOURCE) + user_src.size());
-  combined.append(STDLIB_PREAMBLE_SOURCE);
+  combined.reserve(
+      (needs_time ? std::strlen(TIME_MODULE_SOURCE) : 0) +
+      (needs_args ? std::strlen(ARGS_MODULE_SOURCE) : 0) + user_src.size());
+  if (needs_time) combined.append(TIME_MODULE_SOURCE);
+  if (needs_args) combined.append(ARGS_MODULE_SOURCE);
   combined.append(user_src);
   return combined;
 }
 
-// Parse + interpret-eval the stdlib preamble into `env`. Used at REPL
-// session start (interp mode) where each input is parsed separately
-// so we can't pre-concat. Aborts on internal failure — the preamble
-// is hard-coded so a failure means the binary itself is broken.
-inline void load_stdlib_modules(std::shared_ptr<Environment> env) {
-  std::vector<std::string> msgs;
-  auto src = STDLIB_PREAMBLE_SOURCE;
-  auto ast = parse("<stdlib>", src, std::strlen(src), msgs);
-  if (!ast) {
-    std::fprintf(stderr, "culebra: internal stdlib preamble failed to parse\n");
-    for (auto& m : msgs) std::fprintf(stderr, "  %s", m.c_str());
-    std::abort();
-  }
-  Value v;
-  if (!interpret(ast, env, v, msgs)) {
-    std::fprintf(stderr, "culebra: internal stdlib preamble failed to eval\n");
-    for (auto& m : msgs) std::fprintf(stderr, "  %s", m.c_str());
-    std::abort();
-  }
+// Register stdlib modules that should not be parsed/evaluated up front.
+// Each module is bound lazily so scripts that never touch it pay zero
+// cost. See [[project-startup-overhead]] for the measurement that
+// motivated this.
+inline void register_stdlib_lazy_modules(Environment& env) {
+  env.initialize_lazy("Time", TIME_MODULE_SOURCE);
+  env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
 }
 
 inline std::shared_ptr<Environment> environment(
@@ -2022,10 +2028,7 @@ inline std::shared_ptr<Environment> environment(
   auto env = std::make_shared<Environment>();
   setup_core_globals(*env);
   setup_built_in_functions(*env, argv);
-  // Caller invokes `load_stdlib_modules(env)` if it intends to run
-  // interp scripts (so Time / Args become visible in the outer scope
-  // for dep modules). JIT / AOT paths bypass this since they pre-
-  // concat the preamble into the entry source.
+  register_stdlib_lazy_modules(*env);
   return env;
 }
 
