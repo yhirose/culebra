@@ -12029,10 +12029,10 @@ struct JIT {
       body_ast = *mv.body;
       returnType = {};
     } else {
-      params_ast = ast.nodes[0].get();
-      size_t bodyIdx = 1;
-      returnType = extract_return_type(ast, bodyIdx);
-      body_ast = ast.nodes[bodyIdx];
+      auto fv = culebra::view_function(ast);
+      params_ast = fv.params;
+      returnType = fv.return_type;
+      body_ast = fv.body;
     }
     return compile_fn_common(&ast, *params_ast, body_ast, returnType,
                               declName);
@@ -12042,7 +12042,8 @@ struct JIT {
   // may be any expression — compile_fn_common's generic dispatch handles
   // both BLOCK and bare expressions.
   llvm::Value* compile_lambda(const peg::Ast& ast) {
-    return compile_fn_common(&ast, *ast.nodes[0], ast.nodes[1], {}, {});
+    auto fv = culebra::view_lambda(ast);
+    return compile_fn_common(&ast, *fv.params, fv.body, fv.return_type, {});
   }
 
   // Emit the LLVM function for a FUNCTION / METHOD / synthetic-ctor AST.

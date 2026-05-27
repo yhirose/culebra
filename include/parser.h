@@ -610,6 +610,34 @@ inline std::string_view extract_return_type(const peg::Ast& fn_ast,
   return {};
 }
 
+// View of a FUNCTION or LAMBDA AST node — see grammar:
+//   FUNCTION <- fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
+//   LAMBDA   <- LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
+// Layouts: FUNCTION size 2 `[PARAMETERS, BLOCK]` or size 3 with
+//          `[PARAMETERS, RETURN_TYPE, BLOCK]`; LAMBDA always size 2
+//          `[LAMBDA_PARAMS, BODY]` (no return type slot).
+// One struct covers both: `return_type` is "" for LAMBDA. `body` is
+// `std::shared_ptr<peg::Ast>` so callers can hand it directly to
+// `make_function_value` (which retains ownership).
+// Phase 3 (`yield` / generator) will grow this view with an
+// `is_generator` flag once YIELD scanning lands; centralizing here
+// keeps the lowering site count to one.
+struct FunctionView {
+  const peg::Ast* params;             // node[0]
+  std::string_view return_type;       // "" for LAMBDA / no annotation
+  std::shared_ptr<peg::Ast> body;     // node[body_idx]
+};
+
+inline FunctionView view_function(const peg::Ast& fn) {
+  size_t body_idx = 1;
+  auto rt = extract_return_type(fn, body_idx);
+  return FunctionView{fn.nodes[0].get(), rt, fn.nodes[body_idx]};
+}
+
+inline FunctionView view_lambda(const peg::Ast& lam) {
+  return FunctionView{lam.nodes[0].get(), {}, lam.nodes[1]};
+}
+
 // Parse the built-in trait preamble (`trait Stringer`, `trait Eq`,
 // `trait Comparable` + defaults). Lazily cached so subsequent calls
 // reuse the same AST; the AST is process-lifetime so dependent

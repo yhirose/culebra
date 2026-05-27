@@ -461,8 +461,13 @@ inline void descend_into_nested(
   using namespace peg::udl;
 
   if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) {
+    // FUNCTION's RETURN_TYPE (if present) is metadata only — the
+    // shadow walker only needs params + body, which `view_function`
+    // resolves uniformly for both forms.
+    auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
+                                       : culebra::view_lambda(node);
     outer.push_back(&my_locals);
-    analyze_fn_body(*node.nodes[0], *node.nodes[1], outer);
+    analyze_fn_body(*fv.params, *fv.body, outer);
     outer.pop_back();
     return;
   }
@@ -4377,16 +4382,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_function(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    size_t body_idx = 1;
-    auto return_type = extract_return_type(ast, body_idx);
-    return make_function_value(*ast.nodes[0], ast.nodes[body_idx],
-                               return_type, env);
+    auto fv = culebra::view_function(ast);
+    return make_function_value(*fv.params, fv.body, fv.return_type, env);
   };
 
   // LAMBDA: [LAMBDA_PARAMS, BODY]. BODY may be a BLOCK or a bare
   // expression — both are handled by eval()'s tag dispatch.
   Value eval_lambda(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    return make_function_value(*ast.nodes[0], ast.nodes[1], {}, env);
+    auto fv = culebra::view_lambda(ast);
+    return make_function_value(*fv.params, fv.body, fv.return_type, env);
   }
 
   // Dynamic type-name view for dispatch. For Object instances with a
