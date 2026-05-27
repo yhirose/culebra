@@ -76,14 +76,26 @@ if(CULEBRA_ENABLE_JIT)
   include_directories(${LLVM_INCLUDE_DIRS})
   add_definitions(${LLVM_DEFINITIONS})
 
-  # Native components keep the JIT path lean. AllTargets* extend the
-  # codegen + asm tables so `culebra build --target=<triple>` can emit
-  # for any LLVM-supported target (Phase E). These only inflate the
-  # `culebra` driver binary; AOT-built executables don't carry LLVM.
+  # Native target keeps the JIT lean. WebAssembly is bundled so the
+  # docs-site WASM playground (see project-docs-site memory) can be
+  # produced via `culebra build --target=wasm32-…` from the same binary.
+  # AllTargets* extend codegen + asm tables for any other LLVM target —
+  # opt-in because they add ~31 MB to the `culebra` driver. AOT-built
+  # executables never carry LLVM regardless.
+  option(CULEBRA_LLVM_ALL_TARGETS
+    "Link all LLVM backends for cross-compile (adds ~31 MB)" OFF)
+  if(CULEBRA_LLVM_ALL_TARGETS)
+    set(_extra_target_libs
+      AllTargetsAsmParsers AllTargetsCodeGens AllTargetsDescs
+      AllTargetsInfos)
+    add_compile_definitions(CULEBRA_LLVM_ALL_TARGETS)
+  else()
+    set(_extra_target_libs
+      WebAssemblyAsmParser WebAssemblyCodeGen WebAssemblyDesc
+      WebAssemblyInfo)
+  endif()
   llvm_map_components_to_libnames(llvm_libs
-    core support orcjit native passes
-    AllTargetsAsmParsers AllTargetsCodeGens AllTargetsDescs
-    AllTargetsInfos)
+    core support orcjit native passes ${_extra_target_libs})
 
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
