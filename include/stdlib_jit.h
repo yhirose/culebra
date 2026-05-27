@@ -374,10 +374,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
 // --- _Time primitives ---
 // Calendar logic is shared with the interpreter via `culebra::_time_detail`
 // (see stdlib_interp.h). The user-facing `Time` module (Instant /
-// Duration classes) is built from culebra source (`STDLIB_PREAMBLE_SOURCE`
-// in stdlib_interp.h) and prepended by `culebra::prepend_stdlib_preamble`
-// in the CLI's run paths. Timestamps are i64 nanos since Unix epoch;
-// `monotonic` / `sleep` stay Float (measurement, precision-insensitive).
+// Duration classes) is built from culebra source (`TIME_MODULE_SOURCE`
+// in stdlib_interp.h) — interp registers it lazily, JIT/AOT prepend it
+// selectively via `prepend_stdlib_preamble_selective`. Timestamps are
+// i64 nanos since Unix epoch; `monotonic` / `sleep` stay Float
+// (measurement, precision-insensitive).
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_now_nanos() {
   using clock = std::chrono::system_clock;

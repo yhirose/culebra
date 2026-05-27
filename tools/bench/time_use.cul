@@ -1,0 +1,2 @@
+let t = Time.now()
+print(t.unix_nanos() > 0)

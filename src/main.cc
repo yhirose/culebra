@@ -8,13 +8,45 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <print>
+#include <utility>
+#include <vector>
 
 using namespace std;
+
+// Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
+// phase mark to stderr immediately. See [[project-startup-overhead]].
+namespace startup_profile {
+using clk = std::chrono::steady_clock;
+inline clk::time_point& t0() { static clk::time_point v; return v; }
+inline clk::time_point& tprev() { static clk::time_point v; return v; }
+inline bool& enabled_flag() { static bool v = false; return v; }
+inline void start() {
+  const char* e = std::getenv("CULEBRA_PROFILE_STARTUP");
+  enabled_flag() = e && *e && e[0] != '0';
+  if (enabled_flag()) {
+    auto now = clk::now();
+    t0() = now;
+    tprev() = now;
+    std::fprintf(stderr, "[startup-profile] (env CULEBRA_PROFILE_STARTUP set)\n");
+  }
+}
+inline void mark(const char* name) {
+  if (!enabled_flag()) return;
+  auto t = clk::now();
+  auto ms_delta = std::chrono::duration<double, std::milli>(t - tprev()).count();
+  auto ms_total = std::chrono::duration<double, std::milli>(t - t0()).count();
+  std::fprintf(stderr, "  %7.2f ms (+%6.2f ms)  %s\n", ms_total, ms_delta, name);
+  std::fflush(stderr);
+  tprev() = t;
+}
+}  // namespace startup_profile
 
 bool read_file(const char* path, vector<char>& buff) {
   ifstream ifs(path, ios::in | ios::binary);
@@ -261,7 +293,7 @@ int run_build(const BuildOptions& opts) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
-  auto entry_src = culebra::prepend_stdlib_preamble(
+  auto entry_src = culebra::prepend_stdlib_preamble_selective(
       std::string_view(buff.data(), buff.size()));
   vector<string> msgs;
   culebra::ModuleLoader loader;
@@ -434,12 +466,10 @@ Options parse_command_line(int argc, const char** argv) {
 }
 
 bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
-#ifdef CULEBRA_JIT_ENABLED
-  bool needs_preamble = !options.jit;
-#else
-  bool needs_preamble = true;
-#endif
-  if (needs_preamble) culebra::load_stdlib_modules(env);
+  // Time / Args are registered lazily by `environment()` — no eager
+  // preamble load needed here. The JIT path still pre-concats the
+  // preamble (handled in Phase 3 of [[project-startup-overhead]]).
+  startup_profile::mark("run_scripts begin");
 
   for (auto path : options.script_path_list) {
     vector<char> buff;
@@ -447,19 +477,26 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
       std::println(stderr, "can't open '{}'.", path);
       return false;
     }
+    startup_profile::mark("read_file");
 
     vector<string> msgs;
     std::string_view user_src(buff.data(), buff.size());
 
     // Walk the dependency graph via ModuleLoader. The same vector
     // feeds both backends — JIT bundles every module into one IR,
-    // interp evaluates them sequentially.
+    // interp evaluates them sequentially. The JIT path needs the
+    // stdlib preamble inlined because it doesn't currently honour
+    // the env's lazy bindings (see Phase 3 of [[project-startup-overhead]]).
     culebra::ModuleLoader loader;
     std::vector<culebra::LoadedModule> modules;
-    // Entry source goes in with the stdlib preamble already prepended
-    // so the JIT path (which doesn't pre-load Time / Args via env)
-    // sees those classes as ordinary top-level declarations.
-    auto entry_src = culebra::prepend_stdlib_preamble(user_src);
+    std::string jit_src;
+    std::string_view entry_src = user_src;
+#ifdef CULEBRA_JIT_ENABLED
+    if (options.jit) {
+      jit_src = culebra::prepend_stdlib_preamble_selective(user_src);
+      entry_src = jit_src;
+    }
+#endif
     try {
       modules = loader.load_program(path, entry_src, msgs);
     } catch (const culebra::CulebraError& e) {
@@ -472,6 +509,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
       for (const auto& msg : msgs) cerr << msg << endl;
       return false;
     }
+    startup_profile::mark("ModuleLoader::load_program (parse)");
 
     if (options.print_ast) {
       for (const auto& m : modules) {
@@ -492,7 +530,10 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     culebra::Value val;
     auto dbg =
         options.debug ? culebra::CommandLineDebugger() : culebra::Debugger();
-    if (culebra::interpret_modules(modules, env, val, msgs, dbg)) continue;
+    if (culebra::interpret_modules(modules, env, val, msgs, dbg)) {
+      startup_profile::mark("interpret_modules");
+      continue;
+    }
     for (const auto& msg : msgs) cerr << msg << endl;
     return false;
   }
@@ -591,6 +632,9 @@ int run_test(int argc, const char** argv) {
 }
 
 int main(int argc, const char** argv) {
+  startup_profile::start();
+  startup_profile::mark("main entered");
+
   if (argc >= 2 && string(argv[1]) == "test") {
     return run_test(argc, argv);
   }
@@ -609,14 +653,18 @@ int main(int argc, const char** argv) {
 #endif
 
   auto options = parse_command_line(argc, argv);
+  startup_profile::mark("parse_command_line");
 
 #ifdef CULEBRA_JIT_ENABLED
   culebra::install_jit_stdlib();
+  startup_profile::mark("install_jit_stdlib");
 #endif
 
   try {
     auto env = culebra::environment(options.script_argv);
+    startup_profile::mark("environment() (interp stdlib registered)");
     install_cli_aliases(*env);
+    startup_profile::mark("install_cli_aliases");
 
     if (!run_scripts(env, options)) {
       return -1;

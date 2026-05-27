@@ -56,29 +56,12 @@ class StdoutCapture {
   }
 };
 
-// Number of newlines in the stdlib preamble — used to map a runtime
-// error's `line` (computed against the prepended buffer) back to the
-// user's file line.
-inline int stdlib_preamble_line_count() {
-  static const int n = []() {
-    int c = 0;
-    for (const char* p = STDLIB_PREAMBLE_SOURCE; *p; p++) {
-      if (*p == '\n') c++;
-    }
-    return c;
-  }();
-  return n;
-}
-
-// Convert a runtime error line (raw, against the prepended buffer) to
-// a user-file line. Errors from imported modules (no preamble) come
-// through with `raw <= preamble` and we report 0 (unknown) rather than
-// guess a wrong line — CulebraError doesn't carry the source path so
-// we can't tell which file the error came from.
+// Convert a runtime error line (1-based) to a user-file line, returning
+// 0 for unknown locations. Preamble offset removed in Phase 2 of
+// [[project-startup-overhead]] when the interp test path stopped
+// prepending stdlib source.
 inline int to_user_line(long raw) {
-  if (raw <= 0) return 0;
-  long adjusted = raw - stdlib_preamble_line_count();
-  return adjusted > 0 ? static_cast<int>(adjusted) : 0;
+  return raw > 0 ? static_cast<int>(raw) : 0;
 }
 
 // Snippet of `source` around `line` (1-based, in user-file coordinates)
@@ -630,9 +613,10 @@ inline TestRunSummary run_tests(
     std::vector<std::string> msgs;
     ModuleLoader loader;
     std::vector<LoadedModule> modules;
-    auto entry_src = prepend_stdlib_preamble(buff);
+    // Time / Args come from the env's lazy bindings — no preamble
+    // prepend needed (Phase 2 of [[project-startup-overhead]]).
     try {
-      modules = loader.load_program(path_str, entry_src, msgs);
+      modules = loader.load_program(path_str, buff, msgs);
     } catch (const CulebraError& e) {
       emit_file_error(path_str, e.kind, e.what(), e.line, e.col);
       summary.errored_files++;
@@ -804,7 +788,7 @@ inline TestRunSummary run_tests(
         // here, so leave snippet empty rather than render the wrong
         // file's lines.
         std::string snippet;
-        if (err_line > 0 && err_line > stdlib_preamble_line_count()) {
+        if (err_line > 0) {
           if (auto it = user_sources.find(entry_source);
               it != user_sources.end()) {
             snippet = source_snippet(it->second, user_line);
