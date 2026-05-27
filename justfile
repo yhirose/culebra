@@ -4,11 +4,12 @@ set shell := ["bash", "-cu"]
 default:
     @just --list
 
-# Configure and build with LLVM JIT enabled (Release)
+# Configure and build with LLVM JIT enabled (Release). Extra cmake
+# flags can be passed positionally (used by CI to wire ccache).
 [group("build")]
-build:
+build *extra:
     mkdir -p build
-    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON .. > /dev/null
+    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{extra}} .. > /dev/null
     cd build && make
 
 # Build without JIT (Release)
