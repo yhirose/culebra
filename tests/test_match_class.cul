@@ -16,12 +16,12 @@ let describe = fn(animal) {
   }
 }
 
-assert(describe(Dog.new("Rex")) == "dog: Rex")
-assert(describe(Cat.new("Mia")) == "cat: Mia")
-assert(describe(Bird.new("Tweety")) == "bird: Tweety")
-assert(describe("not an animal") == "unknown")
-assert(describe(42) == "unknown")
-assert(describe(nil) == "unknown")
+assert_eq(describe(Dog.new("Rex")), "dog: Rex")
+assert_eq(describe(Cat.new("Mia")), "cat: Mia")
+assert_eq(describe(Bird.new("Tweety")), "bird: Tweety")
+assert_eq(describe("not an animal"), "unknown")
+assert_eq(describe(42), "unknown")
+assert_eq(describe(nil), "unknown")
 
 # Type pattern + plain Object — Object matches even when class tag absent
 let o = {x: 1}
@@ -29,14 +29,14 @@ let r = match o {
   obj: Object => "obj",
   _ => "?"
 }
-assert(r == "obj")
+assert_eq(r, "obj")
 
 # Type pattern with the same class name on a non-Object value falls through
 let r2 = match 42 {
   x: Dog => "is dog",
   _ => "fallback"
 }
-assert(r2 == "fallback")
+assert_eq(r2, "fallback")
 
 # Nested: array pattern with TYPED_IDENT inside
 let pair_classify = fn(v) {
@@ -45,5 +45,5 @@ let pair_classify = fn(v) {
     _ => "no"
   }
 }
-assert(pair_classify([Dog.new("Buddy"), 99]) == "first is dog: Buddy")
-assert(pair_classify([99, 100]) == "no")
+assert_eq(pair_classify([Dog.new("Buddy"), 99]), "first is dog: Buddy")
+assert_eq(pair_classify([99, 100]), "no")

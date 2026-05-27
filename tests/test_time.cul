@@ -5,144 +5,144 @@
 
 # --- now / monotonic / sleep ---
 let now = Time.now()
-assert(now.unix() > 1700000000.0)               # post-2023
-assert(now.unix_nanos() > 1700000000000000000)
+assert_gt(now.unix(), 1700000000.0)               # post-2023
+assert_gt(now.unix_nanos(), 1700000000000000000)
 
 let m1 = Time.monotonic()
 Time.sleep(0.001)
 let m2 = Time.monotonic()
-assert(m2 >= m1)
+assert_ge(m2, m1)
 
 # --- Instant construction ---
 let t = Time.from_iso("2026-05-21T15:30:45.123456789Z")
-assert(t.iso() == "2026-05-21T15:30:45.123456789Z")
-assert(t.unix_nanos() == 1779377445123456789)
+assert_eq(t.iso(), "2026-05-21T15:30:45.123456789Z")
+assert_eq(t.unix_nanos(), 1779377445123456789)
 
 let t0 = Time.from_iso("2026-05-21T15:30:45Z")
-assert(t0.iso() == "2026-05-21T15:30:45Z")
-assert(t.unix_nanos() - t0.unix_nanos() == 123456789)
+assert_eq(t0.iso(), "2026-05-21T15:30:45Z")
+assert_eq(t.unix_nanos() - t0.unix_nanos(), 123456789)
 
 # Offset handling
 let t_jp = Time.from_iso("2026-05-21T15:30:00+09:00")
 let t_utc = Time.from_iso("2026-05-21T15:30:00Z")
-assert(t_utc.unix_nanos() - t_jp.unix_nanos() == 9 * 3600 * 1000000000)
+assert_eq(t_utc.unix_nanos() - t_jp.unix_nanos(), 9 * 3600 * 1000000000)
 
 # Date-only → UTC midnight (deterministic across hosts)
 let date_only = Time.from_iso("2026-05-21")
 let utc_mid = Time.from_iso("2026-05-21T00:00:00Z")
-assert(date_only == utc_mid)
+assert_eq(date_only, utc_mid)
 
 # from_unix
 let t_unix = Time.from_unix(1779377445)
-assert(t_unix.iso() == "2026-05-21T15:30:45Z")
+assert_eq(t_unix.iso(), "2026-05-21T15:30:45Z")
 
 # from_parts (kwarg: utc)
 let t_parts = Time.from_parts(
   {year: 2026, month: 5, day: 21, hour: 15, minute: 30, second: 45},
   utc: true)
-assert(t_parts == t0)
+assert_eq(t_parts, t0)
 
 # parse (strftime)
 let t_parsed = Time.parse("2026-05-21 15:30:45", "%Y-%m-%d %H:%M:%S")
 let p_local = t_parsed.parts()
-assert(p_local.year == 2026 && p_local.month == 5 && p_local.day == 21)
-assert(p_local.hour == 15 && p_local.minute == 30 && p_local.second == 45)
+assert_true(p_local.year == 2026 && p_local.month == 5 && p_local.day == 21)
+assert_true(p_local.hour == 15 && p_local.minute == 30 && p_local.second == 45)
 
 # --- Instant methods ---
 let p = t.parts(utc: true)
-assert(p.year == 2026 && p.month == 5 && p.day == 21)
-assert(p.hour == 15 && p.minute == 30 && p.second == 45)
-assert(p.nanosecond == 123456789)
-assert(p.weekday == 3)                          # Thursday — ISO 0=Mon..6=Sun
-assert(p.dayofyear == 141)
+assert_true(p.year == 2026 && p.month == 5 && p.day == 21)
+assert_true(p.hour == 15 && p.minute == 30 && p.second == 45)
+assert_eq(p.nanosecond, 123456789)
+assert_eq(p.weekday, 3)                          # Thursday — ISO 0=Mon..6=Sun
+assert_eq(p.dayofyear, 141)
 
-assert(t.weekday(utc: true) == 3)
-assert(t.format("%Y-%m-%d", utc: true) == "2026-05-21")
-assert(t.format("%H:%M:%S", utc: true) == "15:30:45")
+assert_eq(t.weekday(utc: true), 3)
+assert_eq(t.format("%Y-%m-%d", utc: true), "2026-05-21")
+assert_eq(t.format("%H:%M:%S", utc: true), "15:30:45")
 
 # add (kwargs)
 let plus_year = t.add(years: 1, utc: true)
 let py = plus_year.parts(utc: true)
-assert(py.year == 2027 && py.month == 5 && py.day == 21)
-assert(py.nanosecond == 123456789)
+assert_true(py.year == 2027 && py.month == 5 && py.day == 21)
+assert_eq(py.nanosecond, 123456789)
 
 # Month-end clamp (2024-01-31 + 1mo → 2024-02-29)
 let jan31 = Time.from_iso("2024-01-31T00:00:00Z")
 let feb_end = jan31.add(months: 1, utc: true)
 let fp = feb_end.parts(utc: true)
-assert(fp.year == 2024 && fp.month == 2 && fp.day == 29)
+assert_true(fp.year == 2024 && fp.month == 2 && fp.day == 29)
 
 # Non-leap clamp (2026-01-31 + 1mo → 2026-02-28)
 let jan31_26 = Time.from_iso("2026-01-31T00:00:00Z")
 let feb28 = jan31_26.add(months: 1, utc: true)
 let fp2 = feb28.parts(utc: true)
-assert(fp2.year == 2026 && fp2.month == 2 && fp2.day == 28)
+assert_true(fp2.year == 2026 && fp2.month == 2 && fp2.day == 28)
 
 # Negative
 let prev = Time.from_iso("2026-03-15T00:00:00Z").add(months: -1, utc: true)
 let pp = prev.parts(utc: true)
-assert(pp.year == 2026 && pp.month == 2 && pp.day == 15)
+assert_true(pp.year == 2026 && pp.month == 2 && pp.day == 15)
 
 # start_of
 let sod = t.start_of("day", utc: true)
 let sd = sod.parts(utc: true)
-assert(sd.hour == 0 && sd.minute == 0 && sd.second == 0 && sd.nanosecond == 0)
+assert_true(sd.hour == 0 && sd.minute == 0 && sd.second == 0 && sd.nanosecond == 0)
 
 let soy = t.start_of("year", utc: true)
 let sy = soy.parts(utc: true)
-assert(sy.month == 1 && sy.day == 1)
+assert_true(sy.month == 1 && sy.day == 1)
 
 # --- Duration construction + accessors ---
 let one_min = Time.minutes(1)
-assert(one_min.seconds() == 60.0)
-assert(one_min.milliseconds() == 60000.0)
+assert_eq(one_min.seconds(), 60.0)
+assert_eq(one_min.milliseconds(), 60000.0)
 
 let half_sec = Time.milliseconds(500)
-assert(half_sec.seconds() == 0.5)
+assert_eq(half_sec.seconds(), 0.5)
 
 let one_day = Time.days(1)
-assert(one_day.hours() == 24.0)
-assert(one_day.minutes() == 1440.0)
+assert_eq(one_day.hours(), 24.0)
+assert_eq(one_day.minutes(), 1440.0)
 
 # Sub-second Duration
 let micros = Time.milliseconds(1.5)
-assert(micros.seconds() == 0.0015)
+assert_eq(micros.seconds(), 0.0015)
 
 # --- Operator overloads ---
 # Instant + Duration → Instant
 let t_plus_min = t + Time.minutes(1)
-assert(t_plus_min.unix_nanos() - t.unix_nanos() == 60 * 1000000000)
+assert_eq(t_plus_min.unix_nanos() - t.unix_nanos(), 60 * 1000000000)
 
 # Instant - Duration → Instant
 let t_minus_min = t - Time.minutes(1)
-assert(t.unix_nanos() - t_minus_min.unix_nanos() == 60 * 1000000000)
+assert_eq(t.unix_nanos() - t_minus_min.unix_nanos(), 60 * 1000000000)
 
 # Instant - Instant → Duration
 let diff = t_plus_min - t
-assert(diff.seconds() == 60.0)
+assert_eq(diff.seconds(), 60.0)
 
 # Duration arithmetic
 let total = Time.minutes(1) + Time.seconds(30)
-assert(total.seconds() == 90.0)
+assert_eq(total.seconds(), 90.0)
 let halved = Time.minutes(2) / 2
-assert(halved.seconds() == 60.0)
+assert_eq(halved.seconds(), 60.0)
 let doubled = Time.seconds(5) * 3
-assert(doubled.seconds() == 15.0)
+assert_eq(doubled.seconds(), 15.0)
 let neg = -Time.seconds(10)
-assert(neg.seconds() == -10.0)
-assert(neg.abs().seconds() == 10.0)
+assert_eq(neg.seconds(), -10.0)
+assert_eq(neg.abs().seconds(), 10.0)
 
 # Comparison
 let small = Time.seconds(5)
 let big = Time.seconds(10)
-assert(small < big)
-assert(small <= big)
-assert(small <= small)
-assert(small == small)
+assert_lt(small, big)
+assert_le(small, big)
+assert_le(small, small)
+assert_eq(small, small)
 
 # Instant comparison
 let t1 = Time.from_iso("2026-01-01T00:00:00Z")
 let t2 = Time.from_iso("2026-06-01T00:00:00Z")
-assert(t1 < t2)
-assert(t1 <= t2)
-assert(t1 == t1)
+assert_lt(t1, t2)
+assert_le(t1, t2)
+assert_eq(t1, t1)

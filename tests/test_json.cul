@@ -5,118 +5,118 @@
 let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}
 let s = JSON.stringify(v)
 let v2 = JSON.parse(s)
-assert(v2.name == "alice")
-assert(v2.age == 30)
-assert(v2.active == true)
-assert(v2.score == 3.14)
-assert(v2.parent == nil)
+assert_eq(v2.name, "alice")
+assert_eq(v2.age, 30)
+assert_eq(v2.active, true)
+assert_eq(v2.score, 3.14)
+assert_eq(v2.parent, nil)
 
 // Insertion order preserved in stringify
 let o = {b: 2, a: 1, c: 3}
 let s2 = JSON.stringify(o)
-assert(s2 == '{"b":2,"a":1,"c":3}')
+assert_eq(s2, '{"b":2,"a":1,"c":3}')
 
 // Array round-trip
 let arr = [1, "two", 3.0, true, nil]
 let p = JSON.parse(JSON.stringify(arr))
-assert(p[0] == 1)
-assert(p[1] == "two")
-assert(p[2] == 3.0)
+assert_eq(p[0], 1)
+assert_eq(p[1], "two")
+assert_eq(p[2], 3.0)
 
 // Nested
 let nested = JSON.parse('{"a":[1,2,{"b":"c"}]}')
-assert(nested.a[2].b == "c")
+assert_eq(nested.a[2].b, "c")
 
 // --- Pretty stringify ---
 let pretty = JSON.stringify({a: 1, b: [2, 3]}, 2)
 // The pretty output round-trips back to the same logical value.
 let pp = JSON.parse(pretty)
-assert(pp.a == 1)
-assert(pp.b[0] == 2)
-assert(pp.b[1] == 3)
+assert_eq(pp.a, 1)
+assert_eq(pp.b[0], 2)
+assert_eq(pp.b[1], 3)
 
 // --- Tuple → JSON array ---
 let tup = (1, 2, 3)
-assert(JSON.stringify(tup) == JSON.stringify([1, 2, 3]))
+assert_eq(JSON.stringify(tup), JSON.stringify([1, 2, 3]))
 
 // --- Set → JSON array (insertion order) ---
 let st = {7, 8, 9}
-assert(JSON.stringify(st) == JSON.stringify([7, 8, 9]))
+assert_eq(JSON.stringify(st), JSON.stringify([7, 8, 9]))
 
 // Empty collections. Single quotes dodge culebra's `"{}"` string
 // interpolation, which treats braces as an embedded expression.
 let empty_arr = []
 let empty_obj = {}
-assert(JSON.stringify(empty_arr) == '[]')
-assert(JSON.stringify(empty_obj) == '{}')
+assert_eq(JSON.stringify(empty_arr), '[]')
+assert_eq(JSON.stringify(empty_obj), '{}')
 
 // --- H cycle: kwargs API (indent / sort_keys / lines / number_mode) ---
 
 // kwargs form: equivalent to the legacy positional indent
 let pretty_kw = JSON.stringify({a: 1, b: 2}, indent: 2)
-assert(pretty_kw == JSON.stringify({a: 1, b: 2}, 2))
+assert_eq(pretty_kw, JSON.stringify({a: 1, b: 2}, 2))
 
 // sort_keys: deterministic alphabetical order regardless of insertion
 let sorted = JSON.stringify({z: 1, a: 2, m: 3}, sort_keys: true)
-assert(sorted == '{"a":2,"m":3,"z":1}')
+assert_eq(sorted, '{"a":2,"m":3,"z":1}')
 let sorted_pretty = JSON.stringify({b: 1, a: 2}, indent: 2, sort_keys: true)
 let sorted_pretty_expected = JSON.stringify({a: 2, b: 1}, indent: 2)
-assert(sorted_pretty == sorted_pretty_expected)
+assert_eq(sorted_pretty, sorted_pretty_expected)
 
 // JSON Lines round-trip
 let xs = [1, 'two', {x: 3}, true, nil]
 let jsonl = JSON.stringify(xs, lines: true)
 let parsed_lines = JSON.parse(jsonl, lines: true)
-assert(parsed_lines.size() == 5)
-assert(parsed_lines[0] == 1)
-assert(parsed_lines[1] == 'two')
-assert(parsed_lines[2].x == 3)
+assert_eq(parsed_lines.size(), 5)
+assert_eq(parsed_lines[0], 1)
+assert_eq(parsed_lines[1], 'two')
+assert_eq(parsed_lines[2].x, 3)
 
 // Empty-array JSONL → "" (no terminating newline; lines == 0).
-assert(JSON.stringify([], lines: true) == '')
-assert(JSON.parse('', lines: true).size() == 0)
+assert_eq(JSON.stringify([], lines: true), '')
+assert_eq(JSON.parse('', lines: true).size(), 0)
 
 // Dynamic Bool for `lines` (variable, not literal). The JIT path
 // resolves at runtime, so this exercises the non-constant slot.
 let do_lines = true
-assert(JSON.stringify([1, 2], lines: do_lines) == "1\n2\n")
+assert_eq(JSON.stringify([1, 2], lines: do_lines), "1\n2\n")
 let do_lines_off = false
-assert(JSON.stringify([1, 2], lines: do_lines_off) == '[1,2]')
+assert_eq(JSON.stringify([1, 2], lines: do_lines_off), '[1,2]')
 
 // number_mode: 'float' forces every number to Float
 let n_auto = JSON.parse('1')
-assert(n_auto == 1)
+assert_eq(n_auto, 1)
 let n_float = JSON.parse('1', number_mode: 'float')
-assert(n_float == 1.0)
+assert_eq(n_float, 1.0)
 let arr_float = JSON.parse('[1, 2.5, 3]', number_mode: 'float')
-assert(arr_float[0] == 1.0 && arr_float[2] == 3.0)
+assert_true(arr_float[0] == 1.0 && arr_float[2] == 3.0)
 
 // Literal Object splat works on both backends.
 let pretty_splat = JSON.stringify({a: 1, b: 2}, **{indent: 2})
-assert(pretty_splat == JSON.stringify({a: 1, b: 2}, indent: 2))
+assert_eq(pretty_splat, JSON.stringify({a: 1, b: 2}, indent: 2))
 
 // Dynamic `**variable` splat against the built-in dispatch (Option Y
 // kwarg adapter). Pre-Option Y this was JIT-rejected; now both
 // backends enumerate the runtime Object's keys.
 let str_opts = {indent: 2, sort_keys: true}
 let dyn_pretty = JSON.stringify({z: 1, a: 2}, **str_opts)
-assert(dyn_pretty == JSON.stringify({z: 1, a: 2}, indent: 2, sort_keys: true))
+assert_eq(dyn_pretty, JSON.stringify({z: 1, a: 2}, indent: 2, sort_keys: true))
 
 let mixed = JSON.stringify({x: 1}, **{sort_keys: true}, indent: 4)
-assert(mixed == JSON.stringify({x: 1}, indent: 4, sort_keys: true))
+assert_eq(mixed, JSON.stringify({x: 1}, indent: 4, sort_keys: true))
 
 let parse_opts = {number_mode: 'float'}
-assert(JSON.parse('1', **parse_opts) == 1.0)
+assert_eq(JSON.parse('1', **parse_opts), 1.0)
 
 let line_opts = {lines: true}
 let parsed = JSON.parse("1\n2\n3\n", **line_opts)
-assert(parsed.size() == 3 && parsed[0] == 1)
+assert_true(parsed.size() == 3 && parsed[0] == 1)
 
 // Unknown kwarg via dynamic splat — catchable at runtime on both
 // backends (compile-time path's literal splats throw before catch in
 // JIT, but the runtime adapter throws after entry).
 let bad = {bogus: 1}
 let r = try { JSON.stringify({a: 1}, **bad); nil } catch e { e }
-assert(r.kind == 'TypeError' && r.message.contains('bogus'))
+assert_true(r.kind == 'TypeError' && r.message.contains('bogus'))
 
 IO.puts("test_json OK")

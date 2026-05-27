@@ -1590,6 +1590,20 @@ struct Environment : std::enable_shared_from_this<Environment> {
         std::make_shared<std::string>(std::move(source)));
   }
 
+  // Register multiple names sharing the same source. First `get(any_name)`
+  // parses+evaluates the source once; the other names see their pending
+  // entries cleared (the source's `let` statements bind every symbol in
+  // one pass). Used for the matcher family — 10 globals from one source.
+  void initialize_lazy_group(std::vector<std::string_view> names,
+                              std::string source) {
+    auto shared = std::make_shared<std::string>(std::move(source));
+    for (auto name : names) {
+      initialize(name, Value{}, /*mut=*/false);
+      if (is_sink_name(name)) continue;
+      lazy_pending.insert_or_assign(std::string(name), shared);
+    }
+  }
+
   // Defined below `interpret` since it parses + evaluates the source.
   void resolve_from_lazy(std::string_view name,
                          std::shared_ptr<std::string> source);
@@ -6307,6 +6321,15 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
 // invoked long after this call returns.
 inline void Environment::resolve_from_lazy(
     std::string_view name, std::shared_ptr<std::string> source) {
+  // Group lazy bind: a prior eval through a sibling name may have already
+  // bound this symbol via the same source. Detect by non-Nil dictionary
+  // entry + skip parse to avoid redundant work.
+  if (auto it = dictionary.find(name); it != dictionary.end()) {
+    if (it->second.val.type != Value::Nil) {
+      lazy_pending.erase(std::string(name));
+      return;
+    }
+  }
   lazy_pending.erase(std::string(name));
   lazy_module_sources.push_back(source);
   std::vector<std::string> parse_msgs;

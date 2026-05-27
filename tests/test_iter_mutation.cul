@@ -12,9 +12,9 @@ mut a = {mut x: 1, mut y: 2, mut z: 3}
 for k in a.iter() {
   a[k] = 99
 }
-assert(a.x == 99)
-assert(a.y == 99)
-assert(a.z == 99)
+assert_eq(a.x, 99)
+assert_eq(a.y, 99)
+assert_eq(a.z, 99)
 
 # 2. Adding a key mid-iter raises.
 mut b = {x: 1}
@@ -25,9 +25,9 @@ try {
   }
 } catch e {
   add_raised = true
-  assert(e.kind == "RuntimeError")
+  assert_eq(e.kind, "RuntimeError")
 }
-assert(add_raised)
+assert_true(add_raised)
 
 # 3. Removing a key mid-iter raises.
 mut c = {x: 1, y: 2}
@@ -38,9 +38,9 @@ try {
   }
 } catch e {
   del_raised = true
-  assert(e.kind == "RuntimeError")
+  assert_eq(e.kind, "RuntimeError")
 }
-assert(del_raised)
+assert_true(del_raised)
 
 # 4. The `for k in obj` sugar enforces the same protocol.
 mut d = {a: 1, b: 2}
@@ -51,9 +51,9 @@ try {
   }
 } catch e {
   sugar_raised = true
-  assert(e.kind == "RuntimeError")
+  assert_eq(e.kind, "RuntimeError")
 }
-assert(sugar_raised)
+assert_true(sugar_raised)
 
 # 5. Mutating a *different* Object mid-iter is fine.
 let src = {a: 1, b: 2}
@@ -61,5 +61,5 @@ mut dst = {}
 for k in src.iter() {
   dst[k] = src[k]
 }
-assert(dst.a == 1)
-assert(dst.b == 2)
+assert_eq(dst.a, 1)
+assert_eq(dst.b, 2)

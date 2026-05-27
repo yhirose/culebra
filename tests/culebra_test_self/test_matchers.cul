@@ -22,9 +22,9 @@ fn assert_throws_wrong_kind_fails() {
     assert_throws("TypeError", fn() { let _ = 1 / 0 })
     nil
   } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("expected kind 'TypeError'"))
-  assert(r.message.contains("got 'ZeroDivisionError'"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("expected kind 'TypeError'"))
+  assert_true(r.message.contains("got 'ZeroDivisionError'"))
 }
 
 @test
@@ -33,8 +33,8 @@ fn assert_throws_no_throw_fails() {
     assert_throws("TypeError", fn() { 42 })
     nil
   } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("expected throw but fn returned normally"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("expected throw but fn returned normally"))
 }
 
 # --- assert_close ---
@@ -52,10 +52,10 @@ fn assert_close_exceeds_tol_fails() {
     assert_close(1.0, 2.0, 0.5)
     nil
   } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("diff"))
-  assert(r.message.contains("a:"))
-  assert(r.message.contains("b:"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("diff"))
+  assert_true(r.message.contains("a:"))
+  assert_true(r.message.contains("b:"))
 }
 
 # NaN must NOT slip through — `NaN > tol` is false under IEEE-754, so
@@ -67,7 +67,7 @@ fn assert_close_rejects_nan() {
     assert_close(nan, 1.0, 1e-9)
     nil
   } catch e { e }
-  assert(r.kind == "AssertionError")
+  assert_eq(r.kind, "AssertionError")
 }
 
 # assert_throws must reject non-zero-arity callbacks with a clear
@@ -79,8 +79,8 @@ fn assert_throws_rejects_nonzero_arity() {
     assert_throws("X", fn(extra) { throw { kind: "X" } })
     nil
   } catch e { e }
-  assert(r.kind == "ArityError")
-  assert(r.message.contains("fn must take 0 parameters"))
+  assert_eq(r.kind, "ArityError")
+  assert_true(r.message.contains("fn must take 0 parameters"))
 }
 
 # A user throw with a non-String `kind` field shouldn't escape as
@@ -92,8 +92,49 @@ fn assert_throws_handles_nonstring_kind() {
     assert_throws("X", fn() { throw { kind: 42, message: "bad" } })
     nil
   } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("expected kind 'X'"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("expected kind 'X'"))
+}
+
+# --- assert_true / assert_false ---
+
+@test
+fn assert_true_passes() {
+  assert_true(true)
+  assert_true(1 == 1)
+  assert_true(1)            # nonzero numeric is truthy
+  assert_true(0.5)
+}
+
+@test
+fn assert_true_failure_shows_value() {
+  let r = try { assert_true(false); nil } catch e { e }
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("value: false"))
+}
+
+@test
+fn assert_false_passes() {
+  assert_false(false)
+  assert_false(1 == 2)
+  assert_false(0)           # zero numeric is falsy
+  assert_false(0.0)
+}
+
+@test
+fn assert_false_failure_shows_value() {
+  let r = try { assert_false(true); nil } catch e { e }
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("value: true"))
+}
+
+# culebra has no Python-style truthiness: non-numeric / non-bool values
+# raise TypeError when fed to assert_true / assert_false. Documents the
+# strict-bool policy.
+@test
+fn assert_true_rejects_string() {
+  let r = try { assert_true("nonempty"); nil } catch e { e }
+  assert_eq(r.kind, "TypeError")
 }
 
 # --- assert_eq / assert_ne ---
@@ -108,9 +149,9 @@ fn assert_eq_primitives() {
 @test
 fn assert_eq_failure_shows_both_sides() {
   let r = try { assert_eq(41, 42); nil } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("left:  41"))
-  assert(r.message.contains("right: 42"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("left:  41"))
+  assert_true(r.message.contains("right: 42"))
 }
 
 @test
@@ -122,7 +163,7 @@ fn assert_ne_succeeds_on_inequality() {
 @test
 fn assert_ne_failure_on_equality() {
   let r = try { assert_ne(5, 5); nil } catch e { e }
-  assert(r.kind == "AssertionError")
+  assert_eq(r.kind, "AssertionError")
 }
 
 # --- assert_lt / assert_le / assert_gt / assert_ge ---
@@ -140,9 +181,9 @@ fn assert_ordering_matchers() {
 @test
 fn assert_lt_failure() {
   let r = try { assert_lt(10, 5); nil } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("left:  10"))
-  assert(r.message.contains("right: 5"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("left:  10"))
+  assert_true(r.message.contains("right: 5"))
 }
 
 # --- Class instance __eq__ / __lt__ dispatch ---
@@ -179,9 +220,9 @@ class Money {
 @test
 fn assert_eq_failure_uses_user_str() {
   let r = try { assert_eq(Money.new(500), Money.new(700)); nil } catch e { e }
-  assert(r.kind == "AssertionError")
-  assert(r.message.contains("5USD"))
-  assert(r.message.contains("7USD"))
+  assert_eq(r.kind, "AssertionError")
+  assert_true(r.message.contains("5USD"))
+  assert_true(r.message.contains("7USD"))
 }
 
 # --- DI: plain fn in env is resolved by param name ---
@@ -212,7 +253,7 @@ fn di_chain(bumped) {
 @test
 fn di_memoization(db, bumped) {
   assert_eq(db.n, 1)
-  assert(db == bumped)
+  assert_eq(db, bumped)
 }
 
 # --- assert_gt / assert_ge mirror operators on class instances ---
@@ -234,7 +275,7 @@ fn assert_gt_uses_le_negation_not_operand_swap() {
   let a = NaNLike.new()
   let b = NaNLike.new()
   assert_gt(a, b)                       # passes only with the fix
-  assert(a > b)                         # operator agrees
+  assert_gt(a, b)                         # operator agrees
 }
 
 @test
@@ -242,7 +283,7 @@ fn assert_ge_uses_lt_negation() {
   let a = NaNLike.new()
   let b = NaNLike.new()
   assert_ge(a, b)                       # !(a.__lt__(b)) = !false = true
-  assert(a >= b)                        # operator agrees
+  assert_ge(a, b)                        # operator agrees
 }
 
 # --- assert_close rejects NaN tolerance ---
@@ -251,7 +292,7 @@ fn assert_ge_uses_lt_negation() {
 fn assert_close_rejects_nan_tol() {
   let nan_tol = (-1.0) ** 0.5
   let r = try { assert_close(1.0, 2.0, nan_tol); nil } catch e { e }
-  assert(r.kind == "AssertionError")
+  assert_eq(r.kind, "AssertionError")
 }
 
 # Raw user `throw <Value>` escaping a test body is caught by the
@@ -278,7 +319,7 @@ fn probe() { Probe.new() }
 
 @test
 fn drop_during_test(probe) {
-  assert(probe.open)
+  assert_true(probe.open)
 }
 
 @test

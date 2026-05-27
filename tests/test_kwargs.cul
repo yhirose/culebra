@@ -10,25 +10,25 @@
 let f = fn (x, y = 10, z = 100) { x + y + z }
 
 # Positional only (defaults fill trailing)
-assert(f(1, 2, 3) == 6)
-assert(f(1) == 111)
-assert(f(1, 2) == 103)
+assert_eq(f(1, 2, 3), 6)
+assert_eq(f(1), 111)
+assert_eq(f(1, 2), 103)
 
 # Direct kwargs — including a middle gap (y skipped, z provided).
-assert(f(1, z: 5) == 16)
-assert(f(1, y: 2, z: 3) == 6)
-assert(f(z: 3, y: 2, x: 1) == 6)
+assert_eq(f(1, z: 5), 16)
+assert_eq(f(1, y: 2, z: 3), 6)
+assert_eq(f(z: 3, y: 2, x: 1), 6)
 
 # Literal Object splat — flattened at compile time.
-assert(f(1, **{y: 7, z: 8}) == 16)
-assert(f(1, **{y: 7}, z: 100) == 108)
-assert(f(1, **{y: 2}, **{y: 5}) == 106)   # multiple splats: later wins
-assert(f(**{x: 1}, **{y: 2}, z: 3) == 6)
+assert_eq(f(1, **{y: 7, z: 8}), 16)
+assert_eq(f(1, **{y: 7}, z: 100), 108)
+assert_eq(f(1, **{y: 2}, **{y: 5}), 106)   # multiple splats: later wins
+assert_eq(f(**{x: 1}, **{y: 2}, z: 3), 6)
 
 # Explicit kwarg always wins regardless of source order, including
 # when an explicit comes BEFORE the splat with the same key.
-assert(f(1, z: 3, **{z: 999}) == 14)
-assert(f(1, **{z: 999}, z: 3) == 14)
+assert_eq(f(1, z: 3, **{z: 999}), 14)
+assert_eq(f(1, **{z: 999}, z: 3), 14)
 
 # Shadowing a built-in global name with a user fn that takes kwargs:
 # the JIT must route the kwargs call through the user fn, not bail to
@@ -38,25 +38,25 @@ assert(f(1, **{z: 999}, z: 3) == 14)
 # resolution. Kwargs calls bypass those fast paths and reach the
 # user fn correctly.)
 let to_long = fn (n, base = 10) { n * base }
-assert(to_long(5, base: 2) == 10)
+assert_eq(to_long(5, base: 2), 10)
 
 # Indirect callee: captured closure carries the param metadata so the
 # JIT runtime resolver finds it via cls->fn_ptr.
 let make_adder = fn (base) { fn (x, mult = 1) { (x + base) * mult } }
 let add10 = make_adder(10)
-assert(add10(5) == 15)
-assert(add10(5, mult: 2) == 30)
-assert(add10(5, **{mult: 3}) == 45)
+assert_eq(add10(5), 15)
+assert_eq(add10(5, mult: 2), 30)
+assert_eq(add10(5, **{mult: 3}), 45)
 
 # Dynamic `**variable` splat (not a literal Object): resolves at
 # runtime via the helper's enumeration of the splat operand.
 let dyn_opts = {mult: 4}
-assert(add10(5, **dyn_opts) == 60)
+assert_eq(add10(5, **dyn_opts), 60)
 
 # UFCS path with kwargs: `x.f(...)` becomes `f(x, ...)`.
 let greet = fn (name, greeting = 'hi') { "{greeting}, {name}" }
-assert('alice'.greet() == 'hi, alice')
-assert('alice'.greet(greeting: 'yo') == 'yo, alice')
+assert_eq('alice'.greet(), 'hi, alice')
+assert_eq('alice'.greet(greeting: 'yo'), 'yo, alice')
 
 # Object method with kwargs (including a middle-gap default).
 let counter = fn (start) {
@@ -66,101 +66,101 @@ let counter = fn (start) {
   }
 }
 let c = counter(10)
-assert(c.bump() == 11)
-assert(c.bump(by: 5) == 15)
-assert(c.bump(mult: 2) == 22)         # middle gap on by
-assert(c.bump(by: 5, mult: 3) == 45)
+assert_eq(c.bump(), 11)
+assert_eq(c.bump(by: 5), 15)
+assert_eq(c.bump(mult: 2), 22)         # middle gap on by
+assert_eq(c.bump(by: 5, mult: 3), 45)
 
 # Default eval is per-call (Ruby flavor — not Python's def-time trap).
 mut counter = 0
 let inc = fn () { counter = counter + 1; counter }
 let h = fn (x = inc()) { x }
-assert(h() == 1)
-assert(h() == 2)
-assert(h(100) == 100)   # explicit arg skips default eval
-assert(h() == 3)
+assert_eq(h(), 1)
+assert_eq(h(), 2)
+assert_eq(h(100), 100)   # explicit arg skips default eval
+assert_eq(h(), 3)
 
 # Earlier-param visibility in default eval.
 let g = fn (a, b = a + 1) { a + b }
-assert(g(10) == 21)
-assert(g(10, b: 5) == 15)
+assert_eq(g(10), 21)
+assert_eq(g(10, b: 5), 15)
 
 # __ARGS__ catches extra positional only; kwargs never contribute.
 let varfn = fn (a) { __ARGS__ }
 let extras = varfn(1, 2, 3)
-assert(extras.size() == 2 && extras[0] == 2 && extras[1] == 3)
+assert_true(extras.size() == 2 && extras[0] == 2 && extras[1] == 3)
 
 let g2 = fn (a, b = 0) { __ARGS__ }
 let e2 = g2(1, b: 9)
-assert(e2.size() == 0)
+assert_eq(e2.size(), 0)
 
 # Keyword-only parameters: anything after `*` must be passed by name.
 let kw1 = fn (x, *, y) { x + y }
-assert(kw1(1, y: 2) == 3)
-assert(kw1(1, **{y: 4}) == 5)
+assert_eq(kw1(1, y: 2), 3)
+assert_eq(kw1(1, **{y: 4}), 5)
 
 let kw2 = fn (x, *, y = 100, z = 200) { x + y + z }
-assert(kw2(1) == 301)                 # both kw-only defaults
-assert(kw2(1, y: 2) == 203)           # z still defaults
-assert(kw2(1, z: 3) == 104)           # middle gap on kw-only
-assert(kw2(1, z: 3, y: 2) == 6)
-assert(kw2(1, **{y: 2, z: 3}) == 6)
+assert_eq(kw2(1), 301)                 # both kw-only defaults
+assert_eq(kw2(1, y: 2), 203)           # z still defaults
+assert_eq(kw2(1, z: 3), 104)           # middle gap on kw-only
+assert_eq(kw2(1, z: 3, y: 2), 6)
+assert_eq(kw2(1, **{y: 2, z: 3}), 6)
 
 # UFCS + kw-only.
 let greet_kw = fn (name, *, greeting = 'hi') { "{greeting}, {name}" }
-assert('alice'.greet_kw() == 'hi, alice')
-assert('alice'.greet_kw(greeting: 'yo') == 'yo, alice')
+assert_eq('alice'.greet_kw(), 'hi, alice')
+assert_eq('alice'.greet_kw(greeting: 'yo'), 'yo, alice')
 
 # `**rest` catch-all: unconsumed kwargs are collected into an Object.
 let rest1 = fn (**opts) { opts }
 let r = rest1(a: 1, b: 2)
-assert(r.a == 1 && r.b == 2)
-assert(rest1().a == nil)              # empty rest is an empty Object
+assert_true(r.a == 1 && r.b == 2)
+assert_eq(rest1().a, nil)              # empty rest is an empty Object
 
 # Mixed: declared params take their share, rest catches the leftovers.
 let mix = fn (x, **opts) { x + opts.a }
-assert(mix(10, a: 5) == 15)
-assert(mix(10, a: 5, b: 100) == 15)   # b stays in opts, untouched
+assert_eq(mix(10, a: 5), 15)
+assert_eq(mix(10, a: 5, b: 100), 15)   # b stays in opts, untouched
 
 # Combined with `*` and defaults.
 let full = fn (x, y = 10, *, z, **kw) { x + y + z + kw.bonus }
-assert(full(1, z: 100, bonus: 7) == 118)
-assert(full(1, 2, z: 100, bonus: 7) == 110)
+assert_eq(full(1, z: 100, bonus: 7), 118)
+assert_eq(full(1, 2, z: 100, bonus: 7), 110)
 
 # Splat into a function with `**rest` — declared params bind first,
 # the rest of the keys flow into the rest Object.
 let dyn = {z: 50, bonus: 8, extra: 'x'}
-assert(full(1, **dyn) == 69)          # 1+10+50+8 (extra captured in kw)
+assert_eq(full(1, **dyn), 69)          # 1+10+50+8 (extra captured in kw)
 
 # A user-passed kwarg whose name matches the rest param itself is
 # still treated as a name to put INTO the rest Object (the rest slot
 # is filled with the constructed Object, not by name lookup).
 let r2 = fn (**opts) { opts.opts }
-assert(r2(opts: 5) == 5)
+assert_eq(r2(opts: 5), 5)
 
 # Dynamic callee with kw-only param: a positional past the `*`
 # separator must be a TypeError even when the callee is captured into
 # a variable (JIT runtime guard via param meta, mirroring the interp).
 let kw_dyn_src = fn (x, *, y) { x + y }
 let kw_dyn_dst = kw_dyn_src
-assert(kw_dyn_dst(1, y: 2) == 3)
+assert_eq(kw_dyn_dst(1, y: 2), 3)
 let dyn_err = try { kw_dyn_dst(1, 2); nil } catch e { e }
-assert(dyn_err.kind == 'TypeError')
-assert(dyn_err.message.contains('positional'))
+assert_eq(dyn_err.kind, 'TypeError')
+assert_true(dyn_err.message.contains('positional'))
 
 # Dynamic `**var` splat: splat operand is a runtime Object rather
 # than a literal. Both backends route through the runtime kwarg
 # resolver.
 let dyn_target = fn (a, b = 10, c = 100) { a + b + c }
 let opts = {b: 30, c: 300}
-assert(dyn_target(1, **opts) == 331)
+assert_eq(dyn_target(1, **opts), 331)
 # Splat from a fn return — also dynamic.
 let mkopts = fn() { {b: 40, c: 400} }
-assert(dyn_target(1, **mkopts()) == 441)
+assert_eq(dyn_target(1, **mkopts()), 441)
 
 # UFCS + kwargs against a free function.
 let fmt = fn (s, prefix = "[", suffix = "]") { "{prefix}{s}{suffix}" }
-assert("hello".fmt(prefix: "<", suffix: ">") == "<hello>")
+assert_eq("hello".fmt(prefix: "<", suffix: ">"), "<hello>")
 
 # Mixed positional / **splat / kwarg arguments must evaluate
 # left-to-right in source order on both backends — the JIT used
@@ -170,9 +170,9 @@ assert("hello".fmt(prefix: "<", suffix: ">") == "<hello>")
 mut order_log = []
 let trace = fn (label, v) { order_log.push(label); v }
 let order_target = fn (a, b, c) { a + b + c }
-assert(order_target(trace("pos", 1), **trace("splat", {b: 2}),
-                    c: trace("kw", 3)) == 6)
-assert(order_log.size() == 3 &&
+assert_eq(order_target(trace("pos", 1), **trace("splat", {b: 2}),
+                    c: trace("kw", 3)), 6)
+assert_true(order_log.size() == 3 &&
        order_log[0] == 'pos' &&
        order_log[1] == 'splat' &&
        order_log[2] == 'kw')
@@ -185,22 +185,22 @@ assert(order_log.size() == 3 &&
 let err_f = fn (x, y = 10) { x + y }
 
 let e1 = try { err_f(1, zzz: 9); nil } catch e { e }
-assert(e1.kind == 'TypeError' && e1.message.contains('zzz'))
+assert_true(e1.kind == 'TypeError' && e1.message.contains('zzz'))
 
 let e2 = try { err_f(x: 1, x: 2); nil } catch e { e }
-assert(e2.kind == 'TypeError' && e2.message.contains('duplicate'))
+assert_true(e2.kind == 'TypeError' && e2.message.contains('duplicate'))
 
 let e3 = try { err_f(1, x: 2); nil } catch e { e }
-assert(e3.kind == 'TypeError' && e3.message.contains('both positionally'))
+assert_true(e3.kind == 'TypeError' && e3.message.contains('both positionally'))
 
 let e4 = try { err_f(); nil } catch e { e }
-assert(e4.kind == 'ArityError' && e4.message.contains("missing required"))
+assert_true(e4.kind == 'ArityError' && e4.message.contains("missing required"))
 
 let e5 = try { err_f(1, **[1, 2]); nil } catch e { e }
-assert(e5.kind == 'TypeError' && e5.message.contains('splat operand'))
+assert_true(e5.kind == 'TypeError' && e5.message.contains('splat operand'))
 
 let e6 = try { err_f(x: 1, 2); nil } catch e { e }
-assert(e6.kind == 'SyntaxError' &&
+assert_true(e6.kind == 'SyntaxError' &&
        e6.message.contains('positional argument follows'))
 
 let e7 = try {
@@ -208,6 +208,6 @@ let e7 = try {
   err_f(1, **bad)
   nil
 } catch e { e }
-assert(e7.kind == 'TypeError' && e7.message.contains('splat key'))
+assert_true(e7.kind == 'TypeError' && e7.message.contains('splat key'))
 
 IO.puts('test_kwargs OK')

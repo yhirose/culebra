@@ -9,48 +9,48 @@
 
 # --- zeros: variadic shape, default F32 ---
 let a = Tensor.zeros(3, 4)
-assert(to_string(a.shape()) == "[3, 4]")
-assert(type_of(a) == "Tensor")
-assert(to_string(a) == "Tensor 3x4 f32")
+assert_eq(to_string(a.shape()), "[3, 4]")
+assert_eq(type_of(a), "Tensor")
+assert_eq(to_string(a), "Tensor 3x4 f32")
 
 # --- zeros: Array shape (computed) ---
 let dims = [2, 5]
 let b = Tensor.zeros(dims)
-assert(to_string(b.shape()) == "[2, 5]")
+assert_eq(to_string(b.shape()), "[2, 5]")
 
 # --- zeros: explicit dtype, Julia-style first arg ---
 let c = Tensor.zeros("f64", 2, 3)
-assert(to_string(c.shape()) == "[2, 3]")
-assert(to_string(c) == "Tensor 2x3 f64")
+assert_eq(to_string(c.shape()), "[2, 3]")
+assert_eq(to_string(c), "Tensor 2x3 f64")
 
 let d = Tensor.zeros("f64", [4, 4])
-assert(to_string(d.shape()) == "[4, 4]")
-assert(to_string(d) == "Tensor 4x4 f64")
+assert_eq(to_string(d.shape()), "[4, 4]")
+assert_eq(to_string(d), "Tensor 4x4 f64")
 
 # --- ones: same shape rules ---
 let o1 = Tensor.ones(2, 2)
-assert(to_string(o1.shape()) == "[2, 2]")
+assert_eq(to_string(o1.shape()), "[2, 2]")
 let o2 = Tensor.ones("f64", 3, 1)
-assert(to_string(o2) == "Tensor 3x1 f64")
+assert_eq(to_string(o2), "Tensor 3x1 f64")
 
 # --- from: 1D nested-Array ---
 let v = Tensor.from([1.0, 2.0, 3.0, 4.0])
-assert(to_string(v.shape()) == "[4]")
-assert(to_string(v) == "Tensor 4 f32")
+assert_eq(to_string(v.shape()), "[4]")
+assert_eq(to_string(v), "Tensor 4 f32")
 
 # --- from: 2D nested-Array ---
 let m = Tensor.from([[1.0, 2.0, 3.0],
                      [4.0, 5.0, 6.0]])
-assert(to_string(m.shape()) == "[2, 3]")
+assert_eq(to_string(m.shape()), "[2, 3]")
 
 # --- from: rows of equal length, mixed Long/Float numerics promote to F32 ---
 let mi = Tensor.from([[1, 2], [3, 4]])
-assert(to_string(mi.shape()) == "[2, 2]")
+assert_eq(to_string(mi.shape()), "[2, 2]")
 
 # --- 3D / higher-rank shapes work via variadic ---
 let t3 = Tensor.zeros(2, 3, 4)
-assert(to_string(t3.shape()) == "[2, 3, 4]")
-assert(to_string(t3) == "Tensor 2x3x4 f32")
+assert_eq(to_string(t3.shape()), "[2, 3, 4]")
+assert_eq(to_string(t3), "Tensor 2x3x4 f32")
 
 # --- M2.0: lazy graph + eval ---
 #
@@ -61,8 +61,8 @@ assert(to_string(t3) == "Tensor 2x3x4 f32")
 let a = Tensor.ones(2, 3)
 let b = Tensor.ones(2, 3)
 let c = a + b
-assert(to_string(c.shape()) == "[2, 3]")
-assert(to_string(c) == "Tensor 2x3 f32")
+assert_eq(to_string(c.shape()), "[2, 3]")
+assert_eq(to_string(c), "Tensor 2x3 f32")
 Tensor.eval(c)
 
 # Same for - * /
@@ -70,20 +70,20 @@ let d = a - b
 let e = a * b
 let f = a / b
 Tensor.eval(d, e, f)
-assert(to_string(d.shape()) == "[2, 3]")
+assert_eq(to_string(d.shape()), "[2, 3]")
 
 # Diamond DAG: c1 and c2 share `a` — eval is idempotent.
 let c1 = a + b
 let c2 = a + b
 Tensor.eval(c1, c2)
-assert(to_string(c1) == "Tensor 2x3 f32")
-assert(to_string(c2) == "Tensor 2x3 f32")
+assert_eq(to_string(c1), "Tensor 2x3 f32")
+assert_eq(to_string(c2), "Tensor 2x3 f32")
 
 # Eval is idempotent: calling twice on the same graph is OK.
 let g = a + b
 Tensor.eval(g)
 Tensor.eval(g)
-assert(to_string(g) == "Tensor 2x3 f32")
+assert_eq(to_string(g), "Tensor 2x3 f32")
 
 # --- M2.1: broadcast (numpy / silarray rules) ---
 
@@ -91,20 +91,20 @@ assert(to_string(g) == "Tensor 2x3 f32")
 let M = Tensor.ones(3, 4)
 let v = Tensor.ones(4)
 let bc1 = M + v
-assert(to_string(bc1.shape()) == "[3, 4]")
+assert_eq(to_string(bc1.shape()), "[3, 4]")
 Tensor.eval(bc1)
 
 # Column-vector broadcast: [3, 1] across columns.
 let col = Tensor.ones(3, 1)
 let bc2 = M + col
-assert(to_string(bc2.shape()) == "[3, 4]")
+assert_eq(to_string(bc2.shape()), "[3, 4]")
 Tensor.eval(bc2)
 
 # Both sides need broadcasting: [3, 1] + [1, 4] -> [3, 4].
 let r = Tensor.ones(3, 1)
 let s = Tensor.ones(1, 4)
 let bc3 = r + s
-assert(to_string(bc3.shape()) == "[3, 4]")
+assert_eq(to_string(bc3.shape()), "[3, 4]")
 Tensor.eval(bc3)
 
 # --- M2.1: scalar broadcast (Tensor + numeric) ---
@@ -114,39 +114,39 @@ let sc2 = 1.0 + M
 let sc3 = M * 2.0
 let sc4 = M / 2.0
 Tensor.eval(sc1, sc2, sc3, sc4)
-assert(to_string(sc1.shape()) == "[3, 4]")
+assert_eq(to_string(sc1.shape()), "[3, 4]")
 
 # --- M2.1: Tensor.randn ---
 
 let rn = Tensor.randn(2, 3)
-assert(to_string(rn.shape()) == "[2, 3]")
+assert_eq(to_string(rn.shape()), "[2, 3]")
 let rn64 = Tensor.randn("f64", 4, 4)
-assert(to_string(rn64) == "Tensor 4x4 f64")
+assert_eq(to_string(rn64), "Tensor 4x4 f64")
 
 # --- M2.2: .pow() ---
 
 let p1 = M.pow(2.0)
 let p2 = M.pow(M)             # Tensor exponent
 Tensor.eval(p1, p2)
-assert(to_string(p1.shape()) == "[3, 4]")
-assert(to_string(p2.shape()) == "[3, 4]")
+assert_eq(to_string(p1.shape()), "[3, 4]")
+assert_eq(to_string(p2.shape()), "[3, 4]")
 
 # --- M3.1: shape ops (zero-copy views) ---
 
 # transpose: [3, 4] → [4, 3]
 let A = Tensor.ones(3, 4)
 let At = A.transpose()
-assert(to_string(At.shape()) == "[4, 3]")
+assert_eq(to_string(At.shape()), "[4, 3]")
 
 # transpose-then-binop: view participates in broadcast/binop kernels
 let bc_t = At + Tensor.ones(4, 3)
 Tensor.eval(bc_t)
-assert(to_string(bc_t.shape()) == "[4, 3]")
+assert_eq(to_string(bc_t.shape()), "[4, 3]")
 
 # slice: [10, 4] → [3, 4] (rows 2..5)
 let B = Tensor.ones(10, 4)
 let Bs = B.slice(2, 5)
-assert(to_string(Bs.shape()) == "[3, 4]")
+assert_eq(to_string(Bs.shape()), "[3, 4]")
 
 # slice + binop
 let bc_s = Bs + Tensor.ones(3, 4)
@@ -155,92 +155,92 @@ Tensor.eval(bc_s)
 # reshape: [2, 6] → [3, 4] (contiguous → contiguous, no copy)
 let C = Tensor.ones(2, 6)
 let Cr = C.reshape([3, 4])
-assert(to_string(Cr.shape()) == "[3, 4]")
+assert_eq(to_string(Cr.shape()), "[3, 4]")
 
 # reshape: 2D → 1D
 let v1d = C.reshape([12])
-assert(to_string(v1d.shape()) == "[12]")
+assert_eq(to_string(v1d.shape()), "[12]")
 
 # Chained views: transpose-of-slice
 let chained = B.slice(0, 5).transpose()
-assert(to_string(chained.shape()) == "[4, 5]")
+assert_eq(to_string(chained.shape()), "[4, 5]")
 Tensor.eval(chained + Tensor.ones(4, 5))
 
 # --- clone: deep copy, isolates copy from source ---
 
 let cl_src = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 let cl_copy = cl_src.clone()
-assert(to_string(cl_copy.shape()) == "[2, 2]")
-assert(to_string(cl_copy.to_array()) == to_string(cl_src.to_array()))
+assert_eq(to_string(cl_copy.shape()), "[2, 2]")
+assert_eq(to_string(cl_copy.to_array()), to_string(cl_src.to_array()))
 
 # In-place op on the copy must not touch the source.
 cl_copy -= Tensor.ones(2, 2)
 Tensor.eval(cl_copy)
-assert(to_string(cl_src.to_array())  == "[[1.0, 2.0], [3.0, 4.0]]")
-assert(to_string(cl_copy.to_array()) == "[[0.0, 1.0], [2.0, 3.0]]")
+assert_eq(to_string(cl_src.to_array()), "[[1.0, 2.0], [3.0, 4.0]]")
+assert_eq(to_string(cl_copy.to_array()), "[[0.0, 1.0], [2.0, 3.0]]")
 
 # Clone of a non-contiguous view: contiguous independent buffer.
 let cl_view = cl_src.transpose()
 let cl_view_copy = cl_view.clone()
-assert(to_string(cl_view_copy.shape()) == "[2, 2]")
-assert(to_string(cl_view_copy.to_array()) == "[[1.0, 3.0], [2.0, 4.0]]")
+assert_eq(to_string(cl_view_copy.shape()), "[2, 2]")
+assert_eq(to_string(cl_view_copy.to_array()), "[[1.0, 3.0], [2.0, 4.0]]")
 
 # --- M3.2: reductions ---
 
 let R = Tensor.ones(2, 3)
 
 # axis-less: returns Float scalar (eager eval)
-assert(R.sum() == 6.0)
-assert(R.mean() == 1.0)
-assert(R.max() == 1.0)
+assert_eq(R.sum(), 6.0)
+assert_eq(R.mean(), 1.0)
+assert_eq(R.max(), 1.0)
 
 # axis-ful: returns Tensor with that axis dropped
 let row_sums = R.sum(1)
 let col_sums = R.sum(0)
 Tensor.eval(row_sums, col_sums)
-assert(to_string(row_sums.shape()) == "[2]")
-assert(to_string(col_sums.shape()) == "[3]")
+assert_eq(to_string(row_sums.shape()), "[2]")
+assert_eq(to_string(col_sums.shape()), "[3]")
 
 let row_max = R.max(1)
 let col_mean = R.mean(0)
 Tensor.eval(row_max, col_mean)
-assert(to_string(row_max.shape()) == "[2]")
+assert_eq(to_string(row_max.shape()), "[2]")
 
 # argmax: returns Tensor with the reduced axis dropped, F32 indices
 let M3 = Tensor.from([[1.0, 9.0, 2.0], [5.0, 3.0, 8.0]])
 let idx = M3.argmax(1)
 Tensor.eval(idx)
-assert(to_string(idx.shape()) == "[2]")
+assert_eq(to_string(idx.shape()), "[2]")
 
 # Reduction on a transposed view: stride-aware. ones(3,2).transpose()
 # is shape [2, 3]; sum(0) drops axis 0, leaving shape [3].
 let Rv = Tensor.ones(3, 2).transpose()
-assert(Rv.sum() == 6.0)
+assert_eq(Rv.sum(), 6.0)
 let Rv_axis = Rv.sum(0)
 Tensor.eval(Rv_axis)
-assert(to_string(Rv_axis.shape()) == "[3]")
+assert_eq(to_string(Rv_axis.shape()), "[3]")
 
 # --- M3.3: .to_array() ---
 
 # 1D Tensor → flat Array
 let v1 = Tensor.from([1.0, 2.0, 3.0, 4.0])
 let av1 = v1.to_array()
-assert(to_string(av1) == "[1.0, 2.0, 3.0, 4.0]")
+assert_eq(to_string(av1), "[1.0, 2.0, 3.0, 4.0]")
 
 # 2D Tensor → nested Array
 let m2 = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
 let am2 = m2.to_array()
-assert(to_string(am2) == "[[1.0, 2.0], [3.0, 4.0]]")
+assert_eq(to_string(am2), "[[1.0, 2.0], [3.0, 4.0]]")
 
 # .to_array() on a transposed view: reads via strides
 let mt = m2.transpose()
 let amt = mt.to_array()
-assert(to_string(amt) == "[[1.0, 3.0], [2.0, 4.0]]")
+assert_eq(to_string(amt), "[[1.0, 3.0], [2.0, 4.0]]")
 
 # Round-trip a reduction: argmax → to_array gives Float indices
 let scores = Tensor.from([[1.0, 9.0, 2.0], [5.0, 3.0, 8.0]])
 let ai = scores.argmax(1).to_array()
-assert(to_string(ai) == "[1.0, 2.0]")
+assert_eq(to_string(ai), "[1.0, 2.0]")
 
 # --- M4.0: .dot() (BLAS GEMM) ---
 
@@ -253,7 +253,7 @@ let cv = C.to_array()
 # C[0,1] = 1*8 + 2*10 + 3*12 = 8 + 20 + 36 = 64
 # C[1,0] = 4*7 + 5*9 + 6*11 = 28 + 45 + 66 = 139
 # C[1,1] = 4*8 + 5*10 + 6*12 = 32 + 50 + 72 = 154
-assert(to_string(cv) == "[[58.0, 64.0], [139.0, 154.0]]")
+assert_eq(to_string(cv), "[[58.0, 64.0], [139.0, 154.0]]")
 
 # .dot() of a transpose-view: cblas_sgemm with CblasTrans, no copy
 # B.transpose() is [2, 3]; A.transpose() is [3, 2]
@@ -265,7 +265,7 @@ let atav = AtA.to_array()
 # AtA[0,0] = 1*1 + 4*4 = 17
 # AtA[0,1] = 1*2 + 4*5 = 22
 # AtA[2,2] = 3*3 + 6*6 = 45
-assert(to_string(atav) == "[[17.0, 22.0, 27.0], [22.0, 29.0, 36.0], [27.0, 36.0, 45.0]]")
+assert_eq(to_string(atav), "[[17.0, 22.0, 27.0], [22.0, 29.0, 36.0], [27.0, 36.0, 45.0]]")
 
 # --- M4.1: activations (sigmoid / relu / softmax as namespace fns) ---
 
@@ -275,12 +275,12 @@ let half = Tensor.sigmoid(zero_t)
 Tensor.eval(half)
 # sigmoid(0) = 0.5
 let hv = half.to_array()
-assert(to_string(hv) == "[[0.5, 0.5], [0.5, 0.5]]")
+assert_eq(to_string(hv), "[[0.5, 0.5], [0.5, 0.5]]")
 
 # relu: max(0, x)
 let mixed = Tensor.from([[-1.0, 0.0, 2.0], [3.0, -4.0, 0.0]])
 let rl = Tensor.relu(mixed).to_array()
-assert(to_string(rl) == "[[0.0, 0.0, 2.0], [3.0, 0.0, 0.0]]")
+assert_eq(to_string(rl), "[[0.0, 0.0, 2.0], [3.0, 0.0, 0.0]]")
 
 # softmax: each row sums to 1
 let logits = Tensor.from([[1.0, 2.0, 3.0], [1.0, 1.0, 1.0]])
@@ -289,7 +289,7 @@ Tensor.eval(sm)
 # Row 1: uniform → [1/3, 1/3, 1/3]
 let smv = sm.to_array()
 let row2_sum = to_float(smv[1][0]) + to_float(smv[1][1]) + to_float(smv[1][2])
-assert(row2_sum > 0.999 && row2_sum < 1.001)
+assert_true(row2_sum > 0.999 && row2_sum < 1.001)
 
 # --- M4.2: fused linear_sigmoid ---
 
@@ -305,10 +305,10 @@ let v00 = to_float(rv[0][0])
 let v01 = to_float(rv[0][1])
 let v10 = to_float(rv[1][0])
 let v11 = to_float(rv[1][1])
-assert(v00 > 0.99 && v00 < 1.01)
-assert(v01 == 0.5)
-assert(v10 == 0.5)
-assert(v11 > 0.99 && v11 < 1.01)
+assert_true(v00 > 0.99 && v00 < 1.01)
+assert_eq(v01, 0.5)
+assert_eq(v10, 0.5)
+assert_true(v11 > 0.99 && v11 < 1.01)
 
 // --- compound assignment & in-place op ---
 //
@@ -322,38 +322,38 @@ mut t_add = Tensor.from([[10.0, 20.0]])
 let alias_add = t_add
 t_add += Tensor.from([[1.0, 2.0]])
 Tensor.eval(alias_add)
-assert(to_float(alias_add.to_array()[0][0]) == 11.0)
-assert(to_float(alias_add.to_array()[0][1]) == 22.0)
+assert_eq(to_float(alias_add.to_array()[0][0]), 11.0)
+assert_eq(to_float(alias_add.to_array()[0][1]), 22.0)
 
 mut t_sub = Tensor.from([[10.0, 20.0]])
 let alias_sub = t_sub
 t_sub -= Tensor.from([[1.0, 2.0]])
 Tensor.eval(alias_sub)
-assert(to_float(alias_sub.to_array()[0][0]) == 9.0)
+assert_eq(to_float(alias_sub.to_array()[0][0]), 9.0)
 
 mut t_mul = Tensor.from([[10.0, 20.0]])
 t_mul *= Tensor.from([[2.0, 3.0]])
 Tensor.eval(t_mul)
-assert(to_float(t_mul.to_array()[0][1]) == 60.0)
+assert_eq(to_float(t_mul.to_array()[0][1]), 60.0)
 
 mut t_div = Tensor.from([[10.0, 20.0]])
 t_div /= Tensor.from([[2.0, 4.0]])
 Tensor.eval(t_div)
-assert(to_float(t_div.to_array()[0][1]) == 5.0)
+assert_eq(to_float(t_div.to_array()[0][1]), 5.0)
 
 // Scalar rhs: lifts to a rank-0 Tensor and broadcasts.
 mut t_scal = Tensor.from([[10.0, 20.0, 30.0]])
 t_scal *= 2.0
 Tensor.eval(t_scal)
 let tsv = t_scal.to_array()
-assert(to_float(tsv[0][0]) == 20.0)
-assert(to_float(tsv[0][2]) == 60.0)
+assert_eq(to_float(tsv[0][0]), 20.0)
+assert_eq(to_float(tsv[0][2]), 60.0)
 
 // Compound-assign on an object property that holds a Tensor.
 mut model = {mut W: Tensor.from([[5.0]])}
 let alias_W = model.W
 model.W -= Tensor.from([[2.0]])
 Tensor.eval(alias_W)
-assert(to_float(alias_W.to_array()[0][0]) == 3.0)
+assert_eq(to_float(alias_W.to_array()[0][0]), 3.0)
 
 puts("test_tensor: OK")

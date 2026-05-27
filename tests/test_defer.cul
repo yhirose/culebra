@@ -17,8 +17,8 @@ let r1 = try {
   }
   nil
 } catch e { e }
-assert(r1 == 'sx')
-assert(log == 'scope-defer;')
+assert_eq(r1, 'sx')
+assert_eq(log, 'scope-defer;')
 
 # Function-level defer on normal exit
 log = ''
@@ -27,8 +27,8 @@ let f_normal = fn () {
   log = "{log}body;"
   42
 }
-assert(f_normal() == 42)
-assert(log == 'body;fn-defer;')
+assert_eq(f_normal(), 42)
+assert_eq(log, 'body;fn-defer;')
 
 # Function-level defer on throw exit. JIT previously skipped these —
 # the cleanup landingpad introduced in this cycle restores parity
@@ -39,8 +39,8 @@ let f_throw = fn () {
   throw 'boom'
 }
 let r2 = try { f_throw(); nil } catch e { e }
-assert(r2 == 'boom')
-assert(log == 'fn-defer;')
+assert_eq(r2, 'boom')
+assert_eq(log, 'fn-defer;')
 
 # Multiple fn-level defers run in LIFO on throw
 log = ''
@@ -51,8 +51,8 @@ let f_multi = fn () {
   throw 'multi'
 }
 let r3 = try { f_multi(); nil } catch e { e }
-assert(r3 == 'multi')
-assert(log == 'C;B;A;')
+assert_eq(r3, 'multi')
+assert_eq(log, 'C;B;A;')
 
 # Mixed: fn-level + nested scope-level, throw from inside the nested
 # scope. Inner defers run first, then outer.
@@ -65,7 +65,7 @@ let f_mixed = fn () {
   }
 }
 let r4 = try { f_mixed(); nil } catch e { e }
-assert(r4 == 'mixed')
-assert(log == 'inner;outer;')
+assert_eq(r4, 'mixed')
+assert_eq(log, 'inner;outer;')
 
 IO.puts('test_defer OK')

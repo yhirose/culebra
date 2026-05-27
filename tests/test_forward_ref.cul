@@ -11,7 +11,7 @@ let calls_f = fn() { f() + 1 }
 
 let f = fn() { 41 }
 
-assert(calls_f() == 42)
+assert_eq(calls_f(), 42)
 
 # --- (2) Top-level: closure → forward class ---
 let make_point = fn(x) { Point.new(x, x) }
@@ -21,14 +21,14 @@ class Point {
 }
 
 let p = make_point(3)
-assert(p.a == 3 && p.b == 3)
+assert_true(p.a == 3 && p.b == 3)
 
 # --- (3) Top-level: closure → forward multifn ---
 let dispatch = fn() { area(5) }
 
 fn area(s: Long) { s * s }
 
-assert(dispatch() == 25)
+assert_eq(dispatch(), 25)
 
 # --- (4) Inside a function body: forward ref between locals ---
 let outer = fn() {
@@ -37,11 +37,11 @@ let outer = fn() {
   inner_a()
 }
 
-assert(outer() == 42)
+assert_eq(outer(), 42)
 
 # --- (5) Stacked forward refs (a refers to b refers to c) ---
 let chain_a = fn() { chain_b() + 1 }
 let chain_b = fn() { chain_c() + 1 }
 let chain_c = fn() { 40 }
 
-assert(chain_a() == 42)
+assert_eq(chain_a(), 42)

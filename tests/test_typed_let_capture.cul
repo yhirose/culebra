@@ -8,7 +8,7 @@ test_typed_let_captured_by_closure = fn () {
     let g = fn () { x }
     g()
   }
-  assert(outer() == 5)
+  assert_eq(outer(), 5)
 }
 
 test_typed_let_inside_lambda = fn () {
@@ -17,7 +17,7 @@ test_typed_let_inside_lambda = fn () {
     let g = || s
     g()
   }
-  assert(f() == 'hi')
+  assert_eq(f(), 'hi')
 }
 
 test_typed_let_captured_by_closure()

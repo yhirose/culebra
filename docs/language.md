@@ -458,7 +458,7 @@ Scheme-influenced, closure-as-object idiom:
   function, a `{ ... }` block is a local calculation region.
   Rebinding a name there (`let a = transform(a)`) is a common,
   intentional pattern, not a bug. No reason to restrict it.
-* **Globals form a shared vocabulary.** Builtins (`puts`, `assert`,
+* **Globals form a shared vocabulary.** Builtins (`puts`, `to_string`,
   `Math`, `IO`) and top-level names are understood to be ambient. Locals
   like `mut min = arr[0]` are an ergonomic idiom, not a confusion
   risk. Requiring renames would be friction without safety gain.
@@ -1971,7 +1971,7 @@ AOT builds (unless noted).
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property. | yes |
 | `ArityError` | Call missing a required argument; too few or too many positional args; class instantiation arity mismatch. | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§19). | yes |
-| `AssertionError` | `assert(expr)` builtin with falsy condition. Message `assert failed at L:C.`. | yes |
+| `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
 | `IOError` | `read_file` / `write_file` / stdlib file ops failing; `Tensor.load` failure. | yes |
@@ -1992,10 +1992,21 @@ backends; see "Shadow prohibition" in §6 for the rule.
 kwargs and similar errors are deliberately raised at *runtime* on
 both backends so `try { ... } catch e { ... }` can observe them.
 
-### `assert(cond)`
+### Assertion API
 
-Evaluates `cond`; if falsy, aborts with `assert failed at L:C.`. Used
-as a lightweight testing primitive (see `tests/test_core.cul`).
+There is no `assert` keyword or builtin. For tests, use the matcher
+family (`assert_true` / `assert_eq` / etc., see §18 and `docs/stdlib.md`).
+For production invariants, throw an Object:
+
+```culebra
+if (!cond) {
+  throw {kind: "AssertionError", message: "..."}
+}
+```
+
+This mirrors Go's `if x == nil { return errors.New(...) }` and Ruby's
+`raise` style — assertion control flow is explicit rather than a magic
+keyword.
 
 ### JIT support
 
@@ -2138,8 +2149,9 @@ shadowed by user code (for `String`, which has no property store; for
 `Array`/`Object`, a user-defined property of the same name wins and
 the built-in is a fallback).
 
-Global built-in functions (`puts`, `assert`, `Math.*`, `IO.*`,
-etc.) are specified separately in [`docs/stdlib.md`](stdlib.md).
+Global built-in functions (`puts`, `to_string`, `Math.*`, `IO.*`,
+matcher family `assert_true` / `assert_eq` / etc.) are specified
+separately in [`docs/stdlib.md`](stdlib.md).
 
 **Well-known method names (protocols).** Several method names are
 recognized by the runtime and let plain `Object`s opt into language
@@ -2480,27 +2492,18 @@ when you want eager materialization and maximum throughput; use
 
 The functions below are part of the language proper: they are bound
 into every execution environment as global names and cannot be
-replaced. The first group (`assert`, `to_long` / `to_float` /
-`to_string`, `type_of`) is tied to language semantics — source-position
-errors, type introspection, and the display convention. The second
-group (`range`, `iota`) provides the canonical integer-sequence
-factories; both backends recognise them for fusion / specialisation,
-and they are the standard form used in `for`-in loops throughout the
-language. The broader standard library (namespaced under `Math`,
-`IO`, `Sys`) is documented in [`docs/stdlib.md`](stdlib.md). Output
-primitives `puts` and `print` are CLI-installed globals (§21).
-
-### `assert(cond: Bool) -> Nil`
-
-Evaluate `cond`. If falsy, abort with `assert failed at L:C.`. The
-location is the source position of the `assert` call.
-
-```culebra
-assert(1 + 1 == 2)
-```
-
-**Throws**: `assert failed at L:C.` on falsy; `type error at L:C.` if
-`cond` is neither `Bool` nor `Long`.
+replaced. The first group (`to_long` / `to_float` / `to_string`,
+`type_of`) is tied to language semantics — source-position errors,
+type introspection, and the display convention. The second group
+(`range`, `iota`) provides the canonical integer-sequence factories;
+both backends recognise them for fusion / specialisation, and they
+are the standard form used in `for`-in loops throughout the language.
+The matcher family (`assert_true` / `assert_eq` / `assert_throws` /
+`assert_close` / etc.) is a third group of globals — see
+[`docs/stdlib.md`](stdlib.md) for the full reference. The broader
+standard library (namespaced under `Math`, `IO`, `Sys`) is also
+documented in `stdlib.md`. Output primitives `puts` and `print` are
+CLI-installed globals (§21).
 
 ### `to_long(v: Any) -> Long`
 

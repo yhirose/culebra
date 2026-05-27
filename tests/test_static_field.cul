@@ -9,8 +9,8 @@ test_static_field_basic = fn () {
     static PI = 3.14
     static MAX_SIDES = 100
   }
-  assert(Shape.PI == 3.14)
-  assert(Shape.MAX_SIDES == 100)
+  assert_eq(Shape.PI, 3.14)
+  assert_eq(Shape.MAX_SIDES, 100)
 }
 
 # Static fields and static methods coexist on the same class namespace.
@@ -22,8 +22,8 @@ test_static_field_with_method = fn () {
     area () { this.radius * this.radius * Circle.PI }
   }
   let c = Circle.unit()
-  assert(c.area() == 3.14)
-  assert(Circle.PI == 3.14)
+  assert_eq(c.area(), 3.14)
+  assert_eq(Circle.PI, 3.14)
 }
 
 # Value expressions can be arbitrary expressions; eagerly evaluated.
@@ -35,10 +35,10 @@ test_static_field_expression = fn () {
     static GREETING = "hello world"
     static SUM = [1, 2, 3].sum()
   }
-  assert(Config.BASE == 10)
-  assert(Config.DOUBLE == 20)
-  assert(Config.GREETING == 'hello world')
-  assert(Config.SUM == 6)
+  assert_eq(Config.BASE, 10)
+  assert_eq(Config.DOUBLE, 20)
+  assert_eq(Config.GREETING, 'hello world')
+  assert_eq(Config.SUM, 6)
 }
 
 # Static fields are not visible on instances (mirrors static method semantics).
@@ -49,8 +49,8 @@ test_static_field_not_on_instance = fn () {
     static FOO = 42
   }
   let k = K.new()
-  assert(k.FOO == nil)
-  assert(K.FOO == 42)
+  assert_eq(k.FOO, nil)
+  assert_eq(K.FOO, 42)
 }
 
 # Static fields are immutable from the outside.
@@ -61,7 +61,7 @@ test_static_field_immutable = fn () {
   }
   let kind = try { Const.VAL = 2; 'no error' }
              catch e { "kind={e.kind}" }
-  assert(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
+  assert_true(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
 }
 
 test_static_field_basic()

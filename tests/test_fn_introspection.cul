@@ -4,72 +4,72 @@
 
 // --- fn.name on declared function ---
 fn add(a, b) { a + b }
-assert(add.name == "add")
+assert_eq(add.name, "add")
 
 // Anonymous functions: name is ""
 let inc = fn (x) { x + 1 }
-assert(inc.name == "")
+assert_eq(inc.name, "")
 
 // Lambda: also anonymous
 let dbl = |x| x * 2
-assert(dbl.name == "")
+assert_eq(dbl.name, "")
 
 // --- fn.params basic ---
 let ps = add.params
-assert(ps.size() == 2)
-assert(ps[0].name == "a")
-assert(ps[0].mut == false)
-assert(ps[0].type == "")
-assert(ps[0].has_default == false)
-assert(ps[0].kw_only == false)
-assert(ps[0].kwargs_rest == false)
-assert(ps[1].name == "b")
+assert_eq(ps.size(), 2)
+assert_eq(ps[0].name, "a")
+assert_eq(ps[0].mut, false)
+assert_eq(ps[0].type, "")
+assert_eq(ps[0].has_default, false)
+assert_eq(ps[0].kw_only, false)
+assert_eq(ps[0].kwargs_rest, false)
+assert_eq(ps[1].name, "b")
 
 // --- type annotation ---
 fn typed(x: Long, y: String) -> Long { x }
-assert(typed.name == "typed")
-assert(typed.return_type == "Long")
+assert_eq(typed.name, "typed")
+assert_eq(typed.return_type, "Long")
 let tps = typed.params
-assert(tps[0].type == "Long")
-assert(tps[1].type == "String")
+assert_eq(tps[0].type, "Long")
+assert_eq(tps[1].type, "String")
 
 // No annotation: empty
-assert(add.return_type == "")
+assert_eq(add.return_type, "")
 
 // --- mut param ---
 fn modify(mut x) { x }
 let mps = modify.params
-assert(mps[0].mut == true)
+assert_eq(mps[0].mut, true)
 
 // --- default value ---
 fn with_default(x, y = 10) { x + y }
 let dps = with_default.params
-assert(dps[0].has_default == false)
-assert(dps[1].has_default == true)
+assert_eq(dps[0].has_default, false)
+assert_eq(dps[1].has_default, true)
 
 // --- kw-only (* separator) ---
 fn kw_fn(x, *, kw_a, kw_b = 5) { x }
 let kps = kw_fn.params
-assert(kps[0].name == "x")
-assert(kps[0].kw_only == false)
-assert(kps[1].name == "kw_a")
-assert(kps[1].kw_only == true)
-assert(kps[2].name == "kw_b")
-assert(kps[2].kw_only == true)
-assert(kps[2].has_default == true)
+assert_eq(kps[0].name, "x")
+assert_eq(kps[0].kw_only, false)
+assert_eq(kps[1].name, "kw_a")
+assert_eq(kps[1].kw_only, true)
+assert_eq(kps[2].name, "kw_b")
+assert_eq(kps[2].kw_only, true)
+assert_eq(kps[2].has_default, true)
 
 // --- **rest ---
 fn rest_fn(x, **rest) { x }
 let rps = rest_fn.params
-assert(rps[0].kwargs_rest == false)
-assert(rps[1].name == "rest")
-assert(rps[1].kwargs_rest == true)
+assert_eq(rps[0].kwargs_rest, false)
+assert_eq(rps[1].name, "rest")
+assert_eq(rps[1].kwargs_rest, true)
 
 // --- params is a fresh Array (mutating does not affect fn) ---
 let p1 = add.params
 let p2 = add.params
-assert(!(p1 == p2))  // different Array refs
-assert(p1[0].name == p2[0].name)  // same content
+assert_false((p1 == p2))  // different Array refs
+assert_eq(p1[0].name, p2[0].name)  // same content
 
 // --- class method also has name ---
 class Box {
@@ -83,6 +83,6 @@ let bx = Box.new(7)
 // methods on each access, the name should propagate. We accept either
 // "get" or "" — both are coherent.)
 let g = bx.get
-assert(g.name == "get" || g.name == "")
+assert_true(g.name == "get" || g.name == "")
 
 IO.puts("test_fn_introspection OK")

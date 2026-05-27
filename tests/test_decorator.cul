@@ -10,7 +10,7 @@ let tag = fn(f) { fn() { "[{f()}]" } }
 @tag
 fn greet() { "hello" }
 
-assert(greet() == "[hello]")
+assert_eq(greet(), "[hello]")
 
 # --- 2. Stacked decorators (bottom-up application) ---
 let bracket = fn(f) { fn() { "[{f()}]" } }
@@ -21,7 +21,7 @@ let star    = fn(f) { fn() { "*{f()}*" } }
 fn name() { "x" }
 
 # bracket(star(name))() → "[" + star(name)() + "]" → "[*x*]"
-assert(name() == "[*x*]")
+assert_eq(name(), "[*x*]")
 
 # --- 3. Decorator factory (@deco(arg) form) ---
 let prefix = fn(p) {
@@ -31,7 +31,7 @@ let prefix = fn(p) {
 @prefix("LOG")
 fn shout() { "boom" }
 
-assert(shout() == "LOG:boom")
+assert_eq(shout(), "LOG:boom")
 
 # --- 4. Decorator receives the original Value ---
 let identity = fn(f) { f }
@@ -39,8 +39,8 @@ let identity = fn(f) { f }
 @identity
 fn doubled(n) { n * 2 }
 
-assert(doubled(5) == 10)
-assert(doubled(7) == 14)
+assert_eq(doubled(5), 10)
+assert_eq(doubled(7), 14)
 
 # --- 5. Decorator that adds parameters via wrapper ---
 let with_default = fn(f) {
@@ -50,8 +50,8 @@ let with_default = fn(f) {
 @with_default
 fn square(n) { n * n }
 
-assert(square() == 100)
-assert(square(3) == 9)
+assert_eq(square(), 100)
+assert_eq(square(3), 9)
 
 # --- 6. Class decorator: returns the (possibly modified) class ---
 let mark = fn(cls) {
@@ -64,9 +64,9 @@ class Point {
   new(x, y) { this.x = x; this.y = y }
 }
 
-assert(Point.marked == true)
+assert_eq(Point.marked, true)
 let p = Point.new(3, 4)
-assert(p.x == 3 && p.y == 4)
+assert_true(p.x == 3 && p.y == 4)
 
 # --- 7. Multiple-arg decorator factory ---
 let combine = fn(a, b) {
@@ -76,4 +76,4 @@ let combine = fn(a, b) {
 @combine(1, 100)
 fn middle() { 10 }
 
-assert(middle() == 111)
+assert_eq(middle(), 111)

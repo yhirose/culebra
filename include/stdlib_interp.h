@@ -2,7 +2,7 @@
 
 // Interpreter-side implementation of the Culebra standard library.
 //
-// Core built-ins bound on every environment: assert, to_long,
+// Core built-ins bound on every environment: to_long, to_float,
 // to_string, type_of (see docs/language.md §18). Everything else is
 // grouped under a namespace ObjectValue: Math (abs/min/max/pow/sign/
 // clamp/iota), IO (puts/print/input/read/write), Sys (argv/exit/env).
@@ -1540,22 +1540,6 @@ inline void setup_built_in_functions(
   using namespace std::literals;
 
   env.initialize(
-      "assert",
-      Value(FunctionValue({{"arg", true}},
-                          [](std::shared_ptr<Environment> env) {
-                            auto cond = env->get("arg").to_bool();
-                            if (!cond) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto column = env->get("__COLUMN__").to_long();
-                              throw CulebraError("AssertionError",
-                                  std::format("assert failed at {}:{}.", line, column),
-                                  line, column);
-                            }
-                            return Value();
-                          })),
-      false);
-
-  env.initialize(
       "to_long",
       Value(FunctionValue({{"v", false}},
                           [](std::shared_ptr<Environment> env) {
@@ -1984,12 +1968,92 @@ inline constexpr const char* ARGS_MODULE_SOURCE =
     "}; "
     "let Args = _args_module()\n";
 
+// Matcher family — `assert_true` / `assert_false` / `assert_eq` /
+// `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` / `assert_ge` /
+// `assert_throws` / `assert_close`. Authored in culebra so all 3
+// backends (interp/JIT/AOT) share one implementation: the `==` / `<`
+// operators here dispatch through `__eq__` / `__lt__` on class
+// instances, matching the operator semantics each backend already
+// implements. `assert` itself is not in culebra — production code uses
+// `if (!cond) throw {kind: "AssertionError", ...}` (Go / Ruby style).
+inline constexpr const char* MATCHERS_MODULE_SOURCE =
+    "let assert_true = fn(x) { "
+    "if x { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_true failed:\\n  value: {x}\"} "
+    "}; "
+    "let assert_false = fn(x) { "
+    "if !x { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_false failed:\\n  value: {x}\"} "
+    "}; "
+    "let assert_eq = fn(a, b) { "
+    "if a == b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_eq failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_ne = fn(a, b) { "
+    "if a != b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_ne failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_lt = fn(a, b) { "
+    "if a < b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_lt failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_le = fn(a, b) { "
+    "if a <= b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_le failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_gt = fn(a, b) { "
+    "if a > b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_gt failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_ge = fn(a, b) { "
+    "if a >= b { return nil }; "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_ge failed:\\n  left:  {a}\\n  right: {b}\"} "
+    "}; "
+    "let assert_throws = fn(kind, f) { "
+    "if f.params.size() != 0 { "
+    "throw {kind: \"ArityError\", "
+    "message: \"assert_throws: fn must take 0 parameters (got {f.params.size()})\"} "
+    "}; "
+    "let mut threw = false; "
+    "let mut actual_kind = \"\"; "
+    "try { f() } catch e { "
+    "threw = true; "
+    "actual_kind = if type_of(e) == \"Object\" && e.has(\"kind\") "
+    "{ e.kind } else { type_of(e) } "
+    "}; "
+    "if !threw { "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_throws('{kind}', fn): expected throw but fn returned normally\"} "
+    "}; "
+    "if actual_kind != kind { "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_throws: expected kind '{kind}' but got '{actual_kind}'\"} "
+    "} "
+    "}; "
+    "let assert_close = fn(a, b, tol) { "
+    "let mut diff = a - b; "
+    "if diff < 0 { diff = -diff }; "
+    "if diff != diff || tol != tol || diff > tol { "
+    "throw {kind: \"AssertionError\", "
+    "message: \"assert_close failed:\\n  a:    {a}\\n  b:    {b}\\n  diff: {diff} (> tol {tol})\"} "
+    "} "
+    "}\n";
+
 // Transitional concatenation used by the JIT path until it adopts the
 // env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
 // interp path is already preamble-free.
 inline const char* _stdlib_preamble_concat() {
   static const std::string s =
-      std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE;
+      std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE +
+      MATCHERS_MODULE_SOURCE;
   return s.c_str();
 }
 inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
@@ -2004,12 +2068,19 @@ inline std::string prepend_stdlib_preamble_selective(
     std::string_view user_src) {
   bool needs_time = user_src.find("Time") != std::string_view::npos;
   bool needs_args = user_src.find("Args") != std::string_view::npos;
+  // Matchers: any `assert_` reference pulls in the family. A naive
+  // substring works because no other stdlib symbol starts with
+  // `assert_`.
+  bool needs_matchers = user_src.find("assert_") != std::string_view::npos;
   std::string combined;
   combined.reserve(
       (needs_time ? std::strlen(TIME_MODULE_SOURCE) : 0) +
-      (needs_args ? std::strlen(ARGS_MODULE_SOURCE) : 0) + user_src.size());
+      (needs_args ? std::strlen(ARGS_MODULE_SOURCE) : 0) +
+      (needs_matchers ? std::strlen(MATCHERS_MODULE_SOURCE) : 0) +
+      user_src.size());
   if (needs_time) combined.append(TIME_MODULE_SOURCE);
   if (needs_args) combined.append(ARGS_MODULE_SOURCE);
+  if (needs_matchers) combined.append(MATCHERS_MODULE_SOURCE);
   combined.append(user_src);
   return combined;
 }
@@ -2021,6 +2092,14 @@ inline std::string prepend_stdlib_preamble_selective(
 inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
+  // Matcher family — 10 symbols share one source via initialize_lazy_group.
+  // First `get` of any matcher parses + evals the source once; the others
+  // are picked up by the non-Nil guard in resolve_from_lazy.
+  env.initialize_lazy_group(
+      {"assert_true", "assert_false", "assert_eq", "assert_ne",
+       "assert_lt", "assert_le", "assert_gt", "assert_ge",
+       "assert_throws", "assert_close"},
+      MATCHERS_MODULE_SOURCE);
 }
 
 inline std::shared_ptr<Environment> environment(

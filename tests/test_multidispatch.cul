@@ -11,15 +11,15 @@ fn area(s: Long)   { s * s }
 fn area(s: Float)  { s * s }
 fn area(s: String) { s.size() }
 
-assert(area(5) == 25)
-assert(area(5.0) == 25.0)
-assert(area("hello") == 5)
+assert_eq(area(5), 25)
+assert_eq(area(5.0), 25.0)
+assert_eq(area("hello"), 5)
 
 # --- Any (no annotation) catch-all ---
 
 fn area(x) { -1 }
-assert(area([1, 2, 3]) == -1)
-assert(area(true) == -1)
+assert_eq(area([1, 2, 3]), -1)
+assert_eq(area(true), -1)
 
 # --- Specificity: concrete beats Any ---
 
@@ -28,10 +28,10 @@ fn label(x, y: Long) { "any-long" }
 fn label(x: Long, y: Long) { "long-long" }    # most specific
 fn label(x, y) { "any-any" }
 
-assert(label(1, 2) == "long-long")
-assert(label(1, "x") == "long-any")
-assert(label("x", 1) == "any-long")
-assert(label("x", "y") == "any-any")
+assert_eq(label(1, 2), "long-long")
+assert_eq(label(1, "x"), "long-any")
+assert_eq(label("x", 1), "any-long")
+assert_eq(label("x", "y"), "any-any")
 
 # --- Class-instance dispatch ---
 
@@ -47,14 +47,14 @@ fn shape_area(c: Circle) { 3.14 * c.r * c.r }
 
 let s = Square.new(4)
 let c = Circle.new(2)
-assert(shape_area(s) == 16)
-assert(shape_area(c) == 12.56)
+assert_eq(shape_area(s), 16)
+assert_eq(shape_area(c), 12.56)
 
 # --- Same-signature redefinition overwrites (REPL-friendly) ---
 
 fn greet(name: String) { "hi, {name}" }
 fn greet(name: String) { "hello, {name}" }
-assert(greet("alice") == "hello, alice")
+assert_eq(greet("alice"), "hello, alice")
 
 # --- Disambiguated dispatch (concrete-on-one-side wins) ---
 
@@ -62,16 +62,16 @@ fn amb(x: Long, y) { 1 }
 fn amb(x, y: Long) { 2 }
 
 # amb(1, "x") — only (Long, Any) matches.
-assert(amb(1, "x") == 1)
+assert_eq(amb(1, "x"), 1)
 # amb("x", 1) — only (Any, Long) matches.
-assert(amb("x", 1) == 2)
+assert_eq(amb("x", 1), 2)
 # amb(1, 2) is ambiguous — no test here, raises (verified manually).
 # amb("x", "y") raises no-match — no test here.
 
 # --- Coexist with closures: regular `let f = fn(...)` still works ---
 
 let helper = fn(x) { x * 2 }
-assert(helper(7) == 14)
+assert_eq(helper(7), 14)
 
 # --- Coexist with class methods + special methods ---
 #
@@ -83,7 +83,7 @@ class Box {
   squared() { this.v * this.v }
 }
 let b = Box.new(5)
-assert(b.squared() == 25)
+assert_eq(b.squared(), 25)
 
 # --- kwargs flow through dispatch (Julia-flavored kwsorter) ---
 #
@@ -93,24 +93,24 @@ assert(b.squared() == 25)
 fn greet(name: String, *, prefix: String = 'hi') { "{prefix}, {name}" }
 fn greet(n: Long, *, prefix: String = 'num') { "{prefix}:{n}" }
 
-assert(greet('alice') == 'hi, alice')
-assert(greet('alice', prefix: 'yo') == 'yo, alice')
-assert(greet(42) == 'num:42')
-assert(greet(42, prefix: 'got') == 'got:42')
+assert_eq(greet('alice'), 'hi, alice')
+assert_eq(greet('alice', prefix: 'yo'), 'yo, alice')
+assert_eq(greet(42), 'num:42')
+assert_eq(greet(42, prefix: 'got'), 'got:42')
 
 # Splat into a multifn
 let opts = {prefix: 'splat'}
-assert(greet('bob', **opts) == 'splat, bob')
+assert_eq(greet('bob', **opts), 'splat, bob')
 
 # Methods can have their own kw-only defaults
 fn paint(shape: String, *, color: String = 'red') { "{color} {shape}" }
 fn paint(n: Long, *, color: String = 'blue') { "{color} {n}" }
-assert(paint('circle') == 'red circle')
-assert(paint(7) == 'blue 7')
-assert(paint('box', color: 'green') == 'green box')
+assert_eq(paint('circle'), 'red circle')
+assert_eq(paint(7), 'blue 7')
+assert_eq(paint('box', color: 'green'), 'green box')
 
 # **rest inside a multifn method body
 fn collect(tag: String, **opts) { "{tag}:{opts.a}" }
-assert(collect('hi', a: 99, b: 5) == 'hi:99')
+assert_eq(collect('hi', a: 99, b: 5), 'hi:99')
 
 puts("test_multidispatch: OK")

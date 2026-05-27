@@ -1884,7 +1884,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                                                   const std::string& name,
                                                   const peg::Ast& argsAst,
                                                   const peg::Ast& callAst) {
-  // Global builtins (puts, assert, etc.) parse positionally. None of
+  // Global builtins (puts, to_long, etc.) parse positionally. None of
   // them accept kwargs today; if the call carries kwargs/splats and
   // matches a built-in name surface a clean SyntaxError. If the user
   // shadowed the name with their own `let X = fn (...) {...}` binding,
@@ -1894,7 +1894,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   if (!JIT::arg_list_is_positional_only(argsAst)) {
     if (jit.lookup_fn_ast(name) != nullptr) return nullptr;
     static const std::set<std::string_view> known_globals = {
-        "puts", "print", "assert", "to_long", "to_float",
+        "puts", "print", "to_long", "to_float",
         "to_string", "type_of", "iota", "range", "hash",
     };
     if (known_globals.contains(name)) {
@@ -1911,15 +1911,6 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return emit_output_call(jit, rt::puts, argsAst);
   if (name == "print" && argsAst.nodes.size() == 1)
     return emit_output_call(jit, rt::print, argsAst);
-
-  if (name == "assert" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
-    jit.emit_call(
-        jit.module_->getFunction(rt::assert_),
-        {jit.extract_tag(arg), jit.extract_data(arg), line, col});
-    jit.emit_value_release(arg);
-    return jit.make_nil();
-  }
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
     auto arg = jit.compile(*argsAst.nodes[0]);
@@ -2966,7 +2957,7 @@ inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
 
 inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
-      "puts",    "print",     "assert",
+      "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "_Time",
       "Random",  "Sys",       "JSON",      "Tensor"};
@@ -2985,13 +2976,6 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     auto rt_name = method == "puts" ? rt::puts : rt::print;
     emit_call(module_->getFunction(rt_name),
                         {extract_tag(receiver), extract_data(receiver)});
-    emit_value_release(receiver);
-    return make_nil();
-  }
-  if (method == "assert") {
-    emit_call(
-        module_->getFunction(rt::assert_),
-        {extract_tag(receiver), extract_data(receiver), line, col});
     emit_value_release(receiver);
     return make_nil();
   }

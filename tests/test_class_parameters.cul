@@ -25,10 +25,10 @@ class M1 {
 
 let m1 = M1.new()
 let p1 = m1.parameters()
-assert(p1.size() == 2)
+assert_eq(p1.size(), 2)
 # Iteration order is sorted-by-key (std::map): a, b. scalar is Long, skipped.
-assert(p1[0].data == 1.0)
-assert(p1[1].data == 2.0)
+assert_eq(p1[0].data, 1.0)
+assert_eq(p1[1].data, 2.0)
 
 # --- Nested Array of class instances ---
 
@@ -40,9 +40,9 @@ class M2 {
 
 let m2 = M2.new()
 let p2 = m2.parameters()
-assert(p2.size() == 3)
-assert(p2[0].data == 10.0)
-assert(p2[2].data == 30.0)
+assert_eq(p2.size(), 3)
+assert_eq(p2[0].data, 10.0)
+assert_eq(p2[2].data, 30.0)
 
 # --- Array of Array (matrix shape) ---
 
@@ -55,9 +55,9 @@ class M3 {
 
 let m3 = M3.new()
 let p3 = m3.parameters()
-assert(p3.size() == 4)
-assert(p3[0].data == 1.0)
-assert(p3[3].data == 4.0)
+assert_eq(p3.size(), 4)
+assert_eq(p3[0].data, 1.0)
+assert_eq(p3[3].data, 4.0)
 
 # --- Plain dict literal (no class: tag) is descended ---
 
@@ -69,10 +69,10 @@ class M4 {
 
 let m4 = M4.new()
 let p4 = m4.parameters()
-assert(p4.size() == 2)
+assert_eq(p4.size(), 2)
 # Sorted by key: x then y.
-assert(p4[0].data == 7.0)
-assert(p4[1].data == 8.0)
+assert_eq(p4[0].data, 7.0)
+assert_eq(p4[1].data, 8.0)
 
 # --- Underscore fields are skipped ---
 
@@ -86,8 +86,8 @@ class M5 {
 
 let m5 = M5.new()
 let p5 = m5.parameters()
-assert(p5.size() == 1)
-assert(p5[0].data == 1.0)
+assert_eq(p5.size(), 1)
+assert_eq(p5[0].data, 1.0)
 
 # --- User-defined parameters() takes precedence ---
 
@@ -101,8 +101,8 @@ class M6 {
 
 let m6 = M6.new()
 let p6 = m6.parameters()
-assert(p6.size() == 1)
-assert(p6[0].data == 100.0)
+assert_eq(p6.size(), 1)
+assert_eq(p6[0].data, 100.0)
 
 # --- SGD-shaped usage: mutating the leaves through the returned Array ---
 
@@ -116,10 +116,10 @@ let m7 = M7.new()
 for p in m7.parameters() { p.data = p.data * 2.0 }
 # Re-fetch parameters and check the underlying instances were mutated.
 let after = m7.parameters()
-assert(after[0].data == 1.0)
-assert(after[1].data == 3.0)
+assert_eq(after[0].data, 1.0)
+assert_eq(after[1].data, 3.0)
 # Original through the field path also sees the mutation (same Values).
-assert(m7.W[0][0].data == 1.0)
-assert(m7.W[0][1].data == 3.0)
+assert_eq(m7.W[0][0].data, 1.0)
+assert_eq(m7.W[0][1].data, 3.0)
 
 puts("test_class_parameters: OK")

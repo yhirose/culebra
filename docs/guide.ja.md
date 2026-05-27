@@ -1051,7 +1051,7 @@ puts(to_string([1, 2]))       # => [1, 2]
 puts(type_of(42))             # => Long
 puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
-assert(1 + 1 == 2)            # 成功時は無音、失敗で throw
+assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
 ```
 
 ### 14.2 `Math`
@@ -1228,20 +1228,20 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
 # 呼び出し形
 test("interpolation embeds Long", fn() {
   let x = 42
-  assert("hi {x}" == "hi 42")
+  assert_eq("hi {x}", "hi 42")
 })
 
 # デコレータ形 — 関数名がテスト名になる
 @test
 fn interpolation_embeds_float() {
   let pi = 3.14
-  assert("π = {pi}" == "π = 3.14")
+  assert_eq("π = {pi}", "π = 3.14")
 }
 
 # Parametrize — case ごとに 1 テスト、`<fn>[i]` という名前
 @parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
 fn adds_correctly(a, b, want) {
-  assert(a + b == want)
+  assert_eq(a + b, want)
 }
 ```
 
@@ -1299,13 +1299,16 @@ model) は module top-level に置き、 各 test ファイルで import しま�
 モジュールシステムが binding を cache するので、 `import` は常に同一
 インスタンスを返します。
 
-**matchers**。 `assert(expr)` は Bool 検査で、失敗時は `assert failed
-at L:C.` のみ。 両辺を表示する診断が欲しいときは matcher を使います。
-matcher は `culebra test` 起動時のみ `test` / `parametrize` と並んで
-ambient 注入されます:
+**matchers**。 アサーションは matcher 一族を使います — `assert`
+キーワード / builtin は存在しません。 matcher は **3 backend の
+global** として bind されており (`puts` / `Math` と同じ立場)、
+`culebra script.cul`、 `culebra --jit script.cul`、 `culebra build`、
+`culebra test` のいずれでも同じく動きます:
 
 ```culebra
 # doctest: skip
+assert_true(x)                          # x が truthy
+assert_false(x)                         # x が falsy
 assert_eq(arr.len(), 3)                 # == ; 失敗時に両辺を表示
 assert_ne(status, "error")              # !=
 assert_lt(elapsed, 1.0)                 # <
@@ -1319,21 +1322,26 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 - `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
   `assert_ge` は `==` / `<` / `<=` 演算子と同じ `__eq__` / `__lt__` /
   `__le__` dispatch を行います — クラスインスタンスでも `assert_eq(p1,
-  p2)` と `assert(p1 == p2)` は一致します。
+  p2)` と式 `p1 == p2` は一致します。
 - `assert_throws(kind, fn)` は 0 引数の `fn()` を呼んで throw を検査。
   組み込みエラーは `kind`、 ユーザの `throw { kind: ..., message: ... }`
   は `.kind` プロパティを比較。
 - `assert_close(a, b, tol)` は `|a - b| <= tol` を検査。 NaN は失敗扱い
   (素朴な `>` 検査だと発散計算が silently pass してしまうため)。
 
+**production の不変条件**。 テストスイート外で `if (!cond) throw {...}`
+を書くときは `if`/`throw` を直接書きます (Go 流儀、
+[language.ja.md §15](language.ja.md) 参照)。 production build で
+disable する別の `assert` キーワードは存在しません。
+
 ### 16.3 実行
 
 `culebra test [path]` がテストファイルを discover します。 このサブコマンド
-経由で起動した場合のみ、 `test` / `@test` / `@parametrize` と matcher
-群が **ambient global** として注入されます — `import` 不要。 これは
-script 実行モード下でだけ `puts` / `print` が ambient で、
-`culebra::environment()` には注入されない設計と同じ流儀
-([stdlib.ja.md §10](stdlib.ja.md) 参照)。
+経由で起動した場合のみ、 `test` / `@test` / `@parametrize` が
+**ambient global** として注入されます — `import` 不要。 matcher 一族は
+3 backend で常時 global なので追加注入は不要です。 これは script 実行
+モード下でだけ `puts` / `print` が ambient で、 `culebra::environment()`
+には注入されない設計と同じ流儀 ([stdlib.ja.md §11](stdlib.ja.md) 参照)。
 
 ```sh
 culebra test                       # 現在ディレクトリから探索・実行
@@ -1372,8 +1380,11 @@ JSON モードでは test 内の `puts(...)` は event の `stdout` フィール
 には `snippet` が付き、 失敗行を `>` で marker、 前後 2 行の文脈と共に
 含まれます — consumer が file 再読込なしで該当コードを表示できます。
 
-`just test` 経由の従来 `tests/*.cul` スイート (assert のみ、`test()`
-呼出なし) は変更なしで動き続けます — 新 ambient binding を使いません。
+`just test` 経由の従来 `tests/*.cul` スイート (matcher 使用、`test()`
+呼出なし) は各ファイルを `./build/culebra <f>` / `--jit <f>` /
+`culebra build <f>` で直接実行します。 matcher は language-level
+global なので `culebra test` を介さずに 3 backend で同じファイルが
+回ります。
 
 ### 16.4 今後の拡張
 

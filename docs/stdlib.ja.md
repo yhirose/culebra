@@ -9,10 +9,12 @@
 ライブラリの実装詳細と設計理由は [`internals.md`](internals.md) (英語) を
 参照してください。
 
-言語レベルの組み込み関数（`assert`, `to_long`, `to_float`,
-`to_string`, `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
-を参照してください。組み込み型（`String`, `Array`, `Object`）の
-メソッドは [言語仕様 §17](language.ja.md) に規定されています。
+言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
+`type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
+を参照してください。 matcher 一族 (`assert_true` / `assert_eq` /
+`assert_throws` 等) は [§10 Matchers](#10-matchers) で扱います。
+組み込み型（`String`, `Array`, `Object`）のメソッドは
+[言語仕様 §17](language.ja.md) に規定されています。
 
 CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 `IO.puts` / `IO.print` のエイリアスとしてグローバルに配置します
@@ -38,8 +40,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 7. [`Tensor`](#7-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
 8. [`JSON`](#8-json) — stringify / parse の相互変換
 9. [`Args`](#9-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
-10. [設計上の注記](#10-設計上の注記)
-11. [未収録（将来検討）](#11-未収録将来検討)
+10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
+11. [設計上の注記](#11-設計上の注記)
+12. [未収録（将来検討）](#12-未収録将来検討)
 
 **目的別索引**
 
@@ -357,7 +360,7 @@ FS.stem('a/b/c.txt')  # => 'c'
 
 ```culebra
 let names = FS.list_dir('/tmp/build')
-assert(names.contains('out.o'))
+assert_true(names.contains('out.o'))
 ```
 
 #### `FS.mkdir(path: String) -> Nil`
@@ -1005,14 +1008,96 @@ throw 値の `kind` は次のいずれか:
 
 ---
 
-## 10. 設計上の注記
+## 10. Matchers
+
+テスト用 / 実行時不変条件チェック用のアサーション matcher。 全 10
+個の matcher が `import` 不要のグローバル名としてすべての環境に
+bind されています。 失敗時は `{kind: "AssertionError", message: ...}`
+形の culebra Object を throw — `try/catch` で捕捉可能。
+
+`assert` キーワード / builtin は存在しません — 用途ごとに専用 matcher
+を使います。 production の不変条件には `if`/`throw` を直接書きます:
+
+```culebra
+if (!cond) {
+  throw {kind: "AssertionError", message: "invariant violated"}
+}
+```
+
+### 真偽 matcher
+
+* **`assert_true(x: Bool) -> Nil`** — `x` が truthy なら pass。 失敗
+  時は `assert_true failed:\n  value: {x}`。 `x` は `Bool` / `Long` /
+  `Float` のみ — それ以外は `TypeError`。 culebra に Python 流の
+  truthiness はありません (空文字列・空配列は falsy ではない)。
+* **`assert_false(x: Bool) -> Nil`** — `assert_true` の逆。
+
+### 比較 matcher
+
+各比較 matcher は **同名の演算子と同じ dispatch** を行います —
+`assert_eq(a, b)` は `a == b` と等価で、 クラスインスタンスの
+`__eq__` / `__lt__` / `__le__` が尊重されます。 失敗 message は
+`to_string` で両辺を表示 (ユーザ `__str__` を尊重)。
+
+* **`assert_eq(a, b) -> Nil`** — `a == b`。
+* **`assert_ne(a, b) -> Nil`** — `a != b`。
+* **`assert_lt(a, b) -> Nil`** — `a < b`。
+* **`assert_le(a, b) -> Nil`** — `a <= b`。
+* **`assert_gt(a, b) -> Nil`** — `a > b`。
+* **`assert_ge(a, b) -> Nil`** — `a >= b`。
+
+```culebra
+assert_eq(1 + 1, 2)                                # pass
+assert_lt(some_obj, threshold_obj)                 # obj.__lt__ を経由
+
+let r = try { assert_eq("foo", "bar"); nil } catch e { e }
+r.kind     # => 'AssertionError'
+r.message  # => 'assert_eq failed:\n  left:  foo\n  right: bar'
+```
+
+### `assert_throws(kind: String, f: Function) -> Nil`
+
+0 引数 `f()` を呼び、 `kind` に一致する `kind` を持つエラーが throw
+されることを表明。 組み込みエラー (`ZeroDivisionError`, `TypeError`
+等) は `e.kind` を持ち、 ユーザ `throw {kind: "X", ...}` も同じく
+照合。 `f` の引数数が 0 以外なら `ArityError`。
+
+```culebra
+assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
+assert_throws("MyError", fn() {
+  throw {kind: "MyError", message: "boom"}
+})
+```
+
+### `assert_close(a: Float, b: Float, tol: Float) -> Nil`
+
+`|a - b| <= tol` なら pass。 `a` / `b` / `tol` のいずれかが NaN なら
+**故意に失敗** (素朴な `diff > tol` だと NaN が silently pass する
+ため)。 浮動小数比較は `assert_eq` ではなくこちらを使う。
+
+```culebra
+assert_close(3.14, 3.1415, 0.01)
+```
+
+### 実装ノート
+
+matcher 一族は culebra ソース (cpp ではなく) で定義されており、
+lazy module 機構で 3 backend (interp / JIT / AOT) に共通で bind
+されます。 matcher 内部の `==` / `<` 等の演算子 dispatch は各
+backend が既に実装している演算子 dispatch そのもので、 matcher 専用
+の drift 防止ロジックは不要です。
+
+---
+
+## 11. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
-ライブラリ自体は**グローバル名を一切追加しません**。すべての関数
-は `Math`, `IO`, `Random`, `Sys` のいずれかに属します。これにより
-`culebra::environment()` はホストアプリケーションに埋め込むスクリプト
-エンジンとして、意図しないグローバルを持ち込まない形になります。
+ライブラリ自体は matcher 一族以外の**グローバル名を追加しません**。
+それ以外の関数は `Math`, `IO`, `Random`, `Sys` のいずれかに属します。
+これにより `culebra::environment()` はホストアプリケーションに埋め込
+むスクリプトエンジンとして、意図しないグローバルを持ち込まない形に
+なります。
 
 ただし CLI スクリプトで `puts` / `print` は頻出するため、毎回
 `IO.puts` と書くのは摩擦が大きい。CLI バイナリ（`src/main.cc`）
@@ -1058,7 +1143,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 11. 未収録（将来検討）
+## 12. 未収録（将来検討）
 
 ### 三角関数
 

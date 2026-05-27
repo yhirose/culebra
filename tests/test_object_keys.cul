@@ -5,23 +5,23 @@
 // via obj[k].
 
 let m = {1: "one", 2: "two", 3.14: "pi"}
-assert(m[1] == "one")
-assert(m[2] == "two")
-assert(m[3.14] == "pi")
+assert_eq(m[1], "one")
+assert_eq(m[2], "two")
+assert_eq(m[3.14], "pi")
 
 // Single-key cases (avoid Python-style numeric cross-type collision).
 let by_bool = {true: "y"}
-assert(by_bool[true] == "y")
+assert_eq(by_bool[true], "y")
 
 let by_nil = {nil: "n"}
-assert(by_nil[nil] == "n")
+assert_eq(by_nil[nil], "n")
 
 // String keys keep working alongside non-String ones — String keys
 // flow through the shape/string_view path; non-String keys live in
 // the lazy sidecar.
 let mix = {a: 1, 99: "ninety-nine"}
-assert(mix.a == 1)
-assert(mix[99] == "ninety-nine")
+assert_eq(mix.a, 1)
+assert_eq(mix[99], "ninety-nine")
 
 // Mixed-key str rendering: String and non-String keys interleave in
 // their true insertion order. String literals can't embed `{` or `'`
@@ -29,16 +29,16 @@ assert(mix[99] == "ninety-nine")
 // of the same logical Object.
 let m2 = {a: 1, 2: "two", b: 3, 4: "four"}
 let m3 = {a: 1, 2: "two", b: 3, 4: "four"}
-assert(to_string(m2) == to_string(m3))
+assert_eq(to_string(m2), to_string(m3))
 // Distinct insertion orders render differently.
 let m4 = {2: "two", a: 1, 4: "four", b: 3}
 let diff = (to_string(m2) == to_string(m4))
-assert(diff == false)
+assert_eq(diff, false)
 
 // And the same insertion order yields the same render.
 let n  = {10: "x", 5: "y", 1: "z"}
 let n2 = {10: "x", 5: "y", 1: "z"}
-assert(to_string(n) == to_string(n2))
+assert_eq(to_string(n), to_string(n2))
 
 // --- Runtime keys via `obj[k] = v` ---
 // Object subscript-assignment routes String keys through the shape
@@ -50,26 +50,26 @@ bag[sk] = 100
 bag[42] = "long"
 bag[(1, 2)] = "tuple"
 bag[true] = "bool"
-assert(bag[sk] == 100)
-assert(bag[42] == "long")
-assert(bag[(1, 2)] == "tuple")
-assert(bag[true] == "bool")
+assert_eq(bag[sk], 100)
+assert_eq(bag[42], "long")
+assert_eq(bag[(1, 2)], "tuple")
+assert_eq(bag[true], "bool")
 
 // String literal keys via subscript work too.
 mut named = {}
 named["foo"] = 1
 named["bar"] = 2
-assert(named["foo"] == 1)
-assert(named["bar"] == 2)
+assert_eq(named["foo"], 1)
+assert_eq(named["bar"], 2)
 
 // Subscript writes with String keys unify with shape-based `obj.foo`
 // access — `obj["x"] = v` and `obj.x = v` reach the same slot, so
 // either form of read sees the other's write.
 mut split = {}
 split["x"] = 99
-assert(split.x == 99)
+assert_eq(split.x, 99)
 split.y = 7
-assert(split["y"] == 7)
+assert_eq(split["y"], 7)
 
 // `mut` on subscript-set makes the slot mutable, so a later write
 // (subscript or dot, either flow into the same shape slot) succeeds.
@@ -77,30 +77,30 @@ mut split2 = {}
 mut split2["x"] = 1
 split2["x"] = 2     // update via subscript
 split2.x = 3        // update via dot — same slot
-assert(split2.x == 3)
-assert(split2["x"] == 3)
+assert_eq(split2.x, 3)
+assert_eq(split2["x"], 3)
 
 // --- G-1/G-2: size/has/keys/remove cover both key kinds ---
 mut bag2 = {a: 1, b: 2}
 bag2[10] = "ten"
 bag2[(1, 2)] = "tup"
-assert(bag2.size() == 4)
-assert(bag2.has("a"))
-assert(bag2.has(10))
-assert(bag2.has((1, 2)))
+assert_eq(bag2.size(), 4)
+assert_true(bag2.has("a"))
+assert_true(bag2.has(10))
+assert_true(bag2.has((1, 2)))
 let absent = bag2.has("zzz")
-assert(absent == false)
+assert_eq(absent, false)
 let ks = bag2.keys()
-assert(ks.size() == 4)
-assert(ks[0] == "a")
-assert(ks[2] == 10)
-assert(ks[3] == (1, 2))
+assert_eq(ks.size(), 4)
+assert_eq(ks[0], "a")
+assert_eq(ks[2], 10)
+assert_eq(ks[3], (1, 2))
 bag2.remove(10)
-assert(bag2.size() == 3)
+assert_eq(bag2.size(), 3)
 bag2.remove("a")
-assert(bag2.size() == 2)
+assert_eq(bag2.size(), 2)
 bag2.remove((1, 2))
-assert(bag2.size() == 1)
+assert_eq(bag2.size(), 1)
 
 // --- Compound subscript-set (interp + JIT) ---
 // Both forms (`obj[k] += v` and `obj.k += v`) reach the same slot for
@@ -108,23 +108,23 @@ assert(bag2.size() == 1)
 // the sidecar but compound updates work there too.
 mut counts = {mut a: 10, mut b: 20}
 counts['a'] += 5            // shape slot via subscript
-assert(counts.a == 15)
+assert_eq(counts.a, 15)
 counts.b -= 3               // dot reaches the same slot
-assert(counts['b'] == 17)
+assert_eq(counts['b'], 17)
 counts['a'] *= 2
-assert(counts.a == 30)
+assert_eq(counts.a, 30)
 
 mut sidebag = {}
 mut sidebag[42] = 100
 sidebag[42] += 7
-assert(sidebag[42] == 107)
+assert_eq(sidebag[42], 107)
 sidebag[42] /= 7
-assert(sidebag[42] == 15)
+assert_eq(sidebag[42], 15)
 
 mut tally = {}
 mut tally[(1, 2)] = 50
 tally[(1, 2)] -= 10
-assert(tally[(1, 2)] == 40)
+assert_eq(tally[(1, 2)], 40)
 
 // Tuple-key refcount stress: repeated insert/update/has/remove on the
 // same Tuple-shaped key. The JIT runtime previously leaked one ref
@@ -137,13 +137,13 @@ while i < 20 {
   let k = (i, i + 1)
   mut bag3[k] = i             // insert
   bag3[k] = i * 2             // update
-  assert(bag3.has((i, i + 1)))
-  assert(bag3[(i, i + 1)] == i * 2)
+  assert_true(bag3.has((i, i + 1)))
+  assert_eq(bag3[(i, i + 1)], i * 2)
   bag3[k] += 1
-  assert(bag3[(i, i + 1)] == i * 2 + 1)
+  assert_eq(bag3[(i, i + 1)], i * 2 + 1)
   bag3.remove((i, i + 1))
   i = i + 1
 }
-assert(bag3.size() == 0)
+assert_eq(bag3.size(), 0)
 
 IO.puts("test_object_keys OK")

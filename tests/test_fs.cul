@@ -4,39 +4,39 @@
 // Tests run on interp, JIT, and AOT via `just test`; identical stdout.
 
 // --- Path manipulation ---
-assert(FS.join("a", "b", "c.txt")        == "a/b/c.txt")
-assert(FS.join("/usr", "local", "bin")   == "/usr/local/bin")
-assert(FS.join()                          == "")
-assert(FS.join("only")                    == "only")
+assert_eq(FS.join("a", "b", "c.txt"), "a/b/c.txt")
+assert_eq(FS.join("/usr", "local", "bin"), "/usr/local/bin")
+assert_eq(FS.join(), "")
+assert_eq(FS.join("only"), "only")
 
-assert(FS.basename("a/b/c.txt")  == "c.txt")
-assert(FS.basename("c.txt")       == "c.txt")
-assert(FS.basename("/")           == "")
+assert_eq(FS.basename("a/b/c.txt"), "c.txt")
+assert_eq(FS.basename("c.txt"), "c.txt")
+assert_eq(FS.basename("/"), "")
 
-assert(FS.dirname("a/b/c.txt")    == "a/b")
-assert(FS.dirname("c.txt")         == "")
+assert_eq(FS.dirname("a/b/c.txt"), "a/b")
+assert_eq(FS.dirname("c.txt"), "")
 
-assert(FS.extension("a/b/c.txt")  == ".txt")
-assert(FS.extension("noext")       == "")
-assert(FS.extension(".hidden")     == "")   // C++ filesystem treats leading-dot files as no-extension
+assert_eq(FS.extension("a/b/c.txt"), ".txt")
+assert_eq(FS.extension("noext"), "")
+assert_eq(FS.extension(".hidden"), "")   // C++ filesystem treats leading-dot files as no-extension
 
-assert(FS.stem("a/b/c.txt")        == "c")
-assert(FS.stem("c.txt")            == "c")
-assert(FS.stem("noext")            == "noext")
+assert_eq(FS.stem("a/b/c.txt"), "c")
+assert_eq(FS.stem("c.txt"), "c")
+assert_eq(FS.stem("noext"), "noext")
 
 // --- Queries: use the running test directory as a known-good path ---
 // Sys.argv[0] is the first arg passed after `--`. The test harness
 // runs us without args, so we synthesize a path via Sys.env if
 // available; otherwise we just exercise non-existent paths.
 let bogus = "/definitely/not/a/real/path/xyzzy"
-assert(FS.exists(bogus)  == false)
-assert(FS.is_file(bogus) == false)
-assert(FS.is_dir(bogus)  == false)
+assert_eq(FS.exists(bogus), false)
+assert_eq(FS.is_file(bogus), false)
+assert_eq(FS.is_dir(bogus), false)
 
 // `/tmp` exists on every CI host we run on.
-assert(FS.exists("/tmp") == true)
-assert(FS.is_dir("/tmp") == true)
-assert(FS.is_file("/tmp") == false)
+assert_eq(FS.exists("/tmp"), true)
+assert_eq(FS.is_dir("/tmp"), true)
+assert_eq(FS.is_file("/tmp"), false)
 
 // --- Round-trip: mkdir / write / size / list / remove ---
 // Prefer $TMPDIR so the test plays nicely in sandboxes where /tmp
@@ -54,30 +54,30 @@ if FS.exists(f2) { FS.remove(f2) }
 if FS.exists(dir) { FS.remove(dir) }
 
 FS.mkdir(dir)
-assert(FS.is_dir(dir))
+assert_true(FS.is_dir(dir))
 
 IO.write(f1, "hi\n")
 IO.write(f2, "longer content here")
 
-assert(FS.is_file(f1))
-assert(FS.size(f1) == 3)
-assert(FS.size(f2) == 19)
+assert_true(FS.is_file(f1))
+assert_eq(FS.size(f1), 3)
+assert_eq(FS.size(f2), 19)
 
 let names = FS.list_dir(dir)
-assert(names.size() == 2)
+assert_eq(names.size(), 2)
 // Order isn't guaranteed across platforms, so check containment.
-assert(names.contains("hello.txt"))
-assert(names.contains("world.txt"))
+assert_true(names.contains("hello.txt"))
+assert_true(names.contains("world.txt"))
 
 FS.remove(f1)
 FS.remove(f2)
-assert(FS.exists(f1) == false)
+assert_eq(FS.exists(f1), false)
 
 FS.remove(dir)
-assert(FS.exists(dir) == false)
+assert_eq(FS.exists(dir), false)
 
 // --- Error path: size on non-existent throws IOError ---
 let err = try { FS.size(bogus); "no-error" } catch e { e.kind }
-assert(err == "IOError")
+assert_eq(err, "IOError")
 
 IO.puts("test_fs OK")

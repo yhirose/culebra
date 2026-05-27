@@ -4,63 +4,63 @@
 
 // --- Outer-only match (element type is documentation) ---
 fn first(xs: Array<Long>) -> Long { xs[0] }
-assert(first([1, 2, 3]) == 1)
-assert(first([1, "two", 3]) == 1)  // element check no-op
+assert_eq(first([1, 2, 3]), 1)
+assert_eq(first([1, "two", 3]), 1)  // element check no-op
 
 // --- Nested Generic ---
 fn rows(m: Array<Array<Long>>) -> Long { m.size() }
-assert(rows([[1, 2], [3, 4], [5, 6]]) == 3)
+assert_eq(rows([[1, 2], [3, 4], [5, 6]]), 3)
 
 // --- Generic + Union in return type (Array equality is by-ref §9) ---
 fn lookup(k: String) -> Array<Long> | Nil {
   if k == "yes" { [1, 2] } else { nil }
 }
 let hit = lookup("yes")
-assert(hit != nil && hit[0] == 1 && hit[1] == 2)
-assert(lookup("no") == nil)
+assert_true(hit != nil && hit[0] == 1 && hit[1] == 2)
+assert_eq(lookup("no"), nil)
 
 // return_type canonicalizes symmetric to params[i].type.
 fn ws_return(xs: Array<Long>) -> Array < Long > { xs }
-assert(ws_return.return_type == "Array<Long>")
+assert_eq(ws_return.return_type, "Array<Long>")
 fn union_return(k: Long) -> Long  |  Float { to_float(k) }
-assert(union_return.return_type == "Long | Float")
+assert_eq(union_return.return_type, "Long | Float")
 
 // --- Whitespace canonicalization in params ---
 fn ws_a(xs: Array<Long>)     { xs[0] }
 fn ws_b(xs: Array < Long >)  { xs[0] }
 fn ws_c(xs: Array<  Long  >) { xs[0] }
-assert(ws_a.params[0].type == "Array<Long>")
-assert(ws_b.params[0].type == "Array<Long>")
-assert(ws_c.params[0].type == "Array<Long>")
+assert_eq(ws_a.params[0].type, "Array<Long>")
+assert_eq(ws_b.params[0].type, "Array<Long>")
+assert_eq(ws_c.params[0].type, "Array<Long>")
 
 // Nested canonical (Union inside Generic).
 fn nested_canon(m: Array<Array<Long|Float>>) { m.size() }
-assert(nested_canon.params[0].type == "Array<Array<Long | Float>>")
+assert_eq(nested_canon.params[0].type, "Array<Array<Long | Float>>")
 
 // Duplicate Union alts dedup at canonicalization.
 fn dup(xs: Array<Long> | Array<Long>) { xs[0] }
-assert(dup.params[0].type == "Array<Long>")
+assert_eq(dup.params[0].type, "Array<Long>")
 
 // --- Dispatch tie-break: Generic outranks bare outer ---
 fn handle(xs: Array)       -> String { "bare" }
 fn handle(xs: Array<Long>) -> String { "generic" }
-assert(handle([1, 2, 3]) == "generic")
+assert_eq(handle([1, 2, 3]), "generic")
 
 // --- Generic class declaration ---
 class Box<T> {
   new (v) { this.v = v }
 }
 let b = Box.new(42)
-assert(b.class == "Box" && b.v == 42)
+assert_true(b.class == "Box" && b.v == 42)
 
 class Pair<K, V> {
   new (k, v) { this.k = k; this.v = v }
 }
 let p = Pair.new("a", 1)
-assert(p.class == "Pair" && p.k == "a" && p.v == 1)
+assert_true(p.class == "Pair" && p.k == "a" && p.v == 1)
 
 fn unbox(b: Box<Long>) -> Long { b.v }
-assert(unbox(Box.new(7)) == 7)
+assert_eq(unbox(Box.new(7)), 7)
 
 // --- Type-param in method signature is Any-equivalent ---
 class Cell<T> {
@@ -69,14 +69,14 @@ class Cell<T> {
 }
 let c = Cell.new(1)
 c.set("now a string")
-assert(c.v == "now a string")
+assert_eq(c.v, "now a string")
 
 // Introspection preserves declared T (runtime sees Any).
-assert(c.set.params[0].type == "T")
+assert_eq(c.set.params[0].type, "T")
 class Bagged<T> {
   fill(xs: Array<T>) { this.xs = xs }
 }
-assert(Bagged.new().fill.params[0].type == "Array<T>")
+assert_eq(Bagged.new().fill.params[0].type, "Array<T>")
 
 // --- match arm strips Generic on both backends ---
 fn classify(v) {
@@ -86,10 +86,10 @@ fn classify(v) {
     _               => "other",
   }
 }
-assert(classify([1, 2, 3]) == "array")
-assert(classify(42) == "long")
-assert(classify("hi") == "other")
-assert(classify(nil) == "other")
+assert_eq(classify([1, 2, 3]), "array")
+assert_eq(classify(42), "long")
+assert_eq(classify("hi"), "other")
+assert_eq(classify(nil), "other")
 
 // --- Composite type-param (Array<T>, T | Long) neutralizes too ---
 class Bag<T> {
@@ -98,9 +98,9 @@ class Bag<T> {
 }
 let bag = Bag.new()
 bag.put("anything")
-assert(bag.v == "anything")
+assert_eq(bag.v, "anything")
 bag.fill([1, "two", 3.5])
-assert(bag.xs.size() == 3)
+assert_eq(bag.xs.size(), 3)
 
 // --- Nested fn/lambda inside Generic method: backend-symmetric ---
 class Holder<T> {
@@ -110,11 +110,11 @@ class Holder<T> {
     helper(lam(x))
   }
 }
-assert(Holder.new().unwrap(3) == 8)
+assert_eq(Holder.new().unwrap(3), 8)
 
 // --- Generic-inner-Union must not recurse forever (depth-aware gate) ---
 fn inner_union(xs: Array<Long | Float>) -> Long { xs.size() }
-assert(inner_union([1, 2.5, 3]) == 3)
+assert_eq(inner_union([1, 2.5, 3]), 3)
 
 // Class-in-class is rejected at eval/compile time — verified manually
 // (JIT raises pre-runtime, doesn't fit the output-diff harness).

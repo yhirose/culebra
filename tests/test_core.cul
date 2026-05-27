@@ -6,7 +6,7 @@
 
 test_call = fn () {
   ret = fn(){[1,fn(){[4,5,6]},3]}()[1]()[1]
-  assert(ret == 5)
+  assert_eq(ret, 5)
 }
 
 test_return = fn () {
@@ -16,8 +16,8 @@ test_return = fn () {
     }
     'even'
   }
-  assert(f(3) == 'odd')
-  assert(f(4) == 'even')
+  assert_eq(f(3), 'odd')
+  assert_eq(f(4), 'even')
 
   mut val = 0
   f2 = fn () {
@@ -26,26 +26,26 @@ test_return = fn () {
     val = 2
   }
   f2()
-  assert(val == 1)
+  assert_eq(val, 1)
 }
 
 test_nil = fn () {
-  assert(nil == nil)
-  assert(!(nil != nil))
+  assert_eq(nil, nil)
+  assert_false((nil != nil))
 
   a = nil
-  assert(a == nil)
-  assert(!(a != nil))
-  assert(!(a <= nil))
-  assert(!(a < nil))
-  assert(!(a >= nil))
-  assert(!(a > nil))
-  assert(nil == a)
-  assert(!(nil != a))
-  assert(!(nil <= a))
-  assert(!(nil < a))
-  assert(!(nil >= a))
-  assert(!(nil > a))
+  assert_eq(a, nil)
+  assert_false((a != nil))
+  assert_false((a <= nil))
+  assert_false((a < nil))
+  assert_false((a >= nil))
+  assert_false((a > nil))
+  assert_eq(nil, a)
+  assert_false((nil != a))
+  assert_false((nil <= a))
+  assert_false((nil < a))
+  assert_false((nil >= a))
+  assert_false((nil > a))
 }
 
 test_closure = fn () {
@@ -62,68 +62,68 @@ test_closure = fn () {
   f()
   ret = f()
 
-  assert(ret == 319)
+  assert_eq(ret, 319)
 }
 
 test_lambda = fn () {
   add = |x, y| x + y
-  assert(add(2, 3) == 5)
+  assert_eq(add(2, 3), 5)
 
   square = |x| x * x
-  assert(square(6) == 36)
+  assert_eq(square(6), 36)
 
   incr = |x| {
     mut n = x
     n = n + 1
     n
   }
-  assert(incr(10) == 11)
+  assert_eq(incr(10), 11)
 
   forty_two = || 42
-  assert(forty_two() == 42)
+  assert_eq(forty_two(), 42)
 
   make_adder = |n| |x| x + n
   add5 = make_adder(5)
-  assert(add5(3) == 8)
-  assert(add5(10) == 15)
+  assert_eq(add5(3), 8)
+  assert_eq(add5(10), 15)
 
   f = |mut x = 10| { x = x + 1; x }
-  assert(f() == 11)
-  assert(f(100) == 101)
+  assert_eq(f(), 11)
+  assert_eq(f(100), 101)
 
   apply = fn (g, v) { g(v) }
-  assert(apply(|x| x * 10, 7) == 70)
+  assert_eq(apply(|x| x * 10, 7), 70)
 
   # Type annotation on a lambda parameter works the same as on `fn`.
   typed = |x: Long| x + 1
-  assert(typed(5) == 6)
+  assert_eq(typed(5), 6)
 
   # `self` inside a lambda refers to the lambda itself.
   fib = |n| if n < 2 { n } else { self(n - 1) + self(n - 2) }
-  assert(fib(10) == 55)
+  assert_eq(fib(10), 55)
 }
 
 test_array = fn () {
   a = [1,2,3]
-  assert(a.size() == 3)
+  assert_eq(a.size(), 3)
 
   a.push(4)
-  assert(a.size() == 4)
+  assert_eq(a.size(), 4)
 
   b = []
-  assert(b.size() == 0)
+  assert_eq(b.size(), 0)
 
   c = [1]
-  assert(c.size() == 1)
+  assert_eq(c.size(), 1)
 
 	d = [1,2,3](5, 0)
-	assert(d.size() == 5 && d[-1] == 0)
+	assert_true(d.size() == 5 && d[-1] == 0)
 
 	e = [1,2,3](2)
-	assert(e.size() == 3 && e[-1] == 3)
+	assert_true(e.size() == 3 && e[-1] == 3)
 
 	f = [1,2,3](5)
-	assert(f.size() == 5 && f[-1] == nil)
+	assert_true(f.size() == 5 && f[-1] == nil)
 }
 
 g_ = 1
@@ -137,52 +137,52 @@ test_function = fn () {
     }
   }
   f = make()
-  assert(f(1) == 4)
+  assert_eq(f(1), 4)
 }
 
 test_nil_coalesce = fn () {
-  assert((nil ?? 'd') == 'd')
-  assert(('v' ?? 'd') == 'v')
-  assert((nil ?? nil ?? 'c') == 'c')
-  assert((nil ?? nil ?? nil) == nil)
+  assert_eq((nil ?? 'd'), 'd')
+  assert_eq(('v' ?? 'd'), 'v')
+  assert_eq((nil ?? nil ?? 'c'), 'c')
+  assert_eq((nil ?? nil ?? nil), nil)
 
   # Short-circuit: RHS only evaluated when LHS is nil
   mut n = 0
   bump = fn () { n = n + 1; 'x' }
   let a1 = 'present' ?? bump()
-  assert(n == 0)
+  assert_eq(n, 0)
   let a2 = nil ?? bump()
-  assert(n == 1)
+  assert_eq(n, 1)
 
   # Missing object property feeds ??
   o = {a: 1}
-  assert((o.missing ?? -1) == -1)
-  assert((o.a ?? -1) == 1)
+  assert_eq((o.missing ?? -1), -1)
+  assert_eq((o.a ?? -1), 1)
 
   # Lower precedence than || (left-associative, `||` groups tighter)
-  assert((true || false ?? 'd') == true)
+  assert_eq((true || false ?? 'd'), true)
 }
 
 test_default_params = fn () {
   greet = fn (name, greeting = 'hello') { "{greeting}, {name}" }
-  assert(greet('alice') == 'hello, alice')
-  assert(greet('alice', 'hi') == 'hi, alice')
+  assert_eq(greet('alice'), 'hello, alice')
+  assert_eq(greet('alice', 'hi'), 'hi, alice')
 
   make_point = fn (x = 0, y = 0, z = 0) { {x, y, z} }
-  assert(make_point().x == 0)
-  assert(make_point(10, 20).z == 0)
-  assert(make_point(10, 20, 30).z == 30)
+  assert_eq(make_point().x, 0)
+  assert_eq(make_point(10, 20).z, 0)
+  assert_eq(make_point(10, 20, 30).z, 30)
 
   # Default expr references earlier param
   bump = fn (a, b = a + 1) { a + b }
-  assert(bump(5) == 11)
-  assert(bump(5, 100) == 105)
+  assert_eq(bump(5), 11)
+  assert_eq(bump(5, 100), 105)
 
   # Default closes over enclosing scope
   base = 100
   add_base = fn (n = base) { n }
-  assert(add_base() == 100)
-  assert(add_base(5) == 5)
+  assert_eq(add_base(), 100)
+  assert_eq(add_base(5), 5)
 }
 
 test_object = fn () {
@@ -193,86 +193,86 @@ test_object = fn () {
     f1: fn (x) { x + this.n },
     f2: fn (x) { x + n }
   }
-  assert(o.size() == 4)
-  assert(o.f1(10) == 133)
-  assert(o.f2(10) == 11)
+  assert_eq(o.size(), 4)
+  assert_eq(o.f1(10), 133)
+  assert_eq(o.f2(10), 11)
 
   a = {}
   a.b = 1
-  assert(a.a == nil)
-  assert(a.b == 1)
-  assert(a.size() == 1)
+  assert_eq(a.a, nil)
+  assert_eq(a.b, 1)
+  assert_eq(a.size(), 1)
 }
 
 test_object_shorthand = fn () {
   x = 10
   y = 20
   p = {x, y}
-  assert(p.x == 10)
-  assert(p.y == 20)
-  assert(p.size() == 2)
+  assert_eq(p.x, 10)
+  assert_eq(p.y, 20)
+  assert_eq(p.size(), 2)
 
   z = 100
   q = {x, y, z: z * 2}
-  assert(q.z == 200)
+  assert_eq(q.z, 200)
 
   n = 5
   r = {mut n}
   r.n = 99
-  assert(r.n == 99)
-  assert(n == 5)
+  assert_eq(r.n, 99)
+  assert_eq(n, 5)
 }
 
 test_destructure = fn () {
   # Object destructure
   let {name, age} = {name: 'alice', age: 30, role: 'admin'}
-  assert(name == 'alice')
-  assert(age == 30)
+  assert_eq(name, 'alice')
+  assert_eq(age, 30)
 
   # Array destructure
   let [a, b, c] = [10, 20, 30]
-  assert(a == 10)
-  assert(c == 30)
+  assert_eq(a, 10)
+  assert_eq(c, 30)
 
   # With rest
   let [head, ...tail] = [1, 2, 3, 4, 5]
-  assert(head == 1)
-  assert(tail.size() == 4)
-  assert(tail[0] == 2)
+  assert_eq(head, 1)
+  assert_eq(tail.size(), 4)
+  assert_eq(tail[0], 2)
 
   # let mut allows reassignment (interpreter-enforced)
   let mut [x, y] = [100, 200]
   x = x + 1
-  assert(x == 101)
+  assert_eq(x, 101)
 
   # Composes with shorthand
   let {first, last} = {first: 'A', last: 'Z'}
   p = {first, last}
-  assert(p.first == 'A' && p.last == 'Z')
+  assert_true(p.first == 'A' && p.last == 'Z')
 
   # Object pattern with value matching and nesting (C cycle).
   let {name: nm, age: ag} = {name: 'bob', age: 42}
-  assert(nm == 'bob')
-  assert(ag == 42)
+  assert_eq(nm, 'bob')
+  assert_eq(ag, 42)
 
   let {user: {name: uname}} = {user: {name: 'carol'}, role: 'admin'}
-  assert(uname == 'carol')
+  assert_eq(uname, 'carol')
 
   # Mix shorthand and full forms in the same pattern.
   let {a, b: bv} = {a: 1, b: 2, c: 3}
-  assert(a == 1)
-  assert(bv == 2)
+  assert_eq(a, 1)
+  assert_eq(bv, 2)
 
   # Empty object pattern matches any Object.
   let empty_ok = match {} { {} => true, _ => false }
-  assert(empty_ok == true)
+  assert_eq(empty_ok, true)
 
   let r = match {name: 'alice', age: 30} {
     {name: 'bob'} => 'bob',
     {name: 'alice', age: a} => a,
     _ => -1,
   }
-  assert(r == 30)
+  assert_eq(r, 30)
 }
 
 test_object_factory = fn () {
@@ -294,9 +294,9 @@ test_object_factory = fn () {
 
   calc = ctor(10)
 
-  assert(calc.val() == 10)
-  assert(calc.add(1) == 11)
-  assert(calc.sub(1) == 10)
+  assert_eq(calc.val(), 10)
+  assert_eq(calc.add(1), 11)
+  assert_eq(calc.sub(1), 10)
 }
 
 test_class = fn () {
@@ -320,7 +320,7 @@ test_class = fn () {
   car.run(1)
   car.run(2)
 
-  assert(car.total() == 15)
+  assert_eq(car.total(), 15)
 }
 
 test_sum = fn () {
@@ -331,153 +331,153 @@ test_sum = fn () {
     i = i + 1
   }
 
-  assert(ret == 55)
+  assert_eq(ret, 55)
 }
 
 test_float = fn () {
   // Literals & type
-  assert(type_of(1.0) == 'Float')
-  assert(type_of(0.5) == 'Float')
-  assert(type_of(1e-5) == 'Float')
-  assert(type_of(1.5e3) == 'Float')
-  assert(type_of(42) == 'Long')
+  assert_eq(type_of(1.0), 'Float')
+  assert_eq(type_of(0.5), 'Float')
+  assert_eq(type_of(1e-5), 'Float')
+  assert_eq(type_of(1.5e3), 'Float')
+  assert_eq(type_of(42), 'Long')
 
   // Display: Float always carries a decimal point or exponent.
-  assert(to_string(1.0) == '1.0')
-  assert(to_string(0.5) == '0.5')
-  assert(to_string(-2.5) == '-2.5')
-  assert(to_string(1.5e-5) == '1.5e-05')
+  assert_eq(to_string(1.0), '1.0')
+  assert_eq(to_string(0.5), '0.5')
+  assert_eq(to_string(-2.5), '-2.5')
+  assert_eq(to_string(1.5e-5), '1.5e-05')
 
   // Arithmetic — homogeneous Long (unchanged integer semantics).
-  assert(1 + 2 == 3)
-  assert(7 / 2 == 3)
-  assert(-7 % 3 == -1)
-  assert(type_of(1 + 2) == 'Long')
+  assert_eq(1 + 2, 3)
+  assert_eq(7 / 2, 3)
+  assert_eq(-7 % 3, -1)
+  assert_eq(type_of(1 + 2), 'Long')
 
   // Arithmetic — homogeneous Float.
-  assert(1.0 + 2.0 == 3.0)
-  assert(1.5 * 2.0 == 3.0)
-  assert(type_of(1.0 + 2.0) == 'Float')
+  assert_eq(1.0 + 2.0, 3.0)
+  assert_eq(1.5 * 2.0, 3.0)
+  assert_eq(type_of(1.0 + 2.0), 'Float')
 
   // Promotion: Long op Float -> Float (both directions).
-  assert(type_of(1 + 2.0) == 'Float')
-  assert(type_of(2.0 + 1) == 'Float')
-  assert(1 + 0.5 == 1.5)
-  assert(2.0 - 1 == 1.0)
-  assert(3 / 2.0 == 1.5)
-  assert(2.0 / 4 == 0.5)
+  assert_eq(type_of(1 + 2.0), 'Float')
+  assert_eq(type_of(2.0 + 1), 'Float')
+  assert_eq(1 + 0.5, 1.5)
+  assert_eq(2.0 - 1, 1.0)
+  assert_eq(3 / 2.0, 1.5)
+  assert_eq(2.0 / 4, 0.5)
 
   // Cross-type equality (numeric).
-  assert(1 == 1.0)
-  assert(1.0 == 1)
-  assert(!(1 == 1.5))
-  assert(1 < 1.5)
-  assert(2.5 > 2)
+  assert_eq(1, 1.0)
+  assert_eq(1.0, 1)
+  assert_false((1 == 1.5))
+  assert_lt(1, 1.5)
+  assert_gt(2.5, 2)
 
   // Unary minus.
-  assert(-1.5 == -1.5)
-  assert(type_of(-1.5) == 'Float')
+  assert_eq(-1.5, -1.5)
+  assert_eq(type_of(-1.5), 'Float')
 
   // Power.
-  assert(2 ** 10 == 1024)
-  assert(type_of(2 ** 10) == 'Long')
-  assert(2 ** -1 == 0.5)
-  assert(type_of(2 ** -1) == 'Float')
-  assert(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
-  assert(type_of(2.0 ** 10) == 'Float')
+  assert_eq(2 ** 10, 1024)
+  assert_eq(type_of(2 ** 10), 'Long')
+  assert_eq(2 ** -1, 0.5)
+  assert_eq(type_of(2 ** -1), 'Float')
+  assert_true(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
+  assert_eq(type_of(2.0 ** 10), 'Float')
   // Right-associative: 2**3**2 == 2**(3**2) == 512.
-  assert(2 ** 3 ** 2 == 512)
+  assert_eq(2 ** 3 ** 2, 512)
   // Unary minus binds looser than **: -2**2 == -(2**2) == -4.
-  assert(-2 ** 2 == -4)
+  assert_eq(-2 ** 2, -4)
   // Operator precedence: 2 * 3**2 == 2 * 9 == 18.
-  assert(2 * 3 ** 2 == 18)
+  assert_eq(2 * 3 ** 2, 18)
   // 0 ** 0 convention.
-  assert(0 ** 0 == 1)
+  assert_eq(0 ** 0, 1)
 
   // Type annotation.
   x: Float = 3.14
-  assert(x == 3.14)
+  assert_eq(x, 3.14)
 
   // Conversions.
-  assert(to_long(3.7) == 3)       // truncate toward zero
-  assert(to_long(-3.7) == -3)
-  assert(to_float(3) == 3.0)
-  assert(to_float('1.5') == 1.5)
-  assert(to_long('42') == 42)     // unchanged string path
+  assert_eq(to_long(3.7), 3)       // truncate toward zero
+  assert_eq(to_long(-3.7), -3)
+  assert_eq(to_float(3), 3.0)
+  assert_eq(to_float('1.5'), 1.5)
+  assert_eq(to_long('42'), 42)     // unchanged string path
 
   // Zero sign: IEEE 754 treats 0.0 and -0.0 as equal but with
   // distinct bit patterns. Culebra follows Python: equal.
-  assert(0.0 == -0.0)
-  assert(!(0.0 != -0.0))
+  assert_eq(0.0, -0.0)
+  assert_false((0.0 != -0.0))
   // Truthiness: 0.0 and -0.0 are both false.
   mut zero_is_falsy = true
   if 0.0 { zero_is_falsy = false }
-  assert(zero_is_falsy)
+  assert_true(zero_is_falsy)
   mut nz_is_truthy = false
   if 0.5 { nz_is_truthy = true }
-  assert(nz_is_truthy)
+  assert_true(nz_is_truthy)
 
   // NaN: self-inequality, arithmetic propagation, ordering returns
   // false, truthy under Python semantics (UNE matches). Built via
   // sqrt of a negative (0.0 / 0.0 would raise divide-by-zero).
   nan = (-1.0) ** 0.5
-  assert(type_of(nan) == 'Float')
-  assert(nan != nan)               // IEEE 754: NaN !=  everything
-  assert(!(nan == nan))
-  assert(!(nan < 1.0))             // ordering on NaN is false
-  assert(!(nan > 1.0))
-  assert(!(nan <= 1.0))
-  assert(!(nan >= 1.0))
+  assert_eq(type_of(nan), 'Float')
+  assert_ne(nan, nan)               // IEEE 754: NaN !=  everything
+  assert_false((nan == nan))
+  assert_false((nan < 1.0))             // ordering on NaN is false
+  assert_false((nan > 1.0))
+  assert_false((nan <= 1.0))
+  assert_false((nan >= 1.0))
   nan_plus = nan + 1.0
-  assert(nan_plus != nan_plus)     // NaN propagates through arithmetic
+  assert_ne(nan_plus, nan_plus)     // NaN propagates through arithmetic
   mut nan_truthy = false
   if nan { nan_truthy = true }     // NaN is truthy
-  assert(nan_truthy)
+  assert_true(nan_truthy)
 
   // Infinity: produced by overflow (1e308 * 10), propagates through
   // arithmetic, ordered above every finite value.
   big = 1e308 * 10.0
-  assert(type_of(big) == 'Float')
-  assert(big > 1e308)
-  assert(big == big)
-  assert(to_string(big) == 'inf')
+  assert_eq(type_of(big), 'Float')
+  assert_gt(big, 1e308)
+  assert_eq(big, big)
+  assert_eq(to_string(big), 'inf')
   neg_big = -big
-  assert(to_string(neg_big) == '-inf')
+  assert_eq(to_string(neg_big), '-inf')
   // inf - inf is NaN.
   sub = big - big
-  assert(sub != sub)
+  assert_ne(sub, sub)
 
   // Pattern matching on Float literals.
   described = match 1.5 {
     1.5 => 'one-point-five',
     _   => 'other',
   }
-  assert(described == 'one-point-five')
+  assert_eq(described, 'one-point-five')
   described2 = match 2.0 {
     1.5 => 'nope',
     x: Float => x + 1.0,
     _   => nil,
   }
-  assert(described2 == 3.0)
+  assert_eq(described2, 3.0)
 
   // Interpolated strings pick up Float display form. Leading text is
   // required because a `"{expr}"` with only one segment collapses to
   // the expression (pre-existing optimizer behavior, not Float-specific).
-  assert("x={1.0}" == 'x=1.0')
-  assert("x={-2.5}" == 'x=-2.5')
-  assert("x={1.5e-5}" == 'x=1.5e-05')
-  assert("x={nan}" == 'x=nan')
-  assert("x={big}" == 'x=inf')
+  assert_eq("x={1.0}", 'x=1.0')
+  assert_eq("x={-2.5}", 'x=-2.5')
+  assert_eq("x={1.5e-5}", 'x=1.5e-05')
+  assert_eq("x={nan}", 'x=nan')
+  assert_eq("x={big}", 'x=inf')
 
   // Constant-folding peephole for `** 2` keeps result Long when base
   // is Long (wraps like Long multiplication).
-  assert(5 ** 2 == 25)
-  assert(2.5 ** 2 == 6.25)
-  assert(type_of(5 ** 2) == 'Long')
-  assert(type_of(2.5 ** 2) == 'Float')
+  assert_eq(5 ** 2, 25)
+  assert_eq(2.5 ** 2, 6.25)
+  assert_eq(type_of(5 ** 2), 'Long')
+  assert_eq(type_of(2.5 ** 2), 'Float')
   // `** 0.5` peephole: sqrt.
-  assert(16 ** 0.5 == 4.0)
-  assert(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
+  assert_eq(16 ** 0.5, 4.0)
+  assert_true(2.0 ** 0.5 < 1.4143 && 2.0 ** 0.5 > 1.4142)
 
   // Divide-by-zero on Float still raises (same diagnostic as Long).
   // Not easy to assert without a try/catch helper — skip for now;
@@ -487,56 +487,56 @@ test_float = fn () {
 test_math = fn () {
   // Constants. Math.pi and Math.e are finite doubles; inf is infinite;
   // nan compares unequal to itself.
-  assert(Math.pi > 3.14 && Math.pi < 3.15)
-  assert(Math.e > 2.71 && Math.e < 2.72)
-  assert(Math.inf > 1e308)
-  assert(Math.nan != Math.nan)
-  assert(type_of(Math.pi) == 'Float')
-  assert(type_of(Math.inf) == 'Float')
+  assert_true(Math.pi > 3.14 && Math.pi < 3.15)
+  assert_true(Math.e > 2.71 && Math.e < 2.72)
+  assert_gt(Math.inf, 1e308)
+  assert_ne(Math.nan, Math.nan)
+  assert_eq(type_of(Math.pi), 'Float')
+  assert_eq(type_of(Math.inf), 'Float')
 
   // log / exp round-trip.
-  assert(Math.log(Math.e) == 1.0)
-  assert(Math.exp(0) == 1.0)
-  assert(Math.log(1) == 0.0)
-  assert(type_of(Math.log(1)) == 'Float')          // Long arg, Float result
-  assert(type_of(Math.exp(1.0)) == 'Float')
+  assert_eq(Math.log(Math.e), 1.0)
+  assert_eq(Math.exp(0), 1.0)
+  assert_eq(Math.log(1), 0.0)
+  assert_eq(type_of(Math.log(1)), 'Float')          // Long arg, Float result
+  assert_eq(type_of(Math.exp(1.0)), 'Float')
 
   // sqrt.
-  assert(Math.sqrt(4) == 2.0)
-  assert(Math.sqrt(2.0) > 1.4142 && Math.sqrt(2.0) < 1.4143)
-  assert(Math.sqrt(-1.0) != Math.sqrt(-1.0))       // NaN
+  assert_eq(Math.sqrt(4), 2.0)
+  assert_true(Math.sqrt(2.0) > 1.4142 && Math.sqrt(2.0) < 1.4143)
+  assert_ne(Math.sqrt(-1.0), Math.sqrt(-1.0))       // NaN
 
   // floor / ceil / round. Long input passes through unchanged.
-  assert(Math.floor(2.7) == 2)
-  assert(Math.floor(-2.3) == -3)
-  assert(Math.ceil(2.3) == 3)
-  assert(Math.ceil(-2.7) == -2)
-  assert(Math.round(2.5) == 2)                     // banker's rounding (ties to even)
-  assert(Math.round(3.5) == 4)
-  assert(Math.round(-0.5) == 0)
-  assert(Math.round(1.4) == 1)
-  assert(Math.floor(7) == 7)
-  assert(type_of(Math.floor(7)) == 'Long')
-  assert(type_of(Math.floor(7.5)) == 'Long')
+  assert_eq(Math.floor(2.7), 2)
+  assert_eq(Math.floor(-2.3), -3)
+  assert_eq(Math.ceil(2.3), 3)
+  assert_eq(Math.ceil(-2.7), -2)
+  assert_eq(Math.round(2.5), 2)                     // banker's rounding (ties to even)
+  assert_eq(Math.round(3.5), 4)
+  assert_eq(Math.round(-0.5), 0)
+  assert_eq(Math.round(1.4), 1)
+  assert_eq(Math.floor(7), 7)
+  assert_eq(type_of(Math.floor(7)), 'Long')
+  assert_eq(type_of(Math.floor(7.5)), 'Long')
 
   // abs: return type follows input type.
-  assert(Math.abs(-7) == 7)
-  assert(Math.abs(-7.5) == 7.5)
-  assert(type_of(Math.abs(-7)) == 'Long')
-  assert(type_of(Math.abs(-7.5)) == 'Float')
+  assert_eq(Math.abs(-7), 7)
+  assert_eq(Math.abs(-7.5), 7.5)
+  assert_eq(type_of(Math.abs(-7)), 'Long')
+  assert_eq(type_of(Math.abs(-7.5)), 'Float')
 
   // min / max variadic. Long-only stays Long; any Float lifts to Float.
-  assert(Math.min(3, 1, 4, 1, 5) == 1)
-  assert(Math.max(3, 1, 4, 1, 5) == 5)
-  assert(type_of(Math.min(3, 1, 4)) == 'Long')
-  assert(Math.min(1.5, 2) == 1.5)
-  assert(type_of(Math.min(1.5, 2)) == 'Float')
-  assert(Math.max(-1.0, -2) == -1.0)
-  assert(type_of(Math.max(1, 2.0, 3)) == 'Float')
+  assert_eq(Math.min(3, 1, 4, 1, 5), 1)
+  assert_eq(Math.max(3, 1, 4, 1, 5), 5)
+  assert_eq(type_of(Math.min(3, 1, 4)), 'Long')
+  assert_eq(Math.min(1.5, 2), 1.5)
+  assert_eq(type_of(Math.min(1.5, 2)), 'Float')
+  assert_eq(Math.max(-1.0, -2), -1.0)
+  assert_eq(type_of(Math.max(1, 2.0, 3)), 'Float')
 
   // Math.pow kept for back-compat (non-negative Long exponent).
-  assert(Math.pow(2, 10) == 1024)
-  assert(type_of(Math.pow(2, 10)) == 'Long')
+  assert_eq(Math.pow(2, 10), 1024)
+  assert_eq(type_of(Math.pow(2, 10)), 'Long')
 }
 
 test_random = fn () {
@@ -545,8 +545,8 @@ test_random = fn () {
   a1 = Random.int(0, 100)
   a2 = Random.int(0, 100)
   Random.seed(42)
-  assert(Random.int(0, 100) == a1)
-  assert(Random.int(0, 100) == a2)
+  assert_eq(Random.int(0, 100), a1)
+  assert_eq(Random.int(0, 100), a2)
 
   // int is half-open [lo, hi) — produce many samples and check bounds.
   Random.seed(0)
@@ -554,31 +554,31 @@ test_random = fn () {
   mut x = 0
   while i < 100 {
     x = Random.int(10, 20)
-    assert(x >= 10)
-    assert(x < 20)
+    assert_ge(x, 10)
+    assert_lt(x, 20)
     i = i + 1
   }
 
   // uniform yields a Float in [lo, hi) and promotes Long arguments.
   Random.seed(0)
   u = Random.uniform(0.0, 1.0)
-  assert(type_of(u) == 'Float')
-  assert(u >= 0.0)
-  assert(u < 1.0)
-  assert(type_of(Random.uniform(0, 1)) == 'Float')  // Long args promoted
+  assert_eq(type_of(u), 'Float')
+  assert_ge(u, 0.0)
+  assert_lt(u, 1.0)
+  assert_eq(type_of(Random.uniform(0, 1)), 'Float')  // Long args promoted
 
   // gauss returns Float; not checking value because it's unbounded.
-  assert(type_of(Random.gauss(0.0, 1.0)) == 'Float')
-  assert(type_of(Random.gauss(0, 1)) == 'Float')    // Long args promoted
+  assert_eq(type_of(Random.gauss(0.0, 1.0)), 'Float')
+  assert_eq(type_of(Random.gauss(0, 1)), 'Float')    // Long args promoted
 
   // shuffle permutes without adding or dropping elements.
   Random.seed(0)
   mut arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   Random.shuffle(arr)
-  assert(arr.size() == 10)
+  assert_eq(arr.size(), 10)
   mut sum = 0
   arr.for_each(fn (elem) { sum = sum + elem })
-  assert(sum == 55)
+  assert_eq(sum, 55)
 
   // weighted_choice: weight 0 is never picked.
   Random.seed(0)
@@ -586,19 +586,19 @@ test_random = fn () {
   mut pick = ''
   while i < 50 {
     pick = Random.weighted_choice(['a', 'y', 'c'], [1.0, 0.0, 1.0])
-    assert(pick == 'a' || pick == 'c')
+    assert_true(pick == 'a' || pick == 'c')
     i = i + 1
   }
   // All weight on one element.
-  assert(Random.weighted_choice(['only'], [1.0]) == 'only')
+  assert_eq(Random.weighted_choice(['only'], [1.0]), 'only')
 }
 
 test_io_exists = fn () {
   // The test script itself has to exist.
-  assert(IO.exists('tests/test_core.cul'))
-  assert(!IO.exists('definitely-not-a-real-path-xyz.cul'))
+  assert_true(IO.exists('tests/test_core.cul'))
+  assert_false(IO.exists('definitely-not-a-real-path-xyz.cul'))
   // Empty path is not a valid filesystem entry.
-  assert(!IO.exists(''))
+  assert_false(IO.exists(''))
 }
 
 test_fib = fn () {
@@ -612,14 +612,14 @@ test_fib = fn () {
 
   ret = fib(15)
 
-  assert(ret == 610)
+  assert_eq(ret, 610)
 }
 
 test_interpolated_string = fn () {
   hello = "Hello"
   world = "World!"
   ret = "{hello} {world}"
-  assert(ret == 'Hello World!')
+  assert_eq(ret, 'Hello World!')
 }
 
 // String escape sequences. Single-quote strings are RAW (every character
@@ -627,171 +627,171 @@ test_interpolated_string = fn () {
 // strings decode `\n \r \t \\ \" \{`; unknown `\X` is preserved as-is.
 test_string_escapes = fn () {
   // Single-quote: raw, no decoding.
-  assert('\n'.size() == 2)
-  assert('\t'.size() == 2)
+  assert_eq('\n'.size(), 2)
+  assert_eq('\t'.size(), 2)
 
   // Double-quote: control characters.
-  assert("\n".size() == 1)
-  assert("\r".size() == 1)
-  assert("\t".size() == 1)
-  assert("a\nb".size() == 3)
-  assert("a\nb".split("\n").size() == 2)
-  assert("a\nb".split("\n")[0] == 'a')
-  assert("a\nb".split("\n")[1] == 'b')
+  assert_eq("\n".size(), 1)
+  assert_eq("\r".size(), 1)
+  assert_eq("\t".size(), 1)
+  assert_eq("a\nb".size(), 3)
+  assert_eq("a\nb".split("\n").size(), 2)
+  assert_eq("a\nb".split("\n")[0], 'a')
+  assert_eq("a\nb".split("\n")[1], 'b')
 
   // Backslash and embedded quote.
-  assert("\\".size() == 1)
-  assert("\\" == '\')
-  assert("\"".size() == 1)
-  assert("a\"b".size() == 3)
+  assert_eq("\\".size(), 1)
+  assert_eq("\\", '\')
+  assert_eq("\"".size(), 1)
+  assert_eq("a\"b".size(), 3)
 
   // Brace escape — embed a literal `{` without starting interpolation.
   // (`}` is only special as an interpolation terminator; raw `}` is fine.)
-  assert("\{".size() == 1)
-  assert("\{x}".size() == 3)
+  assert_eq("\{".size(), 1)
+  assert_eq("\{x}".size(), 3)
   n = 42
-  assert("a\{n}" == 'a{n}')
+  assert_eq("a\{n}", 'a{n}')
 
   // Unknown escapes pass through unchanged (Python-style: kept as the
   // backslash + char, not silently stripped).
-  assert("\q" == '\q')
-  assert("\q".size() == 2)
+  assert_eq("\q", '\q')
+  assert_eq("\q".size(), 2)
 
   // Interpolation still composes with escapes in the same string.
   v = 7
-  assert("v={v}\tend" == 'v=7	end')
+  assert_eq("v={v}\tend", 'v=7	end')
 }
 
 test_lexical_scope = fn () {
 	a = 0
 	{
 		let a = 1;
-		assert(a == 1)
+		assert_eq(a, 1)
 	}
-	assert(a == 0)
+	assert_eq(a, 0)
 
 	mut b = 0
 	{
 		b = 1;
-		assert(b == 1)
+		assert_eq(b, 1)
 	}
-	assert(b == 1)
+	assert_eq(b, 1)
 
 	c = 0
 	{
 		let mut c = 0;
 		c = 1
-		assert(c == 1)
+		assert_eq(c, 1)
 	}
-	assert(c == 0)
+	assert_eq(c, 0)
 
 	obj = {
 		name: 'object'
 	}
 
-	assert(obj.name == 'object')
+	assert_eq(obj.name, 'object')
 }
 
 test_builtin_methods = fn () {
   // String methods (§17.1)
-  assert('hello'.size() == 5)
-  assert('HeLLo'.upper() == 'HELLO')
-  assert('HeLLo'.lower() == 'hello')
-  assert('  hi  '.trim() == 'hi')
-  assert('a,b,c'.split(',').size() == 3)
-  assert('a,b,c'.split(',')[1] == 'b')
-  assert('abc'.split(',').size() == 1)
-  assert('hello'.contains('ell'))
-  assert(!'hello'.contains('xyz'))
-  assert('hello'.starts_with('he'))
-  assert(!'hello'.starts_with('lo'))
-  assert('hello'.ends_with('lo'))
-  assert(!'hello'.ends_with('he'))
-  assert('hello'.slice(1, 4) == 'ell')
-  assert('hello'.slice(-3, -1) == 'll')
-  assert('hello'.slice(2, 10) == 'llo')
+  assert_eq('hello'.size(), 5)
+  assert_eq('HeLLo'.upper(), 'HELLO')
+  assert_eq('HeLLo'.lower(), 'hello')
+  assert_eq('  hi  '.trim(), 'hi')
+  assert_eq('a,b,c'.split(',').size(), 3)
+  assert_eq('a,b,c'.split(',')[1], 'b')
+  assert_eq('abc'.split(',').size(), 1)
+  assert_true('hello'.contains('ell'))
+  assert_false('hello'.contains('xyz'))
+  assert_true('hello'.starts_with('he'))
+  assert_false('hello'.starts_with('lo'))
+  assert_true('hello'.ends_with('lo'))
+  assert_false('hello'.ends_with('he'))
+  assert_eq('hello'.slice(1, 4), 'ell')
+  assert_eq('hello'.slice(-3, -1), 'll')
+  assert_eq('hello'.slice(2, 10), 'llo')
 
   // Array methods (§17.2)
   mut a = [1, 2, 3]
-  assert(a.pop() == 3)
-  assert(a.size() == 2)
+  assert_eq(a.pop(), 3)
+  assert_eq(a.size(), 2)
   empty = []
-  assert(empty.pop() == nil)
-  assert([10, 20, 30, 40].slice(1, 3).size() == 2)
-  assert([10, 20, 30, 40].slice(1, 3)[0] == 20)
-  assert(['a', 'b', 'c'].join('-') == 'a-b-c')
-  assert([1, 2, 3].join(',') == '1,2,3')
-  assert([1, 2, 3].contains(2))
-  assert(![1, 2, 3].contains(9))
-  assert([10, 20, 30].index_of(20) == 1)
-  assert([10, 20, 30].index_of(99) == -1)
+  assert_eq(empty.pop(), nil)
+  assert_eq([10, 20, 30, 40].slice(1, 3).size(), 2)
+  assert_eq([10, 20, 30, 40].slice(1, 3)[0], 20)
+  assert_eq(['a', 'b', 'c'].join('-'), 'a-b-c')
+  assert_eq([1, 2, 3].join(','), '1,2,3')
+  assert_true([1, 2, 3].contains(2))
+  assert_false([1, 2, 3].contains(9))
+  assert_eq([10, 20, 30].index_of(20), 1)
+  assert_eq([10, 20, 30].index_of(99), -1)
   mut b = [1, 2, 3]
   b.reverse()
-  assert(b[0] == 3 && b[2] == 1)
+  assert_true(b[0] == 3 && b[2] == 1)
 
   // Object methods (§17.3). Iteration is insertion order, so keys
   // come out in the order the literal listed them.
   o = {b: 2, a: 1, c: 3}
-  assert(o.keys().size() == 3)
-  assert(o.keys()[0] == 'b')
-  assert(o.keys()[1] == 'a')
-  assert(o.keys()[2] == 'c')
-  assert(o.has('a'))
-  assert(!o.has('z'))
+  assert_eq(o.keys().size(), 3)
+  assert_eq(o.keys()[0], 'b')
+  assert_eq(o.keys()[1], 'a')
+  assert_eq(o.keys()[2], 'c')
+  assert_true(o.has('a'))
+  assert_false(o.has('z'))
   mut p = {a: 1, b: 2}
   p.remove('a')
-  assert(p.size() == 1)
-  assert(!p.has('a'))
-  assert(p.has('b'))
+  assert_eq(p.size(), 1)
+  assert_false(p.has('a'))
+  assert_true(p.has('b'))
 
   // Higher-order array methods (§17.2)
   squared = [1, 2, 3].map(fn (x) { x * x })
-  assert(squared.size() == 3 && squared[0] == 1 && squared[2] == 9)
+  assert_true(squared.size() == 3 && squared[0] == 1 && squared[2] == 9)
 
   evens = [1, 2, 3, 4, 5].filter(fn (x) { x % 2 == 0 })
-  assert(evens.size() == 2 && evens[0] == 2 && evens[1] == 4)
+  assert_true(evens.size() == 2 && evens[0] == 2 && evens[1] == 4)
 
   sum = [1, 2, 3, 4].reduce(0, fn (acc, x) { acc + x })
-  assert(sum == 10)
+  assert_eq(sum, 10)
 
-  assert([1, 2, 3].reduce(1, fn (acc, x) { acc * x }) == 6)
+  assert_eq([1, 2, 3].reduce(1, fn (acc, x) { acc * x }), 6)
 
   mut total = 0
   [10, 20, 30].for_each(fn (x) { total = total + x })
-  assert(total == 60)
+  assert_eq(total, 60)
 
-  assert([3, 1, 4, 1, 5].find(fn (x) { x > 3 }) == 4)
-  assert([3, 1, 4].find(fn (x) { x > 100 }) == nil)
+  assert_eq([3, 1, 4, 1, 5].find(fn (x) { x > 3 }), 4)
+  assert_eq([3, 1, 4].find(fn (x) { x > 100 }), nil)
 
-  assert([1, 2, 3].any(fn (x) { x > 2 }))
-  assert(![1, 2, 3].any(fn (x) { x > 100 }))
-  assert([].any(fn (x) { x > 0 }) == false)
+  assert_true([1, 2, 3].any(fn (x) { x > 2 }))
+  assert_false([1, 2, 3].any(fn (x) { x > 100 }))
+  assert_eq([].any(fn (x) { x > 0 }), false)
 
-  assert([1, 2, 3].all(fn (x) { x > 0 }))
-  assert(![1, 2, 3].all(fn (x) { x > 1 }))
-  assert([].all(fn (x) { x > 0 }))
+  assert_true([1, 2, 3].all(fn (x) { x > 0 }))
+  assert_false([1, 2, 3].all(fn (x) { x > 1 }))
+  assert_true([].all(fn (x) { x > 0 }))
 
   # sum / product: identity on empty (0 / 1)
-  assert([1, 2, 3, 4].sum() == 10)
-  assert([].sum() == 0)
-  assert([2, 3, 4].product() == 24)
-  assert([].product() == 1)
+  assert_eq([1, 2, 3, 4].sum(), 10)
+  assert_eq([].sum(), 0)
+  assert_eq([2, 3, 4].product(), 24)
+  assert_eq([].product(), 1)
 
   # min / max
-  assert([3, 1, 4, 1, 5, 9, 2, 6].min() == 1)
-  assert([3, 1, 4, 1, 5, 9, 2, 6].max() == 9)
-  assert([-3, -1, -4].min() == -4)
+  assert_eq([3, 1, 4, 1, 5, 9, 2, 6].min(), 1)
+  assert_eq([3, 1, 4, 1, 5, 9, 2, 6].max(), 9)
+  assert_eq([-3, -1, -4].min(), -4)
 
   fm = [1, 2, 3].flat_map(fn (x) { [x, x * 10] })
-  assert(fm.size() == 6 && fm[0] == 1 && fm[1] == 10 && fm[5] == 30)
+  assert_true(fm.size() == 6 && fm[0] == 1 && fm[1] == 10 && fm[5] == 30)
 
   mut nums = [3, 1, 4, 1, 5, 9, 2, 6]
   nums.sort_by(fn (x) { x })
-  assert(nums[0] == 1 && nums[1] == 1 && nums[7] == 9)
+  assert_true(nums[0] == 1 && nums[1] == 1 && nums[7] == 9)
 
   mut ws = ['banana', 'fig', 'apple']
   ws.sort_by(fn (s) { s.size() })
-  assert(ws[0] == 'fig' && ws[1] == 'apple' && ws[2] == 'banana')
+  assert_true(ws[0] == 'fig' && ws[1] == 'apple' && ws[2] == 'banana')
 }
 
 // Top-level binding used by test_shadow_rules to exercise "shadowing a
@@ -814,19 +814,19 @@ test_shadow_rules = fn () {
   // (A) Shadowing a builtin is allowed.
   mut min = 0
   min = 5
-  assert(min == 5)
+  assert_eq(min, 5)
 
   // (B) Shadowing a top-level user binding is allowed.
   mut shadow_src_value = 999
-  assert(shadow_src_value == 999)
+  assert_eq(shadow_src_value, 999)
 
   // (C) Block-scope rebinding within the same function is allowed.
   val = 0
   {
     let val = 1
-    assert(val == 1)
+    assert_eq(val, 1)
   }
-  assert(val == 0)
+  assert_eq(val, 0)
 
   // (D) Closure-as-object: bare reassignment reaches captured outer.
   make_counter = fn () {
@@ -840,15 +840,15 @@ test_shadow_rules = fn () {
   c.incr()
   c.incr()
   c.incr()
-  assert(c.get() == 3)
+  assert_eq(c.get(), 3)
 
   // (E) Parameter of a top-level function may shadow a top-level
   // binding (globals tier). Tested via shadow_arg_fn defined above.
-  assert(shadow_arg_fn(4) == 5)
+  assert_eq(shadow_arg_fn(4), 5)
 
   // (F) Match pattern of a top-level function may shadow a top-level
   // binding. Tested via shadow_match_fn defined above.
-  assert(shadow_match_fn(7) == 70)
+  assert_eq(shadow_match_fn(7), 70)
 }
 
 // Auto-drop (RAII). Cross-checks that scope-exit drop fires in both
@@ -866,7 +866,7 @@ test_drop = fn () {
   {
     let _t = make_thing('a')
   }
-  assert(events.size() == 1 && events[0] == 'a')
+  assert_true(events.size() == 1 && events[0] == 'a')
 
   // Cascade: parent drop fires before child drops are released.
   events = []
@@ -878,10 +878,10 @@ test_drop = fn () {
   {
     let _p = make_parent()
   }
-  assert(events.size() == 3)
-  assert(events[0] == 'p')        // parent's drop runs first
+  assert_eq(events.size(), 3)
+  assert_eq(events[0], 'p')        // parent's drop runs first
   // Child order between c1/c2 isn't observable from refcount semantics
-  assert((events[1] == 'c1' && events[2] == 'c2') ||
+  assert_true((events[1] == 'c1' && events[2] == 'c2') ||
          (events[1] == 'c2' && events[2] == 'c1'))
 
   // `drop` declared as a class-sugar method.
@@ -893,15 +893,15 @@ test_drop = fn () {
   {
     let _r = CSDrop.new('cs1')
   }
-  assert(events.size() == 1 && events[0] == 'cs1')
+  assert_true(events.size() == 1 && events[0] == 'cs1')
 
   events = []
   {
     let _a = CSDrop.new('cs2a')
     let _b = CSDrop.new('cs2b')
   }
-  assert(events.size() == 2)
-  assert((events[0] == 'cs2a' && events[1] == 'cs2b') ||
+  assert_eq(events.size(), 2)
+  assert_true((events[0] == 'cs2a' && events[1] == 'cs2b') ||
          (events[0] == 'cs2b' && events[1] == 'cs2a'))
 
   // Reading an instance property in scope must not pin the instance —
@@ -912,7 +912,7 @@ test_drop = fn () {
     let r = CSDrop.new('cs3')
     let _id = r.id
   }
-  assert(events.size() == 1 && events[0] == 'cs3')
+  assert_true(events.size() == 1 && events[0] == 'cs3')
 
   // Cyclic references: drop is intentionally NOT fired for cycle
   // members on either backend. The interp has no cycle collector
@@ -930,7 +930,7 @@ test_drop = fn () {
   {
     let _cyc = make_pair()
   }
-  assert(events.size() == 0)
+  assert_eq(events.size(), 0)
 }
 
 // JIT-safe subset of UFCS tests. Broader coverage including the
@@ -938,24 +938,24 @@ test_drop = fn () {
 test_ufcs = fn () {
   // Free function as method on primitive
   double = fn (x) { x * 2 }
-  assert(42.double() == 84)
-  assert((-3).double() == -6)
+  assert_eq(42.double(), 84)
+  assert_eq((-3).double(), -6)
 
   // UFCS on String / Array
   word_count = fn (s) { s.split(' ').size() }
-  assert('a b c'.word_count() == 3)
+  assert_eq('a b c'.word_count(), 3)
   sum = fn (xs) { xs.reduce(0, fn (a, x) { a + x }) }
-  assert([1, 2, 3, 4].sum() == 10)
+  assert_eq([1, 2, 3, 4].sum(), 10)
 
   // Multiple args: receiver first, rest follow
   scale = fn (x, factor) { x * factor }
-  assert(7.scale(3) == 21)
+  assert_eq(7.scale(3), 21)
 
   // Existing method wins over same-named free function
   size = fn (x) { 99 }
-  assert([1, 2, 3].size() == 3)
-  assert('hello'.size() == 5)
-  assert({a: 1, b: 2}.size() == 2)
+  assert_eq([1, 2, 3].size(), 3)
+  assert_eq('hello'.size(), 5)
+  assert_eq({a: 1, b: 2}.size(), 2)
 
   // Object HOF via UFCS
   map_keys_to = fn (o, f) {
@@ -964,8 +964,8 @@ test_ufcs = fn () {
     r
   }
   ks = {b: 2, a: 1}.map_keys_to(fn (k) { k })
-  assert(ks.size() == 2)
-  assert(ks[0] == 'b' && ks[1] == 'a')
+  assert_eq(ks.size(), 2)
+  assert_true(ks[0] == 'b' && ks[1] == 'a')
 
   // Chain mixing builtin (Array.map) and UFCS (sum/incr)
   incr = fn (x) { x + 1 }
@@ -973,19 +973,19 @@ test_ufcs = fn () {
     .map(fn (x) { x * 10 })
     .sum()
     .incr()
-  assert(result == 61)
+  assert_eq(result, 61)
 
   // Variadic __ARGS__: overflow goes to __ARGS__, and __ARGS__ is
   // always bound (empty Array when no overflow).
   greet = fn () {
     if __ARGS__.size() > 0 { "hello {__ARGS__[0]}" } else { 'hello' }
   }
-  assert('world'.greet() == 'hello world')
-  assert(greet() == 'hello')
+  assert_eq('world'.greet(), 'hello world')
+  assert_eq(greet(), 'hello')
   collect_extras = fn (first) { __ARGS__ }
-  assert(collect_extras('a').size() == 0)
+  assert_eq(collect_extras('a').size(), 0)
   rest = collect_extras(1, 2, 3)
-  assert(rest.size() == 2 && rest[0] == 2 && rest[1] == 3)
+  assert_true(rest.size() == 2 && rest[0] == 2 && rest[1] == 3)
 }
 
 // JIT-safe subset of for-in tests. Broader coverage including
@@ -995,13 +995,13 @@ test_for_in = fn () {
   // Array iteration
   mut sum = 0
   for x in [1, 2, 3, 4] { sum = sum + x }
-  assert(sum == 10)
+  assert_eq(sum, 10)
 
   // Object iteration yields keys in insertion order
   mut keys = []
   for k in {b: 2, a: 1, c: 3} { keys.push(k) }
-  assert(keys.size() == 3)
-  assert(keys[0] == 'b' && keys[1] == 'a' && keys[2] == 'c')
+  assert_eq(keys.size(), 3)
+  assert_true(keys[0] == 'b' && keys[1] == 'a' && keys[2] == 'c')
 
   // break exits inner loop only
   mut hit = 0
@@ -1011,7 +1011,7 @@ test_for_in = fn () {
       hit = hit + 1
     }
   }
-  assert(hit == 3)
+  assert_eq(hit, 3)
 
   // continue skips
   mut evens = 0
@@ -1019,41 +1019,41 @@ test_for_in = fn () {
     if x % 2 == 1 { continue }
     evens = evens + 1
   }
-  assert(evens == 3)
+  assert_eq(evens, 3)
 
   // Empty iteration
   mut touched = false
   for _ in [] { touched = true }
-  assert(touched == false)
+  assert_eq(touched, false)
 
   // iota returns an Array — goes through the Array fast path.
   mut total = 0
   for i in iota(5) { total = total + i }
-  assert(total == 10)
+  assert_eq(total, 10)
 
   // Range literals (exclusive / inclusive).
   total = 0
   for i in 1..5 { total = total + i }
-  assert(total == 10)
+  assert_eq(total, 10)
   total = 0
   for i in 1..=5 { total = total + i }
-  assert(total == 15)
+  assert_eq(total, 15)
   n = 3
   total = 0
   for i in 0..n*2 { total = total + i }
-  assert(total == 15)
+  assert_eq(total, 15)
 
   // String: UTF-8 scalar walk. 'café' is 5 bytes but 4 scalars.
   mut count = 0
   for c in 'hello' { count = count + 1 }
-  assert(count == 5)
+  assert_eq(count, 5)
   mut scalars = 0
   for c in 'café' { scalars = scalars + 1 }
-  assert(scalars == 4)
+  assert_eq(scalars, 4)
   mut parts = []
   for c in 'ab' { parts.push(c) }
-  assert(parts.size() == 2)
-  assert(parts[0] == 'a' && parts[1] == 'b')
+  assert_eq(parts.size(), 2)
+  assert_true(parts[0] == 'a' && parts[1] == 'b')
 }
 
 test_underscore_sink = fn () {
@@ -1064,13 +1064,13 @@ test_underscore_sink = fn () {
   // for _ in iter: body still runs, no `_` is bound
   mut count = 0
   for _ in 0..3 { count = count + 1 }
-  assert(count == 3)
+  assert_eq(count, 3)
 
   // RHS side effects of `let _ = ...` still run
   mut touched = false
   let side_effect = fn () { touched = true; 42 }
   let _ = side_effect()
-  assert(touched == true)
+  assert_eq(touched, true)
 
   // Repeated `let _ = ...` in the same scope — no shadow error
   let _ = 1
@@ -1079,22 +1079,22 @@ test_underscore_sink = fn () {
 
   // fn(_, _, x): repeated `_` parameters allowed
   let third_arg = fn (_, _, x) { x }
-  assert(third_arg(100, 200, 'hello') == 'hello')
+  assert_eq(third_arg(100, 200, 'hello'), 'hello')
   let ignore_all = fn (_, _, _) { 99 }
-  assert(ignore_all(1, 2, 3) == 99)
+  assert_eq(ignore_all(1, 2, 3), 99)
 
   // Array destructure with `_`
   let [first, _, third_v] = [10, 20, 30]
-  assert(first == 10)
-  assert(third_v == 30)
+  assert_eq(first, 10)
+  assert_eq(third_v, 30)
 
   // Rest pattern named `_` is also a sink
   let [_, ..._, last] = [1, 2, 3, 4, 5]
-  assert(last == 5)
+  assert_eq(last, 5)
 
   // match: `_` inside an array pattern slot is a sink
   let m = match [1, 2, 3] { [a, _, c] => a + c }
-  assert(m == 4)
+  assert_eq(m, 4)
 
   // `_` inside a nested function does not collide with outer `_`
   let outer_fn = fn () {
@@ -1102,38 +1102,38 @@ test_underscore_sink = fn () {
     let inner = fn (_) { 'b' }
     inner(99)
   }
-  assert(outer_fn() == 'b')
+  assert_eq(outer_fn(), 'b')
 }
 
 test_stdlib = fn () {
-  assert(Math.abs(-7) == 7)
-  assert(Math.abs(5) == 5)
-  assert(Math.min(3, 5) == 3)
-  assert(Math.max(3, 5) == 5)
-  assert(Math.pow(2, 10) == 1024)
-  assert(Math.pow(7, 0) == 1)
-  assert(Math.pow(-3, 3) == -27)
-  assert(Math.sign(-5) == -1)
-  assert(Math.sign(0) == 0)
-  assert(Math.sign(42) == 1)
-  assert(Math.clamp(5, 0, 10) == 5)
-  assert(Math.clamp(-5, 0, 10) == 0)
-  assert(Math.clamp(15, 0, 10) == 10)
-  assert(iota(3).size() == 3)
-  assert(iota(3)[0] == 0 && iota(3)[2] == 2)
-  assert(iota(2, 5).size() == 3)
-  assert(iota(2, 5)[0] == 2 && iota(2, 5)[2] == 4)
-  assert(iota(5, 2).size() == 0)
-  assert(to_long('42') == 42)
-  assert(to_long('  -7  ') == -7)
-  assert(to_string(42) == '42')
-  assert(to_string('hi') == 'hi')
-  assert(type_of(42) == 'Long')
-  assert(type_of('x') == 'String')
-  assert(type_of([1]) == 'Array')
-  assert(type_of({a: 1}) == 'Object')
-  assert(type_of(nil) == 'Nil')
-  assert(type_of(true) == 'Bool')
+  assert_eq(Math.abs(-7), 7)
+  assert_eq(Math.abs(5), 5)
+  assert_eq(Math.min(3, 5), 3)
+  assert_eq(Math.max(3, 5), 5)
+  assert_eq(Math.pow(2, 10), 1024)
+  assert_eq(Math.pow(7, 0), 1)
+  assert_eq(Math.pow(-3, 3), -27)
+  assert_eq(Math.sign(-5), -1)
+  assert_eq(Math.sign(0), 0)
+  assert_eq(Math.sign(42), 1)
+  assert_eq(Math.clamp(5, 0, 10), 5)
+  assert_eq(Math.clamp(-5, 0, 10), 0)
+  assert_eq(Math.clamp(15, 0, 10), 10)
+  assert_eq(iota(3).size(), 3)
+  assert_true(iota(3)[0] == 0 && iota(3)[2] == 2)
+  assert_eq(iota(2, 5).size(), 3)
+  assert_true(iota(2, 5)[0] == 2 && iota(2, 5)[2] == 4)
+  assert_eq(iota(5, 2).size(), 0)
+  assert_eq(to_long('42'), 42)
+  assert_eq(to_long('  -7  '), -7)
+  assert_eq(to_string(42), '42')
+  assert_eq(to_string('hi'), 'hi')
+  assert_eq(type_of(42), 'Long')
+  assert_eq(type_of('x'), 'String')
+  assert_eq(type_of([1]), 'Array')
+  assert_eq(type_of({a: 1}), 'Object')
+  assert_eq(type_of(nil), 'Nil')
+  assert_eq(type_of(true), 'Bool')
 }
 
 
@@ -1179,25 +1179,25 @@ test_special_method_ops = fn () {
   a = make_box(3)
   b = make_box(4)
   # Arithmetic
-  assert(a + b == 7)
-  assert(a - b == -1)
-  assert(a * b == 12)
-  assert(a * 5 == 15)
-  assert(-a == -3)
-  assert(a @ b == 13)
-  assert(make_box(2) ** make_box(3) == 8)
+  assert_eq(a + b, 7)
+  assert_eq(a - b, -1)
+  assert_eq(a * b, 12)
+  assert_eq(a * 5, 15)
+  assert_eq(-a, -3)
+  assert_eq(a @ b, 13)
+  assert_eq(make_box(2) ** make_box(3), 8)
   # Reflection for commutative ops
-  assert(2 + a == 5)
-  assert(5 * a == 15)
+  assert_eq(2 + a, 5)
+  assert_eq(5 * a, 15)
   # Comparisons (derived __le__ from __lt__ + __eq__)
-  assert(a == make_box(3))
-  assert(a != b)
-  assert(a < b)
-  assert(a <= make_box(3))
-  assert(b > a)
-  assert(b >= make_box(4))
+  assert_eq(a, make_box(3))
+  assert_ne(a, b)
+  assert_lt(a, b)
+  assert_le(a, make_box(3))
+  assert_gt(b, a)
+  assert_ge(b, make_box(4))
   # Equality reflection
-  assert(make_box(3) == a)
+  assert_eq(make_box(3), a)
 }
 
 test_special_method_ops()
@@ -1216,7 +1216,7 @@ test_builtin_methods()
 test_shadow_rules()
 // After test_shadow_rules, the top-level binding should be unchanged
 // because the inner `mut shadow_src_value = 999` was a local shadow.
-assert(shadow_src_value == 100)
+assert_eq(shadow_src_value, 100)
 test_stdlib()
 test_drop()
 test_ufcs()
@@ -1226,30 +1226,30 @@ test_underscore_sink()
 test_compound_assign = fn () {
   // Identifier target — every operator on Long.
   mut x = 10
-  x += 3;  assert(x == 13)
-  x -= 5;  assert(x == 8)
-  x *= 4;  assert(x == 32)
-  x /= 2;  assert(x == 16)
-  x %= 7;  assert(x == 2)
-  x **= 4; assert(x == 16)
+  x += 3;  assert_eq(x, 13)
+  x -= 5;  assert_eq(x, 8)
+  x *= 4;  assert_eq(x, 32)
+  x /= 2;  assert_eq(x, 16)
+  x %= 7;  assert_eq(x, 2)
+  x **= 4; assert_eq(x, 16)
 
   // Float promotion via `/=` and `**=`.
   mut f = 9
-  f /= 2.0; assert(f == 4.5)
+  f /= 2.0; assert_eq(f, 4.5)
   mut e = 2
-  e **= -1; assert(e == 0.5)
+  e **= -1; assert_eq(e, 0.5)
 
   // Array index target.
   mut a = [1, 2, 3]
-  a[1] += 10;  assert(a[0] == 1 && a[1] == 12 && a[2] == 3)
-  a[2] *= 100; assert(a[2] == 300)
-  a[0] -= 1;   assert(a[0] == 0)
+  a[1] += 10;  assert_true(a[0] == 1 && a[1] == 12 && a[2] == 3)
+  a[2] *= 100; assert_eq(a[2], 300)
+  a[0] -= 1;   assert_eq(a[0], 0)
 
   // Object property target (must be `mut` to permit reassignment).
   mut o = {mut count: 5, mut total: 1.0}
-  o.count += 2; assert(o.count == 7)
-  o.total *= 3; assert(o.total == 3.0)
-  o.count -= 7; assert(o.count == 0)
+  o.count += 2; assert_eq(o.count, 7)
+  o.total *= 3; assert_eq(o.total, 3.0)
+  o.count -= 7; assert_eq(o.count, 0)
 }
 test_compound_assign()
 
@@ -1271,8 +1271,8 @@ test_chained_index_assign_in_nested_loops = fn () {
   }
   for i in range(3) {
     for j in range(4) {
-      assert(g[i][j] > 0.0099)
-      assert(g[i][j] < 0.0101)
+      assert_gt(g[i][j], 0.0099)
+      assert_lt(g[i][j], 0.0101)
     }
   }
 }
@@ -1283,23 +1283,23 @@ test_chained_index_assign_in_nested_loops()
 // crashed with "invalid internal condition." on Array/Object/Tensor.
 fn test_reference_equality() {
   let a = [1, 2]; let b = [1, 2]; let c = a
-  assert(!(a == b)); assert(a == c)
+  assert_false((a == b)); assert_eq(a, c)
 
   let o1 = {x: 1}; let o2 = {x: 1}; let o3 = o1
-  assert(!(o1 == o2)); assert(o1 == o3)
+  assert_false((o1 == o2)); assert_eq(o1, o3)
 
   fn add1(x) { x + 1 }
   let f = add1; let g = add1
-  assert(f == g)
+  assert_eq(f, g)
 
   let t1 = Tensor.zeros(2, 3); let t2 = Tensor.zeros(2, 3); let t3 = t1
-  assert(!(t1 == t2)); assert(t1 == t3)
+  assert_false((t1 == t2)); assert_eq(t1, t3)
 
   // The original #181 repro: .shape() comparison must not crash.
   let s = t1.shape()
-  assert(!(s == [2, 3]))    // different arrays → false
-  assert(s == s)             // same reference → true
-  assert(s[0] == 2 && s[1] == 3)  // element-wise still works
+  assert_false((s == [2, 3]))    // different arrays → false
+  assert_eq(s, s)             // same reference → true
+  assert_true(s[0] == 2 && s[1] == 3)  // element-wise still works
 }
 test_reference_equality()
 

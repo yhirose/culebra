@@ -16,8 +16,8 @@ class Counter {
 
 mut collected = []
 for x in Counter.new(0, 3) { collected.push(x) }
-assert(collected.size() == 3)
-assert(collected[0] == 0 && collected[1] == 1 && collected[2] == 2)
+assert_eq(collected.size(), 3)
+assert_true(collected[0] == 0 && collected[1] == 1 && collected[2] == 2)
 
 // --- nil yield works (the key advantage over a T?-terminator design) ---
 class NilYielder {
@@ -33,8 +33,8 @@ class NilYielder {
 
 mut seen = []
 for x in NilYielder.new() { seen.push(x) }
-assert(seen.size() == 3)
-assert(seen[0] == 0 && seen[1] == nil && seen[2] == 2)
+assert_eq(seen.size(), 3)
+assert_true(seen[0] == 0 && seen[1] == nil && seen[2] == 2)
 
 // --- primitive Iterable conformance ---
 fn iterate (it: Iterable) -> Long {
@@ -42,42 +42,42 @@ fn iterate (it: Iterable) -> Long {
   for _ in it { n = n + 1 }
   n
 }
-assert(iterate([1, 2, 3]) == 3)
-assert(iterate('abc') == 3)
-assert(iterate({a: 1, b: 2}) == 2)
-assert(iterate((1, 2, 3, 4)) == 4)
-assert(iterate({1, 2, 3}) == 3)
+assert_eq(iterate([1, 2, 3]), 3)
+assert_eq(iterate('abc'), 3)
+assert_eq(iterate({a: 1, b: 2}), 2)
+assert_eq(iterate((1, 2, 3, 4)), 4)
+assert_eq(iterate({1, 2, 3}), 3)
 
 // --- Iterator manual driving ---
 let arr_iter = [10, 20, 30].iter()
-assert(arr_iter.has_next() == true)
-assert(arr_iter.next() == 10)
-assert(arr_iter.next() == 20)
-assert(arr_iter.next() == 30)
-assert(arr_iter.has_next() == false)
+assert_eq(arr_iter.has_next(), true)
+assert_eq(arr_iter.next(), 10)
+assert_eq(arr_iter.next(), 20)
+assert_eq(arr_iter.next(), 30)
+assert_eq(arr_iter.has_next(), false)
 
 // --- has_next is idempotent (lazy iters may compute next eagerly) ---
 let r = range(3)
 let it = r.iter()
-assert(it.has_next() == true)
-assert(it.has_next() == true)
-assert(it.next() == 0)
-assert(it.next() == 1)
-assert(it.next() == 2)
-assert(it.has_next() == false)
+assert_eq(it.has_next(), true)
+assert_eq(it.has_next(), true)
+assert_eq(it.next(), 0)
+assert_eq(it.next(), 1)
+assert_eq(it.next(), 2)
+assert_eq(it.has_next(), false)
 
 // --- Iterator pipeline methods compose under the new protocol ---
 let doubled = [1, 2, 3].iter().map(fn (x) { x * 2 }).collect()
-assert(doubled.size() == 3)
-assert(doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6)
+assert_eq(doubled.size(), 3)
+assert_true(doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6)
 
 let evens = range(10).filter(fn (x) { x % 2 == 0 }).collect()
-assert(evens.size() == 5)
-assert(evens[0] == 0 && evens[4] == 8)
+assert_eq(evens.size(), 5)
+assert_true(evens[0] == 0 && evens[4] == 8)
 
 // --- User class works in the pipeline too ---
 let cs = Counter.new(0, 5).map(fn (x) { x * x }).collect()
-assert(cs.size() == 5)
-assert(cs[0] == 0 && cs[4] == 16)
+assert_eq(cs.size(), 5)
+assert_true(cs[0] == 0 && cs[4] == 16)
 
 IO.puts('test_iterator_trait OK')

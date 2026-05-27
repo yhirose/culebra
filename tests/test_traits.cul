@@ -17,11 +17,11 @@ class Mute {
 }
 
 fn greet(x: Greeter) -> String { x.hello() }
-assert(greet(Bob.new("Alice")) == "hi, Alice")
+assert_eq(greet(Bob.new("Alice")), "hi, Alice")
 
 // Mute lacks hello() — Greeter param rejects the dispatch.
 let e = try { greet(Mute.new()); nil } catch e { e }
-assert(e.kind == "DispatchError")
+assert_eq(e.kind, "DispatchError")
 
 // --- Default method dispatch ---
 trait Counter {
@@ -38,8 +38,8 @@ class Five {
   current() { 5 }
   next() { 99 }      // override default
 }
-assert(Zero.new().next() == 1)    // from default
-assert(Five.new().next() == 99)   // override wins
+assert_eq(Zero.new().next(), 1)    // from default
+assert_eq(Five.new().next(), 99)   // override wins
 
 // --- Built-in: Stringer ---
 class Tag {
@@ -47,7 +47,7 @@ class Tag {
   to_s() { "<{this.v}>" }
 }
 fn show(x: Stringer) -> String { x.to_s() }
-assert(show(Tag.new("ok")) == "<ok>")
+assert_eq(show(Tag.new("ok")), "<ok>")
 
 // --- Built-in: Eq with default neq ---
 class Box {
@@ -57,9 +57,9 @@ class Box {
 let a = Box.new(1)
 let b = Box.new(1)
 let c = Box.new(2)
-assert(a.eq(b))
-assert(a.neq(c))     // default
-assert(!a.neq(b))    // default
+assert_true(a.eq(b))
+assert_true(a.neq(c))     // default
+assert_false(a.neq(b))    // default
 
 // --- Built-in: Comparable with full six-way default suite ---
 class Pri {
@@ -68,21 +68,21 @@ class Pri {
 }
 let lo = Pri.new(1)
 let hi = Pri.new(5)
-assert(lo.lt(hi))
-assert(lo.le(hi))
-assert(lo.le(lo))
-assert(hi.gt(lo))
-assert(hi.ge(lo))
-assert(hi.ge(hi))
+assert_true(lo.lt(hi))
+assert_true(lo.le(hi))
+assert_true(lo.le(lo))
+assert_true(hi.gt(lo))
+assert_true(hi.ge(lo))
+assert_true(hi.ge(hi))
 
 // --- Trait param wins dispatch tie when no concrete overload ---
 fn render(x: Stringer) -> String { "S:{x.to_s()}" }
 fn render(x: Pri)      -> String { "P:{x.v}" }   // concrete > trait
 
 let p = Pri.new(7)
-assert(render(p) == "P:7")        // concrete wins
+assert_eq(render(p), "P:7")        // concrete wins
 let t = Tag.new("hi")
-assert(render(t) == "S:<hi>")     // only trait path matches
+assert_eq(render(t), "S:<hi>")     // only trait path matches
 
 // --- Built-in primitives satisfy the standard traits ---
 // Stringer applies to every value; Eq to most; Comparable to the
@@ -90,15 +90,15 @@ assert(render(t) == "S:<hi>")     // only trait path matches
 // the conformance via the hard-coded table — primitives don't
 // participate in the structural method-set walk.
 fn stringify(x: Stringer) -> String { to_string(x) }
-assert(stringify(42) == "42")
-assert(stringify(3.14) == "3.14")
-assert(stringify("hi") == "hi")
-assert(stringify([1, 2, 3]) == "[1, 2, 3]")
+assert_eq(stringify(42), "42")
+assert_eq(stringify(3.14), "3.14")
+assert_eq(stringify("hi"), "hi")
+assert_eq(stringify([1, 2, 3]), "[1, 2, 3]")
 
 fn comparable_only(x: Comparable) -> String { "ok" }
-assert(comparable_only(1) == "ok")
-assert(comparable_only("x") == "ok")
+assert_eq(comparable_only(1), "ok")
+assert_eq(comparable_only("x"), "ok")
 let e_cmp = try { comparable_only([1, 2]); nil } catch e { e }
-assert(e_cmp.kind == "DispatchError")    // Array isn't Comparable here
+assert_eq(e_cmp.kind, "DispatchError")    // Array isn't Comparable here
 
 IO.puts("test_traits OK")

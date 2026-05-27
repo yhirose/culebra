@@ -1074,7 +1074,7 @@ puts(to_string([1, 2]))       # => [1, 2]
 puts(type_of(42))             # => Long
 puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
-assert(1 + 1 == 2)            # passes silently; throws on failure
+assert_eq(1 + 1, 2)           # passes silently; throws on failure
 ```
 
 ### 14.2 `Math`
@@ -1254,20 +1254,20 @@ are equivalent; pick whichever reads better at the call site.
 # Call form
 test("interpolation embeds Long", fn() {
   let x = 42
-  assert("hi {x}" == "hi 42")
+  assert_eq("hi {x}", "hi 42")
 })
 
 # Decorator form — fn name becomes the test name
 @test
 fn interpolation_embeds_float() {
   let pi = 3.14
-  assert("π = {pi}" == "π = 3.14")
+  assert_eq("π = {pi}", "π = 3.14")
 }
 
 # Parametrize — one test per case, named `<fn>[i]`
 @parametrize([(1, 2, 3), (2, 3, 5), (10, 20, 30)])
 fn adds_correctly(a, b, want) {
-  assert(a + b == want)
+  assert_eq(a + b, want)
 }
 ```
 
@@ -1324,13 +1324,16 @@ goes at module top level and is imported by each test file. The
 module system caches the binding, so `import` always returns the
 same instance.
 
-**Matchers.** `assert(expr)` checks a Bool and reports only `assert
-failed at L:C.` on failure. For diagnostics that show both operands,
-use the matchers — ambient under `culebra test` alongside `test` and
-`parametrize`:
+**Matchers.** Assertions in tests use the matcher family — there is
+no `assert` keyword or builtin. Matchers are **3-backend globals**
+(bound on every environment, same as `puts` / `Math`), so they work
+identically under `culebra script.cul`, `culebra --jit script.cul`,
+`culebra build`, and `culebra test`:
 
 ```culebra
 # doctest: skip
+assert_true(x)                          # x is truthy
+assert_false(x)                         # x is falsy
 assert_eq(arr.len(), 3)                 # == ; shows both sides on failure
 assert_ne(status, "error")              # !=
 assert_lt(elapsed, 1.0)                 # <
@@ -1343,21 +1346,27 @@ assert_close(0.1 + 0.2, 0.3, 1e-9)      # |a - b| <= tol
 
 - `assert_eq` / `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` /
   `assert_ge` use the same `__eq__` / `__lt__` / `__le__` dispatch as
-  the operators, so `assert_eq(p1, p2)` and `assert(p1 == p2)` agree
-  for class instances.
+  the operators, so `assert_eq(p1, p2)` and the expression `p1 == p2`
+  agree for class instances.
 - `assert_throws(kind, fn)` invokes 0-arg `fn()` and asserts it throws
   with the given `kind` (for built-in errors) or `.kind` property (for
   `throw { kind: ..., message: ... }`).
 - `assert_close(a, b, tol)` asserts `|a - b| <= tol`. NaN counts as
   failure (a naive `>` would silently pass divergent computations).
 
+**Production invariants.** For `if (!cond) throw {...}` checks outside
+the test suite, write the `if`/`throw` directly (Go-style, see
+[language §15](language.md)). There is no separate `assert` keyword to
+disable in production builds.
+
 ### 16.3 Running
 
 `culebra test [path]` discovers test files. When invoked through this
-subcommand, `test` / `@test` / `@parametrize` and the matcher family
-become **ambient globals** — no `import` required. This mirrors how
-`puts` / `print` are ambient under script-execution mode but absent
-from `culebra::environment()` (see [stdlib §10](stdlib.md)).
+subcommand, `test` / `@test` / `@parametrize` become **ambient
+globals** alongside the always-available matcher family — no `import`
+required. This mirrors how `puts` / `print` are ambient under
+script-execution mode but absent from `culebra::environment()` (see
+[stdlib §11](stdlib.md)).
 
 ```sh
 culebra test                       # discover & run from current dir
@@ -1397,9 +1406,11 @@ Failure events carry a `snippet` with the failing line marked `>` and
 two lines of context on either side, so a consumer can show the
 relevant code without an extra file read.
 
-The legacy `tests/*.cul` suite under `just test` (assert-only, no
-`test()` calls) continues to work unchanged — it does not use the
-new ambient bindings.
+The legacy `tests/*.cul` suite under `just test` (matchers + no
+`test()` calls) runs each file directly via `./build/culebra <f>`,
+`--jit <f>`, and `culebra build <f>`. Matchers are language-level
+globals, so the same file is exercised under all three backends
+without going through `culebra test`.
 
 ### 16.4 Planned extensions
 

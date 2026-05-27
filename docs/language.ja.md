@@ -439,7 +439,7 @@ Culebra はシャドウを 3 つの軸で独立に扱います:
   `{ ... }` は局所計算の staging area で、`let a = transform(a)`
   のような rebinding は意図的パターンであってバグではありません。
   制限する理由がない。
-* **グローバル = 共有の語彙**。`puts`, `assert`, `Math`, `IO` などの
+* **グローバル = 共有の語彙**。`puts`, `to_string`, `Math`, `IO` などの
   builtins や top-level 名は ambient な存在と理解されており、
   `mut min = arr[0]` のようなローカルは使い勝手の良いイディオム
   であって混乱の種ではない。rename を強制すると安全性の利得なく
@@ -1878,7 +1878,7 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 | `AttributeError` | compound 代入（`o.x += ...`）で `x` が存在しない | はい |
 | `ArityError` | 必須引数の欠如；positional の過不足；class new の arity 不一致 | はい |
 | `DispatchError` | 多重ディスパッチ（§19）でマッチなし、または specificity 同点 | はい |
-| `AssertionError` | `assert(expr)` で expr が falsy。message は `assert failed at L:C.` | はい |
+| `AssertionError` | matcher の失敗 (`assert_true` / `assert_eq` 等) もしくはユーザ `throw {kind: "AssertionError", ...}`。 比較系 matcher は両辺を message に含めます | はい |
 | `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
 | `ShadowError` | §6 のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの `try` が走る前に発火 | **いいえ**（eval 前の analyzer） |
 | `IOError` | `read_file` / `write_file` 等 stdlib ファイル操作失敗；`Tensor.load` 失敗 | はい |
@@ -1900,10 +1900,20 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 `try { ... } catch e { ... }` で観測可能です。
 ルールについては §6 の "Shadow prohibition" を参照。
 
-### `assert(cond)`
+### Assertion API
 
-`cond` を評価し、偽なら `assert failed at L:C.` で中断します。
-軽量なテスト用プリミティブです（`tests/test_core.cul` 参照）。
+`assert` キーワード / builtin は存在しません。 テストは matcher 一族
+(`assert_true` / `assert_eq` 等、 §18 と `docs/stdlib.ja.md` 参照)
+を使います。 production の不変条件チェックには Object を throw:
+
+```culebra
+if (!cond) {
+  throw {kind: "AssertionError", message: "..."}
+}
+```
+
+Go の `if x == nil { return errors.New(...) }` や Ruby の `raise` と
+同じ流儀 — 制御フローを明示的に書きます。
 
 ### JIT サポート
 
@@ -2039,8 +2049,9 @@ make_thing = fn () {
 （`String` にはプロパティストアがないため；`Array`/`Object` では
 同名のユーザ定義プロパティが優先され、ビルトインはフォールバック）。
 
-グローバルなビルトイン関数（`puts`, `assert`, `Math.*`, `IO.*`
-など）は [`docs/stdlib.ja.md`](stdlib.ja.md) で別途規定します。
+グローバルなビルトイン関数（`puts`, `to_string`, `Math.*`, `IO.*`、
+matcher 一族 `assert_true` / `assert_eq` 等）は
+[`docs/stdlib.ja.md`](stdlib.ja.md) で別途規定します。
 
 **Well-known メソッド（プロトコル）.** いくつかのメソッド名はランタ
 イムが特別に認識し、プレーンな `Object` でも言語機能に参加できる
@@ -2377,26 +2388,16 @@ iterator chain で不可避）。eager に実体化して最大スループッ�
 ## 18. コア組み込み関数
 
 以下の関数は言語本体の一部で、すべての実行環境にグローバル名として
-バインドされ、置き換えはできません。前半グループ（`assert`、`to_long`
+バインドされ、置き換えはできません。第 1 グループ（`to_long`
 / `to_float` / `to_string`、`type_of`）は言語セマンティクス（ソース位置に
-紐付くエラー、型の内省、表示規則）に結びついています。後半グループ
+紐付くエラー、型の内省、表示規則）に結びついています。第 2 グループ
 （`range`、`iota`）は標準的な整数列ファクトリで、両バックエンドが
 fusion / specialisation の対象として認識し、言語全体の `for`-in ループで
-使われる正規形です。`Math` / `IO` / `Sys` といったネームスペース付き
-の標準ライブラリは [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。出力
-プリミティブ `puts` / `print` は CLI が追加するグローバルです（§21）。
-
-### `assert(cond: Bool) -> Nil`
-
-`cond` を評価し、偽なら `assert failed at L:C.` で中断します。位置は
-`assert` 呼出のソース位置です。
-
-```culebra
-assert(1 + 1 == 2)
-```
-
-**例外**: 偽のとき `assert failed at L:C.`、`cond` が `Bool` でも
-`Long` でもないとき `type error at L:C.`。
+使われる正規形です。 第 3 グループは matcher 一族 (`assert_true` /
+`assert_eq` / `assert_throws` / `assert_close` 等) — 全 reference は
+[`docs/stdlib.ja.md`](stdlib.ja.md) を参照。 `Math` / `IO` / `Sys`
+といったネームスペース付きの標準ライブラリも同じく `stdlib.ja.md` を
+参照。 出力プリミティブ `puts` / `print` は CLI が追加するグローバルです（§21）。
 
 ### `to_long(v: Any) -> Long`
 

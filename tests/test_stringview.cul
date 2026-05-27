@@ -3,102 +3,102 @@
 // --- .view() and .to_string() ---
 let s = 'hello'
 let v = s.view()
-assert(type_of(v) == 'StringView')
-assert(v == 'hello')
-assert(v.to_string() == 'hello')
-assert(type_of(v.to_string()) == 'String')
+assert_eq(type_of(v), 'StringView')
+assert_eq(v, 'hello')
+assert_eq(v.to_string(), 'hello')
+assert_eq(type_of(v.to_string()), 'String')
 
 // View of an existing view reuses the shared source.
 let v2 = v.view()
-assert(type_of(v2) == 'StringView')
-assert(v2 == 'hello')
+assert_eq(type_of(v2), 'StringView')
+assert_eq(v2, 'hello')
 
 // --- slice returns StringView, source kept alive across temps ---
-assert(type_of('hello'.slice(1, 4)) == 'StringView')
-assert('hello'.slice(1, 4) == 'ell')
-assert('hello'.slice(-3, -1) == 'll')
-assert('hello'.slice(2, 10) == 'llo')
+assert_eq(type_of('hello'.slice(1, 4)), 'StringView')
+assert_eq('hello'.slice(1, 4), 'ell')
+assert_eq('hello'.slice(-3, -1), 'll')
+assert_eq('hello'.slice(2, 10), 'llo')
 
 // Even from a discarded temp, the shared source keeps the view valid.
 let a = 'hello world'.slice(6, 11)
-assert(a == 'world')
+assert_eq(a, 'world')
 let b = a.slice(0, 3)
-assert(b == 'wor')
+assert_eq(b, 'wor')
 
 // --- split returns Array<StringView> ---
 let parts = 'a,b,c,d'.split(',')
-assert(type_of(parts) == 'Array')
-assert(parts.size() == 4)
-assert(parts[0] == 'a')
-assert(parts[3] == 'd')
-assert(type_of(parts[0]) == 'StringView')
+assert_eq(type_of(parts), 'Array')
+assert_eq(parts.size(), 4)
+assert_eq(parts[0], 'a')
+assert_eq(parts[3], 'd')
+assert_eq(type_of(parts[0]), 'StringView')
 
 // Empty separator returns the whole string.
 let whole = 'abc'.split('')
-assert(whole.size() == 1)
-assert(whole[0] == 'abc')
+assert_eq(whole.size(), 1)
+assert_eq(whole[0], 'abc')
 
 // StringLike sep — accepts both String and StringView.
-assert('a,b'.split(','.view())[0] == 'a')
+assert_eq('a,b'.split(','.view())[0], 'a')
 
 // --- split_iter is lazy + composable ---
 let three = 'a,b,c,d,e,f'.split_iter(',').take(3).collect()
-assert(three.size() == 3)
-assert(three[0] == 'a')
-assert(three[2] == 'c')
+assert_eq(three.size(), 3)
+assert_eq(three[0], 'a')
+assert_eq(three[2], 'c')
 
 let upper = 'a,b,c'.split_iter(',').map(fn (s) { s.upper() }).collect()
-assert(upper[0] == 'A')
-assert(upper[2] == 'C')
+assert_eq(upper[0], 'A')
+assert_eq(upper[2], 'C')
 
 // --- StringLike acceptance for receivers + args ---
-assert(v.upper() == 'HELLO')
-assert(v.lower() == 'hello')
-assert('  x  '.view().trim() == 'x')
-assert(v.contains('ll'))
-assert(v.starts_with('he'))
-assert(v.ends_with('lo'))
-assert(v.size() == 5)
-assert(v.contains('ell'.view()))
-assert(v.starts_with('he'.view()))
-assert(v.ends_with('lo'.view()))
+assert_eq(v.upper(), 'HELLO')
+assert_eq(v.lower(), 'hello')
+assert_eq('  x  '.view().trim(), 'x')
+assert_true(v.contains('ll'))
+assert_true(v.starts_with('he'))
+assert_true(v.ends_with('lo'))
+assert_eq(v.size(), 5)
+assert_true(v.contains('ell'.view()))
+assert_true(v.starts_with('he'.view()))
+assert_true(v.ends_with('lo'.view()))
 
 // --- StringLike trait ---
 trait Sized {
   size() -> Long
 }
 fn n_bytes(x: StringLike) -> Long { x.size() }
-assert(n_bytes('hello') == 5)
-assert(n_bytes('hello'.view()) == 5)
-assert(n_bytes('hello'.slice(0, 3)) == 3)
+assert_eq(n_bytes('hello'), 5)
+assert_eq(n_bytes('hello'.view()), 5)
+assert_eq(n_bytes('hello'.slice(0, 3)), 3)
 
 // --- Cross-flavor equality + hashing ---
-assert('hello' == 'hello'.view())
-assert('hello'.view() == 'hello')
+assert_eq('hello', 'hello'.view())
+assert_eq('hello'.view(), 'hello')
 
 // --- for-in iterates StringView ---
 let chars = []
 for c in 'abc'.view() { chars.push(c) }
-assert(chars.size() == 3)
-assert(chars[0] == 'a')
+assert_eq(chars.size(), 3)
+assert_eq(chars[0], 'a')
 
 // Split + join round-trips without quoting StringView elements.
-assert('a,b,c'.split(',').join('-') == 'a-b-c')
+assert_eq('a,b,c'.split(',').join('-'), 'a-b-c')
 
 // Match patterns: String literal matches StringView subject.
 fn classify(s: StringLike) -> Long {
   match s { 'hi' => 1, _ => 0 }
 }
-assert(classify('hi') == 1)
-assert(classify('hi'.view()) == 1)
-assert(classify('bye') == 0)
+assert_eq(classify('hi'), 1)
+assert_eq(classify('hi'.view()), 1)
+assert_eq(classify('bye'), 0)
 
 // __str__ may return either flavor.
 class Tag {
   new(label) { this.label = label }
   __str__() { this.label.view() }
 }
-assert(to_string(Tag.new('demo')) == 'demo')
+assert_eq(to_string(Tag.new('demo')), 'demo')
 
 // match TYPED_IDENT accepts StringView and StringLike trait.
 fn kind(x) {
@@ -108,18 +108,18 @@ fn kind(x) {
     _ => 'other',
   }
 }
-assert(kind('hi') == 'string')
-assert(kind('hi'.view()) == 'view')
-assert(kind(42) == 'other')
+assert_eq(kind('hi'), 'string')
+assert_eq(kind('hi'.view()), 'view')
+assert_eq(kind(42), 'other')
 
 fn is_stringlike(x) {
   match x { s: StringLike => true, _ => false }
 }
-assert(is_stringlike('a'))
-assert(is_stringlike('a'.view()))
-assert(!is_stringlike(1))
+assert_true(is_stringlike('a'))
+assert_true(is_stringlike('a'.view()))
+assert_false(is_stringlike(1))
 
 // iter() walks UTF-8 scalars. interp yields StringView, JIT yields
 // Long codepoints — use .code_points() for backend-uniform Long, or
 // for-in which is byte-uniform.
-assert('abc'.code_points().count() == 3)
+assert_eq('abc'.code_points().count(), 3)

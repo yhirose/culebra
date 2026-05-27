@@ -1416,30 +1416,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int32_t culebra_runtime_str_cmp(const char* a,
   return std::strcmp(a, b);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_assert(int8_t type,
-                                                         int64_t data,
-                                                         int64_t line,
-                                                         int64_t col) {
-  bool truthy = false;
-  switch (type) {
-    case TAG_BOOL:
-    case TAG_LONG:
-      truthy = (data != 0);
-      break;
-    case TAG_FLOAT: {
-      // Python-style truthiness: NaN is true; only ±0.0 is false.
-      double d;
-      std::memcpy(&d, &data, sizeof(d));
-      truthy = (d != 0.0) || std::isnan(d);
-      break;
-    }
-  }
-  if (!truthy) {
-    throw culebra::CulebraError("AssertionError",
-        std::format("assert failed at {}:{}.", line, col), line, col);
-  }
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error(int64_t line,
                                                              int64_t col) {
   culebra::throw_type_error_at(line, col);
@@ -6067,9 +6043,7 @@ inline constexpr auto json_stringify      = "culebra_runtime_json_stringify";
 inline constexpr auto json_stringify_kw   = "culebra_runtime_json_stringify_kw";
 inline constexpr auto json_parse          = "culebra_runtime_json_parse";
 inline constexpr auto json_parse_kw       = "culebra_runtime_json_parse_kw";
-// Trailing underscore on `assert_` / `throw_` dodges C++ keyword
-// collision (the `assert` macro from <cassert>, and the `throw` keyword).
-inline constexpr auto assert_             = "culebra_runtime_assert";
+// Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
@@ -8760,9 +8734,6 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     module_->getOrInsertFunction(rt::puts, builder_.getVoidTy(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction(
-        rt::assert_, builder_.getVoidTy(), builder_.getInt8Ty(),
-        builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::type_error,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());

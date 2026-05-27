@@ -12,8 +12,8 @@ test_class_basic = fn () {
   }
   c = Car.new(5)
   c.run(1); c.run(2)
-  assert(c.total() == 15)
-  assert(c.class == 'Car')
+  assert_eq(c.total(), 15)
+  assert_eq(c.class, 'Car')
 }
 
 test_class_default_ctor = fn () {
@@ -21,8 +21,8 @@ test_class_default_ctor = fn () {
     greet() { 'hi' }
   }
   e = Empty.new()
-  assert(e.greet() == 'hi')
-  assert(e.class == 'Empty')
+  assert_eq(e.greet(), 'hi')
+  assert_eq(e.class, 'Empty')
 }
 
 test_class_independent_instances = fn () {
@@ -33,7 +33,7 @@ test_class_independent_instances = fn () {
   }
   a = Car.new(10); b = Car.new(20)
   a.run(1); b.run(1)
-  assert(a.total() == 10 && b.total() == 20)
+  assert_true(a.total() == 10 && b.total() == 20)
 }
 
 test_class_chain = fn () {
@@ -44,7 +44,7 @@ test_class_chain = fn () {
   }
   k = Counter.new()
   k.bump().bump().bump()
-  assert(k.value() == 3)
+  assert_eq(k.value(), 3)
 }
 
 test_class_match_tag = fn () {
@@ -55,8 +55,8 @@ test_class_match_tag = fn () {
       _ => 'other'
     }
   }
-  assert(describe(Point.new(0, 0)) == 'point')
-  assert(describe({}) == 'other')
+  assert_eq(describe(Point.new(0, 0)), 'point')
+  assert_eq(describe({}), 'other')
 }
 
 test_op_overload = fn () {
@@ -80,18 +80,18 @@ test_op_overload = fn () {
   b = Vec.new(3, 4)
 
   s = a + b
-  assert(s.x == 4 && s.y == 6)
-  assert((b - a).x == 2)
-  assert((a * 3).x == 3)                 # scalar scale
-  assert((a * b).y == 8)                 # element-wise
-  assert((-a).x == -1)
+  assert_true(s.x == 4 && s.y == 6)
+  assert_eq((b - a).x, 2)
+  assert_eq((a * 3).x, 3)                 # scalar scale
+  assert_eq((a * b).y, 8)                 # element-wise
+  assert_eq((-a).x, -1)
 
-  assert(a == Vec.new(1, 2))
-  assert(a != b)
-  assert(a < b)
-  assert(a <= Vec.new(1, 2))             # derives from __lt__ + __eq__
-  assert(b > a)
-  assert(b >= Vec.new(3, 4))
+  assert_eq(a, Vec.new(1, 2))
+  assert_ne(a, b)
+  assert_lt(a, b)
+  assert_le(a, Vec.new(1, 2))             # derives from __lt__ + __eq__
+  assert_gt(b, a)
+  assert_ge(b, Vec.new(3, 4))
 }
 
 test_pow_overload = fn () {
@@ -100,7 +100,7 @@ test_pow_overload = fn () {
     __pow__(e) { Wrapped.new(this.n * e.n) }   # silly demo semantics
   }
   r = Wrapped.new(3) ** Wrapped.new(4)
-  assert(r.n == 12)
+  assert_eq(r.n, 12)
 }
 
 test_auto_reflect = fn () {
@@ -122,12 +122,12 @@ test_auto_reflect = fn () {
   }
   v = Vec.new(3, 4)
   a = 2 * v                          # Long * Vec reflects to v.__mul__(2)
-  assert(a.x == 6 && a.y == 8)
+  assert_true(a.x == 6 && a.y == 8)
   b = 10 + v                         # Long + Vec reflects to v.__add__(10)
-  assert(b.x == 13 && b.y == 14)
+  assert_true(b.x == 13 && b.y == 14)
   # Equality reflection (Object RHS)
-  assert(v == Vec.new(3, 4))
-  assert(Vec.new(3, 4) == v)
+  assert_eq(v, Vec.new(3, 4))
+  assert_eq(Vec.new(3, 4), v)
 }
 
 test_matmul_overload = fn () {
@@ -152,11 +152,11 @@ test_matmul_overload = fn () {
   a = Mat.new([[1, 2], [3, 4]])
   b = Mat.new([[5, 6], [7, 8]])
   c = a @ b
-  assert(c.data[0][0] == 19 && c.data[0][1] == 22)
-  assert(c.data[1][0] == 43 && c.data[1][1] == 50)
+  assert_true(c.data[0][0] == 19 && c.data[0][1] == 22)
+  assert_true(c.data[1][0] == 43 && c.data[1][1] == 50)
   # Chains left-associatively (same precedence as *).
   d = a @ b @ a
-  assert(d.data[0][0] == 19 + 66)
+  assert_eq(d.data[0][0], 19 + 66)
 }
 
 test_str_special = fn () {
@@ -167,14 +167,14 @@ test_str_special = fn () {
   m = Matrix.new(2, 3)
 
   # to_string picks up __str__
-  assert(to_string(m) == 'Matrix 2x3')
+  assert_eq(to_string(m), 'Matrix 2x3')
 
   # String interpolation picks it up too
-  assert("shape: {m}" == 'shape: Matrix 2x3')
+  assert_eq("shape: {m}", 'shape: Matrix 2x3')
 
   # Object without __str__ falls back to the default formatter
   plain = {a: 1, b: 2}
-  assert(to_string(plain) == '{a: 1, b: 2}')
+  assert_eq(to_string(plain), '{a: 1, b: 2}')
 }
 
 test_default_display = fn () {
@@ -182,19 +182,19 @@ test_default_display = fn () {
   # omitted from the property list to avoid repetition.
   class Point { new(x, y) { this.x = x; this.y = y } }
   p = Point.new(3, 4)
-  assert(to_string(p) == 'Point {mut x: 3, mut y: 4}')
+  assert_eq(to_string(p), 'Point {mut x: 3, mut y: 4}')
 
   # Plain literals using the `class:` convention get the same treatment.
   tagged = {class: 'Tag', x: 10}
-  assert(to_string(tagged) == 'Tag {x: 10}')
+  assert_eq(to_string(tagged), 'Tag {x: 10}')
 
   # A non-String `class` field is treated as a regular property.
   weird = {class: 42, x: 1}
-  assert(to_string(weird) == '{class: 42, x: 1}')
+  assert_eq(to_string(weird), '{class: 42, x: 1}')
 
   # Untagged Object is unchanged.
   plain = {a: 1, b: 2}
-  assert(to_string(plain) == '{a: 1, b: 2}')
+  assert_eq(to_string(plain), '{a: 1, b: 2}')
 }
 
 # `this` is immutable inside the constructor body. interp and JIT
@@ -210,9 +210,9 @@ test_this_immutable_in_ctor = fn () {
     }
   }
   c = C.new()
-  assert(c.result == 'kind=ImmutableError')
+  assert_eq(c.result, 'kind=ImmutableError')
   # The original instance survives; the would-be replacement is discarded.
-  assert(!c.has('hijacked'))
+  assert_false(c.has('hijacked'))
 }
 
 # Constructor return value is always the allocated instance regardless
@@ -225,7 +225,7 @@ test_ctor_return_ignored = fn () {
     }
   }
   c = C.new()
-  assert(c.tag == 'allocated')
+  assert_eq(c.tag, 'allocated')
 }
 
 # `static` methods live on the class object itself (not the instance),
@@ -245,12 +245,12 @@ test_static_methods = fn () {
     }
   }
   let circle = Shape.make_circle(4)
-  assert(circle.kind == 'circle')
-  assert(circle.area() == 48)
+  assert_eq(circle.kind, 'circle')
+  assert_eq(circle.area(), 48)
   # Static methods are *not* on the instance.
   let inst_call_kind = try { circle.make_circle(1); 'no error' }
                        catch e { "kind={e.kind}" }
-  assert(inst_call_kind == 'kind=AttributeError' ||
+  assert_true(inst_call_kind == 'kind=AttributeError' ||
          inst_call_kind == 'kind=TypeError')
 }
 
@@ -264,11 +264,11 @@ test_static_multiple = fn () {
   }
   let a = Counter.zero()
   let b = Counter.from_array([1, 2, 3])
-  assert(a.n == 0)
-  assert(b.n == 3)
+  assert_eq(a.n, 0)
+  assert_eq(b.n, 3)
   a.bump().bump()
-  assert(a.n == 2)
-  assert(b.n == 3)
+  assert_eq(a.n, 2)
+  assert_eq(b.n, 3)
 }
 
 test_class_basic()

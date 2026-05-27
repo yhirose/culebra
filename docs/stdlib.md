@@ -11,10 +11,12 @@ For an introductory tour and usage idioms see
 implementation details and rationale see
 [`internals.md`](internals.md).
 
-Language-level built-ins — `assert`, `to_long`, `to_float`,
-`to_string`, `type_of`, `range`, `iota` — are specified in
-[§18 of the language spec](language.md). Methods on built-in types
-(`String`, `Array`, `Object`) are specified in
+Language-level built-ins — `to_long`, `to_float`, `to_string`,
+`type_of`, `range`, `iota` — are specified in
+[§18 of the language spec](language.md). The matcher family
+(`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
+in [§10 below](#10-matchers). Methods on built-in types (`String`,
+`Array`, `Object`) are specified in
 [§17 of the language spec](language.md).
 
 The CLI (`src/main.cc`) additionally installs `puts` and `print` as
@@ -40,8 +42,9 @@ Conventions used below:
 7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 8. [`JSON`](#8-json) — stringify / parse round-trip
 9. [`Args`](#9-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
-10. [Design notes](#10-design-notes)
-11. [Not included (yet)](#11-not-included-yet)
+10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
+11. [Design notes](#11-design-notes)
+12. [Not included (yet)](#12-not-included-yet)
 
 **Where to find what**
 
@@ -366,7 +369,7 @@ Throws `IOError` if `path` is not a directory.
 
 ```culebra
 let names = FS.list_dir('/tmp/build')
-assert(names.contains('out.o'))
+assert_true(names.contains('out.o'))
 ```
 
 #### `FS.mkdir(path: String) -> Nil`
@@ -1039,14 +1042,100 @@ The `kind` of a thrown value is one of:
 
 ---
 
-## 10. Design notes
+## 10. Matchers
+
+Assertion matchers for tests and runtime invariant checks. All ten
+matchers are global names bound on every environment (no `import`
+required). Failure throws a Culebra Object with the conventional
+`{kind: "AssertionError", message: ...}` shape; user code can
+`try/catch` it.
+
+There is no `assert` keyword or builtin — instead, use a specific
+matcher for each kind of check. For production invariants, write the
+`if`/`throw` directly:
+
+```culebra
+if (!cond) {
+  throw {kind: "AssertionError", message: "invariant violated"}
+}
+```
+
+### Truthiness matchers
+
+* **`assert_true(x: Bool) -> Nil`** — pass if `x` is truthy. Throws
+  `AssertionError` with message `assert_true failed:\n  value: {x}`
+  on failure. `x` must be `Bool`, `Long`, or `Float`; other types
+  raise `TypeError` (culebra has no Python-style truthiness — empty
+  strings / arrays are not falsy).
+* **`assert_false(x: Bool) -> Nil`** — mirror of `assert_true`.
+
+### Comparison matchers
+
+Each comparison matcher dispatches through the same operator as the
+plain expression — `assert_eq(a, b)` is equivalent to `a == b`, so
+`__eq__` / `__lt__` / `__le__` on class instances are honored.
+Failure message names both operands via `to_string` (respecting any
+user `__str__`).
+
+* **`assert_eq(a, b) -> Nil`** — `a == b`.
+* **`assert_ne(a, b) -> Nil`** — `a != b`.
+* **`assert_lt(a, b) -> Nil`** — `a < b`.
+* **`assert_le(a, b) -> Nil`** — `a <= b`.
+* **`assert_gt(a, b) -> Nil`** — `a > b`.
+* **`assert_ge(a, b) -> Nil`** — `a >= b`.
+
+```culebra
+assert_eq(1 + 1, 2)                                # passes
+assert_lt(some_obj, threshold_obj)                 # uses obj.__lt__
+
+let r = try { assert_eq("foo", "bar"); nil } catch e { e }
+r.kind     # => 'AssertionError'
+r.message  # => 'assert_eq failed:\n  left:  foo\n  right: bar'
+```
+
+### `assert_throws(kind: String, f: Function) -> Nil`
+
+Invoke 0-arg `f()` and assert it throws an error whose `kind` matches
+`kind`. Built-in errors (`ZeroDivisionError`, `TypeError`, etc.)
+expose `e.kind` directly; user `throw {kind: "X", ...}` matches the
+same way. `f` must take 0 parameters — otherwise `ArityError`.
+
+```culebra
+assert_throws("ZeroDivisionError", fn() { let _ = 1 / 0 })
+assert_throws("MyError", fn() {
+  throw {kind: "MyError", message: "boom"}
+})
+```
+
+### `assert_close(a: Float, b: Float, tol: Float) -> Nil`
+
+Pass if `|a - b| <= tol`. NaN in `a`, `b`, or `tol` deliberately
+fails (a naive `diff > tol` check would silently pass NaN). Use this
+in place of `assert_eq` for floating-point comparisons.
+
+```culebra
+assert_close(3.14, 3.1415, 0.01)
+```
+
+### Implementation note
+
+The matcher family is defined in culebra source (not native C++) and
+bound via the lazy module mechanism so that all three backends
+(interp / JIT / AOT) share one implementation. Operator dispatch
+(`==`, `<` etc.) inside the matchers is the same operator dispatch
+each backend already implements, so `__eq__` / `__lt__` semantics
+agree without any matcher-specific drift logic.
+
+---
+
+## 11. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
-The library adds **no global names**: everything lives under
-`Math`, `IO`, `Random`, or `Sys`. This keeps `culebra::environment()`
-free of surprises for embedders who use Culebra as a scripting
-engine inside a host application.
+The library adds **no global names beyond the matcher family**:
+everything else lives under `Math`, `IO`, `Random`, or `Sys`. This
+keeps `culebra::environment()` free of surprises for embedders who
+use Culebra as a scripting engine inside a host application.
 
 For CLI scripting, however, `puts` / `print` are so pervasive that
 writing `IO.puts` everywhere adds friction. The CLI binary
@@ -1093,7 +1182,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 11. Not included (yet)
+## 12. Not included (yet)
 
 ### Trigonometry
 
