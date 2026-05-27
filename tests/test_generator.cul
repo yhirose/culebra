@@ -39,4 +39,47 @@ let mapped = echo(10).map(fn (x) { x * 3 }).collect()
 assert_eq(mapped.size(), 1)
 assert_eq(mapped[0], 30)
 
+// --- Stage 1: N yields in a straight-line body (state dispatch) ---
+fn three() {
+  yield 1
+  yield 2
+  yield 3
+}
+let three_collected = three().collect()
+assert_eq(three_collected.size(), 3)
+assert_eq(three_collected[0], 1)
+assert_eq(three_collected[1], 2)
+assert_eq(three_collected[2], 3)
+
+// --- nil among the yields stays distinct from terminator ---
+fn with_nil() {
+  yield 'a'
+  yield nil
+  yield 'b'
+}
+let wn = with_nil().collect()
+assert_eq(wn.size(), 3)
+assert_eq(wn[0], 'a')
+assert_eq(wn[1], nil)
+assert_eq(wn[2], 'b')
+
+// --- params reach every yield site ---
+fn doubled(v) {
+  yield v
+  yield v + v
+}
+let d = doubled(5).collect()
+assert_eq(d.size(), 2)
+assert_eq(d[0], 5)
+assert_eq(d[1], 10)
+
+// --- has_next idempotent across N-yield generators too ---
+let it = three().iter()
+assert_eq(it.has_next(), true)
+assert_eq(it.has_next(), true)
+assert_eq(it.next(), 1)
+assert_eq(it.next(), 2)
+assert_eq(it.next(), 3)
+assert_eq(it.has_next(), false)
+
 IO.puts('test_generator OK')

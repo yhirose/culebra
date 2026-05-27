@@ -4126,11 +4126,12 @@ inline JitClosure* _iter_method_closure(JitValue iter_val,
                                         const char* method) {
   if (iter_val.tag != TAG_OBJECT) return nullptr;
   auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
-  auto idx = iter_obj->find_slot(method);
-  if (idx == static_cast<size_t>(-1)) return nullptr;
-  const auto& entry = iter_obj->slots[idx];
-  if (entry.value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(entry.value.data);
+  // Walk instance + proto: class instances carry methods on their
+  // class meta proto, while Phase 2 wrapped iterators put them on
+  // the instance directly. `_find_property` handles both.
+  auto* entry = _find_property(iter_obj, method);
+  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(entry->value.data);
 }
 
 inline JitClosure* _iter_has_next_closure(JitValue iter_val) {
@@ -5057,16 +5058,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
       {obj_cell, arr_cell, idx_cell, snap_cell});
 }
 
-// Dispatch helper: prefer the user `iter` slot when present so an
+// Dispatch helper: prefer the user `iter` method when present so an
 // Object that already implements Iterator returns the right iterator
-// (range/map/etc. all hit this), and fall back to the key iterator for
-// plain `{...}` literals via `ObjectValue::builtins()`.
+// (range/map/etc. wrapped iterators put `iter` on the instance; class
+// instances put it on the proto — `_find_property` covers both), and
+// fall back to the key iterator for plain `{...}` literals via
+// `ObjectValue::builtins()`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj) {
-  auto idx = obj->find_slot("iter");
-  if (idx != static_cast<size_t>(-1) &&
-      obj->slots[idx].value.tag == TAG_FUNC) {
-    auto* cls = reinterpret_cast<JitClosure*>(obj->slots[idx].value.data);
+  auto* entry = _find_property(obj, "iter");
+  if (entry && entry->value.tag == TAG_FUNC) {
+    auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     culebra_runtime_value_retain(self.tag, self.data);
     auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
