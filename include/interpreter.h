@@ -384,16 +384,12 @@ inline void collect_locals(
   }
 
   if (node.tag == "ASSIGNMENT"_) {
-    auto lvalcnt = culebra::assignment_lvalcnt(node);
-    auto op_tok = node.nodes[node.nodes.size() - 2]->token;
-    bool compound = op_tok != "=";
-    if (lvalcnt == 1 && !compound) {
-      auto ident_node = node.nodes[2];
+    auto av = culebra::view_assignment(node);
+    if (av.lvalcnt == 1 && !av.compound) {
+      auto ident_node = node.nodes[av.lvaloff];
       if (ident_node->tag == "IDENTIFIER"_) {
         auto name = std::string(ident_node->token);
-        bool is_let = (node.nodes[0]->token == "let");
-        bool is_mut = (node.nodes[1]->token == "mut");
-        if (is_let || is_mut) {
+        if (av.is_let || av.is_mut) {
           check(name, ident_node->line, ident_node->column, outer);
           if (!is_sink_name(name)) locals.insert(name);
         } else {
@@ -5824,38 +5820,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     using namespace peg::udl;
-    auto lvaloff = 2;
-    // ASSIGNMENT layout:
+    // ASSIGNMENT layout (see parser.h `view_assignment`):
     //   [LET, MUTABLE, lval-chain..., (TYPE_ANNOTATION)?, ASSIGN_OP, EXPRESSION]
-    // — the same shape is assumed by the JIT (collect_fn_locals,
-    // visit_for_frees, compile_assignment) and by extract_type_annotation
-    // (which reads the slot before ASSIGN_OP).
-    auto lvalcnt = ast.nodes.size() - 4;
-
-    auto type_name =
-        extract_type_annotation(ast, ast.nodes.size() - 3);
-    if (!type_name.empty()) lvalcnt--;
-
-    auto let = ast.nodes[0]->token == "let";
-    auto mut = ast.nodes[1]->token == "mut";
-    auto op_tok = ast.nodes[ast.nodes.size() - 2]->token;
-    bool compound = op_tok != "=";
+    auto av = culebra::view_assignment(ast);
+    auto lvaloff = av.lvaloff;
+    auto lvalcnt = av.lvalcnt;
+    auto let = av.is_let;
+    auto mut = av.is_mut;
+    bool compound = av.compound;
 
     if (compound && (let || mut)) {
       throw CulebraError("SyntaxError",
           "compound assignment cannot declare a new variable.");
     }
 
-    auto rval = eval(*ast.nodes.back(), env);
+    auto rval = eval(*av.rhs, env);
 
-    if (!type_name.empty()) {
-      check_type(rval, type_name, "assignment", ast.line, ast.column);
+    if (!av.type_annotation.empty()) {
+      check_type(rval, av.type_annotation, "assignment", ast.line, ast.column);
     }
 
-    // For compound ops the binary operand is everything before the '='.
-    auto base_op = compound
-        ? op_tok.substr(0, op_tok.size() - 1)
-        : std::string_view{};
+    auto base_op = av.op_base;
 
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;

@@ -8137,16 +8137,12 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = culebra::assignment_lvalcnt(node);
-      auto op_tok = node.nodes[node.nodes.size() - 2]->token;
-      bool compound = op_tok != "=";
-      if (lvalcnt == 1 && !compound) {
-        auto ident_node = node.nodes[2];
+      auto av = culebra::view_assignment(node);
+      if (av.lvalcnt == 1 && !av.compound) {
+        auto ident_node = node.nodes[av.lvaloff];
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
-          bool is_let = (node.nodes[0]->token == "let");
-          bool is_mut = (node.nodes[1]->token == "mut");
-          bool is_declare = is_let || is_mut;
+          bool is_declare = av.is_let || av.is_mut;
 
           if (is_declare) {
             check_shadow_against_captures(name, outer, ident_node->line,
@@ -8419,32 +8415,30 @@ struct JIT {
     }
 
     if (node.tag == "ASSIGNMENT"_) {
-      auto lvalcnt = culebra::assignment_lvalcnt(node);
-      auto op_tok = node.nodes[node.nodes.size() - 2]->token;
-      bool compound = op_tok != "=";
-      if (lvalcnt == 1) {
+      auto av = culebra::view_assignment(node);
+      if (av.lvalcnt == 1) {
         // Simple target: `x = expr` / `let x = expr` / `x += expr`.
         // For compound (`x += expr`), x must already exist — visit it as
         // an identifier so the closure-capture analyzer sees the read.
-        auto ident_node = node.nodes[2];
+        auto ident_node = node.nodes[av.lvaloff];
         if (ident_node->tag == "IDENTIFIER"_) {
           auto name = std::string(ident_node->token);
-          bool is_let = (node.nodes[0]->token == "let");
-          if ((!is_let || compound) && !my_locals.contains(name) &&
+          if ((!av.is_let || av.compound) && !my_locals.contains(name) &&
               !is_builtin_var(name)) {
             visit_for_frees(*ident_node, my_locals, outer, info);
           }
         }
       } else {
-        // Complex lvalue: primary + postfixes (excluding TYPE_ANNOTATION
-        // and ASSIGN_OP at positions [size-3]..[size-2]).
-        visit_for_frees(*node.nodes[2], my_locals, outer, info);
-        for (int i = 3; i < static_cast<int>(node.nodes.size()) - 2; i++) {
-          if (node.nodes[i]->tag == "TYPE_ANNOTATION"_) continue;
-          visit_for_frees(*node.nodes[i], my_locals, outer, info);
+        // Complex lvalue: primary + postfixes. Walk every child between
+        // `lvaloff` and the lvalue chain end (TYPE_ANNOTATION and
+        // ASSIGN_OP, if present, sit between the last lvalue and rhs and
+        // are skipped naturally by stopping at `lvaloff + lvalcnt`).
+        visit_for_frees(*node.nodes[av.lvaloff], my_locals, outer, info);
+        for (int i = 1; i < av.lvalcnt; i++) {
+          visit_for_frees(*node.nodes[av.lvaloff + i], my_locals, outer, info);
         }
       }
-      visit_for_frees(*node.nodes.back(), my_locals, outer, info);
+      visit_for_frees(*av.rhs, my_locals, outer, info);
       return;
     }
 
@@ -9459,30 +9453,24 @@ struct JIT {
 
   llvm::Value* compile_assignment(const peg::Ast& ast) {
     using namespace peg::udl;
-    auto lvaloff = 2;
-    // ASSIGNMENT layout: see eval_assignment in interpreter.h.
-    auto lvalcnt = static_cast<int>(ast.nodes.size()) - 4;
-
-    auto type_name = extract_type_annotation(ast, ast.nodes.size() - 3);
-    if (!type_name.empty()) lvalcnt--;
-
-    auto let = ast.nodes[0]->token == "let";
-    auto mut = ast.nodes[1]->token == "mut";
-    auto op_tok = ast.nodes[ast.nodes.size() - 2]->token;
-    bool compound = op_tok != "=";
-    auto base_op = compound
-        ? op_tok.substr(0, op_tok.size() - 1)
-        : std::string_view{};
+    // ASSIGNMENT layout (see parser.h `view_assignment`).
+    auto av = culebra::view_assignment(ast);
+    auto lvaloff = av.lvaloff;
+    auto lvalcnt = av.lvalcnt;
+    auto let = av.is_let;
+    auto mut = av.is_mut;
+    bool compound = av.compound;
+    auto base_op = av.op_base;
 
     if (compound && (let || mut)) {
       throw culebra::CulebraError("SyntaxError",
           "compound assignment cannot declare a new variable.");
     }
 
-    auto rval = compile(*ast.nodes.back());
+    auto rval = compile(*av.rhs);
 
-    if (!type_name.empty()) {
-      emit_type_check(rval, type_name, "assignment");
+    if (!av.type_annotation.empty()) {
+      emit_type_check(rval, av.type_annotation, "assignment");
     }
 
     if (lvalcnt == 1) {
