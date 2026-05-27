@@ -4342,7 +4342,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             static_cast<long>(pv.name_line),
             static_cast<long>(pv.name_col));
       }
-      params.push_back({pv.name, pv.mutable_, pv.type_annotation,
+      params.push_back({pv.name, pv.is_mut, pv.type_annotation,
                         pv.default_value, {}, kw_only});
       if (kw_only) kw_only_count++;
     }
@@ -4869,13 +4869,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       auto tv = culebra::view_trait_method(*ast.nodes[i]);
-      // Count positional params (kw_only / kwargs_rest excluded).
       auto params = parse_parameters(*tv.params, env);
-      size_t arity = 0;
-      for (const auto& p : params) {
-        if (p.kw_only || p.kwargs_rest) continue;
-        arity++;
-      }
+      auto arity = culebra::regular_param_count(params);
       def.methods.push_back({std::string(tv.name), arity,
                              static_cast<bool>(tv.body)});
 
@@ -5962,7 +5957,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (pv.key->tag != "IDENTIFIER"_) {
         auto key = eval(*pv.key, env);
         auto val = eval(*pv.value, env);
-        obj.initialize(key, std::move(val), pv.mutable_);
+        obj.initialize(key, std::move(val), pv.is_mut);
         continue;
       }
       // Shorthand resolves the identifier in current scope; long form
@@ -5970,7 +5965,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // right child in either case.
       Value val = pv.is_shorthand ? env->get(pv.key->token)
                                   : eval(*pv.value, env);
-      obj.initialize(pv.key->token, val, pv.mutable_);
+      obj.initialize(pv.key->token, val, pv.is_mut);
     }
     return Value(std::move(obj));
   }

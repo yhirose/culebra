@@ -8425,12 +8425,10 @@ struct JIT {
           }
         }
       } else {
-        // Complex lvalue: primary + postfixes. Walk every child between
-        // `lvaloff` and the lvalue chain end (TYPE_ANNOTATION and
-        // ASSIGN_OP, if present, sit between the last lvalue and rhs and
-        // are skipped naturally by stopping at `lvaloff + lvalcnt`).
-        visit_for_frees(*node.nodes[av.lvaloff], my_locals, outer, info);
-        for (int i = 1; i < av.lvalcnt; i++) {
+        // Complex lvalue: primary + postfixes. TYPE_ANNOTATION and
+        // ASSIGN_OP sit between the last lvalue and rhs, so stopping at
+        // `lvaloff + lvalcnt` naturally skips them.
+        for (int i = 0; i < av.lvalcnt; i++) {
           visit_for_frees(*node.nodes[av.lvaloff + i], my_locals, outer, info);
         }
       }
@@ -9254,7 +9252,7 @@ struct JIT {
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty()),
             {objPtr, extract_tag(key), extract_data(key),
-             builder_.getInt1(pv.mutable_), extract_tag(val), extract_data(val)});
+             builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val)});
         continue;
       }
 
@@ -9276,7 +9274,7 @@ struct JIT {
       } else {
         val = compile(*pv.value);
       }
-      emit_object_set(objPtr, name, pv.mutable_,
+      emit_object_set(objPtr, name, pv.is_mut,
                       extract_tag(val), extract_data(val));
     }
 
@@ -12132,7 +12130,7 @@ struct JIT {
       }
       paramTypeNames.push_back(tname);
       paramDefaults.push_back(pv.default_value);
-      paramMuts.push_back(pv.mutable_);
+      paramMuts.push_back(pv.is_mut);
       if (pv.default_value && !firstDefaulted) {
         firstDefaulted = paramNames.size() - 1;
       }

@@ -346,17 +346,6 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
   return {};
 }
 
-// Number of lvalue children in an ASSIGNMENT node, accounting for the
-// optional TYPE_ANNOTATION sibling before ASSIGN_OP. Centralizing the
-// `size - 4` (and optional -1) formula keeps `collect_fn_locals` /
-// `visit_for_frees` / `_shadow::collect_locals` / `compile_assignment`
-// in sync — drift here is what previously broke `let x: T = ...`.
-inline int assignment_lvalcnt(const peg::Ast& node) {
-  int n = static_cast<int>(node.nodes.size()) - 4;
-  if (!extract_type_annotation(node, node.nodes.size() - 3).empty()) n--;
-  return n;
-}
-
 // View of an ASSIGNMENT AST node — see grammar:
 //   ASSIGNMENT <- LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
 //                 (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
@@ -381,14 +370,17 @@ struct AssignmentView {
 inline AssignmentView view_assignment(const peg::Ast& a) {
   std::string_view op_token = a.nodes[a.nodes.size() - 2]->token;
   bool compound = op_token != "=";
+  auto type_annotation = extract_type_annotation(a, a.nodes.size() - 3);
+  int lvalcnt = static_cast<int>(a.nodes.size()) - 4;
+  if (!type_annotation.empty()) lvalcnt--;
   return AssignmentView{
       a.nodes[0]->token == "let",
       a.nodes[1]->token == "mut",
       compound,
       op_token,
       compound ? op_token.substr(0, op_token.size() - 1) : std::string_view{},
-      extract_type_annotation(a, a.nodes.size() - 3),
-      assignment_lvalcnt(a),
+      type_annotation,
+      lvalcnt,
       /*lvaloff=*/2,
       a.nodes.back().get(),
   };
@@ -404,7 +396,7 @@ inline AssignmentView view_assignment(const peg::Ast& a) {
 // closure-capture walkers visit a single child without branching.
 struct ObjectPropertyView {
   bool is_shorthand;            // size() == 2
-  bool mutable_;                // node[0].token == "mut"
+  bool is_mut;                  // node[0].token == "mut"
   const peg::Ast* key;          // node[1]
   const peg::Ast* value;        // shorthand: same as key; long: node[2]
 };
@@ -570,7 +562,7 @@ inline const peg::Ast* extract_default_expr(const peg::Ast& param_node) {
 struct ParameterView {
   bool is_kwargs_rest;          // tag == KWARGS_REST
   bool is_kw_only_sep;          // tag == KW_ONLY_SEP
-  bool mutable_;                // normal form: node[0].token == "mut"
+  bool is_mut;                  // normal form: node[0].token == "mut"
   std::string_view name;        // KWARGS_REST: p.token; normal: IDENTIFIER child
   size_t name_line;
   size_t name_col;
@@ -582,15 +574,15 @@ inline ParameterView view_parameter(const peg::Ast& p) {
   if (is_kw_only_sep(p)) {
     return ParameterView{false, true, false, {}, p.line, p.column, {}, nullptr};
   }
+  auto loc = extract_param_name_loc(p);
   if (is_kwargs_rest(p)) {
-    return ParameterView{true, false, false, p.token, p.line, p.column,
+    return ParameterView{true, false, false, loc.name, loc.line, loc.column,
                          {}, nullptr};
   }
-  const auto& id = *p.nodes[1];
   return ParameterView{
       false, false,
       p.nodes[0]->token == "mut",
-      id.token, id.line, id.column,
+      loc.name, loc.line, loc.column,
       extract_type_annotation(p, 2),
       extract_default_expr(p),
   };
