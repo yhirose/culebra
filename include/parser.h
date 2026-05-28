@@ -168,11 +168,14 @@ const auto grammar_ = R"(
                             /  '{' _ EXPRESSION _ ',' _ '}'
 
   FUNCTION                 <-  fn _ PARAMETERS (_ RETURN_TYPE)? _ BLOCK
-  # Lambda sugar: `|x, y| expr` / `|x, y| { ... }` desugars to
-  # `fn(x, y) { ... }`. To return an object literal from an expression
-  # body, wrap in parens: `|x| ({a: x})` — otherwise the `{...}` is
-  # parsed as a block.
-  LAMBDA                   <-  LAMBDA_PARAMS _ (BLOCK / EXPRESSION)
+  # Lambda sugar: `|x, y| expr` desugars to `fn (x, y) expr`. Body is
+  # restricted to a single EXPRESSION (not BLOCK) — for multiple
+  # statements / intermediate `let` / side effects, use `fn (...) { ... }`.
+  # `if` / `while` / `for` / `match` / `try` are themselves expressions,
+  # so they work as the body: `|x| if x < 0 { -x } else { x }`.
+  # Object literals as the body are EXPRESSION-position OBJECTs:
+  # `|x| {a: x}` returns `{a: x}` unambiguously.
+  LAMBDA                   <-  LAMBDA_PARAMS _ EXPRESSION
   LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
   PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?

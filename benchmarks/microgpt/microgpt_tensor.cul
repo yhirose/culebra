@@ -64,12 +64,10 @@ class TNode {
   zero_grad() { this.grad = Tensor.zeros(this.data.shape()) }
   backward() {
     mut topo = []
-    let build_topo = |node| {
-      if !node._visited {
-        node._visited = true
-        for ch in node._children { self(ch) }
-        topo.push(node)
-      }
+    let build_topo = |node| if !node._visited {
+      node._visited = true
+      for ch in node._children { self(ch) }
+      topo.push(node)
     }
     build_topo(this)
     this.grad = Tensor.ones(this.data.shape())

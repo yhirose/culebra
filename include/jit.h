@@ -12170,8 +12170,8 @@ struct JIT {
   }
 
   // LAMBDA ast: [LAMBDA_PARAMS, BODY]. No declared return type. BODY
-  // may be any expression — compile_fn_common's generic dispatch handles
-  // both BLOCK and bare expressions.
+  // is a single EXPRESSION (grammar restricts lambdas to expression
+  // bodies; use `fn (...) { ... }` for block bodies).
   llvm::Value* compile_lambda(const peg::Ast& ast) {
     auto fv = culebra::view_lambda(ast);
     return compile_fn_common(&ast, *fv.params, fv.body, fv.return_type, {});

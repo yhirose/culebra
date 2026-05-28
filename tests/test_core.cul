@@ -72,7 +72,7 @@ test_lambda = fn () {
   square = |x| x * x
   assert_eq(square(6), 36)
 
-  incr = |x| {
+  incr = fn (x) {
     mut n = x
     n = n + 1
     n
@@ -87,7 +87,7 @@ test_lambda = fn () {
   assert_eq(add5(3), 8)
   assert_eq(add5(10), 15)
 
-  f = |mut x = 10| { x = x + 1; x }
+  f = fn (mut x = 10) { x = x + 1; x }
   assert_eq(f(), 11)
   assert_eq(f(100), 101)
 
