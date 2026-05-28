@@ -16,6 +16,17 @@ if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
 endif()
 
+# Use ccache as the compiler launcher when available. Keeps a content-
+# addressed cache of .o files in ~/.cache/ccache so that header touches
+# that don't change content (e.g. branch switching) hit the cache and
+# skip the compile. Auto-disabled if ccache isn't installed.
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  message(STATUS "ccache: ${CCACHE_PROGRAM}")
+endif()
+
 # ThinLTO trims ~15 MB off the Release `culebra` driver and gives the
 # JIT runtime a permanent +6.7% (cross-TU inlining of codegen). Cost
 # is ~25 s extra link time per build. Disable with `-DCULEBRA_LTO=OFF`

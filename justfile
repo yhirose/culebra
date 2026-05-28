@@ -11,14 +11,24 @@ default:
 build *extra:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{extra}} .. > /dev/null
-    cd build && make
+    cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+
+# Fast dev build: LTO off (saves ~15-25 s link), still Release + JIT,
+# uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
+# Pair with ccache (auto-detected by CMake) for near-instant rebuilds
+# when only ephemeral mtimes changed.
+[group("build")]
+dev *extra:
+    mkdir -p build-dev
+    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
+    cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Build without JIT (interpreter only, no LLVM)
 [group("build")]
 build-no-jit:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
-    cd build && make
+    cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
 
 # Clean build directory
 [group("build")]
