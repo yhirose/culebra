@@ -32,7 +32,7 @@ syn keyword culFunction    fn
 syn keyword culClass       class trait
 syn keyword culConditional if else match
 syn keyword culRepeat      while for in
-syn keyword culStatement   return break continue throw try catch defer
+syn keyword culStatement   return break continue throw try catch defer yield
 syn keyword culInclude     import export from
 syn keyword culDebugger    debugger
 syn keyword culBoolean     true false

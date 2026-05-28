@@ -122,4 +122,38 @@ for x in counter(0, 1000) {
 }
 assert_eq(sum, 0 + 1 + 2 + 3 + 4)
 
+// --- Stage 3: yield inside if (conditional yield) ---
+fn filter_even(n) {
+  mut i = 0
+  while i < n {
+    if i % 2 == 0 {
+      yield i
+    }
+    i = i + 1
+  }
+}
+let evens_gen = filter_even(10).collect()
+assert_eq(evens_gen.size(), 5)
+assert_eq(evens_gen[0], 0)
+assert_eq(evens_gen[4], 8)
+
+// --- yield in both if and else arms ---
+fn alternating() {
+  mut i = 0
+  while i < 4 {
+    if i % 2 == 0 {
+      yield i
+    } else {
+      yield -i
+    }
+    i = i + 1
+  }
+}
+let alt = alternating().collect()
+assert_eq(alt.size(), 4)
+assert_eq(alt[0], 0)
+assert_eq(alt[1], -1)
+assert_eq(alt[2], 2)
+assert_eq(alt[3], -3)
+
 IO.puts('test_generator OK')

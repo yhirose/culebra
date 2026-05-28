@@ -8,7 +8,7 @@ culFunction:    fn
 culClass:       class trait
 culConditional: if else match
 culRepeat:      while for in
-culStatement:   return break continue throw try catch defer
+culStatement:   return break continue throw try catch defer yield
 culInclude:     import export from
 culDebugger:    debugger
 culBoolean:     true false

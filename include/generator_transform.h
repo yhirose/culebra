@@ -22,7 +22,9 @@
 // Stage 0 cheats by evaluating the yield expression eagerly and
 // passing it to the synthesized class's constructor — fine for the
 // single-yield case, replaced in Stage 1 by a real state machine
-// dispatch over phases.
+// dispatch over phases. Stage 2 added while-loop bodies with a direct
+// yield; Stage 3 generalizes it so the yield can live inside an
+// IF/ELSE/MATCH branch of the loop body.
 //
 // See [[project-generator-design]] for the 5 core design axes
 // (anonymous class / pure transformation / Phase 2 protocol /
@@ -160,15 +162,16 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
   return out;
 }
 
-// --- Stage 2 pattern: pre-loop init + while { pre-yield, yield, post-yield }
-// (single while, single yield, yield must be inside the while). Returns
-// the structured pieces or nullopt if the body doesn't match.
+// --- Stage 3 pattern: pre-loop init + while { pre-yield, yield-bearing stmt,
+// post-yield }. `yield_stmt` is one loop-body statement that may BE a yield
+// (Stage 2 case) or an IF/MATCH whose branches contain the yields. All yields
+// in the loop must live inside that one statement.
 
-struct Stage2Pattern {
+struct Stage3Pattern {
   std::vector<const peg::Ast*> pre_loop;
   const peg::Ast* loop_cond;
   std::vector<const peg::Ast*> pre_yield;
-  const peg::Ast* yield_expr;
+  const peg::Ast* yield_stmt;
   std::vector<const peg::Ast*> post_yield;
 };
 
@@ -196,10 +199,10 @@ inline std::vector<const peg::Ast*> body_stmts(const peg::Ast& body) {
   return out;
 }
 
-inline std::optional<Stage2Pattern> match_stage2_pattern(
+inline std::optional<Stage3Pattern> match_stage3_pattern(
     const peg::Ast& body, const std::vector<const peg::Ast*>& yields) {
   using namespace peg::udl;
-  if (yields.size() != 1) return std::nullopt;
+  if (yields.empty()) return std::nullopt;
   auto stmts = body_stmts(body);
   // Locate the WHILE among top-level body stmts.
   size_t while_idx = stmts.size();
@@ -213,29 +216,43 @@ inline std::optional<Stage2Pattern> match_stage2_pattern(
     }
   }
   if (!while_node || while_node->nodes.size() < 2) return std::nullopt;
-  // The yield must be inside the loop body, not in pre-loop stmts.
-  // Cheapest check: the yield's position is within the while body's range.
-  const peg::Ast* loop_body = while_node->nodes[1].get();
-  if (yields[0]->position < loop_body->position ||
-      yields[0]->position >= loop_body->position + loop_body->length) {
-    return std::nullopt;
-  }
-  Stage2Pattern p;
-  p.loop_cond = while_node->nodes[0].get();
-  for (size_t i = 0; i < while_idx; i++) p.pre_loop.push_back(stmts[i]);
-  // Reject anything after the while too (Stage 2 keeps the loop terminal).
+  // Reject anything after the while (Stage 3 keeps the loop terminal).
   if (while_idx + 1 != stmts.size()) return std::nullopt;
+  // Every yield must be inside the loop body, not in pre-loop stmts.
+  const peg::Ast* loop_body = while_node->nodes[1].get();
+  size_t lb_lo = loop_body->position;
+  size_t lb_hi = loop_body->position + loop_body->length;
+  for (auto* y : yields) {
+    if (y->position < lb_lo || y->position + y->length > lb_hi) {
+      return std::nullopt;
+    }
+  }
+  // All yields must live inside one loop-body statement (which may itself BE
+  // a yield, or an IF/MATCH containing them). yields are in source order, so
+  // the stmt containing yields[0] is the only possible candidate — anything
+  // straddling into a sibling stmt fails the pattern.
   auto inner = body_stmts(*loop_body);
   size_t yidx = inner.size();
   for (size_t i = 0; i < inner.size(); i++) {
-    if (unwrap_stmt(inner[i])->tag == "YIELD"_) {
-      yidx = i;
-      p.yield_expr = unwrap_stmt(inner[i])->nodes[0].get();
-      break;
+    auto* s = inner[i];
+    size_t s_lo = s->position;
+    size_t s_hi = s->position + s->length;
+    if (yields[0]->position < s_lo ||
+        yields[0]->position + yields[0]->length > s_hi) continue;
+    for (auto* y : yields) {
+      if (y->position < s_lo || y->position + y->length > s_hi) {
+        return std::nullopt;
+      }
     }
+    yidx = i;
+    break;
   }
   if (yidx == inner.size()) return std::nullopt;
+  Stage3Pattern p;
+  p.loop_cond = while_node->nodes[0].get();
+  for (size_t i = 0; i < while_idx; i++) p.pre_loop.push_back(stmts[i]);
   for (size_t i = 0; i < yidx; i++) p.pre_yield.push_back(inner[i]);
+  p.yield_stmt = inner[yidx];
   for (size_t i = yidx + 1; i < inner.size(); i++) {
     p.post_yield.push_back(inner[i]);
   }
@@ -322,21 +339,61 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage1(
   return ast;
 }
 
-// Stage 2: while-loop with single yield, all-locals-on-heap state
-// machine. `has_next()` carries the work — it runs pre-loop init on
-// the first call, post-yield code on subsequent calls, then the loop
-// cond + pre-yield code; if the iteration produces a value, it
-// stashes it in a lookahead slot and returns true; if the cond fails
-// it marks drained and returns false. `next()` consumes the stash.
-// This mirrors Phase 2's lookahead-cache pattern and keeps has_next
-// idempotent + accurate (calling has_next twice returns the same
-// result without advancing the generator). See
-// [[project-generator-design]] §Stage 2 設計詳細.
-inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage2(
+// Substitute every YIELD inside `stmt_src` (a source slice starting at
+// absolute `base_pos`) with the lookahead-set-and-return inline. Yields
+// are processed back-to-front so earlier positions stay valid as later
+// replacements shift the tail. `yields` must be in source order and
+// every yield must lie inside the stmt range (caller guarantees).
+//
+// The replacement is wrapped in braces because of a cpp-peglib quirk:
+// when a single-stmt BLOCK collapses (BLOCK→STATEMENTS→STATEMENT→YIELD,
+// each with one child), the surviving YIELD-tagged node inherits the
+// outer BLOCK's position+length, so `y->length` may cover `{ yield expr
+// }` rather than just `yield expr`. `no_ast_opt` on YIELD doesn't help
+// — peglib's collapse rewrites position+length unconditionally when the
+// *outer* rule is the one being optimized away (see AstBase ctor at
+// peglib.h:5136 and AstOptimizer::optimize at peglib.h:5223). Wrapping
+// the replacement in braces restores a valid block where it was needed
+// and creates a harmless nested block in multi-stmt loop bodies — the
+// inner `return true` exits has_next() before any trailing code runs.
+inline std::string substitute_yields_in_stmt(
+    std::string_view stmt_src, size_t base_pos,
+    const std::vector<const peg::Ast*>& yields,
+    const char* src, size_t src_len) {
+  std::string out(stmt_src);
+  for (auto it = yields.rbegin(); it != yields.rend(); ++it) {
+    auto* y = *it;
+    if (y->position < base_pos ||
+        y->position + y->length > base_pos + stmt_src.size()) {
+      continue;
+    }
+    size_t local_pos = y->position - base_pos;
+    auto yexpr_sv = ast_source_slice(*y->nodes[0], src, src_len);
+    auto replacement = std::format(
+        "{{ this._g_la = ({}); this._g_has_la = true; return true }}",
+        std::string(yexpr_sv));
+    out.replace(local_pos, y->length, replacement);
+  }
+  return out;
+}
+
+// Stage 3: while-loop body whose yields all live inside one statement
+// (the yield-bearing stmt — may be a direct YIELD, an IF/ELSE, or a
+// MATCH). The loop is preserved verbatim in `has_next()` so iterations
+// that don't yield (e.g. filter_even's odd numbers) skip naturally. The
+// yield-bearing stmt's source is rewritten so each `yield expr` becomes
+// `this._g_la = (expr); this._g_has_la = true; return true` — control
+// re-enters `has_next()` on the next call and the top-of-method
+// post-yield block advances state past the returned yield. This
+// supersedes Stage 2 (single direct yield) — a Stage 2-shape body
+// matches Stage 3 with `yield_stmt = YIELD` and produces equivalent
+// behavior. See [[project-generator-design]] §Stage 3 設計詳細.
+inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
     const peg::Ast& name_ast,
     const peg::Ast& params_ast,
-    const Stage2Pattern& p) {
+    const Stage3Pattern& p,
+    const std::vector<const peg::Ast*>& yields) {
   auto gen_name = std::format("_Gen_{}_{}_{}",
                               std::string(name_ast.token),
                               name_ast.line, name_ast.column);
@@ -388,8 +445,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage2(
       ast_source_range(p.post_yield, src, src_len), rewrite_set);
   auto cond_src = rewrite_locals_to_this(
       ast_source_slice(*p.loop_cond, src, src_len), rewrite_set);
-  auto yield_src = rewrite_locals_to_this(
-      ast_source_slice(*p.yield_expr, src, src_len), rewrite_set);
+
+  // Yield-bearing stmt: substitute each yield first (positions valid),
+  // then rewrite locals to `this.X`.
+  auto yield_stmt_sv = ast_source_slice(*p.yield_stmt, src, src_len);
+  auto yield_stmt_substituted = substitute_yields_in_stmt(
+      yield_stmt_sv, p.yield_stmt->position, yields, src, src_len);
+  auto yield_stmt_src = rewrite_locals_to_this(yield_stmt_substituted,
+                                                rewrite_set);
 
   auto synthesized = std::make_shared<std::string>(std::format(
       "fn __gen_wrapper__() {{\n"
@@ -405,11 +468,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage2(
       "{4}\n"
       "        this._g_inited = true\n"
       "      }}\n"
-      "      if {5} {{\n"
+      "      while {5} {{\n"
       "{6}\n"
-      "        this._g_la = {7}\n"
-      "        this._g_has_la = true\n"
-      "        return true\n"
+      "        {7}\n"
+      "{8}\n"
       "      }}\n"
       "      this._g_drained = true\n"
       "      return false\n"
@@ -422,19 +484,22 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage2(
       "      return _v\n"
       "    }}\n"
       "  }}\n"
-      "  {0}.new({8})\n"
+      "  {0}.new({9})\n"
       "}}\n",
       gen_name, ctor_params, ctor_inits,
       post_yield_src, pre_loop_src,
-      cond_src, pre_yield_src, yield_src, ctor_call_args));
+      cond_src, pre_yield_src, yield_stmt_src, post_yield_src,
+      ctor_call_args));
   swap_body_from_wrapper(ast, synthesized);
   return ast;
 }
 
 // Dispatcher: pattern-match the body and route to the right stage.
-// Stage 2 gets priority because its body would parse as a 1-yield
-// case that Stage 1 mishandles (eager eval of yield exprs that
-// reference loop locals would NameError at the factory call site).
+// Stage 3 gets priority — its pattern is a superset of Stage 2's (which
+// has been folded in) and handles any while-bound generator whose
+// yields all live in one statement. Falls back to Stage 1's eager-eval
+// path for straight-line bodies whose yield expressions don't reference
+// loop-mutated locals.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
   using namespace peg::udl;
@@ -446,9 +511,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   auto& body_slot = ast->nodes.back();
   auto yields = collect_yields(*body_slot);
   if (yields.empty()) return ast;
-  if (auto p = match_stage2_pattern(*body_slot, yields)) {
-    return transform_one_generator_fn_stage2(ast, src, src_len, name_ast,
-                                             params_ast, *p);
+  if (auto p = match_stage3_pattern(*body_slot, yields)) {
+    return transform_one_generator_fn_stage3(ast, src, src_len, name_ast,
+                                             params_ast, *p, yields);
   }
   return transform_one_generator_fn_stage1(ast, src, src_len, name_ast, yields);
 }

@@ -1,6 +1,6 @@
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -53,6 +53,7 @@
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
+  YIELD                    <-  yield _sp_ !_nl_ EXPRESSION
   BREAK                    <-  break
   CONTINUE                 <-  continue
   DEFER                    <-  defer _ BLOCK
@@ -229,6 +230,7 @@
   ~else                    <-  K('else')
   ~fn                      <-  K('fn')
   ~return                  <-  K('return')
+  ~yield                   <-  K('yield')
   ~match                   <-  K('match')
   ~throw                   <-  K('throw')
   ~try                     <-  K('try')
