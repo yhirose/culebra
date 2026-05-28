@@ -1182,23 +1182,27 @@ function to a higher-order call:
     add   = |x, y| x + y                 # expression body
     sq    = |x| x * x
     noop  = || 42                         # zero params
-    clamp = |v, lo, hi| {                 # block body — use when you
-      mut x = v                           # need multiple statements
+    abs_v = |x| if x < 0 { -x } else { x } # if/while/for/match/try
+                                          # are expressions, so they
+                                          # work as the body
+    xs.map(|x| x * 2)                     # passes cleanly as a functor
+
+The body must be a **single expression**. When multiple statements,
+intermediate `let`, or side effects are needed, use `fn (...) { ... }`
+instead:
+
+    clamp = fn (v, lo, hi) {
+      mut x = v
       if x < lo { x = lo }
       if x > hi { x = hi }
       x
     }
-    xs.map(|x| x * 2)                     # passes cleanly as a functor
 
-Semantically identical to `fn (...) { ... }`:
+Otherwise semantically identical to `fn (...) expr`:
 
 * Captures variables from the enclosing scope.
 * Accepts the same `mut` / type-annotation / default-value parameter
-  forms: `|mut x = 10| { ... }` works just like `fn (mut x = 10) ...`.
-* Body is either a single expression or a `{ ... }` block. The block
-  form is tried first, so `|x| { a }` means "block with one statement
-  returning `a`"; to build an object literal return, wrap it in parens:
-  `|x| ({a: x})`.
+  forms: `|mut x = 10| x + 1` works just like `fn (mut x = 10) x + 1`.
 * Self-reference via `self` works the same as in `fn`.
 * No return-type annotation slot (keep lambdas short; use `fn` for
   functions whose signature deserves the annotation).

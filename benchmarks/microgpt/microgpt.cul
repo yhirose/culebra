@@ -69,18 +69,16 @@ class Value {
   }
   backward() {
     mut topo = []
-    build_topo = |node| {
-      if !node._visited {
-        node._visited = true
-        for ch in node._children { self(ch) }
-        topo.push(node)
-      }
+    build_topo = |node| if !node._visited {
+      node._visited = true
+      for ch in node._children { self(ch) }
+      topo.push(node)
     }
     build_topo(this)
     this.grad = 1.0
     topo.reverse()
-    topo.for_each(|v| {
-      range(v._children.size()).for_each(|j| {
+    topo.for_each(fn (v) {
+      range(v._children.size()).for_each(fn (j) {
         let child = v._children[j]
         child.grad = child.grad + v._local_grads[j] * v.grad
       })
@@ -150,14 +148,14 @@ dot = |a, b| range(a.size()).reduce(Value.new(0.0),
 
 linear = |x, w| w.map(|wo| dot(wo, x))
 
-softmax = |logits| {
+softmax = fn (logits) {
   let mx = max_data(logits)
   let exps = logits.map(|v| (v - mx).exp())
   let total = sum_v(exps)
   exps.map(|e| e / total)
 }
 
-rmsnorm = |x| {
+rmsnorm = fn (x) {
   let ms = sum_v(x.map(|xi| xi * xi)) * (1.0 / x.size())
   let scale = (ms + 1e-5) ** -0.5
   x.map(|xi| xi * scale)
@@ -182,7 +180,7 @@ gpt = fn (token_id, pos_id, keys, values) {
     keys[li].push(k)
     values[li].push(v)
 
-    let x_attn = range(n_head).flat_map(|h| {
+    let x_attn = range(n_head).flat_map(fn (h) {
       let hs = h * head_dim
       let q_h = q.slice(hs, hs + head_dim)
       let k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))
@@ -234,7 +232,7 @@ while step < num_steps {
   mut values = []
   for _ in 0..n_layer { keys.push([]); values.push([]) }
 
-  let total_loss = range(n).reduce(Value.new(0.0), |acc, pos_id| {
+  let total_loss = range(n).reduce(Value.new(0.0), fn (acc, pos_id) {
     let probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))
     acc + (-probs[tokens[pos_id + 1]].log())
   })
