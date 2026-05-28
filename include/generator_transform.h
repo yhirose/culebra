@@ -114,6 +114,16 @@ inline std::string ast_source_range(const std::vector<const peg::Ast*>& stmts,
   return std::string(src + first, last_end - first);
 }
 
+// Drop the enclosing `{` / `}` from a BLOCK source slice. A BLOCK that's
+// been parsed will always be wrapped in braces, but the check stays
+// defensive in case the slice is already brace-stripped or empty.
+inline std::string_view strip_block_braces(std::string_view s) {
+  if (s.size() >= 2 && s.front() == '{' && s.back() == '}') {
+    return s.substr(1, s.size() - 2);
+  }
+  return s;
+}
+
 // Rewrite every `\b<name>\b` in `src` to `this.<name>` for each name in
 // `names`, then strip `let `/`mut ` prefixes that now sit in front of
 // `this.X` (assignment, no longer declaration). Stage 2 spike uses a
@@ -259,19 +269,83 @@ inline std::optional<Stage3Pattern> match_stage3_pattern(
   return p;
 }
 
+// --- Stage 5: for-in desugar to while + iterator -------------------------
+
+// Outermost FOR nodes (within a single fn) that contain at least one YIELD
+// somewhere in their subtree. Stops at fn boundaries and does NOT descend
+// into yielding FORs — those are rewritten as a unit, so any inner FOR
+// nested within them is left alone for a follow-up pass. The walker only
+// surfaces FORs whose yields belong to *this* generator.
+inline std::vector<const peg::Ast*> collect_outermost_yielding_fors(
+    const peg::Ast& body) {
+  using namespace peg::udl;
+  std::vector<const peg::Ast*> out;
+  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+    if (is_fn_boundary(n.tag)) return;
+    if (n.tag == "FOR"_ && fn_body_has_yield(n)) {
+      out.push_back(&n);
+      return;
+    }
+    for (auto& c : n.nodes) walk(*c);
+  };
+  walk(body);
+  return out;
+}
+
+// Source-level rewrite: each outermost yielding `for x in expr BODY` becomes
+// `let _g_it_<pos> = (expr).iter()
+//  while _g_it_<pos>.has_next() {
+//    let x = _g_it_<pos>.next()
+//    BODY_inner
+//  }`
+// Returns the rewritten body source, or `nullopt` when there were no
+// yielding FORs to rewrite (so callers can gate the desugar pipeline on a
+// single walk). Iterator variable names use the FOR's source position to
+// stay unique. The result has fresh source positions once re-parsed;
+// callers must re-parse before walking the AST again.
+inline std::optional<std::string> rewrite_yielding_fors_to_while(
+    const peg::Ast& body, const char* src, size_t src_len) {
+  auto fors = collect_outermost_yielding_fors(body);
+  if (fors.empty()) return std::nullopt;
+  std::string out(ast_source_slice(body, src, src_len));
+  size_t base = body.position;
+  for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
+    auto* f = *it;
+    if (f->nodes.size() < 3) continue;
+    const auto& var_node = *f->nodes[0];
+    const auto& expr_node = *f->nodes[1];
+    const auto& blk_node = *f->nodes[2];
+    auto expr_sv = ast_source_slice(expr_node, src, src_len);
+    auto blk_inner = strip_block_braces(
+        ast_source_slice(blk_node, src, src_len));
+    auto iter_var = std::format("_g_it_{}", f->position);
+    auto replacement = std::format(
+        "let {0} = ({1}).iter()\n"
+        "while {0}.has_next() {{\n"
+        "  let {2} = {0}.next()\n"
+        "  {3}\n"
+        "}}",
+        iter_var, std::string(expr_sv),
+        std::string(var_node.token), std::string(blk_inner));
+    out.replace(f->position - base, f->length, replacement);
+  }
+  return out;
+}
+
 // --- Transformation entry points -----------------------------------------
 
-// Replace `ast->nodes.back()` (the original body BLOCK) with the BLOCK
-// from a freshly-parsed `fn __gen_wrapper__() { ... }` source fragment.
-// Shared by Stage 1 and Stage 2 — both end with "now swap the body".
-inline bool swap_body_from_wrapper(std::shared_ptr<peg::Ast> ast,
-                                   std::shared_ptr<std::string> synthesized) {
+// Re-parse a `fn __gen_wrapper__(...) { ... }` source fragment and return
+// its MULTIFN_DECL node, after registering the source for lifetime. peg::Ast
+// holds string_views into the source, so the synthesized buffer must stay
+// alive until the AST is discarded — generator_transform_sources() owns it.
+inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
+    std::shared_ptr<std::string> synthesized) {
   using namespace peg::udl;
   generator_transform_sources().push_back(synthesized);
   std::vector<std::string> msgs;
   auto sub_ast = parse("<generator-transform>", synthesized->data(),
                        synthesized->size(), msgs);
-  if (!sub_ast) return false;
+  if (!sub_ast) return nullptr;
   std::shared_ptr<peg::Ast> wrapper_fn;
   std::function<void(std::shared_ptr<peg::Ast>)> walk =
       [&](std::shared_ptr<peg::Ast> n) {
@@ -280,7 +354,33 @@ inline bool swap_body_from_wrapper(std::shared_ptr<peg::Ast> ast,
         for (auto& c : n->nodes) walk(c);
       };
   walk(sub_ast);
+  return wrapper_fn;
+}
+
+// Replace `ast->nodes.back()` (the original body BLOCK) with the BLOCK
+// from a freshly-parsed `fn __gen_wrapper__() { ... }` source fragment.
+// Shared by Stage 1 and Stage 2 — both end with "now swap the body".
+inline bool swap_body_from_wrapper(std::shared_ptr<peg::Ast> ast,
+                                   std::shared_ptr<std::string> synthesized) {
+  auto wrapper_fn = parse_wrapper_fn(synthesized);
   if (!wrapper_fn) return false;
+  ast->nodes.back() = wrapper_fn->nodes.back();
+  return true;
+}
+
+// Replace `ast`'s PARAMETERS (at `params_idx`) and body with those from a
+// freshly-parsed `fn __gen_wrapper__(<params>) { <body> }` source. Keeps the
+// original name (and decorators) intact, while giving downstream stages an
+// AST whose param + body positions point into the synthesized source — the
+// shape Stage 3 needs after the Stage 5 for-in desugar rewrites the body.
+inline bool swap_body_with_wrapper_params(
+    std::shared_ptr<peg::Ast> ast,
+    std::shared_ptr<std::string> synthesized,
+    size_t params_idx) {
+  auto wrapper_fn = parse_wrapper_fn(synthesized);
+  if (!wrapper_fn || wrapper_fn->nodes.size() < 3) return false;
+  if (ast->nodes.size() <= params_idx + 1) return false;
+  ast->nodes[params_idx + 1] = wrapper_fn->nodes[1];
   ast->nodes.back() = wrapper_fn->nodes.back();
   return true;
 }
@@ -486,23 +586,41 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
 }
 
 // Dispatcher: pattern-match the body and route to the right stage.
-// Stage 3 gets priority — its pattern is a superset of Stage 2's (which
-// has been folded in) and handles any while-bound generator whose
-// yields all live in one statement. Falls back to Stage 1's eager-eval
-// path for straight-line bodies whose yield expressions don't reference
-// loop-mutated locals.
+// Stage 5 runs first as a source-level pre-pass that rewrites yielding
+// `for-in` loops into `while + iterator` form, then Stage 3 handles the
+// result. Stage 3 is the primary backend — its pattern is a superset of
+// Stage 2's (which has been folded in) and handles any while-bound
+// generator whose yields all live in one statement. Falls back to
+// Stage 1's eager-eval path for straight-line bodies whose yield
+// expressions don't reference loop-mutated locals.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
   using namespace peg::udl;
   size_t i = 0;
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
   if (i + 2 >= ast->nodes.size()) return ast;
+  auto yields = collect_yields(*ast->nodes.back());
+  if (yields.empty()) return ast;
+
+  // Stage 5: rewrite yielding for-in loops to while + iterator at source
+  // level, then re-parse so Stage 3 picks them up.
+  if (auto rewritten = rewrite_yielding_fors_to_while(
+          *ast->nodes.back(), src, src_len)) {
+    auto params_sv = ast_source_slice(*ast->nodes[i + 1], src, src_len);
+    auto body_inner = strip_block_braces(*rewritten);
+    auto desugared = std::make_shared<std::string>(std::format(
+        "fn __gen_wrapper__{} {{\n{}\n}}\n",
+        std::string(params_sv), std::string(body_inner)));
+    if (!swap_body_with_wrapper_params(ast, desugared, i)) return ast;
+    src = desugared->data();
+    src_len = desugared->size();
+    yields = collect_yields(*ast->nodes.back());
+    if (yields.empty()) return ast;
+  }
+
   const auto& name_ast = *ast->nodes[i];
   const auto& params_ast = *ast->nodes[i + 1];
-  auto& body_slot = ast->nodes.back();
-  auto yields = collect_yields(*body_slot);
-  if (yields.empty()) return ast;
-  if (auto p = match_stage3_pattern(*body_slot, yields)) {
+  if (auto p = match_stage3_pattern(*ast->nodes.back(), yields)) {
     return transform_one_generator_fn_stage3(ast, src, src_len, name_ast,
                                              params_ast, *p, yields);
   }

@@ -156,4 +156,72 @@ assert_eq(alt[1], -1)
 assert_eq(alt[2], 2)
 assert_eq(alt[3], -3)
 
+// --- Stage 5: yield inside a for-in loop ---
+fn from_array(arr) {
+  for v in arr {
+    yield v + 1
+  }
+}
+let mapped_s5 = from_array([10, 20, 30]).collect()
+assert_eq(mapped_s5.size(), 3)
+assert_eq(mapped_s5[0], 11)
+assert_eq(mapped_s5[2], 31)
+
+// --- for-in over a generator (nested generator) ---
+fn inner_n(n) {
+  mut i = 0
+  while i < n {
+    yield i
+    i = i + 1
+  }
+}
+fn outer_times10(n) {
+  for x in inner_n(n) {
+    yield x * 10
+  }
+}
+let nested = outer_times10(4).collect()
+assert_eq(nested.size(), 4)
+assert_eq(nested[0], 0)
+assert_eq(nested[1], 10)
+assert_eq(nested[3], 30)
+
+// --- for-in with conditional yield (Stage 3 + Stage 5 combined) ---
+fn keep_evens(arr) {
+  for v in arr {
+    if v % 2 == 0 {
+      yield v
+    }
+  }
+}
+let evens_s5 = keep_evens([1, 2, 3, 4, 5, 6]).collect()
+assert_eq(evens_s5.size(), 3)
+assert_eq(evens_s5[0], 2)
+assert_eq(evens_s5[2], 6)
+
+// --- for-in with both arms yielding ---
+fn signed_evens(arr) {
+  for v in arr {
+    if v % 2 == 0 {
+      yield v
+    } else {
+      yield -v
+    }
+  }
+}
+let se = signed_evens([1, 2, 3, 4]).collect()
+assert_eq(se.size(), 4)
+assert_eq(se[0], -1)
+assert_eq(se[1], 2)
+assert_eq(se[2], -3)
+assert_eq(se[3], 4)
+
+// --- early break still works through the for-in path ---
+mut sum_s5 = 0
+for x in outer_times10(100) {
+  sum_s5 = sum_s5 + x
+  if x >= 30 { break }
+}
+assert_eq(sum_s5, 0 + 10 + 20 + 30)
+
 IO.puts('test_generator OK')
