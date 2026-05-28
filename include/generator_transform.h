@@ -78,6 +78,57 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
   return false;
 }
 
+// Collect every DEFER node in a fn body in source order, stopping at
+// inner fn boundaries. Used by the dispatcher to verify that all defers
+// live at the body's top level (where Stage 3 emits them into the
+// generator's defer registry); defers buried inside loop/if bodies have
+// no good translation today and surface as a SyntaxError.
+inline std::vector<const peg::Ast*> collect_defers(const peg::Ast& body) {
+  using namespace peg::udl;
+  std::vector<const peg::Ast*> out;
+  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+    if (is_fn_boundary(n.tag)) return;
+    if (n.tag == "DEFER"_) { out.push_back(&n); return; }
+    for (auto& c : n.nodes) walk(*c);
+  };
+  walk(body);
+  return out;
+}
+
+// Locate the first YIELD reachable from inside a TRY's try-block / catch
+// block, or from inside a DEFER's body. Returns nullptr if no such yield
+// exists. Used by the dispatcher to enforce the C# rule (CS1626): yield
+// statements may not appear inside a try-catch or defer. `yield try {...}
+// catch e {...}` is fine because the yield is OUTSIDE the try (only the
+// try-expression's value flows through it) — the guard descends into a
+// TRY's body BLOCKs but not into its position as an expression.
+inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
+  using namespace peg::udl;
+  const peg::Ast* found = nullptr;
+  std::function<void(const peg::Ast&, bool)> walk =
+      [&](const peg::Ast& n, bool inside_guard) {
+        if (found) return;
+        if (is_fn_boundary(n.tag)) return;
+        if (inside_guard && (n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_)) {
+          found = &n;
+          return;
+        }
+        if (n.tag == "TRY"_) {
+          // TRY children: try-BLOCK, catch-IDENT, catch-BLOCK
+          if (n.nodes.size() > 0) walk(*n.nodes[0], true);
+          if (n.nodes.size() > 2) walk(*n.nodes[2], true);
+          return;
+        }
+        if (n.tag == "DEFER"_) {
+          if (!n.nodes.empty()) walk(*n.nodes[0], true);
+          return;
+        }
+        for (auto& c : n.nodes) walk(*c, inside_guard);
+      };
+  walk(body, false);
+  return found;
+}
+
 // Collect every YIELD inside a fn body in source order, stopping at
 // inner fn boundaries (same rule as `fn_body_has_yield`).
 inline std::vector<const peg::Ast*> collect_yields(const peg::Ast& node) {
@@ -388,7 +439,10 @@ inline bool swap_body_with_wrapper_params(
 // Stage 1: yield expressions are eager-evaluated in the factory and
 // passed through positional ctor args `_y0, _y1, ...`. Works for any
 // body whose yields depend only on params/literals — see
-// [[project-generator-design]] §Stage 1.
+// [[project-generator-design]] §Stage 1. The class carries a no-op
+// `dispose()` so for-in's unconditional cleanup call lands on a real
+// method (the dispatcher already rejects Stage 1 bodies that try to
+// use `defer`, so there's nothing to actually run here).
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage1(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
     const peg::Ast& name_ast,
@@ -430,6 +484,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage1(
       "{4}"
       "      return nil\n"
       "    }}\n"
+      "    dispose() {{}}\n"
       "  }}\n"
       "  {0}.new({5})\n"
       "}}\n",
@@ -466,6 +521,44 @@ inline std::string substitute_yields_in_stmt(
     out.replace(local_pos, y->length, replacement);
   }
   return out;
+}
+
+// Split pre-loop into (a) the non-defer statements (kept inline) and
+// (b) the LIFO-ordered defer bodies (lifted into the generator's
+// `dispose()` method directly, inlined rather than wrapped in
+// closures). Inlining sidesteps a JIT limitation around `this` capture
+// in closures created from method bodies, and the closure indirection
+// wasn't doing anything Stage 6a's minimum scope needed anyway —
+// defers at body top level are unconditional, so reach + run are
+// equivalent. The dispose code is gated on `_g_inited` so a generator
+// disposed before any iteration doesn't fire defers whose locals
+// haven't been initialized yet.
+inline void split_pre_loop_stmts_and_defers(
+    const std::vector<const peg::Ast*>& stmts,
+    const char* src, size_t src_len,
+    const std::set<std::string>& rewrite_set,
+    std::string& out_stmts,
+    std::string& out_dispose_body) {
+  using namespace peg::udl;
+  std::vector<std::string> defer_bodies;
+  for (auto* stmt : stmts) {
+    auto* unwrapped = unwrap_stmt(stmt);
+    if (unwrapped->tag == "DEFER"_ && !unwrapped->nodes.empty()) {
+      auto block_sv = ast_source_slice(*unwrapped->nodes[0], src, src_len);
+      auto inner_sv = strip_block_braces(block_sv);
+      defer_bodies.push_back(rewrite_locals_to_this(inner_sv, rewrite_set));
+    } else {
+      auto stmt_sv = ast_source_slice(*stmt, src, src_len);
+      out_stmts += rewrite_locals_to_this(stmt_sv, rewrite_set);
+      out_stmts += "\n";
+    }
+  }
+  // LIFO: last-registered defer runs first.
+  for (auto it = defer_bodies.rbegin(); it != defer_bodies.rend(); ++it) {
+    out_dispose_body += "        ";
+    out_dispose_body += *it;
+    out_dispose_body += "\n";
+  }
 }
 
 // Stage 3: while-loop body whose yields all live inside one statement
@@ -507,7 +600,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
       "      this._g_drained = false\n"
       "      this._g_has_la = false\n"
       "      this._g_la = nil\n"
-      "      this._g_inited = false\n";
+      "      this._g_inited = false\n"
+      "      this._g_disposed = false\n";
   std::set<std::string> param_set;
   for (size_t j = 0; j < param_names.size(); j++) {
     auto pn = std::string(param_names[j]);
@@ -528,8 +622,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
   }
 
   // Rewrite each body fragment to use `this.X` for params + locals.
-  auto pre_loop_src = rewrite_locals_to_this(
-      ast_source_range(p.pre_loop, src, src_len), rewrite_set);
+  // pre_loop walks statements one by one so DEFER nodes can be lifted
+  // into the dispose method directly (inlined, not wrapped in closures
+  // — JIT can't capture `this` through a method-local closure today).
+  std::string pre_loop_src;
+  std::string dispose_body_src;
+  split_pre_loop_stmts_and_defers(
+      p.pre_loop, src, src_len, rewrite_set,
+      pre_loop_src, dispose_body_src);
   auto pre_yield_src = rewrite_locals_to_this(
       ast_source_range(p.pre_yield, src, src_len), rewrite_set);
   auto post_yield_src = rewrite_locals_to_this(
@@ -574,13 +674,21 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
       "      this._g_has_la = false\n"
       "      return _v\n"
       "    }}\n"
+      "    dispose() {{\n"
+      "      if this._g_disposed {{ return nil }}\n"
+      "      this._g_disposed = true\n"
+      "      this._g_drained = true\n"
+      "      if this._g_inited {{\n"
+      "{10}"
+      "      }}\n"
+      "    }}\n"
       "  }}\n"
       "  {0}.new({9})\n"
       "}}\n",
       gen_name, ctor_params, ctor_inits,
       post_yield_src, pre_loop_src,
       cond_src, pre_yield_src, yield_stmt_src, post_yield_src,
-      ctor_call_args));
+      ctor_call_args, dispose_body_src));
   swap_body_from_wrapper(ast, synthesized);
   return ast;
 }
@@ -602,6 +710,22 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   auto yields = collect_yields(*ast->nodes.back());
   if (yields.empty()) return ast;
 
+  // C# rule (CS1626): a yield statement may not appear inside a try-catch
+  // or defer block. The state-machine cost of supporting yield-spanning
+  // try blocks is permanently out of scope for culebra ([[generator-design]]
+  // §仕様凍結項目). Cleanup belongs in `defer { ... }` at body top level;
+  // value-level error recovery belongs in the yielded expression
+  // (`yield try { ... } catch e { ... }`).
+  if (auto* bad = find_yield_inside_try_or_defer(*ast->nodes.back())) {
+    throw CulebraError(
+        "SyntaxError",
+        "yield cannot appear inside a try-catch or defer block. Move "
+        "the try to the yielded expression value (yield try { ... } "
+        "catch e { ... }) or use a top-level `defer { ... }` for cleanup.",
+        static_cast<long>(bad->line),
+        static_cast<long>(bad->column));
+  }
+
   // Stage 5: rewrite yielding for-in loops to while + iterator at source
   // level, then re-parse so Stage 3 picks them up.
   if (auto rewritten = rewrite_yielding_fors_to_while(
@@ -618,11 +742,45 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     if (yields.empty()) return ast;
   }
 
+  // Stage 6a defer scope: only top-level `defer { ... }` in the body is
+  // supported (lifted into the generator's defer registry at dispose
+  // time). Defers buried in loop / if / match bodies have no clean
+  // translation today — surface as a SyntaxError instead of silently
+  // letting the existing scope-local defer mechanism mis-fire on yield.
+  auto all_defers = collect_defers(*ast->nodes.back());
   const auto& name_ast = *ast->nodes[i];
   const auto& params_ast = *ast->nodes[i + 1];
   if (auto p = match_stage3_pattern(*ast->nodes.back(), yields)) {
+    if (!all_defers.empty()) {
+      std::set<const peg::Ast*> pre_loop_defers;
+      for (auto* stmt : p->pre_loop) {
+        auto* unwrapped = unwrap_stmt(stmt);
+        if (unwrapped->tag == "DEFER"_) pre_loop_defers.insert(unwrapped);
+      }
+      for (auto* d : all_defers) {
+        if (!pre_loop_defers.contains(d)) {
+          throw CulebraError(
+              "SyntaxError",
+              "defer in generator must be at the body's top level "
+              "(before the loop). Defers nested inside loop / if / match "
+              "bodies are not supported.",
+              static_cast<long>(d->line),
+              static_cast<long>(d->column));
+        }
+      }
+    }
     return transform_one_generator_fn_stage3(ast, src, src_len, name_ast,
                                              params_ast, *p, yields);
+  }
+  if (!all_defers.empty()) {
+    auto* d = all_defers.front();
+    throw CulebraError(
+        "SyntaxError",
+        "defer in generator requires a loop body (while or for-in). "
+        "Straight-line generators have no drain point to attach the "
+        "cleanup to.",
+        static_cast<long>(d->line),
+        static_cast<long>(d->column));
   }
   return transform_one_generator_fn_stage1(ast, src, src_len, name_ast, yields);
 }

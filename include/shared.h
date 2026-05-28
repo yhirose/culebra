@@ -777,6 +777,7 @@ trait Hashable {
 trait Iterator {
   has_next() -> Bool
   next() -> Any
+  dispose() {}
 }
 trait Iterable {
   iter() -> Iterator

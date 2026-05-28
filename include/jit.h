@@ -8596,6 +8596,14 @@ struct JIT {
       for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
       return any;
     }
+    if (node.tag == "FOR"_) {
+      // for-in over the iterator protocol (Object iter() path) emits an
+      // exception landingpad in compile_for_protocol_loop so iter.dispose()
+      // fires even when the body throws. The landingpad requires the
+      // enclosing function to carry a personality, so flag it here even
+      // though no try/defer is present.
+      info.has_eh = true;
+    }
     if (node.tag == "LEXICAL_SCOPE"_) {
       bool inner = false;
       for (auto& c : node.nodes) inner |= scan_eh_defer(*c, false, info);
@@ -11364,6 +11372,37 @@ struct JIT {
     auto condBB = llvm::BasicBlock::Create(ctx_, "for.p.cond", fn);
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.p.body", fn);
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "for.p.cleanup", fn);
+    auto excLpadBB = llvm::BasicBlock::Create(ctx_, "for.p.exc", fn);
+    auto disposeKeyPtr = get_or_create_global_str("dispose", ".dispose.key");
+
+    // Iterator trait dispose: call iter.dispose() if the class carries
+    // one (default trait impl is no-op, so trait-only coverage skips the
+    // call), then release the iterator slot contents. Shared between the
+    // natural-exit/break path (cleanupBB) and the exception landingpad
+    // (excLpadBB) — both run the same cleanup before continuing.
+    auto emit_iter_dispose_and_release = [&](const char* label_prefix) {
+      auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca,
+                                           (std::string(label_prefix) + ".iter").c_str());
+      auto iterFinalPtr = builder_.CreateIntToPtr(
+          extract_data(iterFinal), ptrTy,
+          (std::string(label_prefix) + ".iter.ptr").c_str());
+      auto hasDispose = emit_object_has(
+          iterFinalPtr, disposeKeyPtr,
+          (std::string(label_prefix) + ".has_dispose").c_str());
+      auto disposeBB = llvm::BasicBlock::Create(
+          ctx_, (std::string(label_prefix) + ".dispose").c_str(), fn);
+      auto skipBB = llvm::BasicBlock::Create(
+          ctx_, (std::string(label_prefix) + ".skip").c_str(), fn);
+      builder_.CreateCondBr(hasDispose, disposeBB, skipBB);
+
+      builder_.SetInsertPoint(disposeBB);
+      auto dispose_fn_val = compile_property_get(iterFinal, "dispose");
+      compile_function_call_raw(dispose_fn_val, iterFinal, {});
+      builder_.CreateBr(skipBB);
+
+      builder_.SetInsertPoint(skipBB);
+      emit_value_release(iterFinal);
+    };
 
     builder_.CreateBr(condBB);
 
@@ -11388,14 +11427,34 @@ struct JIT {
     llvm::Value* loop_val = llvm::UndefValue::get(valueType_);
     loop_val = builder_.CreateInsertValue(loop_val, outTag, {0});
     loop_val = builder_.CreateInsertValue(loop_val, outData, {1});
+    // Route in-body exceptions through excLpadBB so iter dispose + release
+    // fire before unwinding continues. Restore the prior landingpad after
+    // the body finishes so the cleanupBB / break paths still inherit the
+    // outer one for any post-cleanup exceptions.
+    auto savedLpad = current_lpad_;
+    current_lpad_ = excLpadBB;
     emit_for_body_with_owned_binding(var_name, loop_val, body, condBB,
                                      cleanupBB);
+    current_lpad_ = savedLpad;
 
-    // cleanupBB: release the iterator slot contents, exit the for-in
+    // cleanupBB: natural-exit and break path.
     builder_.SetInsertPoint(cleanupBB);
-    auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca, "iter.fin");
-    emit_value_release(iterFinal);
+    emit_iter_dispose_and_release("for.p");
     builder_.CreateBr(endBB);
+
+    // excLpadBB: exception path. Catches, runs the same dispose + release,
+    // then rethrows so the exception keeps unwinding to whatever outer
+    // landingpad (or function exit) is active.
+    builder_.SetInsertPoint(excLpadBB);
+    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
+    auto lpad = builder_.CreateLandingPad(lpadTy, 1, "for.p.lpad");
+    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
+    auto excPtr = builder_.CreateExtractValue(lpad, {0});
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+        {excPtr});
+    emit_iter_dispose_and_release("for.p.exc");
+    emit_rethrow(savedLpad);
   }
 
   void compile_for_string_loop(llvm::Value* strPtr,

@@ -4149,11 +4149,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       throw iter_proto_error("iterator missing has_next()/next()");
     }
 
+    // Iterator dispose protocol: call iter.dispose() on every exit path
+    // (drain / break / exception). Default trait impl is a no-op, so
+    // built-in iterators pay just a method lookup; generators override
+    // to run registered defers. See [[generator-design]] §dispose.
+    auto dispose_iter = [&]() {
+      if (iter_val.type != Value::Object) return;
+      const auto& iter_obj = iter_val.to_object();
+      if (!iter_obj.has("dispose")) return;
+      _invoke_method_no_args(iter_val, "dispose");
+    };
+
     // Drive via the Kotlin-style protocol: `has_next()` gates each
     // `next()`. `_iter_next_value` already encapsulates that pair.
     for (;;) {
       auto v = _iter_next_value(iter_val);
-      if (!v) break;
+      if (!v) { dispose_iter(); break; }
 
       auto scopeEnv = make_scope(env);
       scopeEnv->initialize(var_name, std::move(*v), false);
@@ -4162,12 +4173,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
         run_deferred(scopeEnv);
+        dispose_iter();
         return Value();
       } catch (const ContinueSignal&) {
         run_deferred(scopeEnv);
-        // fall through
+        // fall through (loop continues; dispose only at final exit)
       } catch (...) {
         run_deferred(scopeEnv);
+        try { dispose_iter(); } catch (...) {}  // preserve in-flight throw
         throw;
       }
     }

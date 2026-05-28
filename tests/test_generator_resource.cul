@@ -1,0 +1,114 @@
+// Stage 6a: resource-safe generator via dispose protocol + defer + C# rule.
+//
+// Verifies that `defer { ... }` blocks inside generator bodies run reliably:
+//   - on natural drain (loop iteration completes)
+//   - on early `break` out of for-in
+//   - on exception thrown inside the for-in body
+//   - exactly once (idempotent against explicit `.dispose()`)
+// Plus the Stage 3 pre-yield-position try/catch bug fix.
+//
+// Uses a mut String trace + interpolation (no array equality, no `+`
+// concat between Strings) — same pattern as tests/test_defer.cul.
+
+// --- (1) Built-in iterators still work (default dispose = no-op) ---
+mut sum = 0
+for v in [1, 2, 3] { sum = sum + v }
+assert_eq(sum, 6)
+
+// --- (2) defer runs on natural drain ---
+mut log_a = ''
+fn gen_a() {
+  defer { log_a = "{log_a}closed;" }
+  for v in [1, 2, 3] { yield v }
+}
+for v in gen_a() { log_a = "{log_a}{v};" }
+assert_eq(log_a, '1;2;3;closed;')
+
+// --- (3) defer runs on early `break` ---
+mut log_b = ''
+fn gen_b() {
+  defer { log_b = "{log_b}closed;" }
+  mut i = 0
+  while i < 100 {
+    yield i
+    i = i + 1
+  }
+}
+for v in gen_b() {
+  log_b = "{log_b}{v};"
+  if v >= 2 { break }
+}
+assert_eq(log_b, '0;1;2;closed;')
+
+// --- (4) multiple defers run in LIFO order ---
+mut log_c = ''
+fn gen_c() {
+  defer { log_c = "{log_c}c1;" }
+  defer { log_c = "{log_c}c2;" }
+  defer { log_c = "{log_c}c3;" }
+  for v in [42] { yield v }
+}
+for v in gen_c() { log_c = "{log_c}{v};" }
+assert_eq(log_c, '42;c3;c2;c1;')
+
+// --- (5) explicit dispose is idempotent; defer fires exactly once ---
+mut log_d = ''
+fn gen_d() {
+  defer { log_d = "{log_d}once;" }
+  for v in [1, 2] { yield v }
+}
+let g_d = gen_d()
+for v in g_d { log_d = "{log_d}{v};" }
+g_d.dispose()                    // explicit second call — must be no-op
+g_d.dispose()                    // and a third
+assert_eq(log_d, '1;2;once;')
+
+// --- (6) defer runs on exception thrown inside for-in body ---
+mut log_e = ''
+fn gen_e() {
+  defer { log_e = "{log_e}closed;" }
+  for v in [1, 2, 3] { yield v }
+}
+try {
+  for v in gen_e() {
+    log_e = "{log_e}{v};"
+    if v == 1 { throw 'boom' }
+  }
+} catch e { log_e = "{log_e}caught;" }
+assert_eq(log_e, '1;closed;caught;')
+
+// --- (7) defer accesses locals set during body execution ---
+// The defer { f.close() } pattern: `f` is a local set by `let f = ...`
+// before the defer registration is reached. At dispose time, f is the
+// open resource; the closure sees the current value via `this.f`.
+mut log_f = ''
+class FakeResource {
+  new(name) { this.name = name }
+  close() { log_f = "{log_f}close:{this.name};" }
+}
+fn gen_f() {
+  let f = FakeResource.new('alpha')
+  defer { f.close() }
+  for v in [10, 20] { yield v }
+}
+for v in gen_f() { log_f = "{log_f}{v};" }
+assert_eq(log_f, '10;20;close:alpha;')
+
+// --- (8) Stage 3 pre-yield try/catch ---
+// Pre-yield position try/catch with a mut binding mutated inside both
+// the try and the catch arms should hand the post-try value to the
+// downstream yield.
+fn classify(arr) {
+  for v in arr {
+    mut tag = nil
+    try { tag = to_string(100 / v) } catch e { tag = 'err' }
+    yield tag
+  }
+}
+let cls = classify([5, 0, 20]).collect()
+assert_eq(cls.size(), 3)
+assert_eq(cls[0], '20')
+assert_eq(cls[1], 'err')
+assert_eq(cls[2], '5')
+
+IO.puts('test_generator_resource OK')
