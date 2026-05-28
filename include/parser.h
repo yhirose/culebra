@@ -68,7 +68,7 @@ const auto grammar_ = R"(
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
-  YIELD                    <-  yield _sp_ !_nl_ EXPRESSION
+  YIELD                    <-  yield _sp_ !_nl_ EXPRESSION                            { no_ast_opt }
   BREAK                    <-  break
   CONTINUE                 <-  continue
   DEFER                    <-  defer _ BLOCK

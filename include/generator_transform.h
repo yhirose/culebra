@@ -344,18 +344,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage1(
 // are processed back-to-front so earlier positions stay valid as later
 // replacements shift the tail. `yields` must be in source order and
 // every yield must lie inside the stmt range (caller guarantees).
-//
-// The replacement is wrapped in braces because of a cpp-peglib quirk:
-// when a single-stmt BLOCK collapses (BLOCK→STATEMENTS→STATEMENT→YIELD,
-// each with one child), the surviving YIELD-tagged node inherits the
-// outer BLOCK's position+length, so `y->length` may cover `{ yield expr
-// }` rather than just `yield expr`. `no_ast_opt` on YIELD doesn't help
-// — peglib's collapse rewrites position+length unconditionally when the
-// *outer* rule is the one being optimized away (see AstBase ctor at
-// peglib.h:5136 and AstOptimizer::optimize at peglib.h:5223). Wrapping
-// the replacement in braces restores a valid block where it was needed
-// and creates a harmless nested block in multi-stmt loop bodies — the
-// inner `return true` exits has_next() before any trailing code runs.
+// YIELD carries `{ no_ast_opt }` so its position+length survives AST
+// collapse exactly — the replacement maps `yield expr` 1:1 with no
+// outer-block padding needed.
 inline std::string substitute_yields_in_stmt(
     std::string_view stmt_src, size_t base_pos,
     const std::vector<const peg::Ast*>& yields,
@@ -370,7 +361,7 @@ inline std::string substitute_yields_in_stmt(
     size_t local_pos = y->position - base_pos;
     auto yexpr_sv = ast_source_slice(*y->nodes[0], src, src_len);
     auto replacement = std::format(
-        "{{ this._g_la = ({}); this._g_has_la = true; return true }}",
+        "this._g_la = ({}); this._g_has_la = true; return true",
         std::string(yexpr_sv));
     out.replace(local_pos, y->length, replacement);
   }
