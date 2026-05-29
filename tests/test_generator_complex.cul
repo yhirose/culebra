@@ -1,0 +1,70 @@
+// CPS spike: generators whose control flow exceeds the Stage 3
+// "single terminal loop, single yield-bearing stmt" shape.
+//   - post-loop yield   (chunk / group_by tail flush)
+//   - code after yield within a branch (chunk's `yield buf; buf = []`)
+//   - multiple yields per loop iteration (intersperse)
+// Index-based assertions (Array equality is identity).
+
+// --- chunk: fixed-size groups + remainder flush after the loop ---
+fn chunk(arr, n) {
+  mut buf = []
+  for v in arr {
+    buf.push(v)
+    if buf.size() >= n {
+      yield buf
+      buf = []
+    }
+  }
+  if buf.size() > 0 { yield buf }
+}
+let c = chunk([1, 2, 3, 4, 5], 2).collect()
+assert_eq(c.size(), 3)
+assert_eq(c[0].size(), 2)
+assert_eq(c[0][0], 1)
+assert_eq(c[1][1], 4)
+assert_eq(c[2].size(), 1)
+assert_eq(c[2][0], 5)
+
+// chunk dividing evenly (no tail) ---
+let c2 = chunk([1, 2, 3, 4], 2).collect()
+assert_eq(c2.size(), 2)
+assert_eq(c2[1][1], 4)
+
+// --- group_consecutive: flush last run after the loop ---
+fn group_consecutive(arr) {
+  mut cur = []
+  mut key = nil
+  for v in arr {
+    if cur.size() > 0 && v != key {
+      yield cur
+      cur = []
+    }
+    cur.push(v)
+    key = v
+  }
+  if cur.size() > 0 { yield cur }
+}
+let g = group_consecutive([1, 1, 2, 3, 3, 3]).collect()
+assert_eq(g.size(), 3)
+assert_eq(g[0].size(), 2)
+assert_eq(g[1].size(), 1)
+assert_eq(g[2].size(), 3)
+
+// --- intersperse: two yields per iteration ---
+fn intersperse(arr, sep) {
+  mut first = true
+  for v in arr {
+    if !first { yield sep }
+    yield v
+    first = false
+  }
+}
+let s = intersperse([1, 2, 3], 0).collect()
+assert_eq(s.size(), 5)
+assert_eq(s[0], 1)
+assert_eq(s[1], 0)
+assert_eq(s[2], 2)
+assert_eq(s[3], 0)
+assert_eq(s[4], 3)
+
+IO.puts('test_generator_complex OK')
