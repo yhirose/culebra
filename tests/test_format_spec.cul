@@ -1,0 +1,45 @@
+// Interpolation format specs `"{expr:spec}"` — delegated to a
+// std::format-style mini-language (Python-derived).
+
+let pi = 3.14159
+
+// Fixed-point precision on a Float.
+assert_eq("{pi:.2f}", "3.14")
+assert_eq("{pi:.0f}", "3")
+assert_eq("v={pi:.4f}", "v=3.1416")
+
+// A Long under a float spec is coerced (matches Python f-strings).
+assert_eq("{5:.2f}", "5.00")
+
+// Integer width / zero-pad / radix.
+assert_eq("{42:5}", "   42")
+assert_eq("{42:05}", "00042")
+assert_eq("{255:x}", "ff")
+assert_eq("{255:X}", "FF")
+assert_eq("{255:#x}", "0xff")
+assert_eq("{10:b}", "1010")
+assert_eq("{8:o}", "10")
+
+// String width / alignment.
+assert_eq("[{'hi':>5}]", "[   hi]")
+assert_eq("[{'hi':<5}]", "[hi   ]")
+assert_eq("[{'hi':^6}]", "[  hi  ]")
+
+// Sign.
+assert_eq("{42:+}", "+42")
+
+// No spec behaves as before.
+let n = 7
+assert_eq("n={n}", "n=7")
+assert_eq("{pi}", "3.14159")
+
+// Expression with a spec.
+let a = 2
+let b = 3
+assert_eq("{a + b:03}", "005")
+
+// Invalid spec for the type raises ValueError.
+let e = try { let _ = "{pi:z}"; nil } catch er { er.kind }
+assert_eq(e, "ValueError")
+
+IO.puts("test_format_spec OK")

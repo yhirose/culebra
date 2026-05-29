@@ -285,7 +285,12 @@ const auto grammar_ = R"(
   NUMBER                   <-  < '0' [xX] [0-9a-fA-F]+ / '0' [oO] [0-7]+ / '0' [bB] [01]+ / [0-9]+ >
   STRING                   <-  ['] < (!['] .)* > [']
 
-  INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'
+  # `{expr}` embeds an expression; `{expr:spec}` adds a std::format-style
+  # format spec (`{x:.2f}`, `{n:05}`, `{n:x}`, `{s:>10}`). INTERP_EXPR
+  # collapses to the bare EXPRESSION when no spec is present.
+  INTERPOLATED_STRING      <-  '"' (INTERP_EXPR / INTERPOLATED_CONTENT)* '"'
+  INTERP_EXPR              <-  '{' _ EXPRESSION (_ ':' FORMAT_SPEC)? _ '}'
+  FORMAT_SPEC              <-  < (![}] .)* >
   # Inside interpolated strings, '\X' is one logical character: the parser
   # keeps both bytes in the captured token and the runtime decoder turns
   # recognized escapes (\n \r \t \\ \" \{) into their byte values. This
@@ -799,7 +804,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "ENUM_DECL", "VARIANT",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN", "CTOR_PATTERN",
-               "REST_PATTERN",
+               "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
                "IMPORT_STMT", "EXPORT_STMT"});
 
     return opt.optimize(ast);

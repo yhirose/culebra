@@ -577,6 +577,60 @@ inline long parse_integer_literal(std::string_view tok) {
   return std::strtol(owned.c_str() + off, nullptr, base);
 }
 
+// --- Interpolation format spec (`"{x:.2f}"`) ----------------------------
+//
+// The mini-language is delegated to std::format, whose spec syntax is
+// Python-derived (`[[fill]align][sign][#][0][width][grp][.prec][type]`).
+// We wrap `{:<spec>}` around the captured spec and vformat the value.
+// Shared by interp and JIT so both render identically. A bad spec throws
+// a ValueError (mapped from std::format_error).
+
+// Trailing type char of a spec (`f`, `x`, …), or 0 if none.
+inline char format_spec_type(std::string_view spec) {
+  if (spec.empty()) return 0;
+  char c = spec.back();
+  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '%') return c;
+  return 0;
+}
+inline bool format_spec_wants_float(std::string_view spec) {
+  char c = format_spec_type(spec);
+  return c == 'e' || c == 'E' || c == 'f' || c == 'F' || c == 'g' ||
+         c == 'G' || c == '%' || c == 'a' || c == 'A';
+}
+inline bool format_spec_wants_int(std::string_view spec) {
+  char c = format_spec_type(spec);
+  return c == 'b' || c == 'c' || c == 'd' || c == 'o' || c == 'x' || c == 'X';
+}
+
+// Common core: wrap `{:<spec>}`, vformat, map format_error to a
+// ValueError tagged with the value's culebra type name.
+template <typename T>
+inline std::string format_value_as(T& v, std::string_view type_name,
+                                   std::string_view spec, long line, long col) {
+  std::string fmt = "{:";
+  fmt += spec;
+  fmt += "}";
+  try {
+    return std::vformat(fmt, std::make_format_args(v));
+  } catch (const std::format_error&) {
+    throw CulebraError("ValueError",
+        std::format("invalid format spec '{}' for {}", spec, type_name), line,
+        col);
+  }
+}
+inline std::string format_value_long(long v, std::string_view spec, long line,
+                                     long col) {
+  return format_value_as(v, "Long", spec, line, col);
+}
+inline std::string format_value_double(double v, std::string_view spec,
+                                       long line, long col) {
+  return format_value_as(v, "Float", spec, line, col);
+}
+inline std::string format_value_string(std::string v, std::string_view spec,
+                                       long line, long col) {
+  return format_value_as(v, "String", spec, line, col);
+}
+
 // Parse a full string as a double; same trim / full-consumption rules.
 inline double parse_double_strict(std::string_view s, long line, long col) {
   auto t = trim_ascii(s);

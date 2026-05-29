@@ -6531,6 +6531,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(ast.token_to_number<double>());
   }
 
+  // Render a value under a `{x:spec}` format spec. Numeric values honor
+  // the spec's type char (`.2f` formats a Long as Float, `x` an int in
+  // hex); everything else formats its display string (width / align).
+  std::string apply_format_spec(const Value& v, std::string_view spec,
+                                long line, long col) {
+    if (spec.empty()) return str_display_with_special(v);
+    if (v.type == Value::Long) {
+      if (format_spec_wants_float(spec))
+        return format_value_double(static_cast<double>(v.get<long>()), spec,
+                                   line, col);
+      return format_value_long(v.get<long>(), spec, line, col);
+    }
+    if (v.type == Value::Float) {
+      if (format_spec_wants_int(spec))
+        return format_value_long(static_cast<long>(v.get<double>()), spec,
+                                 line, col);
+      return format_value_double(v.get<double>(), spec, line, col);
+    }
+    return format_value_string(str_display_with_special(v), spec, line, col);
+  }
+
   Value eval_interpolated_string(const peg::Ast& ast,
                                  std::shared_ptr<Environment> env) {
     using namespace peg::udl;
@@ -6538,7 +6559,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (auto node : ast.nodes) {
       if (node->tag == "INTERPOLATED_CONTENT"_) {
         s += decode_interpolated_content(node->token);
+      } else if (node->tag == "INTERP_EXPR"_) {
+        // `{expr}` → [EXPRESSION]; `{expr:spec}` → [EXPRESSION, FORMAT_SPEC].
+        const auto& val = eval(*node->nodes[0], env);
+        if (node->nodes.size() > 1) {
+          s += apply_format_spec(val, node->nodes[1]->token,
+                                 static_cast<long>(node->line),
+                                 static_cast<long>(node->column));
+        } else {
+          s += str_display_with_special(val);
+        }
       } else {
+        // Defensive: a bare expression child (shouldn't occur now that
+        // INTERP_EXPR is kept, but keeps old ASTs working).
         const auto& val = eval(*node, env);
         s += str_display_with_special(val);
       }

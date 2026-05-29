@@ -1368,6 +1368,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
   return _culebra_heap_str(_culebra_value_to_str_impl(type, data));
 }
 
+// `"{x:spec}"` interpolation format. Mirrors interp's apply_format_spec:
+// numeric values honor the spec's type char, everything else formats its
+// display string. Returns a heap string (leaked for program lifetime,
+// like other interpolation pieces).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
+    int8_t type, int64_t data, const char* spec_cstr, int64_t line,
+    int64_t col) {
+  std::string_view spec(spec_cstr);
+  if (spec.empty()) return culebra_runtime_value_to_display(type, data);
+  if (type == TAG_LONG) {
+    if (culebra::format_spec_wants_float(spec))
+      return _culebra_heap_str(culebra::format_value_double(
+          static_cast<double>(data), spec, line, col));
+    return _culebra_heap_str(culebra::format_value_long(data, spec, line, col));
+  }
+  if (type == TAG_FLOAT) {
+    double d;
+    std::memcpy(&d, &data, sizeof d);
+    if (culebra::format_spec_wants_int(spec))
+      return _culebra_heap_str(culebra::format_value_long(
+          static_cast<long>(d), spec, line, col));
+    return _culebra_heap_str(culebra::format_value_double(d, spec, line, col));
+  }
+  return _culebra_heap_str(culebra::format_value_string(
+      culebra_runtime_value_to_display(type, data), spec, line, col));
+}
+
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
 // `hash()` method (Hashable + Eq structural conformance); primitives
 // go through JitValueHash — same path JitObject's AnyKeyMap uses.
@@ -6549,6 +6576,7 @@ inline constexpr auto value_release       = "culebra_runtime_value_release";
 inline constexpr auto value_retain        = "culebra_runtime_value_retain";
 inline constexpr auto value_swap_owned    = "culebra_runtime_value_swap_owned";
 inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
+inline constexpr auto format_value        = "culebra_runtime_format_value";
 inline constexpr auto write_file          = "culebra_runtime_write_file";
 }  // namespace rt
 
@@ -9772,9 +9800,26 @@ struct JIT {
         // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
         auto decoded = decode_interpolated_content(node->token);
         piece = builder_.CreateGlobalString(decoded, ".str");
+      } else if (node->tag == "INTERP_EXPR"_ && node->nodes.size() > 1) {
+        // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
+        auto val = compile(*node->nodes[0]);
+        auto specPtr = get_or_create_global_str(
+            std::string(node->nodes[1]->token), ".fmtspec");
+        piece = emit_call(
+            module_->getOrInsertFunction(rt::format_value, ptrTy,
+                                         builder_.getInt8Ty(),
+                                         builder_.getInt64Ty(), ptrTy,
+                                         builder_.getInt64Ty(),
+                                         builder_.getInt64Ty()),
+            {extract_tag(val), extract_data(val), specPtr,
+             builder_.getInt64(node->line), builder_.getInt64(node->column)},
+            "fmt");
       } else {
-        // Expression - evaluate and convert to display string
-        auto val = compile(*node);
+        // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive)
+        // a bare expr node.
+        auto exprNode = (node->tag == "INTERP_EXPR"_) ? node->nodes[0].get()
+                                                      : node.get();
+        auto val = compile(*exprNode);
         auto tag = extract_tag(val);
         auto data = extract_data(val);
         piece = emit_call(

@@ -687,6 +687,27 @@ Escape sequences (in plain-text segments only):
 A `}` does not need escaping outside of an interpolation. An unknown
 `\X` is preserved unchanged as two characters (`\` and `X`).
 
+### Format specs
+
+An interpolation may carry a format spec after a colon — `{expr:spec}`.
+The spec is the C++ `std::format` mini-language (Python-derived):
+`[[fill]align][sign][#][0][width][.precision][type]`.
+
+    "{pi:.2f}"        # → 3.14   (fixed-point, 2 decimals)
+    "{5:.2f}"         # → 5.00   (a Long is coerced for a float spec)
+    "{n:05}"          # → 00042  (zero-padded width)
+    "{255:#x}"        # → 0xff   (hex with prefix)
+    "{name:>10}"      # → right-aligned in 10 columns
+    "{score:+}"       # → +42    (explicit sign)
+
+Numeric values honor the spec's type char: a float type (`f`/`e`/`g`)
+formats Longs and Floats as floating-point, an integer type
+(`d`/`x`/`o`/`b`) formats as an integer. Other values format their
+display string (so width / alignment apply). An invalid spec for the
+value's type raises `ValueError`. Note this is `std::format`, not Python
+exactly — e.g. `,` digit grouping is not supported (std::format uses the
+locale `L` option instead).
+
 ### Display conversion
 
 When an expression inside `"..."` is not a `String`, its display form
