@@ -722,6 +722,13 @@ struct ObjectValue {
   explicit ObjectValue(Synthetic) {}
 
   bool has(std::string_view name) const;
+  // Own-field existence, excluding builtin methods. `has()` returns true
+  // for builtin method names (`size`/`keys`/...) even when the instance
+  // carries no such field, which is what property *reads* want (the
+  // builtin is the fallback). Assignment-target checks must use this
+  // instead, or `this.size = v` on a fresh field routes to `assign()`
+  // (which expects an existing slot) instead of `initialize()`.
+  bool has_own(std::string_view name) const;
   const Value& get(std::string_view name) const;
   void assign(std::string_view name, const Value& val);
   void initialize(std::string_view name, const Value& val, bool mut);
@@ -1677,6 +1684,10 @@ inline bool ObjectValue::has(std::string_view name) const {
     return props.contains(name);
   }
   return true;
+}
+
+inline bool ObjectValue::has_own(std::string_view name) const {
+  return properties->contains(name);
 }
 
 inline const Value& ObjectValue::get(std::string_view name) const {
@@ -5989,10 +6000,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           auto& obj = lval.to_object();
           auto name = postfix.token;
           if (compound) {
-            if (!obj.has(name)) {
+            if (!obj.has_own(name)) {
               // Shared helper so the JIT path (see jit.h
               // `compile_assignment` DOT-compound branch) raises
               // the same AttributeError with location attached.
+              // has_own (not has) so a builtin-named miss still errors
+              // rather than compounding against a builtin method value.
               throw_compound_missing_property_at(
                   static_cast<long>(postfix.line),
                   static_cast<long>(postfix.column));
@@ -6005,7 +6018,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             obj.assign(name, new_val);
             return new_val;
           }
-          if (obj.has(name)) {
+          // has_own: a fresh field whose name shadows a builtin method
+          // (`size`/`keys`/...) must initialize a new slot, not route to
+          // assign() which expects an existing property.
+          if (obj.has_own(name)) {
             obj.assign(name, rval);
           } else {
             obj.initialize(name, rval, mut);

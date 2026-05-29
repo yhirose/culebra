@@ -190,13 +190,18 @@ inline std::string_view strip_block_braces(std::string_view s) {
   return s;
 }
 
-// Rewrite every `\b<name>\b` in `src` to `this.<name>` for each name in
-// `names`, then strip `let `/`mut ` prefixes that now sit in front of
-// `this.X` (assignment, no longer declaration). Stage 2 spike uses a
-// regex word-boundary pass — adequate for counter/fib bodies; the
-// edge cases (string literals / comments containing local names,
-// for-in loop bindings) are out of Stage 2 scope and surface as
-// transformation bugs to revisit if hit.
+// Rewrite every standalone `<name>` in `src` to `this.<name>` for each
+// name in `names`, then strip `let `/`mut ` prefixes that now sit in
+// front of `this.X` (assignment, no longer declaration).
+//
+// The match requires the identifier NOT be preceded by `.` — so a
+// member access like `arr.size()` is left alone even when a local/param
+// is named `size`. Without this, `\bsize\b` rewrote the `.size()` method
+// name to `arr.this.size()`, producing malformed source (a parser crash
+// for any generator whose binding collides with a builtin method like
+// size / push / keys). The same `.`-exclusion also prevents re-rewriting
+// the `this.` prefixes this pass just inserted. String-literal and
+// comment false positives remain out of scope (regex, not a real lexer).
 inline std::string rewrite_locals_to_this(std::string_view src,
                                           const std::set<std::string>& names) {
   // The two declaration-strip patterns are name-independent — hoist
@@ -209,8 +214,11 @@ inline std::string rewrite_locals_to_this(std::string_view src,
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.size() > b.size(); });
   for (const auto& name : sorted) {
-    std::regex pat("\\b" + name + "\\b");
-    out = std::regex_replace(out, pat, "this." + name);
+    // Group 1 captures the boundary char (start-of-string or any byte
+    // that is neither `.` nor an identifier char) so it can be restored
+    // ahead of the inserted `this.`.
+    std::regex pat("(^|[^.A-Za-z0-9_])" + name + "\\b");
+    out = std::regex_replace(out, pat, "$1this." + name);
   }
   out = std::regex_replace(out, strip_let_this, "this.");
   out = std::regex_replace(out, strip_mut_this, "this.");
