@@ -859,6 +859,7 @@ struct Value {
   explicit Value(SetValue&& s);
 
   bool is_numeric() const { return type == Long || type == Float; }
+  bool is_stringlike() const { return type == String || type == StringView; }
 
   // Stable name for the runtime type tag, used by the `to_X` accessors
   // below when constructing "type error: expected X, got Y" messages.
@@ -5778,6 +5779,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (op_reflects(ope)) {
         if (auto r = try_special_binop(rhs, lhs, special, env)) return *r;
       }
+    }
+    // String concatenation: `+` on String / StringView yields a new
+    // owned String. Mixed types (e.g. String + Long) fall through to the
+    // type-error branch below — use interpolation `"{x}"` for those.
+    if (ope == '+' && lhs.is_stringlike() && rhs.is_stringlike()) {
+      auto a = lhs.to_string_view();
+      auto b = rhs.to_string_view();
+      std::string out;
+      out.reserve(a.size() + b.size());
+      out.append(a).append(b);
+      return Value(std::move(out));
     }
     // `@` has no numeric meaning, so skip the numeric path entirely;
     // reaching this point means the LHS didn't supply `__matmul__`.

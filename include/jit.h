@@ -397,6 +397,10 @@ inline void _culebra_call_drop_if_present(JitObject* o);
 extern "C" {
 CULEBRA_RT_KEEP void culebra_runtime_value_retain(int8_t tag, int64_t data);
 CULEBRA_RT_KEEP void culebra_runtime_value_release(int8_t tag, int64_t data);
+// Defined near the string helpers further down; num_add (string concat)
+// needs it before that point.
+CULEBRA_RT_KEEP const char* culebra_runtime_strlike_to_cstr(int8_t tag,
+                                                            int64_t data);
 }
 
 // JitValue::tag values. The refcounted subset (Func/Array/Object)
@@ -1959,10 +1963,34 @@ inline std::optional<JitValue> _try_tensor_binop(
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(add, "__add__", a + b, true,  static_cast<int>(culebra::Op::Add))
 CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
 CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
+
+// `+` is the only arithmetic op that also concatenates strings, so it gets a
+// hand-written body instead of CUL_NUM_BINOP. String / StringView operands on
+// both sides yield a new owned String; mixed types (e.g. String + Long) fall
+// through to _culebra_coerce_num, which throws TypeError — use interpolation
+// `"{x}"` for those.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+  if (auto r = _try_tensor_binop(lt, ld, rt, rd,
+                                  static_cast<int>(culebra::Op::Add)))
+    return *r;
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__add__", true))
+    return *r;
+  bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
+  bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
+  if (ls && rs) {
+    return {TAG_STRING,
+            reinterpret_cast<int64_t>(culebra_runtime_str_concat(
+                culebra_runtime_strlike_to_cstr(lt, ld),
+                culebra_runtime_strlike_to_cstr(rt, rd)))};
+  }
+  auto a = _culebra_coerce_num(lt, ld);
+  auto b = _culebra_coerce_num(rt, rd);
+  return {TAG_FLOAT, _culebra_double_to_bits(a + b)};
+}
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {

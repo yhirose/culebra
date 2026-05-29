@@ -1,0 +1,59 @@
+/*
+ * String concatenation with `+` and `+=` (§8).
+ * `+` joins String / StringView operands into a new owned String.
+ * Mixed types (String + Long, etc.) throw TypeError — use interpolation.
+ */
+
+test_concat_basic = fn () {
+  assert_eq('a' + 'b', 'ab')
+  assert_eq('a' + 'b' + 'c', 'abc')
+  assert_eq('' + 'x', 'x')
+  assert_eq('x' + '', 'x')
+  let hello = 'Hello'
+  let world = 'World'
+  assert_eq(hello + ', ' + world + '!', 'Hello, World!')
+}
+
+test_concat_compound = fn () {
+  let mut s = 'a'
+  s += 'b'
+  s += 'c'
+  assert_eq(s, 'abc')
+
+  // Compound assignment into an array element.
+  let mut arr = ['x', 'y']
+  arr[0] += 'z'
+  assert_eq(arr[0], 'xz')
+
+  // Compound assignment into an object field.
+  let obj = {mut name: 'foo'}
+  obj.name += 'bar'
+  assert_eq(obj.name, 'foobar')
+}
+
+test_concat_stringview = fn () {
+  // StringView operands concatenate; the result is an owned String.
+  let v = 'view'.view()
+  assert_eq('a' + v, 'aview')
+  assert_eq(v + 'b', 'viewb')
+  assert_eq(v + v, 'viewview')
+
+  // split() yields StringView elements — concat them back together.
+  let parts = 'a-b-c'.split('-')
+  assert_eq(parts[0] + parts[1] + parts[2], 'abc')
+}
+
+test_concat_type_errors = fn () {
+  // Mixed types are rejected — interpolation is the way to stringify.
+  assert_throws('TypeError', fn () { 'count: ' + 1 })
+  assert_throws('TypeError', fn () { 1 + 'x' })
+  assert_throws('TypeError', fn () { 'a' + true })
+  assert_throws('TypeError', fn () { 'a' + [1, 2] })
+}
+
+test_concat_basic()
+test_concat_compound()
+test_concat_stringview()
+test_concat_type_errors()
+
+return // end

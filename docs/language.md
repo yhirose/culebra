@@ -123,7 +123,7 @@ contextual and only recognized after `:` or `->`.
 ### Operators and punctuation
 
     ==  !=  <=  <  >=  >        # comparison
-    +  -  *  /  %  **           # arithmetic (`**` exponentiation)
+    +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings
     @                           # matmul (user-defined via `__matmul__`)
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
@@ -658,6 +658,24 @@ is the one place display differs from `puts`.
 Cyclic data (`a.c = a`) displays as `{...}` / `[...]` to avoid
 infinite recursion.
 
+### Concatenation
+
+The `+` operator joins two strings into a new `String`:
+
+    'foo' + 'bar'              # 'foobar'
+    'a' + 'b' + 'c'            # 'abc'
+
+`+=` appends in place (strings are immutable, so this rebinds the
+variable / element / field to the joined result):
+
+    let mut s = 'a'
+    s += 'b'                   # s is now 'ab'
+
+Both operands must be a `String` or `StringView`; the result is always
+an owned `String`. Concatenating a string with a non-string (`'n: ' + 1`)
+is a `TypeError` — use interpolation (`"n: {1}"`) or `to_string` to mix
+types.
+
 ---
 
 ## 9. Arrays
@@ -1154,9 +1172,9 @@ Set operations are method-only: `union`, `intersect`, `diff`,
 `sym_diff`. There are no `|` / `&` / `-` / `^` operator forms —
 the `|` close delimiter of lambda parameters made the operator
 ambiguous to a stateless PEG parser, so all four operations route
-through methods for consistency. Operators stay reserved for math
-types (Long, Float, Tensor, user numeric classes via `__add__`
-etc.).
+through methods for consistency. Operators otherwise stay reserved for
+math types (Long, Float, Tensor, user numeric classes via `__add__`
+etc.); the one exception is `+`, which also concatenates strings (§8).
 
 ---
 
