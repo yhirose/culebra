@@ -30,10 +30,10 @@ build-no-jit:
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
     cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
 
-# Clean build directory
+# Clean build directories
 [group("build")]
 clean:
-    rm -rf build
+    rm -rf build build-dev build-asan
 
 # Regenerate misc/culebra.peg and misc/cul.vim AUTO-KEYWORDS from include/parser.h
 [group("build")]
