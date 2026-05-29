@@ -132,7 +132,7 @@ const auto grammar_ = R"(
   SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
-  FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK
+  FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK         { no_ast_opt }
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
@@ -657,7 +657,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
         true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
                "OBJECT_PROPERTY", "TUPLE", "SET",
                "ARRAY", "RETURN",
-               "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER",
+               "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER", "FOR",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
                "DEFAULT_VALUE",
                "ARG_LIST", "KWARG", "KWARG_SPLAT",
