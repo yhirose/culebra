@@ -260,6 +260,47 @@ inline std::vector<std::string_view> split_union_types(
   return out;
 }
 
+// True iff `name` has a `+` at the outermost bracket depth — the
+// intersection separator used in composite Generic bounds
+// (`T: Hashable + Stringer`, lowered to `"Hashable + Stringer"`).
+// Depth-aware to mirror has_toplevel_pipe, though bound atoms are
+// bare trait names today and never carry `<...>`.
+inline bool has_toplevel_plus(std::string_view name) {
+  int depth = 0;
+  for (char c : name) {
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == '+' && depth == 0) return true;
+  }
+  return false;
+}
+
+// Split a `+`-separated intersection bound into its component trait
+// names. `Hashable + Stringer` → ["Hashable", "Stringer"]. A value
+// satisfies the bound when it conforms to *all* parts (all-of), the
+// dual of split_union_types' any-of. Whitespace is trimmed; empty
+// parts are skipped. Mirrors split_union_types (incl. LIFETIME: each
+// view aliases `name`, so don't pass a temporary).
+inline std::vector<std::string_view> split_intersection_types(
+    std::string_view name) {
+  std::vector<std::string_view> out;
+  size_t start = 0;
+  int depth = 0;
+  for (size_t i = 0; i < name.size(); i++) {
+    char c = name[i];
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == '+' && depth == 0) {
+      auto cand = trim_ascii(name.substr(start, i - start));
+      if (!cand.empty()) out.push_back(cand);
+      start = i + 1;
+    }
+  }
+  auto last = trim_ascii(name.substr(start));
+  if (!last.empty()) out.push_back(last);
+  return out;
+}
+
 // Split a comma-separated Generic argument list into its components,
 // respecting nested `<...>`. `Long, Map<String, Long>` →
 // ["Long", "Map<String, Long>"]. Empty args yield empty vector.
@@ -376,8 +417,21 @@ inline std::string lower_type_params(
   // the generic args were documentation anyway).
   for (auto tp_raw : type_params) {
     auto tp = parse_type_param(tp_raw);
-    if (head.outer == tp.name)
-      return tp.bound.empty() ? "Any" : std::string(tp.bound);
+    if (head.outer != tp.name) continue;
+    if (tp.bound.empty()) return "Any";
+    // Composite bound (`A + B`): normalize spacing to a canonical
+    // " + "-joined form so dispatch-key dedup compares equal regardless
+    // of source whitespace. Matching itself is spacing-insensitive
+    // (split_intersection_types trims), but the registered key isn't.
+    if (!has_toplevel_plus(tp.bound)) return std::string(tp.bound);
+    std::string out;
+    bool first = true;
+    for (auto part : split_intersection_types(tp.bound)) {
+      if (!first) out += " + ";
+      out += part;
+      first = false;
+    }
+    return out;
   }
   if (head.args.empty()) return std::string(head.outer);
   // Generic: keep outer, recurse into each arg.

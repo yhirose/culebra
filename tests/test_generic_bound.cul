@@ -71,4 +71,37 @@ assert_eq(b.get(), 42)
 let e_box = try { b.set([1, 2]); nil } catch e { e }
 assert_eq(e_box != nil, true)            // Array violates T: Comparable
 
+// --- Composite bound `<T: A + B>` (all-of) ---
+fn both<T: Hashable + Stringer>(x: T) { x }
+assert_eq(both(5), 5)          // Long conforms to Hashable AND Stringer
+assert_eq(both("hi"), "hi")    // String conforms to both
+let e_both = try { both([1, 2, 3]); nil } catch e { e }
+assert_eq(e_both != nil, true) // Array is Stringer but not Hashable -> rejected
+
+// Overload: concrete > composite-bounded > unbounded.
+fn kc(x: Long) { "concrete" }
+fn kc<T: Hashable + Stringer>(x: T) { "composite" }
+fn kc<T>(x: T) { "unbounded" }
+assert_eq(kc(5), "concrete")
+assert_eq(kc("s"), "composite")   // String conforms to both bounds
+assert_eq(kc([1]), "unbounded")   // Array conforms to neither
+
+// User class conforming to both built-in traits.
+class Tag {
+  new(n) { this.n = n }
+  hash() { this.n }
+  to_s() { "Tag" }
+}
+fn need_both<T: Hashable + Stringer>(x: T) { x.n }
+assert_eq(need_both(Tag.new(7)), 7)
+
+// User class missing one part is rejected.
+class HashOnly { new(n) { this.n = n } hash() { this.n } }
+let e_ho = try { need_both(HashOnly.new(1)); nil } catch e { e }
+assert_eq(e_ho != nil, true)
+
+// Spacing tolerance: no-space `<T:A+B>` parses and behaves the same.
+fn tight<T:Hashable+Stringer>(x: T) { x }
+assert_eq(tight(9), 9)
+
 IO.puts("test_generic_bound OK")

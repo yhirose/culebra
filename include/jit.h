@@ -1687,6 +1687,14 @@ inline const char* _culebra_tag_name(int8_t tag) {
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
+  // Composite bound (`A + B`) — all-of: conform to every part.
+  // Mirrors interp's type_matches.
+  if (culebra::has_toplevel_plus(expected)) {
+    for (auto part : culebra::split_intersection_types(expected)) {
+      if (!_culebra_type_matches_single(tag, data, part)) return false;
+    }
+    return true;
+  }
   // Generic outer-match: `Array<Long>` checks `Array` only. Element
   // type is documentation in the MVP (matches interp's type_matches).
   if (expected.find('<') != std::string_view::npos) {

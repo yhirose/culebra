@@ -139,6 +139,17 @@ inline int multifn_specificity(std::string_view param_type,
     // bare concrete param outranks it. Lower-tier alts pass through.
     return best >= 6 ? 4 : best;
   }
+  // Composite bound (`A + B`): all-of. The arg must satisfy every
+  // part; score is the best part's tier (parts are traits → 3).
+  if (has_toplevel_plus(param_type)) {
+    int best = -1;
+    for (auto part : split_intersection_types(param_type)) {
+      int s = multifn_specificity(part, arg_type);
+      if (s < 0) return -1;
+      if (s > best) best = s;
+    }
+    return best;
+  }
   // Generic: outer-match against arg label (arg side carries no
   // type args today, so the args part only tie-breaks against bare
   // outer-only annotations).
@@ -1824,6 +1835,13 @@ inline bool type_matches(const Value& val, std::string_view name) {
       if (type_matches(val, candidate)) return true;
     }
     return false;
+  }
+  // Composite bound (`A + B`) — all-of: conform to every part.
+  if (has_toplevel_plus(name)) {
+    for (auto part : split_intersection_types(name)) {
+      if (!type_matches(val, part)) return false;
+    }
+    return true;
   }
   // Generic outer-match: `Array<Long>` checks `Array` only (element
   // type is documentation in the MVP, see [[project_type_system]]).

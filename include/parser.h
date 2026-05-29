@@ -48,10 +48,11 @@ const auto grammar_ = R"(
   # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
   # a single token; eval_class_decl / eval_trait_decl / multifn_decl
   # peel off the outer name via parse_generic_head, then split args
-  # into per-param `name: bound` pairs via parse_type_param.
-  # Type parameters are documentation in the MVP — runtime sees them
-  # as Any-equivalent (bound check is dispatch-time only).
-  CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* )? ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* )? )* _sp_ '>' )? >
+  # into per-param `name: bound` pairs via parse_type_param. A bound
+  # may be composite (`T: Hashable + Stringer`, all-of). Unbounded
+  # params lower to Any; bounded ones lower to the bound trait(s) and
+  # are enforced at dispatch / type_check time.
+  CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? )* _sp_ '>' )? >
 
   # `@expr` before a `fn` / `class` declaration. The expression is any
   # CALL chain (`@deco`, `@deco(arg)`, `@module.deco(arg)`); it must

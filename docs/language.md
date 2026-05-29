@@ -1686,6 +1686,14 @@ reuse the ordinary trait-conformance machinery. Three consequences:
 An unbounded `<T>` accepts any argument (it lowers to `Any`); it
 exists to name a parameter and to lose to more specific overloads.
 
+A **composite bound** `<T: A + B>` requires the argument to conform to
+**all** parts (the all-of dual of a Union). Spacing is tolerated
+(`<T:A+B>` works too).
+
+    fn both<T: Hashable + Stringer>(x: T) { x }
+    both(5)        # OK — Long conforms to both
+    both([1, 2])   # !! Array is Stringer but not Hashable -> rejected
+
 #### Known limitations
 
 * Two overloads sharing an outer Generic name (`fn show(xs:
@@ -1703,8 +1711,8 @@ exists to name a parameter and to lose to more specific overloads.
 * Expression-position type args (`Box<Long>.new(42)`) — the parser
   currently reserves `<...>` for type-annotation contexts only.
 * Opt-in element runtime check.
-* Composite bounds (`<T: A + B>`), `where` clauses, and trait
-  inheritance (`trait Ord: Eq`) — single bounds ship today.
+* Trait inheritance (`trait Ord: Eq`). Single and composite bounds
+  (`<T: Comparable>`, `<T: A + B>`) ship today.
 * Class declarations inside another class's body (currently a
   SyntaxError, see "Where class declarations may appear" above).
 
@@ -1841,8 +1849,10 @@ inline (Rust style):
 The bound is **enforced** at the call boundary (no compile-time
 check; culebra's type checks are runtime) — see "Bound constraints"
 under Generic types for the full semantics (lowering, dispatch
-ordering, lenient unification). Multiple bounds (`<T: A + B>`) and
-`where` clauses are not yet supported.
+ordering, lenient unification). A composite bound `<T: A + B>` is
+also supported — the argument must conform to **all** parts (the
+all-of dual of a Union). `where` clauses are not planned (the inline
+form already covers the cases).
 
 #### Dispatch tie-break
 
@@ -1856,8 +1866,9 @@ chosen when only the trait path matches.
 * `impl Foo for Bar` block is unsupported — conformance is purely
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
 * Trait inheritance (`trait Ord: Eq`) is not yet supported.
-* Bound composition (`<T: A + B>`) and `where` clauses — Phase 4+.
-  Single bounds (`<T: Comparable>`) are enforced today.
+* Trait inheritance (`trait Ord: Eq`) — Phase 4+. Single and
+  composite bounds (`<T: Comparable>`, `<T: A + B>`) are enforced
+  today.
 * **Operator overloads bypass trait defaults**: `<` / `==` etc.
   invoke `__lt__` / `__eq__` directly on the class; Comparable's
   default `lt` / `le` etc. only fire when called as `x.lt(y)`. A

@@ -1580,8 +1580,8 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 * expression 位置の type args (`Box<Long>.new(42)`) — parser は
   現状 `<...>` を型注釈 context のみで使用。
 * opt-in 要素 runtime check。
-* 複合 Bound (`<T: A + B>`) / `where` 節 / trait 継承
-  (`trait Ord: Eq`) — 単一 Bound は実装済。
+* trait 継承 (`trait Ord: Eq`) — Phase 4+。 単一・複合 Bound
+  (`<T: Comparable>`, `<T: A + B>`) は実装済。
 * class body 内 class 宣言 (現状は SyntaxError、 上記「クラス宣言の
   位置」参照)。
 
@@ -1742,6 +1742,14 @@ culebra の型 check は runtime)。 帰結:
 無制約 `<T>` は任意の引数を受ける (`Any` に lower される) — param に
 名前を付け、 より特異な overload に負けるための形。
 
+**複合 bound** `<T: A + B>` も使える — arg は **全パート**に conform
+する必要がある (Union の any-of に対する all-of)。 spacing は寛容
+(`<T:A+B>` も可)。
+
+    fn both<T: Hashable + Stringer>(x: T) { x }
+    both(5)        # OK — Long は両方に conform
+    both([1, 2])   # !! Array は Stringer だが Hashable でない -> reject
+
 #### dispatch tie-break
 
 trait param のスコアは Object と具象の中間。 同じ関数名で `x: Pri`
@@ -1753,8 +1761,9 @@ trait path のみ match する場合は trait 版が選ばれる。
 * `impl Foo for Bar` block は未対応 — 構造的のみ。 (Phase 4+ で
   明示宣言を再検討)
 * trait 継承 (`trait Ord: Eq`) は未対応。
-* 複合 Bound (`<T: A + B>`) と `where` 節 — Phase 4+。
-  単一 Bound (`<T: Comparable>`) は実装済 (上記「Generic Bound」)。
+* trait 継承 (`trait Ord: Eq`) — Phase 4+。
+  単一・複合 Bound (`<T: Comparable>`, `<T: A + B>`) は実装済
+  (上記「Generic Bound」)。
 * **演算子オーバーロードは trait default を bypass する**: `<` /
   `==` 等は class の `__lt__` / `__eq__` を直接呼ぶ。 Comparable の
   default `lt` / `le` 等は `x.lt(y)` の form のみ動作。 `cmp` を持つ
