@@ -1,6 +1,6 @@
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -28,6 +28,17 @@
   # indicating "this method has a default impl" — BLOCK itself is
   # folded away by the optimizer.
   TRAIT_BODY               <-  BLOCK
+
+  # `enum Name<T> { Ok(T), Err(String), None }` — a sum type. Each
+  # VARIANT lowers to a variant-as-class: constructing `Name.Ok(v)`
+  # makes an instance tagged with the variant name and the parent enum
+  # name, with positional payload fields `_0.._n`. Nullary variants
+  # (`None`) are singleton instances exposed as `Name.None`.
+  # VARIANT_FIELD types are documentation in the MVP (payload arity is
+  # what matters; runtime values are positional and untyped).
+  ENUM_DECL                <-  (DECORATOR (_ DECORATOR)* _)? enum _ CLASS_HEAD _ '{' _ (VARIANT (_ ',' _ VARIANT)* _ ','?)? _ '}'
+  VARIANT                  <-  IDENTIFIER (_ '(' _ (VARIANT_FIELD (_ ',' _ VARIANT_FIELD)*)? _ ')')?
+  VARIANT_FIELD            <-  < TYPE_REF >
 
   # Class / trait / fn head with optional Generic type parameters:
   # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
@@ -132,9 +143,16 @@
   GUARD                    <-  if _ EXPRESSION
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
-  PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
+  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
   WILDCARD                 <-  '_' !IdentChar
+  # Enum constructor pattern: `Ok(x)`, `Result.Ok(x)`, `Pair(a, b)`.
+  # The ctor path (variant name, optionally `Enum.Variant`) is the
+  # captured token; the children are the positional payload sub-patterns
+  # matched against the instance's `_0.._n` fields. Nullary variants are
+  # matched with the plain type pattern (`_: None`), so no parens form.
+  CTOR_PATTERN             <-  CTOR_PATH _ '(' _ (PATTERN (_ ',' _ PATTERN)*)? _ ')'
+  CTOR_PATH                <-  < IdentInitChar IdentChar* ( '.' IdentInitChar IdentChar* )? >
   TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
 
   ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _ ']'
@@ -252,6 +270,7 @@
   ~export                  <-  K('export')
   ~from                    <-  K('from')
   ~trait                   <-  K('trait')
+  ~enum                    <-  K('enum')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*

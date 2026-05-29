@@ -1482,6 +1482,7 @@ the value is `nil`.
 | `{k1: p1, k2: p2}` | `Object` whose `k1` matches `p1` and `k2` matches `p2`. Nests freely (`{user: {name}}`). Mixes with shorthand. |
 | `{}`              | Any `Object` (keys ignored)              |
 | `(p1, p2, ...)`   | `Tuple` of exactly the same arity; element-wise sub-patterns |
+| `Ok(p1, ...)`     | Enum constructor: matches the variant `Ok` and destructures its positional payload against the sub-patterns. Qualified form `Result.Ok(p)` also works. See "Sum types". |
 
 ### Semantics
 
@@ -1743,6 +1744,59 @@ A **composite bound** `<T: A + B>` requires the argument to conform to
 
 Annotations are primarily a **documentation and boundary check**
 feature, not a type system.
+
+### Sum types (`enum`)
+
+An `enum` declares a sum type — a fixed set of variants, each
+optionally carrying positional payload. Generic parameters are
+supported.
+
+    enum Result<T, E> {
+      Ok(T),
+      Err(E),
+    }
+    enum Color { Red, Green, Blue }      # nullary variants
+    enum Shape { Circle(Float), Rect(Float, Float), Origin }
+
+Each variant lowers to a **variant-as-class**: the enum name is bound
+as a namespace, and constructing a value goes through it. Payload
+variants are constructors; nullary variants are singleton values.
+
+    let r = Result.Ok(5)        # payload variant — call the constructor
+    let c = Color.Red           # nullary variant — a singleton value
+    let s = Shape.Rect(3.0, 4.0)
+    Result.Ok                   # the constructor is a first-class value
+
+A variant instance is tagged with both the variant name and the parent
+enum name, so type annotations / patterns match at either level:
+
+    fn handle(r) {
+      match r {
+        Ok(x)  => x,            # constructor pattern, binds payload
+        Err(e) => -1,
+      }
+    }
+    match v {
+      x: Ok      => "the Ok variant",     # variant type pattern
+      x: Result  => "some Result",        # enum type pattern (any variant)
+      _          => "other",
+    }
+
+Payload is positional and reachable as `_0`, `_1`, … (`r._0`), though
+constructor patterns are the idiomatic accessor.
+
+#### Notes and limitations
+
+* The canonical sum-type style is an untyped parameter plus a `match`:
+  `fn area(s) { match s { Circle(r) => ..., ... } }`.
+* Multimethod dispatch keys on the **variant** (`fn f(x: Ok)`), not on
+  the enum name (`fn f(x: Result)` is not yet a dispatch key) — use a
+  `match` for enum-level dispatch.
+* No methods-in-enum block (use free functions + UFCS), no named
+  payload fields, no explicit discriminant values, and no static
+  exhaustiveness check (a non-matching `match` yields `nil`).
+* Nullary variants are matched with a type pattern (`_: Origin`), not a
+  parens-free constructor pattern.
 
 ### Traits and protocols
 

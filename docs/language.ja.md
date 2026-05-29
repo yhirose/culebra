@@ -1419,6 +1419,7 @@ for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 | `{k1: p1, k2: p2}` | `k1` が `p1` に、`k2` が `p2` に一致する `Object`。入れ子可（`{user: {name}}`）。省略形と混在可 |
 | `{}`             | 任意の `Object`（キー無視）                  |
 | `(p1, p2, ...)`  | 同じ要素数の `Tuple`。要素ごとに部分パターン |
+| `Ok(p1, ...)`    | enum constructor: variant `Ok` にマッチし positional payload を部分パターンに分解。修飾形 `Result.Ok(p)` も可。「Sum type」参照 |
 
 ### セマンティクス
 
@@ -1613,6 +1614,56 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 
 注釈は主に**ドキュメントと境界検査**のための機能であり、型システム
 ではありません。
+
+### Sum type (`enum`)
+
+`enum` は sum type — variant の固定集合を宣言する。各 variant は
+任意の positional payload を持てる。Generic param 対応。
+
+    enum Result<T, E> {
+      Ok(T),
+      Err(E),
+    }
+    enum Color { Red, Green, Blue }      # nullary variant
+    enum Shape { Circle(Float), Rect(Float, Float), Origin }
+
+各 variant は **variant-as-class** に lower される: enum 名が名前空間
+として bind され、構築はそれを経由する。payload variant は
+constructor、nullary variant は singleton 値。
+
+    let r = Result.Ok(5)        # payload variant — constructor 呼び出し
+    let c = Color.Red           # nullary variant — singleton 値
+    let s = Shape.Rect(3.0, 4.0)
+    Result.Ok                   # constructor は第一級の値
+
+variant instance は variant 名と親 enum 名の両方でタグ付けされ、
+型注釈 / パターンは両レベルでマッチする:
+
+    match r {
+      Ok(x)  => x,            # constructor pattern、payload を束縛
+      Err(e) => -1,
+    }
+    match v {
+      x: Ok      => "Ok variant",     # variant 型パターン
+      x: Result  => "some Result",    # enum 型パターン (任意の variant)
+      _          => "other",
+    }
+
+payload は positional で `_0`, `_1`, … (`r._0`) で参照可能だが、
+constructor pattern が idiomatic なアクセサ。
+
+#### 注意・制限
+
+* canonical な sum-type スタイルは無型 param + `match`:
+  `fn area(s) { match s { Circle(r) => ..., ... } }`。
+* 多重 dispatch は **variant** をキーにする (`fn f(x: Ok)`)。enum 名
+  (`fn f(x: Result)`) は dispatch キーにならない — enum レベルの分岐は
+  `match` を使う。
+* enum 内メソッド (free fn + UFCS で代替) / named payload field /
+  明示 discriminant 値 / 静的 exhaustiveness 検査は無し (非マッチ
+  `match` は `nil`)。
+* nullary variant は型パターン (`_: Origin`) でマッチ (parens なし
+  constructor pattern は無い)。
 
 ### trait と protocol
 

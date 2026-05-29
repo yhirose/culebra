@@ -1724,6 +1724,16 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
         if (class_tag_view == expected) return true;
       }
     }
+    // Enum variant: also matches the parent enum name (`__enum` field),
+    // so `r: Result` accepts any `Result.*` variant. Mirrors interp.
+    if (auto ei = obj->find_slot("__enum"); ei != static_cast<size_t>(-1)) {
+      const auto& en = obj->slots[ei].value;
+      if (en.tag == TAG_STRING &&
+          std::string_view(reinterpret_cast<const char*>(en.data)) ==
+              expected) {
+        return true;
+      }
+    }
   }
   // Structural trait conformance: when `expected` is a registered
   // trait, check (and cache) whether this instance's class supplies
@@ -3336,6 +3346,64 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
 // defined later in this file but used by the multimethod runtime.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity);
+
+// --- Enum (sum type) support ---------------------------------------
+// Build a variant instance: tagged with `class` = variant name and
+// `__enum` = parent enum name, with positional payload fields
+// `_0.._n` taking ownership of the caller's args (object_set transfers
+// the +1, mirroring the default-ctor path in build_class_instance).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
+    const char* variant_name, const char* enum_name, int64_t n_args,
+    JitValue* args) {
+  auto* inst = culebra_runtime_object_new();
+  culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
+                             reinterpret_cast<int64_t>(variant_name), 0, 0);
+  culebra_runtime_object_set(inst, "__enum", /*mut*/ false, TAG_STRING,
+                             reinterpret_cast<int64_t>(enum_name), 0, 0);
+  for (int64_t i = 0; i < n_args; i++) {
+    auto fname = culebra::positional_field_name(static_cast<size_t>(i));
+    culebra_runtime_object_set(inst, fname.data(), /*mut*/ false, args[i].tag,
+                               args[i].data, 0, 0);
+  }
+  for (auto& entry : inst->slots) entry.mut = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+}
+
+// Side table mapping a payload-variant constructor closure to its
+// (variant, enum) names — recovered by the shared thunk below. Mirrors
+// _jit_multifn_dispatcher_names: the closure carries no captures.
+inline std::map<JitClosure*, std::pair<std::string, std::string>>&
+_jit_variant_ctor_info() {
+  static std::map<JitClosure*, std::pair<std::string, std::string>> tbl;
+  return tbl;
+}
+
+// JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
+// constructor closure. Recovers the variant/enum names from the side
+// table and builds the instance from the call args.
+inline JitValue _jit_variant_ctor_thunk(JitClosure* cls, JitValue /*this*/,
+                                         int64_t n_args, JitValue* args) {
+  auto& info = _jit_variant_ctor_info();
+  auto it = info.find(cls);
+  if (it == info.end()) return {TAG_NIL, 0};
+  return culebra_runtime_build_variant(it->second.first.c_str(),
+                                        it->second.second.c_str(), n_args,
+                                        args);
+}
+
+// Create a payload-variant constructor closure (`Result.Ok`): a closure
+// over the shared thunk with the variant/enum names recorded in the
+// side table. Returns +1 (caller owns; the enum namespace slot takes it).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
+culebra_runtime_make_variant_ctor(const char* variant_name,
+                                    const char* enum_name, int64_t arity) {
+  auto* cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/0,
+      static_cast<size_t>(arity));
+  _jit_variant_ctor_info()[cls] = {std::string(variant_name),
+                                    std::string(enum_name)};
+  return cls;
+}
 
 // Parameter metadata attached to JIT-compiled user functions. The side
 // table below is keyed by `fn_ptr` (the underlying JitFn pointer) and
@@ -6185,6 +6253,8 @@ inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
+inline constexpr auto build_variant       = "culebra_runtime_build_variant";
+inline constexpr auto make_variant_ctor   = "culebra_runtime_make_variant_ctor";
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
@@ -7723,12 +7793,13 @@ struct JIT {
     };
     struct DeclInfo { std::string_view name; bool is_mut; };
     auto extract_decl = [](const peg::Ast& node) -> DeclInfo {
-      if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_) {
-        // Skip leading DECORATOR children. multifn / class bindings
-        // are not mutable in interp (no `mut` form), so is_mut=false.
-        // CLASS_HEAD may carry Generic params (`Box<T>`, `min<T: Bound>`);
-        // strip via parse_generic_head — the binding lives under the
-        // outer name only.
+      if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
+          node.tag == "ENUM_DECL"_) {
+        // Skip leading DECORATOR children. multifn / class / enum
+        // bindings are not mutable in interp (no `mut` form), so
+        // is_mut=false. CLASS_HEAD may carry Generic params (`Box<T>`,
+        // `min<T: Bound>`); strip via parse_generic_head — the binding
+        // lives under the outer name only.
         size_t i = 0;
         while (i < node.nodes.size() &&
                node.nodes[i]->tag == "DECORATOR"_) i++;
@@ -8371,6 +8442,21 @@ struct JIT {
       return;
     }
 
+    if (node.tag == "ENUM_DECL"_) {
+      // `enum Name { ... }` binds `Name` in the enclosing scope, like
+      // CLASS_DECL. Variants are namespaced (`Name.Ok`), not bound bare.
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        collect_fn_locals(*node.nodes[i], locals, outer);
+        i++;
+      }
+      auto& id = *node.nodes[i];
+      auto name = std::string(culebra::parse_generic_head(id.token).outer);
+      check_shadow_against_captures(name, outer, id.line, id.column);
+      locals.insert(name);
+      return;
+    }
+
     if (node.tag == "TRAIT_DECL"_) {
       // trait declarations don't bind a name in the value env (they
       // live in culebra::trait_registry()). Default-method bodies are
@@ -8455,6 +8541,19 @@ struct JIT {
             info.free_vars.push_back(fv);
           }
         }
+      }
+      return;
+    }
+
+    if (node.tag == "ENUM_DECL"_) {
+      // Enum variants have no fn bodies — only decorators (evaluated in
+      // the enclosing scope) can reference free vars. Explicitly handle
+      // it so the generic tail recurse doesn't scan VARIANT identifiers
+      // (e.g. `Ok`) as variable references.
+      size_t i = 0;
+      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
+        visit_for_frees(*node.nodes[i], my_locals, outer, info);
+        i++;
       }
       return;
     }
@@ -9084,6 +9183,8 @@ struct JIT {
         return compile_range(ast);
       case "CLASS_DECL"_:
         return compile_class_decl(ast);
+      case "ENUM_DECL"_:
+        return compile_enum_decl(ast);
       case "TRAIT_DECL"_:
         return compile_trait_decl(ast);
       case "MULTIFN_DECL"_:
@@ -10822,6 +10923,8 @@ struct JIT {
         if (!is_sink_name(name)) declare_local(name, subject, is_mut);
         return tag_match;
       }
+      case "CTOR_PATTERN"_:
+        return emit_ctor_pattern(pattern, subject, is_mut);
       case "ARRAY_PATTERN"_:
         return emit_array_pattern(pattern, subject, is_mut);
       case "OBJECT_PATTERN"_:
@@ -11054,6 +11157,84 @@ struct JIT {
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "obj.match");
+    phi->addIncoming(builder_.getTrue(), okEnd);
+    phi->addIncoming(builder_.getFalse(), failEnd);
+    return phi;
+  }
+
+  // Enum constructor pattern `Ok(x)` / `Result.Ok(a, b)`: gate on the
+  // variant name (a runtime type_matches, so class-tag + enum-parent
+  // resolution is shared), then destructure positional payload fields
+  // `_0.._n` against the child sub-patterns. Mirrors emit_object_pattern.
+  llvm::Value* emit_ctor_pattern(const peg::Ast& pattern,
+                                 llvm::Value* subject, bool is_mut) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto failBB = llvm::BasicBlock::Create(ctx_, "ctor.fail", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "ctor.ok", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "ctor.end", fn);
+
+    auto path = pattern.nodes[0]->token;
+    auto dot = path.rfind('.');
+    auto variant =
+        dot == std::string_view::npos ? path : path.substr(dot + 1);
+    auto variantStr = get_or_create_global_str(std::string(variant), ".ctor.v");
+    auto tagMatch = emit_call(
+        module_->getOrInsertFunction(rt::type_matches, builder_.getInt1Ty(),
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(), ptrTy),
+        {extract_tag(subject), extract_data(subject), variantStr},
+        "ctor.tagmatch");
+    // Gate on TAG_OBJECT too: type_matches returns true for a primitive
+    // when the variant name collides with a primitive/trait (`Long(x)`,
+    // `Comparable(x)`), and the payload access below would otherwise
+    // reinterpret the scalar as a JitObject*. Mirrors interp's
+    // `|| val.type != Value::Object` guard and emit_object_pattern.
+    auto isObj = builder_.CreateICmpEQ(extract_tag(subject),
+                                       builder_.getInt8(TAG_OBJECT));
+    auto matched = builder_.CreateAnd(tagMatch, isObj, "ctor.objmatch");
+    auto contBB = llvm::BasicBlock::Create(ctx_, "ctor.next", fn);
+    builder_.CreateCondBr(matched, contBB, failBB);
+    builder_.SetInsertPoint(contBB);
+
+    auto objPtr = builder_.CreateIntToPtr(extract_data(subject), ptrTy);
+    for (size_t i = 1; i < pattern.nodes.size(); i++) {
+      auto fname = std::string(culebra::positional_field_name(i - 1));
+      auto keyPtr = get_or_create_global_str(fname, ".ctor.f");
+      auto has = emit_object_has(objPtr, keyPtr);
+      auto bindBB = llvm::BasicBlock::Create(ctx_, "ctor.bind", fn);
+      builder_.CreateCondBr(has, bindBB, failBB);
+      builder_.SetInsertPoint(bindBB);
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto outTag =
+          entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "cp.tag");
+      auto outData =
+          entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "cp.data");
+      emit_call(
+          module_->getOrInsertFunction(rt::object_get, builder_.getVoidTy(),
+                                       ptrTy, ptrTy, ptrTy, ptrTy),
+          {objPtr, keyPtr, outTag, outData});
+      auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
+      auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
+      llvm::Value* v = llvm::UndefValue::get(valueType_);
+      v = builder_.CreateInsertValue(v, t, {0});
+      v = builder_.CreateInsertValue(v, d, {1});
+      auto m = emit_pattern(*pattern.nodes[i], v, is_mut);
+      auto contBB2 = llvm::BasicBlock::Create(ctx_, "ctor.cont", fn);
+      builder_.CreateCondBr(m, contBB2, failBB);
+      builder_.SetInsertPoint(contBB2);
+    }
+    builder_.CreateBr(okBB);
+    builder_.SetInsertPoint(okBB);
+    auto okEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+    builder_.SetInsertPoint(failBB);
+    auto failEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "ctor.match");
     phi->addIncoming(builder_.getTrue(), okEnd);
     phi->addIncoming(builder_.getFalse(), failEnd);
     return phi;
@@ -11803,6 +11984,84 @@ struct JIT {
     }
     culebra::register_trait(std::move(def));
     return llvm::UndefValue::get(valueType_);
+  }
+
+  // `enum Name<T> { Ok(T), None }` — a namespace object bound under
+  // `Name`. Each payload variant becomes a constructor closure (over the
+  // shared variant-ctor thunk); each nullary variant is a singleton
+  // instance built at decl time. Mirrors the interp eval_enum_decl.
+  llvm::Value* compile_enum_decl(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    size_t k = 0;
+    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    std::string enum_name(
+        culebra::parse_generic_head(ast.nodes[k]->token).outer);
+    auto enum_g = get_or_create_global_str(enum_name, ".enum");
+
+    // Reuse a forward-ref pre-allocated slot if present (mirror class).
+    VarSlot enumSlot;
+    if (!scopes_.empty()) {
+      auto& curSlots = scopes_.back().slots;
+      auto it = curSlots.find(enum_name);
+      if (it != curSlots.end() && it->second.kind == VarSlot::Cell) {
+        enumSlot = it->second;
+      } else {
+        auto nilVal = make_nil();
+        enumSlot = make_cell_slot(enum_name, nilVal);
+        define_var(enum_name, enumSlot);
+      }
+    } else {
+      auto nilVal = make_nil();
+      enumSlot = make_cell_slot(enum_name, nilVal);
+      define_var(enum_name, enumSlot);
+    }
+
+    auto enumObj = emit_call(
+        module_->getOrInsertFunction(rt::object_new, ptrTy), {}, "enum.ns");
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+      auto vv = culebra::view_variant(*ast.nodes[i]);
+      std::string variant(vv.name);
+      auto variant_g = get_or_create_global_str(variant, ".variant");
+      if (vv.arity == 0) {
+        // Nullary variant: build the singleton instance now.
+        auto inst = emit_call(
+            module_->getOrInsertFunction(rt::build_variant, valueType_, ptrTy,
+                                         ptrTy, i64Ty, ptrTy),
+            {variant_g, enum_g, builder_.getInt64(0),
+             llvm::ConstantPointerNull::get(ptrTy)},
+            "variant.inst");
+        emit_object_set(enumObj, variant, /*mut=*/false, extract_tag(inst),
+                        extract_data(inst));
+      } else {
+        // Payload variant: a constructor closure.
+        auto ctorPtr = emit_call(
+            module_->getOrInsertFunction(rt::make_variant_ctor, ptrTy, ptrTy,
+                                         ptrTy, i64Ty),
+            {variant_g, enum_g,
+             builder_.getInt64(static_cast<int64_t>(vv.arity))},
+            "variant.ctor");
+        auto ctorVal = make_func(ctorPtr);
+        emit_object_set(enumObj, variant, /*mut=*/false, extract_tag(ctorVal),
+                        extract_data(ctorVal));
+      }
+    }
+    auto enumVal = make_object(enumObj);
+
+    for (size_t i = k; i > 0; --i) {
+      const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
+      auto decoCallee = compile(dec_expr);
+      enumVal = compile_function_call_raw(decoCallee, nullptr, {enumVal});
+    }
+
+    store_slot(enumSlot, enumVal);
+    if (is_repl_top_level_ && is_repl_session_) {
+      emit_value_retain(enumVal);
+      emit_repl_persist(enumVal, enum_name, ".repl.enum",
+                        /*is_let=*/true, /*is_mut=*/false);
+    }
+    return make_nil();
   }
 
   // `class Name { new(...){...}  m(...){...} }` — compiles each method

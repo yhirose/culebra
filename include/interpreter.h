@@ -317,6 +317,13 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
     case "TUPLE_PATTERN"_:
       for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
       return;
+    case "CTOR_PATTERN"_:
+      // nodes[0] = CTOR_PATH (the ctor name token); nodes[1..] are the
+      // positional payload sub-patterns, each of which may bind.
+      for (size_t i = 1; i < pattern.nodes.size(); i++) {
+        for_each_pattern_binding(*pattern.nodes[i], f);
+      }
+      return;
     case "REST_PATTERN"_: {
       auto& id = *pattern.nodes[0];
       emit(id.token, id.line, id.column);
@@ -425,9 +432,11 @@ inline void collect_locals(
     return;
   }
 
-  if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_) {
+  if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_ ||
+      node.tag == "ENUM_DECL"_) {
     // Skip leading DECORATOR children (added grammar form
     // `@expr ... fn name() {...}` / `@expr ... class Name {...}`).
+    // ENUM_DECL binds its enum name the same way (CLASS_HEAD node).
     size_t i = 0;
     while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
       collect_locals(*node.nodes[i], locals, outer);
@@ -1888,6 +1897,15 @@ inline bool type_matches(const Value& val, std::string_view name) {
       if (name == "Object") return true;
       auto tag = class_tag(val);
       if (tag && *tag == name) return true;
+      // Enum variant: an instance tagged with `__enum` also matches the
+      // parent enum name (so `r: Result` accepts any `Result.*` variant).
+      if (const auto& obj = val.to_object();
+          obj.has("__enum")) {
+        const auto& en = obj.get("__enum");
+        if (en.type == Value::String && en.template get<std::string>() == name) {
+          return true;
+        }
+      }
       // Structural trait conformance: if `name` is a registered trait
       // and this instance's class has the required methods, accept.
       // Cached per (class, trait) for O(1) repeat dispatch.
@@ -4094,6 +4112,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return Value();
       case "CLASS_DECL"_:
         return eval_class_decl(ast, env);
+      case "ENUM_DECL"_:
+        return eval_enum_decl(ast, env);
       case "TRAIT_DECL"_:
         return eval_trait_decl(ast, env);
       case "MULTIFN_DECL"_:
@@ -4289,6 +4309,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         auto type_name = pattern.nodes[1]->token;
         if (!type_matches(val, type_name)) return false;
         bind_pattern_name(env, *pattern.nodes[0], val, mut);
+        return true;
+      }
+      case "CTOR_PATTERN"_: {
+        // nodes[0] = CTOR_PATH (`Ok` / `Result.Ok`); match the variant by
+        // its name (the part after any `.`), then destructure positional
+        // payload fields `_0.._n` against nodes[1..].
+        auto path = pattern.nodes[0]->token;
+        auto dot = path.rfind('.');
+        auto variant =
+            dot == std::string_view::npos ? path : path.substr(dot + 1);
+        if (!type_matches(val, variant) || val.type != Value::Object) {
+          return false;
+        }
+        const auto& obj = val.to_object();
+        for (size_t i = 1; i < pattern.nodes.size(); i++) {
+          auto fname = culebra::positional_field_name(i - 1);
+          if (!obj.has(fname)) return false;
+          if (!try_pattern(*pattern.nodes[i], obj.get(fname), env, mut)) {
+            return false;
+          }
+        }
         return true;
       }
       case "ARRAY_PATTERN"_: {
@@ -5001,6 +5042,85 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     }
     register_trait(std::move(def));
+    return Value();
+  }
+
+  // `enum Name<T> { Ok(T), Err(E), None }` → a namespace object bound
+  // under `Name`. Each variant becomes a constructor (payload variants,
+  // `Name.Ok(v)`) or a singleton instance (nullary, `Name.None`). A
+  // variant instance is tagged with `class` = variant name and `__enum`
+  // = enum name, with positional payload fields `_0.._n`. type_matches
+  // then accepts both `: Ok` (the variant) and `: Name` (the enum).
+  Value eval_enum_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
+    size_t k = 0;
+    std::vector<const peg::Ast*> decorators;
+    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
+      decorators.push_back(ast.nodes[k].get());
+      k++;
+    }
+    // CLASS_HEAD: enum name (Generic params are stripped — documentation).
+    auto enum_name = std::string(parse_generic_head(ast.nodes[k]->token).outer);
+
+    auto make_variant_instance =
+        [](const std::string& variant, const std::string& en) {
+          // Fields are mutable, matching class instances (promote_all_mut)
+          // and the JIT build_variant path — keeps the two backends in
+          // lockstep ([[feedback-check-jit-interp-symmetry]]).
+          ObjectValue inst;
+          inst.properties->emplace(
+              "class", Symbol{Value(std::string(variant)), true});
+          inst.properties->emplace(
+              "__enum", Symbol{Value(std::string(en)), true});
+          return inst;
+        };
+
+    ObjectValue enum_obj;
+    for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+      auto vv = culebra::view_variant(*ast.nodes[i]);
+      std::string variant(vv.name);
+      if (vv.arity == 0) {
+        // Nullary variant: a singleton instance value.
+        enum_obj.properties->emplace(
+            variant,
+            Symbol{Value(make_variant_instance(variant, enum_name)), false});
+        continue;
+      }
+      // Payload variant: a constructor with positional params `_0.._n`.
+      std::vector<FunctionValue::Parameter> params;
+      for (size_t f = 0; f < vv.arity; f++) {
+        FunctionValue::Parameter p;
+        p.name = culebra::positional_field_name(f);
+        params.push_back(p);
+      }
+      size_t arity = vv.arity;
+      auto ctor = Value(FunctionValue(
+          std::move(params),
+          [variant, enum_name, arity, make_variant_instance](
+              std::shared_ptr<Environment> callEnv) {
+            auto inst = make_variant_instance(variant, enum_name);
+            for (size_t f = 0; f < arity; f++) {
+              auto fname = culebra::positional_field_name(f);
+              inst.properties->emplace(
+                  fname, Symbol{callEnv->get(fname), true});
+            }
+            return Value(std::move(inst));
+          },
+          {}, env));
+      enum_obj.properties->emplace(variant, Symbol{std::move(ctor), false});
+    }
+
+    Value enum_val(std::move(enum_obj));
+    for (auto it = decorators.rbegin(); it != decorators.rend(); ++it) {
+      const auto& dec_expr = *(*it)->nodes[0];
+      Value deco_val = eval(dec_expr, env);
+      CallArgs args;
+      args.positional.push_back(std::move(enum_val));
+      args.positional_locs.emplace_back(dec_expr.line, dec_expr.column);
+      enum_val = invoke_user_function_with_args(
+          deco_val, env, std::move(args), dec_expr.line, dec_expr.column);
+    }
+    env->initialize(enum_name, std::move(enum_val), false);
     return Value();
   }
 

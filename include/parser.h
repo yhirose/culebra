@@ -15,7 +15,7 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / ENUM_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -43,6 +43,17 @@ const auto grammar_ = R"(
   # indicating "this method has a default impl" — BLOCK itself is
   # folded away by the optimizer.
   TRAIT_BODY               <-  BLOCK
+
+  # `enum Name<T> { Ok(T), Err(String), None }` — a sum type. Each
+  # VARIANT lowers to a variant-as-class: constructing `Name.Ok(v)`
+  # makes an instance tagged with the variant name and the parent enum
+  # name, with positional payload fields `_0.._n`. Nullary variants
+  # (`None`) are singleton instances exposed as `Name.None`.
+  # VARIANT_FIELD types are documentation in the MVP (payload arity is
+  # what matters; runtime values are positional and untyped).
+  ENUM_DECL                <-  (DECORATOR (_ DECORATOR)* _)? enum _ CLASS_HEAD _ '{' _ (VARIANT (_ ',' _ VARIANT)* _ ','?)? _ '}'
+  VARIANT                  <-  IDENTIFIER (_ '(' _ (VARIANT_FIELD (_ ',' _ VARIANT_FIELD)*)? _ ')')?
+  VARIANT_FIELD            <-  < TYPE_REF >
 
   # Class / trait / fn head with optional Generic type parameters:
   # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
@@ -147,9 +158,16 @@ const auto grammar_ = R"(
   GUARD                    <-  if _ EXPRESSION
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
-  PRIMARY_PATTERN          <-  WILDCARD / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
+  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
   WILDCARD                 <-  '_' !IdentChar
+  # Enum constructor pattern: `Ok(x)`, `Result.Ok(x)`, `Pair(a, b)`.
+  # The ctor path (variant name, optionally `Enum.Variant`) is the
+  # captured token; the children are the positional payload sub-patterns
+  # matched against the instance's `_0.._n` fields. Nullary variants are
+  # matched with the plain type pattern (`_: None`), so no parens form.
+  CTOR_PATTERN             <-  CTOR_PATH _ '(' _ (PATTERN (_ ',' _ PATTERN)*)? _ ')'
+  CTOR_PATH                <-  < IdentInitChar IdentChar* ( '.' IdentInitChar IdentChar* )? >
   TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
 
   ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _ ']'
@@ -267,6 +285,7 @@ const auto grammar_ = R"(
   ~export                  <-  K('export')
   ~from                    <-  K('from')
   ~trait                   <-  K('trait')
+  ~enum                    <-  K('enum')
 
   ~_                       <-  (WhiteSpace / EndOfLine)*
   ~_sp_                    <-  SpaceChar*
@@ -487,6 +506,36 @@ inline MethodView view_method(const peg::Ast& m) {
   };
 }
 
+// View of a VARIANT AST node — see grammar:
+//   VARIANT <- IDENTIFIER (_ '(' (VARIANT_FIELD ...)? ')')?
+// `arity` is the positional payload count (0 = nullary). VARIANT is
+// kept un-collapsed by the AstOptimizer so nodes[0] is always the name.
+struct VariantView {
+  std::string_view name;
+  size_t name_line;
+  size_t name_col;
+  size_t arity;
+};
+inline VariantView view_variant(const peg::Ast& v) {
+  const auto& ident = *v.nodes[0];
+  return VariantView{ident.token, ident.line, ident.column,
+                     v.nodes.size() - 1};
+}
+
+// Stable storage for synthetic positional payload field names
+// (`_0`, `_1`, ...) so a FunctionValue::Parameter's string_view name
+// and the instance field key outlive the call. Capped well above any
+// realistic variant arity.
+inline std::string_view positional_field_name(size_t i) {
+  static const std::vector<std::string> names = [] {
+    std::vector<std::string> v;
+    v.reserve(64);
+    for (size_t k = 0; k < 64; k++) v.push_back("_" + std::to_string(k));
+    return v;
+  }();
+  return names.at(i);
+}
+
 // `static`-modifier check for the field form (size 3). Throws a single
 // canonical SyntaxError so interp and JIT diagnostics stay identical.
 inline void require_static_field(const MethodView& mv,
@@ -669,8 +718,9 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "ARG_LIST", "KWARG", "KWARG_SPLAT",
                "CLASS_DECL", "METHOD", "DECORATOR",
                "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
+               "ENUM_DECL", "VARIANT",
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
-               "TUPLE_PATTERN",
+               "TUPLE_PATTERN", "CTOR_PATTERN",
                "REST_PATTERN",
                "IMPORT_STMT", "EXPORT_STMT"});
 
