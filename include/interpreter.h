@@ -4593,6 +4593,36 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value();
   }
 
+  // Lower a single type annotation slot in place to its runtime-check
+  // form (see shared.h::lower_type_params). Rewritten strings are owned
+  // by generic_type_storage_ so their string_views outlive the call.
+  void neutralize_type_slot(
+      std::string_view& slot,
+      const std::vector<std::string_view>& type_params) {
+    if (type_params.empty() || slot.empty()) return;
+    auto rewritten = culebra::lower_type_params(slot, type_params);
+    if (rewritten == slot) return;
+    if (rewritten == "Any") { slot = "Any"; return; }
+    auto storage = std::make_shared<std::string>(std::move(rewritten));
+    generic_type_storage_.push_back(storage);
+    slot = *storage;
+  }
+
+  // Lower all param + return annotations on a function signature,
+  // snapshotting the original annotation into declared_type_name first
+  // so introspection still surfaces `T` / `Array<T>`. Shared by class
+  // methods and free (multifn) functions carrying Generic type-params.
+  void neutralize_fn_type_params(
+      FunctionValue& fn,
+      const std::vector<std::string_view>& type_params) {
+    if (type_params.empty()) return;
+    for (auto& p : *fn.params) {
+      p.declared_type_name = p.type_name;
+      neutralize_type_slot(p.type_name, type_params);
+    }
+    neutralize_type_slot(fn.return_type, type_params);
+  }
+
   Value eval_multifn_decl(const peg::Ast& ast,
                           std::shared_ptr<Environment> env) {
     using namespace peg::udl;
@@ -4609,9 +4639,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     // CLASS_HEAD may carry Generic params (`min<T: Comparable>`); the
-    // bound name is the outer only. Mirrors eval_class_decl.
-    auto name_view = parse_generic_head(ast.nodes[i]->token).outer;
+    // bound name is the outer only. Mirrors eval_class_decl. The
+    // type-params themselves drive neutralization below so a bare `T`
+    // param lowers to "Any" (unbounded) or its bound trait (bounded).
+    auto mf_head = parse_generic_head(ast.nodes[i]->token);
+    auto name_view = mf_head.outer;
     auto name_owned = std::string(name_view);
+    std::vector<std::string_view> type_params;
+    if (!mf_head.args.empty()) type_params = split_generic_args(mf_head.args);
 
     // Children: CLASS_HEAD, PARAMETERS, [RETURN_TYPE,] BLOCK
     size_t params_idx = i + 1;
@@ -4626,6 +4661,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                        ast.nodes[body_idx],
                                        return_type, env);
     fn_val.get<FunctionValue>().name = std::string(name_view);
+    neutralize_fn_type_params(fn_val.get<FunctionValue>(), type_params);
 
     if (!decorators.empty()) {
       // Apply decorators bottom-up: the closest to the `fn` keyword
@@ -4776,30 +4812,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       reject_class_decl_in_class_body(mv.is_field ? *mv.value : **mv.body,
                                        class_name);
     }
-    // Rewrite ANY occurrence of a type-param (`T`, `Array<T>`, `T | Long`)
-    // to "Any" — runtime check sees Any, introspection sees the rewritten
-    // canonical form. Owned storage lives in generic_type_storage_ so
-    // string_views remain valid for the Interpreter's lifetime.
-    auto neutralize_one = [&](std::string_view& slot) {
-      if (type_params.empty() || slot.empty()) return;
-      auto rewritten = culebra::rewrite_type_params_to_any(slot, type_params);
-      if (rewritten == slot) return;
-      if (rewritten == "Any") { slot = "Any"; return; }
-      auto storage = std::make_shared<std::string>(std::move(rewritten));
-      generic_type_storage_.push_back(storage);
-      slot = *storage;
-    };
-    auto neutralize_type_params = [&](FunctionValue& fn) {
-      // Snapshot original declared annotation BEFORE rewriting type_name,
-      // so introspection can recover `T` / `Array<T>` even though runtime
-      // checks see the rewritten form.
-      for (auto& p : *fn.params) {
-        p.declared_type_name = p.type_name;
-        neutralize_one(p.type_name);
-      }
-      neutralize_one(fn.return_type);
-    };
-
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
@@ -4819,7 +4831,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       auto fn_val = make_function_value(*mv.params, *mv.body, {}, env);
       fn_val.get<FunctionValue>().name = std::string(mv.name);
-      neutralize_type_params(fn_val.get<FunctionValue>());
+      neutralize_fn_type_params(fn_val.get<FunctionValue>(), type_params);
       if (mv.is_static) {
         static_template.push_back({mv.name, std::move(fn_val)});
       } else {
@@ -4858,7 +4870,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // with method params.
       for (auto& p : ctor_params) {
         p.declared_type_name = p.type_name;
-        neutralize_one(p.type_name);
+        neutralize_type_slot(p.type_name, type_params);
       }
       auto body = *ctor_view.body;
       auto self = shared_from_this();

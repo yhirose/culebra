@@ -7468,10 +7468,12 @@ struct JIT {
   std::map<const peg::Ast*, FuncInfo> func_info_;
   FuncInfo main_info_;
 
-  // When compiling methods of `class Foo<T, U>`, holds {"T", "U"} so
-  // param annotations naming a type-param can be rewritten to "Any"
-  // (Phase 2 MVP: type-params are documentation, runtime sees Any).
-  // Cleared back to empty after the class is done compiling.
+  // Holds the active function's Generic type-params ({"T", "U"}) while
+  // its param annotations are compiled, so each can be lowered
+  // (unbounded -> "Any", bounded -> bound trait; see lower_type_params).
+  // Set for class methods (`class Foo<T, U>`) and free multifns
+  // (compile_multifn_decl); compile_fn_common clears it before
+  // descending so nested fns don't inherit it.
   std::vector<std::string_view> class_type_params_;
 
   // Absolute on-disk path of the module currently being compiled.
@@ -12090,9 +12092,15 @@ struct JIT {
     bool has_decorators = dec_end > 0;
 
     // CLASS_HEAD may carry Generic params (`sort<T: Comparable>`); the
-    // bound name is the outer only. Mirrors compile_class_decl.
-    std::string name(culebra::parse_generic_head(
-        ast.nodes[dec_end]->token).outer);
+    // bound name is the outer only. Mirrors compile_class_decl. The
+    // type-params drive lowering of bare `T` params both in the body's
+    // emit_type_check (via class_type_params_, set below) and in the
+    // dispatch param-type strings registered with the multimethod.
+    auto mf_head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
+    std::string name(mf_head.outer);
+    std::vector<std::string_view> mf_type_params;
+    if (!mf_head.args.empty())
+      mf_type_params = culebra::split_generic_args(mf_head.args);
     const peg::Ast* params_ast = ast.nodes[dec_end + 1].get();
     size_t body_idx = dec_end + 2;
     std::string_view returnType;
@@ -12106,6 +12114,10 @@ struct JIT {
     // Compile body — returns +1 Value(TAG_FUNC) wrapping a JitClosure.
     // Pass `name` so introspection (fn.name) reflects the source-level
     // identifier rather than the internal __culebra_fn_N symbol.
+    // Seed class_type_params_ with this fn's own Generic params so
+    // compile_fn_common neutralizes `T` in the param type_checks (it
+    // moves+clears class_type_params_, so nested fns don't inherit).
+    class_type_params_ = mf_type_params;
     auto bodyVal = compile_fn_common(&ast, *params_ast, body_ast, returnType,
                                       name);
 
@@ -12147,8 +12159,14 @@ struct JIT {
       auto t = extract_type_annotation(*p, 2);
       if (t.empty()) {
         typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
-      } else {
+      } else if (mf_type_params.empty()) {
         typePtrs.push_back(get_or_create_global_str(t, ".pt"));
+      } else {
+        // Lower bare `T` / `Array<T>` to "Any" / bound trait so the
+        // dispatch key matches on the bound (or accepts anything for an
+        // unbounded T). Mirrors interp's method.param_types.
+        typePtrs.push_back(get_or_create_global_str(
+            culebra::lower_type_params(t, mf_type_params), ".pt"));
       }
     }
     auto n_param_types = static_cast<int64_t>(typePtrs.size());
@@ -12280,7 +12298,7 @@ struct JIT {
     }
 
     std::vector<std::string> paramNames;
-    // Owning std::string so rewrite_type_params_to_any (which returns a
+    // Owning std::string so lower_type_params (which returns a
     // fresh string) is safe to push; downstream consumers (emit_type_check,
     // paramTypeStrs) take string_view and accept either.
     std::vector<std::string> paramTypeNames;
@@ -12317,7 +12335,7 @@ struct JIT {
       // from the immediate enclosing class so nested fns in the body
       // don't inherit the rewrite (matches interp).
       if (!active_class_type_params.empty() && !tname.empty()) {
-        tname = culebra::rewrite_type_params_to_any(
+        tname = culebra::lower_type_params(
             tname, active_class_type_params);
       }
       paramTypeNames.push_back(tname);

@@ -343,13 +343,17 @@ inline TypeParam parse_type_param(std::string_view raw) {
           trim_ascii(trimmed.substr(pos + 1))};
 }
 
-// Rewrite every occurrence of a class type-param name (`T`, `K`, ...)
-// inside `tn` with "Any", including nested forms like `Array<T>` and
-// `T | Long`. Used by class-method neutralization so the runtime type
-// check is no-op for the documented parameters. Returns the rewritten
-// string in canonical form (single-space `|`, comma-space-separated
-// generic args).
-inline std::string rewrite_type_params_to_any(
+// Lower every occurrence of a type-param name (`T`, `K`, ...) inside
+// `tn` to its runtime check target, including nested forms like
+// `Array<T>` and `T | Long`. An *unbounded* param (`T`) lowers to
+// "Any" (the annotation was documentation, so the check is a no-op).
+// A *bounded* param (`T: Comparable`) lowers to its bound trait name
+// (`Comparable`) so the existing trait-conformance machinery enforces
+// the bound at dispatch / type_check time — no separate generic
+// dispatch path is needed. Used by both class-method and free-fn
+// signature neutralization. Returns the result in canonical form
+// (single-space `|`, comma-space-separated generic args).
+inline std::string lower_type_params(
     std::string_view tn,
     const std::vector<std::string_view>& type_params) {
   auto trimmed = trim_ascii(tn);
@@ -360,18 +364,20 @@ inline std::string rewrite_type_params_to_any(
     bool first = true;
     for (auto cand : split_union_types(trimmed)) {
       if (!first) out += " | ";
-      out += rewrite_type_params_to_any(cand, type_params);
+      out += lower_type_params(cand, type_params);
       first = false;
     }
     return out;
   }
   auto head = parse_generic_head(trimmed);
-  // Outer alone matches a type-param: the whole annotation becomes Any
-  // (so `T`, `T<Long>`, etc. all collapse to "Any" — the args were
-  // documentation anyway). Type-params may carry a bound (`T: Foo`);
-  // strip via parse_type_param so comparison sees just the name.
+  // Outer alone matches a type-param: the whole annotation collapses to
+  // the param's lowered form (so `T`, `T<Long>`, etc. all become "Any"
+  // for an unbounded param, or the bound trait name for a bounded one —
+  // the generic args were documentation anyway).
   for (auto tp_raw : type_params) {
-    if (head.outer == parse_type_param(tp_raw).name) return "Any";
+    auto tp = parse_type_param(tp_raw);
+    if (head.outer == tp.name)
+      return tp.bound.empty() ? "Any" : std::string(tp.bound);
   }
   if (head.args.empty()) return std::string(head.outer);
   // Generic: keep outer, recurse into each arg.
@@ -380,7 +386,7 @@ inline std::string rewrite_type_params_to_any(
   bool first = true;
   for (auto a : split_generic_args(head.args)) {
     if (!first) out += ", ";
-    out += rewrite_type_params_to_any(a, type_params);
+    out += lower_type_params(a, type_params);
     first = false;
   }
   out += '>';

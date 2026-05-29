@@ -1624,10 +1624,11 @@ A class can declare type parameters:
       new (k, v) { this.k = k; this.v = v }
     }
 
-Type parameters are documentation in this phase — they make method
-signatures readable but the runtime sees them as `Any`. The
-class is bound under the outer name (`Box`, `Pair`), and instances
-carry the outer class tag:
+An unbounded type parameter is documentation — it makes method
+signatures readable but the runtime sees it as `Any`. A *bounded*
+parameter (`<T: Comparable>`) is enforced; see "Bound constraints"
+below. The class is bound under the outer name (`Box`, `Pair`), and
+instances carry the outer class tag:
 
     let b = Box.new(42)
     b.class                 # → 'Box'
@@ -1637,6 +1638,53 @@ syntax as built-in Generic types and behave the same way (outer
 match):
 
     fn unbox(b: Box<Long>) -> Long { b.v }
+
+#### Bound constraints
+
+A type parameter may carry a bound — a trait the bound type must
+conform to: `<T: Comparable>`. The bound applies on both free
+functions and classes, and is enforced at the call boundary: a value
+that does not conform to the bound is not a valid argument for that
+parameter. Inside the body, the bound's default methods are available
+on object arguments (`a.gt(b)` for a `Comparable` class).
+
+    class Money {
+      new(amount) { this.amount = amount }
+      cmp(other) { this.amount - other.amount }   # conforms to Comparable
+    }
+    fn pick_max<T: Comparable>(a: T, b: T) {
+      if a.gt(b) { a } else { b }                 # gt is a Comparable default
+    }
+    pick_max(Money.new(10), Money.new(25)).amount   # → 25
+    pick_max([1], [2])                              # !! no matching method
+
+Bounds are *lowered to the bound trait* at declaration time, so they
+reuse the ordinary trait-conformance machinery. Three consequences:
+
+* **Dispatch specificity** sits at the trait level: a concrete
+  overload beats a bounded one, and a bounded one beats an unbounded
+  `<T>` catch-all.
+
+      fn rank(x: Long) { "concrete" }
+      fn rank<T: Comparable>(x: T) { "bounded" }
+      fn rank<T>(x: T) { "unbounded" }
+      rank(5)     # → "concrete"   (exact type)
+      rank(1.5)   # → "bounded"    (Float conforms to Comparable)
+      rank([1])   # → "unbounded"  (Array conforms to neither)
+
+* **Lenient unification**: a type parameter that appears in several
+  positions (`a: T, b: T`) checks the bound at *each* position
+  independently — repeated `T` is not forced to a single concrete
+  type. A function taking `(a: T, b: T)` accepts `(1, 2.0)` (both
+  `Comparable`).
+
+* The bound enforces conformance, but the **primitive method-surface
+  limitation** still applies: `a.gt(b)` only dispatches when `a` is an
+  object. For primitive arguments use the native `<` / `>` operators
+  in the body instead.
+
+An unbounded `<T>` accepts any argument (it lowers to `Any`); it
+exists to name a parameter and to lose to more specific overloads.
 
 #### Known limitations
 
@@ -1655,8 +1703,8 @@ match):
 * Expression-position type args (`Box<Long>.new(42)`) — the parser
   currently reserves `<...>` for type-annotation contexts only.
 * Opt-in element runtime check.
-* Bound constraints (`<T: Comparable>`) — depends on trait /
-  protocol introduction.
+* Composite bounds (`<T: A + B>`), `where` clauses, and trait
+  inheritance (`trait Ord: Eq`) — single bounds ship today.
 * Class declarations inside another class's body (currently a
   SyntaxError, see "Where class declarations may appear" above).
 
@@ -1790,9 +1838,11 @@ inline (Rust style):
       if a.lt(b) { a } else { b }
     }
 
-The Bound is documentation + dispatch (no compile-time check;
-culebra's type checks are runtime). Multiple bounds (`<T: A + B>`)
-and `where` clauses are not yet supported.
+The bound is **enforced** at the call boundary (no compile-time
+check; culebra's type checks are runtime) — see "Bound constraints"
+under Generic types for the full semantics (lowering, dispatch
+ordering, lenient unification). Multiple bounds (`<T: A + B>`) and
+`where` clauses are not yet supported.
 
 #### Dispatch tie-break
 
@@ -1807,10 +1857,7 @@ chosen when only the trait path matches.
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
 * Trait inheritance (`trait Ord: Eq`) is not yet supported.
 * Bound composition (`<T: A + B>`) and `where` clauses — Phase 4+.
-* **Bound is parse-receipt-only**: `<T: Comparable>` parses, but the
-  dispatch / runtime currently does not consult the bound. T inside
-  the body is rewritten to `Any`. Phase 4+ will tie the bound into
-  multifn dispatch and Generic-call-site checking.
+  Single bounds (`<T: Comparable>`) are enforced today.
 * **Operator overloads bypass trait defaults**: `<` / `==` etc.
   invoke `__lt__` / `__eq__` directly on the class; Comparable's
   default `lt` / `le` etc. only fire when called as `x.lt(y)`. A

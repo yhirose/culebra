@@ -1551,10 +1551,11 @@ lambda / lexical-scope (`{ ... }`) の中 (新しい scope を開く) のみ
       new (k, v) { this.k = k; this.v = v }
     }
 
-このフェーズでは型パラメータはドキュメント — メソッドのシグネチャを
-読みやすくするためのものであり、 runtime は `Any` として扱います。
-class は外側名 (`Box`, `Pair`) で bind され、インスタンスは外側の
-class tag を持ちます:
+制約なしの型パラメータはドキュメント — メソッドのシグネチャを
+読みやすくするためのもので、 runtime は `Any` として扱います。
+**Bound 付き** (`<T: Comparable>`) は強制されます (後述「Generic
+Bound」)。 class は外側名 (`Box`, `Pair`) で bind され、インスタンス
+は外側の class tag を持ちます:
 
     let b = Box.new(42)
     b.class                 # → 'Box'
@@ -1579,7 +1580,8 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 * expression 位置の type args (`Box<Long>.new(42)`) — parser は
   現状 `<...>` を型注釈 context のみで使用。
 * opt-in 要素 runtime check。
-* Bound 制約 (`<T: Comparable>`) — trait / protocol 導入次第。
+* 複合 Bound (`<T: A + B>`) / `where` 節 / trait 継承
+  (`trait Ord: Eq`) — 単一 Bound は実装済。
 * class body 内 class 宣言 (現状は SyntaxError、 上記「クラス宣言の
   位置」参照)。
 
@@ -1699,15 +1701,46 @@ class を Object / Set key にする場合は対応する `eq(other)` の同時
 
 #### Generic Bound
 
-型パラメータに trait 制約を付けられる (Rust inline 流):
+型パラメータに trait 制約を付けられる (Rust inline 流)。 free 関数・
+class の両方で使え、 **呼び出し境界で強制**される (bound に conform
+しない値はその param の引数にならない):
 
-    fn min<T: Comparable>(a: T, b: T) -> T {
-      if a.lt(b) { a } else { b }
+    class Money {
+      new(amount) { this.amount = amount }
+      cmp(other) { this.amount - other.amount }   # Comparable に conform
     }
+    fn pick_max<T: Comparable>(a: T, b: T) {
+      if a.gt(b) { a } else { b }                 # gt は Comparable の default
+    }
+    pick_max(Money.new(10), Money.new(25)).amount   # → 25
+    pick_max([1], [2])                              # !! no matching method
 
-Bound はドキュメント + dispatch のみ (compile-time check なし、
-culebra の型 check は runtime)。 複数 Bound (`<T: A + B>`) や
-`where` 節は MVP 範囲外。
+Bound は宣言時に **bound trait へ lower** され、 通常の trait
+conformance 機構をそのまま再利用する (compile-time check なし、
+culebra の型 check は runtime)。 帰結:
+
+* **dispatch 特異性**は trait レベル: 具象 overload > bounded >
+  無制約 `<T>` catch-all。
+
+      fn rank(x: Long) { "concrete" }
+      fn rank<T: Comparable>(x: T) { "bounded" }
+      fn rank<T>(x: T) { "unbounded" }
+      rank(5)     # → "concrete"
+      rank(1.5)   # → "bounded"    (Float は Comparable)
+      rank([1])   # → "unbounded"  (Array はどちらにも非適合)
+
+* **lenient 単一化**: 同じ型パラメータが複数位置に出る (`a: T,
+  b: T`) とき、 bound は *各位置で個別に* 検査され、 繰り返しの `T`
+  は単一の concrete 型に強制されない。 `(a: T, b: T)` の関数は
+  `(1, 2.0)` を受理する (両方 `Comparable`)。
+
+* bound は conformance を強制するが、 後述の **primitive method
+  surface 制限**は残る: `a.gt(b)` は `a` が object のときのみ
+  dispatch される。 primitive 引数では body で native な `<` / `>`
+  を使う。
+
+無制約 `<T>` は任意の引数を受ける (`Any` に lower される) — param に
+名前を付け、 より特異な overload に負けるための形。
 
 #### dispatch tie-break
 
@@ -1721,10 +1754,7 @@ trait path のみ match する場合は trait 版が選ばれる。
   明示宣言を再検討)
 * trait 継承 (`trait Ord: Eq`) は未対応。
 * 複合 Bound (`<T: A + B>`) と `where` 節 — Phase 4+。
-* **Bound は構文受理のみ**: `<T: Comparable>` は parse 通るが
-  dispatch / runtime では bound を見ない。 body 内の `T` は `Any`
-  に書き換えられる。 Phase 4+ で multifn dispatch / Generic 呼び出し
-  時 check に連動。
+  単一 Bound (`<T: Comparable>`) は実装済 (上記「Generic Bound」)。
 * **演算子オーバーロードは trait default を bypass する**: `<` /
   `==` 等は class の `__lt__` / `__eq__` を直接呼ぶ。 Comparable の
   default `lt` / `le` 等は `x.lt(y)` の form のみ動作。 `cmp` を持つ
