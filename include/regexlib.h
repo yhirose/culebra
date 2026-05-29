@@ -246,8 +246,11 @@ struct Segmented {
 
 inline Segmented segment(std::string_view s8) {
   // Decode to code points while remembering each code point's byte offset.
+  // Code-point count is bounded by byte count; reserve to avoid regrowth.
   std::u32string cps;
   std::vector<size_t> cp_byte;
+  cps.reserve(s8.size());
+  cp_byte.reserve(s8.size());
   size_t off = 0;
   while (off < s8.size()) {
     char32_t cp;
@@ -263,6 +266,8 @@ inline Segmented segment(std::string_view s8) {
   }
 
   Segmented seg;
+  seg.graphemes.reserve(cps.size());
+  seg.byte_begin.reserve(cps.size() + 1);
   size_t i = 0;
   while (i < cps.size()) {
     size_t len = unicode::grapheme_length(cps.data() + i, cps.size() - i);
@@ -1123,13 +1128,15 @@ class Regex {
   // Search anywhere in `text`.
   MatchResult search(std::string_view text) const {
     auto seg = detail::segment(text);
-    return run(seg, 0, /*anchored=*/false);
+    Scratch sc;
+    return run(seg, 0, /*anchored=*/false, sc);
   }
 
   // Match anchored at the start of `text` (need not reach the end).
   MatchResult match(std::string_view text) const {
     auto seg = detail::segment(text);
-    return run(seg, 0, /*anchored=*/true);
+    Scratch sc;
+    return run(seg, 0, /*anchored=*/true, sc);
   }
 
   bool test(std::string_view text) const { return search(text).matched; }
@@ -1139,8 +1146,9 @@ class Regex {
     std::vector<MatchResult> out;
     int start = 0;
     int n = static_cast<int>(seg.graphemes.size());
+    Scratch sc;  // reused across every match
     while (start <= n) {
-      MatchResult m = run(seg, start, /*anchored=*/false);
+      MatchResult m = run(seg, start, /*anchored=*/false, sc);
       if (!m.matched) break;
       out.push_back(m);
       int end_idx = m.end_grapheme;
@@ -1171,9 +1179,61 @@ class Regex {
   bool multiline_ = false;
   std::unordered_map<std::string, int> named_;
 
+  // Capture slots are shared between threads copy-on-write: ε-transitions
+  // (Jmp/Split/assert/lookaround) only bump a refcount; a Save clones the
+  // vector. Matching is single-threaded, so the refcount is non-atomic — this
+  // keeps the per-position scan allocation- and atomic-free.
+  class Saves {
+    struct Buf {
+      int rc;
+      std::vector<int> v;
+    };
+    Buf *b_ = nullptr;
+
+   public:
+    Saves() = default;
+    explicit Saves(int nslots) : b_(new Buf{1, std::vector<int>(nslots, -1)}) {}
+    Saves(const Saves &o) : b_(o.b_) {
+      if (b_) ++b_->rc;
+    }
+    Saves(Saves &&o) noexcept : b_(o.b_) { o.b_ = nullptr; }
+    Saves &operator=(Saves o) noexcept {
+      std::swap(b_, o.b_);
+      return *this;
+    }
+    ~Saves() {
+      if (b_ && --b_->rc == 0) delete b_;
+    }
+    const std::vector<int> &operator*() const { return b_->v; }
+    // Clone the buffer with one slot updated (copy-on-write).
+    Saves write(int slot, int sp) const {
+      Saves c;
+      c.b_ = new Buf{1, b_->v};
+      c.b_->v[slot] = sp;
+      return c;
+    }
+  };
+
   struct Thread {
     int pc;
-    std::vector<int> saves;
+    Saves saves;
+  };
+
+  static Saves make_saves(int nslots) { return Saves(nslots); }
+
+  // Reusable VM buffers so find_all() does not re-allocate per match. `gen` is
+  // monotonic across runs, so `visited` never needs re-initialising.
+  struct Scratch {
+    std::vector<Thread> clist, nlist;
+    std::vector<int> visited;
+    int gen = 0;
+    void prepare(int psz) {
+      clist.clear();
+      nlist.clear();
+      clist.reserve(psz);
+      nlist.reserve(psz);
+      if (static_cast<int>(visited.size()) < psz) visited.assign(psz, -1);
+    }
   };
 
   bool bol(const detail::Segmented &seg, int sp) const {
@@ -1217,9 +1277,8 @@ class Regex {
   // Follow ε-transitions (Jmp/Split/Save/asserts/lookaround), adding reachable
   // Char/Any/Class/Match threads to `list`, de-duplicating by pc.
   void add_thread(const detail::Program &prog, std::vector<Thread> &list,
-                  std::vector<int> &visited, int gen, int pc,
-                  std::vector<int> saves, const detail::Segmented &seg, int sp,
-                  int n) const {
+                  std::vector<int> &visited, int gen, int pc, Saves saves,
+                  const detail::Segmented &seg, int sp, int n) const {
     if (visited[pc] == gen) return;
     visited[pc] = gen;
     const detail::Inst &in = prog.insts[pc];
@@ -1233,8 +1292,12 @@ class Regex {
         add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp, n);
         break;
       case Op::Save: {
-        if (in.n >= 0 && in.n < static_cast<int>(saves.size())) saves[in.n] = sp;
-        add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg, sp, n);
+        if (in.n >= 0 && in.n < static_cast<int>((*saves).size()))
+          add_thread(prog, list, visited, gen, pc + 1, saves.write(in.n, sp),
+                     seg, sp, n);
+        else
+          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg, sp,
+                     n);
         break;
       }
       case Op::Look: {
@@ -1278,12 +1341,14 @@ class Regex {
     using Op = detail::Inst::Op;
     int psz = static_cast<int>(prog.insts.size());
     std::vector<Thread> clist, nlist;
+    clist.reserve(psz);
+    nlist.reserve(psz);
     std::vector<int> visited(psz, -1);
     int gen = 0;
 
-    std::vector<int> init(prog.nslots, -1);
     gen++;
-    add_thread(prog, clist, visited, gen, 0, init, seg, start, n);
+    add_thread(prog, clist, visited, gen, 0, make_saves(prog.nslots), seg, start,
+               n);
 
     for (int sp = start; sp <= n; sp++) {
       if (clist.empty()) break;
@@ -1328,12 +1393,14 @@ class Regex {
     using Op = detail::Inst::Op;
     int psz = static_cast<int>(prog.insts.size());
     std::vector<Thread> clist, nlist;
+    clist.reserve(psz);
+    nlist.reserve(psz);
     std::vector<int> visited(psz, -1);
     int gen = 0;
 
-    std::vector<int> init(prog.nslots, -1);
     gen++;
-    add_thread(prog, clist, visited, gen, 0, init, seg, from, n);
+    add_thread(prog, clist, visited, gen, 0, make_saves(prog.nslots), seg, from,
+               n);
 
     for (int p = from; p >= 0; p--) {
       if (clist.empty()) break;
@@ -1370,23 +1437,27 @@ class Regex {
     return false;
   }
 
-  MatchResult run(const detail::Segmented &seg, int start,
-                  bool anchored) const {
+  MatchResult run(const detail::Segmented &seg, int start, bool anchored,
+                  Scratch &sc) const {
     using Op = detail::Inst::Op;
     const detail::Program &prog = prog_;
     int n = static_cast<int>(seg.graphemes.size());
     int psz = static_cast<int>(prog.insts.size());
 
-    std::vector<Thread> clist, nlist;
-    std::vector<int> visited(psz, -1);
-    int gen = 0;
+    sc.prepare(psz);
+    auto &clist = sc.clist;
+    auto &nlist = sc.nlist;
+    auto &visited = sc.visited;
+    int &gen = sc.gen;
 
     std::vector<int> matched;
     bool have = false;
 
-    std::vector<int> init(prog.nslots, -1);
+    // The initial capture state is all-unset; since it is immutable and shared
+    // copy-on-write, one instance is reused for every (re-)seed position.
+    Saves seed = make_saves(prog.nslots);
     gen++;
-    add_thread(prog, clist, visited, gen, 0, init, seg, start, n);
+    add_thread(prog, clist, visited, gen, 0, seed, seg, start, n);
 
     for (int sp = start; sp <= n; sp++) {
       if (clist.empty() && have) break;
@@ -1415,7 +1486,7 @@ class Regex {
                          sp + 1, n);
             break;
           case Op::Match:
-            matched = t.saves;
+            matched = *t.saves;
             have = true;
             stop = true;  // discard lower-priority threads in this step
             break;
@@ -1430,7 +1501,6 @@ class Regex {
       // Unanchored search: seed a fresh start thread (lowest priority) at the
       // next position, unless we already have a match.
       if (!anchored && !have && sp + 1 <= n) {
-        std::vector<int> seed(prog.nslots, -1);
         add_thread(prog, clist, visited, next_gen, 0, seed, seg, sp + 1, n);
       }
     }
