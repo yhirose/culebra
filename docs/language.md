@@ -545,6 +545,10 @@ planned follow-up.
 * `<`, `<=`, `>`, `>=`: same-typed operands, with the exception that
   `Long` and `Float` compare by numeric value (`1 < 1.5` works). Any
   other cross-type ordering raises `type error`.
+* **Chaining**: `a < b < c` means `(a < b) && (b < c)` — the middle
+  operand `b` is evaluated once, and the chain short-circuits to `false`
+  at the first failing link (Python semantics). Any mix of comparison
+  operators chains: `0 <= i < n`, `lo < x <= hi`, `a == b == c`.
 
 ### Logical
 

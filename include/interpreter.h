@@ -5873,11 +5873,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return val;
   }
 
+  // `a OPE b` or a comparison chain `a < b < c …` = `(a<b) && (b<c) …`.
+  // Each middle operand is evaluated once (the rhs becomes the next lhs);
+  // short-circuits to false at the first failing link (Python semantics).
   Value eval_condition(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    auto lhs = eval(*ast.nodes[0], env);
-    auto ope = eval(*ast.nodes[1], env).to_string();
-    auto rhs = eval(*ast.nodes[2], env);
-    return compare_values(lhs, rhs, ope, env);
+    auto prev = eval(*ast.nodes[0], env);
+    for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
+      auto rhs = eval(*ast.nodes[i + 1], env);
+      auto r = compare_values(prev, rhs, ast.nodes[i]->token, env);
+      if (!r.to_bool()) return Value(false);
+      prev = std::move(rhs);
+    }
+    return Value(true);
   }
 
   // Six-way comparison on pre-evaluated operands. Factored out of

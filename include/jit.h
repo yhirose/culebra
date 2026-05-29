@@ -10813,12 +10813,11 @@ struct JIT {
   // that forwards to the runtime helper. String, reference-type, and
   // numeric cross-type (Long↔Float) all go through the runtime — it
   // already implements matching semantics with the interpreter.
-  llvm::Value* compile_condition(const peg::Ast& ast) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto lhs = compile(*ast.nodes[0]);
-    auto ope_str = std::string(ast.nodes[1]->token);
-    auto rhs = compile(*ast.nodes[2]);
-
+  // Compile one comparison `lhs OPE rhs` to an i1 (boolean, pre-make_bool).
+  // Factored out so compile_condition can chain `a < b < c` as
+  // `(a < b) && (b < c)` with each middle operand evaluated once.
+  llvm::Value* compile_comparison_i1(llvm::Value* lhs, llvm::Value* rhs,
+                                     const std::string& ope_str) {
     auto ltag = extract_tag(lhs);
     auto ldata = extract_data(lhs);
     auto rtag = extract_tag(rhs);
@@ -10864,7 +10863,7 @@ struct JIT {
       phi->addIncoming(slowEq, slowEndBB);
       llvm::Value* result = phi;
       if (ope_str == "!=") result = builder_.CreateNot(result, "neq");
-      return make_bool(result);
+      return result;
     }
 
     // Ordering operators. Fast path for both-Long; runtime helper
@@ -10924,7 +10923,48 @@ struct JIT {
     auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "ord.r");
     phi->addIncoming(fastResult, fastEndBB);
     phi->addIncoming(slowResult, slowEndBB);
-    return make_bool(phi);
+    return phi;
+  }
+
+  // `a OPE b` or a chain `a < b < c …` = `(a<b) && (b<c) && …`. Each
+  // middle operand is evaluated once (the rhs becomes the next lhs).
+  // Short-circuits to false at the first failing link (Python semantics).
+  llvm::Value* compile_condition(const peg::Ast& ast) {
+    auto lhs = compile(*ast.nodes[0]);
+    if (ast.nodes.size() == 3) {  // common single comparison — direct
+      auto rhs = compile(*ast.nodes[2]);
+      return make_bool(
+          compile_comparison_i1(lhs, rhs, std::string(ast.nodes[1]->token)));
+    }
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto resultAlloca = eb.CreateAlloca(builder_.getInt1Ty(), nullptr,
+                                        "cmpchain.tmp");
+    auto falseBB = llvm::BasicBlock::Create(ctx_, "cmpchain.false", fn);
+    auto endBB = llvm::BasicBlock::Create(ctx_, "cmpchain.end");
+    {
+      auto saveIP = builder_.saveIP();
+      builder_.SetInsertPoint(falseBB);
+      builder_.CreateStore(builder_.getInt1(false), resultAlloca);
+      builder_.CreateBr(endBB);
+      builder_.restoreIP(saveIP);
+    }
+    llvm::Value* prev = lhs;
+    for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
+      auto rhs = compile(*ast.nodes[i + 1]);
+      auto cmp = compile_comparison_i1(prev, rhs,
+                                       std::string(ast.nodes[i]->token));
+      auto nextBB = llvm::BasicBlock::Create(ctx_, "cmpchain.next", fn);
+      builder_.CreateCondBr(cmp, nextBB, falseBB);
+      builder_.SetInsertPoint(nextBB);
+      prev = rhs;
+    }
+    builder_.CreateStore(builder_.getInt1(true), resultAlloca);
+    builder_.CreateBr(endBB);
+    fn->insert(fn->end(), endBB);
+    builder_.SetInsertPoint(endBB);
+    return make_bool(builder_.CreateLoad(builder_.getInt1Ty(), resultAlloca,
+                                         "cmpchain.r"));
   }
 
   // --- Logical operators (short-circuit) ---
