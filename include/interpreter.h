@@ -4335,6 +4335,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_unary_not(ast, env);
       case "UNARY_BNOT"_:
         return eval_unary_bnot(ast, env);
+      case "BIT_OR"_:
       case "BIT_XOR"_:
       case "BIT_AND"_:
       case "SHIFT"_:
@@ -6184,7 +6185,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (size_t i = 1; i < ast.nodes.size(); i += 2) {
       auto op = ast.nodes[i]->token;
       long rhs = require_long(eval(*ast.nodes[i + 1], env));
-      if (op == "^") acc ^= rhs;
+      if (op == "|") acc |= rhs;
+      else if (op == "^") acc ^= rhs;
       else if (op == "&") acc &= rhs;
       else if (op == "<<") acc <<= rhs;
       else if (op == ">>") acc >>= rhs;

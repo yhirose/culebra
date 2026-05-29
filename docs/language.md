@@ -126,7 +126,7 @@ contextual and only recognized after `:` or `->`.
     ==  !=  <=  <  >=  >        # comparison
     +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings
     @                           # matmul (user-defined via `__matmul__`)
-    &  ^  <<  >>  ~             # bitwise and / xor / shifts / complement (Long only; no `|` yet)
+    |  &  ^  <<  >>  ~          # bitwise or / and / xor / shifts / complement (Long only)
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
     ??                          # nil coalesce (lower precedence than ||)
@@ -518,26 +518,30 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
 
 ### Bitwise
 
-`&` (and), `^` (xor), `<<` / `>>` (left / arithmetic-right shift), and
-unary `~` (complement) operate on **two `Long` operands** (one for
-`~`); any non-`Long` operand raises `type error`. `>>` is an arithmetic
-(sign-preserving) shift, matching `Long`'s signedness. Shifts wrap like
-the rest of `Long` arithmetic (no bignum).
+`|` (or), `&` (and), `^` (xor), `<<` / `>>` (left / arithmetic-right
+shift), and unary `~` (complement) operate on **two `Long` operands**
+(one for `~`); any non-`Long` operand raises `type error`. `>>` is an
+arithmetic (sign-preserving) shift, matching `Long`'s signedness. Shifts
+wrap like the rest of `Long` arithmetic (no bignum).
 
     0b1100 & 0b1010   # → 8
     12 ^ 10           # → 6
+    0b1010 | 0b0101   # → 15
     1 << 4            # → 16
     ~0                # → -1
     5 & ~1            # → 4   (clear the low bit)
+    READ | WRITE      # combine disjoint flag bits
 
-Precedence (Python's): comparison `<` xor `^` `<` and `&` `<` shift
-`<<`/`>>` `<` additive `+`. So `1 << 2 + 1 == 8` (`1 << (2+1)`) and
-`2 & 3 ^ 1 == 3` (`(2 & 3) ^ 1`). `~` binds at the unary level.
+Precedence: comparison `<` or `|` `<` xor `^` `<` and `&` `<` shift
+`<<`/`>>` `<` additive `+`. So `1 << 2 + 1 == 8` (`1 << (2+1)`),
+`2 & 3 ^ 1 == 3` (`(2 & 3) ^ 1`), and `1 | 2 == 3` (`(1 | 2) == 3`).
+`~` binds at the unary level.
 
-There is **no bit-OR `|` operator** yet: a single `|` infix collides
-with the `|...|` lambda delimiter under culebra's stateless grammar.
-For disjoint flag bits, sum them (`READ + WRITE`); a `|` form is a
-planned follow-up.
+**`|` and `|...|` lambdas:** a bit-OR `|` works everywhere a normal
+expression is parsed, including a lambda body (`|x| x | 1`). The one
+exception is a *parameter default*, where a top-level `|` would be
+ambiguous with the closing `|` of the parameter list — write it with
+parentheses there: `|x = (A | B)|`. `||` remains logical-or.
 
 ### Comparison
 

@@ -9537,6 +9537,7 @@ struct JIT {
         return compile_unary_not(ast);
       case "UNARY_BNOT"_:
         return compile_unary_bnot(ast);
+      case "BIT_OR"_:
       case "BIT_XOR"_:
       case "BIT_AND"_:
       case "SHIFT"_:
@@ -10934,7 +10935,8 @@ struct JIT {
       auto ld = extract_data(lhs);
       auto rd = extract_data(rhs);
       llvm::Value* r;
-      if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
+      if (op == "|") r = builder_.CreateOr(ld, rd, "bor");
+      else if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
       else if (op == "&") r = builder_.CreateAnd(ld, rd, "band");
       else if (op == "<<") r = builder_.CreateShl(ld, rd, "shl");
       else r = builder_.CreateAShr(ld, rd, "ashr");  // ">>" (signed)

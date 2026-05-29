@@ -1,7 +1,5 @@
 // Hex / octal / binary integer literals + bitwise operators
-// (`&` `^` `<<` `>>`) and `~`. Bit-OR `|` is not yet an operator (it
-// collides with the `|...|` lambda delimiter); combine disjoint flag
-// bits with `+` in the meantime.
+// (`|` `&` `^` `<<` `>>`) and `~`.
 
 // --- Radix literals ---
 assert_eq(0xFF, 255)
@@ -14,11 +12,14 @@ assert_eq(0b0, 0)
 assert_eq(255, 0xFF)          // decimal still parses
 assert_eq(0.5, 0.5)           // float literal unaffected
 
-// --- AND / XOR ---
+// --- AND / XOR / OR ---
 assert_eq(0b1100 & 0b1010, 0b1000)
 assert_eq(12 & 10, 8)
 assert_eq(0b1100 ^ 0b1010, 0b0110)
 assert_eq(12 ^ 10, 6)
+assert_eq(0b1010 | 0b0101, 0b1111)
+assert_eq(5 | 2, 7)
+assert_eq(1 | 4 | 16, 21)     // chained
 
 // --- Shifts ---
 assert_eq(1 << 4, 16)
@@ -30,18 +31,30 @@ assert_eq(~0, -1)
 assert_eq(~5, -6)
 assert_eq(5 & ~1, 4)          // clear the low bit
 
-// --- Precedence: comparison < ^ < & < shift < additive ---
+// --- Precedence: comparison < | < ^ < & < shift < additive ---
 assert_eq(1 & 2 == 0, true)   // (1 & 2) == 0
 assert_eq(2 & 3 ^ 1, 3)       // (2 & 3) ^ 1
 assert_eq(1 << 2 + 1, 8)      // 1 << (2 + 1)
 assert_eq(1 + 1 << 2, 8)      // (1 + 1) << 2
+assert_eq(1 | 2 ^ 1, 3)       // 1 | (2 ^ 1)
+assert_eq(6 & 3 | 8, 10)      // (6 & 3) | 8
+assert_eq(1 | 2 == 3, true)   // (1 | 2) == 3
+assert_eq(false || true, true)// `||` is still logical-or, not bit-or
 
-// --- Disjoint flags via + (interim for bit-or) ---
+// --- Flag bits via | ---
 let READ = 0b100
 let WRITE = 0b010
 let EXEC = 0b001
-assert_eq(READ + WRITE + EXEC, 0b111)
+assert_eq(READ | WRITE | EXEC, 0b111)
 assert_eq(0o644, 420)         // chmod-style octal
+
+// --- bit-or coexists with the `|...|` lambda delimiter ---
+let body_or = |x| x | 1       // bit-or in a lambda body
+assert_eq(body_or(4), 5)
+let with_default = |a, b, c = 8| a + b + c   // default doesn't eat the close `|`
+assert_eq(with_default(1, 2), 11)
+let paren_default = |x = (2 | 1)| x          // top-level `|` in a default needs parens
+assert_eq(paren_default(), 3)
 
 // --- Non-Long operand is a type error ---
 let e = try { 1.5 & 2; nil } catch er { er.kind }

@@ -519,6 +519,12 @@ Set / Tuple land.
 parser ambiguity that was costly to resolve while keeping both
 features usable. Method syntax has no such ambiguity. The set/tuple
 operator forms were removed before they shipped.
+**Update:** The binary-`|` ambiguity was later resolved for the
+numeric bit-OR operator (a parallel bit-or-free expression ladder for
+parameter defaults, unified back to the same AST tags via cpp-peglib's
+`{ ast_name }` instruction). Set / Tuple keep the method form by
+design, but the "ambiguity is unresolvable" part of the reasoning no
+longer holds.
 **Source:** [[project_roadmap]] §③.
 
 ### 13.4 Scalar bump allocator

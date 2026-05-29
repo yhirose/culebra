@@ -78,6 +78,9 @@
   LEXICAL_SCOPE            <-  BLOCK
 
   EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
+  # Bit-or-free EXPRESSION used by parameter defaults (`|x = e|`), where a
+  # top-level bit-or `|` would be ambiguous with the lambda close delimiter.
+  ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / ND_NIL_COALESCE
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
@@ -93,12 +96,21 @@
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-  CONDITION                <-  BIT_XOR (_ CONDITION_OPERATOR _ BIT_XOR)*
-  # Bitwise / shift levels (Python precedence: comparison < ^ < & < shift
-  # < additive). Bit-OR `|` is intentionally absent — a single `|` infix
-  # collides with the `|...|` lambda close delimiter under a stateless PEG
-  # (same reason Set ops use methods, see the note above); combine
-  # disjoint flag bits with `+` until a `|` disambiguation lands.
+  CONDITION                <-  BIT_OR (_ CONDITION_OPERATOR _ BIT_OR)*
+  # Bitwise / shift levels (precedence: comparison < | < ^ < & < shift
+  # < additive). A single bit-OR `|` infix collides with the `|...|`
+  # lambda delimiter under a stateless PEG, so parameter defaults parse
+  # through the parallel bit-or-free ladder below (ND_*); a top-level `|`
+  # inside a default therefore needs parentheses.
+  BIT_OR                   <-  BIT_XOR (_h_ BIT_OR_OPERATOR _ BIT_XOR)*
+  # No-bit-or ladder: identical to NIL_COALESCE..CONDITION but bottoming
+  # out at BIT_XOR so a bare `|` closes the enclosing `|...|` instead of
+  # parsing as bit-or. `{ ast_name }` makes each rung emit its normal tag
+  # so the evaluator / JIT need no extra cases.
+  ND_NIL_COALESCE          <-  ND_LOGICAL_OR (_ '??' _ ND_LOGICAL_OR)*     { ast_name: NIL_COALESCE }
+  ND_LOGICAL_OR            <-  ND_LOGICAL_AND (_ '||' _ ND_LOGICAL_AND)*   { ast_name: LOGICAL_OR }
+  ND_LOGICAL_AND           <-  ND_CONDITION (_ '&&' _ ND_CONDITION)*       { ast_name: LOGICAL_AND }
+  ND_CONDITION             <-  BIT_XOR (_ CONDITION_OPERATOR _ BIT_XOR)*   { ast_name: CONDITION }
   BIT_XOR                  <-  BIT_AND (_h_ BIT_XOR_OPERATOR _ BIT_AND)*
   BIT_AND                  <-  SHIFT (_h_ BIT_AND_OPERATOR _ SHIFT)*
   SHIFT                    <-  RANGE (_h_ SHIFT_OPERATOR _ RANGE)*
@@ -224,7 +236,7 @@
   KW_ONLY_SEP              <-  '*' !'*'
   ARGS_REST                <-  '*' _ < IdentInitChar IdentChar* >
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
-  DEFAULT_VALUE            <-  EXPRESSION
+  DEFAULT_VALUE            <-  ND_EXPRESSION
 
   # TYPE_NAME = single type, optionally Generic, with an optional
   # trailing `?` (the `T?` = `T | Nil` Optional sugar). TYPE_REF wraps
@@ -246,6 +258,8 @@
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'
   UNARY_BNOT_OPERATOR      <-  '~'
+  # `!'|'` so the first `|` of `||` (logical-or) isn't taken as bit-or.
+  BIT_OR_OPERATOR          <-  < '|' !'|' >
   BIT_XOR_OPERATOR         <-  < '^' >
   BIT_AND_OPERATOR         <-  < '&' >
   SHIFT_OPERATOR           <-  < '<<' / '>>' >
