@@ -3785,6 +3785,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count(
 struct JitMultiMethodEntry {
   std::vector<std::string> param_types;  // empty = "Any"
   JitClosure* body;                       // +1 owned by this entry
+  bool variadic = false;                  // has a `*args` catch-all
 };
 
 inline std::map<std::string, std::vector<JitMultiMethodEntry>>&
@@ -4086,7 +4087,8 @@ inline int64_t _jit_multifn_pick(
       methods, arg_types,
       [](const JitMultiMethodEntry& m) -> const std::vector<std::string>& {
         return m.param_types;
-      });
+      },
+      [](const JitMultiMethodEntry& m) { return m.variadic; });
 }
 
 // Recover (body, name) for a multifn dispatcher closure given the
@@ -4164,12 +4166,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_multifn_register_and_install(const char* name_cstr,
                                              JitClosure* body,
                                              const char* const* param_types,
-                                             int64_t n_param_types) {
+                                             int64_t n_param_types,
+                                             int64_t variadic) {
   std::string name(name_cstr);
   JitMultiMethodEntry method;
   // Caller's `body` arrives at +1; the table takes that ownership
   // outright. On replace, the displaced body's +1 is released below.
   method.body = body;
+  method.variadic = variadic != 0;
   method.param_types.reserve(static_cast<size_t>(n_param_types));
   for (int64_t i = 0; i < n_param_types; i++) {
     // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
@@ -9228,9 +9232,11 @@ struct JIT {
     module_->getOrInsertFunction(rt::class_parameters_walk, valueType_, ptrTy);
     // multifn_register_and_install:
     //   JitClosure* (const char* name, JitClosure* body,
-    //                const char** param_types, int64_t n_param_types)
+    //                const char** param_types, int64_t n_param_types,
+    //                int64_t variadic)
     module_->getOrInsertFunction(rt::multifn_register_and_install,
                                  ptrTy, ptrTy, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // User-level throw: stashes tag+data in globals and raises a
     // C++ exception; try/catch landingpads read the globals back.
@@ -12497,7 +12503,8 @@ struct JIT {
       // Arity count (positional only).
       size_t arity = 0;
       for (const auto& p : tv.params->nodes) {
-        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p))
+        if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p) ||
+            culebra::is_args_rest(*p))
           continue;
         arity++;
       }
@@ -13104,8 +13111,10 @@ struct JIT {
     // kw-only and `**rest` params are not part of the dispatch key.
     std::vector<llvm::Constant*> typePtrs;
     typePtrs.reserve(params_ast->nodes.size());
+    bool mf_variadic = false;
     for (auto& p : params_ast->nodes) {
       if (culebra::is_kw_only_sep(*p)) break;
+      if (culebra::is_args_rest(*p)) { mf_variadic = true; continue; }
       if (culebra::is_kwargs_rest(*p)) continue;
       auto t = extract_type_annotation(*p, 2);
       if (t.empty()) {
@@ -13137,9 +13146,10 @@ struct JIT {
     auto namePtr = get_or_create_global_str(name, ".mname");
     auto dispatcherPtr = emit_call(
         module_->getOrInsertFunction(rt::multifn_register_and_install,
-                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty),
+                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty),
         {namePtr, bodyClosurePtr, paramTypesPtr,
-         builder_.getInt64(n_param_types)},
+         builder_.getInt64(n_param_types),
+         builder_.getInt64(mf_variadic ? 1 : 0)},
         "multifn.disp");
 
     auto dispatcherVal = make_func(dispatcherPtr);
@@ -13265,8 +13275,26 @@ struct JIT {
     std::optional<size_t> firstDefaulted;
     std::optional<size_t> kwargsRestIdx;
     std::optional<size_t> firstKwOnlyIdx;
+    // `*args` catch-all name (bound from the overflow Array below). It
+    // must be the last parameter, so nothing follows it in paramNames
+    // and the overflow boundary stays at declaredArity.
+    std::optional<std::string> argsRestName;
     for (auto& node : params_ast.nodes) {
       auto pv = culebra::view_parameter(*node);
+      if (argsRestName) {
+        throw culebra::CulebraError("SyntaxError",
+            "'*args' must be the last parameter",
+            static_cast<long>(node->line), static_cast<long>(node->column));
+      }
+      if (pv.is_args_rest) {
+        if (firstKwOnlyIdx) {
+          throw culebra::CulebraError("SyntaxError",
+              "'*args' cannot follow a '*' separator",
+              static_cast<long>(node->line), static_cast<long>(node->column));
+        }
+        argsRestName = std::string(pv.name);
+        continue;  // not a positional slot; bound from overflow below
+      }
       if (pv.is_kw_only_sep) {
         if (!firstKwOnlyIdx) firstKwOnlyIdx = paramNames.size();
         continue;
@@ -13524,7 +13552,7 @@ struct JIT {
     // Otherwise we still need to release the +1 retains the caller
     // transferred for each overflow slot — but the dedicated helper
     // (release_overflow_args) skips the Array allocation entirely.
-    if (info.uses_args) {
+    if (info.uses_args || argsRestName) {
       auto argsArr = emit_call(
           module_->getOrInsertFunction(
               rt::args_slice_to_array, ptrTy, ptrTy,
@@ -13534,10 +13562,23 @@ struct JIT {
            nArgsArg},
           "args.arr");
       auto argsVal = make_array(argsArr);
-      if (info.captured_locals.contains("__ARGS__")) {
-        define_var("__ARGS__", make_cell_slot("__ARGS__", argsVal));
-      } else {
-        define_var("__ARGS__", make_stack_slot("__ARGS__", argsVal));
+      // The same overflow Array backs both `__ARGS__` and a named `*args`
+      // param when both are live; the second binding needs its own +1.
+      if (info.uses_args && argsRestName) emit_value_retain(argsVal);
+      if (info.uses_args) {
+        if (info.captured_locals.contains("__ARGS__")) {
+          define_var("__ARGS__", make_cell_slot("__ARGS__", argsVal));
+        } else {
+          define_var("__ARGS__", make_stack_slot("__ARGS__", argsVal));
+        }
+      }
+      if (argsRestName) {
+        const std::string& nm = *argsRestName;
+        if (info.captured_locals.contains(nm)) {
+          define_var(nm, make_cell_slot(nm, argsVal));
+        } else {
+          define_var(nm, make_stack_slot(nm, argsVal, /*is_mut=*/false));
+        }
       }
     } else {
       // Conditional: only call the release helper when there *are*
@@ -14766,6 +14807,7 @@ struct JIT {
         kw_only = true;
         continue;
       }
+      if (pv.is_args_rest) continue;  // overflow slot, not a kwarg target
       if (pv.is_kwargs_rest) {
         params.push_back({pv.name, false, false, true});
         rest_idx = params.size() - 1;
@@ -15636,10 +15678,11 @@ inline bool JIT::is_inlinable_lambda(const peg::Ast& ast,
   if (ast.tag != "LAMBDA"_ && ast.tag != "FUNCTION"_) return false;
   if (ast.nodes.size() < 2) return false;
   const auto& params = *ast.nodes[0];
-  // Inlined calls hand args positionally only — either `*` separator
-  // or `**rest` catch-all forces the slow path.
+  // Inlined calls hand args positionally only — a `*` separator,
+  // `**rest` catch-all, or `*args` overflow forces the slow path.
   for (const auto& p : params.nodes) {
-    if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) {
+    if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p) ||
+        culebra::is_args_rest(*p)) {
       return false;
     }
   }

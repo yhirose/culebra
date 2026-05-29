@@ -208,22 +208,36 @@ inline int multifn_specificity(std::string_view param_type,
 //   idx >= 0  : matching entry index
 //   -1        : no match
 //   -2        : ambiguous (tie at the top)
-// `params_of(entry)` must return a container of param-type strings.
-template <class Entry, class ParamsOf>
+// `params_of(entry)` must return a container of (regular) param-type
+// strings; `is_variadic_of(entry)` reports whether the entry has a
+// `*args` catch-all. A variadic entry matches any arity >= its regular
+// count; the surplus positions score as Any (0), and on an otherwise
+// exact tie a non-variadic (fixed-arity) entry wins.
+template <class Entry, class ParamsOf, class IsVariadic>
 inline int64_t multifn_pick(const std::vector<Entry>& methods,
                              const std::vector<std::string_view>& arg_types,
-                             ParamsOf params_of) {
+                             ParamsOf params_of, IsVariadic is_variadic_of) {
   std::vector<int> score(arg_types.size());
   std::vector<int> best_score(arg_types.size());
   size_t best_idx = 0;
   bool have_best = false;
+  bool best_variadic = false;
+  size_t best_regular = 0;
   bool ambiguous = false;
   for (size_t i = 0; i < methods.size(); i++) {
     const auto& params = params_of(methods[i]);
-    if (params.size() != arg_types.size()) continue;
+    bool variadic = is_variadic_of(methods[i]);
+    if (variadic ? arg_types.size() < params.size()
+                 : params.size() != arg_types.size()) {
+      continue;
+    }
     bool ok = true;
     for (size_t p = 0; p < arg_types.size(); p++) {
-      int s = multifn_specificity(params[p], arg_types[p]);
+      // Positions beyond the regular params are absorbed by `*args` and
+      // score as Any (0) so concrete fixed-arity matches outrank them.
+      int s = p < params.size()
+                  ? multifn_specificity(params[p], arg_types[p])
+                  : 0;
       if (s < 0) { ok = false; break; }
       score[p] = s;
     }
@@ -231,6 +245,8 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
     if (!have_best) {
       best_idx = i;
       best_score = score;
+      best_variadic = variadic;
+      best_regular = params.size();
       have_best = true;
       continue;
     }
@@ -239,12 +255,28 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
       if (score[p] > best_score[p]) better_any = true;
       if (score[p] < best_score[p]) worse_any = true;
     }
-    if (better_any && !worse_any) {
+    auto take = [&] {
       best_idx = i;
       best_score = score;
+      best_variadic = variadic;
+      best_regular = params.size();
       ambiguous = false;
+    };
+    if (better_any && !worse_any) {
+      take();
     } else if (!better_any && !worse_any) {
-      ambiguous = true;
+      // Equal type-specificity. Break the tie by, in order: a fixed-arity
+      // entry beats a variadic one (`*args` is the fallback); among two
+      // variadic entries, the one with more regular params is more
+      // specific. Anything still even is genuinely ambiguous.
+      if (best_variadic && !variadic) {
+        take();
+      } else if (best_variadic && variadic) {
+        if (params.size() > best_regular) take();
+        else if (params.size() == best_regular) ambiguous = true;
+      } else if (!best_variadic && !variadic) {
+        ambiguous = true;
+      }
     }
   }
   if (!have_best) return -1;
@@ -708,6 +740,10 @@ struct FunctionValue {
     std::shared_ptr<Value> default_value;
     bool kw_only = false;
     bool kwargs_rest = false;
+    // Positional catch-all (`*args`): binds the overflow positional
+    // arguments (beyond the regular params) as an Array. Mutually
+    // exclusive with kwargs_rest on the same param.
+    bool args_rest = false;
     // Destructuring parameter (`fn ({a, b})`): the pattern AST. The
     // param binds the arg to a synthetic name; the function body's entry
     // unpacks it via this pattern. nullptr for normal params.
@@ -725,6 +761,15 @@ struct FunctionValue {
       return {name, /*mut=*/false, /*type_name=*/{},
               /*default_expr=*/nullptr, /*default_value=*/{},
               /*kw_only=*/false, /*kwargs_rest=*/true};
+    }
+
+    // Convenience constructor for a `*args` positional catch-all.
+    static Parameter make_args_rest(std::string_view name) {
+      Parameter p{name, /*mut=*/false, /*type_name=*/{},
+                  /*default_expr=*/nullptr, /*default_value=*/{},
+                  /*kw_only=*/false, /*kwargs_rest=*/false};
+      p.args_rest = true;
+      return p;
     }
   };
 
@@ -2630,6 +2675,22 @@ inline std::map<std::string_view, Value>& ObjectValue::builtins() {
 }
 
 // Higher-order Array helpers: invoke a 1-parameter callback `f` on `v`.
+// Bind the positional overflow (args beyond the regular params) to the
+// implicit `__ARGS__` and, if declared, to the named `*args` parameter —
+// both alias the same Array. Shared by the embedder `call` path and the
+// main call binder.
+inline void bind_overflow_args(
+    const std::vector<FunctionValue::Parameter>& params,
+    Environment& callEnv, const Value& extras_val) {
+  callEnv.initialize("__ARGS__", extras_val, false);
+  for (const auto& p : params) {
+    if (p.args_rest) {
+      callEnv.initialize(p.name, extras_val, false);
+      break;
+    }
+  }
+}
+
 // Sets up a function-frame environment with `self` bound to the callback,
 // and treats an early return (`return x` compiled as a thrown Value) as
 // the callback's result.
@@ -2685,6 +2746,7 @@ inline Value call(std::shared_ptr<Environment> env, std::string_view name,
       callEnv->initialize(params[i].name, Value(ObjectValue{}), false);
       continue;
     }
+    if (params[i].args_rest) continue;  // bound from extras below
     if (params[i].kw_only) {
       if (params[i].default_value) {
         callEnv->initialize(params[i].name, *params[i].default_value,
@@ -2699,7 +2761,7 @@ inline Value call(std::shared_ptr<Environment> env, std::string_view name,
   for (size_t i = regulars; i < args.size(); ++i) {
     extras.values->push_back(std::move(args[i]));
   }
-  callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+  bind_overflow_args(params, *callEnv, Value(std::move(extras)));
   callEnv->initialize("__LINE__", Value(0L), false);
   callEnv->initialize("__COLUMN__", Value(0L), false);
 
@@ -4165,6 +4227,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   struct MultiMethod {
     std::vector<std::string> param_types;
     Value body;
+    // `*args` catch-all: matches any arity >= param_types.size(); the
+    // surplus args are absorbed (scored as Any) so a fixed-arity entry
+    // always wins a tie.
+    bool variadic = false;
   };
   // Method tables for top-level `fn name(...)` decls. The dispatcher
   // registered in env captures a shared_ptr to one of these vectors,
@@ -4684,6 +4750,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     bool kw_only = false;
     bool seen_sep = false;
     bool seen_rest = false;
+    bool seen_args_rest = false;
     size_t kw_only_count = 0;
     for (auto node : params_ast.nodes) {
       auto pv = culebra::view_parameter(*node);
@@ -4693,8 +4760,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             static_cast<long>(node->line),
             static_cast<long>(node->column));
       }
+      if (seen_args_rest) {
+        throw CulebraError("SyntaxError",
+            "'*args' must be the last parameter",
+            static_cast<long>(node->line),
+            static_cast<long>(node->column));
+      }
       if (pv.is_kw_only_sep) {
-        if (seen_sep) {
+        if (seen_sep || seen_args_rest) {
           throw CulebraError("SyntaxError",
               "duplicate '*' keyword-only separator",
               static_cast<long>(node->line),
@@ -4705,6 +4778,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         // Keyword-only params can have any default pattern, so reset
         // the "non-default follows default" check at the separator.
         seen_default = false;
+        continue;
+      }
+      if (pv.is_args_rest) {
+        if (seen_sep) {
+          throw CulebraError("SyntaxError",
+              "'*args' cannot follow a '*' separator",
+              static_cast<long>(node->line),
+              static_cast<long>(node->column));
+        }
+        params.push_back(FunctionValue::Parameter::make_args_rest(pv.name));
+        seen_args_rest = true;
         continue;
       }
       if (pv.is_kwargs_rest) {
@@ -4841,7 +4925,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto r = multifn_pick(methods, arg_types,
                           [](const MultiMethod& m) -> const std::vector<std::string>& {
                             return m.param_types;
-                          });
+                          },
+                          [](const MultiMethod& m) { return m.variadic; });
     if (r == -1) return {PickResult::NoMatch, 0};
     if (r == -2) return {PickResult::Ambiguous, 0};
     return {PickResult::Match, static_cast<size_t>(r)};
@@ -5002,6 +5087,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // multifn type dispatch — kw-only and `**rest` are sorted into
     // the picked method via the kwsorter side of the dispatcher.
     for (const auto& p : *fn_val.to_function().params) {
+      if (p.args_rest) { method.variadic = true; continue; }
       if (p.kw_only || p.kwargs_rest) continue;
       // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
       method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
@@ -5493,10 +5579,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     // A mid-list `*` separator caps positional count; check before
     // the per-param walk so this fires before "missing required" on a
-    // kw-only slot when too many positionals were given.
+    // kw-only slot when too many positionals were given. A `*args`
+    // catch-all removes the cap entirely — overflow flows into it.
     auto cap = first_kw_only_index(params);
     throw_if_too_many_positionals(
-        cap ? static_cast<long>(*cap) : -1,
+        (cap && !has_args_rest(params)) ? static_cast<long>(*cap) : -1,
         static_cast<long>(args.positional.size()),
         static_cast<long>(call_line), static_cast<long>(call_column));
 
@@ -5508,7 +5595,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     //    first, then merged map, then default. The `**rest` catch-all
     //    is handled in step D.
     for (size_t p = 0; p < params.size(); p++) {
-      if (params[p].kwargs_rest) continue;
+      if (params[p].kwargs_rest || params[p].args_rest) continue;
       Value v;
       size_t ln = call_line, col = call_column;
       if (p < args.positional.size() && !params[p].kw_only) {
@@ -5565,17 +5652,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           call_line, call_column);
     }
 
-    // E. Overflow positional bind to __ARGS__. Extras start at the
-    //    regular-param count — anything past the last positional-
-    //    bindable slot flows into __ARGS__, regardless of whether the
-    //    fn also declares kw-only params or a `**rest` catch-all.
+    // E. Overflow positional bind to __ARGS__ (and to a named `*args`
+    //    param if declared). Extras start at the regular-param count —
+    //    anything past the last positional-bindable slot flows into
+    //    __ARGS__, regardless of whether the fn also declares kw-only
+    //    params or a `**rest` catch-all.
     size_t extras_start = regular_param_count(params);
     ArrayValue extras;
     for (size_t idx = extras_start;
          idx < args.positional.size(); idx++) {
       extras.values->push_back(std::move(args.positional[idx]));
     }
-    callEnv->initialize("__ARGS__", Value(std::move(extras)), false);
+    bind_overflow_args(params, *callEnv, Value(std::move(extras)));
 
     callEnv->initialize("__LINE__", Value((long)call_line), false);
     callEnv->initialize("__COLUMN__", Value((long)call_column), false);
@@ -5777,6 +5865,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (name == "params") {
         ArrayValue arr;
         for (const auto& p : *source.params) {
+          // `*args` is a synthetic overflow slot, not a positional
+          // parameter — omit it (the JIT meta omits it too, so both
+          // backends report the same param list).
+          if (p.args_rest) continue;
           ObjectValue o;
           o.initialize("name", Value(std::string(p.name)), false);
           o.initialize("mut", Value(p.mut), false);

@@ -1369,6 +1369,23 @@ an expression).
 
       fn dist({x, y}) { x * x + y * y }
       dist({x: 3, y: 4})          # → 25
+* A final parameter written `*name` is a **positional catch-all**: it
+  collects every positional argument beyond the regular params into an
+  `Array` (empty when there are none). It must be the last parameter.
+
+      fn f(first, *rest) { [first, rest] }
+      f(1, 2, 3)                  # → [1, [2, 3]]
+      f(1)                        # → [1, []]
+
+  A `*args` declaration also opts the function into **variadic
+  dispatch**: it matches any call with at least the regular-param count,
+  but a fixed-arity overload always wins a tie, and among variadic
+  candidates the one with more regular params is the more specific.
+
+      fn h(x: Long) { "exact" }
+      fn h(*xs)     { "variadic" }
+      h(1)                        # → 'exact'  (fixed-arity wins)
+      h(1, 2)                     # → 'variadic'
 
 ### Keyword arguments and `**` splat
 
@@ -3025,8 +3042,10 @@ logger('info', 'building', 'fizzbuzz')   # → '[info] building fizzbuzz'
 ```
 
 `__ARGS__` does **not** receive keyword arguments — those go through
-the explicit param list or `**rest`. If a fn declares no params and
-is called with arguments, every argument lands in `__ARGS__`.
+the explicit param list or `**rest`. Prefer the explicit `*args`
+parameter (see *Parameters*) when you want a *named* overflow binding
+and variadic dispatch; `__ARGS__` is the implicit form that always
+accompanies it.
 
 ### Function introspection
 

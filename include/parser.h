@@ -236,8 +236,9 @@ const auto grammar_ = R"(
   # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
   # the matching argument (desugared to a synthetic param + a destructure
   # at the function body's entry).
-  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  PARAMETER                <-  KWARGS_REST / ARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
   KW_ONLY_SEP              <-  '*' !'*'
+  ARGS_REST                <-  '*' _ < IdentInitChar IdentChar* >
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
 
@@ -665,6 +666,13 @@ inline bool is_kwargs_rest(const peg::Ast& node) {
   return node.tag == "KWARGS_REST"_;
 }
 
+// A positional catch-all (`*args`): collects positional arguments beyond
+// the declared regular params into an Array. Counterpart to KWARGS_REST.
+inline bool is_args_rest(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.tag == "ARGS_REST"_;
+}
+
 // A parameter written as a destructuring pattern (`fn ({a, b})`).
 inline bool is_pattern_param(const peg::Ast& node) {
   using namespace peg::udl;
@@ -692,7 +700,7 @@ struct ParamNameLoc {
   size_t column;
 };
 inline ParamNameLoc extract_param_name_loc(const peg::Ast& p) {
-  if (is_kwargs_rest(p)) return {p.token, p.line, p.column};
+  if (is_kwargs_rest(p) || is_args_rest(p)) return {p.token, p.line, p.column};
   const auto& id = *p.nodes[1];
   return {id.token, id.line, id.column};
 }
@@ -717,9 +725,20 @@ template <class P>
 inline size_t regular_param_count(const std::vector<P>& params) {
   size_t n = 0;
   for (auto& p : params) {
-    if (!p.kw_only && !p.kwargs_rest) n++;
+    if (!p.kw_only && !p.kwargs_rest && !p.args_rest) n++;
   }
   return n;
+}
+
+// True if the parameter list declares a `*args` positional catch-all.
+// When present, there is no cap on positional arguments — the overflow
+// flows into the `*args` Array rather than being rejected.
+template <class P>
+inline bool has_args_rest(const std::vector<P>& params) {
+  for (auto& p : params) {
+    if (p.args_rest) return true;
+  }
+  return false;
 }
 
 // For a PARAMETER AST node, returns the DEFAULT_VALUE's inner expression
@@ -746,9 +765,10 @@ inline const peg::Ast* extract_default_expr(const peg::Ast& param_node) {
 // predicates (`is_kw_only_sep` / `is_kwargs_rest`) remain available.
 struct ParameterView {
   bool is_kwargs_rest;          // tag == KWARGS_REST
+  bool is_args_rest;            // tag == ARGS_REST (`*name`)
   bool is_kw_only_sep;          // tag == KW_ONLY_SEP
   bool is_mut;                  // normal form: node[0].token == "mut"
-  std::string_view name;        // KWARGS_REST: p.token; normal: IDENTIFIER child
+  std::string_view name;        // KWARGS_REST/ARGS_REST: p.token; normal: IDENTIFIER child
   size_t name_line;
   size_t name_col;
   std::string_view type_annotation;   // normal form, "" when absent
@@ -758,20 +778,24 @@ struct ParameterView {
 
 inline ParameterView view_parameter(const peg::Ast& p) {
   if (is_kw_only_sep(p)) {
-    return ParameterView{false, true, false, {}, p.line, p.column,
+    return ParameterView{false, false, true, false, {}, p.line, p.column,
                          {}, nullptr, nullptr};
   }
   if (is_pattern_param(p)) {
-    return ParameterView{false, false, false, {}, p.line, p.column,
+    return ParameterView{false, false, false, false, {}, p.line, p.column,
                          {}, nullptr, &p};
   }
   auto loc = extract_param_name_loc(p);
   if (is_kwargs_rest(p)) {
-    return ParameterView{true, false, false, loc.name, loc.line, loc.column,
-                         {}, nullptr, nullptr};
+    return ParameterView{true, false, false, false, loc.name, loc.line,
+                         loc.column, {}, nullptr, nullptr};
+  }
+  if (is_args_rest(p)) {
+    return ParameterView{false, true, false, false, loc.name, loc.line,
+                         loc.column, {}, nullptr, nullptr};
   }
   return ParameterView{
-      false, false,
+      false, false, false,
       p.nodes[0]->token == "mut",
       loc.name, loc.line, loc.column,
       extract_type_annotation(p, 2),

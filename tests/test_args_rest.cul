@@ -1,0 +1,55 @@
+// Positional variadic parameter `*args`: collects overflow positional
+// arguments (beyond the regular params) into an Array. Must be the last
+// parameter. Surfaces variadic dispatch where a fixed-arity overload
+// always wins a tie.
+
+// --- Basic: regular param + catch-all ---
+fn f(a, *rest) { [a, rest] }
+assert_eq(f(1, 2, 3), [1, [2, 3]])
+assert_eq(f(1), [1, []])
+
+// --- All-variadic ---
+fn g(*all) { all }
+assert_eq(g(1, 2, 3), [1, 2, 3])
+assert_eq(g(), [])
+
+// --- Overload resolution: a fixed-arity match beats the variadic one ---
+fn h(x: Long) { "one-long" }
+fn h(*xs) { "variadic:" + xs.size().to_string() }
+assert_eq(h(1), "one-long")        // exact fixed-arity wins
+assert_eq(h("s"), "variadic:1")    // no fixed match -> variadic
+assert_eq(h(1, 2), "variadic:2")   // arity 2 -> only variadic matches
+
+// More regular params = more specific among variadic candidates.
+fn k(*xs) { "zero+" + xs.size().to_string() }
+fn k(a, *xs) { "one+" + xs.size().to_string() }
+assert_eq(k(1, 2, 3), "one+2")     // `(a, *xs)` is more specific than `(*xs)`
+assert_eq(k(), "zero+0")
+
+// --- Lambda form ---
+let lam = |a, *rest| [a, rest]
+assert_eq(lam(1, 2, 3), [1, [2, 3]])
+
+// --- Class method ---
+class C {
+  new() {}
+  collect(first, *more) { [first, more] }
+}
+let c = C.new()
+assert_eq(c.collect(1, 2, 3), [1, [2, 3]])
+assert_eq(c.collect(9), [9, []])
+
+// --- `__ARGS__` aliases the same overflow inside a `*args` fn ---
+fn both(*xs) { __ARGS__.size() + xs.size() }
+assert_eq(both(1, 2, 3), 6)
+
+// --- `*args` is omitted from `fn.params` introspection (both backends) ---
+fn introspect(a, *rest) { a }
+assert_eq(introspect.params.size(), 1)
+assert_eq(introspect.params[0].name, "a")
+
+// (A parameter after `*args` is a SyntaxError — `fn f(a, *rest, b)` —
+// but that aborts module parse, so it can't be asserted from within the
+// same module.)
+
+IO.puts("test_args_rest OK")
