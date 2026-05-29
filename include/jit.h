@@ -9541,6 +9541,7 @@ struct JIT {
       case "INTERPOLATED_CONTENT"_:
         return compile_interpolated_content(ast);
       case "INTERPOLATED_STRING"_:
+      case "TRIPLE_STRING"_:
         return compile_interpolated_string(ast);
       case "ARRAY"_:
         return compile_array(ast);
@@ -9932,7 +9933,8 @@ struct JIT {
 
     for (auto& node : ast.nodes) {
       llvm::Value* piece;
-      if (node->tag == "INTERPOLATED_CONTENT"_) {
+      if (node->tag == "INTERPOLATED_CONTENT"_ ||
+          node->tag == "TRIPLE_CONTENT"_) {
         // Raw text between expressions; decode escape sequences first
         // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
         auto decoded = decode_interpolated_content(node->token);

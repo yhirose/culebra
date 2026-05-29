@@ -661,6 +661,19 @@ Single-quoted strings are **raw**: every character is taken verbatim
 between the quotes. There are no escape sequences and no interpolation.
 A literal apostrophe inside a raw string is not expressible — use a
 double-quoted string with `\'` or `\"` if you need quote characters.
+Both raw and interpolated strings may span multiple lines (a newline in
+the source is part of the value), so `'\d+'` is a ready-made regex
+literal and `"...\n..."` a multi-line template.
+
+### Triple-quoted strings
+
+    """multi-line
+    with "quotes" and 'apostrophes' and {interpolation}"""
+
+`"""..."""` is interpolated like `"..."` (the same `{expr}` / `{x:spec}`
+forms and `\n` / `\{` escapes) but single and double quotes inside need
+no escaping — only `"""` closes it. Handy for embedded LLM prompts and
+snippets that contain quotes. Use `\{` for a literal open brace.
 
 ### Interpolated strings
 

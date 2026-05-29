@@ -214,7 +214,7 @@ const auto grammar_ = R"(
                             /  '(' _ PATTERN _ ',' _ ')'
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
-                               STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
+                               TRIPLE_STRING / STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
   SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'
@@ -307,6 +307,14 @@ const auto grammar_ = R"(
   # also lets '\"' and '\{' appear inside the content without prematurely
   # closing the string or starting an interpolation.
   INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
+
+  # Triple-quoted `"""..."""`: multi-line, interpolated like `"..."` but
+  # single/double quotes need no escaping (only `"""` closes). Ideal for
+  # embedded LLM prompts. Reuses INTERP_EXPR; TRIPLE_CONTENT stops at
+  # `"""` or `{` and still decodes `\X` escapes (use `\{` for a literal
+  # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
+  TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
+  TRIPLE_CONTENT           <-  ('\\' . / !('"""' / '{' / '\\') .)+
 
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')
@@ -815,7 +823,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "TUPLE_PATTERN", "CTOR_PATTERN",
                "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
-               "SPREAD_ELEM",
+               "TRIPLE_STRING", "SPREAD_ELEM",
                "IMPORT_STMT", "EXPORT_STMT"});
 
     return opt.optimize(ast);

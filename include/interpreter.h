@@ -4290,6 +4290,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       case "FLOAT"_:
         return eval_float(ast, env);
       case "INTERPOLATED_STRING"_:
+      case "TRIPLE_STRING"_:
         return eval_interpolated_string(ast, env);
       case "DEBUGGER"_:
         return Value();
@@ -6661,7 +6662,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     std::string s;
     for (auto node : ast.nodes) {
-      if (node->tag == "INTERPOLATED_CONTENT"_) {
+      if (node->tag == "INTERPOLATED_CONTENT"_ ||
+          node->tag == "TRIPLE_CONTENT"_) {
         s += decode_interpolated_content(node->token);
       } else if (node->tag == "INTERP_EXPR"_) {
         // `{expr}` → [EXPRESSION]; `{expr:spec}` → [EXPRESSION, FORMAT_SPEC].

@@ -1,0 +1,31 @@
+// Triple-quoted strings `"""..."""`: multi-line, interpolated like
+// `"..."`, but single/double quotes need no escaping. (Single-quote
+// `'...'` remains the raw, no-escape form.)
+
+let name = "Alice"
+
+// Interpolation works.
+assert_eq("""Hello {name}!""", "Hello Alice!")
+
+// Embedded quotes need no escaping.
+let q = """She said "hi" and 'bye'."""
+assert_eq(q, "She said \"hi\" and 'bye'.")
+
+// Multi-line.
+let prompt = """line one
+line two"""
+assert_eq(prompt, "line one\nline two")
+
+// Escapes decode; `\{` is a literal open brace (`}` needs no escape).
+assert_eq("""tab\tend""", "tab\tend")
+assert_eq("""a \{b} c""", "a \{b} c")
+
+// Interpolation + embedded quotes + a literal brace (LLM-prompt shape).
+let role = "assistant"
+let msg = """role: "{role}", brace: \{x}"""
+assert_eq(msg, "role: \"assistant\", brace: \{x}")
+
+// Single-quote raw is unchanged (regex literal).
+assert_eq('\d+', "\\d+")
+
+IO.puts("test_triple_string OK")
