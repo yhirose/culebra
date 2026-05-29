@@ -29,7 +29,7 @@ syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
 " by `just sync-grammar`; non-PEG identifiers are below).
 " === BEGIN AUTO-KEYWORDS (from misc/culebra.peg via `just sync-grammar`) ===
 syn keyword culFunction    fn
-syn keyword culClass       class trait
+syn keyword culClass       class trait enum
 syn keyword culConditional if else match
 syn keyword culRepeat      while for in
 syn keyword culStatement   return break continue throw try catch defer yield

@@ -5,7 +5,7 @@
 # sync_grammar.sh warns about any K() keyword missing from the map.
 
 culFunction:    fn
-culClass:       class trait
+culClass:       class trait enum
 culConditional: if else match
 culRepeat:      while for in
 culStatement:   return break continue throw try catch defer yield
