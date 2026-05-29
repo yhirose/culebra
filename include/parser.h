@@ -2,6 +2,7 @@
 
 #include <peglib.h>
 
+#include <deque>
 #include <format>
 #include <optional>
 #include <print>
@@ -231,7 +232,11 @@ const auto grammar_ = R"(
   LAMBDA                   <-  LAMBDA_PARAMS _ EXPRESSION
   LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  # A parameter may be a destructuring pattern — `fn ({a, b})`,
+  # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
+  # the matching argument (desugared to a synthetic param + a destructure
+  # at the function body's entry).
+  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
   KW_ONLY_SEP              <-  '*' !'*'
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
@@ -660,6 +665,24 @@ inline bool is_kwargs_rest(const peg::Ast& node) {
   return node.tag == "KWARGS_REST"_;
 }
 
+// A parameter written as a destructuring pattern (`fn ({a, b})`).
+inline bool is_pattern_param(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.tag == "OBJECT_PATTERN"_ || node.tag == "ARRAY_PATTERN"_ ||
+         node.tag == "TUPLE_PATTERN"_;
+}
+
+// Stable synthetic names for destructured parameters (`fn ({a,b})` binds
+// the arg to `__destructure_N`, then the body unpacks it).
+inline std::string_view destructure_param_name(size_t i) {
+  // deque keeps element addresses stable as it grows, so the returned
+  // string_view stays valid; grow on demand rather than capping.
+  static std::deque<std::string> names;
+  while (names.size() <= i)
+    names.push_back("__destructure_" + std::to_string(names.size()));
+  return names[i];
+}
+
 // Returns (name, line, col) for a PARAMETER-shaped AST node. The
 // KWARGS_REST shape stores the name as the node's own token; normal
 // parameters keep it on the IDENTIFIER child at index 1.
@@ -730,16 +753,22 @@ struct ParameterView {
   size_t name_col;
   std::string_view type_annotation;   // normal form, "" when absent
   const peg::Ast* default_value;      // normal form, nullptr when absent
+  const peg::Ast* pattern;            // destructuring param node, else nullptr
 };
 
 inline ParameterView view_parameter(const peg::Ast& p) {
   if (is_kw_only_sep(p)) {
-    return ParameterView{false, true, false, {}, p.line, p.column, {}, nullptr};
+    return ParameterView{false, true, false, {}, p.line, p.column,
+                         {}, nullptr, nullptr};
+  }
+  if (is_pattern_param(p)) {
+    return ParameterView{false, false, false, {}, p.line, p.column,
+                         {}, nullptr, &p};
   }
   auto loc = extract_param_name_loc(p);
   if (is_kwargs_rest(p)) {
     return ParameterView{true, false, false, loc.name, loc.line, loc.column,
-                         {}, nullptr};
+                         {}, nullptr, nullptr};
   }
   return ParameterView{
       false, false,
@@ -747,6 +776,7 @@ inline ParameterView view_parameter(const peg::Ast& p) {
       loc.name, loc.line, loc.column,
       extract_type_annotation(p, 2),
       extract_default_expr(p),
+      nullptr,
   };
 }
 

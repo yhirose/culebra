@@ -1,0 +1,29 @@
+// Destructuring parameters: `fn ({a, b})`, `fn ([a, b])`, `fn ((a, b))`,
+// and the lambda form `|{a, b}|`. The argument is unpacked at entry.
+
+fn dist({x, y}) { x * x + y * y }
+assert_eq(dist({x: 3, y: 4}), 25)
+
+fn swap_pair((a, b)) { (b, a) }
+assert_eq(swap_pair((1, 2)), (2, 1))
+
+fn sum_pair([a, b]) { a + b }
+assert_eq(sum_pair([10, 20]), 30)
+
+// Mixed with normal params.
+fn scale(factor, {x, y}) { (factor * x, factor * y) }
+assert_eq(scale(2, {x: 1, y: 3}), (2, 6))
+
+// Lambda param destructure.
+let f = |{a, b}| a + b
+assert_eq(f({a: 5, b: 7}), 12)
+
+// Nested pattern.
+fn deep({outer: {inner}}) { inner }
+assert_eq(deep({outer: {inner: 42}}), 42)
+
+// Shape mismatch raises ValueError.
+let e = try { sum_pair([1]); nil } catch er { er.kind }
+assert_eq(e, "ValueError")
+
+IO.puts("test_param_destructure OK")

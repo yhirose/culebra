@@ -13244,6 +13244,9 @@ struct JIT {
     std::vector<std::string> paramDeclaredTypeNames;
     std::vector<const peg::Ast*> paramDefaults;
     std::vector<bool> paramMuts;
+    // Parallel to paramNames: the destructuring pattern for a `fn ({a,b})`
+    // param (nullptr for normal params). Unpacked at the prologue's end.
+    std::vector<const peg::Ast*> paramPatterns;
     std::optional<size_t> firstDefaulted;
     std::optional<size_t> kwargsRestIdx;
     std::optional<size_t> firstKwOnlyIdx;
@@ -13259,9 +13262,22 @@ struct JIT {
         paramDeclaredTypeNames.push_back({});
         paramDefaults.push_back(nullptr);
         paramMuts.push_back(false);
+        paramPatterns.push_back(nullptr);
         kwargsRestIdx = paramNames.size() - 1;
         continue;
       }
+      if (pv.pattern) {
+        // Destructuring param: synthetic positional slot, unpacked below.
+        paramNames.push_back(
+            std::string(culebra::destructure_param_name(paramNames.size())));
+        paramTypeNames.push_back({});
+        paramDeclaredTypeNames.push_back({});
+        paramDefaults.push_back(nullptr);
+        paramMuts.push_back(false);
+        paramPatterns.push_back(pv.pattern);
+        continue;
+      }
+      paramPatterns.push_back(nullptr);
       paramNames.push_back(std::string(pv.name));
       auto raw = std::string(pv.type_annotation);
       paramDeclaredTypeNames.push_back(raw);
@@ -13530,6 +13546,31 @@ struct JIT {
           {argsArg, declI64, nArgsArg});
       builder_.CreateBr(skipBB);
       builder_.SetInsertPoint(skipBB);
+    }
+
+    // Unpack destructuring params (`fn ({a, b})`): the synthetic slot was
+    // bound above; emit_pattern binds the pattern's names from it. A shape
+    // mismatch throws the same ValueError as the interp.
+    for (size_t i = 0; i < paramPatterns.size(); i++) {
+      if (!paramPatterns[i]) continue;
+      auto slot = lookup_var(paramNames[i]);
+      if (!slot) continue;
+      auto val = load_slot(*slot, paramNames[i]);
+      auto matched = emit_pattern(*paramPatterns[i], val, /*is_mut=*/false);
+      auto pfn = builder_.GetInsertBlock()->getParent();
+      auto okBB = llvm::BasicBlock::Create(ctx_, "param.destr.ok", pfn);
+      auto failBB = llvm::BasicBlock::Create(ctx_, "param.destr.fail", pfn);
+      builder_.CreateCondBr(matched, okBB, failBB);
+      builder_.SetInsertPoint(failBB);
+      emit_call(
+          module_->getOrInsertFunction(rt::destructure_mismatch,
+                                       builder_.getVoidTy(),
+                                       builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
+          {builder_.getInt64(paramPatterns[i]->line),
+           builder_.getInt64(paramPatterns[i]->column)});
+      builder_.CreateUnreachable();
+      builder_.SetInsertPoint(okBB);
     }
 
     // Forward-reference support: closure capture happens lazily through

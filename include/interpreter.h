@@ -405,9 +405,13 @@ inline void collect_locals(
   }
 
   if (node.tag == "FOR"_) {
-    auto& id = *node.nodes[0];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
+    auto& var = *node.nodes[0];
+    // The loop variable may be a destructuring pattern (`for (i, x) in`).
+    if (is_pattern_param(var)) {
+      check_pattern(var, outer);
+    } else {
+      check(std::string(var.token), var.line, var.column, outer);
+    }
     // FOR binding is block-scoped; deliberately not added to enclosing
     // locals so a same-named binding outside the loop doesn't see it.
     collect_locals(*node.nodes[1], locals, outer);
@@ -582,6 +586,16 @@ inline void analyze_fn_body(
   std::set<std::string, std::less<>> my_locals;
   for (auto& p : params_ast.nodes) {
     if (is_kw_only_sep(*p)) continue;
+    if (is_pattern_param(*p)) {
+      // Destructuring param (`fn ({a, b})`) — register every name the
+      // pattern binds (not a single param node).
+      check_pattern(*p, outer);
+      for_each_pattern_binding(
+          *p, [&](std::string_view nm, size_t, size_t) {
+            if (!is_sink_name(std::string(nm))) my_locals.insert(std::string(nm));
+          });
+      continue;
+    }
     auto [name_sv, line, col] = extract_param_name_loc(*p);
     auto name = std::string(name_sv);
     check(name, line, col, outer);
@@ -694,6 +708,10 @@ struct FunctionValue {
     std::shared_ptr<Value> default_value;
     bool kw_only = false;
     bool kwargs_rest = false;
+    // Destructuring parameter (`fn ({a, b})`): the pattern AST. The
+    // param binds the arg to a synthetic name; the function body's entry
+    // unpacks it via this pattern. nullptr for normal params.
+    const peg::Ast* pattern = nullptr;
     // Declared annotation as written in source — preserved for
     // introspection (`fn.params[i].type`) when `type_name` has been
     // neutralized. Empty = falls back to `type_name` (= raw or
@@ -4694,6 +4712,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         seen_rest = true;
         continue;
       }
+      if (pv.pattern) {
+        // Destructuring param: bind a synthetic positional slot; the
+        // body entry unpacks it (see make_function_value).
+        FunctionValue::Parameter pp{destructure_param_name(params.size()),
+                                    false, {}, nullptr, {}, kw_only, false};
+        pp.pattern = pv.pattern;
+        params.push_back(pp);
+        continue;
+      }
       if (pv.default_value) {
         seen_default = true;
       } else if (seen_default && !kw_only) {
@@ -4724,11 +4751,24 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                             std::string_view return_type,
                             std::shared_ptr<Environment> env) {
     auto params = parse_parameters(params_ast, env);
+    // Destructuring params (`fn ({a, b})`) bind a synthetic slot; unpack
+    // them at the body's entry.
+    std::vector<std::pair<std::string_view, const peg::Ast*>> destructures;
+    for (auto& p : params)
+      if (p.pattern) destructures.push_back({p.name, p.pattern});
     auto self = shared_from_this();
     return Value(FunctionValue(
         params,
-        [self = std::move(self), body, env](std::shared_ptr<Environment> callEnv) {
+        [self = std::move(self), body, env,
+         destructures](std::shared_ptr<Environment> callEnv) {
           callEnv->append_outer(env);
+          for (auto& [name, pat] : destructures) {
+            if (!self->try_pattern(*pat, callEnv->get(name), callEnv,
+                                   /*mut=*/false)) {
+              throw_destructure_mismatch_at(
+                  static_cast<long>(pat->line), static_cast<long>(pat->column));
+            }
+          }
           try {
             auto r = self->eval(*body, callEnv);
             self->run_deferred(callEnv);

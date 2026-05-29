@@ -216,7 +216,11 @@
   LAMBDA                   <-  LAMBDA_PARAMS _ EXPRESSION
   LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
   PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
-  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  # A parameter may be a destructuring pattern — `fn ({a, b})`,
+  # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
+  # the matching argument (desugared to a synthetic param + a destructure
+  # at the function body's entry).
+  PARAMETER                <-  KWARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
   KW_ONLY_SEP              <-  '*' !'*'
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION

@@ -1360,6 +1360,15 @@ an expression).
   the function's definition environment, extended with any earlier
   parameter bindings — so `fn (a, b = a + 1)` works. Default
   parameters must follow all required parameters.
+* A parameter may be a **destructuring pattern** — `fn ({x, y})`,
+  `fn ([a, b])`, `fn ((k, v))`, and the lambda form `|{a, b}|`. The
+  argument is matched against the pattern at entry and its names are
+  bound in the body; a shape mismatch raises `ValueError`. Patterns
+  nest (`fn ({user: {name}})`) and mix with normal params
+  (`fn (factor, {x, y})`).
+
+      fn dist({x, y}) { x * x + y * y }
+      dist({x: 3, y: 4})          # → 25
 
 ### Keyword arguments and `**` splat
 
