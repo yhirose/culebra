@@ -81,7 +81,9 @@
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
-  DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
+  # `let` is optional: `let (a, b) = …` declares; bare `(a, b) = (b, a)`
+  # (parallel / swap assignment) reassigns existing variables.
+  DESTRUCTURE_ASSIGN       <-  LET _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
   # ASSIGN_OP captures the literal so eval_assignment can dispatch on
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
   # alternation chooses the longer match. `??=` is the nil-coalescing
@@ -276,7 +278,6 @@
   # closing the string or starting an interpolation.
   INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
 
-  ~let                     <-  K('let')
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')
   ~while                   <-  K('while')

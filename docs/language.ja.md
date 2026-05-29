@@ -1124,6 +1124,19 @@ class インスタンスは leaf 扱いで、ウォーカーはそこで停止�
       (a, b) => 'other',
     }
 
+**並列代入 / swap。** `let` を外すと、新規宣言でなく**既存変数**へ
+再代入する。RHS は束縛前に全評価されるので、swap や rotate に一時変数
+が要らない:
+
+    mut a = 1
+    mut b = 2
+    (a, b) = (b, a)              # swap → a == 2, b == 1
+    (x, y, z) = (y, z, x)        # rotate
+
+対象は既存かつ `mut` でなければならない（immutable への代入は
+`ImmutableError`）。配列・オブジェクトパターンも可:
+`[p, q, _] = xs`、`{g, h} = rec`。
+
 ---
 
 ## 集合 (Set)

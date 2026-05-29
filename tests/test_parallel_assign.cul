@@ -1,0 +1,44 @@
+// Parallel / swap assignment: a `let`-less destructure reassigns
+// existing variables. `let (a, b) = …` still declares new bindings.
+
+mut a = 1
+mut b = 2
+(a, b) = (b, a)             // swap
+assert_eq(a, 2)
+assert_eq(b, 1)
+
+// Three-way rotate.
+mut x = 1
+mut y = 2
+mut z = 3
+(x, y, z) = (y, z, x)
+assert_eq(x, 2)
+assert_eq(y, 3)
+assert_eq(z, 1)
+
+// Array pattern, with a sink.
+mut p = 0
+mut q = 0
+[p, q, _] = [10, 20, 30]
+assert_eq(p, 10)
+assert_eq(q, 20)
+
+// Object pattern shorthand.
+mut g = 0
+mut h = 0
+{g, h} = {g: 7, h: 8}
+assert_eq(g, 7)
+assert_eq(h, 8)
+
+// `let` still declares.
+let (m, n) = (5, 6)
+assert_eq(m, 5)
+assert_eq(n, 6)
+
+// Assigning to an immutable binding is an error.
+let imm = 1
+mut ok2 = 2
+let e = try { (imm, ok2) = (9, 9); nil } catch er { er.kind }
+assert_eq(e, "ImmutableError")
+
+IO.puts("test_parallel_assign OK")

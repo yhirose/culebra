@@ -10349,12 +10349,19 @@ struct JIT {
     return make_object(obj);
   }
 
-  // DESTRUCTURE_ASSIGN children: [MUTABLE, (OBJECT_PATTERN|ARRAY_PATTERN), EXPRESSION]
-  // Reuses the match-pattern emitter. On runtime mismatch, throws via
-  // emit_type_error (same channel used by other "shape mismatch" cases).
+  // `let`-less destructure (parallel assignment): leaves assign to
+  // existing slots instead of declaring. Set for one pattern tree by
+  // compile_destructure_assign; defaults to declare for match arms.
+  bool pattern_declare_ = true;
+
+  // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
+  // `let`/`let mut` declares; a bare `(a, b) = …` reassigns existing
+  // variables. Reuses the match-pattern emitter. On runtime mismatch,
+  // throws via the same channel as other "shape mismatch" cases.
   llvm::Value* compile_destructure_assign(const peg::Ast& ast) {
-    bool is_mut = ast.nodes[0]->token == "mut";
-    const auto& pattern = *ast.nodes[1];
+    bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
+    bool is_mut = ast.nodes[1]->token == "mut";
+    const auto& pattern = *ast.nodes[2];
     // Stash the DESTRUCTURE_ASSIGN's own location before compiling the
     // rval — `compile(rval)` advances `current_line_ / current_column_`
     // to inside the rval expression, but the structured error should
@@ -10362,9 +10369,12 @@ struct JIT {
     // path's `ast.line / ast.column`.
     auto stmt_line = builder_.getInt64(ast.line);
     auto stmt_col = builder_.getInt64(ast.column);
-    auto rval = compile(*ast.nodes[2]);
+    auto rval = compile(*ast.nodes[3]);
 
+    auto saved_declare = pattern_declare_;
+    pattern_declare_ = declares;
     auto matched = emit_pattern(pattern, rval, is_mut);
+    pattern_declare_ = saved_declare;
 
     auto fn = builder_.GetInsertBlock()->getParent();
     auto failBB = llvm::BasicBlock::Create(ctx_, "destr.fail", fn);
@@ -11204,7 +11214,19 @@ struct JIT {
         // matches but introduces no binding (subject is borrowed here,
         // so there's nothing to release on this path).
         auto name = std::string(pattern.token);
-        if (!is_sink_name(name)) declare_local(name, subject, is_mut);
+        if (!is_sink_name(name)) {
+          // `let`-less destructure (pattern_declare_ == false): assign to
+          // an existing slot (mut-checked); otherwise declare a binding.
+          const VarSlot* slot = nullptr;
+          if (!pattern_declare_) slot = lookup_var(name);
+          if (slot) {
+            if (!slot->mut) emit_immutable_assign_throw(name, pattern.line,
+                                                        pattern.column);
+            store_slot(*slot, subject);
+          } else {
+            declare_local(name, subject, is_mut);
+          }
+        }
         return builder_.getTrue();
       }
       case "TYPED_IDENT"_: {

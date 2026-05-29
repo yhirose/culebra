@@ -4405,11 +4405,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // supplies both the name (via its token) and the diagnostic location.
   // `mut` controls the mutability of the binding — match arms always bind
   // as mut; destructure-let honors the user-declared `mut` qualifier.
+  // When false (a `let`-less destructure / parallel assignment), a leaf
+  // binds like scalar `x = v`: assign to the existing variable, else
+  // declare. When true (match arms, `let`/`mut` destructure), always
+  // declare a fresh binding. Set for the duration of one pattern tree by
+  // eval_destructure_assign; defaults to declare for every other caller.
+  bool pattern_declare_ = true;
+
   void bind_pattern_name(std::shared_ptr<Environment>& env,
                          const peg::Ast& ident_node, Value val,
                          bool mut = true) {
     auto name = ident_node.token;
-    env->initialize(name, std::move(val), mut);
+    if (!pattern_declare_ && env->has(name)) {
+      env->assign(name, std::move(val));
+    } else {
+      env->initialize(name, std::move(val), mut);
+    }
   }
 
   // Try to match a pattern against `val`. On success, bind any introduced
@@ -6243,16 +6254,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return keywords.contains(ident);
   }
 
-  // DESTRUCTURE_ASSIGN ast children: [MUTABLE, (OBJECT_PATTERN|ARRAY_PATTERN), EXPRESSION]
-  // `let` is suppressed; `let mut` yields MUTABLE.token == "mut".
-  // Evaluates RHS once, then reuses `try_pattern` for binding. Pattern
-  // mismatch is a runtime error (unlike match, where it's just "no").
+  // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
+  // `let`/`let mut` declares; a bare `(a, b) = …` (LET empty) reassigns
+  // existing variables (parallel / swap assignment). Evaluates RHS once,
+  // then reuses `try_pattern`. Mismatch is a runtime error (unlike match).
   Value eval_destructure_assign(const peg::Ast& ast,
                                 std::shared_ptr<Environment> env) {
-    auto mut = ast.nodes[0]->token == "mut";
-    const auto& pattern = *ast.nodes[1];
-    auto rval = eval(*ast.nodes[2], env);
-    if (!try_pattern(pattern, rval, env, mut)) {
+    bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
+    auto mut = ast.nodes[1]->token == "mut";
+    const auto& pattern = *ast.nodes[2];
+    auto rval = eval(*ast.nodes[3], env);
+    auto saved = pattern_declare_;
+    pattern_declare_ = declares;
+    bool ok;
+    try {
+      ok = try_pattern(pattern, rval, env, mut);
+    } catch (...) {
+      pattern_declare_ = saved;
+      throw;
+    }
+    pattern_declare_ = saved;
+    if (!ok) {
       // Helper carries line:col so the structured error has the same
       // location the JIT path attaches — see shared.h.
       throw_destructure_mismatch_at(static_cast<long>(ast.line),

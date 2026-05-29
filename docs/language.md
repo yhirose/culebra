@@ -1174,6 +1174,19 @@ patterns also work in `match` arms and nest naturally:
       (a, b) => 'other',
     }
 
+**Parallel / swap assignment.** Dropping `let` reassigns *existing*
+variables instead of declaring new ones — the RHS is fully evaluated
+before any binding, so swaps and rotates need no temporary:
+
+    mut a = 1
+    mut b = 2
+    (a, b) = (b, a)              # swap → a == 2, b == 1
+    (x, y, z) = (y, z, x)        # rotate
+
+A target must already exist and be `mut` (assigning to an immutable
+binding raises `ImmutableError`). Array and object patterns work too:
+`[p, q, _] = xs`, `{g, h} = rec`.
+
 ---
 
 ## Sets
