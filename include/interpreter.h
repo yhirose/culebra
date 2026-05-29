@@ -150,6 +150,16 @@ inline int multifn_specificity(std::string_view param_type,
     }
     return best;
   }
+  // `T?` Optional sugar = `T | Nil`: score like a two-alt Union. A Nil
+  // arg matches at the Union tier; a non-nil arg scores its base type,
+  // downgraded (concrete-in-Union -> 4) so a bare `T` param outranks it.
+  if (!param_type.empty() && param_type.back() == '?') {
+    auto base = param_type.substr(0, param_type.size() - 1);
+    if (arg_type == "Nil") return 4;
+    int s = multifn_specificity(base, arg_type);
+    if (s < 0) return -1;
+    return s >= 6 ? 4 : s;
+  }
   // Generic: outer-match against arg label (arg side carries no
   // type args today, so the args part only tie-breaks against bare
   // outer-only annotations).
@@ -1852,6 +1862,12 @@ inline bool type_matches(const Value& val, std::string_view name) {
       if (!type_matches(val, part)) return false;
     }
     return true;
+  }
+  // `T?` Optional sugar = `T | Nil`: a trailing `?` accepts Nil, else
+  // checks the base type. Unions split above, so this sees one name.
+  if (!name.empty() && name.back() == '?') {
+    if (val.type == Value::Nil) return true;
+    return type_matches(val, name.substr(0, name.size() - 1));
   }
   // Generic outer-match: `Array<Long>` checks `Array` only (element
   // type is documentation in the MVP, see [[project_type_system]]).
@@ -5762,6 +5778,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         case "INDEX"_:
           val = eval_array_reference(postfix, env, val);
           break;
+        case "SAFE_DOT"_:
+          // `a?.b` / `a?.m()` — optional chaining: a nil receiver
+          // short-circuits the entire remaining postfix chain to nil.
+          if (val.type == Value::Nil) return Value();
+          [[fallthrough]];
         case "DOT"_: {
           // UFCS: when DOT is immediately followed by ARGUMENTS and the
           // receiver has no matching property, look up the name as a
@@ -5785,6 +5806,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           val = eval_property(postfix, env, val);
           break;
         }
+        case "SAFE_INDEX"_:
+          // `a?[k]` — optional index: nil receiver short-circuits to nil.
+          if (val.type == Value::Nil) return Value();
+          val = eval_array_reference(postfix, env, val);
+          break;
+        case "NONNULL"_:
+          // `expr!!` — non-null assertion: nil raises NilError, any
+          // other value passes through unchanged.
+          if (val.type == Value::Nil) {
+            throw CulebraError("NilError", std::format(
+                "`!!` applied to nil at {}:{}.", postfix.line, postfix.column));
+          }
+          break;
         default:
           throw std::logic_error("invalid internal condition.");
       }
@@ -6194,13 +6228,28 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           "compound assignment cannot declare a new variable.");
     }
 
-    auto rval = eval(*av.rhs, env);
-
-    if (!av.type_annotation.empty()) {
-      check_type(rval, av.type_annotation, "assignment", ast.line, ast.column);
+    auto base_op = av.op_base;
+    // `??=` (nil-coalescing assign) short-circuits: the RHS is evaluated
+    // and assigned only when the current lvalue reads as nil (or is
+    // missing). Defer the RHS so a non-nil lvalue skips its side effects.
+    bool nil_coalesce = compound && base_op == "??";
+    // `??=` is MVP-limited to a simple variable target (the short-circuit
+    // write on indexed / property lvalues is a JIT-parity follow-up).
+    if (nil_coalesce && lvalcnt != 1) {
+      throw CulebraError("SyntaxError",
+          "`??=` is only supported on a simple variable target.");
     }
 
-    auto base_op = av.op_base;
+    auto eval_rhs = [&]() {
+      auto v = eval(*av.rhs, env);
+      if (!av.type_annotation.empty()) {
+        check_type(v, av.type_annotation, "assignment", ast.line, ast.column);
+      }
+      return v;
+    };
+
+    Value rval;
+    if (!nil_coalesce) rval = eval_rhs();
 
     if (lvalcnt == 1) {
       const auto& ident = ast.nodes[lvaloff]->token;
@@ -6214,6 +6263,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               "compound assignment on undefined name '{}'", ident));
         }
         auto cur = env->get(ident);
+        if (nil_coalesce) {
+          if (cur.type != Value::Nil) return cur;  // short-circuit
+          auto v = eval_rhs();
+          env->assign(ident, v);
+          return v;
+        }
         // In-place fast path for Tensor LHS — see try_tensor_inplace.
         if (try_tensor_inplace(cur, base_op, rval)) {
           return cur;

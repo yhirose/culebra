@@ -1,0 +1,50 @@
+// `?.` optional chaining and `?[]` optional index. A nil receiver
+// short-circuits the entire remaining chain to nil (JS / Kotlin style).
+
+class Box {
+  new(v) { this.v = v }
+  get() { this.v }
+}
+
+let b = Box.new(42)
+assert_eq(b?.v, 42)
+assert_eq(b?.get(), 42)
+
+// nil receiver -> nil, and the method/property is never evaluated.
+let n: Box? = nil
+assert_eq(n?.v, nil)
+assert_eq(n?.get(), nil)
+
+// Nested chaining short-circuits at the first nil link.
+class Wrap { new(inner) { this.inner = inner } }
+let w = Wrap.new(Box.new(7))
+assert_eq(w?.inner?.v, 7)
+let w2 = Wrap.new(nil)
+assert_eq(w2?.inner?.v, nil)     // inner is nil -> short-circuit
+
+// `?.` does not call the method when short-circuiting.
+mut hits = 0
+fn tick() { hits = hits + 1; 1 }
+class Counter { new() {} call(f) { f() } }
+let cn: Counter? = nil
+assert_eq(cn?.call(tick()), nil)
+assert_eq(hits, 0)               // tick() never ran (whole chain skipped)
+
+// `?[]` optional index on array, tuple, and dict.
+let arr = [10, 20, 30]
+assert_eq(arr?[1], 20)
+let na: Array<Long>? = nil
+assert_eq(na?[0], nil)
+
+let d = {a: 1}
+assert_eq(d?["a"], 1)
+let nd = nil
+assert_eq(nd?["a"], nil)
+
+// Combine with `??` and `!!`.
+let x = nil
+assert_eq(x?.v ?? "default", "default")
+assert_eq(b?.v ?? "default", 42)
+assert_eq(b?.v!!, 42)
+
+IO.puts("test_optional_chain OK")

@@ -1699,6 +1699,13 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     }
     return true;
   }
+  // `T?` Optional sugar = `T | Nil`: trailing `?` accepts Nil, else
+  // checks the base. Mirrors interp's type_matches.
+  if (!expected.empty() && expected.back() == '?') {
+    if (tag == TAG_NIL) return true;
+    return _culebra_type_matches_single(tag, data,
+                                        expected.substr(0, expected.size() - 1));
+  }
   // Generic outer-match: `Array<Long>` checks `Array` only. Element
   // type is documentation in the MVP (matches interp's type_matches).
   if (expected.find('<') != std::string_view::npos) {
@@ -9914,11 +9921,26 @@ struct JIT {
           "compound assignment cannot declare a new variable.");
     }
 
-    auto rval = compile(*av.rhs);
-
-    if (!av.type_annotation.empty()) {
-      emit_type_check(rval, av.type_annotation, "assignment");
+    // `??=` (nil-coalescing assign) short-circuits: the RHS IR is emitted
+    // and the slot is written only on the runtime path where the current
+    // lvalue reads as nil. Mirrors interp's eval_assignment. The RHS is
+    // therefore compiled lazily (inside the nil branch), not up front.
+    bool nil_coalesce = compound && base_op == "??";
+    // `??=` is MVP-limited to a simple variable target (matches interp).
+    if (nil_coalesce && lvalcnt != 1) {
+      throw culebra::CulebraError("SyntaxError",
+          "`??=` is only supported on a simple variable target.");
     }
+    auto compile_rhs = [&]() {
+      auto v = compile(*av.rhs);
+      if (!av.type_annotation.empty()) {
+        emit_type_check(v, av.type_annotation, "assignment");
+      }
+      return v;
+    };
+
+    llvm::Value* rval = nullptr;
+    if (!nil_coalesce) rval = compile_rhs();
 
     if (lvalcnt == 1) {
       auto name = std::string(ast.nodes[lvaloff]->token);
@@ -9957,6 +9979,37 @@ struct JIT {
           return make_nil();
         }
         auto cur = load_slot(*slot, name);
+        if (nil_coalesce) {
+          // `a ??= b`: assign only when `a` reads nil; else keep `a`.
+          auto fn2 = builder_.GetInsertBlock()->getParent();
+          auto assignBB = llvm::BasicBlock::Create(ctx_, "ncasn.assign", fn2);
+          auto keepBB = llvm::BasicBlock::Create(ctx_, "ncasn.keep", fn2);
+          auto doneBB = llvm::BasicBlock::Create(ctx_, "ncasn.done", fn2);
+          llvm::IRBuilder<> eb(&fn2->getEntryBlock(),
+                               fn2->getEntryBlock().begin());
+          auto resAlloca = eb.CreateAlloca(valueType_, nullptr, "ncasn.tmp");
+          auto isNil = builder_.CreateICmpEQ(
+              extract_tag(cur), builder_.getInt8(TAG_NIL), "ncasn.isnil");
+          builder_.CreateCondBr(isNil, assignBB, keepBB);
+
+          builder_.SetInsertPoint(assignBB);
+          auto rv = compile_rhs();  // +1, lazily emitted here
+          if (!slot->mut) {
+            emit_immutable_assign_throw(name, ast.line, ast.column);
+          }
+          emit_value_release(cur);   // cur is nil; balance the load's +1
+          store_slot(*slot, rv);     // consumes rv's +1
+          emit_value_retain(rv);     // result keeps a +1
+          builder_.CreateStore(rv, resAlloca);
+          builder_.CreateBr(doneBB);
+
+          builder_.SetInsertPoint(keepBB);
+          builder_.CreateStore(cur, resAlloca);  // cur (+1) is the result
+          builder_.CreateBr(doneBB);
+
+          builder_.SetInsertPoint(doneBB);
+          return builder_.CreateLoad(valueType_, resAlloca, "ncasn.result");
+        }
         // In-place fast path is requested for Tensor lhs; the runtime
         // helper falls back to the plain binop otherwise. When it
         // succeeds for Tensor, new_val is the same handle as cur (mutated
@@ -13415,10 +13468,84 @@ struct JIT {
 
   // --- Call ---
 
+  // Optional-chaining (`?.` / `?[]`) short-circuit scaffolding. A nil
+  // receiver at any `?.`/`?[]` collapses the whole remaining postfix
+  // chain to nil (JS / Kotlin semantics). All nil branches funnel into a
+  // single `nilBB` (stores nil into `result`) and merge at `endBB`.
+  struct SafeNav {
+    llvm::AllocaInst* result = nullptr;
+    llvm::BasicBlock* nilBB = nullptr;
+    llvm::BasicBlock* endBB = nullptr;
+  };
+
+  // Build the scaffolding iff `ast` contains a `?.`/`?[]` postfix.
+  SafeNav begin_safe_nav(const peg::Ast& ast) {
+    using namespace peg::udl;
+    SafeNav sn;
+    bool has_safe = false;
+    for (auto i = 1u; i < ast.nodes.size(); i++) {
+      auto t = ast.nodes[i]->original_tag;
+      if (t == "SAFE_DOT"_ || t == "SAFE_INDEX"_) { has_safe = true; break; }
+    }
+    if (!has_safe) return sn;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    sn.result = eb.CreateAlloca(valueType_, nullptr, "safenav.tmp");
+    sn.nilBB = llvm::BasicBlock::Create(ctx_, "safenav.nil", fn);
+    sn.endBB = llvm::BasicBlock::Create(ctx_, "safenav.end");
+    auto saveIP = builder_.saveIP();
+    builder_.SetInsertPoint(sn.nilBB);
+    builder_.CreateStore(make_nil(), sn.result);
+    builder_.CreateBr(sn.endBB);
+    builder_.restoreIP(saveIP);
+    return sn;
+  }
+
+  // Emit the nil guard for one `?.`/`?[]` step: branch to `nilBB` when
+  // `callee` is nil, otherwise continue in a fresh block (made current).
+  void emit_safe_nav_guard(llvm::Value* callee, const SafeNav& sn) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto contBB = llvm::BasicBlock::Create(ctx_, "safenav.cont", fn);
+    auto isNil = builder_.CreateICmpEQ(
+        extract_tag(callee), builder_.getInt8(TAG_NIL), "safenav.isnil");
+    builder_.CreateCondBr(isNil, sn.nilBB, contBB);
+    builder_.SetInsertPoint(contBB);
+  }
+
+  // Store the non-nil chain result and merge with the nil branches.
+  llvm::Value* end_safe_nav(const SafeNav& sn, llvm::Value* callee) {
+    if (!sn.result) return callee;
+    builder_.CreateStore(callee, sn.result);
+    builder_.CreateBr(sn.endBB);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    fn->insert(fn->end(), sn.endBB);
+    builder_.SetInsertPoint(sn.endBB);
+    return builder_.CreateLoad(valueType_, sn.result, "safenav.result");
+  }
+
+  // `expr!!` — non-null assertion: nil raises NilError, any other value
+  // passes through unchanged (the caller's `callee` is left as-is).
+  void emit_nonnull_assert(llvm::Value* callee, const peg::Ast& postfix) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto nilBB = llvm::BasicBlock::Create(ctx_, "nonnull.nil", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "nonnull.ok", fn);
+    auto isNil = builder_.CreateICmpEQ(
+        extract_tag(callee), builder_.getInt8(TAG_NIL), "nonnull.isnil");
+    builder_.CreateCondBr(isNil, nilBB, okBB);
+    builder_.SetInsertPoint(nilBB);
+    emit_throw_error("NilError",
+        std::format("`!!` applied to nil at {}:{}.",
+                    postfix.line, postfix.column),
+        postfix.line, postfix.column);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+  }
+
   llvm::Value* compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
     llvm::Value* callee = compile(*calleeNode);
+    auto sn = begin_safe_nav(ast);
 
     for (auto i = 1u; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
@@ -13472,6 +13599,18 @@ struct JIT {
           emit_value_swap_owned(callee, receiver);
           break;
         }
+        case "SAFE_INDEX"_: {
+          // `a?[k]` — nil receiver short-circuits the chain to nil.
+          emit_safe_nav_guard(callee, sn);
+          auto receiver = callee;
+          callee = compile_index_access(postfix, receiver);
+          emit_value_swap_owned(callee, receiver);
+          break;
+        }
+        case "SAFE_DOT"_:
+          // `a?.b` / `a?.m()` — nil receiver short-circuits to nil.
+          emit_safe_nav_guard(callee, sn);
+          [[fallthrough]];
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
@@ -13479,7 +13618,9 @@ struct JIT {
             // The lazy iterator path allocates a wrapping iterator and
             // walks it via per-element runtime closure calls; fusing
             // `.map(λ).collect()` collapses both into one inline loop.
-            if (method == "map") {
+            // (Not applied to `?.map` — the receiver was just nil-guarded
+            // and the fused path doesn't thread that.)
+            if (method == "map" && postfix.original_tag == "DOT"_) {
               if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
                 callee = *fused;
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
@@ -13504,12 +13645,15 @@ struct JIT {
           }
           break;
         }
+        case "NONNULL"_:
+          emit_nonnull_assert(callee, postfix);
+          break;
         default:
           throw std::runtime_error("invalid call postfix");
       }
     }
 
-    return callee;
+    return end_safe_nav(sn, callee);
   }
 
   // Get a property from an object (TAG_OBJECT required).
@@ -14704,6 +14848,7 @@ struct JIT {
 
     // Continue with remaining postfixes (matching compile_call's loop).
     llvm::Value* callee = start;
+    auto sn = begin_safe_nav(ast);
     for (auto i = next_idx; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
       switch (postfix.original_tag) {
@@ -14716,11 +14861,21 @@ struct JIT {
           emit_value_swap_owned(callee, receiver);
           break;
         }
+        case "SAFE_INDEX"_: {
+          emit_safe_nav_guard(callee, sn);
+          auto receiver = callee;
+          callee = compile_index_access(postfix, receiver);
+          emit_value_swap_owned(callee, receiver);
+          break;
+        }
+        case "SAFE_DOT"_:
+          emit_safe_nav_guard(callee, sn);
+          [[fallthrough]];
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
             auto method = std::string(postfix.token);
-            if (method == "map") {
+            if (method == "map" && postfix.original_tag == "DOT"_) {
               if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
                 callee = *fused;
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
@@ -14745,11 +14900,27 @@ struct JIT {
           }
           break;
         }
+        case "NONNULL"_: {
+          auto fn = builder_.GetInsertBlock()->getParent();
+          auto nilBB = llvm::BasicBlock::Create(ctx_, "nonnull.nil", fn);
+          auto okBB = llvm::BasicBlock::Create(ctx_, "nonnull.ok", fn);
+          auto isNil = builder_.CreateICmpEQ(
+              extract_tag(callee), builder_.getInt8(TAG_NIL), "nonnull.isnil");
+          builder_.CreateCondBr(isNil, nilBB, okBB);
+          builder_.SetInsertPoint(nilBB);
+          emit_throw_error("NilError",
+              std::format("`!!` applied to nil at {}:{}.",
+                          postfix.line, postfix.column),
+              postfix.line, postfix.column);
+          builder_.CreateUnreachable();
+          builder_.SetInsertPoint(okBB);
+          break;
+        }
         default:
           throw std::runtime_error("invalid call postfix");
       }
     }
-    return callee;
+    return end_safe_nav(sn, callee);
   }
 
   // --- Debugger ---

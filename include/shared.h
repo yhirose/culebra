@@ -511,6 +511,15 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
     return out;
   }
 
+  // `T?` Optional sugar -> `T | Nil`. The `?` binds to a single type
+  // name; top-level unions were already split above, so a `?` here is on
+  // one alternative (`Foo?`, `Array<Long>?`). Dedup keeps `Nil?` == `Nil`.
+  if (trimmed.back() == '?') {
+    auto base = canonicalize_type_annotation(trimmed.substr(0, trimmed.size() - 1));
+    if (base.empty() || base == "Nil") return "Nil";
+    return base + " | Nil";
+  }
+
   // Single type — check for Generic.
   auto head = parse_generic_head(trimmed);
   if (head.args.empty()) return std::string(head.outer);

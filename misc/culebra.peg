@@ -84,8 +84,9 @@
   DESTRUCTURE_ASSIGN       <-  let _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
   # ASSIGN_OP captures the literal so eval_assignment can dispatch on
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
-  # alternation chooses the longer match.
-  ASSIGN_OP                <-  < '**=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
+  # alternation chooses the longer match. `??=` is the nil-coalescing
+  # assign (`a ??= b` assigns only when `a` is nil; short-circuits b).
+  ASSIGN_OP                <-  < '**=' / '??=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
 
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
@@ -122,14 +123,23 @@
   # a statement) so cross-line method chaining still works:
   #   xs.map(...)
   #     .filter(...)   # OK
-  CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)*
+  # Postfix chain. SAFE_DOT (`?.`) and SAFE_INDEX (`?[...]`) are the
+  # optional-chaining operators: a nil receiver short-circuits the whole
+  # remaining chain to nil. NONNULL (`!!`) is the non-null assertion
+  # (throws NilError on nil, else passes the value through). `?.` / `?[`
+  # are matched before plain DOT / INDEX; none collide with `??` (that
+  # needs `?` then `?`) or `!=` (that needs `!` then `=`).
+  CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ SAFE_DOT / _ SAFE_INDEX / _ DOT / NONNULL)*
   ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
   ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)*)?
   ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
   KWARG_SPLAT              <-  '**' _ EXPRESSION
   KWARG                    <-  IDENTIFIER _ ':' _ EXPRESSION
   INDEX                    <-  '[' _ EXPRESSION _ ']'
+  SAFE_INDEX               <-  '?[' _ EXPRESSION _ ']'
   DOT                      <-  '.' _ IDENTIFIER
+  SAFE_DOT                 <-  '?.' _ IDENTIFIER
+  NONNULL                  <-  '!!'
 
   SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
 
@@ -193,12 +203,13 @@
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  EXPRESSION
 
-  # TYPE_NAME = single type, optionally Generic. TYPE_REF wraps Union
-  # alternation around it so `Array<Long | Float>` and the outer
+  # TYPE_NAME = single type, optionally Generic, with an optional
+  # trailing `?` (the `T?` = `T | Nil` Optional sugar). TYPE_REF wraps
+  # Union alternation around it so `Array<Long | Float>` and the outer
   # `Long | Float` use one shared definition. Captured verbatim into
-  # the surrounding TYPE_ANNOTATION / RETURN_TYPE token — whitespace
-  # is canonicalized later by canonicalize_type_annotation.
-  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* _sp_ '>' )?
+  # the surrounding TYPE_ANNOTATION / RETURN_TYPE token — whitespace and
+  # the `?` sugar are canonicalized later by canonicalize_type_annotation.
+  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* _sp_ '>' )? '?'?
   TYPE_REF                 <-  TYPE_NAME ( _sp_ '|' _sp_ TYPE_NAME )*
   TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >
   RETURN_TYPE              <-  '->' _ < TYPE_REF >

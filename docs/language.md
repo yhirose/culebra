@@ -128,9 +128,12 @@ contextual and only recognized after `:` or `->`.
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
     ??                          # nil coalesce (lower precedence than ||)
+    ?.  ?[ ]                    # optional chaining / optional index
+    !!                          # non-null assertion (postfix)
     ..  ..=                     # range literals (exclusive / inclusive)
     =                           # assignment
     +=  -=  *=  /=  %=  **=  @= # compound assignment
+    ??=                         # nil-coalescing assignment
     =>                          # match arm separator
     ->                          # return type
     ...                         # rest pattern
@@ -528,6 +531,25 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
 * `x ?? y`: returns `x` if it is not `nil`, else `y`. Short-circuit
   (RHS not evaluated when LHS is non-nil). Lower precedence than `||`.
   Chains left-associatively: `a ?? b ?? c` = `(a ?? b) ?? c`.
+
+### Null-safe access
+
+These operators complement `??` and the `T?` Optional type (§14) for
+working with possibly-nil values.
+
+* `a?.b` / `a?.m(...)` — **optional chaining**: if `a` is `nil` the
+  whole remaining chain short-circuits to `nil` (the property read or
+  method call is skipped, including its arguments). Otherwise behaves
+  like `a.b` / `a.m(...)`. `a?.b.c` short-circuits the entire `.c` too;
+  use `a?.b?.c` to guard each link.
+* `a?[k]` — **optional index**: `nil` receiver short-circuits to `nil`,
+  otherwise indexes like `a[k]` (Array / Tuple / Object).
+* `expr!!` — **non-null assertion**: passes `expr` through unchanged, or
+  raises `NilError` if it is `nil`. Postfix, so it chains: `a!!.b`,
+  `a!![0]`.
+* `a ??= b` — **nil-coalescing assignment**: assigns `b` to `a` only
+  when `a` currently reads as `nil`, short-circuiting `b` otherwise.
+  MVP: the target must be a simple variable.
 
 ### Truthiness
 
@@ -1580,6 +1602,22 @@ exact class. A bare concrete type outranks any Union that contains
 it: defining both `fn pick(x: Long)` and `fn pick(x: Long | Float)`
 routes a Long arg to the concrete `pick`, while a Float still goes
 through the Union version.
+
+### Optional types (`T?`)
+
+A trailing `?` on a type name is sugar for `T | Nil` — it makes nil an
+accepted value while still enforcing the base type for non-nil values.
+
+    fn id(x: Long?) -> Long? { x }
+    id(5)      # → 5
+    id(nil)    # → nil
+    id("s")    # !! rejected (not Long, not nil)
+
+`?` works on any type name, including Generic outers (`Array<Long>?`)
+and in `let` / parameter / return annotations (`let a: String? = nil`).
+Introspection canonicalizes it to the Union form: `fn.params[0].type`
+of `x: Long?` reads `"Long | Nil"`. Pair with the null-safe operators
+below (`?.`, `?[]`, `!!`, `??`, `??=`) for ergonomic nil handling.
 
 ### Generic types
 
