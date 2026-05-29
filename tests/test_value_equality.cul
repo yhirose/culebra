@@ -1,0 +1,40 @@
+// Collections compare by value (structural), like Python / Ruby.
+// Arrays, Objects, Tuples, and Sets are all value-equal; identity is
+// not exposed as an operator.
+
+// --- Arrays ---
+assert_eq([1, 2, 3] == [1, 2, 3], true)
+assert_eq([1, [2, 3]] == [1, [2, 3]], true)     // nested
+assert_eq([] == [], true)
+assert_eq([1, 2] == [1, 2, 3], false)
+assert_eq([1, 2] == [1, 3], false)
+
+// --- Objects (order-independent) ---
+assert_eq({a: 1, b: 2} == {a: 1, b: 2}, true)
+assert_eq({a: 1, b: 2} == {b: 2, a: 1}, true)
+assert_eq({a: 1} == {a: 2}, false)
+assert_eq({a: 1} == {a: 1, b: 2}, false)
+assert_eq({} == {}, true)
+
+// --- Nested mix ---
+assert_eq({xs: [1, 2], meta: {n: 3}} == {xs: [1, 2], meta: {n: 3}}, true)
+assert_eq({xs: [1, 2]} == {xs: [1, 9]}, false)
+
+// --- Tuples / Sets (already value-equal) ---
+assert_eq((1, 2) == (1, 2), true)
+assert_eq({1, 2, 3} == {3, 2, 1}, true)
+
+// --- Class instances: same class + same fields are equal ---
+class P { new(x, y) { this.x = x; this.y = y } }
+assert_eq(P.new(1, 2) == P.new(1, 2), true)
+assert_eq(P.new(1, 2) == P.new(1, 3), false)
+
+// Different classes with identical fields are not equal (class tag).
+class Q { new(x, y) { this.x = x; this.y = y } }
+assert_eq(P.new(1, 2) == Q.new(1, 2), false)
+
+// --- assert_eq now compares collections structurally ---
+assert_eq([1, 2, 3], [1, 2, 3])
+assert_eq({a: 1, b: [2, 3]}, {a: 1, b: [2, 3]})
+
+IO.puts("test_value_equality OK")

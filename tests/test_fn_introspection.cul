@@ -65,11 +65,16 @@ assert_eq(rps[0].kwargs_rest, false)
 assert_eq(rps[1].name, "rest")
 assert_eq(rps[1].kwargs_rest, true)
 
-// --- params is a fresh Array (mutating does not affect fn) ---
+// --- params is a fresh Array each access (mutating one copy does not
+// affect a later fetch; collections are value-equal so freshness is
+// checked by mutation, not by reference inequality) ---
 let p1 = add.params
 let p2 = add.params
-assert_false((p1 == p2))  // different Array refs
-assert_eq(p1[0].name, p2[0].name)  // same content
+assert_eq(p1, p2)                  // same content (value-equal)
+mut pmut = add.params
+let n0 = pmut.size()
+pmut.push(nil)
+assert_eq(add.params.size(), n0)   // a fresh fetch is unaffected
 
 // --- class method also has name ---
 class Box {

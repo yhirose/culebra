@@ -812,6 +812,8 @@ struct TupleValue {
 struct SetValue;
 inline std::string _set_str(const Value& v);
 inline bool _set_eq(const Value& a, const Value& b);
+inline bool _array_eq(const Value& a, const Value& b);
+inline bool _object_eq(const Value& a, const Value& b);
 
 // Builtin Tensor type. The data buffer lives in a shared_ptr<TensorImpl>
 // (see tensor.h); cycles are impossible because the buffer holds opaque
@@ -1192,14 +1194,21 @@ struct Value {
         return true;
       }
       case Set: return _set_eq(*this, rhs);
-      // Reference equality for the heap-backed types — same as the
-      // JIT (`_culebra_value_equal` default branch). Spec §16.
+      // Structural (value) equality for collections — matches Tuple/Set
+      // and Python/Ruby. The same-pointer short-circuit handles `a == a`
+      // and breaks self-comparison without recursing. Arrays/Objects stay
+      // *unhashable* (ValueHash still throws), so this doesn't make them
+      // usable as keys. Spec §16.
       case Array:
-        return get<ArrayValue>().values.get() ==
-               rhs.get<ArrayValue>().values.get();
+        if (get<ArrayValue>().values.get() ==
+            rhs.get<ArrayValue>().values.get())
+          return true;
+        return _array_eq(*this, rhs);
       case Object:
-        return get<ObjectValue>().properties.get() ==
-               rhs.get<ObjectValue>().properties.get();
+        if (get<ObjectValue>().properties.get() ==
+            rhs.get<ObjectValue>().properties.get())
+          return true;
+        return _object_eq(*this, rhs);
       case Function:
         return get<FunctionValue>().params.get() ==
                rhs.get<FunctionValue>().params.get();
@@ -1388,6 +1397,19 @@ inline bool _set_eq(const Value& a, const Value& b) {
   return true;
 }
 
+// Element-wise array equality (recurses through Value::operator==).
+inline bool _array_eq(const Value& a, const Value& b) {
+  const auto& va = *a.get<ArrayValue>().values;
+  const auto& vb = *b.get<ArrayValue>().values;
+  if (va.size() != vb.size()) return false;
+  for (size_t i = 0; i < va.size(); i++) {
+    if (!(va[i] == vb[i])) return false;
+  }
+  return true;
+}
+
+// _object_eq is defined after OrderedSymbolMap is complete (below).
+
 // Insertion-ordered string-to-Symbol map.
 //
 // `index_` owns the canonical key strings — unordered_map nodes are
@@ -1513,6 +1535,36 @@ struct OrderedSymbolMap {
   std::unordered_map<std::string, size_t, sv_hash, sv_equal> index_;
   size_t mut_count_ = 0;
 };
+
+// Structural object equality: same key set (String + non-String) with
+// equal values, order-independent (like Python dict). Class-sugar
+// instances compare their `class` tag and method values too — methods
+// share a params shared_ptr across instances, so same-class instances
+// match when their data fields do. Defined here so OrderedSymbolMap is
+// complete.
+inline bool _object_eq(const Value& a, const Value& b) {
+  const auto& oa = a.to_object();
+  const auto& ob = b.to_object();
+  if (oa.properties->size() != ob.properties->size()) return false;
+  for (const auto& [k, sym] : *oa.properties) {
+    auto it = ob.properties->find(k);
+    if (it == ob.properties->end() || !(sym.val == it->second.val)) {
+      return false;
+    }
+  }
+  size_t na = oa.non_string_props ? oa.non_string_props->size() : 0;
+  size_t nb = ob.non_string_props ? ob.non_string_props->size() : 0;
+  if (na != nb) return false;
+  if (oa.non_string_props) {
+    for (const auto& [k, sym] : *oa.non_string_props) {
+      auto it = ob.non_string_props->find(k);
+      if (it == ob.non_string_props->end() || !(sym.val == it->second.val)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 
 // Internal control-flow signal for `return expr`. Kept distinct from
 // user-thrown Values so that a user `throw` propagates past function

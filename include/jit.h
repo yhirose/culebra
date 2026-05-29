@@ -1259,7 +1259,59 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       }
       return true;
     }
-    default: return d1 == d2;  // func/array/object: identity
+    case TAG_ARRAY: {
+      // Element-wise eq (structural), matching interp's _array_eq.
+      auto* a = reinterpret_cast<JitArray*>(d1);
+      auto* b = reinterpret_cast<JitArray*>(d2);
+      if (a == b) return true;
+      if (a->size != b->size) return false;
+      for (size_t i = 0; i < a->size; i++) {
+        if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
+                                  b->items[i].tag, b->items[i].data)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case TAG_OBJECT: {
+      // Structural eq: same own slots (data fields + tags; methods live
+      // on the shared proto, not own slots) and non-String entries, with
+      // equal values. Order-independent. Mirrors interp's _object_eq
+      // result (same-class same-field instances compare equal).
+      auto* a = reinterpret_cast<JitObject*>(d1);
+      auto* b = reinterpret_cast<JitObject*>(d2);
+      if (a == b) return true;
+      if (a->prop_size() != b->prop_size()) return false;
+      bool eq = true;
+      a->for_each([&](std::string_view name, const JitObjectEntry& e) {
+        if (!eq) return;
+        auto idx = b->find_slot(name);
+        if (idx == static_cast<size_t>(-1)) { eq = false; return; }
+        if (!_culebra_value_equal(e.value.tag, e.value.data,
+                                  b->slots[idx].value.tag,
+                                  b->slots[idx].value.data)) {
+          eq = false;
+        }
+      });
+      if (!eq) return false;
+      size_t na = a->non_string_props ? a->non_string_props->size() : 0;
+      size_t nb = b->non_string_props ? b->non_string_props->size() : 0;
+      if (na != nb) return false;
+      if (a->non_string_props) {
+        for (auto& [k, entry] : *a->non_string_props) {
+          if (!b->non_string_props) return false;
+          auto it = b->non_string_props->find(k);
+          if (it == b->non_string_props->end()) return false;
+          if (!_culebra_value_equal(entry.value.tag, entry.value.data,
+                                    it->second.value.tag,
+                                    it->second.value.data)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    default: return d1 == d2;  // func: identity
   }
 }
 

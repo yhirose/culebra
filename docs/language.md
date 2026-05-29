@@ -245,9 +245,10 @@ semantics bit-for-bit.
 `==` on reference types:
 
 * `String`: compares by contents.
-* `Array`, `Object`, `Function`: currently compares by reference
-  identity (same pointer). Two arrays with the same elements but
-  distinct allocations are not equal.
+* `Array`, `Object`, `Tuple`, `Set`: compare by **value** (structural,
+  recursing through elements), like Python/Ruby. Only `Function` and
+  `Tensor` compare by reference identity. (Value equality does not make
+  arrays hashable — they still can't be Object/Set keys.)
 
 Cross-type numeric equality: `Long` and `Float` compare by numeric
 value. `1 == 1.0`, `0 == 0.0`. `NaN` compares unequal to everything
@@ -786,8 +787,12 @@ Spread sources are `Array`, `Tuple`, and `Set` (a non-iterable raises
 
 ### Equality and ordering
 
-Arrays compare by reference identity. There is no built-in deep
-equality.
+Arrays compare by **value** (structural): `[1, 2] == [1, 2]` is true,
+recursing through nested elements, like Python/Ruby. Tuples, Sets, and
+Objects are likewise value-equal; only `Function` and `Tensor` keep
+reference identity. (Arrays remain *unhashable* — value equality does
+not make them usable as Object/Set keys.) Ordering operators (`<` etc.)
+are not defined on arrays.
 
 ---
 
@@ -1174,11 +1179,11 @@ Element access is by index, same as `Array`:
     pair[0]                          # 3
     triple[-1]                       # 3.14
 
-Equality is element-wise (in contrast to `Array`, which is by
-reference identity):
+Equality is element-wise (and `Array` is value-equal too, so nesting
+recurses):
 
     (1, 2) == (1, 2)                 # true
-    ([1], 2) == ([1], 2)             # false  (inner Arrays compare by reference)
+    ([1], 2) == ([1], 2)             # true  (inner Arrays are value-equal)
 
 Tuples are hashable when their elements are, so they double as Object
 and Set keys:
@@ -3295,7 +3300,8 @@ built-ins from §18.
   literal braces is not supported.
 * `String` is byte-indexed (`size` / `slice` count bytes); Unicode
   work goes through `code_points()` / `graphemes()` iterators.
-* `Array` and `Object` equality compare by reference, not structural.
+* `Array` / `Object` / `Tuple` / `Set` equality is structural (by value);
+  only `Function` / `Tensor` compare by reference identity.
 * Runtime errors (`type error`, `divide by 0`, `index out of range`,
   etc.) abort the program and do **not** flow through user `throw` /
   `try` / `catch` — those channels are reserved for user-raised
