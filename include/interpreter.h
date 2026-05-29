@@ -774,7 +774,7 @@ struct FunctionValue {
 
   FunctionValue(
       const std::vector<Parameter>& params,
-      const std::function<Value(std::shared_ptr<Environment> env)>& eval,
+      const std::function<Value(const std::shared_ptr<Environment>& env)>& eval,
       std::string_view return_type = {},
       std::shared_ptr<Environment> def_env = {})
       : params(std::make_shared<std::vector<Parameter>>(params)),
@@ -783,7 +783,7 @@ struct FunctionValue {
         def_env(std::move(def_env)) {}
 
   std::shared_ptr<std::vector<Parameter>> params;
-  std::function<Value(std::shared_ptr<Environment> env)> eval;
+  std::function<Value(const std::shared_ptr<Environment>& env)> eval;
   std::string_view return_type;  // empty = no annotation
   // Definition environment — used only to evaluate parameter defaults
   // (for body execution, `eval` closes over this env itself).
@@ -2376,7 +2376,7 @@ inline void inject_derived_methods(
     switch (dm.kind) {
       case 0:  // Eq -> eq(other)
         add(dm.name, {{"other", false}},
-            [](std::shared_ptr<Environment> env) -> Value {
+            [](const std::shared_ptr<Environment>& env) -> Value {
               const auto& self_v = env->get("this");
               const auto& other = env->get("other");
               if (other.type != Value::Object) return Value(false);
@@ -2396,7 +2396,7 @@ inline void inject_derived_methods(
         break;
       case 1:  // Hash -> hash()
         add(dm.name, {},
-            [class_name](std::shared_ptr<Environment> env) -> Value {
+            [class_name](const std::shared_ptr<Environment>& env) -> Value {
               const auto& self_v = env->get("this");
               size_t h = std::hash<std::string_view>{}(class_name);
               _for_each_derived_field(
@@ -2408,7 +2408,7 @@ inline void inject_derived_methods(
         break;
       case 2:  // Show -> to_s()
         add(dm.name, {},
-            [class_name](std::shared_ptr<Environment> env) -> Value {
+            [class_name](const std::shared_ptr<Environment>& env) -> Value {
               const auto& self_v = env->get("this");
               std::string s(class_name);
               s += "(";
@@ -2425,7 +2425,7 @@ inline void inject_derived_methods(
         break;
       case 3:  // Comparable -> cmp(other)
         add(dm.name, {{"other", false}},
-            [](std::shared_ptr<Environment> env) -> Value {
+            [](const std::shared_ptr<Environment>& env) -> Value {
               const auto& self_v = env->get("this");
               const auto& other = env->get("other");
               if (other.type != Value::Object) return Value(0L);
@@ -2718,7 +2718,7 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
 
 // Default-valued params aren't resolved — pass all positional args.
 // Extras bind to `__ARGS__` (matches the in-language calling convention).
-inline Value call(std::shared_ptr<Environment> env, std::string_view name,
+inline Value call(const std::shared_ptr<Environment>& env, std::string_view name,
                   std::vector<Value> args) {
   if (!env->has(name)) {
     throw CulebraError("NameError",
@@ -2888,7 +2888,7 @@ template <> constexpr std::string_view type_annotation_for<const std::string&>()
 //     std::cout << msg << "\n";
 //   }, {"msg"});
 template <class Fn>
-inline void define(std::shared_ptr<Environment> env, std::string_view name,
+inline void define(const std::shared_ptr<Environment>& env, std::string_view name,
                    Fn&& fn, std::vector<std::string> param_names = {}) {
   using traits = _detail::fn_traits<std::decay_t<Fn>>;
   using ArgTuple = typename traits::args;
@@ -4225,7 +4225,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // `interpret(...)` but needs to drive per-module defer flushes and
   // export extraction.
   friend bool interpret_modules(const std::vector<LoadedModule>& modules,
-                                std::shared_ptr<Environment> env,
+                                const std::shared_ptr<Environment>& env,
                                 Value& val,
                                 std::vector<std::string>& msgs,
                                 Debugger debugger);
@@ -4270,7 +4270,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // to resolve relative paths in `import name from "./..."`.
   std::vector<std::filesystem::path> module_stack_;
 
-  Value eval(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     try {
       return _eval_dispatch(ast, env);
     } catch (CulebraError& e) {
@@ -4294,7 +4294,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   }
 
-  Value _eval_dispatch(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value _eval_dispatch(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     if (debugger_) {
@@ -4430,7 +4430,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
  private:
-  Value eval_statements(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_statements(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     if (ast.is_token) {
       return eval(ast, env);
     } else if (ast.nodes.empty()) {
@@ -4444,7 +4444,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return eval(**it, env);
   }
 
-  Value eval_while(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_while(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     for (;;) {
       auto cond = eval(*ast.nodes[0], env);
       if (!cond.to_bool()) {
@@ -4464,7 +4464,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // for IDENT in EXPR BLOCK
   // Calls EXPR.iter().next() repeatedly; binds value to IDENT in a
   // fresh scope per iteration. Honors break/continue and defer.
-  Value eval_for(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_for(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     const auto& var = *ast.nodes[0];
     const auto& iter_expr = *ast.nodes[1];
@@ -4533,7 +4533,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value();
   }
 
-  Value eval_if(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_if(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     const auto& nodes = ast.nodes;
 
     for (auto i = 0u; i < nodes.size(); i += 2) {
@@ -4562,7 +4562,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // eval_destructure_assign; defaults to declare for every other caller.
   bool pattern_declare_ = true;
 
-  void bind_pattern_name(std::shared_ptr<Environment>& env,
+  void bind_pattern_name(const std::shared_ptr<Environment>& env,
                          const peg::Ast& ident_node, Value val,
                          bool mut = true) {
     auto name = ident_node.token;
@@ -4576,7 +4576,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Try to match a pattern against `val`. On success, bind any introduced
   // variables into `env` and return true.
   bool try_pattern(const peg::Ast& pattern, const Value& val,
-                   std::shared_ptr<Environment> env, bool mut = true) {
+                   const std::shared_ptr<Environment>& env, bool mut = true) {
     using namespace peg::udl;
 
     // PATTERN with multiple children is an OR pattern.
@@ -4726,7 +4726,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return false;
   }
 
-  Value eval_match(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_match(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     auto subject = eval(*ast.nodes[0], env);
     const auto& arms = ast.nodes[1]->nodes;  // MATCH_ARMS
@@ -4751,7 +4751,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // enforcing shadow + trailing-default rules. Shared by FUNCTION,
   // class METHODs, and class constructors.
   std::vector<FunctionValue::Parameter> parse_parameters(
-      const peg::Ast& params_ast, std::shared_ptr<Environment> env) {
+      const peg::Ast& params_ast, const std::shared_ptr<Environment>& env) {
     std::vector<FunctionValue::Parameter> params;
     bool seen_default = false;
     bool kw_only = false;
@@ -4840,7 +4840,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value make_function_value(const peg::Ast& params_ast,
                             std::shared_ptr<peg::Ast> body,
                             std::string_view return_type,
-                            std::shared_ptr<Environment> env) {
+                            const std::shared_ptr<Environment>& env) {
     auto params = parse_parameters(params_ast, env);
     // Destructuring params (`fn ({a, b})`) bind a synthetic slot; unpack
     // them at the body's entry.
@@ -4873,14 +4873,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         env));
   }
 
-  Value eval_function(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_function(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto fv = culebra::view_function(ast);
     return make_function_value(*fv.params, fv.body, fv.return_type, env);
   };
 
   // LAMBDA: [LAMBDA_PARAMS, BODY]. BODY may be a BLOCK or a bare
   // expression — both are handled by eval()'s tag dispatch.
-  Value eval_lambda(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_lambda(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto fv = culebra::view_lambda(ast);
     return make_function_value(*fv.params, fv.body, fv.return_type, env);
   }
@@ -4947,7 +4947,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // has no export statement — the resulting Object is the value
   // `import name from "..."` binds in the caller.
   Value extract_export(const peg::Ast& module_ast,
-                       std::shared_ptr<Environment> env) {
+                       const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     ObjectValue obj;
     const peg::Ast* stmts =
@@ -4979,7 +4979,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // resulting absolute path keys into `module_cache_`, which the driver
   // populated when it evaluated the dependency before this module.
   Value eval_import_stmt(const peg::Ast& ast,
-                         std::shared_ptr<Environment> env) {
+                         const std::shared_ptr<Environment>& env) {
     auto name = std::string(ast.nodes[0]->token);
     auto rel = std::string(ast.nodes[1]->token);
     if (module_stack_.empty()) {
@@ -5032,7 +5032,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_multifn_decl(const peg::Ast& ast,
-                          std::shared_ptr<Environment> env) {
+                          const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     // Optional leading DECORATOR children. Decorator inside MULTIFN_DECL
@@ -5182,7 +5182,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // bare instance with only the class tag and methods. Methods close
   // over the defining scope but `this` is bound fresh per method call
   // via the existing method-dispatch protocol.
-  Value eval_class_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     // Optional leading DECORATOR children. Apply them to the final
@@ -5413,7 +5413,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // variant instance is tagged with `class` = variant name and `__enum`
   // = enum name, with positional payload fields `_0.._n`. type_matches
   // then accepts both `: Ok` (the variant) and `: Name` (the enum).
-  Value eval_enum_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_enum_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     size_t k = 0;
     std::vector<const peg::Ast*> decorators;
@@ -5507,7 +5507,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // enforcing "positional must precede any kwarg/splat" at the AST
   // scan (yields a real line/col for the SyntaxError).
   void split_call_args(const peg::Ast& args_ast,
-                       std::shared_ptr<Environment> env,
+                       const std::shared_ptr<Environment>& env,
                        CallArgs& out) {
     using namespace peg::udl;
     bool saw_named = false;
@@ -5546,7 +5546,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Resolves the three argument buckets against `fn_val`'s formal
   // parameters and populates a fresh function frame.
   Value invoke_user_function_with_args(
-      const Value& fn_val, std::shared_ptr<Environment> env,
+      const Value& fn_val, const std::shared_ptr<Environment>& env,
       CallArgs args, size_t call_line, size_t call_column) {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
@@ -5689,7 +5689,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // arguments programmatically (iterator protocol, helper invocations).
   template <typename ArgVal, typename ArgLoc>
   Value invoke_user_function(const Value& fn_val,
-                             std::shared_ptr<Environment> env, size_t total,
+                             const std::shared_ptr<Environment>& env, size_t total,
                              ArgVal arg_value, ArgLoc arg_loc,
                              size_t call_line, size_t call_column) {
     CallArgs args;
@@ -5705,7 +5705,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_function_call(const peg::Ast& ast,
-                           std::shared_ptr<Environment> env, const Value& val) {
+                           const std::shared_ptr<Environment>& env, const Value& val) {
     CallArgs args;
     split_call_args(ast, env, args);
     return invoke_user_function_with_args(val, env, std::move(args),
@@ -5717,7 +5717,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // AST's `ARGUMENTS` node. Deliberately does NOT bind `this` (UFCS is
   // a free-function call, not a method).
   Value eval_ufcs_call(const peg::Ast& args_ast,
-                       std::shared_ptr<Environment> env,
+                       const std::shared_ptr<Environment>& env,
                        const Value& fn_val, const Value& receiver,
                        size_t dot_line, size_t dot_column) {
     CallArgs args;
@@ -5729,7 +5729,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_array_reference(const peg::Ast& ast,
-                             std::shared_ptr<Environment> env,
+                             const std::shared_ptr<Environment>& env,
                              const Value& val) {
     auto key = eval(ast, env);
     // Object[k]: look up the Value-keyed sidecar.
@@ -5829,7 +5829,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         }));
   }
 
-  Value eval_property(const peg::Ast& ast, std::shared_ptr<Environment> env,
+  Value eval_property(const peg::Ast& ast, const std::shared_ptr<Environment>& env,
                       const Value& val) {
     auto name = ast.token;
 
@@ -5978,7 +5978,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return false;
   }
 
-  Value eval_call(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_call(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     Value val = eval(*ast.nodes[0], env);
@@ -6043,7 +6043,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_lexical_scope(const peg::Ast& ast,
-                           std::shared_ptr<Environment> env) {
+                           const std::shared_ptr<Environment>& env) {
     auto scopeEnv = make_scope(env);
     try {
       for (auto node : ast.nodes) {
@@ -6057,7 +6057,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value();
   }
 
-  Value eval_logical_or(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_logical_or(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     assert(ast.nodes.size() >
            1);  // if the size is 1, thes node will be hoisted.
     Value val;
@@ -6071,7 +6071,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_logical_and(const peg::Ast& ast,
-                         std::shared_ptr<Environment> env) {
+                         const std::shared_ptr<Environment>& env) {
     Value val;
     for (auto node : ast.nodes) {
       val = eval(*node, env);
@@ -6085,7 +6085,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // `a OPE b` or a comparison chain `a < b < c …` = `(a<b) && (b<c) …`.
   // Each middle operand is evaluated once (the rhs becomes the next lhs);
   // short-circuits to false at the first failing link (Python semantics).
-  Value eval_condition(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_condition(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto prev = eval(*ast.nodes[0], env);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto rhs = eval(*ast.nodes[i + 1], env);
@@ -6101,7 +6101,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // reflection for `==`/`!=`) is callable without re-evaluating sides.
   Value compare_values(const Value& lhs, const Value& rhs,
                        std::string_view ope,
-                       std::shared_ptr<Environment> env) {
+                       const std::shared_ptr<Environment>& env) {
     auto bool_val = [&](const Value& v) {
       return v.type == Value::Bool ? v.template get<bool>() : v.to_bool();
     };
@@ -6148,25 +6148,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     throw std::logic_error("invalid internal condition.");
   }
 
-  Value eval_unary_plus(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_unary_plus(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return eval(*ast.nodes[1], env);
   }
 
   Value eval_unary_minus(const peg::Ast& ast,
-                         std::shared_ptr<Environment> env) {
+                         const std::shared_ptr<Environment>& env) {
     auto v = eval(*ast.nodes[1], env);
     if (auto r = try_special_unary(v, "__neg__", env)) return *r;
     if (v.type == Value::Float) return Value(-v.get<double>());
     return Value(v.to_long() * -1);
   }
 
-  Value eval_unary_not(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_unary_not(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return Value(!eval(*ast.nodes[1], env).to_bool());
   }
 
   // `~x` — bitwise complement. Integer-only (Long); Float / others are a
   // type error, matching the binary bit operators.
-  Value eval_unary_bnot(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_unary_bnot(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto v = eval(*ast.nodes[1], env);
     if (v.type != Value::Long) {
       throw CulebraError("TypeError", std::format(
@@ -6178,7 +6178,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Bitwise / shift chains (`^`, `&`, `<<`, `>>`). Left-associative over
   // [operand, OP, operand, ...]; operands must be Long. The operator is
   // read from the captured OP token (handles the 2-char `<<` / `>>`).
-  Value eval_bitwise(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_bitwise(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto require_long = [&](const Value& v) -> long {
       if (v.type != Value::Long) {
         throw CulebraError("TypeError", std::format(
@@ -6208,7 +6208,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // `a ?? b ?? c` returns the first non-nil operand, short-circuiting
   // on evaluation. All-nil chains return nil.
   Value eval_nil_coalesce(const peg::Ast& ast,
-                          std::shared_ptr<Environment> env) {
+                          const std::shared_ptr<Environment>& env) {
     auto val = eval(*ast.nodes[0], env);
     for (size_t i = 1; i < ast.nodes.size(); i++) {
       if (val.type != Value::Nil) return val;
@@ -6222,7 +6222,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // allocation. `to_long` throws `type error` on Float or non-numeric
   // operands (matching the JIT's `value_to_long` guard); range literals
   // are stricter than Math.range on purpose.
-  Value eval_range(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_range(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto start = eval(*ast.nodes[0], env).to_long();
     auto end = eval(*ast.nodes[2], env).to_long();
     if (ast.nodes[1]->token == "..=") end++;
@@ -6242,7 +6242,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // this name.
   std::optional<Value> try_special(const Value& receiver, const Value* rhs,
                                   std::string_view special,
-                                  std::shared_ptr<Environment> env) {
+                                  const std::shared_ptr<Environment>& env) {
     if (receiver.type != Value::Object) return std::nullopt;
     const auto& obj = receiver.to_object();
     auto it = obj.properties->find(special);
@@ -6260,13 +6260,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   std::optional<Value> try_special_binop(const Value& lhs, const Value& rhs,
                                         std::string_view special,
-                                        std::shared_ptr<Environment> env) {
+                                        const std::shared_ptr<Environment>& env) {
     return try_special(lhs, &rhs, special, env);
   }
 
   std::optional<Value> try_special_unary(const Value& operand,
                                         std::string_view special,
-                                        std::shared_ptr<Environment> env) {
+                                        const std::shared_ptr<Environment>& env) {
     return try_special(operand, nullptr, special, env);
   }
 
@@ -6310,7 +6310,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_bin_op_step(const Value& lhs, const Value& rhs, char ope,
-                         std::shared_ptr<Environment> env) {
+                         const std::shared_ptr<Environment>& env) {
     if (lhs.type == Value::Tensor || rhs.type == Value::Tensor) {
       auto tensor_op = op_to_tensor_op(std::string_view(&ope, 1));
       if (!tensor_op) throw CulebraError("TypeError", "type error.");
@@ -6376,7 +6376,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_bin_expression(const peg::Ast& ast,
-                            std::shared_ptr<Environment> env) {
+                            const std::shared_ptr<Environment>& env) {
     auto ret = eval(*ast.nodes[0], env);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
       auto rhs = eval(*ast.nodes[i + 1], env);
@@ -6393,7 +6393,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   //   any Float operand          → Float
   //   0 ** 0 = 1 (matches IEEE 754 and Python).
   Value compute_power(const Value& base, const Value& exp,
-                      std::shared_ptr<Environment> env) {
+                      const std::shared_ptr<Environment>& env) {
     if (auto r = try_special_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
       throw CulebraError("TypeError", std::format(
@@ -6413,7 +6413,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::pow(x, y));
   }
 
-  Value eval_power(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_power(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto base = eval(*ast.nodes[0], env);
     auto exp = eval(*ast.nodes[2], env);
     return compute_power(base, exp, env);
@@ -6424,7 +6424,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // the trailing `=`.
   Value apply_compound_op(const Value& lhs, const Value& rhs,
                           std::string_view op,
-                          std::shared_ptr<Environment> env) {
+                          const std::shared_ptr<Environment>& env) {
     if (op == "**") return compute_power(lhs, rhs, env);
     return eval_bin_op_step(lhs, rhs, op[0], env);
   }
@@ -6458,7 +6458,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // existing variables (parallel / swap assignment). Evaluates RHS once,
   // then reuses `try_pattern`. Mismatch is a runtime error (unlike match).
   Value eval_destructure_assign(const peg::Ast& ast,
-                                std::shared_ptr<Environment> env) {
+                                const std::shared_ptr<Environment>& env) {
     bool declares = ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
     auto mut = ast.nodes[1]->token == "mut";
     const auto& pattern = *ast.nodes[2];
@@ -6482,7 +6482,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return rval;
   }
 
-  Value eval_assignment(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_assignment(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     // ASSIGNMENT layout (see parser.h `view_assignment`):
     //   [LET, MUTABLE, lval-chain..., (TYPE_ANNOTATION)?, ASSIGN_OP, EXPRESSION]
@@ -6661,11 +6661,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   };
 
-  Value eval_identifier(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_identifier(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return env->get(ast.token);
   };
 
-  Value eval_object(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_object(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     ObjectValue obj;
     for (auto i = 0u; i < ast.nodes.size(); i++) {
@@ -6724,7 +6724,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   }
 
-  Value eval_array(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_array(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     ArrayValue arr;
 
@@ -6760,19 +6760,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::move(arr));
   }
 
-  Value eval_nil(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_nil(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return Value();
   };
 
-  Value eval_bool(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_bool(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return Value(ast.token == "true");
   };
 
-  Value eval_number(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_number(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return Value(parse_integer_literal(ast.token));
   };
 
-  Value eval_float(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_float(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     return Value(ast.token_to_number<double>());
   }
 
@@ -6798,7 +6798,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_interpolated_string(const peg::Ast& ast,
-                                 std::shared_ptr<Environment> env) {
+                                 const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     std::string s;
     for (auto node : ast.nodes) {
@@ -6825,7 +6825,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::move(s));
   };
 
-  void eval_return(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  void eval_return(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     if (ast.nodes.empty()) {
       throw ReturnValue{Value()};
     } else {
@@ -6833,14 +6833,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   }
 
-  void eval_throw(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  void eval_throw(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     throw eval(*ast.nodes[0], env);
   }
 
   // Run deferred callables registered in `env` in LIFO order. If one
   // throws, it propagates; remaining defers for that scope are abandoned
   // (matches Swift; Go would run all, but we keep it simple).
-  void run_deferred(std::shared_ptr<Environment> env) {
+  void run_deferred(const std::shared_ptr<Environment>& env) {
     while (!env->deferred.empty()) {
       auto fn = std::move(env->deferred.back());
       env->deferred.pop_back();
@@ -6849,7 +6849,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   // TRY = [BLOCK, IDENTIFIER, BLOCK]  (try-body, catch-binding, catch-body)
-  Value eval_try(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_try(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     auto tryEnv = make_scope(env);
     Value tryResult;
     bool threw = false;
@@ -6889,7 +6889,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return catchResult;
   }
 
-  void eval_defer(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  void eval_defer(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     // Capture the body AST (shared_ptr keeps subtree alive) and `env`
     // weakly so the scope can be destroyed without a cycle.
     auto body = ast.nodes[0];
@@ -6919,7 +6919,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 // caller. `modules.back()` is the entry. Error handling matches
 // `interpret` for the single-AST path.
 inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
-                              std::shared_ptr<Environment> env,
+                              const std::shared_ptr<Environment>& env,
                               Value& val,
                               std::vector<std::string>& msgs,
                               Debugger debugger = nullptr) {
@@ -7000,7 +7000,7 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
 }
 
 inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
-                      std::shared_ptr<Environment> env, Value& val,
+                      const std::shared_ptr<Environment>& env, Value& val,
                       std::vector<std::string>& msgs,
                       Debugger debugger = nullptr) {
   auto flush_top_defers = [&] {
