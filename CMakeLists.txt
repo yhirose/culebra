@@ -265,3 +265,10 @@ endfunction()
 culebra_add_smoke_exe(mt_smoke)
 culebra_add_smoke_exe(mi_smoke)
 culebra_add_smoke_exe(define_smoke)
+
+# regexlib is a standalone header-only library (destined for cpp-regexlib); its
+# test depends only on regexlib.h + cpp-unicodelib, so it needs no JIT/LLVM
+# link. Built alongside `culebra` to stay in step with the header.
+add_executable(regexlib_test test/regexlib_test.cc)
+target_compile_features(regexlib_test PRIVATE cxx_std_17)
+add_test(NAME regexlib_test COMMAND regexlib_test)
