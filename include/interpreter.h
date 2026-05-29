@@ -55,8 +55,8 @@ inline bool _invoke_user_eq(const Value& a, const Value& b);
 // (map / filter / take / ... / collect); any Object that has both
 // `iter` and `next` properties picks these up via duck-typed fallback
 // in eval_property.
-inline std::map<std::string_view, Value>& string_builtins();
-inline std::map<std::string_view, Value>& iterator_builtins();
+inline std::unordered_map<std::string_view, Value>& string_builtins();
+inline std::unordered_map<std::string_view, Value>& iterator_builtins();
 
 // Raise the uniform shadow-prohibition error. Used by all sites that
 // would introduce a binding shadowing a closure-captured variable:
@@ -834,7 +834,7 @@ struct ObjectValue {
   void assign(const Value& key, const Value& val);
   void initialize(const Value& key, const Value& val, bool mut);
 
-  virtual std::map<std::string_view, Value>& builtins();
+  virtual std::unordered_map<std::string_view, Value>& builtins();
 
   std::shared_ptr<OrderedSymbolMap> properties;
   // Non-String key sidecar. Eager-allocated (empty) by the ctor so
@@ -856,7 +856,7 @@ struct ArrayValue : public ObjectValue {
   ArrayValue() : values(std::make_shared<std::vector<Value>>()) {
     interp_gc().track_vec(values);
   }
-  std::map<std::string_view, Value>& builtins() override;
+  std::unordered_map<std::string_view, Value>& builtins() override;
 
   std::shared_ptr<std::vector<Value>> values;
 };
@@ -882,7 +882,7 @@ inline bool _object_eq(const Value& a, const Value& b);
 // bytes, so no InterpGC tracking is needed.
 struct TensorValue : public ObjectValue {
   explicit TensorValue(TensorPtr i) : ObjectValue(), impl(std::move(i)) {}
-  std::map<std::string_view, Value>& builtins() override;
+  std::unordered_map<std::string_view, Value>& builtins() override;
 
   TensorPtr impl;
 };
@@ -2564,9 +2564,9 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
       _make_method_call_env(iterable, line, col));
 }
 
-inline std::map<std::string_view, Value>& ObjectValue::builtins() {
+inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("this").to_object();
@@ -2928,9 +2928,9 @@ inline void define(std::shared_ptr<Environment> env, std::string_view name,
                   /*mut=*/false);
 }
 
-inline std::map<std::string_view, Value>& ArrayValue::builtins() {
+inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv, Value(FunctionValue({},
                                      [](std::shared_ptr<Environment> callEnv) {
                                        const auto& val = callEnv->get("this");
@@ -3225,9 +3225,9 @@ inline Value _make_tensor_reduction_method() {
 
 // Builtin methods on Tensor values. M1 added .shape(); M2 adds .pow().
 // Linear-algebra / reduction methods land in M3–M4.
-inline std::map<std::string_view, Value>& TensorValue::builtins() {
+inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"shape"sv, Value(FunctionValue(
                        {},
                        [](std::shared_ptr<Environment> callEnv) {
@@ -3395,9 +3395,9 @@ inline std::map<std::string_view, Value>& TensorValue::builtins() {
 }
 
 // Method lookup table for primitive String values. Not part of any Object.
-inline std::map<std::string_view, Value>& string_builtins() {
+inline std::unordered_map<std::string_view, Value>& string_builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          return Value(static_cast<long>(
@@ -3642,9 +3642,9 @@ inline std::map<std::string_view, Value>& string_builtins() {
 // Method lookup table for primitive Set values. Mirrors string_builtins;
 // SetValue is not an ObjectValue so dispatch goes through a dedicated
 // path in eval_property.
-inline std::map<std::string_view, Value>& set_builtins() {
+inline std::unordered_map<std::string_view, Value>& set_builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("this").get<SetValue>();
@@ -3787,9 +3787,9 @@ inline std::map<std::string_view, Value>& set_builtins() {
 // Method lookup table for primitive Tuple values. Mirrors set_builtins;
 // TupleValue is not an ObjectValue so dispatch goes through the same
 // dedicated path in eval_property.
-inline std::map<std::string_view, Value>& tuple_builtins() {
+inline std::unordered_map<std::string_view, Value>& tuple_builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       {"size"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& self = callEnv->get("this").get<TupleValue>();
@@ -3832,9 +3832,9 @@ inline std::map<std::string_view, Value>& tuple_builtins() {
 // return a new iterator wrapping the receiver; the terminal methods
 // (collect/for_each/reduce/...) consume the iterator and return a
 // concrete value.
-inline std::map<std::string_view, Value>& iterator_builtins() {
+inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
   using namespace std::literals;
-  static std::map<std::string_view, Value> props_ = {
+  static std::unordered_map<std::string_view, Value> props_ = {
       // --- Non-terminal: return a new lazy Iterator ----------------
 
       {"map"sv,

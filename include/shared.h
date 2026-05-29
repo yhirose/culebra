@@ -17,6 +17,23 @@
 
 namespace culebra {
 
+// Transparent hash/eq for std::string-keyed unordered_map that allows
+// std::string_view lookups without constructing a temporary std::string
+// on every find (C++20 heterogeneous lookup needs is_transparent on
+// both the hash and the equality functor).
+struct sv_hash {
+  using is_transparent = void;
+  size_t operator()(std::string_view sv) const noexcept {
+    return std::hash<std::string_view>{}(sv);
+  }
+};
+struct sv_equal {
+  using is_transparent = void;
+  bool operator()(std::string_view a, std::string_view b) const noexcept {
+    return a == b;
+  }
+};
+
 // --- Structured runtime error ---
 
 // Both backends throw this; try/catch machinery translates it into a
