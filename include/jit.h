@@ -3453,6 +3453,22 @@ culebra_runtime_register_trait_method(const char* trait_name,
   culebra::trait_conformance_cache().clear();
 }
 
+// Flatten a supertrait's methods into `trait_name` at runtime (trait
+// inheritance). Emitted by compile_trait_decl after the trait's own
+// methods so the AOT-binary registry mirrors the interp register_trait
+// flatten. The supertrait is declared earlier, so it is already
+// registered when this runs.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_register_trait_super(const char* trait_name,
+                                      const char* super_name) {
+  std::unique_lock lock(culebra::trait_mutex());
+  auto& reg = culebra::trait_registry();
+  auto& def = reg[trait_name];
+  if (def.name.empty()) def.name = trait_name;
+  culebra::merge_supertrait_into(def, super_name);
+  culebra::trait_conformance_cache().clear();
+}
+
 // Side table mapping a dispatcher closure pointer to its multimethod
 // name, so the shared static thunk can recover which name to dispatch
 // for. Dispatchers live for the lifetime of the program (held by the
@@ -6213,6 +6229,8 @@ inline constexpr auto register_trait_default
     = "culebra_runtime_register_trait_default";
 inline constexpr auto register_trait_method
     = "culebra_runtime_register_trait_method";
+inline constexpr auto register_trait_super
+    = "culebra_runtime_register_trait_super";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
@@ -11668,11 +11686,13 @@ struct JIT {
     using namespace peg::udl;
     size_t k = 0;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
-    auto head = culebra::parse_generic_head(ast.nodes[k]->token);
-    std::string trait_name(head.outer);
+    // TRAIT_HEAD: name (+ Generic params) and optional supertraits.
+    auto th = culebra::parse_trait_head(ast.nodes[k]->token);
+    std::string trait_name(culebra::parse_generic_head(th.name).outer);
 
     culebra::TraitDef def;
     def.name = trait_name;
+    for (auto super : th.supertraits) def.supertraits.emplace_back(super);
     auto& defaults = _jit_trait_default_impls()[trait_name];
     defaults.clear();
 
@@ -11733,6 +11753,24 @@ struct JIT {
                 rt::register_trait_default,
                 builder_.getVoidTy(), ptrTy, ptrTy, ptrTy),
             {trait_g, method_g, closure_ptr});
+      }
+    }
+    // Emit supertrait-merge calls so the AOT-binary runtime flattens
+    // inherited methods (mirrors interp's register_trait). The JIT-phase
+    // register_trait(def) below flattens in-process for the same effect.
+    {
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      for (auto super : th.supertraits) {
+        auto trait_g = builder_.CreateGlobalString(
+            trait_name, ".trait." + trait_name + ".sup.tn");
+        auto super_g = builder_.CreateGlobalString(
+            std::string(super),
+            ".trait." + trait_name + ".sup." + std::string(super));
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::register_trait_super,
+                builder_.getVoidTy(), ptrTy, ptrTy),
+            {trait_g, super_g});
       }
     }
     culebra::register_trait(std::move(def));

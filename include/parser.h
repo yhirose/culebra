@@ -37,7 +37,7 @@ const auto grammar_ = R"(
   # conformance: any class whose own methods cover the required ones
   # (arity match) is treated as conforming automatically — no `impl`
   # block needed in this MVP.
-  TRAIT_DECL               <-  (DECORATOR (_ DECORATOR)* _)? trait _ CLASS_HEAD _ '{' _ (TRAIT_METHOD (_ TRAIT_METHOD)*)? _ '}'
+  TRAIT_DECL               <-  (DECORATOR (_ DECORATOR)* _)? trait _ TRAIT_HEAD _ '{' _ (TRAIT_METHOD (_ TRAIT_METHOD)*)? _ '}'
   TRAIT_METHOD             <-  IDENTIFIER _ PARAMETERS (_ RETURN_TYPE)? (_ TRAIT_BODY)?
   # TRAIT_BODY wraps BLOCK so AstOptimizer keeps a distinct node
   # indicating "this method has a default impl" — BLOCK itself is
@@ -53,6 +53,11 @@ const auto grammar_ = R"(
   # params lower to Any; bounded ones lower to the bound trait(s) and
   # are enforced at dispatch / type_check time.
   CLASS_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? )* _sp_ '>' )? >
+  # Trait declaration head: CLASS_HEAD plus an optional supertrait list
+  # (`trait Ord: Eq`, `trait Cmp<T>: Eq, Show`). Captured as one token;
+  # parse_trait_head splits the name (with generics) from the comma-
+  # separated supertraits, whose methods are flattened into the trait.
+  TRAIT_HEAD               <-  < IdentInitChar IdentChar* ( _sp_ '<' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ '+' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? )* _sp_ '>' )? ( _sp_ ':' _sp_ [A-Z] [a-zA-Z_0-9]* ( _sp_ ',' _sp_ [A-Z] [a-zA-Z_0-9]* )* )? >
 
   # `@expr` before a `fn` / `class` declaration. The expression is any
   # CALL chain (`@deco`, `@deco(arg)`, `@module.deco(arg)`); it must

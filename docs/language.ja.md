@@ -1580,8 +1580,6 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 * expression 位置の type args (`Box<Long>.new(42)`) — parser は
   現状 `<...>` を型注釈 context のみで使用。
 * opt-in 要素 runtime check。
-* trait 継承 (`trait Ord: Eq`) — Phase 4+。 単一・複合 Bound
-  (`<T: Comparable>`, `<T: A + B>`) は実装済。
 * class body 内 class 宣言 (現状は SyntaxError、 上記「クラス宣言の
   位置」参照)。
 
@@ -1756,14 +1754,28 @@ trait param のスコアは Object と具象の中間。 同じ関数名で `x: 
 と `x: Stringer` の overload があれば、 arg が Pri なら具象が勝つ。
 trait path のみ match する場合は trait 版が選ばれる。
 
+#### trait 継承
+
+trait は `:` の後に supertrait を宣言できる: `trait Ord: Eq`、
+`trait Both: Eq, Show`。 supertrait の method は subtrait に flatten
+される — `Ord` に conform するには `Eq` と `Ord` の**両方**の required
+method が要る。 推移的に効き (`Done: Ord` は `Eq` も引き込む)、
+supertrait の **default** method も subtrait で使える。
+
+    trait Eq  { eq(other) -> Bool }
+    trait Ord: Eq { cmp(other) -> Long }   # Ord conform には eq + cmp
+
+    fn sorted<T: Ord>(xs: Array<T>) { ... }
+
+supertrait は継承する trait より前に宣言する必要がある (宣言順で
+flatten を解決)。 primitive 型の conformance は名前ベース (hard-coded
+table) なので、 trait 継承は **構造的 (class) conformance のみ**に
+効く — primitive が supertrait 経由で user trait を満たすことはない。
+
 #### 制限 (Phase 4 MVP)
 
 * `impl Foo for Bar` block は未対応 — 構造的のみ。 (Phase 4+ で
   明示宣言を再検討)
-* trait 継承 (`trait Ord: Eq`) は未対応。
-* trait 継承 (`trait Ord: Eq`) — Phase 4+。
-  単一・複合 Bound (`<T: Comparable>`, `<T: A + B>`) は実装済
-  (上記「Generic Bound」)。
 * **演算子オーバーロードは trait default を bypass する**: `<` /
   `==` 等は class の `__lt__` / `__eq__` を直接呼ぶ。 Comparable の
   default `lt` / `le` 等は `x.lt(y)` の form のみ動作。 `cmp` を持つ

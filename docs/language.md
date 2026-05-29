@@ -1711,8 +1711,6 @@ A **composite bound** `<T: A + B>` requires the argument to conform to
 * Expression-position type args (`Box<Long>.new(42)`) — the parser
   currently reserves `<...>` for type-annotation contexts only.
 * Opt-in element runtime check.
-* Trait inheritance (`trait Ord: Eq`). Single and composite bounds
-  (`<T: Comparable>`, `<T: A + B>`) ship today.
 * Class declarations inside another class's body (currently a
   SyntaxError, see "Where class declarations may appear" above).
 
@@ -1861,14 +1859,31 @@ dispatch: a method with `x: Pri` wins over a method with
 `x: Stringer` when the arg is a Pri instance; `x: Stringer` is
 chosen when only the trait path matches.
 
+#### Trait inheritance
+
+A trait may declare supertraits after a colon: `trait Ord: Eq`,
+`trait Both: Eq, Show`. The supertrait's methods are flattened into
+the subtrait, so a value conforming to `Ord` must supply **both**
+`Eq`'s and `Ord`'s required methods. This works transitively
+(`Done: Ord` pulls in `Eq` too) and a supertrait's *default* methods
+become available on the subtrait.
+
+    trait Eq  { eq(other) -> Bool }
+    trait Ord: Eq { cmp(other) -> Long }   # conforming to Ord needs eq + cmp
+
+    fn sorted<T: Ord>(xs: Array<T>) { ... }
+
+Supertraits must be declared before the trait that inherits them
+(declaration order resolves the flatten). Because conformance for
+built-in primitive types is name-based (a hard-coded table), trait
+inheritance affects **structural (class) conformance** only — a
+primitive does not retroactively satisfy a user trait via its
+supertrait.
+
 #### Limitations (Phase 4 MVP)
 
 * `impl Foo for Bar` block is unsupported — conformance is purely
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
-* Trait inheritance (`trait Ord: Eq`) is not yet supported.
-* Trait inheritance (`trait Ord: Eq`) — Phase 4+. Single and
-  composite bounds (`<T: Comparable>`, `<T: A + B>`) are enforced
-  today.
 * **Operator overloads bypass trait defaults**: `<` / `==` etc.
   invoke `__lt__` / `__eq__` directly on the class; Comparable's
   default `lt` / `le` etc. only fire when called as `x.lt(y)`. A

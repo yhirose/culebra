@@ -384,6 +384,34 @@ inline TypeParam parse_type_param(std::string_view raw) {
           trim_ascii(trimmed.substr(pos + 1))};
 }
 
+// Split a TRAIT_HEAD token into the trait name (with any Generic
+// params still attached) and its supertrait list. `Ord: Eq` →
+// {"Ord", ["Eq"]}; `Cmp<T>: Eq, Show` → {"Cmp<T>", ["Eq", "Show"]};
+// `Foo` → {"Foo", {}}. The name/supertrait split is on the first `:`
+// at bracket depth 0 so a type-param bound (`Box<T: Bound>`) inside
+// `<...>` is not mistaken for the supertrait separator. Each view
+// aliases `token` — keep it alive (do not pass a temporary).
+struct TraitHead {
+  std::string_view name;                     // may include `<...>`
+  std::vector<std::string_view> supertraits;
+};
+inline TraitHead parse_trait_head(std::string_view token) {
+  auto trimmed = trim_ascii(token);
+  int depth = 0;
+  size_t colon = std::string_view::npos;
+  for (size_t i = 0; i < trimmed.size(); i++) {
+    char c = trimmed[i];
+    if (c == '<') depth++;
+    else if (c == '>') { if (depth > 0) depth--; }
+    else if (c == ':' && depth == 0) { colon = i; break; }
+  }
+  if (colon == std::string_view::npos) return {trimmed, {}};
+  TraitHead out;
+  out.name = trim_ascii(trimmed.substr(0, colon));
+  out.supertraits = split_generic_args(trimmed.substr(colon + 1));
+  return out;
+}
+
 // Lower every occurrence of a type-param name (`T`, `K`, ...) inside
 // `tn` to its runtime check target, including nested forms like
 // `Array<T>` and `T | Long`. An *unbounded* param (`T`) lowers to
@@ -658,6 +686,11 @@ struct TraitMethod {
 struct TraitDef {
   std::string name;
   std::vector<TraitMethod> methods;
+  // Supertrait names (`trait Ord: Eq` → {"Eq"}); their methods are
+  // flattened into `methods` at register_trait time so conformance and
+  // dispatch stay single-set look-ups. Empty on the JIT/AOT path, which
+  // flattens at runtime via culebra_runtime_register_trait_super.
+  std::vector<std::string> supertraits;
 };
 
 // Process-wide registry. Trait declarations register here; type_matches
@@ -687,8 +720,28 @@ trait_conformance_cache() {
   return cache;
 }
 
+// Merge a supertrait's methods into `def` (dedup by name, keeping
+// `def`'s own entries). The supertrait must already be registered —
+// declaration order guarantees this for `trait Ord: Eq`. Unknown
+// supers are silently skipped (best-effort). Caller holds trait_mutex().
+inline void merge_supertrait_into(TraitDef& def, const std::string& super) {
+  auto& reg = trait_registry();
+  auto it = reg.find(super);
+  if (it == reg.end()) return;
+  for (const auto& m : it->second.methods) {
+    bool present = false;
+    for (const auto& e : def.methods)
+      if (e.name == m.name) { present = true; break; }
+    if (!present) def.methods.push_back(m);
+  }
+}
+
 inline void register_trait(TraitDef def) {
   std::unique_lock lock(trait_mutex());
+  // Flatten supertrait methods (trait inheritance) so conformance is a
+  // single-set check. JIT/AOT carries empty supertraits and instead
+  // merges via culebra_runtime_register_trait_super after registration.
+  for (const auto& super : def.supertraits) merge_supertrait_into(def, super);
   trait_registry()[def.name] = std::move(def);
   trait_conformance_cache().clear();
 }

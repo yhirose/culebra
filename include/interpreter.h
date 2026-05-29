@@ -4970,12 +4970,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     size_t k = 0;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
-    // CLASS_HEAD may carry Generic params; outer is the trait name.
-    auto head = parse_generic_head(ast.nodes[k]->token);
-    auto trait_name = std::string(head.outer);
+    // TRAIT_HEAD: trait name (+ optional Generic params) and optional
+    // supertrait list (`trait Ord: Eq`). Supertrait methods are flattened
+    // into this trait by register_trait.
+    auto th = culebra::parse_trait_head(ast.nodes[k]->token);
+    auto trait_name = std::string(parse_generic_head(th.name).outer);
 
     TraitDef def;
     def.name = trait_name;
+    for (auto super : th.supertraits) def.supertraits.emplace_back(super);
 
     // Per-method default body storage (interp-side). Owned by the trait
     // — every conforming instance shares one FunctionValue per default.
