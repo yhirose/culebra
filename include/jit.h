@@ -12566,7 +12566,7 @@ struct JIT {
   llvm::Value* compile_trait_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t k = 0;
-    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    k = culebra::first_non_decorator_index(ast);
     // TRAIT_HEAD: name (+ Generic params) and optional supertraits.
     auto th = culebra::parse_trait_head(ast.nodes[k]->token);
     std::string trait_name(culebra::parse_generic_head(th.name).outer);
@@ -12668,7 +12668,7 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     size_t k = 0;
-    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    k = culebra::first_non_decorator_index(ast);
     std::string enum_name(
         culebra::parse_generic_head(ast.nodes[k]->token).outer);
     auto enum_g = get_or_create_global_str(enum_name, ".enum");

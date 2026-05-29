@@ -580,6 +580,20 @@ inline MethodView view_method(const peg::Ast& m) {
 
 // View of a VARIANT AST node — see grammar:
 //   VARIANT <- IDENTIFIER (_ '(' (VARIANT_FIELD ...)? ')')?
+// Index of the first non-DECORATOR child. CLASS_DECL / MULTIFN_DECL /
+// ENUM_DECL / TRAIT_DECL carry leading `@deco` children before the real
+// body; this localizes that AST-layout knowledge. The "skip leading
+// decorators" loop was copy-pasted across interp/jit — a grammar tweak
+// to decorator placement would otherwise need updating each copy. Only
+// the pure index-advancing sites use this; sites that also recurse into
+// the decorator nodes keep their own loop.
+inline size_t first_non_decorator_index(const peg::Ast& node) {
+  using namespace peg::udl;
+  size_t i = 0;
+  while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
+  return i;
+}
+
 // `arity` is the positional payload count (0 = nullary). VARIANT is
 // kept un-collapsed by the AstOptimizer so nodes[0] is always the name.
 struct VariantView {

@@ -316,8 +316,7 @@ inline void reject_class_decl_in_class_body(
     return;
   }
   if (node.tag == "CLASS_DECL"_) {
-    size_t k = 0;
-    while (k < node.nodes.size() && node.nodes[k]->tag == "DECORATOR"_) k++;
+    size_t k = culebra::first_non_decorator_index(node);
     auto inner_name = node.nodes[k]->token;
     throw CulebraError(
         "SyntaxError",
@@ -5364,10 +5363,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // and become callable on conforming instances even without a class
   // definition. No new keyword in the value environment — traits live
   // in `culebra::trait_registry()` keyed by name.
-  Value eval_trait_decl(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+  Value eval_trait_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
     size_t k = 0;
-    while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) k++;
+    k = culebra::first_non_decorator_index(ast);
     // TRAIT_HEAD: trait name (+ optional Generic params) and optional
     // supertrait list (`trait Ord: Eq`). Supertrait methods are flattened
     // into this trait by register_trait.
