@@ -2191,6 +2191,130 @@ inline bool _invoke_user_eq(const Value& a, const Value& b) {
   return fn.eval(env).to_bool();
 }
 
+// --- @derive support (project_type_system.md §D) ----------------------
+//
+// `@derive(Eq, Hash, Show, Comparable)` is a compiler-recognized class
+// directive (not a user function). The generated methods are reflective:
+// they walk the instance's own data fields at call time, so a single
+// implementation serves every class. Eq -> eq(other), Hash -> hash(),
+// Show -> to_s(), Comparable -> cmp(other). The trait defaults (neq,
+// lt/le/gt/ge) fall out of structural conformance once eq / cmp exist.
+
+// Visit each own data field (name, value) of a class instance in
+// insertion order, skipping the `class`/`__enum` tags and any method
+// slots. Value is passed by const-ref — no per-field copy (derived
+// methods run at script-call time, so this is a hot path).
+template <class F>
+inline void _for_each_derived_field(const Value& v, F&& fn) {
+  if (v.type != Value::Object) return;
+  for (const auto& [name, sym] : *v.to_object().properties) {
+    if (name == "class" || name == "__enum") continue;
+    if (sym.val.type == Value::Function) continue;
+    fn(name, sym.val);
+  }
+}
+
+// Inject the methods requested by `@derive(...)` into `method_template`,
+// honoring "user definitions win" (a derived method is skipped when the
+// class already declares one of that name). `derive_method_for` validates
+// the trait name (shared with the JIT).
+inline void inject_derived_methods(
+    std::vector<std::pair<std::string_view, Value>>& method_template,
+    std::string_view class_name,
+    const std::vector<std::string_view>& derive_traits) {
+  auto has_method = [&](std::string_view n) {
+    for (auto& [name, _] : method_template)
+      if (name == n) return true;
+    return false;
+  };
+  auto add = [&](std::string_view name, std::vector<FunctionValue::Parameter> ps,
+                 std::function<Value(std::shared_ptr<Environment>)> body) {
+    if (has_method(name)) return;
+    Value fn(FunctionValue(ps, std::move(body)));
+    fn.get<FunctionValue>().name = std::string(name);
+    method_template.push_back({name, std::move(fn)});
+  };
+  for (auto trait : derive_traits) {
+    auto dm = culebra::derive_method_for(trait);
+    switch (dm.kind) {
+      case 0:  // Eq -> eq(other)
+        add(dm.name, {{"other", false}},
+            [](std::shared_ptr<Environment> env) -> Value {
+              const auto& self_v = env->get("this");
+              const auto& other = env->get("other");
+              if (other.type != Value::Object) return Value(false);
+              if (class_tag(self_v) != class_tag(other)) return Value(false);
+              const auto& ob = other.to_object();
+              bool eq = true;
+              _for_each_derived_field(
+                  self_v, [&](std::string_view name, const Value& av) {
+                    if (!eq) return;
+                    auto it = ob.properties->find(name);
+                    if (it == ob.properties->end() ||
+                        !ValueEq{}(av, it->second.val))
+                      eq = false;
+                  });
+              return Value(eq);
+            });
+        break;
+      case 1:  // Hash -> hash()
+        add(dm.name, {},
+            [class_name](std::shared_ptr<Environment> env) -> Value {
+              const auto& self_v = env->get("this");
+              size_t h = std::hash<std::string_view>{}(class_name);
+              _for_each_derived_field(
+                  self_v, [&](std::string_view, const Value& av) {
+                    h = h * 31 + ValueHash{}(av);
+                  });
+              return Value(static_cast<long>(h));
+            });
+        break;
+      case 2:  // Show -> to_s()
+        add(dm.name, {},
+            [class_name](std::shared_ptr<Environment> env) -> Value {
+              const auto& self_v = env->get("this");
+              std::string s(class_name);
+              s += "(";
+              bool first = true;
+              _for_each_derived_field(
+                  self_v, [&](std::string_view, const Value& av) {
+                    if (!first) s += ", ";
+                    first = false;
+                    s += av.str();
+                  });
+              s += ")";
+              return Value(std::move(s));
+            });
+        break;
+      case 3:  // Comparable -> cmp(other)
+        add(dm.name, {{"other", false}},
+            [](std::shared_ptr<Environment> env) -> Value {
+              const auto& self_v = env->get("this");
+              const auto& other = env->get("other");
+              if (other.type != Value::Object) return Value(0L);
+              const auto& ob = other.to_object();
+              long result = 0;
+              bool done = false;
+              _for_each_derived_field(
+                  self_v, [&](std::string_view name, const Value& av) {
+                    if (done) return;
+                    auto it = ob.properties->find(name);
+                    if (it == ob.properties->end()) {
+                      done = true;
+                      return;
+                    }
+                    const Value& bv = it->second.val;
+                    if (av == bv) return;
+                    result = (av < bv) ? -1 : 1;
+                    done = true;
+                  });
+              return Value(result);
+            });
+        break;
+    }
+  }
+}
+
 // Display hook: if `v` is an Object carrying a `__str__` method, run
 // it and return its String result. Returns nullopt otherwise so the
 // caller falls back to the built-in formatter (`str_display`). The
@@ -4837,11 +4961,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
 
     // Optional leading DECORATOR children. Apply them to the final
-    // class Object before binding.
+    // class Object before binding. `@derive(...)` is special-cased: it
+    // names traits whose methods we inject below rather than a callable.
     size_t k = 0;
     std::vector<const peg::Ast*> decorators;
+    std::vector<std::string_view> derive_traits;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
-      decorators.push_back(ast.nodes[k].get());
+      auto traits = culebra::view_derive(*ast.nodes[k]);
+      if (!traits.empty()) {
+        derive_traits.insert(derive_traits.end(), traits.begin(), traits.end());
+      } else {
+        decorators.push_back(ast.nodes[k].get());
+      }
       k++;
     }
 
@@ -4897,6 +5028,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       } else {
         method_template.push_back({mv.name, std::move(fn_val)});
       }
+    }
+
+    // Inject @derive methods (after user methods so user definitions
+    // win) before the instance template is frozen into build_instance.
+    if (!derive_traits.empty()) {
+      inject_derived_methods(method_template, class_name, derive_traits);
     }
 
     auto build_instance = [class_name, method_template]() {

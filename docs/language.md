@@ -1952,6 +1952,54 @@ inheritance affects **structural (class) conformance** only — a
 primitive does not retroactively satisfy a user trait via its
 supertrait.
 
+#### Deriving methods (`@derive`)
+
+The `@derive(...)` class decorator generates standard conformance
+methods automatically, so a data class doesn't have to spell out
+boilerplate `eq` / `hash` / `to_s` / `cmp`. Four names are derivable,
+each mapping to one method:
+
+| Derive | Generated method | Behavior |
+|---|---|---|
+| `Eq` | `eq(other)` | true when `other` is the same class and every data field is equal |
+| `Hash` | `hash()` | combines the class name and each data field's hash |
+| `Show` | `to_s()` | `"ClassName(f1, f2, ...)"` with each field's value repr |
+| `Comparable` | `cmp(other)` | lexicographic over data fields, in declaration order |
+
+    @derive(Eq, Hash, Show, Comparable)
+    class Point {
+      new(x, y) { this.x = x; this.y = y }
+    }
+
+    let a = Point.new(1, 2)
+    let b = Point.new(1, 2)
+    a.eq(b)            # → true
+    a.hash() == b.hash()   # → true
+    a.to_s()           # → "Point(1, 2)"
+    a.cmp(Point.new(1, 3)) # → -1
+
+Because `@derive` only supplies the trait's *required* method, the
+trait defaults follow automatically: deriving `Eq` gives you `neq`,
+and deriving `Comparable` gives you the full `lt` / `le` / `gt` / `ge`
+suite. Deriving `Eq` + `Hash` makes the class usable as an `Object` /
+`Set` key.
+
+The generated methods are **reflective** — they walk the instance's
+own data fields at call time (skipping methods and the internal class
+tag), so they stay correct as fields change. Details:
+
+* **User definitions win.** A derived method whose name the class
+  already declares is skipped, so you can derive most and hand-write
+  one (e.g. `@derive(Eq, Hash)` plus a custom `to_s`).
+* **`@derive` is compiler-recognized**, not a function — `Eq` / `Hash`
+  / `Show` / `Comparable` are the only accepted names (anything else is
+  a SyntaxError). It composes with regular decorators on the same class.
+* **Nominal:** derived `eq` requires the same class tag, so two classes
+  with identical fields never compare equal.
+* **`cmp` ordering** covers numeric and string fields (the MVP field
+  types); like the built-in comparison it does not impose an order on
+  arbitrary object-typed fields.
+
 #### Limitations (Phase 4 MVP)
 
 * `impl Foo for Bar` block is unsupported — conformance is purely

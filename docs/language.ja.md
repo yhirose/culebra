@@ -1842,6 +1842,51 @@ flatten を解決)。 primitive 型の conformance は名前ベース (hard-code
 table) なので、 trait 継承は **構造的 (class) conformance のみ**に
 効く — primitive が supertrait 経由で user trait を満たすことはない。
 
+#### method の自動導出 (`@derive`)
+
+`@derive(...)` class デコレータは標準的な conformance method を自動
+生成する。 data class が `eq` / `hash` / `to_s` / `cmp` の boilerplate
+を手書きしなくて済む。 導出可能なのは 4 つで、 各々 1 method に対応:
+
+| derive | 生成 method | 挙動 |
+|---|---|---|
+| `Eq` | `eq(other)` | `other` が同じ class で全 data field が等しいとき true |
+| `Hash` | `hash()` | class 名と各 data field の hash を合成 |
+| `Show` | `to_s()` | `"ClassName(f1, f2, ...)"` (各 field の値 repr) |
+| `Comparable` | `cmp(other)` | data field を宣言順に辞書式比較 |
+
+    @derive(Eq, Hash, Show, Comparable)
+    class Point {
+      new(x, y) { this.x = x; this.y = y }
+    }
+
+    let a = Point.new(1, 2)
+    let b = Point.new(1, 2)
+    a.eq(b)            # → true
+    a.hash() == b.hash()   # → true
+    a.to_s()           # → "Point(1, 2)"
+    a.cmp(Point.new(1, 3)) # → -1
+
+`@derive` は trait の **required** method だけを供給するので、 trait
+default も自動で付く: `Eq` 導出で `neq`、 `Comparable` 導出で
+`lt` / `le` / `gt` / `ge` が揃う。 `Eq` + `Hash` を導出すると
+`Object` / `Set` の key として使えるようになる。
+
+生成 method は **reflective** — 呼び出し時に instance 自身の data
+field を走査する (method と内部 class tag は除外) ので、 field 変更に
+追従する。 詳細:
+
+* **user 定義が優先**。 class が既に宣言している名前の派生 method は
+  skip されるので、 大半を derive しつつ 1 つだけ手書きできる
+  (`@derive(Eq, Hash)` + 独自 `to_s` など)。
+* **`@derive` は compiler 認識**で関数ではない — `Eq` / `Hash` /
+  `Show` / `Comparable` のみ受理 (それ以外は SyntaxError)。 同じ class
+  上の通常デコレータとも併用できる。
+* **Nominal**: 派生 `eq` は同じ class tag を要求するので、 同一 field
+  を持つ別 class 同士は等しくならない。
+* **`cmp` の順序**は数値・文字列 field を対象 (MVP の field 型)。
+  組み込み比較同様、 任意の object 型 field には順序を課さない。
+
 #### 制限 (Phase 4 MVP)
 
 * `impl Foo for Bar` block は未対応 — 構造的のみ。 (Phase 4+ で

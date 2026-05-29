@@ -549,6 +549,55 @@ inline void require_static_field(const MethodView& mv,
       static_cast<long>(mv.name_col));
 }
 
+// View of a `@derive(...)` decorator. The grammar is
+//   DECORATOR <- '@' _ CALL
+// and `@derive(Eq, Hash, Show, Comparable)` parses (post-AstOptimizer,
+// DECORATOR kept un-collapsed) to:
+//   DECORATOR
+//     CALL
+//       IDENTIFIER "derive"      (callee — PRIMARY collapsed)
+//       ARG_LIST [ IDENTIFIER "Eq", IDENTIFIER "Hash", ... ]
+// Returns the requested trait identifiers when the decorator is a bare
+// `derive(...)` call, or an empty vector otherwise (a regular decorator
+// the caller applies as a function). The eval/compile side validates the
+// names against the supported set. Used by both interp (`eval_class_decl`)
+// and JIT (`compile_class_decl`) so the directive is recognized
+// identically — see project_type_system.md §D.
+inline std::vector<std::string_view> view_derive(const peg::Ast& decorator) {
+  std::vector<std::string_view> traits;
+  if (decorator.nodes.empty()) return traits;
+  const auto& call = *decorator.nodes[0];
+  // A derive directive is `derive(...)`: a 2-child CALL whose callee is
+  // the bare identifier `derive` and whose arg list follows.
+  if (call.nodes.size() < 2) return traits;
+  if (call.nodes[0]->token != "derive") return traits;
+  for (const auto& arg : call.nodes[1]->nodes) {
+    traits.push_back(arg->token);
+  }
+  return traits;
+}
+
+// Resolve a `@derive` trait name to the method it generates and the
+// runtime selector the JIT uses (`make_derived_method`). Throws the
+// canonical SyntaxError on an unknown name so interp / JIT diagnostics
+// stay identical — same rationale as require_static_field. Shared by
+// both backends; see project_type_system.md §D.
+struct DerivedMethod {
+  std::string_view name;  // generated method name (static-lifetime literal)
+  int kind;               // 0=eq, 1=hash, 2=show, 3=cmp
+};
+inline DerivedMethod derive_method_for(std::string_view trait) {
+  if (trait == "Eq") return {"eq", 0};
+  if (trait == "Hash") return {"hash", 1};
+  if (trait == "Show") return {"to_s", 2};
+  if (trait == "Comparable") return {"cmp", 3};
+  throw CulebraError(
+      "SyntaxError",
+      std::format("@derive: unknown trait `{}` (expected Eq, Hash, "
+                  "Show, or Comparable)",
+                  trait));
+}
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;

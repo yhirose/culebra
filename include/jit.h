@@ -3405,6 +3405,177 @@ culebra_runtime_make_variant_ctor(const char* variant_name,
   return cls;
 }
 
+// --- @derive reflective methods (project_type_system.md §D) ----------
+//
+// `@derive(Eq, Hash, Show, Comparable)` injects methods that walk an
+// instance's own data fields at call time. The JIT mirrors the variant
+// ctor pattern: each derived method is a captureless closure over a
+// shared thunk, so no per-class codegen is needed. The thunks recover
+// `this` from the JitFn ABI and forward to the reflective helpers below
+// — no side table, since the helpers read everything off the instance.
+// AOT inherits this for free: the closures are built by runtime calls
+// emitted in the class-decl IR, and the thunks/helpers live in the rt
+// library.
+
+// Class-name tag stored on every instance ("class" -> String). Empty if
+// absent (defensive; class-sugar instances always carry it).
+inline std::string_view _jit_derived_class_tag(JitObject* obj) {
+  auto idx = obj->find_slot("class");
+  if (idx == static_cast<size_t>(-1)) return {};
+  const auto& v = obj->slots[idx].value;
+  if (v.tag != TAG_STRING) return {};
+  return _culebra_str_view(v.tag, v.data);
+}
+
+// Three-way compare for `cmp`: numeric (Long/Float/Bool collapse) and
+// string ordering, falling back to data identity. Mirrors the
+// interpreter's `Value::operator<` reach for the field types @derive
+// supports in the MVP.
+inline int _jit_derived_cmp3(const JitValue& a, const JitValue& b) {
+  if (JitValueEq{}(a, b)) return 0;
+  auto as_double = [](const JitValue& v, bool& ok) -> double {
+    ok = true;
+    if (v.tag == TAG_LONG) return static_cast<double>(v.data);
+    if (v.tag == TAG_BOOL) return v.data ? 1.0 : 0.0;
+    if (v.tag == TAG_FLOAT) {
+      double d;
+      std::memcpy(&d, &v.data, sizeof d);
+      return d;
+    }
+    ok = false;
+    return 0;
+  };
+  bool oa, ob;
+  double da = as_double(a, oa), db = as_double(b, ob);
+  if (oa && ob) return da < db ? -1 : 1;
+  if ((a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW) &&
+      (b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW)) {
+    return _culebra_str_view(a.tag, a.data) < _culebra_str_view(b.tag, b.data)
+               ? -1
+               : 1;
+  }
+  return a.data < b.data ? -1 : 1;
+}
+
+// eq(other): same class tag + every data field equal (JitValueEq, so
+// nested user/derived eq composes). A non-Object or different class is
+// unequal.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
+    JitObject* lhs, JitValue other) {
+  if (other.tag != TAG_OBJECT) return {TAG_BOOL, 0};
+  auto* rhs = reinterpret_cast<JitObject*>(other.data);
+  if (_jit_derived_class_tag(lhs) != _jit_derived_class_tag(rhs))
+    return {TAG_BOOL, 0};
+  bool eq = true;
+  lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
+    if (!eq || name == "class" || name == "__enum" || e.value.tag == TAG_FUNC)
+      return;
+    auto idx = rhs->find_slot(name);
+    if (idx == static_cast<size_t>(-1)) {
+      eq = false;
+      return;
+    }
+    if (!JitValueEq{}(e.value, rhs->slots[idx].value)) eq = false;
+  });
+  return {TAG_BOOL, eq ? 1 : 0};
+}
+
+// hash(): combine the class-name hash with each data field's hash
+// (JitValueHash composes nested user/derived hashes).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
+    JitObject* obj) {
+  size_t h = std::hash<std::string_view>{}(_jit_derived_class_tag(obj));
+  obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
+    if (name == "class" || name == "__enum" || e.value.tag == TAG_FUNC) return;
+    h = h * 31 + JitValueHash{}(e.value);
+  });
+  return static_cast<int64_t>(h);
+}
+
+// to_s(): "ClassName(f1, f2, ...)" with each field's value repr (strings
+// quoted, matching the interpreter's `Value::str()`).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_derived_show(
+    JitObject* obj) {
+  std::string s(_jit_derived_class_tag(obj));
+  s += "(";
+  bool first = true;
+  obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
+    if (name == "class" || name == "__enum" || e.value.tag == TAG_FUNC) return;
+    if (!first) s += ", ";
+    first = false;
+    s += _culebra_value_to_str_impl(e.value.tag, e.value.data);
+  });
+  s += ")";
+  return _culebra_heap_str(s);
+}
+
+// cmp(other): lexicographic over data fields in declaration order.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
+    JitObject* lhs, JitValue other) {
+  if (other.tag != TAG_OBJECT) return 0;
+  auto* rhs = reinterpret_cast<JitObject*>(other.data);
+  int64_t result = 0;
+  bool done = false;
+  lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
+    if (done || name == "class" || name == "__enum" || e.value.tag == TAG_FUNC)
+      return;
+    auto idx = rhs->find_slot(name);
+    if (idx == static_cast<size_t>(-1)) {
+      done = true;
+      return;
+    }
+    int c = _jit_derived_cmp3(e.value, rhs->slots[idx].value);
+    if (c != 0) {
+      result = c;
+      done = true;
+    }
+  });
+  return result;
+}
+
+// JitFn-ABI thunks installed as `fn_ptr` on each derived-method closure.
+inline JitValue _jit_derived_eq_thunk(JitClosure*, JitValue self, int64_t n,
+                                       JitValue* args) {
+  if (self.tag != TAG_OBJECT || n < 1) return {TAG_BOOL, 0};
+  return culebra_runtime_derived_eq(reinterpret_cast<JitObject*>(self.data),
+                                     args[0]);
+}
+inline JitValue _jit_derived_hash_thunk(JitClosure*, JitValue self, int64_t,
+                                         JitValue*) {
+  if (self.tag != TAG_OBJECT) return {TAG_LONG, 0};
+  return {TAG_LONG, culebra_runtime_derived_hash(
+                        reinterpret_cast<JitObject*>(self.data))};
+}
+inline JitValue _jit_derived_show_thunk(JitClosure*, JitValue self, int64_t,
+                                         JitValue*) {
+  const char* s = (self.tag == TAG_OBJECT)
+                      ? culebra_runtime_derived_show(
+                            reinterpret_cast<JitObject*>(self.data))
+                      : _culebra_heap_str("");
+  return {TAG_STRING, reinterpret_cast<int64_t>(s)};
+}
+inline JitValue _jit_derived_cmp_thunk(JitClosure*, JitValue self, int64_t n,
+                                        JitValue* args) {
+  if (self.tag != TAG_OBJECT || n < 1) return {TAG_LONG, 0};
+  return {TAG_LONG, culebra_runtime_derived_cmp(
+                        reinterpret_cast<JitObject*>(self.data), args[0])};
+}
+
+// Build a derived-method closure. `kind`: 0=eq, 1=hash, 2=show, 3=cmp.
+// Returns +1 (the class meta slot takes ownership).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
+culebra_runtime_make_derived_method(int64_t kind) {
+  void* thunk = nullptr;
+  size_t arity = 0;
+  switch (kind) {
+    case 0: thunk = reinterpret_cast<void*>(&_jit_derived_eq_thunk); arity = 1; break;
+    case 1: thunk = reinterpret_cast<void*>(&_jit_derived_hash_thunk); arity = 0; break;
+    case 2: thunk = reinterpret_cast<void*>(&_jit_derived_show_thunk); arity = 0; break;
+    case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
+  }
+  return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity);
+}
+
 // Parameter metadata attached to JIT-compiled user functions. The side
 // table below is keyed by `fn_ptr` (the underlying JitFn pointer) and
 // populated at JIT-module init time for each FUNCTION literal. It lets
@@ -6255,6 +6426,8 @@ inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
 inline constexpr auto build_variant       = "culebra_runtime_build_variant";
 inline constexpr auto make_variant_ctor   = "culebra_runtime_make_variant_ctor";
+inline constexpr auto make_derived_method
+    = "culebra_runtime_make_derived_method";
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
@@ -12132,6 +12305,23 @@ struct JIT {
       }
     }
 
+    // Resolve `@derive(...)` directives into (method name, kind) pairs.
+    // `derive_method_for` validates the trait name and yields the runtime
+    // selector (shared with the interpreter). User definitions win (a
+    // derived method whose name the class already declares is skipped).
+    // See project_type_system.md §D.
+    std::vector<std::pair<std::string, int64_t>> derive_methods;
+    for (size_t i = 0; i < dec_end; i++) {
+      for (auto trait : culebra::view_derive(*ast.nodes[i])) {
+        auto dm = culebra::derive_method_for(trait);
+        std::string mname(dm.name);
+        bool user_defined =
+            std::find(method_names.begin(), method_names.end(), mname) !=
+            method_names.end();
+        if (!user_defined) derive_methods.emplace_back(std::move(mname), dm.kind);
+      }
+    }
+
     // Pre-allocate a cell for `Name` so method closures — which will
     // almost always reference the class for `Name.new(...)` or match
     // tagging — can capture it before the namespace itself exists.
@@ -12159,9 +12349,21 @@ struct JIT {
 
     // Compile each method into a closure %Value (+1 owned).
     std::vector<llvm::Value*> method_vals;
-    method_vals.reserve(method_asts.size());
+    method_vals.reserve(method_asts.size() + derive_methods.size());
     for (auto* m : method_asts) {
       method_vals.push_back(compile_function(*m));
+    }
+    // Append @derive methods: captureless closures over shared runtime
+    // thunks (mirrors the variant-ctor pattern). They land in the class
+    // meta alongside user methods, so dispatch + Set/Object key lookup
+    // (JitValueEq/Hash via proto) find them transparently.
+    for (auto& [mname, kind] : derive_methods) {
+      auto closPtr = emit_call(
+          module_->getOrInsertFunction(rt::make_derived_method, ptrTy,
+                                       builder_.getInt64Ty()),
+          {builder_.getInt64(kind)}, "derive.closure");
+      method_vals.push_back(make_func(closPtr));
+      method_names.push_back(mname);
     }
     llvm::Value* body_val = nullptr;
     size_t new_arity = 0;
@@ -12290,6 +12492,9 @@ struct JIT {
     // in the same `classSlot` so method-capture references resolve
     // to the decorated value at call time.
     for (size_t i = dec_end; i > 0; --i) {
+      // `@derive(...)` was consumed into method injection above — it is
+      // not a callable decorator.
+      if (!culebra::view_derive(*ast.nodes[i - 1]).empty()) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
       auto decoCallee = compile(dec_expr);
       classVal = compile_function_call_raw(decoCallee, nullptr, {classVal});
