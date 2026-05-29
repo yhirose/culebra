@@ -765,6 +765,15 @@ elements with `default`, then overwrites the first positions with any
 literal values. Only the default form is available; omit `default` to
 get `nil` fill.
 
+**Spread.** A `...iterable` element splices another collection's
+elements into the literal:
+
+    [0, ...a, 4]             # → [0, <a's elements>, 4]
+    [...a, ...b]             # concatenate
+
+Spread sources are `Array`, `Tuple`, and `Set` (a non-iterable raises
+`TypeError`).
+
 ### Access and mutation
 
     arr[i]            # index access, negative indices count from end
@@ -799,6 +808,14 @@ The shorthand form `{x}` is equivalent to `{x: x}`: it reuses the
 identifier as both key and value, looking up `x` in the current scope.
 `mut` is allowed (`{mut n}`), which declares the property mutable while
 the value still comes from the binding `n`.
+
+**Spread / merge.** A `...obj` member copies another Object's entries
+in; later keys win, so it doubles as config override:
+
+    {...defaults, ...overrides}             # merge (overrides win)
+    {...base, port: 8080}                   # override one field
+
+Merged entries are mutable. Spreading a non-Object raises `TypeError`.
 
 ### Display conventions
 

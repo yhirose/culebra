@@ -1,0 +1,47 @@
+// Spread literals: `[...iterable]` splices into an array, `{...obj}`
+// merges into an object (later keys win). MVP array sources are
+// Array / Tuple / Set. (Arrays compare by identity, so results are
+// checked via their display form.)
+
+// --- Array spread ---
+let a = [1, 2, 3]
+assert_eq("{[...a]}", "[1, 2, 3]")
+assert_eq("{[0, ...a, 4]}", "[0, 1, 2, 3, 4]")
+assert_eq("{[...a, ...a]}", "[1, 2, 3, 1, 2, 3]")
+assert_eq("{[...[], 9]}", "[9]")
+
+// Tuple source.
+assert_eq("{[...(1, 2), 3]}", "[1, 2, 3]")
+
+// Set source.
+let s = {10, 20}
+assert_eq([...s].size(), 2)
+
+// Non-iterable spread errors.
+let e = try { let _ = [...5]; nil } catch er { er.kind }
+assert_eq(e, "TypeError")
+
+// --- Object spread / merge ---
+let o = {x: 1, y: 2}
+let o2 = {...o}
+assert_eq(o2.x, 1)
+assert_eq(o2.y, 2)
+
+// Later keys override earlier (config-override idiom).
+let merged = {...o, y: 99, z: 3}
+assert_eq(merged.x, 1)
+assert_eq(merged.y, 99)
+assert_eq(merged.z, 3)
+
+// Merge two objects.
+let defaults = {host: "localhost", port: 80}
+let user = {port: 8080}
+let cfg = {...defaults, ...user}
+assert_eq(cfg.host, "localhost")
+assert_eq(cfg.port, 8080)
+
+// Non-object spread into object errors.
+let e2 = try { let _ = {...5}; nil } catch er { er.kind }
+assert_eq(e2, "TypeError")
+
+IO.puts("test_spread OK")

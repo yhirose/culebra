@@ -2954,6 +2954,48 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
+// `[...x]` array spread: append an iterable's elements to `arr` (each
+// retained). MVP sources: Array / Tuple / Set. The spread value's own
+// reference is dropped by the caller.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
+    JitArray* arr, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
+    auto* src = reinterpret_cast<JitArray*>(data);
+    for (size_t i = 0; i < src->size; i++) {
+      culebra_runtime_value_retain(src->items[i].tag, src->items[i].data);
+      culebra_runtime_array_push(arr, src->items[i].tag, src->items[i].data);
+    }
+  } else if (tag == TAG_SET) {
+    auto* s = reinterpret_cast<JitSet*>(data);
+    for (auto& m : s->members) {
+      culebra_runtime_value_retain(m.tag, m.data);
+      culebra_runtime_array_push(arr, m.tag, m.data);
+    }
+  } else {
+    throw culebra::CulebraError("TypeError",
+        "cannot spread non-iterable into an array (Array/Tuple/Set only)",
+        line, col);
+  }
+}
+
+// `{...x}` object spread: merge another Object's string-keyed entries
+// into `dst` (later keys win). Merged keys are made mutable so explicit
+// properties after the spread can override them (matches interp). The
+// spread value's own reference is dropped by the caller.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
+    JitObject* dst, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        "cannot spread non-object into an object (Object only)", line, col);
+  }
+  auto* src = reinterpret_cast<JitObject*>(data);
+  src->for_each([&](std::string_view name, const JitObjectEntry& e) {
+    culebra_runtime_value_retain(e.value.tag, e.value.data);
+    culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
+                               e.value.tag, e.value.data, line, col);
+  });
+}
+
 // Hashable-key access into an Object. String keys unify with the
 // shape-based `obj.foo` path so `obj["x"] = v` and `obj.x = v` reach
 // the same slot; everything else (Long/Float/Bool/Nil/Tuple) lands in
@@ -6324,6 +6366,8 @@ inline constexpr auto array_resize        = "culebra_runtime_array_resize";
 inline constexpr auto array_reverse       = "culebra_runtime_array_reverse";
 inline constexpr auto array_set           = "culebra_runtime_array_set";
 inline constexpr auto array_set_or_push   = "culebra_runtime_array_set_or_push";
+inline constexpr auto array_extend        = "culebra_runtime_array_extend";
+inline constexpr auto object_merge        = "culebra_runtime_object_merge";
 inline constexpr auto array_size          = "culebra_runtime_array_size";
 inline constexpr auto tensor_zeros        = "culebra_runtime_tensor_zeros";
 inline constexpr auto tensor_ones         = "culebra_runtime_tensor_ones";
@@ -9556,18 +9600,46 @@ struct JIT {
     }
 
     // Overwrite or push literal values (matches interpreter:
-    // literals go into positions 0..n-1, extending if needed)
+    // literals go into positions 0..n-1, extending if needed). With a
+    // `...spread` element the index alignment no longer holds, so switch
+    // to pure append (`array_push` / `array_extend`).
+    using namespace peg::udl;
     const auto& seqNodes = ast.nodes[0]->nodes;
+    bool has_spread = false;
+    for (auto& n : seqNodes)
+      if (n->tag == "SPREAD_ELEM"_) { has_spread = true; break; }
+
     for (auto i = 0u; i < seqNodes.size(); i++) {
+      if (has_spread && seqNodes[i]->tag == "SPREAD_ELEM"_) {
+        auto v = compile(*seqNodes[i]->nodes[0]);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_extend, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
+            {arrPtr, extract_tag(v), extract_data(v),
+             builder_.getInt64(seqNodes[i]->line),
+             builder_.getInt64(seqNodes[i]->column)});
+        emit_value_release(v);  // extend retained each element
+        continue;
+      }
       auto val = compile(*seqNodes[i]);
       auto tag = extract_tag(val);
       auto data = extract_data(val);
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::array_set_or_push, builder_.getVoidTy(),
-              ptrTy, builder_.getInt64Ty(), builder_.getInt8Ty(),
-              builder_.getInt64Ty()),
-          {arrPtr, builder_.getInt64(i), tag, data});
+      if (has_spread) {
+        emit_call(
+            module_->getOrInsertFunction(rt::array_push, builder_.getVoidTy(),
+                                         ptrTy, builder_.getInt8Ty(),
+                                         builder_.getInt64Ty()),
+            {arrPtr, tag, data});
+      } else {
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::array_set_or_push, builder_.getVoidTy(),
+                ptrTy, builder_.getInt64Ty(), builder_.getInt8Ty(),
+                builder_.getInt64Ty()),
+            {arrPtr, builder_.getInt64(i), tag, data});
+      }
     }
 
     return make_array(arrPtr);
@@ -9744,6 +9816,19 @@ struct JIT {
     // (Long/Float/Bool/Nil/Tuple literals) route through the value-
     // keyed sidecar via `object_set_any`.
     for (auto& prop : ast.nodes) {
+      if (prop->tag == "SPREAD_ELEM"_) {
+        // `{...obj}` — merge another Object's entries (later keys win).
+        auto v = compile(*prop->nodes[0]);
+        emit_call(
+            module_->getOrInsertFunction(
+                rt::object_merge, builder_.getVoidTy(), ptrTy,
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
+            {objPtr, extract_tag(v), extract_data(v),
+             builder_.getInt64(prop->line), builder_.getInt64(prop->column)});
+        emit_value_release(v);  // merge retained each copied entry
+        continue;
+      }
       auto pv = culebra::view_object_property(*prop);
 
       if (pv.key->tag != "IDENTIFIER"_) {

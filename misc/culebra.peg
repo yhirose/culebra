@@ -152,7 +152,12 @@
   SAFE_DOT                 <-  '?.' _ IDENTIFIER
   NONNULL                  <-  '!!'
 
-  SEQUENCE                 <-  (EXPRESSION (_ ',' _ EXPRESSION)*)?
+  # Array element list. SPREAD_ELEM (`...expr`) splices an iterable's
+  # elements into the literal (`[...a, x]`). SPREAD_ELEM is kept by the
+  # AstOptimizer so it doesn't collapse to its inner EXPRESSION.
+  SEQUENCE                 <-  (SEQ_ELEM (_ ',' _ SEQ_ELEM)*)?
+  SEQ_ELEM                 <-  SPREAD_ELEM / EXPRESSION
+  SPREAD_ELEM              <-  '...' _ EXPRESSION
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
   FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK         { no_ast_opt }
@@ -248,7 +253,10 @@
 
   IDENTIFIER               <-  < IdentInitChar IdentChar* >
 
-  OBJECT                   <-  '{' _ (OBJECT_PROPERTY (_ ',' _ OBJECT_PROPERTY)*)? _ '}'
+  # A member is either a `...spread` or a key/value property. SPREAD_ELEM
+  # is a direct OBJECT child (kept by the optimizer) so eval sees it
+  # uncollapsed — same shape as array SEQ_ELEM.
+  OBJECT                   <-  '{' _ ((SPREAD_ELEM / OBJECT_PROPERTY) (_ ',' _ (SPREAD_ELEM / OBJECT_PROPERTY))*)? _ '}'
   OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
                             /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 

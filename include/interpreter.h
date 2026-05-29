@@ -6470,6 +6470,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     ObjectValue obj;
     for (auto i = 0u; i < ast.nodes.size(); i++) {
+      // `{...obj}` spread: merge another Object's entries (later keys win).
+      if (ast.nodes[i]->tag == "SPREAD_ELEM"_) {
+        auto v = eval(*ast.nodes[i]->nodes[0], env);
+        if (v.type != Value::Object) {
+          throw CulebraError("TypeError",
+              std::format("cannot spread {} into an object (Object only)",
+                          v.type_name()),
+              static_cast<long>(ast.nodes[i]->line),
+              static_cast<long>(ast.nodes[i]->column));
+        }
+        const auto& src = v.to_object();
+        // Merged keys are mutable so a later explicit `key: v` can
+        // override them, and so the JIT path (object_set, which enforces
+        // immutability on overwrite) stays in lockstep.
+        for (const auto& [k, sym] : *src.properties) {
+          obj.initialize(k, sym.val, true);
+        }
+        continue;
+      }
       auto pv = culebra::view_object_property(*ast.nodes[i]);
       // Non-IDENTIFIER literal keys: store under Value-keyed sidecar.
       if (pv.key->tag != "IDENTIFIER"_) {
@@ -6488,7 +6507,26 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::move(obj));
   }
 
+  // Append an iterable's elements to `out` for `[...x]` array spread.
+  // MVP sources: Array / Tuple / Set (the common ones); other values
+  // raise a TypeError.
+  void spread_into_array(const Value& v, ArrayValue& out, long line,
+                         long col) {
+    if (v.type == Value::Array) {
+      for (auto& e : *v.to_array().values) out.values->push_back(e);
+    } else if (v.type == Value::Tuple) {
+      for (auto& e : *v.get<TupleValue>().elements) out.values->push_back(e);
+    } else if (v.type == Value::Set) {
+      for (auto& e : *v.get<SetValue>().members) out.values->push_back(e);
+    } else {
+      throw CulebraError("TypeError",
+          std::format("cannot spread {} into an array (Array/Tuple/Set only)",
+                      v.type_name()), line, col);
+    }
+  }
+
   Value eval_array(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    using namespace peg::udl;
     ArrayValue arr;
 
     if (ast.nodes.size() >= 2) {
@@ -6502,13 +6540,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
 
     const auto& nodes = ast.nodes[0]->nodes;
-    for (auto i = 0u; i < nodes.size(); i++) {
-      auto expr = nodes[i];
-      auto val = eval(*expr, env);
-      if (i < arr.values->size()) {
-        arr.values->at(i) = std::move(val);
+    size_t idx = 0;
+    for (auto& expr : nodes) {
+      if (expr->tag == "SPREAD_ELEM"_) {
+        auto v = eval(*expr->nodes[0], env);
+        spread_into_array(v, arr, static_cast<long>(expr->line),
+                          static_cast<long>(expr->column));
+        idx = arr.values->size();
       } else {
-        arr.values->push_back(std::move(val));
+        auto val = eval(*expr, env);
+        if (idx < arr.values->size()) {
+          arr.values->at(idx) = std::move(val);
+        } else {
+          arr.values->push_back(std::move(val));
+        }
+        idx++;
       }
     }
 
