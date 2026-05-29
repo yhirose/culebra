@@ -1,0 +1,37 @@
+// Array / Set / Function are unhashable: rejected as Object keys, as Set
+// members, and by the `hash(v)` builtin — with a `TypeError` carrying
+// `unhashable type: '<Type>'`. Regression: the JIT used to pointer-hash
+// these and silently accept them where the interpreter threw.
+
+// --- As an Object key ---
+mut bag = {}
+let e_arr = try { bag[[1, 2]] = 1; nil } catch e { e }
+assert_eq(e_arr.kind, "TypeError")
+assert_eq(e_arr.message, "unhashable type: 'Array'")
+
+let e_set = try { bag[{1, 2}] = 1; nil } catch e { e }
+assert_eq(e_set.kind, "TypeError")
+assert_eq(e_set.message, "unhashable type: 'Set'")
+
+let f = |x| x + 1
+let e_fn = try { bag[f] = 1; nil } catch e { e }
+assert_eq(e_fn.kind, "TypeError")
+assert_eq(e_fn.message, "unhashable type: 'Function'")
+
+// --- As a Set member ---
+mut s = {0, 9}
+let e_sadd = try { s.add([1, 2]); nil } catch e { e }
+assert_eq(e_sadd.kind, "TypeError")
+assert_eq(e_sadd.message, "unhashable type: 'Array'")
+
+// --- The `hash(v)` builtin ---
+let e_hash = try { hash([1, 2]); nil } catch e { e }
+assert_eq(e_hash.kind, "TypeError")
+assert_eq(e_hash.message, "unhashable type: 'Array'")
+
+// Tuples remain hashable (value-hashed), so they still work as keys.
+mut ok = {}
+mut ok[(1, 2)] = "a"
+assert_eq(ok[(1, 2)], "a")
+
+IO.puts("test_unhashable_key OK")

@@ -461,6 +461,7 @@ extern "C" {
 inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
 }
+extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 
 // Hash/eq for JitValue keys in JitObject's non-String key sidecar.
 // Numerically-equal Long/Float/Bool share a bucket (Python convention).
@@ -502,7 +503,11 @@ struct JitValueHash {
             "unhashable type: 'Object' (no hash() method)");
       }
     }
-    return std::hash<int64_t>{}(v.data) ^ static_cast<size_t>(v.tag);
+    // Array / Set / Function / Tensor have no value-hash; mirror interp's
+    // ValueHash, which throws rather than falling back to pointer identity.
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("unhashable type: '{}'", _culebra_tag_name(v.tag)));
   }
 };
 struct JitValueEq {
@@ -1471,10 +1476,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     }
     return r->data;
   }
-  // Primitives go through the same hash that JitObject's AnyKeyMap uses.
-  // Unhashable inputs (Array / Set / Function / Tensor) take the default
-  // fallback path (data-bit identity); the Hashable trait dispatch keeps
-  // them out of `hash(v)` callers in practice.
+  // Primitives go through the same hash that JitObject's AnyKeyMap uses;
+  // unhashable inputs (Array / Set / Function / Tensor) throw there.
   return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
 }
 
