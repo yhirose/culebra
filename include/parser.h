@@ -106,7 +106,15 @@ const auto grammar_ = R"(
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-  CONDITION                <-  RANGE (_ CONDITION_OPERATOR _ RANGE)*
+  CONDITION                <-  BIT_XOR (_ CONDITION_OPERATOR _ BIT_XOR)*
+  # Bitwise / shift levels (Python precedence: comparison < ^ < & < shift
+  # < additive). Bit-OR `|` is intentionally absent — a single `|` infix
+  # collides with the `|...|` lambda close delimiter under a stateless PEG
+  # (same reason Set ops use methods, see the note above); combine
+  # disjoint flag bits with `+` until a `|` disambiguation lands.
+  BIT_XOR                  <-  BIT_AND (_h_ BIT_XOR_OPERATOR _ BIT_AND)*
+  BIT_AND                  <-  SHIFT (_h_ BIT_AND_OPERATOR _ SHIFT)*
+  SHIFT                    <-  RANGE (_h_ SHIFT_OPERATOR _ RANGE)*
   RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
   # Container operations use method form: Set has `.union(b)` /
   # `.intersect(b)` / `.diff(b)` / `.sym_diff(b)`; Tuple has no
@@ -123,7 +131,8 @@ const auto grammar_ = R"(
   ADDITIVE                 <-  UNARY_PLUS (_h_ ADDITIVE_OPERATOR _ UNARY_PLUS)*
   UNARY_PLUS               <-  UNARY_PLUS_OPERATOR? UNARY_MINUS
   UNARY_MINUS              <-  UNARY_MINUS_OPERATOR? UNARY_NOT
-  UNARY_NOT                <-  UNARY_NOT_OPERATOR? MULTIPLICATIVE
+  UNARY_NOT                <-  UNARY_NOT_OPERATOR? UNARY_BNOT
+  UNARY_BNOT               <-  UNARY_BNOT_OPERATOR? MULTIPLICATIVE
   # `_h_` (no newline) before the operator matches ADDITIVE's rule
   # so `}\n@deco fn ...` is two statements (decorator on a fresh fn),
   # not a matmul continuation of the preceding expression.
@@ -237,6 +246,10 @@ const auto grammar_ = R"(
   UNARY_PLUS_OPERATOR      <-  '+'
   UNARY_MINUS_OPERATOR     <-  '-'
   UNARY_NOT_OPERATOR       <-  '!'
+  UNARY_BNOT_OPERATOR      <-  '~'
+  BIT_XOR_OPERATOR         <-  < '^' >
+  BIT_AND_OPERATOR         <-  < '&' >
+  SHIFT_OPERATOR           <-  < '<<' / '>>' >
   # '*' negative-lookahead avoids chewing the first '*' of '**' when a
   # left-over arithmetic chain hands back to MULTIPLICATIVE.
   # '@' is matrix-multiply (PEP 465) and shares multiplicative precedence.
@@ -263,7 +276,11 @@ const auto grammar_ = R"(
   # is intentionally *not* accepted so that `1.foo` stays unambiguous.
   FLOAT                    <-  < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)?
                               / [0-9]+ [eE] [-+]? [0-9]+ >
-  NUMBER                   <-  < [0-9]+ >
+  # Integer literal: hex `0x` / octal `0o` / binary `0b` radix prefixes,
+  # or plain decimal. Radix forms precede the decimal alt so `0x1f`
+  # isn't split into `0` + `x1f`. FLOAT is tried before NUMBER, so a
+  # leading-`0` decimal that is really a float (`0.5`) still wins.
+  NUMBER                   <-  < '0' [xX] [0-9a-fA-F]+ / '0' [oO] [0-7]+ / '0' [bB] [01]+ / [0-9]+ >
   STRING                   <-  ['] < (!['] .)* > [']
 
   INTERPOLATED_STRING      <-  '"' ('{' _ EXPRESSION _ '}' / INTERPOLATED_CONTENT)* '"'

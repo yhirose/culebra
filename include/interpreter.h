@@ -4197,6 +4197,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_unary_minus(ast, env);
       case "UNARY_NOT"_:
         return eval_unary_not(ast, env);
+      case "UNARY_BNOT"_:
+        return eval_unary_bnot(ast, env);
+      case "BIT_XOR"_:
+      case "BIT_AND"_:
+      case "SHIFT"_:
+        return eval_bitwise(ast, env);
       case "ADDITIVE"_:
       case "MULTIPLICATIVE"_:
         return eval_bin_expression(ast, env);
@@ -4430,7 +4436,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                val.get<bool>() == (pattern.token == "true");
       case "NUMBER"_:
         return val.type == Value::Long &&
-               val.get<long>() == pattern.token_to_number<long>();
+               val.get<long>() == parse_integer_literal(pattern.token);
       case "FLOAT"_:
         return val.type == Value::Float &&
                val.get<double>() == pattern.token_to_number<double>();
@@ -5942,6 +5948,42 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(!eval(*ast.nodes[1], env).to_bool());
   }
 
+  // `~x` — bitwise complement. Integer-only (Long); Float / others are a
+  // type error, matching the binary bit operators.
+  Value eval_unary_bnot(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto v = eval(*ast.nodes[1], env);
+    if (v.type != Value::Long) {
+      throw CulebraError("TypeError", std::format(
+          "type error: '~' requires Long, got {}", v.type_name()));
+    }
+    return Value(~v.get<long>());
+  }
+
+  // Bitwise / shift chains (`^`, `&`, `<<`, `>>`). Left-associative over
+  // [operand, OP, operand, ...]; operands must be Long. The operator is
+  // read from the captured OP token (handles the 2-char `<<` / `>>`).
+  Value eval_bitwise(const peg::Ast& ast, std::shared_ptr<Environment> env) {
+    auto require_long = [&](const Value& v) -> long {
+      if (v.type != Value::Long) {
+        throw CulebraError("TypeError", std::format(
+            "type error: bitwise operator requires Long, got {}",
+            v.type_name()));
+      }
+      return v.get<long>();
+    };
+    long acc = require_long(eval(*ast.nodes[0], env));
+    for (size_t i = 1; i < ast.nodes.size(); i += 2) {
+      auto op = ast.nodes[i]->token;
+      long rhs = require_long(eval(*ast.nodes[i + 1], env));
+      if (op == "^") acc ^= rhs;
+      else if (op == "&") acc &= rhs;
+      else if (op == "<<") acc <<= rhs;
+      else if (op == ">>") acc >>= rhs;
+      else throw std::logic_error("invalid bitwise operator");
+    }
+    return Value(acc);
+  }
+
   // Arithmetic with Long↔Float promotion. Both operands Long → Long
   // result (integer arithmetic, truncated division/modulo — matching
   // C semantics, unchanged from before Float was introduced). Either
@@ -6453,7 +6495,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   };
 
   Value eval_number(const peg::Ast& ast, std::shared_ptr<Environment> env) {
-    return Value(ast.token_to_number<long>());
+    return Value(parse_integer_literal(ast.token));
   };
 
   Value eval_float(const peg::Ast& ast, std::shared_ptr<Environment> env) {

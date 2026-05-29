@@ -102,8 +102,9 @@ contextual and only recognized after `:` or `->`.
 
 ### Literals
 
-* Integer: `NUMBER <- [0-9]+`. A `NUMBER` is a 64-bit signed integer
-  (`Long`). No hex or octal literals.
+* Integer: a `NUMBER` is a 64-bit signed integer (`Long`), written in
+  decimal or with a radix prefix — hex `0xFF`, octal `0o755`, binary
+  `0b1010` (prefix letter is case-insensitive; digits match the base).
 * Float: `FLOAT <- [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? / [0-9]+ [eE] [-+]? [0-9]+`.
   A literal with either a decimal point (followed by digits, not a
   bare trailing dot) or an `e`/`E` exponent is a `Float` (IEEE 754
@@ -125,6 +126,7 @@ contextual and only recognized after `:` or `->`.
     ==  !=  <=  <  >=  >        # comparison
     +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings
     @                           # matmul (user-defined via `__matmul__`)
+    &  ^  <<  >>  ~             # bitwise and / xor / shifts / complement (Long only; no `|` yet)
     !                           # logical not
     &&  ||                      # logical and/or (short-circuit)
     ??                          # nil coalesce (lower precedence than ||)
@@ -512,6 +514,29 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
 * `**` is right-associative and binds tighter than unary minus. Its
   RHS accepts a unary prefix, so both `2 ** 3 ** 4 == 2 ** 81` and
   `2 ** -1 == 0.5` parse as in Python.
+
+### Bitwise
+
+`&` (and), `^` (xor), `<<` / `>>` (left / arithmetic-right shift), and
+unary `~` (complement) operate on **two `Long` operands** (one for
+`~`); any non-`Long` operand raises `type error`. `>>` is an arithmetic
+(sign-preserving) shift, matching `Long`'s signedness. Shifts wrap like
+the rest of `Long` arithmetic (no bignum).
+
+    0b1100 & 0b1010   # → 8
+    12 ^ 10           # → 6
+    1 << 4            # → 16
+    ~0                # → -1
+    5 & ~1            # → 4   (clear the low bit)
+
+Precedence (Python's): comparison `<` xor `^` `<` and `&` `<` shift
+`<<`/`>>` `<` additive `+`. So `1 << 2 + 1 == 8` (`1 << (2+1)`) and
+`2 & 3 ^ 1 == 3` (`(2 & 3) ^ 1`). `~` binds at the unary level.
+
+There is **no bit-OR `|` operator** yet: a single `|` infix collides
+with the `|...|` lambda delimiter under culebra's stateless grammar.
+For disjoint flag bits, sum them (`READ + WRITE`); a `|` form is a
+planned follow-up.
 
 ### Comparison
 

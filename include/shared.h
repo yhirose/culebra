@@ -4,6 +4,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <random>
 #include <shared_mutex>
@@ -553,6 +554,27 @@ inline long parse_long_strict(std::string_view s, long line, long col) {
     throw_type_error_at(line, col);
   }
   return 0;  // unreachable
+}
+
+// Parse an integer literal token to a signed long, recognizing the
+// `0x` / `0o` / `0b` radix prefixes (hex / octal / binary) in addition
+// to plain decimal. The grammar (NUMBER rule) guarantees the digit set
+// per prefix, so this is a clean base dispatch with no validation churn.
+// Shared by interp (eval_number) and JIT (compile NUMBER) so the two
+// backends decode literals identically.
+inline long parse_integer_literal(std::string_view tok) {
+  std::string owned(tok);
+  int base = 10;
+  size_t off = 0;
+  if (tok.size() > 2 && tok[0] == '0') {
+    char p = tok[1];
+    if (p == 'x' || p == 'X') { base = 16; off = 2; }
+    else if (p == 'o' || p == 'O') { base = 8; off = 2; }
+    else if (p == 'b' || p == 'B') { base = 2; off = 2; }
+  }
+  // strtol over the body after any prefix; the grammar restricted the
+  // digits, so no partial-parse guard is needed.
+  return std::strtol(owned.c_str() + off, nullptr, base);
 }
 
 // Parse a full string as a double; same trim / full-consumption rules.

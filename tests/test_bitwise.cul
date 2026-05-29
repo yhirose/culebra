@@ -1,0 +1,50 @@
+// Hex / octal / binary integer literals + bitwise operators
+// (`&` `^` `<<` `>>`) and `~`. Bit-OR `|` is not yet an operator (it
+// collides with the `|...|` lambda delimiter); combine disjoint flag
+// bits with `+` in the meantime.
+
+// --- Radix literals ---
+assert_eq(0xFF, 255)
+assert_eq(0x10, 16)
+assert_eq(0xff, 255)          // lowercase hex
+assert_eq(0o17, 15)
+assert_eq(0o755, 493)
+assert_eq(0b1010, 10)
+assert_eq(0b0, 0)
+assert_eq(255, 0xFF)          // decimal still parses
+assert_eq(0.5, 0.5)           // float literal unaffected
+
+// --- AND / XOR ---
+assert_eq(0b1100 & 0b1010, 0b1000)
+assert_eq(12 & 10, 8)
+assert_eq(0b1100 ^ 0b1010, 0b0110)
+assert_eq(12 ^ 10, 6)
+
+// --- Shifts ---
+assert_eq(1 << 4, 16)
+assert_eq(256 >> 2, 64)
+assert_eq(0b1 << 3, 8)
+
+// --- Complement ---
+assert_eq(~0, -1)
+assert_eq(~5, -6)
+assert_eq(5 & ~1, 4)          // clear the low bit
+
+// --- Precedence: comparison < ^ < & < shift < additive ---
+assert_eq(1 & 2 == 0, true)   // (1 & 2) == 0
+assert_eq(2 & 3 ^ 1, 3)       // (2 & 3) ^ 1
+assert_eq(1 << 2 + 1, 8)      // 1 << (2 + 1)
+assert_eq(1 + 1 << 2, 8)      // (1 + 1) << 2
+
+// --- Disjoint flags via + (interim for bit-or) ---
+let READ = 0b100
+let WRITE = 0b010
+let EXEC = 0b001
+assert_eq(READ + WRITE + EXEC, 0b111)
+assert_eq(0o644, 420)         // chmod-style octal
+
+// --- Non-Long operand is a type error ---
+let e = try { 1.5 & 2; nil } catch er { er.kind }
+assert_eq(e, "TypeError")
+
+IO.puts("test_bitwise OK")

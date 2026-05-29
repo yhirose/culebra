@@ -9390,6 +9390,12 @@ struct JIT {
         return compile_unary_minus(ast);
       case "UNARY_NOT"_:
         return compile_unary_not(ast);
+      case "UNARY_BNOT"_:
+        return compile_unary_bnot(ast);
+      case "BIT_XOR"_:
+      case "BIT_AND"_:
+      case "SHIFT"_:
+        return compile_bitwise(ast);
       case "ADDITIVE"_:
         return compile_additive(ast);
       case "MULTIPLICATIVE"_:
@@ -9467,7 +9473,7 @@ struct JIT {
   // --- Literals ---
 
   llvm::Value* compile_number(const peg::Ast& ast) {
-    auto n = ast.token_to_number<long>();
+    auto n = culebra::parse_integer_literal(ast.token);
     return make_long(builder_.getInt64(n));
   }
 
@@ -10663,6 +10669,79 @@ struct JIT {
     return make_bool(notb);
   }
 
+  // `~x` — bitwise complement, Long-only (else TypeError). Mirrors the
+  // interp's eval_unary_bnot.
+  llvm::Value* compile_unary_bnot(const peg::Ast& ast) {
+    auto val = compile(*ast.nodes[1]);
+    auto tag = extract_tag(val);
+    auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto intBB = llvm::BasicBlock::Create(ctx_, "bnot.int", fn);
+    auto errBB = llvm::BasicBlock::Create(ctx_, "bnot.err", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "bnot.merge", fn);
+    builder_.CreateCondBr(isLong, intBB, errBB);
+
+    builder_.SetInsertPoint(intBB);
+    auto r = make_long(builder_.CreateNot(extract_data(val), "bnot"));
+    auto intEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_type_error_typed("Long", tag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 1, "bnot.r");
+    phi->addIncoming(r, intEnd);
+    return phi;
+  }
+
+  // Bitwise / shift chains (`^` `&` `<<` `>>`), Long-only. A non-Long
+  // operand raises TypeError. Mirrors interp's eval_bitwise.
+  llvm::Value* compile_bitwise(const peg::Ast& ast) {
+    auto lhs = compile(*ast.nodes[0]);
+    auto longTag = builder_.getInt8(TAG_LONG);
+    for (auto i = 1u; i < ast.nodes.size(); i += 2) {
+      auto rhs = compile(*ast.nodes[i + 1]);
+      auto op = ast.nodes[i]->token;
+      auto ltag = extract_tag(lhs);
+      auto rtag = extract_tag(rhs);
+      auto bothLong = builder_.CreateAnd(
+          builder_.CreateICmpEQ(ltag, longTag),
+          builder_.CreateICmpEQ(rtag, longTag), "bit.bothlong");
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto intBB = llvm::BasicBlock::Create(ctx_, "bit.int", fn);
+      auto errBB = llvm::BasicBlock::Create(ctx_, "bit.err", fn);
+      auto mergeBB = llvm::BasicBlock::Create(ctx_, "bit.merge", fn);
+      builder_.CreateCondBr(bothLong, intBB, errBB);
+
+      builder_.SetInsertPoint(intBB);
+      auto ld = extract_data(lhs);
+      auto rd = extract_data(rhs);
+      llvm::Value* r;
+      if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
+      else if (op == "&") r = builder_.CreateAnd(ld, rd, "band");
+      else if (op == "<<") r = builder_.CreateShl(ld, rd, "shl");
+      else r = builder_.CreateAShr(ld, rd, "ashr");  // ">>" (signed)
+      auto intResult = make_long(r);
+      auto intEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(mergeBB);
+
+      builder_.SetInsertPoint(errBB);
+      // Report on whichever operand isn't a Long.
+      auto lNotLong = builder_.CreateICmpNE(ltag, longTag);
+      auto badTag = builder_.CreateSelect(lNotLong, ltag, rtag);
+      emit_type_error_typed("Long", badTag);
+      builder_.CreateUnreachable();
+
+      builder_.SetInsertPoint(mergeBB);
+      auto phi = builder_.CreatePHI(valueType_, 1, "bit.r");
+      phi->addIncoming(intResult, intEnd);
+      lhs = phi;
+    }
+    return lhs;
+  }
+
   // --- Exponentiation ---
 
   // If `ast` is a compile-time numeric literal (possibly wrapped in a
@@ -10677,7 +10756,7 @@ struct JIT {
       return NumLit{false, 0.0, -inner->l};
     }
     if (ast.tag == "NUMBER"_) {
-      return NumLit{false, 0.0, ast.token_to_number<long>()};
+      return NumLit{false, 0.0, culebra::parse_integer_literal(ast.token)};
     }
     if (ast.tag == "FLOAT"_) {
       return NumLit{true, ast.token_to_number<double>(), 0};
@@ -11027,7 +11106,7 @@ struct JIT {
       case "NUMBER"_: {
         auto is_long = builder_.CreateICmpEQ(extract_tag(subject),
                                              builder_.getInt8(TAG_LONG));
-        auto want = builder_.getInt64(pattern.token_to_number<long>());
+        auto want = builder_.getInt64(culebra::parse_integer_literal(pattern.token));
         auto eq = builder_.CreateICmpEQ(extract_data(subject), want);
         return builder_.CreateAnd(is_long, eq);
       }
