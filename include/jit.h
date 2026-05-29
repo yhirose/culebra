@@ -132,6 +132,67 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 // state to `thread_local` or per-interpreter-context storage.
 // ---------------------------------------------------------------------------
 
+// PROTOTYPE: fixed-size free-list pool for hot-churn JIT heap structs.
+// microgpt's scalar autograd allocates ~5-6 small heap blocks per arithmetic
+// op (a Value JitObject + two child/grad JitArrays) and frees the whole graph
+// each step; profiling put malloc/free at ~26% of JIT self-time. This pool
+// caches freed fixed-size blocks per type so steady-state churn reuses storage
+// instead of round-tripping through the system allocator. Class-specific
+// operator new/delete (on JitObject/JitArray) route all `new`/`delete` through
+// here with no call-site changes; constructors/destructors still run, so
+// refcount + GC semantics are unchanged. Plain static (not thread_local) to
+// match the single-threaded runtime assumption documented above; blocks are
+// not returned to the OS (pool grows to its high-water mark).
+// Prototype A/B toggle: set CULEBRA_NO_POOL=1 to bypass the pool and route
+// straight to the system allocator, so pooled vs unpooled can be compared in
+// one binary (eliminates the LTO-on/off confound). Read once at startup, so
+// the choice is constant for the process and every block is consistent.
+inline bool jit_pool_enabled() {
+  static bool e = (std::getenv("CULEBRA_NO_POOL") == nullptr);
+  return e;
+}
+
+template <class T>
+struct JitPool {
+  union Node {
+    Node* next;
+    alignas(T) unsigned char buf[sizeof(T)];
+  };
+  Node* head = nullptr;
+  long pool_hits = 0;   // reused a freed block (no malloc)
+  long sys_news = 0;    // had to grow via system allocator
+  void* alloc() {
+    if (!jit_pool_enabled()) return ::operator new(sizeof(T));
+    if (head) {
+      Node* n = head;
+      head = n->next;
+      pool_hits++;
+      return n;
+    }
+    sys_news++;
+    return ::operator new(sizeof(Node));
+  }
+  void dealloc(void* p) {
+    if (!jit_pool_enabled()) {
+      ::operator delete(p);
+      return;
+    }
+    auto* n = static_cast<Node*>(p);
+    n->next = head;
+    head = n;
+  }
+  static JitPool& instance() {
+    static JitPool p;
+    return p;
+  }
+  ~JitPool() {
+    if (std::getenv("CULEBRA_POOL_STATS")) {
+      std::fprintf(stderr, "[JitPool sizeof=%zu] pool_hits=%ld sys_news=%ld\n",
+                   sizeof(T), pool_hits, sys_news);
+    }
+  }
+};
+
 extern "C" {
 
 struct JitValue {
@@ -3503,9 +3564,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
 // Side table mapping a payload-variant constructor closure to its
 // (variant, enum) names — recovered by the shared thunk below. Mirrors
 // _jit_multifn_dispatcher_names: the closure carries no captures.
+// thread_local: keyed by per-thread JIT-compiled closure pointers, so
+// there is nothing to share across host threads. Isolating per thread
+// removes the data race that a process-wide static would have (unlike
+// trait_registry, which is intentionally shared + mutex-guarded because
+// every isolate must see the same trait definitions).
 inline std::map<JitClosure*, std::pair<std::string, std::string>>&
 _jit_variant_ctor_info() {
-  static std::map<JitClosure*, std::pair<std::string, std::string>> tbl;
+  static thread_local std::map<JitClosure*, std::pair<std::string, std::string>>
+      tbl;
   return tbl;
 }
 
@@ -3753,9 +3820,11 @@ struct JitParamMeta {
 static_assert(sizeof(JitParamMeta) == 10 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
+// thread_local: keyed by per-thread JIT-compiled fn pointers (see the
+// note on _jit_variant_ctor_info). No cross-thread sharing needed.
 inline std::unordered_map<void*, const JitParamMeta*>&
 _jit_param_meta_table() {
-  static std::unordered_map<void*, const JitParamMeta*> tbl;
+  static thread_local std::unordered_map<void*, const JitParamMeta*> tbl;
   return tbl;
 }
 
@@ -3788,20 +3857,27 @@ struct JitMultiMethodEntry {
   bool variadic = false;                  // has a `*args` catch-all
 };
 
+// thread_local: holds +1 closure refs from this thread's JIT run.
+// Per-thread by construction (see _jit_variant_ctor_info note).
 inline std::map<std::string, std::vector<JitMultiMethodEntry>>&
 _jit_multimethods() {
-  static std::map<std::string, std::vector<JitMultiMethodEntry>> tbl;
+  static thread_local std::map<std::string, std::vector<JitMultiMethodEntry>>
+      tbl;
   return tbl;
 }
 
 // Trait default-method bodies on the JIT side. Outer map keyed by
 // trait name, inner by method name. Holds a +1 reference on each
 // closure for the program's lifetime.
+// thread_local: per-thread JIT closures (see _jit_variant_ctor_info
+// note). The shared trait *definitions* live in culebra::trait_registry
+// (mutex-guarded); only the compiled default-method closures are
+// per-thread, so this table is isolated rather than locked.
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls() {
-  static std::unordered_map<std::string,
-                            std::unordered_map<std::string, JitClosure*>> tbl;
+  static thread_local std::unordered_map<
+      std::string, std::unordered_map<std::string, JitClosure*>> tbl;
   return tbl;
 }
 
@@ -3872,9 +3948,11 @@ culebra_runtime_register_trait_super(const char* trait_name,
 // name, so the shared static thunk can recover which name to dispatch
 // for. Dispatchers live for the lifetime of the program (held by the
 // env binding); leak is bounded by the number of multimethods.
+// thread_local: keyed by per-thread dispatcher closure pointers (see
+// _jit_variant_ctor_info note). No cross-thread sharing needed.
 inline std::map<JitClosure*, std::string>&
 _jit_multifn_dispatcher_names() {
-  static std::map<JitClosure*, std::string> tbl;
+  static thread_local std::map<JitClosure*, std::string> tbl;
   return tbl;
 }
 
