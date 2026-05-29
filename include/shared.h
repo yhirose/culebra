@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -573,8 +574,16 @@ inline long parse_integer_literal(std::string_view tok) {
     else if (p == 'b' || p == 'B') { base = 2; off = 2; }
   }
   // strtol over the body after any prefix; the grammar restricted the
-  // digits, so no partial-parse guard is needed.
-  return std::strtol(owned.c_str() + off, nullptr, base);
+  // digits, so no partial-parse guard is needed. errno is checked so an
+  // out-of-range literal throws instead of silently clamping to
+  // LONG_MAX/MIN (matches parse_long_strict's strict overflow handling).
+  errno = 0;
+  long v = std::strtol(owned.c_str() + off, nullptr, base);
+  if (errno == ERANGE) {
+    throw CulebraError("ValueError",
+                       std::format("integer literal out of range: {}", tok));
+  }
+  return v;
 }
 
 // --- Interpolation format spec (`"{x:.2f}"`) ----------------------------
