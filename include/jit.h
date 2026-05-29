@@ -9094,6 +9094,18 @@ struct JIT {
     std::set<std::string> my_locals;
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p)) continue;
+      // A destructuring param (`fn ({a, b})`) binds the pattern's names,
+      // not a single identifier — extract_param_name_loc would index a
+      // non-existent IDENTIFIER child (flaky OOB read). Mirror the interp
+      // analyzer and collect the pattern's bindings.
+      if (culebra::is_pattern_param(*p)) {
+        check_pattern_shadow(*p, outer);
+        for_each_pattern_binding(
+            *p, [&](std::string_view nm, size_t, size_t) {
+              my_locals.insert(std::string(nm));
+            });
+        continue;
+      }
       auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
       auto name = std::string(name_sv);
       check_shadow_against_captures(name, outer, line, col);
