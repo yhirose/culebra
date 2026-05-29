@@ -11911,10 +11911,9 @@ struct JIT {
   }
 
   llvm::Value* compile_for(const peg::Ast& ast) {
-    auto& id = *ast.nodes[0];
+    auto& id = *ast.nodes[0];  // loop variable: IDENTIFIER or a pattern
     auto& iter_expr = *ast.nodes[1];
     auto& body = *ast.nodes[2];
-    auto var_name = std::string(id.token);
 
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -11944,7 +11943,7 @@ struct JIT {
 
     builder_.SetInsertPoint(arrayBB);
     compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
-                           var_name, body, endBB);
+                           id, body, endBB);
 
     // Set: materialize members into a fresh Array, then reuse the
     // array walker. The temporary Array is +1-owned by this scope;
@@ -11957,7 +11956,7 @@ struct JIT {
         module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
         {setSrcPtr}, "for.set.arr");
     auto setCleanupBB = llvm::BasicBlock::Create(ctx_, "for.set.cleanup", fn);
-    compile_for_array_loop(setMembersArr, var_name, body, setCleanupBB);
+    compile_for_array_loop(setMembersArr, id, body, setCleanupBB);
     builder_.SetInsertPoint(setCleanupBB);
     emit_value_release(make_array(setMembersArr));
     builder_.CreateBr(endBB);
@@ -11989,43 +11988,64 @@ struct JIT {
     keysIterVal = builder_.CreateInsertValue(
         keysIterVal, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()),
         {1});
-    compile_for_protocol_loop(keysIterVal, var_name, body, endBB);
+    compile_for_protocol_loop(keysIterVal, id, body, endBB);
 
     builder_.SetInsertPoint(protoBB);
     llvm::Value* objVal = llvm::UndefValue::get(valueType_);
     objVal = builder_.CreateInsertValue(objVal, builder_.getInt8(TAG_OBJECT),
                                         {0});
     objVal = builder_.CreateInsertValue(objVal, data, {1});
-    compile_for_protocol_loop(objVal, var_name, body, endBB);
+    compile_for_protocol_loop(objVal, id, body, endBB);
 
     builder_.SetInsertPoint(stringBB);
     // For StringView, materialize via strlike_to_cstr (TAG_STRING input
     // returns the same ptr — no copy).
     auto strDataPtr = emit_call(
         module_->getFunction(rt::strlike_to_cstr), {tag, data});
-    compile_for_string_loop(strDataPtr, var_name, body, endBB);
+    compile_for_string_loop(strDataPtr, id, body, endBB);
 
     builder_.SetInsertPoint(endBB);
     return make_nil();
   }
 
-  // Bind `elemVal` to `var_name` for the body of a for-in. Caller must
+  // Bind `elemVal` to `var` (identifier or pattern) for a for-in body. Caller must
   // have transferred `+1` into `elemVal`; the slot takes over that ref
   // and releases on scope exit. Useful when the caller has already
   // arranged ownership (e.g. the protocol loop pre-retains the step
   // value before releasing the enclosing {done,value} object).
-  void emit_for_body_with_owned_binding(const std::string& var_name,
+  void emit_for_body_with_owned_binding(const peg::Ast& var,
                                         llvm::Value* elemVal,
                                         const peg::Ast& body,
                                         llvm::BasicBlock* continue_bb,
                                         llvm::BasicBlock* break_bb) {
+    using namespace peg::udl;
     push_scope();
-    if (is_sink_name(var_name)) {
-      // `for _ in iter`: drop the per-iteration +1 transfer that the
-      // caller already emitted (no slot will release it for us).
-      emit_value_release(elemVal);
+    if (var.tag == "IDENTIFIER"_) {
+      if (is_sink_name(std::string(var.token))) {
+        // `for _ in iter`: drop the per-iteration +1 transfer that the
+        // caller already emitted (no slot will release it for us).
+        emit_value_release(elemVal);
+      } else {
+        declare_local(std::string(var.token), elemVal);
+      }
     } else {
-      declare_local(var_name, elemVal);
+      // Destructuring loop variable: `for (i, x) in …`. emit_pattern
+      // consumes elemVal's +1 (binds sub-slots); a runtime shape
+      // mismatch throws, mirroring the interp's destructure error.
+      auto matched = emit_pattern(var, elemVal, /*is_mut=*/false);
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto okBB = llvm::BasicBlock::Create(ctx_, "for.destr.ok", fn);
+      auto failBB = llvm::BasicBlock::Create(ctx_, "for.destr.fail", fn);
+      builder_.CreateCondBr(matched, okBB, failBB);
+      builder_.SetInsertPoint(failBB);
+      emit_call(
+          module_->getOrInsertFunction(rt::destructure_mismatch,
+                                       builder_.getVoidTy(),
+                                       builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
+          {builder_.getInt64(var.line), builder_.getInt64(var.column)});
+      builder_.CreateUnreachable();
+      builder_.SetInsertPoint(okBB);
     }
 
     loop_stack_.push_back({continue_bb, break_bb});
@@ -12043,18 +12063,18 @@ struct JIT {
   // slot release) and delegates. Used by the Array / String for-in
   // loops where `elemVal` is read directly out of the container with
   // no owning ref of its own.
-  void emit_for_body_iteration(const std::string& var_name,
+  void emit_for_body_iteration(const peg::Ast& var,
                                llvm::Value* elemVal,
                                const peg::Ast& body,
                                llvm::BasicBlock* continue_bb,
                                llvm::BasicBlock* break_bb) {
     emit_value_retain(elemVal);
-    emit_for_body_with_owned_binding(var_name, elemVal, body, continue_bb,
+    emit_for_body_with_owned_binding(var, elemVal, body, continue_bb,
                                      break_bb);
   }
 
   void compile_for_array_loop(llvm::Value* arrPtr,
-                              const std::string& var_name,
+                              const peg::Ast& var,
                               const peg::Ast& body,
                               llvm::BasicBlock* endBB) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -12099,7 +12119,7 @@ struct JIT {
     elem = builder_.CreateInsertValue(elem, t, {0});
     elem = builder_.CreateInsertValue(elem, d, {1});
 
-    emit_for_body_iteration(var_name, elem, body, incBB, endBB);
+    emit_for_body_iteration(var, elem, body, incBB, endBB);
 
     builder_.SetInsertPoint(incBB);
     auto next = builder_.CreateAdd(
@@ -12121,7 +12141,7 @@ struct JIT {
   // on exit via the owned `this` slot). `step` — the {done, value}
   // object — is released on every loop path before branching.
   void compile_for_protocol_loop(llvm::Value* objVal,
-                                 const std::string& var_name,
+                                 const peg::Ast& var,
                                  const peg::Ast& body,
                                  llvm::BasicBlock* endBB) {
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -12219,7 +12239,7 @@ struct JIT {
     // outer one for any post-cleanup exceptions.
     auto savedLpad = current_lpad_;
     current_lpad_ = excLpadBB;
-    emit_for_body_with_owned_binding(var_name, loop_val, body, condBB,
+    emit_for_body_with_owned_binding(var, loop_val, body, condBB,
                                      cleanupBB);
     current_lpad_ = savedLpad;
 
@@ -12244,7 +12264,7 @@ struct JIT {
   }
 
   void compile_for_string_loop(llvm::Value* strPtr,
-                               const std::string& var_name,
+                               const peg::Ast& var,
                                const peg::Ast& body,
                                llvm::BasicBlock* endBB) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -12285,7 +12305,7 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
         {strPtr, off, scalarLen}, "for.scalar");
-    emit_for_body_iteration(var_name, make_string(scalarPtr), body, incBB,
+    emit_for_body_iteration(var, make_string(scalarPtr), body, incBB,
                             endBB);
 
     builder_.SetInsertPoint(incBB);

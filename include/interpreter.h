@@ -4374,10 +4374,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // fresh scope per iteration. Honors break/continue and defer.
   Value eval_for(const peg::Ast& ast, std::shared_ptr<Environment> env) {
     using namespace peg::udl;
-    const auto& id = *ast.nodes[0];
+    const auto& var = *ast.nodes[0];
     const auto& iter_expr = *ast.nodes[1];
     const auto& body = *ast.nodes[2];
-    const auto& var_name = id.token;
+    bool var_is_ident = var.tag == "IDENTIFIER"_;
 
     auto iterable = eval(iter_expr, env);
     auto iter_val = _get_iterator(iterable, iter_expr.line, iter_expr.column);
@@ -4415,7 +4415,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!v) { dispose_iter(); break; }
 
       auto scopeEnv = make_scope(env);
-      scopeEnv->initialize(var_name, std::move(*v), false);
+      if (var_is_ident) {
+        scopeEnv->initialize(var.token, std::move(*v), false);
+      } else if (!try_pattern(var, *v, scopeEnv, /*mut=*/false)) {
+        dispose_iter();
+        throw_destructure_mismatch_at(static_cast<long>(var.line),
+                                      static_cast<long>(var.column));
+      }
       try {
         eval(body, scopeEnv);
         run_deferred(scopeEnv);

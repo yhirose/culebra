@@ -175,7 +175,9 @@ const auto grammar_ = R"(
   SPREAD_ELEM              <-  '...' _ EXPRESSION
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
-  FOR                      <-  for _ IDENTIFIER _ in _ EXPRESSION _ BLOCK         { no_ast_opt }
+  # The loop variable may be a destructuring pattern: `for (i, x) in
+  # arr.enumerate()`, `for [a, b] in pairs`, `for {k, v} in entries`.
+  FOR                      <-  for _ (TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER) _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'

@@ -1520,6 +1520,15 @@ Range literals `a..b` (exclusive) and `a..=b` (inclusive) return the
 same lazy integer iterator as `range` — no up-front allocation.
 Endpoints must be `Long`.
 
+**Destructuring loop variable.** The `var` may be a pattern, matched
+against each element's shape (a mismatch raises `ValueError`):
+
+```culebra
+for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # array pattern
+for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # tuple pattern
+for {index, value} in xs.iter().enumerate() { ... } # object pattern
+```
+
 The iterator protocol (see §17.5) requires the target to be either an
 `Object` (or subtype `Array`) with an `iter` method, or an object
 already playing the iterator role with a `next` method. Passing any
