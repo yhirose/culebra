@@ -66,14 +66,29 @@ inline bool is_fn_boundary(unsigned int tag) {
   return tag == "FUNCTION"_ || tag == "LAMBDA"_ || tag == "MULTIFN_DECL"_;
 }
 
-// True if `node` carries at least one YIELD anywhere inside, stopping
-// at fn boundaries (see `is_fn_boundary`).
+// True if `node` carries at least one YIELD or YIELD_FROM anywhere
+// inside, stopping at fn boundaries (see `is_fn_boundary`). Treating
+// the two as equivalent here lets Stage 5's for-in desugar fire even
+// when the only yield-shaped node inside is a `yield from`.
 inline bool fn_body_has_yield(const peg::Ast& node) {
   using namespace peg::udl;
-  if (node.tag == "YIELD"_) return true;
+  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return true;
   if (is_fn_boundary(node.tag)) return false;
   for (auto& c : node.nodes) {
     if (fn_body_has_yield(*c)) return true;
+  }
+  return false;
+}
+
+// True if `node` has at least one YIELD_FROM. The dispatcher uses this
+// to route bodies with delegation through the Stage 6b phase machine
+// instead of the Stage 3 verbatim-while codegen.
+inline bool body_has_yield_from(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "YIELD_FROM"_) return true;
+  if (is_fn_boundary(node.tag)) return false;
+  for (auto& c : node.nodes) {
+    if (body_has_yield_from(*c)) return true;
   }
   return false;
 }
@@ -523,6 +538,38 @@ inline std::string substitute_yields_in_stmt(
   return out;
 }
 
+// Wire the generated class's `new(_p0, _p1, ...)` slot list and append
+// matching `this.<param> = _pN` initializers, then `this.<local> = nil`
+// for every body-declared local not shadowed by a param. Shared between
+// Stage 3 and Stage 6b — both stages seed `ctor_inits` with their own
+// state-field prefix (`_g_drained` / `_g_phase` / etc.) before calling
+// this to append the per-instance bindings.
+inline void emit_ctor_param_and_local_inits(
+    const std::vector<std::string_view>& param_names,
+    const std::set<std::string>& locals,
+    std::string& ctor_params,
+    std::string& ctor_call_args,
+    std::string& ctor_inits) {
+  std::set<std::string> param_set;
+  for (size_t j = 0; j < param_names.size(); j++) {
+    auto pn = std::string(param_names[j]);
+    auto slot = std::format("_p{}", j);
+    if (j > 0) {
+      ctor_params += ", ";
+      ctor_call_args += ", ";
+    }
+    ctor_params += slot;
+    ctor_call_args += pn;
+    ctor_inits += std::format("      this.{} = {}\n", pn, slot);
+    param_set.insert(std::move(pn));
+  }
+  for (const auto& l : locals) {
+    if (!param_set.contains(l)) {
+      ctor_inits += std::format("      this.{} = nil\n", l);
+    }
+  }
+}
+
 // Split pre-loop into (a) the non-defer statements (kept inline) and
 // (b) the LIFO-ordered defer bodies (lifted into the generator's
 // `dispose()` method directly, inlined rather than wrapped in
@@ -602,24 +649,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
       "      this._g_la = nil\n"
       "      this._g_inited = false\n"
       "      this._g_disposed = false\n";
-  std::set<std::string> param_set;
-  for (size_t j = 0; j < param_names.size(); j++) {
-    auto pn = std::string(param_names[j]);
-    auto slot = std::format("_p{}", j);
-    if (j > 0) {
-      ctor_params += ", ";
-      ctor_call_args += ", ";
-    }
-    ctor_params += slot;
-    ctor_call_args += pn;
-    ctor_inits += std::format("      this.{} = {}\n", pn, slot);
-    param_set.insert(std::move(pn));
-  }
-  for (const auto& l : locals) {
-    if (!param_set.contains(l)) {
-      ctor_inits += std::format("      this.{} = nil\n", l);
-    }
-  }
+  emit_ctor_param_and_local_inits(param_names, locals,
+                                  ctor_params, ctor_call_args, ctor_inits);
 
   // Rewrite each body fragment to use `this.X` for params + locals.
   // pre_loop walks statements one by one so DEFER nodes can be lifted
@@ -693,14 +724,223 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage3(
   return ast;
 }
 
+// --- Stage 6b: yield from via phase machine ------------------------------
+
+// WHILE body acceptable by Stage 6b: zero or more leading statements
+// (typically `let x = _g_it.next()` after Stage 5 desugar) followed by
+// a single YIELD or YIELD_FROM as the final stmt. Bodies with multiple
+// yields, branches, or yield-from nested deeper than top level are
+// rejected — Stage 6b falls back to the dispatcher's error path so the
+// user gets a clean SyntaxError instead of silent miscompilation.
+struct While6bBody {
+  std::vector<const peg::Ast*> pre_stmts;
+  const peg::Ast* yield_node;  // YIELD or YIELD_FROM
+  bool is_yield_from;
+};
+
+inline std::optional<While6bBody> analyze_while_body_for_stage6b(
+    const peg::Ast& while_node) {
+  using namespace peg::udl;
+  if (while_node.nodes.size() < 2) return std::nullopt;
+  const auto& body = *while_node.nodes[1];
+  auto stmts = body_stmts(body);
+  While6bBody result;
+  for (size_t i = 0; i < stmts.size(); i++) {
+    auto* u = unwrap_stmt(stmts[i]);
+    if (u->tag == "YIELD"_ || u->tag == "YIELD_FROM"_) {
+      if (i + 1 != stmts.size()) return std::nullopt;
+      result.yield_node = u;
+      result.is_yield_from = (u->tag == "YIELD_FROM"_);
+      return result;
+    }
+    // Reject nested yields inside non-terminal stmts.
+    if (fn_body_has_yield(*stmts[i])) return std::nullopt;
+    result.pre_stmts.push_back(stmts[i]);
+  }
+  return std::nullopt;
+}
+
+// Emit the body of a single phase block of has_next(), with locals
+// rewritten via `rewrite_locals_to_this`. Each phase ends with either
+// `return true` (yielded a value), `continue` (state advanced, restart
+// the dispatch loop), or `return false` (drained).
+inline std::string emit_stage6b_phase_block(
+    int next_phase, const peg::Ast& stmt,
+    const char* src, size_t src_len,
+    const std::set<std::string>& rewrite_set) {
+  using namespace peg::udl;
+  auto* u = unwrap_stmt(&stmt);
+  if (u->tag == "YIELD"_ && !u->nodes.empty()) {
+    auto expr = rewrite_locals_to_this(
+        ast_source_slice(*u->nodes[0], src, src_len), rewrite_set);
+    return std::format(
+        "        this._g_la = ({0})\n"
+        "        this._g_has_la = true\n"
+        "        this._g_phase = {1}\n"
+        "        return true\n",
+        expr, next_phase);
+  }
+  if (u->tag == "YIELD_FROM"_ && !u->nodes.empty()) {
+    auto expr = rewrite_locals_to_this(
+        ast_source_slice(*u->nodes[0], src, src_len), rewrite_set);
+    return std::format(
+        "        this._g_delegate = ({0}).iter()\n"
+        "        this._g_phase = {1}\n"
+        "        continue\n",
+        expr, next_phase);
+  }
+  if (u->tag == "WHILE"_) {
+    auto wb = analyze_while_body_for_stage6b(*u);
+    if (!wb) return {};
+    auto cond = rewrite_locals_to_this(
+        ast_source_slice(*u->nodes[0], src, src_len), rewrite_set);
+    std::string pre;
+    for (auto* s : wb->pre_stmts) {
+      pre += "          ";
+      pre += rewrite_locals_to_this(
+          ast_source_slice(*s, src, src_len), rewrite_set);
+      pre += "\n";
+    }
+    auto yexpr = rewrite_locals_to_this(
+        ast_source_slice(*wb->yield_node->nodes[0], src, src_len), rewrite_set);
+    std::string yield_part;
+    if (wb->is_yield_from) {
+      yield_part = std::format(
+          "          this._g_delegate = ({0}).iter()\n"
+          "          continue\n",
+          yexpr);
+    } else {
+      yield_part = std::format(
+          "          this._g_la = ({0})\n"
+          "          this._g_has_la = true\n"
+          "          return true\n",
+          yexpr);
+    }
+    return std::format(
+        "        if {0} {{\n"
+        "{1}"
+        "{2}"
+        "        }} else {{\n"
+        "          this._g_phase = {3}\n"
+        "          continue\n"
+        "        }}\n",
+        cond, pre, yield_part, next_phase);
+  }
+  // Plain statement: execute verbatim (with locals rewritten) and advance.
+  auto stmt_rw = rewrite_locals_to_this(
+      ast_source_slice(stmt, src, src_len), rewrite_set);
+  return std::format(
+      "        {0}\n"
+      "        this._g_phase = {1}\n"
+      "        continue\n",
+      stmt_rw, next_phase);
+}
+
+inline std::shared_ptr<peg::Ast> transform_one_generator_fn_stage6b(
+    std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len,
+    const peg::Ast& name_ast,
+    const peg::Ast& params_ast) {
+  using namespace peg::udl;
+  auto gen_name = std::format("_Gen_{}_{}_{}",
+                              std::string(name_ast.token),
+                              name_ast.line, name_ast.column);
+
+  std::vector<std::string_view> param_names;
+  for (const auto& pn : params_ast.nodes) {
+    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
+    param_names.push_back(view_parameter(*pn).name);
+  }
+  auto locals = collect_local_names(*ast->nodes.back());
+  std::set<std::string> rewrite_set = locals;
+  for (auto& pn : param_names) rewrite_set.insert(std::string(pn));
+
+  std::string ctor_params;
+  std::string ctor_call_args;
+  std::string ctor_inits =
+      "      this._g_drained = false\n"
+      "      this._g_has_la = false\n"
+      "      this._g_la = nil\n"
+      "      this._g_disposed = false\n"
+      "      this._g_delegate = nil\n"
+      "      this._g_phase = 0\n";
+  emit_ctor_param_and_local_inits(param_names, locals,
+                                  ctor_params, ctor_call_args, ctor_inits);
+
+  // Walk top-level body statements and build phase blocks. Last phase
+  // is the synthetic "drained" terminator so each real phase can hand
+  // off to its successor with a simple ++index.
+  auto top_stmts = body_stmts(*ast->nodes.back());
+  std::string phases_src;
+  int phase_idx = 0;
+  for (auto* stmt : top_stmts) {
+    auto block = emit_stage6b_phase_block(phase_idx + 1,
+                                          *stmt, src, src_len, rewrite_set);
+    if (block.empty()) return ast;  // unsupported shape — caller will report
+    phases_src += std::format("      if this._g_phase == {} {{\n{}      }}\n",
+                              phase_idx, block);
+    phase_idx++;
+  }
+  // Terminator phase.
+  phases_src += std::format(
+      "      if this._g_phase == {} {{\n"
+      "        this._g_drained = true\n"
+      "        return false\n"
+      "      }}\n",
+      phase_idx);
+
+  auto synthesized = std::make_shared<std::string>(std::format(
+      "fn __gen_wrapper__() {{\n"
+      "  class {0} {{\n"
+      "    new({1}) {{\n{2}    }}\n"
+      "    iter() {{ this }}\n"
+      "    has_next() {{\n"
+      "      while true {{\n"
+      "        if this._g_drained {{ return false }}\n"
+      "        if this._g_has_la {{ return true }}\n"
+      "        if this._g_delegate != nil {{\n"
+      "          if this._g_delegate.has_next() {{\n"
+      "            this._g_la = this._g_delegate.next()\n"
+      "            this._g_has_la = true\n"
+      "            return true\n"
+      "          }}\n"
+      "          if this._g_delegate.has('dispose') {{ this._g_delegate.dispose() }}\n"
+      "          this._g_delegate = nil\n"
+      "        }}\n"
+      "{3}"
+      "      }}\n"
+      "    }}\n"
+      "    next() {{\n"
+      "      if !this._g_has_la {{ this.has_next() }}\n"
+      "      let _v = this._g_la\n"
+      "      this._g_la = nil\n"
+      "      this._g_has_la = false\n"
+      "      return _v\n"
+      "    }}\n"
+      "    dispose() {{\n"
+      "      if this._g_disposed {{ return nil }}\n"
+      "      this._g_disposed = true\n"
+      "      this._g_drained = true\n"
+      "      if this._g_delegate != nil {{\n"
+      "        if this._g_delegate.has('dispose') {{ this._g_delegate.dispose() }}\n"
+      "        this._g_delegate = nil\n"
+      "      }}\n"
+      "    }}\n"
+      "  }}\n"
+      "  {0}.new({4})\n"
+      "}}\n",
+      gen_name, ctor_params, ctor_inits, phases_src, ctor_call_args));
+  swap_body_from_wrapper(ast, synthesized);
+  return ast;
+}
+
 // Dispatcher: pattern-match the body and route to the right stage.
 // Stage 5 runs first as a source-level pre-pass that rewrites yielding
 // `for-in` loops into `while + iterator` form, then Stage 3 handles the
-// result. Stage 3 is the primary backend — its pattern is a superset of
-// Stage 2's (which has been folded in) and handles any while-bound
-// generator whose yields all live in one statement. Falls back to
-// Stage 1's eager-eval path for straight-line bodies whose yield
-// expressions don't reference loop-mutated locals.
+// result. Stage 6b takes any body containing `yield from` and emits a
+// phase machine instead. Stage 3 (verbatim while-preserve) is the
+// primary backend for plain yield generators; Stage 1's eager-eval path
+// catches straight-line bodies whose yield expressions don't reference
+// loop-mutated locals.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const char* src, size_t src_len) {
   using namespace peg::udl;
@@ -708,7 +948,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
   if (i + 2 >= ast->nodes.size()) return ast;
   auto yields = collect_yields(*ast->nodes.back());
-  if (yields.empty()) return ast;
+  bool has_yf = body_has_yield_from(*ast->nodes.back());
+  if (yields.empty() && !has_yf) return ast;
 
   // C# rule (CS1626): a yield statement may not appear inside a try-catch
   // or defer block. The state-machine cost of supporting yield-spanning
@@ -739,7 +980,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     src = desugared->data();
     src_len = desugared->size();
     yields = collect_yields(*ast->nodes.back());
-    if (yields.empty()) return ast;
+    has_yf = body_has_yield_from(*ast->nodes.back());
+    if (yields.empty() && !has_yf) return ast;
   }
 
   // Stage 6a defer scope: only top-level `defer { ... }` in the body is
@@ -750,6 +992,30 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   auto all_defers = collect_defers(*ast->nodes.back());
   const auto& name_ast = *ast->nodes[i];
   const auto& params_ast = *ast->nodes[i + 1];
+
+  // Stage 6b: any body containing `yield from` goes through the phase
+  // machine codegen instead of Stage 3's verbatim while-preserve. The
+  // transformer leaves the body untouched when it can't pattern-match
+  // the shape; surface that as a SyntaxError so the user gets a clear
+  // failure mode rather than silent fallthrough to Stage 1.
+  if (has_yf) {
+    auto orig_body = ast->nodes.back();
+    auto out = transform_one_generator_fn_stage6b(ast, src, src_len,
+                                                   name_ast, params_ast);
+    if (out->nodes.back().get() == orig_body.get()) {
+      throw CulebraError(
+          "SyntaxError",
+          "yield from is only supported in the Stage 6b minimum scope: "
+          "linear sequence of yield / yield from at body top level, "
+          "optionally with a single trailing for-in / while whose body "
+          "is a single yield or yield from. Nested / branching "
+          "delegation is not yet supported.",
+          static_cast<long>(name_ast.line),
+          static_cast<long>(name_ast.column));
+    }
+    return out;
+  }
+
   if (auto p = match_stage3_pattern(*ast->nodes.back(), yields)) {
     if (!all_defers.empty()) {
       std::set<const peg::Ast*> pre_loop_defers;

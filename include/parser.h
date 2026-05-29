@@ -15,7 +15,7 @@ namespace culebra {
 const auto grammar_ = R"(
   PROGRAM                  <-  _ STATEMENTS _
   STATEMENTS               <-  (STATEMENT (_sp_ (';' / _nl_) (_ STATEMENT)?)*)?
-  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
+  STATEMENT                <-  DEBUGGER / RETURN / THROW / YIELD_FROM / YIELD / BREAK / CONTINUE / DEFER / IMPORT_STMT / EXPORT_STMT / MULTIFN_DECL / CLASS_DECL / TRAIT_DECL / LEXICAL_SCOPE / EXPRESSION
 
   # Module system (§25). `import name from "./path"` binds the file's
   # `export { ... }` value to `name`. String-literal paths only.
@@ -68,6 +68,7 @@ const auto grammar_ = R"(
   DEBUGGER                 <-  debugger
   RETURN                   <-  return (_sp_ !_nl_ EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
+  YIELD_FROM               <-  yield _sp_ from _sp_ !_nl_ EXPRESSION                  { no_ast_opt }
   YIELD                    <-  yield _sp_ !_nl_ EXPRESSION                            { no_ast_opt }
   BREAK                    <-  break
   CONTINUE                 <-  continue
@@ -656,7 +657,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
         true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
                "OBJECT_PROPERTY", "TUPLE", "SET",
                "ARRAY", "RETURN",
-               "THROW", "YIELD", "TRY", "DEFER",
+               "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER",
                "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
                "DEFAULT_VALUE",
                "ARG_LIST", "KWARG", "KWARG_SPLAT",

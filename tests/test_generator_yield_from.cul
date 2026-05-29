@@ -1,0 +1,111 @@
+// Stage 6b: yield from delegation via phase machine.
+//
+// Verifies the four patterns the phase machine must handle:
+//   P1 — single `yield from g` at body top level
+//   P2 — sequential `yield from a; yield from b`
+//   P3 — `for x in xs { yield from f(x) }` (delegate inside a for-in)
+//   P4 — bare yield + for-in with yield-from (recursive tree walks)
+//
+// Uses `.collect()` to materialize the iterator and indexes into the
+// resulting Array since culebra Array equality is identity-based.
+
+// --- P1: single yield from ---
+fn passthrough(it) {
+  yield from it
+}
+let p1 = passthrough([10, 20, 30]).collect()
+assert_eq(p1.size(), 3)
+assert_eq(p1[0], 10)
+assert_eq(p1[1], 20)
+assert_eq(p1[2], 30)
+
+// --- P2: sequential yield from ---
+fn chain2(a, b) {
+  yield from a
+  yield from b
+}
+let p2 = chain2([1, 2], [3, 4, 5]).collect()
+assert_eq(p2.size(), 5)
+assert_eq(p2[0], 1)
+assert_eq(p2[1], 2)
+assert_eq(p2[2], 3)
+assert_eq(p2[3], 4)
+assert_eq(p2[4], 5)
+
+// --- yield from a generator (delegation chain) ---
+fn counter(n) {
+  mut i = 0
+  while i < n {
+    yield i
+    i = i + 1
+  }
+}
+fn double_counter(n) {
+  yield from counter(n)
+}
+let dc = double_counter(3).collect()
+assert_eq(dc.size(), 3)
+assert_eq(dc[0], 0)
+assert_eq(dc[1], 1)
+assert_eq(dc[2], 2)
+
+// --- P3: yield from inside for-in ---
+fn flatten(xss) {
+  for xs in xss {
+    yield from xs
+  }
+}
+let p3 = flatten([[1, 2], [3], [4, 5]]).collect()
+assert_eq(p3.size(), 5)
+assert_eq(p3[0], 1)
+assert_eq(p3[1], 2)
+assert_eq(p3[2], 3)
+assert_eq(p3[3], 4)
+assert_eq(p3[4], 5)
+
+// --- P4: bare yield + for-in with yield-from (preorder tree walk) ---
+class TNode {
+  new(val, kids) { this.val = val; this.kids = kids }
+}
+fn preorder(node) {
+  yield node.val
+  for child in node.kids {
+    yield from preorder(child)
+  }
+}
+let tree = TNode.new(1, [
+  TNode.new(2, [
+    TNode.new(4, []),
+    TNode.new(5, [])
+  ]),
+  TNode.new(3, [])
+])
+let pre = preorder(tree).collect()
+assert_eq(pre.size(), 5)
+assert_eq(pre[0], 1)
+assert_eq(pre[1], 2)
+assert_eq(pre[2], 4)
+assert_eq(pre[3], 5)
+assert_eq(pre[4], 3)
+
+// --- yield from cooperates with early break (dispose forwards) ---
+mut leaf_log = ''
+class Leaf {
+  new(id) { this.id = id }
+  visit() { leaf_log = "{leaf_log}v{this.id};" }
+}
+fn visit_leaves(leaves) {
+  for l in leaves {
+    yield l
+  }
+}
+fn outer(leaves) {
+  yield from visit_leaves(leaves)
+}
+for l in outer([Leaf.new(1), Leaf.new(2), Leaf.new(3), Leaf.new(4)]) {
+  l.visit()
+  if l.id == 2 { break }
+}
+assert_eq(leaf_log, 'v1;v2;')
+
+IO.puts('test_generator_yield_from OK')
