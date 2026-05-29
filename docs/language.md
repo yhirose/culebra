@@ -1771,6 +1771,41 @@ A **composite bound** `<T: A + B>` requires the argument to conform to
 * Class declarations inside another class's body (currently a
   SyntaxError, see "Where class declarations may appear" above).
 
+### Nil and annotations (null-safety policy)
+
+Culebra keeps `nil` universal but lets annotations opt into runtime
+null safety, in three tiers:
+
+* **No annotation** — anything goes, including `nil` (the default
+  dynamic behavior).
+* **`T` (non-optional)** — `nil` is *rejected*. A function parameter
+  typed `x: Long` will not accept `nil` (the call is reported as a
+  dispatch/type error); a `let x: Long = nil` raises a type error.
+* **`T?` (optional)** — `nil` is *accepted*, and the base type is still
+  enforced for non-nil values (`x: Long?` takes a Long or nil, but not
+  a String).
+
+This is a **runtime** policy — there is no static null checker (by
+design; see §13 internals). The null-safe operators pair with it:
+`?.` / `?[]` navigate possibly-nil values, `!!` asserts non-nil
+(raising `NilError`), and `??` / `??=` supply or store fallbacks.
+
+There is no `late` / `lateinit` keyword: in static languages that
+feature exists to satisfy a *static* non-null checker for deferred
+initialization, which culebra does not have. Use a plain (nullable)
+field and assert with `!!` at the use site, or guard with `??`. For
+lazily-computed / memoized fields, the idiom is a nil-checked accessor
+method (a field-level `??=` is a future extension — `??=` currently
+targets simple variables):
+
+    class Cache {
+      new() { this._data = nil }
+      data() {
+        if this._data == nil { this._data = load() }
+        this._data
+      }
+    }
+
 ### Where annotations are *not* checked
 
 * Arithmetic / boolean operators check their own operand types;

@@ -1638,6 +1638,37 @@ Generic クラスを型注釈で使う構文は組み込み Generic 型と同じ
 * class body 内 class 宣言 (現状は SyntaxError、 上記「クラス宣言の
   位置」参照)。
 
+### nil と注釈（null safety ポリシー）
+
+culebra は `nil` を universal に保ちつつ、注釈で runtime null safety を
+opt-in できます。3 段階:
+
+* **注釈なし** — `nil` 含め何でも可（デフォルトの動的挙動）。
+* **`T`（非 optional）** — `nil` を**拒否**。`x: Long` 引数は `nil` を
+  受けず（dispatch/type error）、`let x: Long = nil` は type error。
+* **`T?`（optional）** — `nil` を**許容**しつつ、非 nil 値には基底型を
+  強制（`x: Long?` は Long か nil、String は不可）。
+
+これは **runtime** ポリシーで、静的 null 検査器は持ちません（設計上。
+§13 internals 参照）。null 安全演算子が対になります: `?.` / `?[]` で
+nil 可能値を辿り、`!!` で非 nil をアサート（`NilError`）、`??` / `??=`
+でフォールバックを供給／保存。
+
+`late` / `lateinit` キーワードはありません: 静的言語のこの機能は
+「遅延初期化を*静的*非 null 検査器に納得させる」ためのもので、culebra
+にはその検査器が無いからです。nullable フィールド + 使用箇所 `!!`、
+または `??` ガードで代替します。遅延計算・メモ化フィールドのイディオム
+は nil チェック付きアクセサメソッド（フィールドへの `??=` は将来拡張 —
+現状 `??=` は単純変数のみ）:
+
+    class Cache {
+      new() { this._data = nil }
+      data() {
+        if this._data == nil { this._data = load() }
+        this._data
+      }
+    }
+
 ### 検査されない箇所
 
 * 算術・論理演算子は自身のオペランド型を検査しますが、中間値の
