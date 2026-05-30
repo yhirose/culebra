@@ -1090,7 +1090,7 @@ Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, chec
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
 stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0) -> Array<Object>`
 
 複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
 `Array<String>`（`Proc.run` の第1引数と同形）。同時実行数は最大 `limit`（既定 =
@@ -1107,6 +1107,10 @@ throw しません。空リストは `[]` を返します。
 で残りの実行中コマンドを `SIGKILL` し、該当コマンドを示す `ProcessError` を throw
 します（既定の `Promise.allSettled` に対する `Promise.all` 形）。全コマンド成功時は
 通常どおり結果配列を返します。
+
+**`retries`** は失敗したコマンドをその回数だけ再実行し、最終試行の結果を採用します。
+再実行は空きが出た `limit` プールに割り込みます。`fail_fast` と併用した場合、コマンドが
+失敗とみなされるのは retries を使い切った後だけです。
 
 ```culebra
 # doctest: skip

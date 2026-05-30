@@ -1375,6 +1375,7 @@ inline Value make_proc_namespace() {
               {"limit", false, ""sv, nullptr, kw_default_zero()},
               {"timeout", false, ""sv, nullptr, kw_default_zero()},
               {"fail_fast", false, ""sv, nullptr, kw_default_false()},
+              {"retries", false, ""sv, nullptr, kw_default_zero()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -1386,10 +1387,12 @@ inline Value make_proc_namespace() {
             long timeout = env->get("timeout").to_long();
             if (timeout < 0) timeout = 0;
             bool fail_fast = env->get("fail_fast").to_bool();
+            long retries = env->get("retries").to_long();
+            if (retries < 0) retries = 0;
             size_t failed = SIZE_MAX;
             auto outcomes = culebra::proc::run_all(
                 commands, static_cast<size_t>(lim), nullptr, nullptr, nullptr,
-                timeout, fail_fast, &failed);
+                timeout, fail_fast, &failed, retries);
             if (fail_fast && failed != SIZE_MAX) {
               throw CulebraError("ProcessError",
                   std::format("Proc.all: command {} {} at {}:{}.", failed,

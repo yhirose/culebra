@@ -536,6 +536,8 @@ inline RunOutcome run_command(
 // `fail_fast`: stop at the first command that fails (spawn failure, non-zero
 // exit, signal, or timeout), SIGKILL the rest, and report that command's index
 // via `*out_failed`. With fail_fast off (default) it is plain allSettled.
+// `retries`: re-run a failed command up to this many extra times; the result is
+// the last attempt's. fail_fast only triggers once retries are exhausted.
 inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
@@ -544,38 +546,66 @@ inline std::vector<RunOutcome> run_all(
     const std::vector<std::string>* stdins = nullptr,
     long timeout_ms = 0,
     bool fail_fast = false,
-    size_t* out_failed = nullptr) {
+    size_t* out_failed = nullptr,
+    long retries = 0) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
   if (n == 0) return results;
   if (limit == 0) limit = _detail::default_limit();
   if (limit > n) limit = n;
+  if (retries < 0) retries = 0;
 
   _detail::SigpipeGuard guard;
   std::vector<_detail::Child> running;
   running.reserve(limit);
   _detail::ScopeKiller killer(running);
+  std::vector<long> attempts_left(n, retries);  // remaining retries per command
+  std::vector<size_t> retry_queue;              // indices awaiting a re-run
   size_t next = 0, finished = 0;
   long failed_index = -1;
   auto is_failure = [](const RunOutcome& oc) {
     return !oc.spawned || !oc.result.ok;
   };
 
+  // Record a completed attempt: re-queue it if it failed with retries left,
+  // else mark it finished (and arm fail_fast if it's still a failure).
+  auto handle_outcome = [&](size_t idx, RunOutcome&& oc) {
+    bool failed = is_failure(oc);
+    results[idx] = std::move(oc);
+    if (failed && attempts_left[idx] > 0) {
+      --attempts_left[idx];
+      retry_queue.push_back(idx);
+      return;
+    }
+    ++finished;
+    if (fail_fast && failed && failed_index < 0)
+      failed_index = static_cast<long>(idx);
+  };
   auto launch = [&](size_t i) {
     const std::string* sp =
         (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
     _detail::Child c = _detail::spawn_child(commands[i], cwd, env, sp, i);
     if (c.done) {
-      results[i] = std::move(c.outcome);
-      ++finished;
-      if (fail_fast && failed_index < 0 && is_failure(results[i]))
-        failed_index = static_cast<long>(i);
+      handle_outcome(i, std::move(c.outcome));  // spawn failure: instant attempt
     } else {
       if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
       running.push_back(std::move(c));
     }
   };
-  while (next < limit) launch(next++);
+  // Keep up to `limit` children busy, drawing from retries first then new work.
+  auto fill = [&]() {
+    while (failed_index < 0 && running.size() < limit &&
+           (!retry_queue.empty() || next < n)) {
+      if (!retry_queue.empty()) {
+        size_t i = retry_queue.back();
+        retry_queue.pop_back();
+        launch(i);
+      } else {
+        launch(next++);
+      }
+    }
+  };
+  fill();
 
   char buf[65536];
   while (finished < n && failed_index < 0) {
@@ -586,14 +616,11 @@ inline std::vector<RunOutcome> run_all(
       _detail::Child& c = running[k];
       if (!c.out_open && !c.err_open && !c.in_open) {
         size_t idx = c.index;
-        results[idx] = _detail::reap_child(c);
-        ++finished;
+        RunOutcome oc = _detail::reap_child(c);
         running.erase(running.begin() + k);
-        if (fail_fast && failed_index < 0 && is_failure(results[idx])) {
-          failed_index = static_cast<long>(idx);
-          break;
-        }
-        if (failed_index < 0 && next < n) launch(next++);
+        handle_outcome(idx, std::move(oc));
+        if (failed_index >= 0) break;
+        fill();
       } else {
         ++k;
       }

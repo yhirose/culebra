@@ -1297,14 +1297,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
 // consumed. Returns an Array of result Objects (allSettled, input order).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
     int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
-    bool fail_fast, int64_t line, int64_t col) {
+    bool fail_fast, int64_t retries, int64_t line, int64_t col) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.all", line, col);
   if (limit < 0) limit = 0;
   size_t failed = SIZE_MAX;
   auto outcomes = culebra::proc::run_all(
       commands, static_cast<size_t>(limit), nullptr, nullptr, nullptr,
-      timeout > 0 ? timeout : 0, fail_fast, &failed);
+      timeout > 0 ? timeout : 0, fail_fast, &failed, retries > 0 ? retries : 0);
   if (fail_fast && failed != SIZE_MAX) {
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.all: command {} {} at {}:{}.", failed,
@@ -1322,8 +1322,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
 // Positional Proc.all(commands) (no kwargs) — trampoline / AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all(
     int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
-  return _culebra_proc_all_impl(commands_tag, commands_data, 0, 0, false, line,
-                                col);
+  return _culebra_proc_all_impl(commands_tag, commands_data, 0, 0, false, 0,
+                                line, col);
 }
 
 // Kwarg adapter for Proc.all (resolves `limit`). `commands` is not consumed.
@@ -1340,9 +1340,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
   bool fail_fast = false;
   if (auto v = kw.take_typed("fail_fast", TAG_BOOL, "Bool"))
     fail_fast = v->data != 0;
+  int64_t retries = 0;
+  if (auto v = kw.take_typed("retries", TAG_LONG, "Long")) retries = v->data;
   kw.validate_consumed();
   return _culebra_proc_all_impl(commands_tag, commands_data, limit, timeout,
-                                fail_fast, line, col);
+                                fail_fast, retries, line, col);
 }
 
 // Proc.race(commands) — first to finish wins, the rest are killed. `commands`

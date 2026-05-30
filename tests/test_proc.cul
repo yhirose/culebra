@@ -162,4 +162,19 @@ let ffspawn = try {
 } catch e { e.kind }
 assert_eq(ffspawn, "ProcessError")
 
+// --- retries: a persistently failing command keeps the last failure ---
+let rex = Proc.all([["false"]], retries: 2)
+assert_eq(rex[0].ok, false)
+assert_eq(rex[0].code, 1)
+
+// A succeeding command needs no retry and is unaffected.
+let rok = Proc.all([["echo", "hi"]], retries: 3)
+assert_true(rok[0].ok)
+assert_eq(rok[0].stdout.trim(), "hi")
+
+// retries + fail_fast: fail_fast only fires after retries are exhausted.
+let rff = try { Proc.all([["false"]], retries: 1, fail_fast: true); "no-error" }
+          catch e { e.kind }
+assert_eq(rff, "ProcessError")
+
 IO.puts("test_proc OK")
