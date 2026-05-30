@@ -1,0 +1,17 @@
+// Leak repro [C] — `for k in 0..N` leaks the range iterable + its
+// iter/has_next/next closures each loop (JIT). Task #4. EXPECTED RED on
+// --jit until the GC rewrite (Task #5); clean on interp. Do not delete.
+fn measure(work) {
+  work()
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 30 { work(); i = i + 1 }
+  GC.stat().live_objects - base
+}
+class Box { new(d) { this.data = d } }
+assert_lt(measure(fn () {
+  mut acc = []
+  for k in 0..200 { acc.push(Box.new(k)) }
+  acc.size()
+}), 200)
+puts("gc leak [for-range]: no leak")

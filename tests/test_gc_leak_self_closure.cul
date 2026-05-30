@@ -1,0 +1,18 @@
+// Leak repro [B] — a self-referential `|...|` closure leaks its captured
+// graph (a promoted cycle the minor-only collector never reclaims). Task #2.
+// EXPECTED RED on BOTH backends until the GC rewrite (Task #5). Do not delete.
+fn measure(work) {
+  work()
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 30 { work(); i = i + 1 }
+  GC.stat().live_objects - base
+}
+class Box { new(d) { this.data = d } }
+assert_lt(measure(fn () {
+  mut topo = []
+  build = |n| if n > 0 { topo.push(Box.new(n)); self(n - 1) } else { 0 }
+  build(200)
+  topo.size()
+}), 200)
+puts("gc leak [self-closure]: no leak")
