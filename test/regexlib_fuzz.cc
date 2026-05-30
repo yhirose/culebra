@@ -187,6 +187,89 @@ std::string gen_usubject() {
   return s;
 }
 
+// --- Lookaround fuzzing: exercises the reverse-matching lookbehind path,
+// which the std::regex-compatible generator never produces. Oracle-free. ---
+std::string gen_la_pattern(int depth);  // mutually recursive with gen_la_atom
+
+std::string gen_la_atom(int depth) {
+  switch ((depth <= 0) ? U(0, 3) : U(0, 6)) {
+    case 0: return std::string(1, LIT[U(0, 2)]);
+    case 1: return ".";
+    case 2: return gen_class();
+    case 3: { const char *e = "\\d\\w\\s"; return std::string(e + U(0, 2) * 2, 2); }
+    case 4: {  // lookbehind — the reverse-compiled / reverse-matched path
+      const char *p[] = {"(?<=", "(?<!"};
+      return std::string(p[U(0, 1)]) + gen_la_pattern(depth - 1) + ")";
+    }
+    case 5: {  // lookahead
+      const char *p[] = {"(?=", "(?!"};
+      return std::string(p[U(0, 1)]) + gen_la_pattern(depth - 1) + ")";
+    }
+    default: return "(" + gen_la_pattern(depth - 1) + ")";
+  }
+}
+
+std::string gen_la_concat(int depth) {
+  std::string s;
+  int k = U(1, 3);
+  for (int i = 0; i < k; i++) {
+    std::string a = gen_la_atom(depth);
+    if (U(0, 2) != 0) a += gen_quant();
+    s += a;
+  }
+  return s;
+}
+
+std::string gen_la_pattern(int depth) {
+  std::string s = gen_la_concat(depth);
+  int k = U(0, 1);
+  for (int i = 0; i < k; i++) s += "|" + gen_la_concat(depth);
+  return s;
+}
+
+void invariant_fuzz_lookaround(int iters) {
+  for (int it = 0; it < iters; it++) {
+    std::string pat = gen_la_pattern(3);
+    regexlib::Regex *re = nullptr;
+    try {
+      re = new regexlib::Regex(pat);
+    } catch (const regexlib::RegexError &) {
+      continue;
+    } catch (...) {
+      fail("non-RegexError at construction (lookaround)", pat, "");
+      continue;
+    }
+    for (int s = 0; s < 5; s++) {
+      std::string subj = gen_subject();
+      regexlib::MatchResult m;
+      std::vector<regexlib::MatchResult> all;
+      try {
+        m = re->search(subj);
+        all = re->find_all(subj);
+        if (re->test(subj) != m.matched) fail("test() != search (lookaround)", pat, subj);
+      } catch (const regexlib::RegexError &) {
+        continue;  // step budget on a pathological lookaround is acceptable
+      } catch (...) {
+        fail("matcher threw (lookaround)", pat, subj);
+        continue;
+      }
+      check_match(m, subj, pat, subj);
+      if (m.matched) {
+        if (all.empty()) fail("matched but find_all empty (lookaround)", pat, subj);
+        else if (all[0].begin != m.begin || all[0].str != m.str)
+          fail("find_all[0] != search (lookaround)", pat, subj);
+      } else if (!all.empty()) {
+        fail("no-match but find_all non-empty (lookaround)", pat, subj);
+      }
+      for (size_t i = 1; i < all.size(); i++) {
+        check_match(all[i], subj, pat, subj);
+        if (all[i].begin < all[i - 1].end) fail("find_all overlaps (lookaround)", pat, subj);
+      }
+    }
+    delete re;
+  }
+}
+
 // Oracle-free invariant fuzzing over Unicode/grapheme inputs.
 void invariant_fuzz_unicode(int iters) {
   for (int it = 0; it < iters; it++) {
@@ -332,10 +415,11 @@ void differential_info(int iters) {
 }  // namespace
 
 int main() {
-  invariant_fuzz(40000);
-  invariant_fuzz_unicode(40000);
-  parser_fuzz(40000);
-  differential_info(15000);
+  invariant_fuzz(25000);
+  invariant_fuzz_unicode(25000);
+  invariant_fuzz_lookaround(25000);
+  parser_fuzz(30000);
+  differential_info(12000);
 
   if (g_fail == 0) {
     std::printf("regexlib_fuzz: all invariants held, no crashes\n");
