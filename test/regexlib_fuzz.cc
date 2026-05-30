@@ -133,6 +133,102 @@ void check_match(const regexlib::MatchResult &m, const std::string &s,
   }
 }
 
+// --- Unicode / grapheme-cluster fuzzing (the engine's differentiator) ---
+// A mix of: ASCII, a precomposed accent, a base+combining grapheme, CJK, a
+// single emoji, a ZWJ family cluster (many code points, one grapheme), and a
+// regional-indicator flag (two code points, one grapheme).
+const std::vector<std::string> UCHARS = {
+    "a", "1", " ",
+    "\xC3\xA9",                                  // é  (U+00E9)
+    "e\xCC\x81",                                 // e + combining acute (1 cluster)
+    "\xE6\xBC\xA2",                              // 漢 (U+6F22)
+    "\xF0\x9F\x98\x80",                          // 😀 (U+1F600)
+    "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7",  // 👨‍👩‍👧
+    "\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5",          // 🇯🇵 flag
+};
+
+std::string gen_uchar() { return UCHARS[U(0, (int)UCHARS.size() - 1)]; }
+
+std::string gen_upattern_inner(int depth);  // mutually recursive with gen_uatom
+
+std::string gen_uatom(int depth) {
+  switch ((depth <= 0) ? U(0, 3) : U(0, 5)) {
+    case 0: return gen_uchar();                          // literal grapheme
+    case 1: return ".";
+    case 2: { const char *e = "\\d\\w\\s"; return std::string(e + U(0, 2) * 2, 2); }
+    case 3: return "[" + gen_uchar() + gen_uchar() + "]";  // class of clusters
+    case 4: return U(0, 1) ? "\\p{L}" : "\\p{N}";
+    default: return "(" + gen_upattern_inner(depth - 1) + ")";
+  }
+}
+
+std::string gen_uconcat(int depth) {
+  std::string s;
+  int k = U(1, 3);
+  for (int i = 0; i < k; i++) {
+    std::string a = gen_uatom(depth);
+    if (U(0, 2) != 0) a += gen_quant();
+    s += a;
+  }
+  return s;
+}
+
+std::string gen_upattern_inner(int depth) {
+  std::string s = gen_uconcat(depth);
+  int k = U(0, 1);
+  for (int i = 0; i < k; i++) s += "|" + gen_uconcat(depth);
+  return s;
+}
+
+std::string gen_usubject() {
+  int n = U(0, 8);
+  std::string s;
+  for (int i = 0; i < n; i++) s += gen_uchar();
+  return s;
+}
+
+// Oracle-free invariant fuzzing over Unicode/grapheme inputs.
+void invariant_fuzz_unicode(int iters) {
+  for (int it = 0; it < iters; it++) {
+    std::string pat = gen_upattern_inner(3);
+    regexlib::Regex *re = nullptr;
+    try {
+      re = new regexlib::Regex(pat);
+    } catch (const regexlib::RegexError &) {
+      continue;
+    } catch (...) {
+      fail("non-RegexError at construction (unicode)", pat, "");
+      continue;
+    }
+    for (int s = 0; s < 5; s++) {
+      std::string subj = gen_usubject();
+      regexlib::MatchResult m;
+      std::vector<regexlib::MatchResult> all;
+      try {
+        m = re->search(subj);
+        all = re->find_all(subj);
+        if (re->test(subj) != m.matched) fail("test() != search (unicode)", pat, subj);
+      } catch (...) {
+        fail("matcher threw (unicode)", pat, subj);
+        continue;
+      }
+      check_match(m, subj, pat, subj);
+      if (m.matched) {
+        if (all.empty()) fail("matched but find_all empty (unicode)", pat, subj);
+        else if (all[0].begin != m.begin || all[0].str != m.str)
+          fail("find_all[0] != search (unicode)", pat, subj);
+      } else if (!all.empty()) {
+        fail("no-match but find_all non-empty (unicode)", pat, subj);
+      }
+      for (size_t i = 1; i < all.size(); i++) {
+        check_match(all[i], subj, pat, subj);
+        if (all[i].begin < all[i - 1].end) fail("find_all overlaps (unicode)", pat, subj);
+      }
+    }
+    delete re;
+  }
+}
+
 void invariant_fuzz(int iters) {
   for (int it = 0; it < iters; it++) {
     std::string pat = gen_alt(3);
@@ -237,6 +333,7 @@ void differential_info(int iters) {
 
 int main() {
   invariant_fuzz(40000);
+  invariant_fuzz_unicode(40000);
   parser_fuzz(40000);
   differential_info(15000);
 
