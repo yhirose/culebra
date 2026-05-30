@@ -267,6 +267,29 @@ struct Segmented {
 };
 
 inline Segmented segment(std::string_view s8) {
+  // ASCII fast path: every byte < 0x80 is its own code point and its own
+  // grapheme cluster, so the UTF-8 decode and grapheme-break work is skipped.
+  bool ascii = true;
+  for (unsigned char c : s8)
+    if (c >= 0x80) {
+      ascii = false;
+      break;
+    }
+  if (ascii) {
+    Segmented seg;
+    size_t n = s8.size();
+    seg.graphemes.resize(n);
+    seg.byte_begin.resize(n + 1);
+    for (size_t i = 0; i < n; i++) {
+      seg.graphemes[i].assign(1, static_cast<char32_t>(
+                                     static_cast<unsigned char>(s8[i])));
+      seg.byte_begin[i] = i;
+    }
+    seg.byte_begin[n] = n;
+    seg.source = s8;
+    return seg;
+  }
+
   // Decode to code points while remembering each code point's byte offset.
   // Code-point count is bounded by byte count; reserve to avoid regrowth.
   std::u32string cps;
