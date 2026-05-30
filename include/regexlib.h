@@ -31,6 +31,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -264,6 +265,7 @@ struct Segmented {
   std::vector<std::u32string> graphemes;  // code points of each cluster
   std::vector<size_t> byte_begin;         // size == graphemes.size() + 1
   std::string_view source;                // the original UTF-8 subject
+  bool ascii = false;  // all bytes < 0x80, so grapheme index == byte index
 };
 
 inline Segmented segment(std::string_view s8) {
@@ -287,6 +289,7 @@ inline Segmented segment(std::string_view s8) {
     }
     seg.byte_begin[n] = n;
     seg.source = s8;
+    seg.ascii = true;
     return seg;
   }
 
@@ -1278,6 +1281,7 @@ class Regex {
     detail::Node root = parser.parse();
     ncap_ = parser.ncap;
     prog_ = detail::Compiler::compile(root, ncap_);
+    extract_prefix();
   }
 
   int group_count() const { return ncap_; }
@@ -1289,7 +1293,7 @@ class Regex {
   MatchResult search(std::string_view text) const {
     auto seg = detail::segment(text);
     Scratch sc;
-    return run(seg, 0, /*anchored=*/false, sc);
+    return search_at_or_after(seg, 0, sc);
   }
 
   // Match anchored at the start of `text` (need not reach the end).
@@ -1308,7 +1312,7 @@ class Regex {
     int n = static_cast<int>(seg.graphemes.size());
     Scratch sc;  // reused across every match
     while (start <= n) {
-      MatchResult m = run(seg, start, /*anchored=*/false, sc);
+      MatchResult m = search_at_or_after(seg, start, sc);
       if (!m.matched) break;
       out.push_back(m);
       int end_idx = m.end_grapheme;
@@ -1339,6 +1343,25 @@ class Regex {
   bool multiline_ = false;
   bool dotall_ = false;
   std::unordered_map<std::string, int> named_;
+  std::string prefix_;  // required literal prefix (empty if none); see B1 below
+
+  // Every match must begin with the pattern's leading run of literal
+  // characters. Collect it (skipping the zero-width capture Saves) so an
+  // unanchored search can jump straight to the next occurrence with memmem
+  // instead of seeding the NFA at every position. Skipped when case-insensitive
+  // (memmem is case-sensitive).
+  void extract_prefix() {
+    if (icase_) return;
+    using Op = detail::Inst::Op;
+    for (const auto &in : prog_.insts) {
+      if (in.op == Op::Save) continue;
+      if (in.op == Op::Char)
+        prefix_ += unicode::utf8::encode(in.lit);
+      else
+        break;
+    }
+  }
+
 
   // Capture slots are shared between threads copy-on-write: ε-transitions
   // (Jmp/Split/assert/lookaround) only bump a refcount; a Save clones the
@@ -1739,6 +1762,28 @@ class Regex {
 
     if (!have) return MatchResult{};
     return build_result(seg, matched);
+  }
+
+  // Leftmost match at or after grapheme index `start`. With a literal prefix on
+  // an ASCII subject (grapheme index == byte index), memmem skips to the first
+  // prefix occurrence and the unanchored scan resumes there — any match must
+  // begin with the prefix, so nothing in between can match. The scan stays
+  // unanchored (one linear pass), NOT an anchored retry per occurrence: a weak
+  // prefix like "a" matches at almost every position, and a per-occurrence
+  // retry would be quadratic.
+  MatchResult search_at_or_after(const detail::Segmented &seg, int start,
+                                 Scratch &sc) const {
+    if (!prefix_.empty() && seg.ascii) {
+      const char *base = seg.source.data();
+      size_t slen = seg.source.size();
+      size_t b = static_cast<size_t>(start);
+      if (b + prefix_.size() > slen) return MatchResult{};
+      const void *hit =
+          memmem(base + b, slen - b, prefix_.data(), prefix_.size());
+      if (!hit) return MatchResult{};
+      start = static_cast<int>(static_cast<const char *>(hit) - base);
+    }
+    return run(seg, start, /*anchored=*/false, sc);
   }
 
   MatchResult build_result(const detail::Segmented &seg,
