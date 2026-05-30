@@ -2383,6 +2383,7 @@ AOT builds (unless noted).
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
 | `IOError` | `read_file` / `write_file` / stdlib file ops failing; `Tensor.load` failure. | yes |
+| `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
 | `DropContractError` | `drop` / `iter` / `next` property bound to a non-Function or non-zero-arity function. | yes |
 | `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site; JIT REPL `repl_set` outside a session. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 

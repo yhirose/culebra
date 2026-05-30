@@ -15,7 +15,7 @@ Language-level built-ins — `to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota` — are specified in
 [§18 of the language spec](language.md). The matcher family
 (`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
-in [§10 below](#10-matchers). Methods on built-in types (`String`,
+in [§11 below](#11-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
 [§17 of the language spec](language.md).
 
@@ -42,10 +42,11 @@ Conventions used below:
 7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 8. [`JSON`](#8-json) — stringify / parse round-trip
 9. [`Args`](#9-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
-10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
-11. [`Regex`](#11-regex) — linear-time, grapheme-aware regular expressions
-12. [Design notes](#12-design-notes)
-13. [Not included (yet)](#13-not-included-yet)
+10. [`Proc`](#10-proc) — run external commands synchronously, capture stdout/stderr/exit
+11. [Matchers](#11-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
+12. [`Regex`](#12-regex) — linear-time, grapheme-aware regular expressions
+13. [Design notes](#13-design-notes)
+14. [Not included (yet)](#14-not-included-yet)
 
 **Where to find what**
 
@@ -61,6 +62,7 @@ Conventions used below:
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | CLI argument parsing | [§9 Args](#9-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
+| Run an external command | [§10 Proc](#10-proc) — `Proc.run(["git", "status"])` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -1061,7 +1063,70 @@ The `kind` of a thrown value is one of:
 
 ---
 
-## 10. Matchers
+## 10. `Proc`
+
+Run an external command synchronously (blocking) and capture its
+output. The command is an `Array<String>` — `cmd[0]` is the executable
+(PATH-resolved) and the rest are arguments. There is no shell, so no
+quoting or injection concerns: `["git", "commit", "-m", msg]` passes
+`msg` verbatim however it's spelled.
+
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false) -> Object`
+
+Runs `cmd` to completion and returns a result Object:
+
+| field | type | meaning |
+|---|---|---|
+| `code` | `Long` | exit status on normal exit; `-1` when killed by a signal |
+| `stdout` | `String` | everything the command wrote to stdout (captured whole) |
+| `stderr` | `String` | everything it wrote to stderr |
+| `ok` | `Bool` | `true` iff `code == 0` and `signal == nil` |
+| `signal` | `String?` | signal name (`"SIGTERM"`, `"SIGKILL"`, …) if killed, else `nil` |
+
+Keyword arguments:
+
+- `cwd: String` — working directory for the child (default: inherit the parent's).
+- `env: Object` — environment variables, merged onto the parent's so
+  `PATH` and friends survive (default: inherit unchanged). Values must
+  be `String`.
+- `stdin: String` — bytes written to the child's standard input, which
+  is then closed (default: empty).
+- `check: Bool` — when `true`, a non-zero exit or signal death throws
+  `ProcessError` instead of returning a `{ok: false}` result (default: `false`).
+
+A **non-zero exit** or **signal death** is a normal result, not an error —
+branch on `ok` / `code` / `signal`. Only a **spawn failure** (e.g. the
+executable doesn't exist) or a failure under `check: true` throws
+`ProcessError`. Passing a non-Array, a non-String element, or an empty
+command throws `TypeError` / `ValueError`.
+
+```culebra
+# doctest: skip
+let r = Proc.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+if r.ok {
+  IO.puts("on branch " + r.stdout.trim())
+} else {
+  IO.print(r.stderr)
+}
+
+# Feed stdin and read the transformed output.
+let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
+assert_eq(up.stdout, "HELLO\n")
+
+# Run in a directory with an extra env var; throw on failure.
+Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, check: true)
+```
+
+Output is buffered in full, so a command that emits gigabytes will use
+that much memory. stdout and stderr are drained concurrently, so a
+command that fills both will not deadlock.
+
+`Proc.run` is the synchronous primitive; parallel variants
+(`Proc.all` / `Proc.race`) and a live handle (`Proc.spawn`) are planned.
+
+---
+
+## 11. Matchers
 
 Assertion matchers for tests and runtime invariant checks. All ten
 matchers are global names bound on every environment (no `import`
@@ -1151,7 +1216,7 @@ agree without any matcher-specific drift logic.
 
 ---
 
-## 11. `Regex`
+## 12. `Regex`
 
 Linear-time, grapheme-aware regular expressions (engine: `include/regexlib.h`).
 Patterns match by Unicode **extended grapheme cluster**, not code point — `.`
@@ -1220,7 +1285,7 @@ model and resource limits are documented in `docs/regexlib.md`.
 
 ---
 
-## 12. Design notes
+## 13. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1274,7 +1339,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 13. Not included (yet)
+## 14. Not included (yet)
 
 ### Trigonometry
 

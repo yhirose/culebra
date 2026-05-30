@@ -2243,6 +2243,7 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 | `SyntaxError` | AST lowering で検出される構造エラー：`**rest` が末尾でない、`*` 区切りの重複、デフォルト値後に非デフォルト、`let` 付き compound、ループ外の `break` / `continue` 等。該当 function の宣言評価時に発火 | はい |
 | `ShadowError` | §6 のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの `try` が走る前に発火 | **いいえ**（eval 前の analyzer） |
 | `IOError` | `read_file` / `write_file` 等 stdlib ファイル操作失敗；`Tensor.load` 失敗 | はい |
+| `ProcessError` | `Proc.run` の起動失敗（実行ファイルが存在しない等）、または `check: true` での非 0 終了 / シグナル死 | はい |
 | `DropContractError` | `drop` / `iter` / `next` プロパティが非 Function または非 0 引数 Function | はい |
 | `RuntimeError` | 未変換 throw site から伝播した `std::runtime_error` をインタプリタが拾うフォールバック；JIT REPL の session 外 `repl_set`。この場合のみ `e.line == 0` / `e.col == 0` がありうる | はい |
 

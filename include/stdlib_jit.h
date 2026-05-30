@@ -9,6 +9,7 @@
 // before `JIT::run()`.
 
 #include <jit.h>
+#include <proc.h>
 #include <shared.h>
 #include <regexlib.h>
 
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <system_error>
 
 namespace culebra {
 // main.cc (or any embedder) populates this before calling JIT::run.
@@ -712,6 +714,23 @@ class _JitKwargResolver {
     return v;
   }
 
+  // Like take_typed but accepts String or StringView and returns the bytes
+  // as an owned std::string (StringView is non-refcounted, so the release is
+  // a no-op). Absent → nullopt. Lets built-ins accept either string flavor.
+  std::optional<std::string> take_string(std::string_view name) {
+    auto it = merged_.find(name);
+    if (it == merged_.end()) return std::nullopt;
+    auto v = it->second;
+    merged_.erase(it);
+    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
+      _culebra_value_release_impl(v.tag, v.data);
+      fail(std::format("{}: '{}' must be String", ctx_, name));
+    }
+    std::string s(_culebra_str_view(v.tag, v.data));
+    _culebra_value_release_impl(v.tag, v.data);
+    return s;
+  }
+
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
@@ -1082,6 +1101,126 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse_kw(
   return culebra_runtime_json_parse(s, number_mode, lines);
 }
 
+// Shared core for both Proc.run JIT paths (positional trampoline + kwarg
+// adapter). `cmd` must be a TAG_ARRAY of TAG_STRING; cwd/env_over may be
+// null. A spawn failure (or `check` on a non-ok result) throws ProcessError;
+// a normal non-zero exit / signal death is a `{ok:false}` result Object.
+// Does not consume `cmd` — the compile side / trampoline releases it.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
+    int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_over,
+    const std::string& stdin_data, bool check, int64_t line, int64_t col) {
+  if (cmd_tag != TAG_ARRAY) {
+    throw culebra::CulebraError("TypeError",
+        std::format("Proc.run: cmd must be Array at {}:{}.", line, col),
+        line, col);
+  }
+  auto* cmd = reinterpret_cast<JitArray*>(cmd_data);
+  std::vector<std::string> argv;
+  argv.reserve(cmd->size);
+  for (size_t i = 0; i < cmd->size; i++) {
+    const JitValue& e = cmd->items[i];
+    if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError("TypeError",
+          std::format("Proc.run: command elements must be String at {}:{}.",
+                      line, col), line, col);
+    }
+    argv.emplace_back(_culebra_str_view(e.tag, e.data));
+  }
+  if (argv.empty()) {
+    throw culebra::CulebraError("ValueError",
+        std::format("Proc.run: empty command at {}:{}.", line, col),
+        line, col);
+  }
+
+  auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data);
+  if (!oc.spawned) {
+    throw culebra::CulebraError("ProcessError",
+        std::format("Proc.run: {} failed at {}:{}: {}.", oc.err_what, line, col,
+                    std::system_category().message(oc.err_no)),
+        line, col);
+  }
+  if (check && !oc.result.ok) {
+    std::string detail = oc.result.signal.empty()
+        ? std::format("exited with code {}", oc.result.code)
+        : std::format("killed by {}", oc.result.signal);
+    throw culebra::CulebraError("ProcessError",
+        std::format("Proc.run: command {} at {}:{}.", detail, line, col),
+        line, col);
+  }
+
+  const auto& r = oc.result;
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "code", false, TAG_LONG, r.code, line, col);
+  culebra_runtime_object_set(o, "stdout", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(r.out)), line, col);
+  culebra_runtime_object_set(o, "stderr", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(r.err)), line, col);
+  culebra_runtime_object_set(o, "ok", false, TAG_BOOL, r.ok ? 1 : 0, line, col);
+  if (r.signal.empty()) {
+    culebra_runtime_object_set(o, "signal", false, TAG_NIL, 0, line, col);
+  } else {
+    culebra_runtime_object_set(o, "signal", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(r.signal)), line, col);
+  }
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+
+// Positional Proc.run(cmd) (no kwargs) — used by the trampoline and AOT.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run(
+    int8_t cmd_tag, int64_t cmd_data, int64_t line, int64_t col) {
+  return _culebra_proc_run_impl(cmd_tag, cmd_data, nullptr, nullptr,
+                                std::string(), false, line, col);
+}
+
+// Kwarg adapter for Proc.run. Resolves cwd/env/stdin/check (plus `**splat`)
+// via `_JitKwargResolver`, then runs the command. `cmd` is not consumed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
+    int8_t cmd_tag, int64_t cmd_data,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs,
+    int64_t line, int64_t col) {
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
+                       "Proc.run");
+  std::string cwd_str;
+  const std::string* cwd_ptr = nullptr;
+  if (auto v = kw.take_string("cwd")) {
+    cwd_str = std::move(*v);
+    cwd_ptr = &cwd_str;
+  }
+  std::string stdin_data;
+  if (auto v = kw.take_string("stdin")) {
+    stdin_data = std::move(*v);
+  }
+  bool check = false;
+  if (auto v = kw.take_typed("check", TAG_BOOL, "Bool")) {
+    check = v->data != 0;
+  }
+  std::vector<std::pair<std::string, std::string>> overrides;
+  const std::vector<std::pair<std::string, std::string>>* env_ptr = nullptr;
+  if (auto v = kw.take_typed("env", TAG_OBJECT, "Object")) {
+    auto* obj = reinterpret_cast<JitObject*>(v->data);
+    bool bad = false;
+    if (obj->shape) {
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        const JitValue& sv = obj->slots[k].value;
+        if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) {
+          bad = true;
+          break;
+        }
+        overrides.emplace_back(std::string(obj->shape->names[k]),
+                               std::string(_culebra_str_view(sv.tag, sv.data)));
+      }
+    }
+    culebra_runtime_value_release(v->tag, v->data);
+    if (bad) kw.fail("Proc.run: env values must be String", "TypeError");
+    env_ptr = &overrides;
+  }
+  kw.validate_consumed();
+  return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
+                                stdin_data, check, line, col);
+}
+
 }  // extern "C"
 
 // --- JIT compile-side dispatch (extension hook implementation) ---
@@ -1114,6 +1253,11 @@ struct JitExtension {
   // enumeration happens at runtime.
   static llvm::Value* compile_json_kwargs_adapter(
       JIT& jit, std::string_view method, const peg::Ast& argsAst);
+
+  // Marshals Proc.run's positional cmd + cwd/env/stdin/check kwargs (and
+  // `**splat`) into culebra_runtime_proc_run_kw.
+  static llvm::Value* compile_proc_kwargs_adapter(
+      JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
                                          const peg::Ast& argsAst);
@@ -1382,6 +1526,12 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
 }
 
+// Proc. Slow path (first-class `Proc.run` value) is positional-only; the
+// kwargs form goes through compile_proc_kwargs_adapter on the fast path.
+inline JitValue _ns_proc_run(JitValue* a, int64_t) {
+  return culebra_runtime_proc_run(a[0].tag, a[0].data, 0, 0);
+}
+
 // JSON. Slow path is positional-only; the kwargs form goes through
 // compile_json_kwargs_adapter on the fast path.
 inline JitValue _ns_json_stringify(JitValue* a, int64_t) {
@@ -1605,6 +1755,8 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "find_all",    2, &_ns_regex_find_all},
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
+
+  {"Proc",   "run",  1, &_ns_proc_run},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2152,7 +2304,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   // (compile_call → compile_method_call → user-method / UFCS) can
   // handle it — that path supports kwargs against user closures.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
-    static const std::set<std::string_view> kwarg_aware_ns = {"JSON"};
+    static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc"};
     static const std::set<std::string_view> positional_only_ns = {
         "Math", "IO", "FS", "Random", "Sys", "Tensor", "_Time",
     };
@@ -2169,6 +2321,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
+
+  // Proc.run handles cwd/env/stdin/check kwargs (and bare positional) through
+  // one adapter that marshals the ARG_LIST into culebra_runtime_proc_run_kw.
+  if (ns == "Proc" && method == "run") {
+    return compile_proc_kwargs_adapter(jit, argsAst, callAst);
+  }
 
   if (ns == "Math") {
     auto build_block = [&](const char* tag) {
@@ -3049,6 +3207,99 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
   return v;
 }
 
+inline llvm::Value* JitExtension::compile_proc_kwargs_adapter(
+    JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst) {
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
+  using namespace peg::udl;
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto i64Ty = builder_.getInt64Ty();
+
+  // Scan ARG_LIST: exactly one positional (cmd), the rest kwargs / splats.
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+  std::set<std::string_view> seen_explicit;
+  std::vector<const peg::Ast*> splats;
+  bool saw_named = false;
+  for (auto& child : argsAst.nodes) {
+    if (child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+      splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      saw_named = true;
+      auto name = child->nodes[0]->token;
+      if (!seen_explicit.insert(name).second) {
+        throw culebra::CulebraError("TypeError",
+            std::format("duplicate keyword argument '{}'", name),
+            argsAst.line, argsAst.column);
+      }
+      explicit_kwargs.emplace_back(name, child->nodes[1].get());
+    } else {
+      if (saw_named) {
+        throw culebra::CulebraError("SyntaxError",
+            "positional argument follows keyword argument",
+            argsAst.line, argsAst.column);
+      }
+      positional.push_back(child.get());
+    }
+  }
+  if (positional.size() != 1) {
+    throw culebra::CulebraError("ArityError",
+        "Proc.run: expected exactly one positional argument (the command)",
+        argsAst.line, argsAst.column);
+  }
+
+  auto cmd_val = compile(*positional[0]);
+  std::vector<llvm::Constant*> kwKeys;
+  std::vector<llvm::Value*> kwVals;
+  for (auto& [name, ast] : explicit_kwargs) {
+    kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
+    kwVals.push_back(compile(*ast));
+  }
+  std::vector<llvm::Value*> splatVals;
+  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+
+  auto fn = builder_.GetInsertBlock()->getParent();
+  llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto alloc_slab = [&](llvm::Type* ty, size_t n,
+                        const char* name) -> llvm::Value* {
+    if (n == 0) return llvm::ConstantPointerNull::get(ptrTy);
+    return entryB.CreateAlloca(ty, builder_.getInt64(static_cast<int64_t>(n)),
+                              name);
+  };
+  auto store_at = [&](llvm::Value* base, llvm::Type* ty, size_t i,
+                      llvm::Value* val) {
+    auto slot = builder_.CreateInBoundsGEP(
+        ty, base, {builder_.getInt64(static_cast<int64_t>(i))});
+    builder_.CreateStore(val, slot);
+  };
+  auto keysSlab = alloc_slab(ptrTy, kwKeys.size(), "proc.kw.keys");
+  auto valsSlab = alloc_slab(jit.valueType_, kwVals.size(), "proc.kw.vals");
+  auto splatSlab = alloc_slab(jit.valueType_, splatVals.size(),
+                              "proc.kw.splat");
+  for (size_t i = 0; i < kwKeys.size(); i++) {
+    store_at(keysSlab, ptrTy, i, kwKeys[i]);
+    store_at(valsSlab, jit.valueType_, i, kwVals[i]);
+  }
+  for (size_t i = 0; i < splatVals.size(); i++) {
+    store_at(splatSlab, jit.valueType_, i, splatVals[i]);
+  }
+
+  auto lineV = builder_.getInt64(callAst.line);
+  auto colV = builder_.getInt64(callAst.column);
+  auto r = emit_call(
+      module_->getOrInsertFunction(
+          rt::proc_run_kw, jit.valueType_, builder_.getInt8Ty(), i64Ty,
+          i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
+      {extract_tag(cmd_val), extract_data(cmd_val),
+       builder_.getInt64(static_cast<int64_t>(kwVals.size())),
+       keysSlab, valsSlab,
+       builder_.getInt64(static_cast<int64_t>(splatVals.size())),
+       splatSlab, lineV, colV});
+  // proc_run_kw doesn't consume cmd; release it here (like json_parse_kw).
+  emit_value_release(cmd_val);
+  return r;
+}
+
 inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
                                                     std::string_view ns,
                                                     std::string_view prop) {
@@ -3085,7 +3336,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex"};
+      "_Regex",  "Proc"};
   return names.contains(name);
 }
 

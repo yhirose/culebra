@@ -12,7 +12,7 @@
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
 を参照してください。 matcher 一族 (`assert_true` / `assert_eq` /
-`assert_throws` 等) は [§10 Matchers](#10-matchers) で扱います。
+`assert_throws` 等) は [§11 Matchers](#11-matchers) で扱います。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
 [言語仕様 §17](language.ja.md) に規定されています。
 
@@ -40,10 +40,11 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 7. [`Tensor`](#7-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
 8. [`JSON`](#8-json) — stringify / parse の相互変換
 9. [`Args`](#9-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
-10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
-11. [`Regex`](#11-regex) — 線形時間・grapheme 単位の正規表現
-12. [設計上の注記](#12-設計上の注記)
-13. [未収録（将来検討）](#13-未収録将来検討)
+10. [`Proc`](#10-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
+11. [Matchers](#11-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
+12. [`Regex`](#12-regex) — 線形時間・grapheme 単位の正規表現
+13. [設計上の注記](#13-設計上の注記)
+14. [未収録（将来検討）](#14-未収録将来検討)
 
 **目的別索引**
 
@@ -59,6 +60,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | CLI 引数解析 | [§9 Args](#9-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
+| 外部コマンド実行 | [§10 Proc](#10-proc) — `Proc.run(["git", "status"])` |
 | 行列・テンソル演算（BLAS 対応） | [§6 Tensor](#6-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -1027,7 +1029,66 @@ throw 値の `kind` は次のいずれか:
 
 ---
 
-## 10. Matchers
+## 10. `Proc`
+
+外部コマンドを同期（blocking）実行し、その出力を取得します。コマンドは
+`Array<String>` で、`cmd[0]` が実行ファイル（PATH 解決）、残りが引数です。
+シェルを介さないのでクォートやインジェクションの心配がありません
+（`["git", "commit", "-m", msg]` は `msg` をそのまま渡します）。
+
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false) -> Object`
+
+`cmd` を完了まで実行し、結果 Object を返します:
+
+| フィールド | 型 | 意味 |
+|---|---|---|
+| `code` | `Long` | 正常終了時の終了コード。シグナル死した場合は `-1` |
+| `stdout` | `String` | コマンドが stdout に書いた全内容（一括取得） |
+| `stderr` | `String` | stderr に書いた全内容 |
+| `ok` | `Bool` | `code == 0` かつ `signal == nil` のとき `true` |
+| `signal` | `String?` | シグナル死した場合のシグナル名（`"SIGTERM"` 等）、それ以外は `nil` |
+
+キーワード引数:
+
+- `cwd: String` — 子プロセスの作業ディレクトリ（既定: 親を継承）。
+- `env: Object` — 環境変数。親の環境にマージされるので `PATH` 等は維持されます
+  （既定: そのまま継承）。値は `String` であること。
+- `stdin: String` — 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
+  されます（既定: 空）。
+- `check: Bool` — `true` のとき、非 0 終了またはシグナル死で `{ok: false}` を返す
+  代わりに `ProcessError` を throw します（既定: `false`）。
+
+**非 0 終了**や**シグナル死**はエラーではなく通常の結果です — `ok` / `code` /
+`signal` で分岐してください。**起動失敗**（実行ファイルが存在しない等）や
+`check: true` での失敗のみが `ProcessError` を throw します。非 Array・非 String
+要素・空コマンドは `TypeError` / `ValueError` を throw します。
+
+```culebra
+# doctest: skip
+let r = Proc.run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+if r.ok {
+  IO.puts("on branch " + r.stdout.trim())
+} else {
+  IO.print(r.stderr)
+}
+
+# 標準入力を渡して変換結果を読む。
+let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
+assert_eq(up.stdout, "HELLO\n")
+
+# ディレクトリと環境変数を指定し、失敗時に throw。
+Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, check: true)
+```
+
+出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
+stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
+
+`Proc.run` は同期プリミティブです。並列版（`Proc.all` / `Proc.race`）と
+ライブハンドル（`Proc.spawn`）は将来追加予定です。
+
+---
+
+## 11. Matchers
 
 テスト用 / 実行時不変条件チェック用のアサーション matcher。 全 10
 個の matcher が `import` 不要のグローバル名としてすべての環境に
@@ -1112,7 +1173,7 @@ backend が既に実装している演算子 dispatch そのもので、 matcher
 
 ---
 
-## 11. `Regex`
+## 12. `Regex`
 
 線形時間・grapheme 単位の正規表現（エンジン: `include/regexlib.h`）。パターンは
 Unicode の **extended grapheme cluster** 単位でマッチし、コードポイント単位では
@@ -1178,7 +1239,7 @@ d.find("xyz")?.value ?? "none"                   // ?. / ?? と合成可
 
 ---
 
-## 12. 設計上の注記
+## 13. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1232,7 +1293,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 13. 未収録（将来検討）
+## 14. 未収録（将来検討）
 
 ### 三角関数
 

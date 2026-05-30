@@ -1,0 +1,72 @@
+// Conformance: stdlib §Proc. See docs/stdlib.md and docs/language.md.
+//
+// Proc namespace — synchronous external command execution.
+// Tests run on interp, JIT, and AOT via `just test`; identical stdout.
+// Commands are restricted to tools present on every CI host
+// (echo/true/false/cat/env/seq/pwd/sh).
+
+// --- Success round-trip: stdout captured, exit 0, no signal ---
+let r = Proc.run(["echo", "hi"])
+assert_true(r.ok)
+assert_eq(r.code, 0)
+assert_eq(r.stdout, "hi\n")
+assert_eq(r.stdout.trim(), "hi")
+assert_eq(r.stderr, "")
+assert_eq(r.signal, nil)
+
+// --- Exit codes: `true` succeeds, `false` is a normal ok:false result ---
+assert_true(Proc.run(["true"]).ok)
+let f = Proc.run(["false"])
+assert_eq(f.ok, false)
+assert_eq(f.code, 1)
+assert_eq(f.signal, nil)
+
+// --- stdin is fed to the child and then closed ---
+let c = Proc.run(["cat"], stdin: "abc\ndef\n")
+assert_eq(c.stdout, "abc\ndef\n")
+assert_true(c.ok)
+
+// --- env merges onto the parent: MYVAR added, PATH still resolves `env` ---
+let e = Proc.run(["env"], env: {MYVAR: "xyz"})
+assert_true(e.stdout.contains("MYVAR=xyz"))
+assert_true(e.stdout.contains("PATH="))
+
+// --- cwd changes the child's working directory ---
+let tmpdir_env = Sys.env("TMPDIR")
+let tmp_root   = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let workdir    = FS.join(tmp_root, "culebra_proc_test")
+if FS.exists(workdir) { FS.remove(workdir) }
+FS.mkdir(workdir)
+let pw = Proc.run(["pwd"], cwd: workdir)
+// pwd may resolve symlinks (/var -> /private/var), so match the basename.
+assert_true(pw.stdout.trim().contains("culebra_proc_test"))
+FS.remove(workdir)
+
+// --- Large output: 10000 lines must not deadlock on a full pipe buffer ---
+let big = Proc.run(["seq", "1", "10000"])
+assert_true(big.ok)
+assert_eq(big.stdout.split("\n").size(), 10001)  // trailing newline -> empty tail
+
+// --- Signal death is reported distinctly from an exit code ---
+let sig = Proc.run(["sh", "-c", "kill -TERM $$"])
+assert_eq(sig.ok, false)
+assert_eq(sig.signal, "SIGTERM")
+assert_eq(sig.code, -1)
+
+// --- check: true throws ProcessError on a non-zero exit ---
+let chk = try { Proc.run(["false"], check: true); "no-error" } catch e { e.kind }
+assert_eq(chk, "ProcessError")
+// ...and returns normally (no throw) when the command succeeds.
+assert_true(Proc.run(["true"], check: true).ok)
+
+// --- Spawn failure (nonexistent executable) throws ProcessError ---
+let nx = try { Proc.run(["culebra_no_such_cmd_xyzzy"]); "no-error" } catch e { e.kind }
+assert_eq(nx, "ProcessError")
+
+// --- Argument validation ---
+let te = try { Proc.run([1, 2]); "no-error" } catch e { e.kind }
+assert_eq(te, "TypeError")
+let ve = try { Proc.run([]); "no-error" } catch e { e.kind }
+assert_eq(ve, "ValueError")
+
+IO.puts("test_proc OK")

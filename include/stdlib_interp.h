@@ -15,6 +15,7 @@
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
 #include <interpreter.h>
+#include <proc.h>
 #include <regexlib.h>
 
 #include <cctype>
@@ -29,6 +30,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -1182,6 +1184,131 @@ inline Value make_gc_namespace() {
   return Value(std::move(ns));
 }
 
+// Build the `{code, stdout, stderr, ok, signal}` result Object shared by
+// the interp Proc.run lambda. `signal` is nil unless the child was killed.
+inline Value proc_result_to_value(culebra::proc::ProcResult&& r) {
+  ObjectValue obj;
+  obj.initialize("code", Value(r.code), false);
+  obj.initialize("stdout", Value(std::move(r.out)), false);
+  obj.initialize("stderr", Value(std::move(r.err)), false);
+  obj.initialize("ok", Value(r.ok), false);
+  obj.initialize("signal",
+                 r.signal.empty() ? Value() : Value(std::move(r.signal)),
+                 false);
+  return Value(std::move(obj));
+}
+
+// `Proc.run(cmd, cwd=nil, env=nil, stdin="", check=false)` — run an external
+// command synchronously. `cmd` is a non-empty Array<String> (no shell). A
+// non-zero exit or signal death is a normal result (`ok:false`); a spawn
+// failure (or `check:true` on failure) throws ProcessError.
+inline Value make_proc_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  static const auto proc_stdin_default =
+      std::make_shared<Value>(Value(std::string("")));
+  ns.initialize(
+      "run",
+      Value(FunctionValue(
+          {
+              {"cmd", false, "Array"sv},
+              {"cwd", false, ""sv, nullptr, kw_default_nil()},
+              {"env", false, ""sv, nullptr, kw_default_nil()},
+              {"stdin", false, ""sv, nullptr, proc_stdin_default},
+              {"check", false, ""sv, nullptr, kw_default_false()},
+          },
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+
+            const auto& arr = *env->get("cmd").to_array().values;
+            if (arr.empty()) {
+              throw CulebraError("ValueError",
+                  std::format("Proc.run: empty command at {}:{}.", line, col),
+                  line, col);
+            }
+            std::vector<std::string> argv;
+            argv.reserve(arr.size());
+            for (const auto& v : arr) {
+              if (v.type != Value::String && v.type != Value::StringView) {
+                throw CulebraError("TypeError",
+                    std::format("Proc.run: command elements must be String "
+                                "at {}:{}.", line, col), line, col);
+              }
+              argv.emplace_back(v.to_string_view());
+            }
+
+            const auto& cwd_v = env->get("cwd");
+            std::string cwd_str;
+            const std::string* cwd_ptr = nullptr;
+            if (cwd_v.type != Value::Nil) {
+              if (cwd_v.type != Value::String &&
+                  cwd_v.type != Value::StringView) {
+                throw CulebraError("TypeError",
+                    std::format("Proc.run: cwd must be String at {}:{}.",
+                                line, col), line, col);
+              }
+              cwd_str = cwd_v.to_string_view();
+              cwd_ptr = &cwd_str;
+            }
+
+            const auto& env_v = env->get("env");
+            std::vector<std::pair<std::string, std::string>> overrides;
+            const std::vector<std::pair<std::string, std::string>>* env_ptr =
+                nullptr;
+            if (env_v.type != Value::Nil) {
+              if (env_v.type != Value::Object) {
+                throw CulebraError("TypeError",
+                    std::format("Proc.run: env must be Object at {}:{}.",
+                                line, col), line, col);
+              }
+              for (const auto& [k, sym] : *env_v.to_object().properties) {
+                if (sym.val.type != Value::String &&
+                    sym.val.type != Value::StringView) {
+                  throw CulebraError("TypeError",
+                      std::format("Proc.run: env values must be String "
+                                  "at {}:{}.", line, col), line, col);
+                }
+                overrides.emplace_back(std::string(k),
+                                       std::string(sym.val.to_string_view()));
+              }
+              env_ptr = &overrides;
+            }
+
+            const auto& stdin_v = env->get("stdin");
+            if (stdin_v.type != Value::String &&
+                stdin_v.type != Value::StringView) {
+              throw CulebraError("TypeError",
+                  std::format("Proc.run: stdin must be String at {}:{}.",
+                              line, col), line, col);
+            }
+            std::string stdin_data(stdin_v.to_string_view());
+            bool check = env->get("check").to_bool();
+
+            auto oc = culebra::proc::run_command(argv, cwd_ptr, env_ptr,
+                                                 stdin_data);
+            if (!oc.spawned) {
+              throw CulebraError("ProcessError",
+                  std::format("Proc.run: {} failed at {}:{}: {}.",
+                              oc.err_what, line, col,
+                              std::system_category().message(oc.err_no)),
+                  line, col);
+            }
+            if (check && !oc.result.ok) {
+              std::string detail = oc.result.signal.empty()
+                  ? std::format("exited with code {}", oc.result.code)
+                  : std::format("killed by {}", oc.result.signal);
+              throw CulebraError("ProcessError",
+                  std::format("Proc.run: command {} at {}:{}.", detail, line,
+                              col), line, col);
+            }
+            return proc_result_to_value(std::move(oc.result));
+          },
+          "Object"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // --- JSON stringify/parse ---
 
 // Serialize `v`. With `indent > 0` pretty-prints with `indent` spaces
@@ -1865,6 +1992,7 @@ inline void setup_built_in_functions(
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
+  env.initialize("Proc", make_proc_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
