@@ -17,6 +17,7 @@
 
 #include <pthread.h>
 
+#include <algorithm>
 #include <csetjmp>
 #include <cstdint>
 #include <cstdlib>
@@ -70,6 +71,21 @@ class Heap {
     objects_.emplace(p, GcHeader{/*mark=*/0, type_tag, /*generation=*/0,
                                  /*flags=*/0, size});
     live_bytes_ += size;
+    maybe_collect();
+  }
+
+  // Once the runtime has wired the children/roots/sweep callbacks, threshold-
+  // triggered collects (and GC_STRESS's collect-on-every-alloc) become live.
+  bool callbacks_wired() const { return callbacks_wired_; }
+  void mark_callbacks_wired() { callbacks_wired_ = true; }
+
+  // Pin an object as a permanent root (and trace its children). Used for the
+  // few program-lifetime objects built outside jit.h's reach — the cached
+  // namespace objects — so the root enumerator need not cross headers.
+  static constexpr uint8_t kFlagPinned = 1;
+  void pin(void* p) {
+    auto it = objects_.find(p);
+    if (it != objects_.end()) it->second.flags |= kFlagPinned;
   }
 
   // De-register an object whose memory the CALLER frees (RC release-to-zero
@@ -126,6 +142,23 @@ class Heap {
                               std::vector<void*>& out);
   void set_children_fn(ChildrenFn f) { children_fn_ = f; }
 
+  // Extra roots held in containers OUTSIDE any scanned stack — global
+  // tables (module/namespace), REPL globals, the defer stack, the
+  // exception carrier, multimethod bodies. The runtime registers one
+  // enumerator that pushes every such live object pointer; the marker
+  // calls it each collection. Missing a source here would let the
+  // backstop free a still-live object, so this must be exhaustive.
+  using RootFn = void (*)(std::vector<void*>& out);
+  void set_extra_roots_fn(RootFn f) { extra_roots_fn_ = f; }
+
+  // Backstop reclaimer for an unmarked object: frees the object's C++
+  // buffers (items/slots/sidecars/captures) and `delete`s the struct —
+  // WITHOUT firing `drop` and WITHOUT recursively releasing children
+  // (they are reclaimed by their own sweep). Set by the JIT runtime; the
+  // standalone heap has no struct layout so falls back to free_object.
+  using SweepFn = void (*)(void* obj, uint8_t type_tag);
+  void set_sweep_fn(SweepFn f) { sweep_fn_ = f; }
+
   // Full conservative mark-sweep. Returns objects reclaimed. MUST be
   // called directly on the mutator thread (scan walks this thread's stack
   // for roots). Non-moving.
@@ -149,6 +182,27 @@ class Heap {
   }
 
  private:
+  // GC_STRESS=1 collects on every allocation (SpiderMonkey gcZeal style) so a
+  // missing root or a teardown bug surfaces immediately under the test suite.
+  static bool stress() {
+    static const bool s = std::getenv("CULEBRA_GC_STRESS") != nullptr;
+    return s;
+  }
+
+  // Threshold-triggered collect, run from adopt(). Only fires once the runtime
+  // has wired its callbacks (the standalone heap collects explicitly), and
+  // adapts the next threshold to the post-collect live set to keep the
+  // amortised cost ~constant while bounding peak RSS.
+  static constexpr size_t kMinThreshold = 100000;
+  void maybe_collect() {
+    if (!callbacks_wired_) return;
+    if (++alloc_since_collect_ < collect_threshold_) return;
+    alloc_since_collect_ = 0;
+    collect();
+    collect_threshold_ =
+        stress() ? 1 : std::max(kMinThreshold, objects_.size() * 2);
+  }
+
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
@@ -163,6 +217,13 @@ class Heap {
         work.push_back(o);
       }
     };
+    // Pinned objects are always roots.
+    for (auto& kv : objects_) {
+      if (kv.second.flags & kFlagPinned && !kv.second.mark) {
+        kv.second.mark = 1;
+        work.push_back(kv.first);
+      }
+    }
     seed(push);
 
     std::vector<void*> kids;
@@ -176,13 +237,25 @@ class Heap {
       }
     }
 
-    // Sweep unmarked. Real wiring runs each object's C++ destructor here
-    // (RAII frees items/slots/sidecars); the isolated heap just frees.
+    // Sweep unmarked. With a runtime sweep_fn the object is a `new`d JIT
+    // struct: de-register it (before delete, so a re-entrant lookup can't
+    // see it), then run the buffer-teardown + delete. Without one (the
+    // standalone heap) fall back to free_object's malloc/free + poison.
     std::vector<void*> dead;
     for (const auto& kv : objects_) {
       if (!kv.second.mark) dead.push_back(kv.first);
     }
-    for (void* p : dead) free_object(p);
+    for (void* p : dead) {
+      if (sweep_fn_) {
+        auto it = objects_.find(p);
+        uint8_t tag = it->second.type_tag;
+        live_bytes_ -= it->second.size;
+        objects_.erase(it);
+        sweep_fn_(p, tag);
+      } else {
+        free_object(p);
+      }
+    }
     return dead.size();
   }
 
@@ -208,6 +281,13 @@ class Heap {
     scan_range(sp, base, cb);
     for (void** slot : global_roots_) {
       if (slot && is_object(*slot)) cb(*slot);
+    }
+    if (extra_roots_fn_) {
+      extra_roots_.clear();
+      extra_roots_fn_(extra_roots_);
+      for (void* o : extra_roots_) {
+        if (is_object(o)) cb(o);
+      }
     }
   }
 
@@ -250,8 +330,14 @@ class Heap {
 
   std::unordered_map<void*, GcHeader> objects_;
   std::vector<void**> global_roots_;
+  std::vector<void*> extra_roots_;  // scratch reused across collections
   ChildrenFn children_fn_ = nullptr;
+  RootFn extra_roots_fn_ = nullptr;
+  SweepFn sweep_fn_ = nullptr;
   size_t live_bytes_ = 0;
+  bool callbacks_wired_ = false;
+  size_t alloc_since_collect_ = 0;
+  size_t collect_threshold_ = stress() ? 1 : kMinThreshold;
 };
 
 }  // namespace culebra::gc

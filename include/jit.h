@@ -1037,8 +1037,26 @@ inline _GcTracker& _gc() { return _GcTracker::instance(); }
 // per-Runtime slot as the old _GcTracker — under CULEBRA_NEW_GC the tracker
 // path is compiled out, so the slot holds exactly one collector. The heap is
 // default-constructible, satisfying runtime_substate<T>'s `new T()`.
+// Backstop collector callbacks (defined below, after the runtime types they
+// walk). Forward-declared here so _gc_heap() can wire them on first use.
+// extern "C++": this sits inside the surrounding extern "C" block, but the
+// definitions below carry C++ linkage (they take std::vector&).
+extern "C++" {
+void _jit_gc_enumerate_children(void* obj, uint8_t type_tag,
+                                std::vector<void*>& out);
+void _jit_gc_enumerate_roots(std::vector<void*>& out);
+void _jit_gc_sweep_object(void* obj, uint8_t type_tag);
+}
+
 inline culebra::gc::Heap& _gc_heap() {
-  return culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
+  auto& h = culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
+  if (!h.callbacks_wired()) {
+    h.set_children_fn(&_jit_gc_enumerate_children);
+    h.set_extra_roots_fn(&_jit_gc_enumerate_roots);
+    h.set_sweep_fn(&_jit_gc_sweep_object);
+    h.mark_callbacks_wired();  // arms threshold/stress collects (must be last)
+  }
+  return h;
 }
 #endif  // CULEBRA_NEW_GC
 
@@ -4097,6 +4115,126 @@ struct JitReplGlobals {
 // their signature. One REPL session per thread.
 inline thread_local JitReplGlobals* _jit_repl_globals_current = nullptr;
 
+#ifdef CULEBRA_NEW_GC
+extern "C++" {  // C++ linkage (these take std::vector&); we sit in extern "C"
+// --- Backstop collector callbacks (forward-declared near _gc_heap) ---------
+// Push a JitValue's heap pointer as a GC child/root if it is refcounted.
+inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
+  if (v.data && _is_refcounted_value_tag(v.tag))
+    out.push_back(reinterpret_cast<void*>(v.data));
+}
+
+// Children of a live object, for the mark phase. Mirrors the legacy
+// `_GcTracker::enumerate_children`, but pushes raw pointers (the heap re-reads
+// the tag from its registry). Captures (Cells) and `proto` are direct object
+// pointers; all other children are refcounted JitValue payloads.
+inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
+                                       std::vector<void*>& out) {
+  switch (tag) {
+    case GC_TAG_FUNC: {
+      auto* c = static_cast<JitClosure*>(obj);
+      for (size_t i = 0; i < c->n_captures; i++)
+        if (c->captures[i]) out.push_back(c->captures[i]);
+      break;
+    }
+    case GC_TAG_ARRAY:
+    case GC_TAG_TUPLE: {
+      auto* a = static_cast<JitArray*>(obj);
+      for (size_t i = 0; i < a->size; i++) _gc_push_value(out, a->items[i]);
+      break;
+    }
+    case GC_TAG_SET: {
+      auto* s = static_cast<JitSet*>(obj);
+      for (auto& m : s->members) _gc_push_value(out, m);
+      break;
+    }
+    case GC_TAG_OBJECT: {
+      auto* o = static_cast<JitObject*>(obj);
+      for (auto& e : o->slots) _gc_push_value(out, e.value);
+      if (o->key_order && o->non_string_props) {
+        for (const auto& k : *o->key_order) {
+          _gc_push_value(out, k);
+          if (k.tag == TAG_STRING) continue;
+          auto it = o->non_string_props->find(k);
+          if (it != o->non_string_props->end())
+            _gc_push_value(out, it->second.value);
+        }
+      }
+      if (o->proto) out.push_back(o->proto);
+      break;
+    }
+    case GC_TAG_CELL:
+      _gc_push_value(out, static_cast<JitCell*>(obj)->value);
+      break;
+  }
+}
+
+// Roots held in containers outside any scanned stack. Exhaustive over the
+// jit.h-local global tables; the cached namespace objects (built in
+// stdlib_jit.h) are instead pinned at creation, so they need no entry here.
+inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
+  for (auto& [_, v] : _jit_module_table()) _gc_push_value(out, v);
+  for (auto& [_, methods] : _jit_trait_default_impls())
+    for (auto& [__, cls] : methods)
+      if (cls) out.push_back(cls);
+  for (auto& [_, entries] : _jit_multimethods())
+    for (auto& e : entries)
+      if (e.body) out.push_back(e.body);
+  for (auto& [cls, _] : _jit_multifn_dispatcher_names())
+    if (cls) out.push_back(cls);
+  if (_jit_repl_globals_current)
+    for (auto& [_, v] : _jit_repl_globals_current->by_name)
+      _gc_push_value(out, v);
+  for (auto& v : _culebra_defer_stack()) _gc_push_value(out, v);
+  auto& rt = culebra::current_runtime();
+  if (rt.thrown_data)
+    _gc_push_value(out, JitValue{rt.thrown_tag, rt.thrown_data});
+}
+
+// Backstop reclaim of one unmarked object: free its owned C++ buffers and
+// `delete` the struct. NO `drop`, NO recursive child release — children are
+// reclaimed by their own sweep entry, so each object is freed exactly once.
+inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
+  switch (tag) {
+    case GC_TAG_FUNC: {
+      auto* c = static_cast<JitClosure*>(obj);
+      std::free(c->captures);
+      delete c;
+      break;
+    }
+    case GC_TAG_ARRAY:
+    case GC_TAG_TUPLE: {
+      auto* a = static_cast<JitArray*>(obj);
+      delete[] a->items;
+      delete a;
+      break;
+    }
+    case GC_TAG_OBJECT: {
+      auto* o = static_cast<JitObject*>(obj);
+      delete o->key_order;
+      delete o->non_string_props;
+      delete o;
+      break;
+    }
+#ifndef CULEBRA_RT_NO_TENSOR
+    case GC_TAG_TENSOR:
+      delete static_cast<JitTensor*>(obj);  // ~JitTensor drops the shared_ptr
+      break;
+#endif
+    case GC_TAG_SET: {
+      auto* s = static_cast<JitSet*>(obj);
+      delete s->index;
+      delete s;
+      break;
+    }
+    case GC_TAG_CELL:
+      delete static_cast<JitCell*>(obj);
+      break;
+  }
+}
+}  // extern "C++"
+#endif  // CULEBRA_NEW_GC
+
 // Out-parameter style avoids any ABI surprise around 16-byte struct
 // return on ARM64 macOS (where LLVM's regs-vs-sret choice for
 // `{i8, i64}` didn't agree with the C++ side for this entry).
@@ -4390,9 +4528,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
   c->refcount = 1;
   c->fn_ptr = fn_ptr;
   c->n_captures = n_captures;
+  // calloc (zero-init): the caller fills captures[i] after this returns, and a
+  // collect in that window would otherwise read uninitialised slots as roots.
   c->captures =
       n_captures ? static_cast<JitCell**>(
-                       std::malloc(sizeof(JitCell*) * n_captures))
+                       std::calloc(n_captures, sizeof(JitCell*)))
                  : nullptr;
   c->arity = arity;
   _gc_register(c, GC_TAG_FUNC);
@@ -15855,9 +15995,11 @@ struct JIT {
     // any plain trailing statement would run).
     struct CollectGuard {
       ~CollectGuard() {
-#ifndef CULEBRA_NEW_GC
+#ifdef CULEBRA_NEW_GC
+        _gc_heap().collect();  // reclaim leaked residue before module teardown
+#else
         _GcTracker::instance().collect();
-#endif  // CULEBRA_NEW_GC: allocate-only in commit 2; sweep wired in commit 3
+#endif
       }
     } collect_guard;
     try {

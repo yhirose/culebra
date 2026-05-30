@@ -393,10 +393,18 @@ localised future change rather than a second rewrite.
     (allocate-only). CI builds both.
 
   Phase 0 ships nothing user-visible; it de-risks Phase 1.
-- **Phase 1 — conservative full mark-sweep.** Conservative root scan +
-  mark (reuse `enumerate_children`) + sweep (struct dtors). **Delete all
-  manual RC** (§7). Acceptance: full suite green under GC stress; the
-  leak regression tests pass on JIT; microgpt JIT RSS flat across steps.
+- **Phase 1 — conservative full mark-sweep backstop. DONE (2026-05-30).**
+  Conservative root scan + explicit container roots (module/namespace tables,
+  trait-default + multimethod closures, REPL globals, defer stack, exception
+  carrier; cached namespace objects pinned) + mark (`enumerate_children`) +
+  sweep (per-type buffer teardown, NO `drop`, NO recursive child release).
+  Manual RC is **kept** (§2 revision corrected §7's "delete all RC"); the
+  collector runs as a backstop on a threshold (adaptive `max(100k, live*2)`),
+  at `GC.stat()`, and at exit, with `CULEBRA_GC_STRESS=1` collecting every
+  allocation. Achieved: the three leak gates pass on JIT, the full suite is
+  interp/JIT symmetric (the self-closure gate is JIT-only green — interp
+  cannot break the cycle), the suite is crash-free under GC stress (root
+  set is complete), OFF is unchanged, and microgpt JIT RSS is flat.
 - **Phase 2 — generational.** `generation` byte, promotion, write
   barrier + card table, minor/major. Acceptance: throughput recovered
   to ≥ current on the benchmark set, still green under stress.
