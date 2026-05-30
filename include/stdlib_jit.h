@@ -1101,6 +1101,86 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse_kw(
   return culebra_runtime_json_parse(s, number_mode, lines);
 }
 
+// Build the `{code, stdout, stderr, ok, signal, error}` result Object shared
+// by Proc.run/all/race. Spawned => process result with `error` nil; a spawn
+// failure => `ok:false` with the message in `error` (Proc.all's allSettled
+// error representation).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_proc_outcome_to_object(
+    const culebra::proc::RunOutcome& oc, int64_t line, int64_t col) {
+  auto* o = culebra_runtime_object_new();
+  if (oc.spawned) {
+    const auto& r = oc.result;
+    culebra_runtime_object_set(o, "code", false, TAG_LONG, r.code, line, col);
+    culebra_runtime_object_set(o, "stdout", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(r.out)), line, col);
+    culebra_runtime_object_set(o, "stderr", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(r.err)), line, col);
+    culebra_runtime_object_set(o, "ok", false, TAG_BOOL, r.ok ? 1 : 0, line, col);
+    if (r.signal.empty()) {
+      culebra_runtime_object_set(o, "signal", false, TAG_NIL, 0, line, col);
+    } else {
+      culebra_runtime_object_set(o, "signal", false, TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(r.signal)), line, col);
+    }
+    culebra_runtime_object_set(o, "error", false, TAG_NIL, 0, line, col);
+  } else {
+    culebra_runtime_object_set(o, "code", false, TAG_LONG, -1, line, col);
+    culebra_runtime_object_set(o, "stdout", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(std::string(""))), line, col);
+    culebra_runtime_object_set(o, "stderr", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(std::string(""))), line, col);
+    culebra_runtime_object_set(o, "ok", false, TAG_BOOL, 0, line, col);
+    culebra_runtime_object_set(o, "signal", false, TAG_NIL, 0, line, col);
+    std::string msg = std::format("{} failed: {}", oc.err_what,
+                                  std::system_category().message(oc.err_no));
+    culebra_runtime_object_set(o, "error", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(msg)), line, col);
+  }
+  return o;
+}
+
+// Parse a TAG_ARRAY of TAG_ARRAY<String> into argv vectors (for Proc.all/race).
+// Elements accept String or StringView. Empty inner command => ValueError.
+inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
+    int8_t commands_tag, int64_t commands_data, const char* ctx,
+    int64_t line, int64_t col) {
+  if (commands_tag != TAG_ARRAY) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: commands must be Array at {}:{}.", ctx, line, col),
+        line, col);
+  }
+  auto* outer = reinterpret_cast<JitArray*>(commands_data);
+  std::vector<std::vector<std::string>> commands;
+  commands.reserve(outer->size);
+  for (size_t i = 0; i < outer->size; i++) {
+    const JitValue& cv = outer->items[i];
+    if (cv.tag != TAG_ARRAY) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: each command must be an Array of String at {}:{}.",
+                      ctx, line, col), line, col);
+    }
+    auto* inner = reinterpret_cast<JitArray*>(cv.data);
+    if (inner->size == 0) {
+      throw culebra::CulebraError("ValueError",
+          std::format("{}: empty command at {}:{}.", ctx, line, col),
+          line, col);
+    }
+    std::vector<std::string> argv;
+    argv.reserve(inner->size);
+    for (size_t j = 0; j < inner->size; j++) {
+      const JitValue& e = inner->items[j];
+      if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
+        throw culebra::CulebraError("TypeError",
+            std::format("{}: command elements must be String at {}:{}.",
+                        ctx, line, col), line, col);
+      }
+      argv.emplace_back(_culebra_str_view(e.tag, e.data));
+    }
+    commands.push_back(std::move(argv));
+  }
+  return commands;
+}
+
 // Shared core for both Proc.run JIT paths (positional trampoline + kwarg
 // adapter). `cmd` must be a TAG_ARRAY of TAG_STRING; cwd/env_over may be
 // null. A spawn failure (or `check` on a non-ok result) throws ProcessError;
@@ -1149,21 +1229,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
         line, col);
   }
 
-  const auto& r = oc.result;
-  auto* o = culebra_runtime_object_new();
-  culebra_runtime_object_set(o, "code", false, TAG_LONG, r.code, line, col);
-  culebra_runtime_object_set(o, "stdout", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(r.out)), line, col);
-  culebra_runtime_object_set(o, "stderr", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(r.err)), line, col);
-  culebra_runtime_object_set(o, "ok", false, TAG_BOOL, r.ok ? 1 : 0, line, col);
-  if (r.signal.empty()) {
-    culebra_runtime_object_set(o, "signal", false, TAG_NIL, 0, line, col);
-  } else {
-    culebra_runtime_object_set(o, "signal", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_culebra_heap_str(r.signal)), line, col);
-  }
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
 }
 
 // Positional Proc.run(cmd) (no kwargs) — used by the trampoline and AOT.
@@ -1221,6 +1288,60 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
                                 stdin_data, check, line, col);
 }
 
+// Proc.all core (shared by trampoline + kwarg adapter). `commands` is not
+// consumed. Returns an Array of result Objects (allSettled, input order).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
+    int8_t commands_tag, int64_t commands_data, int64_t limit,
+    int64_t line, int64_t col) {
+  auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
+                                               "Proc.all", line, col);
+  if (limit < 0) limit = 0;
+  auto outcomes =
+      culebra::proc::run_all(commands, static_cast<size_t>(limit));
+  auto* arr = culebra_runtime_array_new();
+  for (auto& oc : outcomes) {
+    auto* o = _culebra_proc_outcome_to_object(oc, line, col);
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
+
+// Positional Proc.all(commands) (no kwargs) — trampoline / AOT.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all(
+    int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
+  return _culebra_proc_all_impl(commands_tag, commands_data, 0, line, col);
+}
+
+// Kwarg adapter for Proc.all (resolves `limit`). `commands` is not consumed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
+    int8_t commands_tag, int64_t commands_data,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
+                       "Proc.all");
+  int64_t limit = 0;
+  if (auto v = kw.take_typed("limit", TAG_LONG, "Long")) limit = v->data;
+  kw.validate_consumed();
+  return _culebra_proc_all_impl(commands_tag, commands_data, limit, line, col);
+}
+
+// Proc.race(commands) — first to finish wins, the rest are killed. `commands`
+// is not consumed. Empty list throws ValueError.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
+    int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
+  auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
+                                               "Proc.race", line, col);
+  if (commands.empty()) {
+    throw culebra::CulebraError("ValueError",
+        std::format("Proc.race: empty command list at {}:{}.", line, col),
+        line, col);
+  }
+  auto [winner, oc] = culebra::proc::run_race(commands);
+  (void)winner;
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
+}
+
 }  // extern "C"
 
 // --- JIT compile-side dispatch (extension hook implementation) ---
@@ -1254,10 +1375,13 @@ struct JitExtension {
   static llvm::Value* compile_json_kwargs_adapter(
       JIT& jit, std::string_view method, const peg::Ast& argsAst);
 
-  // Marshals Proc.run's positional cmd + cwd/env/stdin/check kwargs (and
-  // `**splat`) into culebra_runtime_proc_run_kw.
-  static llvm::Value* compile_proc_kwargs_adapter(
-      JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst);
+  // Marshals a `(single positional, kwargs..., **splat)` ARG_LIST into a
+  // runtime `_kw` function (cmd_tag, cmd_data, keys/vals slabs, splat slab,
+  // line, col). Shared by Proc.run (rt::proc_run_kw) and Proc.all
+  // (rt::proc_all_kw); the positional is released after the call.
+  static llvm::Value* compile_single_positional_kwargs(
+      JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
+      const char* ctx, const char* rt_name);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
                                          const peg::Ast& argsAst);
@@ -1526,10 +1650,16 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
 }
 
-// Proc. Slow path (first-class `Proc.run` value) is positional-only; the
-// kwargs form goes through compile_proc_kwargs_adapter on the fast path.
+// Proc. Slow path (first-class `Proc.*` value) is positional-only; the kwargs
+// form (run/all) goes through compile_single_positional_kwargs on the fast path.
 inline JitValue _ns_proc_run(JitValue* a, int64_t) {
   return culebra_runtime_proc_run(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_proc_all(JitValue* a, int64_t) {
+  return culebra_runtime_proc_all(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_proc_race(JitValue* a, int64_t) {
+  return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
 
 // JSON. Slow path is positional-only; the kwargs form goes through
@@ -1757,6 +1887,8 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "split",       2, &_ns_regex_split},
 
   {"Proc",   "run",  1, &_ns_proc_run},
+  {"Proc",   "all",  1, &_ns_proc_all},
+  {"Proc",   "race", 1, &_ns_proc_race},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2322,10 +2454,16 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
 
-  // Proc.run handles cwd/env/stdin/check kwargs (and bare positional) through
-  // one adapter that marshals the ARG_LIST into culebra_runtime_proc_run_kw.
+  // Proc.run / Proc.all route their (positional + kwargs) ARG_LIST through one
+  // marshaller into the matching `_kw` runtime fn. Proc.race is positional-only
+  // and falls through to the namespace-object trampoline.
   if (ns == "Proc" && method == "run") {
-    return compile_proc_kwargs_adapter(jit, argsAst, callAst);
+    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.run",
+                                            rt::proc_run_kw);
+  }
+  if (ns == "Proc" && method == "all") {
+    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.all",
+                                            rt::proc_all_kw);
   }
 
   if (ns == "Math") {
@@ -3207,14 +3345,15 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
   return v;
 }
 
-inline llvm::Value* JitExtension::compile_proc_kwargs_adapter(
-    JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst) {
+inline llvm::Value* JitExtension::compile_single_positional_kwargs(
+    JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
+    const char* ctx, const char* rt_name) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   using namespace peg::udl;
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto i64Ty = builder_.getInt64Ty();
 
-  // Scan ARG_LIST: exactly one positional (cmd), the rest kwargs / splats.
+  // Scan ARG_LIST: exactly one positional, the rest kwargs / splats.
   std::vector<const peg::Ast*> positional;
   std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
   std::set<std::string_view> seen_explicit;
@@ -3244,7 +3383,7 @@ inline llvm::Value* JitExtension::compile_proc_kwargs_adapter(
   }
   if (positional.size() != 1) {
     throw culebra::CulebraError("ArityError",
-        "Proc.run: expected exactly one positional argument (the command)",
+        std::format("{}: expected exactly one positional argument", ctx),
         argsAst.line, argsAst.column);
   }
 
@@ -3288,14 +3427,14 @@ inline llvm::Value* JitExtension::compile_proc_kwargs_adapter(
   auto colV = builder_.getInt64(callAst.column);
   auto r = emit_call(
       module_->getOrInsertFunction(
-          rt::proc_run_kw, jit.valueType_, builder_.getInt8Ty(), i64Ty,
+          rt_name, jit.valueType_, builder_.getInt8Ty(), i64Ty,
           i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
       {extract_tag(cmd_val), extract_data(cmd_val),
        builder_.getInt64(static_cast<int64_t>(kwVals.size())),
        keysSlab, valsSlab,
        builder_.getInt64(static_cast<int64_t>(splatVals.size())),
        splatSlab, lineV, colV});
-  // proc_run_kw doesn't consume cmd; release it here (like json_parse_kw).
+  // The _kw fn doesn't consume the positional; release it here.
   emit_value_release(cmd_val);
   return r;
 }

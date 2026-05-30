@@ -6250,6 +6250,7 @@ inline constexpr auto json_stringify_kw   = "culebra_runtime_json_stringify_kw";
 inline constexpr auto json_parse          = "culebra_runtime_json_parse";
 inline constexpr auto json_parse_kw       = "culebra_runtime_json_parse_kw";
 inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
+inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";

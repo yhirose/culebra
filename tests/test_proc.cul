@@ -69,4 +69,46 @@ assert_eq(te, "TypeError")
 let ve = try { Proc.run([]); "no-error" } catch e { e.kind }
 assert_eq(ve, "ValueError")
 
+// --- Proc.all: parallel, results in input order, error nil on success ---
+let rs = Proc.all([["echo", "a"], ["echo", "b"], ["echo", "c"]])
+assert_eq(rs.size(), 3)
+assert_eq(rs[0].stdout.trim(), "a")
+assert_eq(rs[1].stdout.trim(), "b")
+assert_eq(rs[2].stdout.trim(), "c")
+assert_true(rs[0].ok)
+assert_eq(rs[0].error, nil)
+
+// --- allSettled: a non-zero exit and a spawn failure don't abort the rest ---
+let mix = Proc.all([["true"], ["false"], ["culebra_no_such_cmd_xyzzy"]])
+assert_eq(mix.size(), 3)
+assert_true(mix[0].ok)
+assert_eq(mix[1].ok, false)
+assert_eq(mix[1].code, 1)
+assert_eq(mix[1].error, nil)         // ran, just exited non-zero
+assert_eq(mix[2].ok, false)
+assert_true(mix[2].error != nil)     // failed to spawn
+
+// --- limit caps concurrency; all commands still complete ---
+let lim = Proc.all([["echo", "1"], ["echo", "2"], ["echo", "3"], ["echo", "4"]], limit: 2)
+assert_eq(lim.size(), 4)
+
+// --- Large output across several children must not deadlock (CLOEXEC) ---
+let big = Proc.all([["seq", "1", "5000"], ["seq", "1", "5000"], ["seq", "1", "5000"]])
+assert_eq(big[0].stdout.split("\n").size(), 5001)
+assert_eq(big[2].stdout.split("\n").size(), 5001)
+
+// --- Empty list: all -> [], race -> ValueError ---
+assert_eq(Proc.all([]).size(), 0)
+let re = try { Proc.race([]); "no-error" } catch e { e.kind }
+assert_eq(re, "ValueError")
+
+// --- Proc.race: fastest wins, the rest are killed (does not block on sleep) ---
+let win = Proc.race([["sleep", "5"], ["echo", "fast"]])
+assert_eq(win.stdout.trim(), "fast")
+assert_true(win.ok)
+
+// --- Type errors on malformed command lists ---
+let ne = try { Proc.all([["echo"], "notarray"]); "no-error" } catch e { e.kind }
+assert_eq(ne, "TypeError")
+
 IO.puts("test_proc OK")

@@ -1047,6 +1047,7 @@ throw 値の `kind` は次のいずれか:
 | `stderr` | `String` | stderr に書いた全内容 |
 | `ok` | `Bool` | `code == 0` かつ `signal == nil` のとき `true` |
 | `signal` | `String?` | シグナル死した場合のシグナル名（`"SIGTERM"` 等）、それ以外は `nil` |
+| `error` | `String?` | 起動失敗時のメッセージ。コマンドが実際に走った場合は常に `nil`。これを設定するのは `Proc.all`（allSettled のエラー表現）のみで、`Proc.run` では起動失敗は throw されるため常に `nil`。 |
 
 キーワード引数:
 
@@ -1083,8 +1084,46 @@ Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, chec
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
 stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
-`Proc.run` は同期プリミティブです。並列版（`Proc.all` / `Proc.race`）と
-ライブハンドル（`Proc.spawn`）は将来追加予定です。
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>) -> Array<Object>`
+
+複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
+`Array<String>`（`Proc.run` の第1引数と同形）。同時実行数は最大 `limit`（既定 =
+オンライン CPU 数。絞るには小さい値、広げるには大きい値を渡す）。
+
+これは **allSettled** です。1個の失敗が他を巻き込みません。走って非 0 終了した
+コマンドは `{ok: false, code: N, error: nil}`、そもそも起動できなかった（実行
+ファイルが無い等）コマンドは `{ok: false, error: "<メッセージ>"}` で、どちらも
+throw しません。空リストは `[]` を返します。
+
+```culebra
+# doctest: skip
+let results = Proc.all([
+  ["git", "fetch", "origin"],
+  ["npm", "test"],
+  ["cargo", "build"],
+], limit: 2)
+for r in results {
+  if !r.ok { IO.print(r.error ?? r.stderr) }
+}
+```
+
+### `Proc.race(commands: Array<Array<String>>) -> Object`
+
+全コマンドを起動し、**最初に完了した1個**の結果 Object を返し、残りに `SIGKILL`
+を送って reap します。冗長なプロバイダの競争や「最速のミラーが勝ち」に有用。空
+リストは `ValueError` を throw します。
+
+```culebra
+# doctest: skip
+let fastest = Proc.race([
+  ["curl", "-s", "https://mirror-a.example/file"],
+  ["curl", "-s", "https://mirror-b.example/file"],
+])
+IO.print(fastest.stdout)
+```
+
+`Proc.run` / `Proc.all` / `Proc.race` は同期プリミティブです。ライブハンドル
+（`Proc.spawn`）と `timeout:` は将来追加予定です。
 
 ---
 

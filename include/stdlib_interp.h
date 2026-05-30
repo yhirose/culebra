@@ -1186,16 +1186,67 @@ inline Value make_gc_namespace() {
 
 // Build the `{code, stdout, stderr, ok, signal}` result Object shared by
 // the interp Proc.run lambda. `signal` is nil unless the child was killed.
-inline Value proc_result_to_value(culebra::proc::ProcResult&& r) {
+// Build the `{code, stdout, stderr, ok, signal, error}` result Object shared
+// by Proc.run/all/race. A spawned outcome carries the process result with
+// `error` nil; a spawn failure carries `ok:false` and the failure message in
+// `error` (this is how Proc.all reports allSettled errors without throwing).
+inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
   ObjectValue obj;
-  obj.initialize("code", Value(r.code), false);
-  obj.initialize("stdout", Value(std::move(r.out)), false);
-  obj.initialize("stderr", Value(std::move(r.err)), false);
-  obj.initialize("ok", Value(r.ok), false);
-  obj.initialize("signal",
-                 r.signal.empty() ? Value() : Value(std::move(r.signal)),
-                 false);
+  if (oc.spawned) {
+    auto& r = oc.result;
+    obj.initialize("code", Value(r.code), false);
+    obj.initialize("stdout", Value(std::move(r.out)), false);
+    obj.initialize("stderr", Value(std::move(r.err)), false);
+    obj.initialize("ok", Value(r.ok), false);
+    obj.initialize("signal",
+                   r.signal.empty() ? Value() : Value(std::move(r.signal)),
+                   false);
+    obj.initialize("error", Value(), false);
+  } else {
+    obj.initialize("code", Value(static_cast<long>(-1)), false);
+    obj.initialize("stdout", Value(std::string("")), false);
+    obj.initialize("stderr", Value(std::string("")), false);
+    obj.initialize("ok", Value(false), false);
+    obj.initialize("signal", Value(), false);
+    obj.initialize("error",
+        Value(std::format("{} failed: {}", oc.err_what,
+                          std::system_category().message(oc.err_no))),
+        false);
+  }
   return Value(std::move(obj));
+}
+
+// Validate and convert an Array of command Arrays into argv vectors. Used by
+// Proc.all / Proc.race. Each element must be a non-empty Array<String>.
+inline std::vector<std::vector<std::string>> proc_parse_command_list(
+    const std::vector<Value>& outer, const char* ctx, long line, long col) {
+  std::vector<std::vector<std::string>> commands;
+  commands.reserve(outer.size());
+  for (const auto& cv : outer) {
+    if (cv.type != Value::Array) {
+      throw CulebraError("TypeError",
+          std::format("{}: each command must be an Array of String at {}:{}.",
+                      ctx, line, col), line, col);
+    }
+    const auto& inner = *cv.to_array().values;
+    if (inner.empty()) {
+      throw CulebraError("ValueError",
+          std::format("{}: empty command at {}:{}.", ctx, line, col),
+          line, col);
+    }
+    std::vector<std::string> argv;
+    argv.reserve(inner.size());
+    for (const auto& e : inner) {
+      if (e.type != Value::String && e.type != Value::StringView) {
+        throw CulebraError("TypeError",
+            std::format("{}: command elements must be String at {}:{}.",
+                        ctx, line, col), line, col);
+      }
+      argv.emplace_back(e.to_string_view());
+    }
+    commands.push_back(std::move(argv));
+  }
+  return commands;
 }
 
 // `Proc.run(cmd, cwd=nil, env=nil, stdin="", check=false)` — run an external
@@ -1302,10 +1353,66 @@ inline Value make_proc_namespace() {
                   std::format("Proc.run: command {} at {}:{}.", detail, line,
                               col), line, col);
             }
-            return proc_result_to_value(std::move(oc.result));
+            return proc_outcome_to_value(std::move(oc));
           },
           "Object"sv)),
       false);
+
+  // `Proc.all(commands, limit=0)` — run each command (an Array<String>) with
+  // at most `limit` concurrent children (0 => CPU count). allSettled: returns
+  // an Array of result Objects in input order; a spawn failure is a result
+  // with `ok:false` and `error` set, never a throw.
+  ns.initialize(
+      "all",
+      Value(FunctionValue(
+          {
+              {"commands", false, "Array"sv},
+              {"limit", false, ""sv, nullptr, kw_default_zero()},
+          },
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto commands = proc_parse_command_list(
+                *env->get("commands").to_array().values, "Proc.all", line, col);
+            long lim = env->get("limit").to_long();
+            if (lim < 0) lim = 0;
+            auto outcomes = culebra::proc::run_all(
+                commands, static_cast<size_t>(lim));
+            ArrayValue av;
+            av.values->reserve(outcomes.size());
+            for (auto& oc : outcomes) {
+              av.values->emplace_back(proc_outcome_to_value(std::move(oc)));
+            }
+            return Value(std::move(av));
+          },
+          "Array"sv)),
+      false);
+
+  // `Proc.race(commands)` — start every command, return the first to finish
+  // and SIGKILL the rest. Returns a single result Object (the winner's; if it
+  // failed to spawn, `ok:false` + `error`). Empty list throws ValueError.
+  ns.initialize(
+      "race",
+      Value(FunctionValue(
+          {{"commands", false, "Array"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto commands = proc_parse_command_list(
+                *env->get("commands").to_array().values, "Proc.race", line,
+                col);
+            if (commands.empty()) {
+              throw CulebraError("ValueError",
+                  std::format("Proc.race: empty command list at {}:{}.", line,
+                              col), line, col);
+            }
+            auto [winner, oc] = culebra::proc::run_race(commands);
+            (void)winner;
+            return proc_outcome_to_value(std::move(oc));
+          },
+          "Object"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 

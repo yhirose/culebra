@@ -1,18 +1,24 @@
 #pragma once
 
-// Type-neutral POSIX process execution core for Proc.run.
+// Type-neutral POSIX process execution core for the Proc namespace.
 //
 // No dependency on culebra Value / JitValue / GC: both the interp and JIT
-// backends call run_command() and adapt RunOutcome into their own object
+// backends call these and adapt RunOutcome into their own object
 // representation. Keeping this header value-neutral lets stdlib_interp.h and
 // stdlib_jit.h include it without pulling each other in.
 //
-// run_command() runs one external command synchronously (blocking), captures
-// stdout/stderr without deadlocking (poll-multiplexed drain), optionally feeds
-// stdin, and reports signal death distinctly from a normal exit code.
+//   run_command — one command, blocking. Captures stdout/stderr without
+//                 deadlocking (poll-multiplexed drain), optionally feeds stdin,
+//                 reports signal death distinctly from a normal exit code.
+//   run_all     — N commands, <= limit concurrent, allSettled, input order.
+//   run_race    — N commands, first to finish wins; the rest are killed.
+//
+// run_command / run_all / run_race share one spawn + drain + reap core
+// (the drain loop is the most deadlock-prone code, so it lives once).
 
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <fcntl.h>
 #include <poll.h>
 #include <string>
@@ -68,9 +74,10 @@ inline void set_nonblocking(int fd) {
 }
 
 // Restores the previous SIGPIPE disposition on scope exit. We must ignore
-// SIGPIPE while writing the child's stdin: if the child exits early and closes
+// SIGPIPE while writing a child's stdin: if the child exits early and closes
 // its read end, the write would otherwise kill the culebra process. Process-
-// global, so this assumes Proc.run runs on the main thread (true for MVP).
+// global, so this assumes Proc runs on the main thread (true for MVP). One
+// guard wraps a whole batch — never nest per child.
 struct SigpipeGuard {
   struct sigaction old_sa{};
   bool active = false;
@@ -88,38 +95,71 @@ struct SigpipeGuard {
   SigpipeGuard& operator=(const SigpipeGuard&) = delete;
 };
 
-}  // namespace _detail
+// One running (or finished) child. Owns its three parent-side fds; move-only
+// so fd ownership transfers cleanly (default move would copy fd ints and
+// double-close). The destructor only closes fds — reaping is explicit.
+struct Child {
+  pid_t pid = -1;
+  int in_fd = -1, out_fd = -1, err_fd = -1;       // parent ends; -1 == closed.
+  bool in_open = false, out_open = false, err_open = false;
+  const std::string* stdin_data = nullptr;        // points into caller storage.
+  size_t in_off = 0, index = 0;                   // index = position in input.
+  std::string out, err;
+  RunOutcome outcome;                             // filled on spawn-fail or reap.
+  bool done = false;                              // terminal (spawn-fail/reaped).
 
-// Runs argv[0] (PATH-resolved) synchronously.
-//   cwd            : working directory, or nullptr to inherit.
-//   env_overrides  : key/value pairs merged onto the parent environment
-//                    (parent kept so PATH survives), or nullptr to inherit.
-//   stdin_data     : bytes written to the child's stdin, then closed.
-// timeout_ms is reserved for a future kwarg and currently ignored.
-inline RunOutcome run_command(
+  Child() = default;
+  Child(Child&& o) noexcept { *this = std::move(o); }
+  Child& operator=(Child&& o) noexcept {
+    if (this != &o) {
+      pid = o.pid; in_fd = o.in_fd; out_fd = o.out_fd; err_fd = o.err_fd;
+      in_open = o.in_open; out_open = o.out_open; err_open = o.err_open;
+      stdin_data = o.stdin_data; in_off = o.in_off; index = o.index;
+      out = std::move(o.out); err = std::move(o.err);
+      outcome = std::move(o.outcome); done = o.done;
+      o.pid = -1; o.in_fd = o.out_fd = o.err_fd = -1;
+      o.in_open = o.out_open = o.err_open = false;
+    }
+    return *this;
+  }
+  Child(const Child&) = delete;
+  Child& operator=(const Child&) = delete;
+  ~Child() {
+    if (in_fd >= 0) close(in_fd);
+    if (out_fd >= 0) close(out_fd);
+    if (err_fd >= 0) close(err_fd);
+  }
+};
+
+// poll() slot indices for one child's open fds within a shared pollfd array.
+struct Slots { int out = -1, err = -1, in = -1; };
+
+// Forks+execs one command. On any pre-exec failure returns a Child with
+// done=true and outcome.spawned=false (its slot still occupies index). On
+// success returns a live Child with out/err_open=true and in_open iff a
+// non-empty stdin payload was given.
+inline Child spawn_child(
     const std::vector<std::string>& argv,
     const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
-    const std::string& stdin_data,
-    long /*timeout_ms*/ = 0) {
-  RunOutcome oc;
+    const std::string* stdin_data,
+    size_t index) {
+  Child c;
+  c.index = index;
+  c.stdin_data = stdin_data;
   if (argv.empty()) {
-    oc.err_no = EINVAL;
-    oc.err_what = "argv";
-    return oc;
+    c.outcome.err_no = EINVAL;
+    c.outcome.err_what = "argv";
+    c.done = true;
+    return c;
   }
 
-  _detail::SigpipeGuard sigpipe_guard;
-
-  // Build the argv pointer array before fork (no malloc between fork/exec).
+  // Build argv/envp before fork (no malloc between fork and exec).
   std::vector<char*> cargv;
   cargv.reserve(argv.size() + 1);
   for (const auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
   cargv.push_back(nullptr);
 
-  // Build a merged envp before fork when overrides are present. Start from the
-  // parent environ (so PATH etc. survive — execvp needs PATH), drop any keys
-  // the caller overrides, then append the overrides.
   const bool custom_env = (env_overrides != nullptr);
   std::vector<std::string> env_storage;
   std::vector<char*> cenvp;
@@ -148,35 +188,28 @@ inline RunOutcome run_command(
     if (p[0] >= 0) close(p[0]);
     if (p[1] >= 0) close(p[1]);
   };
-  auto fail_pipe = [&](void) {
-    oc.err_no = errno;
-    oc.err_what = "pipe";
+  auto fail = [&](const char* what) -> Child {
+    c.outcome.err_no = errno;
+    c.outcome.err_what = what;
+    c.done = true;
     close_pair(out_pipe);
     close_pair(err_pipe);
     close_pair(in_pipe);
     close_pair(exec_pipe);
-    return oc;
+    return std::move(c);
   };
-  if (pipe(out_pipe) != 0) return fail_pipe();
-  if (pipe(err_pipe) != 0) return fail_pipe();
-  if (pipe(in_pipe) != 0) return fail_pipe();
-  if (pipe(exec_pipe) != 0) return fail_pipe();
+  if (pipe(out_pipe) != 0) return fail("pipe");
+  if (pipe(err_pipe) != 0) return fail("pipe");
+  if (pipe(in_pipe) != 0) return fail("pipe");
+  if (pipe(exec_pipe) != 0) return fail("pipe");
 
-  // The exec_pipe carries the child's errno to the parent if exec/chdir fails;
+  // exec_pipe carries the child's errno to the parent on exec/chdir failure;
   // CLOEXEC closes it automatically on a successful exec (parent sees EOF).
   fcntl(exec_pipe[0], F_SETFD, FD_CLOEXEC);
   fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC);
 
   pid_t pid = fork();
-  if (pid < 0) {
-    oc.err_no = errno;
-    oc.err_what = "fork";
-    close_pair(out_pipe);
-    close_pair(err_pipe);
-    close_pair(in_pipe);
-    close_pair(exec_pipe);
-    return oc;
-  }
+  if (pid < 0) return fail("fork");
 
   if (pid == 0) {
     // ---- child: only async-signal-safe calls between fork and exec ----
@@ -202,12 +235,12 @@ inline RunOutcome run_command(
   }
 
   // ---- parent ----
-  close(in_pipe[0]);  in_pipe[0] = -1;
-  close(out_pipe[1]); out_pipe[1] = -1;
-  close(err_pipe[1]); err_pipe[1] = -1;
-  close(exec_pipe[1]); exec_pipe[1] = -1;
+  c.pid = pid;
+  close(in_pipe[0]);
+  close(out_pipe[1]);
+  close(err_pipe[1]);
+  close(exec_pipe[1]);
 
-  // exec/chdir failure: a readable exec_pipe means the child wrote its errno.
   int child_errno = 0;
   ssize_t er;
   do {
@@ -220,103 +253,317 @@ inline RunOutcome run_command(
     close(err_pipe[0]);
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-    oc.err_no = child_errno;
-    oc.err_what = "execvp";
-    return oc;
+    c.pid = -1;
+    c.outcome.err_no = child_errno;
+    c.outcome.err_what = "execvp";
+    c.done = true;
+    return c;
   }
 
-  // Drain stdout/stderr and feed stdin via a single poll loop so neither side
-  // can deadlock on a full pipe buffer.
-  _detail::set_nonblocking(out_pipe[0]);
-  _detail::set_nonblocking(err_pipe[0]);
-  _detail::set_nonblocking(in_pipe[1]);
-
-  std::string out, err;
-  size_t in_off = 0;
-  bool out_open = true, err_open = true, in_open = true;
-  if (stdin_data.empty()) {
-    close(in_pipe[1]);
-    in_pipe[1] = -1;
-    in_open = false;
+  // Success: retain the parent ends. CLOEXEC so a later fork (sibling child)
+  // does NOT inherit them — otherwise the sibling holds this child's pipe read
+  // ends open and this child's EOF never arrives (multi-child deadlock).
+  c.out_fd = out_pipe[0];
+  c.err_fd = err_pipe[0];
+  c.in_fd = in_pipe[1];
+  c.out_open = c.err_open = c.in_open = true;
+  fcntl(c.out_fd, F_SETFD, FD_CLOEXEC);
+  fcntl(c.err_fd, F_SETFD, FD_CLOEXEC);
+  fcntl(c.in_fd, F_SETFD, FD_CLOEXEC);
+  set_nonblocking(c.out_fd);
+  set_nonblocking(c.err_fd);
+  set_nonblocking(c.in_fd);
+  if (!stdin_data || stdin_data->empty()) {
+    close(c.in_fd);
+    c.in_fd = -1;
+    c.in_open = false;
   }
+  return c;
+}
 
-  char buf[65536];
-  while (out_open || err_open || in_open) {
-    struct pollfd fds[3];
-    int idx_out = -1, idx_err = -1, idx_in = -1, nfds = 0;
-    if (out_open) { fds[nfds] = {out_pipe[0], POLLIN, 0};  idx_out = nfds++; }
-    if (err_open) { fds[nfds] = {err_pipe[0], POLLIN, 0};  idx_err = nfds++; }
-    if (in_open)  { fds[nfds] = {in_pipe[1], POLLOUT, 0};  idx_in = nfds++; }
+// Append a child's open fds to fds[], recording their slot indices.
+inline Slots fill_pollfds(Child& c, std::vector<pollfd>& fds) {
+  Slots s;
+  if (c.out_open) { fds.push_back({c.out_fd, POLLIN, 0});  s.out = (int)fds.size() - 1; }
+  if (c.err_open) { fds.push_back({c.err_fd, POLLIN, 0});  s.err = (int)fds.size() - 1; }
+  if (c.in_open)  { fds.push_back({c.in_fd, POLLOUT, 0});  s.in = (int)fds.size() - 1; }
+  return s;
+}
 
-    int pr = poll(fds, nfds, -1);
-    if (pr < 0) {
+// Consume one child's revents after poll(): drain stdout/stderr, push stdin.
+// Closes a fd (and clears its flag) on EOF/error.
+inline void apply_revents(Child& c, const Slots& s,
+                          const std::vector<pollfd>& fds, char* buf,
+                          size_t buflen) {
+  auto drain = [&](int idx, int& fd, std::string& dst, bool& open_flag) {
+    if (idx < 0) return;
+    if (!(fds[idx].revents & (POLLIN | POLLHUP | POLLERR))) return;
+    for (;;) {
+      ssize_t n = read(fd, buf, buflen);
+      if (n > 0) { dst.append(buf, static_cast<size_t>(n)); continue; }
+      if (n == 0) { open_flag = false; break; }
       if (errno == EINTR) continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+      open_flag = false;
       break;
     }
+    if (!open_flag) { close(fd); fd = -1; }
+  };
+  drain(s.out, c.out_fd, c.out, c.out_open);
+  drain(s.err, c.err_fd, c.err, c.err_open);
 
-    auto drain = [&](int idx, int fd, std::string& dst, bool& open_flag) {
-      if (idx < 0) return;
-      if (!(fds[idx].revents & (POLLIN | POLLHUP | POLLERR))) return;
-      for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
-        if (n > 0) { dst.append(buf, static_cast<size_t>(n)); continue; }
-        if (n == 0) { open_flag = false; break; }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-        open_flag = false;
-        break;
-      }
-    };
-    drain(idx_out, out_pipe[0], out, out_open);
-    drain(idx_err, err_pipe[0], err, err_open);
-
-    if (idx_in >= 0 && (fds[idx_in].revents & (POLLOUT | POLLERR | POLLHUP))) {
-      if (fds[idx_in].revents & (POLLERR | POLLHUP)) {
-        close(in_pipe[1]);
-        in_pipe[1] = -1;
-        in_open = false;
-      } else {
-        ssize_t n = write(in_pipe[1], stdin_data.data() + in_off,
-                          stdin_data.size() - in_off);
-        if (n > 0) {
-          in_off += static_cast<size_t>(n);
-          if (in_off >= stdin_data.size()) {
-            close(in_pipe[1]);
-            in_pipe[1] = -1;
-            in_open = false;
-          }
-        } else if (n < 0 && errno != EINTR && errno != EAGAIN &&
-                   errno != EWOULDBLOCK) {
-          close(in_pipe[1]);
-          in_pipe[1] = -1;
-          in_open = false;
+  if (s.in >= 0 && (fds[s.in].revents & (POLLOUT | POLLERR | POLLHUP))) {
+    if (fds[s.in].revents & (POLLERR | POLLHUP)) {
+      close(c.in_fd);
+      c.in_fd = -1;
+      c.in_open = false;
+    } else {
+      const std::string& sd = *c.stdin_data;
+      ssize_t n = write(c.in_fd, sd.data() + c.in_off, sd.size() - c.in_off);
+      if (n > 0) {
+        c.in_off += static_cast<size_t>(n);
+        if (c.in_off >= sd.size()) {
+          close(c.in_fd);
+          c.in_fd = -1;
+          c.in_open = false;
         }
+      } else if (n < 0 && errno != EINTR && errno != EAGAIN &&
+                 errno != EWOULDBLOCK) {
+        close(c.in_fd);
+        c.in_fd = -1;
+        c.in_open = false;
       }
     }
   }
+}
 
-  if (in_pipe[1] >= 0) close(in_pipe[1]);
-  close(out_pipe[0]);
-  close(err_pipe[0]);
+// One scheduler step: poll every running child once and drain its revents.
+// Returns false only on a fatal poll() error (caller should stop); EINTR is
+// retried internally. A step with no open fds is a no-op returning true.
+inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen) {
+  std::vector<pollfd> fds;
+  std::vector<Slots> slots(running.size());
+  bool any_fd = false;
+  for (size_t k = 0; k < running.size(); k++) {
+    slots[k] = fill_pollfds(running[k], fds);
+    if (running[k].out_open || running[k].err_open || running[k].in_open)
+      any_fd = true;
+  }
+  if (!any_fd) return true;
+  int pr;
+  do {
+    pr = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
+  } while (pr < 0 && errno == EINTR);
+  if (pr < 0) return false;
+  for (size_t k = 0; k < running.size(); k++)
+    apply_revents(running[k], slots[k], fds, buf, buflen);
+  return true;
+}
 
+// waitpid the child (EINTR-safe), decode status into outcome, close stray fds.
+// Call only once both pipes are EOF. Returns the filled RunOutcome.
+inline RunOutcome reap_child(Child& c) {
+  if (c.in_fd >= 0)  { close(c.in_fd);  c.in_fd = -1; }
+  if (c.out_fd >= 0) { close(c.out_fd); c.out_fd = -1; }
+  if (c.err_fd >= 0) { close(c.err_fd); c.err_fd = -1; }
   int status = 0;
-  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-
+  while (waitpid(c.pid, &status, 0) < 0 && errno == EINTR) {}
+  c.pid = -1;
   ProcResult r;
-  r.out = std::move(out);
-  r.err = std::move(err);
+  r.out = std::move(c.out);
+  r.err = std::move(c.err);
   if (WIFEXITED(status)) {
     r.code = WEXITSTATUS(status);
-    r.signal.clear();
     r.ok = (r.code == 0);
   } else if (WIFSIGNALED(status)) {
     r.code = -1;
     r.signal = signal_name(WTERMSIG(status));
     r.ok = false;
   }
-  oc.spawned = true;
-  oc.result = std::move(r);
-  return oc;
+  c.outcome.spawned = true;
+  c.outcome.result = std::move(r);
+  c.done = true;
+  return std::move(c.outcome);
+}
+
+// SIGKILL every survivor, then reap them all. Two passes so they die in
+// parallel rather than serially.
+inline void kill_and_reap(std::vector<Child>& cs) {
+  for (auto& c : cs) {
+    if (c.pid > 0) kill(c.pid, SIGKILL);
+    if (c.in_fd >= 0)  { close(c.in_fd);  c.in_fd = -1; }
+    if (c.out_fd >= 0) { close(c.out_fd); c.out_fd = -1; }
+    if (c.err_fd >= 0) { close(c.err_fd); c.err_fd = -1; }
+  }
+  for (auto& c : cs) {
+    if (c.pid <= 0) continue;
+    int st = 0;
+    while (waitpid(c.pid, &st, 0) < 0 && errno == EINTR) {}
+    c.pid = -1;
+  }
+}
+
+// Default concurrency = online CPU count, capped so limit*3 fds stay well
+// under the typical RLIMIT_NOFILE (256 on macOS).
+inline size_t default_limit() {
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  size_t cpu = (n > 0) ? static_cast<size_t>(n) : 4;
+  return cpu < 64 ? cpu : 64;
+}
+
+// Kills + reaps any still-running children if the scheduler unwinds early
+// (exception). The central anti-zombie guarantee; disarm() on clean exit.
+struct ScopeKiller {
+  std::vector<Child>& running;
+  bool armed = true;
+  explicit ScopeKiller(std::vector<Child>& r) : running(r) {}
+  void disarm() { armed = false; }
+  ~ScopeKiller() { if (armed) kill_and_reap(running); }
+  ScopeKiller(const ScopeKiller&) = delete;
+  ScopeKiller& operator=(const ScopeKiller&) = delete;
+};
+
+}  // namespace _detail
+
+// Runs argv[0] (PATH-resolved) synchronously.
+//   cwd            : working directory, or nullptr to inherit.
+//   env_overrides  : key/value pairs merged onto the parent environment
+//                    (parent kept so PATH survives), or nullptr to inherit.
+//   stdin_data     : bytes written to the child's stdin, then closed.
+// timeout_ms is reserved for a future kwarg and currently ignored.
+inline RunOutcome run_command(
+    const std::vector<std::string>& argv,
+    const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const std::string& stdin_data,
+    long /*timeout_ms*/ = 0) {
+  _detail::SigpipeGuard guard;
+  const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
+  _detail::Child c =
+      _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+  if (c.done) return std::move(c.outcome);
+
+  char buf[65536];
+  while (c.out_open || c.err_open || c.in_open) {
+    std::vector<pollfd> fds;
+    auto s = _detail::fill_pollfds(c, fds);
+    int pr = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
+    if (pr < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    _detail::apply_revents(c, s, fds, buf, sizeof(buf));
+  }
+  return _detail::reap_child(c);
+}
+
+// Runs every command with at most `limit` concurrent children (0 => default).
+// allSettled: a failure never aborts the others; a spawn failure is reported
+// as RunOutcome.spawned==false at its index. Results are returned in input
+// order. cwd/env are shared across the batch; `stdins`, if given, is one
+// payload per command.
+inline std::vector<RunOutcome> run_all(
+    const std::vector<std::vector<std::string>>& commands,
+    size_t limit = 0,
+    const std::string* cwd = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<std::string>* stdins = nullptr) {
+  size_t n = commands.size();
+  std::vector<RunOutcome> results(n);
+  if (n == 0) return results;
+  if (limit == 0) limit = _detail::default_limit();
+  if (limit > n) limit = n;
+
+  _detail::SigpipeGuard guard;
+  std::vector<_detail::Child> running;
+  running.reserve(limit);
+  _detail::ScopeKiller killer(running);
+  size_t next = 0, finished = 0;
+
+  auto launch = [&](size_t i) {
+    const std::string* sp =
+        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+    _detail::Child c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    if (c.done) {
+      results[i] = std::move(c.outcome);
+      ++finished;
+    } else {
+      running.push_back(std::move(c));
+    }
+  };
+  while (next < limit) launch(next++);
+
+  char buf[65536];
+  while (finished < n) {
+    if (!_detail::poll_step(running, buf, sizeof(buf))) break;
+    // Reap finished children (both pipes EOF), then backfill to keep <= limit.
+    for (size_t k = 0; k < running.size();) {
+      _detail::Child& c = running[k];
+      if (!c.out_open && !c.err_open && !c.in_open) {
+        results[c.index] = _detail::reap_child(c);
+        ++finished;
+        running.erase(running.begin() + k);
+        if (next < n) launch(next++);
+      } else {
+        ++k;
+      }
+    }
+  }
+  _detail::kill_and_reap(running);  // reap survivors on a poll-error break
+  killer.disarm();
+  return results;
+}
+
+// Runs up to `limit` (0 => all) commands and returns the first to finish
+// (winner index + its RunOutcome); every other started child is SIGKILLed and
+// reaped before returning. A command that fails to spawn finishes instantly
+// and can win. Empty input => {SIZE_MAX, RunOutcome{}}.
+inline std::pair<size_t, RunOutcome> run_race(
+    const std::vector<std::vector<std::string>>& commands,
+    size_t limit = 0,
+    const std::string* cwd = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<std::string>* stdins = nullptr) {
+  size_t n = commands.size();
+  if (n == 0) return {SIZE_MAX, RunOutcome{}};
+  if (limit == 0 || limit > n) limit = n;
+
+  _detail::SigpipeGuard guard;
+  std::vector<_detail::Child> running;
+  running.reserve(limit);
+  _detail::ScopeKiller killer(running);
+
+  size_t winner = SIZE_MAX;
+  RunOutcome win_oc;
+  for (size_t i = 0; i < limit && winner == SIZE_MAX; i++) {
+    const std::string* sp =
+        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+    _detail::Child c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    if (c.done) {
+      winner = i;
+      win_oc = std::move(c.outcome);
+    } else {
+      running.push_back(std::move(c));
+    }
+  }
+
+  char buf[65536];
+  while (winner == SIZE_MAX && !running.empty()) {
+    if (!_detail::poll_step(running, buf, sizeof(buf))) break;
+    for (size_t k = 0; k < running.size(); k++) {
+      _detail::Child& c = running[k];
+      if (!c.out_open && !c.err_open && !c.in_open) {
+        winner = c.index;
+        win_oc = _detail::reap_child(c);
+        running.erase(running.begin() + k);
+        break;
+      }
+    }
+  }
+
+  _detail::kill_and_reap(running);
+  killer.disarm();
+  return {winner, std::move(win_oc)};
 }
 
 }  // namespace culebra::proc

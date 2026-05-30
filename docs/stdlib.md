@@ -1082,6 +1082,7 @@ Runs `cmd` to completion and returns a result Object:
 | `stderr` | `String` | everything it wrote to stderr |
 | `ok` | `Bool` | `true` iff `code == 0` and `signal == nil` |
 | `signal` | `String?` | signal name (`"SIGTERM"`, `"SIGKILL"`, …) if killed, else `nil` |
+| `error` | `String?` | spawn-failure message; `nil` whenever the command actually ran. Only `Proc.all` sets this (its allSettled errors) — for `Proc.run` it is always `nil`, since a spawn failure throws instead. |
 
 Keyword arguments:
 
@@ -1121,8 +1122,48 @@ Output is buffered in full, so a command that emits gigabytes will use
 that much memory. stdout and stderr are drained concurrently, so a
 command that fills both will not deadlock.
 
-`Proc.run` is the synchronous primitive; parallel variants
-(`Proc.all` / `Proc.race`) and a live handle (`Proc.spawn`) are planned.
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>) -> Array<Object>`
+
+Runs many commands in parallel and returns their result Objects in input
+order. Each command is its own `Array<String>` (same form as `Proc.run`'s
+first argument). At most `limit` run at once — `limit` defaults to the
+online CPU count; pass a smaller number to throttle, a larger one to widen.
+
+This is **allSettled**: one command failing never aborts the others. A
+command that ran and exited non-zero is `{ok: false, code: N, error: nil}`;
+a command that *couldn't start* (e.g. the executable doesn't exist) is
+`{ok: false, error: "<message>"}` — neither throws. An empty list returns `[]`.
+
+```culebra
+# doctest: skip
+let results = Proc.all([
+  ["git", "fetch", "origin"],
+  ["npm", "test"],
+  ["cargo", "build"],
+], limit: 2)
+for r in results {
+  if !r.ok { IO.print(r.error ?? r.stderr) }
+}
+```
+
+### `Proc.race(commands: Array<Array<String>>) -> Object`
+
+Starts every command, returns the result Object of the **first to finish**,
+and sends `SIGKILL` to the rest (then reaps them). Useful for racing
+redundant providers or "first mirror to respond wins". An empty list throws
+`ValueError`.
+
+```culebra
+# doctest: skip
+let fastest = Proc.race([
+  ["curl", "-s", "https://mirror-a.example/file"],
+  ["curl", "-s", "https://mirror-b.example/file"],
+])
+IO.print(fastest.stdout)
+```
+
+`Proc.run` / `Proc.all` / `Proc.race` are the synchronous primitives; a live
+handle (`Proc.spawn`) and `timeout:` are planned.
 
 ---
 
