@@ -1411,18 +1411,9 @@ inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
 }
-inline JitValue _ns_tensor_sigmoid(JitValue* a, int64_t) {
-  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
-      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Sigmoid)));
-}
-inline JitValue _ns_tensor_relu(JitValue* a, int64_t) {
-  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
-      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Relu)));
-}
-inline JitValue _ns_tensor_softmax(JitValue* a, int64_t) {
-  return _ns_adapt::v_tensor(culebra_runtime_tensor_unary(
-      _ns_adapt::take_tensor(a[0]), static_cast<int64_t>(culebra::Op::Softmax)));
-}
+// Activations relu/sigmoid/softmax are Tensor instance methods
+// (`t.relu()`), dispatched in compile_builtin_method — not namespace
+// functions.
 inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
   for (int64_t i = 0; i < n; i++) {
     if (auto* t = _ns_adapt::take_tensor(a[i])) {
@@ -1623,9 +1614,6 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
   {"Tensor", "from",      1, &_ns_tensor_from},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv},
-  {"Tensor", "sigmoid",   1, &_ns_tensor_sigmoid},
-  {"Tensor", "relu",      1, &_ns_tensor_relu},
-  {"Tensor", "softmax",   1, &_ns_tensor_softmax},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
 #endif
 };
@@ -2923,23 +2911,8 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_value_release(arg);
       return make_tensor(t);
     }
-    if ((method == "sigmoid" || method == "relu" || method == "softmax") &&
-        argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "Tensor",
-                      method == "sigmoid" ? "Tensor.sigmoid argument"
-                    : method == "relu"    ? "Tensor.relu argument"
-                                          : "Tensor.softmax argument");
-      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      int op_id = method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
-                : method == "relu"    ? static_cast<int>(culebra::Op::Relu)
-                                      : static_cast<int>(culebra::Op::Softmax);
-      auto t = emit_call(
-          module_->getFunction(rt::tensor_unary),
-          {ap, builder_.getInt64(op_id)});
-      emit_value_release(arg);
-      return make_tensor(t);
-    }
+    // Activations relu/sigmoid/softmax are Tensor instance methods
+    // (`t.relu()`), handled in JIT::compile_builtin_method.
     if (method == "eval") {
       // Variadic: each arg must be a Tensor; we just call eval_one
       // on each and release. No alloca needed.

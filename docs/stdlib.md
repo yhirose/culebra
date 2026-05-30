@@ -748,17 +748,18 @@ b1 = b1 - d1.sum(1).reshape([N_HID, 1]) * lr
 Tensor.eval(W1, b1, W2, b2)              # evaluate all four in one pass
 ```
 
-### Activation functions (namespace functions)
+### Activation functions
 
-These are namespace functions, not methods (`.relu()` etc.), to avoid
-clashing with the convention of users defining `relu` as a class
-method (microGPT's `Value.relu()`, for instance).
+Instance methods on a Tensor. A user class may still define its own
+`relu` / `sigmoid` / `softmax` (e.g. microGPT's `Value.relu()`) — method
+lookup gives the class method priority over the builtin, so there is no
+clash.
 
 ```culebra
 # doctest: skip
-let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
-let r = Tensor.relu(x)           # max(0, x)
-let p = Tensor.softmax(logits)   # over the last axis, online-stable
+let h = z.sigmoid()        # 1/(1+exp(-z)) elementwise
+let r = x.relu()           # max(0, x)
+let p = logits.softmax()   # over the last axis, online-stable
 ```
 
 ### Tensor methods

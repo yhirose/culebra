@@ -267,11 +267,11 @@ let atav = AtA.to_array()
 # AtA[2,2] = 3*3 + 6*6 = 45
 assert_eq(to_string(atav), "[[17.0, 22.0, 27.0], [22.0, 29.0, 36.0], [27.0, 36.0, 45.0]]")
 
-# --- M4.1: activations (sigmoid / relu / softmax as namespace fns) ---
+# --- M4.1: activations (sigmoid / relu / softmax as instance methods) ---
 
 # sigmoid: 1/(1+exp(-x))
 let zero_t = Tensor.zeros(2, 2)
-let half = Tensor.sigmoid(zero_t)
+let half = zero_t.sigmoid()
 Tensor.eval(half)
 # sigmoid(0) = 0.5
 let hv = half.to_array()
@@ -279,12 +279,12 @@ assert_eq(to_string(hv), "[[0.5, 0.5], [0.5, 0.5]]")
 
 # relu: max(0, x)
 let mixed = Tensor.from([[-1.0, 0.0, 2.0], [3.0, -4.0, 0.0]])
-let rl = Tensor.relu(mixed).to_array()
+let rl = mixed.relu().to_array()
 assert_eq(to_string(rl), "[[0.0, 0.0, 2.0], [3.0, 0.0, 0.0]]")
 
 # softmax: each row sums to 1
 let logits = Tensor.from([[1.0, 2.0, 3.0], [1.0, 1.0, 1.0]])
-let sm = Tensor.softmax(logits)
+let sm = logits.softmax()
 Tensor.eval(sm)
 # Row 1: uniform → [1/3, 1/3, 1/3]
 let smv = sm.to_array()

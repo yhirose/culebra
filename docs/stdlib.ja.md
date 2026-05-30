@@ -728,17 +728,18 @@ b1 = b1 - d1.sum(1).reshape([N_HID, 1]) * lr
 Tensor.eval(W1, b1, W2, b2)              # 4 つを 1 パスで評価
 ```
 
-### 活性化関数（名前空間関数）
+### 活性化関数
 
-メソッド形式（`.relu()` 等）にしないのは、ユーザのクラスメソッドで
-`relu` を定義する慣習（microgpt の `Value.relu()` など）と衝突する
-ため。
+Tensor のインスタンスメソッドです。ユーザのクラスが独自に `relu` /
+`sigmoid` / `softmax` を定義していても（microgpt の `Value.relu()`
+など）、メソッド解決はクラスメソッドをビルトインより優先するため衝突
+しません。
 
 ```culebra
 # doctest: skip
-let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
-let r = Tensor.relu(x)           # max(0, x)
-let p = Tensor.softmax(logits)   # 最終軸で online stable
+let h = z.sigmoid()        # 1/(1+exp(-z)) elementwise
+let r = x.relu()           # max(0, x)
+let p = logits.softmax()   # 最終軸で online stable
 ```
 
 ### Tensor のメソッド

@@ -6,11 +6,15 @@
 
 class Box {
   new(tag) { this._tag = tag }
-  // shadows Array.find / String.split / Array.map / number min(...)
+  // shadows Array.find / String.split / Array.map / Tensor.relu / ...
   find(x) { "box-find:" + to_string(x) }
   split(x) { "box-split:" + to_string(x) }
   map(x) { "box-map:" + to_string(x) }
   match(x) { "box-match:" + to_string(x) }
+  // relu/sigmoid are Tensor builtin methods; a user class (cf. microgpt's
+  // Value.relu()) must still reach its own definition, not the Tensor op.
+  relu() { "box-relu" }
+  sigmoid() { "box-sigmoid" }
 }
 
 let b = Box.new("t")
@@ -20,6 +24,8 @@ assert_eq(b.find(5), "box-find:5")
 assert_eq(b.split("z"), "box-split:z")
 assert_eq(b.map(9), "box-map:9")
 assert_eq(b.match(1), "box-match:1")
+assert_eq(b.relu(), "box-relu")
+assert_eq(b.sigmoid(), "box-sigmoid")
 
 // builtins still apply on Array / String receivers
 assert_eq([3, 1, 2].find(fn (x) { x == 2 }), 2)

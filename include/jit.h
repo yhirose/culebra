@@ -7865,13 +7865,14 @@ struct JIT {
         "take_while",  "chain",      "zip",      "enumerate",
         "code_points", "graphemes",  "iter",
         "view",        "split_iter",
-        // Tensor methods. (Activations sigmoid/relu/softmax are
-        // exposed as `Tensor.sigmoid(t)` namespace functions instead,
-        // because they collide with class-method names users
-        // commonly define — e.g. microgpt's `Value.relu()`.)
+        // Tensor methods. Activations relu/sigmoid/softmax are instance
+        // methods (`t.relu()`); a user class defining its own `relu` is
+        // unaffected because compile_user_method_over_builtin gives the
+        // class method priority over a same-named builtin.
         "shape",       "pow",        "transpose",  "reshape",
         "mean",        "argmax",     "to_array",   "dot",
         "linear_sigmoid", "clone",
+        "relu",        "sigmoid",    "softmax",
         "union",       "intersect",  "diff",
         "sym_diff",    "subset",     "superset",
         "to_array"};
@@ -16416,6 +16417,19 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tPtr = expect_tag(receiver, TAG_TENSOR, "clone");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_clone), {tPtr}, "tcl");
+    return make_tensor(resultPtr);
+  }
+  // Activations as instance methods: `t.relu()` / `.sigmoid()` /
+  // `.softmax()`. Each is a no-arg unary over the receiver Tensor.
+  if ((method == "relu" || method == "sigmoid" || method == "softmax") &&
+      argsAst.nodes.size() == 0) {
+    auto tPtr = expect_tag(receiver, TAG_TENSOR, method.c_str());
+    int op_id = method == "relu"    ? static_cast<int>(culebra::Op::Relu)
+              : method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
+                                    : static_cast<int>(culebra::Op::Softmax);
+    auto resultPtr = emit_call(
+        module_->getFunction(rt::tensor_unary),
+        {tPtr, builder_.getInt64(op_id)}, "tact");
     return make_tensor(resultPtr);
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {

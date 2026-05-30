@@ -3301,6 +3301,37 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         return Value(TensorValue(tensor_clone(self)));
                       },
                       "Tensor"sv))},
+      // Activations as instance methods: `t.relu()` / `.sigmoid()` /
+      // `.softmax()`. A user class may still define its own `relu` etc.;
+      // method lookup gives the class method priority (the JIT does the
+      // same via compile_user_method_over_builtin), so these never shadow
+      // a user definition.
+      {"relu"sv, Value(FunctionValue(
+                     {},
+                     [](std::shared_ptr<Environment> callEnv) {
+                       const auto& self =
+                           callEnv->get("this").to_tensor().impl;
+                       return Value(TensorValue(tensor_unary(Op::Relu, self)));
+                     },
+                     "Tensor"sv))},
+      {"sigmoid"sv, Value(FunctionValue(
+                        {},
+                        [](std::shared_ptr<Environment> callEnv) {
+                          const auto& self =
+                              callEnv->get("this").to_tensor().impl;
+                          return Value(
+                              TensorValue(tensor_unary(Op::Sigmoid, self)));
+                        },
+                        "Tensor"sv))},
+      {"softmax"sv, Value(FunctionValue(
+                        {},
+                        [](std::shared_ptr<Environment> callEnv) {
+                          const auto& self =
+                              callEnv->get("this").to_tensor().impl;
+                          return Value(
+                              TensorValue(tensor_unary(Op::Softmax, self)));
+                        },
+                        "Tensor"sv))},
       {"slice"sv, Value(FunctionValue(
                        {{"start", false, "Long"sv},
                         {"end", false, "Long"sv}},

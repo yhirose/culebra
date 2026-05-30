@@ -1052,22 +1052,10 @@ inline Value make_tensor_namespace() {
   ns.initialize("ones", make_ctor(&tensor_ones), false);
   ns.initialize("randn", make_ctor(&tensor_randn), false);
 
-  // Activations: namespace functions (not Tensor methods), since
-  // `relu / sigmoid / softmax` are common class-method names — having
-  // them as methods would shadow user definitions. The namespace form
-  // makes the call site explicitly Tensor-flavored.
-  auto make_unary_ns = [](Op op) {
-    return Value(FunctionValue(
-        {{"t", false, "Tensor"sv}},
-        [op](std::shared_ptr<Environment> env) {
-          const auto& t = env->get("t").to_tensor().impl;
-          return Value(TensorValue(tensor_unary(op, t)));
-        },
-        "Tensor"sv));
-  };
-  ns.initialize("sigmoid", make_unary_ns(Op::Sigmoid), false);
-  ns.initialize("relu", make_unary_ns(Op::Relu), false);
-  ns.initialize("softmax", make_unary_ns(Op::Softmax), false);
+  // Activations (relu / sigmoid / softmax) are Tensor instance methods
+  // — `t.relu()` — registered in TensorValue::builtins(). A user class
+  // may define its own `relu` etc. without collision: method lookup
+  // gives the class method priority on every backend.
 
   ns.initialize(
       "eval",
