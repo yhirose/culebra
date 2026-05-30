@@ -131,6 +131,18 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
+# In-progress JIT GC rewrite — see docs/jit_gc_design.md. When ON, jit.h
+# compiles the conservative mark-sweep collector (include/jit_gc.h) in place
+# of the manual-RC + minor-only collector. Defined GLOBALLY (before every
+# JIT target) because the GcHeader struct layout must be identical across
+# the `culebra` driver and the embedded `culebra_rt` / `culebra_rt_no_tensor`
+# runtime archives — a per-target define would risk an ABI skew between them.
+# OFF until Phase 1 lands; the current collector ships.
+option(CULEBRA_NEW_GC "Use the rewritten conservative GC (in progress)" OFF)
+if(CULEBRA_NEW_GC)
+  add_compile_definitions(CULEBRA_NEW_GC)
+endif()
+
 add_executable(culebra ./src/main.cc)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -286,12 +298,10 @@ add_executable(regexlib_corpus test/regexlib_corpus.cc)
 target_compile_features(regexlib_corpus PRIVATE cxx_std_17)
 add_test(NAME regexlib_corpus COMMAND regexlib_corpus)
 
-# In-progress JIT GC rewrite — see docs/jit_gc_design.md. The new conservative
-# collector (include/jit_gc.h) is a standalone header (no JIT/LLVM link); its
-# Phase 0 tests validate pointer-validation, conservative root scanning, and
-# mark-sweep in isolation. CULEBRA_NEW_GC will gate the actual jit.h wiring
-# once Phase 1 lands; OFF until then (current collector ships).
-option(CULEBRA_NEW_GC "Use the rewritten conservative GC (in progress)" OFF)
+# Phase 0 GC tests — the standalone collector (include/jit_gc.h) validated in
+# isolation (pointer-validation, conservative root scanning, mark-sweep), no
+# JIT/LLVM link. Built unconditionally; CULEBRA_NEW_GC (defined above) gates
+# the in-tree jit.h wiring separately.
 foreach(gc_test jit_gc_phase0 jit_gc_collect)
   add_executable(${gc_test} tests/${gc_test}.cc)
   target_compile_features(${gc_test} PRIVATE cxx_std_20)

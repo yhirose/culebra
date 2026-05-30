@@ -2,6 +2,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
+#include <jit_gc.h>
 #include <module_loader.h>
 #include <parser.h>
 #include <runtime/rt_macros.h>
@@ -1008,6 +1009,16 @@ struct _GcTracker {
 };
 
 inline _GcTracker& _gc() { return _GcTracker::instance(); }
+
+#ifdef CULEBRA_NEW_GC
+// Phase 1 conservative collector (docs/jit_gc_design.md). Occupies the same
+// per-Runtime slot as the old _GcTracker — under CULEBRA_NEW_GC the tracker
+// path is compiled out, so the slot holds exactly one collector. The heap is
+// default-constructible, satisfying runtime_substate<T>'s `new T()`.
+inline culebra::gc::Heap& _gc_heap() {
+  return culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
+}
+#endif  // CULEBRA_NEW_GC
 
 // Cycle detection during string conversion.
 inline thread_local std::unordered_set<const void*> _jit_str_visiting;
