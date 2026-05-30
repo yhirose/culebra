@@ -1,6 +1,14 @@
 // Leak repro [B] — a self-referential `|...|` closure leaks its captured
-// graph (a promoted cycle the minor-only collector never reclaims). Task #2.
-// EXPECTED RED on BOTH backends until the GC rewrite (Task #5). Do not delete.
+// graph (a cycle reference counting can never break). Do not delete.
+// On the JIT this is now reclaimed by the conservative mark-sweep backstop;
+// on the interpreter (RC only, no backstop) it still leaks unboundedly.
+// Threshold note: the backstop is CONSERVATIVE, so it can keep the single
+// most-recent batch (one `build(200)` graph) alive when a stale stack/register
+// word still looks like a pointer to it — measured retention is 0 or exactly
+// 200, never more. The bound is `< 400` (tolerate that one batch) which still
+// catches the unbounded leak (the interpreter grows to ~6000). Eliminating the
+// last-batch retention would need precise rooting (docs §12), deliberately not
+// pursued — culebra stays non-moving for C++/Tensor/interp pointer interop.
 fn measure(work) {
   work()
   let base = GC.stat().live_objects
@@ -14,5 +22,5 @@ assert_lt(measure(fn () {
   build = |n| if n > 0 { topo.push(Box.new(n)); self(n - 1) } else { 0 }
   build(200)
   topo.size()
-}), 200)
+}), 400)
 puts("gc leak [self-closure]: no leak")

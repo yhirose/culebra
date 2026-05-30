@@ -176,12 +176,20 @@ optimised without touching mark/sweep/roots.
   Trivially correct, no pages/bitmaps/size-classes. Validates roots,
   marking, sweep, and the safety tooling with minimal code. (Sweep frees
   via the registry.)
-- **Phase 2+ — page/bitmap heap (perf).** Replace the registry with
-  size-segregated **pages** + a per-page **allocation bitmap** (object
-  starts, for O(1) `is_gc_object`) and a **mark bitmap**. Free lists per
-  size class; allocation refills from fresh pages. This only swaps the
-  `gc_alloc`/`is_gc_object`/iteration internals — mark/sweep/roots are
-  unchanged.
+- **Phase 2a — flat-array registry (DONE).** The first registry used
+  `std::unordered_map<void*, GcHeader>`, whose per-object node malloc/free
+  was measured as the entire alloc-churn overhead (+12–21% on object/array
+  churn; realistic workloads unaffected). Replaced with `GcRegistry`, an
+  open-addressing flat hash map storing `{key, header}` inline (no per-entry
+  allocation, tombstone reuse) — recovered the overhead (churn 1.21×→1.02×).
+  Only `adopt`/`forget`/`find`/iteration changed; mark/sweep/roots are
+  unchanged. Under plan A the runtime still `new`s the structs (RC owns the
+  memory); the registry is a side table.
+- **Phase 2b+ — size-class / region allocator (future, only if measured).**
+  If allocation throughput is later shown to need more, a non-moving
+  size-segregated / Immix-style bump-region allocator (Go / JSC model) is the
+  next step — it again only swaps `gc_alloc`/`is_gc_object`/iteration.
+  **Moving / copying is deliberately NOT on this path** (see §12).
 
 `gc_alloc(size, type_tag)` is the runtime entry that replaces today's
 `new JitObject()` etc.; it never calls a C++ destructor implicitly.
@@ -349,17 +357,44 @@ The GC itself is written with RAII, never hand acquire/release:
   heaps mean most collections are thread-local. Conservative scan needs
   no per-thread shadow stack — just each thread's stack bounds.
 
-## 12. Future migration to precise / moving (Option C)
+## 12. Precise / moving (Option C) — conditional future, NOT the default path
 
-When compaction or copying-nursery allocation throughput is shown by
-measurement to be needed, migrate roots from conservative scan to
-**LLVM Statepoints** (`gc.statepoint`/`gc.relocate`, the modern LLVM GC
-path that superseded `gcroot`). That enables relocation → compaction +
-bump-allocated copying young gen. The object model (§3), marking (§6),
-generational structure (§8), and safety devices (§9) are designed to
-**carry over**; only root finding (§5) and the moving/compaction of the
-heap change. Keeping the heap non-moving now is what makes that a
-localised future change rather than a second rewrite.
+> **Decision (2026-05-30): moving/copying GC is deliberately NOT pursued for
+> culebra.** It is kept here only as a conditional future option, not the
+> roadmap.
+
+**Why moving is the wrong fit.** A moving collector has two hard
+prerequisites culebra fails today: (1) **precise rooting** — you must update
+every root when an object moves, and a *conservative* root (a maybe-pointer)
+cannot be updated, so moving ⟹ precise; (2) **no raw object pointers escaping
+to GC-uncooperative code** — culebra hands raw pointers to C++ for Tensor and
+interpreter interop (§3 keeps the heap non-moving precisely so those stay
+valid), and the tagged `JitValue {tag, i64 data}` representation stuffs
+pointers into integers, which LLVM Statepoints cannot track. This is the same
+reason CPython, Lua, Ruby (default), and Go stay non-moving. Reworking the
+value ABI + the interop boundary to enable moving would dwarf the GC itself.
+
+**The throughput lever is non-moving anyway.** The win moving *uniquely* buys
+is compaction (anti-fragmentation) + collection-cost ∝ survivors — both
+second-order for culebra now. Fast *allocation* is achievable non-moving via a
+size-class / Immix bump-region allocator (§4 Phase 2b, the Go/JSC model). So
+even when throughput is the goal, the next step is a better non-moving
+allocator, not moving.
+
+**Revisit triggers (only then reopen this).** (1) fragmentation is shown by
+measurement to be a real cost a non-moving allocator can't address; or (2) the
+raw-pointer interop is redesigned behind handles/pinning. If reopened: migrate
+roots from conservative scan to **LLVM Statepoints** (`gc.statepoint` /
+`gc.relocate`). The object model (§3), marking (§6), generational structure
+(§8), and safety devices (§9) are designed to **carry over**; only root
+finding (§5) and heap moving change — keeping the heap non-moving now is what
+makes that a localised change rather than a second rewrite.
+
+**Note on precision vs speed.** Precise rooting *without* moving buys only
+precision (it would make the conservative collector's bounded last-batch
+retention — see the self-closure leak gate — exact), not speed. That precision
+alone does not justify the Statepoints cost; it rides along only if moving is
+ever adopted.
 
 ## 13. Phasing
 

@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_map>
 #include <vector>
 
 namespace culebra::gc {
@@ -41,6 +40,114 @@ struct GcHeader {
   uint32_t size;       // total object size in bytes (header + payload)
 };
 static_assert(sizeof(GcHeader) == 8, "GcHeader must stay 8 bytes");
+
+// Open-addressing address→GcHeader map: the live-object registry. Stores
+// {key, header} inline in a flat array (16 bytes/slot), so registering and
+// de-registering an object is a probe + slot write with NO per-entry heap
+// allocation — std::unordered_map's per-object node malloc/free was the
+// measured alloc-churn cost (docs/jit_gc_design.md §4). Linear probing with
+// tombstones; inserts reuse tombstone slots, so steady-state churn (insert on
+// birth, erase on death) keeps tombstones bounded and rarely rehashes.
+class GcRegistry {
+ public:
+  GcRegistry() { rehash(kInitCap); }
+
+  // Pointer to the live entry's header, or nullptr if absent. `key` may be any
+  // word from a conservative scan, so reject the empty/tombstone sentinels (no
+  // real object lives at address 0 or 1) before they alias a slot's key.
+  GcHeader* find(void* key) {
+    if (key == kEmpty || key == kTomb()) return nullptr;
+    size_t i = index(key);
+    for (;;) {
+      void* k = slots_[i].key;
+      if (k == key) return &slots_[i].val;
+      if (k == kEmpty) return nullptr;
+      i = (i + 1) & mask_;
+    }
+  }
+
+  // Insert (or overwrite) key→val. `key` must be a real object pointer
+  // (never null or the tombstone sentinel).
+  void insert(void* key, const GcHeader& val) {
+    if ((used_ + 1) * 8 >= cap_ * 7) grow();
+    size_t i = index(key), tomb = kNpos;
+    for (;;) {
+      void* k = slots_[i].key;
+      if (k == key) { slots_[i].val = val; return; }
+      if (k == kEmpty) break;
+      if (k == kTomb() && tomb == kNpos) tomb = i;
+      i = (i + 1) & mask_;
+    }
+    if (tomb != kNpos) i = tomb;  // reuse a tombstone (does not grow `used_`)
+    else used_++;
+    slots_[i].key = key;
+    slots_[i].val = val;
+    size_++;
+  }
+
+  void erase(void* key) {
+    size_t i = index(key);
+    for (;;) {
+      void* k = slots_[i].key;
+      if (k == key) { slots_[i].key = kTomb(); size_--; return; }
+      if (k == kEmpty) return;
+      i = (i + 1) & mask_;
+    }
+  }
+
+  size_t size() const { return size_; }
+
+  // Visit every live entry as f(void* key, GcHeader& val). The callback may
+  // mutate the header (mark/flags) but must NOT insert/erase during the walk.
+  template <class F>
+  void for_each(F&& f) {
+    for (auto& s : slots_)
+      if (s.key != kEmpty && s.key != kTomb()) f(s.key, s.val);
+  }
+
+ private:
+  struct Slot {
+    void* key = kEmpty;
+    GcHeader val{};
+  };
+  static constexpr size_t kInitCap = 16;
+  static constexpr size_t kNpos = ~size_t(0);
+  static constexpr void* kEmpty = nullptr;
+  static void* kTomb() { return reinterpret_cast<void*>(uintptr_t(1)); }
+
+  size_t index(void* key) const {
+    uintptr_t x = reinterpret_cast<uintptr_t>(key);  // fibonacci-mix the bits
+    x ^= x >> 16;
+    x *= 0x9E3779B97F4A7C15ull;
+    x ^= x >> 29;
+    return x & mask_;
+  }
+  void grow() {
+    // Mostly tombstones → rehash same size to reclaim them; otherwise double.
+    rehash(size_ * 2 >= cap_ ? cap_ * 2 : cap_);
+  }
+  void rehash(size_t newcap) {
+    std::vector<Slot> old = std::move(slots_);
+    slots_.assign(newcap, Slot{});
+    cap_ = newcap;
+    mask_ = newcap - 1;
+    size_ = 0;
+    for (auto& s : old)
+      if (s.key != kEmpty && s.key != kTomb()) {
+        size_t i = index(s.key);
+        while (slots_[i].key != kEmpty) i = (i + 1) & mask_;
+        slots_[i] = s;
+        size_++;
+      }
+    used_ = size_;  // no tombstones in a freshly rehashed table
+  }
+
+  std::vector<Slot> slots_;
+  size_t size_ = 0;  // live entries
+  size_t used_ = 0;  // live + tombstones (drives probe length / rehash)
+  size_t cap_ = 0;
+  size_t mask_ = 0;
+};
 
 class Heap {
  public:
@@ -65,11 +172,8 @@ class Heap {
   // address→metadata map (NOT in the object — offset 0 stays `refcount`).
   // The caller owns the storage (runtime: `new`; tests: raw_alloc).
   void adopt(void* p, uint32_t size, uint8_t type_tag) {
-    // `p` is a fresh address at every object birth, so emplace (construct the
-    // metadata in place, no default-construct + assign) is both correct and
-    // the cheaper insert on this per-allocation path.
-    objects_.emplace(p, GcHeader{/*mark=*/0, type_tag, /*generation=*/0,
-                                 /*flags=*/0, size});
+    objects_.insert(p, GcHeader{/*mark=*/0, type_tag, /*generation=*/0,
+                                /*flags=*/0, size});
     live_bytes_ += size;
     maybe_collect();
   }
@@ -84,28 +188,27 @@ class Heap {
   // namespace objects — so the root enumerator need not cross headers.
   static constexpr uint8_t kFlagPinned = 1;
   void pin(void* p) {
-    auto it = objects_.find(p);
-    if (it != objects_.end()) it->second.flags |= kFlagPinned;
+    if (GcHeader* h = objects_.find(p)) h->flags |= kFlagPinned;
   }
 
   // De-register an object whose memory the CALLER frees (RC release-to-zero
   // `delete`s the struct, then calls forget). No free/poison here — the
   // memory is not the heap's to reclaim.
   void forget(void* p) {
-    auto it = objects_.find(p);
-    if (it == objects_.end()) return;
-    live_bytes_ -= it->second.size;
-    objects_.erase(it);
+    if (GcHeader* h = objects_.find(p)) {
+      live_bytes_ -= h->size;
+      objects_.erase(p);
+    }
   }
 
   // Free one heap-owned object (standalone alloc / Phase 1 sweep of
   // heap-owned storage). Poisons the slot so a stale pointer use is caught.
   void free_object(void* p) {
-    auto it = objects_.find(p);
-    if (it == objects_.end()) return;
-    uint32_t size = it->second.size;
+    GcHeader* h = objects_.find(p);
+    if (!h) return;
+    uint32_t size = h->size;
     live_bytes_ -= size;
-    objects_.erase(it);
+    objects_.erase(p);
     std::memset(p, 0xDE, size);
     std::free(p);
   }
@@ -113,22 +216,17 @@ class Heap {
   // Conservative pointer validation: is `p` the start of a live object?
   // `data` always points to an object base (no interior pointers), so a
   // plain registry-membership test is exact for our representation.
-  bool is_object(const void* p) const {
-    return objects_.find(const_cast<void*>(p)) != objects_.end();
-  }
+  bool is_object(void* p) { return objects_.find(p) != nullptr; }
 
-  GcHeader* header(void* obj) {
-    auto it = objects_.find(obj);
-    return it == objects_.end() ? nullptr : &it->second;
-  }
+  GcHeader* header(void* obj) { return objects_.find(obj); }
 
   size_t live_count() const { return objects_.size(); }
   size_t live_bytes() const { return live_bytes_; }
 
   // Iterate every live object (for sweep / heap-verify).
   template <class F>
-  void for_each(F&& f) const {
-    for (const auto& kv : objects_) f(kv.first);
+  void for_each(F&& f) {
+    objects_.for_each([&](void* k, GcHeader&) { f(k); });
   }
 
   // Register the address of a global root slot (e.g. a namespace-table
@@ -206,24 +304,23 @@ class Heap {
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
-    for (auto& kv : objects_) kv.second.mark = 0;
+    objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
 
     std::vector<void*> work;
     auto push = [&](void* o) {
-      auto it = objects_.find(o);
-      if (it == objects_.end()) return;
-      if (!it->second.mark) {
-        it->second.mark = 1;
+      GcHeader* h = objects_.find(o);
+      if (h && !h->mark) {
+        h->mark = 1;
         work.push_back(o);
       }
     };
     // Pinned objects are always roots.
-    for (auto& kv : objects_) {
-      if (kv.second.flags & kFlagPinned && !kv.second.mark) {
-        kv.second.mark = 1;
-        work.push_back(kv.first);
+    objects_.for_each([&](void* k, GcHeader& h) {
+      if (h.flags & kFlagPinned && !h.mark) {
+        h.mark = 1;
+        work.push_back(k);
       }
-    }
+    });
     seed(push);
 
     std::vector<void*> kids;
@@ -232,7 +329,7 @@ class Heap {
       work.pop_back();
       if (children_fn_) {
         kids.clear();
-        children_fn_(o, objects_.at(o).type_tag, kids);
+        children_fn_(o, objects_.find(o)->type_tag, kids);
         for (void* c : kids) push(c);
       }
     }
@@ -242,15 +339,15 @@ class Heap {
     // see it), then run the buffer-teardown + delete. Without one (the
     // standalone heap) fall back to free_object's malloc/free + poison.
     std::vector<void*> dead;
-    for (const auto& kv : objects_) {
-      if (!kv.second.mark) dead.push_back(kv.first);
-    }
+    objects_.for_each([&](void* k, GcHeader& h) {
+      if (!h.mark) dead.push_back(k);
+    });
     for (void* p : dead) {
       if (sweep_fn_) {
-        auto it = objects_.find(p);
-        uint8_t tag = it->second.type_tag;
-        live_bytes_ -= it->second.size;
-        objects_.erase(it);
+        GcHeader* h = objects_.find(p);
+        uint8_t tag = h->type_tag;
+        live_bytes_ -= h->size;
+        objects_.erase(p);
         sweep_fn_(p, tag);
       } else {
         free_object(p);
@@ -328,7 +425,7 @@ class Heap {
     return pthread_get_stackaddr_np(pthread_self());
   }
 
-  std::unordered_map<void*, GcHeader> objects_;
+  GcRegistry objects_;
   std::vector<void**> global_roots_;
   std::vector<void*> extra_roots_;  // scratch reused across collections
   ChildrenFn children_fn_ = nullptr;
