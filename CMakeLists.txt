@@ -131,14 +131,14 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
-# In-progress JIT GC rewrite — see docs/jit_gc_design.md. When ON, jit.h
-# compiles the conservative mark-sweep collector (include/jit_gc.h) in place
-# of the manual-RC + minor-only collector. Defined GLOBALLY (before every
-# JIT target) because the GcHeader struct layout must be identical across
-# the `culebra` driver and the embedded `culebra_rt` / `culebra_rt_no_tensor`
+# JIT GC — see docs/jit_gc_design.md. ON (default): jit.h compiles the
+# conservative mark-sweep backstop (include/jit_gc.h) alongside the kept manual
+# RC, in place of the broken minor-only collector. Defined GLOBALLY (before
+# every JIT target) because the metadata layout must be identical across the
+# `culebra` driver and the embedded `culebra_rt` / `culebra_rt_no_tensor`
 # runtime archives — a per-target define would risk an ABI skew between them.
-# OFF until Phase 1 lands; the current collector ships.
-option(CULEBRA_NEW_GC "Use the rewritten conservative GC (in progress)" OFF)
+# OFF still builds the legacy collector as a fallback (removed once proven).
+option(CULEBRA_NEW_GC "Use the rewritten conservative GC backstop" ON)
 if(CULEBRA_NEW_GC)
   add_compile_definitions(CULEBRA_NEW_GC)
 endif()
