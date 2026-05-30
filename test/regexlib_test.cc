@@ -315,6 +315,9 @@ void test_nullable_quantifiers() {
   // instruction at most once per position. Honouring the backtracker here
   // would reintroduce the exponential blow-up the engine exists to avoid; this
   // is the same class of divergence RE2 documents. Extremely rare in practice.
+  // Characterization (pins the current behaviour so a refactor that changes it
+  // is noticed): regexlib yields the POSIX leftmost-longest result here.
+  CHECK(Regex("(a*|b)*").search("ab").str == "ab");
 }
 
 void test_linear_time() {
