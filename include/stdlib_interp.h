@@ -1169,6 +1169,7 @@ inline Value make_gc_namespace() {
       Value(FunctionValue({},
                           [](std::shared_ptr<Environment>) {
                             auto& gc = interp_gc();
+                            gc.collect();  // report reachable, not cycle residue
                             long live = static_cast<long>(gc.live_objects);
                             long bytes = static_cast<long>(gc.live_bytes);
                             ObjectValue stat;

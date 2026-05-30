@@ -346,11 +346,17 @@ The GC itself is written with RAII, never hand acquire/release:
 
 ## 11. Cross-backend & threading
 
-- **Interp** is untouched (`shared_ptr`). Objects that cross the
-  interp/JIT boundary (Tensor `impl` is a `shared_ptr<TensorImpl>`)
-  keep their existing handle: the JIT `JitTensor` struct is GC-managed,
-  its `impl` shared_ptr is released by `~JitTensor` at sweep. No moving,
-  so raw pointers handed to C++ stay valid.
+- **Interp** keeps `shared_ptr` RC. Its accurate RC means the only residue
+  is reference *cycles*, reclaimed by `InterpGC` — a precise CPython-style
+  cycle collector (gc_refs subtraction + BFS + clear). It tracks Array ValVecs
+  and captured Environments, so the closure↔environment cycle that the JIT
+  backstop reclaims is reclaimed on the interpreter too — the two backends stay
+  behaviorally symmetric. (Object-/Tuple-/Set-rooted cycles are not yet tracked
+  interp-side; the conservative JIT backstop covers all.) Objects that cross
+  the interp/JIT boundary (Tensor `impl` is a `shared_ptr<TensorImpl>`) keep
+  their existing handle: the JIT `JitTensor` struct is GC-managed, its `impl`
+  shared_ptr is released by `~JitTensor` at sweep. No moving, so raw pointers
+  handed to C++ stay valid.
 - **Isolates / threads** (concurrency roadmap): each thread registers
   its stack base; collection is stop-the-world across the isolate's
   threads at safepoints (allocation points + loop back-edges). Per-isolate

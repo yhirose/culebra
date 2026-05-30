@@ -657,19 +657,18 @@ inline void check_shadow_static(const peg::Ast& ast) {
 // Process-wide singleton; NOT thread-safe (see THREAD SAFETY note at
 // the top of the runtime section in jit.h).
 //
-// We only track ArrayValue's `values` vector: cycles that go entirely
-// through Object property maps without an Array in between are not
-// detected. This trade keeps the tracker entries down to one per
-// Array (vs one per Object plus one per Array previously) and the
-// per-collect walk visits roughly half the pointers. microgpt's
-// cycles route Object → Array (`_children`) → Object, so they're
-// still broken correctly. User code with direct Object→Object cycles
-// will leak — the language spec already calls cycles a hazard and
-// recommends weak refs (`drop` for explicit teardown).
+// Tracked nodes are ArrayValue `values` vectors and closure-captured
+// Environments (the two container kinds that form cycles RC can't break).
+// Cycles routed entirely through Object property maps with no Array or
+// Environment in between are not detected — microgpt's route Object → Array
+// (`_children`) → Object and closures route Function → Environment, so both
+// are broken correctly; direct Object→Object cycles leak (the language spec
+// calls cycles a hazard and recommends `drop` for explicit teardown).
 struct InterpGC {
   struct Entry {
     std::weak_ptr<void> weak;
     void* ptr;
+    bool is_env;  // false = a ValVec (Array backing); true = an Environment
   };
 
   static InterpGC& instance() { return runtime_substate<InterpGC>(kSlotInterpGc); }
@@ -687,10 +686,20 @@ struct InterpGC {
 
   template <typename T>
   void track_vec(std::shared_ptr<T> p) {
-    entries_.push_back(
-        {std::weak_ptr<void>(std::shared_ptr<void>(p, p.get())), p.get()});
+    push_entry(std::shared_ptr<void>(p, p.get()), /*is_env=*/false);
+  }
+
+  // Register a node (a type-erased aliasing shared_ptr) and trigger a
+  // threshold collect. Shared by track_vec and track_env.
+  void push_entry(std::shared_ptr<void> sp, bool is_env) {
+    entries_.push_back({std::weak_ptr<void>(sp), sp.get(), is_env});
     bump();
   }
+
+  // Register a captured Environment as a collectable cycle node (a closure's
+  // def_env can form a cycle RC alone can't break). Deduped via e->gc_tracked.
+  // Defined out-of-line below, where Environment is a complete type.
+  void track_env(const std::shared_ptr<Environment>& e);
 
   void collect();
 
@@ -701,8 +710,20 @@ struct InterpGC {
   size_t threshold_ = GC_MIN_THRESHOLD;  // adaptive; see collect().
   bool running_ = false;
 
+  // CULEBRA_GC_STRESS=1 collects on every tracked allocation, surfacing any
+  // over-collection (a live node wrongly broken) immediately under the suite.
+  static bool stress() {
+    static const bool s = std::getenv("CULEBRA_GC_STRESS") != nullptr;
+    return s;
+  }
+
   void bump() {
-    if (!running_ && ++alloc_counter_ >= threshold_) {
+    if (running_) return;
+    if (stress()) {
+      collect();
+      return;
+    }
+    if (++alloc_counter_ >= threshold_) {
       alloc_counter_ = 0;
       collect();
     }
@@ -797,6 +818,13 @@ struct FunctionValue {
   // Definition environment — used only to evaluate parameter defaults
   // (for body execution, `eval` closes over this env itself).
   std::shared_ptr<Environment> def_env;
+  // True when `eval` ALSO closes over `def_env` (the make_function_value
+  // path), so this FunctionValue holds TWO shared_ptr refs to `def_env`
+  // (the field + the eval capture). The cycle collector must subtract both
+  // when computing gc_refs for `def_env`, else a closure→env→closure cycle
+  // looks externally rooted and never gets reclaimed. Stdlib/C++ functions
+  // leave this false (their `eval` captures no Environment; def_env is null).
+  bool eval_captures_def_env = false;
   // Declared name for introspection (`fn.name`). Empty for anonymous
   // expressions (lambdas, `fn (x) { ... }`). Set by the caller after
   // construction so stdlib FunctionValues stay one-liners. Owned
@@ -1816,6 +1844,9 @@ struct Environment : std::enable_shared_from_this<Environment> {
   // new-entry insertion in `initialize` allocates.
   std::map<std::string, Symbol, std::less<>> dictionary;
   bool is_function_frame = false;
+  // Set once this env has been registered with InterpGC as a collectable
+  // node (it became some closure's def_env). Dedupes repeat track_env calls.
+  bool gc_tracked = false;
   // Deferred callables registered in this scope via `defer { ... }`.
   // Fired in LIFO order when the scope exits (normally or via throw).
   std::vector<std::function<void()>> deferred;
@@ -4895,7 +4926,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     for (auto& p : params)
       if (p.pattern) destructures.push_back({p.name, p.pattern});
     auto self = shared_from_this();
-    return Value(FunctionValue(
+    FunctionValue fv(
         params,
         [self = std::move(self), body, env,
          destructures](std::shared_ptr<Environment> callEnv) {
@@ -4917,7 +4948,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           }
         },
         return_type,
-        env));
+        env);
+    // The eval closure above captures `env`, so this FunctionValue holds two
+    // refs to `def_env`. Flag it for the cycle collector and register the
+    // definition environment as a collectable node — a self-referential
+    // closure forms a cycle through it that RC alone can't break.
+    fv.eval_captures_def_env = true;
+    if (env) interp_gc().track_env(env);
+    return Value(std::move(fv));
   }
 
   Value eval_function(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
@@ -7147,6 +7185,12 @@ inline void Environment::resolve_from_lazy(
 // --- Cycle collector implementation ---
 // (Defined here so Value is complete.)
 
+inline void InterpGC::track_env(const std::shared_ptr<Environment>& e) {
+  if (!e || e->gc_tracked) return;
+  e->gc_tracked = true;
+  push_entry(std::shared_ptr<void>(e, e.get()), /*is_env=*/true);
+}
+
 inline void InterpGC::collect() {
   if (running_) return;
   running_ = true;
@@ -7160,70 +7204,113 @@ inline void InterpGC::collect() {
   // Lock live shared_ptrs.
   struct Live {
     void* ptr;
+    bool is_env;
     std::shared_ptr<void> sp;
   };
   std::vector<Live> live;
   live.reserve(entries_.size());
   for (auto& e : entries_) {
-    if (auto sp = e.weak.lock()) live.push_back({e.ptr, std::move(sp)});
+    if (auto sp = e.weak.lock())
+      live.push_back({e.ptr, e.is_env, std::move(sp)});
   }
 
-  // gc_refs: use_count - 1 (our local copy in `live`).
-  std::unordered_map<void*, long> gc_refs;
+  // Per-node state: gc_refs = use_count - 1 (our local copy in `live`), plus
+  // the node kind so the BFS can dispatch walk_node without a second map.
+  struct Node {
+    long refs;
+    bool is_env;
+  };
+  std::unordered_map<void*, Node> gc_refs;
   gc_refs.reserve(live.size());
-  for (auto& l : live) gc_refs[l.ptr] = l.sp.use_count() - 1;
+  for (auto& l : live) gc_refs[l.ptr] = {l.sp.use_count() - 1, l.is_env};
 
-  // For each Value held in a tracked ValVec, find the ValVec(s)
-  // reachable in one step and invoke `fn(child_ptr)`. Object property
-  // maps are untracked but we descend through them once to surface the
-  // tracked Arrays they contain. `auto&& fn` keeps the visitor
-  // monomorphic per call site, so the compiler inlines instead of
-  // emitting a thunk.
-  auto walk_array_children = [](ValVec* v, auto&& fn) {
-    for (auto& val : *v) {
-      if (val.type == Value::Array) {
-        fn(val.template get<ArrayValue>().values.get());
-      } else if (val.type == Value::Object) {
-        for (auto& [_, sym] : *val.template get<ObjectValue>().properties) {
-          if (sym.val.type == Value::Array) {
-            fn(sym.val.template get<ArrayValue>().values.get());
-          }
+  // Walk a node's edges to OTHER tracked nodes (ValVecs + Environments),
+  // invoking emit(child_ptr, multiplicity). A ValVec yields its element
+  // Values; an Environment yields its bindings' Values plus its `outer`.
+  // For each Value: Array -> its tracked ValVec; Function -> its def_env
+  // (multiplicity 2 when `eval` also captures it — see FunctionValue); and
+  // Object/Tuple/Set are descended ONE level (untracked containers) to
+  // surface the tracked nodes they hold. The one-level cap matches the old
+  // walk and bounds recursion through untracked-container cycles. Missing an
+  // edge only under-counts gc_refs (a bounded leak); only OVER-counting could
+  // free a live node, which is why the Function multiplicity must be exact.
+  auto walk_node = [&](void* ptr, bool is_env, auto&& emit) {
+    auto walk_value = [&emit](const Value& val, bool descend, auto&& wv) -> void {
+      switch (val.type) {
+        case Value::Array:
+          emit(val.template get<ArrayValue>().values.get(), 1L);
+          break;
+        case Value::Function: {
+          auto& fv = val.template get<FunctionValue>();
+          if (fv.def_env)
+            emit(fv.def_env.get(), fv.eval_captures_def_env ? 2L : 1L);
+          break;
         }
+        case Value::Object:
+          if (descend)
+            for (auto& [k, sym] : *val.template get<ObjectValue>().properties)
+              wv(sym.val, false, wv);
+          break;
+        case Value::Tuple:
+          if (descend)
+            for (auto& e : *val.template get<TupleValue>().elements)
+              wv(e, false, wv);
+          break;
+        case Value::Set:
+          if (descend)
+            for (auto& e : *val.template get<SetValue>().members)
+              wv(e, false, wv);
+          break;
+        default:
+          break;
       }
+    };
+    if (is_env) {
+      auto* e = static_cast<Environment*>(ptr);
+      for (auto& [k, sym] : e->dictionary) walk_value(sym.val, true, walk_value);
+      if (e->outer) emit(e->outer.get(), 1L);
+    } else {
+      for (auto& val : *static_cast<ValVec*>(ptr))
+        walk_value(val, true, walk_value);
     }
   };
 
   // Subtract internal references.
   for (auto& l : live) {
-    walk_array_children(static_cast<ValVec*>(l.ptr), [&](void* p) {
+    walk_node(l.ptr, l.is_env, [&](void* p, long mult) {
       auto it = gc_refs.find(p);
-      if (it != gc_refs.end()) --it->second;
+      if (it != gc_refs.end()) it->second.refs -= mult;
     });
   }
 
   // Mark external roots and BFS-propagate reachability.
   std::unordered_set<void*> reachable;
   std::queue<void*> q;
-  for (auto& [ptr, r] : gc_refs) {
-    if (r > 0) {
+  for (auto& [ptr, n] : gc_refs) {
+    if (n.refs > 0) {
       reachable.insert(ptr);
       q.push(ptr);
     }
   }
-  auto mark = [&](void* c) {
+  auto mark = [&](void* c, long) {
     if (reachable.insert(c).second && gc_refs.contains(c)) q.push(c);
   };
   while (!q.empty()) {
-    auto* v = static_cast<ValVec*>(q.front());
+    void* p = q.front();
     q.pop();
-    walk_array_children(v, mark);
+    walk_node(p, gc_refs.find(p)->second.is_env, mark);
   }
 
-  // Break cycles by clearing unreachable ValVecs. shared_ptr cascade
-  // does the rest, including invoking each freed PropMap's custom
-  // deleter (which fires `drop` on its way out).
+  // Break cycles by clearing unreachable nodes. The shared_ptr cascade does
+  // the rest, including each freed PropMap's custom deleter (which fires
+  // `drop`). Clearing an Environment drops its bindings + outer chain.
   for (auto& l : live) {
-    if (!reachable.contains(l.ptr)) {
+    if (reachable.contains(l.ptr)) continue;
+    if (l.is_env) {
+      auto* e = static_cast<Environment*>(l.ptr);
+      e->dictionary.clear();
+      e->outer.reset();
+    } else {
       static_cast<ValVec*>(l.ptr)->clear();
     }
   }
