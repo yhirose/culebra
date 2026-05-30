@@ -15,6 +15,12 @@
 // not depend on it. No dependency on jit.h: the heap is generic over a
 // raw size + a type-tag byte.
 
+// Linux: pthread_getattr_np (used by stack_base) is a GNU extension that
+// needs _GNU_SOURCE defined before <pthread.h>. g++ defines it by default
+// for C++, but make it explicit so a standalone -std compile sees it too.
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <pthread.h>
 
 #include <algorithm>
@@ -420,9 +426,24 @@ class Heap {
   }
 
   // Highest address of the current thread's stack (it grows down toward
-  // lower addresses, so the live region is [current_sp, base)).
+  // lower addresses, so the live region is [current_sp, base)). The query
+  // is the conservative scanner's one OS-specific point.
   static void* stack_base() {
+#if defined(__APPLE__)
     return pthread_get_stackaddr_np(pthread_self());
+#elif defined(__linux__)
+    // glibc: pthread_attr_getstack returns the LOW address + size; the base
+    // (highest address, where the stack starts) is addr + size.
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) != 0) std::abort();
+    void* addr = nullptr;
+    size_t size = 0;
+    pthread_attr_getstack(&attr, &addr, &size);
+    pthread_attr_destroy(&attr);
+    return static_cast<char*>(addr) + size;
+#else
+#error "conservative GC stack_base: unsupported platform"
+#endif
   }
 
   GcRegistry objects_;
