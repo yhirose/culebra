@@ -177,4 +177,38 @@ let rff = try { Proc.all([["false"]], retries: 1, fail_fast: true); "no-error" }
           catch e { e.kind }
 assert_eq(rff, "ProcessError")
 
+// --- Proc.spawn: a live handle with wait/poll/kill ---
+let sp = Proc.spawn(["echo", "spawned"])
+let sr = sp.wait()
+assert_true(sr.ok)
+assert_eq(sr.stdout.trim(), "spawned")
+// wait() is idempotent — the second call returns the same cached result.
+assert_eq(sp.wait().stdout.trim(), "spawned")
+
+// poll() is nil while running, the result Object once finished.
+let slow = Proc.spawn(["sleep", "2"])
+assert_eq(slow.poll(), nil)
+assert_true(slow.wait().ok)
+assert_true(slow.poll().ok)        // cached after wait
+
+// kill() stops a running child; wait() then reports the signal death.
+let doomed = Proc.spawn(["sleep", "5"])
+doomed.kill()
+let dr = doomed.wait()
+assert_eq(dr.ok, false)
+assert_true(dr.signal != nil)
+
+// stdin is fed at spawn time.
+let pipe = Proc.spawn(["cat"], stdin: "fed\n")
+assert_eq(pipe.wait().stdout, "fed\n")
+
+// A spawn failure throws (like Proc.run).
+let se = try { Proc.spawn(["culebra_no_such_cmd_xyzzy"]); "no-error" }
+         catch e { e.kind }
+assert_eq(se, "ProcessError")
+
+// Handles dropped without wait() are reaped by GC (no leak / no hang).
+fn spawn_and_drop() { Proc.spawn(["true"]) }
+for i in range(10) { spawn_and_drop() }
+
 IO.puts("test_proc OK")

@@ -85,6 +85,22 @@ inline std::string outcome_detail(const RunOutcome& oc) {
   return failure_detail(oc.result);
 }
 
+// Decode a waitpid() status plus captured output into a ProcResult.
+inline ProcResult decode_result(int status, std::string out, std::string err) {
+  ProcResult r;
+  r.out = std::move(out);
+  r.err = std::move(err);
+  if (WIFEXITED(status)) {
+    r.code = WEXITSTATUS(status);
+    r.ok = (r.code == 0);
+  } else if (WIFSIGNALED(status)) {
+    r.code = -1;
+    r.signal = signal_name(WTERMSIG(status));
+    r.ok = false;
+  }
+  return r;
+}
+
 namespace _detail {
 
 inline void set_nonblocking(int fd) {
@@ -439,17 +455,7 @@ inline RunOutcome reap_child(Child& c) {
   int status = 0;
   while (waitpid(c.pid, &status, 0) < 0 && errno == EINTR) {}
   c.pid = -1;
-  ProcResult r;
-  r.out = std::move(c.out);
-  r.err = std::move(c.err);
-  if (WIFEXITED(status)) {
-    r.code = WEXITSTATUS(status);
-    r.ok = (r.code == 0);
-  } else if (WIFSIGNALED(status)) {
-    r.code = -1;
-    r.signal = signal_name(WTERMSIG(status));
-    r.ok = false;
-  }
+  ProcResult r = decode_result(status, std::move(c.out), std::move(c.err));
   r.timed_out = c.timed_out;
   c.outcome.spawned = true;
   c.outcome.result = std::move(r);
@@ -684,6 +690,114 @@ inline std::pair<size_t, RunOutcome> run_race(
   _detail::kill_and_reap(running);
   killer.disarm();
   return {winner, std::move(win_oc)};
+}
+
+// --- Live handle primitives (Proc.spawn). The child outlives the call; the
+// caller (a culebra handle object) keeps pid + out/err fds and later drains
+// + reaps them via wait_handle / poll_handle / kill_pid. ---
+
+struct SpawnResult {
+  bool spawned = false;
+  long pid = -1;
+  int out_fd = -1, err_fd = -1;
+  int err_no = 0;            // errno when !spawned.
+  std::string err_what;     // failing step when !spawned.
+};
+
+// Spawns a child without waiting: writes stdin_data then closes the child's
+// stdin, and returns the live pid + out/err fds (parent keeps them open). On a
+// spawn failure returns spawned=false with errno/step.
+inline SpawnResult spawn_detached(
+    const std::vector<std::string>& argv, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const std::string& stdin_data) {
+  _detail::SigpipeGuard guard;
+  const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
+  _detail::Child c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+  SpawnResult sr;
+  if (c.done) {
+    sr.err_no = c.outcome.err_no;
+    sr.err_what = c.outcome.err_what;
+    return sr;
+  }
+  // Write the whole stdin payload, then close (MVP: a one-shot feed at spawn).
+  if (c.in_open && c.stdin_data) {
+    const std::string& sd = *c.stdin_data;
+    size_t off = 0;
+    while (off < sd.size()) {
+      ssize_t w = write(c.in_fd, sd.data() + off, sd.size() - off);
+      if (w > 0) { off += static_cast<size_t>(w); continue; }
+      if (w < 0 && errno == EINTR) continue;
+      if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        struct pollfd pf{c.in_fd, POLLOUT, 0};
+        poll(&pf, 1, -1);
+        continue;
+      }
+      break;  // EPIPE etc. — child closed its stdin early.
+    }
+  }
+  if (c.in_fd >= 0) { close(c.in_fd); c.in_fd = -1; c.in_open = false; }
+
+  sr.spawned = true;
+  sr.pid = c.pid;
+  sr.out_fd = c.out_fd;
+  sr.err_fd = c.err_fd;
+  // Detach fds + pid from the Child so its destructor leaves them to the handle.
+  c.out_fd = c.err_fd = -1;
+  c.out_open = c.err_open = false;
+  c.pid = -1;
+  return sr;
+}
+
+inline void kill_pid(long pid, int sig) {
+  if (pid > 0) kill(static_cast<pid_t>(pid), sig);
+}
+
+// Non-blocking: returns true and fills `status` if the child has exited (and
+// reaps it); false if it is still running.
+inline bool try_reap(long pid, int& status) {
+  pid_t r;
+  do {
+    r = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+  } while (r < 0 && errno == EINTR);
+  return r == static_cast<pid_t>(pid);
+}
+
+// Adopts pid + out/err fds into a Child to reuse the drain+reap machinery.
+inline _detail::Child _adopt(long pid, int& out_fd, int& err_fd) {
+  _detail::Child c;
+  c.pid = static_cast<pid_t>(pid);
+  c.out_fd = out_fd;
+  c.err_fd = err_fd;
+  c.out_open = out_fd >= 0;
+  c.err_open = err_fd >= 0;
+  out_fd = err_fd = -1;  // ownership moves into the Child.
+  return c;
+}
+
+// Blocking: drains out/err to EOF and waitpid()s -> full ProcResult. Consumes
+// the fds (sets them to -1).
+inline ProcResult wait_handle(long pid, int& out_fd, int& err_fd) {
+  std::vector<_detail::Child> running;
+  running.push_back(_adopt(pid, out_fd, err_fd));
+  char buf[65536];
+  while (running[0].out_open || running[0].err_open) {
+    if (!_detail::poll_step(running, buf, sizeof(buf), -1)) break;
+  }
+  return std::move(_detail::reap_child(running[0]).result);
+}
+
+// After try_reap() has reaped the child: drain remaining buffered out/err and
+// decode `status` into a ProcResult. Consumes the fds.
+inline ProcResult drain_reaped(int status, int& out_fd, int& err_fd) {
+  std::vector<_detail::Child> running;
+  running.push_back(_adopt(0, out_fd, err_fd));  // pid 0: no waitpid here.
+  char buf[65536];
+  while (running[0].out_open || running[0].err_open) {
+    if (!_detail::poll_step(running, buf, sizeof(buf), -1)) break;
+  }
+  return decode_result(status, std::move(running[0].out),
+                       std::move(running[0].err));
 }
 
 }  // namespace culebra::proc

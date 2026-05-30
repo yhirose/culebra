@@ -1251,6 +1251,171 @@ inline std::vector<std::vector<std::string>> proc_parse_command_list(
   return commands;
 }
 
+// Parsed cmd / cwd / env / stdin shared by Proc.run and Proc.spawn.
+struct ProcLaunchArgs {
+  std::vector<std::string> argv;
+  std::string cwd_str;
+  bool has_cwd = false;
+  std::vector<std::pair<std::string, std::string>> overrides;
+  bool has_env = false;
+  std::string stdin_data;
+  const std::string* cwd_ptr() const { return has_cwd ? &cwd_str : nullptr; }
+  const std::vector<std::pair<std::string, std::string>>* env_ptr() const {
+    return has_env ? &overrides : nullptr;
+  }
+};
+
+// Validate and collect the cmd (non-empty Array<String>), cwd (nil/String),
+// env (nil/Object of String) and stdin (String) kwargs. `ctx` tags errors.
+inline ProcLaunchArgs proc_parse_launch(
+    const std::shared_ptr<Environment>& env, const char* ctx, long line,
+    long col) {
+  ProcLaunchArgs la;
+  const auto& arr = *env->get("cmd").to_array().values;
+  if (arr.empty()) {
+    throw CulebraError("ValueError",
+        std::format("{}: empty command at {}:{}.", ctx, line, col), line, col);
+  }
+  la.argv.reserve(arr.size());
+  for (const auto& v : arr) {
+    if (v.type != Value::String && v.type != Value::StringView) {
+      throw CulebraError("TypeError",
+          std::format("{}: command elements must be String at {}:{}.", ctx,
+                      line, col), line, col);
+    }
+    la.argv.emplace_back(v.to_string_view());
+  }
+  const auto& cwd_v = env->get("cwd");
+  if (cwd_v.type != Value::Nil) {
+    if (cwd_v.type != Value::String && cwd_v.type != Value::StringView) {
+      throw CulebraError("TypeError",
+          std::format("{}: cwd must be String at {}:{}.", ctx, line, col),
+          line, col);
+    }
+    la.cwd_str = cwd_v.to_string_view();
+    la.has_cwd = true;
+  }
+  const auto& env_v = env->get("env");
+  if (env_v.type != Value::Nil) {
+    if (env_v.type != Value::Object) {
+      throw CulebraError("TypeError",
+          std::format("{}: env must be Object at {}:{}.", ctx, line, col),
+          line, col);
+    }
+    for (const auto& [k, sym] : *env_v.to_object().properties) {
+      if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
+        throw CulebraError("TypeError",
+            std::format("{}: env values must be String at {}:{}.", ctx, line,
+                        col), line, col);
+      }
+      la.overrides.emplace_back(std::string(k),
+                                std::string(sym.val.to_string_view()));
+    }
+    la.has_env = true;
+  }
+  const auto& stdin_v = env->get("stdin");
+  if (stdin_v.type != Value::String && stdin_v.type != Value::StringView) {
+    throw CulebraError("TypeError",
+        std::format("{}: stdin must be String at {}:{}.", ctx, line, col),
+        line, col);
+  }
+  la.stdin_data = stdin_v.to_string_view();
+  return la;
+}
+
+// Wrap a finished ProcResult as the standard `{code,...,timed_out}` Object.
+inline Value proc_result_to_value(culebra::proc::ProcResult&& pr) {
+  culebra::proc::RunOutcome oc;
+  oc.spawned = true;
+  oc.result = std::move(pr);
+  return proc_outcome_to_value(std::move(oc));
+}
+
+// Mutate a handle field. Objects share their property map, so this is visible
+// to every holder of the handle (the user's variable and the bound `this`).
+inline void _proc_handle_set(const Value& this_v, std::string_view key,
+                             Value val) {
+  this_v.to_object().properties->insert_or_assign(
+      key, Symbol{std::move(val), true});
+}
+
+// Build the Proc.spawn live handle: data fields `_pid/_out/_err/_done/_result`
+// plus `wait`/`poll`/`kill`/`drop` methods. The result is cached on first
+// wait/poll so the methods are idempotent; `drop` (called on GC) best-effort
+// reaps a child that was never waited on.
+inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_pid", Value(pid), true);
+  h.initialize("_out", Value(static_cast<long>(out_fd)), true);
+  h.initialize("_err", Value(static_cast<long>(err_fd)), true);
+  h.initialize("_done", Value(false), true);
+  h.initialize("_result", Value(), true);
+
+  h.initialize("wait",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
+        const Value& self = env->get("this");
+        const auto& o = self.to_object();
+        if (o.get("_done").to_bool()) return o.get("_result");
+        int out_fd = static_cast<int>(o.get("_out").to_long());
+        int err_fd = static_cast<int>(o.get("_err").to_long());
+        auto pr = culebra::proc::wait_handle(o.get("_pid").to_long(), out_fd,
+                                             err_fd);
+        Value res = proc_result_to_value(std::move(pr));
+        _proc_handle_set(self, "_done", Value(true));
+        _proc_handle_set(self, "_result", res);
+        return res;
+      }, "Object"sv)), false);
+
+  h.initialize("poll",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
+        const Value& self = env->get("this");
+        const auto& o = self.to_object();
+        if (o.get("_done").to_bool()) return o.get("_result");
+        int status = 0;
+        if (!culebra::proc::try_reap(o.get("_pid").to_long(), status)) {
+          return Value();  // still running
+        }
+        int out_fd = static_cast<int>(o.get("_out").to_long());
+        int err_fd = static_cast<int>(o.get("_err").to_long());
+        auto pr = culebra::proc::drain_reaped(status, out_fd, err_fd);
+        Value res = proc_result_to_value(std::move(pr));
+        _proc_handle_set(self, "_done", Value(true));
+        _proc_handle_set(self, "_result", res);
+        return res;
+      }, ""sv)), false);  // returns Object (exited) or nil (still running)
+
+  static const auto kill_sig_default =
+      std::make_shared<Value>(Value(static_cast<long>(15)));
+  h.initialize("kill",
+      Value(FunctionValue({{"sig", false, "Long"sv, nullptr, kill_sig_default}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            const auto& o = env->get("this").to_object();
+            if (!o.get("_done").to_bool()) {
+              culebra::proc::kill_pid(
+                  o.get("_pid").to_long(),
+                  static_cast<int>(env->get("sig").to_long()));
+            }
+            return Value();
+          }, "Nil"sv)), false);
+
+  h.initialize("drop",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
+        const Value& self = env->get("this");
+        const auto& o = self.to_object();
+        if (o.get("_done").to_bool()) return Value();
+        int out_fd = static_cast<int>(o.get("_out").to_long());
+        int err_fd = static_cast<int>(o.get("_err").to_long());
+        long pid = o.get("_pid").to_long();
+        culebra::proc::kill_pid(pid, SIGKILL);
+        culebra::proc::wait_handle(pid, out_fd, err_fd);  // drains + reaps
+        _proc_handle_set(self, "_done", Value(true));
+        return Value();
+      }, "Nil"sv)), false);
+
+  return Value(std::move(h));
+}
+
 // `Proc.run(cmd, cwd=nil, env=nil, stdin="", check=false)` — run an external
 // command synchronously. `cmd` is a non-empty Array<String> (no shell). A
 // non-zero exit or signal death is a normal result (`ok:false`); a spawn
@@ -1275,74 +1440,14 @@ inline Value make_proc_namespace() {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
 
-            const auto& arr = *env->get("cmd").to_array().values;
-            if (arr.empty()) {
-              throw CulebraError("ValueError",
-                  std::format("Proc.run: empty command at {}:{}.", line, col),
-                  line, col);
-            }
-            std::vector<std::string> argv;
-            argv.reserve(arr.size());
-            for (const auto& v : arr) {
-              if (v.type != Value::String && v.type != Value::StringView) {
-                throw CulebraError("TypeError",
-                    std::format("Proc.run: command elements must be String "
-                                "at {}:{}.", line, col), line, col);
-              }
-              argv.emplace_back(v.to_string_view());
-            }
-
-            const auto& cwd_v = env->get("cwd");
-            std::string cwd_str;
-            const std::string* cwd_ptr = nullptr;
-            if (cwd_v.type != Value::Nil) {
-              if (cwd_v.type != Value::String &&
-                  cwd_v.type != Value::StringView) {
-                throw CulebraError("TypeError",
-                    std::format("Proc.run: cwd must be String at {}:{}.",
-                                line, col), line, col);
-              }
-              cwd_str = cwd_v.to_string_view();
-              cwd_ptr = &cwd_str;
-            }
-
-            const auto& env_v = env->get("env");
-            std::vector<std::pair<std::string, std::string>> overrides;
-            const std::vector<std::pair<std::string, std::string>>* env_ptr =
-                nullptr;
-            if (env_v.type != Value::Nil) {
-              if (env_v.type != Value::Object) {
-                throw CulebraError("TypeError",
-                    std::format("Proc.run: env must be Object at {}:{}.",
-                                line, col), line, col);
-              }
-              for (const auto& [k, sym] : *env_v.to_object().properties) {
-                if (sym.val.type != Value::String &&
-                    sym.val.type != Value::StringView) {
-                  throw CulebraError("TypeError",
-                      std::format("Proc.run: env values must be String "
-                                  "at {}:{}.", line, col), line, col);
-                }
-                overrides.emplace_back(std::string(k),
-                                       std::string(sym.val.to_string_view()));
-              }
-              env_ptr = &overrides;
-            }
-
-            const auto& stdin_v = env->get("stdin");
-            if (stdin_v.type != Value::String &&
-                stdin_v.type != Value::StringView) {
-              throw CulebraError("TypeError",
-                  std::format("Proc.run: stdin must be String at {}:{}.",
-                              line, col), line, col);
-            }
-            std::string stdin_data(stdin_v.to_string_view());
+            auto la = proc_parse_launch(env, "Proc.run", line, col);
             bool check = env->get("check").to_bool();
             long timeout = env->get("timeout").to_long();
             if (timeout < 0) timeout = 0;
 
-            auto oc = culebra::proc::run_command(argv, cwd_ptr, env_ptr,
-                                                 stdin_data, timeout);
+            auto oc = culebra::proc::run_command(la.argv, la.cwd_ptr(),
+                                                 la.env_ptr(), la.stdin_data,
+                                                 timeout);
             if (!oc.spawned) {
               throw CulebraError("ProcessError",
                   std::format("Proc.run: {} failed at {}:{}: {}.",
@@ -1430,6 +1535,36 @@ inline Value make_proc_namespace() {
             auto [winner, oc] = culebra::proc::run_race(commands);
             (void)winner;
             return proc_outcome_to_value(std::move(oc));
+          },
+          "Object"sv)),
+      false);
+
+  // `Proc.spawn(cmd, cwd=nil, env=nil, stdin="")` — start a command and return
+  // a live handle (`wait`/`poll`/`kill`) without waiting for it. A spawn
+  // failure throws ProcessError.
+  ns.initialize(
+      "spawn",
+      Value(FunctionValue(
+          {
+              {"cmd", false, "Array"sv},
+              {"cwd", false, ""sv, nullptr, kw_default_nil()},
+              {"env", false, ""sv, nullptr, kw_default_nil()},
+              {"stdin", false, ""sv, nullptr, proc_stdin_default},
+          },
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto la = proc_parse_launch(env, "Proc.spawn", line, col);
+            auto sr = culebra::proc::spawn_detached(la.argv, la.cwd_ptr(),
+                                                    la.env_ptr(), la.stdin_data);
+            if (!sr.spawned) {
+              throw CulebraError("ProcessError",
+                  std::format("Proc.spawn: {} failed at {}:{}: {}.", sr.err_what,
+                              line, col,
+                              std::system_category().message(sr.err_no)),
+                  line, col);
+            }
+            return make_proc_handle(sr.pid, sr.out_fd, sr.err_fd);
           },
           "Object"sv)),
       false);

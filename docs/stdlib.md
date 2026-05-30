@@ -1183,8 +1183,42 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-`Proc.run` / `Proc.all` / `Proc.race` are the synchronous primitives; a live
-handle (`Proc.spawn`) and `timeout:` are planned.
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="") -> handle`
+
+Starts a command and returns immediately with a **live handle**, without
+waiting for it. The handle has three methods:
+
+| method | returns | meaning |
+|---|---|---|
+| `h.wait()` | result Object | block until the child exits, draining its output |
+| `h.poll()` | result Object or `nil` | the result if it has exited, else `nil` (non-blocking) |
+| `h.kill(sig = 15)` | `nil` | send a signal (`SIGTERM` by default); the next `wait`/`poll` reaps |
+
+`wait()` / `poll()` are idempotent — once the child has been reaped, both
+return the same cached result Object (the usual `{code, stdout, stderr, ok,
+signal, error, timed_out}`). A spawn failure throws `ProcessError`, like
+`Proc.run`. A handle that is dropped without ever being waited on is reaped by
+the GC (the child is `SIGKILL`ed), so it won't linger as a zombie — but
+explicitly `wait()`ing or `kill()`ing is clearer. As with the other verbs, only
+the direct child is signalled, not any grandchildren.
+
+```culebra
+# doctest: skip
+let server = Proc.spawn(["python", "-m", "http.server", "8000"])
+# ... do work against the server ...
+server.kill()                 # SIGTERM
+let r = server.wait()
+IO.puts("server exited via " + (r.signal ?? to_string(r.code)))
+
+# Run something and poll for completion without blocking.
+let job = Proc.spawn(["make", "-j4"])
+while job.poll() == nil {
+  IO.print(".")               # ...other work...
+}
+```
+
+`stdin` is fed once at spawn time and then closed. Incremental streaming I/O
+and pipelines (`a | b`) are planned.
 
 ---
 

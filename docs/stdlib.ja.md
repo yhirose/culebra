@@ -1139,8 +1139,41 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-`Proc.run` / `Proc.all` / `Proc.race` は同期プリミティブです。ライブハンドル
-（`Proc.spawn`）と `timeout:` は将来追加予定です。
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="") -> handle`
+
+コマンドを起動し、完了を待たずに即座に**ライブハンドル**を返します。ハンドルは
+3 つのメソッドを持ちます:
+
+| メソッド | 戻り値 | 意味 |
+|---|---|---|
+| `h.wait()` | 結果 Object | 子の終了まで待ち、出力を drain する（ブロッキング） |
+| `h.poll()` | 結果 Object または `nil` | 終了していれば結果、まだなら `nil`（非ブロッキング） |
+| `h.kill(sig = 15)` | `nil` | シグナル送出（既定 `SIGTERM`）。次の `wait`/`poll` が reap |
+
+`wait()` / `poll()` は冪等で、子を reap した後はどちらも同じキャッシュ済み結果
+Object（通常の `{code, stdout, stderr, ok, signal, error, timed_out}`）を返します。
+起動失敗は `Proc.run` と同様 `ProcessError` を throw します。一度も wait されずに
+捨てられたハンドルは GC が reap し（子を `SIGKILL`）、ゾンビとして残りません — ただし
+明示的に `wait()` / `kill()` する方が明快です。他の verb と同様、シグナルは直接の子
+にのみ送られます（孫には届きません）。
+
+```culebra
+# doctest: skip
+let server = Proc.spawn(["python", "-m", "http.server", "8000"])
+# ... サーバに対して作業 ...
+server.kill()                 # SIGTERM
+let r = server.wait()
+IO.puts("server exited via " + (r.signal ?? to_string(r.code)))
+
+# ブロックせずに完了をポーリング。
+let job = Proc.spawn(["make", "-j4"])
+while job.poll() == nil {
+  IO.print(".")               # ...他の作業...
+}
+```
+
+`stdin` は spawn 時に一度だけ渡されてクローズされます。逐次 streaming I/O と
+パイプライン（`a | b`）は将来追加予定です。
 
 ---
 

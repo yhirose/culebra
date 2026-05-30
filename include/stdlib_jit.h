@@ -731,6 +731,30 @@ class _JitKwargResolver {
     return s;
   }
 
+  // Resolve an `env` Object-of-String kwarg into name/value pairs (appended to
+  // `out`). Returns true if `env` was present. A non-String value is a
+  // TypeError tagged with ctx_.
+  bool take_env(std::vector<std::pair<std::string, std::string>>& out) {
+    auto v = take_typed("env", TAG_OBJECT, "Object");
+    if (!v) return false;
+    auto* obj = reinterpret_cast<JitObject*>(v->data);
+    bool bad = false;
+    if (obj->shape) {
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        const JitValue& sv = obj->slots[k].value;
+        if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) {
+          bad = true;
+          break;
+        }
+        out.emplace_back(std::string(obj->shape->names[k]),
+                         std::string(_culebra_str_view(sv.tag, sv.data)));
+      }
+    }
+    _culebra_value_release_impl(v->tag, v->data);
+    if (bad) fail(std::string(ctx_) + ": env values must be String", "TypeError");
+    return true;
+  }
+
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
@@ -1269,25 +1293,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   int64_t timeout = 0;
   if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
   std::vector<std::pair<std::string, std::string>> overrides;
-  const std::vector<std::pair<std::string, std::string>>* env_ptr = nullptr;
-  if (auto v = kw.take_typed("env", TAG_OBJECT, "Object")) {
-    auto* obj = reinterpret_cast<JitObject*>(v->data);
-    bool bad = false;
-    if (obj->shape) {
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
-        const JitValue& sv = obj->slots[k].value;
-        if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) {
-          bad = true;
-          break;
-        }
-        overrides.emplace_back(std::string(obj->shape->names[k]),
-                               std::string(_culebra_str_view(sv.tag, sv.data)));
-      }
-    }
-    culebra_runtime_value_release(v->tag, v->data);
-    if (bad) kw.fail("Proc.run: env values must be String", "TypeError");
-    env_ptr = &overrides;
-  }
+  const std::vector<std::pair<std::string, std::string>>* env_ptr =
+      kw.take_env(overrides) ? &overrides : nullptr;
   kw.validate_consumed();
   return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
                                 stdin_data, check, timeout, line, col);
@@ -1362,6 +1369,214 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
   (void)winner;
   return {TAG_OBJECT,
           reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
+}
+
+// --- Proc.spawn live handle (JIT) ---
+// The handle is a JitObject with data slots (_pid/_out/_err/_done/_result) and
+// method-closure slots; each method reads `this` (the handle) via the JitFn
+// `this` argument. Result is cached on first wait/poll (idempotent); `drop`
+// (GC) best-effort reaps a child that was never waited on.
+
+CULEBRA_RT_INLINE JitObject* _culebra_proc_result_to_object(
+    culebra::proc::ProcResult&& pr, int64_t line, int64_t col) {
+  culebra::proc::RunOutcome oc;
+  oc.spawned = true;
+  oc.result = std::move(pr);
+  return _culebra_proc_outcome_to_object(oc, line, col);
+}
+
+CULEBRA_RT_INLINE int64_t _jit_handle_long(JitObject* h, const char* key) {
+  size_t i = h->find_slot(key);
+  return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
+}
+CULEBRA_RT_INLINE bool _jit_handle_done(JitObject* h) {
+  size_t i = h->find_slot("_done");
+  return i != static_cast<size_t>(-1) &&
+         h->slots[i].value.tag == TAG_BOOL && h->slots[i].value.data;
+}
+// Returns the cached _result with a +1 for the caller.
+CULEBRA_RT_INLINE JitValue _jit_handle_cached(JitObject* h) {
+  size_t i = h->find_slot("_result");
+  JitValue r = (i == static_cast<size_t>(-1)) ? JitValue{TAG_NIL, 0}
+                                              : h->slots[i].value;
+  culebra_runtime_value_retain(r.tag, r.data);
+  return r;
+}
+// Cache `res_obj` + mark done; returns the result with a +1 for the caller.
+// `res_obj` arrives with refcount 1 (object_new); the slot adopts that ref
+// (set_or_append doesn't retain), so we only retain once for the caller.
+CULEBRA_RT_INLINE JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) {
+  JitValue res{TAG_OBJECT, reinterpret_cast<int64_t>(res_obj)};
+  h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
+  h->set_or_append("_result", res, true);     // slot adopts object_new's +1
+  culebra_runtime_value_retain(res.tag, res.data);  // caller's ref
+  return res;
+}
+
+// wait/poll/kill are invoked via the method ABI (_culebra_invoke_method1),
+// which retains `self`; the callee must consume that +1. Each releases `self`
+// before returning. (drop, below, is called from the destructor's drop
+// protocol, which manages the object's refcount itself — it must NOT release.)
+CULEBRA_RT_INLINE JitValue _jit_handle_wait(JitClosure*, JitValue self,
+                                            int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  JitValue ret;
+  if (_jit_handle_done(h)) {
+    ret = _jit_handle_cached(h);
+  } else {
+    int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
+    int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
+    auto pr = culebra::proc::wait_handle(_jit_handle_long(h, "_pid"), out_fd,
+                                         err_fd);
+    ret = _jit_handle_finish(
+        h, _culebra_proc_result_to_object(std::move(pr), 0, 0));
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+CULEBRA_RT_INLINE JitValue _jit_handle_poll(JitClosure*, JitValue self,
+                                            int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  JitValue ret;
+  if (_jit_handle_done(h)) {
+    ret = _jit_handle_cached(h);
+  } else {
+    int status = 0;
+    if (!culebra::proc::try_reap(_jit_handle_long(h, "_pid"), status)) {
+      ret = {TAG_NIL, 0};  // still running
+    } else {
+      int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
+      int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
+      auto pr = culebra::proc::drain_reaped(status, out_fd, err_fd);
+      ret = _jit_handle_finish(
+          h, _culebra_proc_result_to_object(std::move(pr), 0, 0));
+    }
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+CULEBRA_RT_INLINE JitValue _jit_handle_kill(JitClosure*, JitValue self,
+                                            int64_t n, JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int sig = (n >= 1 && args[0].tag == TAG_LONG)
+                ? static_cast<int>(args[0].data) : 15;
+  if (!_jit_handle_done(h)) {
+    culebra::proc::kill_pid(_jit_handle_long(h, "_pid"), sig);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_handle_drop(JitClosure*, JitValue self,
+                                            int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  if (_jit_handle_done(h)) return {TAG_NIL, 0};
+  int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
+  int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
+  long pid = _jit_handle_long(h, "_pid");
+  culebra::proc::kill_pid(pid, SIGKILL);
+  culebra::proc::wait_handle(pid, out_fd, err_fd);
+  h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity) {
+  auto* cls = new JitClosure();
+  cls->refcount = 1;
+  cls->fn_ptr = reinterpret_cast<void*>(fn);
+  cls->n_captures = 0;
+  cls->captures = nullptr;
+  cls->arity = arity;
+  _gc_register(cls, GC_TAG_FUNC);
+  return cls;
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
+                                                      int err_fd) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_pid", JitValue{TAG_LONG, pid}, true);
+  h->set_or_append("_out", JitValue{TAG_LONG, out_fd}, true);
+  h->set_or_append("_err", JitValue{TAG_LONG, err_fd}, true);
+  h->set_or_append("_done", JitValue{TAG_BOOL, 0}, true);
+  h->set_or_append("_result", JitValue{TAG_NIL, 0}, true);
+  auto fn = [&](const char* name, auto* f, size_t ar) {
+    h->set_or_append(name,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+            _jit_make_handle_method(f, ar))}, false);
+  };
+  fn("wait", _jit_handle_wait, 0);
+  fn("poll", _jit_handle_poll, 0);
+  fn("kill", _jit_handle_kill, 0);
+  fn("drop", _jit_handle_drop, 0);
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Spawn core: parse argv, spawn detached, return a live handle (or throw).
+CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
+    int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_over,
+    const std::string& stdin_data, int64_t line, int64_t col) {
+  if (cmd_tag != TAG_ARRAY) {
+    throw culebra::CulebraError("TypeError",
+        std::format("Proc.spawn: cmd must be Array at {}:{}.", line, col),
+        line, col);
+  }
+  auto* cmd = reinterpret_cast<JitArray*>(cmd_data);
+  std::vector<std::string> argv;
+  argv.reserve(cmd->size);
+  for (size_t i = 0; i < cmd->size; i++) {
+    const JitValue& e = cmd->items[i];
+    if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError("TypeError",
+          std::format("Proc.spawn: command elements must be String at {}:{}.",
+                      line, col), line, col);
+    }
+    argv.emplace_back(_culebra_str_view(e.tag, e.data));
+  }
+  if (argv.empty()) {
+    throw culebra::CulebraError("ValueError",
+        std::format("Proc.spawn: empty command at {}:{}.", line, col),
+        line, col);
+  }
+  auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, stdin_data);
+  if (!sr.spawned) {
+    throw culebra::CulebraError("ProcessError",
+        std::format("Proc.spawn: {} failed at {}:{}: {}.", sr.err_what, line,
+                    col, std::system_category().message(sr.err_no)),
+        line, col);
+  }
+  return _culebra_proc_build_handle(sr.pid, sr.out_fd, sr.err_fd);
+}
+
+// Positional Proc.spawn(cmd) (no kwargs) — trampoline / AOT.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn(
+    int8_t cmd_tag, int64_t cmd_data, int64_t line, int64_t col) {
+  return _culebra_proc_spawn_build(cmd_tag, cmd_data, nullptr, nullptr,
+                                   std::string(), line, col);
+}
+
+// Kwarg adapter for Proc.spawn (cwd/env/stdin). `cmd` is not consumed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
+    int8_t cmd_tag, int64_t cmd_data,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
+                       "Proc.spawn");
+  std::string cwd_str;
+  const std::string* cwd_ptr = nullptr;
+  if (auto v = kw.take_string("cwd")) {
+    cwd_str = std::move(*v);
+    cwd_ptr = &cwd_str;
+  }
+  std::string stdin_data;
+  if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
+  std::vector<std::pair<std::string, std::string>> overrides;
+  const std::vector<std::pair<std::string, std::string>>* env_ptr =
+      kw.take_env(overrides) ? &overrides : nullptr;
+  kw.validate_consumed();
+  return _culebra_proc_spawn_build(cmd_tag, cmd_data, cwd_ptr, env_ptr,
+                                   stdin_data, line, col);
 }
 
 }  // extern "C"
@@ -1683,6 +1898,9 @@ inline JitValue _ns_proc_all(JitValue* a, int64_t) {
 inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
+inline JitValue _ns_proc_spawn(JitValue* a, int64_t) {
+  return culebra_runtime_proc_spawn(a[0].tag, a[0].data, 0, 0);
+}
 
 // JSON. Slow path is positional-only; the kwargs form goes through
 // compile_json_kwargs_adapter on the fast path.
@@ -1908,9 +2126,10 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
 
-  {"Proc",   "run",  1, &_ns_proc_run},
-  {"Proc",   "all",  1, &_ns_proc_all},
-  {"Proc",   "race", 1, &_ns_proc_race},
+  {"Proc",   "run",   1, &_ns_proc_run},
+  {"Proc",   "all",   1, &_ns_proc_all},
+  {"Proc",   "race",  1, &_ns_proc_race},
+  {"Proc",   "spawn", 1, &_ns_proc_spawn},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2486,6 +2705,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (ns == "Proc" && method == "all") {
     return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.all",
                                             rt::proc_all_kw);
+  }
+  if (ns == "Proc" && method == "spawn") {
+    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.spawn",
+                                            rt::proc_spawn_kw);
   }
 
   if (ns == "Math") {
