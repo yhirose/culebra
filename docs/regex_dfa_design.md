@@ -123,10 +123,27 @@ thing stays linear.
     DFA and was being recomputed ~3× per match — a /simplify pass fixed it for
     another ~2.3×.) `\w+` now beats std::regex (~11) decisively. Dense patterns
     no longer cap at ~2×, but this is still not RE2's order of magnitude.
-- **M2 — windowed Pike.** Captures via "DFA window → Pike resolve". Measure
-  sparse alternation / log-parse patterns.
-- **M3 — reverse DFA (conditional).** Only if M1/M2 measurement shows the
-  reverse Pike dominates the window cost. Otherwise not done.
+- **M2 — windowed Pike (ATTEMPTED, ABANDONED).** The plan was: for captures /
+  longest-unsafe DFA-able patterns, reuse the M1 prefilter (unanchored forward
+  → first end `e0` → reverse → leftmost start `s`), then run an anchored Pike
+  at `s` for the end + captures. **The fuzzer (DFA-vs-forced-Pike differential)
+  immediately found it wrong on alternation.** Root cause: the unanchored
+  forward DFA finds the *earliest-ending* match, but the *leftmost-starting*
+  match can start earlier and end later — e.g. `\d.|[a]*\w{3}\w` on `"c1BA"`:
+  the DFA finds `1B` (`\d.`, ends at 3) first, so reverse localizes start 1 and
+  misses the true leftmost match `c1BA` (`[a]*\w{3}\w`, starts at 0, ends at 4).
+  Tier 1 was immune only because longest-safe ⇒ no alternation, which happens
+  to also rule out earlier-start/later-end; tier 2's target set is exactly the
+  patterns where it breaks. Correctly localizing the leftmost-*starting* match
+  needs a priority/leftmost-aware DFA (the subset DFA carries no thread
+  priority) — that is M3-scale, not a quick win. **Reverted.** Captures /
+  longest-unsafe patterns stay on the Pike VM with the B1/B4 prefilters (which
+  already skip dead regions by literal prefix / first-byte set).
+- **M3 — priority/leftmost-aware DFA (open).** The real prerequisite for
+  accelerating tier-2 patterns: a forward DFA whose states carry NFA thread
+  priority so it reports the leftmost-first match end directly (RE2-style).
+  Large; only worth it if tier-2 patterns prove to be a measured bottleneck in
+  a real workload. Not scheduled.
 
 ## Invariants (non-negotiable)
 
