@@ -324,6 +324,17 @@ void invariant_fuzz(int iters) {
       fail("non-RegexError thrown at construction", pat, "");
       continue;
     }
+    // Wrapping the pattern in a capture group forces the Pike VM (it is no
+    // longer capture-free, so the tier-1 DFA gate fails), while group 0 — the
+    // whole match — is identical to the unwrapped pattern. This gives an
+    // oracle-free DFA-vs-Pike reference for search()/find_all(), which both
+    // take the DFA path for tier-1 patterns.
+    regexlib::Regex *pike = nullptr;
+    try {
+      pike = new regexlib::Regex("(" + pat + ")");
+    } catch (...) {
+      pike = nullptr;  // wrapping may hit a limit; skip the differential then
+    }
     for (int s = 0; s < 5; s++) {
       std::string subj = gen_subject();
       regexlib::MatchResult m;
@@ -337,9 +348,9 @@ void invariant_fuzz(int iters) {
         continue;
       }
       check_match(m, subj, pat, subj);
-      // match() takes the forward-DFA path for tier-1 patterns; search() stays
-      // on the Pike VM. They must agree whenever the leftmost match is anchored
-      // at 0 — a genuine DFA-vs-Pike differential (oracle-free).
+      // match() and search() must agree whenever the leftmost match is anchored
+      // at 0 (both take the DFA path for tier-1 patterns; the Pike reference is
+      // the wrapped pattern checked below).
       regexlib::MatchResult am;
       try {
         am = re->match(subj);
@@ -364,8 +375,26 @@ void invariant_fuzz(int iters) {
         check_match(all[i], subj, pat, subj);
         if (all[i].begin < all[i - 1].end) fail("find_all overlaps/regresses", pat, subj);
       }
+      // DFA-vs-Pike differential: the wrapped pattern's whole matches (its
+      // group-0 spans) must equal the DFA find_all spans, one for one.
+      if (pike) {
+        std::vector<regexlib::MatchResult> ref;
+        try {
+          ref = pike->find_all(subj);
+        } catch (...) {
+          fail("pike reference threw", pat, subj);
+          continue;
+        }
+        if (ref.size() != all.size()) fail("find_all count != Pike", pat, subj);
+        else
+          for (size_t i = 0; i < all.size(); i++)
+            if (all[i].begin != ref[i].begin || all[i].end != ref[i].end ||
+                all[i].str != ref[i].str)
+              fail("find_all span != Pike", pat, subj);
+      }
     }
     delete re;
+    delete pike;
   }
 }
 

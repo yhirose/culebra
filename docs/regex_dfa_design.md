@@ -112,11 +112,17 @@ thing stays linear.
     (interned states + lazy byte transitions + state cap) backs `dfa_test`,
     `dfa_forward`, and `dfa_match_start`. Differential: the fuzzer's existing
     "Pike find_all[0] == search()" invariant now cross-checks the DFA search.
-  - **M1-step3.** Wire `find_all` (the throughput case). Needs a DFA cache so
-    the forward/reverse DFAs are built once and reused across the match loop
-    (not rebuilt per match). Add a find_all DFA-vs-Pike differential.
-    **Measure immediately** (`\w+`, `\d+`, literals); do not proceed to M2 on
-    speculation.
+  - **M1-step3 (done).** Wire `find_all`: the three DFAs (`fu`/`fa`/`rv`) are
+    built once per call and reused across every match (`LazyDfa` gained a
+    `reseed` member so the unanchored and anchored DFAs are distinct, reusable
+    objects). DFA-vs-Pike differential added to the fuzzer by wrapping the
+    pattern in a capture group (forces Pike; group 0 == the unwrapped whole
+    match). **Measured (1MB find_all): 2–5× over the Pike baseline** — `\w+`
+    8.9→44, `[a-z]+` 9.9→47, `\d+` 55→200, literal 60→190 MB/s. (`\w+` was
+    ~18 before caching the interned start state; that state is invariant per
+    DFA and was being recomputed ~3× per match — a /simplify pass fixed it for
+    another ~2.3×.) `\w+` now beats std::regex (~11) decisively. Dense patterns
+    no longer cap at ~2×, but this is still not RE2's order of magnitude.
 - **M2 — windowed Pike.** Captures via "DFA window → Pike resolve". Measure
   sparse alternation / log-parse patterns.
 - **M3 — reverse DFA (conditional).** Only if M1/M2 measurement shows the
