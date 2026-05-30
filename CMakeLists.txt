@@ -272,3 +272,16 @@ culebra_add_smoke_exe(define_smoke)
 add_executable(regexlib_test test/regexlib_test.cc)
 target_compile_features(regexlib_test PRIVATE cxx_std_17)
 add_test(NAME regexlib_test COMMAND regexlib_test)
+
+# In-progress JIT GC rewrite — see docs/jit_gc_design.md. The new conservative
+# collector (include/jit_gc.h) is a standalone header (no JIT/LLVM link); its
+# Phase 0 tests validate pointer-validation, conservative root scanning, and
+# mark-sweep in isolation. CULEBRA_NEW_GC will gate the actual jit.h wiring
+# once Phase 1 lands; OFF until then (current collector ships).
+option(CULEBRA_NEW_GC "Use the rewritten conservative GC (in progress)" OFF)
+foreach(gc_test jit_gc_phase0 jit_gc_collect)
+  add_executable(${gc_test} tests/${gc_test}.cc)
+  target_compile_features(${gc_test} PRIVATE cxx_std_20)
+  target_include_directories(${gc_test} PRIVATE include)
+  add_test(NAME ${gc_test} COMMAND ${gc_test})
+endforeach()
