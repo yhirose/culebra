@@ -100,13 +100,23 @@ thing stays linear.
     the longest match end. Wired into `match()` (anchored at 0 ⇒ no reverse
     scan needed). Cross-checked by a new fuzzer invariant: DFA `match()` ==
     Pike `search()` when the leftmost match is anchored at 0.
-  - **M1-step2.** Reverse-compile the whole program; reverse scan from an end
-    `e` to the leftmost start `s` (reuse `sub_match_reverse` infra, generalized
-    to return the leftmost start, clamped to the previous match's end).
-  - **M1-step3.** Wire `search`/`find_all`: unanchored forward DFA finds an end,
-    reverse scan finds `s`, anchored `dfa_match_end` confirms the longest end.
-    Add the find_all DFA-vs-Pike differential. **Measure immediately** (`\w+`,
-    `\d+`, literals); do not proceed to M2 on speculation.
+  - **M1-step2 (done).** Reverse-compile the whole program (`reverse_ast` +
+    `Compiler::compile`, built only for tier-1 patterns). `dfa_match_start`:
+    a byte-DFA over the reverse program scanning leftward from an end `e` to the
+    leftmost start `s` (clamped to a floor). NOTE: reverse is a *byte DFA*, not
+    the reverse Pike VM the meeting first proposed — a Pike reverse needs the
+    `Segmented` grapheme split, which would defeat tier-1's "no segmentation"
+    win. `dfa_search` orchestrates the three stages (unanchored forward end →
+    reverse start → anchored longest end) and `search()` is wired to it (one
+    match per call, so no DFA caching needed yet). The shared `LazyDfa` driver
+    (interned states + lazy byte transitions + state cap) backs `dfa_test`,
+    `dfa_forward`, and `dfa_match_start`. Differential: the fuzzer's existing
+    "Pike find_all[0] == search()" invariant now cross-checks the DFA search.
+  - **M1-step3.** Wire `find_all` (the throughput case). Needs a DFA cache so
+    the forward/reverse DFAs are built once and reused across the match loop
+    (not rebuilt per match). Add a find_all DFA-vs-Pike differential.
+    **Measure immediately** (`\w+`, `\d+`, literals); do not proceed to M2 on
+    speculation.
 - **M2 — windowed Pike.** Captures via "DFA window → Pike resolve". Measure
   sparse alternation / log-parse patterns.
 - **M3 — reverse DFA (conditional).** Only if M1/M2 measurement shows the

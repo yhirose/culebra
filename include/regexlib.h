@@ -1310,6 +1310,14 @@ class Regex {
     analyze_dfa();
     analyze_first_bytes();
     longest_safe_ = dfa_ok_ && detail::node_longest_safe(root);
+    // Tier-1 find DFA needs a reverse program to recover match starts.
+    if (longest_safe_ && ncap_ == 0) {
+      rev_prog_ = detail::Compiler::compile(detail::reverse_ast(root), ncap_);
+      for (size_t i = 0; i < rev_prog_.insts.size(); i++)
+        if (rev_prog_.insts[i].op == detail::Inst::Op::Match)
+          rev_match_pc_ = static_cast<int>(i);
+      have_rev_ = true;
+    }
   }
 
   int group_count() const { return ncap_; }
@@ -1319,6 +1327,12 @@ class Regex {
 
   // Search anywhere in `text`.
   MatchResult search(std::string_view text) const {
+    // Tier 1 (capture-free ∧ longest-safe ∧ ASCII): pure DFA, no segmentation.
+    if (longest_safe_ && ncap_ == 0 && have_rev_ && is_ascii(text)) {
+      MatchResult r;
+      if (dfa_search(text, 0, r)) return r;  // handled (match or no-match)
+      // otherwise the state cap tripped — fall through to the Pike VM.
+    }
     auto seg = detail::segment(text);
     Scratch sc;
     return search_at_or_after(seg, 0, sc);
@@ -1330,7 +1344,7 @@ class Regex {
     // end comes straight from a forward DFA, no Pike VM. Anchored at 0, so no
     // reverse scan is needed to find the start. See docs/regex_dfa_design.md.
     if (longest_safe_ && ncap_ == 0 && is_ascii(text)) {
-      int end = dfa_match_end(text, 0);
+      int end = dfa_forward(text, 0, /*reseed=*/false, /*longest=*/true);
       if (end >= 0) return build_dfa_result(text, 0, end);
       if (end == -1) return MatchResult{};
       // end == -2: DFA state cap exceeded — fall through to the Pike VM.
@@ -1392,6 +1406,12 @@ class Regex {
   bool dfa_ok_ = false;  // program is "regular" -> boolean match via lazy DFA
   bool longest_safe_ = false;  // leftmost-first end == leftmost-longest end
   int match_pc_ = -1;    // index of the Match instruction
+  // Reverse-compiled program for the M1 find DFA (built only for tier-1
+  // patterns: longest-safe ∧ capture-free). Used to recover a match's leftmost
+  // start by scanning leftward from its end. See docs/regex_dfa_design.md.
+  detail::Program rev_prog_;
+  int rev_match_pc_ = -1;
+  bool have_rev_ = false;
 
   // Every match must begin with the pattern's leading run of literal
   // characters. Collect it (skipping the zero-width capture Saves) so an
@@ -1425,7 +1445,7 @@ class Regex {
     if (!dfa_ok_) return;  // asserts/lookaround/loop break first-byte reasoning
     std::vector<int> startpcs;
     std::vector<char> seen(prog_.insts.size(), 0);
-    dfa_closure({0}, startpcs, seen);
+    dfa_closure(prog_, {0}, startpcs, seen);
     for (int pc : startpcs) {
       Op op = prog_.insts[pc].op;
       if (op == Op::Match) return;  // empty match possible -> every position viable
@@ -1476,16 +1496,16 @@ class Regex {
   }
 
   // Capture-free ε-closure: from `seeds`, follow Jmp/Split/Save and collect the
-  // reachable consuming (Char/Class/Any) and Match program counters.
-  void dfa_closure(std::vector<int> stk, std::vector<int> &out,
-                   std::vector<char> &seen) const {
+  // reachable consuming (Char/Class/Any) and Match program counters of `prog`.
+  void dfa_closure(const detail::Program &prog, std::vector<int> stk,
+                   std::vector<int> &out, std::vector<char> &seen) const {
     using Op = detail::Inst::Op;
     while (!stk.empty()) {
       int pc = stk.back();
       stk.pop_back();
       if (seen[pc]) continue;
       seen[pc] = 1;
-      const detail::Inst &in = prog_.insts[pc];
+      const detail::Inst &in = prog.insts[pc];
       switch (in.op) {
         case Op::Jmp: stk.push_back(in.x); break;
         case Op::Split:
@@ -1498,22 +1518,33 @@ class Regex {
     }
   }
 
-  bool dfa_test(std::string_view text) const {
-    int psz = static_cast<int>(prog_.insts.size());
+  // Shared lazy-DFA driver. A state is a sorted, de-duplicated set of program
+  // counters (interned to an int id); byte transitions are built on demand. A
+  // state is accepting if it contains `match_pc`. `next` returns the
+  // destination state, or kCap if the interned-state count exceeds the cap (the
+  // caller then falls back to the Pike VM). Drives the boolean test() DFA and
+  // the M1 forward/reverse find DFAs over either the forward or reverse program.
+  struct LazyDfa {
+    const Regex &re;
+    const detail::Program &prog;
+    int match_pc;
     std::map<std::vector<int>, int> intern;
     std::vector<std::vector<int>> states;
     std::vector<char> accept;
     std::vector<std::array<int, 128>> trans;
-    std::vector<char> seen(psz, 0);
+    std::vector<char> seen;
+    static constexpr int kCap = -2;
 
-    auto make_state = [&](std::vector<int> pcs) -> int {
+    LazyDfa(const Regex &r, const detail::Program &p, int mpc)
+        : re(r), prog(p), match_pc(mpc), seen(p.insts.size(), 0) {}
+
+    int intern_state(std::vector<int> pcs) {
       std::sort(pcs.begin(), pcs.end());
       pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
       auto it = intern.find(pcs);
       if (it != intern.end()) return it->second;
       int id = static_cast<int>(states.size());
-      bool acc =
-          std::find(pcs.begin(), pcs.end(), match_pc_) != pcs.end();
+      bool acc = std::find(pcs.begin(), pcs.end(), match_pc) != pcs.end();
       intern.emplace(pcs, id);
       states.push_back(std::move(pcs));
       accept.push_back(acc);
@@ -1521,38 +1552,49 @@ class Regex {
       t.fill(-1);
       trans.push_back(t);
       return id;
-    };
+    }
 
-    std::vector<int> startpcs;
-    dfa_closure({0}, startpcs, seen);
-    int start = make_state(std::move(startpcs));
-    if (accept[start]) return true;
+    int start() {
+      std::vector<int> sp;
+      re.dfa_closure(prog, {0}, sp, seen);
+      return intern_state(std::move(sp));
+    }
+    bool is_accept(int s) const { return accept[s]; }
+    bool is_dead(int s) const { return states[s].empty(); }
 
-    int s = start;
-    const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data());
-    size_t n = text.size();
-    for (size_t i = 0; i < n; i++) {
-      unsigned char b = p[i];
+    // Transition from state `s` on byte `b`. `reseed` adds the unanchored start
+    // thread. Returns the destination state, or kCap on state-cap overflow.
+    int next(int s, unsigned char b, bool reseed) {
       int nxt = trans[s][b];
-      if (nxt < 0) {
-        std::vector<int> seeds;
-        for (int pc : states[s])
-          if (pc != match_pc_ && inst_matches_byte(prog_.insts[pc], b))
-            seeds.push_back(pc + 1);
-        seeds.push_back(0);  // re-seed the start: unanchored search
-        std::fill(seen.begin(), seen.end(), 0);
-        std::vector<int> outpcs;
-        dfa_closure(std::move(seeds), outpcs, seen);
-        nxt = make_state(std::move(outpcs));
-        trans[s][b] = nxt;  // indexed after make_state (vectors may have grown)
-        // State cap: a regular pattern can still need exponentially many DFA
-        // states. Abandon the DFA and let the Pike VM answer — the boolean
-        // result is identical and the VM is unaffected by this blowup.
-        if (static_cast<int>(states.size()) > limits::kMaxDfaStates)
-          return search(text).matched;
-      }
-      s = nxt;
-      if (accept[s]) return true;
+      if (nxt >= 0) return nxt;
+      std::vector<int> seeds;
+      for (int pc : states[s])
+        if (pc != match_pc && re.inst_matches_byte(prog.insts[pc], b))
+          seeds.push_back(pc + 1);
+      if (reseed) seeds.push_back(0);
+      std::fill(seen.begin(), seen.end(), 0);
+      std::vector<int> out;
+      re.dfa_closure(prog, std::move(seeds), out, seen);
+      nxt = intern_state(std::move(out));
+      trans[s][b] = nxt;  // indexed after intern_state (vectors may have grown)
+      if (static_cast<int>(states.size()) > limits::kMaxDfaStates) return kCap;
+      return nxt;
+    }
+  };
+
+  bool dfa_test(std::string_view text) const {
+    LazyDfa d(*this, prog_, match_pc_);
+    int s = d.start();
+    if (d.is_accept(s)) return true;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data());
+    int n = static_cast<int>(text.size());
+    for (int i = 0; i < n; i++) {
+      s = d.next(s, p[i], /*reseed=*/true);
+      // State cap: a regular pattern can still need exponentially many DFA
+      // states. Abandon the DFA and let the Pike VM answer — the boolean result
+      // is identical and the VM is unaffected by this blowup.
+      if (s == LazyDfa::kCap) return search(text).matched;
+      if (d.is_accept(s)) return true;
     }
     return false;
   }
@@ -1563,64 +1605,75 @@ class Regex {
     return true;
   }
 
-  // Anchored longest-match end (M1 tier 1). For a regular, longest-safe program
-  // on an ASCII subject, return the byte offset where the longest match that
-  // starts exactly at `from` ends, or -1 if the pattern does not match there.
-  // Because the program is longest-safe, this longest end equals the engine's
-  // leftmost-first end. Returns -2 if the DFA state cap is exceeded (caller
-  // falls back to the Pike VM). No re-seeding: this is anchored, not a search.
-  int dfa_match_end(std::string_view text, int from) const {
-    int psz = static_cast<int>(prog_.insts.size());
-    std::map<std::vector<int>, int> intern;
-    std::vector<std::vector<int>> states;
-    std::vector<char> accept;
-    std::vector<std::array<int, 128>> trans;
-    std::vector<char> seen(psz, 0);
-
-    auto make_state = [&](std::vector<int> pcs) -> int {
-      std::sort(pcs.begin(), pcs.end());
-      pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
-      auto it = intern.find(pcs);
-      if (it != intern.end()) return it->second;
-      int id = static_cast<int>(states.size());
-      bool acc = std::find(pcs.begin(), pcs.end(), match_pc_) != pcs.end();
-      intern.emplace(pcs, id);
-      states.push_back(std::move(pcs));
-      accept.push_back(acc);
-      std::array<int, 128> t;
-      t.fill(-1);
-      trans.push_back(t);
-      return id;
-    };
-
-    std::vector<int> startpcs;
-    dfa_closure({0}, startpcs, seen);
-    int s = make_state(std::move(startpcs));
-    int last_accept = accept[s] ? from : -1;
-
+  // Forward DFA over the main program (M1 tier 1), scanning from byte `from`.
+  //   reseed=false (anchored): only the thread started at `from`; with
+  //     longest=true returns the byte offset of the LONGEST match starting
+  //     exactly at `from`, or -1 if none. (Longest end == leftmost-first end
+  //     because the program is longest-safe.)
+  //   reseed=true (unanchored): re-seed the start at every position; with
+  //     longest=false returns the end of the FIRST match found at or after
+  //     `from`, or -1.
+  // Returns -2 if the DFA state cap is exceeded (caller falls back to Pike).
+  int dfa_forward(std::string_view text, int from, bool reseed,
+                  bool longest) const {
+    LazyDfa d(*this, prog_, match_pc_);
+    int s = d.start();
+    if (d.is_accept(s) && !longest) return from;  // first/empty match at `from`
+    int result = d.is_accept(s) ? from : -1;
     const unsigned char *p =
         reinterpret_cast<const unsigned char *>(text.data());
     int n = static_cast<int>(text.size());
     for (int i = from; i < n; i++) {
-      if (states[s].empty()) break;  // dead: the match cannot extend further
-      unsigned char b = p[i];
-      int nxt = trans[s][b];
-      if (nxt < 0) {
-        std::vector<int> seeds;
-        for (int pc : states[s])
-          if (pc != match_pc_ && inst_matches_byte(prog_.insts[pc], b))
-            seeds.push_back(pc + 1);
-        std::fill(seen.begin(), seen.end(), 0);
-        std::vector<int> outpcs;
-        dfa_closure(std::move(seeds), outpcs, seen);  // empty seeds -> dead state
-        nxt = make_state(std::move(outpcs));
-        trans[s][b] = nxt;  // indexed after make_state (vectors may have grown)
-        if (static_cast<int>(states.size()) > limits::kMaxDfaStates) return -2;
+      if (!reseed && d.is_dead(s)) break;  // anchored: match cannot extend
+      s = d.next(s, p[i], reseed);
+      if (s == LazyDfa::kCap) return -2;
+      if (d.is_accept(s)) {
+        if (!longest) return i + 1;
+        result = i + 1;
       }
-      s = nxt;
-      if (accept[s]) last_accept = i + 1;
     }
-    return last_accept;
+    return result;
+  }
+
+  // Reverse DFA over the reverse-compiled program (M1 tier 1). Given that some
+  // match ends at byte `e`, scan leftward and return the leftmost start `s`
+  // (>= floor) such that the forward pattern matches [s, e); -1 if none in
+  // range, -2 if the state cap trips. Anchored at `e` (no re-seeding).
+  int dfa_match_start(std::string_view text, int e, int floor) const {
+    LazyDfa d(*this, rev_prog_, rev_match_pc_);
+    int s = d.start();
+    int leftmost = d.is_accept(s) ? e : -1;  // empty match [e, e)
+    const unsigned char *p =
+        reinterpret_cast<const unsigned char *>(text.data());
+    for (int pos = e; pos > floor; pos--) {
+      if (d.is_dead(s)) break;
+      s = d.next(s, p[pos - 1], /*reseed=*/false);  // consume grapheme left of pos
+      if (s == LazyDfa::kCap) return -2;
+      if (d.is_accept(s)) leftmost = pos - 1;
+    }
+    return leftmost;
+  }
+
+  // Leftmost match at or after byte `from`, found purely with the DFA (tier 1).
+  // Three stages: (1) the unanchored forward DFA finds the end of the first
+  // match; (2) the reverse DFA recovers its leftmost start `s` (>= from); (3)
+  // the anchored forward DFA confirms the longest end from `s`. Writes the
+  // result to `out` and returns true; returns false only if a stage hit the
+  // state cap, so the caller falls back to the Pike VM. Subject must be ASCII.
+  bool dfa_search(std::string_view text, int from, MatchResult &out) const {
+    int e0 = dfa_forward(text, from, /*reseed=*/true, /*longest=*/false);
+    if (e0 == -2) return false;
+    if (e0 == -1) {
+      out = MatchResult{};
+      return true;  // no match — definitive
+    }
+    int s = dfa_match_start(text, e0, /*floor=*/from);
+    if (s == -2) return false;
+    // e0 was a real match end, so a start in [from, e0] must exist.
+    int e = dfa_forward(text, s, /*reseed=*/false, /*longest=*/true);
+    if (e == -2) return false;
+    out = build_dfa_result(text, s, e);
+    return true;
   }
 
   // Build the result for a capture-free DFA match over an ASCII byte range

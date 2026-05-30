@@ -392,6 +392,46 @@ void test_dfa_match() {
   }
 }
 
+void test_dfa_search() {
+  // search() takes the 3-stage pure-DFA path for capture-free, longest-safe,
+  // ASCII patterns (M1-step2): unanchored forward finds an end, reverse finds
+  // the leftmost start, anchored forward confirms the longest end. It must
+  // match the Pike VM (which still backs find_all).
+  auto m = Regex("\\d+").search("abc 123 def");
+  CHECK(m.matched && m.str == "123" && m.begin == 4 && m.end == 7);
+  m = Regex("\\w+").search("  hello world");
+  CHECK(m.str == "hello" && m.begin == 2);
+  m = Regex("fox").search("the quick fox");      // literal prefix path + DFA
+  CHECK(m.str == "fox" && m.begin == 10);
+  m = Regex("[a-z]+").search("ABCdef");
+  CHECK(m.str == "def" && m.begin == 3);
+  m = Regex("a+").search("bbaaab");
+  CHECK(m.str == "aaa" && m.begin == 2);
+  CHECK(!Regex("\\d+").search("abc").matched);
+  CHECK(Regex("\\w+").search("a").str == "a");
+  // Empty-match pattern: leftmost match is the empty string at 0.
+  m = Regex("x*").search("yyy");
+  CHECK(m.matched && m.str == "" && m.begin == 0 && m.end == 0);
+  m = Regex("x*").search("axxb");                // empty at 0 (leftmost-first)
+  CHECK(m.matched && m.begin == 0 && m.str == "");
+  // DFA search() must equal Pike find_all()[0] across a spread of inputs.
+  const char *pats[] = {"\\w+", "\\d+", "[a-z]+", "ab?c", "a.c", "foo", "x*y"};
+  const char *subs[] = {"", "a", "  12ab cd34  ", "xxxyy", "foofoo", "a1!b2?"};
+  for (const char *pp : pats)
+    for (const char *ss : subs) {
+      Regex re(pp);
+      auto s = re.search(ss);
+      auto all = re.find_all(ss);
+      if (s.matched) {
+        CHECK(!all.empty());
+        CHECK(all[0].begin == s.begin && all[0].end == s.end &&
+              all[0].str == s.str);
+      } else {
+        CHECK(all.empty());
+      }
+    }
+}
+
 void test_linear_time() {
   // `(a+)+$` against all-'a' + a trailing mismatch is the classic ReDoS bomb
   // that hangs backtracking engines. The Pike VM stays linear, so this must
@@ -500,6 +540,7 @@ int main() {
   test_nullable_quantifiers();
   test_dfa_boolean();
   test_dfa_match();
+  test_dfa_search();
   test_linear_time();
   test_invalid_patterns();
   test_resource_limits();
