@@ -1129,7 +1129,7 @@ Output is buffered in full, so a command that emits gigabytes will use
 that much memory. stdout and stderr are drained concurrently, so a
 command that fills both will not deadlock.
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false) -> Array<Object>`
 
 Runs many commands in parallel and returns their result Objects in input
 order. Each command is its own `Array<String>` (same form as `Proc.run`'s
@@ -1138,10 +1138,17 @@ online CPU count; pass a smaller number to throttle, a larger one to widen.
 `timeout` (ms, `0` = none) applies per command, measured from each command's
 own start, and flags the result with `timed_out: true` when it fires.
 
-This is **allSettled**: one command failing never aborts the others. A
-command that ran and exited non-zero is `{ok: false, code: N, error: nil}`;
-a command that *couldn't start* (e.g. the executable doesn't exist) is
-`{ok: false, error: "<message>"}` — neither throws. An empty list returns `[]`.
+By default this is **allSettled**: one command failing never aborts the
+others. A command that ran and exited non-zero is `{ok: false, code: N,
+error: nil}`; a command that *couldn't start* (e.g. the executable doesn't
+exist) is `{ok: false, error: "<message>"}` — neither throws. An empty list
+returns `[]`.
+
+With **`fail_fast: true`** the call instead stops at the first failure
+(non-zero exit, signal, timeout, or spawn failure), `SIGKILL`s the still-
+running commands, and throws `ProcessError` naming the offending command —
+the `Promise.all` shape (as opposed to the default `Promise.allSettled`). If
+every command succeeds it returns the result array as usual.
 
 ```culebra
 # doctest: skip

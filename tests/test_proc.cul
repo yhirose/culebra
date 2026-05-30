@@ -138,4 +138,28 @@ assert_eq(tos[1].stdout.trim(), "ok")
 // timed_out is false on every non-timeout result (uniform shape).
 assert_eq(Proc.run(["echo", "x"]).timed_out, false)
 
+// --- fail_fast: first failure throws ProcessError, the rest are killed ---
+let ff = try {
+  Proc.all([["sleep", "5"], ["false"], ["sleep", "5"]], fail_fast: true)
+  "no-error"
+} catch e { e.kind }
+assert_eq(ff, "ProcessError")
+
+// fail_fast with all successes returns the result array (no throw).
+let allok = Proc.all([["echo", "a"], ["echo", "b"]], fail_fast: true)
+assert_eq(allok.size(), 2)
+assert_eq(allok[1].stdout.trim(), "b")
+
+// fail_fast off (default) is allSettled — a failure does not throw.
+let settled = Proc.all([["true"], ["false"]])
+assert_eq(settled.size(), 2)
+assert_eq(settled[1].ok, false)
+
+// A spawn failure also triggers fail_fast.
+let ffspawn = try {
+  Proc.all([["culebra_no_such_cmd_xyzzy"], ["sleep", "5"]], fail_fast: true)
+  "no-error"
+} catch e { e.kind }
+assert_eq(ffspawn, "ProcessError")
+
 IO.puts("test_proc OK")

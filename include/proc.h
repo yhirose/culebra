@@ -24,6 +24,7 @@
 #include <poll.h>
 #include <string>
 #include <sys/wait.h>
+#include <system_error>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -66,6 +67,22 @@ inline std::string signal_name(int sig) {
     case SIGTERM: return "SIGTERM";
     default:      return "SIG" + std::to_string(sig);
   }
+}
+
+// One-line human reason a (spawned) command counts as a failure, for `check:`
+// and `fail_fast:` error messages.
+inline std::string failure_detail(const ProcResult& r) {
+  if (r.timed_out) return "timed out";
+  if (!r.signal.empty()) return "killed by " + r.signal;
+  return "exited with code " + std::to_string(r.code);
+}
+
+// Same, but for a whole outcome — covers a spawn failure too.
+inline std::string outcome_detail(const RunOutcome& oc) {
+  if (!oc.spawned)
+    return oc.err_what + " failed: " +
+           std::system_category().message(oc.err_no);
+  return failure_detail(oc.result);
 }
 
 namespace _detail {
@@ -516,13 +533,18 @@ inline RunOutcome run_command(
 // order. cwd/env are shared across the batch; `stdins`, if given, is one
 // payload per command. `timeout_ms` (0 == none) applies per command, measured
 // from each command's own start.
+// `fail_fast`: stop at the first command that fails (spawn failure, non-zero
+// exit, signal, or timeout), SIGKILL the rest, and report that command's index
+// via `*out_failed`. With fail_fast off (default) it is plain allSettled.
 inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
     const std::vector<std::string>* stdins = nullptr,
-    long timeout_ms = 0) {
+    long timeout_ms = 0,
+    bool fail_fast = false,
+    size_t* out_failed = nullptr) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
   if (n == 0) return results;
@@ -534,6 +556,10 @@ inline std::vector<RunOutcome> run_all(
   running.reserve(limit);
   _detail::ScopeKiller killer(running);
   size_t next = 0, finished = 0;
+  long failed_index = -1;
+  auto is_failure = [](const RunOutcome& oc) {
+    return !oc.spawned || !oc.result.ok;
+  };
 
   auto launch = [&](size_t i) {
     const std::string* sp =
@@ -542,6 +568,8 @@ inline std::vector<RunOutcome> run_all(
     if (c.done) {
       results[i] = std::move(c.outcome);
       ++finished;
+      if (fail_fast && failed_index < 0 && is_failure(results[i]))
+        failed_index = static_cast<long>(i);
     } else {
       if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
       running.push_back(std::move(c));
@@ -550,24 +578,32 @@ inline std::vector<RunOutcome> run_all(
   while (next < limit) launch(next++);
 
   char buf[65536];
-  while (finished < n) {
+  while (finished < n && failed_index < 0) {
     int pto = _detail::deadline_poll_timeout(running);
     if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
     // Reap finished children (both pipes EOF), then backfill to keep <= limit.
     for (size_t k = 0; k < running.size();) {
       _detail::Child& c = running[k];
       if (!c.out_open && !c.err_open && !c.in_open) {
-        results[c.index] = _detail::reap_child(c);
+        size_t idx = c.index;
+        results[idx] = _detail::reap_child(c);
         ++finished;
         running.erase(running.begin() + k);
-        if (next < n) launch(next++);
+        if (fail_fast && failed_index < 0 && is_failure(results[idx])) {
+          failed_index = static_cast<long>(idx);
+          break;
+        }
+        if (failed_index < 0 && next < n) launch(next++);
       } else {
         ++k;
       }
     }
   }
-  _detail::kill_and_reap(running);  // reap survivors on a poll-error break
+  // Kills survivors on a fail_fast trigger (or a poll-error break); no-op once
+  // everything has been reaped.
+  _detail::kill_and_reap(running);
   killer.disarm();
+  if (out_failed && failed_index >= 0) *out_failed = static_cast<size_t>(failed_index);
   return results;
 }
 

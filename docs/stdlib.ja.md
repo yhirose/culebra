@@ -1090,7 +1090,7 @@ Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, chec
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
 stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false) -> Array<Object>`
 
 複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
 `Array<String>`（`Proc.run` の第1引数と同形）。同時実行数は最大 `limit`（既定 =
@@ -1098,10 +1098,15 @@ stderr は並行して読み出すので、両方を埋めるコマンドでも�
 `0` = 無し）は各コマンドにその起動時刻から適用され、発火時は結果に
 `timed_out: true` を立てます。
 
-これは **allSettled** です。1個の失敗が他を巻き込みません。走って非 0 終了した
+既定は **allSettled** です。1個の失敗が他を巻き込みません。走って非 0 終了した
 コマンドは `{ok: false, code: N, error: nil}`、そもそも起動できなかった（実行
 ファイルが無い等）コマンドは `{ok: false, error: "<メッセージ>"}` で、どちらも
 throw しません。空リストは `[]` を返します。
+
+**`fail_fast: true`** の場合は最初の失敗（非 0 終了・シグナル・timeout・起動失敗）
+で残りの実行中コマンドを `SIGKILL` し、該当コマンドを示す `ProcessError` を throw
+します（既定の `Promise.allSettled` に対する `Promise.all` 形）。全コマンド成功時は
+通常どおり結果配列を返します。
 
 ```culebra
 # doctest: skip

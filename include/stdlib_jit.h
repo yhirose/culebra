@@ -1226,14 +1226,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
         line, col);
   }
   if (check && !oc.result.ok) {
-    std::string detail =
-        oc.result.timed_out
-            ? "timed out"
-            : (oc.result.signal.empty()
-                   ? std::format("exited with code {}", oc.result.code)
-                   : std::format("killed by {}", oc.result.signal));
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.run: command {} at {}:{}.", detail, line, col),
+        std::format("Proc.run: command {} at {}:{}.",
+                    culebra::proc::failure_detail(oc.result), line, col),
         line, col);
   }
 
@@ -1302,13 +1297,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
 // consumed. Returns an Array of result Objects (allSettled, input order).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
     int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
-    int64_t line, int64_t col) {
+    bool fail_fast, int64_t line, int64_t col) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.all", line, col);
   if (limit < 0) limit = 0;
+  size_t failed = SIZE_MAX;
   auto outcomes = culebra::proc::run_all(
       commands, static_cast<size_t>(limit), nullptr, nullptr, nullptr,
-      timeout > 0 ? timeout : 0);
+      timeout > 0 ? timeout : 0, fail_fast, &failed);
+  if (fail_fast && failed != SIZE_MAX) {
+    throw culebra::CulebraError("ProcessError",
+        std::format("Proc.all: command {} {} at {}:{}.", failed,
+                    culebra::proc::outcome_detail(outcomes[failed]), line, col),
+        line, col);
+  }
   auto* arr = culebra_runtime_array_new();
   for (auto& oc : outcomes) {
     auto* o = _culebra_proc_outcome_to_object(oc, line, col);
@@ -1320,7 +1322,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
 // Positional Proc.all(commands) (no kwargs) — trampoline / AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all(
     int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
-  return _culebra_proc_all_impl(commands_tag, commands_data, 0, 0, line, col);
+  return _culebra_proc_all_impl(commands_tag, commands_data, 0, 0, false, line,
+                                col);
 }
 
 // Kwarg adapter for Proc.all (resolves `limit`). `commands` is not consumed.
@@ -1334,9 +1337,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
   if (auto v = kw.take_typed("limit", TAG_LONG, "Long")) limit = v->data;
   int64_t timeout = 0;
   if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
+  bool fail_fast = false;
+  if (auto v = kw.take_typed("fail_fast", TAG_BOOL, "Bool"))
+    fail_fast = v->data != 0;
   kw.validate_consumed();
   return _culebra_proc_all_impl(commands_tag, commands_data, limit, timeout,
-                                line, col);
+                                fail_fast, line, col);
 }
 
 // Proc.race(commands) — first to finish wins, the rest are killed. `commands`

@@ -1351,15 +1351,9 @@ inline Value make_proc_namespace() {
                   line, col);
             }
             if (check && !oc.result.ok) {
-              std::string detail =
-                  oc.result.timed_out
-                      ? "timed out"
-                      : (oc.result.signal.empty()
-                             ? std::format("exited with code {}",
-                                           oc.result.code)
-                             : std::format("killed by {}", oc.result.signal));
               throw CulebraError("ProcessError",
-                  std::format("Proc.run: command {} at {}:{}.", detail, line,
+                  std::format("Proc.run: command {} at {}:{}.",
+                              culebra::proc::failure_detail(oc.result), line,
                               col), line, col);
             }
             return proc_outcome_to_value(std::move(oc));
@@ -1367,10 +1361,12 @@ inline Value make_proc_namespace() {
           "Object"sv)),
       false);
 
-  // `Proc.all(commands, limit=0)` — run each command (an Array<String>) with
-  // at most `limit` concurrent children (0 => CPU count). allSettled: returns
-  // an Array of result Objects in input order; a spawn failure is a result
-  // with `ok:false` and `error` set, never a throw.
+  // `Proc.all(commands, limit=0, timeout=0, fail_fast=false)` — run each command
+  // (an Array<String>) with at most `limit` concurrent children (0 => CPU
+  // count). Default is allSettled: returns an Array of result Objects in input
+  // order; a spawn failure is a result with `ok:false`/`error`, never a throw.
+  // `fail_fast: true` instead kills the rest and throws ProcessError on the
+  // first failure (Promise.all semantics).
   ns.initialize(
       "all",
       Value(FunctionValue(
@@ -1378,6 +1374,7 @@ inline Value make_proc_namespace() {
               {"commands", false, "Array"sv},
               {"limit", false, ""sv, nullptr, kw_default_zero()},
               {"timeout", false, ""sv, nullptr, kw_default_zero()},
+              {"fail_fast", false, ""sv, nullptr, kw_default_false()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -1388,9 +1385,17 @@ inline Value make_proc_namespace() {
             if (lim < 0) lim = 0;
             long timeout = env->get("timeout").to_long();
             if (timeout < 0) timeout = 0;
+            bool fail_fast = env->get("fail_fast").to_bool();
+            size_t failed = SIZE_MAX;
             auto outcomes = culebra::proc::run_all(
                 commands, static_cast<size_t>(lim), nullptr, nullptr, nullptr,
-                timeout);
+                timeout, fail_fast, &failed);
+            if (fail_fast && failed != SIZE_MAX) {
+              throw CulebraError("ProcessError",
+                  std::format("Proc.all: command {} {} at {}:{}.", failed,
+                              culebra::proc::outcome_detail(outcomes[failed]),
+                              line, col), line, col);
+            }
             ArrayValue av;
             av.values->reserve(outcomes.size());
             for (auto& oc : outcomes) {
