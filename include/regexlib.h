@@ -52,6 +52,20 @@ struct RegexError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// Resource limits that bound the cost of compiling a pattern, so a small
+// adversarial pattern cannot exhaust memory or the stack. A pattern that hits
+// any of these raises RegexError rather than blowing up:
+//   - source length    guards against giant inputs / wide alternations
+//   - program size      guards against repetition blow-up (e.g. `a{1000000}`,
+//                       nested `(x{1000}){1000}`)
+//   - nesting depth     guards against deep recursion / stack overflow on
+//                       patterns like `((((...))))`
+namespace limits {
+constexpr size_t kMaxPatternBytes = 1u << 15;  // 32 KiB
+constexpr int kMaxProgramInsts = 1 << 18;      // 262144 compiled instructions
+constexpr int kMaxNestingDepth = 1000;         // group / lookaround nesting
+}  // namespace limits
+
 //===----------------------------------------------------------------------===//
 // Unicode character-class helpers (operate on a single code point)
 //===----------------------------------------------------------------------===//
@@ -384,6 +398,7 @@ struct Parser {
   std::vector<std::u32string> toks;  // pattern segmented into graphemes
   size_t pos = 0;
   int ncap = 0;     // capture group counter (group 0 is the whole match)
+  int depth = 0;    // current group/lookaround nesting depth
   bool in_look = false;  // inside a lookaround body (groups become non-capturing)
   std::unordered_map<std::string, int> &named;
   bool &icase;
@@ -608,7 +623,19 @@ struct Parser {
     return n;
   }
 
+  // RAII nesting-depth counter; throws if the pattern nests too deeply, so a
+  // recursive-descent (or, later, recursive ε-closure) blow-up cannot overflow
+  // the stack. Every '(' enters parse_group, so guarding it covers all nesting.
+  struct DepthGuard {
+    Parser &p;
+    explicit DepthGuard(Parser &p_) : p(p_) {
+      if (++p.depth > limits::kMaxNestingDepth) p.error("pattern nested too deeply");
+    }
+    ~DepthGuard() { --p.depth; }
+  };
+
   Node parse_group() {
+    DepthGuard dg(*this);
     pos++;  // consume '('
     Node g;
     g.kind = Node::Kind::Group;
@@ -967,6 +994,8 @@ struct Compiler {
   int here() const { return static_cast<int>(prog.insts.size()); }
 
   int push(Inst i) {
+    if (static_cast<int>(prog.insts.size()) >= limits::kMaxProgramInsts)
+      throw RegexError("regex pattern too large (compiled program too big)");
     prog.insts.push_back(std::move(i));
     return here() - 1;
   }
@@ -1031,7 +1060,7 @@ struct Compiler {
         for (auto &k : n.kids) emit(k);
         break;
       case K::Alt:
-        emit_alt(n.kids, 0);
+        emit_alt(n.kids);
         break;
       case K::Group: {
         if (n.cap_index >= 0) emit_save(2 * n.cap_index);
@@ -1059,21 +1088,23 @@ struct Compiler {
     }
   }
 
-  // Left-to-right alternation, preserving priority order.
-  void emit_alt(const std::vector<Node> &kids, size_t idx) {
-    if (idx + 1 == kids.size()) {
-      emit(kids[idx]);
-      return;
+  // Left-to-right alternation, preserving priority order. Iterative so a very
+  // wide alternation cannot overflow the compiler stack.
+  //   split L1,Lnext ; L1: <kid0> ; jmp End ; Lnext: split ... ; <kidLast> ; End:
+  void emit_alt(const std::vector<Node> &kids) {
+    std::vector<int> jmps;
+    for (size_t i = 0; i + 1 < kids.size(); i++) {
+      int split = push_split();
+      int l1 = here();
+      emit(kids[i]);
+      jmps.push_back(push_jmp());
+      int l2 = here();  // next alternative's split (or the last kid)
+      prog.insts[split].x = l1;
+      prog.insts[split].y = l2;
     }
-    int split = push_split();
-    int l1 = here();
-    emit(kids[idx]);
-    int jmp = push_jmp();
-    int l2 = here();
-    emit_alt(kids, idx + 1);
-    prog.insts[split].x = l1;
-    prog.insts[split].y = l2;
-    prog.insts[jmp].x = here();
+    emit(kids.back());  // last alternative: no split, fall-through target
+    int end = here();
+    for (int j : jmps) prog.insts[j].x = end;
   }
 
   int push_split() {
@@ -1206,6 +1237,8 @@ enum Flag : unsigned {
 class Regex {
  public:
   explicit Regex(std::string_view pattern, unsigned flags = 0) {
+    if (pattern.size() > limits::kMaxPatternBytes)
+      throw RegexError("regex pattern too long");
     icase_ = (flags & IgnoreCase) != 0;
     multiline_ = (flags & Multiline) != 0;
     dotall_ = (flags & DotAll) != 0;

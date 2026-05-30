@@ -345,6 +345,35 @@ void test_invalid_patterns() {
   CHECK(!rejects("(?<name>x)"));
 }
 
+void test_resource_limits() {
+  // Adversarial patterns must be rejected with RegexError, not crash or OOM.
+  CHECK(rejects("a{1000000}"));  // repetition blow-up -> program too big
+  {
+    std::string p;  // nested bounded repetition: (((((a){50}){50})...){50}
+    for (int i = 0; i < 6; i++) p = "(" + p + "a){50}";
+    CHECK(rejects(p));
+  }
+  {
+    std::string p(50000, '(');  // deep nesting -> would overflow the stack
+    p += "a";
+    p += std::string(50000, ')');
+    CHECK(rejects(p));
+  }
+  {
+    std::string p(40000, 'a');  // exceeds the source-length cap
+    CHECK(rejects(p));
+  }
+  // A wide alternation that fits under the caps still compiles and matches
+  // without overflowing the matcher.
+  {
+    std::string p;
+    for (int i = 0; i < 8000; i++) p += "a|";
+    p += "b";
+    auto m = Regex(p).search("xb");
+    CHECK(m && m.str == "b");
+  }
+}
+
 void test_error_messages() {
   // Errors carry the offending position and a caret line.
   std::string e = error_of("ab**");
@@ -378,6 +407,7 @@ int main() {
   test_nullable_quantifiers();
   test_linear_time();
   test_invalid_patterns();
+  test_resource_limits();
   test_error_messages();
 
   std::printf("\nregexlib: %d passed, %d failed\n", g_pass, g_fail);
