@@ -46,6 +46,65 @@ history / memory):
 
 ## 2. Decision
 
+> **DECISION REVISED 2026-05-30 — CPython-style hybrid, NOT pure tracing.**
+> The original pure-tracing decision below is *superseded*. Implementation
+> (Phase 1 commits 1–2) and a design review surfaced a hard constraint the
+> original missed: **`drop` is a deterministic, scope-exit finalizer** (the
+> interp fires it via `shared_ptr`; `test_drop` asserts ordering + the
+> cross-backend symmetry rule requires the JIT to match). **Deterministic
+> finalization under shared ownership logically requires full reference
+> counting** — a drop-bearing object held inside a non-drop container can
+> only fire its `drop` deterministically if that container's death is
+> deterministic too, which recurses to *every* object being reference
+> counted. "RC only on drop objects" is non-deterministic for
+> container-held objects, so it does not work.
+>
+> Therefore: **keep the manual RC** (it owns memory + immediate reuse +
+> deterministic `drop`), and **replace ONLY the broken minor-only collector
+> with a sound, conservative, non-moving full mark-sweep collector that runs
+> as a *backstop*** — reclaiming the residue RC cannot: reference **cycles**
+> and objects leaked by a **missed release** (both become unreachable from
+> roots, so a full mark-sweep frees them regardless of their stale refcount).
+> This is the CPython / PHP model (§1's first survey bullet).
+>
+> **Value proposition, restated:** the rewrite is no longer "replace RC with
+> tracing" but "**fix the collector**" — the original architecture (RC + a
+> collector) was structurally right; only the *minor-only* collector was
+> broken (it amplified every leak into a permanent one, §1). The fix is to
+> swap it for a full mark-sweep backstop. RC bugs are thereby downgraded from
+> *permanent leak* to *slightly delayed reclamation*, which dissolves the
+> microgpt ~5 GB class.
+>
+> **§7 is corrected, not achieved:** "delete all manual RC" is logically
+> incompatible with deterministic `drop`. The retain/release machinery
+> stays; what changes is the collector.
+>
+> **Layout (plan A):** `int64_t refcount` stays at struct offset 0 (the
+> existing retain/release IR is undisturbed). The collector's per-object
+> metadata (mark bit, type tag, size) lives in the **registry** (an
+> address→metadata map), NOT an in-object header — counter-intuitively the
+> *smaller* rollback, since it revives the original retain/release IR
+> verbatim instead of rewriting 92 emit sites to a trailing field. A later
+> perf phase MAY move the mark bit to a trailing in-object field (offset 0
+> stays `refcount`, so the IR is still untouched).
+>
+> **Finalization invariant (Phase 1+):** **`drop` is fired by RC's
+> release-to-zero exactly once; sweep NEVER fires `drop`.** RC, on
+> release-to-zero, fires `drop` + frees memory + de-registers. Only objects
+> RC could not reclaim (cycles / missed-release) reach the backstop, which
+> reclaims their *memory only* (cycle members do not fire `drop` — matches
+> the current behavior and Python's `__del__` rule). So `drop` runs
+> structurally at most once; there is no double-finalization path. Any
+> "sweep fires drop" scaffolding from the pure-tracing draft must be removed.
+>
+> The sections below (object model, registry heap, conservative root
+> scanning, mark-sweep, safety devices) still apply — they describe the
+> **backstop collector**. Read "the collector" as "the backstop", not "the
+> sole memory manager". The Phasing (§13) and "remove manual RC" (§7) are
+> the parts rewritten by this revision.
+
+--- *original (superseded) decision follows* ---
+
 Replace the JIT's manual RC + minor-only collector with a
 **conservative, generational, non-moving mark-sweep tracing GC**
 (the Ruby MRI / Boehm model).
@@ -179,21 +238,59 @@ A full mark-sweep from real roots **reclaims any unreachable object
 regardless of any stale bookkeeping** — this is the property the
 current collector lacks and the reason leaks become permanent today.
 
-## 7. Removing manual RC from codegen
+## 6a. Finalization (`drop`) — deterministic, owned by RC (CPython model)
 
-- Delete all `emit_value_retain` / `emit_value_release` emission and the
-  `culebra_runtime_value_retain/release/swap_owned` helpers.
-- Delete `_GcTracker` (refcount-based reachability, promote-and-forget).
-- Delete `_culebra_invoke_method0/1`'s retain/release, the
-  `compile_method_call` uniform release, the `dispatch_arr_iter`
-  retain, `release_scope_slots`, the loop-body releases — **all the
-  ownership bookkeeping I've been patching disappears.** Codegen just
-  allocates and uses values.
-- `array_push` etc. no longer "steal" a +1 — there is no +1. They store
-  the `{tag,data}`; the pushed object stays alive because it is now
-  reachable from the array (and from the stack until then).
+**Decision (2026-05-30; see §2 revision banner).** `drop` stays a
+**deterministic, scope-exit** finalizer — the interp fires it via `shared_ptr`
+and the JIT must match (the cross-backend symmetry rule; `test_drop` asserts
+parent-before-child ordering). Deterministic finalization under shared
+ownership **requires full reference counting** (a drop-bearing object held in
+a non-drop container fires its `drop` deterministically only if the
+container's death is deterministic too — which recurses to every object). So:
 
-This is the bulk of the simplification the rewrite buys.
+- **RC owns memory + `drop`.** Retain/release stay. Release-to-zero fires
+  `drop` (once), runs the C++ teardown (frees `items`/`slots`/sidecars/`impl`),
+  and de-registers the object — exactly the current behavior. `drop` timing is
+  the interp's `shared_ptr` timing.
+- **The collector is a backstop, not the memory owner.** It reclaims only what
+  RC cannot: **cycles** and objects leaked by a **missed release**. These are
+  unreachable from roots, so a full mark-sweep frees them regardless of their
+  stale refcount.
+- **Sweep NEVER fires `drop`.** Backstop-reclaimed objects are cycle members /
+  leaked residue; their `drop` is intentionally skipped (matches the current
+  behavior and Python's `__del__` rule — cycle finalizer order is undefined).
+- **Finalization invariant:** `drop` is fired by RC release-to-zero **at most
+  once**; the sweep path frees *memory only*. RC reclaims an object before it
+  ever reaches the sweep set (it is de-registered on free), so there is no
+  double-finalization and no double-free path.
+
+This **corrects §7**: the retain/release machinery is kept (it owns memory and
+deterministic `drop`); only the broken minor-only collector is replaced.
+
+## 7. Replacing the collector (NOT removing manual RC)
+
+> Superseded by the §2 revision: the original plan deleted all retain/release.
+> Under the CPython-hybrid decision the RC machinery is **kept**; this section
+> now describes swapping the *collector* while leaving RC intact.
+
+- **Keep** `emit_value_retain` / `emit_value_release` /
+  `culebra_runtime_value_*` / cell retain-release / the scope-exit releases /
+  `array_push`'s +1 steal — RC ownership is unchanged from today's JIT.
+- **Replace** `_GcTracker` (the broken minor-only, promote-and-forget
+  collector) with the conservative full mark-sweep backstop (`jit_gc.h`).
+  Allocation registers each object with the new collector; the collector runs
+  periodically + at exit and reclaims the RC-unreachable residue.
+- **Sweep teardown** reuses the existing per-type teardown (the body of
+  `_culebra_value_release_impl`) to free buffers, **minus** the `drop` call
+  and **minus** the recursive child release (children are reclaimed by their
+  own sweep / RC), and frees + de-registers the object.
+- `release_scope_slots`, loop-body releases, method-receiver releases, etc.
+  all **stay** — they are correct RC bookkeeping, not the source of the
+  permanent leaks. The permanent leaks came from the *collector* treating
+  nonzero refcount as a live root and never re-scanning old.
+
+The simplification the rewrite buys is now **a sound collector** (cycles +
+missed-release residue self-heal), not the deletion of RC.
 
 ## 8. Generational layer (Phase 2 — perf, not correctness)
 
