@@ -1,0 +1,16 @@
+{
+  "name": "culebra-linux",
+  "build": { "dockerfile": "Dockerfile" },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "remoteEnv": {
+    "CC": "gcc-14",
+    "CXX": "g++-14",
+    "CMAKE_PREFIX_PATH": "/usr/lib/llvm-22"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools", "llvm-vs-code-extensions.vscode-clangd"]
+    }
+  }
+}

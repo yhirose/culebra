@@ -3,13 +3,15 @@
 // reference counting can never break. Do not delete. Both backends now
 // reclaim it: the interpreter via its precise gc_refs cycle collector
 // (InterpGC, which tracks captured Environments), the JIT via its conservative
-// mark-sweep backstop. Threshold `< 400`: the interpreter is precise (returns
-// ~0), but the conservative JIT backstop can keep the single most-recent batch
-// (one `build(200)` graph) alive when a stale stack/register word still looks
-// like a pointer to it — measured retention is 0 or exactly 200, never more.
-// `< 400` tolerates that one batch while still catching an unbounded leak
-// (~6000). Making the JIT precise too would need stack maps (docs §12),
-// deliberately not pursued — culebra stays non-moving for its interop.
+// mark-sweep backstop. Threshold `< 1000`: the interpreter is precise (returns
+// ~0), but the conservative JIT backstop can keep the most-recent batch(es)
+// (`build(200)` graphs) alive when a stale stack/register word still looks like
+// a pointer to them. That retention is PLATFORM-DEPENDENT (the scanned stack
+// region differs): measured 0 or 200 (one batch) on macOS, 0 or 400 (two) on
+// Linux/glibc, never more. `< 1000` clears both with margin while still
+// catching an unbounded leak (~6000). Making the JIT precise too would need
+// stack maps (docs §12), deliberately not pursued — culebra stays non-moving
+// for its interop.
 fn measure(work) {
   work()
   let base = GC.stat().live_objects
@@ -23,5 +25,5 @@ assert_lt(measure(fn () {
   build = |n| if n > 0 { topo.push(Box.new(n)); self(n - 1) } else { 0 }
   build(200)
   topo.size()
-}), 400)
+}), 1000)
 puts("gc leak [self-closure]: no leak")
