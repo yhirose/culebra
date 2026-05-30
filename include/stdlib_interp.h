@@ -1186,10 +1186,10 @@ inline Value make_gc_namespace() {
 
 // Build the `{code, stdout, stderr, ok, signal}` result Object shared by
 // the interp Proc.run lambda. `signal` is nil unless the child was killed.
-// Build the `{code, stdout, stderr, ok, signal, error}` result Object shared
-// by Proc.run/all/race. A spawned outcome carries the process result with
-// `error` nil; a spawn failure carries `ok:false` and the failure message in
-// `error` (this is how Proc.all reports allSettled errors without throwing).
+// Build the `{code, stdout, stderr, ok, signal, error, timed_out}` result
+// Object shared by Proc.run/all/race. A spawned outcome carries the process
+// result with `error` nil; a spawn failure carries `ok:false` and the failure
+// message in `error` (Proc.all's allSettled error representation).
 inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
   ObjectValue obj;
   if (oc.spawned) {
@@ -1202,6 +1202,7 @@ inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
                    r.signal.empty() ? Value() : Value(std::move(r.signal)),
                    false);
     obj.initialize("error", Value(), false);
+    obj.initialize("timed_out", Value(r.timed_out), false);
   } else {
     obj.initialize("code", Value(static_cast<long>(-1)), false);
     obj.initialize("stdout", Value(std::string("")), false);
@@ -1212,6 +1213,7 @@ inline Value proc_outcome_to_value(culebra::proc::RunOutcome&& oc) {
         Value(std::format("{} failed: {}", oc.err_what,
                           std::system_category().message(oc.err_no))),
         false);
+    obj.initialize("timed_out", Value(false), false);
   }
   return Value(std::move(obj));
 }
@@ -1267,6 +1269,7 @@ inline Value make_proc_namespace() {
               {"env", false, ""sv, nullptr, kw_default_nil()},
               {"stdin", false, ""sv, nullptr, proc_stdin_default},
               {"check", false, ""sv, nullptr, kw_default_false()},
+              {"timeout", false, ""sv, nullptr, kw_default_zero()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -1335,9 +1338,11 @@ inline Value make_proc_namespace() {
             }
             std::string stdin_data(stdin_v.to_string_view());
             bool check = env->get("check").to_bool();
+            long timeout = env->get("timeout").to_long();
+            if (timeout < 0) timeout = 0;
 
             auto oc = culebra::proc::run_command(argv, cwd_ptr, env_ptr,
-                                                 stdin_data);
+                                                 stdin_data, timeout);
             if (!oc.spawned) {
               throw CulebraError("ProcessError",
                   std::format("Proc.run: {} failed at {}:{}: {}.",
@@ -1346,9 +1351,13 @@ inline Value make_proc_namespace() {
                   line, col);
             }
             if (check && !oc.result.ok) {
-              std::string detail = oc.result.signal.empty()
-                  ? std::format("exited with code {}", oc.result.code)
-                  : std::format("killed by {}", oc.result.signal);
+              std::string detail =
+                  oc.result.timed_out
+                      ? "timed out"
+                      : (oc.result.signal.empty()
+                             ? std::format("exited with code {}",
+                                           oc.result.code)
+                             : std::format("killed by {}", oc.result.signal));
               throw CulebraError("ProcessError",
                   std::format("Proc.run: command {} at {}:{}.", detail, line,
                               col), line, col);
@@ -1368,6 +1377,7 @@ inline Value make_proc_namespace() {
           {
               {"commands", false, "Array"sv},
               {"limit", false, ""sv, nullptr, kw_default_zero()},
+              {"timeout", false, ""sv, nullptr, kw_default_zero()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -1376,8 +1386,11 @@ inline Value make_proc_namespace() {
                 *env->get("commands").to_array().values, "Proc.all", line, col);
             long lim = env->get("limit").to_long();
             if (lim < 0) lim = 0;
+            long timeout = env->get("timeout").to_long();
+            if (timeout < 0) timeout = 0;
             auto outcomes = culebra::proc::run_all(
-                commands, static_cast<size_t>(lim));
+                commands, static_cast<size_t>(lim), nullptr, nullptr, nullptr,
+                timeout);
             ArrayValue av;
             av.values->reserve(outcomes.size());
             for (auto& oc : outcomes) {

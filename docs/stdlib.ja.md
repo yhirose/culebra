@@ -1048,6 +1048,7 @@ throw 値の `kind` は次のいずれか:
 | `ok` | `Bool` | `code == 0` かつ `signal == nil` のとき `true` |
 | `signal` | `String?` | シグナル死した場合のシグナル名（`"SIGTERM"` 等）、それ以外は `nil` |
 | `error` | `String?` | 起動失敗時のメッセージ。コマンドが実際に走った場合は常に `nil`。これを設定するのは `Proc.all`（allSettled のエラー表現）のみで、`Proc.run` では起動失敗は throw されるため常に `nil`。 |
+| `timed_out` | `Bool` | `timeout` 超過で kill された場合 `true`、それ以外 `false`。 |
 
 キーワード引数:
 
@@ -1056,8 +1057,13 @@ throw 値の `kind` は次のいずれか:
   （既定: そのまま継承）。値は `String` であること。
 - `stdin: String` — 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
   されます（既定: 空）。
-- `check: Bool` — `true` のとき、非 0 終了またはシグナル死で `{ok: false}` を返す
-  代わりに `ProcessError` を throw します（既定: `false`）。
+- `check: Bool` — `true` のとき、非 0 終了・シグナル死・timeout で `{ok: false}` を
+  返す代わりに `ProcessError` を throw します（既定: `false`）。
+- `timeout: Long` — ミリ秒。これを超えて走るとコマンドは kill され（`SIGTERM` →
+  短い猶予の後 `SIGKILL`）、結果は `ok: false` / `timed_out: true` になります
+  （既定: `0` = 無制限）。**直接の子だけを kill**し、その子が生んだ孫は kill しません
+  （Python/Node 既定と同じ）。stdout/stderr を早期に閉じて走り続けるプロセスには
+  timeout が届かないことがあります。
 
 **非 0 終了**や**シグナル死**はエラーではなく通常の結果です — `ok` / `code` /
 `signal` で分岐してください。**起動失敗**（実行ファイルが存在しない等）や
@@ -1084,11 +1090,13 @@ Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, chec
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
 stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0) -> Array<Object>`
 
 複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
 `Array<String>`（`Proc.run` の第1引数と同形）。同時実行数は最大 `limit`（既定 =
-オンライン CPU 数。絞るには小さい値、広げるには大きい値を渡す）。
+オンライン CPU 数。絞るには小さい値、広げるには大きい値を渡す）。`timeout`（ms、
+`0` = 無し）は各コマンドにその起動時刻から適用され、発火時は結果に
+`timed_out: true` を立てます。
 
 これは **allSettled** です。1個の失敗が他を巻き込みません。走って非 0 終了した
 コマンドは `{ok: false, code: N, error: nil}`、そもそも起動できなかった（実行

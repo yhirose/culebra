@@ -111,4 +111,31 @@ assert_true(win.ok)
 let ne = try { Proc.all([["echo"], "notarray"]); "no-error" } catch e { e.kind }
 assert_eq(ne, "TypeError")
 
+// --- timeout: a slow command is killed and flagged timed_out ---
+let slow = Proc.run(["sleep", "5"], timeout: 200)
+assert_eq(slow.ok, false)
+assert_true(slow.timed_out)
+assert_true(slow.signal != nil)       // killed by SIGTERM/SIGKILL
+
+// A command that finishes within the timeout is unaffected.
+let quick = Proc.run(["echo", "hi"], timeout: 5000)
+assert_true(quick.ok)
+assert_eq(quick.timed_out, false)
+assert_eq(quick.stdout.trim(), "hi")
+
+// timeout + check: true throws ProcessError.
+let ce = try { Proc.run(["sleep", "5"], timeout: 100, check: true); "no-error" }
+         catch e { e.kind }
+assert_eq(ce, "ProcessError")
+
+// timeout applies per command in Proc.all.
+let tos = Proc.all([["sleep", "5"], ["echo", "ok"]], timeout: 200)
+assert_true(tos[0].timed_out)
+assert_eq(tos[0].ok, false)
+assert_eq(tos[1].timed_out, false)
+assert_eq(tos[1].stdout.trim(), "ok")
+
+// timed_out is false on every non-timeout result (uniform shape).
+assert_eq(Proc.run(["echo", "x"]).timed_out, false)
+
 IO.puts("test_proc OK")

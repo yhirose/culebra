@@ -17,6 +17,7 @@
 // (the drain loop is the most deadlock-prone code, so it lives once).
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <fcntl.h>
@@ -37,6 +38,7 @@ struct ProcResult {
   std::string err;      // full stderr (raw bytes).
   bool ok = false;      // exited normally with code 0 (no signal).
   std::string signal;   // signal name ("SIGTERM") if killed; empty otherwise.
+  bool timed_out = false;  // true if we killed it for exceeding its timeout.
 };
 
 struct RunOutcome {
@@ -73,6 +75,16 @@ inline void set_nonblocking(int fd) {
   if (fl != -1) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+// Monotonic milliseconds, for per-child timeout deadlines.
+inline long now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Grace period between SIGTERM and SIGKILL when a child overruns its timeout.
+inline constexpr long kKillGraceMs = 100;
+
 // Restores the previous SIGPIPE disposition on scope exit. We must ignore
 // SIGPIPE while writing a child's stdin: if the child exits early and closes
 // its read end, the write would otherwise kill the culebra process. Process-
@@ -107,6 +119,9 @@ struct Child {
   std::string out, err;
   RunOutcome outcome;                             // filled on spawn-fail or reap.
   bool done = false;                              // terminal (spawn-fail/reaped).
+  long deadline_ms = 0;       // absolute now_ms() deadline; 0 == no timeout.
+  long kill_deadline_ms = 0;  // SIGKILL-after-SIGTERM deadline; 0 == not yet sent.
+  bool timed_out = false;     // killed for exceeding deadline_ms.
 
   Child() = default;
   Child(Child&& o) noexcept { *this = std::move(o); }
@@ -117,6 +132,8 @@ struct Child {
       stdin_data = o.stdin_data; in_off = o.in_off; index = o.index;
       out = std::move(o.out); err = std::move(o.err);
       outcome = std::move(o.outcome); done = o.done;
+      deadline_ms = o.deadline_ms; kill_deadline_ms = o.kill_deadline_ms;
+      timed_out = o.timed_out;
       o.pid = -1; o.in_fd = o.out_fd = o.err_fd = -1;
       o.in_open = o.out_open = o.err_open = false;
     }
@@ -337,10 +354,12 @@ inline void apply_revents(Child& c, const Slots& s,
   }
 }
 
-// One scheduler step: poll every running child once and drain its revents.
-// Returns false only on a fatal poll() error (caller should stop); EINTR is
-// retried internally. A step with no open fds is a no-op returning true.
-inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen) {
+// One scheduler step: poll every running child once (up to timeout_ms, -1 =
+// block) and drain its revents. Returns false only on a fatal poll() error
+// (caller stops); on EINTR or a poll timeout it returns true so the caller can
+// recompute deadlines and re-poll. A step with no open fds is a no-op.
+inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen,
+                      int timeout_ms) {
   std::vector<pollfd> fds;
   std::vector<Slots> slots(running.size());
   bool any_fd = false;
@@ -350,14 +369,48 @@ inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen) {
       any_fd = true;
   }
   if (!any_fd) return true;
-  int pr;
-  do {
-    pr = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
-  } while (pr < 0 && errno == EINTR);
-  if (pr < 0) return false;
+  int pr = poll(fds.data(), static_cast<nfds_t>(fds.size()), timeout_ms);
+  if (pr < 0) return errno == EINTR;  // EINTR: caller re-polls; else fatal.
   for (size_t k = 0; k < running.size(); k++)
-    apply_revents(running[k], slots[k], fds, buf, buflen);
+    apply_revents(running[k], slots[k], fds, buf, buflen);  // pr==0 => no-op
   return true;
+}
+
+// Enforces per-child timeouts: SIGTERM a child past its deadline, escalate to
+// SIGKILL after a grace period. Marks timed_out. Returns the earliest absolute
+// wake time across pending deadlines (-1 if none) so the caller can size its
+// next poll() wait.
+inline long enforce_deadlines(std::vector<Child>& running, long now) {
+  long next = -1;
+  auto consider = [&](long when) {
+    if (when > 0 && (next < 0 || when < next)) next = when;
+  };
+  for (auto& c : running) {
+    if (c.pid <= 0) continue;
+    if (c.kill_deadline_ms > 0) {
+      if (now >= c.kill_deadline_ms) kill(c.pid, SIGKILL);
+      else consider(c.kill_deadline_ms);
+    } else if (c.deadline_ms > 0) {
+      if (now >= c.deadline_ms) {
+        kill(c.pid, SIGTERM);
+        c.timed_out = true;
+        c.kill_deadline_ms = now + kKillGraceMs;
+        consider(c.kill_deadline_ms);
+      } else {
+        consider(c.deadline_ms);
+      }
+    }
+  }
+  return next;
+}
+
+// Enforce deadlines now and return the poll() wait (ms) until the next one, or
+// -1 if no child has a pending deadline. Wraps the run_command/run_all loops'
+// shared now -> enforce -> clamp step.
+inline int deadline_poll_timeout(std::vector<Child>& running) {
+  long now = now_ms();
+  long next = enforce_deadlines(running, now);
+  return (next < 0) ? -1 : static_cast<int>(next > now ? next - now : 0);
 }
 
 // waitpid the child (EINTR-safe), decode status into outcome, close stray fds.
@@ -380,6 +433,7 @@ inline RunOutcome reap_child(Child& c) {
     r.signal = signal_name(WTERMSIG(status));
     r.ok = false;
   }
+  r.timed_out = c.timed_out;
   c.outcome.spawned = true;
   c.outcome.result = std::move(r);
   c.done = true;
@@ -430,44 +484,45 @@ struct ScopeKiller {
 //   env_overrides  : key/value pairs merged onto the parent environment
 //                    (parent kept so PATH survives), or nullptr to inherit.
 //   stdin_data     : bytes written to the child's stdin, then closed.
-// timeout_ms is reserved for a future kwarg and currently ignored.
+//   timeout_ms     : kill (SIGTERM then SIGKILL) the child if it runs longer
+//                    than this many ms; 0 == no timeout. A timed-out result has
+//                    ok:false and timed_out:true.
 inline RunOutcome run_command(
     const std::vector<std::string>& argv,
     const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
     const std::string& stdin_data,
-    long /*timeout_ms*/ = 0) {
+    long timeout_ms = 0) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::Child c =
       _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
   if (c.done) return std::move(c.outcome);
+  if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
+  std::vector<_detail::Child> running;
+  running.push_back(std::move(c));
   char buf[65536];
-  while (c.out_open || c.err_open || c.in_open) {
-    std::vector<pollfd> fds;
-    auto s = _detail::fill_pollfds(c, fds);
-    int pr = poll(fds.data(), static_cast<nfds_t>(fds.size()), -1);
-    if (pr < 0) {
-      if (errno == EINTR) continue;
-      break;
-    }
-    _detail::apply_revents(c, s, fds, buf, sizeof(buf));
+  while (running[0].out_open || running[0].err_open || running[0].in_open) {
+    int pto = _detail::deadline_poll_timeout(running);
+    if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
   }
-  return _detail::reap_child(c);
+  return _detail::reap_child(running[0]);
 }
 
 // Runs every command with at most `limit` concurrent children (0 => default).
 // allSettled: a failure never aborts the others; a spawn failure is reported
 // as RunOutcome.spawned==false at its index. Results are returned in input
 // order. cwd/env are shared across the batch; `stdins`, if given, is one
-// payload per command.
+// payload per command. `timeout_ms` (0 == none) applies per command, measured
+// from each command's own start.
 inline std::vector<RunOutcome> run_all(
     const std::vector<std::vector<std::string>>& commands,
     size_t limit = 0,
     const std::string* cwd = nullptr,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
-    const std::vector<std::string>* stdins = nullptr) {
+    const std::vector<std::string>* stdins = nullptr,
+    long timeout_ms = 0) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
   if (n == 0) return results;
@@ -488,6 +543,7 @@ inline std::vector<RunOutcome> run_all(
       results[i] = std::move(c.outcome);
       ++finished;
     } else {
+      if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
       running.push_back(std::move(c));
     }
   };
@@ -495,7 +551,8 @@ inline std::vector<RunOutcome> run_all(
 
   char buf[65536];
   while (finished < n) {
-    if (!_detail::poll_step(running, buf, sizeof(buf))) break;
+    int pto = _detail::deadline_poll_timeout(running);
+    if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
     // Reap finished children (both pipes EOF), then backfill to keep <= limit.
     for (size_t k = 0; k < running.size();) {
       _detail::Child& c = running[k];
@@ -549,7 +606,7 @@ inline std::pair<size_t, RunOutcome> run_race(
 
   char buf[65536];
   while (winner == SIZE_MAX && !running.empty()) {
-    if (!_detail::poll_step(running, buf, sizeof(buf))) break;
+    if (!_detail::poll_step(running, buf, sizeof(buf), -1)) break;
     for (size_t k = 0; k < running.size(); k++) {
       _detail::Child& c = running[k];
       if (!c.out_open && !c.err_open && !c.in_open) {

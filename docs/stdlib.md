@@ -1083,6 +1083,7 @@ Runs `cmd` to completion and returns a result Object:
 | `ok` | `Bool` | `true` iff `code == 0` and `signal == nil` |
 | `signal` | `String?` | signal name (`"SIGTERM"`, `"SIGKILL"`, …) if killed, else `nil` |
 | `error` | `String?` | spawn-failure message; `nil` whenever the command actually ran. Only `Proc.all` sets this (its allSettled errors) — for `Proc.run` it is always `nil`, since a spawn failure throws instead. |
+| `timed_out` | `Bool` | `true` if the command was killed for exceeding its `timeout`; `false` otherwise. |
 
 Keyword arguments:
 
@@ -1092,8 +1093,14 @@ Keyword arguments:
   be `String`.
 - `stdin: String` — bytes written to the child's standard input, which
   is then closed (default: empty).
-- `check: Bool` — when `true`, a non-zero exit or signal death throws
-  `ProcessError` instead of returning a `{ok: false}` result (default: `false`).
+- `check: Bool` — when `true`, a non-zero exit, signal death, or timeout
+  throws `ProcessError` instead of returning a `{ok: false}` result (default: `false`).
+- `timeout: Long` — milliseconds; if the command runs longer it is killed
+  (`SIGTERM`, then `SIGKILL` after a short grace) and the result has
+  `ok: false` and `timed_out: true` (default: `0` = no limit). Only the
+  command itself is killed, not any grandchildren it spawned (matching
+  Python/Node defaults). A process that closes stdout/stderr but keeps
+  running may not be reached by the timeout.
 
 A **non-zero exit** or **signal death** is a normal result, not an error —
 branch on `ok` / `code` / `signal`. Only a **spawn failure** (e.g. the
@@ -1122,12 +1129,14 @@ Output is buffered in full, so a command that emits gigabytes will use
 that much memory. stdout and stderr are drained concurrently, so a
 command that fills both will not deadlock.
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0) -> Array<Object>`
 
 Runs many commands in parallel and returns their result Objects in input
 order. Each command is its own `Array<String>` (same form as `Proc.run`'s
 first argument). At most `limit` run at once — `limit` defaults to the
 online CPU count; pass a smaller number to throttle, a larger one to widen.
+`timeout` (ms, `0` = none) applies per command, measured from each command's
+own start, and flags the result with `timed_out: true` when it fires.
 
 This is **allSettled**: one command failing never aborts the others. A
 command that ran and exited non-zero is `{ok: false, code: N, error: nil}`;

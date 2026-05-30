@@ -1123,6 +1123,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_proc_outcome_to_object(
           reinterpret_cast<int64_t>(_culebra_heap_str(r.signal)), line, col);
     }
     culebra_runtime_object_set(o, "error", false, TAG_NIL, 0, line, col);
+    culebra_runtime_object_set(o, "timed_out", false, TAG_BOOL,
+        r.timed_out ? 1 : 0, line, col);
   } else {
     culebra_runtime_object_set(o, "code", false, TAG_LONG, -1, line, col);
     culebra_runtime_object_set(o, "stdout", false, TAG_STRING,
@@ -1135,6 +1137,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_proc_outcome_to_object(
                                   std::system_category().message(oc.err_no));
     culebra_runtime_object_set(o, "error", false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(msg)), line, col);
+    culebra_runtime_object_set(o, "timed_out", false, TAG_BOOL, 0, line, col);
   }
   return o;
 }
@@ -1189,7 +1192,8 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_over,
-    const std::string& stdin_data, bool check, int64_t line, int64_t col) {
+    const std::string& stdin_data, bool check, int64_t timeout,
+    int64_t line, int64_t col) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
         std::format("Proc.run: cmd must be Array at {}:{}.", line, col),
@@ -1213,7 +1217,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
         line, col);
   }
 
-  auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data);
+  auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data,
+                                       timeout > 0 ? timeout : 0);
   if (!oc.spawned) {
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.run: {} failed at {}:{}: {}.", oc.err_what, line, col,
@@ -1221,9 +1226,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
         line, col);
   }
   if (check && !oc.result.ok) {
-    std::string detail = oc.result.signal.empty()
-        ? std::format("exited with code {}", oc.result.code)
-        : std::format("killed by {}", oc.result.signal);
+    std::string detail =
+        oc.result.timed_out
+            ? "timed out"
+            : (oc.result.signal.empty()
+                   ? std::format("exited with code {}", oc.result.code)
+                   : std::format("killed by {}", oc.result.signal));
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.run: command {} at {}:{}.", detail, line, col),
         line, col);
@@ -1237,7 +1245,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run(
     int8_t cmd_tag, int64_t cmd_data, int64_t line, int64_t col) {
   return _culebra_proc_run_impl(cmd_tag, cmd_data, nullptr, nullptr,
-                                std::string(), false, line, col);
+                                std::string(), false, 0, line, col);
 }
 
 // Kwarg adapter for Proc.run. Resolves cwd/env/stdin/check (plus `**splat`)
@@ -1263,6 +1271,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   if (auto v = kw.take_typed("check", TAG_BOOL, "Bool")) {
     check = v->data != 0;
   }
+  int64_t timeout = 0;
+  if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
   std::vector<std::pair<std::string, std::string>> overrides;
   const std::vector<std::pair<std::string, std::string>>* env_ptr = nullptr;
   if (auto v = kw.take_typed("env", TAG_OBJECT, "Object")) {
@@ -1285,19 +1295,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   }
   kw.validate_consumed();
   return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
-                                stdin_data, check, line, col);
+                                stdin_data, check, timeout, line, col);
 }
 
 // Proc.all core (shared by trampoline + kwarg adapter). `commands` is not
 // consumed. Returns an Array of result Objects (allSettled, input order).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
-    int8_t commands_tag, int64_t commands_data, int64_t limit,
+    int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
     int64_t line, int64_t col) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.all", line, col);
   if (limit < 0) limit = 0;
-  auto outcomes =
-      culebra::proc::run_all(commands, static_cast<size_t>(limit));
+  auto outcomes = culebra::proc::run_all(
+      commands, static_cast<size_t>(limit), nullptr, nullptr, nullptr,
+      timeout > 0 ? timeout : 0);
   auto* arr = culebra_runtime_array_new();
   for (auto& oc : outcomes) {
     auto* o = _culebra_proc_outcome_to_object(oc, line, col);
@@ -1309,7 +1320,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
 // Positional Proc.all(commands) (no kwargs) — trampoline / AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all(
     int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
-  return _culebra_proc_all_impl(commands_tag, commands_data, 0, line, col);
+  return _culebra_proc_all_impl(commands_tag, commands_data, 0, 0, line, col);
 }
 
 // Kwarg adapter for Proc.all (resolves `limit`). `commands` is not consumed.
@@ -1321,8 +1332,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
                        "Proc.all");
   int64_t limit = 0;
   if (auto v = kw.take_typed("limit", TAG_LONG, "Long")) limit = v->data;
+  int64_t timeout = 0;
+  if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
   kw.validate_consumed();
-  return _culebra_proc_all_impl(commands_tag, commands_data, limit, line, col);
+  return _culebra_proc_all_impl(commands_tag, commands_data, limit, timeout,
+                                line, col);
 }
 
 // Proc.race(commands) — first to finish wins, the rest are killed. `commands`
