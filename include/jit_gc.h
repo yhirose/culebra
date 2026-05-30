@@ -21,15 +21,17 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace culebra::gc {
 
-// 8-byte object header at offset 0 of every GC-managed struct (replacing
-// the old `int64_t refcount`). `type_tag` drives sweep's per-type
-// destructor / enumerate_children dispatch — sweep only holds the raw
-// pointer, not the JitValue tag.
+// 8-byte per-object collector metadata. Under plan A (docs/jit_gc_design.md
+// §2 revision) this lives OUTSIDE the object, in the heap's address→metadata
+// registry — offset 0 of a GC struct stays its `int64_t refcount`, so the
+// existing retain/release IR is undisturbed. `type_tag` drives sweep's
+// per-type destructor / enumerate_children dispatch — sweep only holds the
+// raw pointer, not the JitValue tag.
 struct GcHeader {
   uint8_t mark;        // 0 = unmarked (white), 1 = marked
   uint8_t type_tag;    // GC_TAG_* (opaque to the heap)
@@ -41,47 +43,51 @@ static_assert(sizeof(GcHeader) == 8, "GcHeader must stay 8 bytes");
 
 class Heap {
  public:
-  // Allocate `size` bytes (header included) and register the object.
-  // Returns the object pointer (GcHeader at offset 0). Allocate-only:
-  // never frees or collects in Phase 0.
+  // Standalone (unit-test) allocation: malloc `size` bytes and register the
+  // object. The heap owns this memory and reclaims it via free_object. The
+  // JIT runtime does NOT use this — it `new`s its structs (so vectors /
+  // shared_ptr members are constructed) and only `adopt`s the raw pointer
+  // into the registry; RC's `delete` + `forget` own that memory.
   void* alloc(uint32_t size, uint8_t type_tag) {
     void* p = raw_alloc(size);
     adopt(p, size, type_tag);
     return p;
   }
 
-  // Two-step allocation for callers that must run a C++ constructor on the
-  // payload (vectors, shared_ptr members): `raw_alloc` hands back unregistered
-  // storage, the caller placement-news the struct (value-initialising — and
-  // thus zeroing — the leading GcHeader), then `adopt` stamps the real header
-  // and registers the object. Splitting the two is what keeps the header
-  // intact: stamping before the placement-new would just be clobbered by the
-  // constructor. `alloc` above is the fused form for callers that don't need
-  // to construct (the Phase 0 tests). `adopt` is the single source of truth
-  // for header layout + registration.
   void* raw_alloc(uint32_t size) {
     void* p = std::malloc(size);
     if (!p) std::abort();
     return p;
   }
+
+  // Register `p` as a live object: record its collector metadata in the
+  // address→metadata map (NOT in the object — offset 0 stays `refcount`).
+  // The caller owns the storage (runtime: `new`; tests: raw_alloc).
   void adopt(void* p, uint32_t size, uint8_t type_tag) {
-    auto* h = static_cast<GcHeader*>(p);
-    h->mark = 0;
-    h->type_tag = type_tag;
-    h->generation = 0;
-    h->flags = 0;
-    h->size = size;
-    objects_.insert(p);
+    // `p` is a fresh address at every object birth, so emplace (construct the
+    // metadata in place, no default-construct + assign) is both correct and
+    // the cheaper insert on this per-allocation path.
+    objects_.emplace(p, GcHeader{/*mark=*/0, type_tag, /*generation=*/0,
+                                 /*flags=*/0, size});
     live_bytes_ += size;
   }
 
-  // Free one object. Phase 1 sweep calls this after running the object's
-  // C++ destructor; in Phase 0 it exists only for the unit tests. Poisons
-  // the slot so a stale pointer use is caught.
+  // De-register an object whose memory the CALLER frees (RC release-to-zero
+  // `delete`s the struct, then calls forget). No free/poison here — the
+  // memory is not the heap's to reclaim.
+  void forget(void* p) {
+    auto it = objects_.find(p);
+    if (it == objects_.end()) return;
+    live_bytes_ -= it->second.size;
+    objects_.erase(it);
+  }
+
+  // Free one heap-owned object (standalone alloc / Phase 1 sweep of
+  // heap-owned storage). Poisons the slot so a stale pointer use is caught.
   void free_object(void* p) {
     auto it = objects_.find(p);
     if (it == objects_.end()) return;
-    uint32_t size = static_cast<GcHeader*>(p)->size;
+    uint32_t size = it->second.size;
     live_bytes_ -= size;
     objects_.erase(it);
     std::memset(p, 0xDE, size);
@@ -95,7 +101,10 @@ class Heap {
     return objects_.find(const_cast<void*>(p)) != objects_.end();
   }
 
-  GcHeader* header(void* obj) const { return static_cast<GcHeader*>(obj); }
+  GcHeader* header(void* obj) {
+    auto it = objects_.find(obj);
+    return it == objects_.end() ? nullptr : &it->second;
+  }
 
   size_t live_count() const { return objects_.size(); }
   size_t live_bytes() const { return live_bytes_; }
@@ -103,7 +112,7 @@ class Heap {
   // Iterate every live object (for sweep / heap-verify).
   template <class F>
   void for_each(F&& f) const {
-    for (void* p : objects_) f(p);
+    for (const auto& kv : objects_) f(kv.first);
   }
 
   // Register the address of a global root slot (e.g. a namespace-table
@@ -143,14 +152,14 @@ class Heap {
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
-    for_each([](void* p) { static_cast<GcHeader*>(p)->mark = 0; });
+    for (auto& kv : objects_) kv.second.mark = 0;
 
     std::vector<void*> work;
     auto push = [&](void* o) {
-      if (!is_object(o)) return;
-      auto* h = static_cast<GcHeader*>(o);
-      if (!h->mark) {
-        h->mark = 1;
+      auto it = objects_.find(o);
+      if (it == objects_.end()) return;
+      if (!it->second.mark) {
+        it->second.mark = 1;
         work.push_back(o);
       }
     };
@@ -162,7 +171,7 @@ class Heap {
       work.pop_back();
       if (children_fn_) {
         kids.clear();
-        children_fn_(o, static_cast<GcHeader*>(o)->type_tag, kids);
+        children_fn_(o, objects_.at(o).type_tag, kids);
         for (void* c : kids) push(c);
       }
     }
@@ -170,9 +179,9 @@ class Heap {
     // Sweep unmarked. Real wiring runs each object's C++ destructor here
     // (RAII frees items/slots/sidecars); the isolated heap just frees.
     std::vector<void*> dead;
-    for_each([&](void* p) {
-      if (!static_cast<GcHeader*>(p)->mark) dead.push_back(p);
-    });
+    for (const auto& kv : objects_) {
+      if (!kv.second.mark) dead.push_back(kv.first);
+    }
     for (void* p : dead) free_object(p);
     return dead.size();
   }
@@ -239,7 +248,7 @@ class Heap {
     return pthread_get_stackaddr_np(pthread_self());
   }
 
-  std::unordered_set<void*> objects_;
+  std::unordered_map<void*, GcHeader> objects_;
   std::vector<void**> global_roots_;
   ChildrenFn children_fn_ = nullptr;
   size_t live_bytes_ = 0;

@@ -147,21 +147,17 @@ struct JitValue {
 };
 
 struct JitArray {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;  // 8 bytes, replaces refcount at offset 0
-#else
   int64_t refcount;
-#endif
   size_t size;
   size_t capacity;
   JitValue* items;
-#ifndef CULEBRA_NEW_GC
-  // Index into the GC tracker's young vector while this Array is in
-  // the young generation; -1 when in old (or untracked / shutdown).
+  // Index into the legacy GC tracker's young vector while this Array is in
+  // the young generation; -1 when in old (or untracked / shutdown). Unused
+  // under CULEBRA_NEW_GC (the conservative heap keeps metadata in its own
+  // registry) but kept so the IR layout matches the OFF build exactly.
   // Trailing field so the established IR layout for `JitArray` (which
   // codegen accesses by GEP index) is undisturbed.
   int64_t gc_slot = -1;
-#endif
 };
 
 // Refcounted Tensor handle for the JIT runtime. `impl` is a shared_ptr
@@ -170,12 +166,8 @@ struct JitArray {
 // JIT-emitted IR only GEPs refcount/gc_slot — `impl` is touched from
 // C++ runtime fns only.
 struct JitTensor {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;
-#else
   int64_t refcount;
   int64_t gc_slot = -1;
-#endif
   culebra::TensorPtr impl;
 };
 
@@ -201,11 +193,7 @@ struct JitObjectEntry {
 // per-type dispatch.
 
 struct JitObject {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;
-#else
   int64_t refcount;
-#endif
   bool has_drop = false;
   JitIterFastFn fast_next_fn = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
@@ -238,9 +226,7 @@ struct JitObject {
   // (for String) and `non_string_props` (for non-String) remain for
   // O(1) lookup.
   std::vector<JitValue>* key_order = nullptr;
-#ifndef CULEBRA_NEW_GC
   int64_t gc_slot = -1;  // see JitArray::gc_slot
-#endif
   // Bumps on add/delete (not value updates). object_iter snapshots
   // this and fails-fast on per-step mismatch — matches Python dict
   // semantics. Trailing field so existing JitObject IR layout is
@@ -365,30 +351,18 @@ struct JitPropSetIC {
 
 
 struct JitCell {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;
-#else
   int64_t refcount;
-#endif
   JitValue value;
-#ifndef CULEBRA_NEW_GC
   int64_t gc_slot = -1;  // see JitArray::gc_slot
-#endif
 };
 
 struct JitClosure {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;
-#else
   int64_t refcount;
-#endif
   void* fn_ptr;
   size_t n_captures;
   JitCell** captures;
   size_t arity;  // number of user-visible params (excluding __cls__, this)
-#ifndef CULEBRA_NEW_GC
   int64_t gc_slot = -1;  // see JitArray::gc_slot
-#endif
 };
 
 // Uniform calling convention for every JIT closure. Callers build a
@@ -482,6 +456,15 @@ static constexpr int8_t GC_TAG_TENSOR = TAG_TENSOR;
 static constexpr int8_t GC_TAG_TUPLE = TAG_TUPLE;
 static constexpr int8_t GC_TAG_SET = TAG_SET;
 static constexpr int8_t GC_TAG_CELL = 100;
+
+// Is this tag a refcounted heap value (the container/handle tags, excluding
+// Cell)? Pure predicate over GC_TAG_* — available in both GC modes (the
+// legacy `_GcTracker::is_refcounted_value_tag` delegates to it).
+inline bool _is_refcounted_value_tag(int8_t tag) {
+  return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY ||
+         tag == GC_TAG_OBJECT || tag == GC_TAG_TENSOR ||
+         tag == GC_TAG_TUPLE || tag == GC_TAG_SET;
+}
 
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.
 inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
@@ -598,16 +581,10 @@ struct JitSetIndex
     : std::unordered_set<JitValue, JitValueHash, JitValueEq> {};
 
 struct JitSet {
-#ifdef CULEBRA_NEW_GC
-  culebra::gc::GcHeader header;
-#else
   int64_t refcount;
-#endif
   std::vector<JitValue> members;
   JitSetIndex* index = nullptr;
-#ifndef CULEBRA_NEW_GC
   int64_t gc_slot = -1;
-#endif
 };
 
 #ifndef CULEBRA_NEW_GC
@@ -728,9 +705,7 @@ struct _GcTracker {
   }
 
   static bool is_refcounted_value_tag(int8_t tag) {
-    return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY ||
-           tag == GC_TAG_OBJECT || tag == GC_TAG_TENSOR ||
-           tag == GC_TAG_TUPLE || tag == GC_TAG_SET;
+    return _is_refcounted_value_tag(tag);
   }
 
   static void push_if_refcounted(std::vector<TaggedPtr>& out, int8_t tag,
@@ -1065,20 +1040,36 @@ inline _GcTracker& _gc() { return _GcTracker::instance(); }
 inline culebra::gc::Heap& _gc_heap() {
   return culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
 }
-
-// Allocate a GC-managed struct: raw storage + placement-new (so vector /
-// shared_ptr members are constructed) + register with the heap. The leading
-// GcHeader is value-initialised by the placement-new, then stamped with the
-// real tag/size by adopt(). Replaces `new JitX(); x->refcount = 1;
-// _gc().add(x, TAG)`. Allocate-only in Phase 1 commit 2 (no collect yet).
-template <class T>
-inline T* _gc_new(uint8_t tag) {
-  void* p = _gc_heap().raw_alloc(sizeof(T));
-  T* obj = new (p) T();
-  _gc_heap().adopt(p, sizeof(T), tag);
-  return obj;
-}
 #endif  // CULEBRA_NEW_GC
+
+// Collector registration, abstracted over the active GC (plan A,
+// docs/jit_gc_design.md §2). The object is allocated with `new` and owns its
+// own memory (refcount + RC release-to-zero `delete`); registration only
+// records it with the collector. OFF: the legacy young-generation tracker.
+// ON: the conservative heap's address→metadata registry (metadata external,
+// so offset 0 stays `refcount`). `_gc_note_free` is the de-registration the
+// release path runs just before `delete`.
+template <class T>
+inline void _gc_register(T* obj, int8_t tag) {
+#ifdef CULEBRA_NEW_GC
+  _gc_heap().adopt(obj, sizeof(T), tag);
+#else
+  _gc().add(obj, tag);
+#endif
+}
+// De-register `obj` from the active collector just before the release path
+// `delete`s it. OFF: clear its young-vector slot + decrement the live tally.
+// ON: erase it from the heap's registry (the conservative heap owns no
+// memory under plan A — RC's `delete` frees it).
+inline void _gc_note_free(void* obj, int8_t tag) {
+#ifdef CULEBRA_NEW_GC
+  (void)tag;
+  _gc_heap().forget(obj);
+#else
+  _gc().remove(obj, tag);
+  _gc().note_free(tag);
+#endif
+}
 
 // Cycle detection during string conversion.
 inline thread_local std::unordered_set<const void*> _jit_str_visiting;
@@ -2410,18 +2401,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(
 // --- Array runtime ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new() {
-#ifdef CULEBRA_NEW_GC
-  auto* arr = _gc_new<JitArray>(GC_TAG_ARRAY);
-#else
   auto* arr = new JitArray();
   arr->refcount = 1;
-#endif
   arr->size = 0;
   arr->capacity = 0;
   arr->items = nullptr;
-#ifndef CULEBRA_NEW_GC
-  _gc().add(arr, GC_TAG_ARRAY);
-#endif
+  _gc_register(arr, GC_TAG_ARRAY);
   return arr;
 }
 
@@ -2431,18 +2416,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new() {
 // stays 0 — push fills it as elements arrive.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
     int64_t capacity) {
-#ifdef CULEBRA_NEW_GC
-  auto* arr = _gc_new<JitArray>(GC_TAG_ARRAY);
-#else
   auto* arr = new JitArray();
   arr->refcount = 1;
-#endif
   arr->size = 0;
   arr->capacity = capacity > 0 ? static_cast<size_t>(capacity) : 0;
   arr->items = capacity > 0 ? new JitValue[arr->capacity] : nullptr;
-#ifndef CULEBRA_NEW_GC
-  _gc().add(arr, GC_TAG_ARRAY);
-#endif
+  _gc_register(arr, GC_TAG_ARRAY);
   return arr;
 }
 
@@ -2455,18 +2434,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
 // IR (mutation ops only accept TAG_ARRAY) — there is no mutating
 // runtime entry for Tuple.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new() {
-#ifdef CULEBRA_NEW_GC
-  auto* arr = _gc_new<JitArray>(GC_TAG_TUPLE);
-#else
   auto* arr = new JitArray();
   arr->refcount = 1;
-#endif
   arr->size = 0;
   arr->capacity = 0;
   arr->items = nullptr;
-#ifndef CULEBRA_NEW_GC
-  _gc().add(arr, GC_TAG_TUPLE);
-#endif
+  _gc_register(arr, GC_TAG_TUPLE);
   return arr;
 }
 
@@ -2484,16 +2457,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tuple_push(JitArray* arr,
 
 // Set runtime: insertion-ordered with O(1) membership.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_new() {
-#ifdef CULEBRA_NEW_GC
-  auto* s = _gc_new<JitSet>(GC_TAG_SET);
-#else
   auto* s = new JitSet();
   s->refcount = 1;
-#endif
   s->index = new JitSetIndex();
-#ifndef CULEBRA_NEW_GC
-  _gc().add(s, GC_TAG_SET);
-#endif
+  _gc_register(s, GC_TAG_SET);
   return s;
 }
 
@@ -2839,17 +2806,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
 #else  // !CULEBRA_RT_NO_TENSOR
 
 inline JitTensor* _culebra_jit_tensor_register(culebra::TensorPtr impl) {
-#ifdef CULEBRA_NEW_GC
-  // Placement-new constructs the `impl` shared_ptr; the leading GcHeader is
-  // value-initialised by `{}` then stamped by adopt(). Can't use _gc_new<T>
-  // here — JitTensor has no default ctor that takes the impl.
-  void* p = _gc_heap().raw_alloc(sizeof(JitTensor));
-  auto* t = new (p) JitTensor{{}, std::move(impl)};
-  _gc_heap().adopt(p, sizeof(JitTensor), GC_TAG_TENSOR);
-#else
   auto* t = new JitTensor{1, -1, std::move(impl)};
-  _gc().add(t, GC_TAG_TENSOR);
-#endif
+  _gc_register(t, GC_TAG_TENSOR);
   return t;
 }
 
@@ -3067,14 +3025,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
 // --- Object runtime ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
-#ifdef CULEBRA_NEW_GC
-  return _gc_new<JitObject>(GC_TAG_OBJECT);
-#else
   auto* o = new JitObject();
   o->refcount = 1;
-  _gc().add(o, GC_TAG_OBJECT);
+  _gc_register(o, GC_TAG_OBJECT);
   return o;
-#endif
 }
 
 // Build an Array from args[start..n) for binding to `__ARGS__`. Caller
@@ -3545,14 +3499,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   auto* inst = culebra_runtime_object_new();
 
   inst->proto = class_meta;
-#ifndef CULEBRA_NEW_GC
   // Retain the meta on the instance so it lives at least as long as
   // any of its instances. The matching release runs in the JitObject
-  // destructor (release_impl GC_TAG_OBJECT path). Under CULEBRA_NEW_GC the
-  // meta will instead be reached through `inst->proto` once marking traces
-  // children (commit 3); until sweep is wired, allocate-only never frees it.
+  // destructor (release_impl GC_TAG_OBJECT path).
   if (class_meta) class_meta->refcount++;
-#endif
   // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
   if (class_meta && _find_property(class_meta, "drop")) inst->has_drop = true;
 
@@ -3975,12 +3925,7 @@ culebra_runtime_register_trait_default(const char* trait_name,
   if (slot) {
     _culebra_value_release_impl(TAG_FUNC, reinterpret_cast<int64_t>(slot));
   }
-#ifndef CULEBRA_NEW_GC
-  // Under CULEBRA_NEW_GC this static map must be registered as a global root
-  // (commit 3) so the stored closure stays live without a manual retain; until
-  // roots + sweep are wired, allocate-only never frees it.
   closure->refcount++;
-#endif
   slot = closure;
 }
 
@@ -4362,12 +4307,7 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   // Find or create the dispatcher closure for this name.
   for (auto& [cls_ptr, n] : _jit_multifn_dispatcher_names()) {
     if (n == name) {
-#ifndef CULEBRA_NEW_GC
-      // hand a +1 back to the caller. Under CULEBRA_NEW_GC the dispatcher (and
-      // the method bodies it holds) must be reachable from a registered global
-      // root once sweep is wired (commit 3); allocate-only never frees it now.
-      cls_ptr->refcount++;
-#endif
+      cls_ptr->refcount++;  // hand a +1 back to the caller
       return cls_ptr;
     }
   }
@@ -4434,17 +4374,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_parameters_walk
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(int8_t tag,
                                                                int64_t data) {
-#ifdef CULEBRA_NEW_GC
-  auto* c = _gc_new<JitCell>(GC_TAG_CELL);
-#else
   auto* c = new JitCell();
   c->refcount = 1;
-#endif
   c->value.tag = tag;
   c->value.data = data;
-#ifndef CULEBRA_NEW_GC
-  _gc().add(c, GC_TAG_CELL);
-#endif
+  _gc_register(c, GC_TAG_CELL);
   return c;
 }
 
@@ -4452,12 +4386,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(int8_t tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity) {
-#ifdef CULEBRA_NEW_GC
-  auto* c = _gc_new<JitClosure>(GC_TAG_FUNC);
-#else
   auto* c = new JitClosure();
   c->refcount = 1;
-#endif
   c->fn_ptr = fn_ptr;
   c->n_captures = n_captures;
   c->captures =
@@ -4465,9 +4395,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
                        std::malloc(sizeof(JitCell*) * n_captures))
                  : nullptr;
   c->arity = arity;
-#ifndef CULEBRA_NEW_GC
-  _gc().add(c, GC_TAG_FUNC);
-#endif
+  _gc_register(c, GC_TAG_FUNC);
   return c;
 }
 
@@ -6324,12 +6252,10 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
   auto& ko = *obj->key_order;
   for (auto it = ko.begin(); it != ko.end(); ++it) {
     if (eq(*it, key)) {
-#ifndef CULEBRA_NEW_GC
       // Refcounted (Tuple) keys hold a +1 here — release before erasing.
-      if (_GcTracker::is_refcounted_value_tag(it->tag)) {
+      if (_is_refcounted_value_tag(it->tag)) {
         _culebra_value_release_impl(it->tag, it->data);
       }
-#endif
       ko.erase(it);
       return;
     }
@@ -6405,12 +6331,9 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   auto* cls = reinterpret_cast<JitClosure*>(v.data);
   if (!cls || cls->arity != 0) return;
 
-#ifndef CULEBRA_NEW_GC
   // Pin the object across its own drop so a re-entrant release inside the
-  // drop body can't free it mid-call. Under CULEBRA_NEW_GC freeing only
-  // happens at sweep, so `o` (reachable here) can't self-free — no pin.
+  // drop body can't free it mid-call.
   o->refcount = 2;
-#endif
   JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   try {
     auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, this_val, 0,
@@ -6421,16 +6344,10 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   } catch (...) {
     std::cerr << "drop: unknown error" << std::endl;
   }
-#ifndef CULEBRA_NEW_GC
   o->refcount = 0;
-#endif
 }
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
-#ifdef CULEBRA_NEW_GC
-  (void)tag;   // sweep reclaims unreachable objects; release is a no-op
-  (void)data;
-#else
   if (data == 0) return;
   switch (tag) {
     case GC_TAG_FUNC: {
@@ -6440,8 +6357,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           _culebra_cell_release(c->captures[i]);
         }
         std::free(c->captures);
-        _gc().remove(c, GC_TAG_FUNC);
-        _gc().note_free(GC_TAG_FUNC);
+        _gc_note_free(c, GC_TAG_FUNC);
         delete c;
       }
       break;
@@ -6454,8 +6370,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           _culebra_value_release_impl(a->items[i].tag, a->items[i].data);
         }
         delete[] a->items;
-        _gc().remove(a, tag);
-        _gc().note_free(tag);
+        _gc_note_free(a, tag);
         delete a;
       }
       break;
@@ -6479,7 +6394,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         // refcount lands at zero for keys that go fully unreachable.
         if (o->key_order) {
           for (auto& k : *o->key_order) {
-            if (_GcTracker::is_refcounted_value_tag(k.tag)) {
+            if (_is_refcounted_value_tag(k.tag)) {
               _culebra_value_release_impl(k.tag, k.data);
             }
           }
@@ -6498,8 +6413,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           delete o->non_string_props;
           o->non_string_props = nullptr;
         }
-        _gc().remove(o, GC_TAG_OBJECT);
-        _gc().note_free(GC_TAG_OBJECT);
+        _gc_note_free(o, GC_TAG_OBJECT);
         delete o;
       }
       break;
@@ -6508,8 +6422,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
     case GC_TAG_TENSOR: {
       auto* t = reinterpret_cast<JitTensor*>(data);
       if (--t->refcount == 0) {
-        _gc().remove(t, GC_TAG_TENSOR);
-        _gc().note_free(GC_TAG_TENSOR);
+        _gc_note_free(t, GC_TAG_TENSOR);
         delete t;  // ~JitTensor releases the shared_ptr<TensorImpl>
       }
       break;
@@ -6522,8 +6435,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           _culebra_value_release_impl(m.tag, m.data);
         }
         delete s->index;
-        _gc().remove(s, GC_TAG_SET);
-        _gc().note_free(GC_TAG_SET);
+        _gc_note_free(s, GC_TAG_SET);
         delete s;
       }
       break;
@@ -6531,31 +6443,21 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
     default:
       break;  // TAG_NIL/BOOL/LONG/STRING: no-op
   }
-#endif  // CULEBRA_NEW_GC
 }
 
 inline void _culebra_cell_release(JitCell* c) {
-#ifdef CULEBRA_NEW_GC
-  (void)c;
-#else
   if (!c) return;
   if (--c->refcount == 0) {
     _culebra_value_release_impl(c->value.tag, c->value.data);
-    _gc().remove(c, GC_TAG_CELL);
-    _gc().note_free(GC_TAG_CELL);
+    _gc_note_free(c, GC_TAG_CELL);
     delete c;
   }
-#endif
 }
 
 extern "C" {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
                                                                int64_t data) {
-#ifdef CULEBRA_NEW_GC
-  (void)tag;  // no manual RC under the conservative collector
-  (void)data;
-#else
   if (data == 0) return;
   switch (tag) {
     case TAG_FUNC:
@@ -6575,7 +6477,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
       reinterpret_cast<JitSet*>(data)->refcount++;
       break;
   }
-#endif
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_release(int8_t tag,
@@ -6592,11 +6493,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_swap_owned(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_cell_retain(JitCell* c) {
-#ifdef CULEBRA_NEW_GC
-  (void)c;
-#else
   if (c) c->refcount++;
-#endif
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_cell_release(JitCell* c) {
@@ -8408,10 +8305,6 @@ struct JIT {
 
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
-#ifdef CULEBRA_NEW_GC
-    (void)val;  // no manual RC under the conservative collector
-    return;
-#else
     auto tag = extract_tag(val);
     auto data = extract_data(val);
     emit_call(
@@ -8419,14 +8312,9 @@ struct JIT {
             rt::value_retain, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {tag, data});
-#endif
   }
 
   void emit_value_release(llvm::Value* val) {
-#ifdef CULEBRA_NEW_GC
-    (void)val;
-    return;
-#else
     auto tag = extract_tag(val);
     auto data = extract_data(val);
     emit_call(
@@ -8434,16 +8322,10 @@ struct JIT {
             rt::value_release, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {tag, data});
-#endif
   }
 
   // IR-side wrapper for `rt::value_swap_owned`.
   void emit_value_swap_owned(llvm::Value* keep, llvm::Value* drop) {
-#ifdef CULEBRA_NEW_GC
-    (void)keep;
-    (void)drop;
-    return;
-#else
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     emit_call(
@@ -8452,33 +8334,22 @@ struct JIT {
             i8Ty, i64Ty, i8Ty, i64Ty),
         {extract_tag(drop), extract_data(drop),
          extract_tag(keep), extract_data(keep)});
-#endif
   }
 
   void emit_cell_retain(llvm::Value* cellPtr) {
-#ifdef CULEBRA_NEW_GC
-    (void)cellPtr;
-    return;
-#else
     emit_call(
         module_->getOrInsertFunction(rt::cell_retain,
                                      builder_.getVoidTy(),
                                      llvm::PointerType::get(ctx_, 0)),
         {cellPtr});
-#endif
   }
 
   void emit_cell_release(llvm::Value* cellPtr) {
-#ifdef CULEBRA_NEW_GC
-    (void)cellPtr;
-    return;
-#else
     emit_call(
         module_->getOrInsertFunction(rt::cell_release,
                                      builder_.getVoidTy(),
                                      llvm::PointerType::get(ctx_, 0)),
         {cellPtr});
-#endif
   }
 
   llvm::Value* current_line_val() {

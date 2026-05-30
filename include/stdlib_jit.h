@@ -1676,21 +1676,15 @@ inline JitValue _jit_ns_method_trampoline(
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
-#ifdef CULEBRA_NEW_GC
-  auto* cls = _gc_new<JitClosure>(GC_TAG_FUNC);
-#else
   auto* cls = new JitClosure();
   cls->refcount = 1;
-#endif
   cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
   cls->n_captures = 1;
   cls->captures = new JitCell*[1];
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
   cls->arity = m->arity < 0 ? 0 : static_cast<size_t>(m->arity);
-#ifndef CULEBRA_NEW_GC
-  _gc().add(cls, GC_TAG_FUNC);
-#endif
+  _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
 

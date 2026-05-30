@@ -421,7 +421,19 @@ localised future change rather than a second rewrite.
 
 ## 15. Invariants (must always hold)
 
-1. No `emit_value_retain` / `emit_value_release` in codegen (Phase 1+).
+1. **(Corrected by §2 revision.)** Manual RC is KEPT: `emit_value_retain` /
+   `emit_value_release` stay in codegen and own memory + deterministic `drop`.
+   The collector is a backstop, not a replacement for RC. Layout plan A:
+   struct offset 0 is `int64_t refcount`; the collector's per-object metadata
+   (mark/tag/size) lives in the heap's address→metadata registry, NOT in the
+   object.
+1a. **GC substate outlives the value-holding substates.** `~Runtime` destroys
+   substates in **reverse slot order** so the GC heaps (`kSlotInterpGc`,
+   `kSlotJitGc` — the lowest slots) are torn down LAST. Forward order frees the
+   GC first, and any later substate destructor that releases a JitValue (module
+   / namespace tables, test registry, defer stack) would then call `forget()`
+   into a freed heap — a use-after-free. Each slot is nulled after deletion so a
+   release that still resolves a substate mid-teardown revives an empty one.
 2. **Soundness (the safety guarantee):** a collection NEVER frees an
    object reachable from a root or another live object. This must hold
    unconditionally.
