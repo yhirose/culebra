@@ -114,7 +114,15 @@ pattern that exceeds any of these raises `RegexError` at construction:
 | Nesting depth | 1000 |
 
 These bound compile cost (e.g. `a{1000000}`, nested `(x{50}){50}…`) and parser
-recursion (e.g. `((((…))))`). Match time is linear in the subject length.
+recursion (e.g. `((((…))))`).
+
+Match time is linear in the subject length, but the constant is the program
+size, so a dense pattern (e.g. `(a?){9000}`) on a long subject is
+bounded-but-slow. A match-time step budget, proportional to the subject length,
+caps this: a match that exceeds it raises `RegexError` from the matching call
+(`search`, `match`, `find_all`, `test`, `replace_all`) rather than running for
+many seconds. Real patterns stay far below the budget. The ε-closure is
+iterative, so a long zero-width chain cannot overflow the stack.
 
 ## Not supported
 

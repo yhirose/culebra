@@ -64,6 +64,13 @@ namespace limits {
 constexpr size_t kMaxPatternBytes = 1u << 15;  // 32 KiB
 constexpr int kMaxProgramInsts = 1 << 18;      // 262144 compiled instructions
 constexpr int kMaxNestingDepth = 1000;         // group / lookaround nesting
+// Match-time budget. Matching is already linear in the subject, but the
+// constant is the program size (up to kMaxProgramInsts), so a dense pattern on
+// a long subject is bounded-but-slow. Cap the work per subject position; a
+// match that exceeds `base + perPos * (length + 1)` raises RegexError instead
+// of running for many seconds. Real patterns stay far below this.
+constexpr long kStepsPerPos = 1 << 11;  // 2048 ε-closure steps per position
+constexpr long kStepsBase = 1 << 20;    // slack so short subjects never trip
 }  // namespace limits
 
 //===----------------------------------------------------------------------===//
@@ -1350,6 +1357,17 @@ class Regex {
 
   static Saves make_saves(int nslots) { return Saves(nslots); }
 
+  // Total ε-closure work for the current top-level match (reset by run()).
+  // Drives the match-time step budget. Per-thread, so concurrent matching on
+  // one Regex stays safe.
+  static long &match_steps() {
+    static thread_local long s = 0;
+    return s;
+  }
+  static long step_budget(int n) {
+    return limits::kStepsBase + static_cast<long>(n + 1) * limits::kStepsPerPos;
+  }
+
   // Reusable VM buffers so find_all() does not re-allocate per match. `gen` is
   // monotonic across runs, so `visited` never needs re-initialising.
   struct Scratch {
@@ -1408,76 +1426,77 @@ class Regex {
   void add_thread(const detail::Program &prog, std::vector<Thread> &list,
                   std::vector<int> &visited, int gen, int pc, Saves saves,
                   const detail::Segmented &seg, int sp, int n) const {
-    if (visited[pc] == gen) return;
-    visited[pc] = gen;
-    const detail::Inst &in = prog.insts[pc];
     using Op = detail::Inst::Op;
-    switch (in.op) {
-      case Op::Jmp:
-        add_thread(prog, list, visited, gen, in.x, std::move(saves), seg, sp, n);
-        break;
-      case Op::Split:
-        add_thread(prog, list, visited, gen, in.x, saves, seg, sp, n);
-        add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp, n);
-        break;
-      case Op::Save: {
-        if (in.n >= 0 && in.n < static_cast<int>((*saves).size()))
-          add_thread(prog, list, visited, gen, pc + 1, saves.write(in.n, sp),
-                     seg, sp, n);
-        else
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg, sp,
-                     n);
-        break;
-      }
-      case Op::Look: {
-        bool ok = eval_look(in, seg, sp, n);
-        if (in.look_negate ? !ok : ok)
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
-                     sp, n);
-        break;
-      }
-      case Op::Loop: {
-        // Empty-iteration guard: re-enter only if the iteration consumed input.
-        bool progressed = in.n >= static_cast<int>((*saves).size()) ||
-                          sp != (*saves)[in.n];
-        if (!progressed) {
-          add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp,
-                     n);  // empty iteration -> exit only
-        } else if (in.greedy) {
-          add_thread(prog, list, visited, gen, in.x, saves, seg, sp, n);
-          add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp,
-                     n);
-        } else {
-          add_thread(prog, list, visited, gen, in.y, saves, seg, sp, n);
-          add_thread(prog, list, visited, gen, in.x, std::move(saves), seg, sp,
-                     n);
+    // Iterative ε-closure with an explicit, reused stack, so a long zero-width
+    // chain (e.g. `(a?){9000}`) cannot overflow the call stack. The stack is
+    // thread_local (concurrent matching on one Regex stays safe) and drained
+    // only down to the size on entry, so reentrant calls via lookaround share
+    // it correctly. Children are pushed in reverse priority so the higher-
+    // priority branch is popped first — DFS pre-order, as in the recursive form.
+    static thread_local std::vector<std::pair<int, Saves>> stack;
+    const size_t base = stack.size();
+    stack.emplace_back(pc, std::move(saves));
+    long pops = 0;
+    while (stack.size() > base) {
+      int p = stack.back().first;
+      Saves sv = std::move(stack.back().second);
+      stack.pop_back();
+      ++pops;
+      if (visited[p] == gen) continue;
+      visited[p] = gen;
+      const detail::Inst &in = prog.insts[p];
+      switch (in.op) {
+        case Op::Jmp:
+          stack.emplace_back(in.x, std::move(sv));
+          break;
+        case Op::Split:
+          stack.emplace_back(in.y, sv);             // lower priority (deeper)
+          stack.emplace_back(in.x, std::move(sv));  // higher priority (top)
+          break;
+        case Op::Save:
+          if (in.n >= 0 && in.n < static_cast<int>((*sv).size()))
+            stack.emplace_back(p + 1, sv.write(in.n, sp));
+          else
+            stack.emplace_back(p + 1, std::move(sv));
+          break;
+        case Op::Look: {
+          bool ok = eval_look(in, seg, sp, n);
+          if (in.look_negate ? !ok : ok) stack.emplace_back(p + 1, std::move(sv));
+          break;
         }
-        break;
+        case Op::Loop: {
+          // Empty-iteration guard: re-enter only if the iteration progressed.
+          bool progressed = in.n >= static_cast<int>((*sv).size()) ||
+                            sp != (*sv)[in.n];
+          if (!progressed) {
+            stack.emplace_back(in.y, std::move(sv));  // empty -> exit only
+          } else if (in.greedy) {
+            stack.emplace_back(in.y, sv);             // exit (lower priority)
+            stack.emplace_back(in.x, std::move(sv));  // re-enter (top)
+          } else {
+            stack.emplace_back(in.x, sv);
+            stack.emplace_back(in.y, std::move(sv));
+          }
+          break;
+        }
+        case Op::AssertBOL:
+          if (bol(seg, sp)) stack.emplace_back(p + 1, std::move(sv));
+          break;
+        case Op::AssertEOL:
+          if (eol(seg, sp, n)) stack.emplace_back(p + 1, std::move(sv));
+          break;
+        case Op::AssertWB:
+          if (wb(seg, sp, n)) stack.emplace_back(p + 1, std::move(sv));
+          break;
+        case Op::AssertNWB:
+          if (!wb(seg, sp, n)) stack.emplace_back(p + 1, std::move(sv));
+          break;
+        default:
+          list.push_back({p, std::move(sv)});
+          break;
       }
-      case Op::AssertBOL:
-        if (bol(seg, sp))
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
-                     sp, n);
-        break;
-      case Op::AssertEOL:
-        if (eol(seg, sp, n))
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
-                     sp, n);
-        break;
-      case Op::AssertWB:
-        if (wb(seg, sp, n))
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
-                     sp, n);
-        break;
-      case Op::AssertNWB:
-        if (!wb(seg, sp, n))
-          add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
-                     sp, n);
-        break;
-      default:
-        list.push_back({pc, std::move(saves)});
-        break;
     }
+    match_steps() += pops;
   }
 
   // Boolean Pike-VM run for lookaround bodies: anchored at `start`, succeeds if
@@ -1497,8 +1516,10 @@ class Regex {
     add_thread(prog, clist, visited, gen, 0, make_saves(prog.nslots), seg, start,
                n);
 
+    long budget = step_budget(n);  // shared cumulative counter, not reset here
     for (int sp = start; sp <= n; sp++) {
       if (clist.empty()) break;
+      if (match_steps() > budget) throw RegexError("regex match step budget exceeded");
       int next_gen = ++gen;
       const std::u32string *g = (sp < n) ? &seg.graphemes[sp] : nullptr;
       for (auto &t : clist) {
@@ -1549,8 +1570,10 @@ class Regex {
     add_thread(prog, clist, visited, gen, 0, make_saves(prog.nslots), seg, from,
                n);
 
+    long budget = step_budget(n);  // shared cumulative counter, not reset here
     for (int p = from; p >= 0; p--) {
       if (clist.empty()) break;
+      if (match_steps() > budget) throw RegexError("regex match step budget exceeded");
       int next_gen = ++gen;
       // The grapheme immediately to the left of position p.
       const std::u32string *g = (p > 0) ? &seg.graphemes[p - 1] : nullptr;
@@ -1606,8 +1629,11 @@ class Regex {
     gen++;
     add_thread(prog, clist, visited, gen, 0, seed, seg, start, n);
 
+    match_steps() = 0;  // top-level search: reset the cumulative work counter
+    long budget = step_budget(n);
     for (int sp = start; sp <= n; sp++) {
       if (clist.empty() && have) break;
+      if (match_steps() > budget) throw RegexError("regex match step budget exceeded");
 
       int next_gen = ++gen;
       const std::u32string *g = (sp < n) ? &seg.graphemes[sp] : nullptr;

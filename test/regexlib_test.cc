@@ -376,6 +376,20 @@ void test_resource_limits() {
     auto m = Regex(p).search("xb");
     CHECK(m && m.str == "b");
   }
+  // A long zero-width chain compiles, but matching it must not overflow the
+  // stack (the closure is iterative) — it raises the match step budget on a
+  // long subject instead. `(a?){9000}` used to segfault.
+  {
+    bool threw = false;
+    try {
+      Regex("(a?){9000}").search(std::string(6000, 'a'));
+    } catch (const RegexError &) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+  // The same dense pattern on a short subject stays under budget and matches.
+  CHECK(Regex("(a?){9000}").search("aaa").matched);
 }
 
 void test_error_messages() {
