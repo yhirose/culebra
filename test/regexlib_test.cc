@@ -47,6 +47,22 @@ bool rejects(const std::string &pat) {
   return false;
 }
 
+// Returns the RegexError message for an invalid pattern (empty if it compiled).
+std::string error_of(const std::string &pat) {
+  try {
+    Regex r(pat);
+    (void)r;
+  } catch (const RegexError &e) {
+    return e.what();
+  }
+  return "";
+}
+
+// True if `haystack` contains `needle`.
+bool has(const std::string &haystack, const std::string &needle) {
+  return haystack.find(needle) != std::string::npos;
+}
+
 void test_literals_and_anchors() {
   CHECK(Regex("abc").test("xxabcxx"));
   CHECK(!Regex("abc").test("ab"));
@@ -278,6 +294,18 @@ void test_invalid_patterns() {
   CHECK(!rejects("(?<name>x)"));
 }
 
+void test_error_messages() {
+  // Errors carry the offending position and a caret line.
+  std::string e = error_of("ab**");
+  CHECK(has(e, "nothing to repeat"));
+  CHECK(has(e, "position 3"));   // the second '*' (a=0 b=1 *=2 *=3)
+  CHECK(has(e, "^"));            // caret line present
+  CHECK(has(error_of("ab)"), "position 2"));     // the ')'
+  CHECK(has(error_of("a(b|c"), "position 5"));   // EOF, missing ')'
+  CHECK(has(error_of("x(?P<n>y)"), "position 3"));
+  CHECK(has(error_of("[a-z"), "unterminated character class"));
+}
+
 }  // namespace
 
 int main() {
@@ -297,6 +325,7 @@ int main() {
   test_gpt2_tokenizer();
   test_linear_time();
   test_invalid_patterns();
+  test_error_messages();
 
   std::printf("\nregexlib: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

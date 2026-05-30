@@ -374,8 +374,21 @@ struct Parser {
     return true;
   }
 
+  // Throw a parse error annotated with the offending position and a caret
+  // line, e.g.
+  //   regex parse error at position 3: nothing to repeat
+  //     ab**
+  //       ^
+  // The caret column counts one space per preceding grapheme, so it aligns for
+  // ASCII patterns (and stays close for wider clusters).
   [[noreturn]] void error(const std::string &msg) {
-    throw RegexError("regex parse error: " + msg);
+    std::string pat, indent;
+    for (size_t i = 0; i < toks.size(); i++) {
+      if (i < pos) indent += ' ';
+      pat += unicode::utf8::encode(toks[i]);
+    }
+    throw RegexError("regex parse error at position " + std::to_string(pos) +
+                     ": " + msg + "\n  " + pat + "\n  " + indent + "^");
   }
 
   Node parse() {
