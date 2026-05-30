@@ -344,6 +344,38 @@ inline Node reverse_ast(const Node &n) {
   return r;
 }
 
+// True if `n` can match the empty string. Used to decide whether an unbounded
+// quantifier needs an empty-iteration guard (only nullable bodies do).
+inline bool node_nullable(const Node &n) {
+  using K = Node::Kind;
+  switch (n.kind) {
+    case K::Empty:
+    case K::BOL:
+    case K::EOL:
+    case K::WordBoundary:
+    case K::NonWordBoundary:
+    case K::LookAround:
+      return true;
+    case K::Lit:
+    case K::AnyChar:
+    case K::Class:
+      return false;
+    case K::Concat:
+      for (auto &k : n.kids)
+        if (!node_nullable(k)) return false;
+      return true;
+    case K::Alt:
+      for (auto &k : n.kids)
+        if (node_nullable(k)) return true;
+      return false;
+    case K::Group:
+      return node_nullable(n.kids[0]);
+    case K::Repeat:
+      return n.rmin == 0 || node_nullable(n.kids[0]);
+  }
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // Parser  (recursive descent over a stream of pattern grapheme clusters)
 //===----------------------------------------------------------------------===//
@@ -885,6 +917,9 @@ struct Inst {
     Jmp,    // jump to x
     Save,   // saves[n] = current position
     Look,   // zero-width lookaround: run `sub` at the current position
+    Loop,   // empty-guarded back-edge of an unbounded quantifier over a
+            // nullable body: re-enter x only if the iteration made progress
+            // (sp != saves[n]); otherwise take the exit y
     AssertBOL,
     AssertEOL,
     AssertWB,
@@ -895,8 +930,9 @@ struct Inst {
   Op op;
   std::u32string lit;  // Char
   CharClass cls;       // Class
-  int x = 0, y = 0;    // Split / Jmp targets
-  int n = 0;           // Save slot
+  int x = 0, y = 0;    // Split / Jmp / Loop targets
+  int n = 0;           // Save slot (also Loop progress slot)
+  bool greedy = false;  // Loop: prefer re-entering over exiting
   // Look
   std::shared_ptr<Program> sub;  // compiled lookaround body
                                  // (reverse-compiled for lookbehind)
@@ -911,16 +947,19 @@ struct Program {
 
 struct Compiler {
   Program prog;
+  int base_slots_ = 2;  // capture slots; hidden Loop slots are allocated above
+  int loop_slots_ = 0;  // number of hidden progress slots allocated
 
   static Program compile(const Node &root, int ncap) {
     Compiler c;
-    c.prog.nslots = 2 * (ncap + 1);
+    c.base_slots_ = 2 * (ncap + 1);
     c.emit_save(0);  // start of whole match
     c.emit(root);
     c.emit_save(1);  // end of whole match
     Inst m;
     m.op = Inst::Op::Match;
     c.prog.insts.push_back(m);
+    c.prog.nslots = c.base_slots_ + c.loop_slots_;
     return std::move(c.prog);
   }
 
@@ -1054,8 +1093,32 @@ struct Compiler {
     // Emit `lo` mandatory copies.
     for (int k = 0; k < lo; k++) emit(body);
 
-    if (hi == -1) {
-      // Unbounded tail (body)* :  L1: split L2,L3 ; L2: body ; jmp L1 ; L3:
+    if (hi == -1 && node_nullable(body)) {
+      // Unbounded tail over a NULLABLE body needs an empty-iteration guard, or
+      // a greedy loop would keep finding a consuming path instead of stopping
+      // (e.g. `(.*?)*` must match empty, not "c"). Record each iteration's
+      // entry position in a hidden slot and only re-enter on real progress:
+      //   L1: split L2,L3        (greedy: prefer entering)
+      //   L2: save w ; <body> ; Loop(w, x=L2, y=L3)
+      //   L3:
+      int w = base_slots_ + loop_slots_++;
+      int l1 = push_split();
+      int l2 = here();
+      emit_save(w);
+      emit(body);
+      Inst lp;
+      lp.op = Inst::Op::Loop;
+      lp.n = w;
+      lp.x = l2;  // re-enter
+      lp.greedy = n.greedy;
+      int lpi = push(std::move(lp));
+      int l3 = here();
+      prog.insts[lpi].y = l3;  // exit
+      set_split(l1, n.greedy, l2, l3);
+    } else if (hi == -1) {
+      // Unbounded tail over a non-nullable body: the cheap structure suffices
+      // (each iteration necessarily consumes, so it cannot loop on empty).
+      //   L1: split L2,L3 ; L2: body ; jmp L1 ; L3:
       int l1 = push_split();
       int l2 = here();
       emit(body);
@@ -1337,6 +1400,24 @@ class Regex {
         if (in.look_negate ? !ok : ok)
           add_thread(prog, list, visited, gen, pc + 1, std::move(saves), seg,
                      sp, n);
+        break;
+      }
+      case Op::Loop: {
+        // Empty-iteration guard: re-enter only if the iteration consumed input.
+        bool progressed = in.n >= static_cast<int>((*saves).size()) ||
+                          sp != (*saves)[in.n];
+        if (!progressed) {
+          add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp,
+                     n);  // empty iteration -> exit only
+        } else if (in.greedy) {
+          add_thread(prog, list, visited, gen, in.x, saves, seg, sp, n);
+          add_thread(prog, list, visited, gen, in.y, std::move(saves), seg, sp,
+                     n);
+        } else {
+          add_thread(prog, list, visited, gen, in.y, saves, seg, sp, n);
+          add_thread(prog, list, visited, gen, in.x, std::move(saves), seg, sp,
+                     n);
+        }
         break;
       }
       case Op::AssertBOL:

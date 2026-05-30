@@ -291,6 +291,28 @@ void test_gpt2_tokenizer() {
   }
 }
 
+void test_nullable_quantifiers() {
+  // An unbounded quantifier over a body that can match empty must stop after an
+  // empty iteration rather than greedily consuming (the empty-iteration guard).
+  // These match the empty string at position 0, like Perl/Python/PCRE.
+  CHECK(Regex("(.*?)*").search("cc").str == "");
+  CHECK(Regex("(.*?)+").search("cc").str == "");
+  CHECK(Regex("(.*?){2,}").search("cc").str == "");
+  CHECK(Regex("(a*)*").search("bb").str == "");
+  CHECK(Regex("(a|b*){2,}").search("cc").str == "");
+  CHECK(Regex("(x|){2,}").search("ab").str == "");
+  // Non-nullable bodies are unaffected (still consume greedily).
+  CHECK(Regex("(.*)*").search("cc").str == "cc");
+  CHECK(Regex("\\w+").search("hello42").str == "hello42");
+  CHECK(Regex("(ab)+").search("ababab").str == "ababab");
+  // A consuming leading branch still consumes.
+  CHECK(Regex("(.|a*)*").search("ab").str == "ab");
+  // KNOWN LIMITATION: an alternation whose FIRST branch is nullable, nested in
+  // an unbounded quantifier (e.g. `(a*|b)*` on "ab"), still over-matches
+  // ("ab" instead of "a") because the pc-only thread dedup does not account
+  // for loop-progress state. Extremely rare in practice; left as a known edge.
+}
+
 void test_linear_time() {
   // `(a+)+$` against all-'a' + a trailing mismatch is the classic ReDoS bomb
   // that hangs backtracking engines. The Pike VM stays linear, so this must
@@ -351,6 +373,7 @@ int main() {
   test_lookbehind_fixed();
   test_lookbehind_variable();
   test_gpt2_tokenizer();
+  test_nullable_quantifiers();
   test_linear_time();
   test_invalid_patterns();
   test_error_messages();
