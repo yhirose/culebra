@@ -1,4 +1,5 @@
 #include <culebra.h>
+#include <doctest_runner.h>
 #include <stdlib_interp.h>
 #include <test_runner.h>
 #ifdef CULEBRA_JIT_ENABLED
@@ -556,6 +557,7 @@ int run_test(int argc, const char** argv) {
   auto reporter = culebra::Reporter::Default;
   int bail_after = 0;
   bool list_only = false;
+  bool doc_mode = false;
   auto parse_reporter = [&](std::string_view v) {
     if (v == "default") reporter = culebra::Reporter::Default;
     else if (v == "json") reporter = culebra::Reporter::Json;
@@ -597,6 +599,8 @@ int run_test(int argc, const char** argv) {
       }
     } else if (arg == "--list") {
       list_only = true;
+    } else if (arg == "--doc") {
+      doc_mode = true;
     } else if (arg.starts_with("--")) {
       std::println(stderr, "culebra test: unknown option '{}'", arg);
       return 2;
@@ -604,19 +608,40 @@ int run_test(int argc, const char** argv) {
       roots.push_back(arg);
     }
   }
-  auto env = culebra::environment({});
-  install_cli_aliases(*env);
-  culebra::install_test_ambient(*env);
+  culebra::TestRunSummary summary;
+  if (doc_mode) {
+    // Doctest mode: extract ` ```culebra ` blocks from Markdown docs and
+    // run each in a fresh env. A directory root is walked for `*.md`.
+    auto files = culebra::discover_test_files(roots, [](const auto& p) {
+      return p.extension() == ".md";
+    });
+    if (files.empty()) {
+      std::println(stderr, "culebra test --doc: no .md files found");
+      return 1;
+    }
+    auto make_env = [] {
+      auto e = culebra::environment({});
+      install_cli_aliases(*e);
+      culebra::install_doctest_exit_guard(*e);
+      return e;
+    };
+    summary = culebra::run_doctests(
+        files, filter, make_env, reporter, bail_after, list_only);
+  } else {
+    auto env = culebra::environment({});
+    install_cli_aliases(*env);
+    culebra::install_test_ambient(*env);
 
-  auto files = culebra::discover_test_files(roots);
-  if (files.empty()) {
-    std::println(stderr,
-        "culebra test: no test files found (looking for test_*.cul)");
-    return 1;
+    auto files = culebra::discover_test_files(roots);
+    if (files.empty()) {
+      std::println(stderr,
+          "culebra test: no test files found (looking for test_*.cul)");
+      return 1;
+    }
+    summary = culebra::run_tests(
+        files, filter, env, reporter, bail_after, list_only);
   }
 
-  auto summary = culebra::run_tests(
-      files, filter, env, reporter, bail_after, list_only);
   if (list_only) {
     return summary.errored_files == 0 ? 0 : 1;
   }

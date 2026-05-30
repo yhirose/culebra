@@ -228,6 +228,7 @@ IO.puts('')         # → Hello, world!
 `''`（空文字列）を返します。
 
 ```culebra
+# doctest: skip
 puts('name?')
 name = IO.input()
 puts("Hello, {name}")
@@ -243,6 +244,7 @@ puts("Hello, {name}")
 `IO.exists(path)` でチェックしてください。
 
 ```culebra
+# doctest: skip
 contents = IO.read('data.txt')
 ```
 
@@ -255,6 +257,7 @@ contents = IO.read('data.txt')
 警告なしで上書きします。
 
 ```culebra
+# doctest: skip
 IO.write('out.txt', 'hello\n')
 ```
 
@@ -265,6 +268,7 @@ IO.write('out.txt', 'hello\n')
 `try`/`catch` 無しで「取得前に有無を確認」パターンに使えます。
 
 ```culebra
+# doctest: skip
 if !IO.exists('data.txt') {
   IO.write('data.txt', 'hello')
 }
@@ -292,9 +296,9 @@ if !IO.exists('data.txt') {
 途中要素の末尾区切り文字は尊重されます。
 
 ```culebra
-FS.join('a', 'b', 'c.txt')      # => 'a/b/c.txt'
-FS.join('/usr', 'local', 'bin') # => '/usr/local/bin'
-FS.join()                        # => ''
+puts(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
+puts(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
+puts(FS.join())                       # => ''
 ```
 
 #### `FS.basename(path: String) -> String`
@@ -302,8 +306,8 @@ FS.join()                        # => ''
 最終要素（ファイル名＋拡張子）。末尾区切り文字のみのパスは `""`。
 
 ```culebra
-FS.basename('a/b/c.txt')  # => 'c.txt'
-FS.basename('/')          # => ''
+puts(FS.basename('a/b/c.txt'))  # => 'c.txt'
+puts(FS.basename('/'))          # => ''
 ```
 
 #### `FS.dirname(path: String) -> String`
@@ -317,8 +321,8 @@ FS.basename('/')          # => ''
 通り。
 
 ```culebra
-FS.extension('a/b/c.txt')  # => '.txt'
-FS.extension('.hidden')    # => ''
+puts(FS.extension('a/b/c.txt'))  # => '.txt'
+puts(FS.extension('.hidden'))    # => ''
 ```
 
 #### `FS.stem(path: String) -> String`
@@ -326,7 +330,7 @@ FS.extension('.hidden')    # => ''
 拡張子を除いた basename。
 
 ```culebra
-FS.stem('a/b/c.txt')  # => 'c'
+puts(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
 ### 問い合わせ
@@ -359,6 +363,7 @@ FS.stem('a/b/c.txt')  # => 'c'
 れば `IOError` を throw。
 
 ```culebra
+# doctest: skip
 let names = FS.list_dir('/tmp/build')
 assert_true(names.contains('out.o'))
 ```
@@ -403,6 +408,7 @@ wire form のため）、それ以外は `utc: false`（local）デフォルト�
 ル。
 
 ```culebra
+# doctest: skip
 let t0 = Time.monotonic()
 do_work()
 puts("elapsed: {Time.monotonic() - t0} s")
@@ -461,6 +467,7 @@ ISO 8601 形式、完全ナノ秒精度（小数部が 0 の場合は省略）�
 strftime format で整形。デフォルトは local time。
 
 ```culebra
+# doctest: skip
 t.format("%Y-%m-%d %H:%M:%S")             # local
 t.format("%Y%m%d", utc: true)             # 20260520
 ```
@@ -500,6 +507,7 @@ let next_year    = Time.now().add(years: 1)
 `"day"` / `"hour"` / `"minute"`。それ以外は `ValueError`。
 
 ```culebra
+# doctest: skip
 let day_bucket  = t.start_of("day")
 let hour_bucket = t.start_of("hour")
 ```
@@ -512,6 +520,7 @@ Unix epoch を Float 秒（現在時点で ~400ns 精度）または Long ns
 ### `Duration` コンストラクタ
 
 ```culebra
+# doctest: skip
 Time.seconds(n)        # n 秒
 Time.milliseconds(n)
 Time.minutes(n)
@@ -534,6 +543,7 @@ Time.days(n)
 ### 演算子オーバーロード
 
 ```culebra
+# doctest: skip
 let t = Time.now()
 let one_hour = Time.hours(1)
 
@@ -630,6 +640,7 @@ puts(Sys.argv)        # ['hello', 'world']
 保留中の `defer` 文も**実行されません**。
 
 ```culebra
+# doctest: skip
 if error_occurred { Sys.exit(1) }
 ```
 
@@ -695,6 +706,7 @@ nested Array を経由しないので、`Tensor.from(load_2d(path))`
 パターンより 3-5x 速い（MNIST 規模で実測）：
 
 ```culebra
+# doctest: skip
 let W1 = Tensor.from_csv("W1.csv")    # [30, 784]
 let b1 = Tensor.from_csv("b1.csv")    # [30, 1]
 let X  = Tensor.from_csv("X.csv")     # [N, 784]
@@ -707,6 +719,7 @@ let X  = Tensor.from_csv("X.csv")     # [N, 784]
 **必ず一度呼ぶ**（呼ばないとグラフが累積してメモリが膨張）。
 
 ```culebra
+# doctest: skip
 W2 = W2 - d2.dot(a1.transpose()) * lr
 b2 = b2 - d2.sum(1).reshape([N_OUT, 1]) * lr
 W1 = W1 - d1.dot(xb.transpose()) * lr
@@ -721,6 +734,7 @@ Tensor.eval(W1, b1, W2, b2)              # 4 つを 1 パスで評価
 ため。
 
 ```culebra
+# doctest: skip
 let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
 let r = Tensor.relu(x)           # max(0, x)
 let p = Tensor.softmax(logits)   # 最終軸で online stable
@@ -768,6 +782,7 @@ broadcast 結果と一致する」こと — view・未評価グラフノード�
 の場合は通常経路（新規 Tensor）に自動でフォールバックします。
 
 ```culebra
+# doctest: skip
 mut W = Tensor.randn('f32', 1024, 256)
 let alias = W
 W -= grad * lr     # W のバッファを直接書き換え
@@ -930,6 +945,7 @@ parse / exit せずに help 文字列だけ取得。広めのメッセージに�
 ### 例
 
 ```culebra
+# doctest: skip
 let spec = {
   name: "wc-lite",
   doc:  "count lines and words",
@@ -976,6 +992,7 @@ parse 結果の `subcommand` フィールドに名前が入り、残りの引数
 subcommand の spec に従って parse される:
 
 ```culebra
+# doctest: skip
 let spec = {
   name: "git-lite",
   subcommands: [
@@ -1019,6 +1036,7 @@ bind されています。 失敗時は `{kind: "AssertionError", message: ...}`
 を使います。 production の不変条件には `if`/`throw` を直接書きます:
 
 ```culebra
+# doctest: skip
 if (!cond) {
   throw {kind: "AssertionError", message: "invariant violated"}
 }
@@ -1047,12 +1065,15 @@ if (!cond) {
 * **`assert_ge(a, b) -> Nil`** — `a >= b`。
 
 ```culebra
-assert_eq(1 + 1, 2)                                # pass
-assert_lt(some_obj, threshold_obj)                 # obj.__lt__ を経由
+assert_eq(1 + 1, 2)                                # 成功時は無音
 
 let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-r.kind     # => 'AssertionError'
-r.message  # => 'assert_eq failed:\n  left:  foo\n  right: bar'
+puts(r.kind)         # => 'AssertionError'
+puts(r.message)
+# => |
+# 'assert_eq failed:
+#   left:  foo
+#   right: bar'
 ```
 
 ### `assert_throws(kind: String, f: Function) -> Nil`

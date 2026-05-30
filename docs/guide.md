@@ -110,8 +110,13 @@ is to omit `;` at end-of-line.
 
 ```culebra
 # this is a comment
-puts('hello')          # => hello
+puts('hello')          # => 'hello'
 ```
+
+`puts` prints values in *inspect* form, so strings appear with
+surrounding quotes (`'hello'`) and reference types in their literal
+shape. Use `print` for raw, unquoted text (it also omits the trailing
+newline) — see Ch.11.
 
 2. Values, bindings, and control flow
 -------------------------------------
@@ -119,14 +124,14 @@ puts('hello')          # => hello
 ### 2.1 The eight types
 
 ```culebra
-puts(type_of(nil))            # => Nil
-puts(type_of(true))           # => Bool
-puts(type_of(42))             # => Long
-puts(type_of(3.14))           # => Float
-puts(type_of('hi'))           # => String
-puts(type_of([1, 2]))         # => Array
-puts(type_of({a: 1}))         # => Object
-puts(type_of(fn () { 1 }))    # => Function
+puts(type_of(nil))            # => 'Nil'
+puts(type_of(true))           # => 'Bool'
+puts(type_of(42))             # => 'Long'
+puts(type_of(3.14))           # => 'Float'
+puts(type_of('hi'))           # => 'String'
+puts(type_of([1, 2]))         # => 'Array'
+puts(type_of({a: 1}))         # => 'Object'
+puts(type_of(fn () { 1 }))    # => 'Function'
 ```
 
 ### 2.2 Bindings: bare, `let`, `mut`
@@ -254,16 +259,16 @@ keywords into an Object.
 
 ```culebra
 greet = fn (name, *, greeting = 'hi', **opts) {
-  prefix = if opts.formal { 'Mr./Ms. ' } else { '' }
+  prefix = if opts.has('formal') && opts.formal { 'Mr./Ms. ' } else { '' }
   "{greeting}, {prefix}{name}"
 }
-puts(greet('alice'))                       # => hi, alice
-puts(greet('alice', greeting: 'hello'))    # => hello, alice
-puts(greet('bob', formal: true))           # => hi, Mr./Ms. bob
+puts(greet('alice'))                       # => 'hi, alice'
+puts(greet('alice', greeting: 'hello'))    # => 'hello, alice'
+puts(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
 
 # `**` splats an Object as keyword arguments:
 opts = {greeting: 'yo', formal: false}
-puts(greet('carol', **opts))               # => yo, carol
+puts(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 ### Why keyword-only?
@@ -280,9 +285,9 @@ omitted: Array literals fill that role.
 
 ```culebra
 name = 'Culebra'
-puts("hello, {name}!")                   # => hello, Culebra!
-puts("two plus three is {2 + 3}")        # => two plus three is 5
-puts('a' + 'b' + 'c')                    # => abc
+puts("hello, {name}!")                   # => 'hello, Culebra!'
+puts("two plus three is {2 + 3}")        # => 'two plus three is 5'
+puts('a' + 'b' + 'c')                    # => 'abc'
 ```
 
 ### 4.2 Iteration and indexing
@@ -294,24 +299,26 @@ of-bounds raises.
 ```culebra
 for c in 'café' { puts(c) }
 # => |
-# c
-# a
-# f
-# é
+# 'c'
+# 'a'
+# 'f'
+# 'é'
 
-puts('café'.size())            # => 5   (bytes: c=1 a=1 f=1 é=2)
-puts('café'.length())          # => 4   (scalars)
+puts('café'.size())            # => 5
 ```
+
+`size()` counts bytes in the UTF-8 representation (`é` is 2 bytes, so
+`'café'` is 5), while the `for` loop above steps one Unicode scalar at
+a time (four steps).
 
 ### 4.3 Common methods
 
 ```culebra
 puts('hello world'.split(' '))        # => ['hello', 'world']
-puts('  hi  '.trim())                 # => hi
-puts('abc'.upcase())                  # => ABC
-puts('hello'.replace('l', 'L'))       # => heLLo
+puts('  hi  '.trim())                 # => 'hi'
+puts('abc'.upper())                   # => 'ABC'
 puts('foo'.starts_with('fo'))         # => true
-puts(['a', 'b', 'c'].join('-'))       # => a-b-c
+puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
 See [`stdlib.md` §String](stdlib.md) for the full list.
@@ -387,17 +394,17 @@ for p in ['fizz', 'buzz', 'bang'].iter().enumerate() {
   puts("{p.index}: {p.value}")
 }
 # => |
-# 0: fizz
-# 1: buzz
-# 2: bang
+# '0: fizz'
+# '1: buzz'
+# '2: bang'
 
 for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
   puts("{p.first} / {p.second}")
 }
 # => |
-# 1 / a
-# 2 / b
-# 3 / c
+# '1 / a'
+# '2 / b'
+# '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
 puts(flat)                    # => [1, 2, 3, 4, 5, 6]
@@ -408,22 +415,17 @@ puts(head)                    # => [10, 11, 12, 13, 14]
 
 ### 5.4 User-defined iterators
 
-Implement two methods: `iter()` (returning the iterator itself, by
-convention) and `next()` (returning `{done: true}` or
-`{done: false, value: <x>}`).
+Implement three methods: `iter()` (returning the iterator itself, by
+convention), `has_next()` (returning a `Bool`), and `next()` (returning
+the next element).
 
 ```culebra
 countdown = fn (start) {
   mut i = start
   {
-    iter: fn () { this },
-    next: fn () {
-      if i <= 0 { {done: true} }
-      else {
-        v = i; i = i - 1
-        {done: false, value: v}
-      }
-    }
+    iter:     fn () { this },
+    has_next: fn () { i > 0 },
+    next:     fn () { v = i; i = i - 1; v }
   }
 }
 
@@ -465,11 +467,11 @@ describe = fn (x) {
     _                  => 'other'
   }
 }
-puts(describe(0))             # => zero
-puts(describe(2))             # => small
-puts(describe(999))           # => big (999)
-puts(describe('hi'))          # => str (hi)
-puts(describe([1]))           # => other
+puts(describe(0))             # => 'zero'
+puts(describe(2))             # => 'small'
+puts(describe(999))           # => 'big (999)'
+puts(describe('hi'))          # => 'str (hi)'
+puts(describe([1]))           # => 'other'
 ```
 
 ### 6.2 As an expression
@@ -500,9 +502,9 @@ shape = fn (a) {
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-puts(shape([]))               # => empty
-puts(shape([10, 20]))         # => two (10,20)
-puts(shape([1, 2, 3, 4]))     # => head=1, rest=3
+puts(shape([]))               # => 'empty'
+puts(shape([10, 20]))         # => 'two (10,20)'
+puts(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
@@ -510,8 +512,8 @@ first_name = fn (people) {
     _              => 'none'
   }
 }
-puts(first_name([{name: 'x'}, {name: 'y'}]))     # => x
-puts(first_name([]))                              # => none
+puts(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
+puts(first_name([]))                              # => 'none'
 ```
 
 ### 6.4 Recursion
@@ -553,13 +555,17 @@ try {
   puts(validate(-1))          # throws, the next line is unreached
   puts('unreached')
 } catch e {
-  puts("caught: {e}")         # => caught: negative: -1
+  puts("caught: {e}")         # => 'caught: negative: -1'
 }
 ```
 
 ### 7.2 `try` as an expression
 
 ```culebra
+validate = fn (x) {
+  if x < 0 { throw "negative: {x}" }
+  x
+}
 safe = fn (x) {
   try { validate(x) } catch _ { 0 }
 }
@@ -586,9 +592,9 @@ demo = fn (fail) {
 
 demo(false)
 # => |
-# work done
-# cleanup B
-# cleanup A
+# 'work done'
+# 'cleanup B'
+# 'cleanup A'
 ```
 
 ### 7.4 RAII via `drop`
@@ -609,9 +615,9 @@ puts('enter')
 }
 puts('exit')
 # => |
-# enter
-# R-X released
-# exit
+# 'enter'
+# 'RX released'
+# 'exit'
 ```
 
 `drop` cascades: when the outer object is released, its members
@@ -647,10 +653,10 @@ process = fn (items) {
 
 process(['a', 'b'])
 # => |
-# open a
-# open b
-# close b
-# close a
+# 'open a'
+# 'open b'
+# 'close b'
+# 'close a'
 ```
 
 ### Why allow any value to be thrown?
@@ -682,8 +688,8 @@ class Car {
 
 car = Car.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => total: 15 miles
-puts(car.class)               # => Car
+puts(car.total())             # => 'total: 15 miles'
+puts(car.class)               # => 'Car'
 ```
 
 ### 8.2 The closure-based alternative
@@ -705,7 +711,7 @@ Car2 = {
 
 car = Car2.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => total: 15 miles
+puts(car.total())             # => 'total: 15 miles'
 ```
 
 Use `class` when you want the `class:` tag and matchable shape; use
@@ -769,16 +775,21 @@ class Vec2 {
 
 a = Vec2.new(1, 2)
 b = Vec2.new(3, 4)
-puts((a + b).show())          # => (4, 6)
-puts((b - a).show())          # => (2, 2)
-puts((a * 3).show())          # => (3, 6)
-puts((-a).show())             # => (-1, -2)
+puts((a + b).show())          # => '(4, 6)'
+puts((b - a).show())          # => '(2, 2)'
+puts((a * 3).show())          # => '(3, 6)'
+puts((-a).show())             # => '(-1, -2)'
 puts(a == Vec2.new(1, 2))     # => true
 ```
 
 ### 9.3 `__call__` for callable instances
 
+> **Status: Planned.** Calling an instance directly (`add5(10)`) is not
+> yet wired up. For now, give the class a named method and call that
+> (`add5.apply(10)`).
+
 ```culebra
+# doctest: skip
 class Adder {
   new(n)        { this.n = n }
   __call__(x)   { x + this.n }
@@ -824,9 +835,9 @@ declared types of the arguments.
 class Circle { new(r) { this.r = r } }
 class Square { new(s) { this.s = s } }
 
-area = fn (c: Circle) { 3.14159 * c.r * c.r }
-area = fn (s: Square) { s.s * s.s }
-area = fn (n: Long)   { n }                  # fallback for numbers
+fn area(c: Circle) { 3.14159 * c.r * c.r }
+fn area(s: Square) { s.s * s.s }
+fn area(n: Long)   { n }                     # fallback for numbers
 
 puts(area(Circle.new(2)))                    # => 12.56636
 puts(area(Square.new(3)))                    # => 9
@@ -868,18 +879,18 @@ to the original name.
 
 ```culebra
 log = fn (f) {
-  fn (*args) {
-    puts("calling with {args.size()} arg(s)")
-    f(*args)
+  fn (x) {
+    puts("calling with {x}")
+    f(x)
   }
 }
 
 @log
-double = fn (x) { x * 2 }
+fn double(x) { x * 2 }
 
 puts(double(7))
 # => |
-# calling with 1 arg(s)
+# 'calling with 7'
 # 14
 ```
 
@@ -888,22 +899,22 @@ puts(double(7))
 ```culebra
 prefix = fn (tag) {
   fn (f) {
-    fn (*args) {
+    fn () {
       puts("[{tag}]")
-      f(*args)
+      f()
     }
   }
 }
 
 @prefix('A')
 @prefix('B')
-greet = fn () { puts('hi') }
+fn greet() { puts('hi') }
 
 greet()
 # => |
-# [A]
-# [B]
-# hi
+# '[A]'
+# '[B]'
+# 'hi'
 ```
 
 Outer decorator wraps the result of the inner; here `@prefix('A')`
@@ -917,16 +928,16 @@ memoize = fn (f) {
   mut cache = {}
   fn (x) {
     k = to_string(x)
-    if cache[k] == nil { cache[k] = f(x) }
+    if !cache.has(k) { cache[k] = f(x) }
     cache[k]
   }
 }
 
 @memoize
-slow_square = fn (x) { x * x }
+fn slow_square(x) { x * x }
 
 puts(slow_square(7))          # => 49
-puts(slow_square(7))          # => 49   (cached)
+puts(slow_square(7))          # => 49
 ```
 
 ### 11.4 `fn.params` introspection
@@ -957,6 +968,7 @@ PI    = 3.14159
 ```
 
 ```culebra
+# doctest: skip
 # main.cul — same directory as lib.cul
 puts(greet('world'))          # => hello, world
 puts(PI)                      # => 3.14159
@@ -1014,11 +1026,11 @@ puts(add(3, 4))               # => 7
 # Any matches everything
 identity = fn (x: Any) -> Any { x }
 puts(identity(42))            # => 42
-puts(identity('hi'))          # => hi
+puts(identity('hi'))          # => 'hi'
 
 # Mix typed and dynamic parameters
 describe = fn (v, label: String) -> String { "{label}: {v}" }
-puts(describe([1, 2], 'array'))     # => array: [1, 2]
+puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
 `type_of` (Ch.2.1) is the runtime introspection for built-in types.
@@ -1069,9 +1081,9 @@ namespaces but not the bare aliases.
 ```culebra
 puts(to_long('42'))           # => 42
 puts(to_long('  -7 '))        # => -7
-puts(to_string(42))           # => 42
-puts(to_string([1, 2]))       # => [1, 2]
-puts(type_of(42))             # => Long
+puts(to_string(42))           # => '42'
+puts(to_string([1, 2]))       # => '[1, 2]'
+puts(type_of(42))             # => 'Long'
 puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # passes silently; throws on failure
@@ -1091,7 +1103,7 @@ puts(Math.clamp(15, 0, 10))   # => 10
 ### 14.3 `IO`
 
 ```culebra
-print('Hello, '); print('world!'); puts('')   # => Hello, world!
+print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # IO.input()                 # read a line from stdin
 # IO.write('out.txt', 'hi')  # write a file
 # IO.read('in.txt')          # read a file
@@ -1102,14 +1114,13 @@ print('Hello, '); print('world!'); puts('')   # => Hello, world!
 Brief tour; full reference in [`stdlib.md`](stdlib.md).
 
 ```culebra
-puts(Sys.argv)                # => []     (or the CLI args after `--`)
+puts(Sys.argv)                # => []
 # Sys.env('HOME')             # process env
 # Sys.exit(0)                 # terminate
 
-puts(Random.range(0, 100) >= 0)        # => true
-puts(String.from_codepoint(65))        # => A
+puts(Random.int(0, 100) >= 0)          # => true
 
-# FS, Time, Args namespaces — see stdlib.md
+# String, FS, Time, Args namespaces — see stdlib.md
 ```
 
 ### 14.5 `Regex`
@@ -1173,27 +1184,31 @@ a concrete user pushes a feature into the critical path.
 `Float` (F64) today.
 
 ```culebra
-a = Tensor([1.0, 2.0, 3.0])
-b = Tensor([10.0, 20.0, 30.0])
-puts((a + b).to_list())       # => [11.0, 22.0, 33.0]
-puts((a * 2.0).to_list())     # => [2.0, 4.0, 6.0]
+a = Tensor.from([1.0, 2.0, 3.0])
+b = Tensor.from([10.0, 20.0, 30.0])
+puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
+puts((a * 2.0).to_array())    # => [2.0, 4.0, 6.0]
 puts(a.sum())                 # => 6.0
 ```
 
 ### 15.2 Shape and matmul
 
 ```culebra
-m = Tensor([[1.0, 2.0], [3.0, 4.0]])
-puts(m.shape)                 # => [2, 2]
-puts((m @ m).to_list())       # => [[7.0, 10.0], [15.0, 22.0]]
+m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+puts(m.shape())               # => [2, 2]
+
+# Matmul (`dot`) builds a lazy graph; `Tensor.eval` runs the BLAS kernel.
+c = m.dot(m)
+Tensor.eval(c)
+puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 ### 15.3 Broadcasting
 
 ```culebra
-row = Tensor([1.0, 2.0, 3.0])
-col = Tensor([[10.0], [20.0]])
-puts((row + col).to_list())   # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
+row = Tensor.from([1.0, 2.0, 3.0])
+col = Tensor.from([[10.0], [20.0]])
+puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
 ```
 
 ### 15.4 GPU primitive
@@ -1240,6 +1255,12 @@ Every ` ```culebra ` block in this guide, in `language.md`, and in
   - `interp-only` / `jit-only` / `aot-only` — backend filter
 
 Blocks are independent; no `setup`/`teardown` across blocks.
+
+Run them with `culebra test --doc <path>` (or `just doctest`), which
+extracts every block, runs it in a fresh interpreter, and checks output
+against the markers. The runner currently honors `skip`; the
+`compile-only` and backend-filter directives are reserved (such blocks
+run normally for now).
 
 ### 16.2 Writing tests
 

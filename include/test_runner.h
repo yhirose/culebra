@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -262,11 +263,22 @@ inline void install_test_ambient(Environment& env) {
 
 }
 
-// Discover test files under `roots`. A path that is a directory is
-// walked recursively for files matching `test_*.cul`. A path that is
-// a file is included as-is. Returns absolute paths, deduplicated.
+// Default file matcher: `test_*.cul` (the convention for unit tests).
+inline bool default_test_cul_matcher(const std::filesystem::path& p) {
+  auto name = p.filename().string();
+  return name.starts_with("test_") && p.extension() == ".cul";
+}
+
+// Discover files under `roots`. A path that is a directory is walked
+// recursively for files satisfying `match`; a path that is a regular
+// file is included as-is (the matcher is not applied to explicit file
+// arguments, so `culebra test foo.cul` / `--doc foo.md` always run).
+// Returns absolute paths, deduplicated and sorted. The default matcher
+// selects `test_*.cul`; the doctest runner passes a `.md` matcher.
+using FileMatcher = std::function<bool(const std::filesystem::path&)>;
 inline std::vector<std::filesystem::path> discover_test_files(
-    const std::vector<std::string>& roots) {
+    const std::vector<std::string>& roots,
+    const FileMatcher& match = default_test_cul_matcher) {
   namespace fs = std::filesystem;
   std::vector<fs::path> out;
   auto add = [&](const fs::path& p) {
@@ -309,8 +321,7 @@ inline std::vector<std::filesystem::path> discover_test_files(
       }
       std::error_code stat_ec;
       if (!it->is_regular_file(stat_ec)) continue;
-      auto name = it->path().filename().string();
-      if (name.starts_with("test_") && it->path().extension() == ".cul") {
+      if (match(it->path())) {
         add(it->path());
       }
     }

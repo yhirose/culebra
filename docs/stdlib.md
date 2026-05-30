@@ -236,6 +236,7 @@ Read a single line from standard input. The trailing newline is
 stripped. Returns `''` (empty string) on end-of-file.
 
 ```culebra
+# doctest: skip
 puts('name?')
 name = IO.input()
 puts("Hello, {name}")
@@ -251,6 +252,7 @@ directory. Use `IO.exists(path)` to pre-check when a missing file is
 not exceptional.
 
 ```culebra
+# doctest: skip
 contents = IO.read('data.txt')
 ```
 
@@ -263,6 +265,7 @@ directory does not exist, the path is not writable, or write fails
 (e.g., disk full). Existing files are overwritten without warning.
 
 ```culebra
+# doctest: skip
 IO.write('out.txt', 'hello\n')
 ```
 
@@ -274,6 +277,7 @@ returns `false`. Useful for the check-then-download pattern without
 needing `try`/`catch`.
 
 ```culebra
+# doctest: skip
 if !IO.exists('data.txt') {
   IO.write('data.txt', 'hello')
 }
@@ -301,9 +305,9 @@ arguments returns `""`. Trailing separators in components are
 respected — the operator behaves like `std::filesystem::path::operator/=`.
 
 ```culebra
-FS.join('a', 'b', 'c.txt')      # => 'a/b/c.txt'
-FS.join('/usr', 'local', 'bin') # => '/usr/local/bin'
-FS.join()                        # => ''
+puts(FS.join('a', 'b', 'c.txt'))      # => 'a/b/c.txt'
+puts(FS.join('/usr', 'local', 'bin')) # => '/usr/local/bin'
+puts(FS.join())                       # => ''
 ```
 
 #### `FS.basename(path: String) -> String`
@@ -312,8 +316,8 @@ Final path component (filename + extension). Trailing separator
 yields `""`.
 
 ```culebra
-FS.basename('a/b/c.txt')  # => 'c.txt'
-FS.basename('/')          # => ''
+puts(FS.basename('a/b/c.txt'))  # => 'c.txt'
+puts(FS.basename('/'))          # => ''
 ```
 
 #### `FS.dirname(path: String) -> String`
@@ -327,8 +331,8 @@ none. Dotfiles (`.hidden`) are treated as having no extension —
 matches `std::filesystem::path::extension`.
 
 ```culebra
-FS.extension('a/b/c.txt')  # => '.txt'
-FS.extension('.hidden')    # => ''
+puts(FS.extension('a/b/c.txt'))  # => '.txt'
+puts(FS.extension('.hidden'))    # => ''
 ```
 
 #### `FS.stem(path: String) -> String`
@@ -336,7 +340,7 @@ FS.extension('.hidden')    # => ''
 Basename without the trailing extension.
 
 ```culebra
-FS.stem('a/b/c.txt')  # => 'c'
+puts(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
 ### Queries
@@ -368,6 +372,7 @@ prefix). Order is filesystem-defined — sort explicitly if needed.
 Throws `IOError` if `path` is not a directory.
 
 ```culebra
+# doctest: skip
 let names = FS.list_dir('/tmp/build')
 assert_true(names.contains('out.o'))
 ```
@@ -413,6 +418,7 @@ process start. Strictly non-decreasing; immune to wall-clock
 changes. The primary tool for benchmarks and timeouts.
 
 ```culebra
+# doctest: skip
 let t0 = Time.monotonic()
 do_work()
 puts("elapsed: {Time.monotonic() - t0} s")
@@ -473,6 +479,7 @@ component omitted when zero). UTC by default (`...Z`); pass
 Format with a strftime format string. Local time by default.
 
 ```culebra
+# doctest: skip
 t.format("%Y-%m-%d %H:%M:%S")             # local
 t.format("%Y%m%d", utc: true)             # 20260520
 ```
@@ -513,6 +520,7 @@ Truncate to the start of a calendar unit. `unit` ∈ `"year"` /
 on any other unit.
 
 ```culebra
+# doctest: skip
 let day_bucket  = t.start_of("day")
 let hour_bucket = t.start_of("hour")
 ```
@@ -525,6 +533,7 @@ or Long nanoseconds (lossless).
 ### `Duration` constructors
 
 ```culebra
+# doctest: skip
 Time.seconds(n)        # n seconds
 Time.milliseconds(n)
 Time.minutes(n)
@@ -549,6 +558,7 @@ Absolute value of a (possibly negative) duration.
 ### Operator overloads
 
 ```culebra
+# doctest: skip
 let t = Time.now()
 let one_hour = Time.hours(1)
 
@@ -646,6 +656,7 @@ Terminate the process immediately with the given exit code. Does
 not return; pending `defer` statements are *not* run.
 
 ```culebra
+# doctest: skip
 if error_occurred { Sys.exit(1) }
 ```
 
@@ -713,6 +724,7 @@ form). Skips the nested Array intermediary, which is 3-5× faster than
 the `Tensor.from(load_2d(path))` pattern (measured on MNIST):
 
 ```culebra
+# doctest: skip
 let W1 = Tensor.from_csv("W1.csv")    # [30, 784]
 let b1 = Tensor.from_csv("b1.csv")    # [30, 1]
 let X  = Tensor.from_csv("X.csv")     # [N, 784]
@@ -727,6 +739,7 @@ a training loop — otherwise the graph accumulates and memory grows
 unbounded.
 
 ```culebra
+# doctest: skip
 W2 = W2 - d2.dot(a1.transpose()) * lr
 b2 = b2 - d2.sum(1).reshape([N_OUT, 1]) * lr
 W1 = W1 - d1.dot(xb.transpose()) * lr
@@ -741,6 +754,7 @@ clashing with the convention of users defining `relu` as a class
 method (microGPT's `Value.relu()`, for instance).
 
 ```culebra
+# doctest: skip
 let h = Tensor.sigmoid(z)        # 1/(1+exp(-z)) elementwise
 let r = Tensor.relu(x)           # max(0, x)
 let p = Tensor.softmax(logits)   # over the last axis, online-stable
@@ -789,6 +803,7 @@ nodes, and shape mismatches automatically fall back to the ordinary
 path (a fresh Tensor).
 
 ```culebra
+# doctest: skip
 mut W = Tensor.randn('f32', 1024, 256)
 let alias = W
 W -= grad * lr     # writes directly into W's buffer
@@ -962,6 +977,7 @@ Positional args are matched in spec order; a positional with a
 ### Example
 
 ```culebra
+# doctest: skip
 let spec = {
   name: "wc-lite",
   doc:  "count lines and words",
@@ -1010,6 +1026,7 @@ naming the selected command, and the rest of the spec's args are
 parsed as that subcommand's:
 
 ```culebra
+# doctest: skip
 let spec = {
   name: "git-lite",
   subcommands: [
@@ -1055,6 +1072,7 @@ matcher for each kind of check. For production invariants, write the
 `if`/`throw` directly:
 
 ```culebra
+# doctest: skip
 if (!cond) {
   throw {kind: "AssertionError", message: "invariant violated"}
 }
@@ -1085,12 +1103,15 @@ user `__str__`).
 * **`assert_ge(a, b) -> Nil`** — `a >= b`.
 
 ```culebra
-assert_eq(1 + 1, 2)                                # passes
-assert_lt(some_obj, threshold_obj)                 # uses obj.__lt__
+assert_eq(1 + 1, 2)                                # passes silently
 
 let r = try { assert_eq("foo", "bar"); nil } catch e { e }
-r.kind     # => 'AssertionError'
-r.message  # => 'assert_eq failed:\n  left:  foo\n  right: bar'
+puts(r.kind)         # => 'AssertionError'
+puts(r.message)
+# => |
+# 'assert_eq failed:
+#   left:  foo
+#   right: bar'
 ```
 
 ### `assert_throws(kind: String, f: Function) -> Nil`

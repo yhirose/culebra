@@ -103,8 +103,12 @@ echo "puts('hello, culebra!')" > hello.cul
 
 ```culebra
 # this is a comment
-puts('hello')          # => hello
+puts('hello')          # => 'hello'
 ```
+
+`puts` は値を *inspect* 形式で出力するため、文字列は引用符付き
+(`'hello'`) で、参照型はそのリテラル表記で表示される。引用符の付かない
+生のテキストが必要なときは `print` を使う (末尾の改行も付かない) — 第11章参照。
 
 2. 値・束縛・制御フロー
 -----------------------
@@ -112,14 +116,14 @@ puts('hello')          # => hello
 ### 2.1 8 つの型
 
 ```culebra
-puts(type_of(nil))            # => Nil
-puts(type_of(true))           # => Bool
-puts(type_of(42))             # => Long
-puts(type_of(3.14))           # => Float
-puts(type_of('hi'))           # => String
-puts(type_of([1, 2]))         # => Array
-puts(type_of({a: 1}))         # => Object
-puts(type_of(fn () { 1 }))    # => Function
+puts(type_of(nil))            # => 'Nil'
+puts(type_of(true))           # => 'Bool'
+puts(type_of(42))             # => 'Long'
+puts(type_of(3.14))           # => 'Float'
+puts(type_of('hi'))           # => 'String'
+puts(type_of([1, 2]))         # => 'Array'
+puts(type_of({a: 1}))         # => 'Object'
+puts(type_of(fn () { 1 }))    # => 'Function'
 ```
 
 ### 2.2 束縛: bare / `let` / `mut`
@@ -244,16 +248,16 @@ Object にまとめる。
 
 ```culebra
 greet = fn (name, *, greeting = 'hi', **opts) {
-  prefix = if opts.formal { 'Mr./Ms. ' } else { '' }
+  prefix = if opts.has('formal') && opts.formal { 'Mr./Ms. ' } else { '' }
   "{greeting}, {prefix}{name}"
 }
-puts(greet('alice'))                       # => hi, alice
-puts(greet('alice', greeting: 'hello'))    # => hello, alice
-puts(greet('bob', formal: true))           # => hi, Mr./Ms. bob
+puts(greet('alice'))                       # => 'hi, alice'
+puts(greet('alice', greeting: 'hello'))    # => 'hello, alice'
+puts(greet('bob', formal: true))           # => 'hi, Mr./Ms. bob'
 
 # `**` で Object をキーワード引数として splat
 opts = {greeting: 'yo', formal: false}
-puts(greet('carol', **opts))               # => yo, carol
+puts(greet('carol', **opts))               # => 'yo, carol'
 ```
 
 ### Why keyword-only
@@ -270,9 +274,9 @@ puts(greet('carol', **opts))               # => yo, carol
 
 ```culebra
 name = 'Culebra'
-puts("hello, {name}!")                   # => hello, Culebra!
-puts("two plus three is {2 + 3}")        # => two plus three is 5
-puts('a' + 'b' + 'c')                    # => abc
+puts("hello, {name}!")                   # => 'hello, Culebra!'
+puts("two plus three is {2 + 3}")        # => 'two plus three is 5'
+puts('a' + 'b' + 'c')                    # => 'abc'
 ```
 
 ### 4.2 反復とインデックス
@@ -283,24 +287,26 @@ puts('a' + 'b' + 'c')                    # => abc
 ```culebra
 for c in 'café' { puts(c) }
 # => |
-# c
-# a
-# f
-# é
+# 'c'
+# 'a'
+# 'f'
+# 'é'
 
-puts('café'.size())            # => 5   (バイト: c=1 a=1 f=1 é=2)
-puts('café'.length())          # => 4   (スカラ)
+puts('café'.size())            # => 5
 ```
+
+`size()` は UTF-8 表現上のバイト数を返す (`é` は 2 バイトなので `'café'`
+は 5)。一方、上の `for` ループは Unicode スカラ単位で 1 ステップずつ進む
+(4 ステップ)。
 
 ### 4.3 よく使うメソッド
 
 ```culebra
 puts('hello world'.split(' '))        # => ['hello', 'world']
-puts('  hi  '.trim())                 # => hi
-puts('abc'.upcase())                  # => ABC
-puts('hello'.replace('l', 'L'))       # => heLLo
+puts('  hi  '.trim())                 # => 'hi'
+puts('abc'.upper())                   # => 'ABC'
 puts('foo'.starts_with('fo'))         # => true
-puts(['a', 'b', 'c'].join('-'))       # => a-b-c
+puts(['a', 'b', 'c'].join('-'))       # => 'a-b-c'
 ```
 
 完全な一覧は [`stdlib.ja.md` §String](stdlib.ja.md)。
@@ -375,17 +381,17 @@ for p in ['fizz', 'buzz', 'bang'].iter().enumerate() {
   puts("{p.index}: {p.value}")
 }
 # => |
-# 0: fizz
-# 1: buzz
-# 2: bang
+# '0: fizz'
+# '1: buzz'
+# '2: bang'
 
 for p in [1, 2, 3].iter().zip(['a', 'b', 'c']) {
   puts("{p.first} / {p.second}")
 }
 # => |
-# 1 / a
-# 2 / b
-# 3 / c
+# '1 / a'
+# '2 / b'
+# '3 / c'
 
 flat = [[1, 2], [3], [4, 5, 6]].iter().flat_map(|xs| xs).collect()
 puts(flat)                    # => [1, 2, 3, 4, 5, 6]
@@ -396,21 +402,16 @@ puts(head)                    # => [10, 11, 12, 13, 14]
 
 ### 5.4 ユーザー定義イテレータ
 
-2 メソッドを実装: `iter()` (慣習でイテレータ自身を返す) と
-`next()` (`{done: true}` または `{done: false, value: <x>}` を返す)。
+3 メソッドを実装: `iter()` (慣習でイテレータ自身を返す)、
+`has_next()` (`Bool` を返す)、`next()` (次の要素を返す)。
 
 ```culebra
 countdown = fn (start) {
   mut i = start
   {
-    iter: fn () { this },
-    next: fn () {
-      if i <= 0 { {done: true} }
-      else {
-        v = i; i = i - 1
-        {done: false, value: v}
-      }
-    }
+    iter:     fn () { this },
+    has_next: fn () { i > 0 },
+    next:     fn () { v = i; i = i - 1; v }
   }
 }
 
@@ -452,11 +453,11 @@ describe = fn (x) {
     _                  => 'other'
   }
 }
-puts(describe(0))             # => zero
-puts(describe(2))             # => small
-puts(describe(999))           # => big (999)
-puts(describe('hi'))          # => str (hi)
-puts(describe([1]))           # => other
+puts(describe(0))             # => 'zero'
+puts(describe(2))             # => 'small'
+puts(describe(999))           # => 'big (999)'
+puts(describe('hi'))          # => 'str (hi)'
+puts(describe([1]))           # => 'other'
 ```
 
 ### 6.2 式として
@@ -487,9 +488,9 @@ shape = fn (a) {
     [head, ...tail] => "head={head}, rest={tail.size()}",
   }
 }
-puts(shape([]))               # => empty
-puts(shape([10, 20]))         # => two (10,20)
-puts(shape([1, 2, 3, 4]))     # => head=1, rest=3
+puts(shape([]))               # => 'empty'
+puts(shape([10, 20]))         # => 'two (10,20)'
+puts(shape([1, 2, 3, 4]))     # => 'head=1, rest=3'
 
 first_name = fn (people) {
   match people {
@@ -497,8 +498,8 @@ first_name = fn (people) {
     _              => 'none'
   }
 }
-puts(first_name([{name: 'x'}, {name: 'y'}]))     # => x
-puts(first_name([]))                              # => none
+puts(first_name([{name: 'x'}, {name: 'y'}]))     # => 'x'
+puts(first_name([]))                              # => 'none'
 ```
 
 ### 6.4 再帰
@@ -540,13 +541,17 @@ try {
   puts(validate(-1))          # throws、次の行は到達せず
   puts('unreached')
 } catch e {
-  puts("caught: {e}")         # => caught: negative: -1
+  puts("caught: {e}")         # => 'caught: negative: -1'
 }
 ```
 
 ### 7.2 `try` を式として
 
 ```culebra
+validate = fn (x) {
+  if x < 0 { throw "negative: {x}" }
+  x
+}
 safe = fn (x) {
   try { validate(x) } catch _ { 0 }
 }
@@ -573,9 +578,9 @@ demo = fn (fail) {
 
 demo(false)
 # => |
-# work done
-# cleanup B
-# cleanup A
+# 'work done'
+# 'cleanup B'
+# 'cleanup A'
 ```
 
 ### 7.4 `drop` による RAII
@@ -596,9 +601,9 @@ puts('enter')
 }
 puts('exit')
 # => |
-# enter
-# R-X released
-# exit
+# 'enter'
+# 'RX released'
+# 'exit'
 ```
 
 `drop` はカスケードする — 外側オブジェクトが解放されると、内側に
@@ -633,10 +638,10 @@ process = fn (items) {
 
 process(['a', 'b'])
 # => |
-# open a
-# open b
-# close b
-# close a
+# 'open a'
+# 'open b'
+# 'close b'
+# 'close a'
 ```
 
 ### Why throw 値は任意
@@ -668,8 +673,8 @@ class Car {
 
 car = Car.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => 走行距離: 15 miles
-puts(car.class)               # => Car
+puts(car.total())             # => '走行距離: 15 miles'
+puts(car.class)               # => 'Car'
 ```
 
 ### 8.2 クロージャベースの別解
@@ -691,7 +696,7 @@ Car2 = {
 
 car = Car2.new(5)
 car.run(1); car.run(2)
-puts(car.total())             # => 走行距離: 15 miles
+puts(car.total())             # => '走行距離: 15 miles'
 ```
 
 `class:` タグと shape マッチが欲しいなら `class`、private 状態の
@@ -755,16 +760,21 @@ class Vec2 {
 
 a = Vec2.new(1, 2)
 b = Vec2.new(3, 4)
-puts((a + b).show())          # => (4, 6)
-puts((b - a).show())          # => (2, 2)
-puts((a * 3).show())          # => (3, 6)
-puts((-a).show())             # => (-1, -2)
+puts((a + b).show())          # => '(4, 6)'
+puts((b - a).show())          # => '(2, 2)'
+puts((a * 3).show())          # => '(3, 6)'
+puts((-a).show())             # => '(-1, -2)'
 puts(a == Vec2.new(1, 2))     # => true
 ```
 
 ### 9.3 `__call__` で callable インスタンス
 
+> **Status: Planned.** インスタンスを直接呼び出す形 (`add5(10)`) は
+> まだ未対応。 当面はクラスに名前付きメソッドを持たせてそれを呼ぶ
+> (`add5.apply(10)`)。
+
 ```culebra
+# doctest: skip
 class Adder {
   new(n)        { this.n = n }
   __call__(x)   { x + this.n }
@@ -809,9 +819,9 @@ puts(a)                                            # => [3, 2, 1]
 class Circle { new(r) { this.r = r } }
 class Square { new(s) { this.s = s } }
 
-area = fn (c: Circle) { 3.14159 * c.r * c.r }
-area = fn (s: Square) { s.s * s.s }
-area = fn (n: Long)   { n }                  # 数値のフォールバック
+fn area(c: Circle) { 3.14159 * c.r * c.r }
+fn area(s: Square) { s.s * s.s }
+fn area(n: Long)   { n }                     # 数値のフォールバック
 
 puts(area(Circle.new(2)))                    # => 12.56636
 puts(area(Square.new(3)))                    # => 9
@@ -851,18 +861,18 @@ puts(area(10))                               # => 10
 
 ```culebra
 log = fn (f) {
-  fn (*args) {
-    puts("calling with {args.size()} arg(s)")
-    f(*args)
+  fn (x) {
+    puts("calling with {x}")
+    f(x)
   }
 }
 
 @log
-double = fn (x) { x * 2 }
+fn double(x) { x * 2 }
 
 puts(double(7))
 # => |
-# calling with 1 arg(s)
+# 'calling with 7'
 # 14
 ```
 
@@ -871,22 +881,22 @@ puts(double(7))
 ```culebra
 prefix = fn (tag) {
   fn (f) {
-    fn (*args) {
+    fn () {
       puts("[{tag}]")
-      f(*args)
+      f()
     }
   }
 }
 
 @prefix('A')
 @prefix('B')
-greet = fn () { puts('hi') }
+fn greet() { puts('hi') }
 
 greet()
 # => |
-# [A]
-# [B]
-# hi
+# '[A]'
+# '[B]'
+# 'hi'
 ```
 
 外側デコレータが内側の結果をラップする — ここでは `@prefix('A')`
@@ -900,16 +910,16 @@ memoize = fn (f) {
   mut cache = {}
   fn (x) {
     k = to_string(x)
-    if cache[k] == nil { cache[k] = f(x) }
+    if !cache.has(k) { cache[k] = f(x) }
     cache[k]
   }
 }
 
 @memoize
-slow_square = fn (x) { x * x }
+fn slow_square(x) { x * x }
 
 puts(slow_square(7))          # => 49
-puts(slow_square(7))          # => 49   (キャッシュ済み)
+puts(slow_square(7))          # => 49
 ```
 
 ### 11.4 `fn.params` introspection
@@ -940,6 +950,7 @@ PI    = 3.14159
 ```
 
 ```culebra
+# doctest: skip
 # main.cul — lib.cul と同じディレクトリ
 puts(greet('world'))          # => hello, world
 puts(PI)                      # => 3.14159
@@ -993,11 +1004,11 @@ puts(add(3, 4))               # => 7
 # Any は全部受ける
 identity = fn (x: Any) -> Any { x }
 puts(identity(42))            # => 42
-puts(identity('hi'))          # => hi
+puts(identity('hi'))          # => 'hi'
 
 # 一部だけ型注釈、残りは動的
 describe = fn (v, label: String) -> String { "{label}: {v}" }
-puts(describe([1, 2], 'array'))     # => array: [1, 2]
+puts(describe([1, 2], 'array'))     # => 'array: [1, 2]'
 ```
 
 `type_of` (Ch.2.1) が組み込み型のランタイム introspection。
@@ -1046,9 +1057,9 @@ namespace は見えるが bare alias は無い。
 ```culebra
 puts(to_long('42'))           # => 42
 puts(to_long('  -7 '))        # => -7
-puts(to_string(42))           # => 42
-puts(to_string([1, 2]))       # => [1, 2]
-puts(type_of(42))             # => Long
+puts(to_string(42))           # => '42'
+puts(to_string([1, 2]))       # => '[1, 2]'
+puts(type_of(42))             # => 'Long'
 puts(iota(3))                 # => [0, 1, 2]
 puts(iota(2, 5))              # => [2, 3, 4]
 assert_eq(1 + 1, 2)           # 成功時は無音、失敗で throw
@@ -1068,7 +1079,7 @@ puts(Math.clamp(15, 0, 10))   # => 10
 ### 14.3 `IO`
 
 ```culebra
-print('Hello, '); print('world!'); puts('')   # => Hello, world!
+print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # IO.input()                 # 標準入力から 1 行
 # IO.write('out.txt', 'hi')  # ファイル書き込み
 # IO.read('in.txt')          # ファイル読み込み
@@ -1079,14 +1090,13 @@ print('Hello, '); print('world!'); puts('')   # => Hello, world!
 簡単に紹介。 完全リファレンスは [`stdlib.ja.md`](stdlib.ja.md)。
 
 ```culebra
-puts(Sys.argv)                # => []     ( `-- ...` 付き起動で値あり)
+puts(Sys.argv)                # => []
 # Sys.env('HOME')             # プロセス環境
 # Sys.exit(0)                 # 終了
 
-puts(Random.range(0, 100) >= 0)        # => true
-puts(String.from_codepoint(65))        # => A
+puts(Random.int(0, 100) >= 0)          # => true
 
-# FS / Time / Args namespace — stdlib.ja.md を参照
+# String / FS / Time / Args namespace — stdlib.ja.md を参照
 ```
 
 ### 14.5 `Regex`
@@ -1148,27 +1158,31 @@ CLI ツールや小さなサーバを書くのにパッケージマネージャ�
 `Float` (F64)。
 
 ```culebra
-a = Tensor([1.0, 2.0, 3.0])
-b = Tensor([10.0, 20.0, 30.0])
-puts((a + b).to_list())       # => [11.0, 22.0, 33.0]
-puts((a * 2.0).to_list())     # => [2.0, 4.0, 6.0]
+a = Tensor.from([1.0, 2.0, 3.0])
+b = Tensor.from([10.0, 20.0, 30.0])
+puts((a + b).to_array())      # => [11.0, 22.0, 33.0]
+puts((a * 2.0).to_array())    # => [2.0, 4.0, 6.0]
 puts(a.sum())                 # => 6.0
 ```
 
 ### 15.2 形状と matmul
 
 ```culebra
-m = Tensor([[1.0, 2.0], [3.0, 4.0]])
-puts(m.shape)                 # => [2, 2]
-puts((m @ m).to_list())       # => [[7.0, 10.0], [15.0, 22.0]]
+m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+puts(m.shape())               # => [2, 2]
+
+# matmul (`dot`) は遅延グラフを作る; `Tensor.eval` で BLAS カーネルが走る。
+c = m.dot(m)
+Tensor.eval(c)
+puts(c.to_array())            # => [[7.0, 10.0], [15.0, 22.0]]
 ```
 
 ### 15.3 ブロードキャスト
 
 ```culebra
-row = Tensor([1.0, 2.0, 3.0])
-col = Tensor([[10.0], [20.0]])
-puts((row + col).to_list())   # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
+row = Tensor.from([1.0, 2.0, 3.0])
+col = Tensor.from([[10.0], [20.0]])
+puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
 ```
 
 ### 15.4 GPU プリミティブ
@@ -1215,6 +1229,11 @@ F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
   - `interp-only` / `jit-only` / `aot-only` — backend 限定
 
 ブロック間は独立、`setup` / `teardown` は無し。
+
+実行は `culebra test --doc <path>` (または `just doctest`)。各ブロックを
+抽出し、新しいインタプリタで実行してマーカーと出力を照合する。現状
+honor されるのは `skip` のみ。`compile-only` と backend 限定ディレクティブ
+は予約済み (該当ブロックは当面そのまま実行される)。
 
 ### 16.2 テストの書き方
 

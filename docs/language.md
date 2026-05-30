@@ -1545,10 +1545,10 @@ work inside the loop body.
 
     for var in iterable { body }
 
-Iterates by calling `iterable.iter()` once, then repeatedly invoking
-`next()` on the returned iterator until `next()` returns an object
-whose `done` is truthy. Each step's `value` is bound to `var` in a
-fresh scope per iteration.
+Iterates by calling `iterable.iter()` once, then driving the returned
+iterator with `has_next()` / `next()`: while `has_next()` is `true`,
+`next()` produces the element bound to `var` in a fresh scope per
+iteration (see §17.5).
 
 ```culebra
 for x in [1, 2, 3] { puts(x) }
@@ -1567,6 +1567,7 @@ Endpoints must be `Long`.
 against each element's shape (a mismatch raises `ValueError`):
 
 ```culebra
+# doctest: skip
 for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # array pattern
 for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # tuple pattern
 for {index, value} in xs.iter().enumerate() { ... } # object pattern
@@ -1574,8 +1575,8 @@ for {index, value} in xs.iter().enumerate() { ... } # object pattern
 
 The iterator protocol (see §17.5) requires the target to be either an
 `Object` (or subtype `Array`) with an `iter` method, or an object
-already playing the iterator role with a `next` method. Passing any
-other type raises `type error`.
+already playing the iterator role with `has_next` / `next` methods.
+Passing any other type raises `type error`.
 
 `for` is a statement; its value is `nil`. Shadow rules apply to
 `var`: if it would shadow a closure-captured name from an enclosing
@@ -2406,6 +2407,7 @@ family (`assert_true` / `assert_eq` / etc., see §18 and `docs/stdlib.md`).
 For production invariants, throw an Object:
 
 ```culebra
+# doctest: skip
 if (!cond) {
   throw {kind: "AssertionError", message: "..."}
 }
@@ -2482,6 +2484,7 @@ assignment: binding `drop` to a non-function value, or to a function
 with non-zero arity, raises a `type error`.
 
 ```culebra
+# doctest: skip
 File.open = fn (path) {
   h = _native_open(path)
   {
@@ -2851,6 +2854,7 @@ chain. This mirrors Swift's `arr` vs `arr.lazy`, Kotlin's `list` vs
 `list.asSequence()`, and Python's list comprehension vs generator.
 
 ```culebra
+# doctest: skip
 # Eager: allocates two intermediate Arrays
 arr.map(f).filter(g)
 
@@ -2867,14 +2871,12 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter: fn () { this },                     # Iterator is its own Iterable
-    next: fn () {
-      if i <= 0 { { done: true } }
-      else {
-        v = i
-        i = i - 1
-        { done: false, value: v }
-      }
+    iter:     fn () { this },                 # Iterator is its own Iterable
+    has_next: fn () { i > 0 },
+    next:     fn () {
+      v = i
+      i = i - 1
+      v
     }
   }
 }
@@ -3002,7 +3004,7 @@ for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
 for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
 
 # Constant memory even for huge bounds
-for i in range(1_000_000_000) {
+for i in range(1000000000) {
   if i > 3 { break }
   puts(i)
 }
@@ -3224,6 +3226,7 @@ Stacked decorators apply bottom-up — the one closest to the
 declaration runs first, the topmost runs last:
 
 ```culebra
+# doctest: skip
 @a
 @b
 fn foo() { ... }

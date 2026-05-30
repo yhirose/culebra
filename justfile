@@ -226,6 +226,16 @@ test BACKEND='all': build
       *) echo "test: unknown backend '{{BACKEND}}' (expected: all|interp|jit|aot|embed)" >&2; exit 2 ;;
     esac
 
+# Run the doctest examples in the public docs (interp). Both en and ja
+# are run — their code blocks are mostly shared but a few string literals
+# are localized, so ja needs its own pass. Not part of `just test` — run
+# on demand / before publishing docs. The self-test fixture under
+# tests/doctest/ guards the runner itself.
+[doc("Run ` ```culebra ` doctest blocks in docs/ (interp)")]
+[group("test")]
+doctest: build
+    ./build/culebra test --doc tests/doctest docs
+
 # Microbenchmark regression check: every tests/perf/*.cul on interp
 # and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`
 # directive declared in the file header. Not part of `just test`

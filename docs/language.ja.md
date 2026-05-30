@@ -1475,9 +1475,9 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
 
     for var in iterable { body }
 
-`iterable.iter()` を一度呼んで得たイテレータに対し、`next()` を
-繰り返し呼び、戻り値の `done` が真になるまで iteration します。各
-ステップの `value` を `var` として反復ごとに新しいスコープに束縛。
+`iterable.iter()` を一度呼んで得たイテレータを `has_next()` /
+`next()` で駆動します。`has_next()` が `true` の間、`next()` が
+返す要素を `var` として反復ごとに新しいスコープに束縛します（§17.5）。
 
 ```culebra
 for x in [1, 2, 3] { puts(x) }
@@ -1492,6 +1492,7 @@ for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 （不一致は `ValueError`）:
 
 ```culebra
+# doctest: skip
 for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # 配列パターン
 for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # タプルパターン
 for {index, value} in xs.iter().enumerate() { ... } # オブジェクトパターン
@@ -1499,8 +1500,8 @@ for {index, value} in xs.iter().enumerate() { ... } # オブジェクトパタ�
 
 イテレータプロトコル（§17.5）により、対象は `iter` メソッドを持つ
 `Object`（サブ型の `Array` 含む）、またはすでにイテレータとして
-振る舞う `next` メソッドを持つオブジェクトである必要があります。
-それ以外の型は `type error`。
+振る舞う `has_next` / `next` メソッドを持つオブジェクトである必要が
+あります。それ以外の型は `type error`。
 
 `for` は文で、値は `nil`。`var` にシャドウ規則が適用されます —
 外側関数でキャプチャ済みの名前をシャドウしそうな場合、スクリプトは
@@ -2267,6 +2268,7 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 を使います。 production の不変条件チェックには Object を throw:
 
 ```culebra
+# doctest: skip
 if (!cond) {
   throw {kind: "AssertionError", message: "..."}
 }
@@ -2338,6 +2340,7 @@ JIT バックエンドは `throw` / `try` / `catch` / `defer` を主要な
 や引数のある Function を束縛すると `type error` になります。
 
 ```culebra
+# doctest: skip
 File.open = fn (path) {
   h = _native_open(path)
   {
@@ -2700,6 +2703,7 @@ for k in o.iter() { o["b"] = 2 }
 と同じ二層構造です。
 
 ```culebra
+# doctest: skip
 # Eager: 中間 Array を 2 つ確保
 arr.map(f).filter(g)
 
@@ -2716,14 +2720,12 @@ range(1000000).filter(f).map(g).take(4).collect()
 countdown = fn (start) {
   mut i = start
   {
-    iter: fn () { this },                     # Iterator は自身が Iterable
-    next: fn () {
-      if i <= 0 { { done: true } }
-      else {
-        v = i
-        i = i - 1
-        { done: false, value: v }
-      }
+    iter:     fn () { this },                 # Iterator は自身が Iterable
+    has_next: fn () { i > 0 },
+    next:     fn () {
+      v = i
+      i = i - 1
+      v
     }
   }
 }
@@ -2844,7 +2846,7 @@ for i in range(0, 10, step: 2) { puts(i) }   # 0, 2, 4, 6, 8
 for i in range(5, 0, step: -1) { puts(i) }   # 5, 4, 3, 2, 1
 
 # 巨大な上限でも定数メモリで動く
-for i in range(1_000_000_000) {
+for i in range(1000000000) {
   if i > 3 { break }
   puts(i)
 }
@@ -3061,6 +3063,7 @@ paint(7, **{color: "gold"})  # → "gold 7"
 に実行され、最上層が最後に実行される:
 
 ```culebra
+# doctest: skip
 @a
 @b
 fn foo() { ... }
