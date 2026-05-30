@@ -280,6 +280,12 @@ add_executable(regexlib_fuzz test/regexlib_fuzz.cc)
 target_compile_features(regexlib_fuzz PRIVATE cxx_std_17)
 add_test(NAME regexlib_fuzz COMMAND regexlib_fuzz)
 
+# Portable semantic-regression corpus: cases adjudicated once against Python's
+# `re` and baked into test/regexlib_corpus_data.h (no runtime oracle needed).
+add_executable(regexlib_corpus test/regexlib_corpus.cc)
+target_compile_features(regexlib_corpus PRIVATE cxx_std_17)
+add_test(NAME regexlib_corpus COMMAND regexlib_corpus)
+
 # In-progress JIT GC rewrite — see docs/jit_gc_design.md. The new conservative
 # collector (include/jit_gc.h) is a standalone header (no JIT/LLVM link); its
 # Phase 0 tests validate pointer-validation, conservative root scanning, and
