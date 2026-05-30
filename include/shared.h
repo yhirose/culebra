@@ -711,8 +711,18 @@ struct Runtime {
 
   Runtime() = default;
   ~Runtime() {
-    for (size_t i = 0; i < substate.size(); ++i) {
-      if (substate[i] && substate_deleter[i]) substate_deleter[i](substate[i]);
+    // Destroy substates in reverse slot order. The GC substates (kSlotInterpGc,
+    // kSlotJitGc) are the lowest slots and MUST outlive the JitValue-holding
+    // substates (module/namespace tables, test registry, defer stack), whose
+    // destructors release values back into the GC. Forward order frees the GC
+    // first, leaving those later releases to call into a destroyed heap. Null
+    // each slot after deleting so any release that still resolves a substate
+    // mid-teardown lazily revives an empty one instead of touching freed memory.
+    for (size_t i = substate.size(); i-- > 0;) {
+      if (substate[i] && substate_deleter[i]) {
+        substate_deleter[i](substate[i]);
+        substate[i] = nullptr;
+      }
     }
   }
   Runtime(const Runtime&) = delete;
