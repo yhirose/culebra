@@ -43,8 +43,9 @@ Conventions used below:
 8. [`JSON`](#8-json) — stringify / parse round-trip
 9. [`Args`](#9-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
 10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
-11. [Design notes](#11-design-notes)
-12. [Not included (yet)](#12-not-included-yet)
+11. [`Regex`](#11-regex) — linear-time, grapheme-aware regular expressions
+12. [Design notes](#12-design-notes)
+13. [Not included (yet)](#13-not-included-yet)
 
 **Where to find what**
 
@@ -1149,7 +1150,76 @@ agree without any matcher-specific drift logic.
 
 ---
 
-## 11. Design notes
+## 11. `Regex`
+
+Linear-time, grapheme-aware regular expressions (engine: `include/regexlib.h`).
+Patterns match by Unicode **extended grapheme cluster**, not code point — `.`
+consumes one user-perceived character (so `/./` matches `🇯🇵` as a single
+element). Matching runs in **linear time** (Thompson NFA / Pike VM with a lazy
+DFA fast path), so catastrophic backtracking cannot occur and there are no
+backreferences. Offsets are **byte offsets** (Go-style), always on grapheme
+boundaries.
+
+A `Regex` is **compiled once and reused** (`Regex.compile` — the compiled
+program is the expensive part), then queried with methods:
+
+**Write patterns as single-quoted raw strings** (`'\d+'`, not `"\\d+"`): single
+quotes do no escape processing and no `{...}` interpolation, so `\d` and `{n}`
+pass through verbatim (the Python `r"..."` idiom). Flags are either passed to
+`compile` as a string (`Regex.compile('hello', "i")`) or inline in the pattern:
+`(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
+
+| Constructor | Result |
+| --- | --- |
+| `Regex.compile(pat)` | `Regex` — compile (reused); bad pattern raises |
+| `Regex.compile(pat, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
+
+| Method | Result |
+| --- | --- |
+| `re.test(s)` | `Bool` — does the pattern match anywhere in `s` |
+| `re.find(s)` | `Match` or `nil` — leftmost match |
+| `re.match(s)` | `Match` or `nil` — match anchored at the start |
+| `re.find_all(s)` | `[Match]` — all non-overlapping matches |
+| `re.replace_all(s, repl)` | `String` — `$1` / `$<name>` / `$$` in `repl` |
+| `re.split(s)` | `[String]` — split `s` on matches |
+
+A `Match` is a data object (and `nil` means no match):
+
+| Field | Meaning |
+| --- | --- |
+| `m.value` | the whole-match text (`String`) |
+| `m.start`, `m.end` | byte offsets |
+| `m.groups` | `[Group \| nil]`; `groups[0]` is the whole match |
+| `m.named` | `{name: Group}` — named captures |
+
+`Group` has `.value`, `.start`, `.end`. An invalid pattern raises `RegexError`.
+
+```culebra
+let d = Regex.compile('\d+')
+d.test("abc 123")                                // => true
+Regex.compile('\w+').find("  hello world").value // => "hello"
+d.find("no digits")                              // => nil
+d.find_all("a1 b22 c333").size()                 // => 3
+
+let m = Regex.compile('(\d{4})-(\d{2})').find("2026-05")
+m.groups[1].value                                // => "2026"
+m.named["..."]                                   // named via (?<name>...)
+
+d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
+Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
+Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
+Regex.compile('hello', "i").test("HELLO world")  // => true (flag arg)
+d.find("xyz")?.value ?? "none"                   // composes with ?. / ??
+```
+
+The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy
+and lazy / `|` / capturing and named groups / `\d \w \s \b` / lookahead /
+variable-length lookbehind / `\p{…}` Unicode properties) and the full matching
+model and resource limits are documented in `docs/regexlib.md`.
+
+---
+
+## 12. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1203,7 +1273,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 12. Not included (yet)
+## 13. Not included (yet)
 
 ### Trigonometry
 
@@ -1211,11 +1281,6 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 exposed. Random drawing and the core transcendentals (`log`, `exp`,
 `sqrt`) are available; trig entries can be added when a concrete use
 case lands.
-
-### Regular expressions
-
-Deferred; would require either a built-in regex engine or a vendored
-dependency.
 
 ### Date, time
 

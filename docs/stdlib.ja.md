@@ -41,8 +41,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 8. [`JSON`](#8-json) — stringify / parse の相互変換
 9. [`Args`](#9-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
 10. [Matchers](#10-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
-11. [設計上の注記](#11-設計上の注記)
-12. [未収録（将来検討）](#12-未収録将来検討)
+11. [`Regex`](#11-regex) — 線形時間・grapheme 単位の正規表現
+12. [設計上の注記](#12-設計上の注記)
+13. [未収録（将来検討）](#13-未収録将来検討)
 
 **目的別索引**
 
@@ -1110,7 +1111,73 @@ backend が既に実装している演算子 dispatch そのもので、 matcher
 
 ---
 
-## 11. 設計上の注記
+## 11. `Regex`
+
+線形時間・grapheme 単位の正規表現（エンジン: `include/regexlib.h`）。パターンは
+Unicode の **extended grapheme cluster** 単位でマッチし、コードポイント単位では
+ありません — `.` は1つのユーザー知覚文字を消費します（`/./` が `🇯🇵` に1要素として
+マッチ）。マッチは**線形時間**（Thompson NFA / Pike VM + lazy DFA fast path）で、
+catastrophic backtracking が原理的に起きないため backreference はありません。
+オフセットは**バイトオフセット**（Go 流）で常に grapheme 境界上です。
+
+`Regex` は **`Regex.compile` で一度コンパイルして再利用**します（コンパイル済み
+プログラムが高コスト部分）。以降はメソッドで問い合わせます:
+
+**パターンはシングルクォートの raw 文字列で書きます**（`'\d+'`、`"\\d+"` ではなく）:
+シングルクォートはエスケープ処理も `{...}` 補間も行わないので `\d` や `{n}` がそのまま
+通ります（Python の `r"..."` と同じ）。フラグは `compile` に文字列で渡す
+（`Regex.compile('hello', "i")`）か、パターン内にインライン: `(?i)` 大文字小文字
+無視、`(?m)` 複数行、`(?s)` dotall。
+
+| コンストラクタ | 結果 |
+| --- | --- |
+| `Regex.compile(pat)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
+| `Regex.compile(pat, flags)` | `Regex` — `flags` は `"i"` / `"m"` / `"s"` の文字列 |
+
+| メソッド | 結果 |
+| --- | --- |
+| `re.test(s)` | `Bool` — `s` のどこかにマッチするか |
+| `re.find(s)` | `Match` または `nil` — 最左マッチ |
+| `re.match(s)` | `Match` または `nil` — 先頭 anchored マッチ |
+| `re.find_all(s)` | `[Match]` — 全ての非重複マッチ |
+| `re.replace_all(s, repl)` | `String` — `repl` 内で `$1` / `$<name>` / `$$` |
+| `re.split(s)` | `[String]` — マッチで `s` を分割 |
+
+`Match` はデータオブジェクト（`nil` はマッチなし）:
+
+| フィールド | 意味 |
+| --- | --- |
+| `m.value` | マッチ全体の文字列（`String`） |
+| `m.start`, `m.end` | バイトオフセット |
+| `m.groups` | `[Group \| nil]`; `groups[0]` はマッチ全体 |
+| `m.named` | `{name: Group}` — 名前付きキャプチャ |
+
+`Group` は `.value` / `.start` / `.end` を持ちます。不正なパターンは `RegexError` を送出。
+
+```culebra
+let d = Regex.compile('\d+')
+d.test("abc 123")                                // => true
+Regex.compile('\w+').find("  hello world").value // => "hello"
+d.find("no digits")                              // => nil
+d.find_all("a1 b22 c333").size()                 // => 3
+
+let m = Regex.compile('(\d{4})-(\d{2})').find("2026-05")
+m.groups[1].value                                // => "2026"
+
+d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
+Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
+Regex.compile('hello', "i").test("HELLO world")  // => true（フラグ引数）
+d.find("xyz")?.value ?? "none"                   // ?. / ?? と合成可
+```
+
+対応構文（literal / `.` / 文字クラス / `* + ? {n,m}` greedy・lazy / `|` /
+キャプチャ・名前付きグループ / `\d \w \s \b` / lookahead / 可変長 lookbehind /
+`\p{…}` Unicode プロパティ）とマッチモデル・資源上限は `docs/regexlib.md`（および
+`docs/regexlib.ja.md`）に記載しています。
+
+---
+
+## 12. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1164,18 +1231,13 @@ run_with(IO, "via parameter")
 
 ---
 
-## 12. 未収録（将来検討）
+## 13. 未収録（将来検討）
 
 ### 三角関数
 
 `Math.sin` / `cos` / `tan` / `atan2` は未実装です。乱数生成と主要な
 超越関数（`log`, `exp`, `sqrt`）は揃っているので、三角関数は具体的
 なユースケースが出てきた時点で追加します。
-
-### 正規表現
-
-将来対応。ビルトインの正規表現エンジン、またはベンダ依存のライブラリ
-が必要です。
 
 ### 日時
 

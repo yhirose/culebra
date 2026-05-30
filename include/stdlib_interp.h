@@ -15,6 +15,7 @@
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
 #include <interpreter.h>
+#include <regexlib.h>
 
 #include <cctype>
 #include <cmath>
@@ -1561,6 +1562,204 @@ inline Value make_json_namespace() {
   return Value(std::move(ns));
 }
 
+//===--------------------------------------------------------------------===//
+// Regex — a stateless namespace (Regex.find(pat, s) etc.). Exposed as a
+// namespace rather than a compiled-handle object so JIT routes calls through
+// kNsMethods, avoiding the builtin-method-name collision (find/split/match)
+// that breaks class-instance methods in the JIT. A compiled-Regex cache keyed
+// by pattern gives reuse. A Match is a data object
+// { value, start, end, groups: [Group|nil], named: {name: Group} }; no-match
+// is nil. Flags are inline ((?i)/(?m)/(?s)). See docs/regex_stdlib_api.md.
+//===--------------------------------------------------------------------===//
+
+// A capture group -> { value, start, end }, or nil if it did not participate.
+inline Value regex_group_value(const regexlib::Capture& c) {
+  using namespace std::literals;
+  if (!c.matched) return Value();
+  ObjectValue g;
+  g.initialize("value", Value(std::string(c.str)), false);
+  g.initialize("start", Value(static_cast<long>(c.begin)), false);
+  g.initialize("end", Value(static_cast<long>(c.end)), false);
+  return Value(std::move(g));
+}
+
+// A match -> { value, start, end, groups: [Group|nil], group(i|name) }.
+inline Value regex_match_value(const regexlib::MatchResult& m) {
+  using namespace std::literals;
+  ObjectValue mo;
+  mo.initialize("value", Value(std::string(m.str)), false);
+  mo.initialize("start", Value(static_cast<long>(m.begin)), false);
+  mo.initialize("end", Value(static_cast<long>(m.end)), false);
+  ArrayValue groups;
+  for (const auto& g : m.groups) groups.values->push_back(regex_group_value(g));
+  mo.initialize("groups", Value(std::move(groups)), false);
+  // named: { name -> Group } (data only, so it survives the JIT value model too)
+  ObjectValue named;
+  for (const auto& kv : m.named)
+    named.initialize(kv.first, regex_group_value(m.group(kv.second)), false);
+  mo.initialize("named", Value(std::move(named)), false);
+  return Value(std::move(mo));
+}
+
+// Convert a match-time RegexError (e.g. step-budget exceeded) into a
+// CulebraError carrying the call site.
+inline void regex_rethrow(const regexlib::RegexError& e,
+                          const std::shared_ptr<Environment>& env) {
+  throw CulebraError("RegexError", std::string(e.what()),
+                     env->get("__LINE__").to_long(),
+                     env->get("__COLUMN__").to_long());
+}
+
+// Compile (or cache-hit) a Regex for `pattern`. The Regex namespace functions
+// are stateless — the pattern string is the identity — so a small thread-local
+// cache gives reuse without a handle. Flags are written inline ((?i)/(?m)/(?s))
+// in the pattern, so the cache key is just the pattern.
+inline std::shared_ptr<regexlib::Regex> regex_compile_cached(
+    const std::string& pattern, long line, long col) {
+  static thread_local std::unordered_map<std::string,
+                                          std::shared_ptr<regexlib::Regex>>
+      cache;
+  auto it = cache.find(pattern);
+  if (it != cache.end()) return it->second;
+  std::shared_ptr<regexlib::Regex> re;
+  try {
+    re = std::make_shared<regexlib::Regex>(pattern);
+  } catch (const regexlib::RegexError& e) {
+    throw CulebraError("RegexError", std::format("Regex: {}", e.what()), line,
+                       col);
+  }
+  if (cache.size() > 256) cache.clear();  // bound growth
+  cache.emplace(pattern, re);
+  return re;
+}
+
+inline std::shared_ptr<regexlib::Regex> regex_from_env(
+    const std::shared_ptr<Environment>& env) {
+  return regex_compile_cached(std::string(env->get("pattern").to_string()),
+                              env->get("__LINE__").to_long(),
+                              env->get("__COLUMN__").to_long());
+}
+
+// `_Regex`: low-level stateless primitives over the engine. The user-facing
+// object API `Regex.compile(pat).find(s)` is the culebra-source `Regex` class
+// in REGEX_MODULE_SOURCE, which delegates here — the `_Time` / `Time` split.
+// All primitives take (pattern, subject, ...); flags are folded into the
+// pattern inline ((?i)/(?m)/(?s)) by the wrapper. A Match is a data object
+// { value, start, end, groups: [Group|nil], named: {name: Group} }; no-match nil.
+inline Value make_regex_primitives_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  const std::vector<FunctionValue::Parameter> ps = {{"pattern", false, "String"sv},
+                                                    {"s", false, "String"sv}};
+
+  // _Regex.check(pattern) -> Nil  (validate eagerly at Regex.compile time)
+  ns.initialize("check",
+                Value(FunctionValue(
+                    {{"pattern", false, "String"sv}},
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      regex_compile_cached(
+                          std::string(env->get("pattern").to_string()),
+                          env->get("__LINE__").to_long(),
+                          env->get("__COLUMN__").to_long());
+                      return Value();
+                    })),
+                false);
+
+  ns.initialize("test",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      try {
+                        return Value(re->test(s));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                        return Value();
+                      }
+                    },
+                    "Bool"sv)),
+                false);
+
+  auto search_fn = [ps](bool anchored) {
+    return Value(FunctionValue(
+        ps, [anchored](std::shared_ptr<Environment> env) -> Value {
+          auto re = regex_from_env(env);
+          std::string s{env->get("s").to_string()};
+          try {
+            auto m = anchored ? re->match(s) : re->search(s);
+            return m.matched ? regex_match_value(m) : Value();
+          } catch (const regexlib::RegexError& e) {
+            regex_rethrow(e, env);
+            return Value();
+          }
+        }));
+  };
+  ns.initialize("find", search_fn(false), false);
+  ns.initialize("match", search_fn(true), false);
+
+  ns.initialize("find_all",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      ArrayValue av;
+                      try {
+                        for (auto& m : re->find_all(s))
+                          av.values->push_back(regex_match_value(m));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                      }
+                      return Value(std::move(av));
+                    })),
+                false);
+
+  ns.initialize("replace_all",
+                Value(FunctionValue(
+                    {{"pattern", false, "String"sv},
+                     {"s", false, "String"sv},
+                     {"repl", false, "String"sv}},
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      std::string repl{env->get("repl").to_string()};
+                      try {
+                        return Value(re->replace_all(s, repl));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                        return Value();
+                      }
+                    },
+                    "String"sv)),
+                false);
+
+  // split: slice the subject between successive matches (find_all + substr).
+  ns.initialize("split",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      ArrayValue av;
+                      try {
+                        size_t cursor = 0;
+                        for (auto& m : re->find_all(s)) {
+                          av.values->push_back(
+                              Value(s.substr(cursor, m.begin - cursor)));
+                          cursor = m.end;
+                        }
+                        av.values->push_back(Value(s.substr(cursor)));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                      }
+                      return Value(std::move(av));
+                    })),
+                false);
+
+  return Value(std::move(ns));
+}
+
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
   using namespace std::literals;
@@ -1676,6 +1875,7 @@ inline void setup_built_in_functions(
   env.initialize("GC", make_gc_namespace(), false);
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
+  env.initialize("_Regex", make_regex_primitives_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
@@ -2074,13 +2274,36 @@ inline constexpr const char* MATCHERS_MODULE_SOURCE =
     "} "
     "}\n";
 
+// `Regex` — the user-facing object API over the native `_Regex` primitives
+// (the `_Time` / `Time` split). `Regex.compile(pat, flags?)` returns a Regex
+// instance whose methods delegate to `_Regex`; flags ("i"/"m"/"s") are folded
+// into the pattern as an inline `(?…)` group. Patterns are best written as
+// single-quoted raw strings ('\d+'). A Match is a data object
+// { value, start, end, groups: [Group|nil], named: {name: Group} }; no-match nil.
+inline constexpr const char* REGEX_MODULE_SOURCE =
+    "let _regex_module = fn () { "
+    "class Regex { "
+    "new(pattern) { this._pat = pattern; _Regex.check(pattern) } "
+    "test(s) { _Regex.test(this._pat, s) } "
+    "find(s) { _Regex.find(this._pat, s) } "
+    "match(s) { _Regex.match(this._pat, s) } "
+    "find_all(s) { _Regex.find_all(this._pat, s) } "
+    "replace_all(s, repl) { _Regex.replace_all(this._pat, s, repl) } "
+    "split(s) { _Regex.split(this._pat, s) } "
+    "}; "
+    "{ compile: fn(pattern, flags = \"\") { "
+    "Regex.new(if flags == \"\" { pattern } else { \"(?\" + flags + \")\" + pattern }) }, "
+    "Regex: Regex } "
+    "}; "
+    "let Regex = _regex_module()\n";
+
 // Transitional concatenation used by the JIT path until it adopts the
 // env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
 // interp path is already preamble-free.
 inline const char* _stdlib_preamble_concat() {
   static const std::string s =
       std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE +
-      MATCHERS_MODULE_SOURCE;
+      MATCHERS_MODULE_SOURCE + REGEX_MODULE_SOURCE;
   return s.c_str();
 }
 inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
@@ -2099,15 +2322,18 @@ inline std::string prepend_stdlib_preamble_selective(
   // substring works because no other stdlib symbol starts with
   // `assert_`.
   bool needs_matchers = user_src.find("assert_") != std::string_view::npos;
+  bool needs_regex = user_src.find("Regex") != std::string_view::npos;
   std::string combined;
   combined.reserve(
       (needs_time ? std::strlen(TIME_MODULE_SOURCE) : 0) +
       (needs_args ? std::strlen(ARGS_MODULE_SOURCE) : 0) +
       (needs_matchers ? std::strlen(MATCHERS_MODULE_SOURCE) : 0) +
+      (needs_regex ? std::strlen(REGEX_MODULE_SOURCE) : 0) +
       user_src.size());
   if (needs_time) combined.append(TIME_MODULE_SOURCE);
   if (needs_args) combined.append(ARGS_MODULE_SOURCE);
   if (needs_matchers) combined.append(MATCHERS_MODULE_SOURCE);
+  if (needs_regex) combined.append(REGEX_MODULE_SOURCE);
   combined.append(user_src);
   return combined;
 }
@@ -2119,6 +2345,7 @@ inline std::string prepend_stdlib_preamble_selective(
 inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
+  env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   // Matcher family — 10 symbols share one source via initialize_lazy_group.
   // First `get` of any matcher parses + evals the source once; the others
   // are picked up by the non-Nil guard in resolve_from_lazy.

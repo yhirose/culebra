@@ -10,6 +10,7 @@
 
 #include <jit.h>
 #include <shared.h>
+#include <regexlib.h>
 
 #include <algorithm>
 #include <chrono>
@@ -1434,6 +1435,123 @@ inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
 
 // --- The dispatch table ---
 
+//===-- Regex: the `Regex` namespace functions. Like GC.stat, no fast-path
+// branch or runtime helper is needed — these slow-path adapters do the work
+// and build the JitObject/JitArray results directly. All take (pattern,
+// subject, ...); flags are inline ((?i)/(?m)/(?s)). A Match is a data object
+// { value, start, end, groups:[Group|nil], named:{name:Group} }; no-match nil.
+//===------------------------------------------------------------------------//
+inline std::shared_ptr<regexlib::Regex> _jit_regex_compile(const char* pat) {
+  // Stateless cache keyed by pattern (own thread-local; see the /simplify note
+  // about sharing with stdlib_interp's regex_compile_cached).
+  static thread_local std::unordered_map<std::string,
+                                         std::shared_ptr<regexlib::Regex>>
+      cache;
+  std::string p = pat ? pat : "";
+  auto it = cache.find(p);
+  if (it != cache.end()) return it->second;
+  std::shared_ptr<regexlib::Regex> re;
+  try {
+    re = std::make_shared<regexlib::Regex>(p);
+  } catch (const regexlib::RegexError& e) {
+    throw culebra::CulebraError("RegexError",
+                                std::format("Regex: {}", e.what()), 0, 0);
+  }
+  if (cache.size() > 256) cache.clear();
+  cache.emplace(std::move(p), re);
+  return re;
+}
+
+inline JitValue _jit_regex_group(const regexlib::Capture& c) {
+  if (!c.matched) return _ns_adapt::v_nil();
+  auto* g = culebra_runtime_object_new();
+  culebra_runtime_object_set(g, "value", false, TAG_STRING,
+                             reinterpret_cast<int64_t>(_culebra_heap_str(c.str)),
+                             0, 0);
+  culebra_runtime_object_set(g, "start", false, TAG_LONG,
+                             static_cast<int64_t>(c.begin), 0, 0);
+  culebra_runtime_object_set(g, "end", false, TAG_LONG,
+                             static_cast<int64_t>(c.end), 0, 0);
+  return _ns_adapt::v_object(g);
+}
+
+inline JitValue _jit_regex_match(const regexlib::MatchResult& m) {
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "value", false, TAG_STRING,
+                             reinterpret_cast<int64_t>(_culebra_heap_str(m.str)),
+                             0, 0);
+  culebra_runtime_object_set(o, "start", false, TAG_LONG,
+                             static_cast<int64_t>(m.begin), 0, 0);
+  culebra_runtime_object_set(o, "end", false, TAG_LONG,
+                             static_cast<int64_t>(m.end), 0, 0);
+  auto* groups = culebra_runtime_array_new();
+  for (const auto& g : m.groups) {
+    auto gv = _jit_regex_group(g);
+    culebra_runtime_array_push(groups, gv.tag, gv.data);
+  }
+  culebra_runtime_object_set(o, "groups", false, TAG_ARRAY,
+                             reinterpret_cast<int64_t>(groups), 0, 0);
+  auto* named = culebra_runtime_object_new();
+  for (const auto& kv : m.named) {
+    auto gv = _jit_regex_group(m.group(kv.second));
+    culebra_runtime_object_set(named, kv.first.c_str(), false, gv.tag, gv.data,
+                               0, 0);
+  }
+  culebra_runtime_object_set(o, "named", false, TAG_OBJECT,
+                             reinterpret_cast<int64_t>(named), 0, 0);
+  return _ns_adapt::v_object(o);
+}
+
+inline JitValue _ns_regex_check(JitValue* a, int64_t) {
+  _jit_regex_compile(_ns_adapt::take_str(a[0]));  // validate; throws on bad pattern
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_regex_test(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  return _ns_adapt::v_bool(re->test(_ns_adapt::take_str(a[1])));
+}
+inline JitValue _ns_regex_find(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto m = re->search(_ns_adapt::take_str(a[1]));
+  return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
+}
+inline JitValue _ns_regex_match(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto m = re->match(_ns_adapt::take_str(a[1]));
+  return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
+}
+inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto* arr = culebra_runtime_array_new();
+  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+    auto mv = _jit_regex_match(m);
+    culebra_runtime_array_push(arr, mv.tag, mv.data);
+  }
+  return _ns_adapt::v_array(arr);
+}
+inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  std::string out =
+      re->replace_all(_ns_adapt::take_str(a[1]), _ns_adapt::take_str(a[2]));
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
+inline JitValue _ns_regex_split(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  std::string s = _ns_adapt::take_str(a[1]);
+  auto* arr = culebra_runtime_array_new();
+  size_t cursor = 0;
+  for (auto& m : re->find_all(s)) {
+    auto piece = s.substr(cursor, m.begin - cursor);
+    culebra_runtime_array_push(
+        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(piece)));
+    cursor = m.end;
+  }
+  auto last = s.substr(cursor);
+  culebra_runtime_array_push(
+      arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(last)));
+  return _ns_adapt::v_array(arr);
+}
+
 struct NsMethod {
   const char* ns;
   const char* name;
@@ -1487,6 +1605,14 @@ inline const NsMethod kNsMethods[] = {
   {"Sys",    "time", 0, &_ns_sys_time},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
+
+  {"_Regex", "check",       1, &_ns_regex_check},
+  {"_Regex", "test",        2, &_ns_regex_test},
+  {"_Regex", "find",        2, &_ns_regex_find},
+  {"_Regex", "match",       2, &_ns_regex_match},
+  {"_Regex", "find_all",    2, &_ns_regex_find_all},
+  {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
+  {"_Regex", "split",       2, &_ns_regex_split},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2980,7 +3106,8 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "_Time",
-      "Random",  "Sys",       "JSON",      "Tensor",   "GC"};
+      "Random",  "Sys",       "JSON",      "Tensor",   "GC",
+      "_Regex"};
   return names.contains(name);
 }
 

@@ -1,0 +1,83 @@
+// Conformance: stdlib Regex (object form). See docs/regex_stdlib_api.md and
+// docs/stdlib.md. Engine: include/regexlib.h (linear-time, grapheme-aware).
+// Offsets are byte offsets (Go-style), always on grapheme boundaries.
+//
+// Write patterns as single-quoted RAW strings ('\d+', not "\\d+"): single
+// quotes do no escape processing and no `{...}` interpolation, so `\d` and
+// `{n}` pass through verbatim (the Python r"" idiom).
+
+// --- compile + test (matches anywhere) ---
+let d = Regex.compile('\d+')
+assert_true(d.test("abc 123"))
+assert_false(d.test("no digits"))
+
+// --- find: leftmost match anywhere, nil if none ---
+let m = d.find("abc 123 def 456")
+assert_eq(m.value, "123")
+assert_eq(m.start, 4)
+assert_eq(m.end, 7)
+assert_eq(d.find("xyz"), nil)
+
+// --- match: anchored at the start (prefix) ---
+assert_eq(Regex.compile('\w+').match("hello world").value, "hello")
+assert_eq(Regex.compile('\d+').match("abc"), nil)   // not anchored at 0
+
+// --- find_all -> [Match] ---
+let all = d.find_all("a1 b22 c333")
+assert_eq(all.size(), 3)
+assert_eq(all[0].value, "1")
+assert_eq(all[1].value, "22")
+assert_eq(all[2].value, "333")
+assert_eq(d.find_all("none").size(), 0)
+
+// --- capture groups ---
+let date = Regex.compile('(\d{4})-(\d{2})-(\d{2})')
+let dm = date.find("on 2026-05-30 today")
+assert_eq(dm.value, "2026-05-30")
+assert_eq(dm.groups[1].value, "2026")
+assert_eq(dm.groups[2].value, "05")
+assert_eq(dm.groups[3].value, "30")
+assert_eq(dm.groups.size(), 4)            // groups[0] = whole match + 3 groups
+assert_eq(dm.groups[0].value, "2026-05-30")
+
+// --- named groups (m.named maps name -> Group) ---
+let named = Regex.compile('(?<year>\d{4})-(?<mon>\d{2})')
+let nm = named.find("2026-05")
+assert_eq(nm.named["year"].value, "2026")
+assert_eq(nm.named["mon"].value, "05")
+
+// --- flags (folded inline; "i" case-insensitive) ---
+assert_true(Regex.compile('hello', "i").test("HELLO world"))
+assert_false(Regex.compile('hello').test("HELLO world"))
+
+// --- replace_all ($1 / $<name> / $$) ---
+assert_eq(Regex.compile('\d+').replace_all("a1 b22 c333", "#"), "a# b# c#")
+assert_eq(Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1'), "y.x")
+assert_eq(Regex.compile('(?<g>\d+)').replace_all("a12b", '[$<g>]'), "a[12]b")
+
+// --- split ---
+let parts = Regex.compile('\s+').split("the quick  brown   fox")
+assert_eq(parts.size(), 4)
+assert_eq(parts[0], "the")
+assert_eq(parts[3], "fox")
+
+// --- grapheme-aware (the differentiator): . consumes one grapheme cluster ---
+// "🇯🇵" is one grapheme = two regional-indicator code points = 8 UTF-8 bytes.
+let gm = Regex.compile('.').find("🇯🇵x")
+assert_eq(gm.start, 0)
+assert_eq(gm.end, 8)                       // one grapheme, not one code point
+
+// --- bad pattern raises (at compile time) ---
+let caught = try { Regex.compile('('); "no-error" } catch e { "caught" }
+assert_eq(caught, "caught")
+
+// --- nil composes with ?. and ?? ---
+assert_eq(d.find("xyz")?.value ?? "none", "none")
+assert_eq(d.find("12")?.value ?? "none", "12")
+
+// --- a compiled Regex is reused across calls ---
+let w = Regex.compile('\w+')
+assert_eq(w.find("a b").value, "a")
+assert_eq(w.find_all("a b c").size(), 3)
+
+puts("test_regex: ok")
