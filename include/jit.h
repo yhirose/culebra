@@ -132,67 +132,6 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 // state to `thread_local` or per-interpreter-context storage.
 // ---------------------------------------------------------------------------
 
-// PROTOTYPE: fixed-size free-list pool for hot-churn JIT heap structs.
-// microgpt's scalar autograd allocates ~5-6 small heap blocks per arithmetic
-// op (a Value JitObject + two child/grad JitArrays) and frees the whole graph
-// each step; profiling put malloc/free at ~26% of JIT self-time. This pool
-// caches freed fixed-size blocks per type so steady-state churn reuses storage
-// instead of round-tripping through the system allocator. Class-specific
-// operator new/delete (on JitObject/JitArray) route all `new`/`delete` through
-// here with no call-site changes; constructors/destructors still run, so
-// refcount + GC semantics are unchanged. Plain static (not thread_local) to
-// match the single-threaded runtime assumption documented above; blocks are
-// not returned to the OS (pool grows to its high-water mark).
-// Prototype A/B toggle: set CULEBRA_NO_POOL=1 to bypass the pool and route
-// straight to the system allocator, so pooled vs unpooled can be compared in
-// one binary (eliminates the LTO-on/off confound). Read once at startup, so
-// the choice is constant for the process and every block is consistent.
-inline bool jit_pool_enabled() {
-  static bool e = (std::getenv("CULEBRA_NO_POOL") == nullptr);
-  return e;
-}
-
-template <class T>
-struct JitPool {
-  union Node {
-    Node* next;
-    alignas(T) unsigned char buf[sizeof(T)];
-  };
-  Node* head = nullptr;
-  long pool_hits = 0;   // reused a freed block (no malloc)
-  long sys_news = 0;    // had to grow via system allocator
-  void* alloc() {
-    if (!jit_pool_enabled()) return ::operator new(sizeof(T));
-    if (head) {
-      Node* n = head;
-      head = n->next;
-      pool_hits++;
-      return n;
-    }
-    sys_news++;
-    return ::operator new(sizeof(Node));
-  }
-  void dealloc(void* p) {
-    if (!jit_pool_enabled()) {
-      ::operator delete(p);
-      return;
-    }
-    auto* n = static_cast<Node*>(p);
-    n->next = head;
-    head = n;
-  }
-  static JitPool& instance() {
-    static JitPool p;
-    return p;
-  }
-  ~JitPool() {
-    if (std::getenv("CULEBRA_POOL_STATS")) {
-      std::fprintf(stderr, "[JitPool sizeof=%zu] pool_hits=%ld sys_news=%ld\n",
-                   sizeof(T), pool_hits, sys_news);
-    }
-  }
-};
-
 extern "C" {
 
 struct JitValue {
@@ -674,6 +613,27 @@ struct _GcTracker {
   size_t threshold = GC_THRESHOLD;
   bool running = false;      // prevent re-entry
 
+  // Live-object accounting for GC.stat() introspection. `live_objects` is
+  // births (add) minus frees (note_free) = currently-live refcounted heap
+  // objects across both generations. `live_bytes` is the same but weighted by
+  // each type's struct size — element buffers (Array items, Object slots) and
+  // allocator overhead are not counted, so it's a structural approximation.
+  int64_t live_objects = 0;
+  int64_t live_bytes = 0;
+
+  // Struct size per GC tag, mirroring `_gc_slot_of`'s type dispatch.
+  static int64_t tag_struct_size(int8_t tag) {
+    switch (tag) {
+      case GC_TAG_ARRAY:
+      case GC_TAG_TUPLE:  return sizeof(JitArray);
+      case GC_TAG_OBJECT: return sizeof(JitObject);
+      case GC_TAG_TENSOR: return sizeof(JitTensor);
+      case GC_TAG_SET:    return sizeof(JitSet);
+      case GC_TAG_CELL:   return sizeof(JitCell);
+      default:            return sizeof(JitClosure);  // GC_TAG_FUNC
+    }
+  }
+
   static _GcTracker& instance() {
     return culebra::runtime_substate<_GcTracker>(culebra::kSlotJitGc);
   }
@@ -696,10 +656,19 @@ struct _GcTracker {
       young.push_back({ptr, tag});
     }
     _gc_slot_of(ptr, tag) = static_cast<int64_t>(slot);
+    live_objects++;
+    live_bytes += tag_struct_size(tag);
     if (!running && ++alloc_counter >= threshold) {
       alloc_counter = 0;
       collect();
     }
+  }
+
+  // Account for an actual heap free (a real `delete`, NOT a generational
+  // promotion via remove()). Call at each delete site in the release path.
+  void note_free(int8_t tag) {
+    live_objects--;
+    live_bytes -= tag_struct_size(tag);
   }
   void remove(void* ptr, int8_t tag) {
     auto& slot = _gc_slot_of(ptr, tag);
@@ -6325,6 +6294,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         }
         std::free(c->captures);
         _gc().remove(c, GC_TAG_FUNC);
+        _gc().note_free(GC_TAG_FUNC);
         delete c;
       }
       break;
@@ -6338,6 +6308,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         }
         delete[] a->items;
         _gc().remove(a, tag);
+        _gc().note_free(tag);
         delete a;
       }
       break;
@@ -6381,6 +6352,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
           o->non_string_props = nullptr;
         }
         _gc().remove(o, GC_TAG_OBJECT);
+        _gc().note_free(GC_TAG_OBJECT);
         delete o;
       }
       break;
@@ -6390,6 +6362,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       auto* t = reinterpret_cast<JitTensor*>(data);
       if (--t->refcount == 0) {
         _gc().remove(t, GC_TAG_TENSOR);
+        _gc().note_free(GC_TAG_TENSOR);
         delete t;  // ~JitTensor releases the shared_ptr<TensorImpl>
       }
       break;
@@ -6403,6 +6376,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
         }
         delete s->index;
         _gc().remove(s, GC_TAG_SET);
+        _gc().note_free(GC_TAG_SET);
         delete s;
       }
       break;
@@ -6417,6 +6391,7 @@ inline void _culebra_cell_release(JitCell* c) {
   if (--c->refcount == 0) {
     _culebra_value_release_impl(c->value.tag, c->value.data);
     _gc().remove(c, GC_TAG_CELL);
+    _gc().note_free(GC_TAG_CELL);
     delete c;
   }
 }
@@ -11973,9 +11948,13 @@ struct JIT {
 
     builder_.SetInsertPoint(bodyBB);
     loop_stack_.push_back({condBB, endBB});
-    compile(*ast.nodes[1]);
+    // compile_statements returns the body block's final-statement value as an
+    // owned (+1) temporary; a loop discards it every iteration, so release it
+    // (else a body ending in a heap expression leaks one object per pass).
+    auto bodyVal = compile(*ast.nodes[1]);
     loop_stack_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) {
+      emit_value_release(bodyVal);
       builder_.CreateBr(condBB);
     }
 
@@ -12152,8 +12131,15 @@ struct JIT {
     }
 
     loop_stack_.push_back({continue_bb, break_bb});
-    compile(body);
+    // compile_statements hands back the body block's final-statement value as
+    // an owned (+1) temporary; the loop discards it each iteration, so release
+    // it (else a body ending in a heap expression — `for x in xs { f(x) }`,
+    // an accumulator reassign, etc. — leaks one object per pass).
+    auto bodyVal = compile(body);
     loop_stack_.pop_back();
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      emit_value_release(bodyVal);
+    }
 
     pop_scope();
 
@@ -14471,6 +14457,16 @@ struct JIT {
     }
     if (auto* r =
             compile_builtin_method(method, argsAst, receiver)) {
+      // Uniform receiver-ownership convention for builtin methods: the
+      // receiver arrives +1-owned (the postfix chain transfers it, like the
+      // property-get `swap_owned` release below), and a builtin treats it as
+      // BORROWED — read-only/mutating methods never store it, and methods
+      // that DO retain it for longer (the lazy iterator paths in
+      // `dispatch_arr_iter`) take their own +1. So this frame always drops the
+      // incoming ref; without it every `arr.size()` / `acc.push(x)` leaves the
+      // receiver's refcount dangling, which the generational GC then promotes
+      // and never reclaims.
+      emit_value_release(receiver);
       return r;
     }
 
@@ -16923,6 +16919,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
+    // The iterator path CONSUMES the source: lazy wrappers (iter_map/filter/
+    // flat_map) store it, terminal drivers (iter_reduce/for_each/...) release
+    // it on exhaustion. Since compile_method_call releases the receiver once
+    // uniformly, hand the iterator path its own +1 so that consume is balanced.
+    emit_value_retain(receiver);
     auto lazyRes = lazy(t, d);
     auto lazyEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);

@@ -1166,6 +1166,32 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
   return Value(std::move(ns));
 }
 
+// GC introspection. `GC.stat()` returns an Object with `live_objects` (net
+// live refcounted heap objects = births − frees, deterministic) and
+// `heap_bytes` (those objects' struct sizes summed — element buffers and
+// allocator overhead excluded, so a structural approximation). Snapshot the
+// counters before building the result Object so the container isn't counted
+// in its own report.
+inline Value make_gc_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "stat",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment>) {
+                            auto& gc = interp_gc();
+                            long live = static_cast<long>(gc.live_objects);
+                            long bytes = static_cast<long>(gc.live_bytes);
+                            ObjectValue stat;
+                            stat.initialize("live_objects", Value(live), false);
+                            stat.initialize("heap_bytes", Value(bytes), false);
+                            return Value(std::move(stat));
+                          },
+                          "Object"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // --- JSON stringify/parse ---
 
 // Serialize `v`. With `indent > 0` pretty-prints with `indent` spaces
@@ -1647,6 +1673,7 @@ inline void setup_built_in_functions(
   env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
+  env.initialize("GC", make_gc_namespace(), false);
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
 }

@@ -1362,6 +1362,24 @@ inline JitValue _ns_sys_time(JitValue*, int64_t) {
   return _ns_adapt::v_float(culebra_runtime_sys_time());
 }
 
+// GC.stat() — heap introspection. Returns an Object with `live_objects`
+// (net live refcounted heap objects = births − frees, deterministic) and
+// `heap_bytes` (those objects' struct sizes summed — element buffers and
+// allocator overhead excluded, so it's a structural approximation). Snapshot
+// the counters before allocating the result object so the container itself
+// isn't included in its own report.
+inline JitValue _ns_gc_stat(JitValue*, int64_t) {
+  auto& gc = _GcTracker::instance();
+  int64_t live = gc.live_objects;
+  int64_t bytes = gc.live_bytes;
+  auto* obj = culebra_runtime_object_new();
+  culebra_runtime_object_set(obj, "live_objects", /*mut=*/false, TAG_LONG,
+                             live, 0, 0);
+  culebra_runtime_object_set(obj, "heap_bytes", /*mut=*/false, TAG_LONG,
+                             bytes, 0, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+}
+
 // JSON. Slow path is positional-only; the kwargs form goes through
 // compile_json_kwargs_adapter on the fast path.
 inline JitValue _ns_json_stringify(JitValue* a, int64_t) {
@@ -1467,6 +1485,8 @@ inline const NsMethod kNsMethods[] = {
   {"Sys",    "exit", 1, &_ns_sys_exit},
   {"Sys",    "env",  1, &_ns_sys_env},
   {"Sys",    "time", 0, &_ns_sys_time},
+
+  {"GC",     "stat", 0, &_ns_gc_stat},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2960,7 +2980,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "_Time",
-      "Random",  "Sys",       "JSON",      "Tensor"};
+      "Random",  "Sys",       "JSON",      "Tensor",   "GC"};
   return names.contains(name);
 }
 

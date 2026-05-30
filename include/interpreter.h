@@ -676,6 +676,15 @@ struct InterpGC {
 
   ~InterpGC() { collect(); }
 
+  // Live heap-object accounting for GC.stat() introspection. Counts the
+  // OrderedSymbolMap backing each Object / Array / class-instance: bumped in
+  // ObjectValue's ctor, dropped in _destroy_prop_map (the prop-map deleter),
+  // so it's a per-logical-object count immune to Value handle copies.
+  // `live_bytes` weights each by sizeof(OrderedSymbolMap) — a structural
+  // approximation that excludes element buffers and allocator overhead.
+  int64_t live_objects = 0;
+  int64_t live_bytes = 0;
+
   template <typename T>
   void track_vec(std::shared_ptr<T> p) {
     entries_.push_back(
@@ -1653,6 +1662,13 @@ struct ContinueSignal {};
 // Defined out-of-line so OrderedSymbolMap is complete here.
 inline ObjectValue::ObjectValue() {
   auto* raw = new OrderedSymbolMap();
+  // Live-object accounting (see InterpGC). Birth here, death in
+  // _destroy_prop_map — both keyed on this OrderedSymbolMap, so a logical
+  // Object/Array/class-instance is counted exactly once regardless of how
+  // many Value handles copy the shared_ptr.
+  auto& gc = interp_gc();
+  gc.live_objects++;
+  gc.live_bytes += static_cast<int64_t>(sizeof(OrderedSymbolMap));
   properties = std::shared_ptr<OrderedSymbolMap>(raw, &_destroy_prop_map);
   // properties map is intentionally not GC-tracked — see the InterpGC
   // class header. Cycles are detected via the contained ArrayValues.
@@ -7207,6 +7223,10 @@ inline void InterpGC::collect() {
 // not resurrect `this` in drop bodies.
 inline void _destroy_prop_map(OrderedSymbolMap* m) {
   if (!m) return;
+  // Live-object accounting: matches the bump in ObjectValue's ctor.
+  auto& gc = interp_gc();
+  gc.live_objects--;
+  gc.live_bytes -= static_cast<int64_t>(sizeof(OrderedSymbolMap));
   _call_drop_if_present(m);
   delete m;
 }

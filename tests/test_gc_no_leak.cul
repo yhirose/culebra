@@ -1,0 +1,77 @@
+// Memory-leak regression tests, built on the GC.stat() introspection API.
+//
+// GC.stat() returns an Object with:
+//   live_objects — net live refcounted heap objects (births − frees);
+//                  deterministic, so a steady-state workload that allocates
+//                  and frees in balance leaves it flat.
+//   heap_bytes   — those objects' struct sizes summed (a structural
+//                  approximation; element buffers / allocator overhead are
+//                  not counted).
+//
+// Pattern: warm up once (so one-time lazy allocations settle), snapshot
+// live_objects, run the same work N times, then assert the delta stays below
+// a small tolerance. A leak shows up as delta ≈ N × per-iteration objects;
+// clean code leaves delta near zero (the tolerance absorbs the transient
+// Object GC.stat() itself allocates per call, and small one-time setup).
+//
+// NOTE: known leaks still tracked separately and intentionally NOT asserted
+// here yet: `for k in 0..N` range-loop setup (~9 objects per loop) and
+// overloaded-operator dispatch (`a + b` → user `__add__`). See the leak tasks.
+
+let TOL = 100
+
+// --- API sanity ---
+let s = GC.stat()
+assert_ge(s.live_objects, 0)
+assert_ge(s.heap_bytes, 0)
+
+class Box { new(d) { this.data = d } }
+
+fn measure_delta(work) {
+  work()                       // warm up one-time allocations
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 30 { work(); i = i + 1 }
+  GC.stat().live_objects - base
+}
+
+// Clean scope-exit must not leak (baseline: proves no false positives).
+assert_lt(measure_delta(fn () {
+  let x = Box.new(42)
+  x.data
+}), TOL)
+
+// Array built by accumulating into a loop-local, then dropped on return.
+// Exercises the builtin-method receiver release (`push` / `size`).
+assert_lt(measure_delta(fn () {
+  mut acc = []
+  mut k = 0
+  while k < 200 { acc.push(Box.new(k)); k = k + 1 }
+  acc.size()
+}), TOL)
+
+// Reassigned loop-local must release the previous heap value each pass.
+assert_lt(measure_delta(fn () {
+  mut last = Box.new(0)
+  mut k = 0
+  while k < 200 { last = Box.new(k); k = k + 1 }
+  last.data
+}), TOL)
+
+// Higher-order iterator chain: eager array map/reduce, terminal sum/contains.
+assert_lt(measure_delta(fn () {
+  let a = [1, 2, 3, 4, 5]
+  a.contains(3)
+  a.map(|x| x * 2).reduce(0, |acc, x| acc + x)
+}), TOL)
+
+// Discarded heap value at the end of a loop body must be released each pass
+// (the loop-body-value fix). Array iteration, so no range-iterator setup.
+let items = []
+for k in 0..200 { items.push(k) }
+assert_lt(measure_delta(fn () {
+  for e in items { Box.new(e) }
+  0
+}), TOL)
+
+puts("gc no-leak tests passed")
