@@ -1370,9 +1370,15 @@ inline JitValue _ns_sys_time(JitValue*, int64_t) {
 // the counters before allocating the result object so the container itself
 // isn't included in its own report.
 inline JitValue _ns_gc_stat(JitValue*, int64_t) {
+#ifdef CULEBRA_NEW_GC
+  auto& gc = _gc_heap();
+  int64_t live = static_cast<int64_t>(gc.live_count());
+  int64_t bytes = static_cast<int64_t>(gc.live_bytes());
+#else
   auto& gc = _GcTracker::instance();
   int64_t live = gc.live_objects;
   int64_t bytes = gc.live_bytes;
+#endif
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(obj, "live_objects", /*mut=*/false, TAG_LONG,
                              live, 0, 0);
@@ -1670,15 +1676,21 @@ inline JitValue _jit_ns_method_trampoline(
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
+#ifdef CULEBRA_NEW_GC
+  auto* cls = _gc_new<JitClosure>(GC_TAG_FUNC);
+#else
   auto* cls = new JitClosure();
   cls->refcount = 1;
+#endif
   cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
   cls->n_captures = 1;
   cls->captures = new JitCell*[1];
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
   cls->arity = m->arity < 0 ? 0 : static_cast<size_t>(m->arity);
+#ifndef CULEBRA_NEW_GC
   _gc().add(cls, GC_TAG_FUNC);
+#endif
   return cls;
 }
 

@@ -45,8 +45,26 @@ class Heap {
   // Returns the object pointer (GcHeader at offset 0). Allocate-only:
   // never frees or collects in Phase 0.
   void* alloc(uint32_t size, uint8_t type_tag) {
+    void* p = raw_alloc(size);
+    adopt(p, size, type_tag);
+    return p;
+  }
+
+  // Two-step allocation for callers that must run a C++ constructor on the
+  // payload (vectors, shared_ptr members): `raw_alloc` hands back unregistered
+  // storage, the caller placement-news the struct (value-initialising — and
+  // thus zeroing — the leading GcHeader), then `adopt` stamps the real header
+  // and registers the object. Splitting the two is what keeps the header
+  // intact: stamping before the placement-new would just be clobbered by the
+  // constructor. `alloc` above is the fused form for callers that don't need
+  // to construct (the Phase 0 tests). `adopt` is the single source of truth
+  // for header layout + registration.
+  void* raw_alloc(uint32_t size) {
     void* p = std::malloc(size);
     if (!p) std::abort();
+    return p;
+  }
+  void adopt(void* p, uint32_t size, uint8_t type_tag) {
     auto* h = static_cast<GcHeader*>(p);
     h->mark = 0;
     h->type_tag = type_tag;
@@ -55,7 +73,6 @@ class Heap {
     h->size = size;
     objects_.insert(p);
     live_bytes_ += size;
-    return p;
   }
 
   // Free one object. Phase 1 sweep calls this after running the object's
