@@ -30,8 +30,11 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1282,6 +1285,7 @@ class Regex {
     ncap_ = parser.ncap;
     prog_ = detail::Compiler::compile(root, ncap_);
     extract_prefix();
+    analyze_dfa();
   }
 
   int group_count() const { return ncap_; }
@@ -1303,7 +1307,21 @@ class Regex {
     return run(seg, 0, /*anchored=*/true, sc);
   }
 
-  bool test(std::string_view text) const { return search(text).matched; }
+  bool test(std::string_view text) const {
+    // Boolean match is the same under leftmost-first and POSIX semantics, so a
+    // lazy DFA can answer it when the program is "regular" and the subject is
+    // ASCII. Everything else uses the Pike VM.
+    if (dfa_ok_) {
+      bool ascii = true;
+      for (unsigned char c : text)
+        if (c >= 0x80) {
+          ascii = false;
+          break;
+        }
+      if (ascii) return dfa_test(text);
+    }
+    return search(text).matched;
+  }
 
   std::vector<MatchResult> find_all(std::string_view text) const {
     auto seg = detail::segment(text);
@@ -1344,6 +1362,8 @@ class Regex {
   bool dotall_ = false;
   std::unordered_map<std::string, int> named_;
   std::string prefix_;  // required literal prefix (empty if none); see B1 below
+  bool dfa_ok_ = false;  // program is "regular" -> boolean match via lazy DFA
+  int match_pc_ = -1;    // index of the Match instruction
 
   // Every match must begin with the pattern's leading run of literal
   // characters. Collect it (skipping the zero-width capture Saves) so an
@@ -1360,6 +1380,117 @@ class Regex {
       else
         break;
     }
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Lazy DFA for boolean match (test) on ASCII subjects.
+  //
+  // Valid only for a "regular" program: no lookaround, no empty-loop guard, and
+  // no positional assertions (^ $ \b) — those make a transition depend on more
+  // than the current byte. A DFA state is the set of consuming/Match program
+  // counters reachable by the capture-free ε-closure; states and their
+  // byte-transitions are interned and built on demand. The subject is scanned
+  // one byte per step, re-seeding the start so the search is unanchored.
+  //===--------------------------------------------------------------------===//
+
+  void analyze_dfa() {
+    using Op = detail::Inst::Op;
+    dfa_ok_ = true;
+    for (size_t i = 0; i < prog_.insts.size(); i++) {
+      Op op = prog_.insts[i].op;
+      if (op == Op::Match) match_pc_ = static_cast<int>(i);
+      if (op == Op::Look || op == Op::Loop || op == Op::AssertBOL ||
+          op == Op::AssertEOL || op == Op::AssertWB || op == Op::AssertNWB)
+        dfa_ok_ = false;
+    }
+  }
+
+  bool inst_matches_byte(const detail::Inst &in, unsigned char b) const {
+    using Op = detail::Inst::Op;
+    std::u32string g(1, static_cast<char32_t>(b));
+    switch (in.op) {
+      case Op::Char: return lit_match(in.lit, g);
+      case Op::Class: return in.cls.matches(g, icase_);
+      case Op::Any: return dotall_ || !detail::is_line_break(g);
+      default: return false;
+    }
+  }
+
+  // Capture-free ε-closure: from `seeds`, follow Jmp/Split/Save and collect the
+  // reachable consuming (Char/Class/Any) and Match program counters.
+  void dfa_closure(std::vector<int> stk, std::vector<int> &out,
+                   std::vector<char> &seen) const {
+    using Op = detail::Inst::Op;
+    while (!stk.empty()) {
+      int pc = stk.back();
+      stk.pop_back();
+      if (seen[pc]) continue;
+      seen[pc] = 1;
+      const detail::Inst &in = prog_.insts[pc];
+      switch (in.op) {
+        case Op::Jmp: stk.push_back(in.x); break;
+        case Op::Split:
+          stk.push_back(in.x);
+          stk.push_back(in.y);
+          break;
+        case Op::Save: stk.push_back(pc + 1); break;
+        default: out.push_back(pc); break;  // Char/Class/Any/Match
+      }
+    }
+  }
+
+  bool dfa_test(std::string_view text) const {
+    int psz = static_cast<int>(prog_.insts.size());
+    std::map<std::vector<int>, int> intern;
+    std::vector<std::vector<int>> states;
+    std::vector<char> accept;
+    std::vector<std::array<int, 128>> trans;
+    std::vector<char> seen(psz, 0);
+
+    auto make_state = [&](std::vector<int> pcs) -> int {
+      std::sort(pcs.begin(), pcs.end());
+      pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
+      auto it = intern.find(pcs);
+      if (it != intern.end()) return it->second;
+      int id = static_cast<int>(states.size());
+      bool acc =
+          std::find(pcs.begin(), pcs.end(), match_pc_) != pcs.end();
+      intern.emplace(pcs, id);
+      states.push_back(std::move(pcs));
+      accept.push_back(acc);
+      std::array<int, 128> t;
+      t.fill(-1);
+      trans.push_back(t);
+      return id;
+    };
+
+    std::vector<int> startpcs;
+    dfa_closure({0}, startpcs, seen);
+    int start = make_state(std::move(startpcs));
+    if (accept[start]) return true;
+
+    int s = start;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(text.data());
+    size_t n = text.size();
+    for (size_t i = 0; i < n; i++) {
+      unsigned char b = p[i];
+      int nxt = trans[s][b];
+      if (nxt < 0) {
+        std::vector<int> seeds;
+        for (int pc : states[s])
+          if (pc != match_pc_ && inst_matches_byte(prog_.insts[pc], b))
+            seeds.push_back(pc + 1);
+        seeds.push_back(0);  // re-seed the start: unanchored search
+        std::fill(seen.begin(), seen.end(), 0);
+        std::vector<int> outpcs;
+        dfa_closure(std::move(seeds), outpcs, seen);
+        nxt = make_state(std::move(outpcs));
+        trans[s][b] = nxt;  // indexed after make_state (vectors may have grown)
+      }
+      s = nxt;
+      if (accept[s]) return true;
+    }
+    return false;
   }
 
 

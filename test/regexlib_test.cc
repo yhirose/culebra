@@ -320,6 +320,30 @@ void test_nullable_quantifiers() {
   CHECK(Regex("(a*|b)*").search("ab").str == "ab");
 }
 
+void test_dfa_boolean() {
+  // test() uses the lazy DFA for regular patterns on ASCII subjects; it must
+  // agree with the Pike VM (search().matched). Mix of matching / non-matching.
+  CHECK(Regex("\\d+").test("abc 123"));
+  CHECK(!Regex("\\d+").test("no digits here"));
+  CHECK(Regex("[a-z]+").test("Hello"));
+  CHECK(Regex("(ab|cd)+").test("xxabcdab"));
+  CHECK(!Regex("(ab|cd)+e").test("ababab"));
+  CHECK(Regex("a.c").test("xayc x abc"));
+  CHECK(Regex("\\w+@\\w+").test("mail me at a@b ok"));
+  CHECK(Regex("").test(""));     // empty pattern matches
+  CHECK(Regex("x*").test(""));   // matches empty
+  CHECK(!Regex("zzz").test("the quick brown fox"));
+  // DFA result must equal the Pike VM result for the same input.
+  CHECK(Regex("[0-9]{3}").test("ab123") ==
+        Regex("[0-9]{3}").search("ab123").matched);
+  // Non-ASCII subject falls back to the Pike VM but stays correct.
+  CHECK(Regex("\\w+").test("héllo"));
+  CHECK(Regex("café").test("a café"));
+  // Patterns with anchors / lookaround are not DFA-able -> Pike VM, still right.
+  CHECK(Regex("^abc$").test("abc"));
+  CHECK(Regex("foo(?=bar)").test("foobar"));
+}
+
 void test_linear_time() {
   // `(a+)+$` against all-'a' + a trailing mismatch is the classic ReDoS bomb
   // that hangs backtracking engines. The Pike VM stays linear, so this must
@@ -426,6 +450,7 @@ int main() {
   test_lookbehind_variable();
   test_gpt2_tokenizer();
   test_nullable_quantifiers();
+  test_dfa_boolean();
   test_linear_time();
   test_invalid_patterns();
   test_resource_limits();
