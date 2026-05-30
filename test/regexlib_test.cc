@@ -307,10 +307,14 @@ void test_nullable_quantifiers() {
   CHECK(Regex("(ab)+").search("ababab").str == "ababab");
   // A consuming leading branch still consumes.
   CHECK(Regex("(.|a*)*").search("ab").str == "ab");
-  // KNOWN LIMITATION: an alternation whose FIRST branch is nullable, nested in
-  // an unbounded quantifier (e.g. `(a*|b)*` on "ab"), still over-matches
-  // ("ab" instead of "a") because the pc-only thread dedup does not account
-  // for loop-progress state. Extremely rare in practice; left as a known edge.
+  // FUNDAMENTAL LIMITATION (not a fixable bug): an alternation whose FIRST
+  // branch is nullable, nested in an unbounded quantifier — e.g. `(a*|b)*` on
+  // "ab" yields "ab" where a backtracker yields "a". A second loop iteration
+  // would have to re-traverse the nullable branch's instructions at the same
+  // position, but the pc-dedup that makes matching linear visits each
+  // instruction at most once per position. Honouring the backtracker here
+  // would reintroduce the exponential blow-up the engine exists to avoid; this
+  // is the same class of divergence RE2 documents. Extremely rare in practice.
 }
 
 void test_linear_time() {
