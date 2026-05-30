@@ -356,10 +356,11 @@ struct Parser {
   std::unordered_map<std::string, int> &named;
   bool &icase;
   bool &multiline;
+  bool &dotall;
 
   Parser(std::string_view pattern, std::unordered_map<std::string, int> &named_,
-         bool &icase_, bool &multiline_)
-      : named(named_), icase(icase_), multiline(multiline_) {
+         bool &icase_, bool &multiline_, bool &dotall_)
+      : named(named_), icase(icase_), multiline(multiline_), dotall(dotall_) {
     toks = segment(pattern).graphemes;
   }
 
@@ -403,17 +404,19 @@ struct Parser {
     while (pos + 1 < toks.size() && is(U'(') && toks[pos + 1].size() == 1 &&
            toks[pos + 1][0] == U'?') {
       size_t p = pos + 2;
-      bool ti = false, tm = false;
+      bool ti = false, tm = false, ts = false;
       while (p < toks.size() && toks[p].size() == 1 &&
-             (toks[p][0] == U'i' || toks[p][0] == U'm')) {
+             (toks[p][0] == U'i' || toks[p][0] == U'm' || toks[p][0] == U's')) {
         if (toks[p][0] == U'i') ti = true;
         if (toks[p][0] == U'm') tm = true;
+        if (toks[p][0] == U's') ts = true;
         p++;
       }
       if (p < toks.size() && toks[p].size() == 1 && toks[p][0] == U')' &&
           p > pos + 2) {
         icase = icase || ti;
         multiline = multiline || tm;
+        dotall = dotall || ts;
         pos = p + 1;
       } else {
         break;
@@ -608,17 +611,20 @@ struct Parser {
         pos++;  // consume closing delimiter
         g.cap_index = assign_capture();
         if (g.cap_index >= 0) named[unicode::utf8::encode(name)] = g.cap_index;
-      } else if (c == U'i' || c == U'm') {
+      } else if (c == U'i' || c == U'm' || c == U's') {
         // Inline flag group encountered mid-pattern; treat as global flags.
-        bool ti = false, tm = false;
+        bool ti = false, tm = false, ts = false;
         while (!eof() && toks[pos].size() == 1 &&
-               (toks[pos][0] == U'i' || toks[pos][0] == U'm')) {
+               (toks[pos][0] == U'i' || toks[pos][0] == U'm' ||
+                toks[pos][0] == U's')) {
           if (toks[pos][0] == U'i') ti = true;
           if (toks[pos][0] == U'm') tm = true;
+          if (toks[pos][0] == U's') ts = true;
           pos++;
         }
         icase = icase || ti;
         multiline = multiline || tm;
+        dotall = dotall || ts;
         if (is(U')')) {
           pos++;
           Node empty;
@@ -1124,10 +1130,22 @@ struct MatchResult {
 // Regex
 //===----------------------------------------------------------------------===//
 
+// Pattern-wide flags, OR-combinable: Regex("abc", IgnoreCase | Multiline).
+// They are equivalent to the corresponding leading inline groups (?i)(?m)(?s);
+// inline flags inside the pattern turn the same flags on in addition.
+enum Flag : unsigned {
+  IgnoreCase = 1u << 0,  // (?i) — case-insensitive
+  Multiline = 1u << 1,   // (?m) — ^ and $ also match at line breaks
+  DotAll = 1u << 2,      // (?s) — `.` also matches a line break
+};
+
 class Regex {
  public:
-  explicit Regex(std::string_view pattern) {
-    detail::Parser parser(pattern, named_, icase_, multiline_);
+  explicit Regex(std::string_view pattern, unsigned flags = 0) {
+    icase_ = (flags & IgnoreCase) != 0;
+    multiline_ = (flags & Multiline) != 0;
+    dotall_ = (flags & DotAll) != 0;
+    detail::Parser parser(pattern, named_, icase_, multiline_, dotall_);
     detail::Node root = parser.parse();
     ncap_ = parser.ncap;
     prog_ = detail::Compiler::compile(root, ncap_);
@@ -1190,6 +1208,7 @@ class Regex {
   int ncap_ = 0;
   bool icase_ = false;
   bool multiline_ = false;
+  bool dotall_ = false;
   std::unordered_map<std::string, int> named_;
 
   // Capture slots are shared between threads copy-on-write: ε-transitions
@@ -1376,7 +1395,7 @@ class Regex {
                          sp + 1, n);
             break;
           case Op::Any:
-            if (g && !detail::is_line_break(*g))
+            if (g && (dotall_ || !detail::is_line_break(*g)))
               add_thread(prog, nlist, visited, next_gen, t.pc + 1, t.saves, seg,
                          sp + 1, n);
             break;
@@ -1429,7 +1448,7 @@ class Regex {
                          p - 1, n);
             break;
           case Op::Any:
-            if (g && !detail::is_line_break(*g))
+            if (g && (dotall_ || !detail::is_line_break(*g)))
               add_thread(prog, nlist, visited, next_gen, t.pc + 1, t.saves, seg,
                          p - 1, n);
             break;
@@ -1489,7 +1508,7 @@ class Regex {
                          sp + 1, n);
             break;
           case Op::Any:
-            if (g && !detail::is_line_break(*g))
+            if (g && (dotall_ || !detail::is_line_break(*g)))
               add_thread(prog, nlist, visited, next_gen, t.pc + 1, t.saves, seg,
                          sp + 1, n);
             break;

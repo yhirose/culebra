@@ -33,6 +33,9 @@ void check(bool cond, const char *expr, int line) {
 
 #define CHECK(cond) check(static_cast<bool>(cond), #cond, __LINE__)
 
+using regexlib::DotAll;
+using regexlib::IgnoreCase;
+using regexlib::Multiline;
 using regexlib::Regex;
 using regexlib::RegexError;
 
@@ -147,6 +150,30 @@ void test_boundaries_and_flags() {
   CHECK(Regex("(?i)STRASSE").test("strasse"));
   CHECK(Regex("(?m)^bar$").test("foo\nbar\nbaz"));
   CHECK(!Regex("^bar$").test("foo\nbar\nbaz"));  // without (?m)
+}
+
+void test_constructor_flags() {
+  // IgnoreCase via constructor (no inline (?i) needed).
+  CHECK(Regex("abc", IgnoreCase).test("xxABCxx"));
+  CHECK(Regex("[a-z]+", IgnoreCase).search("ABC").str == "ABC");
+  CHECK(!Regex("abc").test("ABC"));  // default is case-sensitive
+
+  // Multiline via constructor.
+  CHECK(Regex("^bar$", Multiline).test("foo\nbar\nbaz"));
+  CHECK(!Regex("^bar$").test("foo\nbar\nbaz"));
+
+  // DotAll: '.' matches a newline only with the flag (or (?s)).
+  CHECK(Regex("a.c", DotAll).test("a\nc"));
+  CHECK(!Regex("a.c").test("a\nc"));
+  CHECK(Regex("(?s)a.c").test("a\nc"));   // inline (?s)
+  CHECK(Regex("a.*c", DotAll).search("a\n\nc").str == "a\n\nc");
+
+  // Combined flags.
+  CHECK(Regex("^a.b$", Multiline | DotAll).test("x\na\nb\ny"));
+  CHECK(Regex("HELLO", IgnoreCase | DotAll).test("hello"));
+
+  // Constructor flag and inline flag compose (both turn the flag on).
+  CHECK(Regex("a(?i)bc", IgnoreCase).test("ABC"));
 }
 
 void test_find_all_and_replace() {
@@ -315,6 +342,7 @@ int main() {
   test_alternation_and_groups();
   test_named_groups();
   test_boundaries_and_flags();
+  test_constructor_flags();
   test_find_all_and_replace();
   test_byte_offsets();
   test_grapheme_aware();
