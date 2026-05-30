@@ -336,6 +336,8 @@ void test_invalid_patterns() {
   CHECK(rejects("*abc"));        // nothing to repeat
   CHECK(rejects("[abc"));        // unterminated class
   CHECK(rejects("\\"));          // trailing backslash
+  CHECK(rejects("[a-\\"));       // class range ending in a trailing backslash
+  CHECK(rejects("[\\"));         // class with a trailing backslash
   CHECK(rejects("(?P<x>a)"));    // unsupported group construct
   // valid patterns must NOT throw
   CHECK(!rejects("(?<=a+)b"));   // variable lookbehind is supported now

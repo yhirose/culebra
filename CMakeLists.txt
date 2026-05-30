@@ -273,6 +273,13 @@ add_executable(regexlib_test test/regexlib_test.cc)
 target_compile_features(regexlib_test PRIVATE cxx_std_17)
 add_test(NAME regexlib_test COMMAND regexlib_test)
 
+# Deterministic regression fuzzer: gates on oracle-free robustness invariants
+# (no crash/hang, self-consistent match spans, find_all/search agreement) and
+# prints an informational std::regex differential. Run under ASan/UBSan in CI.
+add_executable(regexlib_fuzz test/regexlib_fuzz.cc)
+target_compile_features(regexlib_fuzz PRIVATE cxx_std_17)
+add_test(NAME regexlib_fuzz COMMAND regexlib_fuzz)
+
 # In-progress JIT GC rewrite — see docs/jit_gc_design.md. The new conservative
 # collector (include/jit_gc.h) is a standalone header (no JIT/LLVM link); its
 # Phase 0 tests validate pointer-validation, conservative root scanning, and

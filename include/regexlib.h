@@ -806,6 +806,7 @@ struct Parser {
   // Translate an escape sequence to a literal code point (caller has already
   // consumed the backslash; current token is the escaped char).
   char32_t escaped_literal() {
+    if (eof()) error("trailing backslash");  // e.g. a class range ending in `\`
     char32_t e;
     if (!single_cp(e)) {
       char32_t cp = peek()[0];
