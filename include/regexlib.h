@@ -1286,6 +1286,7 @@ class Regex {
     prog_ = detail::Compiler::compile(root, ncap_);
     extract_prefix();
     analyze_dfa();
+    analyze_first_bytes();
   }
 
   int group_count() const { return ncap_; }
@@ -1362,6 +1363,8 @@ class Regex {
   bool dotall_ = false;
   std::unordered_map<std::string, int> named_;
   std::string prefix_;  // required literal prefix (empty if none); see B1 below
+  std::array<bool, 128> start_bytes_{};  // bytes that can begin a match
+  bool first_byte_ok_ = false;  // start_bytes_ filter is usable (see below)
   bool dfa_ok_ = false;  // program is "regular" -> boolean match via lazy DFA
   int match_pc_ = -1;    // index of the Match instruction
 
@@ -1380,6 +1383,37 @@ class Regex {
       else
         break;
     }
+  }
+
+  // Generalization of the literal prefix (B1) to a leading first-byte set. When
+  // the program is "regular" (no asserts/lookaround/empty-loop) and cannot match
+  // empty, every match's first grapheme is one of the consuming instructions in
+  // the start ε-closure. On an ASCII subject (grapheme index == byte index) we
+  // can scan to the next byte that can begin a match and seed the unanchored NFA
+  // there, instead of seeding it at every dead position. This covers patterns
+  // with no literal prefix — `[a-z]+`, `(foo|bar)`, `\d+` — that memmem cannot.
+  // The scan stays a single unanchored pass (no anchored per-candidate retry),
+  // so it is linear, not quadratic.
+  void analyze_first_bytes() {
+    using Op = detail::Inst::Op;
+    first_byte_ok_ = false;
+    if (!dfa_ok_) return;  // asserts/lookaround/loop break first-byte reasoning
+    std::vector<int> startpcs;
+    std::vector<char> seen(prog_.insts.size(), 0);
+    dfa_closure({0}, startpcs, seen);
+    for (int pc : startpcs) {
+      Op op = prog_.insts[pc].op;
+      if (op == Op::Match) return;  // empty match possible -> every position viable
+      if (op == Op::Any) return;    // matches nearly every byte -> skipping is moot
+    }
+    start_bytes_.fill(false);
+    for (int b = 0; b < 128; b++)
+      for (int pc : startpcs)
+        if (inst_matches_byte(prog_.insts[pc], static_cast<unsigned char>(b))) {
+          start_bytes_[b] = true;
+          break;
+        }
+    first_byte_ok_ = true;
   }
 
   //===--------------------------------------------------------------------===//
@@ -1913,6 +1947,20 @@ class Regex {
           memmem(base + b, slen - b, prefix_.data(), prefix_.size());
       if (!hit) return MatchResult{};
       start = static_cast<int>(static_cast<const char *>(hit) - base);
+    } else if (first_byte_ok_ && seg.ascii) {
+      // No literal prefix, but we know the set of bytes a match can begin with:
+      // skip to the next viable byte before seeding the NFA. One forward scan,
+      // then one unanchored run — both linear, so find_all stays O(n).
+      const char *base = seg.source.data();
+      size_t slen = seg.source.size();
+      size_t b = static_cast<size_t>(start);
+      while (b < slen) {
+        unsigned char c = static_cast<unsigned char>(base[b]);
+        if (c < 128 && start_bytes_[c]) break;
+        b++;
+      }
+      if (b >= slen) return MatchResult{};  // no byte here can begin a match
+      start = static_cast<int>(b);
     }
     return run(seg, start, /*anchored=*/false, sc);
   }
