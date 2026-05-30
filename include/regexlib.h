@@ -263,6 +263,7 @@ namespace detail {
 struct Segmented {
   std::vector<std::u32string> graphemes;  // code points of each cluster
   std::vector<size_t> byte_begin;         // size == graphemes.size() + 1
+  std::string_view source;                // the original UTF-8 subject
 };
 
 inline Segmented segment(std::string_view s8) {
@@ -298,6 +299,7 @@ inline Segmented segment(std::string_view s8) {
     i += len;
   }
   seg.byte_begin.push_back(s8.size());  // sentinel = end of subject
+  seg.source = s8;
   return seg;
 }
 
@@ -1326,9 +1328,42 @@ class Regex {
     };
     Buf *b_ = nullptr;
 
+    // Per-thread free-list of Bufs. Matching allocates a fresh capture buffer
+    // on every Save, so pooling them avoids a malloc/free storm; a reused Buf
+    // keeps its vector capacity, so the copy in write() rarely re-allocates.
+    // The pool is cleaned at thread exit (no leak) and capped (no unbounded
+    // growth), and is per-thread so concurrent matching stays safe.
+    struct Pool {
+      std::vector<Buf *> free;
+      ~Pool() {
+        for (Buf *b : free) delete b;
+      }
+    };
+    static Pool &pool() {
+      static thread_local Pool p;
+      return p;
+    }
+    static Buf *take() {
+      Pool &p = pool();
+      if (!p.free.empty()) {
+        Buf *b = p.free.back();
+        p.free.pop_back();
+        b->rc = 1;
+        return b;
+      }
+      return new Buf{1, {}};
+    }
+    static void give(Buf *b) {
+      Pool &p = pool();
+      if (p.free.size() < 1024)
+        p.free.push_back(b);
+      else
+        delete b;
+    }
+
    public:
     Saves() = default;
-    explicit Saves(int nslots) : b_(new Buf{1, std::vector<int>(nslots, -1)}) {}
+    explicit Saves(int nslots) : b_(take()) { b_->v.assign(nslots, -1); }
     Saves(const Saves &o) : b_(o.b_) {
       if (b_) ++b_->rc;
     }
@@ -1338,13 +1373,14 @@ class Regex {
       return *this;
     }
     ~Saves() {
-      if (b_ && --b_->rc == 0) delete b_;
+      if (b_ && --b_->rc == 0) give(b_);
     }
     const std::vector<int> &operator*() const { return b_->v; }
     // Clone the buffer with one slot updated (copy-on-write).
     Saves write(int slot, int sp) const {
       Saves c;
-      c.b_ = new Buf{1, b_->v};
+      c.b_ = take();
+      c.b_->v = b_->v;  // copy; the pooled buffer's capacity is reused
       c.b_->v[slot] = sp;
       return c;
     }
@@ -1692,13 +1728,11 @@ class Regex {
         return seg.byte_begin.back();
       return seg.byte_begin[gi];
     };
+    // Copy the matched byte range straight from the source — much cheaper than
+    // re-encoding each grapheme cluster back to UTF-8.
     auto slice = [&](int gi_begin, int gi_end) -> std::string {
-      std::string s;
-      for (int gi = gi_begin;
-           gi < gi_end && gi < static_cast<int>(seg.graphemes.size()); gi++) {
-        s += unicode::utf8::encode(seg.graphemes[gi]);
-      }
-      return s;
+      size_t b = byte_of(gi_begin), e = byte_of(gi_end);
+      return std::string(seg.source.substr(b, e >= b ? e - b : 0));
     };
 
     int whole_b = saves[0], whole_e = saves[1];
