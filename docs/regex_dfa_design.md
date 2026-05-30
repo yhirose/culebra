@@ -93,11 +93,20 @@ thing stays linear.
   Pike fallback to the existing `test()` DFA. (Generalising the DFA core to an
   arbitrary program is deferred to M1, where the shape of the forward-DFA call
   is known.) `test()` results unchanged; regression-only.
-- **M1 — pure DFA find_all (max value, min risk).** Capture-free ∧
-  longest-safe ∧ ASCII → pure DFA. Implement the longest-safe static analysis.
-  Forward DFA for `e` + reverse Pike for `s`. Add the find_all differential
-  fuzzer **first**. Build and **measure immediately** (`\w+`, `\d+`, literals);
-  do not proceed to M2 on speculation.
+- **M1 — pure DFA for capture-free ∧ longest-safe ∧ ASCII.** Done in three
+  sub-steps because the unanchored case needs a reverse scan to find the start:
+  - **M1-step1 (done).** `longest-safe` static analysis (`node_longest_safe`:
+    no `Alt`, no lazy `Repeat`). Anchored forward DFA `dfa_match_end` returning
+    the longest match end. Wired into `match()` (anchored at 0 ⇒ no reverse
+    scan needed). Cross-checked by a new fuzzer invariant: DFA `match()` ==
+    Pike `search()` when the leftmost match is anchored at 0.
+  - **M1-step2.** Reverse-compile the whole program; reverse scan from an end
+    `e` to the leftmost start `s` (reuse `sub_match_reverse` infra, generalized
+    to return the leftmost start, clamped to the previous match's end).
+  - **M1-step3.** Wire `search`/`find_all`: unanchored forward DFA finds an end,
+    reverse scan finds `s`, anchored `dfa_match_end` confirms the longest end.
+    Add the find_all DFA-vs-Pike differential. **Measure immediately** (`\w+`,
+    `\d+`, literals); do not proceed to M2 on speculation.
 - **M2 — windowed Pike.** Captures via "DFA window → Pike resolve". Measure
   sparse alternation / log-parse patterns.
 - **M3 — reverse DFA (conditional).** Only if M1/M2 measurement shows the

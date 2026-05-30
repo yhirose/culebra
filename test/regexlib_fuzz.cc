@@ -337,6 +337,20 @@ void invariant_fuzz(int iters) {
         continue;
       }
       check_match(m, subj, pat, subj);
+      // match() takes the forward-DFA path for tier-1 patterns; search() stays
+      // on the Pike VM. They must agree whenever the leftmost match is anchored
+      // at 0 — a genuine DFA-vs-Pike differential (oracle-free).
+      regexlib::MatchResult am;
+      try {
+        am = re->match(subj);
+      } catch (...) {
+        fail("match() threw", pat, subj);
+        continue;
+      }
+      bool anchored = m.matched && m.begin == 0;
+      if (am.matched != anchored) fail("match() != (search anchored at 0)", pat, subj);
+      else if (am.matched && (am.end != m.end || am.str != m.str))
+        fail("match() span != search span at 0", pat, subj);
       // find_all must agree with search on the leftmost match.
       if (m.matched) {
         if (all.empty()) fail("search matched but find_all empty", pat, subj);

@@ -356,6 +356,42 @@ void test_dfa_boolean() {
   }
 }
 
+void test_dfa_match() {
+  // match() takes a forward-DFA fast path for capture-free, longest-safe,
+  // ASCII patterns (M1 tier 1). It must return the same anchored longest match
+  // as the Pike VM.
+  CHECK(Regex("\\w+").match("hello world").str == "hello");
+  CHECK(Regex("\\d+").match("123abc").str == "123");
+  CHECK(!Regex("\\d+").match("abc").matched);      // no match at position 0
+  CHECK(Regex("a.c").match("abc").end == 3);
+  CHECK(Regex("a{2,3}").match("aaaa").str == "aaa");  // greedy = longest
+  CHECK(Regex("ab?c").match("abc").matched);
+  CHECK(Regex("ab?c").match("ac").matched);          // greedy optional skipped
+  CHECK(Regex("[a-z]+").match("abcXYZ").str == "abc");
+  Regex star("x*");
+  CHECK(star.match("yyy").matched);                  // empty match at 0
+  CHECK(star.match("yyy").str == "");
+  CHECK(star.match("xxy").str == "xx");
+  // group 0 is populated even on the DFA path.
+  CHECK(Regex("\\w+").match("foo bar").group(0).str == "foo");
+  // Not longest-safe (alternation) -> Pike path, still correct.
+  CHECK(Regex("cat|dog").match("dog").str == "dog");
+  CHECK(Regex("a|ab").match("ab").str == "a");        // leftmost-first, not "ab"
+  // Non-ASCII subject -> Pike fallback, still correct.
+  CHECK(Regex("\\w+").match("héllo").matched);
+  // State-heavy but longest-safe: cap may force a Pike fallback; result equals
+  // the Pike VM either way (compare against search at position 0).
+  {
+    Regex heavy(".*a.{18}");
+    std::string s = "aaa bbb a 1234567890123456789 ccc";
+    while (s.size() < 70000) s += s;
+    auto m = heavy.match(s);
+    auto sr = heavy.search(s);
+    CHECK(m.matched == (sr.matched && sr.begin == 0));
+    if (m.matched) CHECK(m.end == sr.end);
+  }
+}
+
 void test_linear_time() {
   // `(a+)+$` against all-'a' + a trailing mismatch is the classic ReDoS bomb
   // that hangs backtracking engines. The Pike VM stays linear, so this must
@@ -463,6 +499,7 @@ int main() {
   test_gpt2_tokenizer();
   test_nullable_quantifiers();
   test_dfa_boolean();
+  test_dfa_match();
   test_linear_time();
   test_invalid_patterns();
   test_resource_limits();

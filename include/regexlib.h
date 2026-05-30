@@ -401,6 +401,23 @@ inline Node reverse_ast(const Node &n) {
   return r;
 }
 
+// Conservative "longest-safe" test: true if the leftmost-first (Perl) match end
+// always equals the leftmost-longest (POSIX) end, so a longest-matching DFA may
+// report the match span directly. The two diverge only when alternative
+// priority or laziness chooses a shorter span — `a|ab` (an earlier branch is a
+// prefix of a later one) or any lazy quantifier. We reject both outright: no
+// `Alt` node and no non-greedy `Repeat`. Greedy quantifiers, classes, literals
+// and their concatenations are all longest-safe (e.g. `\w+`, `\d+`, `ab?c`).
+// A false result only costs speed (fall back to the Pike VM), never accuracy.
+inline bool node_longest_safe(const Node &n) {
+  using K = Node::Kind;
+  if (n.kind == K::Alt) return false;
+  if (n.kind == K::Repeat && !n.greedy) return false;
+  for (const auto &k : n.kids)
+    if (!node_longest_safe(k)) return false;
+  return true;
+}
+
 // True if `n` can match the empty string. Used to decide whether an unbounded
 // quantifier needs an empty-iteration guard (only nullable bodies do).
 inline bool node_nullable(const Node &n) {
@@ -1292,6 +1309,7 @@ class Regex {
     extract_prefix();
     analyze_dfa();
     analyze_first_bytes();
+    longest_safe_ = dfa_ok_ && detail::node_longest_safe(root);
   }
 
   int group_count() const { return ncap_; }
@@ -1308,6 +1326,15 @@ class Regex {
 
   // Match anchored at the start of `text` (need not reach the end).
   MatchResult match(std::string_view text) const {
+    // Tier 1 (capture-free ∧ longest-safe ∧ ASCII): the anchored longest match
+    // end comes straight from a forward DFA, no Pike VM. Anchored at 0, so no
+    // reverse scan is needed to find the start. See docs/regex_dfa_design.md.
+    if (longest_safe_ && ncap_ == 0 && is_ascii(text)) {
+      int end = dfa_match_end(text, 0);
+      if (end >= 0) return build_dfa_result(text, 0, end);
+      if (end == -1) return MatchResult{};
+      // end == -2: DFA state cap exceeded — fall through to the Pike VM.
+    }
     auto seg = detail::segment(text);
     Scratch sc;
     return run(seg, 0, /*anchored=*/true, sc);
@@ -1317,15 +1344,7 @@ class Regex {
     // Boolean match is the same under leftmost-first and POSIX semantics, so a
     // lazy DFA can answer it when the program is "regular" and the subject is
     // ASCII. Everything else uses the Pike VM.
-    if (dfa_ok_) {
-      bool ascii = true;
-      for (unsigned char c : text)
-        if (c >= 0x80) {
-          ascii = false;
-          break;
-        }
-      if (ascii) return dfa_test(text);
-    }
+    if (dfa_ok_ && is_ascii(text)) return dfa_test(text);
     return search(text).matched;
   }
 
@@ -1371,6 +1390,7 @@ class Regex {
   std::array<bool, 128> start_bytes_{};  // bytes that can begin a match
   bool first_byte_ok_ = false;  // start_bytes_ filter is usable (see below)
   bool dfa_ok_ = false;  // program is "regular" -> boolean match via lazy DFA
+  bool longest_safe_ = false;  // leftmost-first end == leftmost-longest end
   int match_pc_ = -1;    // index of the Match instruction
 
   // Every match must begin with the pattern's leading run of literal
@@ -1535,6 +1555,92 @@ class Regex {
       if (accept[s]) return true;
     }
     return false;
+  }
+
+  static bool is_ascii(std::string_view text) {
+    for (unsigned char c : text)
+      if (c >= 0x80) return false;
+    return true;
+  }
+
+  // Anchored longest-match end (M1 tier 1). For a regular, longest-safe program
+  // on an ASCII subject, return the byte offset where the longest match that
+  // starts exactly at `from` ends, or -1 if the pattern does not match there.
+  // Because the program is longest-safe, this longest end equals the engine's
+  // leftmost-first end. Returns -2 if the DFA state cap is exceeded (caller
+  // falls back to the Pike VM). No re-seeding: this is anchored, not a search.
+  int dfa_match_end(std::string_view text, int from) const {
+    int psz = static_cast<int>(prog_.insts.size());
+    std::map<std::vector<int>, int> intern;
+    std::vector<std::vector<int>> states;
+    std::vector<char> accept;
+    std::vector<std::array<int, 128>> trans;
+    std::vector<char> seen(psz, 0);
+
+    auto make_state = [&](std::vector<int> pcs) -> int {
+      std::sort(pcs.begin(), pcs.end());
+      pcs.erase(std::unique(pcs.begin(), pcs.end()), pcs.end());
+      auto it = intern.find(pcs);
+      if (it != intern.end()) return it->second;
+      int id = static_cast<int>(states.size());
+      bool acc = std::find(pcs.begin(), pcs.end(), match_pc_) != pcs.end();
+      intern.emplace(pcs, id);
+      states.push_back(std::move(pcs));
+      accept.push_back(acc);
+      std::array<int, 128> t;
+      t.fill(-1);
+      trans.push_back(t);
+      return id;
+    };
+
+    std::vector<int> startpcs;
+    dfa_closure({0}, startpcs, seen);
+    int s = make_state(std::move(startpcs));
+    int last_accept = accept[s] ? from : -1;
+
+    const unsigned char *p =
+        reinterpret_cast<const unsigned char *>(text.data());
+    int n = static_cast<int>(text.size());
+    for (int i = from; i < n; i++) {
+      if (states[s].empty()) break;  // dead: the match cannot extend further
+      unsigned char b = p[i];
+      int nxt = trans[s][b];
+      if (nxt < 0) {
+        std::vector<int> seeds;
+        for (int pc : states[s])
+          if (pc != match_pc_ && inst_matches_byte(prog_.insts[pc], b))
+            seeds.push_back(pc + 1);
+        std::fill(seen.begin(), seen.end(), 0);
+        std::vector<int> outpcs;
+        dfa_closure(std::move(seeds), outpcs, seen);  // empty seeds -> dead state
+        nxt = make_state(std::move(outpcs));
+        trans[s][b] = nxt;  // indexed after make_state (vectors may have grown)
+        if (static_cast<int>(states.size()) > limits::kMaxDfaStates) return -2;
+      }
+      s = nxt;
+      if (accept[s]) last_accept = i + 1;
+    }
+    return last_accept;
+  }
+
+  // Build the result for a capture-free DFA match over an ASCII byte range
+  // [b, e). On an ASCII subject the byte offset is the grapheme index, so no
+  // segmentation is needed.
+  MatchResult build_dfa_result(std::string_view text, int b, int e) const {
+    MatchResult r;
+    r.matched = true;
+    r.begin = static_cast<size_t>(b);
+    r.end = static_cast<size_t>(e);
+    r.begin_grapheme = b;
+    r.end_grapheme = e;
+    r.str = std::string(text.substr(b, e - b));
+    Capture c;
+    c.matched = true;
+    c.begin = r.begin;
+    c.end = r.end;
+    c.str = r.str;
+    r.groups.assign(1, std::move(c));  // group 0 only (ncap_ == 0)
+    return r;
   }
 
 
