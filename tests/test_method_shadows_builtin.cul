@@ -1,0 +1,34 @@
+// Regression: a class instance's OWN method must shadow a same-named builtin
+// method, on every backend. Names like find / split / match / map / min are
+// builtin methods on Array/String; defining them on a class must NOT mis-
+// dispatch to the builtin (the JIT used to do this — interp always shadowed).
+// The builtin must still apply when the receiver is an Array/String.
+
+class Box {
+  new(tag) { this._tag = tag }
+  // shadows Array.find / String.split / Array.map / number min(...)
+  find(x) { "box-find:" + to_string(x) }
+  split(x) { "box-split:" + to_string(x) }
+  map(x) { "box-map:" + to_string(x) }
+  match(x) { "box-match:" + to_string(x) }
+}
+
+let b = Box.new("t")
+
+// user methods win on the class instance
+assert_eq(b.find(5), "box-find:5")
+assert_eq(b.split("z"), "box-split:z")
+assert_eq(b.map(9), "box-map:9")
+assert_eq(b.match(1), "box-match:1")
+
+// builtins still apply on Array / String receivers
+assert_eq([3, 1, 2].find(fn (x) { x == 2 }), 2)
+assert_eq("a,b,c".split(",").size(), 3)
+assert_eq([1, 2, 3].map(fn (x) { x * 2 })[2], 6)
+
+// a builtin the user class does not define still reaches the builtin
+let xs = [5, 1, 9]
+xs.sort_by(fn (x) { x })
+assert_eq(xs[0], 1)
+
+puts("test_method_shadows_builtin: ok")

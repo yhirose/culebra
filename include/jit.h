@@ -14455,6 +14455,16 @@ struct JIT {
         return r;
       }
     }
+    // A user class may define a method whose name collides with a builtin
+    // (`find`, `split`, `map`, …). The interpreter gives the user's own method
+    // priority over the builtin; the JIT must match. For a builtin-named
+    // method, branch at runtime: if the receiver is an Object whose class
+    // defines the method, call it; otherwise run the builtin. (Mirrors
+    // compile_method_or_ufcs, which does the same against a free-function
+    // fallback, and the Set add/remove dispatch above.)
+    if (known_builtin_methods().contains(method)) {
+      return compile_user_method_over_builtin(method, argsAst, receiver);
+    }
     if (auto* r =
             compile_builtin_method(method, argsAst, receiver)) {
       // Uniform receiver-ownership convention for builtin methods: the
@@ -14640,6 +14650,66 @@ struct JIT {
     auto phi = builder_.CreatePHI(valueType_, 2, "ma.res");
     phi->addIncoming(setRes, setEnd);
     phi->addIncoming(objRes, objEnd);
+    return phi;
+  }
+
+  // Builtin-named method on a user class: give the class's own method priority
+  // over the builtin (interpreter parity). Runtime branch — Object whose class
+  // (proto-aware) defines `method` → call it; otherwise the builtin. Args are
+  // compiled inside whichever branch runs, so a side-effecting argument is
+  // evaluated exactly once. Mirrors compile_method_or_ufcs + the receiver
+  // ownership of compile_method_call (user path keeps receiver; builtin path
+  // releases it).
+  llvm::Value* compile_user_method_over_builtin(const std::string& method,
+                                                const peg::Ast& argsAst,
+                                                llvm::Value* receiver) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto tag = extract_tag(receiver);
+    auto isObj =
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT), "umb.is.obj");
+
+    auto checkBB = llvm::BasicBlock::Create(ctx_, "umb.check", fn);
+    auto userBB = llvm::BasicBlock::Create(ctx_, "umb.user", fn);
+    auto builtinBB = llvm::BasicBlock::Create(ctx_, "umb.builtin", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "umb.merge", fn);
+
+    builder_.CreateCondBr(isObj, checkBB, builtinBB);
+
+    // checkBB: does the object's class define `method` (own + proto)?
+    builder_.SetInsertPoint(checkBB);
+    auto methodVal = compile_property_get(receiver, method);  // borrowed; nil if absent
+    auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
+                                        builder_.getInt8(TAG_FUNC), "umb.is.func");
+    builder_.CreateCondBr(isFunc, userBB, builtinBB);
+
+    // userBB: the user-defined function shadows the builtin. Use the same
+    // path as compile_method_call's final fallback (14505) — it compiles the
+    // args from `argsAst` and binds `this` correctly for both class instances
+    // (methods take `this`) and namespace objects (functions ignore it).
+    builder_.SetInsertPoint(userBB);
+    auto userRes = compile_function_call(argsAst, methodVal, receiver);
+    auto userEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    // builtinBB: not an Object with the method. Try the builtin; if it declines
+    // (e.g. an arity it doesn't implement — `min(a,b)` is not Array.min()), fall
+    // back to the user/namespace method path, exactly as compile_method_call
+    // does when compile_builtin_method returns null.
+    builder_.SetInsertPoint(builtinBB);
+    llvm::Value* builtinRes = compile_builtin_method(method, argsAst, receiver);
+    if (builtinRes) {
+      emit_value_release(receiver);  // builtin borrows the receiver
+    } else {
+      auto fbMethodVal = compile_property_get(receiver, method);
+      builtinRes = compile_function_call(argsAst, fbMethodVal, receiver);
+    }
+    auto builtinEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "umb.res");
+    phi->addIncoming(userRes, userEnd);
+    phi->addIncoming(builtinRes, builtinEnd);
     return phi;
   }
 
