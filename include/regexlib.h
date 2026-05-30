@@ -1310,8 +1310,14 @@ class Regex {
     analyze_dfa();
     analyze_first_bytes();
     longest_safe_ = dfa_ok_ && detail::node_longest_safe(root);
-    // Tier-1 find DFA needs a reverse program to recover match starts.
-    if (longest_safe_ && ncap_ == 0) {
+    // The find DFA needs a reverse program to recover a match's leftmost start.
+    // Built for every longest-safe program: tier 1 (capture-free) uses it for a
+    // pure-DFA match; tier 2 (longest-safe but with captures) uses it to
+    // localize the start, then the Pike VM resolves the captures. Restricted to
+    // longest-safe so the unanchored "first end" really is the leftmost match's
+    // end — alternation breaks that (an earlier start can end later), so
+    // longest-unsafe patterns stay on the Pike VM. See docs/regex_dfa_design.md.
+    if (longest_safe_) {
       rev_prog_ = detail::Compiler::compile(detail::reverse_ast(root), ncap_);
       for (size_t i = 0; i < rev_prog_.insts.size(); i++)
         if (rev_prog_.insts[i].op == detail::Inst::Op::Match)
@@ -1338,6 +1344,14 @@ class Regex {
     }
     auto seg = detail::segment(text);
     Scratch sc;
+    // Tier 2 (longest-safe with captures, ASCII): DFA skips dead regions to the
+    // start, the Pike VM resolves the end + captures.
+    if (longest_safe_ && ncap_ > 0 && have_rev_ && is_ascii(text)) {
+      LazyDfa fu(*this, prog_, match_pc_, /*reseed=*/true);
+      LazyDfa rv(*this, rev_prog_, rev_match_pc_, /*reseed=*/false);
+      MatchResult r;
+      if (dfa_search_capture(fu, rv, seg, text, 0, sc, r)) return r;
+    }
     return search_at_or_after(seg, 0, sc);
   }
 
@@ -1373,6 +1387,10 @@ class Regex {
       std::vector<MatchResult> out;
       if (dfa_find_all(text, out)) return out;
       // otherwise the state cap tripped — fall through to the Pike VM.
+    } else if (longest_safe_ && ncap_ > 0 && have_rev_ && is_ascii(text)) {
+      // Tier 2 (longest-safe with captures): DFA prefilter + Pike captures.
+      std::vector<MatchResult> out;
+      if (dfa_find_all_capture(text, out)) return out;
     }
     auto seg = detail::segment(text);
     std::vector<MatchResult> out;
@@ -1414,6 +1432,7 @@ class Regex {
   std::string prefix_;  // required literal prefix (empty if none); see B1 below
   std::array<bool, 128> start_bytes_{};  // bytes that can begin a match
   bool first_byte_ok_ = false;  // start_bytes_ filter is usable (see below)
+  bool first_byte_sparse_ = false;  // start_bytes_ is small -> dead-byte skip pays
   bool dfa_ok_ = false;  // program is "regular" -> boolean match via lazy DFA
   bool longest_safe_ = false;  // leftmost-first end == leftmost-longest end
   int match_pc_ = -1;    // index of the Match instruction
@@ -1463,13 +1482,19 @@ class Regex {
       if (op == Op::Any) return;    // matches nearly every byte -> skipping is moot
     }
     start_bytes_.fill(false);
+    int count = 0;
     for (int b = 0; b < 128; b++)
       for (int pc : startpcs)
         if (inst_matches_byte(prog_.insts[pc], static_cast<unsigned char>(b))) {
           start_bytes_[b] = true;
+          count++;
           break;
         }
     first_byte_ok_ = true;
+    // A small first-byte set is "rare" in arbitrary text, so skipping dead bytes
+    // to the next viable one pays off; a large set (e.g. `\w` ≈ 63 bytes) is
+    // common, so the skip rarely fires and only adds per-byte overhead.
+    first_byte_sparse_ = count <= 32;
   }
 
   //===--------------------------------------------------------------------===//
@@ -1528,6 +1553,8 @@ class Regex {
       }
     }
   }
+
+  struct Scratch;  // reusable Pike VM buffers, defined below; tier 2 needs it
 
   // Shared lazy-DFA driver. A state is a sorted, de-duplicated set of program
   // counters (interned to an int id); byte transitions are built on demand. A
@@ -1635,6 +1662,18 @@ class Regex {
     int n = static_cast<int>(text.size());
     for (int i = from; i < n; i++) {
       if (!d.reseed && d.is_dead(s)) break;  // anchored: match cannot extend
+      // Unanchored and back at the start state (no match in progress): every
+      // match must begin with a known first byte, so skip the dead bytes to the
+      // next viable one (the B1/B4 prefilter, folded into the DFA scan). Only
+      // when the first-byte set is sparse — otherwise the skip rarely fires.
+      if (d.reseed && s == d.start_state && first_byte_sparse_) {
+        while (i < n) {
+          unsigned char c = p[i];
+          if (c < 128 && start_bytes_[c]) break;
+          i++;
+        }
+        if (i >= n) break;
+      }
       s = d.next(s, p[i]);
       if (s == LazyDfa::kCap) return LazyDfa::kCap;
       if (d.is_accept(s)) {
@@ -1664,23 +1703,30 @@ class Regex {
     return leftmost;
   }
 
-  // Leftmost match at or after byte `from`, found purely with the DFA (tier 1),
-  // using three reusable DFAs: unanchored forward (`fu`), anchored forward
-  // (`fa`), reverse (`rv`). Stages: (1) `fu` finds the first match end; (2) `rv`
-  // recovers its leftmost start `s`; (3) `fa` confirms the longest end from `s`.
-  // Returns true and writes `out` on success; false only if a stage hit the cap
-  // (caller falls back to the Pike VM). Subject must be ASCII.
+  // Locate the leftmost match start at or after byte `from`, shared by both
+  // find tiers: the unanchored forward DFA finds the first match end, then the
+  // reverse DFA recovers that match's leftmost start. Returns the start `s`
+  // (>= from), -1 if there is no match, or kCap if a DFA hit the state cap.
+  int dfa_locate_start(LazyDfa &fu, LazyDfa &rv, std::string_view text,
+                       int from) const {
+    int e0 = dfa_forward_scan(fu, text, from, /*longest=*/false);
+    if (e0 == LazyDfa::kCap) return LazyDfa::kCap;
+    if (e0 == -1) return -1;
+    return dfa_reverse_scan(rv, text, e0, /*floor=*/from);  // s, -1, or kCap
+  }
+
+  // Leftmost match at or after byte `from`, found purely with the DFA (tier 1):
+  // locate the start `s`, then the anchored forward DFA (`fa`) confirms the
+  // longest end from `s`. Returns true and writes `out` on success; false only
+  // if a DFA hit the cap (caller falls back to the Pike VM). Subject is ASCII.
   bool dfa_search_with(LazyDfa &fu, LazyDfa &fa, LazyDfa &rv,
                        std::string_view text, int from, MatchResult &out) const {
-    int e0 = dfa_forward_scan(fu, text, from, /*longest=*/false);
-    if (e0 == LazyDfa::kCap) return false;
-    if (e0 == -1) {
+    int s = dfa_locate_start(fu, rv, text, from);
+    if (s == LazyDfa::kCap) return false;
+    if (s == -1) {
       out = MatchResult{};
       return true;  // no match — definitive
     }
-    int s = dfa_reverse_scan(rv, text, e0, /*floor=*/from);
-    if (s == LazyDfa::kCap) return false;
-    // e0 was a real match end, so a start in [from, e0] must exist.
     int e = dfa_forward_scan(fa, text, s, /*longest=*/true);
     if (e == LazyDfa::kCap) return false;
     out = build_dfa_result(text, s, e);
@@ -1701,6 +1747,48 @@ class Regex {
       if (!dfa_search_with(fu, fa, rv, text, start, m)) return false;
       if (!m.matched) break;
       int b = static_cast<int>(m.begin), e = static_cast<int>(m.end);
+      out.push_back(std::move(m));
+      start = (e > b) ? e : e + 1;  // advance past an empty match
+    }
+    return true;
+  }
+
+  // Tier 2 (longest-safe but with capture groups): the DFA skips dead regions
+  // to the leftmost start `s`, then an anchored Pike run at `s` produces the
+  // leftmost-first match with its captures. Correct because the program is
+  // longest-safe — without alternation the unanchored first end belongs to the
+  // leftmost-starting match, so reverse finds the true leftmost start. (For
+  // longest-unsafe patterns this fails and they use the full Pike VM instead.)
+  // Returns true and writes `out`; false on cap (caller falls back to Pike).
+  bool dfa_search_capture(LazyDfa &fu, LazyDfa &rv, const detail::Segmented &seg,
+                          std::string_view text, int from, Scratch &sc,
+                          MatchResult &out) const {
+    int s = dfa_locate_start(fu, rv, text, from);
+    if (s == LazyDfa::kCap) return false;
+    if (s == -1) {
+      out = MatchResult{};
+      return true;  // no match — definitive
+    }
+    // ASCII: byte offset == grapheme index, so `s` is a valid grapheme start.
+    out = run(seg, s, /*anchored=*/true, sc);
+    return true;
+  }
+
+  // All non-overlapping matches via tier 2 (DFA prefilter + Pike captures). The
+  // two DFAs and the segmentation are set up once and reused across matches.
+  bool dfa_find_all_capture(std::string_view text,
+                            std::vector<MatchResult> &out) const {
+    LazyDfa fu(*this, prog_, match_pc_, /*reseed=*/true);
+    LazyDfa rv(*this, rev_prog_, rev_match_pc_, /*reseed=*/false);
+    auto seg = detail::segment(text);
+    Scratch sc;
+    int n = static_cast<int>(text.size());
+    int start = 0;
+    while (start <= n) {
+      MatchResult m;
+      if (!dfa_search_capture(fu, rv, seg, text, start, sc, m)) return false;
+      if (!m.matched) break;
+      int b = m.begin_grapheme, e = m.end_grapheme;
       out.push_back(std::move(m));
       start = (e > b) ? e : e + 1;  // advance past an empty match
     }

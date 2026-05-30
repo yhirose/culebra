@@ -123,27 +123,39 @@ thing stays linear.
     DFA and was being recomputed ~3× per match — a /simplify pass fixed it for
     another ~2.3×.) `\w+` now beats std::regex (~11) decisively. Dense patterns
     no longer cap at ~2×, but this is still not RE2's order of magnitude.
-- **M2 — windowed Pike (ATTEMPTED, ABANDONED).** The plan was: for captures /
-  longest-unsafe DFA-able patterns, reuse the M1 prefilter (unanchored forward
-  → first end `e0` → reverse → leftmost start `s`), then run an anchored Pike
-  at `s` for the end + captures. **The fuzzer (DFA-vs-forced-Pike differential)
-  immediately found it wrong on alternation.** Root cause: the unanchored
-  forward DFA finds the *earliest-ending* match, but the *leftmost-starting*
-  match can start earlier and end later — e.g. `\d.|[a]*\w{3}\w` on `"c1BA"`:
-  the DFA finds `1B` (`\d.`, ends at 3) first, so reverse localizes start 1 and
-  misses the true leftmost match `c1BA` (`[a]*\w{3}\w`, starts at 0, ends at 4).
-  Tier 1 was immune only because longest-safe ⇒ no alternation, which happens
-  to also rule out earlier-start/later-end; tier 2's target set is exactly the
-  patterns where it breaks. Correctly localizing the leftmost-*starting* match
-  needs a priority/leftmost-aware DFA (the subset DFA carries no thread
-  priority) — that is M3-scale, not a quick win. **Reverted.** Captures /
-  longest-unsafe patterns stay on the Pike VM with the B1/B4 prefilters (which
-  already skip dead regions by literal prefix / first-byte set).
-- **M3 — priority/leftmost-aware DFA (open).** The real prerequisite for
-  accelerating tier-2 patterns: a forward DFA whose states carry NFA thread
-  priority so it reports the leftmost-first match end directly (RE2-style).
-  Large; only worth it if tier-2 patterns prove to be a measured bottleneck in
-  a real workload. Not scheduled.
+- **M2 — DFA prefilter + Pike captures (done, restricted to longest-safe).**
+  For DFA-able patterns that have captures but are **longest-safe** (no
+  alternation, no lazy): reuse the M1 prefilter (unanchored forward → first end
+  `e0` → reverse → leftmost start `s`), then run an anchored Pike at `s` for the
+  end + captures (`dfa_search_capture` / `dfa_find_all_capture`). The leftmost
+  *start* is semantics-independent, and longest-safe guarantees the unanchored
+  first end belongs to the leftmost-starting match, so reverse finds the true
+  start.
+
+  A first, broader attempt (gate = any DFA-able pattern) was **wrong and the
+  fuzzer's DFA-vs-forced-Pike differential caught it on alternation**: the
+  unanchored DFA finds the *earliest-ending* match, but the *leftmost-starting*
+  match can start earlier and end later — `\d.|[a]*\w{3}\w` on `"c1BA"` finds
+  `1B` (ends at 3) first, missing `c1BA` (starts at 0, ends at 4). Restricting
+  the gate to longest-safe (no alternation) fixes it — exactly the structures
+  where first-end ≠ leftmost-start are excluded.
+
+  Folded the B1/B4 first-byte skip into the DFA forward scan (skip dead bytes
+  while in the start state) so a rare-first-byte pattern in dead-region-heavy
+  text isn't slower than the old Pike+memchr path; gated on a *sparse*
+  first-byte set so dense patterns (`\w` ≈ 63 bytes) pay no per-byte overhead.
+
+  Measured (1MB find_all) vs the Pike baseline: `(\w+)@(\w+)` in prose
+  8→98 MB/s, `(\d+)-(\d+)` ~8→~100 (**~12-13×**, the DFA byte-step beats Pike's
+  per-position add_thread). Bonus: tier-1 `\d+` in letters 385→1406 (first-byte
+  skip). No regression on `\w+` dense (43→43).
+- **M3 — priority/leftmost-aware DFA (open, likely unnecessary).** The only
+  thing M2 does *not* accelerate is **longest-unsafe** (alternation / lazy)
+  patterns, which need a forward DFA whose states carry NFA thread priority to
+  report the leftmost-first end directly (RE2-style). Large. Only worth it if
+  alternation patterns prove to be a measured bottleneck in a real workload —
+  the common capture patterns are longest-safe and already covered by M2. Not
+  scheduled.
 
 ## Invariants (non-negotiable)
 

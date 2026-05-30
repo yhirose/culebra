@@ -324,14 +324,15 @@ void invariant_fuzz(int iters) {
       fail("non-RegexError thrown at construction", pat, "");
       continue;
     }
-    // Wrapping the pattern in a capture group forces the Pike VM (it is no
-    // longer capture-free, so the tier-1 DFA gate fails), while group 0 — the
-    // whole match — is identical to the unwrapped pattern. This gives an
-    // oracle-free DFA-vs-Pike reference for search()/find_all(), which both
-    // take the DFA path for tier-1 patterns.
+    // Appending an always-true zero-width assertion forces the full Pike VM:
+    // the assertion makes the program non-DFA-able (so the tier-1/tier-2 DFA
+    // paths bow out), while `(?:\b|\B)` matches at every position and consumes
+    // nothing, so the whole match is identical to the bare pattern. This is an
+    // oracle-free DFA-vs-Pike reference — search/find_all take the DFA path for
+    // DFA-able patterns, this forces the Pike path for the same matches.
     regexlib::Regex *pike = nullptr;
     try {
-      pike = new regexlib::Regex("(" + pat + ")");
+      pike = new regexlib::Regex("(?:" + pat + ")(?:\\b|\\B)");
     } catch (...) {
       pike = nullptr;  // wrapping may hit a limit; skip the differential then
     }
