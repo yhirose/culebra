@@ -75,6 +75,11 @@ constexpr int kMaxNestingDepth = 1000;         // group / lookaround nesting
 // of running for many seconds. Real patterns stay far below this.
 constexpr long kStepsPerPos = 1 << 11;  // 2048 ε-closure steps per position
 constexpr long kStepsBase = 1 << 20;    // slack so short subjects never trip
+// Lazy-DFA state cap. A "regular" pattern can still need exponentially many DFA
+// states (e.g. `.*a.{18}` needs 2^18), so bound the interned state count; the
+// matcher abandons the DFA and falls back to the Pike VM (which is unaffected)
+// when this is exceeded. See docs/regex_dfa_design.md.
+constexpr int kMaxDfaStates = 1 << 16;  // 65536 interned DFA states
 }  // namespace limits
 
 //===----------------------------------------------------------------------===//
@@ -1520,6 +1525,11 @@ class Regex {
         dfa_closure(std::move(seeds), outpcs, seen);
         nxt = make_state(std::move(outpcs));
         trans[s][b] = nxt;  // indexed after make_state (vectors may have grown)
+        // State cap: a regular pattern can still need exponentially many DFA
+        // states. Abandon the DFA and let the Pike VM answer — the boolean
+        // result is identical and the VM is unaffected by this blowup.
+        if (static_cast<int>(states.size()) > limits::kMaxDfaStates)
+          return search(text).matched;
       }
       s = nxt;
       if (accept[s]) return true;

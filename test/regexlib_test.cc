@@ -342,6 +342,18 @@ void test_dfa_boolean() {
   // Patterns with anchors / lookaround are not DFA-able -> Pike VM, still right.
   CHECK(Regex("^abc$").test("abc"));
   CHECK(Regex("foo(?=bar)").test("foobar"));
+  // State-heavy "regular" pattern: `.*a.{N}` needs ~2^N DFA states in the
+  // limit. The state cap abandons the DFA and falls back to the Pike VM, which
+  // must give the same boolean. This guards the M0 safety net (the answer is
+  // identical whether or not the cap trips on a given input).
+  {
+    Regex heavy(".*a.{18}");
+    std::string s = "the quick brown fox a jumps 12345 over xyz a lazy dog; ";
+    while (s.size() < 80000) s += s;
+    CHECK(heavy.test(s) == heavy.search(s).matched);
+    std::string none(80000, 'b');  // no 'a' -> no match on either path
+    CHECK(heavy.test(none) == heavy.search(none).matched);
+  }
 }
 
 void test_linear_time() {
