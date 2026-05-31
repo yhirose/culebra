@@ -2115,6 +2115,45 @@ inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
       re->replace_all(_ns_adapt::take_str(a[1]), _ns_adapt::take_str(a[2]));
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
+// find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
+// twin in stdlib_interp.h: leftmost match at/after byte `pos` with absolute
+// offsets, plus the grapheme-correct resume position.
+inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  std::string s = _ns_adapt::take_str(a[1]);
+  long pos = static_cast<long>(a[2].data);
+  auto* out = culebra_runtime_object_new();
+  auto miss = [&](long nxt) {
+    culebra_runtime_object_set(out, "m", false, TAG_NIL, 0, 0, 0);
+    culebra_runtime_object_set(out, "nxt", false, TAG_LONG,
+                               static_cast<int64_t>(nxt), 0, 0);
+    return _ns_adapt::v_object(out);
+  };
+  if (pos < 0 || static_cast<size_t>(pos) > s.size())
+    return miss(static_cast<long>(s.size()) + 1);
+  std::string_view suffix = std::string_view(s).substr(pos);
+  auto m = re->search(suffix);
+  if (!m.matched) return miss(static_cast<long>(s.size()) + 1);
+  long next;
+  if (m.end > m.begin) {
+    next = pos + static_cast<long>(m.end);
+  } else {
+    auto seg = regexlib::detail::segment(suffix);
+    size_t gi = static_cast<size_t>(m.end_grapheme) + 1;
+    size_t nb =
+        gi < seg.byte_begin.size() ? seg.byte_begin[gi] : suffix.size() + 1;
+    next = pos + static_cast<long>(nb);
+  }
+  m.begin += pos;
+  m.end += pos;
+  for (auto& g : m.groups)
+    if (g.matched) { g.begin += pos; g.end += pos; }
+  auto mv = _jit_regex_match(m);
+  culebra_runtime_object_set(out, "m", false, mv.tag, mv.data, 0, 0);
+  culebra_runtime_object_set(out, "nxt", false, TAG_LONG,
+                             static_cast<int64_t>(next), 0, 0);
+  return _ns_adapt::v_object(out);
+}
 inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
   std::string s = _ns_adapt::take_str(a[1]);
@@ -2246,6 +2285,7 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "test",        2, &_ns_regex_test},
   {"_Regex", "find",        2, &_ns_regex_find},
   {"_Regex", "match",       2, &_ns_regex_match},
+  {"_Regex", "find_from",   3, &_ns_regex_find_from},
   {"_Regex", "find_all",    2, &_ns_regex_find_all},
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},

@@ -1333,10 +1333,11 @@ string `` `...` `` — also raw, but it may hold `'`, `"`, and `{`. Flags are
 either passed to `compile` as a string (`Regex.compile('hello', "i")`) or inline
 in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 
-| Constructor | Result |
+| Constructor / static | Result |
 | --- | --- |
 | `Regex.compile(pat)` | `Regex` — compile (reused); bad pattern raises |
 | `Regex.compile(pat, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
+| `Regex.escape(s)` | `String` — backslash-quote every metacharacter so `s` matches literally |
 
 | Method | Result |
 | --- | --- |
@@ -1344,7 +1345,8 @@ in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 | `re.find(s)` | `Match` or `nil` — leftmost match |
 | `re.match(s)` | `Match` or `nil` — match anchored at the start |
 | `re.find_all(s)` | `[Match]` — all non-overlapping matches |
-| `re.replace_all(s, repl)` | `String` — `$1` / `$<name>` / `$$` in `repl` |
+| `re.find_iter(s)` | `Iterator<Match>` — lazy; supports early exit (`.take(n)`) |
+| `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — split `s` on matches |
 
 A `Match` is a data object (and `nil` means no match):
@@ -1371,9 +1373,14 @@ m.named["..."]                                   // named via (?<name>...)
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
 Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
+d.replace_all("a1 b22", fn (m) { "<{m.value}>" })// => "a<1> b<22>" (callback)
 Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
 Regex.compile('hello', "i").test("HELLO world")  // => true (flag arg)
 d.find("xyz")?.value ?? "none"                   // composes with ?. / ??
+
+for m in d.find_iter("a1 b22") { ... }           // lazy; stop early any time
+d.find_iter("1 2 3").take(2).collect().size()    // => 2 (no full scan)
+Regex.escape("a.b(c)")                           // => `a\.b\(c\)` (literal match)
 ```
 
 The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy

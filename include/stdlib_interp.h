@@ -2077,6 +2077,56 @@ inline Value make_regex_primitives_namespace() {
   ns.initialize("find", search_fn(false), false);
   ns.initialize("match", search_fn(true), false);
 
+  // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. Drives the
+  // lazy `Regex.find_iter` generator: the leftmost match at/after byte `pos`
+  // (absolute offsets) plus the grapheme-correct resume position — one
+  // grapheme past an empty match, so the generator always advances.
+  ns.initialize(
+      "find_from",
+      Value(FunctionValue(
+          {{"pattern", false, "String"sv},
+           {"s", false, "String"sv},
+           {"pos", false, "Long"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            auto re = regex_from_env(env);
+            std::string s{env->get("s").to_string()};
+            long pos = env->get("pos").to_long();
+            ObjectValue out;
+            auto miss = [&](long nxt) {
+              out.initialize("m", Value(), false);
+              out.initialize("nxt", Value(nxt), false);
+              return Value(std::move(out));
+            };
+            if (pos < 0 || static_cast<size_t>(pos) > s.size())
+              return miss(static_cast<long>(s.size()) + 1);
+            std::string_view suffix = std::string_view(s).substr(pos);
+            try {
+              auto m = re->search(suffix);
+              if (!m.matched) return miss(static_cast<long>(s.size()) + 1);
+              long next;
+              if (m.end > m.begin) {
+                next = pos + static_cast<long>(m.end);
+              } else {
+                auto seg = regexlib::detail::segment(suffix);
+                size_t gi = static_cast<size_t>(m.end_grapheme) + 1;
+                size_t nb = gi < seg.byte_begin.size() ? seg.byte_begin[gi]
+                                                       : suffix.size() + 1;
+                next = pos + static_cast<long>(nb);
+              }
+              m.begin += pos;
+              m.end += pos;
+              for (auto& g : m.groups)
+                if (g.matched) { g.begin += pos; g.end += pos; }
+              out.initialize("m", regex_match_value(m), false);
+              out.initialize("nxt", Value(next), false);
+              return Value(std::move(out));
+            } catch (const regexlib::RegexError& e) {
+              regex_rethrow(e, env);
+              return Value();
+            }
+          })),
+      false);
+
   ns.initialize("find_all",
                 Value(FunctionValue(
                     ps,
@@ -2661,6 +2711,18 @@ inline constexpr const char* MATCHERS_MODULE_SOURCE =
 // single-quoted raw strings ('\d+'). A Match is a data object
 // { value, start, end, groups: [Group|nil], named: {name: Group} }; no-match nil.
 inline constexpr const char* REGEX_MODULE_SOURCE =
+    // Lazy match iterator. A class method cannot be a generator (the CPS
+    // transform only rewrites top-level `fn` declarations), so `find_iter`
+    // delegates here. `_Regex.find_from` returns { m, next } where `next`
+    // is the grapheme-correct resume byte, so empty matches still advance.
+    "fn _regex_find_iter(pat, s) { "
+    "let mut pos = 0; "
+    "while pos <= s.size() { "
+    "let r = _Regex.find_from(pat, s, pos); "
+    "if r.m == nil { return }; "
+    "yield r.m; "
+    "pos = r.nxt "
+    "} }; "
     "let _regex_module = fn () { "
     "class Regex { "
     "new(pattern) { this._pat = pattern; _Regex.check(pattern) } "
@@ -2668,11 +2730,24 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "find(s) { _Regex.find(this._pat, s) } "
     "match(s) { _Regex.match(this._pat, s) } "
     "find_all(s) { _Regex.find_all(this._pat, s) } "
-    "replace_all(s, repl) { _Regex.replace_all(this._pat, s, repl) } "
+    "find_iter(s) { _regex_find_iter(this._pat, s) } "
+    // String repl -> native $1/$<name> template; Function repl -> call it
+    // with each Match and splice the returned String between matches.
+    "replace_all(s, repl) { "
+    "if type_of(repl) != \"Function\" { return _Regex.replace_all(this._pat, s, repl) }; "
+    "let mut out = \"\"; let mut last = 0; "
+    "for m in _Regex.find_all(this._pat, s) { out = out + s.slice(last, m.start) + repl(m); last = m.end }; "
+    "out + s.slice(last, s.size()) } "
     "split(s) { _Regex.split(this._pat, s) } "
     "}; "
     "{ compile: fn(pattern, flags = \"\") { "
     "Regex.new(if flags == \"\" { pattern } else { \"(?\" + flags + \")\" + pattern }) }, "
+    // escape(s): backslash-quote every regex metacharacter so `s` matches
+    // literally. The metachar set is a backtick raw string (holds { } \\).
+    "escape: fn(s) { "
+    "let metas = `\\.^$|?*+()[]{}`; let mut out = \"\"; "
+    "for c in s { if metas.contains(c) { out = out + `\\` + c } else { out = out + c } }; "
+    "out }, "
     "Regex: Regex } "
     "}; "
     "let Regex = _regex_module()\n";

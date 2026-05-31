@@ -100,11 +100,26 @@ class wrapper.
 
 test-first → interp → JIT → AOT, all three agree
 (`feedback_check_jit_interp_symmetry`). `tests/test_regex.cul` covers happy
-paths + error paths (bad pattern, no-match nil, named groups, flags, split,
-replace, grapheme, reuse). docs: `docs/stdlib.md` + `.ja.md`.
+paths + error paths; `tests/test_regex_extras.cul` covers `escape` /
+`replace_all(fn)` / `find_iter` (lazy, early exit, empty-match, grapheme).
+docs: `docs/stdlib.md` + `.ja.md`.
+
+## Extras (implemented)
+
+- **`Regex.escape(s)`** — backslash-quote metacharacters; pure culebra in the
+  module wrapper (uses a backtick raw string for the metachar set).
+- **`replace_all(s, fn)`** — a `Function` `repl` is called per `Match` and its
+  return spliced between matches (a `String` `repl` keeps the native template
+  path). Pure culebra (`type_of` dispatch + `slice`).
+- **`find_iter(s)`** — lazy `Iterator<Match>`. A class method can't be a
+  generator (the CPS transform only rewrites top-level `fn`), so it delegates
+  to a top-level `fn _regex_find_iter` that drives the native
+  `_Regex.find_from(pat, s, pos) -> {m, nxt}`. The native returns absolute
+  offsets and a grapheme-correct resume byte (one grapheme past an empty
+  match), so iteration always advances. Re-searches the suffix per step — fine
+  for early exit; use `find_all` to materialize everything. (Field is named
+  `nxt`, not `next`, because the Iterator protocol reserves `next`.)
 
 ## Open / deferred
 
-- `replace_all` with a function argument.
-- lazy `find_iter` generator.
-- `Regex.escape(s)` (quote metacharacters) — small, add if needed.
+- (none currently)

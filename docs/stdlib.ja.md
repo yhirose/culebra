@@ -1282,10 +1282,11 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 （`Regex.compile('hello', "i")`）か、パターン内にインライン: `(?i)` 大文字小文字
 無視、`(?m)` 複数行、`(?s)` dotall。
 
-| コンストラクタ | 結果 |
+| コンストラクタ / 静的 | 結果 |
 | --- | --- |
 | `Regex.compile(pat)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
 | `Regex.compile(pat, flags)` | `Regex` — `flags` は `"i"` / `"m"` / `"s"` の文字列 |
+| `Regex.escape(s)` | `String` — メタ文字を全てバックスラッシュエスケープし `s` をリテラル一致に |
 
 | メソッド | 結果 |
 | --- | --- |
@@ -1293,7 +1294,8 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `re.find(s)` | `Match` または `nil` — 最左マッチ |
 | `re.match(s)` | `Match` または `nil` — 先頭 anchored マッチ |
 | `re.find_all(s)` | `[Match]` — 全ての非重複マッチ |
-| `re.replace_all(s, repl)` | `String` — `repl` 内で `$1` / `$<name>` / `$$` |
+| `re.find_iter(s)` | `Iterator<Match>` — 遅延。途中終了可（`.take(n)`） |
+| `re.replace_all(s, repl)` | `String` — `repl` はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — マッチで `s` を分割 |
 
 `Match` はデータオブジェクト（`nil` はマッチなし）:
@@ -1318,9 +1320,14 @@ let m = Regex.compile('(\d{4})-(\d{2})').find("2026-05")
 m.groups[1].value                                // => "2026"
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
+d.replace_all("a1 b22", fn (m) { "<{m.value}>" })// => "a<1> b<22>"（コールバック）
 Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
 Regex.compile('hello', "i").test("HELLO world")  // => true（フラグ引数）
 d.find("xyz")?.value ?? "none"                   // ?. / ?? と合成可
+
+for m in d.find_iter("a1 b22") { ... }           // 遅延。いつでも途中終了可
+d.find_iter("1 2 3").take(2).collect().size()    // => 2（全走査しない）
+Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラル一致）
 ```
 
 対応構文（literal / `.` / 文字クラス / `* + ? {n,m}` greedy・lazy / `|` /
