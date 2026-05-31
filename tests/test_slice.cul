@@ -1,0 +1,63 @@
+// Closed-range slicing: seq[a..b] / seq[a..=b]. Open-ended ranges
+// (seq[a..], seq[..b]) are a separate feature (Phase 1b).
+// Array -> shallow copy, String/StringView -> byte-unit view, Tuple -> tuple.
+
+let xs = [10, 20, 30, 40, 50]
+
+// --- Array: exclusive / inclusive / empty ---
+assert_eq(xs[1..3], [20, 30])
+assert_eq(xs[1..=3], [20, 30, 40])
+assert_eq(xs[0..0], [])
+assert_eq(xs[2..2], [])
+
+// --- Array: negative indices ---
+assert_eq(xs[1..-1], [20, 30, 40])
+assert_eq(xs[-3..-1], [30, 40])
+assert_eq(xs[-2..=-1], [40, 50])
+
+// --- Array: out-of-range clamp / reversed -> empty ---
+assert_eq(xs[1..100], [20, 30, 40, 50])
+assert_eq(xs[2..1], [])
+assert_eq(xs[10..20], [])
+
+// --- inclusive end at LONG_MAX clamps to len (no signed overflow) ---
+assert_eq(xs[0..=9223372036854775807], [10, 20, 30, 40, 50])
+assert_eq(xs[0..=-100], [])
+
+// --- Array: shallow copy is independent of source mutation ---
+mut ys = [10, 20, 30]
+let sl = ys[0..2]
+ys[0] = 999
+assert_eq(sl, [10, 20])
+
+// --- Array: slice is a normal array (methods, chaining) ---
+assert_eq(xs[1..4].size(), 3)
+assert_eq(xs[1..4][0..2], [20, 30])
+let g = [10, 20, 30, 40][1..3]
+g.push(99)
+assert_eq(g, [20, 30, 99])
+
+// --- String: byte-unit view ---
+assert_eq("hello"[1..3], "el")
+assert_eq("hello"[0..2], "he")
+assert_eq("hello"[1..=3], "ell")
+assert_eq("hello"[2..100], "llo")
+assert_eq(""[0..3], "")
+assert_eq("hello world"[0..5][1..3], "el")
+
+// --- String: byte unit (UTF-8 multibyte: あ=3 bytes each) ---
+assert_eq("あいう"[0..3], "あ")
+assert_eq("あいう"[3..6], "い")
+assert_eq("あいう"[0..6], "あい")
+
+// --- Tuple: slice returns a tuple ---
+assert_eq((10, 20, 30, 40)[1..3], (20, 30))
+
+// --- GC: tight-loop slicing must not leak ---
+let big = []
+for i in 0..1000 { big.push(i) }
+mut acc = 0
+for r in 0..2000 { acc = acc + big[10..20].size() }
+assert_eq(acc, 20000)
+
+puts("slice ok")

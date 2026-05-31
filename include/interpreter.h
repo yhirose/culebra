@@ -927,6 +927,28 @@ struct StringViewPayload {
   std::string_view view;
 };
 
+// Normalize a slice range against a sequence length: resolve negative
+// indices from the end, apply the inclusive end (`..=`), then clamp both
+// ends to [0, len] and force an empty window when start > end. Returns a
+// half-open [start, end). Shared by interp + JIT slicing so the two
+// backends stay symmetric.
+inline std::pair<size_t, size_t> _slice_bounds(long lo, long hi,
+                                               bool inclusive, size_t len) {
+  long n = static_cast<long>(len);
+  if (lo < 0) lo += n;
+  if (hi < 0) hi += n;
+  // `..=` includes the end. Skip the increment at LONG_MAX so a huge
+  // endpoint (`xs[0..=<LONG_MAX>]`) doesn't signed-overflow; it clamps to
+  // `n` below either way, so the result is unchanged for every other input.
+  if (inclusive && hi != std::numeric_limits<long>::max()) hi += 1;
+  if (lo < 0) lo = 0;
+  if (lo > n) lo = n;
+  if (hi < 0) hi = 0;
+  if (hi > n) hi = n;
+  if (hi < lo) hi = lo;
+  return {static_cast<size_t>(lo), static_cast<size_t>(hi)};
+}
+
 struct Value {
   enum Type { Nil, Bool, Long, Float, String, Object, Array, Function, Tensor, Tuple, Set, StringView };
 
@@ -5829,6 +5851,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_array_reference(const peg::Ast& ast,
                              const std::shared_ptr<Environment>& env,
                              const Value& val) {
+    // `seq[a..b]` / `seq[a..=b]`: a RANGE index slices instead of doing a
+    // point lookup. Array -> shallow copy, String/StringView -> byte-unit
+    // zero-copy view, Tuple -> new tuple. (Open-ended ranges are Phase 1b.)
+    using namespace peg::udl;
+    if (ast.tag == "RANGE"_) return eval_slice(ast, env, val);
     auto key = eval(ast, env);
     // Object[k]: look up the Value-keyed sidecar.
     if (val.type == Value::Object) {
@@ -5857,6 +5884,34 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       throw CulebraError("IndexError", "index out of range.");
     }
     return val;
+  }
+
+  // `seq[a..b]` slicing. Endpoints are evaluated as Longs (a RANGE node
+  // carries start/op/end children, same shape as eval_range); bounds are
+  // normalized + clamped by _slice_bounds. String/StringView yield a
+  // byte-unit zero-copy view; Array a shallow copy; Tuple a new tuple.
+  Value eval_slice(const peg::Ast& ast,
+                   const std::shared_ptr<Environment>& env,
+                   const Value& val) {
+    long lo = eval(*ast.nodes[0], env).to_long();
+    long hi = eval(*ast.nodes[2], env).to_long();
+    bool inclusive = ast.nodes[1]->token == "..=";
+    if (val.is_stringlike()) {
+      auto [src, base] = val.share_source_and_view();
+      auto [s, e] = _slice_bounds(lo, hi, inclusive, base.size());
+      return Value(src, base.substr(s, e - s));
+    }
+    if (val.type == Value::Tuple) {
+      const auto& elems = *val.get<TupleValue>().elements;
+      auto [s, e] = _slice_bounds(lo, hi, inclusive, elems.size());
+      return Value(TupleValue(
+          std::vector<Value>(elems.begin() + s, elems.begin() + e)));
+    }
+    const auto& arr = val.to_array();
+    auto [s, e] = _slice_bounds(lo, hi, inclusive, arr.values->size());
+    ArrayValue out;
+    out.values->assign(arr.values->begin() + s, arr.values->begin() + e);
+    return Value(std::move(out));
   }
 
   // Wrap a method value (looked up from a builtin table) into a

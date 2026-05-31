@@ -817,6 +817,49 @@ Spread sources are `Array`, `Tuple`, and `Set` (a non-iterable raises
 
 `arr[i]` out of range raises `index out of range at L:C`.
 
+### Slicing
+
+A `RANGE` index (`seq[a..b]`, `seq[a..=b]`) returns a sub-sequence
+instead of a single element. `..` is end-exclusive, `..=` end-inclusive;
+either endpoint may be negative (counted from the end). Out-of-range
+endpoints **clamp** to the sequence and a start past the end yields an
+empty result (matching Python/JS/Ruby), so slicing never raises on
+bounds.
+
+Arrays return a **shallow copy** — the slice's spine is independent of
+the source, but elements are shared (a reference-semantic array sliced
+into a view would alias surprisingly, so copy is the safe default). For
+a zero-copy lazy window over a large array, use the iterator instead
+(`xs.iter().skip(a)`). Strings return a **byte-unit view** (Go-style
+byte indexing; a slice that lands mid-codepoint keeps the raw bytes).
+Tuples return a tuple.
+
+```culebra
+let xs = [10, 20, 30, 40, 50]
+puts(xs[1..3])      # => [20, 30]
+puts(xs[1..=3])     # => [20, 30, 40]
+puts(xs[-3..-1])    # => [30, 40]
+```
+
+```culebra
+let xs = [10, 20, 30, 40, 50]
+puts(xs[1..100])    # => [20, 30, 40, 50]
+puts(xs[3..1])      # => []
+```
+
+```culebra
+# Shallow copy: mutating the source does not touch the slice.
+mut xs = [10, 20, 30]
+let s = xs[0..2]
+xs[0] = 99
+puts(s)            # => [10, 20]
+```
+
+```culebra
+puts("hello"[1..3])    # => 'el'
+puts("hello"[1..=3])   # => 'ell'
+```
+
 ### Equality and ordering
 
 Arrays compare by **value** (structural): `[1, 2] == [1, 2]` is true,

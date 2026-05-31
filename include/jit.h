@@ -2251,6 +2251,36 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_slice(
   return r;
 }
 
+// `seq[a..b]` / `seq[a..=b]` slicing. Bounds are normalized by the shared
+// _slice_bounds (so JIT/AOT stay symmetric with the interpreter): negative
+// indices resolve from the end, `..=` includes the end, then both clamp to
+// [0,len] with start>end yielding an empty window. Array/Tuple -> shallow
+// JitArray copy (tag preserved so a Tuple slice stays a Tuple); String/
+// StringView -> byte-unit view into the same leak-bounded bytes. Other tags
+// raise a TypeError at line:col.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
+    int8_t tag, int64_t data, int64_t lo, int64_t hi, int8_t inclusive,
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
+    auto* src = reinterpret_cast<JitArray*>(data);
+    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive != 0, src->size);
+    auto* r = culebra_runtime_array_slice(src, static_cast<int64_t>(s),
+                                          static_cast<int64_t>(e - s));
+    *out_tag = tag;
+    *out_data = reinterpret_cast<int64_t>(r);
+    return;
+  }
+  if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
+    auto view = _culebra_str_view(tag, data);
+    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive != 0, view.size());
+    auto* v = _culebra_heap_view(view.data() + s, e - s);
+    *out_tag = TAG_STRINGVIEW;
+    *out_data = reinterpret_cast<int64_t>(v);
+    return;
+  }
+  culebra::throw_type_error_at(line, col);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data) {
   if (static_cast<size_t>(idx) < arr->size) {
@@ -6258,6 +6288,7 @@ inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
 inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";
 inline constexpr auto array_slice         = "culebra_runtime_array_slice";
+inline constexpr auto slice               = "culebra_runtime_slice";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
 // Tuple allocates a JitArray and returns it tagged TAG_TUPLE; storage
@@ -13874,20 +13905,16 @@ struct JIT {
           break;
         }
         case "INDEX"_: {
-          // INDEX/DOT return borrowed slot values; promote them to +1
-          // so chained access like `a.b[i].c` doesn't over-release the
-          // intermediate when the next step's swap drops it.
-          auto receiver = callee;
-          callee = compile_index_access(postfix, receiver);
-          emit_value_swap_owned(callee, receiver);
+          // INDEX/DOT return borrowed slot values; emit_index_step promotes
+          // a point index to +1 (so chained `a.b[i].c` doesn't over-release
+          // the intermediate) and slices `a..b` into a fresh owned value.
+          callee = emit_index_step(postfix, callee);
           break;
         }
         case "SAFE_INDEX"_: {
           // `a?[k]` — nil receiver short-circuits the chain to nil.
           emit_safe_nav_guard(callee, sn);
-          auto receiver = callee;
-          callee = compile_index_access(postfix, receiver);
-          emit_value_swap_owned(callee, receiver);
+          callee = emit_index_step(postfix, callee);
           break;
         }
         case "SAFE_DOT"_:
@@ -14164,6 +14191,51 @@ struct JIT {
     llvm::Value* result = llvm::UndefValue::get(valueType_);
     result = builder_.CreateInsertValue(result, tagLoaded, {0});
     result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    return result;
+  }
+
+  // `receiver[lo..hi]` slicing. Compiles only the range endpoints (not the
+  // whole RANGE, which would build an iterator) and calls culebra_runtime_
+  // slice. The result is a fresh +1-owned value, so emit_index_step releases
+  // the receiver WITHOUT promoting the result (unlike point INDEX).
+  llvm::Value* compile_slice(const peg::Ast& rangeAst, llvm::Value* receiver) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto loVal = value_to_long(compile(*rangeAst.nodes[0]));
+    auto hiVal = value_to_long(compile(*rangeAst.nodes[2]));
+    bool inclusive = rangeAst.nodes[1]->token == "..=";
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "slice.out.tag");
+    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "slice.out.data");
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, i64Ty,
+            i8Ty, ptrTy, ptrTy, i64Ty, i64Ty),
+        {extract_tag(receiver), extract_data(receiver), loVal, hiVal,
+         builder_.getInt8(inclusive ? 1 : 0), outTag, outData,
+         current_line_val(), current_column_val()});
+    auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
+    auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
+    llvm::Value* result = llvm::UndefValue::get(valueType_);
+    result = builder_.CreateInsertValue(result, tagLoaded, {0});
+    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    return result;
+  }
+
+  // Apply one INDEX/SAFE_INDEX postfix to `receiver`, returning the new
+  // value and releasing `receiver`. A `a..b` RANGE index slices (fresh
+  // owned result); a point index borrows a slot and is promoted via retain.
+  llvm::Value* emit_index_step(const peg::Ast& postfix, llvm::Value* receiver) {
+    using namespace peg::udl;
+    if (postfix.tag == "RANGE"_) {
+      auto result = compile_slice(postfix, receiver);
+      emit_value_release(receiver);
+      return result;
+    }
+    auto result = compile_index_access(postfix, receiver);
+    emit_value_swap_owned(result, receiver);
     return result;
   }
 
@@ -15235,16 +15307,12 @@ struct JIT {
           callee = compile_function_call(postfix, callee);
           break;
         case "INDEX"_: {
-          auto receiver = callee;
-          callee = compile_index_access(postfix, receiver);
-          emit_value_swap_owned(callee, receiver);
+          callee = emit_index_step(postfix, callee);
           break;
         }
         case "SAFE_INDEX"_: {
           emit_safe_nav_guard(callee, sn);
-          auto receiver = callee;
-          callee = compile_index_access(postfix, receiver);
-          emit_value_swap_owned(callee, receiver);
+          callee = emit_index_step(postfix, callee);
           break;
         }
         case "SAFE_DOT"_:
