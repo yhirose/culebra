@@ -1,6 +1,8 @@
 Culebra Programming Language
 ============================
 
+> **Status:** under active development, not yet released — APIs and syntax may change.
+
 A scripting language small enough to embed, fast enough for Tensor,
 simple enough for agents.
 
