@@ -295,3 +295,11 @@ foreach(gc_test jit_gc_phase0 jit_gc_collect)
   target_include_directories(${gc_test} PRIVATE include)
   add_test(NAME ${gc_test} COMMAND ${gc_test})
 endforeach()
+
+# Lint regression (include/lint.h): the static let-reassignment check must
+# abort before eval, and the sound-negative cases (let mut, separate
+# scopes, block-locals) must be accepted. Driven E2E through the built
+# `culebra` binary, which all backends share via the ModuleLoader.
+add_test(NAME lint_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/lint_test.sh
+                 $<TARGET_FILE:culebra>)
