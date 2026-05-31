@@ -12,7 +12,7 @@
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
 を参照してください。 matcher 一族 (`assert_true` / `assert_eq` /
-`assert_throws` 等) は [§12 Matchers](#12-matchers) で扱います。
+`assert_throws` 等) は [§13 Matchers](#13-matchers) で扱います。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
 [言語仕様 §17](language.ja.md) に規定されています。
 
@@ -42,10 +42,11 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 9. [`JSON`](#9-json) — stringify / parse の相互変換
 10. [`Args`](#10-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
-12. [Matchers](#12-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
-13. [`Regex`](#13-regex) — 線形時間・grapheme 単位の正規表現
-14. [設計上の注記](#14-設計上の注記)
-15. [未収録（将来検討）](#15-未収録将来検討)
+12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー
+13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
+14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
+15. [設計上の注記](#15-設計上の注記)
+16. [未収録（将来検討）](#16-未収録将来検討)
 
 **目的別索引**
 
@@ -64,6 +65,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | CLI 引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
+| 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -1342,7 +1344,98 @@ while job.poll() == nil {
 
 ---
 
-## 12. Matchers
+## 12. `Isolate`
+
+クロージャを専用 OS スレッド上で（独立した GC ヒープを持たせて）実行し、真の
+CPU 並列を得ます。isolate 間で可変メモリは共有されません。値は境界を越える際に
+**コピー**されるため、2 つの isolate が同じオブジェクトで競合することは決して
+ありません。[§11 `Proc`](#11-proc)（プロセス並列）のスレッド版に当たります。
+
+> 現状はインタプリタ専用 — `--jit` では `Isolate` はまだ使えません。
+
+### `Isolate.spawn(fn, *args) -> handle`
+
+`fn` を別スレッドで実行し、即座にライブハンドルを返します。位置引数 `args` は
+`fn` に渡されます。
+
+```culebra
+# doctest: skip
+let h = Isolate.spawn(|| 1 + 2)
+h.join()                       # => 3
+
+let h2 = Isolate.spawn(|n| n * n, 7)
+h2.join()                      # => 49
+```
+
+ハンドルのメソッド:
+
+| メソッド | 戻り値 | 意味 |
+|---|---|---|
+| `h.join()` | クロージャの戻り値 | isolate の完了を待ち、（コピーされた）結果を返す |
+| `h.poll()` | 結果または `nil` | 完了済みなら結果、未完了なら `nil`（ノンブロッキング） |
+
+クロージャが例外を投げた場合、その例外は `join()` を呼んだスレッド上で
+（kind を保ったまま）再送出されます。`join()` されずに drop されたハンドルは
+GC が join するため、スレッドが取り残されることはありません。
+
+### Sendable: 境界を越えられる値
+
+クロージャ・その引数・戻り値は **Sendable** でなければなりません。違反は
+`spawn` の時点で `SendError` を投げます（黙ってコピーはしません）:
+
+| Sendable | Sendable でない |
+|---|---|
+| 数値・`String`・`Bool`・`nil` | ネイティブハンドル（`Proc` / `File` / isolate ハンドル） |
+| Sendable 値からなる `Array` / `Object` / `Set` / `Tuple` | `Tensor`（将来はバッファ経由で共有） |
+| `enum` / data-class インスタンス | `mut` 変数を捕獲したクロージャ |
+| Sendable 値のみを捕獲したクロージャ | 自己参照する値（循環参照） |
+| 自由関数（`fn name(...)`、参照で捕獲） | |
+
+捕獲はコピーされるため、捕獲したコレクションを変更するクロージャは**自分の
+コピー**を変更します。親側の値はそのままです:
+
+```culebra
+# doctest: skip
+let xs = [1, 2, 3]
+let h = Isolate.spawn(fn () { xs.push(99); xs.size() })
+h.join()                       # => 4   (isolate 側のコピー)
+xs                             # => [1, 2, 3]   (親は不変)
+```
+
+`mut` の捕獲は黙ってスナップショットを取らず拒否します — 値は引数として
+渡してください:
+
+```culebra
+# doctest: skip
+mut total = 0
+Isolate.spawn(|| total)        # SendError: mutable 変数 'total' を捕獲
+Isolate.spawn(|t| t, total)    # ok — 値渡し
+```
+
+### 並列度の上限
+
+同時に生きている isolate には上限があります（既定はマシンのコア数、環境変数
+`CULEBRA_ISOLATE_LIMIT` で上書き可）。上限を超える spawn は新しいスレッドを
+起こさず**現在のスレッド上で同期実行**されます — これにより再帰的並列が数千
+スレッドに爆発しません。`join()` は同じ結果を返し、変わるのはタイミングだけです。
+
+```culebra
+# doctest: skip
+# 並列 map: 仕事を isolate に分配して集約。
+let parts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+mut handles = []
+for p in parts { handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b))) }
+mut total = 0
+for h in handles { total = total + h.join() }
+total                          # => 45
+```
+
+isolate 間ストリーミングの channel と `Parallel.map` / `Parallel.each` ヘルパは
+次に予定しています。
+
+---
+
+## 13. Matchers
 
 テスト用 / 実行時不変条件チェック用のアサーション matcher。 全 10
 個の matcher が `import` 不要のグローバル名としてすべての環境に
@@ -1427,7 +1520,7 @@ backend が既に実装している演算子 dispatch そのもので、 matcher
 
 ---
 
-## 13. `Regex`
+## 14. `Regex`
 
 線形時間・grapheme 単位の正規表現（エンジン: `include/regexlib.h`）。パターンは
 Unicode の **extended grapheme cluster** 単位でマッチし、コードポイント単位では
@@ -1505,7 +1598,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 ---
 
-## 14. 設計上の注記
+## 15. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1559,7 +1652,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 15. 未収録（将来検討）
+## 16. 未収録（将来検討）
 
 ### 三角関数
 

@@ -830,6 +830,15 @@ struct FunctionValue {
   // args positionally and never accept kwargs; the call site uses this to
   // raise a clean TypeError instead of an opaque ArityError. Matches JIT.
   bool is_builtin_method = false;
+  // Defining AST for a user closure (fn / lambda / method), retained so the
+  // closure can be REBUILT on another thread's heap by the isolate layer
+  // (sendable.h): the eval std::function captures the *parent* Interpreter
+  // and heap and cannot run as-is on a child thread, but the AST is
+  // immutable + process-lifetime so a child Interpreter can re-create the
+  // closure from these. `body == nullptr` marks a native/stdlib FunctionValue
+  // (not rebuildable → not Sendable as a closure). Set by make_function_value.
+  const peg::Ast* params_ast = nullptr;  // borrowed (process-lifetime AST)
+  std::shared_ptr<peg::Ast> body;        // shared; control block is atomic
 };
 
 struct ObjectValue {
@@ -4373,6 +4382,29 @@ inline void setup_core_globals(Environment& env) {
 struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
+  // --- Public entry points for the isolate / sendable layer ---
+  // Rebuild a user closure on THIS interpreter's heap from its retained
+  // defining AST (FunctionValue::params_ast/body) and a freshly-populated
+  // capture environment. Used by sendable::deserialize to reconstruct a
+  // closure shipped across a thread boundary. Forwards to make_function_value.
+  Value rebuild_closure(const peg::Ast& params_ast,
+                        std::shared_ptr<peg::Ast> body,
+                        std::string_view return_type,
+                        const std::shared_ptr<Environment>& env) {
+    return make_function_value(params_ast, std::move(body), return_type, env);
+  }
+  // Invoke a (rebuilt) closure with positional args, binding params and
+  // catching `return`. Used by the isolate child to run the spawned body.
+  Value call_closure(const Value& fn, const std::shared_ptr<Environment>& env,
+                     std::vector<Value> args) {
+    CallArgs ca;
+    ca.positional = std::move(args);
+    // invoke_user_function_with_args indexes positional_locs in lock-step with
+    // positional (for per-arg error locations); keep them the same length.
+    ca.positional_locs.assign(ca.positional.size(), {0, 0});
+    return invoke_user_function_with_args(fn, env, std::move(ca), 0, 0);
+  }
+
   // The multi-module driver lives outside the class for symmetry with
   // `interpret(...)` but needs to drive per-module defer flushes and
   // export extraction.
@@ -5032,6 +5064,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // definition environment as a collectable node — a self-referential
     // closure forms a cycle through it that RC alone can't break.
     fv.eval_captures_def_env = true;
+    // Retain the defining AST so the isolate layer can rebuild this closure
+    // on another thread (see FunctionValue::params_ast/body).
+    fv.params_ast = &params_ast;
+    fv.body = body;
     if (env) interp_gc().track_env(env);
     return Value(std::move(fv));
   }

@@ -1,0 +1,151 @@
+# Isolate (C2-a, first slice): spawn/join + closure-across-thread transfer.
+# Interpreter backend only. JIT/AOT symmetry is a later milestone (C2-c).
+
+# --- Slice 0: spawn a closure, run on another thread, get a scalar back ---
+let h0 = Isolate.spawn(|| 1 + 2)
+assert_eq(h0.join(), 3)
+
+# --- Slice 1: positional args ---
+let h1 = Isolate.spawn(|n| n * n, 7)
+assert_eq(h1.join(), 49)
+
+let h1b = Isolate.spawn(|a, b| a + b, 10, 20)
+assert_eq(h1b.join(), 30)
+
+# --- Slice 1: captured immutable variables (free-var serialization) ---
+let k = 10
+let hcap = Isolate.spawn(|| k + 5)
+assert_eq(hcap.join(), 15)
+
+let prefix = "hi-"
+let hstr = Isolate.spawn(|| prefix + "there")
+assert_eq(hstr.join(), "hi-there")
+
+# --- Slice 1: collections round-trip by value across the boundary ---
+let arr = [1, 2, 3]
+let harr = Isolate.spawn(|| arr.map(|x| x * 2))
+assert_eq(harr.join(), [2, 4, 6])
+
+let obj = {name: "ada", n: 42}
+let hobj = Isolate.spawn(|| obj)
+assert_eq(hobj.join(), {name: "ada", n: 42})
+
+let tup = (1, "two", 3.0)
+let htup = Isolate.spawn(|| tup)
+assert_eq(htup.join(), (1, "two", 3.0))
+
+let st = {1, 2, 3}
+let hset = Isolate.spawn(|| st)
+assert_eq(hset.join(), {1, 2, 3})
+
+let nested = {xs: [1, 2], inner: {a: [true, false]}}
+let hn = Isolate.spawn(|| nested)
+assert_eq(hn.join(), {xs: [1, 2], inner: {a: [true, false]}})
+
+# --- Slice 2: a recursive top-level function captured as a free var ---
+fn fib(n) {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+let hfib = Isolate.spawn(|| fib(20))
+assert_eq(hfib.join(), 6765)
+
+# fib with an argument forwarded across the boundary
+let hfib2 = Isolate.spawn(|n| fib(n), 15)
+assert_eq(hfib2.join(), 610)
+
+# --- enum / data-class instance round-trips structurally ---
+enum Color { Red, Green, Blue }
+let hcolor = Isolate.spawn(|| Color.Green)
+assert_eq(hcolor.join(), Color.Green)
+
+# --- many isolates: results correct even past the parallelism cap (the
+#     synchronous fallback kicks in) ---
+mut handles = []
+for i in 0..50 {
+  handles.push(Isolate.spawn(|x| x * x, i))
+}
+mut total = 0
+for hh in handles {
+  total = total + hh.join()
+}
+# sum of i*i for i in 0..49
+mut expect = 0
+for i in 0..50 { expect = expect + i * i }
+assert_eq(total, expect)
+
+# --- parallel sum equals serial sum (heap isolation, no data race) ---
+let chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9, 10]]
+mut sums = []
+for c in chunks {
+  sums.push(Isolate.spawn(fn () {
+    mut s = 0
+    for v in c { s = s + v }
+    s
+  }))
+}
+mut grand = 0
+for s in sums { grand = grand + s.join() }
+assert_eq(grand, 55)
+
+# --- copy semantics: mutating a captured collection must NOT leak to the
+#     parent (holds for both the threaded path and the synchronous fallback) ---
+let shared_arr = [1, 2, 3]
+let hmut = Isolate.spawn(fn () {
+  shared_arr.push(99)
+  shared_arr.size()
+})
+assert_eq(hmut.join(), 4)         # the child mutated its own copy
+assert_eq(shared_arr, [1, 2, 3])  # the parent's array is untouched
+
+# --- nested isolate: a spawned closure can itself spawn ---
+fn dbl(x) { return x * 2 }
+let hnest = Isolate.spawn(fn () {
+  let inner = Isolate.spawn(|| dbl(21))
+  inner.join()
+})
+assert_eq(hnest.join(), 42)
+
+# --- Sendable violations: must throw SendError at the spawn site ---
+mut counter = 0
+try {
+  Isolate.spawn(|| counter)   # captures a `mut` variable
+  assert(false)               # unreachable
+} catch e {
+  assert_eq(e.kind, "SendError")
+}
+
+try {
+  let t = Tensor.zeros([2, 2])
+  Isolate.spawn(|| t)         # Tensor is not Sendable
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "SendError")
+}
+
+# --- a child exception propagates to the parent on join (kind preserved) ---
+try {
+  let hbad = Isolate.spawn(|| 1 / 0)
+  hbad.join()
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "ZeroDivisionError")
+}
+
+# --- poll: nil before done is acceptable; eventually returns the value ---
+let hp = Isolate.spawn(|| fib(10))
+mut r = hp.poll()
+# r is either nil (still running) or 55 (done) — both fine; join settles it
+assert_eq(hp.join(), 55)
+
+# --- an isolate may return a closure; it is rebuilt on the parent and callable
+#     (exercises the parent-side deserialize rebuilding a closure) ---
+fn make_adder() {
+  let base = 100
+  return |x| x + base
+}
+let hclo = Isolate.spawn(|| make_adder())
+let adder = hclo.join()
+assert_eq(adder(5), 105)
+
+puts("test_isolate: all assertions passed")

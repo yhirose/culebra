@@ -215,15 +215,26 @@ test BACKEND='all': build
         esac
     }
 
+    # Isolate (C2-a) is interpreter-only this cycle (JIT is a later
+    # milestone), so its test lives in a subdir kept out of the
+    # `tests/*.cul` interp-vs-JIT diff glob and is run under interp here.
+    run_isolate() {
+        for f in tests/isolate/*.cul; do
+            ./build/culebra "$f" > /dev/null
+        done
+        echo "test isolate OK (interp)"
+    }
+
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
-      all)    run_diff_interp_jit; run_embed; run_culebra_test_self; run_aot; echo "test OK" ;;
-      interp) run_interp ;;
+      all)    run_diff_interp_jit; run_embed; run_culebra_test_self; run_isolate; run_aot; echo "test OK" ;;
+      interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
       aot)    run_aot ;;
       embed)  run_embed ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|interp|jit|aot|embed)" >&2; exit 2 ;;
+      isolate) run_isolate ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|interp|jit|aot|embed|isolate)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs (interp). Both en and ja

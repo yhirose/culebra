@@ -2913,6 +2913,12 @@ inline Value make_regex_primitives_namespace() {
   return Value(std::move(ns));
 }
 
+// Defined in isolate.h (included at the end of this header). Forward-declared
+// so setup_built_in_functions can register the `Isolate` namespace; the body
+// pulls in the isolate/sendable machinery which itself depends on the full
+// stdlib (environment(), Interpreter), hence the bottom include.
+inline Value make_isolate_namespace();
+
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
   using namespace std::literals;
@@ -3031,6 +3037,7 @@ inline void setup_built_in_functions(
   env.initialize("JSON", make_json_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
+  env.initialize("Isolate", make_isolate_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
@@ -3549,3 +3556,9 @@ inline std::shared_ptr<Environment> environment(
 }
 
 }  // namespace culebra
+
+// Isolate / Channel stdlib + the sendable value-transfer layer. Included last
+// because it depends on the full stdlib defined above (environment(),
+// Interpreter). Provides the definition of make_isolate_namespace() declared
+// near setup_built_in_functions.
+#include "isolate.h"

@@ -15,7 +15,7 @@ Language-level built-ins — `to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota` — are specified in
 [§18 of the language spec](language.md). The matcher family
 (`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
-in [§12 below](#12-matchers). Methods on built-in types (`String`,
+in [§13 below](#13-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
 [§17 of the language spec](language.md).
 
@@ -44,10 +44,11 @@ Conventions used below:
 9. [`JSON`](#9-json) — stringify / parse round-trip
 10. [`Args`](#10-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — run external commands synchronously, capture stdout/stderr/exit
-12. [Matchers](#12-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
-13. [`Regex`](#13-regex) — linear-time, grapheme-aware regular expressions
-14. [Design notes](#14-design-notes)
-15. [Not included (yet)](#15-not-included-yet)
+12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary
+13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
+14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
+15. [Design notes](#15-design-notes)
+16. [Not included (yet)](#16-not-included-yet)
 
 **Where to find what**
 
@@ -66,6 +67,7 @@ Conventions used below:
 | CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
+| Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -1395,7 +1397,100 @@ and pipelines (`a | b`) are planned.
 
 ---
 
-## 12. Matchers
+## 12. `Isolate`
+
+Run a closure on its own OS thread with its own garbage-collected heap, for
+real CPU parallelism. Isolates share no mutable memory: a value crosses the
+boundary by being **copied**, so two isolates can never race on the same
+object. This is the thread-level counterpart to [§11 `Proc`](#11-proc) (which
+parallelizes across processes).
+
+> Interpreter only for now — `Isolate` is not yet available under `--jit`.
+
+### `Isolate.spawn(fn, *args) -> handle`
+
+Runs `fn` on another thread and returns immediately with a live handle. Any
+positional `args` are passed to `fn`.
+
+```culebra
+# doctest: skip
+let h = Isolate.spawn(|| 1 + 2)
+h.join()                       # => 3
+
+let h2 = Isolate.spawn(|n| n * n, 7)
+h2.join()                      # => 49
+```
+
+The handle has:
+
+| method | returns | meaning |
+|---|---|---|
+| `h.join()` | the closure's return value | block until the isolate finishes, then hand back its (copied) result |
+| `h.poll()` | the result or `nil` | the result if finished, else `nil` (non-blocking) |
+
+If the closure throws, the exception is re-raised on the thread that calls
+`join()`, with its original kind preserved. A handle dropped without `join()` is
+joined by the GC, so no thread is left dangling.
+
+### Sendable: what can cross the boundary
+
+The closure and its arguments — and the value it returns — must be **Sendable**.
+A violation throws `SendError` at the `spawn` site (never a silent copy):
+
+| Sendable | Not Sendable |
+|---|---|
+| numbers, `String`, `Bool`, `nil` | a native handle (`Proc` / `File` / isolate handle) |
+| `Array` / `Object` / `Set` / `Tuple` of Sendable values | a `Tensor` (share via a buffer instead — planned) |
+| `enum` / data-class instances | a closure that captures a `mut` variable |
+| a closure capturing only Sendable values | a value that refers to itself (a cycle) |
+| a free function (`fn name(...)`), captured by reference | |
+
+Because captures are copied, a closure that mutates a captured collection
+mutates **its own copy** — the parent's value is untouched:
+
+```culebra
+# doctest: skip
+let xs = [1, 2, 3]
+let h = Isolate.spawn(fn () { xs.push(99); xs.size() })
+h.join()                       # => 4   (the isolate's copy)
+xs                             # => [1, 2, 3]   (parent unchanged)
+```
+
+A `mut` capture is rejected rather than silently snapshotted — pass the value
+as an argument instead:
+
+```culebra
+# doctest: skip
+mut total = 0
+Isolate.spawn(|| total)        # SendError: captures the mutable variable 'total'
+Isolate.spawn(|t| t, total)    # ok — passed by value
+```
+
+### Parallelism cap
+
+Live isolates are capped (default: the machine's core count; override with the
+`CULEBRA_ISOLATE_LIMIT` environment variable). A spawn beyond the cap runs
+**synchronously on the current thread** instead of starting a new one — so
+recursive parallelism can't explode into thousands of threads. `join()` still
+returns the same result; only the timing differs.
+
+```culebra
+# doctest: skip
+# Parallel map: split work across isolates, then collect.
+let parts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+mut handles = []
+for p in parts { handles.push(Isolate.spawn(|| p.reduce(0, |a, b| a + b))) }
+mut total = 0
+for h in handles { total = total + h.join() }
+total                          # => 45
+```
+
+Channels (streaming between isolates) and a `Parallel.map` / `Parallel.each`
+helper are planned next.
+
+---
+
+## 13. Matchers
 
 Assertion matchers for tests and runtime invariant checks. All ten
 matchers are global names bound on every environment (no `import`
@@ -1485,7 +1580,7 @@ agree without any matcher-specific drift logic.
 
 ---
 
-## 13. `Regex`
+## 14. `Regex`
 
 Linear-time, grapheme-aware regular expressions (engine: `include/regexlib.h`).
 Patterns match by Unicode **extended grapheme cluster**, not code point — `.`
@@ -1566,7 +1661,7 @@ model and resource limits are documented in `docs/regexlib.md`.
 
 ---
 
-## 14. Design notes
+## 15. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1620,7 +1715,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 15. Not included (yet)
+## 16. Not included (yet)
 
 ### Trigonometry
 
