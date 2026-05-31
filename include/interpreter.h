@@ -2167,7 +2167,7 @@ inline void check_type(const Value& val, std::string_view name,
   if (name.empty()) return;
   if (type_matches(val, name)) return;
   throw CulebraError("TypeError", std::format(
-      "type error: {} expects {} at {}:{}.", context, name, line, col),
+      "type error: {} expects {}", context, name),
       static_cast<long>(line), static_cast<long>(col));
 }
 
@@ -2653,8 +2653,7 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     const auto& s = obj.get("start");
     const auto& e = obj.get("end");
     if (s.type == Value::Nil || e.type == Value::Nil) {
-      throw CulebraError("TypeError", std::format(
-          "cannot iterate an unbounded range at {}:{}.", line, col),
+      throw CulebraError("TypeError", "cannot iterate an unbounded range",
           static_cast<long>(line), static_cast<long>(col));
     }
     long end = e.to_long() + (obj.get("inclusive").to_bool() ? 1 : 0);
@@ -2682,8 +2681,7 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     return _iter_over_vector(iterable.get<SetValue>().members);
   }
   if (iter_fn.type != Value::Function) {
-    throw CulebraError("TypeError", std::format(
-        "type error: target is not iterable at {}:{}.", line, col),
+    throw CulebraError("TypeError", "type error: target is not iterable",
         static_cast<long>(line), static_cast<long>(col));
   }
   return iter_fn.to_function().eval(
@@ -4678,8 +4676,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto iter_proto_error = [&](std::string_view what) -> CulebraError {
       return CulebraError(
           "TypeError",
-          std::format("type error: {} at {}:{}.", what, iter_expr.line,
-                      iter_expr.column),
+          std::format("type error: {}", what),
           static_cast<long>(iter_expr.line),
           static_cast<long>(iter_expr.column));
     };
@@ -5018,8 +5015,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         seen_default = true;
       } else if (seen_default && !kw_only) {
         throw CulebraError("SyntaxError", std::format(
-            "non-default parameter '{}' follows a default parameter at {}:{}.",
-            std::string(pv.name), pv.name_line, pv.name_col),
+            "non-default parameter '{}' follows a default parameter",
+            std::string(pv.name)),
             static_cast<long>(pv.name_line),
             static_cast<long>(pv.name_col));
       }
@@ -5335,13 +5332,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             auto pick = self->pick_method(*methods, args);
             if (pick.status == PickResult::NoMatch) {
               throw CulebraError("DispatchError", std::format(
-                  "no matching method for `{}` at {}:{}.", name_owned, line,
-                  col), line, col);
+                  "no matching method for `{}`", name_owned), line, col);
             }
             if (pick.status == PickResult::Ambiguous) {
               throw CulebraError("DispatchError", std::format(
-                  "ambiguous dispatch for `{}` at {}:{}.", name_owned, line,
-                  col), line, col);
+                  "ambiguous dispatch for `{}`", name_owned), line, col);
             }
             CallArgs call_args;
             call_args.positional = args;

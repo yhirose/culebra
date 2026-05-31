@@ -357,8 +357,8 @@ inline Value make_fs_namespace() {
 
   auto throw_io = [](const std::string& what, long line, long col,
                      const std::error_code& ec = {}) {
-    auto msg = ec ? std::format("{} at {}:{}: {}.", what, line, col, ec.message())
-                  : std::format("{} at {}:{}.", what, line, col);
+    auto msg = ec ? std::format("{}: {}.", what, ec.message())
+                  : std::string(what);
     throw CulebraError("IOError", std::move(msg), line, col);
   };
 
@@ -756,8 +756,7 @@ inline _FileTable& _file_table() {
 
 [[noreturn]] inline void _file_throw(const std::string& what, long line,
                                      long col, std::string_view kind = "IOError") {
-  throw CulebraError(std::string(kind),
-                     std::format("{} at {}:{}.", what, line, col), line, col);
+  throw CulebraError(std::string(kind), what, line, col);
 }
 
 // Open `path` in `mode` (r/w/a). Returns a fresh handle id. ValueError on
@@ -897,9 +896,7 @@ inline int days_in_month(int year, int month) {
 }
 
 [[noreturn]] inline void throw_value(const std::string& msg, long line, long col) {
-  throw CulebraError("ValueError",
-                     std::format("{} at {}:{}.", msg, line, col),
-                     line, col);
+  throw CulebraError("ValueError", msg, line, col);
 }
 
 inline long iso_weekday(const std::tm& tm) {
@@ -1697,22 +1694,21 @@ inline std::vector<std::vector<std::string>> proc_parse_command_list(
   for (const auto& cv : outer) {
     if (cv.type != Value::Array) {
       throw CulebraError("TypeError",
-          std::format("{}: each command must be an Array of String at {}:{}.",
-                      ctx, line, col), line, col);
+          std::format("{}: each command must be an Array of String", ctx),
+          line, col);
     }
     const auto& inner = *cv.to_array().values;
     if (inner.empty()) {
       throw CulebraError("ValueError",
-          std::format("{}: empty command at {}:{}.", ctx, line, col),
-          line, col);
+          std::format("{}: empty command", ctx), line, col);
     }
     std::vector<std::string> argv;
     argv.reserve(inner.size());
     for (const auto& e : inner) {
       if (e.type != Value::String && e.type != Value::StringView) {
         throw CulebraError("TypeError",
-            std::format("{}: command elements must be String at {}:{}.",
-                        ctx, line, col), line, col);
+            std::format("{}: command elements must be String", ctx),
+            line, col);
       }
       argv.emplace_back(e.to_string_view());
     }
@@ -1744,14 +1740,13 @@ inline ProcLaunchArgs proc_parse_launch(
   const auto& arr = *env->get("cmd").to_array().values;
   if (arr.empty()) {
     throw CulebraError("ValueError",
-        std::format("{}: empty command at {}:{}.", ctx, line, col), line, col);
+        std::format("{}: empty command", ctx), line, col);
   }
   la.argv.reserve(arr.size());
   for (const auto& v : arr) {
     if (v.type != Value::String && v.type != Value::StringView) {
       throw CulebraError("TypeError",
-          std::format("{}: command elements must be String at {}:{}.", ctx,
-                      line, col), line, col);
+          std::format("{}: command elements must be String", ctx), line, col);
     }
     la.argv.emplace_back(v.to_string_view());
   }
@@ -1759,8 +1754,7 @@ inline ProcLaunchArgs proc_parse_launch(
   if (cwd_v.type != Value::Nil) {
     if (cwd_v.type != Value::String && cwd_v.type != Value::StringView) {
       throw CulebraError("TypeError",
-          std::format("{}: cwd must be String at {}:{}.", ctx, line, col),
-          line, col);
+          std::format("{}: cwd must be String", ctx), line, col);
     }
     la.cwd_str = cwd_v.to_string_view();
     la.has_cwd = true;
@@ -1769,14 +1763,12 @@ inline ProcLaunchArgs proc_parse_launch(
   if (env_v.type != Value::Nil) {
     if (env_v.type != Value::Object) {
       throw CulebraError("TypeError",
-          std::format("{}: env must be Object at {}:{}.", ctx, line, col),
-          line, col);
+          std::format("{}: env must be Object", ctx), line, col);
     }
     for (const auto& [k, sym] : *env_v.to_object().properties) {
       if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
         throw CulebraError("TypeError",
-            std::format("{}: env values must be String at {}:{}.", ctx, line,
-                        col), line, col);
+            std::format("{}: env values must be String", ctx), line, col);
       }
       la.overrides.emplace_back(std::string(k),
                                 std::string(sym.val.to_string_view()));
@@ -1786,8 +1778,7 @@ inline ProcLaunchArgs proc_parse_launch(
   const auto& stdin_v = env->get("stdin");
   if (stdin_v.type != Value::String && stdin_v.type != Value::StringView) {
     throw CulebraError("TypeError",
-        std::format("{}: stdin must be String at {}:{}.", ctx, line, col),
-        line, col);
+        std::format("{}: stdin must be String", ctx), line, col);
   }
   la.stdin_data = stdin_v.to_string_view();
   return la;
@@ -2118,16 +2109,15 @@ inline Value make_proc_namespace() {
                                                  timeout);
             if (!oc.spawned) {
               throw CulebraError("ProcessError",
-                  std::format("Proc.run: {} failed at {}:{}: {}.",
-                              oc.err_what, line, col,
+                  std::format("Proc.run: {} failed: {}.", oc.err_what,
                               std::system_category().message(oc.err_no)),
                   line, col);
             }
             if (check && !oc.result.ok) {
               throw CulebraError("ProcessError",
-                  std::format("Proc.run: command {} at {}:{}.",
-                              culebra::proc::failure_detail(oc.result), line,
-                              col), line, col);
+                  std::format("Proc.run: command {}",
+                              culebra::proc::failure_detail(oc.result)),
+                  line, col);
             }
             return proc_outcome_to_value(std::move(oc));
           },
@@ -2168,9 +2158,9 @@ inline Value make_proc_namespace() {
                 timeout, fail_fast, &failed, retries);
             if (fail_fast && failed != SIZE_MAX) {
               throw CulebraError("ProcessError",
-                  std::format("Proc.all: command {} {} at {}:{}.", failed,
-                              culebra::proc::outcome_detail(outcomes[failed]),
-                              line, col), line, col);
+                  std::format("Proc.all: command {} {}", failed,
+                              culebra::proc::outcome_detail(outcomes[failed])),
+                  line, col);
             }
             ArrayValue av;
             av.values->reserve(outcomes.size());
@@ -2197,8 +2187,7 @@ inline Value make_proc_namespace() {
                 col);
             if (commands.empty()) {
               throw CulebraError("ValueError",
-                  std::format("Proc.race: empty command list at {}:{}.", line,
-                              col), line, col);
+                  "Proc.race: empty command list", line, col);
             }
             auto [winner, oc] = culebra::proc::run_race(commands);
             (void)winner;
@@ -2227,8 +2216,7 @@ inline Value make_proc_namespace() {
                                                     la.env_ptr(), la.stdin_data);
             if (!sr.spawned) {
               throw CulebraError("ProcessError",
-                  std::format("Proc.spawn: {} failed at {}:{}: {}.", sr.err_what,
-                              line, col,
+                  std::format("Proc.spawn: {} failed: {}.", sr.err_what,
                               std::system_category().message(sr.err_no)),
                   line, col);
             }
@@ -2370,9 +2358,7 @@ struct _JsonParser {
     // Format with " at L:C." inline so eval()'s catch doesn't replace
     // our JSON-internal location with the caller AST's location.
     throw CulebraError("ValueError",
-                       std::format("JSON.parse: {} at {}:{}.", msg,
-                                   line, col),
-                       line, col);
+                       std::format("JSON.parse: {}", msg), line, col);
   }
   Value parse_value() {
     skip_ws();
@@ -2498,9 +2484,7 @@ inline Value json_parse(std::string_view s,
   jp.skip_ws();
   if (jp.p != jp.end) {
     throw CulebraError("ValueError",
-                       std::format("JSON.parse: trailing characters at {}:{}.",
-                                   jp.line, jp.col),
-                       jp.line, jp.col);
+                       "JSON.parse: trailing characters", jp.line, jp.col);
   }
   return v;
 }
@@ -2526,9 +2510,7 @@ inline Value json_parse_lines(std::string_view s,
       jp.skip_ws();
       if (jp.p != jp.end) {
         throw CulebraError("ValueError",
-                           std::format("JSON.parse(lines: true): trailing "
-                                       "characters at {}:{}.",
-                                       jp.line, jp.col),
+                           "JSON.parse(lines: true): trailing characters",
                            jp.line, jp.col);
       }
     }
