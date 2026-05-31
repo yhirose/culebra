@@ -1364,8 +1364,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error_typed(
     case TAG_STRINGVIEW: got = "StringView"; break;
   }
   throw culebra::CulebraError("TypeError", std::format(
-      "type error: expected {}, got {} at {}:{}.", expected, got, line, col),
-      line, col);
+      "type error: expected {}, got {}", expected, got), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
@@ -1373,9 +1372,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
   // Legacy entry point (kept for ABI continuity in JIT runtimes that
   // were compiled before culebra_runtime_arity_missing existed).
   throw culebra::CulebraError("ArityError", std::format(
-      "arguments error: called with {} argument(s), expected at least {} "
-      "at {}:{}.",
-      got, declared, line, col), line, col);
+      "arguments error: called with {} argument(s), expected at least {}",
+      got, declared), line, col);
 }
 
 // Name-aware arity error: callee passes its declared parameter name
@@ -1641,19 +1639,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
       if (_culebra_type_matches_single(tag, data, cand)) return;
     }
     throw culebra::CulebraError("TypeError", std::format(
-        "type error: {} expects {} at {}:{}.", context, expected, line, col),
-        line, col);
+        "type error: {} expects {}", context, expected), line, col);
   }
   if (_culebra_type_matches_single(tag, data, sv)) return;
   throw culebra::CulebraError("TypeError", std::format(
-      "type error: {} expects {} at {}:{}.", context, expected, line, col),
-      line, col);
+      "type error: {} expects {}", context, expected), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
                                                            int64_t col) {
-  throw culebra::CulebraError("ZeroDivisionError",
-      std::format("divide by 0 error at {}:{}.", line, col), line, col);
+  throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error",
+                              line, col);
 }
 
 // --- Numeric runtime helpers (Float-aware arithmetic slow paths) ---
@@ -2331,8 +2327,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_get(JitArray* arr,
                                                             int64_t col) {
   if (idx < 0) idx = static_cast<int64_t>(arr->size) + idx;
   if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
-    throw culebra::CulebraError("IndexError",
-        std::format("index out of range at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
   *out_tag = arr->items[idx].tag;
   *out_data = arr->items[idx].data;
@@ -2345,8 +2340,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set(JitArray* arr,
                                                             int64_t line,
                                                             int64_t col) {
   if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
-    throw culebra::CulebraError("IndexError",
-        std::format("index out of range at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
   _culebra_value_release_impl(arr->items[idx].tag, arr->items[idx].data);
   arr->items[idx].tag = tag;
@@ -2801,7 +2795,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}' at {}:{}.", key, line, col), line, col);
+          "immutable property '{}'", key), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -3039,7 +3033,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}' at {}:{}.", key, line, col), line, col);
+          "immutable property '{}'", key), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -3088,7 +3082,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     if (!entry.mut) {
       _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}' at {}:{}.", key, line, col), line, col);
+          "immutable property '{}'", key), line, col);
     }
     _culebra_value_release_impl(entry.value.tag, entry.value.data);
     entry.value.tag = tag;
@@ -5036,8 +5030,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_min(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    throw culebra::CulebraError("ValueError", std::format(
-        "min of empty Iterator at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("ValueError", "min of empty Iterator",
+                                line, col);
   }
   if (v.tag != TAG_LONG) {
     _culebra_value_release_impl(v.tag, v.data);
@@ -5060,8 +5054,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   if (!_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    throw culebra::CulebraError("ValueError", std::format(
-        "max of empty Iterator at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("ValueError", "max of empty Iterator",
+                                line, col);
   }
   if (v.tag != TAG_LONG) {
     _culebra_value_release_impl(v.tag, v.data);
@@ -5362,8 +5356,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
   auto ev = _jit_slot_or_nil(o, "end");
   auto iv = _jit_slot_or_nil(o, "inclusive");
   if (sv.tag == TAG_NIL || ev.tag == TAG_NIL) {
-    throw culebra::CulebraError("TypeError", std::format(
-        "cannot iterate an unbounded range at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("TypeError", "cannot iterate an unbounded range",
+                                line, col);
   }
   int64_t end = ev.data + ((iv.tag == TAG_BOOL && iv.data != 0) ? 1 : 0);
   return culebra_runtime_math_range(sv.data, end, 1, line, col);
@@ -5392,8 +5386,8 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                                      nullptr);
     }
   }
-  throw culebra::CulebraError("TypeError", std::format(
-      "type error: target is not iterable at {}:{}.", line, col), line, col);
+  throw culebra::CulebraError("TypeError", "type error: target is not iterable",
+                              line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
@@ -5794,8 +5788,8 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (fn->arity != expected_arity) {
     throw culebra::CulebraError("TypeError", std::format(
-        "type error: {} expects a {}-parameter function at {}:{}.",
-        method_name, expected_arity, line, col), line, col);
+        "type error: {} expects a {}-parameter function",
+        method_name, expected_arity), line, col);
   }
   return fn;
 }
@@ -5902,9 +5896,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
     JitValue r = _culebra_invoke1(fn, e);
     if (r.tag != TAG_ARRAY) {
       _culebra_value_release_impl(r.tag, r.data);
-      throw culebra::CulebraError("TypeError", std::format(
-          "type error: flat_map callback must return an Array at {}:{}.",
-          line, col), line, col);
+      throw culebra::CulebraError("TypeError",
+          "type error: flat_map callback must return an Array", line, col);
     }
     auto* inner = reinterpret_cast<JitArray*>(r.data);
     for (size_t j = 0; j < inner->size; j++) {
@@ -6003,8 +5996,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_product(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_min(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
-    throw culebra::CulebraError("ValueError", std::format(
-        "min of empty Array at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("ValueError", "min of empty Array", line, col);
   }
   if (arr->items[0].tag != TAG_LONG) {
     culebra::throw_type_error_at(line, col);
@@ -6023,8 +6015,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_min(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_max(
     JitArray* arr, int64_t line, int64_t col) {
   if (arr->size == 0) {
-    throw culebra::CulebraError("ValueError", std::format(
-        "max of empty Array at {}:{}.", line, col), line, col);
+    throw culebra::CulebraError("ValueError", "max of empty Array", line, col);
   }
   if (arr->items[0].tag != TAG_LONG) {
     culebra::throw_type_error_at(line, col);
@@ -12166,9 +12157,8 @@ struct JIT {
 
   llvm::Value* compile_break(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
-      throw culebra::CulebraError("SyntaxError", std::format(
-          "break outside loop at {}:{}.", ast.line, ast.column),
-          ast.line, ast.column);
+      throw culebra::CulebraError("SyntaxError", "break outside loop",
+                                  ast.line, ast.column);
     }
     branch_then_dead(loop_stack_.back().break_target, "break.dead");
     return make_nil();
@@ -12176,9 +12166,8 @@ struct JIT {
 
   llvm::Value* compile_continue(const peg::Ast& ast) {
     if (loop_stack_.empty()) {
-      throw culebra::CulebraError("SyntaxError", std::format(
-          "continue outside loop at {}:{}.", ast.line, ast.column),
-          ast.line, ast.column);
+      throw culebra::CulebraError("SyntaxError", "continue outside loop",
+                                  ast.line, ast.column);
     }
     branch_then_dead(loop_stack_.back().continue_target, "continue.dead");
     return make_nil();
@@ -14280,10 +14269,8 @@ struct JIT {
         extract_tag(callee), builder_.getInt8(TAG_NIL), "nonnull.isnil");
     builder_.CreateCondBr(isNil, nilBB, okBB);
     builder_.SetInsertPoint(nilBB);
-    emit_throw_error("NilError",
-        std::format("`!!` applied to nil at {}:{}.",
-                    postfix.line, postfix.column),
-        postfix.line, postfix.column);
+    emit_throw_error("NilError", "`!!` applied to nil",
+                     postfix.line, postfix.column);
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(okBB);
   }
@@ -15835,10 +15822,8 @@ struct JIT {
               extract_tag(callee), builder_.getInt8(TAG_NIL), "nonnull.isnil");
           builder_.CreateCondBr(isNil, nilBB, okBB);
           builder_.SetInsertPoint(nilBB);
-          emit_throw_error("NilError",
-              std::format("`!!` applied to nil at {}:{}.",
-                          postfix.line, postfix.column),
-              postfix.line, postfix.column);
+          emit_throw_error("NilError", "`!!` applied to nil",
+                           postfix.line, postfix.column);
           builder_.CreateUnreachable();
           builder_.SetInsertPoint(okBB);
           break;

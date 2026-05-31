@@ -117,10 +117,11 @@ inline std::string json_escape(std::string_view s) {
   return out;
 }
 
+// Location lives in the CulebraError's line/col fields; the top-level
+// printer (src/main.cc) appends ` at L:C.` once, so messages must not
+// embed it themselves (else it prints twice).
 [[noreturn]] inline void throw_type_error_at(long line, long col) {
-  throw CulebraError("TypeError",
-                     std::format("type error at {}:{}.", line, col), line,
-                     col);
+  throw CulebraError("TypeError", "type error", line, col);
 }
 
 // Shared by interp's `eval_destructure_assign` and JIT's
@@ -129,10 +130,7 @@ inline std::string json_escape(std::string_view s) {
 // when an Object / Array / Tuple pattern fails to match its rval.
 [[noreturn]] inline void throw_destructure_mismatch_at(long line, long col) {
   throw CulebraError("ValueError",
-                     std::format(
-                         "destructure pattern did not match value at {}:{}.",
-                         line, col),
-                     line, col);
+                     "destructure pattern did not match value", line, col);
 }
 
 // `o.x += rhs` against a missing property `x`. Both backends used to
@@ -165,8 +163,8 @@ inline std::string json_escape(std::string_view s) {
   throw CulebraError(
       "ShadowError",
       std::format("cannot shadow outer variable '{}' (declared in an enclosing "
-                  "function) at {}:{}.",
-                  name, line, column),
+                  "function)",
+                  name),
       static_cast<long>(line), static_cast<long>(column));
 }
 
