@@ -1345,6 +1345,8 @@ in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 | `re.find(s)` | `Match` or `nil` — leftmost match |
 | `re.match(s)` | `Match` or `nil` — match anchored at the start |
 | `re.find_all(s)` | `[Match]` — all non-overlapping matches |
+| `re.find_all_str(s)` | `[String]` — just the matched texts (no `Match` objects; ~12× faster on match-dense input) |
+| `re.count(s)` | `Int` — number of non-overlapping matches (no objects allocated) |
 | `re.find_iter(s)` | `Iterator<Match>` — lazy; supports early exit (`.take(n)`) |
 | `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — split `s` on matches |

@@ -2109,6 +2109,23 @@ inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_array(arr);
 }
+// find_all_str(pattern, s) -> [String]: matched texts only, no Match objects
+// (the per-match Object structure dominated match-dense workloads). See interp.
+inline JitValue _ns_regex_find_all_str(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto* arr = culebra_runtime_array_new();
+  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+    culebra_runtime_array_push(
+        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(m.str)));
+  }
+  return _ns_adapt::v_array(arr);
+}
+// count(pattern, s) -> Long: number of non-overlapping matches, no objects.
+inline JitValue _ns_regex_count(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  return JitValue{TAG_LONG, static_cast<int64_t>(
+                                re->find_all(_ns_adapt::take_str(a[1])).size())};
+}
 inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
   std::string out =
@@ -2287,6 +2304,8 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "match",       2, &_ns_regex_match},
   {"_Regex", "find_from",   3, &_ns_regex_find_from},
   {"_Regex", "find_all",    2, &_ns_regex_find_all},
+  {"_Regex", "find_all_str",2, &_ns_regex_find_all_str},
+  {"_Regex", "count",       2, &_ns_regex_count},
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
 

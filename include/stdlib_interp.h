@@ -2144,6 +2144,43 @@ inline Value make_regex_primitives_namespace() {
                     })),
                 false);
 
+  // find_all_str(pattern, s) -> [String]: just the matched texts, skipping the
+  // per-match Match object (groups/named construction dominated match-dense
+  // workloads — ~3x faster than find_all when you only need the texts).
+  ns.initialize("find_all_str",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      ArrayValue av;
+                      try {
+                        for (auto& m : re->find_all(s))
+                          av.values->push_back(Value(std::string(m.str)));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                      }
+                      return Value(std::move(av));
+                    })),
+                false);
+
+  // count(pattern, s) -> Long: number of non-overlapping matches, no objects.
+  ns.initialize("count",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      try {
+                        return Value(static_cast<long>(re->find_all(s).size()));
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                        return Value();
+                      }
+                    },
+                    "Long"sv)),
+                false);
+
   ns.initialize("replace_all",
                 Value(FunctionValue(
                     {{"pattern", false, "String"sv},
@@ -2730,6 +2767,8 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "find(s) { _Regex.find(this._pat, s) } "
     "match(s) { _Regex.match(this._pat, s) } "
     "find_all(s) { _Regex.find_all(this._pat, s) } "
+    "find_all_str(s) { _Regex.find_all_str(this._pat, s) } "
+    "count(s) { _Regex.count(this._pat, s) } "
     "find_iter(s) { _regex_find_iter(this._pat, s) } "
     // String repl -> native $1/$<name> template; Function repl -> call it
     // with each Match and splice the returned String between matches.

@@ -1294,6 +1294,8 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `re.find(s)` | `Match` または `nil` — 最左マッチ |
 | `re.match(s)` | `Match` または `nil` — 先頭 anchored マッチ |
 | `re.find_all(s)` | `[Match]` — 全ての非重複マッチ |
+| `re.find_all_str(s)` | `[String]` — マッチ文字列のみ（`Match` を作らない。match-dense で約12倍速） |
+| `re.count(s)` | `Int` — 非重複マッチ数（オブジェクト確保なし） |
 | `re.find_iter(s)` | `Iterator<Match>` — 遅延。途中終了可（`.take(n)`） |
 | `re.replace_all(s, repl)` | `String` — `repl` はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — マッチで `s` を分割 |

@@ -50,4 +50,15 @@ let gs = g.find_iter("🇯🇵x").collect()
 assert_eq(gs[0].end, 8)
 assert_eq(gs[1].value, "x")
 
+// --- find_all_str / count: lean bulk APIs (no Match objects) ---
+let w = Regex.compile('\w+')
+assert_eq(w.find_all_str("a1 b22 c333"), ["a1", "b22", "c333"])
+assert_eq(w.find_all_str("nope-here").size(), 2)   // "nope", "here"
+assert_eq(w.count("a1 b22 c333"), 3)
+assert_eq(Regex.compile('\d+').count("a1 b22 c333"), 3)
+assert_eq(Regex.compile('x').count("yyy"), 0)
+// find_all_str agrees with find_all's values
+let s2 = "the 7 cats 99 dogs"
+assert_eq(Regex.compile('\d+').find_all_str(s2), ["7", "99"])
+
 puts("test_regex_extras: ok")

@@ -119,7 +119,18 @@ docs: `docs/stdlib.md` + `.ja.md`.
   match), so iteration always advances. Re-searches the suffix per step — fine
   for early exit; use `find_all` to materialize everything. (Field is named
   `nxt`, not `next`, because the Iterator protocol reserves `next`.)
+- **`find_all_str(s) -> [String]`** and **`count(s) -> Int`** — lean bulk APIs
+  that skip the per-`Match` object. Profiling a match-dense workload (`sample`
+  on `find_all` over a 256 KB subject) showed the bottleneck is **not** the
+  engine but the per-match Object structure (Match obj + groups array + group0
+  obj + named obj — ~6 allocations each, mostly redundant for capture-free
+  patterns); the engine's matching is minor. `find_all_str` (texts only) and
+  `count` (no objects) run **~12× faster** than `find_all` on that workload.
+  Use `find_all` only when you need offsets/groups. (A StringView `value` was
+  tried first and reverted: in the JIT the view descriptor is itself
+  heap-allocated, so it left the alloc count — and the runtime — unchanged.)
 
 ## Open / deferred
 
-- (none currently)
+- engine-level speedups (SIMD literal prefilter, priority DFA) — only matter for
+  *sparse* matches over large text; deferred until a workload shows that shape.
