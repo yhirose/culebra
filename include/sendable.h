@@ -40,13 +40,13 @@ namespace culebra::sendable {
 // ---------------------------------------------------------------------------
 struct SendNode {
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure };
+                 Closure, Channel };
   K kind = K::Nil;
 
-  bool b = false;
-  long i = 0;
+  bool b = false;  // Bool; also Channel role (false = tx, true = rx)
+  long i = 0;      // Long; also Channel id (into the process-wide registry)
   double d = 0.0;
-  std::string s;  // Str
+  std::string s;   // Str
 
   std::vector<SendNode> elems;  // Array / Set / Tuple
 
@@ -72,10 +72,25 @@ struct SendNode {
 // environment({}), so `print` / `Math` / `Isolate` etc. resolve locally. Only
 // USER bindings (e.g. a top-level `fn fib`) are transferred. Computed once.
 // ---------------------------------------------------------------------------
+// The base environment an isolate runs in: the standard stdlib plus the
+// puts/print globals the CLI aliases (so a closure that prints transfers
+// cleanly — those names resolve to the child's own copies and aren't shipped).
+// builtin_names() is derived from this same env, keeping the "skip" set and the
+// child's environment exactly in sync.
+inline std::shared_ptr<Environment> isolate_base_env() {
+  auto env = culebra::environment({});
+  if (env->has("IO")) {
+    const auto& io = env->get("IO").to_object();
+    env->initialize("puts", io.get("puts"), false);
+    env->initialize("print", io.get("print"), false);
+  }
+  return env;
+}
+
 inline const std::set<std::string, std::less<>>& builtin_names() {
   static const std::set<std::string, std::less<>> names = [] {
     std::set<std::string, std::less<>> s;
-    auto e = culebra::environment({});
+    auto e = isolate_base_env();
     for (const auto& [k, sym] : e->dictionary) s.insert(k);
     return s;
   }();
@@ -253,6 +268,27 @@ struct SerCtx {
   throw culebra::CulebraError("SendError", what);
 }
 
+// Channel endpoints are the one Sendable native handle (a shared, GC-external
+// channel, referenced — not copied). Since isolates are threads in one process,
+// an endpoint is identified by a process-wide registry id + role (0 = tx,
+// 1 = rx). isolate.h registers these hooks so the channel-agnostic walk can
+// ship an endpoint by id. `extract` reads id+role and bumps the endpoint
+// refcount (so the channel can't auto-close in the in-flight window before the
+// receiver rebuilds it); `rebuild` materializes a fresh endpoint over the same
+// id (no extra bump — extract already accounted for it).
+struct ChannelRef {
+  long id = 0;
+  int role = 0;
+};
+inline std::function<ChannelRef(const Value&)>& channel_extract_hook() {
+  static std::function<ChannelRef(const Value&)> f;
+  return f;
+}
+inline std::function<Value(const ChannelRef&)>& channel_rebuild_hook() {
+  static std::function<Value(const ChannelRef&)> f;
+  return f;
+}
+
 inline SendNode serialize(const Value& v, SerCtx& ctx) {
   SendNode n;
   // Array / Set / Tuple share the same shape: cycle-guard the backing store,
@@ -286,6 +322,16 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
     case Value::Tuple:  return seq(v.get<TupleValue>().elements, SendNode::K::Tuple);
     case Value::Object: {
       const auto& obj = v.to_object();
+      // Channel endpoint: the Sendable exception — ship the shared core by
+      // reference (must be checked before the __nonsendable__ guard, since an
+      // endpoint also carries native methods).
+      if (obj.has("__channel_endpoint__")) {
+        ChannelRef ref = channel_extract_hook()(v);
+        n.kind = SendNode::K::Channel;
+        n.i = ref.id;
+        n.b = (ref.role == 1);
+        return n;
+      }
       if (obj.has("__nonsendable__"))
         send_error("a native handle is not Sendable");
       const void* bp = obj.properties.get();
@@ -389,6 +435,8 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
     case K::Long:  return Value(n.i);
     case K::Float: return Value(n.d);
     case K::Str:   return Value(std::string(n.s));
+    case K::Channel:
+      return channel_rebuild_hook()(ChannelRef{n.i, n.b ? 1 : 0});
     case K::Array: {
       ArrayValue av;
       av.values->reserve(n.elems.size());

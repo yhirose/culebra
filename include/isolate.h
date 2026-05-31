@@ -23,11 +23,14 @@
 // .map, JIT support, stdout line-locking.
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 
 #include "sendable.h"
 
@@ -62,6 +65,7 @@ struct IsolateCore {
   bool finished = false;
   bool joined = false;
   bool ran_inline = false;
+  std::atomic<bool> interrupt{false};           // set by drop() to cancel
 
   Value inline_result;                          // ran_inline: parent-heap result
   sendable::SendNode result;                    // threaded: neutral result
@@ -72,7 +76,10 @@ struct IsolateCore {
   // Safety net: a joinable std::thread destroyed without join() calls
   // std::terminate. `join`/`drop` normally join first; this covers the rest.
   ~IsolateCore() {
-    if (thread.joinable()) thread.join();
+    if (thread.joinable()) {
+      interrupt.store(true, std::memory_order_relaxed);
+      thread.join();
+    }
   }
 };
 
@@ -84,8 +91,10 @@ inline void run_isolate_child(std::shared_ptr<IsolateCore> core,
                               const std::vector<sendable::SendNode>& sargs) {
   culebra::Runtime rt;
   culebra::RuntimeScope scope(rt);
+  rt.interrupt_flag = &core->interrupt;  // for the blocking channel waits
   auto child = std::make_shared<Interpreter>();
-  auto base = culebra::environment({});
+  child->interrupt_flag_ = &core->interrupt;  // for the statement-dispatch poll
+  auto base = sendable::isolate_base_env();
   try {
     sendable::DeCtx dc;
     Value fn = sendable::deserialize(sclosure, *child, base, dc);
@@ -135,7 +144,7 @@ inline Value _isolate_deser_parent(const sendable::SendNode& n) {
   // a non-shared_ptr-owned Interpreter (e.g. an isolate returning a closure).
   auto ti = std::make_shared<Interpreter>();
   std::shared_ptr<Environment> base =
-      sendable::contains_closure(n) ? culebra::environment({}) : nullptr;
+      sendable::contains_closure(n) ? sendable::isolate_base_env() : nullptr;
   sendable::DeCtx dc;
   return sendable::deserialize(n, *ti, base, dc);
 }
@@ -152,6 +161,243 @@ inline Value _isolate_extract(IsolateCore& core) {
   if (core.thrown) throw _isolate_deser_parent(*core.thrown);
   if (core.ran_inline) return core.inline_result;
   return _isolate_deser_parent(core.result);
+}
+
+// ===========================================================================
+// Channel (tx / rx) — bounded message passing between isolates.
+// ===========================================================================
+//
+// A channel is a GC-external core (mutex + bounded queue of serialized values)
+// living in a process-wide registry keyed by id. Endpoints are script Objects
+// carrying that id + a role (tx/rx); they are the one Sendable native handle
+// (serialize ships the id, not a copy), so a closure can capture an endpoint
+// and send it into a spawned isolate. When the last tx endpoint is dropped the
+// channel auto-closes, ending any `for x in rx` — the deadlock-prevention core.
+
+struct ChannelCore {
+  std::mutex m;
+  std::condition_variable cv;
+  std::deque<sendable::SendNode> q;  // serialized (neutral) values
+  size_t cap;
+  int tx_count = 0;  // active senders (guarded by m)
+  int rx_count = 0;  // active receivers
+  bool closed = false;
+  explicit ChannelCore(size_t c) : cap(c) {}
+};
+
+inline std::mutex& channel_registry_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline std::unordered_map<long, std::shared_ptr<ChannelCore>>&
+channel_registry() {
+  static std::unordered_map<long, std::shared_ptr<ChannelCore>> r;
+  return r;
+}
+inline std::atomic<long>& channel_next_id() {
+  static std::atomic<long> n{1};
+  return n;
+}
+inline std::shared_ptr<ChannelCore> chan_lookup(long id) {
+  std::lock_guard<std::mutex> lk(channel_registry_mutex());
+  auto it = channel_registry().find(id);
+  return it == channel_registry().end() ? nullptr : it->second;
+}
+
+inline Value make_channel_endpoint(long id, int role);  // fwd (clone recurses)
+
+// Adjust an endpoint's active count (+1 on clone / in-flight send, -1 on drop).
+inline void chan_bump(long id, int role, int delta) {
+  auto core = chan_lookup(id);
+  if (!core) return;
+  std::lock_guard<std::mutex> lk(core->m);
+  if (role == 0) core->tx_count += delta;
+  else           core->rx_count += delta;
+}
+
+// Drop one endpoint: when the last tx is gone the channel auto-closes (waking
+// receivers); when no endpoint of either kind remains the core is reclaimed.
+inline void chan_drop(long id, int role) {
+  auto core = chan_lookup(id);
+  if (!core) return;
+  bool reclaim = false;
+  {
+    std::lock_guard<std::mutex> lk(core->m);
+    if (role == 0) {
+      if (core->tx_count > 0) core->tx_count--;
+      if (core->tx_count == 0) core->closed = true;
+    } else {
+      if (core->rx_count > 0) core->rx_count--;
+    }
+    reclaim = core->tx_count == 0 && core->rx_count == 0;
+  }
+  core->cv.notify_all();
+  if (reclaim) {
+    std::lock_guard<std::mutex> lk(channel_registry_mutex());
+    channel_registry().erase(id);
+  }
+}
+
+inline void channel_send(long id, const Value& v) {
+  sendable::SerCtx sc;
+  sendable::SendNode node = sendable::serialize(v, sc);  // Sendable check
+  auto core = chan_lookup(id);
+  if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
+  std::unique_lock<std::mutex> lk(core->m);
+  while (!core->closed && core->q.size() >= core->cap) {
+    if (culebra::interrupt_requested())
+      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+    core->cv.wait_for(lk, std::chrono::milliseconds(50));
+  }
+  if (core->closed)
+    throw culebra::CulebraError("ChannelError", "send on a closed channel");
+  core->q.push_back(std::move(node));
+  lk.unlock();
+  core->cv.notify_all();
+}
+
+// Block until a value is available or the channel is closed+drained. Returns
+// the dequeued (neutral) node, or nullopt when closed and empty.
+inline std::optional<sendable::SendNode> chan_pop_blocking(long id) {
+  auto core = chan_lookup(id);
+  if (!core) return std::nullopt;
+  std::unique_lock<std::mutex> lk(core->m);
+  while (core->q.empty() && !core->closed) {
+    if (culebra::interrupt_requested())
+      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+    core->cv.wait_for(lk, std::chrono::milliseconds(50));
+  }
+  if (core->q.empty()) return std::nullopt;  // closed + empty
+  sendable::SendNode node = std::move(core->q.front());
+  core->q.pop_front();
+  lk.unlock();
+  core->cv.notify_all();
+  return node;
+}
+
+// Block for one value. Returns nil when the channel is closed and drained
+// (for a clean end-of-stream, prefer `for x in rx`, which ends instead).
+inline Value channel_recv(long id) {
+  auto node = chan_pop_blocking(id);
+  return node ? _isolate_deser_parent(*node) : Value();
+}
+
+inline Value channel_iter(long id) {
+  return _make_iterator(
+      [id](std::shared_ptr<Environment>) -> std::optional<Value> {
+        auto node = chan_pop_blocking(id);
+        return node ? _iter_step_value(_isolate_deser_parent(*node))
+                    : _iter_step_done();  // closed + empty → for-in ends
+      });
+}
+
+// Idempotent endpoint drop: an endpoint can be dropped both explicitly
+// (`tx.drop()`) and again by the GC when its isolate's heap tears down, so the
+// count must move exactly once per endpoint. The `_dropped` flag (on the same
+// shared property map both call paths see) guards the second call.
+inline Value _chan_drop_once(const Value& self, long id, int role) {
+  auto& props = *self.to_object().properties;
+  if (auto it = props.find("_dropped");
+      it != props.end() && it->second.val.type == Value::Bool &&
+      it->second.val.to_bool()) {
+    return Value();
+  }
+  props.insert_or_assign("_dropped", Symbol{Value(true), true});
+  chan_drop(id, role);
+  return Value();
+}
+
+inline Value make_channel_endpoint(long id, int role) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("__channel_endpoint__", Value(true), false);
+  h.initialize("__channel_id__", Value(id), false);
+  h.initialize("__channel_role__", Value(static_cast<long>(role)), false);
+  h.initialize("_dropped", Value(false), true);
+  h.initialize("drop",
+      Value(FunctionValue({}, [id, role](std::shared_ptr<Environment> env) -> Value {
+        return _chan_drop_once(env->get("this"), id, role);
+      }, "Nil"sv)), false);
+  h.initialize("clone",
+      Value(FunctionValue({}, [id, role](std::shared_ptr<Environment>) -> Value {
+        chan_bump(id, role, +1);
+        return make_channel_endpoint(id, role);
+      }, ""sv)), false);
+  if (role == 0) {  // tx
+    h.initialize("send",
+        Value(FunctionValue({{"v", false, ""sv}},
+            [id](std::shared_ptr<Environment> env) -> Value {
+              channel_send(id, env->get("v"));
+              return Value();
+            }, "Nil"sv)), false);
+  } else {  // rx
+    h.initialize("recv",
+        Value(FunctionValue({}, [id](std::shared_ptr<Environment>) -> Value {
+          return channel_recv(id);
+        }, ""sv)), false);
+    h.initialize("iter",
+        Value(FunctionValue({}, [id](std::shared_ptr<Environment>) -> Value {
+          return channel_iter(id);
+        }, ""sv)), false);
+  }
+  return Value(std::move(h));
+}
+
+// Register the Sendable hooks (endpoints ship by id + role) once at load.
+inline bool _install_channel_hooks() {
+  sendable::channel_extract_hook() =
+      [](const Value& v) -> sendable::ChannelRef {
+    const auto& o = v.to_object();
+    long id = o.get("__channel_id__").to_long();
+    int role = static_cast<int>(o.get("__channel_role__").to_long());
+    chan_bump(id, role, +1);  // in-flight bump, balanced by the rebuilt drop
+    // Known limitation: if a value *containing* an endpoint is serialized and
+    // the SendNode is then discarded WITHOUT being rebuilt (e.g. sending an
+    // endpoint through a channel whose send throws, or it sits undrained in a
+    // reclaimed queue), this +1 leaks. The documented patterns — capturing an
+    // endpoint into a spawned closure — always rebuild, so they stay balanced.
+    // A sound fix (move-only RAII ownership of the ref on SendNode) is deferred
+    // until endpoint-through-channel is a supported pattern.
+    return {id, role};
+  };
+  sendable::channel_rebuild_hook() =
+      [](const sendable::ChannelRef& r) -> Value {
+    return make_channel_endpoint(r.id, r.role);  // extract already bumped
+  };
+  return true;
+}
+inline const bool _channel_hooks_installed = _install_channel_hooks();
+
+// `Channel.new(cap = 1) -> (tx, rx)`. Bounded; capacity must be >= 1.
+inline Value make_channel_namespace() {
+  using namespace std::literals;
+  static const auto cap_default = std::make_shared<Value>(Value(1L));
+  ObjectValue ns;
+  ns.initialize("new",
+      Value(FunctionValue({{"cap", false, ""sv, nullptr, cap_default}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long cap = env->get("cap").to_long();
+            long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            if (cap < 1) {
+              throw culebra::CulebraError("ValueError",
+                  "Channel.new: capacity must be >= 1 (rendezvous channels are "
+                  "not yet supported)", line, col);
+            }
+            auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
+            long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+            {
+              std::lock_guard<std::mutex> lk(channel_registry_mutex());
+              channel_registry()[id] = core;
+            }
+            core->tx_count = 1;
+            core->rx_count = 1;
+            std::vector<Value> pair;
+            pair.push_back(make_channel_endpoint(id, 0));  // tx
+            pair.push_back(make_channel_endpoint(id, 1));  // rx
+            return Value(TupleValue(std::move(pair)));
+          }, "Tuple"sv)), false);
+  return Value(std::move(ns));
 }
 
 // Build the live handle Object: `join` / `poll` / `drop` methods closing over
@@ -196,8 +442,10 @@ inline Value make_isolate_handle(std::shared_ptr<IsolateCore> core) {
           [core](std::shared_ptr<Environment>) -> Value {
             if (core->joined) return Value();
             if (core->thread.joinable()) {
-              // No interrupt flag yet (next cycle): wait for completion, then
-              // join so no thread is left detached.
+              // Ask the isolate to stop (it unwinds at its next statement
+              // boundary / blocking channel op), then wait + join so no thread
+              // is left detached.
+              core->interrupt.store(true, std::memory_order_relaxed);
               {
                 std::unique_lock<std::mutex> lk(core->m);
                 core->cv.wait(lk, [&] { return core->finished; });

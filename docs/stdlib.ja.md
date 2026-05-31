@@ -1430,8 +1430,50 @@ for h in handles { total = total + h.join() }
 total                          # => 45
 ```
 
-isolate 間ストリーミングの channel と `Parallel.map` / `Parallel.each` ヘルパは
-次に予定しています。
+### キャンセル
+
+isolate は協調的にキャンセル可能です。`join()` せずにハンドルを drop する（または
+GC が回収する）と isolate に停止が伝わり、次の文境界または channel のブロッキング
+境界で巻き戻ります。暴走中・待機中の isolate がプログラムをハングさせることは
+ありません。
+
+### Channel — `Channel.new(cap = 1) -> (tx, rx)`
+
+channel は isolate 間で値を渡す有界・ブロッキングのキューです。**(tx, rx)** の組を
+返します（Rust `mpsc` 流）。`tx.send(v)` で投入、`rx` で取り出し。channel の
+endpoint は Sendable 規則の唯一の例外で、（参照で）共有されます — クロージャが
+`tx`/`rx` を捕獲して spawn した isolate に持ち込めます。値そのものはコピーで渡り、
+共有されるのは channel だけです。
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(10)        # 有界・容量 10
+let prod = Isolate.spawn(fn () {
+  for line in source() { tx.send(parse(line)) }
+  tx.drop()                            # この送信端を解放
+})
+tx.drop()                              # 親側の送信端も解放
+for record in rx { process(record) }   # 全 tx が drop されると終了
+prod.join()
+```
+
+| メソッド | 対象 | 意味 |
+|---|---|---|
+| `tx.send(v)` | tx | `v` を投入（バッファ満杯ならブロック）。closed なら `ChannelError` |
+| `tx.clone()` / `rx.clone()` | 両方 | 同一 channel の別 endpoint（multi-producer / multi-consumer） |
+| `tx.drop()` / `rx.drop()` | 両方 | この endpoint を解放 |
+| `rx.recv()` | rx | 1 値をブロッキング取得。closed かつ空なら `nil` |
+| `for v in rx { ... }` | rx | closed まで drain（綺麗な end-of-stream の形） |
+
+**auto-close がデッドロック安全網です。** アクティブな送信端を数え、**最後の `tx`
+が drop された**時（producer isolate が正常／例外終了）に channel が close し、
+`for v in rx` が終了します。producer がクラッシュしても consumer はハングせず、
+原因は producer を `join()` して surface します。multi-producer の罠に注意:
+channel が閉じるには全ての `tx`（親の元の tx 含む）が drop される必要があります —
+保持しない tx は drop してください。
+
+`容量は 1 以上`（rendezvous channel と `Parallel.map` / `Parallel.each` ヘルパは
+次に予定）。
 
 ---
 

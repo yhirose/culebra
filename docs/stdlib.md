@@ -1485,8 +1485,52 @@ for h in handles { total = total + h.join() }
 total                          # => 45
 ```
 
-Channels (streaming between isolates) and a `Parallel.map` / `Parallel.each`
-helper are planned next.
+### Cancellation
+
+An isolate is cooperatively cancellable. Dropping its handle without `join()`
+(or letting the GC collect it) signals the isolate to stop; it unwinds at its
+next statement or blocking-channel boundary, so a runaway or idle isolate never
+hangs the program.
+
+### Channels — `Channel.new(cap = 1) -> (tx, rx)`
+
+A channel is a bounded, blocking queue for passing values between isolates. It
+returns a **(tx, rx)** pair (Rust `mpsc` style): `tx.send(v)` enqueues, `rx`
+yields values. A channel endpoint is the one exception to the Sendable rules —
+it is shared (by reference), so a closure can capture `tx`/`rx` and carry it
+into a spawned isolate. Values still cross by copy; only the channel itself is
+shared.
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(10)        # bounded; capacity 10
+let prod = Isolate.spawn(fn () {
+  for line in source() { tx.send(parse(line)) }
+  tx.drop()                            # release this sender
+})
+tx.drop()                              # release the parent's sender too
+for record in rx { process(record) }   # ends when every tx is dropped
+prod.join()
+```
+
+| method | on | meaning |
+|---|---|---|
+| `tx.send(v)` | tx | enqueue `v` (blocks while the buffer is full); throws `ChannelError` if the channel is closed |
+| `tx.clone()` / `rx.clone()` | both | another endpoint over the same channel (multi-producer / multi-consumer) |
+| `tx.drop()` / `rx.drop()` | both | release this endpoint |
+| `rx.recv()` | rx | block for one value; returns `nil` once the channel is closed and drained |
+| `for v in rx { ... }` | rx | drain until closed (the clean end-of-stream form) |
+
+**Auto-close is the deadlock-safety net.** The active senders are counted;
+when the **last `tx` is dropped** (a producer isolate finishing, normally or by
+throwing) the channel closes and any `for v in rx` ends. So a producer that
+crashes won't hang its consumer — surface the failure by `join()`-ing the
+producer. Note the multi-producer trap: every `tx` (including the parent's
+original) must be dropped for the channel to close — drop the ones you don't
+keep.
+
+`bound to capacity >= 1` (rendezvous channels and a `Parallel.map` /
+`Parallel.each` helper are planned next).
 
 ---
 

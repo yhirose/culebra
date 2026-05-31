@@ -148,4 +148,9 @@ let hclo = Isolate.spawn(|| make_adder())
 let adder = hclo.join()
 assert_eq(adder(5), 105)
 
+# --- a spawned closure can use the puts/print globals (CLI aliases): they
+#     resolve to the isolate's own copies rather than being shipped ---
+let hputs = Isolate.spawn(fn () { puts("[isolate] hello"); 7 })
+assert_eq(hputs.join(), 7)
+
 puts("test_isolate: all assertions passed")

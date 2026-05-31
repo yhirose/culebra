@@ -1,0 +1,73 @@
+# Channel (C2-a): bounded message passing between isolates. Interpreter only.
+
+# --- producer isolate streams into a channel; consumer drains via for-in ---
+let (tx, rx) = Channel.new(4)
+let prod = Isolate.spawn(fn () {
+  for i in 1..6 { tx.send(i * 10) }
+  tx.drop()        # release the sender copy so the channel can close
+})
+tx.drop()          # the parent's own sender copy — both must drop to close
+mut got = []
+for v in rx { got.push(v) }
+prod.join()
+assert_eq(got, [10, 20, 30, 40, 50])
+
+# --- explicit recv() returns values then nil once closed + drained ---
+let (tx2, rx2) = Channel.new(2)
+let p2 = Isolate.spawn(fn () {
+  tx2.send("a")
+  tx2.send("b")
+  tx2.drop()
+})
+tx2.drop()
+assert_eq(rx2.recv(), "a")
+assert_eq(rx2.recv(), "b")
+assert_eq(rx2.recv(), nil)   # closed + empty
+p2.join()
+
+# --- multi-producer via tx.clone(); fan-in sum ---
+let (tx3, rx3) = Channel.new(8)
+mut workers = []
+for w in 0..3 {
+  let mytx = tx3.clone()
+  workers.push(Isolate.spawn(fn () {
+    mytx.send(w + 1)
+    mytx.drop()
+  }))
+}
+tx3.drop()                   # drop the original; clones keep it open
+mut total = 0
+for v in rx3 { total = total + v }
+for wk in workers { wk.join() }
+assert_eq(total, 6)          # 1 + 2 + 3
+
+# --- backpressure: capacity-1 channel, producer outpaces consumer ---
+let (tx4, rx4) = Channel.new(1)
+let p4 = Isolate.spawn(fn () {
+  for i in 0..5 { tx4.send(i) }
+  tx4.drop()
+})
+tx4.drop()
+mut sum4 = 0
+for v in rx4 { sum4 = sum4 + v }
+p4.join()
+assert_eq(sum4, 10)          # 0+1+2+3+4
+
+# --- sending a structured value across the channel ---
+let (tx5, rx5) = Channel.new(2)
+let p5 = Isolate.spawn(fn () {
+  tx5.send({id: 1, tags: ["a", "b"]})
+  tx5.drop()
+})
+tx5.drop()
+let rec = rx5.recv()
+p5.join()
+assert_eq(rec, {id: 1, tags: ["a", "b"]})
+
+# --- dropping an isolate blocked on recv() unwinds it (interrupt-aware wait) ---
+let (tx6, rx6) = Channel.new(1)
+let blocked = Isolate.spawn(fn () { rx6.recv() })  # blocks: no value is ever sent
+blocked.drop()                                     # must not hang (reaching the
+tx6.drop()                                         # final line proves it)
+
+puts("test_channel: all assertions passed")

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <mutex>
 #include <cerrno>
 #include <charconv>
 #include <cmath>
@@ -720,6 +722,12 @@ struct Runtime {
   int64_t thrown_data = 0;
   int8_t is_throw = 0;
 
+  // Cooperative cancellation. When non-null and set, the interpreter's
+  // statement dispatch throws `Interrupted` to unwind this thread (an isolate
+  // being cancelled / dropped). The flag itself lives on the owning IsolateCore
+  // (isolate.h); the Runtime only borrows a pointer. Null on the main thread.
+  std::atomic<bool>* interrupt_flag = nullptr;
+
   std::array<void*, kRuntimeSlotCount> substate{};
   std::array<void (*)(void*), kRuntimeSlotCount> substate_deleter{};
 
@@ -753,6 +761,21 @@ inline Runtime& default_runtime() {
 inline Runtime& current_runtime() {
   return _culebra_current_runtime ? *_culebra_current_runtime
                                   : default_runtime();
+}
+
+// True when the current isolate has been asked to cancel (see Runtime::
+// interrupt_flag). Polled by the statement dispatch and by blocking channel
+// waits. Always false on the main thread (no flag installed).
+inline bool interrupt_requested() {
+  auto* f = current_runtime().interrupt_flag;
+  return f && f->load(std::memory_order_relaxed);
+}
+
+// Serializes stdout/stderr writes so concurrent isolates don't interleave
+// mid-line (`puts` once = one atomic line). Process-wide.
+inline std::mutex& stdio_mutex() {
+  static std::mutex m;
+  return m;
 }
 
 // RAII to switch the active Runtime for the current thread.

@@ -4382,6 +4382,14 @@ inline void setup_core_globals(Environment& env) {
 struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Interpreter(Debugger debugger = nullptr) : debugger_(debugger) {}
 
+  // Borrowed cooperative-cancellation flag (an isolate's IsolateCore::interrupt,
+  // set by isolate.h on the child's interpreter). Cached here so the per-
+  // statement poll in _eval_dispatch is a single member load + null test
+  // instead of a thread_local current_runtime() round-trip — null and free on
+  // the main thread. The channel blocking waits use current_runtime() directly
+  // (they're not on the hot path).
+  std::atomic<bool>* interrupt_flag_ = nullptr;
+
   // --- Public entry points for the isolate / sendable layer ---
   // Rebuild a user closure on THIS interpreter's heap from its retained
   // defining AST (FunctionValue::params_ast/body) and a freshly-populated
@@ -4481,8 +4489,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value _eval_dispatch(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
-    if (debugger_) {
-      if (ast.original_tag == "STATEMENT"_) {
+    if (ast.original_tag == "STATEMENT"_) {
+      // Cooperative cancellation: an isolate being dropped/cancelled unwinds
+      // here at the next statement boundary. Null (main thread) → no-op.
+      if (interrupt_flag_ &&
+          interrupt_flag_->load(std::memory_order_relaxed)) {
+        throw CulebraError("Interrupted", "isolate cancelled");
+      }
+      if (debugger_) {
         auto force_to_break = ast.tag == "DEBUGGER"_;
         debugger_(ast, *env, force_to_break);
       }

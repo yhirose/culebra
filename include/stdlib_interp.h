@@ -199,10 +199,11 @@ inline Value make_io_namespace() {
   ns.initialize("puts",
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
-                                      std::cout
-                                          << str_quoted_with_special(
-                                                 env->get("arg"))
-                                          << std::endl;
+                                      auto s = str_quoted_with_special(
+                                          env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cout << s << std::endl;
                                       return Value();
                                     })),
                 false);
@@ -210,8 +211,11 @@ inline Value make_io_namespace() {
   ns.initialize("print",
                 Value(FunctionValue({{"arg", true}},
                                     [](std::shared_ptr<Environment> env) {
-                                      std::cout << str_display_with_special(
+                                      auto s = str_display_with_special(
                                           env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cout << s;
                                       return Value();
                                     })),
                 false);
@@ -2914,10 +2918,11 @@ inline Value make_regex_primitives_namespace() {
 }
 
 // Defined in isolate.h (included at the end of this header). Forward-declared
-// so setup_built_in_functions can register the `Isolate` namespace; the body
-// pulls in the isolate/sendable machinery which itself depends on the full
-// stdlib (environment(), Interpreter), hence the bottom include.
+// so setup_built_in_functions can register the `Isolate`/`Channel` namespaces;
+// the bodies pull in the isolate/sendable machinery which itself depends on the
+// full stdlib (environment(), Interpreter), hence the bottom include.
 inline Value make_isolate_namespace();
+inline Value make_channel_namespace();
 
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
@@ -3038,6 +3043,7 @@ inline void setup_built_in_functions(
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
   env.initialize("Isolate", make_isolate_namespace(), false);
+  env.initialize("Channel", make_channel_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
