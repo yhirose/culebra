@@ -1370,16 +1370,10 @@ inline JitValue _ns_sys_time(JitValue*, int64_t) {
 // the counters before allocating the result object so the container itself
 // isn't included in its own report.
 inline JitValue _ns_gc_stat(JitValue*, int64_t) {
-#ifdef CULEBRA_NEW_GC
   auto& gc = _gc_heap();
   gc.collect();  // report reachable objects, not registry residue not yet swept
   int64_t live = static_cast<int64_t>(gc.live_count());
   int64_t bytes = static_cast<int64_t>(gc.live_bytes());
-#else
-  auto& gc = _GcTracker::instance();
-  int64_t live = gc.live_objects;
-  int64_t bytes = gc.live_bytes;
-#endif
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(obj, "live_objects", /*mut=*/false, TAG_LONG,
                              live, 0, 0);
@@ -1739,12 +1733,10 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   if (!_is_known_ns(name)) return nullptr;
   auto* obj = _jit_build_namespace_object(name);
   table.emplace(name, obj);
-#ifdef CULEBRA_NEW_GC
   // Cached for the program's lifetime and reached only through this table
   // (off any scanned stack between uses), so pin it as a permanent root; the
   // marker traces its method closures as children.
   _gc_heap().pin(obj);
-#endif
   return obj;
 }
 

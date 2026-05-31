@@ -404,6 +404,13 @@ ever adopted.
 
 ## 13. Phasing
 
+> **Shipped (2026-05-30).** Phases 0–1 + 2a landed on master and the backstop
+> is now the sole JIT collector: the `CULEBRA_NEW_GC` CMake flag and the legacy
+> manual-RC + minor-only collector (`_GcTracker`, `_gc_slot_of`, the dual-path
+> `#ifdef`s) were removed. The struct `gc_slot` field is now a vestigial unused
+> trailing i64 (kept to leave the IR layout undisturbed). Phase 2b / generational
+> / §12 remain future, measurement-gated.
+
 - **Phase 0 — scaffolding (allocate-only; validate the scary parts in
   isolation).** The two genuinely dangerous parts of a conservative GC
   are (1) *does the scan find every live root?* (a miss → use-after-free

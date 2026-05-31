@@ -2,13 +2,8 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
-#ifdef CULEBRA_NEW_GC
-// Conservative collector header (docs/jit_gc_design.md). Gated: it pulls in
-// the macOS-only pthread_get_stackaddr_np for stack scanning, and the OFF
-// path references nothing from it — so an OFF build (the shipping path) must
-// not parse it on platforms lacking that symbol (e.g. Linux CI).
+// Conservative backstop collector (docs/jit_gc_design.md).
 #include <jit_gc.h>
-#endif
 #include <module_loader.h>
 #include <parser.h>
 #include <runtime/rt_macros.h>
@@ -151,12 +146,10 @@ struct JitArray {
   size_t size;
   size_t capacity;
   JitValue* items;
-  // Index into the legacy GC tracker's young vector while this Array is in
-  // the young generation; -1 when in old (or untracked / shutdown). Unused
-  // under CULEBRA_NEW_GC (the conservative heap keeps metadata in its own
-  // registry) but kept so the IR layout matches the OFF build exactly.
-  // Trailing field so the established IR layout for `JitArray` (which
-  // codegen accesses by GEP index) is undisturbed.
+  // Vestigial unused trailing i64 (was the old minor collector's young-vector
+  // index; the conservative heap keeps metadata in its own registry). Left in
+  // place to avoid perturbing the established `JitArray` IR struct layout that
+  // codegen accesses by GEP index.
   int64_t gc_slot = -1;
 };
 
@@ -458,8 +451,7 @@ static constexpr int8_t GC_TAG_SET = TAG_SET;
 static constexpr int8_t GC_TAG_CELL = 100;
 
 // Is this tag a refcounted heap value (the container/handle tags, excluding
-// Cell)? Pure predicate over GC_TAG_* — available in both GC modes (the
-// legacy `_GcTracker::is_refcounted_value_tag` delegates to it).
+// Cell)? Pure predicate over GC_TAG_*.
 inline bool _is_refcounted_value_tag(int8_t tag) {
   return tag == GC_TAG_FUNC || tag == GC_TAG_ARRAY ||
          tag == GC_TAG_OBJECT || tag == GC_TAG_TENSOR ||
@@ -587,460 +579,13 @@ struct JitSet {
   int64_t gc_slot = -1;
 };
 
-#ifndef CULEBRA_NEW_GC
-// --- Legacy manual-RC + minor-only collector (replaced under CULEBRA_NEW_GC
-// by the conservative mark-sweep heap in jit_gc.h; see docs/jit_gc_design.md).
-// The whole apparatus — _gc_slot_of, _GcTracker, enumerate_children, the
-// refcount helpers — is compiled out on the new path. ---
 
-// Minimum collect-trigger threshold; adaptive at runtime — see collect().
-static constexpr size_t GC_THRESHOLD = 10000;
-static constexpr int64_t GC_REFCOUNT_BOOST = 1000000;
-
-// Type-dispatched accessor to a refcounted heap object's `gc_slot`
-// field. Each tracked struct (JitArray, JitObject, JitCell,
-// JitClosure) carries an i64 `gc_slot` that is the object's index
-// into the tracker's young vector (or -1 when in old / untracked).
-inline int64_t& _gc_slot_of(void* ptr, int8_t tag) {
-  switch (tag) {
-    case GC_TAG_ARRAY:
-    case GC_TAG_TUPLE:  return static_cast<JitArray*>(ptr)->gc_slot;
-    case GC_TAG_OBJECT: return static_cast<JitObject*>(ptr)->gc_slot;
-    case GC_TAG_TENSOR: return static_cast<JitTensor*>(ptr)->gc_slot;
-    case GC_TAG_SET:    return static_cast<JitSet*>(ptr)->gc_slot;
-    case GC_TAG_CELL: return static_cast<JitCell*>(ptr)->gc_slot;
-    default: return static_cast<JitClosure*>(ptr)->gc_slot;  // GC_TAG_FUNC
-  }
-}
-
-struct _GcTracker {
-  using TaggedPtr = std::pair<void*, int8_t>;
-
-  // Generational tracker. `young` holds freshly-allocated heap
-  // objects in a flat vector; each object stores its slot index in
-  // its own `gc_slot` field so add and remove are O(1) push /
-  // swap-pop with no per-call heap allocation. After a collect, the
-  // surviving young objects are "promoted" simply by clearing their
-  // gc_slot to -1 — they're no longer in any tracker. Refcount is
-  // sufficient to manage their lifetime; cycles among promoted
-  // objects are not detected.
-  //
-  // For Culebra's class-sugar workloads (params + class meta +
-  // per-step intermediates) cycles among promoted objects don't
-  // form in practice. Programs that mix long-lived data with cyclic
-  // references will leak; that's an acceptable trade for the
-  // ~30%-of-self-time we save vs the previous unordered_map<void*,
-  // int8_t> for the old generation.
-  std::vector<TaggedPtr> young;
-  std::vector<size_t> free_slots;
-  size_t alloc_counter = 0;
-  size_t threshold = GC_THRESHOLD;
-  bool running = false;      // prevent re-entry
-
-  // Live-object accounting for GC.stat() introspection. `live_objects` is
-  // births (add) minus frees (note_free) = currently-live refcounted heap
-  // objects across both generations. `live_bytes` is the same but weighted by
-  // each type's struct size — element buffers (Array items, Object slots) and
-  // allocator overhead are not counted, so it's a structural approximation.
-  int64_t live_objects = 0;
-  int64_t live_bytes = 0;
-
-  // Struct size per GC tag, mirroring `_gc_slot_of`'s type dispatch.
-  static int64_t tag_struct_size(int8_t tag) {
-    switch (tag) {
-      case GC_TAG_ARRAY:
-      case GC_TAG_TUPLE:  return sizeof(JitArray);
-      case GC_TAG_OBJECT: return sizeof(JitObject);
-      case GC_TAG_TENSOR: return sizeof(JitTensor);
-      case GC_TAG_SET:    return sizeof(JitSet);
-      case GC_TAG_CELL:   return sizeof(JitCell);
-      default:            return sizeof(JitClosure);  // GC_TAG_FUNC
-    }
-  }
-
-  static _GcTracker& instance() {
-    return culebra::runtime_substate<_GcTracker>(culebra::kSlotJitGc);
-  }
-
-  _GcTracker() {
-    young.reserve(1 << 18);
-    free_slots.reserve(1 << 14);
-  }
-
-  ~_GcTracker() { collect(); }
-
-  void add(void* ptr, int8_t tag) {
-    size_t slot;
-    if (!free_slots.empty()) {
-      slot = free_slots.back();
-      free_slots.pop_back();
-      young[slot] = {ptr, tag};
-    } else {
-      slot = young.size();
-      young.push_back({ptr, tag});
-    }
-    _gc_slot_of(ptr, tag) = static_cast<int64_t>(slot);
-    live_objects++;
-    live_bytes += tag_struct_size(tag);
-    if (!running && ++alloc_counter >= threshold) {
-      alloc_counter = 0;
-      collect();
-    }
-  }
-
-  // Account for an actual heap free (a real `delete`, NOT a generational
-  // promotion via remove()). Call at each delete site in the release path.
-  void note_free(int8_t tag) {
-    live_objects--;
-    live_bytes -= tag_struct_size(tag);
-  }
-  void remove(void* ptr, int8_t tag) {
-    auto& slot = _gc_slot_of(ptr, tag);
-    if (slot >= 0) {
-      young[slot] = {nullptr, 0};
-      free_slots.push_back(static_cast<size_t>(slot));
-      slot = -1;
-    }
-    // gc_slot == -1: already promoted (or untracked) — nothing to do.
-  }
-
-  static bool is_refcounted_value_tag(int8_t tag) {
-    return _is_refcounted_value_tag(tag);
-  }
-
-  static void push_if_refcounted(std::vector<TaggedPtr>& out, int8_t tag,
-                                 int64_t data) {
-    if (is_refcounted_value_tag(tag))
-      out.push_back({reinterpret_cast<void*>(data), tag});
-  }
-
-  // Enumerate child objects (cells/closures/arrays/objects) directly
-  // reachable from ptr. Tags travel with pointers so the cycle GC can
-  // call `_gc_slot_of(ptr, tag)` directly on each child.
-  void enumerate_children(void* ptr, int8_t tag,
-                          std::vector<TaggedPtr>& out) {
-    switch (tag) {
-      case GC_TAG_FUNC: {
-        auto* c = static_cast<JitClosure*>(ptr);
-        for (size_t i = 0; i < c->n_captures; i++) {
-          if (c->captures[i]) out.push_back({c->captures[i], GC_TAG_CELL});
-        }
-        break;
-      }
-      case GC_TAG_ARRAY:
-      case GC_TAG_TUPLE: {
-        auto* a = static_cast<JitArray*>(ptr);
-        for (size_t i = 0; i < a->size; i++) {
-          push_if_refcounted(out, a->items[i].tag, a->items[i].data);
-        }
-        break;
-      }
-      case GC_TAG_SET: {
-        auto* s = static_cast<JitSet*>(ptr);
-        for (auto& m : s->members) {
-          push_if_refcounted(out, m.tag, m.data);
-        }
-        break;
-      }
-      case GC_TAG_OBJECT: {
-        auto* o = static_cast<JitObject*>(ptr);
-        for (auto& entry : o->slots) {
-          push_if_refcounted(out, entry.value.tag, entry.value.data);
-        }
-        // Non-String keys (Tuple) and their values: both can be
-        // refcounted. Walk `key_order` for the keys; String entries
-        // are filtered by `push_if_refcounted` since TAG_STRING isn't
-        // a refcounted tag.
-        if (o->key_order && o->non_string_props) {
-          for (const auto& k : *o->key_order) {
-            push_if_refcounted(out, k.tag, k.data);
-            if (k.tag == TAG_STRING) continue;
-            auto it = o->non_string_props->find(k);
-            if (it != o->non_string_props->end()) {
-              push_if_refcounted(out, it->second.value.tag,
-                                 it->second.value.data);
-            }
-          }
-        }
-        // Reach the shared class meta via proto so GC sees it as live
-        // while any instance is alive (and discovers methods through
-        // it on subsequent walks).
-        if (o->proto) out.push_back({o->proto, GC_TAG_OBJECT});
-        break;
-      }
-      case GC_TAG_CELL: {
-        auto* cell = static_cast<JitCell*>(ptr);
-        push_if_refcounted(out, cell->value.tag, cell->value.data);
-        break;
-      }
-    }
-  }
-
-  // All refcounted types share refcount as their first i64 field.
-  static int64_t& refcount_ref(void* ptr) {
-    return *reinterpret_cast<int64_t*>(ptr);
-  }
-
-  // Clear internal references by releasing each child.
-  // This breaks cycles and cascades normal RC freeing.
-  void clear_references(void* ptr, int8_t tag) {
-    switch (tag) {
-      case GC_TAG_FUNC: {
-        auto* c = static_cast<JitClosure*>(ptr);
-        for (size_t i = 0; i < c->n_captures; i++) {
-          if (c->captures[i]) {
-            auto* cell = c->captures[i];
-            c->captures[i] = nullptr;
-            _culebra_cell_release(cell);
-          }
-        }
-        break;
-      }
-      case GC_TAG_ARRAY:
-      case GC_TAG_TUPLE: {
-        auto* a = static_cast<JitArray*>(ptr);
-        auto items = a->items;
-        auto size = a->size;
-        a->items = nullptr;
-        a->size = 0;
-        a->capacity = 0;
-        for (size_t i = 0; i < size; i++) {
-          _culebra_value_release_impl(items[i].tag, items[i].data);
-        }
-        delete[] items;
-        break;
-      }
-      case GC_TAG_SET: {
-        auto* s = static_cast<JitSet*>(ptr);
-        auto members = std::move(s->members);
-        s->members.clear();
-        if (s->index) {
-          delete s->index;
-          s->index = nullptr;
-        }
-        for (auto& m : members) {
-          _culebra_value_release_impl(m.tag, m.data);
-        }
-        break;
-      }
-      case GC_TAG_OBJECT: {
-        auto* o = static_cast<JitObject*>(ptr);
-        // `drop` is intentionally NOT fired for cycle members. The
-        // interpreter has no cycle collector and therefore never runs
-        // user drops on cycles either; firing them only in the JIT
-        // would diverge observable behavior (drop side-effects:
-        // puts, file close, counter decrement, ...). This matches
-        // Python's __del__ rule for cyclic garbage: the collector
-        // breaks the cycle but skips finalizers because their order
-        // would be non-deterministic. Non-cyclic objects still hit
-        // their drop via the normal _culebra_value_release_impl
-        // refcount-to-zero path.
-        if (o->proto) {
-          auto* proto = o->proto;
-          o->proto = nullptr;
-          _culebra_value_release_impl(GC_TAG_OBJECT,
-                                       reinterpret_cast<int64_t>(proto));
-        }
-        auto slots = std::move(o->slots);
-        o->slots.clear();
-        o->shape = nullptr;
-        for (auto& entry : slots) {
-          _culebra_value_release_impl(entry.value.tag, entry.value.data);
-        }
-        // Non-String sidecar: same teardown as the normal release path.
-        if (o->key_order) {
-          for (auto& k : *o->key_order) {
-            // String entries are unretained shape-name pointers; only
-            // refcounted keys (currently Tuple) hold a +1 here.
-            if (_GcTracker::is_refcounted_value_tag(k.tag)) {
-              _culebra_value_release_impl(k.tag, k.data);
-            }
-          }
-          delete o->key_order;
-          o->key_order = nullptr;
-        }
-        if (o->non_string_props) {
-          // Release both the entry's value AND the entry's stored key.
-          // The key release drops the +1 transferred from the original
-          // `object_set_any` insert; `key_order` separately released
-          // its own +1 above, so the two stored refs are balanced.
-          for (auto& [k, entry] : *o->non_string_props) {
-            _culebra_value_release_impl(entry.value.tag, entry.value.data);
-            _culebra_value_release_impl(k.tag, k.data);
-          }
-          delete o->non_string_props;
-          o->non_string_props = nullptr;
-        }
-        break;
-      }
-      case GC_TAG_CELL: {
-        auto* cell = static_cast<JitCell*>(ptr);
-        auto v = cell->value;
-        cell->value = {0, 0};
-        _culebra_value_release_impl(v.tag, v.data);
-        break;
-      }
-    }
-  }
-
-  // Minor-only generational GC: every collect scans only `young`,
-  // promotes survivors to `old`, and never re-scans `old`. Cycles
-  // entirely inside long-lived objects are not detected. For the
-  // class-sugar workloads Culebra is targeted at (params + class
-  // metadata + per-step intermediates) those cycles don't form in
-  // practice. Programs that hit a real long-lived-cycle pattern
-  // would need an explicit major-collect entry point — left as
-  // future work; threshold-triggered major collects regressed bench
-  // when tested because `old` for HOF-style microgpt grows past any
-  // reasonable threshold due to closure capture patterns.
-  // Alive entry count in young (excluding swap-popped null slots).
-  size_t young_alive() const { return young.size() - free_slots.size(); }
-
-  void collect() {
-    if (young_alive() == 0 || running) return;
-    running = true;
-    _do_collect();
-    threshold = std::max(GC_THRESHOLD, young_alive() * 2);
-    running = false;
-  }
-
-  void _do_collect() {
-    if (young_alive() == 0) return;
-
-    if (std::getenv("CULEBRA_GC_DEBUG")) {
-      std::println(stderr, "[GC] scan young={}", young_alive());
-    }
-
-    // Minor collect: snapshot young objects and run the existing
-    // decrement / BFS reachability over them. Old objects are not
-    // visited; if a young object is held only by an old one, it
-    // shows up as a reachable root because gc_refs keeps the full
-    // refcount and we never decrement for old->young edges (old
-    // isn't iterated to enumerate children).
-    //
-    // All collect-local state is keyed by snapshot index. Pointer →
-    // index lookup avoids a hash table by repurposing each tracked
-    // object's `gc_slot` field as the snapshot index for the duration
-    // of this collect. Promoted (or untracked) objects keep their
-    // existing `gc_slot == -1`, so a child whose `_gc_slot_of()` is
-    // negative is "outside the snapshot" — same semantics the prior
-    // `unordered_map::find` returned.
-    std::vector<TaggedPtr> snapshot;
-    snapshot.reserve(young_alive());
-    for (auto& e : young) {
-      if (e.first) snapshot.push_back(e);
-    }
-
-    for (size_t i = 0; i < snapshot.size(); i++) {
-      _gc_slot_of(snapshot[i].first, snapshot[i].second) =
-          static_cast<int64_t>(i);
-    }
-
-    std::vector<int64_t> gc_refs(snapshot.size());
-    for (size_t i = 0; i < snapshot.size(); i++) {
-      gc_refs[i] = refcount_ref(snapshot[i].first);
-    }
-
-    // Subtract internal references.
-    std::vector<TaggedPtr> children;
-    for (size_t i = 0; i < snapshot.size(); i++) {
-      children.clear();
-      enumerate_children(snapshot[i].first, snapshot[i].second, children);
-      for (auto& c : children) {
-        auto idx = _gc_slot_of(c.first, c.second);
-        if (idx >= 0 && static_cast<size_t>(idx) < snapshot.size()) {
-          --gc_refs[idx];
-        }
-      }
-    }
-
-    // Mark external roots and propagate reachability via index BFS.
-    std::vector<bool> reachable(snapshot.size(), false);
-    std::queue<size_t> q;
-    for (size_t i = 0; i < snapshot.size(); i++) {
-      if (gc_refs[i] > 0) {
-        reachable[i] = true;
-        q.push(i);
-      }
-    }
-    while (!q.empty()) {
-      auto i = q.front();
-      q.pop();
-      children.clear();
-      enumerate_children(snapshot[i].first, snapshot[i].second, children);
-      for (auto& c : children) {
-        auto idx = _gc_slot_of(c.first, c.second);
-        if (idx < 0 || static_cast<size_t>(idx) >= snapshot.size()) continue;
-        if (!reachable[idx]) {
-          reachable[idx] = true;
-          q.push(idx);
-        }
-      }
-    }
-
-    // Collect garbage (unreachable)
-    std::vector<TaggedPtr> garbage;
-    for (size_t i = 0; i < snapshot.size(); i++) {
-      if (!reachable[i]) garbage.push_back(snapshot[i]);
-    }
-
-    if (!garbage.empty()) {
-      if (std::getenv("CULEBRA_GC_DEBUG")) {
-        std::println(stderr, "[GC] collecting {} cycle objects (tracked={})",
-                     garbage.size(), snapshot.size());
-      }
-
-      // Boost refcounts so intra-cycle releases during `clear_references`
-      // can't drive any garbage entry to 0 prematurely.
-      for (auto& [p, t] : garbage) refcount_ref(p) += GC_REFCOUNT_BOOST;
-      for (auto& [p, t] : garbage) clear_references(p, t);
-
-      // Pre-detach each garbage entry from `young` and clear its
-      // `gc_slot` so the upcoming destructor's `_gc().remove()` is a
-      // no-op (it would otherwise read the snapshot index left by
-      // step (1) and clear the wrong slot).
-      for (auto& [p, t] : garbage) {
-        auto idx = _gc_slot_of(p, t);
-        young[static_cast<size_t>(idx)] = {nullptr, 0};
-        free_slots.push_back(static_cast<size_t>(idx));
-        _gc_slot_of(p, t) = -1;
-      }
-
-      // refcount = 1 then release → destructor runs, frees the
-      // (already-emptied) children, deletes the storage.
-      for (auto& [p, t] : garbage) {
-        refcount_ref(p) = 1;
-        if (t == GC_TAG_CELL) {
-          _culebra_cell_release(static_cast<JitCell*>(p));
-        } else {
-          _culebra_value_release_impl(t, reinterpret_cast<int64_t>(p));
-        }
-      }
-    }
-
-    // Promote survivors by clearing their (still-snapshot-index)
-    // `gc_slot` to -1; they leave the tracker entirely, so cycles
-    // formed entirely among promoted objects won't be collected.
-    for (auto& [p, t] : young) {
-      if (p) _gc_slot_of(p, t) = -1;
-    }
-    young.clear();
-    free_slots.clear();
-  }
-};
-
-inline _GcTracker& _gc() { return _GcTracker::instance(); }
-#endif  // !CULEBRA_NEW_GC
-
-#ifdef CULEBRA_NEW_GC
-// Phase 1 conservative collector (docs/jit_gc_design.md). Occupies the same
-// per-Runtime slot as the old _GcTracker — under CULEBRA_NEW_GC the tracker
-// path is compiled out, so the slot holds exactly one collector. The heap is
-// default-constructible, satisfying runtime_substate<T>'s `new T()`.
-// Backstop collector callbacks (defined below, after the runtime types they
-// walk). Forward-declared here so _gc_heap() can wire them on first use.
-// extern "C++": this sits inside the surrounding extern "C" block, but the
-// definitions below carry C++ linkage (they take std::vector&).
+// Conservative backstop collector (docs/jit_gc_design.md). Lives in the
+// kSlotJitGc per-Runtime slot; default-constructible for runtime_substate.
+// Callbacks (defined below, after the runtime types they walk) are
+// forward-declared so _gc_heap() can wire them on first use. extern "C++":
+// this sits inside the surrounding extern "C" block, but the definitions
+// below carry C++ linkage (they take std::vector&).
 extern "C++" {
 void _jit_gc_enumerate_children(void* obj, uint8_t type_tag,
                                 std::vector<void*>& out);
@@ -1058,35 +603,21 @@ inline culebra::gc::Heap& _gc_heap() {
   }
   return h;
 }
-#endif  // CULEBRA_NEW_GC
 
-// Collector registration, abstracted over the active GC (plan A,
-// docs/jit_gc_design.md §2). The object is allocated with `new` and owns its
-// own memory (refcount + RC release-to-zero `delete`); registration only
-// records it with the collector. OFF: the legacy young-generation tracker.
-// ON: the conservative heap's address→metadata registry (metadata external,
-// so offset 0 stays `refcount`). `_gc_note_free` is the de-registration the
-// release path runs just before `delete`.
+// Register a `new`d object with the collector. The object owns its own memory
+// (refcount + RC release-to-zero `delete`); registration only records it in
+// the heap's address→metadata registry (metadata external, so offset 0 stays
+// `refcount`). `_gc_note_free` is the de-registration the release path runs
+// just before `delete`.
 template <class T>
 inline void _gc_register(T* obj, int8_t tag) {
-#ifdef CULEBRA_NEW_GC
   _gc_heap().adopt(obj, sizeof(T), tag);
-#else
-  _gc().add(obj, tag);
-#endif
 }
-// De-register `obj` from the active collector just before the release path
-// `delete`s it. OFF: clear its young-vector slot + decrement the live tally.
-// ON: erase it from the heap's registry (the conservative heap owns no
-// memory under plan A — RC's `delete` frees it).
+// De-register `obj` from the registry just before the release path `delete`s
+// it (the conservative heap owns no memory — RC's `delete` frees it).
 inline void _gc_note_free(void* obj, int8_t tag) {
-#ifdef CULEBRA_NEW_GC
   (void)tag;
   _gc_heap().forget(obj);
-#else
-  _gc().remove(obj, tag);
-  _gc().note_free(tag);
-#endif
 }
 
 // Cycle detection during string conversion.
@@ -2446,11 +1977,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data);
 
-// Tuple sits on the same JitArray storage but is tracked under
-// GC_TAG_TUPLE so the cycle collector dispatches via the tuple-aware
-// `_gc_slot_of` path. Caller-visible immutability is enforced by the
-// IR (mutation ops only accept TAG_ARRAY) — there is no mutating
-// runtime entry for Tuple.
+// Tuple sits on the same JitArray storage but is registered under
+// GC_TAG_TUPLE so the collector's per-type dispatch treats it as a Tuple.
+// Caller-visible immutability is enforced by the IR (mutation ops only
+// accept TAG_ARRAY) — there is no mutating runtime entry for Tuple.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new() {
   auto* arr = new JitArray();
   arr->refcount = 1;
@@ -4115,7 +3645,6 @@ struct JitReplGlobals {
 // their signature. One REPL session per thread.
 inline thread_local JitReplGlobals* _jit_repl_globals_current = nullptr;
 
-#ifdef CULEBRA_NEW_GC
 extern "C++" {  // C++ linkage (these take std::vector&); we sit in extern "C"
 // --- Backstop collector callbacks (forward-declared near _gc_heap) ---------
 // Push a JitValue's heap pointer as a GC child/root if it is refcounted.
@@ -4124,10 +3653,9 @@ inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
     out.push_back(reinterpret_cast<void*>(v.data));
 }
 
-// Children of a live object, for the mark phase. Mirrors the legacy
-// `_GcTracker::enumerate_children`, but pushes raw pointers (the heap re-reads
-// the tag from its registry). Captures (Cells) and `proto` are direct object
-// pointers; all other children are refcounted JitValue payloads.
+// Children of a live object, for the mark phase. Pushes raw pointers (the heap
+// re-reads the tag from its registry). Captures (Cells) and `proto` are direct
+// object pointers; all other children are refcounted JitValue payloads.
 inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
                                        std::vector<void*>& out) {
   switch (tag) {
@@ -4233,7 +3761,6 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
   }
 }
 }  // extern "C++"
-#endif  // CULEBRA_NEW_GC
 
 // Out-parameter style avoids any ABI surprise around 16-byte struct
 // return on ARM64 macOS (where LLVM's regs-vs-sret choice for
@@ -15984,22 +15511,17 @@ struct JIT {
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
-    // Force a cycle collect while the LLJIT (and therefore every
-    // closure's `fn_ptr`) is still alive — on BOTH success and
-    // throw paths. Without this, top-level object cycles that carry
-    // a `drop` survive until ~_GcTracker runs at process exit; by
-    // then the JIT module has been torn down and the drop closure's
-    // native code is dangling, which segfaults. RAII guard covers
+    // Force a collect while the LLJIT (and therefore every closure's
+    // `fn_ptr`) is still alive — on BOTH success and throw paths. Without
+    // this, leaked residue holding a `drop` survives until the heap is torn
+    // down at process exit; by then the JIT module is gone and the drop
+    // closure's native code is dangling, which segfaults. RAII guard covers
     // the throw-rethrow branch too (the catch below converts the
-    // CulebraException to std::runtime_error, which unwinds before
-    // any plain trailing statement would run).
+    // CulebraException to std::runtime_error, which unwinds before any plain
+    // trailing statement would run).
     struct CollectGuard {
       ~CollectGuard() {
-#ifdef CULEBRA_NEW_GC
         _gc_heap().collect();  // reclaim leaked residue before module teardown
-#else
-        _GcTracker::instance().collect();
-#endif
       }
     } collect_guard;
     try {

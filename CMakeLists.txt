@@ -131,18 +131,6 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
-# JIT GC — see docs/jit_gc_design.md. ON (default): jit.h compiles the
-# conservative mark-sweep backstop (include/jit_gc.h) alongside the kept manual
-# RC, in place of the broken minor-only collector. Defined GLOBALLY (before
-# every JIT target) because the metadata layout must be identical across the
-# `culebra` driver and the embedded `culebra_rt` / `culebra_rt_no_tensor`
-# runtime archives — a per-target define would risk an ABI skew between them.
-# OFF still builds the legacy collector as a fallback (removed once proven).
-option(CULEBRA_NEW_GC "Use the rewritten conservative GC backstop" ON)
-if(CULEBRA_NEW_GC)
-  add_compile_definitions(CULEBRA_NEW_GC)
-endif()
-
 add_executable(culebra ./src/main.cc)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -298,10 +286,9 @@ add_executable(regexlib_corpus test/regexlib_corpus.cc)
 target_compile_features(regexlib_corpus PRIVATE cxx_std_17)
 add_test(NAME regexlib_corpus COMMAND regexlib_corpus)
 
-# Phase 0 GC tests — the standalone collector (include/jit_gc.h) validated in
+# GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
-# JIT/LLVM link. Built unconditionally; CULEBRA_NEW_GC (defined above) gates
-# the in-tree jit.h wiring separately.
+# JIT/LLVM link, independent of the in-tree jit.h wiring.
 foreach(gc_test jit_gc_phase0 jit_gc_collect)
   add_executable(${gc_test} tests/${gc_test}.cc)
   target_compile_features(${gc_test} PRIVATE cxx_std_20)
