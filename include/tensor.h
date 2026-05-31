@@ -1005,6 +1005,18 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
 // is_evaluated() short-circuits shared subgraphs so each node runs
 // exactly once across an eval batch (and across re-evals).
 inline void tensor_eval_node(TensorImpl& t) {
+#ifdef CULEBRA_RT_NO_TENSOR
+  // The no-tensor runtime links no BLAS. This is the single entry to every
+  // tensor kernel (cblas lives below here), so stubbing it keeps cblas out of
+  // libculebra_rt_no_tensor.a. The interp Tensor namespace is reachable in that
+  // archive only because environment() is pulled in by isolate child setup; a
+  // NO_TENSOR binary never creates a tensor value, so this stays unreachable.
+  // Throw defensively if that invariant ever breaks — mirrors the JIT-side
+  // _no_tensor_abort() stubs.
+  (void)t;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in NO_TENSOR binary", 0, 0);
+#else
   if (t.is_evaluated()) return;
   for (auto& in : t.inputs) tensor_eval_node(*in);
   t.buf.assign(t.shape.num_elements() * dtype_size(t.dtype), std::byte{});
@@ -1037,6 +1049,7 @@ inline void tensor_eval_node(TensorImpl& t) {
     case Op::Const:
       break;  // unreachable: Const is_evaluated() above
   }
+#endif  // CULEBRA_RT_NO_TENSOR
 }
 
 // "Tensor 3x4 f32" — used by interp and (in M1.1) JIT puts/str paths.
