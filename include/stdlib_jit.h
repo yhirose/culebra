@@ -665,6 +665,22 @@ struct _JitValueGuard {
 };
 
 // Splat / explicit kwarg resolver shared between every built-in
+// Append an `env` Object's String-keyed entries as name/value pairs.
+// `obj` is borrowed (no ref drop). Returns false on the first non-String
+// value (partial fill left in `out`) so the caller can release its owned
+// refs before throwing; true if every value was a String.
+inline bool _ns_env_object_pairs(
+    JitObject* obj, std::vector<std::pair<std::string, std::string>>& out) {
+  if (!obj->shape) return true;
+  for (size_t k = 0; k < obj->shape->names.size(); k++) {
+    const JitValue& sv = obj->slots[k].value;
+    if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) return false;
+    out.emplace_back(std::string(obj->shape->names[k]),
+                     std::string(_culebra_str_view(sv.tag, sv.data)));
+  }
+  return true;
+}
+
 // kwarg adapter. The constructor merges splats+kwargs into a single
 // name-keyed map (same algorithm as the user-fn runtime resolver:
 // splats merge left-to-right with later wins, then explicit kwargs
@@ -737,21 +753,9 @@ class _JitKwargResolver {
   bool take_env(std::vector<std::pair<std::string, std::string>>& out) {
     auto v = take_typed("env", TAG_OBJECT, "Object");
     if (!v) return false;
-    auto* obj = reinterpret_cast<JitObject*>(v->data);
-    bool bad = false;
-    if (obj->shape) {
-      for (size_t k = 0; k < obj->shape->names.size(); k++) {
-        const JitValue& sv = obj->slots[k].value;
-        if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) {
-          bad = true;
-          break;
-        }
-        out.emplace_back(std::string(obj->shape->names[k]),
-                         std::string(_culebra_str_view(sv.tag, sv.data)));
-      }
-    }
+    bool ok = _ns_env_object_pairs(reinterpret_cast<JitObject*>(v->data), out);
     _culebra_value_release_impl(v->tag, v->data);
-    if (bad) fail(std::string(ctx_) + ": env values must be String", "TypeError");
+    if (!ok) fail(std::string(ctx_) + ": env values must be String", "TypeError");
     return true;
   }
 
@@ -1887,19 +1891,83 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
 }
 
-// Proc. Slow path (first-class `Proc.*` value) is positional-only; the kwargs
-// form (run/all) goes through compile_single_positional_kwargs on the fast path.
-inline JitValue _ns_proc_run(JitValue* a, int64_t) {
-  return culebra_runtime_proc_run(a[0].tag, a[0].data, 0, 0);
+// Proc. The first-class `Proc.*` value (bare-value calls) and AOT route
+// through these trampoline adapters. They receive a positional slab whose
+// slots match the NsParamMeta order (kwargs already resolved + defaults
+// filled by culebra_runtime_call_with_kwargs); slots past `n` are treated
+// as their defaults so a bare positional `p.run([cmd])` (no kwargs) still
+// works.
+namespace _proc_adapt {
+// Read slab[i] when present; otherwise a nil sentinel.
+inline JitValue at(JitValue* a, int64_t n, int64_t i) {
+  return i < n ? a[i] : JitValue{TAG_NIL, 0};
 }
-inline JitValue _ns_proc_all(JitValue* a, int64_t) {
-  return culebra_runtime_proc_all(a[0].tag, a[0].data, 0, 0);
+// Optional cwd-style string slot: nil → absent.
+inline bool str_slot(JitValue v, std::string& out) {
+  if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
+    out = _culebra_str_view(v.tag, v.data);
+    return true;
+  }
+  return false;
+}
+// `env` Object slot → name/value pairs. nil → absent. Non-Object or
+// non-String values raise TypeError.
+inline bool env_slot(JitValue v,
+                     std::vector<std::pair<std::string, std::string>>& out,
+                     int64_t line, int64_t col) {
+  if (v.tag != TAG_OBJECT) return false;
+  if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(v.data), out)) {
+    throw culebra::CulebraError("TypeError",
+        std::format("Proc: env values must be String at {}:{}.", line, col),
+        line, col);
+  }
+  return true;
+}
+}  // namespace _proc_adapt
+
+inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
+  // slab: cmd, cwd, env, stdin, check, timeout
+  std::string cwd_str;
+  const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
+                                                 cwd_str) ? &cwd_str : nullptr;
+  std::vector<std::pair<std::string, std::string>> over;
+  const auto* env = _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), over, 0, 0)
+                        ? &over : nullptr;
+  std::string stdin_data;
+  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
+  JitValue chk = _proc_adapt::at(a, n, 4);
+  bool check = chk.tag == TAG_BOOL && chk.data != 0;
+  JitValue to = _proc_adapt::at(a, n, 5);
+  int64_t timeout = to.tag == TAG_LONG ? to.data : 0;
+  return _culebra_proc_run_impl(a[0].tag, a[0].data, cwd, env, stdin_data,
+                                check, timeout, 0, 0);
+}
+inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
+  // slab: commands, limit, timeout, fail_fast, retries
+  JitValue lim = _proc_adapt::at(a, n, 1);
+  JitValue to = _proc_adapt::at(a, n, 2);
+  JitValue ff = _proc_adapt::at(a, n, 3);
+  JitValue rt = _proc_adapt::at(a, n, 4);
+  return _culebra_proc_all_impl(
+      a[0].tag, a[0].data, lim.tag == TAG_LONG ? lim.data : 0,
+      to.tag == TAG_LONG ? to.data : 0, ff.tag == TAG_BOOL && ff.data != 0,
+      rt.tag == TAG_LONG ? rt.data : 0, 0, 0);
 }
 inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
-inline JitValue _ns_proc_spawn(JitValue* a, int64_t) {
-  return culebra_runtime_proc_spawn(a[0].tag, a[0].data, 0, 0);
+inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
+  // slab: cmd, cwd, env, stdin
+  std::string cwd_str;
+  const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
+                                                 cwd_str) ? &cwd_str : nullptr;
+  std::vector<std::pair<std::string, std::string>> over;
+  const auto* env = _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), over, 0, 0)
+                        ? &over : nullptr;
+  std::string stdin_data;
+  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
+  return _culebra_proc_spawn_build(a[0].tag, a[0].data, cwd, env, stdin_data,
+                                   0, 0);
 }
 
 // JSON. Slow path is positional-only; the kwargs form goes through
@@ -2064,12 +2132,68 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   return _ns_adapt::v_array(arr);
 }
 
+// Per-parameter metadata for stdlib methods that accept kwargs / have
+// defaults. Defaults are produced by a factory fn (mirrors kNsConstants'
+// late-bound `build`) so heap values like "" can be materialized fresh
+// per call. Methods without kwargs leave NsMethod::params null.
+struct NsParam {
+  const char* name;
+  bool has_default;
+  bool kw_only;
+  JitValue (*make_default)();  // null when has_default == false
+};
+
+struct NsParamMeta {
+  const NsParam* params;
+  int n_params;
+  int kwargs_rest_idx;    // -1 = none
+  int first_kw_only_idx;  // -1 = none
+};
+
+inline JitValue _ns_def_nil()   { return {TAG_NIL, 0}; }
+inline JitValue _ns_def_false() { return {TAG_BOOL, 0}; }
+inline JitValue _ns_def_zero()  { return {TAG_LONG, 0}; }
+inline JitValue _ns_def_empty_str() {
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(""))};
+}
+
 struct NsMethod {
   const char* ns;
   const char* name;
   int8_t arity;  // -1 = variadic
   JitValue (*adapter)(JitValue* args, int64_t n);
+  const NsParamMeta* params = nullptr;  // null = all-positional, no defaults
 };
+
+// Param metadata for the kwarg-accepting Proc methods. Names/defaults
+// mirror make_proc_namespace() in stdlib_interp.h; _check_ns_drift_once
+// verifies the two stay in sync (debug builds).
+inline const NsParam kProcRunParams[] = {
+  {"cmd",     false, false, nullptr},
+  {"cwd",     true,  false, &_ns_def_nil},
+  {"env",     true,  false, &_ns_def_nil},
+  {"stdin",   true,  false, &_ns_def_empty_str},
+  {"check",   true,  false, &_ns_def_false},
+  {"timeout", true,  false, &_ns_def_zero},
+};
+inline const NsParamMeta kProcRunMeta = {kProcRunParams, 6, -1, -1};
+
+inline const NsParam kProcAllParams[] = {
+  {"commands",  false, false, nullptr},
+  {"limit",     true,  false, &_ns_def_zero},
+  {"timeout",   true,  false, &_ns_def_zero},
+  {"fail_fast", true,  false, &_ns_def_false},
+  {"retries",   true,  false, &_ns_def_zero},
+};
+inline const NsParamMeta kProcAllMeta = {kProcAllParams, 5, -1, -1};
+
+inline const NsParam kProcSpawnParams[] = {
+  {"cmd",   false, false, nullptr},
+  {"cwd",   true,  false, &_ns_def_nil},
+  {"env",   true,  false, &_ns_def_nil},
+  {"stdin", true,  false, &_ns_def_empty_str},
+};
+inline const NsParamMeta kProcSpawnMeta = {kProcSpawnParams, 4, -1, -1};
 
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
@@ -2126,10 +2250,10 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
 
-  {"Proc",   "run",   1, &_ns_proc_run},
-  {"Proc",   "all",   1, &_ns_proc_all},
+  {"Proc",   "run",   1, &_ns_proc_run,   &kProcRunMeta},
+  {"Proc",   "all",   1, &_ns_proc_all,   &kProcAllMeta},
   {"Proc",   "race",  1, &_ns_proc_race},
-  {"Proc",   "spawn", 1, &_ns_proc_spawn},
+  {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -2181,7 +2305,20 @@ inline JitValue _jit_ns_method_trampoline(
       _culebra_value_release_impl(args[i].tag, args[i].data);
     }
   };
-  if (m->arity >= 0 && n_args != m->arity) {
+  // Methods with NsParamMeta accept a variable arity (required params up to
+  // the full param count); the kwarg resolver fills a full-arity slab and
+  // bare positional calls pass a prefix. Methods without params keep the
+  // strict fixed-arity check.
+  if (m->params) {
+    int64_t n_required = 0;
+    for (int i = 0; i < m->params->n_params; i++) {
+      if (!m->params->params[i].has_default) n_required++;
+    }
+    if (n_args < n_required || n_args > m->params->n_params) {
+      release_args();
+      _ns_adapt::arity_error(m->ns, m->name, n_required, n_args);
+    }
+  } else if (m->arity >= 0 && n_args != m->arity) {
     release_args();
     _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args);
   }
@@ -2207,6 +2344,140 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
+
+// Resolve a kwarg/splat call against an ns-method closure carrying
+// NsParamMeta. Mirrors culebra_runtime_call_with_kwargs' merge order
+// (splat first, explicit kwargs override) but fills missing defaulted
+// slots with the param's real default value (the C++ adapters have no
+// callee prologue to expand a TAG_UNFILLED sentinel). Builds a
+// full-arity positional slab and dispatches through the trampoline.
+inline bool _jit_ns_kwarg_resolve(
+    JitClosure* cls, JitValue this_val, int64_t n_pos, JitValue* positional,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
+    JitValue* out) {
+  if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
+    return false;
+  }
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
+  if (!m->params) return false;  // method doesn't take kwargs
+  const NsParamMeta* pm = m->params;
+
+  auto release_all = [&]() {
+    for (int64_t i = 0; i < n_pos; i++)
+      _culebra_value_release_impl(positional[i].tag, positional[i].data);
+    for (int64_t i = 0; i < n_kw; i++)
+      _culebra_value_release_impl(kw_vals[i].tag, kw_vals[i].data);
+    for (int64_t i = 0; i < n_splat; i++)
+      _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
+  };
+
+  // Merge splats then explicit kwargs (each owns +1 in `merged`).
+  std::unordered_map<std::string_view, JitValue> merged;
+  for (int64_t i = 0; i < n_splat; i++) {
+    if (splat_objs[i].tag != TAG_OBJECT) {
+      release_all();
+      throw culebra::CulebraError("TypeError",
+          std::format("**: splat operand must be Object at {}:{}.", line, col),
+          line, col);
+    }
+    auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
+    if (obj->shape) {
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        auto& sv = obj->slots[k].value;
+        culebra_runtime_value_retain(sv.tag, sv.data);
+        auto it = merged.find(obj->shape->names[k]);
+        if (it != merged.end()) {
+          _culebra_value_release_impl(it->second.tag, it->second.data);
+          it->second = sv;
+        } else {
+          merged.emplace(obj->shape->names[k], sv);
+        }
+      }
+    }
+  }
+  for (int64_t i = 0; i < n_kw; i++) {
+    auto it = merged.find(kw_keys[i]);
+    if (it != merged.end()) {
+      _culebra_value_release_impl(it->second.tag, it->second.data);
+      it->second = kw_vals[i];
+    } else {
+      merged.emplace(kw_keys[i], kw_vals[i]);
+    }
+  }
+
+  int n = pm->n_params;
+  std::vector<JitValue> slab(n);
+  std::vector<bool> filled(n, false);
+  // Positional args bind leftmost params; reject if also given by keyword.
+  for (int64_t i = 0; i < n_pos && i < n; i++) {
+    if (merged.count(pm->params[i].name)) {
+      for (int64_t k = 0; k < i; k++)
+        _culebra_value_release_impl(slab[k].tag, slab[k].data);
+      for (int64_t k = i; k < n_pos; k++)
+        _culebra_value_release_impl(positional[k].tag, positional[k].data);
+      for (auto& [_, v] : merged)
+        _culebra_value_release_impl(v.tag, v.data);
+      throw culebra::CulebraError("TypeError",
+          std::format("got argument '{}' both positionally and as a "
+                      "keyword at {}:{}.", pm->params[i].name, line, col),
+          line, col);
+    }
+    slab[i] = positional[i];
+    filled[i] = true;
+  }
+  if (n_pos > n) {  // too many positionals
+    for (int64_t k = 0; k < n; k++)
+      _culebra_value_release_impl(slab[k].tag, slab[k].data);
+    for (int64_t k = n; k < n_pos; k++)
+      _culebra_value_release_impl(positional[k].tag, positional[k].data);
+    for (auto& [_, v] : merged)
+      _culebra_value_release_impl(v.tag, v.data);
+    _ns_adapt::arity_error(m->ns, m->name, n, n_pos);
+  }
+  // Remaining params: from merged kwargs, else default, else ArityError.
+  for (int i = static_cast<int>(n_pos); i < n; i++) {
+    auto it = merged.find(pm->params[i].name);
+    if (it != merged.end()) {
+      slab[i] = it->second;
+      filled[i] = true;
+      merged.erase(it);
+    } else if (pm->params[i].has_default) {
+      slab[i] = pm->params[i].make_default();
+      filled[i] = true;
+    } else {
+      for (int k = 0; k < n; k++)
+        if (filled[k]) _culebra_value_release_impl(slab[k].tag, slab[k].data);
+      for (auto& [_, v] : merged)
+        _culebra_value_release_impl(v.tag, v.data);
+      throw culebra::CulebraError("ArityError",
+          std::format("missing required argument '{}' at {}:{}.",
+                      pm->params[i].name, line, col), line, col);
+    }
+  }
+  // Any leftover kwargs are unknown to this method.
+  if (!merged.empty()) {
+    auto bad = std::string(merged.begin()->first);
+    for (int k = 0; k < n; k++)
+      _culebra_value_release_impl(slab[k].tag, slab[k].data);
+    for (auto& [_, v] : merged)
+      _culebra_value_release_impl(v.tag, v.data);
+    throw culebra::CulebraError("TypeError",
+        std::format("unknown keyword argument '{}' at {}:{}.", bad, line, col),
+        line, col);
+  }
+
+  // Dispatch through the trampoline (it releases the slab values).
+  *out = _jit_ns_method_trampoline(cls, this_val, n, slab.data());
+  return true;
+}
+
+// Install the kwarg hook once, before any JIT call runs.
+inline const bool _jit_ns_kwarg_hook_installed = [] {
+  _jit_ns_kwarg_hook = &_jit_ns_kwarg_resolve;
+  return true;
+}();
 
 inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
   auto* obj = culebra_runtime_object_new();
@@ -2286,6 +2557,48 @@ inline void _check_ns_drift_once() {
             "and table rows for it.\n",
             std::string(n).c_str());
         std::abort();
+      }
+    }
+    // For methods carrying NsParamMeta (kwarg/default support), verify the
+    // JIT-side param names + default flags match the interp's FunctionValue
+    // definition. Catches a one-sided signature edit (e.g. adding a kwarg to
+    // make_proc_namespace but forgetting the kProc*Params table).
+    auto fail = [](const NsMethod& m, const std::string& why) {
+      std::fprintf(stderr,
+          "culebra: JIT param-meta drift for %s.%s — %s. Sync the "
+          "kNsMethods NsParamMeta with make_%s_namespace in "
+          "stdlib_interp.h.\n",
+          m.ns, m.name, why.c_str(), m.ns);
+      std::abort();
+    };
+    for (const auto& m : kNsMethods) {
+      if (!m.params) continue;
+      auto ns_it = env->dictionary.find(m.ns);
+      if (ns_it == env->dictionary.end() ||
+          ns_it->second.val.type != culebra::Value::Object) {
+        fail(m, "interp namespace not found");
+      }
+      const auto& ns_obj = ns_it->second.val.to_object();
+      if (!ns_obj.has(m.name)) fail(m, "interp method not found");
+      const auto& fn_val = ns_obj.get(m.name);
+      if (fn_val.type != culebra::Value::Function) fail(m, "not a Function");
+      const auto& params = *fn_val.to_function().params;
+      if (static_cast<int>(params.size()) != m.params->n_params) {
+        fail(m, std::format("param count {} != NsParamMeta {}",
+                            params.size(), m.params->n_params));
+      }
+      for (int i = 0; i < m.params->n_params; i++) {
+        const auto& ip = params[i];
+        const auto& jp = m.params->params[i];
+        if (ip.name != jp.name) {
+          fail(m, std::format("param {} name '{}' != '{}'", i,
+                              std::string(ip.name), jp.name));
+        }
+        bool ip_has_default =
+            ip.default_expr != nullptr || ip.default_value != nullptr;
+        if (ip_has_default != jp.has_default) {
+          fail(m, std::format("param '{}' default flag mismatch", jp.name));
+        }
       }
     }
     return true;
@@ -2677,18 +2990,16 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   // (compile_call → compile_method_call → user-method / UFCS) can
   // handle it — that path supports kwargs against user closures.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
+    // JSON / Proc parse kwargs themselves on the fast path (handlers
+    // below). Every other namespace returns nullptr so the call falls
+    // through to the generic dispatch (compile_call → namespace_get →
+    // property_get → compile_function_call_runtime_kwargs →
+    // culebra_runtime_call_with_kwargs → the ns-method kwarg hook). The
+    // hook resolves kwargs/defaults for methods carrying NsParamMeta and
+    // raises a clean error for those that don't — matching the interp.
     static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc"};
-    static const std::set<std::string_view> positional_only_ns = {
-        "Math", "IO", "FS", "Random", "Sys", "Tensor", "_Time",
-    };
-    if (positional_only_ns.contains(ns)) {
-      throw culebra::CulebraError("SyntaxError",
-          std::format("namespace '{}' does not accept keyword arguments",
-                      ns),
-          argsAst.line, argsAst.column);
-    }
     if (!kwarg_aware_ns.contains(ns)) {
-      return nullptr;  // unknown namespace → let compile_call dispatch
+      return nullptr;
     }
   }
   auto ptrTy = llvm::PointerType::get(ctx_, 0);

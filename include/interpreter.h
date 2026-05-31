@@ -838,6 +838,11 @@ struct FunctionValue {
   // `__KWARGS__` param list for the dispatch protocol — without this
   // redirect, introspection would expose that internal detail.
   std::shared_ptr<FunctionValue> introspection_target;
+  // True for the wrapper produced by _wrap_method_with_this around a
+  // built-in method (Array/String/Set/...). Built-in methods parse their
+  // args positionally and never accept kwargs; the call site uses this to
+  // raise a clean TypeError instead of an opaque ArityError. Matches JIT.
+  bool is_builtin_method = false;
 };
 
 struct ObjectValue {
@@ -5791,6 +5796,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   Value eval_function_call(const peg::Ast& ast,
                            const std::shared_ptr<Environment>& env, const Value& val) {
+    using namespace peg::udl;
+    // Built-in methods (Array/String/Set/... wrappers) parse positionally
+    // and never accept kwargs — raise a clean TypeError rather than letting
+    // the unconsumed kwargs surface as an opaque ArityError. Matches JIT.
+    if (val.type == Value::Function) {
+      const auto& fn = val.get<FunctionValue>();
+      if (fn.is_builtin_method) {
+        for (const auto& child : ast.nodes) {
+          if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
+            throw CulebraError("TypeError",
+                std::format("built-in method '{}' does not accept keyword "
+                            "arguments", fn.name.empty() ? "<builtin>" : fn.name),
+                ast.line, ast.column);
+          }
+        }
+      }
+    }
     CallArgs args;
     split_call_args(ast, env, args);
     return invoke_user_function_with_args(val, env, std::move(args),
@@ -5849,7 +5871,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Wrap a method value (looked up from a builtin table) into a
   // Function that will bind `this` to `val` when invoked. Matches how
   // eval_property used to inline this for Object/Array methods.
-  static Value _wrap_method_with_this(const Value& prop, const Value& val) {
+  // `is_builtin` marks wrappers around primitive method tables
+  // (Array/String/Set/Tuple/iterator builtins) that parse positionally
+  // and reject kwargs. Namespace/user-object methods (own Function
+  // properties) pass false so their kwargs/defaults still work.
+  static Value _wrap_method_with_this(const Value& prop, const Value& val,
+                                      bool is_builtin = true) {
     const auto& pf = prop.to_function();
     Value wrapped = Value(
         FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
@@ -5864,6 +5891,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     wf.name = pf.name;
     wf.return_type = pf.return_type;
     wf.introspection_target = pf.introspection_target;
+    wf.is_builtin_method = is_builtin;
     return wrapped;
   }
 
@@ -5987,7 +6015,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (obj.has(name)) {
       const auto& prop = obj.get(name);
       if (prop.type == Value::Function) {
-        return _wrap_method_with_this(prop, val);
+        // Own Function properties (user methods, namespace methods like
+        // Proc.run) accept kwargs; only builtins()-table methods don't.
+        return _wrap_method_with_this(prop, val, !obj.has_own(name));
       }
       return prop;
     }

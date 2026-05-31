@@ -3416,6 +3416,19 @@ inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
   return it == tbl.end() ? nullptr : it->second;
 }
 
+// Hook for stdlib namespace methods (FS/Proc/...). All such methods share
+// one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
+// stdlib_jit.h installs this hook to resolve a kwarg call against the
+// NsParamMeta carried in the closure's capture. Returns true if it handled
+// the call (writing the result to *out); false if `cls` isn't an ns-method
+// closure, so the regular meta-lookup path runs. Ownership of the +1 on
+// each positional/kwarg/splat transfers to the hook when it returns true.
+inline bool (*_jit_ns_kwarg_hook)(
+    JitClosure* cls, JitValue this_val, int64_t n_pos, JitValue* positional,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
+    JitValue* out) = nullptr;
+
 // Enforce kw-only at runtime for dynamic-callee positional calls.
 // `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
 // kw-only slot positionally without the compile-time static check
@@ -4111,6 +4124,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     return culebra_runtime_call_with_kwargs(
         picked.body, this_val, n_pos, positional, n_kw, kw_keys, kw_vals,
         n_splat, splat_objs, line, col);
+  }
+
+  // stdlib namespace methods route through the hook (their shared
+  // trampoline fn_ptr has no per-fn JitParamMeta).
+  if (_jit_ns_kwarg_hook) {
+    JitValue out;
+    if (_jit_ns_kwarg_hook(cls, this_val, n_pos, positional, n_kw, kw_keys,
+                           kw_vals, n_splat, splat_objs, line, col, &out)) {
+      return out;
+    }
   }
 
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
@@ -14162,15 +14185,18 @@ struct JIT {
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
-    // Method dispatch: built-ins parse argsAst positionally and can't
-    // accept kwargs; UFCS and user methods route through the runtime
-    // resolver via the dispatched closure's param metadata.
+    // Method dispatch: true built-ins (Array/String/...) parse argsAst
+    // positionally and can't accept kwargs. But a builtin-named method can
+    // also be a closure field on an Object receiver — notably namespace
+    // values (`let p = Proc; p.all(.., limit: 2)`) and user classes. Those
+    // route through compile_user_method_over_builtin's runtime branch,
+    // which dispatches the kwargs to the closure. So for a kwargs call to
+    // a builtin-named method, take that runtime-dispatch path instead of
+    // rejecting at compile time; the builtin branch still raises if the
+    // receiver turns out to be a real builtin value.
     bool has_kwargs = !arg_list_is_positional_only(argsAst);
     if (has_kwargs && known_builtin_methods().contains(method)) {
-      emit_throw_error("SyntaxError",
-          std::format("built-in method '{}' does not accept keyword "
-                      "arguments", method),
-          argsAst.line, argsAst.column);
+      return compile_user_method_over_builtin(method, argsAst, receiver);
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
@@ -14418,17 +14444,29 @@ struct JIT {
     auto userEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
-    // builtinBB: not an Object with the method. Try the builtin; if it declines
-    // (e.g. an arity it doesn't implement — `min(a,b)` is not Array.min()), fall
-    // back to the user/namespace method path, exactly as compile_method_call
-    // does when compile_builtin_method returns null.
+    // builtinBB: the receiver is a real builtin value (or an Object lacking
+    // the method). A kwargs call here targets a true builtin, which never
+    // accepts keywords — raise the same TypeError the interp does.
     builder_.SetInsertPoint(builtinBB);
-    llvm::Value* builtinRes = compile_builtin_method(method, argsAst, receiver);
-    if (builtinRes) {
-      emit_value_release(receiver);  // builtin borrows the receiver
+    llvm::Value* builtinRes;
+    if (!arg_list_is_positional_only(argsAst)) {
+      emit_throw_error("TypeError",
+          std::format("built-in method '{}' does not accept keyword "
+                      "arguments", method),
+          argsAst.line, argsAst.column);
+      builtinRes = llvm::UndefValue::get(valueType_);
     } else {
-      auto fbMethodVal = compile_property_get(receiver, method);
-      builtinRes = compile_function_call(argsAst, fbMethodVal, receiver);
+      // Try the builtin; if it declines (e.g. an arity it doesn't implement —
+      // `min(a,b)` is not Array.min()), fall back to the user/namespace
+      // method path, exactly as compile_method_call does when
+      // compile_builtin_method returns null.
+      builtinRes = compile_builtin_method(method, argsAst, receiver);
+      if (builtinRes) {
+        emit_value_release(receiver);  // builtin borrows the receiver
+      } else {
+        auto fbMethodVal = compile_property_get(receiver, method);
+        builtinRes = compile_function_call(argsAst, fbMethodVal, receiver);
+      }
     }
     auto builtinEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);

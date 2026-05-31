@@ -1,0 +1,48 @@
+// Conformance: stdlib namespace methods accept kwargs / defaults on all
+// three backends (interp, JIT, AOT). Mechanism: stdlib methods carrying
+// NsParamMeta route kwargs through the same resolver as user fns. See
+// docs/internals.md and tests/test_kwargs.cul (user-fn kwargs).
+//
+// Proc is the exercised namespace here (its methods have kwargs/defaults
+// on master). Commands use `echo`, which exists on every CI host.
+
+// --- Direct call with kwargs (fast-path marshaller) ---
+let r1 = Proc.run(["echo", "hi"], check: false)
+assert_eq(r1.code, 0)
+assert_true(r1.ok)
+
+// --- Bare-value call routes kwargs through the ns-method hook ---
+// (Previously raised "function does not accept keyword arguments" on JIT.)
+let p = Proc
+let r2 = p.run(["echo", "x"], check: false)
+assert_eq(r2.code, 0)
+
+// Bare value, positional only — defaults fill the rest.
+let r3 = p.run(["echo", "y"])
+assert_eq(r3.code, 0)
+
+// Bare value, multiple kwargs (order-independent).
+let r4 = p.run(["echo", "z"], timeout: 5, check: false)
+assert_eq(r4.code, 0)
+
+// Proc.all bare value + kwarg (its name `all` collides with a builtin
+// method, exercising the user-method-over-builtin runtime dispatch).
+let r5 = p.all([["echo", "a"], ["echo", "b"]], limit: 2)
+assert_eq(r5.size(), 2)
+
+// --- Error paths (must match across backends) ---
+// Unknown kwarg to a namespace method → TypeError.
+let e1 = try { p.run(["echo"], bogus: 1); "no-err" } catch e { e.kind }
+assert_eq(e1, "TypeError")
+
+// Kwarg to a TRUE builtin method (Array.all) → TypeError, not ArityError.
+let e2 = try { [1, 2, 3].all(pred: fn (x) { x > 0 }); "no-err" }
+         catch e { e.kind }
+assert_eq(e2, "TypeError")
+
+// Real builtin methods still work positionally (regression guard).
+assert_eq([1, 2, 3].all(fn (x) { x > 0 }), true)
+assert_eq([1, 2, 3].map(fn (x) { x * 2 }), [2, 4, 6])
+assert_eq("hi".upper(), "HI")
+
+IO.puts("test_ns_kwargs OK")
