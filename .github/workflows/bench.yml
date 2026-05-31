@@ -60,10 +60,10 @@ jobs:
       - name: Build (Release + JIT)
         run: just build
 
-      - name: Run bench-all
+      - name: Run perf
         run: |
           set -o pipefail
-          just bench-all | tee bench.txt
+          just perf | tee bench.txt
           {
             echo "## Benchmark results — ${{ matrix.os }}"
             echo
