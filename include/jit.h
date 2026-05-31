@@ -1091,13 +1091,17 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
 
 template <typename Cmp>
 inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
-                               Cmp cmp) {
+                               Cmp cmp, int64_t line, int64_t col) {
+  // Cross-type (non-numeric) and same-type-unorderable (Array/Object/...)
+  // both raise the canonical "cannot compare L and R", mirroring the
+  // interpreter's ord_compare. == stays structural on its own path.
   if (t1 != t2) {
     if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
       return cmp(_culebra_coerce_num(t1, d1), _culebra_coerce_num(t2, d2));
     }
-    throw culebra::CulebraError("TypeError", "type error.");
+    culebra::throw_compare_type_error(_culebra_tag_name(t1),
+                                      _culebra_tag_name(t2), line, col);
   }
   switch (t1) {
     case TAG_NIL: return false;
@@ -1109,7 +1113,9 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
       auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
       return cmp(double(c), 0.0);
     }
-    default: throw culebra::CulebraError("TypeError", "type error.");
+    default:
+      culebra::throw_compare_type_error(_culebra_tag_name(t1),
+                                        _culebra_tag_name(t2), line, col);
   }
 }
 
@@ -1950,10 +1956,12 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_##name(       \
-      int8_t t1, int64_t d1, int8_t t2, int64_t d2) {                   \
+      int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
+      int64_t line, int64_t col) {                                      \
     fast_path                                                           \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
-                              [](double a, double b) { return a cmp_op b; }); \
+                              [](double a, double b) { return a cmp_op b; }, \
+                              line, col);                               \
   }
 CUL_DEF_ORD_OP(less, <,
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
@@ -2046,14 +2054,15 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 // Unary negation: Long → Long (wraps), Float → Float. Non-numeric
 // raises type error. Called only from the unary-minus slow path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg(
-    int8_t t, int64_t d) {
+    int8_t t, int64_t d, int64_t line, int64_t col) {
   if (auto r = _try_special_unary(t, d, "__neg__")) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);
     return {TAG_FLOAT, _culebra_double_to_bits(-v)};
   }
-  throw culebra::CulebraError("TypeError", "type error.");
+  culebra::throw_type_mismatch("Long or Float", _culebra_tag_name(t),
+                               line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_debugger_break(
@@ -5950,11 +5959,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
       keyed.emplace_back(_culebra_invoke1(fn, e), i);
     }
     std::stable_sort(keyed.begin(), keyed.end(),
-                     [](const auto& a, const auto& b) {
+                     [line, col](const auto& a, const auto& b) {
                        return _culebra_value_ord(
                            a.first.tag, a.first.data,
                            b.first.tag, b.first.data,
-                           [](double x, double y) { return x < y; });
+                           [](double x, double y) { return x < y; },
+                           line, col);
                      });
     std::vector<JitValue> sorted(arr->size);
     for (size_t i = 0; i < keyed.size(); i++) {
@@ -11120,8 +11130,11 @@ struct JIT {
     auto slowResult = emit_call(
         module_->getOrInsertFunction(rt::num_neg, valueType_,
                                      builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {extract_tag(val), extract_data(val)}, "neg.num");
+        {extract_tag(val), extract_data(val),
+         current_line_val(), current_column_val()}, "neg.num");
     auto slowEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -11385,8 +11398,11 @@ struct JIT {
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {ltag, ldata, rtag, rdata}, "val.ord");
+        {ltag, ldata, rtag, rdata,
+         current_line_val(), current_column_val()}, "val.ord");
     auto slowEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
