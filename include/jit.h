@@ -953,11 +953,25 @@ inline int64_t _culebra_double_to_bits(double d) {
 }
 
 // Coerce a numeric JitValue (Long or Float) to double. Any other tag
-// throws. Used by the arithmetic/comparison slow paths.
+// throws a terse TypeError — callers that have the operator + both tags
+// (the arithmetic helpers below) should guard with `_arith_guard_numeric`
+// first so the user sees the detailed `cannot apply 'op' to L and R`.
 inline double _culebra_coerce_num(int8_t tag, int64_t data) {
   if (tag == TAG_LONG) return static_cast<double>(data);
   if (tag == TAG_FLOAT) return _culebra_float_to_double(data);
-  throw culebra::CulebraError("TypeError", "type error.");
+  throw culebra::CulebraError("TypeError", "type error");
+}
+
+// Throw the canonical `cannot apply 'op' to L and R` when either operand
+// is non-numeric, after special-method dispatch has already declined.
+// Single source for every arithmetic helper's type error, with location.
+inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
+                                 int64_t line, int64_t col) {
+  bool ln = (lt == TAG_LONG || lt == TAG_FLOAT);
+  bool rn = (rt == TAG_LONG || rt == TAG_FLOAT);
+  if (ln && rn) return;
+  culebra::throw_arith_type_error(op, _culebra_tag_name(lt),
+                                  _culebra_tag_name(rt), line, col);
 }
 
 // Same-tag equality matching the interpreter's operator==. Strings compare by
@@ -1809,19 +1823,21 @@ inline std::optional<JitValue> _try_tensor_binop(
 #endif
 }
 
-#define CUL_NUM_BINOP(name, method, expr, reflect, op_id)               \
+#define CUL_NUM_BINOP(name, opstr, method, expr, reflect, op_id)        \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_##name(     \
-      int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
+      int64_t line, int64_t col) {                                      \
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id)) return *r;   \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
                                          reflect))                      \
       return *r;                                                        \
+    _arith_guard_numeric(opstr, lt, rt, line, col);                     \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(sub, "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
-CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
+CUL_NUM_BINOP(sub, "-", "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
+CUL_NUM_BINOP(mul, "*", "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
 // `+` is the only arithmetic op that also concatenates strings, so it gets a
@@ -1830,7 +1846,7 @@ CUL_NUM_BINOP(mul, "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
 // through to _culebra_coerce_num, which throws TypeError — use interpolation
 // `"{x}"` for those.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Add)))
     return *r;
@@ -1844,18 +1860,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add(
                 culebra_runtime_strlike_to_cstr(lt, ld),
                 culebra_runtime_strlike_to_cstr(rt, rd)))};
   }
+  _arith_guard_numeric("+", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   return {TAG_FLOAT, _culebra_double_to_bits(a + b)};
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_tensor_binop(lt, ld, rt, rd,
                                   static_cast<int>(culebra::Op::Div)))
     return *r;
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
     return *r;
+  _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   if (b == 0.0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
@@ -1863,9 +1881,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
     return *r;
+  _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   if (b == 0.0) throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error");
@@ -1875,9 +1894,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod(
 // `@` (matmul) has no numeric meaning — always dispatches through
 // `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
-  throw culebra::CulebraError("TypeError", "type error.");
+  culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
+                                  _culebra_tag_name(rt), line, col);
 }
 
 // Extract a boolean from a special method's +1 return value and release
@@ -1989,12 +2009,13 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
 #define CUL_NUM_INPLACE(name, op_enum)                                  \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                                 \
   culebra_runtime_num_inplace_##name(                                   \
-      int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
+      int64_t line, int64_t col) {                                      \
     if (lt == TAG_TENSOR) {                                             \
       auto r = _try_tensor_inplace(lt, ld, rt, rd, culebra::op_enum);   \
       if (r.tag != TAG_NIL) return r;                                   \
     }                                                                   \
-    return culebra_runtime_num_##name(lt, ld, rt, rd);                  \
+    return culebra_runtime_num_##name(lt, ld, rt, rd, line, col);       \
   }
 CUL_NUM_INPLACE(add, Op::Add)
 CUL_NUM_INPLACE(sub, Op::Sub)
@@ -2003,7 +2024,7 @@ CUL_NUM_INPLACE(div, Op::Div)
 // Pow expansion is further down — it needs `culebra_runtime_num_pow`.
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
@@ -2013,6 +2034,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow(
             _culebra_double_to_bits(std::pow(static_cast<double>(a),
                                              static_cast<double>(e)))};
   }
+  _arith_guard_numeric("**", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
   auto b = _culebra_coerce_num(rt, rd);
   return {TAG_FLOAT, _culebra_double_to_bits(std::pow(a, b))};
@@ -10900,8 +10922,11 @@ struct JIT {
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt8Ty(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {ltag, ldata, rtag, rdata}, "num.op");
+        {ltag, ldata, rtag, rdata,
+         current_line_val(), current_column_val()}, "num.op");
     auto numEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -10925,9 +10950,11 @@ struct JIT {
           module_->getOrInsertFunction(
               rt::num_matmul, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
           {extract_tag(lhs), extract_data(lhs),
-           extract_tag(rhs), extract_data(rhs)}, "cmp.matmul");
+           extract_tag(rhs), extract_data(rhs),
+           current_line_val(), current_column_val()}, "cmp.matmul");
     }
     if (op == "**") {
       const char* rt_name = inplace ? rt::num_inplace_pow : rt::num_pow;
@@ -10935,9 +10962,11 @@ struct JIT {
           module_->getOrInsertFunction(
               rt_name, valueType_,
               builder_.getInt8Ty(), builder_.getInt64Ty(),
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
           {extract_tag(lhs), extract_data(lhs),
-           extract_tag(rhs), extract_data(rhs)}, "cmp.pow");
+           extract_tag(rhs), extract_data(rhs),
+           current_line_val(), current_column_val()}, "cmp.pow");
     }
     char ope = op[0];
     const char* rt_name = nullptr;
@@ -11023,9 +11052,11 @@ struct JIT {
             module_->getOrInsertFunction(
                 rt::num_matmul, valueType_,
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
-                builder_.getInt8Ty(), builder_.getInt64Ty()),
+                builder_.getInt8Ty(), builder_.getInt64Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty()),
             {extract_tag(lhs), extract_data(lhs),
-             extract_tag(rhs), extract_data(rhs)}, "matmul");
+             extract_tag(rhs), extract_data(rhs),
+             current_line_val(), current_column_val()}, "matmul");
         continue;
       }
 
