@@ -232,6 +232,36 @@ Methods like `split`, `replace`, `trim` operate at the byte level by
 default. `length()` returns scalars; `size()` returns bytes; this
 distinction is documented in `guide.md` §4.2.
 
+### JIT/AOT representation: inline length header
+
+The interpreter's `std::string` carries its length, so an embedded NUL
+is an ordinary byte. The JIT/AOT backend must match that, but a
+`JitValue` is one `{tag, i64}` slot — the length cannot ride in the
+value, so it lives in the heap/`.rodata` object. A `TAG_STRING` payload
+points at the bytes of a length-prefixed buffer
+([[project_jit_string_repr]]):
+
+```
+[ uint64_t len ][ bytes... ][ '\0' ]
+                 ^ TAG_STRING data points here; len at data[-8].
+```
+
+This is the BSTR / Zig sentinel-slice / CPython shape: length is
+authoritative and read in O(1) (`_str_len`), so embedded NUL is a plain
+byte; the trailing NUL is retained so a string without one passes to C
+APIs (paths, `%s`) as-is. A `{ptr, len}` descriptor was rejected — it
+adds an indirection on the hot path and a per-surface allocation for
+borrowed names, and collides with `TAG_STRINGVIEW`'s layout.
+
+Invariant: every `TAG_STRING` is header-backed. The only producers are
+`_culebra_heap_str` (runtime) and `emit_str_literal` (a `.rodata`
+`ConstantStruct`); literal and heap strings share one layout, so readers
+never branch on origin. Borrowed shape names surfaced as String values
+(object keys, `class` / variant / enum names) go through `_intern_str`
+to gain a header. A debug `assert` in `_str_len` catches a header-less
+pointer mis-tagged as `TAG_STRING`. Folding strings into the cycle GC
+(they currently leak) is the header's natural next use.
+
 ### Planned: StringView, StringLike, lazy graphemes
 
 [[project_string_model]] decided:

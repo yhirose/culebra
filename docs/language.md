@@ -727,7 +727,9 @@ Escape sequences (in plain-text segments only):
 codepoint: it rejects values above `U+10FFFF` and the surrogate range
 `U+D800`–`U+DFFF` (not Unicode scalar values). A `}` does not need
 escaping outside of an interpolation. An unknown `\X` is preserved
-unchanged as two characters (`\` and `X`).
+unchanged as two characters (`\` and `X`). An embedded NUL (`\x00` /
+`\u{0}`) is an ordinary byte: `size()` counts it and every String
+operation preserves it — a `String` never terminates at a NUL.
 
 ### Format specs
 

@@ -183,6 +183,13 @@ struct JitObjectEntry {
 // This uniform layout lets the cycle collector read/write refcounts without
 // per-type dispatch.
 
+// Forward-declared; defined with the String representation below (c2
+// inline length header). Referenced by value formatting / equality / puts
+// above.
+inline uint64_t _str_len(const char* data);
+inline char* _str_alloc(uint64_t len);
+inline const char* _intern_str(std::string_view s);
+
 struct JitObject {
   int64_t refcount;
   bool has_drop = false;
@@ -256,7 +263,7 @@ struct JitObject {
     // here (so the interleaved order survives). Tag literal 4 matches
     // TAG_STRING (defined further down).
     if (key_order) {
-      auto* name_cstr = shape->names.back().c_str();
+      auto* name_cstr = _intern_str(shape->names.back());
       key_order->push_back(
           {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(name_cstr)});
     }
@@ -662,8 +669,9 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     case TAG_FUNC:
       return "[function]";
     case TAG_STRING: {
+      auto* p = reinterpret_cast<const char*>(data);
       std::string s = "'";
-      s += reinterpret_cast<const char*>(data);
+      s.append(p, _str_len(p));
       s += "'";
       return s;
     }
@@ -819,10 +827,73 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   }
 }
 
+// --- JIT String representation (c2: inline length header) ---------------
+// Every TAG_STRING value's `data` points at the `bytes` field of a
+// length-prefixed buffer:
+//
+//   [ uint64_t len ][ bytes... ][ '\0' ]
+//                    ^ data points here; len lives at data[-8].
+//
+// Length is authoritative and read in O(1) via _str_len, so embedded NUL
+// bytes are preserved (a String is a Go-style byte string). The trailing
+// NUL is retained so a string with no embedded NUL can be handed to C
+// APIs (paths, printf %s) as-is. The buffer leaks for the program's
+// lifetime (cycle-bounded, same as before the header existed). Literals
+// carry an identical layout emitted as a .rodata ConstantStruct (see
+// emit_str_literal), so readers never branch on a string's origin.
+struct JitStrHeader { uint64_t len; };
+
+// Byte length of a TAG_STRING data pointer; the header sits just before
+// the bytes. memcpy avoids any alignment assumption (the 8-byte header
+// keeps `data` 8-aligned regardless).
+inline uint64_t _str_len(const char* data) {
+  uint64_t len;
+  std::memcpy(&len, data - sizeof(JitStrHeader), sizeof(len));
+  // Sanity backstop (debug only): a header-less pointer mis-tagged as
+  // TAG_STRING reads garbage here. An implausibly large length means the
+  // invariant "every TAG_STRING is header-backed" was violated upstream.
+  assert(len <= (uint64_t{1} << 40) && "TAG_STRING without length header");
+  return len;
+}
+
+// View over a TAG_STRING data pointer, length read from the header.
+// (Tag-dispatching counterpart: _culebra_str_view.)
+inline std::string_view _str_sv(const char* s) {
+  return std::string_view(s, _str_len(s));
+}
+
+// Allocate a header-prefixed buffer for `len` bytes (+ trailing NUL) and
+// return a pointer to the bytes field. malloc's 16-byte alignment keeps
+// the bytes (at base+8) 8-aligned. Caller fills [data, data+len); the NUL
+// is pre-written.
+inline char* _str_alloc(uint64_t len) {
+  auto* base = static_cast<char*>(std::malloc(sizeof(JitStrHeader) + len + 1));
+  std::memcpy(base, &len, sizeof(len));
+  char* data = base + sizeof(JitStrHeader);
+  data[len] = '\0';
+  return data;
+}
+
 inline const char* _culebra_heap_str(std::string_view s) {
-  auto buf = static_cast<char*>(std::malloc(s.size() + 1));
-  std::memcpy(buf, s.data(), s.size());
-  buf[s.size()] = '\0';
+  char* data = _str_alloc(s.size());
+  std::memcpy(data, s.data(), s.size());
+  return data;
+}
+
+// Intern a borrowed name (e.g. shape->names[i]) into a header-backed,
+// process-lifetime String buffer so it can be surfaced as a TAG_STRING
+// value without a per-access copy. Cached by content; allocated once per
+// distinct name. Mutex-guarded like trait_registry (mt_smoke exercises
+// concurrent JIT runtimes sharing one process).
+inline const char* _intern_str(std::string_view s) {
+  static std::mutex mu;
+  static std::unordered_map<std::string, const char*> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  std::string key(s);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+  const char* buf = _culebra_heap_str(s);
+  cache.emplace(std::move(key), buf);
   return buf;
 }
 
@@ -843,8 +914,7 @@ inline JitStringView* _culebra_heap_view(const char* ptr, uint64_t len) {
 // pre-check the tag.
 inline std::string_view _culebra_str_view(int8_t tag, int64_t data) {
   if (tag == TAG_STRING) {
-    auto* s = reinterpret_cast<const char*>(data);
-    return std::string_view(s);
+    return _str_sv(reinterpret_cast<const char*>(data));
   }
   if (tag == TAG_STRINGVIEW) {
     auto* v = reinterpret_cast<const JitStringView*>(data);
@@ -898,8 +968,6 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
     case TAG_FLOAT:
       return _culebra_float_to_double(d1) == _culebra_float_to_double(d2);
     case TAG_STRING:
-      return std::strcmp(reinterpret_cast<const char*>(d1),
-                         reinterpret_cast<const char*>(d2)) == 0;
     case TAG_STRINGVIEW:
       return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
     case TAG_TUPLE: {
@@ -1008,8 +1076,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
     case TAG_FLOAT:
       return cmp(_culebra_float_to_double(d1), _culebra_float_to_double(d2));
     case TAG_STRING: {
-      auto c = std::strcmp(reinterpret_cast<const char*>(d1),
-                           reinterpret_cast<const char*>(d2));
+      auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
       return cmp(double(c), 0.0);
     }
     default: throw culebra::CulebraError("TypeError", "type error.");
@@ -1052,10 +1119,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
     case TAG_LONG:
       std::cout << data << std::endl;
       break;
-    case TAG_STRING:
-      std::cout << "'" << reinterpret_cast<const char*>(data) << "'"
-                << std::endl;
+    case TAG_STRING: {
+      auto* p = reinterpret_cast<const char*>(data);
+      std::cout << "'";
+      std::cout.write(p, static_cast<std::streamsize>(_str_len(p)));
+      std::cout << "'" << std::endl;
       break;
+    }
     case TAG_STRINGVIEW: {
       auto* v = reinterpret_cast<const JitStringView*>(data);
       std::cout << "'";
@@ -1148,23 +1218,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_concat(
     const char* a, const char* b) {
-  auto la = std::strlen(a);
-  auto lb = std::strlen(b);
-  auto r = static_cast<char*>(std::malloc(la + lb + 1));
+  auto la = _str_len(a);
+  auto lb = _str_len(b);
+  char* r = _str_alloc(la + lb);
   std::memcpy(r, a, la);
   std::memcpy(r + la, b, lb);
-  r[la + lb] = '\0';
   return r;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_eq(const char* a,
                                                          const char* b) {
-  return std::strcmp(a, b) == 0;
+  uint64_t la = _str_len(a), lb = _str_len(b);
+  return la == lb && std::memcmp(a, b, la) == 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int32_t culebra_runtime_str_cmp(const char* a,
                                                              const char* b) {
-  return std::strcmp(a, b);
+  // Lexicographic over min length, then shorter-first — matches
+  // std::string_view::compare and the interpreter's std::string ordering.
+  return static_cast<int32_t>(_str_sv(a).compare(_str_sv(b)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_error(int64_t line,
@@ -2840,7 +2912,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
       obj->key_order->reserve(obj->shape->names.size() + 1);
       for (const auto& name : obj->shape->names) {
         obj->key_order->push_back(
-            {TAG_STRING, reinterpret_cast<int64_t>(name.c_str())});
+            {TAG_STRING, reinterpret_cast<int64_t>(_intern_str(name))});
       }
     }
   }
@@ -2963,7 +3035,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     if (obj->key_order) {
       obj->key_order->push_back(
           {TAG_STRING,
-           reinterpret_cast<int64_t>(obj->shape->names.back().c_str())});
+           reinterpret_cast<int64_t>(_intern_str(obj->shape->names.back()))});
     }
   }
 }
@@ -2993,7 +3065,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     if (obj->key_order) {
       obj->key_order->push_back(
           {TAG_STRING,
-           reinterpret_cast<int64_t>(result->names.back().c_str())});
+           reinterpret_cast<int64_t>(_intern_str(result->names.back()))});
     }
   } else {
     auto& entry = obj->slots[idx];
@@ -3346,8 +3418,8 @@ inline JitValue _jit_variant_ctor_thunk(JitClosure* cls, JitValue /*this*/,
   auto& info = _jit_variant_ctor_info();
   auto it = info.find(cls);
   if (it == info.end()) return {TAG_NIL, 0};
-  return culebra_runtime_build_variant(it->second.first.c_str(),
-                                        it->second.second.c_str(), n_args,
+  return culebra_runtime_build_variant(_intern_str(it->second.first),
+                                        _intern_str(it->second.second), n_args,
                                         args);
 }
 
@@ -5377,7 +5449,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
       TAG_LONG, reinterpret_cast<int64_t>(s));
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
-      TAG_LONG, static_cast<int64_t>(std::strlen(s)));
+      TAG_LONG, static_cast<int64_t>(_str_len(s)));
   return _iter_wrap_fast<&_iter_code_points_fast_fn>(
       {buf_cell, off_cell, len_cell});
 }
@@ -5392,7 +5464,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
     const char* s) {
   std::u32string u32;
-  size_t buf_size = std::strlen(s);
+  size_t buf_size = _str_len(s);
   // Decode UTF-8 → UTF-32, mapping invalid bytes to U+FFFD (1 byte each)
   // rather than dropping them (unicode::utf8::decode silently skips, which
   // loses data). Matches _decode_one_utf8 / the interp graphemes path.
@@ -5945,33 +6017,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_scalar_at(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_str_size(const char* s) {
-  return static_cast<int64_t>(std::strlen(s));
+  return static_cast<int64_t>(_str_len(s));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_upper(
     const char* s) {
-  return _culebra_heap_str(culebra::ascii_upper(std::string(s)));
+  return _culebra_heap_str(culebra::ascii_upper(std::string(_str_sv(s))));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_lower(
     const char* s) {
-  return _culebra_heap_str(culebra::ascii_lower(std::string(s)));
+  return _culebra_heap_str(culebra::ascii_lower(std::string(_str_sv(s))));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(
     const char* s) {
-  auto trimmed = culebra::trim_ascii(std::string_view(s, std::strlen(s)));
-  auto* buf = static_cast<char*>(std::malloc(trimmed.size() + 1));
-  std::memcpy(buf, trimmed.data(), trimmed.size());
-  buf[trimmed.size()] = '\0';
-  return buf;
+  auto trimmed = culebra::trim_ascii(_str_sv(s));
+  return _culebra_heap_str(trimmed);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
     const char* s, const char* sep) {
   auto* r = culebra_runtime_array_new();
-  std::string_view sv(s);
-  std::string_view sp(sep);
+  std::string_view sv = _str_sv(s);
+  std::string_view sp = _str_sv(sep);
   auto push_view = [&](std::string_view piece) {
     auto* v = _culebra_heap_view(piece.data(), piece.size());
     culebra_runtime_array_push(r, TAG_STRINGVIEW,
@@ -5996,37 +6065,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_contains(
     const char* s, const char* sub) {
-  return std::strstr(s, sub) != nullptr;
+  return _str_sv(s).find(_str_sv(sub)) != std::string_view::npos;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_starts_with(
     const char* s, const char* prefix) {
-  auto lp = std::strlen(prefix);
-  return std::strncmp(s, prefix, lp) == 0;
+  return _str_sv(s).starts_with(_str_sv(prefix));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_str_ends_with(
     const char* s, const char* suffix) {
-  auto ls = std::strlen(s);
-  auto lsuf = std::strlen(suffix);
-  if (lsuf > ls) return false;
-  return std::strncmp(s + (ls - lsuf), suffix, lsuf) == 0;
+  return _str_sv(s).ends_with(_str_sv(suffix));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_slice(
     const char* s, int64_t start, int64_t end) {
-  int64_t size = static_cast<int64_t>(std::strlen(s));
+  int64_t size = static_cast<int64_t>(_str_len(s));
   if (start < 0) start += size;
   if (end < 0) end += size;
   if (start < 0) start = 0;
   if (start > size) start = size;
   if (end < start) end = start;
   if (end > size) end = size;
-  auto len = static_cast<size_t>(end - start);
-  auto* buf = static_cast<char*>(std::malloc(len + 1));
-  std::memcpy(buf, s + start, len);
-  buf[len] = '\0';
-  return buf;
+  return _culebra_heap_str(
+      std::string_view(s + start, static_cast<size_t>(end - start)));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView*
@@ -9687,16 +9749,35 @@ struct JIT {
     return make_bool(builder_.getInt1(b));
   }
 
+  // Emit a String literal as a .rodata length-prefixed buffer matching the
+  // runtime _str_alloc layout: { i64 len, [N+1 x i8] bytes-with-nul }. The
+  // returned pointer targets the bytes field, so TAG_STRING data points at
+  // the bytes (len at data[-8]) exactly like a heap string. StringRef
+  // carries the length, so embedded NUL bytes survive into .rodata.
+  llvm::Value* emit_str_literal(std::string_view bytes) {
+    auto i64Ty = builder_.getInt64Ty();
+    llvm::StringRef raw(bytes.data(), bytes.size());
+    auto* bytesConst =
+        llvm::ConstantDataArray::getString(ctx_, raw, /*AddNull=*/true);
+    auto* structTy = llvm::StructType::get(ctx_, {i64Ty, bytesConst->getType()});
+    auto* init = llvm::ConstantStruct::get(
+        structTy, {llvm::ConstantInt::get(i64Ty, bytes.size()), bytesConst});
+    auto* g = new llvm::GlobalVariable(*module_, structTy, /*isConstant=*/true,
+                                       llvm::GlobalValue::PrivateLinkage, init,
+                                       ".str");
+    g->setAlignment(llvm::Align(8));
+    g->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+    llvm::Value* idx[] = {builder_.getInt32(0), builder_.getInt32(1),
+                          builder_.getInt32(0)};
+    return builder_.CreateInBoundsGEP(structTy, g, idx, ".str.data");
+  }
+
   llvm::Value* compile_string(const peg::Ast& ast) {
-    auto str = std::string(ast.token);
-    auto global = builder_.CreateGlobalString(str, ".str");
-    return make_string(global);
+    return make_string(emit_str_literal(std::string(ast.token)));
   }
 
   llvm::Value* compile_interpolated_content(const peg::Ast& ast) {
-    auto str = decode_interpolated_content(ast.token);
-    auto global = builder_.CreateGlobalString(str, ".str");
-    return make_string(global);
+    return make_string(emit_str_literal(decode_interpolated_content(ast.token)));
   }
 
   llvm::Value* compile_array(const peg::Ast& ast) {
@@ -10003,7 +10084,7 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     // Start with empty string
-    llvm::Value* result = builder_.CreateGlobalString("", ".str.empty");
+    llvm::Value* result = emit_str_literal("");
 
     for (auto& node : ast.nodes) {
       llvm::Value* piece;
@@ -10012,7 +10093,7 @@ struct JIT {
         // Raw text between expressions; decode escape sequences first
         // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
         auto decoded = decode_interpolated_content(node->token);
-        piece = builder_.CreateGlobalString(decoded, ".str");
+        piece = emit_str_literal(decoded);
       } else if (node->tag == "INTERP_EXPR"_ && node->nodes.size() > 1) {
         // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
         auto val = compile(*node->nodes[0]);
@@ -11471,7 +11552,7 @@ struct JIT {
         auto pat_str = pattern.tag == "INTERPOLATED_CONTENT"_
                            ? decode_interpolated_content(pattern.token)
                            : std::string(pattern.token);
-        auto lit = builder_.CreateGlobalString(pat_str, ".pat.str");
+        auto lit = emit_str_literal(pat_str);
         auto fn = builder_.GetInsertBlock()->getParent();
         auto eqBB = llvm::BasicBlock::Create(ctx_, "str.eq", fn);
         auto endBB = llvm::BasicBlock::Create(ctx_, "str.end", fn);
@@ -12576,8 +12657,8 @@ struct JIT {
       bodyData = builder_.getInt64(0);
     }
 
-    auto classNameGlobal =
-        get_or_create_global_str(class_name, ".class.name");
+    // Header-backed: stored as the instance's "class" TAG_STRING value.
+    auto classNameGlobal = emit_str_literal(class_name);
 
     auto result = builder_.CreateCall(
         module_->getOrInsertFunction(rt::build_class_instance, valueType_,
@@ -12705,7 +12786,7 @@ struct JIT {
     k = culebra::first_non_decorator_index(ast);
     std::string enum_name(
         culebra::parse_generic_head(ast.nodes[k]->token).outer);
-    auto enum_g = get_or_create_global_str(enum_name, ".enum");
+    auto enum_g = emit_str_literal(enum_name);  // stored as "__enum" value
 
     // Reuse a forward-ref pre-allocated slot if present (mirror class).
     VarSlot enumSlot;
@@ -12730,7 +12811,7 @@ struct JIT {
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       auto vv = culebra::view_variant(*ast.nodes[i]);
       std::string variant(vv.name);
-      auto variant_g = get_or_create_global_str(variant, ".variant");
+      auto variant_g = emit_str_literal(variant);  // stored as "class" value
       if (vv.arity == 0) {
         // Nullary variant: build the singleton instance now.
         auto inst = emit_call(

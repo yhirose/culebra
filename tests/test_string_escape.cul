@@ -11,9 +11,13 @@ assert_eq("\x41\x42\x43", "ABC")
 assert_eq("\xff".size(), 1)
 // Hex is case-insensitive.
 assert_eq("\x4a", "\x4A")
-// NOTE: an embedded NUL (\x00 / \u{0}) is not round-trippable on the JIT
-// yet — JIT string literals are NUL-terminated C strings (length via
-// strlen). Tracked separately; see the JIT length-prefixed-string task.
+// Embedded NUL: a String is a Go-style byte string, so \x00 / \u{0} are
+// ordinary bytes counted by size() — not terminators. interp / JIT / AOT
+// all carry the length explicitly, so the NUL neither truncates nor drops.
+assert_eq("\x00".size(), 1)
+assert_eq("a\x00b".size(), 3)
+assert_eq("\u{0}".size(), 1)
+assert_eq("a\x00b", "a" + "\x00" + "b")   // round-trips through concat
 
 // --- \u{...}: Unicode codepoint, 1–6 hex digits, UTF-8 encoded ---
 assert_eq("\u{41}", "A")               // BMP ASCII

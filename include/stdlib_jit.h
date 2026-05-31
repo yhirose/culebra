@@ -69,7 +69,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_float_any(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_type_of(int8_t tag) {
-  return _culebra_tag_name(tag);
+  // _culebra_tag_name returns a static C-string literal (no length header).
+  // Intern it so the surfaced TAG_STRING value carries a header like any
+  // other String.
+  return _intern_str(_culebra_tag_name(tag));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
@@ -79,7 +82,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
     return;
   }
   if (type == TAG_STRING) {
-    std::cout << reinterpret_cast<const char*>(data);
+    auto* p = reinterpret_cast<const char*>(data);
+    std::cout.write(p, static_cast<std::streamsize>(_str_len(p)));
   } else if (type == TAG_STRINGVIEW) {
     auto* v = reinterpret_cast<const JitStringView*>(data);
     std::cout.write(v->ptr, static_cast<std::streamsize>(v->len));
