@@ -1,0 +1,53 @@
+# Parallel.map_settled / Parallel.race — run under BOTH interp and --jit.
+
+# map_settled: every element yields a {ok, value, error} Result, no fail-fast.
+let rs = Parallel.map_settled([1, 2, 0, 4], |x| 12 / x)
+assert_eq(rs.size(), 4)
+assert_eq(rs[0].ok, true)
+assert_eq(rs[0].value, 12)
+assert_eq(rs[1].value, 6)
+assert_eq(rs[2].ok, false)        # 12 / 0 failed
+assert_eq(rs[2].value, nil)
+assert_true(rs[2].error != nil)
+assert_eq(rs[3].value, 3)
+
+# all-success map_settled
+let ok = Parallel.map_settled([1, 2, 3], |x| x * x)
+assert_eq(ok.map(|r| r.value), [1, 4, 9])
+assert_true(ok.all(|r| r.ok))
+
+# map_settled with limit kwarg
+let lim = Parallel.map_settled([1, 2, 3, 4], |x| x, limit: 2)
+assert_eq(lim.map(|r| r.value), [1, 2, 3, 4])
+
+# empty map_settled
+assert_eq(Parallel.map_settled([], |x| x), [])
+
+# race: one winner among many (all succeed here → result is one of the inputs).
+let w = Parallel.race([10, 20, 30], |x| x * x)
+assert_true(w == 100 || w == 400 || w == 900)
+
+# race where only one element can succeed → that one always wins
+let only = Parallel.race([0, 0, 5, 0], fn (x) {
+  let check = 10 / x       # throws for the zeros, succeeds for 5
+  return 100 + x
+})
+assert_eq(only, 105)
+
+# race all-fail raises ParallelError
+try {
+  Parallel.race([0, 0, 0], |x| 1 / x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ParallelError")
+}
+
+# race on empty raises ParallelError
+try {
+  Parallel.race([], |x| x)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "ParallelError")
+}
+
+puts("test_parallel_combinators_jit: all assertions passed")

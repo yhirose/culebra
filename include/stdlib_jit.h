@@ -2363,24 +2363,31 @@ inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
   return culebra_jit_channel_new(n, a, 0, 0);
 }
 
-// Parallel.map/each(items, fn, limit = 0). `limit` arrives in slab slot 2 —
-// resolved from a positional arg or a `limit:` kwarg by the NsParamMeta hook
-// (kParallelMeta), defaulting to 0 (= the parallelism cap in jit_parallel_run).
-inline JitValue _ns_parallel_map(JitValue* a, int64_t n) {
+// Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
+// slab slot 2 — resolved from a positional arg or a `limit:` kwarg by the
+// NsParamMeta hook (kParallelMeta), defaulting to 0 (= the cap). The four modes
+// share one dispatch; the table needs a distinct fn pointer per method.
+inline JitValue _ns_parallel_dispatch(JitValue* a, int64_t n,
+                                      culebra::PMode mode) {
   if (n < 2) {
     throw culebra::CulebraError("TypeError",
-        "Parallel.map: expected (items, fn)");
+        std::format("Parallel.{}: expected (items, fn)",
+                    culebra::parallel_mode_name(mode)));
   }
   long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
-  return jit_parallel_run(a[0], a[1], limit, /*collect=*/true, 0, 0);
+  return jit_parallel_run(a[0], a[1], limit, mode, 0, 0);
+}
+inline JitValue _ns_parallel_map(JitValue* a, int64_t n) {
+  return _ns_parallel_dispatch(a, n, culebra::PMode::Map);
 }
 inline JitValue _ns_parallel_each(JitValue* a, int64_t n) {
-  if (n < 2) {
-    throw culebra::CulebraError("TypeError",
-        "Parallel.each: expected (items, fn)");
-  }
-  long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
-  return jit_parallel_run(a[0], a[1], limit, /*collect=*/false, 0, 0);
+  return _ns_parallel_dispatch(a, n, culebra::PMode::Each);
+}
+inline JitValue _ns_parallel_map_settled(JitValue* a, int64_t n) {
+  return _ns_parallel_dispatch(a, n, culebra::PMode::MapSettled);
+}
+inline JitValue _ns_parallel_race(JitValue* a, int64_t n) {
+  return _ns_parallel_dispatch(a, n, culebra::PMode::Race);
 }
 inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
   // slab: cmd, cwd, env, stdin
@@ -2809,8 +2816,10 @@ inline const NsMethod kNsMethods[] = {
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new", -1, &_ns_channel_new},
-  {"Parallel", "map",  2, &_ns_parallel_map,  &kParallelMeta},
-  {"Parallel", "each", 2, &_ns_parallel_each, &kParallelMeta},
+  {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
+  {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
+  {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},
+  {"Parallel", "race",        2, &_ns_parallel_race,        &kParallelMeta},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},

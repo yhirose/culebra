@@ -595,6 +595,71 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
 // work (deserialize → invoke fn_ptr → serialize) is JIT-specific.
 // ===========================================================================
 
+// A settled Result Object {ok, value, error} on the JIT heap; set_or_append
+// takes ownership of `value`, so the caller hands its +1 over and releases the
+// returned Object (which frees the fields). Mirrors interp _settled_ok/_err.
+inline JitValue _jit_settled_result(bool ok, JitValue value, const char* err) {
+  auto* o = culebra_runtime_object_new();
+  o->set_or_append("ok", JitValue{TAG_BOOL, ok ? 1 : 0}, false);
+  o->set_or_append("value", value, false);
+  o->set_or_append("error",
+                   ok ? JitValue{TAG_NIL, 0}
+                      : JitValue{TAG_STRING,
+                                 reinterpret_cast<int64_t>(_culebra_heap_str(err))},
+                   false);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+
+// JIT counterparts of parallel_record_success / _element_error (the interp ones
+// build Value; these build JitValue). `r` is owned and released here.
+inline void jit_parallel_record_success(ParallelState& st, size_t i, JitValue r) {
+  switch (st.mode) {
+    case culebra::PMode::Map: {
+      JitSerCtx sc;
+      st.results[i] = jit_serialize(r, sc);
+      break;
+    }
+    case culebra::PMode::MapSettled: {
+      JitValue o = _jit_settled_result(true, r, nullptr);  // owns r
+      JitSerCtx sc;
+      st.results[i] = jit_serialize(o, sc);
+      culebra_runtime_value_release(o.tag, o.data);  // frees o and r
+      return;
+    }
+    case culebra::PMode::Each:
+      break;
+    case culebra::PMode::Race:
+      if (!st.race_won.exchange(true)) {
+        std::lock_guard<std::mutex> lk(st.err_m);
+        JitSerCtx sc;
+        st.race_result = jit_serialize(r, sc);
+        st.interrupt.store(true, std::memory_order_relaxed);
+      }
+      break;
+  }
+  culebra_runtime_value_release(r.tag, r.data);
+}
+
+inline void jit_parallel_record_element_error(ParallelState& st, size_t i,
+                                              culebra::CulebraError e) {
+  switch (st.mode) {
+    case culebra::PMode::MapSettled: {
+      JitValue o = _jit_settled_result(false, JitValue{TAG_NIL, 0}, e.what());
+      JitSerCtx sc;
+      st.results[i] = jit_serialize(o, sc);
+      culebra_runtime_value_release(o.tag, o.data);
+      break;
+    }
+    case culebra::PMode::Race: {
+      std::lock_guard<std::mutex> lk(st.err_m);
+      if (!st.failed) { st.failed = true; st.err_index = i; st.err = std::move(e); }
+      break;
+    }
+    default:
+      parallel_record_error(st, i, std::move(e));
+  }
+}
+
 inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   culebra::Runtime rt;
   culebra::RuntimeScope scope(rt);
@@ -610,15 +675,11 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
         JitDeCtx idc;
         JitValue item = jit_deserialize(st->items[i], idc);
         JitValue r = _culebra_invoke1(cls, item);
-        if (st->collect) {
-          JitSerCtx sc;
-          st->results[i] = jit_serialize(r, sc);
-        }
-        culebra_runtime_value_release(r.tag, r.data);
+        jit_parallel_record_success(*st, i, r);
       } catch (culebra::CulebraError& e) {
-        parallel_record_error(*st, i, e);
+        jit_parallel_record_element_error(*st, i, e);
       } catch (std::exception& e) {
-        parallel_record_error(*st, i,
+        jit_parallel_record_element_error(*st, i,
             culebra::CulebraError("RuntimeError", e.what()));
       }
     }
@@ -631,18 +692,21 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
 }
 
 inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
-                                 bool collect, int64_t line, int64_t col) {
+                                 culebra::PMode mode, int64_t line, int64_t col) {
+  const char* who = culebra::parallel_mode_name(mode);
   if (items_v.tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        "Parallel.map/each: first argument must be an Array", line, col);
+        std::format("Parallel.{}: first argument must be an Array", who),
+        line, col);
   }
   if (fn_v.tag != TAG_FUNC) {
     throw culebra::CulebraError("TypeError",
-        "Parallel.map/each: second argument must be a function", line, col);
+        std::format("Parallel.{}: second argument must be a function", who),
+        line, col);
   }
   auto* arr = reinterpret_cast<JitArray*>(items_v.data);
   auto st = std::make_shared<ParallelState>();
-  st->collect = collect;
+  st->mode = mode;
   { JitSerCtx sc; st->fn = jit_serialize(fn_v, sc); }
   st->items.reserve(arr->size);
   for (size_t i = 0; i < arr->size; i++) {
@@ -651,11 +715,15 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
   }
   if (arr->size == 0) {
     release_inflight_channels(st->fn);
-    return collect ? JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
-                         culebra_runtime_array_new())}
-                   : JitValue{TAG_NIL, 0};
+    if (mode == culebra::PMode::Race) {
+      throw culebra::CulebraError("ParallelError",
+          "Parallel.race: empty array has no result", line, col);
+    }
+    return st->collects() ? JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
+                                culebra_runtime_array_new())}
+                          : JitValue{TAG_NIL, 0};
   }
-  if (collect) st->results.resize(arr->size);
+  if (st->collects()) st->results.resize(arr->size);
 
   if (limit < 1) limit = isolate_cap();
   size_t target = std::min(static_cast<size_t>(limit),
@@ -686,14 +754,27 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
   release_inflight_channels(st->fn);
   for (const auto& it : st->items) release_inflight_channels(it);
 
+  if (mode == culebra::PMode::Race) {
+    if (st->race_won.load()) {
+      JitDeCtx dc;
+      JitValue v = jit_deserialize(st->race_result, dc);
+      release_inflight_channels(st->race_result);
+      return v;
+    }
+    throw culebra::CulebraError("ParallelError",
+        std::format("Parallel.race: all {} elements failed: {}",
+                    static_cast<size_t>(arr->size),
+                    st->err ? st->err->what() : "unknown"),
+        line, col);
+  }
   if (st->failed) {
     for (const auto& rn : st->results) release_inflight_channels(rn);
     throw culebra::CulebraError("ParallelError",
-        std::format("Parallel.{}: element[{}] failed: {}",
-                    collect ? "map" : "each", st->err_index, st->err->what()),
+        std::format("Parallel.{}: element[{}] failed: {}", who, st->err_index,
+                    st->err->what()),
         line, col);
   }
-  if (!collect) return {TAG_NIL, 0};
+  if (!st->collects()) return {TAG_NIL, 0};
   auto* out = culebra_runtime_array_new();
   for (const auto& rn : st->results) {
     JitDeCtx dc;

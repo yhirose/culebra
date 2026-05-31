@@ -455,10 +455,18 @@ inline Value make_channel_namespace() {
 // re-raised as `ParallelError` with the element index. Results come back in
 // input order. on_progress / map_settled / map_reduce are later increments.
 
+// The four Parallel combinators differ only in how a worker records its
+// per-element outcome; the pool, queue, and cancellation machinery are shared.
+//   Map        — collect values by index, fail-fast on the first error
+//   Each       — run for side effects, collect nothing, fail-fast
+//   MapSettled — collect a {ok,value,error} Result by index, never fail-fast
+//   Race       — first success wins (cancels the rest); all-fail throws
+enum class PMode { Map, Each, MapSettled, Race };
+
 struct ParallelState {
   std::vector<sendable::SendNode> items;    // serialized inputs
   sendable::SendNode fn;                     // serialized closure
-  bool collect = true;                       // map (true) vs each (false)
+  PMode mode = PMode::Map;
   std::vector<sendable::SendNode> results;   // serialized outputs, by index
   std::atomic<size_t> next{0};               // next element to claim
   std::atomic<bool> interrupt{false};        // fail-fast / cancellation
@@ -466,7 +474,29 @@ struct ParallelState {
   bool failed = false;
   size_t err_index = 0;
   std::optional<culebra::CulebraError> err;
+  // Race: the first worker to succeed claims the winner slot (CAS) and stores
+  // its serialized result; later finishers are discarded.
+  std::atomic<bool> race_won{false};
+  sendable::SendNode race_result;
+  bool collects() const { return mode == PMode::Map || mode == PMode::MapSettled; }
 };
+
+// A settled Result Object: {ok: Bool, value: Any, error: String?}. Mirrors the
+// Proc.all allSettled shape so `r.ok ? r.value : r.error` reads the same way.
+inline Value _settled_ok(Value v) {
+  ObjectValue o;
+  o.initialize("ok", Value(true), false);
+  o.initialize("value", std::move(v), false);
+  o.initialize("error", Value(), false);
+  return Value(std::move(o));
+}
+inline Value _settled_err(std::string msg) {
+  ObjectValue o;
+  o.initialize("ok", Value(false), false);
+  o.initialize("value", Value(), false);
+  o.initialize("error", Value(std::move(msg)), false);
+  return Value(std::move(o));
+}
 
 inline void parallel_record_error(ParallelState& st, size_t i,
                                   culebra::CulebraError e) {
@@ -477,6 +507,54 @@ inline void parallel_record_error(ParallelState& st, size_t i,
     st.failed = true;
     st.err_index = i;
     st.err = std::move(e);
+  }
+}
+
+// Record one element's success, by mode. Race claims the winner slot via CAS
+// and cancels the rest; the loser's result is discarded.
+inline void parallel_record_success(ParallelState& st, size_t i, Value r) {
+  switch (st.mode) {
+    case PMode::Map: {
+      sendable::SerCtx sc;
+      st.results[i] = sendable::serialize(r, sc);
+      break;
+    }
+    case PMode::MapSettled: {
+      sendable::SerCtx sc;
+      st.results[i] = sendable::serialize(_settled_ok(std::move(r)), sc);
+      break;
+    }
+    case PMode::Each:
+      break;  // side effects only
+    case PMode::Race:
+      if (!st.race_won.exchange(true)) {
+        std::lock_guard<std::mutex> lk(st.err_m);
+        sendable::SerCtx sc;
+        st.race_result = sendable::serialize(r, sc);
+        st.interrupt.store(true, std::memory_order_relaxed);  // cancel the rest
+      }
+      break;
+  }
+}
+
+// Record one element's failure, by mode. Settled stores a Result and keeps
+// going; Race remembers the first error for the all-failed message (no
+// cancellation — a sibling may still win); Map/Each fail-fast.
+inline void parallel_record_element_error(ParallelState& st, size_t i,
+                                          culebra::CulebraError e) {
+  switch (st.mode) {
+    case PMode::MapSettled: {
+      sendable::SerCtx sc;
+      st.results[i] = sendable::serialize(_settled_err(e.what()), sc);
+      break;
+    }
+    case PMode::Race: {
+      std::lock_guard<std::mutex> lk(st.err_m);
+      if (!st.failed) { st.failed = true; st.err_index = i; st.err = std::move(e); }
+      break;
+    }
+    default:  // Map / Each
+      parallel_record_error(st, i, std::move(e));
   }
 }
 
@@ -502,17 +580,14 @@ inline void parallel_worker(std::shared_ptr<ParallelState> st) {
         Value item = sendable::deserialize(st->items[i], *interp, base, idc);
         Value r = interp->call_closure(fn, base,
                                        std::vector<Value>{std::move(item)});
-        if (st->collect) {
-          sendable::SerCtx sc;
-          st->results[i] = sendable::serialize(r, sc);
-        }
+        parallel_record_success(*st, i, std::move(r));
       } catch (culebra::CulebraError& e) {
-        parallel_record_error(*st, i, e);
+        parallel_record_element_error(*st, i, e);
       } catch (Value& thrown) {
-        parallel_record_error(*st, i,
+        parallel_record_element_error(*st, i,
             culebra::CulebraError("RuntimeError", thrown.str()));
       } catch (std::exception& e) {
-        parallel_record_error(*st, i,
+        parallel_record_element_error(*st, i,
             culebra::CulebraError("RuntimeError", e.what()));
       }
     }
@@ -525,19 +600,32 @@ inline void parallel_worker(std::shared_ptr<ParallelState> st) {
   }
 }
 
+inline const char* parallel_mode_name(PMode m) {
+  switch (m) {
+    case PMode::Map:        return "map";
+    case PMode::Each:       return "each";
+    case PMode::MapSettled: return "map_settled";
+    case PMode::Race:       return "race";
+  }
+  return "map";
+}
+
 inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
-                          bool collect, long line, long col) {
+                          PMode mode, long line, long col) {
+  const char* who = parallel_mode_name(mode);
   if (items_v.type != Value::Array) {
     throw culebra::CulebraError("TypeError",
-        "Parallel.map/each: first argument must be an Array", line, col);
+        std::format("Parallel.{}: first argument must be an Array", who),
+        line, col);
   }
   if (fn_v.type != Value::Function) {
     throw culebra::CulebraError("TypeError",
-        "Parallel.map/each: second argument must be a function", line, col);
+        std::format("Parallel.{}: second argument must be a function", who),
+        line, col);
   }
   const auto& items = *items_v.to_array().values;
   auto st = std::make_shared<ParallelState>();
-  st->collect = collect;
+  st->mode = mode;
   // Serialize fn + every element up front — Sendable violations throw here.
   { sendable::SerCtx sc; st->fn = sendable::serialize(fn_v, sc); }
   st->items.reserve(items.size());
@@ -547,11 +635,14 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
   }
   if (items.empty()) {
     release_inflight_channels(st->fn);  // no workers will consume it
-    if (!collect) return Value();
-    ArrayValue empty;
-    return Value(std::move(empty));
+    if (mode == PMode::Race) {
+      throw culebra::CulebraError("ParallelError",
+          "Parallel.race: empty array has no result", line, col);
+    }
+    if (!st->collects()) return Value();
+    return Value(ArrayValue{});
   }
-  if (collect) st->results.resize(items.size());
+  if (st->collects()) st->results.resize(items.size());
 
   if (limit < 1) limit = isolate_cap();
   size_t target = std::min(static_cast<size_t>(limit), items.size());
@@ -578,16 +669,23 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
   release_inflight_channels(st->fn);
   for (const auto& it : st->items) release_inflight_channels(it);
 
-  if (st->failed) {
-    // Results are abandoned on the fail-fast path; release any in-flight refs
-    // their (unconsumed) nodes hold. Unfilled slots are K::Nil = no-op.
-    for (const auto& rn : st->results) release_inflight_channels(rn);
+  // Race: the winner (if any) is the single result; all-fail throws.
+  if (mode == PMode::Race) {
+    if (st->race_won.load()) return chan_take(st->race_result);
     throw culebra::CulebraError("ParallelError",
-        std::format("Parallel.{}: element[{}] failed: {}",
-                    collect ? "map" : "each", st->err_index, st->err->what()),
+        std::format("Parallel.race: all {} elements failed: {}", items.size(),
+                    st->err ? st->err->what() : "unknown"),
         line, col);
   }
-  if (!collect) return Value();
+  // Map / Each fail-fast (MapSettled never sets failed).
+  if (st->failed) {
+    for (const auto& rn : st->results) release_inflight_channels(rn);
+    throw culebra::CulebraError("ParallelError",
+        std::format("Parallel.{}: element[{}] failed: {}", who, st->err_index,
+                    st->err->what()),
+        line, col);
+  }
+  if (!st->collects()) return Value();
   ArrayValue out;
   out.values->reserve(st->results.size());
   for (const auto& rn : st->results) {
@@ -596,26 +694,32 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
   return Value(std::move(out));
 }
 
-// `Parallel.map(items, fn, limit = <cap>) -> Array` (N→N, fail-fast) and
-// `Parallel.each(items, fn, limit = <cap>) -> Nil` (side effects).
+// Parallel combinators over an Array, each running `fn(element)` across a
+// worker pool (limit = parallelism cap, 0 = machine default):
+//   map(items, fn)        -> Array     N→N in input order, fail-fast
+//   each(items, fn)       -> Nil       side effects, fail-fast
+//   map_settled(items,fn) -> [Result]  per-element {ok,value,error}, never fail-fast
+//   race(items, fn)       -> Any       first success wins (cancels the rest)
 inline Value make_parallel_namespace() {
   using namespace std::literals;
   ObjectValue ns;
-  auto make_entry = [](bool collect, std::string_view rt) {
+  auto make_entry = [](PMode mode, std::string_view rt) {
     return Value(FunctionValue(
         {{"items", false, ""sv},
          {"fn", false, ""sv},
          {"limit", false, ""sv, nullptr, kw_default_zero()}},
-        [collect](std::shared_ptr<Environment> env) -> Value {
+        [mode](std::shared_ptr<Environment> env) -> Value {
           long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
           long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
           return parallel_run(env->get("items"), env->get("fn"),
-                              env->get("limit").to_long(), collect, line, col);
+                              env->get("limit").to_long(), mode, line, col);
         },
         rt));
   };
-  ns.initialize("map", make_entry(true, "Array"sv), false);
-  ns.initialize("each", make_entry(false, "Nil"sv), false);
+  ns.initialize("map", make_entry(PMode::Map, "Array"sv), false);
+  ns.initialize("each", make_entry(PMode::Each, "Nil"sv), false);
+  ns.initialize("map_settled", make_entry(PMode::MapSettled, "Array"sv), false);
+  ns.initialize("race", make_entry(PMode::Race, "Any"sv), false);
   return Value(std::move(ns));
 }
 

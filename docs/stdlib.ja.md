@@ -1351,10 +1351,9 @@ CPU 並列を得ます。isolate 間で可変メモリは共有されません�
 **コピー**されるため、2 つの isolate が同じオブジェクトで競合することは決して
 ありません。[§11 `Proc`](#11-proc)（プロセス並列）のスレッド版に当たります。
 
-> `Isolate.spawn` はインタプリタと `--jit` の両方で動作します（クロージャは
-> 共有コード参照 — インタプリタは AST、JIT はコンパイル済み `fn_ptr` — と
-> コピーした捕獲で越境し、子の自前ヒープで実行）。`Channel` と `Parallel` は
-> `--jit` では当面インタプリタ専用です。
+> `Isolate.spawn`・`Channel`・`Parallel` はいずれもインタプリタと `--jit` の
+> 両方で動作します（クロージャは共有コード参照 — インタプリタは AST、JIT は
+> コンパイル済み `fn_ptr` — とコピーした捕獲で越境し、子の自前ヒープで実行）。
 
 ### `Isolate.spawn(fn, *args) -> handle`
 
@@ -1477,7 +1476,7 @@ channel が閉じるには全ての `tx`（親の元の tx 含む）が drop さ
 
 容量は 1 以上（rendezvous channel は次に予定）。
 
-### Parallel — `Parallel.map` / `Parallel.each`
+### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 高レベル形。配列の各要素に関数を isolate プールで並列適用します（ハンドル管理
 不要）。`fn` と各要素は Sendable でなければなりません（`Isolate.spawn` と同じ規則）。
@@ -1487,18 +1486,32 @@ channel が閉じるには全ての `tx`（親の元の tx 含む）が drop さ
 Parallel.map([1, 2, 3, 4], |x| x * x)         # => [1, 4, 9, 16]  (入力順)
 Parallel.map(urls, |u| fetch(u), limit: 8)    # 同時 isolate は最大 8
 Parallel.each(jobs, |j| process(j))           # 副作用のみ、nil を返す
+Parallel.map_settled(urls, |u| fetch(u))      # => [{ok, value, error}, ...]
+Parallel.race(mirrors, |m| download(m))       # 最初の成功が勝つ
 ```
 
 | 呼び出し | 戻り値 | 備考 |
 |---|---|---|
-| `Parallel.map(items, fn, limit = <コア数>)` | `Array` | 要素ごと 1 結果、**入力順** |
-| `Parallel.each(items, fn, limit = <コア数>)` | `nil` | 副作用用、結果は集めない |
+| `Parallel.map(items, fn, limit = <コア数>)` | `Array` | 要素ごと 1 結果、**入力順**、fail-fast |
+| `Parallel.each(items, fn, limit = <コア数>)` | `nil` | 副作用用、結果は集めない、fail-fast |
+| `Parallel.map_settled(items, fn, limit = <コア数>)` | `Array` | 要素ごと 1 `Result`、入力順、**fail-fast しない** |
+| `Parallel.race(items, fn, limit = <コア数>)` | `Any` | **最初に成功**した要素、残りはキャンセル |
 
 `limit` は同時に走る isolate 数の上限（既定はコア数）。要素は 1 つの共有キューから
-取り出すので、要素数ぶんでなく合計 `limit` 個の isolate です。**fail-fast**:
-最初に例外を投げた要素で残りを停止し、要素 index 付きの `ParallelError` として
-再送出します（例: `Parallel.map: element[2] failed: ...`）。(all-settled 版・
-`on_progress` callback・`map_reduce` は予定。)
+取り出すので、要素数ぶんでなく合計 `limit` 個の isolate です。
+
+**`map` / `each` は fail-fast**: 最初に例外を投げた要素で残りを停止し、要素
+index 付きの `ParallelError` として再送出します（例: `Parallel.map: element[2]
+failed: ...`）。
+
+**`map_settled` は fail-fast しない**: 各要素は `Result` Object
+`{ok: Bool, value: Any, error: String?}`（`Proc.all` と同じ形）を返すので、1 つの
+失敗で他の成果を失いません（`r.ok ? r.value : r.error`）。
+
+**`race` は最初の成功**を返し、残りの要素をキャンセルします。*全要素*が例外を
+投げたら `ParallelError`、空配列でも `ParallelError`（返す結果が無いため）。
+
+(`on_progress` callback・`map_reduce` は予定。)
 
 ---
 

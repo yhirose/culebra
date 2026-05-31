@@ -1405,10 +1405,10 @@ boundary by being **copied**, so two isolates can never race on the same
 object. This is the thread-level counterpart to [§11 `Proc`](#11-proc) (which
 parallelizes across processes).
 
-> `Isolate.spawn` works under both the interpreter and `--jit` (a closure
-> crosses as a shared code reference — the AST in the interpreter, the compiled
-> `fn_ptr` in the JIT — plus copied captures, and runs on the child's own heap).
-> `Channel` and `Parallel` are interpreter-only for now under `--jit`.
+> `Isolate.spawn`, `Channel`, and `Parallel` all work under both the interpreter
+> and `--jit` (a closure crosses as a shared code reference — the AST in the
+> interpreter, the compiled `fn_ptr` in the JIT — plus copied captures, and runs
+> on the child's own heap).
 
 ### `Isolate.spawn(fn, *args) -> handle`
 
@@ -1534,7 +1534,7 @@ keep.
 
 Bounded to capacity >= 1 (rendezvous channels are planned next).
 
-### Parallel — `Parallel.map` / `Parallel.each`
+### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 The high-level form: apply a function to every element of an array across a pool
 of isolates, without managing handles yourself. `fn` and every element must be
@@ -1545,19 +1545,34 @@ Sendable (the same rules as `Isolate.spawn`).
 Parallel.map([1, 2, 3, 4], |x| x * x)         # => [1, 4, 9, 16]  (input order)
 Parallel.map(urls, |u| fetch(u), limit: 8)    # at most 8 live isolates
 Parallel.each(jobs, |j| process(j))           # side effects; returns nil
+Parallel.map_settled(urls, |u| fetch(u))      # => [{ok, value, error}, ...]
+Parallel.race(mirrors, |m| download(m))       # first success wins
 ```
 
 | call | returns | notes |
 |---|---|---|
-| `Parallel.map(items, fn, limit = <cores>)` | `Array` | one result per element, **in input order** |
-| `Parallel.each(items, fn, limit = <cores>)` | `nil` | for side effects; no results collected |
+| `Parallel.map(items, fn, limit = <cores>)` | `Array` | one result per element, **in input order**; fail-fast |
+| `Parallel.each(items, fn, limit = <cores>)` | `nil` | for side effects; no results collected; fail-fast |
+| `Parallel.map_settled(items, fn, limit = <cores>)` | `Array` | one `Result` per element, in input order; **never fail-fast** |
+| `Parallel.race(items, fn, limit = <cores>)` | `Any` | the **first** element to succeed; cancels the rest |
 
 `limit` caps how many isolates run at once (default: the core count); the
 elements are pulled from one shared queue, so it is `limit` isolates total, not
-one per element. **Fail-fast:** the first element to throw stops the rest and is
-re-raised as `ParallelError` naming the element index — e.g. `Parallel.map:
-element[2] failed: ...`. (An all-settled variant, an `on_progress` callback, and
-`map_reduce` are planned.)
+one per element.
+
+**`map` / `each` are fail-fast:** the first element to throw stops the rest and
+is re-raised as `ParallelError` naming the element index — e.g. `Parallel.map:
+element[2] failed: ...`.
+
+**`map_settled` never fail-fasts:** every element yields a `Result` Object
+`{ok: Bool, value: Any, error: String?}` (the same shape as `Proc.all`), so one
+failure doesn't lose the others' work — `r.ok ? r.value : r.error`.
+
+**`race` returns the first success** and cancels the remaining elements; if
+*every* element throws it raises `ParallelError`, and on an empty array it raises
+`ParallelError` (there is no result to return).
+
+(An `on_progress` callback and `map_reduce` are planned.)
 
 ---
 
