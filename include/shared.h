@@ -155,6 +155,19 @@ inline std::string json_escape(std::string_view s) {
                      line, col);
 }
 
+// Raise the uniform shadow-prohibition error. Used by interp and JIT at
+// every binding site that would shadow a closure-captured outer variable
+// (let/mut declarations, function parameters, match pattern bindings).
+[[noreturn]] inline void throw_shadow_error(std::string_view name,
+                                            size_t line, size_t column) {
+  throw CulebraError(
+      "ShadowError",
+      std::format("cannot shadow outer variable '{}' (declared in an enclosing "
+                  "function) at {}:{}.",
+                  name, line, column),
+      static_cast<long>(line), static_cast<long>(column));
+}
+
 // Call site passed a keyword the callee doesn't accept. Both backends
 // used to diverge: interp threw at runtime (catchable by try/catch),
 // JIT raised at IR-emit time (uncatchable). This helper unifies them

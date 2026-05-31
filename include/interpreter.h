@@ -58,21 +58,8 @@ inline bool _invoke_user_eq(const Value& a, const Value& b);
 inline std::unordered_map<std::string_view, Value>& string_builtins();
 inline std::unordered_map<std::string_view, Value>& iterator_builtins();
 
-// Raise the uniform shadow-prohibition error. Used by all sites that
-// would introduce a binding shadowing a closure-captured variable:
-// `let`/`mut` declarations, function parameters, and `match` pattern
-// bindings — in both the interpreter and the JIT.
-[[noreturn]] inline void throw_shadow_error(std::string_view name,
-                                            size_t line, size_t column) {
-  throw CulebraError(
-      "ShadowError",
-      std::format("cannot shadow outer variable '{}' (declared in an enclosing "
-                  "function) at {}:{}.",
-                  name, line, column),
-      static_cast<long>(line), static_cast<long>(column));
-}
-
 // --- Static shadow analyzer ---
+// (throw_shadow_error lives in shared.h — shared by interp and JIT.)
 //
 // Walks the AST once before eval, raising ShadowError at any binding
 // site that would shadow a name from an enclosing function scope. This
