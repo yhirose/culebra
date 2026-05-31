@@ -13,6 +13,17 @@ assert_eq(r1.kind, 'TypeError')
 let r2 = try { let _ = 1 + 'b'; nil } catch e { e }
 assert_eq(r2.kind, 'TypeError')
 
+# Ordered comparison of same-type collections is a catchable TypeError,
+# never an uncatchable internal abort. (== is structural; <,<=,>,>= are a
+# type error — see value-equality.) Regression: ord_compare used to fall
+# through to a C++ logic_error that try/catch could not intercept.
+let r2b = try { let _ = [1] < [2]; nil } catch e { e }
+assert_eq(r2b.kind, 'TypeError')
+let r2c = try { let _ = {} < {}; nil } catch e { e }
+assert_eq(r2c.kind, 'TypeError')
+let r2d = try { let _ = (1, 2) < (3, 4); nil } catch e { e }
+assert_eq(r2d.kind, 'TypeError')
+
 # --- ZeroDivisionError ---
 let r3 = try { let _ = 1 / 0; nil } catch e { e }
 assert_eq(r3.kind, 'ZeroDivisionError')

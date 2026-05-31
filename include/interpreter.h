@@ -1381,9 +1381,14 @@ struct Value {
             rhs.get<StringViewPayload>().view);
         return cmp(double(c), 0.0);
       }
-      // TODO: Object and Array support
+      // Collections (Array/Object/Tuple/Set) and Function/Tensor are not
+      // ordered: == is structural (see value-equality), but <,<=,>,>= are a
+      // clean TypeError — never an uncatchable internal abort. Same message
+      // as the cross-type branch above; the eval-wrapper backfills location.
       default:
-        throw std::logic_error("invalid internal condition.");
+        throw CulebraError("TypeError", std::format(
+            "type error: cannot compare {} and {}",
+            type_name(), rhs.type_name()));
     }
     std::unreachable();
   }
