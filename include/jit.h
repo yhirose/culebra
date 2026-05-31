@@ -9636,7 +9636,16 @@ struct JIT {
   llvm::Value* compile(const peg::Ast& ast) {
     using namespace peg::udl;
 
-    // Track position for runtime error messages
+    // Track position for runtime error messages. Save/restore so the
+    // *innermost* compile() frame owns current_line_/col — mirroring the
+    // interpreter, where the deepest eval() stamps the error location.
+    // Without the restore it would drift to the last leaf compiled (e.g. a
+    // subscript would attribute to its index expr, not the subscript), so
+    // interp/JIT error columns diverged.
+    struct PosGuard {
+      JIT* self; size_t l, c;
+      ~PosGuard() { self->current_line_ = l; self->current_column_ = c; }
+    } pos_guard{this, current_line_, current_column_};
     if (ast.line) current_line_ = ast.line;
     if (ast.column) current_column_ = ast.column;
 
