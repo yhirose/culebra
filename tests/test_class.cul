@@ -131,6 +131,18 @@ test_subscript_overload = fn () {
   b["y"] = 2
   assert_eq(b["x"], 1)
   assert_eq(b["y"], 2)
+
+  # Subscript overloading is a class-instance feature: a plain dict that
+  # merely holds an `__index__` / `__setindex__` value treats them as
+  # ordinary data, not hooks. `d[k]` misses -> KeyError; `d[k] = v` stores
+  # a normal entry.
+  let plain = { __index__: fn(i) { 999 } }
+  mut threw = false
+  try { let _ = plain[5] } catch e { threw = true }
+  assert_true(threw)
+  mut store = { __setindex__: fn(k, v) { 0 } }
+  store["z"] = 42
+  assert_eq(store["z"], 42)
 }
 
 test_auto_reflect = fn () {

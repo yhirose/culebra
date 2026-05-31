@@ -5913,7 +5913,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (val.type == Value::Object) {
       const auto& obj = val.to_object();
       if (obj.has(key)) return obj.get(key);
-      if (auto r = try_special(val, &key, "__index__", env)) return *r;
+      // Subscript overloading is a class-instance feature; a plain dict
+      // miss is a KeyError even if it happens to hold an `__index__` value.
+      if (class_tag(val)) {
+        if (auto r = try_special(val, &key, "__index__", env)) return *r;
+      }
       throw CulebraError("KeyError", "key not present");
     }
     // Tuple[i]: same Long-indexed access as Array, but read-only.
@@ -6837,13 +6841,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                 obj.assign(key, new_val);
                 return new_val;
               }
-              // `g[k] op= v` on a user subscript: read via __index__ and
+              // `g[k] op= v` on a class instance: read via __index__ and
               // write back via __setindex__ (matches the JIT, which lowers
               // it to a plain get + set).
-              if (auto cur = try_special(lval, &key, "__index__", env)) {
-                auto new_val = apply_compound_op(*cur, rval, base_op, env);
-                if (try_special2(lval, key, new_val, "__setindex__", env)) {
-                  return new_val;
+              if (class_tag(lval)) {
+                if (auto cur = try_special(lval, &key, "__index__", env)) {
+                  auto new_val = apply_compound_op(*cur, rval, base_op, env);
+                  if (try_special2(lval, key, new_val, "__setindex__", env)) {
+                    return new_val;
+                  }
                 }
               }
               throw CulebraError("KeyError",
@@ -6853,7 +6859,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             // handle assignment to subscripts the sidecar misses.
             if (obj.has(key)) {
               obj.assign(key, rval);
-            } else if (try_special2(lval, key, rval, "__setindex__", env)) {
+            } else if (class_tag(lval) &&
+                       try_special2(lval, key, rval, "__setindex__", env)) {
               // handled by the user method
             } else {
               obj.initialize(key, rval, mut);

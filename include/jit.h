@@ -2785,6 +2785,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
 inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
                                      int64_t key_data, int8_t val_tag,
                                      int64_t val_data) {
+  // Class-instance feature only (the call sites also gate on `proto` to
+  // skip the slot probe for plain dicts; this keeps the helper self-safe).
+  if (!obj->proto) return false;
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               "__setindex__");
   if (!cls) return false;
@@ -2799,10 +2802,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
   if (key_tag == TAG_STRING) {
-    // A class instance may define `__setindex__` to handle keys that
-    // aren't one of its own slots (string key non-refcounted, so only the
-    // consumed value is released).
-    if (obj->find_slot(reinterpret_cast<const char*>(key_data)) ==
+    // Subscript overloading is a class-instance feature (proto != null); a
+    // class instance may define `__setindex__` for keys that aren't one of
+    // its own slots. A plain dict short-circuits on `proto` and sets the
+    // slot directly, so its hot path keeps a single lookup (string key is
+    // non-refcounted, so only the consumed value is released here).
+    if (obj->proto &&
+        obj->find_slot(reinterpret_cast<const char*>(key_data)) ==
             static_cast<size_t>(-1) &&
         _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
       _culebra_value_release_impl(val_tag, val_data);
@@ -2812,16 +2818,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
                                mut, val_tag, val_data, 0, 0);
     return;
   }
-  // Non-String key not already stored: route to __setindex__ before
-  // activating the sidecar (key + value are consumed by this helper's
-  // contract).
-  bool exists = obj->non_string_props &&
-                obj->non_string_props->count(JitValue{key_tag, key_data});
-  if (!exists &&
-      _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
-    _culebra_value_release_impl(key_tag, key_data);
-    _culebra_value_release_impl(val_tag, val_data);
-    return;
+  // A class instance may route a not-yet-stored key to __setindex__ before
+  // the sidecar is activated (key + value are consumed by this helper's
+  // contract). A plain dict skips this probe entirely.
+  if (obj->proto) {
+    bool exists = obj->non_string_props &&
+                  obj->non_string_props->count(JitValue{key_tag, key_data});
+    if (!exists &&
+        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+      _culebra_value_release_impl(key_tag, key_data);
+      _culebra_value_release_impl(val_tag, val_data);
+      return;
+    }
   }
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
@@ -2867,6 +2875,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
                                   int64_t key_data, int8_t* out_tag,
                                   int64_t* out_data) {
+  // Subscript overloading is a class-instance feature (matches interp's
+  // class_tag gate); a plain dict never routes to __index__.
+  if (!obj->proto) return false;
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               key_tag, key_data, "__index__");
   if (!r) return false;
