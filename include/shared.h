@@ -199,6 +199,46 @@ inline std::string json_escape(std::string_view s) {
   throw CulebraError(kind, msg, line, col);
 }
 
+// Canonical arithmetic type error: `1 + "a"`, `nil + nil`, `2 ** "a"`,
+// `1 @ 2`, etc. Single message source for both backends — interp's
+// `arith_dispatch` / `compute_power` and the JIT's typed fast-path and
+// `_arith_*` helpers all route here so the wording stays in lockstep.
+[[noreturn]] inline void throw_arith_type_error(std::string_view op,
+                                                std::string_view lhs,
+                                                std::string_view rhs,
+                                                long line = 0, long col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: cannot apply '" + std::string(op) +
+                         "' to " + std::string(lhs) + " and " +
+                         std::string(rhs),
+                     line, col);
+}
+
+// Canonical comparison type error for `<`, `<=`, `>`, `>=`: cross-type
+// (`1 < "a"`) and same-type-unorderable (`[1] < [2]`, `{} < {}`). Both
+// backends single-source from here.
+[[noreturn]] inline void throw_compare_type_error(std::string_view lhs,
+                                                  std::string_view rhs,
+                                                  long line = 0,
+                                                  long col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: cannot compare " + std::string(lhs) +
+                         " and " + std::string(rhs),
+                     line, col);
+}
+
+// Canonical "expected X, got Y" type error. Used for unary negation
+// (`-"a"` → expected "Long or Float") and any other single-operand type
+// guard shared between backends.
+[[noreturn]] inline void throw_type_mismatch(std::string_view expected,
+                                             std::string_view got,
+                                             long line = 0, long col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: expected " + std::string(expected) +
+                         ", got " + std::string(got),
+                     line, col);
+}
+
 // Integer power by squaring. `exp` must be non-negative; result wraps
 // on overflow (matches the rest of Long arithmetic — no bignum).
 inline long ipow_nonneg(long base, long exp) {

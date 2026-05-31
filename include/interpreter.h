@@ -1359,9 +1359,7 @@ struct Value {
       return cmp(to_double_coerce(), rhs.to_double_coerce());
     }
     if (type != rhs.type) {
-      throw CulebraError("TypeError", std::format(
-          "type error: cannot compare {} and {}",
-          type_name(), rhs.type_name()));
+      throw_compare_type_error(type_name(), rhs.type_name());
     }
     switch (type) {
       case Nil:
@@ -1386,9 +1384,7 @@ struct Value {
       // clean TypeError — never an uncatchable internal abort. Same message
       // as the cross-type branch above; the eval-wrapper backfills location.
       default:
-        throw CulebraError("TypeError", std::format(
-            "type error: cannot compare {} and {}",
-            type_name(), rhs.type_name()));
+        throw_compare_type_error(type_name(), rhs.type_name());
     }
     std::unreachable();
   }
@@ -6443,7 +6439,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto v = eval(*ast.nodes[1], env);
     if (auto r = try_special_unary(v, "__neg__", env)) return *r;
     if (v.type == Value::Float) return Value(-v.get<double>());
-    return Value(v.to_long() * -1);
+    if (v.type != Value::Long)
+      culebra::throw_type_mismatch("Long or Float", v.type_name());
+    return Value(v.get<long>() * -1);
   }
 
   Value eval_unary_not(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
@@ -6650,9 +6648,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // `@` has no numeric meaning, so skip the numeric path entirely;
     // reaching this point means the LHS didn't supply `__matmul__`.
     if (ope == '@' || !lhs.is_numeric() || !rhs.is_numeric()) {
-      throw CulebraError("TypeError", std::format(
-          "type error: cannot apply '{}' to {} and {}",
-          ope, lhs.type_name(), rhs.type_name()));
+      culebra::throw_arith_type_error(std::string_view(&ope, 1),
+                                     lhs.type_name(), rhs.type_name());
     }
     // Integer fast path: both Long.
     if (lhs.type == Value::Long && rhs.type == Value::Long) {
@@ -6702,9 +6699,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                       const std::shared_ptr<Environment>& env) {
     if (auto r = try_special_binop(base, exp, "__pow__", env)) return *r;
     if (!base.is_numeric() || !exp.is_numeric()) {
-      throw CulebraError("TypeError", std::format(
-          "type error: '**' requires numeric operands, got {} and {}",
-          base.type_name(), exp.type_name()));
+      throw_arith_type_error("**", base.type_name(), exp.type_name());
     }
     if (base.type == Value::Long && exp.type == Value::Long) {
       auto a = base.get<long>();
