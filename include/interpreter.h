@@ -5907,10 +5907,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (auto ct = class_tag(key); ct && *ct == "Range") {
       return eval_slice(val, key);
     }
-    // Object[k]: look up the Value-keyed sidecar.
+    // Object[k]: look up the Value-keyed sidecar. A class instance may
+    // define `__index__(key)` to handle subscripts the sidecar misses
+    // (e.g. an integer index into a wrapped collection).
     if (val.type == Value::Object) {
       const auto& obj = val.to_object();
       if (obj.has(key)) return obj.get(key);
+      if (auto r = try_special(val, &key, "__index__", env)) return *r;
       throw CulebraError("KeyError", "key not present");
     }
     // Tuple[i]: same Long-indexed access as Array, but read-only.
@@ -6489,6 +6492,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return try_special(operand, nullptr, special, env);
   }
 
+  // Two-argument special-method dispatch (e.g. `__setindex__(key, value)`).
+  // Returns nullopt if `receiver` isn't an Object carrying a callable
+  // method of this name.
+  std::optional<Value> try_special2(const Value& receiver, const Value& a1,
+                                    const Value& a2, std::string_view special,
+                                    const std::shared_ptr<Environment>& env) {
+    if (receiver.type != Value::Object) return std::nullopt;
+    const auto& obj = receiver.to_object();
+    auto it = obj.properties->find(special);
+    if (it == obj.properties->end()) return std::nullopt;
+    const auto& m = it->second.val;
+    if (m.type != Value::Function) return std::nullopt;
+    auto bound = _wrap_method_with_this(m, receiver);
+    const Value* args[2] = {&a1, &a2};
+    return invoke_user_function(
+        bound, env, 2, [&](size_t i) { return *args[i]; },
+        [&](size_t) -> std::pair<size_t, size_t> { return {0, 0}; }, 0, 0);
+  }
+
   static const char* arith_op_to_special(char ope) {
     switch (ope) {
       case '+': return "__add__";
@@ -6809,17 +6831,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             auto key = eval(postfix, env);
             auto& obj = lval.to_object();
             if (compound) {
-              if (!obj.has(key)) {
-                throw CulebraError("KeyError",
-                    "compound assignment on missing key.");
+              if (obj.has(key)) {
+                auto cur = obj.get(key);
+                auto new_val = apply_compound_op(cur, rval, base_op, env);
+                obj.assign(key, new_val);
+                return new_val;
               }
-              auto cur = obj.get(key);
-              auto new_val = apply_compound_op(cur, rval, base_op, env);
-              obj.assign(key, new_val);
-              return new_val;
+              // `g[k] op= v` on a user subscript: read via __index__ and
+              // write back via __setindex__ (matches the JIT, which lowers
+              // it to a plain get + set).
+              if (auto cur = try_special(lval, &key, "__index__", env)) {
+                auto new_val = apply_compound_op(*cur, rval, base_op, env);
+                if (try_special2(lval, key, new_val, "__setindex__", env)) {
+                  return new_val;
+                }
+              }
+              throw CulebraError("KeyError",
+                  "compound assignment on missing key.");
             }
+            // A class instance may define `__setindex__(key, value)` to
+            // handle assignment to subscripts the sidecar misses.
             if (obj.has(key)) {
               obj.assign(key, rval);
+            } else if (try_special2(lval, key, rval, "__setindex__", env)) {
+              // handled by the user method
             } else {
               obj.initialize(key, rval, mut);
             }

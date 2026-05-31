@@ -1159,6 +1159,25 @@ Example:
     b = Vec.new(3, 4)
     c = (a + b) * 2           # Vec(8, 12)
 
+**Subscripting.** A class instance can define `__index__(key)` and
+`__setindex__(key, value)` so `obj[k]` and `obj[k] = v` delegate to it —
+a user collection wrapper then subscripts like a built-in. These fire
+for keys the object doesn't hold as a direct property (so named-field
+access `obj["field"]` still reads the field); slicing a user type
+(`obj[a..b]`) is not routed through `__index__`. Both backends dispatch
+identically.
+
+```culebra
+class Grid {
+  new()          { this.d = [10, 20, 30] }
+  __index__(i)   { this.d[i] }
+  __setindex__(i, v) { this.d[i] = v }
+}
+let g = Grid.new()
+g[1] = 99
+puts(g[1])                  # => 99
+```
+
 ### Custom string representation (`__str__`)
 
 Defining a 0-arg `__str__` method on an `Object` lets the value

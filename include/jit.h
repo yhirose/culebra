@@ -1590,6 +1590,15 @@ inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 0, nullptr);
 }
 
+inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
+                                        JitValue a1, JitValue a2) {
+  culebra_runtime_value_retain(self.tag, self.data);
+  culebra_runtime_value_retain(a1.tag, a1.data);
+  culebra_runtime_value_retain(a2.tag, a2.data);
+  JitValue args[2] = {a1, a2};
+  return reinterpret_cast<JitFn>(cls->fn_ptr)(cls, self, 2, args);
+}
+
 // Resolve user-defined `hash()` on an Object (Hashable structural
 // conformance). Returns the Long payload on success; nullopt when the
 // method is absent or returns a non-Long value (caller falls back to
@@ -2771,12 +2780,47 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
 // adds a second +1 for the key_order entry. On update / throw it
 // explicitly releases the caller's +1 since the existing stored alias
 // already covers the slot.
+// `obj[key] = value` fallback to a user-defined `__setindex__(key, value)`.
+// Returns true when the method exists (and was invoked), else false.
+inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
+                                     int64_t key_data, int8_t val_tag,
+                                     int64_t val_data) {
+  auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                              "__setindex__");
+  if (!cls) return false;
+  auto r = _culebra_invoke_method2(
+      cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)}, {key_tag, key_data},
+      {val_tag, val_data});
+  _culebra_value_release_impl(r.tag, r.data);  // discard the return value
+  return true;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data) {
   if (key_tag == TAG_STRING) {
+    // A class instance may define `__setindex__` to handle keys that
+    // aren't one of its own slots (string key non-refcounted, so only the
+    // consumed value is released).
+    if (obj->find_slot(reinterpret_cast<const char*>(key_data)) ==
+            static_cast<size_t>(-1) &&
+        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+      _culebra_value_release_impl(val_tag, val_data);
+      return;
+    }
     culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
                                mut, val_tag, val_data, 0, 0);
+    return;
+  }
+  // Non-String key not already stored: route to __setindex__ before
+  // activating the sidecar (key + value are consumed by this helper's
+  // contract).
+  bool exists = obj->non_string_props &&
+                obj->non_string_props->count(JitValue{key_tag, key_data});
+  if (!exists &&
+      _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+    _culebra_value_release_impl(key_tag, key_data);
+    _culebra_value_release_impl(val_tag, val_data);
     return;
   }
   if (!obj->non_string_props) {
@@ -2818,6 +2862,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 // Consumes the caller's +1 to the key on the refcounted (sidecar)
 // path so a Tuple-keyed `obj[k]` read does not leak. TAG_STRING keys
 // are non-refcounted (just borrowed cstrings), so they need no release.
+// `obj[key]` fallback to a user-defined `__index__(key)`. Returns true and
+// writes the (+1 owned) result to out when the method exists, else false.
+inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
+                                  int64_t key_data, int8_t* out_tag,
+                                  int64_t* out_data) {
+  auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                              key_tag, key_data, "__index__");
+  if (!r) return false;
+  *out_tag = r->tag;
+  *out_data = r->data;
+  return true;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data) {
@@ -2825,6 +2882,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   if (key_tag == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
     if (idx == static_cast<size_t>(-1)) {
+      // String keys are borrowed cstrings (non-refcounted) — no release.
+      if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+        return;
+      }
       throw culebra::CulebraError("KeyError", "key not present");
     }
     *out_tag = obj->slots[idx].value.tag;
@@ -2833,12 +2894,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     return;
   }
   if (!obj->non_string_props) {
+    if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+      _culebra_value_release_impl(key_tag, key_data);
+      return;
+    }
     _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("KeyError", "key not present");
   }
   JitValue key{key_tag, key_data};
   auto it = obj->non_string_props->find(key);
   if (it == obj->non_string_props->end()) {
+    if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+      _culebra_value_release_impl(key_tag, key_data);
+      return;
+    }
     _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("KeyError", "key not present");
   }
@@ -10299,6 +10368,15 @@ struct JIT {
           // release below would otherwise underflow the inner array.
           auto receiver = lval;
           lval = compile_index_access(postfix, lval);
+          emit_value_swap_owned(lval, receiver);
+          break;
+        }
+        case "DOT"_: {
+          // Intermediate `.prop` in a chain like `this.d[i] = v`: read the
+          // property (borrowed) and promote to +1, mirroring the INDEX case
+          // so the trailing release doesn't underflow the receiver.
+          auto receiver = lval;
+          lval = compile_property_get(lval, std::string(postfix.token));
           emit_value_swap_owned(lval, receiver);
           break;
         }

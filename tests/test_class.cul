@@ -103,6 +103,36 @@ test_pow_overload = fn () {
   assert_eq(r.n, 12)
 }
 
+# `obj[k]` / `obj[k] = v` delegate to __index__ / __setindex__ on a class
+# instance, so a user collection wrapper subscripts like a built-in.
+test_subscript_overload = fn () {
+  class Grid {
+    new() { this.d = [10, 20, 30] }
+    __index__(i)    { this.d[i] }
+    __setindex__(i, v) { this.d[i] = v }     # exercises this.d[i] = v lvalue
+  }
+  g = Grid.new()
+  assert_eq(g[0], 10)
+  assert_eq(g[2], 30)
+  g[1] = 99
+  assert_eq(g[1], 99)
+  assert_eq(g.d[1], 99)                       # the setter mutated the field
+  g[2] += 5                                   # compound: read __index__, write __setindex__
+  assert_eq(g[2], 35)
+
+  # Non-integer keys route through the same hooks.
+  class Bag {
+    new() { this.m = {} }
+    __index__(k)    { this.m[k] }
+    __setindex__(k, v) { this.m[k] = v }
+  }
+  b = Bag.new()
+  b["x"] = 1
+  b["y"] = 2
+  assert_eq(b["x"], 1)
+  assert_eq(b["y"], 2)
+}
+
 test_auto_reflect = fn () {
   class Vec {
     new(x, y) { this.x = x; this.y = y }
@@ -277,6 +307,7 @@ test_class_independent_instances()
 test_class_chain()
 test_class_match_tag()
 test_op_overload()
+test_subscript_overload()
 test_pow_overload()
 test_auto_reflect()
 test_matmul_overload()
