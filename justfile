@@ -216,9 +216,10 @@ test BACKEND='all': build
     }
 
     # Isolate tests live in a subdir kept out of the `tests/*.cul` interp-vs-JIT
-    # diff glob. All run under interp; `*_jit.cul` additionally run under --jit
-    # (Isolate.spawn is symmetric across backends; Channel/Parallel under --jit
-    # are still pending, so those tests stay interp-only).
+    # diff glob. All run under interp; `*_jit.cul` additionally run under --jit.
+    # Isolate.spawn, Channel, and Parallel are all symmetric across backends now;
+    # the interp-only files (no `_jit` suffix) cover surface that doesn't apply
+    # under --jit (e.g. the runtime mut-capture SendError and the `limit:` kwarg).
     run_isolate() {
         for f in tests/isolate/*.cul; do
             ./build/culebra "$f" > /dev/null

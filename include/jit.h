@@ -87,16 +87,31 @@ struct Shape {
 // the set is bounded by the number of distinct property-name sets
 // the program ever uses (typically tiny — every class instance
 // shares one shape, every {a, b, c} object literal shares one).
+//
+// Deliberately process-global, NOT a per-Runtime substate: a Shape is
+// immutable structural metadata (names + transition tree), the same
+// "shared immutable code" category as the JIT-compiled functions. The
+// property inline caches embedded in that shared code cache `Shape*`
+// values, so isolates running the same code on different threads MUST
+// observe the same Shape pointers — a per-Runtime registry would let one
+// isolate cache a Shape that dies with another isolate's heap (a real
+// heap-use-after-free across worker threads). The mutable Object heap is
+// what's isolated; the shape tree is shared. `transition_add` is the only
+// mutator and is locked so concurrent isolates can intern safely.
 struct ShapeRegistry {
   static ShapeRegistry& instance() {
-    return culebra::runtime_substate<ShapeRegistry>(culebra::kSlotShapeRegistry);
+    static ShapeRegistry inst;
+    return inst;
   }
   Shape* root() { return root_.get(); }
 
   // Return the Shape obtained by adding `name` to `current`'s
   // property set. Cached on `current->add_transitions` so identical
-  // transitions collide on the same Shape pointer.
+  // transitions collide on the same Shape pointer. Locked: only ever
+  // hit on inline-cache miss (rare after warm-up), so the global mutex
+  // costs nothing on the steady-state fast path.
   Shape* transition_add(Shape* current, std::string_view name) {
+    std::lock_guard<std::mutex> lk(mu_);
     auto it = current->add_transitions.find(name);
     if (it != current->add_transitions.end()) return it->second;
     auto next = std::make_unique<Shape>();
@@ -114,6 +129,7 @@ struct ShapeRegistry {
   ShapeRegistry() : root_(std::make_unique<Shape>()) {}
 
  private:
+  std::mutex mu_;
   std::unique_ptr<Shape> root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
 };

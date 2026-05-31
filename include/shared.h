@@ -702,7 +702,9 @@ inline double parse_double_strict(std::string_view s, long line, long col) {
 enum RuntimeSlot : size_t {
   kSlotInterpGc = 0,
   kSlotJitGc,
-  kSlotShapeRegistry,
+  kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
+                       // process-global singleton (see jit.h ShapeRegistry) —
+                       // Shapes are shared immutable metadata, not isolated heap
   kSlotDeferStack,
   kSlotJitHooks,
   kSlotJitModuleTable,

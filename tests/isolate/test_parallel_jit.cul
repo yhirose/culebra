@@ -1,0 +1,54 @@
+# Parallel.map / Parallel.each symmetry: runs under BOTH interp and --jit (C2-c).
+# Covers the symmetric surface (positional/default limit; the `limit:` keyword
+# is interp-only under --jit for now — it only bounds parallelism, not results).
+
+# map: N→N, results in input order
+let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
+
+# positional limit (not the keyword form)
+assert_eq(Parallel.map(xs, |x| x + 100, 1),
+          [101, 102, 103, 104, 105, 106, 107, 108])
+
+# empty array
+assert_eq(Parallel.map([], |x| x), [])
+
+# captured free var + a top-level fn (multifn dispatcher)
+let factor = 10
+fn dbl(n) { return n * 2 }
+assert_eq(Parallel.map([1, 2, 3], |x| dbl(x) * factor), [20, 40, 60])
+
+# structured results
+assert_eq(Parallel.map([1, 2], |x| {n: x, sq: x * x}),
+          [{n: 1, sq: 1}, {n: 2, sq: 4}])
+
+# heavier workload matches the serial result
+fn fib(n) {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+let ns = [10, 12, 14, 16, 18, 20]
+mut serial = []
+for n in ns { serial.push(fib(n)) }
+assert_eq(Parallel.map(ns, |n| fib(n)), serial)
+
+# each: side effects, returns nil
+Parallel.each([1, 2, 3], |x| dbl(x))
+
+# fail-fast: a failing element raises ParallelError
+try {
+  Parallel.map([1, 2, 0, 4], |x| 12 / x)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "ParallelError")
+}
+
+# type errors
+try {
+  Parallel.map(42, |x| x)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+puts("test_parallel_jit: all assertions passed")

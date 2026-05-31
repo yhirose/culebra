@@ -2363,15 +2363,24 @@ inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
   return culebra_jit_channel_new(n, a, 0, 0);
 }
 
-// Parallel.map/each: registered so the namespace exists (drift check), but the
-// worker pool under --jit isn't wired yet — error cleanly.
-inline JitValue _ns_parallel_map(JitValue*, int64_t) {
-  throw culebra::CulebraError("RuntimeError",
-      "Parallel.map is not yet supported under --jit");
+// Parallel.map/each(items, fn, limit = <cap>). limit passed positionally on the
+// slow path; a `limit:` kwarg falls back to the cap (results are unaffected —
+// limit only bounds parallelism).
+inline JitValue _ns_parallel_map(JitValue* a, int64_t n) {
+  if (n < 2) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.map: expected (items, fn)");
+  }
+  long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
+  return jit_parallel_run(a[0], a[1], limit, /*collect=*/true, 0, 0);
 }
-inline JitValue _ns_parallel_each(JitValue*, int64_t) {
-  throw culebra::CulebraError("RuntimeError",
-      "Parallel.each is not yet supported under --jit");
+inline JitValue _ns_parallel_each(JitValue* a, int64_t n) {
+  if (n < 2) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.each: expected (items, fn)");
+  }
+  long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
+  return jit_parallel_run(a[0], a[1], limit, /*collect=*/false, 0, 0);
 }
 inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
   // slab: cmd, cwd, env, stdin

@@ -73,14 +73,18 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
     }
     case TAG_OBJECT: {
       auto* o = reinterpret_cast<JitObject*>(v.data);
-      // Channel endpoints under --jit are blocked: Channel.new returns a tuple,
-      // and a pre-existing JIT bug double-frees refcounted tuple/array
-      // destructure elements (emit_indexed_pattern binds borrowed elements
-      // without retaining, unlike emit_object_pattern — jit.h:11237/11393;
-      // repro `let (a,b)=([1],[2])` corrupts on master too). The endpoint code
-      // below is complete and ASAN-clean once that JIT bug is fixed.
-      if (o->find_slot("__channel_endpoint__") != static_cast<size_t>(-1))
-        sendable::send_error("channels are not yet supported under --jit");
+      // Channel endpoint — the Sendable exception: ship its id + role and bump
+      // the in-flight ref (released after the node is consumed).
+      if (o->find_slot("__channel_endpoint__") != static_cast<size_t>(-1)) {
+        long id = o->slots[o->find_slot("__channel_id__")].value.data;
+        int role = static_cast<int>(
+            o->slots[o->find_slot("__channel_role__")].value.data);
+        chan_bump(id, role, +1);
+        n.kind = K::Channel;
+        n.i = id;
+        n.b = (role == 1);
+        return n;
+      }
       if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
         sendable::send_error("a native handle is not Sendable");
       if (!ctx.visiting.insert(o).second)
@@ -218,7 +222,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       return cv;
     }
     case K::Channel:
-      sendable::send_error("channels are not yet supported under --jit");
+      chan_bump(n.i, n.b ? 1 : 0, +1);  // this rebuilt endpoint's own ref
+      return _jit_make_channel_endpoint(n.i, n.b ? 1 : 0);
   }
   return {TAG_NIL, 0};
 }
@@ -577,20 +582,124 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// Channel.new(cap = 1) -> (tx, rx). DISABLED under --jit until the pre-existing
-// JIT tuple-destructure double-free is fixed (Channel.new returns a tuple, so
-// `let (tx, rx) = Channel.new()` triggers it; repro `let (a,b)=([1],[2])`
-// corrupts on master too — emit_indexed_pattern binds borrowed elements without
-// retaining, jit.h:11237/11393). Registered (drift check) but errors. The
-// endpoint code is complete and ASAN-clean on its own once that bug is fixed.
-inline JitValue culebra_jit_channel_new(int64_t, JitValue*, int64_t line,
-                                        int64_t col) {
-  throw culebra::CulebraError(
-      "RuntimeError", "Channel is not yet supported under --jit", line, col);
+// ===========================================================================
+// JIT Parallel.map / Parallel.each — reuses the backend-neutral ParallelState
+// (SendNode-based) and fail-fast machinery from isolate.h; only the per-element
+// work (deserialize → invoke fn_ptr → serialize) is JIT-specific.
+// ===========================================================================
+
+inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  rt.interrupt_flag = &st->interrupt;
+  try {
+    JitDeCtx dc;
+    JitValue fn = jit_deserialize(st->fn, dc);
+    auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+    while (!st->interrupt.load(std::memory_order_relaxed)) {
+      size_t i = st->next.fetch_add(1, std::memory_order_relaxed);
+      if (i >= st->items.size()) break;
+      try {
+        JitDeCtx idc;
+        JitValue item = jit_deserialize(st->items[i], idc);
+        JitValue r = _culebra_invoke1(cls, item);
+        if (st->collect) {
+          JitSerCtx sc;
+          st->results[i] = jit_serialize(r, sc);
+        }
+        culebra_runtime_value_release(r.tag, r.data);
+      } catch (culebra::CulebraError& e) {
+        parallel_record_error(*st, i, e);
+      } catch (std::exception& e) {
+        parallel_record_error(*st, i,
+            culebra::CulebraError("RuntimeError", e.what()));
+      }
+    }
+  } catch (culebra::CulebraError& e) {
+    parallel_record_error(*st, 0, e);
+  } catch (std::exception& e) {
+    parallel_record_error(*st, 0,
+        culebra::CulebraError("RuntimeError", e.what()));
+  }
 }
 
-inline JitValue _culebra_jit_channel_new_impl(int64_t n, JitValue* args,
-                                              int64_t line, int64_t col) {
+inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
+                                 bool collect, int64_t line, int64_t col) {
+  if (items_v.tag != TAG_ARRAY) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.map/each: first argument must be an Array", line, col);
+  }
+  if (fn_v.tag != TAG_FUNC) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.map/each: second argument must be a function", line, col);
+  }
+  auto* arr = reinterpret_cast<JitArray*>(items_v.data);
+  auto st = std::make_shared<ParallelState>();
+  st->collect = collect;
+  { JitSerCtx sc; st->fn = jit_serialize(fn_v, sc); }
+  st->items.reserve(arr->size);
+  for (size_t i = 0; i < arr->size; i++) {
+    JitSerCtx sc;
+    st->items.push_back(jit_serialize(arr->items[i], sc));
+  }
+  if (arr->size == 0) {
+    release_inflight_channels(st->fn);
+    return collect ? JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(
+                         culebra_runtime_array_new())}
+                   : JitValue{TAG_NIL, 0};
+  }
+  if (collect) st->results.resize(arr->size);
+
+  if (limit < 1) limit = isolate_cap();
+  size_t target = std::min(static_cast<size_t>(limit),
+                           static_cast<size_t>(arr->size));
+  // Workers run on threads only (the JIT multifn tables are thread_local, so an
+  // inline run on the parent thread would pollute its overloads). Each thread
+  // drains the shared queue; one thread still finishes the whole job.
+  std::vector<std::thread> threads;
+  for (size_t w = 0; w < target; w++) {
+    if (g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
+        isolate_cap()) {
+      threads.emplace_back([st] {
+        jit_parallel_worker(st);
+        g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+      });
+    } else {
+      g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+      break;
+    }
+  }
+  if (threads.empty()) {
+    std::thread t([st] { jit_parallel_worker(st); });
+    t.join();
+  } else {
+    for (auto& t : threads) t.join();
+  }
+
+  release_inflight_channels(st->fn);
+  for (const auto& it : st->items) release_inflight_channels(it);
+
+  if (st->failed) {
+    for (const auto& rn : st->results) release_inflight_channels(rn);
+    throw culebra::CulebraError("ParallelError",
+        std::format("Parallel.{}: element[{}] failed: {}",
+                    collect ? "map" : "each", st->err_index, st->err->what()),
+        line, col);
+  }
+  if (!collect) return {TAG_NIL, 0};
+  auto* out = culebra_runtime_array_new();
+  for (const auto& rn : st->results) {
+    JitDeCtx dc;
+    JitValue v = jit_deserialize(rn, dc);
+    release_inflight_channels(rn);
+    culebra_runtime_array_push(out, v.tag, v.data);
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(out)};
+}
+
+// Channel.new(cap = 1) -> (tx, rx).
+inline JitValue culebra_jit_channel_new(int64_t n, JitValue* args,
+                                        int64_t line, int64_t col) {
   long cap = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 1;
   if (cap < 1) {
     throw culebra::CulebraError("ValueError",
