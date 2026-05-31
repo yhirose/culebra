@@ -2970,7 +2970,7 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
-    int8_t* out_tag, int64_t* out_data) {
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
   // String keys: unified with shape access (see object_set_any).
   if (key_tag == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
@@ -2979,7 +2979,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
         return;
       }
-      throw culebra::CulebraError("KeyError", "key not present");
+      throw culebra::CulebraError("KeyError", "key not present", line, col);
     }
     *out_tag = obj->slots[idx].value.tag;
     *out_data = obj->slots[idx].value.data;
@@ -2992,7 +2992,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       return;
     }
     _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("KeyError", "key not present");
+    throw culebra::CulebraError("KeyError", "key not present", line, col);
   }
   JitValue key{key_tag, key_data};
   auto it = obj->non_string_props->find(key);
@@ -3002,7 +3002,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       return;
     }
     _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("KeyError", "key not present");
+    throw culebra::CulebraError("KeyError", "key not present", line, col);
   }
   *out_tag = it->second.value.tag;
   *out_data = it->second.value.data;
@@ -10636,9 +10636,9 @@ struct JIT {
               module_->getOrInsertFunction(
                   rt::object_get_any, builder_.getVoidTy(), ptrTy,
                   builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy,
-                  ptrTy),
+                  ptrTy, builder_.getInt64Ty(), builder_.getInt64Ty()),
               {objPtr, extract_tag(keyVal), extract_data(keyVal),
-               outTag, outData});
+               outTag, outData, current_line_val(), current_column_val()});
           auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
           auto curData =
               builder_.CreateLoad(builder_.getInt64Ty(), outData);
@@ -14607,8 +14607,9 @@ struct JIT {
     emit_call(
         module_->getOrInsertFunction(
             rt::object_get_any, builder_.getVoidTy(), ptrTy, i8Ty, i64Ty,
-            ptrTy, ptrTy),
-        {objPtr, extract_tag(key), extract_data(key), outTag, outData});
+            ptrTy, ptrTy, i64Ty, i64Ty),
+        {objPtr, extract_tag(key), extract_data(key), outTag, outData,
+         current_line_val(), current_column_val()});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
