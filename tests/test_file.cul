@@ -1,0 +1,123 @@
+// Conformance: stdlib File handle (Layer 1, stateful streaming). See
+// docs/stdlib.md §File and the I/O design. Runs on interp / JIT / AOT
+// via `just test`; identical stdout across all three.
+
+let tmpdir_env = Sys.env("TMPDIR")
+let tmp_root = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let p = FS.join(tmp_root, "culebra_file_test.txt")
+if FS.exists(p) { FS.remove(p) }
+
+// --- write / flush / close round-trip ---
+let w = File.open(p, "w")
+w.write("hello\n")
+w.write("world\n")
+w.flush()
+w.close()
+assert_eq(FS.read(p), "hello\nworld\n")
+
+// --- streaming read(): whole remaining content ---
+let r = File.open(p, "r")
+assert_eq(r.read(), "hello\nworld\n")
+r.close()
+
+// --- read(n): at most n bytes from the current position ---
+let r2 = File.open(p, "r")
+assert_eq(r2.read(5), "hello")
+assert_eq(r2.read(1), "\n")
+r2.close()
+
+// --- seek / tell (set / cur / end) ---
+let r3 = File.open(p, "r")
+assert_eq(r3.tell(), 0)
+r3.seek(6)                    // default whence = "set"
+assert_eq(r3.tell(), 6)
+assert_eq(r3.read(5), "world")
+r3.seek(0, "set")
+assert_eq(r3.read(5), "hello")
+r3.seek(-6, "end")            // 6 bytes before end -> "world\n"
+assert_eq(r3.read(5), "world")
+r3.seek(0, "set")
+r3.seek(6, "cur")             // skip "hello\n" relative
+assert_eq(r3.read(5), "world")
+r3.close()
+
+// --- lines(): newline stripped, both \n and \r\n ---
+let crlf = FS.join(tmp_root, "culebra_file_crlf.txt")
+File.open(crlf, "w").write("a\nb\r\nc\rd")
+let collected = []
+for line in File.open(crlf, "r").lines() {
+  collected.push(line)
+}
+assert_eq(collected, ["a", "b", "c", "d"])
+FS.remove(crlf)
+
+// --- lines() with mid-iteration break: dispose closes the handle ---
+let big = FS.join(tmp_root, "culebra_file_big.txt")
+let wb = File.open(big, "w")
+for i in range(0, 100) { wb.write("line{i}\n") }
+wb.close()
+let first_two = []
+for line in File.open(big, "r").lines() {
+  first_two.push(line)
+  if first_two.size() == 2 { break }
+}
+assert_eq(first_two, ["line0", "line1"])
+FS.remove(big)
+
+// --- chunks(n): fixed-size byte chunks ---
+let cf = FS.join(tmp_root, "culebra_file_chunks.txt")
+File.open(cf, "w").write("abcdefg")
+let chunks = []
+for ch in File.open(cf, "r").chunks(3) {
+  chunks.push(ch)
+}
+assert_eq(chunks, ["abc", "def", "g"])
+FS.remove(cf)
+
+// --- File.with: scoped handle, returns the block value, closes after ---
+let n = File.with(p, "r", fn (f) { f.read(5) })
+assert_eq(n, "hello")
+
+// File.with with an explicit `return` in the block (must unwrap, not escape).
+let n2 = File.with(p, "r", fn (f) { return f.read(5) })
+assert_eq(n2, "hello")
+
+// --- append mode ---
+let a = File.open(p, "a")
+a.write("!")
+a.close()
+assert_eq(FS.read(p), "hello\nworld\n!")
+
+// --- close() is idempotent ---
+let c = File.open(p, "r")
+c.close()
+c.close()                     // no-op, no throw
+
+// --- error paths ---
+let e_mode = try { File.open(p, "q"); "no-err" } catch e { e.kind }
+assert_eq(e_mode, "ValueError")
+
+let e_write = try {
+  let rh = File.open(p, "r")
+  rh.write("x")
+  "no-err"
+} catch e { e.kind }
+assert_eq(e_write, "IOError")
+
+let e_closed = try {
+  let ch = File.open(p, "r")
+  ch.close()
+  ch.read()
+  "no-err"
+} catch e { e.kind }
+assert_eq(e_closed, "IOError")
+
+// --- binary safety: NUL byte + multibyte round-trip ---
+let bin = FS.join(tmp_root, "culebra_file_bin.dat")
+let payload = "a\u{0}b日本語\u{0}c"
+File.with(bin, "w", fn (f) { f.write(payload) })
+assert_eq(File.with(bin, "r", fn (f) { f.read() }), payload)
+FS.remove(bin)
+
+FS.remove(p)
+IO.puts("test_file OK")

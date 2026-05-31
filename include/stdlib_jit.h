@@ -1660,6 +1660,155 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// --- File handle (JIT) ---
+// Methods read `_id` (Long) from the handle and operate on the shared
+// side table (culebra::_file_* helpers, defined in stdlib_interp.h). Same
+// method ABI as the Proc handle: self arrives +1 and is released here,
+// except drop (called from the destructor's drop protocol, which manages
+// refcount itself — see _jit_handle_drop).
+CULEBRA_RT_INLINE JitValue _jit_file_read(JitClosure*, JitValue self,
+                                          int64_t n, JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_id");
+  std::string out = (n >= 1 && args[0].tag == TAG_LONG)
+      ? culebra::_file_read_n(id, args[0].data, 0, 0)
+      : culebra::_file_read_all(id, 0, 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_write(JitClosure*, JitValue self,
+                                           int64_t n, JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_id");
+  if (n >= 1 && (args[0].tag == TAG_STRING || args[0].tag == TAG_STRINGVIEW)) {
+    auto sv = _culebra_str_view(args[0].tag, args[0].data);
+    culebra::_file_write(id, sv, 0, 0);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_flush(JitClosure*, JitValue self,
+                                           int64_t, JitValue*) {
+  culebra::_file_flush(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
+                                        "_id"), 0, 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_seek(JitClosure*, JitValue self,
+                                          int64_t n, JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_id");
+  long off = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 0;
+  std::string_view whence = "set";
+  if (n >= 2 && (args[1].tag == TAG_STRING || args[1].tag == TAG_STRINGVIEW)) {
+    whence = _culebra_str_view(args[1].tag, args[1].data);
+  }
+  culebra::_file_seek(id, off, whence, 0, 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_tell(JitClosure*, JitValue self,
+                                          int64_t, JitValue*) {
+  long pos = culebra::_file_tell(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"), 0, 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_LONG, pos};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_close(JitClosure*, JitValue self,
+                                           int64_t, JitValue*) {
+  culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
+                                        "_id"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_drop(JitClosure*, JitValue self,
+                                          int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
+                                        "_id"));
+  return {TAG_NIL, 0};
+}
+
+// lines()/chunks() iterator FastFns. captures: [handle_cell, id_cell]
+// (+ n_cell for chunks). handle_cell keeps the File handle alive so an
+// anonymous `File.open(p).lines()` isn't GC'd before the loop runs.
+inline void _file_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[1]->value.data;
+  std::string out;
+  if (!culebra::_file_getline(id, out, 0, 0)) { *done = true; return; }
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
+}
+inline void _file_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[1]->value.data;
+  int64_t n = cls->captures[2]->value.data;
+  std::string chunk = culebra::_file_read_n(id, n, 0, 0);
+  if (chunk.empty()) { *done = true; return; }
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(chunk));
+}
+
+// Build an iterator over a File handle, adding a `dispose` method that
+// closes the handle so a broken for-in still releases the fd.
+inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_id");
+  culebra_runtime_value_retain(self.tag, self.data);  // iter keeps handle alive
+  auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  JitObject* it;
+  if (chunks) {
+    auto* n_cell = culebra_runtime_cell_new(TAG_LONG, n);
+    it = _iter_wrap_fast<&_file_chunks_fast_fn>({handle_cell, id_cell, n_cell});
+  } else {
+    it = _iter_wrap_fast<&_file_lines_fast_fn>({handle_cell, id_cell});
+  }
+  it->set_or_append("dispose",
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+          _jit_make_handle_method(_jit_file_close, 0))}, false);
+  return it;
+}
+CULEBRA_RT_INLINE JitValue _jit_file_lines(JitClosure*, JitValue self,
+                                           int64_t, JitValue*) {
+  // dispose's close needs the handle; transfer self's +1 into the iterator
+  // build (it retains again), then the iterator owns the keep-alive ref.
+  auto* it = _file_iter_build(self, /*chunks=*/false, 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+CULEBRA_RT_INLINE JitValue _jit_file_chunks(JitClosure*, JitValue self,
+                                            int64_t n, JitValue* args) {
+  int64_t sz = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 0;
+  auto* it = _file_iter_build(self, /*chunks=*/true, sz);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  auto fn = [&](const char* name, auto* f, size_t ar) {
+    h->set_or_append(name,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+            _jit_make_handle_method(f, ar))}, false);
+  };
+  fn("read", _jit_file_read, 0);
+  fn("write", _jit_file_write, 1);
+  fn("flush", _jit_file_flush, 0);
+  fn("seek", _jit_file_seek, 1);
+  fn("tell", _jit_file_tell, 0);
+  fn("lines", _jit_file_lines, 0);
+  fn("chunks", _jit_file_chunks, 1);
+  fn("close", _jit_file_close, 0);
+  fn("drop", _jit_file_drop, 0);
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
@@ -1891,6 +2040,44 @@ inline JitValue _ns_fs_write(JitValue* a, int64_t) {
   culebra_runtime_write_file(_ns_adapt::take_str(a[0]),
                               _ns_adapt::take_str(a[1]), 0, 0);
   return _ns_adapt::v_nil();
+}
+
+// File.open(path, mode="r") -> handle. File.with(path, mode, fn) -> block value.
+inline JitValue _ns_file_open(JitValue* a, int64_t n) {
+  std::string path = _ns_adapt::take_str(a[0]);
+  std::string mode = (n >= 2 && (a[1].tag == TAG_STRING ||
+                                 a[1].tag == TAG_STRINGVIEW))
+      ? std::string(_culebra_str_view(a[1].tag, a[1].data)) : "r";
+  int64_t id = culebra::_file_open(path, mode, 0, 0);
+  return _culebra_file_build_handle(id);
+}
+inline JitValue _ns_file_with(JitValue* a, int64_t n) {
+  std::string path = _ns_adapt::take_str(a[0]);
+  // params: path, mode="r", fn. With 2 positional args, slot 1 is fn.
+  std::string mode = "r";
+  JitValue fnv;
+  if (n >= 3) {
+    if (a[1].tag == TAG_STRING || a[1].tag == TAG_STRINGVIEW)
+      mode = std::string(_culebra_str_view(a[1].tag, a[1].data));
+    fnv = a[2];
+  } else {
+    fnv = a[1];
+  }
+  int64_t id = culebra::_file_open(path, mode, 0, 0);
+  JitValue handle = _culebra_file_build_handle(id);
+  auto* fn = reinterpret_cast<JitClosure*>(fnv.data);
+  culebra_runtime_value_retain(handle.tag, handle.data);  // for the call arg
+  JitValue result;
+  try {
+    result = _culebra_invoke1(fn, handle);
+  } catch (...) {
+    culebra::_file_close(id);
+    culebra_runtime_value_release(handle.tag, handle.data);
+    throw;
+  }
+  culebra::_file_close(id);
+  culebra_runtime_value_release(handle.tag, handle.data);
+  return result;
 }
 
 // Math
@@ -2424,6 +2611,9 @@ inline JitValue _ns_def_zero()  { return {TAG_LONG, 0}; }
 inline JitValue _ns_def_empty_str() {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(""))};
 }
+inline JitValue _ns_def_mode_r() {
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str("r"))};
+}
 
 struct NsMethod {
   const char* ns;
@@ -2478,6 +2668,20 @@ inline const NsParam kFsCopyParams[] = {
 };
 inline const NsParamMeta kFsCopyMeta = {kFsCopyParams, 3, -1, -1};
 
+// File.open(path, mode="r") / File.with(path, mode="r", fn).
+inline const NsParam kFileOpenParams[] = {
+  {"path", false, false, nullptr},
+  {"mode", true,  false, &_ns_def_mode_r},
+};
+inline const NsParamMeta kFileOpenMeta = {kFileOpenParams, 2, -1, -1};
+
+inline const NsParam kFileWithParams[] = {
+  {"path", false, false, nullptr},
+  {"mode", true,  false, &_ns_def_mode_r},
+  {"fn",   false, false, nullptr},
+};
+inline const NsParamMeta kFileWithMeta = {kFileWithParams, 3, -1, -1};
+
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
@@ -2522,6 +2726,9 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "readlink",  1, &_ns_fs_readlink},
   {"FS",     "walk",      1, &_ns_fs_walk},
   {"FS",     "glob",      1, &_ns_fs_glob},
+
+  {"File",   "open",      1, &_ns_file_open, &kFileOpenMeta},
+  {"File",   "with",      2, &_ns_file_with, &kFileWithMeta},
 
   {"Random", "seed",            1, &_ns_random_seed},
   {"Random", "int",             2, &_ns_random_int},
@@ -4342,7 +4549,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash",
-      "Math",    "IO",        "FS",        "_Time",
+      "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc"};
   return names.contains(name);

@@ -25,6 +25,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 #include <iostream>
 #include <limits>
 #include <chrono>
@@ -723,6 +724,158 @@ inline Value make_fs_namespace() {
       false);
 
   return Value(std::move(ns));
+}
+
+// --- File handle side table (file-scope, shared between interp + JIT) ---
+//
+// A File handle is an Object carrying just `_id` (Long); the native
+// std::fstream lives here, keyed by id. The table is per-Runtime (Runtime
+// is thread_local), so handles don't cross isolate/copy boundaries — which
+// matches the concurrency model. close()/drop erase the entry (idempotent:
+// a missing id is a no-op or "closed file" error depending on the op).
+
+struct _FileStream {
+  std::fstream fs;
+  char mode;        // 'r' / 'w' / 'a'
+  bool readable;
+  bool writable;
+};
+
+struct _FileTable {
+  std::unordered_map<int64_t, _FileStream> entries;
+  int64_t next_id = 1;
+};
+
+inline _FileTable& _file_table() {
+  return runtime_substate<_FileTable>(kSlotFileTable);
+}
+
+[[noreturn]] inline void _file_throw(const std::string& what, long line,
+                                     long col, std::string_view kind = "IOError") {
+  throw CulebraError(std::string(kind),
+                     std::format("{} at {}:{}.", what, line, col), line, col);
+}
+
+// Open `path` in `mode` (r/w/a). Returns a fresh handle id. ValueError on
+// bad mode, IOError if the stream can't be opened.
+inline int64_t _file_open(const std::string& path, const std::string& mode,
+                          long line, long col) {
+  std::ios::openmode flags = std::ios::binary;
+  bool readable = false, writable = false;
+  if (mode == "r")      { flags |= std::ios::in;  readable = true; }
+  else if (mode == "w") { flags |= std::ios::out | std::ios::trunc; writable = true; }
+  else if (mode == "a") { flags |= std::ios::out | std::ios::app;   writable = true; }
+  else {
+    _file_throw(std::format("File.open: invalid mode '{}' (expected r/w/a)",
+                            mode), line, col, "ValueError");
+  }
+  auto& tbl = _file_table();
+  int64_t id = tbl.next_id++;
+  auto& slot = tbl.entries[id];
+  slot.fs.open(path, flags);
+  slot.mode = mode[0];
+  slot.readable = readable;
+  slot.writable = writable;
+  if (!slot.fs.is_open()) {
+    tbl.entries.erase(id);
+    _file_throw(std::format("File.open('{}', '{}')", path, mode), line, col);
+  }
+  return id;
+}
+
+// Look up a live stream; IOError if the id was closed.
+inline _FileStream& _file_get(int64_t id, const char* op, long line, long col) {
+  auto& tbl = _file_table();
+  auto it = tbl.entries.find(id);
+  if (it == tbl.entries.end()) {
+    _file_throw(std::format("File.{}: operation on closed file", op), line, col);
+  }
+  return it->second;
+}
+
+inline std::string _file_read_all(int64_t id, long line, long col) {
+  auto& s = _file_get(id, "read", line, col);
+  if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
+  std::string out((std::istreambuf_iterator<char>(s.fs)),
+                  std::istreambuf_iterator<char>());
+  return out;
+}
+
+inline std::string _file_read_n(int64_t id, long n, long line, long col) {
+  auto& s = _file_get(id, "read", line, col);
+  if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
+  if (n < 0) n = 0;
+  std::string buf(static_cast<size_t>(n), '\0');
+  s.fs.read(buf.data(), n);
+  buf.resize(static_cast<size_t>(s.fs.gcount()));
+  return buf;
+}
+
+inline void _file_write(int64_t id, std::string_view data, long line, long col) {
+  auto& s = _file_get(id, "write", line, col);
+  if (!s.writable) _file_throw("File.write: file not opened for writing", line, col);
+  s.fs.write(data.data(), static_cast<std::streamsize>(data.size()));
+  if (s.fs.bad()) _file_throw("File.write: write failed", line, col);
+}
+
+inline void _file_flush(int64_t id, long line, long col) {
+  _file_get(id, "flush", line, col).fs.flush();
+}
+
+inline void _file_seek(int64_t id, long off, std::string_view whence,
+                       long line, long col) {
+  auto& s = _file_get(id, "seek", line, col);
+  std::ios::seekdir dir;
+  if (whence == "set")      dir = std::ios::beg;
+  else if (whence == "cur") dir = std::ios::cur;
+  else if (whence == "end") dir = std::ios::end;
+  else _file_throw(std::format("File.seek: invalid whence '{}' "
+                               "(expected set/cur/end)", whence),
+                   line, col, "ValueError");
+  s.fs.clear();  // clear EOF so seeking past a prior read works
+  if (s.readable) s.fs.seekg(off, dir); else s.fs.seekp(off, dir);
+}
+
+inline long _file_tell(int64_t id, long line, long col) {
+  auto& s = _file_get(id, "tell", line, col);
+  return static_cast<long>(s.readable ? s.fs.tellg() : s.fs.tellp());
+}
+
+// Read one line (newline stripped, handles \n / \r\n / \r). Returns false
+// at end of stream.
+inline bool _file_getline(int64_t id, std::string& out, long line, long col) {
+  auto& s = _file_get(id, "lines", line, col);
+  out.clear();
+  int ch;
+  bool any = false;
+  while ((ch = s.fs.get()) != EOF) {
+    any = true;
+    if (ch == '\n') return true;
+    if (ch == '\r') {
+      if (s.fs.peek() == '\n') s.fs.get();
+      return true;
+    }
+    out.push_back(static_cast<char>(ch));
+  }
+  return any;
+}
+
+inline void _file_close(int64_t id) {
+  _file_table().entries.erase(id);  // idempotent: missing id is a no-op
+}
+
+// Attach a `dispose` method to a lines()/chunks() iterator: closes the
+// handle on for-in exit (incl. break). `self` is captured only to keep the
+// handle Value alive until the loop drains (otherwise the anonymous
+// `File.open(p).lines()` handle would be GC'd before iteration).
+inline void _file_attach_dispose(Value& iter, Value self, int64_t id) {
+  iter.to_object().initialize(
+      "dispose",
+      Value(FunctionValue({}, [self, id](std::shared_ptr<Environment>) {
+        _file_close(id);
+        return Value();
+      })),
+      false);
 }
 
 // --- Time helpers (file-scope, shared between interp + future JIT path) ---
@@ -1650,6 +1803,204 @@ inline void _proc_handle_set(const Value& this_v, std::string_view key,
                              Value val) {
   this_v.to_object().properties->insert_or_assign(
       key, Symbol{std::move(val), true});
+}
+
+// Build a File handle: carries `_id` (Long) into the side table, plus the
+// Reader/Writer/Seekable/Closeable method set. `drop` (GC backstop) and
+// `close` both erase the table entry (idempotent).
+inline Value make_file_handle(int64_t id) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<long>(id)), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+
+  // read(n: Long? = nil) — streaming. nil → rest of file, Long → ≤ n bytes.
+  h.initialize(
+      "read",
+      Value(FunctionValue({{"n", false, ""sv, nullptr, kw_default_nil()}},
+                          [hid, loc](std::shared_ptr<Environment> env) {
+                            long line, col; loc(env, line, col);
+                            const auto& n = env->get("n");
+                            if (n.type == Value::Nil) {
+                              return Value(_file_read_all(hid(env), line, col));
+                            }
+                            return Value(_file_read_n(hid(env), n.to_long(),
+                                                      line, col));
+                          },
+                          "String"sv)),
+      false);
+
+  h.initialize(
+      "write",
+      Value(FunctionValue({{"data", false, "String"sv}},
+                          [hid, loc](std::shared_ptr<Environment> env) {
+                            long line, col; loc(env, line, col);
+                            _file_write(hid(env), env->get("data").to_string(),
+                                        line, col);
+                            return Value();
+                          })),
+      false);
+
+  h.initialize(
+      "flush",
+      Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
+        long line, col; loc(env, line, col);
+        _file_flush(hid(env), line, col);
+        return Value();
+      })),
+      false);
+
+  h.initialize(
+      "seek",
+      Value(FunctionValue(
+          {{"offset", false, "Long"sv},
+           {"whence", false, ""sv, nullptr,
+            std::make_shared<Value>(std::string("set"))}},
+          [hid, loc](std::shared_ptr<Environment> env) {
+            long line, col; loc(env, line, col);
+            _file_seek(hid(env), env->get("offset").to_long(),
+                       env->get("whence").to_string(), line, col);
+            return Value();
+          })),
+      false);
+
+  h.initialize(
+      "tell",
+      Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
+        long line, col; loc(env, line, col);
+        return Value(_file_tell(hid(env), line, col));
+      }, "Long"sv)),
+      false);
+
+  // lines() — line iterator (newline stripped). dispose closes the handle
+  // so a broken for-in still releases the fd.
+  h.initialize(
+      "lines",
+      Value(FunctionValue({}, [hid, loc](std::shared_ptr<Environment> env) {
+        long line, col; loc(env, line, col);
+        int64_t id = hid(env);
+        // Capture the handle Value so the iterator keeps it alive — without
+        // this the anonymous `File.open(p).lines()` handle would be GC'd
+        // (drop → close) before the loop runs.
+        Value self = env->get("this");
+        Value iter = _make_iterator(
+            [self, id, line, col](std::shared_ptr<Environment>) -> std::optional<Value> {
+              std::string out;
+              if (!_file_getline(id, out, line, col)) return _iter_step_done();
+              return _iter_step_value(Value(std::move(out)));
+            });
+        _file_attach_dispose(iter, self, id);
+        return iter;
+      }, "Object"sv)),
+      false);
+
+  // chunks(n) — fixed-size byte chunks. Same dispose contract as lines().
+  h.initialize(
+      "chunks",
+      Value(FunctionValue({{"n", false, "Long"sv}},
+                          [hid, loc](std::shared_ptr<Environment> env) {
+        long line, col; loc(env, line, col);
+        int64_t id = hid(env);
+        long n = env->get("n").to_long();
+        Value self = env->get("this");
+        Value iter = _make_iterator(
+            [self, id, n, line, col](std::shared_ptr<Environment>) -> std::optional<Value> {
+              auto chunk = _file_read_n(id, n, line, col);
+              if (chunk.empty()) return _iter_step_done();
+              return _iter_step_value(Value(std::move(chunk)));
+            });
+        _file_attach_dispose(iter, self, id);
+        return iter;
+      }, "Object"sv)),
+      false);
+
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        _file_close(hid(env));
+        return Value();
+      })),
+      false);
+
+  // GC backstop: close a handle that was never explicitly closed.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        _file_close(hid(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
+inline Value make_file_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  ns.initialize(
+      "open",
+      Value(FunctionValue(
+          {{"path", false, "String"sv},
+           {"mode", false, ""sv, nullptr,
+            std::make_shared<Value>(std::string("r"))}},
+          [](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            int64_t id = _file_open(env->get("path").to_string(),
+                                    env->get("mode").to_string(), line, col);
+            return make_file_handle(id);
+          },
+          "Object"sv)),
+      false);
+
+  // with(path, mode, fn) — scoped open: closes on every exit path, returns
+  // the block's value. The native equivalent of open + defer { close }.
+  ns.initialize(
+      "with",
+      Value(FunctionValue(
+          {{"path", false, "String"sv},
+           {"mode", false, ""sv, nullptr,
+            std::make_shared<Value>(std::string("r"))},
+           {"fn", false, "Function"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            int64_t id = _file_open(env->get("path").to_string(),
+                                    env->get("mode").to_string(), line, col);
+            Value handle = make_file_handle(id);
+            const auto& fn = env->get("fn").to_function();
+            auto call_env = _make_method_call_env(handle, line, col);
+            if (!fn.params->empty()) {
+              call_env->initialize((*fn.params)[0].name, handle, false);
+            }
+            try {
+              Value result;
+              // An explicit `return` in the block surfaces as ReturnValue;
+              // unwrap it like every other call site so the value becomes
+              // File.with's result (matches the JIT path).
+              try {
+                result = fn.eval(call_env);
+              } catch (const ReturnValue& r) {
+                result = r.value;
+              }
+              _file_close(id);
+              return result;
+            } catch (...) {
+              _file_close(id);
+              throw;
+            }
+          })),
+      false);
+
+  return Value(std::move(ns));
 }
 
 // Build the Proc.spawn live handle: data fields `_pid/_out/_err/_done/_result`
@@ -2671,6 +3022,7 @@ inline void setup_built_in_functions(
   env.initialize("Math", make_math_namespace(), false);
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
+  env.initialize("File", make_file_namespace(), false);
   env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);

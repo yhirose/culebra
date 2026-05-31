@@ -706,6 +706,7 @@ enum RuntimeSlot : size_t {
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
   kSlotTestRegistry,
+  kSlotFileTable,
   kRuntimeSlotCount
 };
 
