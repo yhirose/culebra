@@ -2164,6 +2164,29 @@ inline Value make_regex_primitives_namespace() {
                     })),
                 false);
 
+  // find_all_index(pattern, s) -> [Int]: a flat array of byte spans
+  // [s0, e0, s1, e1, ...] — positions only, no strings. Longs are stored
+  // inline in the Array (no per-element heap object), so the whole result is
+  // one allocation regardless of match count.
+  ns.initialize("find_all_index",
+                Value(FunctionValue(
+                    ps,
+                    [](std::shared_ptr<Environment> env) -> Value {
+                      auto re = regex_from_env(env);
+                      std::string s{env->get("s").to_string()};
+                      ArrayValue av;
+                      try {
+                        for (auto& m : re->find_all(s)) {
+                          av.values->push_back(Value(static_cast<long>(m.begin)));
+                          av.values->push_back(Value(static_cast<long>(m.end)));
+                        }
+                      } catch (const regexlib::RegexError& e) {
+                        regex_rethrow(e, env);
+                      }
+                      return Value(std::move(av));
+                    })),
+                false);
+
   // count(pattern, s) -> Long: number of non-overlapping matches, no objects.
   ns.initialize("count",
                 Value(FunctionValue(
@@ -2768,6 +2791,7 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "match(s) { _Regex.match(this._pat, s) } "
     "find_all(s) { _Regex.find_all(this._pat, s) } "
     "find_all_str(s) { _Regex.find_all_str(this._pat, s) } "
+    "find_all_index(s) { _Regex.find_all_index(this._pat, s) } "
     "count(s) { _Regex.count(this._pat, s) } "
     "find_iter(s) { _regex_find_iter(this._pat, s) } "
     // String repl -> native $1/$<name> template; Function repl -> call it

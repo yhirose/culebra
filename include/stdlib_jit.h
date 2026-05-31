@@ -2126,6 +2126,17 @@ inline JitValue _ns_regex_count(JitValue* a, int64_t) {
   return JitValue{TAG_LONG, static_cast<int64_t>(
                                 re->find_all(_ns_adapt::take_str(a[1])).size())};
 }
+// find_all_index(pattern, s) -> [Int]: flat byte spans [s0,e0,s1,e1,...].
+// Longs are inline in the JitArray, so the whole result is one allocation.
+inline JitValue _ns_regex_find_all_index(JitValue* a, int64_t) {
+  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto* arr = culebra_runtime_array_new();
+  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin));
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end));
+  }
+  return _ns_adapt::v_array(arr);
+}
 inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
   std::string out =
@@ -2305,6 +2316,7 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "find_from",   3, &_ns_regex_find_from},
   {"_Regex", "find_all",    2, &_ns_regex_find_all},
   {"_Regex", "find_all_str",2, &_ns_regex_find_all_str},
+  {"_Regex", "find_all_index",2, &_ns_regex_find_all_index},
   {"_Regex", "count",       2, &_ns_regex_count},
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},

@@ -126,7 +126,10 @@ docs: `docs/stdlib.md` + `.ja.md`.
   obj + named obj — ~6 allocations each, mostly redundant for capture-free
   patterns); the engine's matching is minor. `find_all_str` (texts only) and
   `count` (no objects) run **~12× faster** than `find_all` on that workload.
-  Use `find_all` only when you need offsets/groups. (A StringView `value` was
+  `find_all_index(s) -> [Int]` returns flat byte spans `[s0,e0,s1,e1,…]`;
+  Longs are inline in the Array, so the whole result is one allocation (≈ the
+  speed of `count`, ~13×). Use `find_all` only when you need offsets *and*
+  group/named captures together. (A StringView `value` was
   tried first and reverted: in the JIT the view descriptor is itself
   heap-allocated, so it left the alloc count — and the runtime — unchanged.)
 

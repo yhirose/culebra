@@ -61,4 +61,15 @@ assert_eq(Regex.compile('x').count("yyy"), 0)
 let s2 = "the 7 cats 99 dogs"
 assert_eq(Regex.compile('\d+').find_all_str(s2), ["7", "99"])
 
+// --- find_all_index: flat byte spans [s0, e0, s1, e1, ...] ---
+let dd = Regex.compile('\d+')
+assert_eq(dd.find_all_index("a1 b22"), [1, 2, 4, 6])   // "1"@[1,2), "22"@[4,6)
+assert_eq(dd.find_all_index("none"), [])
+// spans agree with the Match start/end from find_all
+let ix = dd.find_all_index(s2)
+let ms = dd.find_all(s2)
+assert_eq(ix[0], ms[0].start)
+assert_eq(ix[1], ms[0].end)
+assert_eq(ix.size(), ms.size() * 2)
+
 puts("test_regex_extras: ok")
