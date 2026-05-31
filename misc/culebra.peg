@@ -317,7 +317,7 @@
   # recognized escapes (\n \r \t \\ \" \{) into their byte values. This
   # also lets '\"' and '\{' appear inside the content without prematurely
   # closing the string or starting an interpolation.
-  INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
+  INTERPOLATED_CONTENT     <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !["{\\] .)+
 
   # Triple-quoted `"""..."""`: multi-line, interpolated like `"..."` but
   # single/double quotes need no escaping (only `"""` closes). Ideal for
@@ -325,7 +325,7 @@
   # `"""` or `{` and still decodes `\X` escapes (use `\{` for a literal
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
-  TRIPLE_CONTENT           <-  ('\\' . / !('"""' / '{' / '\\') .)+
+  TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')

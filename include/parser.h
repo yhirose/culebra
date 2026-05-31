@@ -339,7 +339,10 @@ const auto grammar_ = R"(
   # recognized escapes (\n \r \t \\ \" \{) into their byte values. This
   # also lets '\"' and '\{' appear inside the content without prematurely
   # closing the string or starting an interpolation.
-  INTERPOLATED_CONTENT     <-  ('\\' . / !["{\\] .)+
+  # `\u{...}` is matched as one unit *before* the bare-`{` interpolation
+  # rule so its brace isn't read as an INTERP_EXPR opener. The decoder
+  # validates the hex/range; the grammar just delimits the token.
+  INTERPOLATED_CONTENT     <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !["{\\] .)+
 
   # Triple-quoted `"""..."""`: multi-line, interpolated like `"..."` but
   # single/double quotes need no escaping (only `"""` closes). Ideal for
@@ -347,7 +350,7 @@ const auto grammar_ = R"(
   # `"""` or `{` and still decodes `\X` escapes (use `\{` for a literal
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
-  TRIPLE_CONTENT           <-  ('\\' . / !('"""' / '{' / '\\') .)+
+  TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')
@@ -413,8 +416,86 @@ inline peg::parser& get_parser() {
   return parser;
 }
 
+// Append `cp` to `out` as UTF-8 (1–4 bytes). Caller guarantees
+// cp <= 0x10FFFF and not a surrogate.
+inline void _append_utf8(std::string& out, uint32_t cp) {
+  if (cp < 0x80) {
+    out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+}
+
+inline int _hex_val(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// `\xHH` — exactly two hex digits → one raw byte (0x00–0xFF). `i` points
+// at the backslash; returns the index of the last consumed char.
+inline size_t decode_hex_byte(std::string_view raw, size_t i, std::string& out) {
+  if (i + 3 >= raw.size() ||
+      _hex_val(raw[i + 2]) < 0 || _hex_val(raw[i + 3]) < 0) {
+    throw CulebraError("SyntaxError",
+        "invalid \\x escape: expected two hex digits (\\xHH).");
+  }
+  out += static_cast<char>(_hex_val(raw[i + 2]) * 16 + _hex_val(raw[i + 3]));
+  return i + 3;
+}
+
+// `\u{H..H}` — 1–6 hex digits in braces → a Unicode scalar value, UTF-8
+// encoded. Rejects > U+10FFFF and surrogates (U+D800–U+DFFF). `i` points
+// at the backslash; returns the index of the closing brace.
+inline size_t decode_unicode_escape(std::string_view raw, size_t i,
+                                     std::string& out) {
+  if (i + 2 >= raw.size() || raw[i + 2] != '{') {
+    throw CulebraError("SyntaxError",
+        "invalid \\u escape: expected \\u{H..H} with braces.");
+  }
+  size_t j = i + 3;
+  uint32_t cp = 0;
+  int digits = 0;
+  while (j < raw.size() && raw[j] != '}') {
+    int v = _hex_val(raw[j]);
+    if (v < 0) {
+      throw CulebraError("SyntaxError",
+          "invalid \\u{...} escape: non-hex digit.");
+    }
+    cp = cp * 16 + static_cast<uint32_t>(v);
+    digits++;
+    if (digits > 6) {
+      throw CulebraError("SyntaxError",
+          "invalid \\u{...} escape: more than 6 hex digits.");
+    }
+    j++;
+  }
+  if (j >= raw.size() || digits == 0) {
+    throw CulebraError("SyntaxError",
+        "invalid \\u{...} escape: empty or unterminated.");
+  }
+  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+    throw CulebraError("SyntaxError", std::format(
+        "invalid \\u{{...}} escape: U+{:X} is not a Unicode scalar value.",
+        cp));
+  }
+  _append_utf8(out, cp);
+  return j;  // points at '}'
+}
+
 // Decode escape sequences in an INTERPOLATED_CONTENT token. Recognized:
-//   \n \r \t \\ \" \{
+//   \n \r \t \\ \" \{ \xHH \u{H..H}
 // Unknown '\X' is preserved literally as backslash + char (Python's
 // permissive default — keeps the string round-trippable rather than
 // silently dropping the escape introducer).
@@ -437,6 +518,8 @@ inline std::string decode_interpolated_content(std::string_view raw) {
         case '\\': out += '\\'; i++; continue;
         case '"':  out += '"';  i++; continue;
         case '{':  out += '{';  i++; continue;
+        case 'x':  i = decode_hex_byte(raw, i, out); continue;
+        case 'u':  i = decode_unicode_escape(raw, i, out); continue;
         default:
           out += '\\';
           out += n;

@@ -117,8 +117,11 @@ contextual and only recognized after `:` or `->`.
 * Interpolated string: `"...{expr}..."`. `{expr}` embeds any expression.
   Recognized escape sequences: `\n` `\r` `\t` `\\` `\"` `\{` (use `\{`
   to embed a literal `{` without starting an interpolation; raw `}` is
-  fine since it's only special as the interpolation terminator). An
-  unknown `\X` is preserved as the two literal characters `\` and `X`.
+  fine since it's only special as the interpolation terminator),
+  `\xHH` (exactly two hex digits → one raw byte, `0x00`–`0xFF`), and
+  `\u{H..H}` (1–6 hex digits → a Unicode scalar value, UTF-8 encoded;
+  rejects values above `U+10FFFF` and the surrogate range). An unknown
+  `\X` is preserved as the two literal characters `\` and `X`.
 * Boolean: `true`, `false`.
 * Nil: `nil`.
 
@@ -708,17 +711,23 @@ and concatenated with the surrounding text.
 
 Escape sequences (in plain-text segments only):
 
-| escape | byte               |
-| ------ | ------------------ |
-| `\n`   | newline (0x0A)     |
-| `\r`   | carriage return    |
-| `\t`   | tab                |
-| `\\`   | backslash          |
-| `\"`   | double quote       |
-| `\{`   | literal `{` (does not start an interpolation) |
+| escape     | byte / codepoint                                 |
+| ---------- | ------------------------------------------------ |
+| `\n`       | newline (0x0A)                                   |
+| `\r`       | carriage return                                  |
+| `\t`       | tab                                              |
+| `\\`       | backslash                                        |
+| `\"`       | double quote                                     |
+| `\{`       | literal `{` (does not start an interpolation)    |
+| `\xHH`     | one raw byte from two hex digits (`0x00`–`0xFF`) |
+| `\u{H..H}` | a Unicode scalar value (1–6 hex digits), UTF-8 encoded |
 
-A `}` does not need escaping outside of an interpolation. An unknown
-`\X` is preserved unchanged as two characters (`\` and `X`).
+`\xHH` writes a raw byte — it can produce bytes that aren't valid UTF-8
+(e.g. `"\xff"`), since a `String` is a byte string. `\u{...}` writes a
+codepoint: it rejects values above `U+10FFFF` and the surrogate range
+`U+D800`–`U+DFFF` (not Unicode scalar values). A `}` does not need
+escaping outside of an interpolation. An unknown `\X` is preserved
+unchanged as two characters (`\` and `X`).
 
 ### Format specs
 
