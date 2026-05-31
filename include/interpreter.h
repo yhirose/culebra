@@ -6312,8 +6312,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           // `expr!!` — non-null assertion: nil raises NilError, any
           // other value passes through unchanged.
           if (val.type == Value::Nil) {
-            throw CulebraError("NilError", std::format(
-                "`!!` applied to nil at {}:{}.", postfix.line, postfix.column));
+            throw CulebraError("NilError", "`!!` applied to nil",
+                               postfix.line, postfix.column);
           }
           break;
         default:
