@@ -2168,6 +2168,17 @@ inline std::string Value::str_object() const {
   StrGuard guard(key);
   if (guard.already) return "{...}";
   const auto& properties = *obj.properties;
+  // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
+  // `1..=3`) rather than as a raw object.
+  if (auto rt = class_tag(*this); rt && *rt == "Range") {
+    const auto& s_v = obj.get("start");
+    const auto& e_v = obj.get("end");
+    std::string out;
+    if (s_v.type != Value::Nil) out += s_v.str();
+    out += obj.get("inclusive").to_bool() ? "..=" : "..";
+    if (e_v.type != Value::Nil) out += e_v.str();
+    return out;
+  }
   // If the object carries a String `class:` tag, hoist it as a
   // prefix so `{class: 'Matrix', rows: 2}` prints as
   // `Matrix {rows: 2}`. The `class` entry is then skipped in the
@@ -2317,6 +2328,20 @@ inline Value _make_iterator(AdvanceFn&& advance) {
       })),
       false);
   return Value(std::move(iter_obj));
+}
+
+// A range value (`a..b`). Represented as a tagged Object carrying its
+// bounds so it is a first-class storable/passable value; an absent
+// endpoint (open-ended range) is stored as Nil. Slicing reads the bounds
+// directly; for-in builds a bounded iterator (see _get_iterator).
+inline Value _make_range(std::optional<long> start, std::optional<long> end,
+                         bool inclusive) {
+  ObjectValue r;
+  r.initialize("class", Value(std::string("Range")), false);
+  r.initialize("start", start ? Value(*start) : Value(), false);
+  r.initialize("end", end ? Value(*end) : Value(), false);
+  r.initialize("inclusive", Value(inclusive), false);
+  return Value(std::move(r));
 }
 
 // Build an iterator that yields elements of a shared Value vector in
@@ -2612,6 +2637,26 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
 // the given source location if the value is not iterable.
 inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
   Value iter_fn;
+  // A range value iterates start..end (an open start or end has no defined
+  // iteration bound, so an unbounded range is not iterable).
+  if (auto ct = class_tag(iterable); ct && *ct == "Range") {
+    const auto& obj = iterable.to_object();
+    const auto& s = obj.get("start");
+    const auto& e = obj.get("end");
+    if (s.type == Value::Nil || e.type == Value::Nil) {
+      throw CulebraError("TypeError", std::format(
+          "cannot iterate an unbounded range at {}:{}.", line, col),
+          static_cast<long>(line), static_cast<long>(col));
+    }
+    long end = e.to_long() + (obj.get("inclusive").to_bool() ? 1 : 0);
+    auto current = std::make_shared<long>(s.to_long());
+    return _make_iterator([current, end](std::shared_ptr<Environment>) {
+      if (*current >= end) return _iter_step_done();
+      auto v = Value(*current);
+      (*current)++;
+      return _iter_step_value(std::move(v));
+    });
+  }
   if (iterable.type == Value::String ||
       iterable.type == Value::StringView) {
     const auto& methods = string_builtins();
@@ -4447,6 +4492,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_bin_expression(ast, env);
       case "RANGE"_:
         return eval_range(ast, env);
+      case "RANGE_OPERATOR"_:
+        // Bare `..` (full range) — the AST optimizer collapses the
+        // operator-only RANGE to a lone RANGE_OPERATOR node.
+        return _make_range(std::nullopt, std::nullopt, ast.token == "..=");
       case "DESTRUCTURE_ASSIGN"_:
         return eval_destructure_assign(ast, env);
       case "POWER"_:
@@ -5851,12 +5900,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_array_reference(const peg::Ast& ast,
                              const std::shared_ptr<Environment>& env,
                              const Value& val) {
-    // `seq[a..b]` / `seq[a..=b]`: a RANGE index slices instead of doing a
-    // point lookup. Array -> shallow copy, String/StringView -> byte-unit
-    // zero-copy view, Tuple -> new tuple. (Open-ended ranges are Phase 1b.)
-    using namespace peg::udl;
-    if (ast.tag == "RANGE"_) return eval_slice(ast, env, val);
     auto key = eval(ast, env);
+    // `seq[r]` where r is a range value slices instead of a point lookup:
+    // Array -> shallow copy, String/StringView -> byte-unit zero-copy view,
+    // Tuple -> new tuple. Works for literal (`xs[1..3]`) and stored ranges.
+    if (auto ct = class_tag(key); ct && *ct == "Range") {
+      return eval_slice(val, key);
+    }
     // Object[k]: look up the Value-keyed sidecar.
     if (val.type == Value::Object) {
       const auto& obj = val.to_object();
@@ -5886,29 +5936,34 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return val;
   }
 
-  // `seq[a..b]` slicing. Endpoints are evaluated as Longs (a RANGE node
-  // carries start/op/end children, same shape as eval_range); bounds are
-  // normalized + clamped by _slice_bounds. String/StringView yield a
-  // byte-unit zero-copy view; Array a shallow copy; Tuple a new tuple.
-  Value eval_slice(const peg::Ast& ast,
-                   const std::shared_ptr<Environment>& env,
-                   const Value& val) {
-    long lo = eval(*ast.nodes[0], env).to_long();
-    long hi = eval(*ast.nodes[2], env).to_long();
-    bool inclusive = ast.nodes[1]->token == "..=";
+  // Slice `val` by a range value. An open start defaults to 0, an open end
+  // to the sequence length; bounds are normalized + clamped by
+  // _slice_bounds. String/StringView yield a byte-unit zero-copy view;
+  // Array a shallow copy; Tuple a new tuple.
+  Value eval_slice(const Value& val, const Value& range) {
+    const auto& robj = range.to_object();
+    const auto& sv = robj.get("start");
+    const auto& ev = robj.get("end");
+    bool open_end = ev.type == Value::Nil;
+    bool inclusive = !open_end && robj.get("inclusive").to_bool();
+    long lo = sv.type == Value::Nil ? 0 : sv.to_long();
+    auto bounds = [&](size_t len) {
+      long hi = open_end ? static_cast<long>(len) : ev.to_long();
+      return _slice_bounds(lo, hi, inclusive, len);
+    };
     if (val.is_stringlike()) {
       auto [src, base] = val.share_source_and_view();
-      auto [s, e] = _slice_bounds(lo, hi, inclusive, base.size());
+      auto [s, e] = bounds(base.size());
       return Value(src, base.substr(s, e - s));
     }
     if (val.type == Value::Tuple) {
       const auto& elems = *val.get<TupleValue>().elements;
-      auto [s, e] = _slice_bounds(lo, hi, inclusive, elems.size());
+      auto [s, e] = bounds(elems.size());
       return Value(TupleValue(
           std::vector<Value>(elems.begin() + s, elems.begin() + e)));
     }
     const auto& arr = val.to_array();
-    auto [s, e] = _slice_bounds(lo, hi, inclusive, arr.values->size());
+    auto [s, e] = bounds(arr.values->size());
     ArrayValue out;
     out.values->assign(arr.values->begin() + s, arr.values->begin() + e);
     return Value(std::move(out));
@@ -6383,18 +6438,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // allocation. `to_long` throws `type error` on Float or non-numeric
   // operands (matching the JIT's `value_to_long` guard); range literals
   // are stricter than Math.range on purpose.
+  // A RANGE node carries `[start?] OP [end?]` — either endpoint may be
+  // omitted (open-ended). The operator child is at index 0 when there is
+  // no start, else index 1; an end follows it when present. (The bare `..`
+  // form collapses to a lone RANGE_OPERATOR node, handled in eval().)
   Value eval_range(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
-    auto start = eval(*ast.nodes[0], env).to_long();
-    auto end = eval(*ast.nodes[2], env).to_long();
-    if (ast.nodes[1]->token == "..=") end++;
-    auto current = std::make_shared<long>(start);
-    return _make_iterator(
-        [current, end](std::shared_ptr<Environment>) {
-          if (*current >= end) return _iter_step_done();
-          auto v = Value(*current);
-          (*current)++;
-          return _iter_step_value(std::move(v));
-        });
+    using namespace peg::udl;
+    size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
+    bool has_start = op_idx == 1;
+    bool has_end = op_idx + 1 < ast.nodes.size();
+    std::optional<long> start, end;
+    if (has_start) start = eval(*ast.nodes[0], env).to_long();
+    if (has_end) end = eval(*ast.nodes[op_idx + 1], env).to_long();
+    return _make_range(start, end, ast.nodes[op_idx]->token == "..=");
   }
 
   // Shared special-method dispatch core. Arity 0 (unary) or 1 (binary);

@@ -642,6 +642,14 @@ struct JitStringView {
 };
 static_assert(sizeof(JitStringView) == 16, "JitStringView layout drift");
 
+// `obj.k` as a JitValue, or Nil when the key is absent. Used where a
+// missing slot should read as Nil (e.g. a range value's optional bounds).
+inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
+  auto i = obj->find_slot(k);
+  return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
+                                      : obj->slots[i].value;
+}
+
 // Internal helper (C++ - not extern C, but inline to satisfy ODR)
 inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   switch (type) {
@@ -723,6 +731,24 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       auto* obj = reinterpret_cast<JitObject*>(data);
       _JitStrGuard guard(obj);
       if (guard.already) return "{...}";
+      // Range value: print in source form (`1..3`, `2..`, `..3`, `..`,
+      // `1..=3`) rather than as a raw object (matches the interpreter).
+      {
+        auto cidx = obj->find_slot("class");
+        if (cidx != static_cast<size_t>(-1) &&
+            obj->slots[cidx].value.tag == TAG_STRING &&
+            std::string_view(reinterpret_cast<const char*>(
+                obj->slots[cidx].value.data)) == "Range") {
+          auto sv = _jit_slot_or_nil(obj, "start");
+          auto ev = _jit_slot_or_nil(obj, "end");
+          auto iv = _jit_slot_or_nil(obj, "inclusive");
+          std::string out;
+          if (sv.tag != TAG_NIL) out += std::to_string(sv.data);
+          out += (iv.tag == TAG_BOOL && iv.data != 0) ? "..=" : "..";
+          if (ev.tag != TAG_NIL) out += std::to_string(ev.data);
+          return out;
+        }
+      }
       // Hoist a String `class:` tag to a prefix (matches the tree
       // interpreter's str_object formatting).
       std::string s;
@@ -2251,19 +2277,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_slice(
   return r;
 }
 
-// `seq[a..b]` / `seq[a..=b]` slicing. Bounds are normalized by the shared
-// _slice_bounds (so JIT/AOT stay symmetric with the interpreter): negative
-// indices resolve from the end, `..=` includes the end, then both clamp to
-// [0,len] with start>end yielding an empty window. Array/Tuple -> shallow
-// JitArray copy (tag preserved so a Tuple slice stays a Tuple); String/
-// StringView -> byte-unit view into the same leak-bounded bytes. Other tags
-// raise a TypeError at line:col.
+// Slice `tag:data` by the range value `range_data` (a `{class:"Range",
+// start, end, inclusive}` JitObject; an open start/end is stored Nil).
+// Bounds are normalized by the shared _slice_bounds (so JIT/AOT stay
+// symmetric with the interpreter): negative indices resolve from the end,
+// an open start is 0 and an open end the length, `..=` includes the end,
+// then both clamp to [0,len] with start>end yielding empty. Array/Tuple ->
+// shallow JitArray copy (tag preserved); String/StringView -> byte-unit
+// view into the same leak-bounded bytes. Other tags raise a TypeError.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
-    int8_t tag, int64_t data, int64_t lo, int64_t hi, int8_t inclusive,
+    int8_t tag, int64_t data, int64_t range_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  auto* ro = reinterpret_cast<JitObject*>(range_data);
+  auto sv = _jit_slot_or_nil(ro, "start");
+  auto ev = _jit_slot_or_nil(ro, "end");
+  auto iv = _jit_slot_or_nil(ro, "inclusive");
+  bool open_end = ev.tag == TAG_NIL;
+  bool inclusive = !open_end && iv.tag == TAG_BOOL && iv.data != 0;
+  long lo = sv.tag == TAG_NIL ? 0 : sv.data;
   if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
     auto* src = reinterpret_cast<JitArray*>(data);
-    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive != 0, src->size);
+    long hi = open_end ? static_cast<long>(src->size) : ev.data;
+    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, src->size);
     auto* r = culebra_runtime_array_slice(src, static_cast<int64_t>(s),
                                           static_cast<int64_t>(e - s));
     *out_tag = tag;
@@ -2272,7 +2307,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
   }
   if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
     auto view = _culebra_str_view(tag, data);
-    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive != 0, view.size());
+    long hi = open_end ? static_cast<long>(view.size()) : ev.data;
+    auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, view.size());
     auto* v = _culebra_heap_view(view.data() + s, e - s);
     *out_tag = TAG_STRINGVIEW;
     *out_data = reinterpret_cast<int64_t>(v);
@@ -3117,6 +3153,45 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   }
 
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+}
+
+// Build a range value `{class:"Range", start, end, inclusive}`. An absent
+// endpoint (open-ended range) is stored Nil. Mirrors the interpreter's
+// _make_range so both backends represent a range identically. Returns a
+// fresh +1 JitObject.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
+    int8_t has_start, int64_t start, int8_t has_end, int64_t end,
+    int8_t inclusive) {
+  static const char kRange[] = "Range";
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "class", false, TAG_STRING,
+                             reinterpret_cast<int64_t>(kRange), 0, 0);
+  culebra_runtime_object_set(o, "start", false,
+                             has_start ? TAG_LONG : TAG_NIL,
+                             has_start ? start : 0, 0, 0);
+  culebra_runtime_object_set(o, "end", false, has_end ? TAG_LONG : TAG_NIL,
+                             has_end ? end : 0, 0, 0);
+  culebra_runtime_object_set(o, "inclusive", false, TAG_BOOL,
+                             inclusive ? 1 : 0, 0, 0);
+  return o;
+}
+
+// True iff `tag:data` is a range value (an Object carrying class:"Range").
+// Cheap: a non-Object short-circuits on the tag before any slot scan.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_range(
+    int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return 0;
+  auto* o = reinterpret_cast<JitObject*>(data);
+  auto idx = o->find_slot("class");
+  if (idx == static_cast<size_t>(-1) ||
+      o->slots[idx].value.tag != TAG_STRING) {
+    return 0;
+  }
+  return std::string_view(
+             reinterpret_cast<const char*>(o->slots[idx].value.data)) ==
+                 "Range"
+             ? 1
+             : 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
@@ -5071,8 +5146,33 @@ inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad);
 // Coerce any iterable (Array / Object-with-iter / already-iterator) into an
 // iterator Object Value. Returns a fresh +1 (caller owns the result).
 // Throws `type error at line:col.` on non-iterable input.
+// Forward decl: a range value iterates via the same fast iterator as
+// math_range, which is defined further down.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
+    int64_t start, int64_t end, int64_t step, int64_t line, int64_t col);
+
+// Build a bounded iterator over a range value `data`. An open start or end
+// has no defined iteration bound, so an unbounded range is not iterable.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
+    int64_t data, int64_t line, int64_t col) {
+  auto* o = reinterpret_cast<JitObject*>(data);
+  auto sv = _jit_slot_or_nil(o, "start");
+  auto ev = _jit_slot_or_nil(o, "end");
+  auto iv = _jit_slot_or_nil(o, "inclusive");
+  if (sv.tag == TAG_NIL || ev.tag == TAG_NIL) {
+    throw culebra::CulebraError("TypeError", std::format(
+        "cannot iterate an unbounded range at {}:{}.", line, col), line, col);
+  }
+  int64_t end = ev.data + ((iv.tag == TAG_BOOL && iv.data != 0) ? 1 : 0);
+  return culebra_runtime_math_range(sv.data, end, 1, line, col);
+}
+
 inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                       int64_t col) {
+  if (culebra_runtime_is_range(t, d)) {
+    auto* it = culebra_runtime_range_iter(d, line, col);
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+  }
   if (t == TAG_ARRAY || t == TAG_TUPLE) {
     auto* wrapped =
         _iter_from_array_obj(t, d);
@@ -6289,6 +6389,9 @@ inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
 inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";
 inline constexpr auto array_slice         = "culebra_runtime_array_slice";
 inline constexpr auto slice               = "culebra_runtime_slice";
+inline constexpr auto make_range          = "culebra_runtime_make_range";
+inline constexpr auto is_range            = "culebra_runtime_is_range";
+inline constexpr auto range_iter          = "culebra_runtime_range_iter";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
 // Tuple allocates a JitArray and returns it tagged TAG_TUPLE; storage
@@ -9365,6 +9468,9 @@ struct JIT {
         return compile_destructure_assign(ast);
       case "RANGE"_:
         return compile_range(ast);
+      case "RANGE_OPERATOR"_:
+        // Bare `..` (full range) collapses to a lone RANGE_OPERATOR node.
+        return emit_make_range(nullptr, nullptr, ast.token == "..=");
       case "CLASS_DECL"_:
         return compile_class_decl(ast);
       case "ENUM_DECL"_:
@@ -10401,16 +10507,36 @@ struct JIT {
 
   // `a..b` / `a..=b`: lazy integer iterator (same runtime object as
   // Math.range). Inclusive form bumps the end by one at compile time.
+  // A RANGE node carries `[start?] OP [end?]` — either endpoint may be
+  // omitted (open-ended). The operator child is at index 0 when there is
+  // no start, else index 1. Builds a `{class:"Range",...}` value (the bare
+  // `..` form is handled by the RANGE_OPERATOR case in compile()).
   llvm::Value* compile_range(const peg::Ast& ast) {
-    auto start = value_to_long(compile(*ast.nodes[0]));
-    auto end = value_to_long(compile(*ast.nodes[2]));
-    if (ast.nodes[1]->token == "..=") {
-      end = builder_.CreateAdd(end, builder_.getInt64(1), "range.incl");
-    }
-    auto obj = builder_.CreateCall(
-        module_->getFunction(rt::math_range),
-        {start, end, builder_.getInt64(1),
-         current_line_val(), current_column_val()});
+    using namespace peg::udl;
+    size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
+    bool has_start = op_idx == 1;
+    bool has_end = op_idx + 1 < ast.nodes.size();
+    llvm::Value* startV =
+        has_start ? value_to_long(compile(*ast.nodes[0])) : nullptr;
+    llvm::Value* endV =
+        has_end ? value_to_long(compile(*ast.nodes[op_idx + 1])) : nullptr;
+    return emit_make_range(startV, endV, ast.nodes[op_idx]->token == "..=");
+  }
+
+  // Build a range value via culebra_runtime_make_range. A null start/end
+  // is an open endpoint (passed as has_*=false).
+  llvm::Value* emit_make_range(llvm::Value* startV, llvm::Value* endV,
+                               bool inclusive) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto obj = emit_call(
+        module_->getOrInsertFunction(
+            rt::make_range, llvm::PointerType::get(ctx_, 0), i8Ty, i64Ty,
+            i8Ty, i64Ty, i8Ty),
+        {builder_.getInt8(startV ? 1 : 0),
+         startV ? startV : builder_.getInt64(0),
+         builder_.getInt8(endV ? 1 : 0), endV ? endV : builder_.getInt64(0),
+         builder_.getInt8(inclusive ? 1 : 0)});
     return make_object(obj);
   }
 
@@ -11858,6 +11984,26 @@ struct JIT {
     // pays zero overhead vs the prior compiler output.
     builder_.SetInsertPoint(objectBB);
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
+    // A range value iterates start..end (errors if unbounded). It carries
+    // no `iter` property, so it must be handled before the keys fallback.
+    auto rangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.range", fn);
+    auto notRangeBB = llvm::BasicBlock::Create(ctx_, "for.obj.notrange", fn);
+    builder_.CreateCondBr(emit_is_range(iterable), rangeBB, notRangeBB);
+
+    builder_.SetInsertPoint(rangeBB);
+    auto rangeIt = emit_call(
+        module_->getOrInsertFunction(rt::range_iter, ptrTy, builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {data, current_line_val(), current_column_val()});
+    llvm::Value* rangeIterVal = llvm::UndefValue::get(valueType_);
+    rangeIterVal = builder_.CreateInsertValue(
+        rangeIterVal, builder_.getInt8(TAG_OBJECT), {0});
+    rangeIterVal = builder_.CreateInsertValue(
+        rangeIterVal, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()),
+        {1});
+    compile_for_protocol_loop(rangeIterVal, id, body, endBB);
+
+    builder_.SetInsertPoint(notRangeBB);
     auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
     auto hasIter = emit_object_has(objPtr, iterKeyPtr);
     auto keysBB = llvm::BasicBlock::Create(ctx_, "for.obj.keys", fn);
@@ -14127,6 +14273,14 @@ struct JIT {
 
   llvm::Value* compile_index_access(const peg::Ast& idxAst,
                                     llvm::Value* arr) {
+    return emit_point_index(arr, compile(idxAst));
+  }
+
+  // Point index `arr[key]` — Array/Tuple by Long, Object by Value key.
+  // Returns a borrowed slot value (the caller promotes it). The Object path
+  // (object_get_any) consumes `key`; the Array/Tuple path takes a Long
+  // (non-refcounted), so callers must NOT release `key` themselves.
+  llvm::Value* emit_point_index(llvm::Value* arr, llvm::Value* key) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
@@ -14161,11 +14315,10 @@ struct JIT {
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "idx.out.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "idx.out.data");
 
-    // Array path: existing behavior — index by Long.
+    // Array path: index by Long.
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
-    auto idxVal = compile(idxAst);
-    auto idx = value_to_long(idxVal);
+    auto idx = value_to_long(key);
     emit_call(
         module_->getOrInsertFunction(
             rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy,
@@ -14177,12 +14330,11 @@ struct JIT {
     // Object path: look up by Value key in the non-String sidecar.
     builder_.SetInsertPoint(objBB);
     auto objPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
-    auto objKey = compile(idxAst);
     emit_call(
         module_->getOrInsertFunction(
             rt::object_get_any, builder_.getVoidTy(), ptrTy, i8Ty, i64Ty,
             ptrTy, ptrTy),
-        {objPtr, extract_tag(objKey), extract_data(objKey), outTag, outData});
+        {objPtr, extract_tag(key), extract_data(key), outTag, outData});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
@@ -14194,28 +14346,22 @@ struct JIT {
     return result;
   }
 
-  // `receiver[lo..hi]` slicing. Compiles only the range endpoints (not the
-  // whole RANGE, which would build an iterator) and calls culebra_runtime_
-  // slice. The result is a fresh +1-owned value, so emit_index_step releases
-  // the receiver WITHOUT promoting the result (unlike point INDEX).
-  llvm::Value* compile_slice(const peg::Ast& rangeAst, llvm::Value* receiver) {
+  // Slice `receiver` by a pre-compiled range value via culebra_runtime_slice
+  // (which reads the range's bounds). The result is a fresh +1-owned value.
+  llvm::Value* emit_slice_value(llvm::Value* receiver, llvm::Value* range) {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto loVal = value_to_long(compile(*rangeAst.nodes[0]));
-    auto hiVal = value_to_long(compile(*rangeAst.nodes[2]));
-    bool inclusive = rangeAst.nodes[1]->token == "..=";
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "slice.out.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "slice.out.data");
     emit_call(
         module_->getOrInsertFunction(
-            rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, i64Ty,
-            i8Ty, ptrTy, ptrTy, i64Ty, i64Ty),
-        {extract_tag(receiver), extract_data(receiver), loVal, hiVal,
-         builder_.getInt8(inclusive ? 1 : 0), outTag, outData,
-         current_line_val(), current_column_val()});
+            rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, ptrTy,
+            ptrTy, i64Ty, i64Ty),
+        {extract_tag(receiver), extract_data(receiver), extract_data(range),
+         outTag, outData, current_line_val(), current_column_val()});
     auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
     auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
     llvm::Value* result = llvm::UndefValue::get(valueType_);
@@ -14224,19 +14370,66 @@ struct JIT {
     return result;
   }
 
+  // i1: is `key` a range value? (culebra_runtime_is_range short-circuits
+  // non-Object tags internally.)
+  llvm::Value* emit_is_range(llvm::Value* key) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto r = emit_call(
+        module_->getOrInsertFunction(rt::is_range, i8Ty, i8Ty, i64Ty),
+        {extract_tag(key), extract_data(key)});
+    return builder_.CreateICmpNE(r, builder_.getInt8(0));
+  }
+
   // Apply one INDEX/SAFE_INDEX postfix to `receiver`, returning the new
-  // value and releasing `receiver`. A `a..b` RANGE index slices (fresh
-  // owned result); a point index borrows a slot and is promoted via retain.
+  // value and releasing `receiver`. A range index slices (fresh owned
+  // result); a point index borrows a slot and is promoted via retain.
   llvm::Value* emit_index_step(const peg::Ast& postfix, llvm::Value* receiver) {
     using namespace peg::udl;
-    if (postfix.tag == "RANGE"_) {
-      auto result = compile_slice(postfix, receiver);
+    // Literal range index (`xs[1..3]`, `xs[2..]`, `xs[..]`): statically
+    // known — `key` is a fresh owned Range temp, released after slicing.
+    if (postfix.tag == "RANGE"_ || postfix.tag == "RANGE_OPERATOR"_) {
+      auto key = compile(postfix);
+      auto result = emit_slice_value(receiver, key);
       emit_value_release(receiver);
+      emit_value_release(key);
       return result;
     }
-    auto result = compile_index_access(postfix, receiver);
-    emit_value_swap_owned(result, receiver);
-    return result;
+    // Non-literal index: compile once (`key` is +1 owned), then branch at
+    // runtime on whether it is a stored range value (`xs[r]`) — slice — or a
+    // point key. The slice path only reads `key` (so it releases it); the
+    // point path's emit_point_index consumes `key` (object_get_any), so it
+    // must not.
+    auto key = compile(postfix);
+    auto cond = emit_is_range(key);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto sliceBB = llvm::BasicBlock::Create(ctx_, "idx.slice", fn);
+    auto pointBB = llvm::BasicBlock::Create(ctx_, "idx.point", fn);
+    auto doneBB = llvm::BasicBlock::Create(ctx_, "idx.done", fn);
+    builder_.CreateCondBr(cond, sliceBB, pointBB);
+
+    // Slice path: `key` (the range value) is read-only, so release it here;
+    // the result is fresh owned.
+    builder_.SetInsertPoint(sliceBB);
+    auto sliceRes = emit_slice_value(receiver, key);
+    emit_value_release(receiver);
+    emit_value_release(key);
+    auto sliceEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(doneBB);
+
+    // Point path: borrowed slot -> promote (retain result, release receiver).
+    // emit_point_index consumes `key`, so it is not released here.
+    builder_.SetInsertPoint(pointBB);
+    auto pointRes = emit_point_index(receiver, key);
+    emit_value_swap_owned(pointRes, receiver);
+    auto pointEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(doneBB);
+
+    builder_.SetInsertPoint(doneBB);
+    auto phi = builder_.CreatePHI(valueType_, 2);
+    phi->addIncoming(sliceRes, sliceEnd);
+    phi->addIncoming(pointRes, pointEnd);
+    return phi;
   }
 
   // Helper: check receiver tag matches expected TAG_*, else type error.

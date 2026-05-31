@@ -819,12 +819,14 @@ Spread sources are `Array`, `Tuple`, and `Set` (a non-iterable raises
 
 ### Slicing
 
-A `RANGE` index (`seq[a..b]`, `seq[a..=b]`) returns a sub-sequence
-instead of a single element. `..` is end-exclusive, `..=` end-inclusive;
-either endpoint may be negative (counted from the end). Out-of-range
-endpoints **clamp** to the sequence and a start past the end yields an
-empty result (matching Python/JS/Ruby), so slicing never raises on
-bounds.
+A range index (`seq[a..b]`, `seq[a..=b]`) returns a sub-sequence instead
+of a single element. `..` is end-exclusive, `..=` end-inclusive; either
+endpoint may be negative (counted from the end). Either endpoint may also
+be **omitted** — an open start defaults to `0`, an open end to the
+sequence length: `xs[2..]` drops the first two, `xs[..3]` keeps the first
+three, `xs[..]` copies the whole sequence. Out-of-range endpoints
+**clamp** and a start past the end yields an empty result (matching
+Python/JS/Ruby), so slicing never raises on bounds.
 
 Arrays return a **shallow copy** — the slice's spine is independent of
 the source, but elements are shared (a reference-semantic array sliced
@@ -834,17 +836,26 @@ a zero-copy lazy window over a large array, use the iterator instead
 byte indexing; a slice that lands mid-codepoint keeps the raw bytes).
 Tuples return a tuple.
 
+A range is a **first-class value** (`let r = 1..3`) — store it, pass it
+to a function, and use it to subscript later (`xs[r]`). A bounded range
+is also iterable (`for i in 1..4`); an unbounded one (`2..`) has no
+iteration end and raises if iterated.
+
 ```culebra
 let xs = [10, 20, 30, 40, 50]
 puts(xs[1..3])      # => [20, 30]
 puts(xs[1..=3])     # => [20, 30, 40]
 puts(xs[-3..-1])    # => [30, 40]
+puts(xs[2..])       # => [30, 40, 50]
+puts(xs[..3])       # => [10, 20, 30]
 ```
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
 puts(xs[1..100])    # => [20, 30, 40, 50]
 puts(xs[3..1])      # => []
+let r = 1..3
+puts(xs[r])         # => [20, 30]
 ```
 
 ```culebra

@@ -129,8 +129,15 @@ const auto grammar_ = R"(
   ND_CONDITION             <-  BIT_XOR (_ CONDITION_OPERATOR _ BIT_XOR)*   { ast_name: CONDITION }
   BIT_XOR                  <-  BIT_AND (_h_ BIT_XOR_OPERATOR _ BIT_AND)*
   BIT_AND                  <-  SHIFT (_h_ BIT_AND_OPERATOR _ SHIFT)*
-  SHIFT                    <-  RANGE (_h_ SHIFT_OPERATOR _ RANGE)*
-  RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
+  SHIFT                    <-  RANGE_EXPR (_h_ SHIFT_OPERATOR _ RANGE_EXPR)*
+  RANGE_EXPR               <-  RANGE / ADDITIVE
+  # A range value (`a..b`, `a..=b`, `a..`, `..b`, `..`). Either endpoint
+  # may be omitted (open-ended). `_h_` keeps the whole range on one line so
+  # an open end (`2..`) can't swallow the next statement. The bare `..`
+  # form collapses to a lone RANGE_OPERATOR node (single child); eval and
+  # codegen treat that tag as a full range. A plain expression with no
+  # operator falls through to ADDITIVE.
+  RANGE                    <-  ADDITIVE _h_ RANGE_OPERATOR (_h_ ADDITIVE)? / RANGE_OPERATOR (_h_ ADDITIVE)?
   # Container operations use method form: Set has `.union(b)` /
   # `.intersect(b)` / `.diff(b)` / `.sym_diff(b)`; Tuple has no
   # concat by design (multi-value returns + fixed records were the

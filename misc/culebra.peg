@@ -113,8 +113,9 @@
   ND_CONDITION             <-  BIT_XOR (_ CONDITION_OPERATOR _ BIT_XOR)*   { ast_name: CONDITION }
   BIT_XOR                  <-  BIT_AND (_h_ BIT_XOR_OPERATOR _ BIT_AND)*
   BIT_AND                  <-  SHIFT (_h_ BIT_AND_OPERATOR _ SHIFT)*
-  SHIFT                    <-  RANGE (_h_ SHIFT_OPERATOR _ RANGE)*
-  RANGE                    <-  ADDITIVE (_ RANGE_OPERATOR _ ADDITIVE)?
+  SHIFT                    <-  RANGE_EXPR (_h_ SHIFT_OPERATOR _ RANGE_EXPR)*
+  RANGE_EXPR               <-  RANGE / ADDITIVE
+  RANGE                    <-  ADDITIVE _h_ RANGE_OPERATOR (_h_ ADDITIVE)? / RANGE_OPERATOR (_h_ ADDITIVE)?
   # Container operations use method form: Set has `.union(b)` /
   # `.intersect(b)` / `.diff(b)` / `.sym_diff(b)`; Tuple has no
   # concat by design (multi-value returns + fixed records were the
