@@ -215,14 +215,18 @@ test BACKEND='all': build
         esac
     }
 
-    # Isolate (C2-a) is interpreter-only this cycle (JIT is a later
-    # milestone), so its test lives in a subdir kept out of the
-    # `tests/*.cul` interp-vs-JIT diff glob and is run under interp here.
+    # Isolate tests live in a subdir kept out of the `tests/*.cul` interp-vs-JIT
+    # diff glob. All run under interp; `*_jit.cul` additionally run under --jit
+    # (Isolate.spawn is symmetric across backends; Channel/Parallel under --jit
+    # are still pending, so those tests stay interp-only).
     run_isolate() {
         for f in tests/isolate/*.cul; do
             ./build/culebra "$f" > /dev/null
         done
-        echo "test isolate OK (interp)"
+        for f in tests/isolate/*_jit.cul; do
+            ./build/culebra --jit "$f" > /dev/null
+        done
+        echo "test isolate OK (interp + jit symmetry)"
     }
 
     case "{{BACKEND}}" in

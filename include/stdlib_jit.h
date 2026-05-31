@@ -12,6 +12,7 @@
 #include <proc.h>
 #include <shared.h>
 #include <regexlib.h>
+#include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 
 #include <algorithm>
 #include <chrono>
@@ -2348,6 +2349,30 @@ inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
 inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
+
+// Isolate.spawn(fn, *args): a[0] = closure, a[1..] = positional args.
+inline JitValue _ns_isolate_spawn(JitValue* a, int64_t n) {
+  if (n < 1) {
+    throw culebra::CulebraError("TypeError",
+        "Isolate.spawn: first argument must be a function");
+  }
+  return culebra_jit_isolate_spawn(a[0].tag, a[0].data, n - 1, a + 1, 0, 0);
+}
+
+inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
+  return culebra_jit_channel_new(n, a, 0, 0);
+}
+
+// Parallel.map/each: registered so the namespace exists (drift check), but the
+// worker pool under --jit isn't wired yet — error cleanly.
+inline JitValue _ns_parallel_map(JitValue*, int64_t) {
+  throw culebra::CulebraError("RuntimeError",
+      "Parallel.map is not yet supported under --jit");
+}
+inline JitValue _ns_parallel_each(JitValue*, int64_t) {
+  throw culebra::CulebraError("RuntimeError",
+      "Parallel.each is not yet supported under --jit");
+}
 inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
   // slab: cmd, cwd, env, stdin
   std::string cwd_str;
@@ -2763,6 +2788,11 @@ inline const NsMethod kNsMethods[] = {
   {"Proc",   "all",   1, &_ns_proc_all,   &kProcAllMeta},
   {"Proc",   "race",  1, &_ns_proc_race},
   {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
+
+  {"Isolate", "spawn", -1, &_ns_isolate_spawn},
+  {"Channel", "new", -1, &_ns_channel_new},
+  {"Parallel", "map", -1, &_ns_parallel_map},
+  {"Parallel", "each", -1, &_ns_parallel_each},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
@@ -4555,7 +4585,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "Proc"};
+      "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel"};
   return names.contains(name);
 }
 

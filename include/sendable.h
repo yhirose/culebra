@@ -57,11 +57,23 @@ struct SendNode {
   std::vector<std::pair<SendNode, SendNode>> entries;
   std::vector<bool> entry_mut;
 
-  // Closure
+  // Closure — interp form: defining AST + named free-var captures.
   const peg::Ast* params_ast = nullptr;            // borrowed, process-lifetime
   std::shared_ptr<peg::Ast> body;                  // shared, thread-safe
   std::string return_type;
   std::vector<std::pair<std::string, SendNode>> captures;  // free var → value
+  // Closure — JIT form: shared native code pointer (process-lifetime while the
+  // LLJIT is alive) + positional captures in `elems` + arity in `i`. The two
+  // forms never mix: an interp program ships interp closures, a JIT program
+  // ships JIT closures. `jit_fn != nullptr` selects the JIT form.
+  void* jit_fn = nullptr;
+  // Closure — JIT multifn dispatcher (`fn name`): the dispatcher thunk shares
+  // fn_ptr, but its overload methods live in a thread_local table, so they are
+  // shipped explicitly (method bodies in `elems`, types/variadic parallel) and
+  // re-registered on the child. mf_name non-empty selects this form.
+  std::string mf_name;
+  std::vector<std::vector<std::string>> mf_param_types;
+  std::vector<bool> mf_variadic;
   int ref_id = -1;          // closure identity (for back-references)
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
 };

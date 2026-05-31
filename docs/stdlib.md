@@ -1405,7 +1405,10 @@ boundary by being **copied**, so two isolates can never race on the same
 object. This is the thread-level counterpart to [§11 `Proc`](#11-proc) (which
 parallelizes across processes).
 
-> Interpreter only for now — `Isolate` is not yet available under `--jit`.
+> `Isolate.spawn` works under both the interpreter and `--jit` (a closure
+> crosses as a shared code reference — the AST in the interpreter, the compiled
+> `fn_ptr` in the JIT — plus copied captures, and runs on the child's own heap).
+> `Channel` and `Parallel` are interpreter-only for now under `--jit`.
 
 ### `Isolate.spawn(fn, *args) -> handle`
 

@@ -1,0 +1,82 @@
+# Isolate symmetry test: runs under BOTH interp and --jit (C2-c). Covers the
+# Isolate.spawn surface that is symmetric across backends — closures cross as a
+# shared code reference (AST in the interp, fn_ptr in the JIT) plus copied
+# captures, and run on the child's own heap. Channel/Parallel are not yet
+# wired under --jit, so they live in the interp-only test files.
+
+# scalar result
+assert_eq(Isolate.spawn(|| 1 + 2).join(), 3)
+
+# positional args
+assert_eq(Isolate.spawn(|n| n * n, 7).join(), 49)
+assert_eq(Isolate.spawn(|a, b| a + b, 10, 20).join(), 30)
+
+# captured immutable variables (copied across the boundary)
+let k = 10
+assert_eq(Isolate.spawn(|| k + 5).join(), 15)
+let prefix = "hi-"
+assert_eq(Isolate.spawn(|| prefix + "there").join(), "hi-there")
+
+# captured + arg
+let base = 100
+assert_eq(Isolate.spawn(|x| x + base, 23).join(), 123)
+
+# collections round-trip by value, including a nested lambda in the body
+let arr = [1, 2, 3]
+assert_eq(Isolate.spawn(|| arr.map(|x| x * 2)).join(), [2, 4, 6])
+assert_eq(Isolate.spawn(|| {a: 1, b: [2, 3]}).join(), {a: 1, b: [2, 3]})
+assert_eq(Isolate.spawn(|| (1, "two", 3)).join(), (1, "two", 3))
+
+# a recursive top-level function captured as a free var (multifn dispatcher)
+fn fib(n) {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+assert_eq(Isolate.spawn(|| fib(20)).join(), 6765)
+assert_eq(Isolate.spawn(|n| fib(n), 15).join(), 610)
+
+# mutual recursion across two dispatchers
+fn ev(n) {
+  if n == 0 { return true }
+  return od(n - 1)
+}
+fn od(n) {
+  if n == 0 { return false }
+  return ev(n - 1)
+}
+assert_eq(Isolate.spawn(|| ev(10)).join(), true)
+
+# an isolate may return a closure; it is rebuilt on the parent and callable
+fn make_adder() {
+  let n = 100
+  return |x| x + n
+}
+let adder = Isolate.spawn(|| make_adder()).join()
+assert_eq(adder(5), 105)
+
+# many isolates: results correct past the parallelism cap (synchronous fallback)
+mut handles = []
+for i in 0..40 { handles.push(Isolate.spawn(|x| x * x, i)) }
+mut total = 0
+for h in handles { total = total + h.join() }
+mut expect = 0
+for i in 0..40 { expect = expect + i * i }
+assert_eq(total, expect)
+
+# nested: a spawned closure can itself spawn
+fn dbl(x) { return x * 2 }
+let hnest = Isolate.spawn(fn () {
+  let inner = Isolate.spawn(|| dbl(21))
+  inner.join()
+})
+assert_eq(hnest.join(), 42)
+
+# a child exception propagates to the parent on join, kind preserved
+try {
+  Isolate.spawn(|| 1 / 0).join()
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "ZeroDivisionError")
+}
+
+puts("test_isolate_jit: all assertions passed")

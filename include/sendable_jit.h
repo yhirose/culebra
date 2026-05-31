@@ -1,0 +1,616 @@
+#pragma once
+
+// JIT side of the isolate value transfer ([[project-concurrency-c2]], C2-c).
+//
+// The interpreter and the JIT share the same isolate architecture, matching
+// every isolate-based runtime (V8 Workers, Ruby Ractor, Java, Go, Erlang):
+// **immutable code is shared, the mutable heap is isolated, only data is
+// copied.** The interp's "code" is the AST (shared, process-lifetime); the
+// JIT's is the compiled `JitClosure::fn_ptr` (shared while the LLJIT is alive,
+// which spans the whole JIT::run and therefore every isolate joined within it).
+//
+// So a JIT closure crosses a thread boundary as (fn_ptr + positionally-copied
+// captures) — no AST, no names: the compiled body reads captures[i] by index,
+// so the child rebuilds the cells in the same order. The child runs on its own
+// JIT heap (fresh Runtime) and invokes the shared fn_ptr. Symmetric with the
+// interp: both ship a shared code reference + copied data and run on their own
+// heap. Values cross via the same neutral sendable::SendNode.
+
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+
+#include "isolate.h"  // IsolateCore, sendable::SendNode, isolate_cap, g_live_isolates
+#include "jit.h"      // JitValue and the runtime constructors
+
+namespace culebra {
+
+// --- JitValue <-> SendNode ---------------------------------------------------
+
+struct JitSerCtx {
+  std::map<const void*, int> closure_ids;  // JitClosure* -> ref id (recursion)
+  int next_id = 0;
+  std::set<const void*> visiting;          // container cycle guard
+};
+struct JitDeCtx {
+  std::map<int, JitValue> closures;        // ref id -> rebuilt closure
+};
+
+inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
+  using K = sendable::SendNode::K;
+  sendable::SendNode n;
+  auto seq = [&](JitArray* a, K kind) -> sendable::SendNode {
+    if (!ctx.visiting.insert(a).second)
+      sendable::send_error("a cyclic value cannot be sent");
+    n.kind = kind;
+    n.elems.reserve(a->size);
+    for (size_t i = 0; i < a->size; i++)
+      n.elems.push_back(jit_serialize(a->items[i], ctx));
+    ctx.visiting.erase(a);
+    return n;
+  };
+  switch (v.tag) {
+    case TAG_NIL:   n.kind = K::Nil; return n;
+    case TAG_BOOL:  n.kind = K::Bool; n.b = v.data != 0; return n;
+    case TAG_LONG:  n.kind = K::Long; n.i = v.data; return n;
+    case TAG_FLOAT: n.kind = K::Float; n.d = _culebra_float_to_double(v.data); return n;
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      n.kind = K::Str;
+      n.s = std::string(_culebra_str_view(v.tag, v.data));
+      return n;
+    case TAG_ARRAY:  return seq(reinterpret_cast<JitArray*>(v.data), K::Array);
+    case TAG_TUPLE:  return seq(reinterpret_cast<JitArray*>(v.data), K::Tuple);
+    case TAG_SET: {
+      auto* s = reinterpret_cast<JitSet*>(v.data);
+      if (!ctx.visiting.insert(s).second)
+        sendable::send_error("a cyclic value cannot be sent");
+      n.kind = K::Set;
+      n.elems.reserve(s->members.size());
+      for (const auto& m : s->members) n.elems.push_back(jit_serialize(m, ctx));
+      ctx.visiting.erase(s);
+      return n;
+    }
+    case TAG_OBJECT: {
+      auto* o = reinterpret_cast<JitObject*>(v.data);
+      // Channel endpoints under --jit are blocked: Channel.new returns a tuple,
+      // and a pre-existing JIT bug double-frees refcounted tuple/array
+      // destructure elements (emit_indexed_pattern binds borrowed elements
+      // without retaining, unlike emit_object_pattern — jit.h:11237/11393;
+      // repro `let (a,b)=([1],[2])` corrupts on master too). The endpoint code
+      // below is complete and ASAN-clean once that JIT bug is fixed.
+      if (o->find_slot("__channel_endpoint__") != static_cast<size_t>(-1))
+        sendable::send_error("channels are not yet supported under --jit");
+      if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
+        sendable::send_error("a native handle is not Sendable");
+      if (!ctx.visiting.insert(o).second)
+        sendable::send_error("a cyclic value cannot be sent");
+      n.kind = K::Object;
+      if (o->shape) {
+        for (size_t i = 0; i < o->shape->names.size(); i++) {
+          sendable::SendNode key;
+          key.kind = K::Str;
+          key.s = o->shape->names[i];
+          n.entries.emplace_back(std::move(key),
+                                 jit_serialize(o->slots[i].value, ctx));
+          n.entry_mut.push_back(o->slots[i].mut);
+        }
+      }
+      // Non-string keys are rare here; defer (most data objects are string-keyed).
+      ctx.visiting.erase(o);
+      return n;
+    }
+    case TAG_FUNC: {
+      auto* c = reinterpret_cast<JitClosure*>(v.data);
+      n.kind = K::Closure;
+      if (auto it = ctx.closure_ids.find(c); it != ctx.closure_ids.end()) {
+        n.is_backref = true;
+        n.ref_id = it->second;
+        return n;
+      }
+      n.ref_id = ctx.next_id++;
+      ctx.closure_ids.emplace(c, n.ref_id);  // before recursing (fib recursion)
+      n.jit_fn = c->fn_ptr;
+      n.i = static_cast<long>(c->arity);
+      // `fn name` is a dispatcher thunk: its overloads live in a thread_local
+      // table, so ship each method body + its dispatch types explicitly.
+      if (auto dit = _jit_multifn_dispatcher_names().find(c);
+          dit != _jit_multifn_dispatcher_names().end()) {
+        n.mf_name = dit->second;
+        const auto& methods = _jit_multimethods()[n.mf_name];
+        for (const auto& mth : methods) {
+          n.mf_param_types.push_back(mth.param_types);
+          n.mf_variadic.push_back(mth.variadic);
+          n.elems.push_back(jit_serialize(
+              JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mth.body)}, ctx));
+        }
+        return n;
+      }
+      n.elems.reserve(c->n_captures);  // positional captures
+      for (size_t i = 0; i < c->n_captures; i++)
+        n.elems.push_back(jit_serialize(c->captures[i]->value, ctx));
+      return n;
+    }
+    case TAG_TENSOR:
+      sendable::send_error("Tensor is not Sendable");
+  }
+  sendable::send_error("value is not Sendable");
+}
+
+inline JitValue jit_float(double d) {
+  int64_t bits;
+  std::memcpy(&bits, &d, sizeof(double));
+  return {TAG_FLOAT, bits};
+}
+
+inline JitValue _jit_make_channel_endpoint(long id, int role);  // fwd
+
+inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
+  using K = sendable::SendNode::K;
+  switch (n.kind) {
+    case K::Nil:   return {TAG_NIL, 0};
+    case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
+    case K::Long:  return {TAG_LONG, n.i};
+    case K::Float: return jit_float(n.d);
+    case K::Str:
+      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s.c_str()))};
+    case K::Array: {
+      auto* a = culebra_runtime_array_new();
+      for (const auto& e : n.elems) {
+        JitValue ev = jit_deserialize(e, ctx);
+        culebra_runtime_array_push(a, ev.tag, ev.data);
+      }
+      return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
+    }
+    case K::Tuple: {
+      auto* a = culebra_runtime_tuple_new();
+      for (const auto& e : n.elems) {
+        JitValue ev = jit_deserialize(e, ctx);
+        culebra_runtime_array_push(a, ev.tag, ev.data);
+      }
+      return {TAG_TUPLE, reinterpret_cast<int64_t>(a)};
+    }
+    case K::Set: {
+      auto* s = culebra_runtime_set_new();
+      for (const auto& e : n.elems) {
+        JitValue ev = jit_deserialize(e, ctx);
+        culebra_runtime_set_add(s, ev.tag, ev.data);
+      }
+      return {TAG_SET, reinterpret_cast<int64_t>(s)};
+    }
+    case K::Object: {
+      auto* o = culebra_runtime_object_new();
+      for (size_t k = 0; k < n.entries.size(); k++) {
+        JitValue val = jit_deserialize(n.entries[k].second, ctx);
+        bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
+        o->set_or_append(n.entries[k].first.s, val, mut);
+      }
+      return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+    }
+    case K::Closure: {
+      if (n.is_backref) return ctx.closures.at(n.ref_id);
+      // Multifn dispatcher: rebuild the thunk closure and re-register its name
+      // + overload methods in this thread's tables (recursion resolves because
+      // the dispatcher is memoized before its method bodies are rebuilt).
+      if (!n.mf_name.empty()) {
+        auto* c = culebra_runtime_closure_new(n.jit_fn, 0,
+                                              static_cast<size_t>(n.i));
+        JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
+        _jit_multifn_dispatcher_names()[c] = n.mf_name;
+        ctx.closures.emplace(n.ref_id, cv);
+        auto& methods = _jit_multimethods()[n.mf_name];
+        for (size_t i = 0; i < n.elems.size(); i++) {
+          JitValue body = jit_deserialize(n.elems[i], ctx);
+          methods.push_back({n.mf_param_types[i],
+                             reinterpret_cast<JitClosure*>(body.data),
+                             n.mf_variadic[i]});
+        }
+        return cv;
+      }
+      auto* c = culebra_runtime_closure_new(n.jit_fn, n.elems.size(),
+                                            static_cast<size_t>(n.i));
+      JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
+      ctx.closures.emplace(n.ref_id, cv);
+      for (size_t i = 0; i < n.elems.size(); i++) {
+        JitValue capv = jit_deserialize(n.elems[i], ctx);
+        c->captures[i] = culebra_runtime_cell_new(capv.tag, capv.data);
+      }
+      return cv;
+    }
+    case K::Channel:
+      sendable::send_error("channels are not yet supported under --jit");
+  }
+  return {TAG_NIL, 0};
+}
+
+// --- Isolate handle registry (JIT handle methods are captureless → store the
+//     IsolateCore behind an integer id, mirroring the channel registry) -------
+
+inline std::mutex& jit_isolate_reg_mutex() { static std::mutex m; return m; }
+inline std::unordered_map<long, std::shared_ptr<IsolateCore>>&
+jit_isolate_reg() {
+  static std::unordered_map<long, std::shared_ptr<IsolateCore>> r;
+  return r;
+}
+inline std::atomic<long>& jit_isolate_next_id() {
+  static std::atomic<long> n{1};
+  return n;
+}
+inline std::shared_ptr<IsolateCore> jit_isolate_lookup(long id) {
+  std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
+  auto it = jit_isolate_reg().find(id);
+  return it == jit_isolate_reg().end() ? nullptr : it->second;
+}
+
+// --- Child entry point: run the spawned closure on a fresh JIT heap ----------
+
+inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
+                                  sendable::SendNode sclosure,
+                                  std::vector<sendable::SendNode> sargs,
+                                  bool decrement_live) {
+  // A fresh Runtime gives this work its own JIT heap (and fresh thread_local
+  // multifn tables); the shared fn_ptr allocates on whichever Runtime is active.
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  rt.interrupt_flag = &core->interrupt;
+  try {
+    JitDeCtx dc;
+    JitValue fn = jit_deserialize(sclosure, dc);  // rebuild closure on child heap
+    auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+    std::vector<JitValue> args;
+    args.reserve(sargs.size());
+    for (const auto& sa : sargs) args.push_back(jit_deserialize(sa, dc));
+    // Rebuilt endpoints hold their own refs now; drop the in-flight ones.
+    release_inflight_channels(sclosure);
+    for (const auto& sa : sargs) release_inflight_channels(sa);
+    JitValue r;
+    if (args.empty()) r = _culebra_invoke0(cls);
+    else if (args.size() == 1) r = _culebra_invoke1(cls, args[0]);
+    else if (args.size() == 2) r = _culebra_invoke2(cls, args[0], args[1]);
+    else r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, {0, 0},
+                                                  static_cast<int64_t>(args.size()),
+                                                  args.data());
+    JitSerCtx sc;
+    sendable::SendNode out = jit_serialize(r, sc);
+    {
+      std::lock_guard<std::mutex> lk(core->m);
+      core->result = std::move(out);
+      core->finished = true;
+    }
+    culebra_runtime_value_release(r.tag, r.data);
+  } catch (culebra::CulebraError& e) {
+    std::lock_guard<std::mutex> lk(core->m);
+    core->error = e;
+    core->finished = true;
+  } catch (std::exception& e) {
+    std::lock_guard<std::mutex> lk(core->m);
+    core->error = culebra::CulebraError("RuntimeError", e.what());
+    core->finished = true;
+  }
+  core->cv.notify_all();
+  if (decrement_live)
+    g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+}
+
+// --- JIT isolate handle (join/poll/drop). JIT handle methods are captureless,
+//     so the IsolateCore is reached through the registry by id. ---------------
+
+inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
+  if (!core->joined && core->thread.joinable()) {
+    core->thread.join();
+    core->joined = true;
+  }
+  if (core->error) throw *core->error;
+  JitDeCtx dc;
+  return jit_deserialize(core->result, dc);  // on the parent heap
+}
+
+inline long _jit_isolate_self_id(JitValue self) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  size_t i = h->find_slot("_core_id");
+  return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
+}
+
+inline JitValue _jit_isolate_join(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
+  JitValue ret{TAG_NIL, 0};
+  if (core) {
+    {
+      std::unique_lock<std::mutex> lk(core->m);
+      core->cv.wait(lk, [&] { return core->finished; });
+    }
+    ret = _jit_isolate_extract(core);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+
+inline JitValue _jit_isolate_poll(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
+  JitValue ret{TAG_NIL, 0};
+  if (core) {
+    bool done;
+    { std::lock_guard<std::mutex> lk(core->m); done = core->finished; }
+    if (done) ret = _jit_isolate_extract(core);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+
+inline JitValue _jit_isolate_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long id = _jit_isolate_self_id(self);
+  auto core = jit_isolate_lookup(id);
+  if (core && !core->joined && core->thread.joinable()) {
+    core->interrupt.store(true, std::memory_order_relaxed);
+    {
+      std::unique_lock<std::mutex> lk(core->m);
+      core->cv.wait(lk, [&] { return core->finished; });
+    }
+    core->thread.join();
+    core->joined = true;
+  }
+  {
+    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
+    jit_isolate_reg().erase(id);
+  }
+  return {TAG_NIL, 0};
+}
+
+// A captureless native method closure (reads its state from `self`). Same
+// shape as Proc's _jit_make_handle_method; kept local so this header depends
+// only on jit.h (and can be included before stdlib_jit.h's helpers).
+inline JitClosure* _jit_native_method(
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+  auto* c = new JitClosure();
+  c->refcount = 1;
+  c->fn_ptr = reinterpret_cast<void*>(fn);
+  c->n_captures = 0;
+  c->captures = nullptr;
+  c->arity = 0;
+  _gc_register(c, GC_TAG_FUNC);
+  return c;
+}
+
+inline JitValue _jit_build_isolate_handle(long id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_core_id", JitValue{TAG_LONG, id}, true);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  auto m = [&](const char* name,
+               JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(
+        name,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  m("join", _jit_isolate_join);
+  m("poll", _jit_isolate_poll);
+  m("drop", _jit_isolate_drop);
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Runtime entry for Isolate.spawn(fn, *args). First slice: validates cross-
+// thread execution of a shared fn_ptr. Always threaded (the parallelism-cap
+// fallback lands with the full port).
+inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
+                                          int64_t n_args, JitValue* args,
+                                          int64_t line, int64_t col) {
+  if (fn_tag != TAG_FUNC) {
+    throw culebra::CulebraError(
+        "TypeError", "Isolate.spawn: first argument must be a function", line,
+        col);
+  }
+  JitSerCtx sc;
+  sendable::SendNode sclo = jit_serialize({fn_tag, fn_data}, sc);
+  std::vector<sendable::SendNode> sargs;
+  sargs.reserve(n_args);
+  for (int64_t i = 0; i < n_args; i++) sargs.push_back(jit_serialize(args[i], sc));
+
+  auto core = std::make_shared<IsolateCore>();
+  long id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
+    jit_isolate_reg()[id] = core;
+  }
+  bool threaded =
+      g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
+  if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+  core->thread = std::thread([core, sclo = std::move(sclo),
+                              sargs = std::move(sargs), threaded]() mutable {
+    run_isolate_child_jit(core, sclo, sargs, /*decrement_live=*/threaded);
+  });
+  if (!threaded) {
+    // Synchronous fallback over the cap: still a fresh thread (the JIT multifn
+    // tables are thread_local, so an inline run on the parent thread would
+    // pollute the parent's overloads) but joined immediately, so concurrency
+    // stays bounded.
+    core->thread.join();
+    core->joined = true;
+  }
+  return _jit_build_isolate_handle(id);
+}
+
+// ===========================================================================
+// JIT channel endpoints. The ChannelCore + registry + auto-close are the
+// backend-neutral machinery in isolate.h; here is the JitObject endpoint and
+// the JitValue serialize/deserialize boundary. Endpoint methods are captureless
+// and reach the core by the id stored on the endpoint.
+// ===========================================================================
+
+inline long _jit_self_long(JitValue self, const char* key) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  size_t i = h->find_slot(key);
+  return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
+}
+
+inline JitValue _jit_chan_send(JitClosure*, JitValue self, int64_t n,
+                               JitValue* args) {
+  long id = _jit_self_long(self, "__channel_id__");
+  if (n >= 1) {
+    JitSerCtx sc;
+    channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+
+inline JitValue _jit_chan_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long id = _jit_self_long(self, "__channel_id__");
+  auto node = chan_pop_blocking(id);
+  JitValue ret{TAG_NIL, 0};
+  if (node) {
+    JitDeCtx dc;
+    ret = jit_deserialize(*node, dc);
+    release_inflight_channels(*node);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+
+inline JitValue _jit_chan_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  size_t di = h->find_slot("_dropped");
+  if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
+      h->slots[di].value.data) {
+    return {TAG_NIL, 0};  // already dropped (explicit + GC are idempotent)
+  }
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
+  chan_drop(_jit_self_long(self, "__channel_id__"),
+            static_cast<int>(_jit_self_long(self, "__channel_role__")));
+  return {TAG_NIL, 0};
+}
+
+inline JitValue _jit_chan_clone(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long id = _jit_self_long(self, "__channel_id__");
+  int role = static_cast<int>(_jit_self_long(self, "__channel_role__"));
+  chan_bump(id, role, +1);
+  JitValue ret = _jit_make_channel_endpoint(id, role);
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+
+// rx for-in iterator: has_next pulls one value (blocking, ends on close), next
+// hands over the cached lookahead. State lives in the iterator's own slots.
+inline JitValue _jit_chan_iter_self(JitClosure*, JitValue self, int64_t,
+                                    JitValue*) {
+  culebra_runtime_value_retain(self.tag, self.data);
+  return self;
+}
+inline JitValue _jit_chan_iter_has_next(JitClosure*, JitValue self, int64_t,
+                                        JitValue*) {
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  long st = _jit_self_long(self, "_st");
+  JitValue ret;
+  if (st == 1) {
+    ret = {TAG_BOOL, 1};
+  } else if (st == 2) {
+    ret = {TAG_BOOL, 0};
+  } else {
+    auto node = chan_pop_blocking(_jit_self_long(self, "_cid"));
+    if (node) {
+      JitDeCtx dc;
+      JitValue v = jit_deserialize(*node, dc);
+      release_inflight_channels(*node);
+      it->set_or_append("_lv", v, true);  // slot owns the +1
+      it->set_or_append("_st", JitValue{TAG_LONG, 1}, true);
+      ret = {TAG_BOOL, 1};
+    } else {
+      it->set_or_append("_st", JitValue{TAG_LONG, 2}, true);
+      ret = {TAG_BOOL, 0};
+    }
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+inline JitValue _jit_chan_iter_next(JitClosure*, JitValue self, int64_t,
+                                    JitValue*) {
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  JitValue ret{TAG_NIL, 0};
+  if (_jit_self_long(self, "_st") == 1) {
+    ret = it->slots[it->find_slot("_lv")].value;  // transfer slot's +1 to caller
+    it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);  // overwrite, no release
+    it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+inline JitValue _jit_chan_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long id = _jit_self_long(self, "__channel_id__");
+  auto* it = culebra_runtime_object_new();
+  it->set_or_append("_cid", JitValue{TAG_LONG, id}, true);
+  it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
+  it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    it->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("iter", _jit_chan_iter_self);
+  meth("has_next", _jit_chan_iter_has_next);
+  meth("next", _jit_chan_iter_next);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+
+inline JitValue _jit_make_channel_endpoint(long id, int role) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__channel_endpoint__", JitValue{TAG_BOOL, 1}, false);
+  h->set_or_append("__channel_id__", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__channel_role__", JitValue{TAG_LONG, role}, false);
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("drop", _jit_chan_drop);
+  meth("clone", _jit_chan_clone);
+  if (role == 0) {
+    meth("send", _jit_chan_send);
+  } else {
+    meth("recv", _jit_chan_recv);
+    meth("iter", _jit_chan_iter);
+  }
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Channel.new(cap = 1) -> (tx, rx). DISABLED under --jit until the pre-existing
+// JIT tuple-destructure double-free is fixed (Channel.new returns a tuple, so
+// `let (tx, rx) = Channel.new()` triggers it; repro `let (a,b)=([1],[2])`
+// corrupts on master too — emit_indexed_pattern binds borrowed elements without
+// retaining, jit.h:11237/11393). Registered (drift check) but errors. The
+// endpoint code is complete and ASAN-clean on its own once that bug is fixed.
+inline JitValue culebra_jit_channel_new(int64_t, JitValue*, int64_t line,
+                                        int64_t col) {
+  throw culebra::CulebraError(
+      "RuntimeError", "Channel is not yet supported under --jit", line, col);
+}
+
+inline JitValue _culebra_jit_channel_new_impl(int64_t n, JitValue* args,
+                                              int64_t line, int64_t col) {
+  long cap = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 1;
+  if (cap < 1) {
+    throw culebra::CulebraError("ValueError",
+        "Channel.new: capacity must be >= 1 (rendezvous channels are not yet "
+        "supported)", line, col);
+  }
+  auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
+  long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lk(channel_registry_mutex());
+    channel_registry()[id] = core;
+  }
+  core->tx_count = 1;
+  core->rx_count = 1;
+  auto* tup = culebra_runtime_tuple_new();
+  JitValue tx = _jit_make_channel_endpoint(id, 0);
+  JitValue rx = _jit_make_channel_endpoint(id, 1);
+  culebra_runtime_array_push(tup, tx.tag, tx.data);  // adopts the +1
+  culebra_runtime_array_push(tup, rx.tag, rx.data);
+  return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};
+}
+
+}  // namespace culebra

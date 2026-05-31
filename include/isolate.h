@@ -269,9 +269,10 @@ inline void chan_drop(long id, int role) {
   }
 }
 
-inline void channel_send(long id, const Value& v) {
-  sendable::SerCtx sc;
-  sendable::SendNode node = sendable::serialize(v, sc);  // Sendable check
+// Backend-neutral enqueue: the caller has already serialized the value (interp
+// or JIT) into a neutral node. Blocks while the buffer is full; interrupt- and
+// close-aware.
+inline void channel_send_node(long id, sendable::SendNode node) {
   auto core = chan_lookup(id);
   if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
   std::unique_lock<std::mutex> lk(core->m);
@@ -285,6 +286,11 @@ inline void channel_send(long id, const Value& v) {
   core->q.push_back(std::move(node));
   lk.unlock();
   core->cv.notify_all();
+}
+
+inline void channel_send(long id, const Value& v) {
+  sendable::SerCtx sc;
+  channel_send_node(id, sendable::serialize(v, sc));  // Sendable check here
 }
 
 // Block until a value is available or the channel is closed+drained. Returns
