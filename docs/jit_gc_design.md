@@ -1,11 +1,10 @@
 # JIT GC Rewrite — Design Spec (Conservative, Generational, Non-Moving)
 
-Status: **Design / not yet implemented.** Supersedes the current JIT
-reference-counting + minor-only generational collector.
+Status: **Shipped (2026-05-30).** The JIT GC is manual reference counting
+plus a conservative, non-moving mark-sweep backstop.
 
-This document is the authoritative spec for the rewrite. It is written
-to be implementable phase by phase, prioritising **safety and code
-simplicity first**, performance later.
+This document is the authoritative spec, written to be implementable phase by
+phase, prioritising **safety and code simplicity first**, performance later.
 
 ---
 
@@ -22,10 +21,10 @@ exit). This is the source of a whole bug class:
   consumed (the ownership convention is *non-uniform* across call
   boundaries — even operator operands turned out to be inconsistent).
 
-The minor-only generational collector then **amplifies every leak into
-a permanent one**: it treats a non-zero refcount as a live root,
-promotes such objects to the old generation, and never re-scans old.
-So a single missed release leaks forever (microgpt JIT grew to ~5 GB).
+Manual RC also cannot reclaim **reference cycles**, and without a tracing
+backstop a missed release or a cycle is **permanent** — it persists for the
+process lifetime (microgpt JIT grew to ~5 GB). A backstop is what turns these
+into at-worst-delayed reclamation.
 
 The **interpreter has none of these problems** because it uses
 `shared_ptr` — refcounting that is *automatic and exact* (C++
@@ -60,20 +59,17 @@ history / memory):
 > container-held objects, so it does not work.
 >
 > Therefore: **keep the manual RC** (it owns memory + immediate reuse +
-> deterministic `drop`), and **replace ONLY the broken minor-only collector
-> with a sound, conservative, non-moving full mark-sweep collector that runs
-> as a *backstop*** — reclaiming the residue RC cannot: reference **cycles**
-> and objects leaked by a **missed release** (both become unreachable from
-> roots, so a full mark-sweep frees them regardless of their stale refcount).
-> This is the CPython / PHP model (§1's first survey bullet).
+> deterministic `drop`), and **add a sound, conservative, non-moving full
+> mark-sweep collector that runs as a *backstop*** — reclaiming the residue RC
+> cannot: reference **cycles** and objects leaked by a **missed release** (both
+> become unreachable from roots, so a full mark-sweep frees them regardless of
+> their stale refcount). This is the CPython / PHP model (§1's first survey
+> bullet).
 >
-> **Value proposition, restated:** the rewrite is no longer "replace RC with
-> tracing" but "**fix the collector**" — the original architecture (RC + a
-> collector) was structurally right; only the *minor-only* collector was
-> broken (it amplified every leak into a permanent one, §1). The fix is to
-> swap it for a full mark-sweep backstop. RC bugs are thereby downgraded from
-> *permanent leak* to *slightly delayed reclamation*, which dissolves the
-> microgpt ~5 GB class.
+> **Value proposition:** RC stays the primary memory manager; the conservative
+> mark-sweep backstop reclaims only the residue RC cannot. RC bugs are thereby
+> downgraded from *permanent leak* to *slightly delayed reclamation*, which
+> dissolves the microgpt ~5 GB class.
 >
 > **§7 is corrected, not achieved:** "delete all manual RC" is logically
 > incompatible with deterministic `drop`. The retain/release machinery
@@ -105,9 +101,8 @@ history / memory):
 
 --- *original (superseded) decision follows* ---
 
-Replace the JIT's manual RC + minor-only collector with a
-**conservative, generational, non-moving mark-sweep tracing GC**
-(the Ruby MRI / Boehm model).
+Replace the JIT's manual RC with a **conservative, generational,
+non-moving mark-sweep tracing GC** (the Ruby MRI / Boehm model).
 
 Rationale (prioritising safety + simplicity):
 
@@ -272,30 +267,24 @@ container's death is deterministic too — which recurses to every object). So:
   ever reaches the sweep set (it is de-registered on free), so there is no
   double-finalization and no double-free path.
 
-This **corrects §7**: the retain/release machinery is kept (it owns memory and
-deterministic `drop`); only the broken minor-only collector is replaced.
+The retain/release machinery is kept (it owns memory and deterministic
+`drop`); the conservative backstop reclaims only the residue RC cannot.
 
-## 7. Replacing the collector (NOT removing manual RC)
+## 7. RC + backstop division of labour
 
-> Superseded by the §2 revision: the original plan deleted all retain/release.
-> Under the CPython-hybrid decision the RC machinery is **kept**; this section
-> now describes swapping the *collector* while leaving RC intact.
-
-- **Keep** `emit_value_retain` / `emit_value_release` /
+- **RC owns memory.** `emit_value_retain` / `emit_value_release` /
   `culebra_runtime_value_*` / cell retain-release / the scope-exit releases /
-  `array_push`'s +1 steal — RC ownership is unchanged from today's JIT.
-- **Replace** `_GcTracker` (the broken minor-only, promote-and-forget
-  collector) with the conservative full mark-sweep backstop (`jit_gc.h`).
-  Allocation registers each object with the new collector; the collector runs
-  periodically + at exit and reclaims the RC-unreachable residue.
+  `array_push`'s +1 steal all stay — RC is the primary manager.
+- **The backstop reclaims the residue.** The conservative full mark-sweep
+  (`jit_gc.h`) frees what RC cannot — cycles and missed-release leaks.
+  Allocation registers each object with the collector; it runs periodically +
+  at exit and reclaims the RC-unreachable residue.
 - **Sweep teardown** reuses the existing per-type teardown (the body of
   `_culebra_value_release_impl`) to free buffers, **minus** the `drop` call
   and **minus** the recursive child release (children are reclaimed by their
   own sweep / RC), and frees + de-registers the object.
 - `release_scope_slots`, loop-body releases, method-receiver releases, etc.
-  all **stay** — they are correct RC bookkeeping, not the source of the
-  permanent leaks. The permanent leaks came from the *collector* treating
-  nonzero refcount as a live root and never re-scanning old.
+  all **stay** — they are correct RC bookkeeping.
 
 The simplification the rewrite buys is now **a sound collector** (cycles +
 missed-release residue self-heal), not the deletion of RC.
@@ -404,12 +393,9 @@ ever adopted.
 
 ## 13. Phasing
 
-> **Shipped (2026-05-30).** Phases 0–1 + 2a landed on master and the backstop
-> is now the sole JIT collector: the `CULEBRA_NEW_GC` CMake flag and the legacy
-> manual-RC + minor-only collector (`_GcTracker`, `_gc_slot_of`, the dual-path
-> `#ifdef`s) were removed. The struct `gc_slot` field is now a vestigial unused
-> trailing i64 (kept to leave the IR layout undisturbed). Phase 2b / generational
-> / §12 remain future, measurement-gated.
+> **Shipped (2026-05-30).** Phases 0–1 + 2a landed on master; the conservative
+> backstop is the JIT's collector, alongside the kept RC. Phase 2b /
+> generational / §12 remain future, measurement-gated.
 
 - **Phase 0 — scaffolding (allocate-only; validate the scary parts in
   isolation).** The two genuinely dangerous parts of a conservative GC
@@ -435,10 +421,8 @@ ever adopted.
   - `GC.stat()` repointed to the new heap; `CULEBRA_GC_STRESS` runs
     scan+heap-verify each alloc; poison-fill infra; heap-verify
     (`enumerate_children` children all pass `is_gc_object`).
-  - Wired behind a CMake flag (`CULEBRA_NEW_GC`), default OFF, compiled
-    alongside the current collector (compile-time exclusive); structs use
-    `GcHeader` and `new JitX()`→`gc_alloc`, with retain/release as no-ops
-    (allocate-only). CI builds both.
+  - Compiled allocate-only and validated standalone before the in-tree
+    wiring landed.
 
   Phase 0 ships nothing user-visible; it de-risks Phase 1.
 - **Phase 1 — conservative full mark-sweep backstop. DONE (2026-05-30).**

@@ -146,10 +146,8 @@ struct JitArray {
   size_t size;
   size_t capacity;
   JitValue* items;
-  // Vestigial unused trailing i64 (was the old minor collector's young-vector
-  // index; the conservative heap keeps metadata in its own registry). Left in
-  // place to avoid perturbing the established `JitArray` IR struct layout that
-  // codegen accesses by GEP index.
+  // Reserved unused trailing i64. Left in place to avoid perturbing the
+  // established `JitArray` IR struct layout that codegen accesses by GEP index.
   int64_t gc_slot = -1;
 };
 
