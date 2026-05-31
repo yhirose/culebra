@@ -228,60 +228,8 @@ inline Value make_io_namespace() {
                           "String"sv)),
       false);
 
-  ns.initialize(
-      "read",
-      Value(FunctionValue({{"path", false, "String"sv}},
-                          [](std::shared_ptr<Environment> env) {
-                            const auto& p = env->get("path").to_string();
-                            std::ifstream ifs(p, std::ios::binary);
-                            if (!ifs) {
-                              auto line = env->get("__LINE__").to_long();
-                              auto col = env->get("__COLUMN__").to_long();
-                              throw CulebraError("IOError",
-                                  std::format("IO.read: cannot open '{}' at {}:{}.",
-                                              p, line, col),
-                                  line, col);
-                            }
-                            std::string s(
-                                (std::istreambuf_iterator<char>(ifs)),
-                                std::istreambuf_iterator<char>());
-                            return Value(std::move(s));
-                          },
-                          "String"sv)),
-      false);
-
-  ns.initialize(
-      "write",
-      Value(FunctionValue(
-          {{"path", false, "String"sv}, {"content", false, "String"sv}},
-          [](std::shared_ptr<Environment> env) {
-            const auto& p = env->get("path").to_string();
-            const auto& c = env->get("content").to_string();
-            std::ofstream ofs(p, std::ios::binary);
-            if (!ofs) {
-              auto line = env->get("__LINE__").to_long();
-              auto col = env->get("__COLUMN__").to_long();
-              throw CulebraError("IOError",
-                  std::format("IO.write: cannot open '{}' at {}:{}.",
-                              p, line, col),
-                  line, col);
-            }
-            ofs.write(c.data(), c.size());
-            return Value();
-          })),
-      false);
-
-  ns.initialize(
-      "exists",
-      Value(FunctionValue({{"path", false, "String"sv}},
-                          [](std::shared_ptr<Environment> env) {
-                            const auto& p = env->get("path").to_string();
-                            std::error_code ec;
-                            return Value(std::filesystem::exists(p, ec));
-                          },
-                          "Bool"sv)),
-      false);
-
+  // File I/O lives on FS (FS.read / FS.write / FS.exists). IO is the
+  // standard-stream + console namespace: puts / print / input.
   return Value(std::move(ns));
 }
 
@@ -455,6 +403,47 @@ inline Value make_fs_namespace() {
   ns.initialize("exists",  path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::exists(p, ec); }), false);
   ns.initialize("is_file", path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::is_regular_file(p, ec); }), false);
   ns.initialize("is_dir",  path_query_bool([](const std::filesystem::path& p, std::error_code& ec) { return std::filesystem::is_directory(p, ec); }), false);
+
+  // Whole-file read/write convenience (open + read/write + close in one
+  // call). Streaming lives on the File handle. Always binary (raw bytes);
+  // String is a byte string, so this round-trips arbitrary content.
+  ns.initialize(
+      "read",
+      Value(FunctionValue({{"path", false, "String"sv}},
+                          [throw_io](std::shared_ptr<Environment> env) {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            const auto& p = env->get("path").to_string();
+                            std::ifstream ifs(p, std::ios::binary);
+                            if (!ifs) {
+                              throw_io(std::format("FS.read('{}')", p),
+                                       line, col);
+                            }
+                            std::string s(
+                                (std::istreambuf_iterator<char>(ifs)),
+                                std::istreambuf_iterator<char>());
+                            return Value(std::move(s));
+                          },
+                          "String"sv)),
+      false);
+
+  ns.initialize(
+      "write",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}, {"content", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            const auto& c = env->get("content").to_string();
+            std::ofstream ofs(p, std::ios::binary);
+            if (!ofs) {
+              throw_io(std::format("FS.write('{}')", p), line, col);
+            }
+            ofs.write(c.data(), c.size());
+            return Value();
+          })),
+      false);
 
   ns.initialize(
       "size",

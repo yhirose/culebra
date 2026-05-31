@@ -1105,8 +1105,8 @@ puts(Math.clamp(15, 0, 10))   # => 10
 ```culebra
 print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # IO.input()                 # read a line from stdin
-# IO.write('out.txt', 'hi')  # write a file
-# IO.read('in.txt')          # read a file
+# FS.write('out.txt', 'hi')  # write a file
+# FS.read('in.txt')          # read a file
 ```
 
 ### 14.4 `Sys`, `Random`, `String`, `FS`, `Time`, `Args`

@@ -20,13 +20,13 @@ Random.seed(42)
 # --- Data + tokenizer (unchanged from microgpt.cul) ---
 
 let data_path = 'benchmarks/microgpt/names.txt'
-if !IO.exists(data_path) {
+if !FS.exists(data_path) {
   puts("error: {data_path} missing. Run `just fetch-names` first.")
   Sys.exit(1)
 }
 
 mut docs = []
-for line in IO.read(data_path).split("\n") {
+for line in FS.read(data_path).split("\n") {
   let s = line.trim()
   if s.size() > 0 { docs.push(s) }
 }

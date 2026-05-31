@@ -595,10 +595,10 @@ test_random = fn () {
 
 test_io_exists = fn () {
   // The test script itself has to exist.
-  assert_true(IO.exists('tests/test_core.cul'))
-  assert_false(IO.exists('definitely-not-a-real-path-xyz.cul'))
+  assert_true(FS.exists('tests/test_core.cul'))
+  assert_false(FS.exists('definitely-not-a-real-path-xyz.cul'))
   // Empty path is not a valid filesystem entry.
-  assert_false(IO.exists(''))
+  assert_false(FS.exists(''))
 }
 
 test_fib = fn () {

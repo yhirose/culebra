@@ -8,7 +8,7 @@ let CYCLES = 3
 
 let load_int_1d = fn (path) {
   mut out = []
-  for line in IO.read(path).split("\n") {
+  for line in FS.read(path).split("\n") {
     let s = line.trim()
     if s.size() == 0 { continue }
     out.push(to_long(s))
@@ -19,7 +19,7 @@ let load_int_1d = fn (path) {
 # Sanity: required CSVs must be present.
 for f in ['W1.csv', 'b1.csv', 'W2.csv', 'b2.csv',
           'test_images.csv', 'test_labels.csv'] {
-  if !IO.exists("{DIR}/{f}") {
+  if !FS.exists("{DIR}/{f}") {
     puts("missing {DIR}/{f}; run train.py and prep_test.py first")
     Sys.exit(1)
   }

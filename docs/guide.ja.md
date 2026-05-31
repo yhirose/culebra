@@ -1081,8 +1081,8 @@ puts(Math.clamp(15, 0, 10))   # => 10
 ```culebra
 print('Hello, '); print('world!'); print("\n")   # => Hello, world!
 # IO.input()                 # 標準入力から 1 行
-# IO.write('out.txt', 'hi')  # ファイル書き込み
-# IO.read('in.txt')          # ファイル読み込み
+# FS.write('out.txt', 'hi')  # ファイル書き込み
+# FS.read('in.txt')          # ファイル読み込み
 ```
 
 ### 14.4 `Sys` / `Random` / `String` / `FS` / `Time` / `Args`

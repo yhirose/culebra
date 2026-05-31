@@ -3,11 +3,9 @@
 // on JIT/AOT) must return the same observable behavior as `NS.method(...)`
 // (fast path, via compile_ns_call). See stdlib_jit.h::kNsMethods.
 
-// --- IO ---
+// --- IO (standard streams + console) ---
 let io = IO
 io.puts("IO bare resolve")
-assert_eq(io.exists("tests/test_bare_namespace.cul"), true)
-assert_eq(io.exists("/nonexistent_path_xyz"), false)
 
 // --- Math ---
 let math = Math
@@ -36,6 +34,13 @@ assert_eq(fs.extension("/tmp/foo.txt"), ".txt")
 assert_eq(fs.stem("/tmp/foo.txt"), "foo")
 assert_eq(fs.join("a", "b", "c.txt"), "a/b/c.txt")
 assert_eq(fs.exists("tests/test_bare_namespace.cul"), true)
+// Whole-file read/write moved from IO to FS; exercise via bare value too.
+let tdir = Sys.env("TMPDIR")
+let troot = if tdir != "" { tdir } else { "/tmp" }
+let bare_tmp = FS.join(troot, "cul_bare_fs.txt")
+fs.write(bare_tmp, "bare")
+assert_eq(fs.read(bare_tmp), "bare")
+fs.remove(bare_tmp)
 
 // --- Random ---
 let r = Random

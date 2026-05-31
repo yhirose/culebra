@@ -11,7 +11,7 @@ let CYCLES = 2
 
 let load_int_1d = fn (path) {
   mut out = []
-  for line in IO.read(path).split("\n") {
+  for line in FS.read(path).split("\n") {
     let s = line.trim()
     if s.size() == 0 { continue }
     out.push(to_long(s))
@@ -35,7 +35,7 @@ let build_one_hot = fn (labels, k) {
 for f in ['init_W1.csv', 'init_b1.csv', 'init_W2.csv', 'init_b2.csv',
           'train_images.csv', 'train_labels.csv',
           'test_images.csv',  'test_labels.csv'] {
-  if !IO.exists("{DIR}/{f}") {
+  if !FS.exists("{DIR}/{f}") {
     puts("missing {DIR}/{f}; run prep_train.py and prep_test.py first")
     Sys.exit(1)
   }

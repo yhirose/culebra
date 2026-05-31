@@ -34,7 +34,7 @@ Conventions used below:
 ## Index
 
 1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
-2. [`IO`](#2-io) — output, stdin, file I/O
+2. [`IO`](#2-io) — output, stdin (file I/O lives under `FS`)
 3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
 4. [`Time`](#4-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
 5. [`Random`](#5-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
@@ -55,7 +55,7 @@ Conventions used below:
 | Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
 | Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
-| Read a file | `IO.read` (throws on failure) |
+| Read a file | `FS.read` (throws on failure) |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§4 Time](#4-time) |
@@ -206,7 +206,8 @@ puts(Math.clamp(15, 0, 10))  # 10
 
 ## 2. `IO`
 
-Output, standard input, and file I/O.
+Output and standard input. File reading/writing lives under `FS`
+(`FS.read` / `FS.write` / `FS.exists`).
 
 ### `IO.puts(x: Any) -> Nil`
 
@@ -245,50 +246,8 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `IO.read(path: String) -> String`
-
-Read the entire file at `path` into a `String`.
-
-**Errors** (raised as runtime `type error`, not user-catchable via
-`try`/`catch`): file does not exist, is not readable, or is a
-directory. Use `IO.exists(path)` to pre-check when a missing file is
-not exceptional.
-
-```culebra
-# doctest: skip
-contents = IO.read('data.txt')
-```
-
-### `IO.write(path: String, content: String) -> Nil`
-
-Write `content` to the file at `path`, creating or overwriting it.
-
-**Errors** (raised as runtime `type error`): the path's parent
-directory does not exist, the path is not writable, or write fails
-(e.g., disk full). Existing files are overwritten without warning.
-
-```culebra
-# doctest: skip
-IO.write('out.txt', 'hello\n')
-```
-
-### `IO.exists(path: String) -> Bool`
-
-Return whether an entry exists at `path`. Does not distinguish
-regular files from directories or symlinks. An empty or invalid path
-returns `false`. Useful for the check-then-download pattern without
-needing `try`/`catch`.
-
-```culebra
-# doctest: skip
-if !IO.exists('data.txt') {
-  IO.write('data.txt', 'hello')
-}
-```
-
-`FS.exists` is the same predicate under the FS namespace and is the
-preferred form for new code; `IO.exists` is retained for backward
-compatibility.
+`IO` is the standard-stream and console namespace. File reading and
+writing live under `FS` (`FS.read` / `FS.write` / `FS.exists`).
 
 ---
 
@@ -346,12 +305,37 @@ Basename without the trailing extension.
 puts(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
+### Whole-file read / write
+
+#### `FS.read(path: String) -> String`
+
+Read the entire file at `path` into a `String` (open + read + close in
+one call). Always binary: the result is a byte string that round-trips
+arbitrary content. For incremental/streaming reads use a `File` handle.
+Throws `IOError` if the file is missing, unreadable, or a directory.
+
+```culebra
+# doctest: skip
+contents = FS.read('data.txt')
+```
+
+#### `FS.write(path: String, content: String) -> Nil`
+
+Write `content` to `path`, creating or overwriting it. Binary, no
+newline translation. Throws `IOError` if the parent directory is
+missing or the path is not writable.
+
+```culebra
+# doctest: skip
+FS.write('out.txt', 'hello\n')
+```
+
 ### Queries
 
 #### `FS.exists(path: String) -> Bool`
 
 Whether anything exists at `path`. Does not distinguish files,
-directories or symlinks. Same semantics as `IO.exists`.
+directories or symlinks. An empty or invalid path returns `false`.
 
 #### `FS.is_file(path: String) -> Bool`
 
@@ -1440,7 +1424,7 @@ language spec for String/Array/Object methods.
 ### Error-by-throw versus `nil` returns
 
 The library prefers throwing on unrecoverable type errors
-(`to_long('abc')`, `IO.read(...)` on a missing file) and returning
+(`to_long('abc')`, `FS.read(...)` on a missing file) and returning
 sentinel values for "found or not" predicates (`IO.input()` returns
 `''` on EOF). This keeps hot paths simple without requiring a
 `try`/`catch` mechanism.
@@ -1459,7 +1443,7 @@ case lands.
 ### Date, time
 
 Deferred. Scripts that need these today can call out through
-`IO.read` / `IO.write` with a helper process.
+`FS.read` / `FS.write` with a helper process.
 
 ### Collections beyond `Array`/`Object`
 

@@ -56,8 +56,8 @@ if FS.exists(dir) { FS.remove(dir) }
 FS.mkdir(dir)
 assert_true(FS.is_dir(dir))
 
-IO.write(f1, "hi\n")
-IO.write(f2, "longer content here")
+FS.write(f1, "hi\n")
+FS.write(f2, "longer content here")
 
 assert_true(FS.is_file(f1))
 assert_eq(FS.size(f1), 3)
@@ -89,8 +89,8 @@ assert_eq(FS.is_abs("rel/path"), false)
 let xdir = FS.join(tmp_root, "culebra_fs_ext")
 if FS.exists(xdir) { FS.remove(xdir, recursive: true) }
 FS.mkdir(FS.join(xdir, "sub"))
-IO.write(FS.join(xdir, "f.txt"), "hello")
-IO.write(FS.join(xdir, "sub/g.txt"), "yy")
+FS.write(FS.join(xdir, "f.txt"), "hello")
+FS.write(FS.join(xdir, "sub/g.txt"), "yy")
 
 // stat: regular file is_file/size; mtime/is_dir/is_symlink present.
 let stf = FS.stat(FS.join(xdir, "f.txt"))

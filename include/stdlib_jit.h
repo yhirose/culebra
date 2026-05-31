@@ -101,7 +101,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
     throw culebra::CulebraError("IOError",
-        std::format("IO.read: cannot open '{}' at {}:{}.", path, line, col),
+        std::format("FS.read: cannot open '{}' at {}:{}.", path, line, col),
         line, col);
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
@@ -114,7 +114,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
     throw culebra::CulebraError("IOError",
-        std::format("IO.write: cannot open '{}' at {}:{}.", path, line, col),
+        std::format("FS.write: cannot open '{}' at {}:{}.", path, line, col),
         line, col);
   }
   auto len = std::strlen(content);
@@ -1881,17 +1881,16 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
 inline JitValue _ns_io_input(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_input());
 }
-inline JitValue _ns_io_read(JitValue* a, int64_t) {
+// Whole-file read/write convenience on FS (open+read/write+close). Reuses
+// the runtime file helpers; streaming lives on the File handle.
+inline JitValue _ns_fs_read(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
       culebra_runtime_read_file(_ns_adapt::take_str(a[0]), 0, 0));
 }
-inline JitValue _ns_io_write(JitValue* a, int64_t) {
+inline JitValue _ns_fs_write(JitValue* a, int64_t) {
   culebra_runtime_write_file(_ns_adapt::take_str(a[0]),
                               _ns_adapt::take_str(a[1]), 0, 0);
   return _ns_adapt::v_nil();
-}
-inline JitValue _ns_io_exists(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_io_exists(_ns_adapt::take_str(a[0])));
 }
 
 // Math
@@ -2483,9 +2482,6 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "input",     0, &_ns_io_input},
-  {"IO",     "read",      1, &_ns_io_read},
-  {"IO",     "write",     2, &_ns_io_write},
-  {"IO",     "exists",    1, &_ns_io_exists},
 
   {"Math",   "abs",       1, &_ns_math_abs},
   {"Math",   "log",       1, &_ns_math_log},
@@ -2508,6 +2504,8 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "exists",    1, &_ns_fs_exists},
   {"FS",     "is_file",   1, &_ns_fs_is_file},
   {"FS",     "is_dir",    1, &_ns_fs_is_dir},
+  {"FS",     "read",      1, &_ns_fs_read},
+  {"FS",     "write",     2, &_ns_fs_write},
   {"FS",     "size",      1, &_ns_fs_size},
   {"FS",     "list_dir",  1, &_ns_fs_list_dir},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
@@ -3553,41 +3551,32 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto s = emit_call(module_->getFunction(rt::input), {});
       return make_string(s);
     }
+  }
+
+  if (ns == "FS") {
+    // Whole-file read/write convenience (open+read/write+close).
     if (method == "read" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "IO.read argument");
+      emit_type_check(arg, "String", "FS.read argument");
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto s = emit_call(
-          module_->getFunction(rt::read_file), {ptr, line, col});
+      auto s = emit_call(module_->getFunction(rt::read_file),
+                         {ptr, line, col});
       emit_value_release(arg);
       return make_string(s);
     }
     if (method == "write" && argsAst.nodes.size() == 2) {
       auto p = compile(*argsAst.nodes[0]);
-      emit_type_check(p, "String", "IO.write path");
+      emit_type_check(p, "String", "FS.write path");
       auto c = compile(*argsAst.nodes[1]);
-      emit_type_check(c, "String", "IO.write content");
+      emit_type_check(c, "String", "FS.write content");
       auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
       auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
-      emit_call(module_->getFunction(rt::write_file),
-                          {pp, cp, line, col});
+      emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
       emit_value_release(p);
       emit_value_release(c);
       return make_nil();
     }
-    if (method == "exists" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "IO.exists argument");
-      auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
-      auto i = emit_call(module_->getFunction(rt::io_exists),
-                                   {ptr});
-      emit_value_release(arg);
-      auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
-      return make_bool(b);
-    }
-  }
 
-  if (ns == "FS") {
     // (path) -> String for the four path-manipulation helpers.
     auto path_to_string = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;

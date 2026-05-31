@@ -32,7 +32,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 ## 目次
 
 1. [`Math`](#1-math) — 数値ユーティリティ・定数・整数列
-2. [`IO`](#2-io) — 出力・標準入力・ファイル I/O
+2. [`IO`](#2-io) — 出力・標準入力（ファイル I/O は `FS`）
 3. [`FS`](#3-fs) — パス操作・ファイル/ディレクトリ問い合わせ・更新
 4. [`Time`](#4-time) — `Instant` / `Duration` クラス、ISO 8601、カレンダー算術、ナノ秒精度
 5. [`Random`](#5-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
@@ -53,7 +53,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
-| ファイル読込 | `IO.read`（失敗時 throw） |
+| ファイル読込 | `FS.read`（失敗時 throw） |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§4 Time](#4-time) |
@@ -199,7 +199,8 @@ puts(Math.clamp(15, 0, 10))  # 10
 
 ## 2. `IO`
 
-出力、標準入力、ファイル入出力。
+出力と標準入力。ファイルの読み書きは `FS`（`FS.read` / `FS.write` /
+`FS.exists`）にあります。
 
 ### `IO.puts(x: Any) -> Nil`
 
@@ -237,49 +238,8 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `IO.read(path: String) -> String`
-
-`path` のファイル全体を `String` として読み込みます。
-
-**エラー**（実行時 `type error` として送出。`try`/`catch` でユーザ
-捕捉はできない）: ファイルが存在しない、読込権限がない、ディレクトリ
-を指している。ファイル不在が例外的でない場合は事前に
-`IO.exists(path)` でチェックしてください。
-
-```culebra
-# doctest: skip
-contents = IO.read('data.txt')
-```
-
-### `IO.write(path: String, content: String) -> Nil`
-
-`content` を `path` のファイルに書き込みます（作成または上書き）。
-
-**エラー**（実行時 `type error`）: 親ディレクトリが存在しない、
-書込権限がない、書込が失敗した（ディスクフル等）。既存ファイルは
-警告なしで上書きします。
-
-```culebra
-# doctest: skip
-IO.write('out.txt', 'hello\n')
-```
-
-### `IO.exists(path: String) -> Bool`
-
-`path` にエントリ（ファイル／ディレクトリ／シンボリックリンクを
-区別しない）があるかを返します。空文字列や不正なパスは `false`。
-`try`/`catch` 無しで「取得前に有無を確認」パターンに使えます。
-
-```culebra
-# doctest: skip
-if !IO.exists('data.txt') {
-  IO.write('data.txt', 'hello')
-}
-```
-
-`FS.exists` は同じ判定を `FS` 名前空間下で提供するもので、新規
-コードではそちらを推奨します。`IO.exists` は後方互換用に残して
-あります。
+`IO` は標準ストリームとコンソールの名前空間です。ファイルの読み書きは
+`FS`（`FS.read` / `FS.write` / `FS.exists`）にあります。
 
 ---
 
@@ -336,12 +296,36 @@ puts(FS.extension('.hidden'))    # => ''
 puts(FS.stem('a/b/c.txt'))  # => 'c'
 ```
 
+### ファイル全体の読み書き
+
+#### `FS.read(path: String) -> String`
+
+`path` のファイル全体を `String` として読み込みます（open + read +
+close を1呼び出しで）。常にバイナリ: 戻り値は任意の内容を往復できる
+byte string。逐次／ストリーミング読みは `File` ハンドルを使います。
+ファイルが存在しない・読込不可・ディレクトリの場合 `IOError` を throw。
+
+```culebra
+# doctest: skip
+contents = FS.read('data.txt')
+```
+
+#### `FS.write(path: String, content: String) -> Nil`
+
+`content` を `path` に書き込みます（作成または上書き）。バイナリ、
+改行変換なし。親ディレクトリが無い・書込不可の場合 `IOError` を throw。
+
+```culebra
+# doctest: skip
+FS.write('out.txt', 'hello\n')
+```
+
 ### 問い合わせ
 
 #### `FS.exists(path: String) -> Bool`
 
 `path` に何かが存在するか。ファイル／ディレクトリ／シンボリック
-リンクの区別なし。`IO.exists` と同じセマンティクス。
+リンクの区別なし。空文字列や不正なパスは `false`。
 
 #### `FS.is_file(path: String) -> Bool`
 
@@ -1388,7 +1372,7 @@ run_with(IO, "via parameter")
 ### エラー送出 vs `nil` 戻り値
 
 回復不能な型エラー（`to_long('abc')`、存在しないファイルへの
-`IO.read(...)` など）は例外送出を優先し、「見つかるかどうか」の
+`FS.read(...)` など）は例外送出を優先し、「見つかるかどうか」の
 述語はセンチネルを返す方針です（`IO.input()` は EOF で `''`）。
 `try`/`catch` なしでホットパスを簡潔に保つためです。
 
@@ -1404,7 +1388,7 @@ run_with(IO, "via parameter")
 
 ### 日時
 
-将来対応。必要なら `IO.read` / `IO.write` 経由でヘルパープロセスを
+将来対応。必要なら `FS.read` / `FS.write` 経由でヘルパープロセスを
 呼ぶ形で代用できます。
 
 ### `Array`/`Object` 以外のコレクション
