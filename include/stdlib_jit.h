@@ -106,8 +106,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
     throw culebra::CulebraError("IOError",
-        std::format("FS.read: cannot open '{}' at {}:{}.", path, line, col),
-        line, col);
+        std::format("FS.read: cannot open '{}'", path), line, col);
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
                 std::istreambuf_iterator<char>());
@@ -119,8 +118,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
   std::ofstream ofs(path, std::ios::binary);
   if (!ofs) {
     throw culebra::CulebraError("IOError",
-        std::format("FS.write: cannot open '{}' at {}:{}.", path, line, col),
-        line, col);
+        std::format("FS.write: cannot open '{}'", path), line, col);
   }
   auto len = std::strlen(content);
   ofs.write(content, static_cast<std::streamsize>(len));
@@ -284,8 +282,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_io_exists(
                                       const std::error_code& ec) {
   throw culebra::CulebraError(
       "IOError",
-      std::format("{} at {}:{}: {}.", msg, line, col, ec.message()),
-      line, col);
+      std::format("{}: {}.", msg, ec.message()), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
@@ -556,8 +553,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
   auto r = culebra::_time_detail::parse_iso_nanos(s ? s : "");
   if (!r) {
     throw culebra::CulebraError("ValueError",
-        std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}' at {}:{}.",
-                    s ? s : "", line, col),
+        std::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'",
+                    s ? s : ""),
         line, col);
   }
   return *r;
@@ -568,8 +565,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
   std::tm tm{};
   if (!strptime(s ? s : "", fmt ? fmt : "", &tm)) {
     throw culebra::CulebraError("ValueError",
-        std::format("_Time.parse_nanos: '{}' does not match '{}' at {}:{}.",
-                    s ? s : "", fmt ? fmt : "", line, col),
+        std::format("_Time.parse_nanos: '{}' does not match '{}'",
+                    s ? s : "", fmt ? fmt : ""),
         line, col);
   }
   tm.tm_isdst = -1;
@@ -670,8 +667,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_start_of_nanos(
     throw culebra::CulebraError(
         "ValueError",
         std::format("_Time.start_of_nanos: unknown unit '{}' "
-                    "(year/month/day/hour/minute) at {}:{}.",
-                    std::string(u), line, col),
+                    "(year/month/day/hour/minute)",
+                    std::string(u)),
         line, col);
   }
   return culebra::_time_detail::from_tm_nanos(tm, 0, utc != 0);
@@ -921,8 +918,7 @@ class _JitKwargResolver {
   [[noreturn]] void fail(const std::string& msg,
                           std::string_view kind = "TypeError") {
     release_merged();
-    throw culebra::CulebraError(std::string(kind),
-        std::format("{} at {}:{}.", msg, line_, col_),
+    throw culebra::CulebraError(std::string(kind), std::format("{}", msg),
         line_, col_);
   }
 
@@ -1071,8 +1067,7 @@ struct _JitJsonParser {
     // Embed " at L:C." inline so eval()'s outer catch doesn't override
     // our JSON-internal position with the caller AST's location.
     throw culebra::CulebraError("ValueError",
-        std::format("JSON.parse: {} at {}:{}.", msg, line, col),
-        line, col);
+        std::format("JSON.parse: {}", msg), line, col);
   }
   JitValue parse_value() {
     skip_ws();
@@ -1217,9 +1212,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
     jp.skip_ws();
     if (jp.p != jp.end) {
       throw culebra::CulebraError("ValueError",
-          std::format("JSON.parse: trailing characters at {}:{}.",
-                      jp.line, jp.col),
-          jp.line, jp.col);
+          "JSON.parse: trailing characters", jp.line, jp.col);
     }
     return v;
   }
@@ -1243,9 +1236,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
         culebra_runtime_value_release(TAG_ARRAY,
                                       reinterpret_cast<int64_t>(arr));
         throw culebra::CulebraError("ValueError",
-            std::format("JSON.parse(lines: true): trailing characters "
-                        "at {}:{}.", jp.line, jp.col),
-            jp.line, jp.col);
+            "JSON.parse(lines: true): trailing characters", jp.line, jp.col);
       }
       culebra_runtime_array_push(arr, v.tag, v.data);
     }
@@ -1326,8 +1317,7 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
     int64_t line, int64_t col) {
   if (commands_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        std::format("{}: commands must be Array at {}:{}.", ctx, line, col),
-        line, col);
+        std::format("{}: commands must be Array", ctx), line, col);
   }
   auto* outer = reinterpret_cast<JitArray*>(commands_data);
   std::vector<std::vector<std::string>> commands;
@@ -1336,14 +1326,13 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
     const JitValue& cv = outer->items[i];
     if (cv.tag != TAG_ARRAY) {
       throw culebra::CulebraError("TypeError",
-          std::format("{}: each command must be an Array of String at {}:{}.",
-                      ctx, line, col), line, col);
+          std::format("{}: each command must be an Array of String", ctx),
+          line, col);
     }
     auto* inner = reinterpret_cast<JitArray*>(cv.data);
     if (inner->size == 0) {
       throw culebra::CulebraError("ValueError",
-          std::format("{}: empty command at {}:{}.", ctx, line, col),
-          line, col);
+          std::format("{}: empty command", ctx), line, col);
     }
     std::vector<std::string> argv;
     argv.reserve(inner->size);
@@ -1351,8 +1340,8 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
       const JitValue& e = inner->items[j];
       if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
         throw culebra::CulebraError("TypeError",
-            std::format("{}: command elements must be String at {}:{}.",
-                        ctx, line, col), line, col);
+            std::format("{}: command elements must be String", ctx),
+            line, col);
       }
       argv.emplace_back(_culebra_str_view(e.tag, e.data));
     }
@@ -1373,8 +1362,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
     int64_t line, int64_t col) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        std::format("Proc.run: cmd must be Array at {}:{}.", line, col),
-        line, col);
+        "Proc.run: cmd must be Array", line, col);
   }
   auto* cmd = reinterpret_cast<JitArray*>(cmd_data);
   std::vector<std::string> argv;
@@ -1383,30 +1371,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
     const JitValue& e = cmd->items[i];
     if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError",
-          std::format("Proc.run: command elements must be String at {}:{}.",
-                      line, col), line, col);
+          "Proc.run: command elements must be String", line, col);
     }
     argv.emplace_back(_culebra_str_view(e.tag, e.data));
   }
   if (argv.empty()) {
     throw culebra::CulebraError("ValueError",
-        std::format("Proc.run: empty command at {}:{}.", line, col),
-        line, col);
+        "Proc.run: empty command", line, col);
   }
 
   auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data,
                                        timeout > 0 ? timeout : 0);
   if (!oc.spawned) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.run: {} failed at {}:{}: {}.", oc.err_what, line, col,
+        std::format("Proc.run: {} failed: {}.", oc.err_what,
                     std::system_category().message(oc.err_no)),
         line, col);
   }
   if (check && !oc.result.ok) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.run: command {} at {}:{}.",
-                    culebra::proc::failure_detail(oc.result), line, col),
-        line, col);
+        std::format("Proc.run: command {}",
+                    culebra::proc::failure_detail(oc.result)), line, col);
   }
 
   return {TAG_OBJECT,
@@ -1467,8 +1452,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
       timeout > 0 ? timeout : 0, fail_fast, &failed, retries > 0 ? retries : 0);
   if (fail_fast && failed != SIZE_MAX) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.all: command {} {} at {}:{}.", failed,
-                    culebra::proc::outcome_detail(outcomes[failed]), line, col),
+        std::format("Proc.all: command {} {}", failed,
+                    culebra::proc::outcome_detail(outcomes[failed])),
         line, col);
   }
   auto* arr = culebra_runtime_array_new();
@@ -1515,8 +1500,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
                                                "Proc.race", line, col);
   if (commands.empty()) {
     throw culebra::CulebraError("ValueError",
-        std::format("Proc.race: empty command list at {}:{}.", line, col),
-        line, col);
+        "Proc.race: empty command list", line, col);
   }
   auto [winner, oc] = culebra::proc::run_race(commands);
   (void)winner;
@@ -1821,8 +1805,7 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     const std::string& stdin_data, int64_t line, int64_t col) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        std::format("Proc.spawn: cmd must be Array at {}:{}.", line, col),
-        line, col);
+        "Proc.spawn: cmd must be Array", line, col);
   }
   auto* cmd = reinterpret_cast<JitArray*>(cmd_data);
   std::vector<std::string> argv;
@@ -1831,21 +1814,19 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     const JitValue& e = cmd->items[i];
     if (e.tag != TAG_STRING && e.tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError",
-          std::format("Proc.spawn: command elements must be String at {}:{}.",
-                      line, col), line, col);
+          "Proc.spawn: command elements must be String", line, col);
     }
     argv.emplace_back(_culebra_str_view(e.tag, e.data));
   }
   if (argv.empty()) {
     throw culebra::CulebraError("ValueError",
-        std::format("Proc.spawn: empty command at {}:{}.", line, col),
-        line, col);
+        "Proc.spawn: empty command", line, col);
   }
   auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, stdin_data);
   if (!sr.spawned) {
     throw culebra::CulebraError("ProcessError",
-        std::format("Proc.spawn: {} failed at {}:{}: {}.", sr.err_what, line,
-                    col, std::system_category().message(sr.err_no)),
+        std::format("Proc.spawn: {} failed: {}.", sr.err_what,
+                    std::system_category().message(sr.err_no)),
         line, col);
   }
   return _culebra_proc_build_handle(sr.pid, sr.out_fd, sr.err_fd);
@@ -2311,8 +2292,7 @@ inline bool env_slot(JitValue v,
   if (v.tag != TAG_OBJECT) return false;
   if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(v.data), out)) {
     throw culebra::CulebraError("TypeError",
-        std::format("Proc: env values must be String at {}:{}.", line, col),
-        line, col);
+        "Proc: env values must be String", line, col);
   }
   return true;
 }
@@ -2952,8 +2932,7 @@ inline bool _jit_ns_kwarg_resolve(
     if (splat_objs[i].tag != TAG_OBJECT) {
       release_all();
       throw culebra::CulebraError("TypeError",
-          std::format("**: splat operand must be Object at {}:{}.", line, col),
-          line, col);
+          "**: splat operand must be Object", line, col);
     }
     auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
     if (obj->shape) {
@@ -2994,7 +2973,7 @@ inline bool _jit_ns_kwarg_resolve(
         _culebra_value_release_impl(v.tag, v.data);
       throw culebra::CulebraError("TypeError",
           std::format("got argument '{}' both positionally and as a "
-                      "keyword at {}:{}.", pm->params[i].name, line, col),
+                      "keyword", pm->params[i].name),
           line, col);
     }
     slab[i] = positional[i];
@@ -3025,8 +3004,8 @@ inline bool _jit_ns_kwarg_resolve(
       for (auto& [_, v] : merged)
         _culebra_value_release_impl(v.tag, v.data);
       throw culebra::CulebraError("ArityError",
-          std::format("missing required argument '{}' at {}:{}.",
-                      pm->params[i].name, line, col), line, col);
+          std::format("missing required argument '{}'",
+                      pm->params[i].name), line, col);
     }
   }
   // Any leftover kwargs are unknown to this method.
@@ -3037,8 +3016,7 @@ inline bool _jit_ns_kwarg_resolve(
     for (auto& [_, v] : merged)
       _culebra_value_release_impl(v.tag, v.data);
     throw culebra::CulebraError("TypeError",
-        std::format("unknown keyword argument '{}' at {}:{}.", bad, line, col),
-        line, col);
+        std::format("unknown keyword argument '{}'", bad), line, col);
   }
 
   // Dispatch through the trampoline (it releases the slab values).
