@@ -112,11 +112,17 @@ let e_closed = try {
 } catch e { e.kind }
 assert_eq(e_closed, "IOError")
 
-// --- binary safety: NUL byte + multibyte round-trip ---
+// --- multibyte round-trip (String is a Go-style byte string) ---
+// Multibyte UTF-8 must survive write→read unchanged, and size() counts
+// bytes (3 per CJK char here), not characters. (A lone NUL / invalid
+// byte can't be written from source yet — no \x escape; see the byte
+// string round-trip in tests/embedding/utf8_invalid_smoke.cc.)
 let bin = FS.join(tmp_root, "culebra_file_bin.dat")
-let payload = "a\u{0}b日本語\u{0}c"
+let payload = "a日本語b"
 File.with(bin, "w", fn (f) { f.write(payload) })
-assert_eq(File.with(bin, "r", fn (f) { f.read() }), payload)
+let back = File.with(bin, "r", fn (f) { f.read() })
+assert_eq(back, payload)
+assert_eq(back.size(), 11)   // 'a' + 3×3 (CJK) + 'b'
 FS.remove(bin)
 
 FS.remove(p)
