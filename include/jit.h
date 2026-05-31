@@ -8780,6 +8780,23 @@ struct JIT {
       // fall through to normal recursive walk
     }
 
+    if (node.tag == "DESTRUCTURE_ASSIGN"_) {
+      // [LET, MUTABLE, PATTERN, EXPRESSION]. The pattern's bound names are
+      // locals of the enclosing function (like a plain `let`), so nested
+      // closures can capture them and the bindings get promoted to cells.
+      // Same mechanism as MATCH above; without this they look like globals and
+      // a capturing closure raises NameError.
+      if (node.nodes.size() >= 3) {
+        check_pattern_shadow(*node.nodes[2], outer);
+        for_each_pattern_binding(
+            *node.nodes[2],
+            [&](std::string_view name, size_t, size_t) {
+              locals.insert(std::string(name));
+            });
+      }
+      // fall through to walk the RHS
+    }
+
     if (node.tag == "TRY"_) {
       // TRY = [body_block, catch_ident, catch_body]. The catch binding
       // introduces a new local in the enclosing function; register it
@@ -11671,6 +11688,20 @@ struct JIT {
     return builder_.getFalse();
   }
 
+  // A leaf element pattern that binds the whole value to a single name (the
+  // declare_local / store_slot path takes ownership of a +1). When the value
+  // handed to it is BORROWED (an Array/Tuple element from array_get), the
+  // caller must retain it first; sub-patterns instead recurse on the borrowed
+  // value and retain their own leaves. Mirrors emit_object_pattern's split.
+  bool pattern_takes_ownership(const peg::Ast& pat) {
+    using namespace peg::udl;
+    if (pat.tag == "IDENTIFIER"_)
+      return !is_sink_name(std::string(pat.token));
+    if (pat.tag == "TYPED_IDENT"_)
+      return !is_sink_name(std::string(pat.nodes[0]->token));
+    return false;
+  }
+
   // Element-by-element destructuring against a JitArray-backed value
   // (Array or Tuple — same storage, different tag). `allow_rest`
   // toggles `...rest` recognition: Array allows it, Tuple's grammar
@@ -11749,6 +11780,11 @@ struct JIT {
         rest_idx < 0 ? elems.size() : static_cast<size_t>(rest_idx);
     for (size_t i = 0; i < pre_count; i++) {
       auto v = get_elem(builder_.getInt64(i));
+      // array_get hands back a borrowed element; a leaf binding takes
+      // ownership of it, so retain before binding (the temp Tuple/Array is
+      // released after the destructure and would otherwise free the element
+      // out from under the binding — heap-use-after-free).
+      if (pattern_takes_ownership(*elems[i])) emit_value_retain(v);
       auto m = emit_pattern(*elems[i], v, is_mut);
       auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont", fn);
       builder_.CreateCondBr(m, contBB, failBB);
@@ -11778,6 +11814,9 @@ struct JIT {
         auto off = static_cast<int64_t>(elems.size() - i);
         auto idx = builder_.CreateSub(size, builder_.getInt64(off));
         auto v = get_elem(idx);
+        // Post-rest leaves take ownership of a borrowed element too; retain
+        // before binding, same as the pre-rest loop above.
+        if (pattern_takes_ownership(*elems[i])) emit_value_retain(v);
         auto m = emit_pattern(*elems[i], v, is_mut);
         auto contBB = llvm::BasicBlock::Create(ctx_, p + ".cont2", fn);
         builder_.CreateCondBr(m, contBB, failBB);

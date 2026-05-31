@@ -41,4 +41,36 @@ mut ok2 = 2
 let e = try { (imm, ok2) = (9, 9); nil } catch er { er.kind }
 assert_eq(e, "ImmutableError")
 
+// Destructuring refcounted (heap) elements must retain each leaf binding:
+// the temporary tuple/array is released right after the destructure, so a
+// borrowed-but-unretained element would be freed out from under the binding
+// (a JIT heap-use-after-free / double-free — `let (a,b)=([1],[2])` corrupted).
+let (arr1, arr2) = ([1, 2], [3, 4])
+arr1.push(99)
+arr2.push(88)
+assert_eq(arr1, [1, 2, 99])
+assert_eq(arr2, [3, 4, 88])
+
+// A closure can capture destructure-bound locals — they are real locals of
+// the enclosing scope (promotable to cells), not globals. Capturing one used
+// to raise NameError under the JIT.
+let (cap_s, cap_t) = (10, 20)
+let add = || cap_s + cap_t
+assert_eq(add(), 30)
+
+// Captured binding holding a heap value, mutated after capture.
+let (lst, _) = ([5, 6], 0)
+let read = || lst.size()
+lst.push(7)
+assert_eq(read(), 3)
+
+// Same retain rule for leaves *after* a rest pattern: `post` is bound from a
+// borrowed element past the slice, so it must be retained too.
+let [head, ...middle, tail] = [[1], [2], [3]]
+head.push(10)
+tail.push(30)
+assert_eq(head, [1, 10])
+assert_eq(middle, [[2]])
+assert_eq(tail, [3, 30])
+
 IO.puts("test_parallel_assign OK")
