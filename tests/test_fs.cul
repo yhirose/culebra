@@ -80,4 +80,47 @@ assert_eq(FS.exists(dir), false)
 let err = try { FS.size(bogus); "no-error" } catch e { e.kind }
 assert_eq(err, "IOError")
 
+// --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
+// Pure path helpers (no I/O).
+assert_eq(FS.normpath("a/./b/../c"), "a/c")
+assert_eq(FS.is_abs("/tmp"), true)
+assert_eq(FS.is_abs("rel/path"), false)
+
+let xdir = FS.join(tmp_root, "culebra_fs_ext")
+if FS.exists(xdir) { FS.remove(xdir, recursive: true) }
+FS.mkdir(FS.join(xdir, "sub"))
+IO.write(FS.join(xdir, "f.txt"), "hello")
+IO.write(FS.join(xdir, "sub/g.txt"), "yy")
+
+// stat: regular file is_file/size; mtime/is_dir/is_symlink present.
+let stf = FS.stat(FS.join(xdir, "f.txt"))
+assert_eq(stf.size, 5)
+assert_true(stf.is_file)
+assert_eq(stf.is_dir, false)
+assert_eq(stf.is_symlink, false)
+let std = FS.stat(xdir)
+assert_true(std.is_dir)
+
+// walk: every path under xdir (sub/, f.txt, sub/g.txt) = 3 entries.
+assert_eq(FS.walk(xdir).size(), 3)
+
+// glob: **/*.txt matches both files.
+assert_eq(FS.glob(FS.join(xdir, "**/*.txt")).size(), 2)
+
+// rename then copy.
+FS.rename(FS.join(xdir, "f.txt"), FS.join(xdir, "r.txt"))
+assert_true(FS.exists(FS.join(xdir, "r.txt")))
+assert_eq(FS.exists(FS.join(xdir, "f.txt")), false)
+FS.copy(FS.join(xdir, "r.txt"), FS.join(xdir, "c.txt"))
+assert_true(FS.exists(FS.join(xdir, "c.txt")))
+
+// symlink / readlink / is_symlink.
+FS.symlink(FS.join(xdir, "r.txt"), FS.join(xdir, "link"))
+assert_true(FS.is_symlink(FS.join(xdir, "link")))
+assert_eq(FS.readlink(FS.join(xdir, "link")), FS.join(xdir, "r.txt"))
+
+// recursive remove (kwarg) cleans the whole tree.
+FS.remove(xdir, recursive: true)
+assert_eq(FS.exists(xdir), false)
+
 IO.puts("test_fs OK")

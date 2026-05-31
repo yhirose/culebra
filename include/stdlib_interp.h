@@ -18,6 +18,7 @@
 #include <proc.h>
 #include <regexlib.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -284,6 +285,119 @@ inline Value make_io_namespace() {
   return Value(std::move(ns));
 }
 
+// --- Glob (file-scope, shared between interp + JIT) ---
+
+namespace _glob_detail {
+
+// Match a single path component against a glob token supporting `*`, `?`,
+// and `[...]` character classes. Backtracking on `*`.
+inline bool match_segment(std::string_view pat, std::string_view name) {
+  size_t pi = 0, ni = 0, star = std::string_view::npos, mark = 0;
+  while (ni < name.size()) {
+    if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == name[ni])) {
+      ++pi; ++ni;
+    } else if (pi < pat.size() && pat[pi] == '[') {
+      size_t close = pat.find(']', pi + 1);
+      if (close == std::string_view::npos) return false;
+      auto cls = pat.substr(pi + 1, close - pi - 1);
+      bool neg = !cls.empty() && (cls[0] == '!' || cls[0] == '^');
+      if (neg) cls.remove_prefix(1);
+      bool hit = false;
+      for (size_t k = 0; k < cls.size(); ++k) {
+        if (k + 2 < cls.size() && cls[k + 1] == '-') {
+          if (name[ni] >= cls[k] && name[ni] <= cls[k + 2]) hit = true;
+          k += 2;
+        } else if (cls[k] == name[ni]) {
+          hit = true;
+        }
+      }
+      if (hit == neg) return false;
+      pi = close + 1; ++ni;
+    } else if (pi < pat.size() && pat[pi] == '*') {
+      star = pi++; mark = ni;
+    } else if (star != std::string_view::npos) {
+      pi = star + 1; ni = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pi < pat.size() && pat[pi] == '*') ++pi;
+  return pi == pat.size();
+}
+
+// Recursively expand glob segments starting at directory `base`.
+inline void expand(const std::filesystem::path& base,
+                   const std::vector<std::string>& segs, size_t si,
+                   std::vector<std::string>& out) {
+  if (si == segs.size()) {
+    if (!base.empty()) out.push_back(base.string());
+    return;
+  }
+  const auto& seg = segs[si];
+  if (seg == "**") {
+    // `**` matches zero or more directories: try skipping it, and try
+    // descending into every subdir while keeping `**` active.
+    expand(base, segs, si + 1, out);
+    std::error_code ec;
+    std::filesystem::directory_iterator it(
+        base.empty() ? std::filesystem::path(".") : base, ec);
+    if (ec) return;
+    for (const auto& e : it) {
+      if (e.is_directory(ec)) expand(e.path(), segs, si, out);
+    }
+    return;
+  }
+  bool literal = seg.find_first_of("*?[") == std::string::npos;
+  if (literal) {
+    auto next = base.empty() ? std::filesystem::path(seg) : base / seg;
+    std::error_code ec;
+    if (std::filesystem::exists(next, ec)) expand(next, segs, si + 1, out);
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::directory_iterator it(
+      base.empty() ? std::filesystem::path(".") : base, ec);
+  if (ec) return;
+  for (const auto& e : it) {
+    auto name = e.path().filename().string();
+    if (match_segment(seg, name)) expand(e.path(), segs, si + 1, out);
+  }
+}
+
+}  // namespace _glob_detail
+
+inline std::vector<std::string> _fs_glob(std::string_view pattern) {
+  std::vector<std::string> segs;
+  bool absolute = !pattern.empty() && pattern[0] == '/';
+  size_t i = 0;
+  while (i < pattern.size()) {
+    size_t j = pattern.find('/', i);
+    if (j == std::string_view::npos) j = pattern.size();
+    if (j > i) segs.emplace_back(pattern.substr(i, j - i));
+    i = j + 1;
+  }
+  std::vector<std::string> out;
+  _glob_detail::expand(absolute ? std::filesystem::path("/")
+                                : std::filesystem::path(),
+                       segs, 0, out);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// Last-write time of `p` as seconds since the Unix epoch, or 0 on error.
+// Shared interp/JIT (file_time_type -> system_clock conversion for FS.stat).
+inline long _fs_mtime_secs(const std::filesystem::path& p) {
+  std::error_code ec;
+  auto ftime = std::filesystem::last_write_time(p, ec);
+  if (ec) return 0;
+  auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() +
+      std::chrono::system_clock::now());
+  return static_cast<long>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          sys.time_since_epoch()).count());
+}
+
 inline Value make_fs_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -396,17 +510,227 @@ inline Value make_fs_namespace() {
   ns.initialize(
       "remove",
       Value(FunctionValue(
+          {{"path", false, "String"sv},
+           {"recursive", false, ""sv, nullptr, kw_default_false()}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            bool recursive = env->get("recursive").to_bool();
+            std::error_code ec;
+            if (recursive) {
+              if (std::filesystem::remove_all(p, ec) ==
+                      static_cast<std::uintmax_t>(-1) || ec) {
+                throw_io(std::format("FS.remove('{}', recursive: true)", p),
+                         line, col, ec);
+              }
+            } else if (!std::filesystem::remove(p, ec) || ec) {
+              throw_io(std::format("FS.remove('{}')", p), line, col, ec);
+            }
+            return Value();
+          })),
+      false);
+
+  // `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime}.
+  // mtime is seconds since the Unix epoch (Long). IOError on missing path.
+  ns.initialize(
+      "stat",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            auto st = std::filesystem::symlink_status(p, ec);
+            if (ec || st.type() == std::filesystem::file_type::not_found) {
+              throw_io(std::format("FS.stat('{}')", p), line, col, ec);
+            }
+            bool is_link =
+                st.type() == std::filesystem::file_type::symlink;
+            // Follow the link for size/dir/file/mtime.
+            auto fst = std::filesystem::status(p, ec);
+            std::uintmax_t sz = 0;
+            if (std::filesystem::is_regular_file(fst)) {
+              sz = std::filesystem::file_size(p, ec);
+              if (ec) sz = 0;
+            }
+            long mtime = _fs_mtime_secs(p);
+            ObjectValue obj;
+            obj.initialize("size", Value(static_cast<long>(sz)), false);
+            obj.initialize("is_dir",
+                           Value(std::filesystem::is_directory(fst)), false);
+            obj.initialize("is_file",
+                           Value(std::filesystem::is_regular_file(fst)),
+                           false);
+            obj.initialize("is_symlink", Value(is_link), false);
+            obj.initialize("mtime", Value(mtime), false);
+            return Value(std::move(obj));
+          },
+          "Object"sv)),
+      false);
+
+  // `FS.rename(src, dst)` — atomic within a filesystem. IOError otherwise.
+  ns.initialize(
+      "rename",
+      Value(FunctionValue(
+          {{"src", false, "String"sv}, {"dst", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& s = env->get("src").to_string();
+            const auto& d = env->get("dst").to_string();
+            std::error_code ec;
+            std::filesystem::rename(s, d, ec);
+            if (ec) throw_io(std::format("FS.rename('{}', '{}')", s, d),
+                             line, col, ec);
+            return Value();
+          })),
+      false);
+
+  // `FS.copy(src, dst, recursive: false)` — file or (recursive) tree copy.
+  ns.initialize(
+      "copy",
+      Value(FunctionValue(
+          {{"src", false, "String"sv}, {"dst", false, "String"sv},
+           {"recursive", false, ""sv, nullptr, kw_default_false()}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& s = env->get("src").to_string();
+            const auto& d = env->get("dst").to_string();
+            bool recursive = env->get("recursive").to_bool();
+            std::error_code ec;
+            auto opts = std::filesystem::copy_options::overwrite_existing;
+            if (recursive) opts |= std::filesystem::copy_options::recursive;
+            std::filesystem::copy(s, d, opts, ec);
+            if (ec) throw_io(std::format("FS.copy('{}', '{}')", s, d),
+                             line, col, ec);
+            return Value();
+          })),
+      false);
+
+  // --- Path resolution ---
+  ns.initialize("normpath",
+                string_to_string([](const std::filesystem::path& p) {
+                  return p.lexically_normal().string();
+                }),
+                false);
+  ns.initialize("is_abs",
+                path_query_bool([](const std::filesystem::path& p,
+                                   std::error_code&) {
+                  return p.is_absolute();
+                }),
+                false);
+  ns.initialize(
+      "abspath",
+      Value(FunctionValue(
           {{"path", false, "String"sv}},
           [throw_io](std::shared_ptr<Environment> env) {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
             const auto& p = env->get("path").to_string();
             std::error_code ec;
-            if (!std::filesystem::remove(p, ec) || ec) {
-              throw_io(std::format("FS.remove('{}')", p), line, col, ec);
-            }
+            auto out = std::filesystem::absolute(p, ec);
+            if (ec) throw_io(std::format("FS.abspath('{}')", p), line, col, ec);
+            return Value(out.lexically_normal().string());
+          },
+          "String"sv)),
+      false);
+  ns.initialize(
+      "realpath",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            auto out = std::filesystem::weakly_canonical(p, ec);
+            if (ec) throw_io(std::format("FS.realpath('{}')", p), line, col, ec);
+            return Value(out.string());
+          },
+          "String"sv)),
+      false);
+
+  // --- Symlinks ---
+  ns.initialize("is_symlink",
+                path_query_bool([](const std::filesystem::path& p,
+                                   std::error_code& ec) {
+                  return std::filesystem::is_symlink(
+                      std::filesystem::symlink_status(p, ec));
+                }),
+                false);
+  ns.initialize(
+      "symlink",
+      Value(FunctionValue(
+          {{"target", false, "String"sv}, {"link", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& t = env->get("target").to_string();
+            const auto& l = env->get("link").to_string();
+            std::error_code ec;
+            std::filesystem::create_symlink(t, l, ec);
+            if (ec) throw_io(std::format("FS.symlink('{}', '{}')", t, l),
+                             line, col, ec);
             return Value();
           })),
+      false);
+  ns.initialize(
+      "readlink",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            auto out = std::filesystem::read_symlink(p, ec);
+            if (ec) throw_io(std::format("FS.readlink('{}')", p), line, col, ec);
+            return Value(out.string());
+          },
+          "String"sv)),
+      false);
+
+  // `FS.walk(path)` -> Array<String> of all paths under `path`, recursive,
+  // depth-first. Each entry is the full path (root-relative as given).
+  ns.initialize(
+      "walk",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [throw_io](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            std::error_code ec;
+            std::filesystem::recursive_directory_iterator it(p, ec);
+            if (ec) throw_io(std::format("FS.walk('{}')", p), line, col, ec);
+            ArrayValue av;
+            std::error_code iter_ec;
+            for (auto end = std::filesystem::recursive_directory_iterator();
+                 it != end; it.increment(iter_ec)) {
+              if (iter_ec) break;
+              av.values->emplace_back(it->path().string());
+            }
+            return Value(std::move(av));
+          },
+          "Array"sv)),
+      false);
+
+  // `FS.glob(pattern)` -> Array<String> of matching paths. Supports `*`,
+  // `?`, `[...]` per path segment, and `**` for recursive descent.
+  ns.initialize(
+      "glob",
+      Value(FunctionValue(
+          {{"pattern", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            const auto& pat = env->get("pattern").to_string();
+            ArrayValue av;
+            for (auto& m : _fs_glob(pat)) av.values->emplace_back(std::move(m));
+            return Value(std::move(av));
+          },
+          "Array"sv)),
       false);
 
   return Value(std::move(ns));

@@ -374,6 +374,150 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove(
   }
 }
 
+// recursive remove (`FS.remove(path, recursive: true)`).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove_all(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  if (std::filesystem::remove_all(path ? path : "", ec) ==
+          static_cast<std::uintmax_t>(-1) || ec) {
+    _fs_throw_io(std::format("FS.remove('{}', recursive: true)",
+                             path ? path : ""), line, col, ec);
+  }
+}
+
+// `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime}.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto st = std::filesystem::symlink_status(path ? path : "", ec);
+  if (ec || st.type() == std::filesystem::file_type::not_found) {
+    _fs_throw_io(std::format("FS.stat('{}')", path ? path : ""), line, col, ec);
+  }
+  bool is_link = st.type() == std::filesystem::file_type::symlink;
+  auto fst = std::filesystem::status(path ? path : "", ec);
+  std::uintmax_t sz = 0;
+  if (std::filesystem::is_regular_file(fst)) {
+    sz = std::filesystem::file_size(path ? path : "", ec);
+    if (ec) sz = 0;
+  }
+  int64_t mtime = culebra::_fs_mtime_secs(path ? path : "");
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "size", false, TAG_LONG,
+                             static_cast<int64_t>(sz), line, col);
+  culebra_runtime_object_set(o, "is_dir", false, TAG_BOOL,
+                             std::filesystem::is_directory(fst) ? 1 : 0,
+                             line, col);
+  culebra_runtime_object_set(o, "is_file", false, TAG_BOOL,
+                             std::filesystem::is_regular_file(fst) ? 1 : 0,
+                             line, col);
+  culebra_runtime_object_set(o, "is_symlink", false, TAG_BOOL,
+                             is_link ? 1 : 0, line, col);
+  culebra_runtime_object_set(o, "mtime", false, TAG_LONG, mtime, line, col);
+  return o;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_rename(
+    const char* src, const char* dst, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::rename(src ? src : "", dst ? dst : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.rename('{}', '{}')", src ? src : "",
+                                   dst ? dst : ""), line, col, ec);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_copy(
+    const char* src, const char* dst, int64_t recursive,
+    int64_t line, int64_t col) {
+  std::error_code ec;
+  auto opts = std::filesystem::copy_options::overwrite_existing;
+  if (recursive) opts |= std::filesystem::copy_options::recursive;
+  std::filesystem::copy(src ? src : "", dst ? dst : "", opts, ec);
+  if (ec) _fs_throw_io(std::format("FS.copy('{}', '{}')", src ? src : "",
+                                   dst ? dst : ""), line, col, ec);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_normpath(
+    const char* path) {
+  return _culebra_heap_str(
+      std::filesystem::path(path ? path : "").lexically_normal().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_abs(
+    const char* path) {
+  return std::filesystem::path(path ? path : "").is_absolute() ? 1 : 0;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_abspath(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto out = std::filesystem::absolute(path ? path : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.abspath('{}')", path ? path : ""),
+                       line, col, ec);
+  return _culebra_heap_str(out.lexically_normal().string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_realpath(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto out = std::filesystem::weakly_canonical(path ? path : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.realpath('{}')", path ? path : ""),
+                       line, col, ec);
+  return _culebra_heap_str(out.string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_fs_is_symlink(
+    const char* path) {
+  std::error_code ec;
+  return std::filesystem::is_symlink(
+      std::filesystem::symlink_status(path ? path : "", ec)) ? 1 : 0;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_symlink(
+    const char* target, const char* link, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::create_symlink(target ? target : "", link ? link : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.symlink('{}', '{}')",
+                                   target ? target : "", link ? link : ""),
+                       line, col, ec);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_readlink(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  auto out = std::filesystem::read_symlink(path ? path : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.readlink('{}')", path ? path : ""),
+                       line, col, ec);
+  return _culebra_heap_str(out.string());
+}
+
+// `FS.walk(path)` -> Array<String>, recursive depth-first.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_walk(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::recursive_directory_iterator it(path ? path : "", ec);
+  if (ec) _fs_throw_io(std::format("FS.walk('{}')", path ? path : ""),
+                       line, col, ec);
+  auto* arr = culebra_runtime_array_new();
+  std::error_code iter_ec;
+  for (auto end = std::filesystem::recursive_directory_iterator();
+       it != end; it.increment(iter_ec)) {
+    if (iter_ec) break;
+    auto* s = _culebra_heap_str(it->path().string());
+    culebra_runtime_array_push(arr, TAG_STRING, reinterpret_cast<int64_t>(s));
+  }
+  return arr;
+}
+
+// `FS.glob(pattern)` -> Array<String>, shares culebra::_fs_glob with interp.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_glob(
+    const char* pattern) {
+  auto* arr = culebra_runtime_array_new();
+  for (auto& m : culebra::_fs_glob(pattern ? pattern : "")) {
+    auto* s = _culebra_heap_str(m);
+    culebra_runtime_array_push(arr, TAG_STRING, reinterpret_cast<int64_t>(s));
+  }
+  return arr;
+}
+
 // --- _Time primitives ---
 // Calendar logic is shared with the interpreter via `culebra::_time_detail`
 // (see stdlib_interp.h). The user-facing `Time` module (Instant /
@@ -1829,9 +1973,67 @@ inline JitValue _ns_fs_mkdir(JitValue* a, int64_t) {
   culebra_runtime_fs_mkdir(_ns_adapt::take_str(a[0]), 0, 0);
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_fs_remove(JitValue* a, int64_t) {
-  culebra_runtime_fs_remove(_ns_adapt::take_str(a[0]), 0, 0);
+// remove(path, recursive=false): slab is full-arity via NsParamMeta.
+inline JitValue _ns_fs_remove(JitValue* a, int64_t n) {
+  JitValue rec = n > 1 ? a[1] : JitValue{TAG_BOOL, 0};
+  if (rec.tag == TAG_BOOL && rec.data != 0) {
+    culebra_runtime_fs_remove_all(_ns_adapt::take_str(a[0]), 0, 0);
+  } else {
+    culebra_runtime_fs_remove(_ns_adapt::take_str(a[0]), 0, 0);
+  }
   return _ns_adapt::v_nil();
+}
+inline JitValue _ns_fs_stat(JitValue* a, int64_t) {
+  return _ns_adapt::v_object(
+      culebra_runtime_fs_stat(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_rename(JitValue* a, int64_t) {
+  culebra_runtime_fs_rename(_ns_adapt::take_str(a[0]),
+                            _ns_adapt::take_str(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+// copy(src, dst, recursive=false): slab full-arity via NsParamMeta.
+inline JitValue _ns_fs_copy(JitValue* a, int64_t n) {
+  JitValue rec = n > 2 ? a[2] : JitValue{TAG_BOOL, 0};
+  culebra_runtime_fs_copy(_ns_adapt::take_str(a[0]), _ns_adapt::take_str(a[1]),
+                          rec.tag == TAG_BOOL && rec.data != 0 ? 1 : 0, 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_fs_normpath(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_fs_normpath(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_is_abs(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_fs_is_abs(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_abspath(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_fs_abspath(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_realpath(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_fs_realpath(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_is_symlink(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(
+      culebra_runtime_fs_is_symlink(_ns_adapt::take_str(a[0])));
+}
+inline JitValue _ns_fs_symlink(JitValue* a, int64_t) {
+  culebra_runtime_fs_symlink(_ns_adapt::take_str(a[0]),
+                             _ns_adapt::take_str(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_fs_readlink(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_fs_readlink(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_walk(JitValue* a, int64_t) {
+  return _ns_adapt::v_array(
+      culebra_runtime_fs_walk(_ns_adapt::take_str(a[0]), 0, 0));
+}
+inline JitValue _ns_fs_glob(JitValue* a, int64_t) {
+  return _ns_adapt::v_array(
+      culebra_runtime_fs_glob(_ns_adapt::take_str(a[0])));
 }
 
 // Random
@@ -2262,6 +2464,21 @@ inline const NsParam kProcSpawnParams[] = {
 };
 inline const NsParamMeta kProcSpawnMeta = {kProcSpawnParams, 4, -1, -1};
 
+// FS.remove(path, recursive=false) / FS.copy(src, dst, recursive=false).
+// Names/defaults mirror make_fs_namespace in stdlib_interp.h.
+inline const NsParam kFsRemoveParams[] = {
+  {"path",      false, false, nullptr},
+  {"recursive", true,  false, &_ns_def_false},
+};
+inline const NsParamMeta kFsRemoveMeta = {kFsRemoveParams, 2, -1, -1};
+
+inline const NsParam kFsCopyParams[] = {
+  {"src",       false, false, nullptr},
+  {"dst",       false, false, nullptr},
+  {"recursive", true,  false, &_ns_def_false},
+};
+inline const NsParamMeta kFsCopyMeta = {kFsCopyParams, 3, -1, -1};
+
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
@@ -2294,7 +2511,19 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "size",      1, &_ns_fs_size},
   {"FS",     "list_dir",  1, &_ns_fs_list_dir},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
-  {"FS",     "remove",    1, &_ns_fs_remove},
+  {"FS",     "remove",    1, &_ns_fs_remove, &kFsRemoveMeta},
+  {"FS",     "stat",      1, &_ns_fs_stat},
+  {"FS",     "rename",    2, &_ns_fs_rename},
+  {"FS",     "copy",      2, &_ns_fs_copy, &kFsCopyMeta},
+  {"FS",     "normpath",  1, &_ns_fs_normpath},
+  {"FS",     "is_abs",    1, &_ns_fs_is_abs},
+  {"FS",     "abspath",   1, &_ns_fs_abspath},
+  {"FS",     "realpath",  1, &_ns_fs_realpath},
+  {"FS",     "is_symlink",1, &_ns_fs_is_symlink},
+  {"FS",     "symlink",   2, &_ns_fs_symlink},
+  {"FS",     "readlink",  1, &_ns_fs_readlink},
+  {"FS",     "walk",      1, &_ns_fs_walk},
+  {"FS",     "glob",      1, &_ns_fs_glob},
 
   {"Random", "seed",            1, &_ns_random_seed},
   {"Random", "int",             2, &_ns_random_int},
@@ -2791,11 +3020,35 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::fs_list_dir, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
-  for (auto name : {rt::fs_mkdir, rt::fs_remove}) {
+  for (auto name : {rt::fs_mkdir, rt::fs_remove, rt::fs_remove_all}) {
     jit.module_->getOrInsertFunction(name, jit.builder_.getVoidTy(), ptrTy,
                                  jit.builder_.getInt64Ty(),
                                  jit.builder_.getInt64Ty());
   }
+  // FS extensions. (ptr)->i64 / (ptr)->ptr query+pure helpers.
+  for (auto name : {rt::fs_is_abs, rt::fs_is_symlink}) {
+    jit.module_->getOrInsertFunction(name, jit.builder_.getInt64Ty(), ptrTy);
+  }
+  jit.module_->getOrInsertFunction(rt::fs_normpath, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::fs_glob, ptrTy, ptrTy);
+  // (path, line, col) -> ptr (string or Object* or Array*), throws on error.
+  for (auto name : {rt::fs_abspath, rt::fs_realpath, rt::fs_readlink,
+                    rt::fs_stat, rt::fs_walk}) {
+    jit.module_->getOrInsertFunction(name, ptrTy, ptrTy,
+                                 jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
+  }
+  // (src, dst, line, col) -> void.
+  for (auto name : {rt::fs_rename, rt::fs_symlink}) {
+    jit.module_->getOrInsertFunction(name, jit.builder_.getVoidTy(), ptrTy,
+                                 ptrTy, jit.builder_.getInt64Ty(),
+                                 jit.builder_.getInt64Ty());
+  }
+  // FS.copy(src, dst, recursive, line, col) -> void.
+  jit.module_->getOrInsertFunction(rt::fs_copy, jit.builder_.getVoidTy(),
+                               ptrTy, ptrTy, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
   // _Time (Long-nanos primitives + Float monotonic / sleep).
   {
   auto i64 = jit.builder_.getInt64Ty();
