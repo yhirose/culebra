@@ -1628,9 +1628,10 @@ for i in 0..10 { puts(i) }          # exclusive (0..9)
 for i in 0..=10 { puts(i) }         # inclusive (0..10)
 ```
 
-Range literals `a..b` (exclusive) and `a..=b` (inclusive) return the
-same lazy integer iterator as `range` — no up-front allocation.
-Endpoints must be `Long`.
+Range values `a..b` (exclusive) and `a..=b` (inclusive) iterate the
+same lazy integer sequence as `range`. A bounded range (both `Long`
+endpoints present) is iterable; an open-ended range used for slicing
+(`xs[2..]`) has no iteration end and raises if iterated.
 
 **Destructuring loop variable.** The `var` may be a pattern, matched
 against each element's shape (a mismatch raises `ValueError`):
@@ -2884,11 +2885,19 @@ for k in o.iter() { o["b"] = 2 }
                      # !! Object changed size during iteration
 ```
 
-**Iterator methods**: any Object that has both `iter` and `next`
-properties (whether built-in or user-defined) picks up the lazy
-iterator method set below. Non-terminal methods return a new
-Iterator; terminal methods consume the iterator and return a
+**Iterator methods**: any Object exposing the iterator interface —
+`next` together with `has_next`, or `iter` — picks up the lazy iterator
+method set below, which drives the receiver through `has_next()` /
+`next()`. This means a user `iter()` result (a plain `{has_next, next}`
+object) and a generator chain the same combinators as a built-in
+iterator, not just `range`/array iterators. Non-terminal methods return
+a new Iterator; terminal methods consume the iterator and return a
 concrete value.
+
+```culebra
+fn nums() { yield 1; yield 2; yield 3; yield 4 }
+puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+```
 
 | Non-terminal | Result | Notes |
 |---|---|---|

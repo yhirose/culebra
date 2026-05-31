@@ -6144,11 +6144,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return _synthesize_parameters(val);
     }
 
-    // Duck-typed iterator protocol fallback: any Object/Array that has
-    // both `iter` and `next` methods is treated as an Iterator, and
-    // gains the lazy method set (map/filter/take/.../collect — see
-    // iterator_builtins()). Eager Array methods take priority above.
-    if (obj.has("iter") && obj.has("next")) {
+    // Duck-typed iterator protocol fallback: any Object/Array exposing the
+    // iterator interface (`next` plus `has_next`, or `iter`) gains the lazy
+    // method set (map/filter/take/.../collect — see iterator_builtins()),
+    // which drives the receiver via has_next()/next(). This is what lets a
+    // user `iter()` result (`{has_next, next}`) chain combinators, not just
+    // built-in iterators. Eager Array methods take priority above.
+    if (obj.has("next") && (obj.has("has_next") || obj.has("iter"))) {
       const auto& methods = iterator_builtins();
       auto it = methods.find(name);
       if (it != methods.end()) {

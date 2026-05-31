@@ -357,3 +357,36 @@ assert_true(outer_seen[0] == 1 && outer_seen[1] == 1
 assert_eq(inner_seen.size(), 4)
 assert_true(inner_seen[0] == 10 && inner_seen[1] == 20
     && inner_seen[2] == 10 && inner_seen[3] == 20)
+
+# --- User iterators compose with the lazy combinator chain ---
+# A user `iter()` returning a `{has_next, next}` object gains the same lazy
+# methods as a built-in iterator (map/filter/take/.../collect), driven via
+# its has_next()/next().
+class Countdown {
+  new(n) { this.n = n }
+  iter() {
+    let mut i = this.n
+    { has_next: fn() { i > 0 }, next: fn() { i = i - 1; i + 1 } }
+  }
+}
+assert_eq(Countdown.new(5).iter().filter(|x| x % 2 == 0).collect(), [4, 2])
+assert_eq(Countdown.new(5).iter().map(|x| x * 10).collect(), [50, 40, 30, 20, 10])
+assert_eq(Countdown.new(5).iter().take(2).collect(), [5, 4])
+assert_eq(Countdown.new(4).iter().map(|x| x + 1).filter(|x| x > 2).collect(), [5, 4, 3])
+
+# Generators expose the same chain.
+fn nums() { yield 1; yield 2; yield 3; yield 4 }
+assert_eq(nums().filter(|x| x % 2 == 0).collect(), [2, 4])
+assert_eq(nums().map(|x| x * 10).take(2).collect(), [10, 20])
+
+# Lazy short-circuit must cross the user-iterator boundary: take(2) over an
+# infinite source drives the user next() only twice (it must not exhaust it).
+mut calls = 0
+class Naturals {
+  new() {}
+  iter() {
+    { has_next: fn() { true }, next: fn() { calls = calls + 1; calls } }
+  }
+}
+assert_eq(Naturals.new().iter().map(|x| x * 2).take(2).collect(), [2, 4])
+assert_true(calls <= 3)

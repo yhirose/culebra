@@ -2720,10 +2720,19 @@ for k in o.iter() { o["b"] = 2 }
                      # !! Object changed size during iteration
 ```
 
-**イテレータメソッド**: `iter` と `next` の両方を持つ Object
-（組み込み / ユーザ定義を問わず）は、以下の遅延メソッド群を獲得
-します。非終端メソッドは新しい Iterator を返し、終端メソッドは
-イテレータを消費して具体値を返します。
+**イテレータメソッド**: イテレータ・インターフェイスを満たす Object
+——`next` と `has_next`、または `iter` を持つもの——は、以下の遅延
+メソッド群を獲得します。これらは受け手を `has_next()` / `next()` で
+駆動するため、ユーザの `iter()` 結果（素の `{has_next, next}` オブ
+ジェクト）やジェネレータも、組み込みイテレータと同じく combinator を
+連結できます（`range`・配列イテレータに限りません）。非終端メソッド
+は新しい Iterator を返し、終端メソッドはイテレータを消費して具体値を
+返します。
+
+```culebra
+fn nums() { yield 1; yield 2; yield 3; yield 4 }
+puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
+```
 
 | 非終端 | 戻り値 | 説明 |
 |---|---|---|
