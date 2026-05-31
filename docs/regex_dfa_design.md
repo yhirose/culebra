@@ -46,7 +46,10 @@ labour dissolves the three hard problems at once.
 
 `longest-safe` = a static, **conservative** property: alternative priority can
 never change the match end. Sufficient condition to start with: no priority
-branch reaching `Match`, no lazy quantifier, no trailing optional. *When in
+branch reaching `Match`, no lazy quantifier, no trailing optional, and no
+variable-length quantifier nested inside a repeat that can re-run (greedy
+spends the characters on the inner quantifier; longest spends them on extra
+outer iterations, so the ends differ — e.g. `(?:[a-cb].{0,4})+`). *When in
 doubt, mark unsafe* — the penalty for a false negative is "fall to the Pike
 VM and run slower", never a wrong answer.
 
