@@ -5985,7 +5985,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (0 <= idx && idx < static_cast<long>(elems.size())) {
         return elems[idx];
       }
-      throw CulebraError("IndexError", "index out of range.");
+      throw CulebraError("IndexError", "index out of range");
     }
     const auto& arr = val.to_array();
     auto idx = key.to_long();
@@ -5995,7 +5995,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (0 <= idx && idx < static_cast<long>(arr.values->size())) {
       return arr.values->at(idx);
     } else {
-      throw CulebraError("IndexError", "index out of range.");
+      throw CulebraError("IndexError", "index out of range");
     }
     return val;
   }
@@ -6926,7 +6926,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           const auto& arr = lval.to_array();
           auto idx = eval(postfix, env).to_long();
           if (idx < 0 || idx >= static_cast<long>(arr.values->size())) {
-            throw CulebraError("IndexError", "index out of range.");
+            throw CulebraError("IndexError", "index out of range");
           }
           if (compound) {
             auto cur = arr.values->at(idx);
