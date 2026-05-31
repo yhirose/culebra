@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "generator_transform.h"
+#include "lint.h"
 #include "parser.h"
 #include "shared.h"
 
@@ -94,6 +95,9 @@ inline std::vector<LoadedModule> ModuleLoader::load_program(
   auto entry_abs = std::filesystem::weakly_canonical(entry_path, ec);
   if (ec) entry_abs = std::filesystem::absolute(entry_path);
   load_recursive(entry_abs, entry_source, parse_msgs);
+  // Static lint pass: shared by interp / JIT / AOT (all backends share
+  // this loader), so a sound diagnostic aborts before any of them eval.
+  for (const auto& m : loaded_) lint::check_module(*m.ast);
   return std::move(loaded_);
 }
 
