@@ -432,6 +432,34 @@ void test_dfa_search() {
     }
 }
 
+void test_longest_safe_repeat() {
+  // Regression: a greedy re-entrant repeat whose body holds a *nested*
+  // variable-length quantifier (here `.{0,4}`) is NOT longest-safe — the
+  // leftmost-first (greedy) end is shorter than the leftmost-longest (DFA) end,
+  // so the DFA must bow out to the Pike VM rather than report the longer span.
+  // Fuzzer-found: `(?:[a-cb].{0,4})+` on "bbc 23_\n_2" once gave [0,7) ("bbc
+  // 23_") where greedy yields only [0,5) ("bbc 2").
+  auto agrees_with_pike = [](const std::string &pat, const std::string &sub) {
+    Regex re(pat);
+    Regex pike("(?:" + pat + ")(?:\\b|\\B)");  // wrap forces the full Pike VM
+    auto all = re.find_all(sub);
+    auto ref = pike.find_all(sub);
+    CHECK(all.size() == ref.size());
+    for (size_t i = 0; i < all.size() && i < ref.size(); i++)
+      CHECK(all[i].begin == ref[i].begin && all[i].end == ref[i].end &&
+            all[i].str == ref[i].str);
+  };
+  auto m = Regex("(?:[a-cb].{0,4})+").search("bbc 23_\n_2");
+  CHECK(m.matched && m.begin == 0 && m.end == 5 && m.str == "bbc 2");
+  agrees_with_pike("(?:[a-cb].{0,4})+", "bbc 23_\n_2");
+  agrees_with_pike("(?:[a-cb]${0}.{0,4})+", "bbc 23_\n_2");  // exact fuzzer pattern
+  agrees_with_pike("(?:\\w+\\s*)+", "a b  c d");
+  agrees_with_pike("(?:ab?)+", "abab aab");
+  // Simple greedy quantifiers stay on the (correct) DFA path — no over-rejection.
+  CHECK(Regex("\\w+").search("snake_case").str == "snake_case");
+  CHECK(Regex("\\d+").search("x 42 y").str == "42");
+}
+
 void test_linear_time() {
   // `(a+)+$` against all-'a' + a trailing mismatch is the classic ReDoS bomb
   // that hangs backtracking engines. The Pike VM stays linear, so this must
@@ -541,6 +569,7 @@ int main() {
   test_dfa_boolean();
   test_dfa_match();
   test_dfa_search();
+  test_longest_safe_repeat();
   test_linear_time();
   test_invalid_patterns();
   test_resource_limits();

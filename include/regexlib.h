@@ -401,18 +401,39 @@ inline Node reverse_ast(const Node &n) {
   return r;
 }
 
+// True if `n`'s subtree contains a variable-length quantifier (a `Repeat` whose
+// iteration count is not fixed, i.e. `rmin != rmax` — `?`, `*`, `+`, `{0,n}`,
+// `{m,n}`). A fixed `{k}` does not count.
+inline bool node_has_variable_repeat(const Node &n) {
+  using K = Node::Kind;
+  if (n.kind == K::Repeat && n.rmin != n.rmax) return true;
+  for (const auto &k : n.kids)
+    if (node_has_variable_repeat(k)) return true;
+  return false;
+}
+
 // Conservative "longest-safe" test: true if the leftmost-first (Perl) match end
 // always equals the leftmost-longest (POSIX) end, so a longest-matching DFA may
-// report the match span directly. The two diverge only when alternative
-// priority or laziness chooses a shorter span — `a|ab` (an earlier branch is a
-// prefix of a later one) or any lazy quantifier. We reject both outright: no
-// `Alt` node and no non-greedy `Repeat`. Greedy quantifiers, classes, literals
-// and their concatenations are all longest-safe (e.g. `\w+`, `\d+`, `ab?c`).
+// report the match span directly. The two diverge when alternative priority or
+// laziness chooses a shorter span — `a|ab` (an earlier branch is a prefix of a
+// later one) or any lazy quantifier — so we reject any `Alt` node and any
+// non-greedy `Repeat`. They also diverge when a greedy quantifier that can run
+// two or more iterations has a body holding a *nested* variable-length
+// quantifier: the leftmost-first engine spends characters greedily on the inner
+// quantifier, while a longer overall match spends them on extra outer iterations
+// (e.g. `(?:[a-cb].{0,4})+` on "bbc 23": greedy keeps "bc 2" in `.{0,4}` and
+// stops at 5, but the split "b","c 23_" reaches 7). Simple greedy quantifiers,
+// classes, literals and their concatenations stay safe (`\w+`, `\d+`, `ab?c`).
 // A false result only costs speed (fall back to the Pike VM), never accuracy.
 inline bool node_longest_safe(const Node &n) {
   using K = Node::Kind;
   if (n.kind == K::Alt) return false;
-  if (n.kind == K::Repeat && !n.greedy) return false;
+  if (n.kind == K::Repeat) {
+    if (!n.greedy) return false;
+    bool reentrant = n.rmax < 0 || n.rmax >= 2;  // can run >= 2 iterations
+    if (reentrant && !n.kids.empty() && node_has_variable_repeat(n.kids[0]))
+      return false;
+  }
   for (const auto &k : n.kids)
     if (!node_longest_safe(k)) return false;
   return true;
