@@ -1327,9 +1327,11 @@ program is the expensive part), then queried with methods:
 
 **Write patterns as single-quoted raw strings** (`'\d+'`, not `"\\d+"`): single
 quotes do no escape processing and no `{...}` interpolation, so `\d` and `{n}`
-pass through verbatim (the Python `r"..."` idiom). Flags are either passed to
-`compile` as a string (`Regex.compile('hello', "i")`) or inline in the pattern:
-`(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
+pass through verbatim (the Python `r"..."` idiom). For a pattern that also
+contains an apostrophe (e.g. a tokenizer's `'s`/`'t`), use a backtick raw
+string `` `...` `` — also raw, but it may hold `'`, `"`, and `{`. Flags are
+either passed to `compile` as a string (`Regex.compile('hello', "i")`) or inline
+in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 
 | Constructor | Result |
 | --- | --- |

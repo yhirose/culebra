@@ -112,7 +112,8 @@ contextual and only recognized after `:` or `->`.
   `2.5`), `1e-5`, `1.5e3`.
 * String: `'...'` is a **raw** string — every character between the
   quotes is taken literally, including backslashes. There is no escape
-  syntax, no interpolation, and apostrophes inside are not expressible.
+  syntax, no interpolation, and apostrophes inside are not expressible
+  (use a backtick string `` `...` `` for raw content containing `'`).
 * Interpolated string: `"...{expr}..."`. `{expr}` embeds any expression.
   Recognized escape sequences: `\n` `\r` `\t` `\\` `\"` `\{` (use `\{`
   to embed a literal `{` without starting an interpolation; raw `}` is
@@ -663,11 +664,25 @@ the spec exists so you don't need to.
 
 Single-quoted strings are **raw**: every character is taken verbatim
 between the quotes. There are no escape sequences and no interpolation.
-A literal apostrophe inside a raw string is not expressible — use a
-double-quoted string with `\'` or `\"` if you need quote characters.
-Both raw and interpolated strings may span multiple lines (a newline in
-the source is part of the value), so `'\d+'` is a ready-made regex
-literal and `"...\n..."` a multi-line template.
+A literal apostrophe is the one byte a `'...'` string cannot hold — use
+a backtick string (below) when the content contains `'`. Both raw and
+interpolated strings may span multiple lines (a newline in the source is
+part of the value), so `'\d+'` is a ready-made regex literal and
+`"...\n..."` a multi-line template.
+
+### Backtick raw string literals
+
+    `it's`              # holds a single quote
+    `say "hi"`          # holds double quotes — no escaping
+    `\d{4}-\d{2}`       # regex with quantifiers, verbatim
+
+Backtick strings (Go-style) are **raw like `'...'` but may also contain
+`'`, `"`, and `{`** — every byte between the backticks is verbatim, with
+no escapes and no interpolation, and they may span multiple lines. The
+only byte a backtick string cannot hold is a backtick itself. They are
+the cleanest form for regex patterns that mix apostrophes and braces
+(e.g. a GPT-2 pre-tokenizer: `` `'s| ?\p{L}+|\s+(?!\S)` ``), where neither
+`'...'` (no apostrophes) nor `"..."` (interpolates `{...}`) fits.
 
 ### Triple-quoted strings
 

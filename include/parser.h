@@ -227,7 +227,7 @@ const auto grammar_ = R"(
                             /  '(' _ PATTERN _ ',' _ ')'
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
-                               TRIPLE_STRING / STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
+                               TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
   SET                      <-  '{' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ '}'
@@ -314,6 +314,12 @@ const auto grammar_ = R"(
   # leading-`0` decimal that is really a float (`0.5`) still wins.
   NUMBER                   <-  < '0' [xX] [0-9a-fA-F]+ / '0' [oO] [0-7]+ / '0' [bB] [01]+ / [0-9]+ >
   STRING                   <-  ['] < (!['] .)* > [']
+  # Backtick raw string (Go-style): every byte verbatim between backticks
+  # — no escapes, no interpolation, multi-line. Unlike `'...'` it may hold
+  # `'`, `"`, and `{`; the only inexpressible byte is a backtick itself.
+  # Emits the same AST tag as STRING so the backends treat it identically
+  # (raw token, no decode).
+  RAW_STRING               <-  '`' < (!'`' .)* > '`'                     { ast_name: STRING }
 
   # `{expr}` embeds an expression; `{expr:spec}` adds a std::format-style
   # format spec (`{x:.2f}`, `{n:05}`, `{n:x}`, `{s:>10}`). INTERP_EXPR
