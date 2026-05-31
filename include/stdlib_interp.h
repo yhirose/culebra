@@ -2923,6 +2923,7 @@ inline Value make_regex_primitives_namespace() {
 // full stdlib (environment(), Interpreter), hence the bottom include.
 inline Value make_isolate_namespace();
 inline Value make_channel_namespace();
+inline Value make_parallel_namespace();
 
 inline void setup_built_in_functions(
     Environment& env, const std::vector<std::string>& argv = {}) {
@@ -3044,6 +3045,7 @@ inline void setup_built_in_functions(
   env.initialize("Proc", make_proc_namespace(), false);
   env.initialize("Isolate", make_isolate_namespace(), false);
   env.initialize("Channel", make_channel_namespace(), false);
+  env.initialize("Parallel", make_parallel_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express

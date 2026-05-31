@@ -22,6 +22,7 @@
 // cancel a still-running isolate — for now `drop` joins best-effort), Parallel
 // .map, JIT support, stdout line-locking.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -35,6 +36,15 @@
 #include "sendable.h"
 
 namespace culebra {
+
+// Defined in the Channel section below. Releases the in-flight channel refs a
+// serialized SendNode holds (the bump `channel_extract_hook` took), once the
+// node has been deserialized for the last time. Declared early because the
+// isolate child / inline paths consume nodes before that section.
+inline void release_inflight_channels(const sendable::SendNode& n);
+// Deserialize a transferred node on the current heap and release its in-flight
+// channel refs (defined in the Channel section). Used by join() and recv().
+inline Value chan_take(const sendable::SendNode& n);
 
 // Process-wide parallelism cap and live-isolate counter. Raw spawns and (later)
 // Parallel.map share ONE counter so recursive parallelism can't exceed the cap.
@@ -102,6 +112,9 @@ inline void run_isolate_child(std::shared_ptr<IsolateCore> core,
     args.reserve(sargs.size());
     for (const auto& sa : sargs)
       args.push_back(sendable::deserialize(sa, *child, base, dc));
+    // The rebuilt endpoints now hold their own refs; release the in-flight ones.
+    release_inflight_channels(sclosure);
+    for (const auto& sa : sargs) release_inflight_channels(sa);
     Value r = child->call_closure(fn, base, std::move(args));
     sendable::SerCtx sc;
     sendable::SendNode out = sendable::serialize(r, sc);
@@ -158,9 +171,9 @@ inline Value _isolate_extract(IsolateCore& core) {
   }
   if (core.error) throw *core.error;
   if (core.inline_thrown) throw *core.inline_thrown;
-  if (core.thrown) throw _isolate_deser_parent(*core.thrown);
+  if (core.thrown) throw chan_take(*core.thrown);
   if (core.ran_inline) return core.inline_result;
-  return _isolate_deser_parent(core.result);
+  return chan_take(core.result);
 }
 
 // ===========================================================================
@@ -213,6 +226,24 @@ inline void chan_bump(long id, int role, int delta) {
   std::lock_guard<std::mutex> lk(core->m);
   if (role == 0) core->tx_count += delta;
   else           core->rx_count += delta;
+}
+
+inline void chan_drop(long id, int role);  // fwd (release uses it)
+
+// Recursively release the in-flight refs (the extract-time bumps) a serialized
+// node holds for any channel endpoints it carries. Called exactly once per
+// serialized node, after it has been fully consumed (deserialized), so the
+// "endpoint = one count" invariant holds across both 1:1 (spawn / recv) and
+// 1:N (Parallel) transfers. Plain values are a no-op.
+inline void release_inflight_channels(const sendable::SendNode& n) {
+  using K = sendable::SendNode::K;
+  if (n.kind == K::Channel) { chan_drop(n.i, n.b ? 1 : 0); return; }
+  for (const auto& e : n.elems) release_inflight_channels(e);
+  for (const auto& e : n.entries) {
+    release_inflight_channels(e.first);
+    release_inflight_channels(e.second);
+  }
+  for (const auto& c : n.captures) release_inflight_channels(c.second);
 }
 
 // Drop one endpoint: when the last tx is gone the channel auto-closes (waking
@@ -275,18 +306,26 @@ inline std::optional<sendable::SendNode> chan_pop_blocking(long id) {
   return node;
 }
 
+// Deserialize a value popped from a channel and release its in-flight channel
+// refs (a value carrying an endpoint was extract-bumped at send time).
+inline Value chan_take(const sendable::SendNode& node) {
+  Value v = _isolate_deser_parent(node);
+  release_inflight_channels(node);
+  return v;
+}
+
 // Block for one value. Returns nil when the channel is closed and drained
 // (for a clean end-of-stream, prefer `for x in rx`, which ends instead).
 inline Value channel_recv(long id) {
   auto node = chan_pop_blocking(id);
-  return node ? _isolate_deser_parent(*node) : Value();
+  return node ? chan_take(*node) : Value();
 }
 
 inline Value channel_iter(long id) {
   return _make_iterator(
       [id](std::shared_ptr<Environment>) -> std::optional<Value> {
         auto node = chan_pop_blocking(id);
-        return node ? _iter_step_value(_isolate_deser_parent(*node))
+        return node ? _iter_step_value(chan_take(*node))
                     : _iter_step_done();  // closed + empty → for-in ends
       });
 }
@@ -350,19 +389,17 @@ inline bool _install_channel_hooks() {
     const auto& o = v.to_object();
     long id = o.get("__channel_id__").to_long();
     int role = static_cast<int>(o.get("__channel_role__").to_long());
-    chan_bump(id, role, +1);  // in-flight bump, balanced by the rebuilt drop
-    // Known limitation: if a value *containing* an endpoint is serialized and
-    // the SendNode is then discarded WITHOUT being rebuilt (e.g. sending an
-    // endpoint through a channel whose send throws, or it sits undrained in a
-    // reclaimed queue), this +1 leaks. The documented patterns — capturing an
-    // endpoint into a spawned closure — always rebuild, so they stay balanced.
-    // A sound fix (move-only RAII ownership of the ref on SendNode) is deferred
-    // until endpoint-through-channel is a supported pattern.
+    // In-flight ref: keeps the channel open across the async gap between
+    // serialize and rebuild (so a sender dropping its endpoint right after
+    // spawn can't auto-close before the child rebuilds). Released exactly once
+    // by release_inflight_channels after the node is consumed.
+    chan_bump(id, role, +1);
     return {id, role};
   };
   sendable::channel_rebuild_hook() =
       [](const sendable::ChannelRef& r) -> Value {
-    return make_channel_endpoint(r.id, r.role);  // extract already bumped
+    chan_bump(r.id, r.role, +1);  // this rebuilt endpoint's own ref (its drop -1)
+    return make_channel_endpoint(r.id, r.role);
   };
   return true;
 }
@@ -397,6 +434,182 @@ inline Value make_channel_namespace() {
             pair.push_back(make_channel_endpoint(id, 1));  // rx
             return Value(TupleValue(std::move(pair)));
           }, "Tuple"sv)), false);
+  return Value(std::move(ns));
+}
+
+// ===========================================================================
+// Parallel.map / Parallel.each — a worker pool over a fixed isolate count.
+// ===========================================================================
+//
+// The high-level API that dogfoods the Sendable path: `fn` and every element
+// cross the boundary, so a Sendable hole shows up here first. `limit` workers
+// (default = the parallelism cap) pull elements from one shared queue — N→N
+// with at most `limit` live isolates, not one isolate per element. Fail-fast:
+// the first error stops the rest (via the shared interrupt flag) and is
+// re-raised as `ParallelError` with the element index. Results come back in
+// input order. on_progress / map_settled / map_reduce are later increments.
+
+struct ParallelState {
+  std::vector<sendable::SendNode> items;    // serialized inputs
+  sendable::SendNode fn;                     // serialized closure
+  bool collect = true;                       // map (true) vs each (false)
+  std::vector<sendable::SendNode> results;   // serialized outputs, by index
+  std::atomic<size_t> next{0};               // next element to claim
+  std::atomic<bool> interrupt{false};        // fail-fast / cancellation
+  std::mutex err_m;
+  bool failed = false;
+  size_t err_index = 0;
+  std::optional<culebra::CulebraError> err;
+};
+
+inline void parallel_record_error(ParallelState& st, size_t i,
+                                  culebra::CulebraError e) {
+  st.interrupt.store(true, std::memory_order_relaxed);  // stop the others
+  if (e.kind == "Interrupted") return;  // a fail-fast consequence, not the cause
+  std::lock_guard<std::mutex> lk(st.err_m);
+  if (!st.failed) {
+    st.failed = true;
+    st.err_index = i;
+    st.err = std::move(e);
+  }
+}
+
+// One worker: its own Runtime/heap, deserialize `fn` once, then drain elements
+// until the queue is empty or a sibling fails. Runs on a spawned thread or
+// inline on the parent (the parent always works one, so progress is guaranteed
+// even with zero free thread slots).
+inline void parallel_worker(std::shared_ptr<ParallelState> st) {
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
+  rt.interrupt_flag = &st->interrupt;
+  auto interp = std::make_shared<Interpreter>();
+  interp->interrupt_flag_ = &st->interrupt;
+  auto base = sendable::isolate_base_env();
+  try {
+    sendable::DeCtx dc;
+    Value fn = sendable::deserialize(st->fn, *interp, base, dc);
+    while (!st->interrupt.load(std::memory_order_relaxed)) {
+      size_t i = st->next.fetch_add(1, std::memory_order_relaxed);
+      if (i >= st->items.size()) break;
+      try {
+        sendable::DeCtx idc;
+        Value item = sendable::deserialize(st->items[i], *interp, base, idc);
+        Value r = interp->call_closure(fn, base,
+                                       std::vector<Value>{std::move(item)});
+        if (st->collect) {
+          sendable::SerCtx sc;
+          st->results[i] = sendable::serialize(r, sc);
+        }
+      } catch (culebra::CulebraError& e) {
+        parallel_record_error(*st, i, e);
+      } catch (Value& thrown) {
+        parallel_record_error(*st, i,
+            culebra::CulebraError("RuntimeError", thrown.str()));
+      } catch (std::exception& e) {
+        parallel_record_error(*st, i,
+            culebra::CulebraError("RuntimeError", e.what()));
+      }
+    }
+  } catch (culebra::CulebraError& e) {
+    parallel_record_error(*st, 0, e);  // fn itself wasn't Sendable / rebuildable
+  } catch (std::exception& e) {
+    // No exception may escape an inline worker — the parent's not-yet-joined
+    // threads would std::terminate. Mirror run_isolate_child's final arm.
+    parallel_record_error(*st, 0, culebra::CulebraError("RuntimeError", e.what()));
+  }
+}
+
+inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
+                          bool collect, long line, long col) {
+  if (items_v.type != Value::Array) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.map/each: first argument must be an Array", line, col);
+  }
+  if (fn_v.type != Value::Function) {
+    throw culebra::CulebraError("TypeError",
+        "Parallel.map/each: second argument must be a function", line, col);
+  }
+  const auto& items = *items_v.to_array().values;
+  auto st = std::make_shared<ParallelState>();
+  st->collect = collect;
+  // Serialize fn + every element up front — Sendable violations throw here.
+  { sendable::SerCtx sc; st->fn = sendable::serialize(fn_v, sc); }
+  st->items.reserve(items.size());
+  for (const auto& it : items) {
+    sendable::SerCtx sc;
+    st->items.push_back(sendable::serialize(it, sc));
+  }
+  if (items.empty()) {
+    release_inflight_channels(st->fn);  // no workers will consume it
+    if (!collect) return Value();
+    ArrayValue empty;
+    return Value(std::move(empty));
+  }
+  if (collect) st->results.resize(items.size());
+
+  if (limit < 1) limit = isolate_cap();
+  size_t target = std::min(static_cast<size_t>(limit), items.size());
+  // Spawn up to target-1 thread workers (cap-limited); the parent works one
+  // inline, so the pool drains even when no thread slots are free.
+  std::vector<std::thread> threads;
+  for (size_t w = 0; w + 1 < target; w++) {
+    if (g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
+        isolate_cap()) {
+      threads.emplace_back([st] {
+        parallel_worker(st);
+        g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+      });
+    } else {
+      g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
+      break;
+    }
+  }
+  parallel_worker(st);
+  for (auto& t : threads) t.join();
+
+  // Each worker rebuilt fn (and its claimed item), so the in-flight refs the
+  // parent's serialize took are now redundant — release them once.
+  release_inflight_channels(st->fn);
+  for (const auto& it : st->items) release_inflight_channels(it);
+
+  if (st->failed) {
+    // Results are abandoned on the fail-fast path; release any in-flight refs
+    // their (unconsumed) nodes hold. Unfilled slots are K::Nil = no-op.
+    for (const auto& rn : st->results) release_inflight_channels(rn);
+    throw culebra::CulebraError("ParallelError",
+        std::format("Parallel.{}: element[{}] failed: {}",
+                    collect ? "map" : "each", st->err_index, st->err->what()),
+        line, col);
+  }
+  if (!collect) return Value();
+  ArrayValue out;
+  out.values->reserve(st->results.size());
+  for (const auto& rn : st->results) {
+    out.values->push_back(chan_take(rn));  // deserialize + release in-flight
+  }
+  return Value(std::move(out));
+}
+
+// `Parallel.map(items, fn, limit = <cap>) -> Array` (N→N, fail-fast) and
+// `Parallel.each(items, fn, limit = <cap>) -> Nil` (side effects).
+inline Value make_parallel_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  auto make_entry = [](bool collect, std::string_view rt) {
+    return Value(FunctionValue(
+        {{"items", false, ""sv},
+         {"fn", false, ""sv},
+         {"limit", false, ""sv, nullptr, kw_default_zero()}},
+        [collect](std::shared_ptr<Environment> env) -> Value {
+          long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+          long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+          return parallel_run(env->get("items"), env->get("fn"),
+                              env->get("limit").to_long(), collect, line, col);
+        },
+        rt));
+  };
+  ns.initialize("map", make_entry(true, "Array"sv), false);
+  ns.initialize("each", make_entry(false, "Nil"sv), false);
   return Value(std::move(ns));
 }
 
@@ -538,6 +751,8 @@ inline Value make_isolate_namespace() {
                 iargs.reserve(sargs.size());
                 for (const auto& sa : sargs)
                   iargs.push_back(sendable::deserialize(sa, *inl, root, dc));
+                release_inflight_channels(sclosure);
+                for (const auto& sa : sargs) release_inflight_channels(sa);
                 core->inline_result =
                     inl->call_closure(fn, root, std::move(iargs));
               } catch (Value& thrown) {

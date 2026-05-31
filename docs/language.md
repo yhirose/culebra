@@ -2486,6 +2486,7 @@ AOT builds (unless noted).
 | `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
 | `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
+| `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `next` property bound to a non-Function or non-zero-arity function. | yes |
 | `RuntimeError` | Fallback when interp catches an unconverted `std::runtime_error` from a not-yet-migrated throw site; JIT REPL `repl_set` outside a session. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 

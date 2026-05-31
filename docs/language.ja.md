@@ -2329,6 +2329,7 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 | `ProcessError` | `Proc.run` の起動失敗（実行ファイルが存在しない等）、または `check: true` での非 0 終了 / シグナル死 | はい |
 | `SendError` | Sendable でない値を isolate 境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut` を捕獲したクロージャ、循環参照 | はい |
 | `ChannelError` | 全 endpoint が消えた（closed）channel への `tx.send` | はい |
+| `ParallelError` | `Parallel.map` / `Parallel.each` の要素が例外を投げた。失敗要素の index と原因を保持（fail-fast） | はい |
 | `DropContractError` | `drop` / `iter` / `next` プロパティが非 Function または非 0 引数 Function | はい |
 | `RuntimeError` | 未変換 throw site から伝播した `std::runtime_error` をインタプリタが拾うフォールバック；JIT REPL の session 外 `repl_set`。この場合のみ `e.line == 0` / `e.col == 0` がありうる | はい |
 

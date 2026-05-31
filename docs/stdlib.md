@@ -1529,8 +1529,32 @@ producer. Note the multi-producer trap: every `tx` (including the parent's
 original) must be dropped for the channel to close — drop the ones you don't
 keep.
 
-`bound to capacity >= 1` (rendezvous channels and a `Parallel.map` /
-`Parallel.each` helper are planned next).
+Bounded to capacity >= 1 (rendezvous channels are planned next).
+
+### Parallel — `Parallel.map` / `Parallel.each`
+
+The high-level form: apply a function to every element of an array across a pool
+of isolates, without managing handles yourself. `fn` and every element must be
+Sendable (the same rules as `Isolate.spawn`).
+
+```culebra
+# doctest: skip
+Parallel.map([1, 2, 3, 4], |x| x * x)         # => [1, 4, 9, 16]  (input order)
+Parallel.map(urls, |u| fetch(u), limit: 8)    # at most 8 live isolates
+Parallel.each(jobs, |j| process(j))           # side effects; returns nil
+```
+
+| call | returns | notes |
+|---|---|---|
+| `Parallel.map(items, fn, limit = <cores>)` | `Array` | one result per element, **in input order** |
+| `Parallel.each(items, fn, limit = <cores>)` | `nil` | for side effects; no results collected |
+
+`limit` caps how many isolates run at once (default: the core count); the
+elements are pulled from one shared queue, so it is `limit` isolates total, not
+one per element. **Fail-fast:** the first element to throw stops the rest and is
+re-raised as `ParallelError` naming the element index — e.g. `Parallel.map:
+element[2] failed: ...`. (An all-settled variant, an `on_progress` callback, and
+`map_reduce` are planned.)
 
 ---
 

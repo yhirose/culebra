@@ -1472,8 +1472,30 @@ prod.join()
 channel が閉じるには全ての `tx`（親の元の tx 含む）が drop される必要があります —
 保持しない tx は drop してください。
 
-`容量は 1 以上`（rendezvous channel と `Parallel.map` / `Parallel.each` ヘルパは
-次に予定）。
+容量は 1 以上（rendezvous channel は次に予定）。
+
+### Parallel — `Parallel.map` / `Parallel.each`
+
+高レベル形。配列の各要素に関数を isolate プールで並列適用します（ハンドル管理
+不要）。`fn` と各要素は Sendable でなければなりません（`Isolate.spawn` と同じ規則）。
+
+```culebra
+# doctest: skip
+Parallel.map([1, 2, 3, 4], |x| x * x)         # => [1, 4, 9, 16]  (入力順)
+Parallel.map(urls, |u| fetch(u), limit: 8)    # 同時 isolate は最大 8
+Parallel.each(jobs, |j| process(j))           # 副作用のみ、nil を返す
+```
+
+| 呼び出し | 戻り値 | 備考 |
+|---|---|---|
+| `Parallel.map(items, fn, limit = <コア数>)` | `Array` | 要素ごと 1 結果、**入力順** |
+| `Parallel.each(items, fn, limit = <コア数>)` | `nil` | 副作用用、結果は集めない |
+
+`limit` は同時に走る isolate 数の上限（既定はコア数）。要素は 1 つの共有キューから
+取り出すので、要素数ぶんでなく合計 `limit` 個の isolate です。**fail-fast**:
+最初に例外を投げた要素で残りを停止し、要素 index 付きの `ParallelError` として
+再送出します（例: `Parallel.map: element[2] failed: ...`）。(all-settled 版・
+`on_progress` callback・`map_reduce` は予定。)
 
 ---
 

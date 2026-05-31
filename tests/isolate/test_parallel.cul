@@ -1,0 +1,68 @@
+# Parallel.map / Parallel.each (C2-b): worker-pool over isolates. Interp only.
+
+# --- map: N→N, results in input order ---
+let xs = [1, 2, 3, 4, 5, 6, 7, 8]
+assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
+
+# --- map preserves order even with a single worker (limit: 1) ---
+assert_eq(Parallel.map(xs, |x| x + 100, limit: 1),
+          [101, 102, 103, 104, 105, 106, 107, 108])
+
+# --- map over an empty array ---
+assert_eq(Parallel.map([], |x| x), [])
+
+# --- map captures an immutable free variable + a top-level fn ---
+let factor = 10
+fn dbl(n) { return n * 2 }
+assert_eq(Parallel.map([1, 2, 3], |x| dbl(x) * factor), [20, 40, 60])
+
+# --- map returning structured values ---
+assert_eq(Parallel.map([1, 2], |x| {n: x, sq: x * x}),
+          [{n: 1, sq: 1}, {n: 2, sq: 4}])
+
+# --- a heavier workload across the pool still matches the serial result ---
+fn fib(n) {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+let ns = [10, 12, 14, 16, 18, 20]
+mut serial = []
+for n in ns { serial.push(fib(n)) }
+assert_eq(Parallel.map(ns, |n| fib(n)), serial)
+
+# --- each: side effects only, returns nil; sum collected via a channel ---
+let (tx, rx) = Channel.new(16)
+Parallel.each([1, 2, 3, 4, 5], fn (x) {
+  tx.send(x * x)
+})
+tx.drop()
+mut total = 0
+for v in rx { total = total + v }
+assert_eq(total, 55)   # 1+4+9+16+25
+
+# --- fail-fast: a failing element raises ParallelError with the index ---
+try {
+  Parallel.map([1, 2, 0, 4], |x| 12 / x)   # element[2] divides by zero
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "ParallelError")
+}
+
+# --- Sendable check still applies: a mut capture is rejected up front ---
+mut counter = 0
+try {
+  Parallel.map([1, 2], |x| x + counter)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "SendError")
+}
+
+# --- type errors ---
+try {
+  Parallel.map(42, |x| x)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+puts("test_parallel: all assertions passed")

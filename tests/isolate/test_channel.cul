@@ -70,4 +70,16 @@ let blocked = Isolate.spawn(fn () { rx6.recv() })  # blocks: no value is ever se
 blocked.drop()                                     # must not hang (reaching the
 tx6.drop()                                         # final line proves it)
 
+# --- an endpoint can itself be sent through a channel (the Sendable exception);
+#     the refcount stays balanced (no leak / premature close) ---
+let (ctrl_tx, ctrl_rx) = Channel.new(1)
+let (data_tx, data_rx) = Channel.new(4)
+ctrl_tx.send(data_tx)              # ship the data-sender over the control channel
+ctrl_tx.drop()
+data_tx.drop()                     # parent's original data sender
+let moved_tx = ctrl_rx.recv()      # the rebuilt data-sender
+moved_tx.send(42)
+moved_tx.drop()
+assert_eq(data_rx.recv(), 42)
+
 puts("test_channel: all assertions passed")
