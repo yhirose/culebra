@@ -2311,15 +2311,19 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
 }
 
 // Decode one UTF-8 codepoint at `s + off` into `cp`, advancing `off` by
-// the consumed byte count. Invalid / truncated sequences fall back to
-// the raw byte value and advance by one — matching the permissive
-// policy used by `String.iter` / `code_points` / `graphemes`.
+// the consumed byte count. Invalid / truncated sequences yield U+FFFD
+// (the Unicode replacement character) and advance by one byte — the
+// industry-standard behavior (Go's `for range`, Swift, JS TextDecoder).
+// The source bytes are never dropped (silent skip), so the original
+// String still round-trips via byte index / slice; only the decoded
+// codepoint value is the replacement. Shared by `String.iter` /
+// `code_points` / `graphemes`.
 inline void _decode_one_utf8(std::string_view s, size_t& off,
                              char32_t& cp) {
   size_t bytes;
   if (!unicode::utf8::decode_codepoint(s.data() + off, s.size() - off,
                                        bytes, cp)) {
-    cp = static_cast<unsigned char>(s[off]);
+    cp = 0xFFFD;
     bytes = 1;
   }
   off += bytes;

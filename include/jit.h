@@ -5142,7 +5142,7 @@ inline void _iter_code_points_fast_fn(JitClosure* cls, JitValue, bool* done,
   char32_t cp;
   size_t bytes;
   if (!unicode::utf8::decode_codepoint(s + off, len - off, bytes, cp)) {
-    cp = static_cast<unsigned char>(s[off]);
+    cp = 0xFFFD;  // U+FFFD replacement; source bytes stay in the String
     bytes = 1;
   }
   off_cell->value.data = off + static_cast<int64_t>(bytes);
@@ -5176,7 +5176,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
     const char* s) {
   std::u32string u32;
   size_t buf_size = std::strlen(s);
-  unicode::utf8::decode(s, buf_size, u32);
+  // Decode UTF-8 → UTF-32, mapping invalid bytes to U+FFFD (1 byte each)
+  // rather than dropping them (unicode::utf8::decode silently skips, which
+  // loses data). Matches _decode_one_utf8 / the interp graphemes path.
+  for (size_t off = 0; off < buf_size;) {
+    char32_t cp;
+    size_t bytes;
+    if (!unicode::utf8::decode_codepoint(s + off, buf_size - off, bytes, cp)) {
+      cp = 0xFFFD;
+      bytes = 1;
+    }
+    u32.push_back(cp);
+    off += bytes;
+  }
   auto* arr = culebra_runtime_array_new();
   size_t cp_off = 0;
   while (cp_off < u32.size()) {
