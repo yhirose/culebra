@@ -15,7 +15,7 @@ Language-level built-ins — `to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota` — are specified in
 [§18 of the language spec](language.md). The matcher family
 (`assert_true` / `assert_eq` / `assert_throws` / etc.) is documented
-in [§11 below](#11-matchers). Methods on built-in types (`String`,
+in [§12 below](#12-matchers). Methods on built-in types (`String`,
 `Array`, `Object`) are specified in
 [§17 of the language spec](language.md).
 
@@ -36,17 +36,18 @@ Conventions used below:
 1. [`Math`](#1-math) — numeric utilities, constants, integer sequences
 2. [`IO`](#2-io) — output, stdin (file I/O lives under `FS`)
 3. [`FS`](#3-fs) — path manipulation, file/dir queries and mutations
-4. [`Time`](#4-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
-5. [`Random`](#5-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-6. [`Sys`](#6-sys) — argv, exit, env
-7. [`Tensor`](#7-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
-8. [`JSON`](#8-json) — stringify / parse round-trip
-9. [`Args`](#9-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
-10. [`Proc`](#10-proc) — run external commands synchronously, capture stdout/stderr/exit
-11. [Matchers](#11-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
-12. [`Regex`](#12-regex) — linear-time, grapheme-aware regular expressions
-13. [Design notes](#13-design-notes)
-14. [Not included (yet)](#14-not-included-yet)
+4. [`File`](#4-file) — stateful handle for streaming read/write/seek
+5. [`Time`](#5-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
+6. [`Random`](#6-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
+7. [`Sys`](#7-sys) — argv, exit, env
+8. [`Tensor`](#8-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
+9. [`JSON`](#9-json) — stringify / parse round-trip
+10. [`Args`](#10-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
+11. [`Proc`](#11-proc) — run external commands synchronously, capture stdout/stderr/exit
+12. [Matchers](#12-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
+13. [`Regex`](#13-regex) — linear-time, grapheme-aware regular expressions
+14. [Design notes](#14-design-notes)
+15. [Not included (yet)](#15-not-included-yet)
 
 **Where to find what**
 
@@ -55,14 +56,16 @@ Conventions used below:
 | Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
 | Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
-| Read a file | `FS.read` (throws on failure) |
+| Read a whole file | `FS.read` (throws on failure) |
+| Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
+| Stat / walk / glob / copy / rename / symlink | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
-| `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§4 Time](#4-time) |
+| `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
-| CLI argument parsing | [§9 Args](#9-args) |
+| CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
-| Run an external command | [§10 Proc](#10-proc) — `Proc.run(["git", "status"])` |
+| Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -370,15 +373,201 @@ Create a directory at `path`, including any missing parents
 (`mkdir -p` semantics). No-op if the directory already exists.
 Throws `IOError` if the path exists as a file or creation fails.
 
-#### `FS.remove(path: String) -> Nil`
+#### `FS.remove(path: String, recursive: Bool = false) -> Nil`
 
-Remove a file or empty directory. Throws `IOError` if the path
-doesn't exist, isn't removable, or is a non-empty directory. There
-is no recursive variant — list and remove explicitly if needed.
+Remove a file or directory. By default removes a file or *empty*
+directory and throws `IOError` if the directory is non-empty. With
+`recursive: true` it removes a directory tree (`rm -rf`). Throws
+`IOError` if the path doesn't exist or isn't removable.
+
+```culebra
+# doctest: skip
+FS.remove('/tmp/build/out.o')
+FS.remove('/tmp/build', recursive: true)
+```
+
+#### `FS.rename(src: String, dst: String) -> Nil`
+
+Rename / move `src` to `dst` (atomic within one filesystem). Throws
+`IOError` on failure.
+
+#### `FS.copy(src: String, dst: String, recursive: Bool = false) -> Nil`
+
+Copy a file, overwriting `dst` if it exists. With `recursive: true`
+copies a directory tree. Throws `IOError` on failure.
+
+### Stat / metadata
+
+#### `FS.stat(path: String) -> Object`
+
+Return `{size, is_dir, is_file, is_symlink, mtime}` for `path`. `size`
+is bytes (0 for non-regular files); `mtime` is seconds since the Unix
+epoch; `is_symlink` reflects the link itself while the other fields
+follow it. Throws `IOError` if the path doesn't exist.
+
+```culebra
+# doctest: skip
+let st = FS.stat('config.toml')
+puts(st.size)
+```
+
+### Recursive traversal
+
+#### `FS.walk(path: String) -> Array<String>`
+
+Every path under `path`, recursive, depth-first. Each entry is a full
+path. Throws `IOError` if `path` isn't a directory.
+
+#### `FS.glob(pattern: String) -> Array<String>`
+
+Paths matching a glob `pattern`, sorted. Supports `*`, `?`, `[...]`
+per segment and `**` for recursive descent. This is shell-style glob,
+distinct from `Regex`.
+
+```culebra
+# doctest: skip
+let sources = FS.glob('src/**/*.cul')
+```
+
+### Path resolution
+
+#### `FS.abspath(path: String) -> String`
+
+Absolute, normalized form of `path` (relative to the current
+directory). Does not resolve symlinks.
+
+#### `FS.realpath(path: String) -> String`
+
+Canonical path with symlinks resolved (`weakly_canonical`; missing
+trailing components are kept).
+
+#### `FS.normpath(path: String) -> String`
+
+Lexically normalize (collapse `.` / `..` / duplicate separators)
+without touching the filesystem.
+
+#### `FS.is_abs(path: String) -> Bool`
+
+Whether `path` is absolute.
+
+### Symlinks
+
+#### `FS.symlink(target: String, link: String) -> Nil`
+
+Create a symbolic link at `link` pointing to `target`.
+
+#### `FS.readlink(path: String) -> String`
+
+Read a symlink's target. Throws `IOError` if `path` isn't a symlink.
+
+#### `FS.is_symlink(path: String) -> Bool`
+
+Whether `path` is a symbolic link (the link itself, not its target).
 
 ---
 
-## 4. `Time`
+## 4. `File`
+
+A `File` is a **stateful handle** for streaming I/O — the complement
+to `FS`'s one-shot whole-file operations (`FS.read` / `FS.write`).
+Open one with `File.open` or the scoped `File.with`. All I/O is binary
+(no text-mode newline translation); `String` is a byte string, so any
+content round-trips.
+
+The handle implements four method groups — **Reader** (`read` /
+`lines` / `chunks`), **Writer** (`write` / `flush`), **Seekable**
+(`seek` / `tell`), **Closeable** (`close`). Which are valid depends on
+the open mode.
+
+### Opening
+
+#### `File.open(path: String, mode: String = "r") -> File`
+
+Open `path`. `mode` is `"r"` (read), `"w"` (truncate + write), or
+`"a"` (append). Throws `ValueError` for any other mode, `IOError` if
+the file can't be opened.
+
+#### `File.with(path: String, mode: String = "r", fn: Function) -> Any`
+
+Open `path`, call `fn(handle)`, and close the handle on every exit
+path (normal, `return`, or exception). Returns `fn`'s value. This is
+the native equivalent of `open` + `defer { close }`, and the clearest
+choice when the handle's lifetime fits one block.
+
+```culebra
+# doctest: skip
+let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+```
+
+### Resource safety — three ways to close
+
+| Pattern | Use when |
+|---|---|
+| `File.with(p, m, fn (f) { … })` | the handle's lifetime fits one block |
+| `let f = File.open(p, m); defer { f.close() }` | the handle outlives a block / mixes with other logic |
+| `for line in File.open(p).lines() { … }` | streaming; the iterator closes on loop exit (incl. `break`) |
+
+A handle never explicitly closed is closed by a GC backstop, but don't
+rely on it — prefer one of the three patterns above.
+
+### Reader methods
+
+#### `File.read() -> String` / `File.read(n: Long) -> String`
+
+Streaming read from the current position: `read()` returns the rest of
+the file, `read(n)` at most `n` bytes (fewer at EOF). For a one-shot
+whole-file read without a handle, use `FS.read(path)`.
+
+#### `File.lines() -> Iterator<String>`
+
+Iterate lines, each with its trailing newline stripped (`\n`, `\r\n`,
+and `\r` are all recognized). The iterator owns the handle and closes
+it when the loop ends or breaks.
+
+```culebra
+# doctest: skip
+for line in File.open('access.log').lines() {
+  if line.contains('ERROR') { puts(line) }
+}
+```
+
+#### `File.chunks(n: Long) -> Iterator<String>`
+
+Iterate fixed-size byte chunks of at most `n` bytes (the last may be
+shorter). Same close-on-exit contract as `lines()`.
+
+### Writer methods
+
+#### `File.write(data: String) -> Nil`
+
+Write `data` at the current position (raw bytes, no newline
+translation). Throws `IOError` on a read-only handle.
+
+#### `File.flush() -> Nil`
+
+Flush buffered writes to the OS.
+
+### Seekable methods
+
+#### `File.seek(offset: Long, whence: String = "set") -> Nil`
+
+Move the cursor. `whence` is `"set"` (from start), `"cur"` (relative),
+or `"end"` (from end; use a negative `offset`).
+
+#### `File.tell() -> Long`
+
+Current byte offset.
+
+### Closeable
+
+#### `File.close() -> Nil`
+
+Close the handle, flushing writes. Idempotent — closing twice is a
+no-op. Operating on a closed handle throws `IOError`.
+
+---
+
+## 5. `Time`
 
 Wall-clock + monotonic time, ISO 8601 round-trip, calendar
 arithmetic. The module exposes two classes — `Instant` (a point in
@@ -563,7 +752,7 @@ a < b, a <= b, a == b                 # natural ordering on both types
 
 ---
 
-## 5. `Random`
+## 6. `Random`
 
 Random-number generation. The process has a single shared
 Mersenne-Twister-64 engine, shared between the interpreter and JIT
@@ -621,7 +810,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-## 6. `Sys`
+## 7. `Sys`
 
 Process-level information.
 
@@ -660,7 +849,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 7. `Tensor`
+## 8. `Tensor`
 
 N-dimensional numeric tensor. Builds a lazy computation graph and
 launches BLAS / vDSP kernels through `Tensor.eval(...)` to materialize
@@ -832,7 +1021,7 @@ target.
 
 ---
 
-## 8. `JSON`
+## 9. `JSON`
 
 Round-trip between Culebra values and JSON text. Both backends ship
 the same surface.
@@ -916,7 +1105,7 @@ fly — same algorithm interp uses.
 
 ---
 
-## 9. `Args`
+## 10. `Args`
 
 Declarative CLI argument parser. The spec is a culebra `Object`
 listing positionals, options, and subcommands; `Args.parse` returns
@@ -1047,7 +1236,7 @@ The `kind` of a thrown value is one of:
 
 ---
 
-## 10. `Proc`
+## 11. `Proc`
 
 Run an external command synchronously (blocking) and capture its
 output. The command is an `Array<String>` — `cmd[0]` is the executable
@@ -1206,7 +1395,7 @@ and pipelines (`a | b`) are planned.
 
 ---
 
-## 11. Matchers
+## 12. Matchers
 
 Assertion matchers for tests and runtime invariant checks. All ten
 matchers are global names bound on every environment (no `import`
@@ -1296,7 +1485,7 @@ agree without any matcher-specific drift logic.
 
 ---
 
-## 12. `Regex`
+## 13. `Regex`
 
 Linear-time, grapheme-aware regular expressions (engine: `include/regexlib.h`).
 Patterns match by Unicode **extended grapheme cluster**, not code point — `.`
@@ -1377,7 +1566,7 @@ model and resource limits are documented in `docs/regexlib.md`.
 
 ---
 
-## 13. Design notes
+## 14. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1431,7 +1620,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 14. Not included (yet)
+## 15. Not included (yet)
 
 ### Trigonometry
 

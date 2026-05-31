@@ -12,7 +12,7 @@
 言語レベルの組み込み関数（`to_long`, `to_float`, `to_string`,
 `type_of`, `range`, `iota`）は [言語仕様 §18](language.ja.md)
 を参照してください。 matcher 一族 (`assert_true` / `assert_eq` /
-`assert_throws` 等) は [§11 Matchers](#11-matchers) で扱います。
+`assert_throws` 等) は [§12 Matchers](#12-matchers) で扱います。
 組み込み型（`String`, `Array`, `Object`）のメソッドは
 [言語仕様 §17](language.ja.md) に規定されています。
 
@@ -34,17 +34,18 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 1. [`Math`](#1-math) — 数値ユーティリティ・定数・整数列
 2. [`IO`](#2-io) — 出力・標準入力（ファイル I/O は `FS`）
 3. [`FS`](#3-fs) — パス操作・ファイル/ディレクトリ問い合わせ・更新
-4. [`Time`](#4-time) — `Instant` / `Duration` クラス、ISO 8601、カレンダー算術、ナノ秒精度
-5. [`Random`](#5-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
-6. [`Sys`](#6-sys) — argv / exit / env
-7. [`Tensor`](#7-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
-8. [`JSON`](#8-json) — stringify / parse の相互変換
-9. [`Args`](#9-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
-10. [`Proc`](#10-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
-11. [Matchers](#11-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
-12. [`Regex`](#12-regex) — 線形時間・grapheme 単位の正規表現
-13. [設計上の注記](#13-設計上の注記)
-14. [未収録（将来検討）](#14-未収録将来検討)
+4. [`File`](#4-file) — ストリーミング読み書き/seek の状態付きハンドル
+5. [`Time`](#5-time) — `Instant` / `Duration` クラス、ISO 8601、カレンダー算術、ナノ秒精度
+6. [`Random`](#6-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
+7. [`Sys`](#7-sys) — argv / exit / env
+8. [`Tensor`](#8-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
+9. [`JSON`](#9-json) — stringify / parse の相互変換
+10. [`Args`](#10-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
+11. [`Proc`](#11-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
+12. [Matchers](#12-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
+13. [`Regex`](#13-regex) — 線形時間・grapheme 単位の正規表現
+14. [設計上の注記](#14-設計上の注記)
+15. [未収録（将来検討）](#15-未収録将来検討)
 
 **目的別索引**
 
@@ -53,15 +54,17 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
-| ファイル読込 | `FS.read`（失敗時 throw） |
+| ファイル全体を読む | `FS.read`（失敗時 throw） |
+| ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
+| stat / walk / glob / copy / rename / symlink | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
-| `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§4 Time](#4-time) |
+| `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
-| CLI 引数解析 | [§9 Args](#9-args) |
+| CLI 引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
-| 外部コマンド実行 | [§10 Proc](#10-proc) — `Proc.run(["git", "status"])` |
-| 行列・テンソル演算（BLAS 対応） | [§6 Tensor](#6-tensor) |
+| 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
+| 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
 | 変換（`to_long`、`to_float`、`to_string`、`type_of`） | [言語仕様 §18](language.ja.md) |
@@ -361,15 +364,193 @@ assert_true(names.contains('out.o'))
 （`mkdir -p` セマンティクス）。既存なら no-op。パスがファイル
 として存在する／作成に失敗した場合は `IOError` を throw。
 
-#### `FS.remove(path: String) -> Nil`
+#### `FS.remove(path: String, recursive: Bool = false) -> Nil`
 
-ファイル、または空ディレクトリを削除。対象が存在しない／削除
-できない／非空ディレクトリの場合は `IOError` を throw。再帰削除
-は提供しません — 必要なら明示的に列挙して削除してください。
+ファイルまたは空ディレクトリを削除（既定）。非空ディレクトリは
+`IOError`。`recursive: true` でディレクトリツリーを削除（`rm -rf`）。
+対象が存在しない／削除できない場合は `IOError`。
+
+```culebra
+# doctest: skip
+FS.remove('/tmp/build/out.o')
+FS.remove('/tmp/build', recursive: true)
+```
+
+#### `FS.rename(src: String, dst: String) -> Nil`
+
+`src` を `dst` にリネーム／移動（同一ファイルシステム内は atomic）。
+失敗時 `IOError`。
+
+#### `FS.copy(src: String, dst: String, recursive: Bool = false) -> Nil`
+
+ファイルをコピー（`dst` 既存なら上書き）。`recursive: true` で
+ディレクトリツリーをコピー。失敗時 `IOError`。
+
+### stat / メタデータ
+
+#### `FS.stat(path: String) -> Object`
+
+`{size, is_dir, is_file, is_symlink, mtime}` を返す。`size` はバイト
+（非通常ファイルは 0）、`mtime` は Unix epoch 秒、`is_symlink` は
+リンク自体を、他フィールドはリンク先を見ます。存在しなければ
+`IOError`。
+
+### 再帰探索
+
+#### `FS.walk(path: String) -> Array<String>`
+
+`path` 配下の全パスを再帰・深さ優先で。各要素はフルパス。
+ディレクトリでなければ `IOError`。
+
+#### `FS.glob(pattern: String) -> Array<String>`
+
+glob `pattern` にマッチするパス（ソート済み）。セグメント単位で
+`*` / `?` / `[...]`、`**` で再帰下降。シェル流 glob で `Regex` とは
+別物です。
+
+```culebra
+# doctest: skip
+let sources = FS.glob('src/**/*.cul')
+```
+
+### パス解決
+
+#### `FS.abspath(path: String) -> String`
+
+`path` の絶対・正規化形（カレントディレクトリ基準）。シンボリック
+リンクは解決しません。
+
+#### `FS.realpath(path: String) -> String`
+
+シンボリックリンクを解決した正準パス（`weakly_canonical`、末尾の
+存在しない要素は保持）。
+
+#### `FS.normpath(path: String) -> String`
+
+ファイルシステムに触れず字句的に正規化（`.` / `..` / 重複区切りを
+畳む）。
+
+#### `FS.is_abs(path: String) -> Bool`
+
+`path` が絶対パスか。
+
+### シンボリックリンク
+
+#### `FS.symlink(target: String, link: String) -> Nil`
+
+`target` を指すシンボリックリンクを `link` に作成。
+
+#### `FS.readlink(path: String) -> String`
+
+シンボリックリンクの参照先を読む。`path` がリンクでなければ
+`IOError`。
+
+#### `FS.is_symlink(path: String) -> Bool`
+
+`path` がシンボリックリンク自体か（参照先でなく）。
 
 ---
 
-## 4. `Time`
+## 4. `File`
+
+`File` はストリーミング I/O 用の**状態を持つハンドル**で、`FS` の
+一発の全読み書き（`FS.read` / `FS.write`）と対になります。`File.open`
+または スコープ付きの `File.with` で開きます。I/O は常にバイナリ
+（テキストモードの改行変換なし）で、`String` は byte string なので
+任意の内容が往復します。
+
+ハンドルは4つのメソッド群を実装します — **Reader**（`read` /
+`lines` / `chunks`）、**Writer**（`write` / `flush`）、**Seekable**
+（`seek` / `tell`）、**Closeable**（`close`）。どれが有効かは open
+モードに依ります。
+
+### 開く
+
+#### `File.open(path: String, mode: String = "r") -> File`
+
+`path` を開く。`mode` は `"r"`（読み）/ `"w"`（切り詰め+書き）/
+`"a"`（追記）。それ以外は `ValueError`、開けなければ `IOError`。
+
+#### `File.with(path: String, mode: String = "r", fn: Function) -> Any`
+
+`path` を開き `fn(handle)` を呼び、あらゆる脱出経路（正常・`return`・
+例外）でハンドルを閉じます。`fn` の戻り値を返します。`open` +
+`defer { close }` の native 版で、ハンドルの寿命が1ブロックに収まる
+時に最も明快です。
+
+```culebra
+# doctest: skip
+let head = File.with('big.log', 'r', fn (f) { f.read(256) })
+```
+
+### 資源安全 — 閉じる3つの方法
+
+| パターン | 使う場面 |
+|---|---|
+| `File.with(p, m, fn (f) { … })` | ハンドルの寿命が1ブロックに収まる |
+| `let f = File.open(p, m); defer { f.close() }` | 寿命が広い／他のロジックと混ざる |
+| `for line in File.open(p).lines() { … }` | ストリーミング。iterator がループ脱出（`break` 含む）で閉じる |
+
+明示的に閉じられなかったハンドルは GC バックストップが閉じますが、
+それに頼らず上記3つのどれかを使ってください。
+
+### Reader メソッド
+
+#### `File.read() -> String` / `File.read(n: Long) -> String`
+
+現在位置からのストリーミング読み: `read()` は残り全部、`read(n)`
+は最大 `n` バイト（EOF では少なくなる）。ハンドル不要の一発全読みは
+`FS.read(path)` を使います。
+
+#### `File.lines() -> Iterator<String>`
+
+行を反復、各行は末尾改行を剥がします（`\n` / `\r\n` / `\r` 全対応）。
+iterator がハンドルを所有し、ループ終了・break で閉じます。
+
+```culebra
+# doctest: skip
+for line in File.open('access.log').lines() {
+  if line.contains('ERROR') { puts(line) }
+}
+```
+
+#### `File.chunks(n: Long) -> Iterator<String>`
+
+最大 `n` バイトの固定長チャンクを反復（最後は短いことあり）。
+`lines()` と同じ close-on-exit 契約。
+
+### Writer メソッド
+
+#### `File.write(data: String) -> Nil`
+
+現在位置に `data` を書き込み（生バイト、改行変換なし）。読み取り
+専用ハンドルでは `IOError`。
+
+#### `File.flush() -> Nil`
+
+バッファした書き込みを OS にフラッシュ。
+
+### Seekable メソッド
+
+#### `File.seek(offset: Long, whence: String = "set") -> Nil`
+
+カーソル移動。`whence` は `"set"`（先頭から）/ `"cur"`（相対）/
+`"end"`（末尾から；負の `offset` を使う）。
+
+#### `File.tell() -> Long`
+
+現在のバイトオフセット。
+
+### Closeable
+
+#### `File.close() -> Nil`
+
+ハンドルを閉じ、書き込みをフラッシュ。冪等 — 二重 close は no-op。
+閉じたハンドルへの操作は `IOError`。
+
+---
+
+## 5. `Time`
 
 Wall-clock + monotonic 時刻、ISO 8601 入出力、カレンダー算術。
 モジュールが提供する 2 つのクラス — `Instant`（時点）と
@@ -548,7 +729,7 @@ a < b, a <= b, a == b                 # 両クラスで自然な順序
 
 ---
 
-## 5. `Random`
+## 6. `Random`
 
 乱数生成。プロセスごとに単一の Mersenne-Twister-64 エンジンを
 持ち、インタプリタと JIT で共有しています。`Random.seed(n)` は
@@ -605,7 +786,7 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ---
 
-## 6. `Sys`
+## 7. `Sys`
 
 プロセスレベルの情報。
 
@@ -643,7 +824,7 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 
 ---
 
-## 7. `Tensor`
+## 8. `Tensor`
 
 N 次元数値テンソル。lazy 計算グラフを構築し、`Tensor.eval(...)` で
 BLAS / vDSP 経由のカーネルを起動して値を確定します。dtype は
@@ -806,7 +987,7 @@ Phase 1 では **CPU** のみ。
 
 ---
 
-## 8. `JSON`
+## 9. `JSON`
 
 Culebra の値と JSON テキストの相互変換。両バックエンドで同じ API
 を提供します。
@@ -888,7 +1069,7 @@ built-in 専用 runtime adapter が Object のキーを実行時に列挙
 
 ---
 
-## 9. `Args`
+## 10. `Args`
 
 宣言的な CLI 引数パーサ。spec は culebra `Object` で positional / option /
 subcommand を列挙し、`Args.parse` は parse 結果を `Object` で返す。
@@ -1013,7 +1194,7 @@ throw 値の `kind` は次のいずれか:
 
 ---
 
-## 10. `Proc`
+## 11. `Proc`
 
 外部コマンドを同期（blocking）実行し、その出力を取得します。コマンドは
 `Array<String>` で、`cmd[0]` が実行ファイル（PATH 解決）、残りが引数です。
@@ -1161,7 +1342,7 @@ while job.poll() == nil {
 
 ---
 
-## 11. Matchers
+## 12. Matchers
 
 テスト用 / 実行時不変条件チェック用のアサーション matcher。 全 10
 個の matcher が `import` 不要のグローバル名としてすべての環境に
@@ -1246,7 +1427,7 @@ backend が既に実装している演算子 dispatch そのもので、 matcher
 
 ---
 
-## 12. `Regex`
+## 13. `Regex`
 
 線形時間・grapheme 単位の正規表現（エンジン: `include/regexlib.h`）。パターンは
 Unicode の **extended grapheme cluster** 単位でマッチし、コードポイント単位では
@@ -1324,7 +1505,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 ---
 
-## 13. 設計上の注記
+## 14. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1378,7 +1559,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 14. 未収録（将来検討）
+## 15. 未収録（将来検討）
 
 ### 三角関数
 
