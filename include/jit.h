@@ -3689,6 +3689,33 @@ inline const JitParamMeta* _jit_lookup_param_meta(void* fn_ptr) {
   return it == tbl.end() ? nullptr : it->second;
 }
 
+// thread_local: fn_ptr -> names of free vars the lambda captured as `mut`.
+// Same keying/thread rationale as _jit_param_meta_table. Registered at closure
+// construction for lambdas that have any mut capture, read by jit_serialize to
+// reject them at an isolate boundary — interp parity with sendable.h, where a
+// `mut` capture would silently snapshot rather than track the parent's value.
+inline std::unordered_map<void*, std::vector<std::string>>&
+_jit_mut_capture_table() {
+  static thread_local std::unordered_map<void*, std::vector<std::string>> tbl;
+  return tbl;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_mut_captures(
+    void* fn_ptr, const char* const* names, int64_t n) {
+  auto& v = _jit_mut_capture_table()[fn_ptr];
+  if (!v.empty()) return;  // idempotent: same fn_ptr always has the same set
+  v.reserve(static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; i++) v.emplace_back(names[i]);
+}
+
+// The first `mut`-captured free-var name, or nullptr if the lambda captured
+// none (including lambdas never registered — they have no mut captures).
+inline const std::string* _jit_first_mut_capture(void* fn_ptr) {
+  auto& tbl = _jit_mut_capture_table();
+  auto it = tbl.find(fn_ptr);
+  return (it == tbl.end() || it->second.empty()) ? nullptr : &it->second.front();
+}
+
 // Hook for stdlib namespace methods (FS/Proc/...). All such methods share
 // one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
 // stdlib_jit.h installs this hook to resolve a kwarg call against the
@@ -6592,6 +6619,7 @@ inline constexpr auto cell_release        = "culebra_runtime_cell_release";
 inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";
 inline constexpr auto register_param_meta = "culebra_runtime_register_param_meta";
+inline constexpr auto register_mut_captures = "culebra_runtime_register_mut_captures";
 inline constexpr auto fn_introspect_get    = "culebra_runtime_fn_introspect_get";
 inline constexpr auto call_with_kwargs    = "culebra_runtime_call_with_kwargs";
 inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
@@ -14153,6 +14181,33 @@ struct JIT {
             ptrTy, capturesArr, {builder_.getInt64(i)});
         builder_.CreateStore(cellPtr, dstSlot);
         emit_cell_retain(cellPtr);  // closure owns a ref to each cell
+      }
+    }
+    // Record `mut`-captured free vars (keyed by fn_ptr, like param meta) for
+    // jit_serialize's isolate-boundary check (see _jit_mut_capture_table).
+    if (n > 0) {
+      std::vector<llvm::Constant*> mut_names;
+      for (size_t i = 0; i < n; i++) {
+        if (info.free_var_mut[i]) {
+          mut_names.push_back(builder_.CreateGlobalString(
+              info.free_vars[i],
+              ".mutcap.name." + std::string(fn->getName()) + "." +
+                  info.free_vars[i]));
+        }
+      }
+      if (!mut_names.empty()) {
+        auto arrTy = llvm::ArrayType::get(ptrTy, mut_names.size());
+        auto namesG = new llvm::GlobalVariable(
+            *module_, arrTy, /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage,
+            llvm::ConstantArray::get(arrTy, mut_names),
+            std::string(fn->getName()) + ".mutcaps");
+        emit_call(
+            module_->getOrInsertFunction(rt::register_mut_captures,
+                                         builder_.getVoidTy(), ptrTy, ptrTy,
+                                         builder_.getInt64Ty()),
+            {fn, namesG,
+             builder_.getInt64(static_cast<int64_t>(mut_names.size()))});
       }
     }
     return make_func(closurePtr);

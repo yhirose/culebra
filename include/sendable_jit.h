@@ -130,6 +130,13 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         }
         return n;
       }
+      // A `mut` capture is not Sendable: the value would silently diverge from
+      // the parent's. Reject at the boundary, matching the interp (sendable.h).
+      if (auto* nm = _jit_first_mut_capture(c->fn_ptr))
+        sendable::send_error(
+            "closure captures the mutable variable '" + *nm +
+            "' (mutable captures are not Sendable — pass it as an "
+            "argument instead)");
       n.elems.reserve(c->n_captures);  // positional captures
       for (size_t i = 0; i < c->n_captures; i++)
         n.elems.push_back(jit_serialize(c->captures[i]->value, ctx));

@@ -79,4 +79,26 @@ try {
   assert_eq(e.kind, "ZeroDivisionError")
 }
 
+# Sendable violations throw SendError at the spawn site (symmetric backends):
+# a `mut` capture would silently snapshot, so it is rejected.
+mut counter = 0
+try {
+  Isolate.spawn(|| counter)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "SendError")
+}
+# an immutable capture next to it is fine (no false positive)
+let fixed = 7
+assert_eq(Isolate.spawn(|| fixed + 1).join(), 8)
+
+# Tensor is not Sendable — a captured tensor is rejected too
+try {
+  let t = Tensor.zeros([2, 2])
+  Isolate.spawn(|| t)
+  assert(false)
+} catch e {
+  assert_eq(e.kind, "SendError")
+}
+
 puts("test_isolate_jit: all assertions passed")
