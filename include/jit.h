@@ -4601,7 +4601,14 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
     }
   }
   // Slow path: user-built iterator. Drive its has_next() / next()
-  // closures directly; the user owns any caching they need.
+  // closures directly; the user owns any caching they need. A non-iterator
+  // receiver (no has_next/next) yields null closures — e.g. a terminal
+  // method called by name on a builtin namespace like `GC.collect()`.
+  // Reject it cleanly instead of calling through a null fn_ptr.
+  if (!has_next_cls || !next_cls) {
+    throw culebra::CulebraError("TypeError",
+                                "type error: target is not iterable");
+  }
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
   auto hn = reinterpret_cast<JitFn>(has_next_cls->fn_ptr)(
       has_next_cls, iter_val, 0, nullptr);

@@ -390,3 +390,11 @@ class Naturals {
 }
 assert_eq(Naturals.new().iter().map(|x| x * 2).take(2).collect(), [2, 4])
 assert_true(calls <= 3)
+
+# A terminal iterator method (collect/count/sum) reached by name on a
+# non-iterator — e.g. a builtin namespace as `GC.collect()` — must raise a
+# clean TypeError, not crash (regression: it segfaulted the JIT when it
+# drove a null has_next/next closure).
+mut threw = false
+try { GC.collect() } catch e { threw = true }
+assert_true(threw)
