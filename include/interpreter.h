@@ -2765,16 +2765,27 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          struct State {
            std::shared_ptr<OrderedSymbolMap> props;
-           std::vector<std::string> keys;
+           std::vector<Value> keys;
            size_t index = 0;
            size_t version = 0;
          };
-         const auto& val = callEnv->get("this");
+         const auto& obj = callEnv->get("this").to_object();
          auto st = std::make_shared<State>();
-         st->props = val.to_object().properties;
+         st->props = obj.properties;
          st->version = st->props->mut_count();
-         st->keys.reserve(st->props->size());
-         for (const auto& [k, _] : *st->props) st->keys.emplace_back(k);
+         // Snapshot all keys (String + non-String) in insertion order via
+         // the same `key_order` walk `keys()` uses, so for-in matches
+         // keys() / size(). Fall back to the property-map walk for objects
+         // built by direct emplace (class instances, no key_order).
+         if (obj.key_order && !obj.key_order->empty()) {
+           st->keys.reserve(obj.key_order->size());
+           for (const auto& k : *obj.key_order) st->keys.push_back(k);
+         } else {
+           st->keys.reserve(st->props->size());
+           for (const auto& [k, _] : *st->props) {
+             st->keys.emplace_back(std::string(k));
+           }
+         }
          return _make_iterator([st](std::shared_ptr<Environment>) {
            if (st->props->mut_count() != st->version) {
              throw CulebraError(
@@ -2782,7 +2793,7 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                  "Object changed size during iteration");
            }
            if (st->index >= st->keys.size()) return _iter_step_done();
-           auto v = Value(std::string(st->keys[st->index]));
+           auto v = st->keys[st->index];
            st->index++;
            return _iter_step_value(std::move(v));
          });
