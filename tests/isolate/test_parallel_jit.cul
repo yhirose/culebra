@@ -1,13 +1,17 @@
 # Parallel.map / Parallel.each symmetry: runs under BOTH interp and --jit (C2-c).
-# Covers the symmetric surface (positional/default limit; the `limit:` keyword
-# is interp-only under --jit for now — it only bounds parallelism, not results).
+# Covers the symmetric surface, including the `limit:` keyword (limit only bounds
+# parallelism, not results, so the output is identical regardless of its value).
 
 # map: N→N, results in input order
 let xs = [1, 2, 3, 4, 5, 6, 7, 8]
 assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
 
-# positional limit (not the keyword form)
+# positional limit
 assert_eq(Parallel.map(xs, |x| x + 100, 1),
+          [101, 102, 103, 104, 105, 106, 107, 108])
+
+# `limit:` keyword form (symmetric across backends)
+assert_eq(Parallel.map(xs, |x| x + 100, limit: 2),
           [101, 102, 103, 104, 105, 106, 107, 108])
 
 # empty array

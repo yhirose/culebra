@@ -2363,9 +2363,9 @@ inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
   return culebra_jit_channel_new(n, a, 0, 0);
 }
 
-// Parallel.map/each(items, fn, limit = <cap>). limit passed positionally on the
-// slow path; a `limit:` kwarg falls back to the cap (results are unaffected —
-// limit only bounds parallelism).
+// Parallel.map/each(items, fn, limit = 0). `limit` arrives in slab slot 2 —
+// resolved from a positional arg or a `limit:` kwarg by the NsParamMeta hook
+// (kParallelMeta), defaulting to 0 (= the parallelism cap in jit_parallel_run).
 inline JitValue _ns_parallel_map(JitValue* a, int64_t n) {
   if (n < 2) {
     throw culebra::CulebraError("TypeError",
@@ -2720,6 +2720,15 @@ inline const NsParam kFileWithParams[] = {
 };
 inline const NsParamMeta kFileWithMeta = {kFileWithParams, 3, -1, -1};
 
+// Parallel.map/each(items, fn, limit=0). Mirrors make_parallel_namespace in
+// isolate.h; the NsParamMeta hook resolves a `limit:` kwarg into slab slot 2.
+inline const NsParam kParallelParams[] = {
+  {"items", false, false, nullptr},
+  {"fn",    false, false, nullptr},
+  {"limit", true,  false, &_ns_def_zero},
+};
+inline const NsParamMeta kParallelMeta = {kParallelParams, 3, -1, -1};
+
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
@@ -2800,8 +2809,8 @@ inline const NsMethod kNsMethods[] = {
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new", -1, &_ns_channel_new},
-  {"Parallel", "map", -1, &_ns_parallel_map},
-  {"Parallel", "each", -1, &_ns_parallel_each},
+  {"Parallel", "map",  2, &_ns_parallel_map,  &kParallelMeta},
+  {"Parallel", "each", 2, &_ns_parallel_each, &kParallelMeta},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
