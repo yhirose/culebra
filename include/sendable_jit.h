@@ -599,7 +599,7 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
 // The iterator's iter_self/next slots are generic, so only has_next differs.
 inline JitValue _jit_merged_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
   long mid = _jit_self_long(self, "__merged_id__");
-  auto node = chan_select_recv(chan_merge_ids(mid));
+  auto node = chan_select_recv(mid);
   JitValue ret{TAG_NIL, 0};
   if (node) {
     JitDeCtx dc;
@@ -620,6 +620,12 @@ inline JitValue _jit_merged_drop(JitClosure*, JitValue self, int64_t, JitValue*)
   chan_merge_drop(_jit_self_long(self, "__merged_id__"));  // idempotent anyway
   return {TAG_NIL, 0};
 }
+inline JitValue _jit_merged_join(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long mid = _jit_self_long(self, "__merged_id__");
+  culebra_runtime_value_release(self.tag, self.data);
+  chan_merge_join(mid);  // join producers (fan_in(items,fn)); surface first error
+  return {TAG_NIL, 0};
+}
 inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,
                                           JitValue*) {
   auto* it = reinterpret_cast<JitObject*>(self.data);
@@ -630,7 +636,7 @@ inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,
   } else if (st == 2) {
     ret = {TAG_BOOL, 0};
   } else {
-    auto node = chan_select_recv(chan_merge_ids(_jit_self_long(self, "_mid")));
+    auto node = chan_select_recv(_jit_self_long(self, "_mid"));
     if (node) {
       JitDeCtx dc;
       JitValue v = jit_deserialize(*node, dc);
@@ -678,35 +684,95 @@ inline JitValue _jit_make_merged_rx_endpoint(long mid) {
   meth("recv", _jit_merged_recv);
   meth("iter", _jit_merged_iter);
   meth("drop", _jit_merged_drop);
+  meth("join", _jit_merged_join);
   h->has_drop = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// Channel.fan_in(sources: [rx]) -> merged rx. Take an rx clone of each source
-// and register the merged endpoint over their ids.
+// Channel.fan_in(a, fn = nil) -> merged rx. With one arg, merge the given
+// receivers. With (items, fn), spawn one producer per item (fn(item, tx)) and
+// merge their streams — JIT mirror of make_channel_namespace's fan_in.
 inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
                                            int64_t line, int64_t col) {
   if (n < 1 || args[0].tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
-        "Channel.fan_in: argument must be an Array of receivers", line, col);
+        "Channel.fan_in: first argument must be an Array", line, col);
   }
   auto* arr = reinterpret_cast<JitArray*>(args[0].data);
-  std::vector<long> ids;
-  ids.reserve(arr->size);
-  for (size_t i = 0; i < arr->size; i++) {
-    JitValue s = arr->items[i];
-    bool ok = s.tag == TAG_OBJECT;
-    JitObject* o = ok ? reinterpret_cast<JitObject*>(s.data) : nullptr;
-    if (!ok || o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
-        o->slots[o->find_slot("__channel_role__")].value.data != 1) {
-      throw culebra::CulebraError("TypeError",
-          "Channel.fan_in: every source must be a receiver (rx)", line, col);
+
+  if (n < 2 || args[1].tag != TAG_FUNC) {
+    // fan_in([rx, ...]): merge existing receivers.
+    std::vector<long> ids;
+    ids.reserve(arr->size);
+    for (size_t i = 0; i < arr->size; i++) {
+      JitValue s = arr->items[i];
+      bool ok = s.tag == TAG_OBJECT;
+      JitObject* o = ok ? reinterpret_cast<JitObject*>(s.data) : nullptr;
+      if (!ok ||
+          o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
+          o->slots[o->find_slot("__channel_role__")].value.data != 1) {
+        throw culebra::CulebraError("TypeError",
+            "Channel.fan_in: every source must be a receiver (rx)", line, col);
+      }
+      long id = o->slots[o->find_slot("__channel_id__")].value.data;
+      chan_bump(id, /*role=*/1, +1);
+      ids.push_back(id);
     }
-    long id = o->slots[o->find_slot("__channel_id__")].value.data;
-    chan_bump(id, /*role=*/1, +1);
-    ids.push_back(id);
+    return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
   }
-  return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+
+  // fan_in(items, fn): spawn one producer per item, merge. Producers run
+  // threaded (a streaming producer blocks on send, so the inline-over-cap
+  // fallback would deadlock). fn(item, tx) sends to its own channel; the
+  // parent's tx is never created, the producer's auto-drops on exit.
+  JitSerCtx fsc;
+  sendable::SendNode sfn;
+  try {
+    sfn = jit_serialize(args[1], fsc);  // Sendable check (once)
+  } catch (culebra::CulebraError& e) {
+    if (e.kind == "SendError" && e.line == 0)
+      throw culebra::CulebraError(
+          "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
+    throw;
+  }
+  std::vector<long> ids;
+  std::vector<std::shared_ptr<IsolateCore>> producers;
+  for (size_t i = 0; i < arr->size; i++) {
+    auto chcore = std::make_shared<ChannelCore>(1);
+    long cid = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lk(channel_registry_mutex());
+      channel_registry()[cid] = chcore;
+    }
+    chcore->tx_count = 0;
+    chcore->rx_count = 1;
+    JitSerCtx asc;
+    std::vector<sendable::SendNode> sargs;
+    try {
+      sargs.push_back(jit_serialize(arr->items[i], asc));
+    } catch (culebra::CulebraError& e) {
+      if (e.kind == "SendError" && e.line == 0)
+        throw culebra::CulebraError(
+            "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
+      throw;
+    }
+    sendable::SendNode txnode;
+    txnode.kind = sendable::SendNode::K::Channel;
+    txnode.i = cid;
+    txnode.b = false;  // tx
+    chan_bump(cid, /*role=*/0, +1);  // in-flight (released by the child)
+    sargs.push_back(std::move(txnode));
+    auto pcore = std::make_shared<IsolateCore>();
+    g_live_isolates().fetch_add(1, std::memory_order_relaxed);
+    pcore->thread = std::thread(
+        [pcore, sfn, sargs = std::move(sargs)]() mutable {
+          run_isolate_child_jit(pcore, sfn, sargs, /*decrement_live=*/true);
+        });
+    producers.push_back(std::move(pcore));
+    ids.push_back(cid);
+  }
+  return _jit_make_merged_rx_endpoint(
+      chan_merge_register(std::move(ids), std::move(producers)));
 }
 
 // ===========================================================================

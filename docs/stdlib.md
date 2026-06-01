@@ -1566,6 +1566,27 @@ The merge **takes over** the given receivers — read them only through the merg
 not preserved (it is a merge). An empty list yields an immediately-closed `rx`; a
 single source is a pass-through.
 
+#### `Channel.fan_in(items, fn) -> rx`
+
+The all-in-one form: spawn one producer isolate per item, running `fn(item, tx)`,
+and merge their streams. `fn` sends to its own `tx`; fan_in creates the channels,
+drops the parent's senders, and owns the producer handles — so the consumer
+writes **no `tx`, no `drop`, and no handle** at all. `fn` and every item must be
+Sendable.
+
+```culebra
+# doctest: skip
+let merged = Channel.fan_in(workers, fn (w, tx) {
+  for x in produce(w) { tx.send(x) }
+})
+for v in merged { consume(v) }
+merged.join()        # join the producers; re-raises the first one that errored
+```
+
+`merged.join()` (after the stream ends) joins the spawned producers and re-raises
+the first error; without it, producer errors are dropped (as with not joining an
+`Isolate.spawn` handle). Producers run on their own threads.
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 The high-level form: apply a function to every element of an array across a pool

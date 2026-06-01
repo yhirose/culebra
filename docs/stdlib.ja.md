@@ -1506,6 +1506,26 @@ merge は渡した receiver を**引き取り**ます — 元の rx を直接読
 経由でのみ読んでください（元を読むと merge と競合）。source 間の順序は保たれ
 ません（merge ゆえ）。空リストは即 closed な `rx`、source 1 個はパススルー。
 
+#### `Channel.fan_in(items, fn) -> rx`
+
+オールインワン形：各 item に producer isolate を起動し `fn(item, tx)` を実行、
+出力を merge します。`fn` は自分の `tx` に send し、fan_in が channel 作成・親
+tx の drop・producer handle の所有をすべて引き受けるので、consumer は **tx も
+drop も handle も一切書きません**。`fn` と各 item は Sendable 必須。
+
+```culebra
+# doctest: skip
+let merged = Channel.fan_in(workers, fn (w, tx) {
+  for x in produce(w) { tx.send(x) }
+})
+for v in merged { consume(v) }
+merged.join()        # producer を join、最初のエラーを再送出
+```
+
+`merged.join()`（stream 終了後）は producer を join し最初のエラーを再送出。
+呼ばなければ producer のエラーは握り潰し（`Isolate.spawn` handle を join しない
+のと同じ）。producer は専用スレッドで実行されます。
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 高レベル形。配列の各要素に関数を isolate プールで並列適用します（ハンドル管理

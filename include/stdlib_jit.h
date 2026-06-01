@@ -2822,7 +2822,7 @@ inline const NsMethod kNsMethods[] = {
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new",    -1, &_ns_channel_new},
-  {"Channel", "fan_in",  1, &_ns_channel_fan_in},
+  {"Channel", "fan_in", -1, &_ns_channel_fan_in},
   {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
   {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},

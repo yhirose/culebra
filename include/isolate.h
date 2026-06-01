@@ -163,6 +163,14 @@ inline Value _isolate_deser_parent(const sendable::SendNode& n) {
   return sendable::deserialize(n, *ti, base, dc);
 }
 
+// Whether the isolate has finished (normally or by throwing). Read under the
+// core lock; used by the fan_in merge to treat a finished producer's drained
+// channel as done even if its `tx` wasn't dropped (a JIT throw path).
+inline bool _isolate_finished(IsolateCore& core) {
+  std::lock_guard<std::mutex> lk(core.m);
+  return core.finished;
+}
+
 // Join the thread (once) and surface the outcome: re-throw a crossed error /
 // user throw, or return the result. Precondition: core.finished is true.
 inline Value _isolate_extract(IsolateCore& core) {
@@ -241,38 +249,71 @@ inline std::shared_ptr<ChannelCore> chan_lookup(long id) {
   return it == channel_registry().end() ? nullptr : it->second;
 }
 
-// Merged-rx (fan_in) registry: a merged id → its source channel ids. Keyed by
-// id so endpoint methods stay captureless (same pattern as the channel
-// registry), and the registry erase makes drop idempotent (explicit + GC).
+struct IsolateCore;  // fwd (defined below; held by a merge entry for fan_in(fn))
+inline Value _isolate_extract(IsolateCore& core);  // fwd
+
+// Merged-rx (fan_in) registry: a merged id → its source channel ids, plus (for
+// the `fan_in(items, fn)` form) the producer isolates it spawned. Keyed by id so
+// endpoint methods stay captureless (same pattern as the channel registry); the
+// registry holds the producer cores alive (a GC'd handle would cancel them) and
+// the erase makes drop idempotent (explicit + GC).
+struct MergeEntry {
+  std::vector<long> source_ids;
+  std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
+};
 inline std::mutex& merge_registry_mutex() { static std::mutex m; return m; }
-inline std::unordered_map<long, std::vector<long>>& merge_registry() {
-  static std::unordered_map<long, std::vector<long>> r;
+inline std::unordered_map<long, MergeEntry>& merge_registry() {
+  static std::unordered_map<long, MergeEntry> r;
   return r;
 }
-inline long chan_merge_register(std::vector<long> ids) {
+inline long chan_merge_register(
+    std::vector<long> ids,
+    std::vector<std::shared_ptr<IsolateCore>> producers = {}) {
   long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  merge_registry()[id] = std::move(ids);
+  merge_registry()[id] = MergeEntry{std::move(ids), std::move(producers)};
   return id;
-}
-inline std::vector<long> chan_merge_ids(long mid) {
-  std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  auto it = merge_registry().find(mid);
-  return it == merge_registry().end() ? std::vector<long>{} : it->second;
 }
 inline void chan_drop(long id, int role);  // fwd
 // Drop a merged endpoint: release the rx clone fan_in took on each source, and
-// erase the entry. Idempotent — a second call finds no entry and does nothing.
+// erase the entry (releasing any producer cores — their threads are finished
+// once every source has closed, so destruction joins them). Idempotent.
 inline void chan_merge_drop(long mid) {
-  std::vector<long> ids;
+  MergeEntry e;
   {
     std::lock_guard<std::mutex> lk(merge_registry_mutex());
     auto it = merge_registry().find(mid);
     if (it == merge_registry().end()) return;
-    ids = std::move(it->second);
+    e = std::move(it->second);
     merge_registry().erase(it);
   }
-  for (long id : ids) chan_drop(id, /*role=*/1);
+  for (long id : e.source_ids) chan_drop(id, /*role=*/1);
+  // e.producers' shared_ptrs drop here; the last ref joins the finished thread.
+}
+// Join the producer isolates of a `fan_in(items, fn)` merge and surface the
+// first error (no-op for fan_in([rx]), which has no producers). Leaves the
+// merge registered so the merged rx still drops cleanly afterward.
+inline void chan_merge_join(long mid) {
+  std::vector<std::shared_ptr<IsolateCore>> producers;
+  {
+    std::lock_guard<std::mutex> lk(merge_registry_mutex());
+    auto it = merge_registry().find(mid);
+    if (it == merge_registry().end()) return;
+    producers = it->second.producers;  // copy the shared_ptrs (keep alive)
+  }
+  std::optional<culebra::CulebraError> first_err;
+  std::optional<Value> first_thrown;
+  for (auto& core : producers) {
+    try {
+      _isolate_extract(*core);  // joins; rethrows the producer's error
+    } catch (culebra::CulebraError& e) {
+      if (!first_err && !first_thrown) first_err = e;
+    } catch (Value& v) {
+      if (!first_err && !first_thrown) first_thrown = v;
+    }
+  }
+  if (first_thrown) throw *first_thrown;
+  if (first_err) throw *first_err;
 }
 
 inline Value make_channel_endpoint(long id, int role);  // fwd (clone recurses)
@@ -397,27 +438,45 @@ inline Value channel_recv(long id) {
   return node ? chan_take(*node) : Value();
 }
 
-// Wait until one of `ids` (rx channels) has a value and pop it; return nullopt
-// once EVERY source is closed and drained. This is the fan_in / select core:
+inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCore)
+
+// Wait until one of a merge's sources has a value and pop it; return nullopt
+// once EVERY source is drained AND done. This is the fan_in / select core:
 // register one waiter on each source, then block on it — event-driven, no
 // polling (the 50ms is only the interrupt heartbeat, as in chan_pop_blocking).
 // Mirrors Go's `select` (sudog on every case) and core.async's `alts!` (its
-// `merge` is just a loop over this). Sources that are already closed+empty are
-// skipped; they contribute to the all-closed test but are never popped.
-inline std::optional<sendable::SendNode>
-chan_select_recv(const std::vector<long>& ids) {
+// `merge` is just a loop over this).
+//
+// A source is "done" when it is empty and either closed OR its producer isolate
+// (for the fan_in(items, fn) form) has finished — the latter covers a producer
+// that threw, since the JIT doesn't auto-drop a thrown closure's `tx` param the
+// way the interp GC does, so the channel might not have closed itself.
+inline std::optional<sendable::SendNode> chan_select_recv(long mid) {
+  std::vector<long> ids;
+  std::vector<std::shared_ptr<IsolateCore>> producers;
+  {
+    std::lock_guard<std::mutex> lk(merge_registry_mutex());
+    auto it = merge_registry().find(mid);
+    if (it == merge_registry().end()) return std::nullopt;
+    ids = it->second.source_ids;
+    producers = it->second.producers;
+  }
   std::vector<std::shared_ptr<ChannelCore>> cores;
   cores.reserve(ids.size());
-  for (long id : ids)
-    if (auto c = chan_lookup(id)) cores.push_back(std::move(c));
+  std::vector<IsolateCore*> prod;  // parallel to cores; null for fan_in([rx])
+  for (size_t i = 0; i < ids.size(); i++) {
+    if (auto c = chan_lookup(ids[i])) {
+      cores.push_back(std::move(c));
+      prod.push_back(i < producers.size() ? producers[i].get() : nullptr);
+    }
+  }
 
   MergeWaiter w;
   for (auto& c : cores) {
     std::lock_guard<std::mutex> lk(c->m);
     c->selectors.push_back(&w);  // register before the first scan: no lost wakeup
   }
-  // Unregister on every exit path (value found / all closed / interrupt throw).
-  struct Unreg {
+  struct Unreg {  // unregister on every exit (value / all done / interrupt throw)
     std::vector<std::shared_ptr<ChannelCore>>& cores;
     MergeWaiter* w;
     ~Unreg() {
@@ -430,8 +489,9 @@ chan_select_recv(const std::vector<long>& ids) {
   } unreg{cores, &w};
 
   while (true) {
-    bool all_closed = true;
-    for (auto& c : cores) {
+    bool all_done = true;
+    for (size_t i = 0; i < cores.size(); i++) {
+      auto& c = cores[i];
       std::unique_lock<std::mutex> lk(c->m);
       if (!c->q.empty()) {
         sendable::SendNode node = std::move(c->q.front());
@@ -440,9 +500,10 @@ chan_select_recv(const std::vector<long>& ids) {
         c->cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
         return node;
       }
-      if (!c->closed) all_closed = false;
+      bool done = c->closed || (prod[i] && _isolate_finished(*prod[i]));
+      if (!done) all_done = false;
     }
-    if (all_closed) return std::nullopt;
+    if (all_done) return std::nullopt;
     if (culebra::interrupt_requested())
       throw culebra::CulebraError("Interrupted", "isolate cancelled");
     std::unique_lock<std::mutex> lk(w.m);
@@ -523,14 +584,14 @@ inline Value make_merged_rx_endpoint(long mid) {
   h.initialize("__merged_id__", Value(mid), false);
   h.initialize("recv",
       Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
-        auto node = chan_select_recv(chan_merge_ids(mid));
+        auto node = chan_select_recv(mid);
         return node ? chan_take(*node) : Value();
       }, ""sv)), false);
   h.initialize("iter",
       Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
         return _make_iterator(
             [mid](std::shared_ptr<Environment>) -> std::optional<Value> {
-              auto node = chan_select_recv(chan_merge_ids(mid));
+              auto node = chan_select_recv(mid);
               return node ? _iter_step_value(chan_take(*node))
                           : _iter_step_done();
             });
@@ -538,6 +599,13 @@ inline Value make_merged_rx_endpoint(long mid) {
   h.initialize("drop",
       Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
         chan_merge_drop(mid);  // idempotent (registry erase)
+        return Value();
+      }, "Nil"sv)), false);
+  // For the fan_in(items, fn) form: join the spawned producers and surface the
+  // first error. A no-op for fan_in([rx]) (no producers).
+  h.initialize("join",
+      Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
+        chan_merge_join(mid);
         return Value();
       }, "Nil"sv)), false);
   return Value(std::move(h));
@@ -600,30 +668,96 @@ inline Value make_channel_namespace() {
   // and no drop bookkeeping). Takes one rx clone per source; reading the original
   // receivers afterward races the merge, so hand them over and don't reuse them.
   ns.initialize("fan_in",
-      Value(FunctionValue({{"sources", false, ""sv}},
+      Value(FunctionValue(
+          {{"a", false, ""sv}, {"fn", false, ""sv, nullptr, kw_default_nil()}},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
             long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
-            Value sources = env->get("sources");
-            if (sources.type != Value::Array) {
+            Value a = env->get("a");
+            const Value& fnv = env->get("fn");
+            if (a.type != Value::Array) {
               throw culebra::CulebraError("TypeError",
-                  "Channel.fan_in: argument must be an Array of receivers",
-                  line, col);
+                  "Channel.fan_in: first argument must be an Array", line, col);
+            }
+
+            if (fnv.type != Value::Function) {
+              // fan_in([rx, ...]): merge existing receivers.
+              std::vector<long> ids;
+              for (const auto& s : *a.to_array().values) {
+                if (s.type != Value::Object ||
+                    !s.to_object().has("__channel_endpoint__") ||
+                    s.to_object().get("__channel_role__").to_long() != 1) {
+                  throw culebra::CulebraError("TypeError",
+                      "Channel.fan_in: every source must be a receiver (rx)",
+                      line, col);
+                }
+                long id = s.to_object().get("__channel_id__").to_long();
+                chan_bump(id, /*role=*/1, +1);  // the merged endpoint's own rx
+                ids.push_back(id);
+              }
+              return make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+            }
+
+            // fan_in(items, fn): spawn one producer per item and merge their
+            // streams. `fn(item, tx)` sends to its own channel; fan_in drops the
+            // parent's tx and the producer's auto-drops on exit, so the consumer
+            // sees no tx and no drop bookkeeping at all. Producers run threaded
+            // (a streaming producer blocks on send, so the inline-over-cap
+            // fallback would deadlock).
+            const auto& items = *a.to_array().values;
+            sendable::SerCtx fsc;
+            sendable::SendNode sfn;
+            try {
+              sfn = sendable::serialize(fnv, fsc);  // Sendable check (once)
+            } catch (culebra::CulebraError& e) {
+              if (e.kind == "SendError" && e.line == 0)
+                throw culebra::CulebraError(
+                    "SendError", std::string("Channel.fan_in: ") + e.what(),
+                    line, col);
+              throw;
             }
             std::vector<long> ids;
-            for (const auto& s : *sources.to_array().values) {
-              if (s.type != Value::Object ||
-                  !s.to_object().has("__channel_endpoint__") ||
-                  s.to_object().get("__channel_role__").to_long() != 1) {
-                throw culebra::CulebraError("TypeError",
-                    "Channel.fan_in: every source must be a receiver (rx)",
-                    line, col);
+            std::vector<std::shared_ptr<IsolateCore>> producers;
+            for (const auto& item : items) {
+              auto chcore = std::make_shared<ChannelCore>(1);
+              long cid = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+              {
+                std::lock_guard<std::mutex> lk(channel_registry_mutex());
+                channel_registry()[cid] = chcore;
               }
-              long id = s.to_object().get("__channel_id__").to_long();
-              chan_bump(id, /*role=*/1, +1);  // the merged endpoint's own rx ref
-              ids.push_back(id);
+              chcore->tx_count = 0;  // no parent tx (only the producer holds one)
+              chcore->rx_count = 1;  // the merged endpoint's rx
+              // args = [item, tx]. The tx crosses as an in-flight Channel node;
+              // the child rebuilds it (+1) and run_isolate_child releases the
+              // in-flight ref, leaving the producer as the sole tx.
+              sendable::SerCtx asc;
+              std::vector<sendable::SendNode> sargs;
+              try {
+                sargs.push_back(sendable::serialize(item, asc));
+              } catch (culebra::CulebraError& e) {
+                if (e.kind == "SendError" && e.line == 0)
+                  throw culebra::CulebraError(
+                      "SendError", std::string("Channel.fan_in: ") + e.what(),
+                      line, col);
+                throw;
+              }
+              sendable::SendNode txnode;
+              txnode.kind = sendable::SendNode::K::Channel;
+              txnode.i = cid;
+              txnode.b = false;  // tx
+              chan_bump(cid, /*role=*/0, +1);  // in-flight (released by the child)
+              sargs.push_back(std::move(txnode));
+              auto pcore = std::make_shared<IsolateCore>();
+              g_live_isolates().fetch_add(1, std::memory_order_relaxed);
+              pcore->thread = std::thread(
+                  [pcore, sfn, sargs = std::move(sargs)]() mutable {
+                    run_isolate_child(pcore, sfn, sargs);
+                  });
+              producers.push_back(std::move(pcore));
+              ids.push_back(cid);
             }
-            return make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+            return make_merged_rx_endpoint(
+                chan_merge_register(std::move(ids), std::move(producers)));
           }, ""sv)), false);
   return Value(std::move(ns));
 }

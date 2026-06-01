@@ -60,4 +60,26 @@ try {
   assert_eq(e.kind, "TypeError")
 }
 
+# fan_in(items, fn): spawn a producer per item + merge — no tx, no drop, no
+# handle in user code. (The producer's tx auto-drops; fan_in owns the rest.)
+let merged = Channel.fan_in([1, 2, 3], fn (w, tx) {
+  for i in 1..6 { tx.send(w * 100 + i) }
+})
+mut g2 = []
+for v in merged { g2.push(v) }
+merged.join()
+assert_eq(g2.size(), 15)                       # 3 producers x 5
+assert_eq(g2.reduce(0, |a, b| a + b), 3045)
+
+# a producer error surfaces via merged.join() (structured error, both backends)
+let mf = Channel.fan_in([1, 2], fn (w, tx) {
+  tx.send(w)
+  if w == 2 { let bad = 1 / 0 }    # ZeroDivisionError
+})
+mut cf = 0
+for v in mf { cf = cf + 1 }
+assert_eq(cf, 2)
+let kind = try { mf.join(); "no error" } catch e { e.kind }
+assert_eq(kind, "ZeroDivisionError")
+
 puts("test_fanin_jit: all assertions passed")
