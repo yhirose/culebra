@@ -323,3 +323,14 @@ assert_eq(r_acoll.message, "type error: expected Function, got Nil")
 let r_scoll = try { (5).collect(); nil } catch e { e }
 assert_eq(r_scoll.kind, 'TypeError')
 assert_eq(r_scoll.message, "type error: expected Object, Array, or Tensor, got Long")
+
+# The JIT fuses `.map(λ).collect()`, but the fusion is only valid for an
+# iterator-shaped receiver. On an Array — whose `.map` is eager, so
+# `.collect()` on the result is method-miss — it must NOT leak the fused
+# path's "expected Object, got Array"; it falls back to the unfused map
+# (eager) then collect (method-miss), matching interp.
+let r_mc = try { [1, 2, 3].map(fn (x) { x * 2 }).collect(); nil } catch e { e }
+assert_eq(r_mc.kind, 'TypeError')
+assert_eq(r_mc.message, "type error: expected Function, got Nil")
+# The valid fused path still produces the collected array.
+assert_eq([1, 2, 3].iter().map(fn (x) { x * 2 }).collect(), [2, 4, 6])

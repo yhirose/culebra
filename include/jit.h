@@ -16904,9 +16904,48 @@ inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
   if (ast.nodes[i + 2]->token != "collect") return std::nullopt;
   if (ast.nodes[i + 3]->original_tag != "ARGUMENTS"_) return std::nullopt;
   if (!ast.nodes[i + 3]->nodes.empty()) return std::nullopt;
-  expect_tag(receiver, TAG_OBJECT, "map.collect");
-  return emit_inlined_iter_map_collect(receiver,
-                                        *ast.nodes[i + 1]->nodes[0]);
+
+  // The fused inline loop drives the receiver via the iterator protocol
+  // (has_next/next), so it's valid only for an iterator-shaped Object.
+  // The receiver type is a runtime value, so branch: an iterator-shaped
+  // Object takes the fused path; anything else (an Array — whose `.map`
+  // is eager so `.collect` is method-miss — a plain dict, a scalar) takes
+  // the ordinary unfused `map` then `collect`, which resolves to the same
+  // error interp gives. Without this, expect_tag(TAG_OBJECT) leaked
+  // "expected Object, got Array" for `[1,2,3].map(f).collect()`.
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto fn = builder_.GetInsertBlock()->getParent();
+  auto tag = extract_tag(receiver);
+  auto chkBB = llvm::BasicBlock::Create(ctx_, "mc.objchk", fn);
+  auto fusedBB = llvm::BasicBlock::Create(ctx_, "mc.fused", fn);
+  auto unfusedBB = llvm::BasicBlock::Create(ctx_, "mc.unfused", fn);
+  auto mergeBB = llvm::BasicBlock::Create(ctx_, "mc.merge", fn);
+  builder_.CreateCondBr(
+      builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), chkBB,
+      unfusedBB);
+  builder_.SetInsertPoint(chkBB);  // object_has is safe only here
+  auto hasNext = emit_object_has(builder_.CreateIntToPtr(extract_data(receiver),
+                                                         ptrTy),
+                                 get_or_create_global_str("next", ".it.next"));
+  builder_.CreateCondBr(hasNext, fusedBB, unfusedBB);
+
+  builder_.SetInsertPoint(fusedBB);
+  auto fusedRes =
+      emit_inlined_iter_map_collect(receiver, *ast.nodes[i + 1]->nodes[0]);
+  auto fusedEnd = builder_.GetInsertBlock();
+  builder_.CreateBr(mergeBB);
+
+  builder_.SetInsertPoint(unfusedBB);
+  auto mapped = compile_method_call("map", *ast.nodes[i + 1], receiver);
+  auto unfusedRes = compile_method_call("collect", *ast.nodes[i + 3], mapped);
+  auto unfusedEnd = builder_.GetInsertBlock();
+  builder_.CreateBr(mergeBB);
+
+  builder_.SetInsertPoint(mergeBB);
+  auto phi = builder_.CreatePHI(valueType_, 2, "mc.res");
+  phi->addIncoming(fusedRes, fusedEnd);
+  phi->addIncoming(unfusedRes, unfusedEnd);
+  return phi;
 }
 
 inline llvm::Value* JIT::emit_inlined_iter_map_collect(
