@@ -5855,11 +5855,52 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
 // Type-check a higher-order callback argument. Returns the Closure or
 // throws. Centralizes the identical preamble shared by all higher-order
 // array runtime helpers.
+// Forwarding body for the adapter closure that lets a callable class
+// instance stand in for a function callback. captures[0] is the instance
+// (bound as `this`), captures[1] is its resolved `__call__` closure
+// (captured once so the per-element call skips the property lookup). Each
+// call dispatches to __call__ with the callback args passed through.
+inline JitValue _culebra_callable_adapter(JitClosure* self, JitValue,
+                                          int64_t n, JitValue* args) {
+  JitValue inst = self->captures[0]->value;  // borrowed
+  auto* m = reinterpret_cast<JitClosure*>(self->captures[1]->value.data);
+  culebra_runtime_value_retain(inst.tag, inst.data);  // `this` consumed by frame
+  return reinterpret_cast<JitFn>(m->fn_ptr)(m, inst, n, args);
+}
+
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
   if (fn_tag != TAG_FUNC) {
+    // A callable class instance (own/proto `__call__`) stands in for a
+    // function: synthesize an adapter closure that forwards to __call__
+    // with `this` bound (Option A: structural callable). Mirrors interp's
+    // as_callback. proto-gated so a plain dict isn't callable.
+    if (fn_tag == TAG_OBJECT) {
+      auto* obj = reinterpret_cast<JitObject*>(fn_data);
+      auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
+      if (e && e->value.tag == TAG_FUNC) {
+        auto* call_cls = reinterpret_cast<JitClosure*>(e->value.data);
+        if (call_cls->arity != expected_arity) {
+          throw culebra::CulebraError("TypeError", std::format(
+              "type error: {} expects a {}-parameter function",
+              method_name, expected_arity), line, col);
+        }
+        // Capture the instance and its __call__ closure (each +1, released
+        // when the adapter is collected). Capturing the resolved closure
+        // lets the per-element forward skip the property lookup.
+        culebra_runtime_value_retain(fn_tag, fn_data);
+        culebra_runtime_value_retain(TAG_FUNC, e->value.data);
+        auto* adapter = culebra_runtime_closure_new(
+            reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
+            expected_arity);
+        adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
+        adapter->captures[1] =
+            culebra_runtime_cell_new(TAG_FUNC, e->value.data);
+        return adapter;
+      }
+    }
     // Every higher-order builtin names its callback parameter `f` with a
     // `Function` annotation, so interp's generic typed-param check reports
     // "parameter 'f' expects Function" for a non-Function argument. Match

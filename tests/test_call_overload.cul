@@ -93,16 +93,24 @@ test_kwargs_rejected = fn () {
   assert_eq(msg, 'type error: expected Function, got Object')
 }
 
-# Phase 1 boundary: a bare callable instance passed as a higher-order
-# callback is not yet supported (that is Phase 2). It must raise a clean
-# TypeError rather than silently misbehaving. The message text is NOT
-# asserted here: the callback-validation paths give different wording per
-# backend for ANY non-Function callback (pre-existing, independent of
-# __call__), tracked separately for the error-symmetry work.
-test_callable_as_value_errors = fn () {
-  class F { new() {} __call__(x) { x + 1 } }
+# Phase 2a: a bare callable instance is itself a valid higher-order
+# callback — the builtin invokes its __call__ per element, `this` bound to
+# the instance. A class with __call__ structurally satisfies `Function`.
+test_callable_as_value = fn () {
+  class Inc { new() {} __call__(x) { x + 1 } }
+  assert_eq([1, 2, 3].map(Inc.new()), [2, 3, 4])
+
+  class Mul { new(k) { this.k = k } __call__(x) { x * this.k } }
+  assert_eq([1, 2, 3].filter(fn (x) { x > 1 }).map(Mul.new(10)), [20, 30])
+
+  # 2-arg __call__ as a reduce callback.
+  class Add2 { new() {} __call__(acc, x) { acc + x } }
+  assert_eq([1, 2, 3, 4].reduce(0, Add2.new()), 10)
+
+  # A genuine non-callable (no __call__) is still rejected, same kind both
+  # backends (message pinned in test_runtime_errors).
   mut kind = nil
-  try { let _ = [1, 2, 3].map(F.new()) } catch e { kind = e.kind }
+  try { let _ = [1, 2, 3].map({}) } catch e { kind = e.kind }
   assert_eq(kind, 'TypeError')
 }
 
@@ -168,7 +176,7 @@ test_call_in_lambda_and_loop()
 test_plain_dict_not_callable()
 test_non_callable_instance()
 test_kwargs_rejected()
-test_callable_as_value_errors()
+test_callable_as_value()
 test_dezero_call()
 
 puts('call-overload OK')

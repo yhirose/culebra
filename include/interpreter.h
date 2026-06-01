@@ -2122,6 +2122,20 @@ inline bool type_matches(const Value& val, std::string_view name) {
       if (name == "Object") return true;
       auto tag = class_tag(val);
       if (tag && *tag == name) return true;
+      // A class instance that defines `__call__` is callable, so it
+      // structurally satisfies the `Function` type — it can be bound to a
+      // `Function`-annotated parameter and passed as a higher-order
+      // callback, just like a closure (Option A: structural callable).
+      // Limited to an own/proto `__call__` (a `__call__` inherited only
+      // as a trait default isn't reachable from this free function);
+      // direct `obj(x)` calls still dispatch trait-default `__call__`.
+      if (name == "Function" && tag) {
+        auto it = val.to_object().properties->find("__call__");
+        if (it != val.to_object().properties->end() &&
+            it->second.val.type == Value::Function) {
+          return true;
+        }
+      }
       // Enum variant: an instance tagged with `__enum` also matches the
       // parent enum name (so `r: Result` accepts any `Result.*` variant).
       if (const auto& obj = val.to_object();
@@ -2846,6 +2860,30 @@ inline void bind_overflow_args(
   }
 }
 
+// Resolve a higher-order builtin's callback argument to a FunctionValue.
+// A plain function is returned as-is; a callable class instance (own/proto
+// `__call__`) is wrapped so the builtin invokes it like any function, with
+// `this` bound to the instance (Option A: structural callable). type_matches
+// already let the instance bind to the `f: Function` parameter; this is
+// where the per-call dispatch happens. A genuine non-callable falls through
+// to to_function(), which raises the standard "expected Function" error.
+inline FunctionValue as_callback(const Value& cb) {
+  if (cb.type == Value::Object && class_tag(cb)) {
+    auto it = cb.to_object().properties->find("__call__");
+    if (it != cb.to_object().properties->end() &&
+        it->second.val.type == Value::Function) {
+      const auto& pf = it->second.val.get<FunctionValue>();
+      FunctionValue bound(*pf.params, [pf, cb](std::shared_ptr<Environment> ce) {
+        ce->initialize("this", cb, false);
+        return pf.eval(ce);
+      });
+      bound.name = pf.name;
+      return bound;
+    }
+  }
+  return cb.to_function();
+}
+
 // Sets up a function-frame environment with `self` bound to the callback,
 // and treats an early return (`return x` compiled as a thrown Value) as
 // the callback's result.
@@ -3171,7 +3209,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              ArrayValue out;
                              out.values->reserve(arr.values->size());
                              for (const auto& v : *arr.values) {
@@ -3184,7 +3222,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              ArrayValue out;
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
@@ -3198,7 +3236,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              for (const auto& v : *arr.values) {
                                invoke_unary_callback(callEnv, f, v);
                              }
@@ -3209,7 +3247,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
            {{"init", false}, {"f", false, "Function"sv}},
            [](std::shared_ptr<Environment> callEnv) {
              const auto& arr = callEnv->get("this").to_array();
-             const auto& f = callEnv->get("f").to_function();
+             auto f = as_callback(callEnv->get("f"));
              Value acc = callEnv->get("init");
              for (const auto& v : *arr.values) {
                auto inner = std::make_shared<Environment>(callEnv);
@@ -3235,7 +3273,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
                                        .to_bool()) return v;
@@ -3246,7 +3284,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
                                        .to_bool()) return Value(true);
@@ -3257,7 +3295,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              for (const auto& v : *arr.values) {
                                if (!invoke_unary_callback(callEnv, f, v)
                                         .to_bool()) return Value(false);
@@ -3268,7 +3306,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              ArrayValue out;
                              for (const auto& v : *arr.values) {
                                auto r = invoke_unary_callback(callEnv, f, v);
@@ -3329,7 +3367,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
                              auto& arr = callEnv->get("this").to_array();
-                             const auto& f = callEnv->get("f").to_function();
+                             auto f = as_callback(callEnv->get("f"));
                              auto& vs = *arr.values;
                              std::vector<std::pair<Value, size_t>> keyed;
                              keyed.reserve(vs.size());

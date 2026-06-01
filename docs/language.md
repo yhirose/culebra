@@ -1207,10 +1207,17 @@ puts(add3(10))              # => 13
 puts(add3.__call__(10))     # => 13
 ```
 
-Phase 1 is positional-only: `__call__` takes `*args` positional arguments
-(no keyword arguments), and a bare callable instance can be *called*
-directly but not yet passed as a higher-order callback (e.g. to `map`) —
-both raise a clean `TypeError`.
+A callable instance is also a first-class higher-order callback — pass it
+straight to `map` / `filter` / `reduce` / `sort_by` and the builtin
+invokes its `__call__` per element:
+
+```culebra
+class Scale { new(k) { this.k = k } __call__(x) { x * this.k } }
+puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+```
+
+`__call__` itself is positional-only — it takes `*args` (no keyword
+arguments); a keyword call like `obj(x: 1)` is a `TypeError`.
 
 ### Custom string representation (`__str__`)
 
