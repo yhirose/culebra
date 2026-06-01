@@ -2682,8 +2682,11 @@ inline Value _get_iterator(const Value& iterable, size_t line, size_t col) {
     return _iter_over_vector(iterable.get<SetValue>().members);
   }
   if (iter_fn.type != Value::Function) {
-    throw CulebraError("TypeError", "type error: target is not iterable",
-        static_cast<long>(line), static_cast<long>(col));
+    // Match the JIT's for-in check: list the allowed iterable types and
+    // the actual type, single-sourced through the shared helper.
+    throw_type_mismatch("Array, Tuple, Set, Object, or String",
+                        iterable.type_name(),
+                        static_cast<long>(line), static_cast<long>(col));
   }
   return iter_fn.to_function().eval(
       _make_method_call_env(iterable, line, col));
