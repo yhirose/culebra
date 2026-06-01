@@ -1221,8 +1221,9 @@ fn apply_twice(f: Function, x) { f(f(x)) }
 puts(apply_twice(Scale.new(2), 5))   # => 20
 ```
 
-`__call__` itself is positional-only — it takes `*args` (no keyword
-arguments); a keyword call like `obj(x: 1)` is a `TypeError`.
+`__call__` accepts the full call form — positional, `*args`, and keyword
+arguments — so `obj(x: 1)` binds `x` against `__call__`'s parameters like
+any method call.
 
 ### Custom string representation (`__str__`)
 

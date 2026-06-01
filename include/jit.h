@@ -15953,21 +15953,51 @@ struct JIT {
       store_at(splatSlab, valueType_, i, splatVals[i]);
     }
 
-    // Callee must be a closure; type-check at the IR level (matches
-    // `compile_function_call_raw`'s guard).
+    // Callee must be a closure (matches compile_function_call_raw's
+    // guard) — or a callable class instance, in which case `obj(kwargs)`
+    // dispatches to its `__call__` with `this` bound to the instance
+    // (Phase 2b). Resolve cls/this on both arms and merge.
     auto tag = extract_tag(callee);
     auto isFunc = builder_.CreateICmpEQ(tag,
                                          builder_.getInt8(TAG_FUNC));
     auto okBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.ok", fn);
+    auto ovBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.overload", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.cont", fn);
+    builder_.CreateCondBr(isFunc, okBB, ovBB);
+
+    builder_.SetInsertPoint(okBB);
+    auto clsNormal = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
+    auto thisNormal = thisVal ? thisVal : make_nil();
+    auto okEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(contBB);
+
+    builder_.SetInsertPoint(ovBB);
+    auto cm = emit_call(
+        module_->getOrInsertFunction(rt::class_call_method, valueType_,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty()),
+        {tag, extract_data(callee)}, "kwc.cm");
+    auto isCm = builder_.CreateICmpEQ(extract_tag(cm),
+                                       builder_.getInt8(TAG_FUNC));
+    auto callBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.call", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "kwc.callee.err", fn);
-    builder_.CreateCondBr(isFunc, okBB, errBB);
+    builder_.CreateCondBr(isCm, callBB, errBB);
     builder_.SetInsertPoint(errBB);
     emit_type_error_typed("Function", tag);
     builder_.CreateUnreachable();
-    builder_.SetInsertPoint(okBB);
-    auto clsPtr = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
+    builder_.SetInsertPoint(callBB);
+    emit_value_retain(callee);  // instance becomes `this` (consumed by frame)
+    auto clsOverload = builder_.CreateIntToPtr(extract_data(cm), ptrTy);
+    auto ovEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(contBB);
 
-    auto thisVV = thisVal ? thisVal : make_nil();
+    builder_.SetInsertPoint(contBB);
+    auto clsPtr = builder_.CreatePHI(ptrTy, 2, "kwc.cls");
+    clsPtr->addIncoming(clsNormal, okEnd);
+    clsPtr->addIncoming(clsOverload, ovEnd);
+    auto thisVV = builder_.CreatePHI(valueType_, 2, "kwc.this");
+    thisVV->addIncoming(thisNormal, okEnd);
+    thisVV->addIncoming(callee, ovEnd);
 
     auto result = emit_call(
         module_->getOrInsertFunction(

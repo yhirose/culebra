@@ -77,20 +77,21 @@ test_non_callable_instance = fn () {
   assert_true(threw)
 }
 
-# Phase 1 is positional-only: a kwargs call on a callable instance is not
-# routed to __call__ — it falls through to the normal call path and raises
-# the SAME error both backends give for "called a non-function with
-# kwargs". Asserting the exact message locks interp/JIT symmetry (a
-# divergence would fail the assert on one backend). Keyword args to
-# __call__ are a Phase 2 concern.
-test_kwargs_rejected = fn () {
-  class F { new() {} __call__(x) { x + 1 } }
+# Phase 2b: keyword arguments to `obj(...)` bind against __call__'s
+# parameters like any method call — order-independent, mixable with
+# positionals. A non-callable instance called with kwargs still errors
+# identically on both backends.
+test_kwargs_call = fn () {
+  class F { new() {} __call__(x, step) { x * step } }
   let f = F.new()
+  assert_eq(f(x: 5, step: 2), 10)        # keyword args
+  assert_eq(f(step: 2, x: 5), 10)        # order-independent
+  assert_eq(f(5, step: 2), 10)           # positional + keyword
+
+  class Plain { new() { this.v = 1 } }
   mut kind = nil
-  mut msg = nil
-  try { let _ = f(x: 5) } catch e { kind = e.kind; msg = e.message }
+  try { let _ = Plain.new()(a: 1) } catch e { kind = e.kind }
   assert_eq(kind, 'TypeError')
-  assert_eq(msg, 'type error: expected Function, got Object')
 }
 
 # Phase 2a: a bare callable instance is itself a valid higher-order
@@ -191,7 +192,7 @@ test_call_chain()
 test_call_in_lambda_and_loop()
 test_plain_dict_not_callable()
 test_non_callable_instance()
-test_kwargs_rejected()
+test_kwargs_call()
 test_callable_as_value()
 test_callable_function_param()
 test_dezero_call()
