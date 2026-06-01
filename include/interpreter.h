@@ -6874,11 +6874,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
         switch (postfix.original_tag) {
           case "ARGUMENTS"_: {
-            // Call errors point at the callee (the postfix chain element
-            // just before the arg list), matching the JIT.
-            const auto& callee = *ast.nodes[i - 1];
+            // Attribute the call error to the chain head (the lvalue's base
+            // expression), matching the rvalue path's nodes[0] and the JIT.
+            // The immediately-preceding postfix would point at an inner arg
+            // list for chained calls like `f()(x).y = z`.
+            const auto& head = *ast.nodes[lvaloff];
             lval = eval_function_call(postfix, env, lval,
-                                      callee.line, callee.column);
+                                      head.line, head.column);
             break;
           }
           case "INDEX"_:

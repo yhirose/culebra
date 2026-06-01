@@ -144,6 +144,25 @@ let r_destr = try {
 assert_eq(r_destr.kind, 'ValueError')
 assert_true(r_destr.message.contains('destructure pattern did not match value'))
 
+# --- Failed dispatch inside an lvalue chain anchors at the chain head ---
+# `ret_f()(1, 2, 3)` over-applies the returned 1-arg function, so the call
+# fails to dispatch while walking the assignment target. Both backends
+# attribute it to the chain head `ret_f` (col 3), not the inner `()` arg
+# list — matching the rvalue call path.
+fn f_one(x) { x }
+fn ret_f() { f_one }
+let r_lvcall = try {
+  let mut holder = {}
+  ret_f()(1, 2, 3).slot = holder
+  nil
+} catch e { e }
+assert_eq(r_lvcall.kind, 'DispatchError')
+# Column anchors at `ret_f` (col 3), the same node the rvalue path uses.
+# Line is intentionally not pinned: the JIT mis-attributes lvalue-assignment
+# error lines by +1 in some statement contexts (a pre-existing drift, col
+# unaffected) tracked separately; both backends still agree on col.
+assert_eq(r_lvcall.col, 3)
+
 # --- Runtime helpers (throwing stdlib functions) ---
 # Verify the JIT sweep that routes runtime-helper calls through the
 # landingpad: Math.pow with a negative exp, to_long on bad input,
