@@ -1,0 +1,39 @@
+# Member access on a non-existent member.
+#
+# Reading a missing member is permissive — it reads as `nil` — on every
+# type that can carry members or methods: String, StringView, Array, Set,
+# Tuple, Object, Function, Tensor. Scalars (Long/Float/Bool/Nil) cannot
+# carry members and raise a TypeError. Calling a missing member resolves
+# the member to nil first, so the *call* fails with "expected Function,
+# got Nil". The interpreter and JIT agree on all of this (this file runs
+# under the interp-vs-JIT diff harness).
+
+# --- permissive nil reads ---
+assert_true("abc".nope == nil)
+assert_true("abc".slice(1, 2).nope == nil)   # StringView
+assert_true([1, 2].nope == nil)
+assert_true({1, 2}.nope == nil)              # Set
+assert_true((1, 2).nope == nil)              # Tuple
+assert_true({a: 1}.nope == nil)              # Object
+assert_true((fn (x) { x }).nope == nil)
+assert_true(Tensor.zeros([2]).nope == nil)
+
+# A real member still resolves (the permissive path only catches misses).
+assert_eq([1, 2, 3].size(), 3)
+assert_eq({a: 1}.a, 1)
+
+# --- scalars raise TypeError ---
+fn read_kind(thunk) {
+  try { let _ = thunk(); 'no-throw' } catch e { e.kind }
+}
+assert_eq(read_kind(|| (5).nope), 'TypeError')
+assert_eq(read_kind(|| (5.0).nope), 'TypeError')
+assert_eq(read_kind(|| true.nope), 'TypeError')
+assert_eq(read_kind(|| nil.nope), 'TypeError')
+
+# --- calling a missing member: nil is not callable ---
+let r_call = try { let _ = [1].nope(); nil } catch e { e }
+assert_eq(r_call.kind, 'TypeError')
+assert_true(r_call.message.contains('expected Function, got Nil'))
+
+puts("test_member_access OK")

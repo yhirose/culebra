@@ -14523,15 +14523,41 @@ struct JIT {
       builder_.SetInsertPoint(notFnBB);
     }
 
+    // Tag dispatch. TAG_OBJECT resolves through the inline cache below.
+    // String/StringView/Array/Set/Tuple/Function mirror the interpreter's
+    // permissive member read: a missing member reads as Nil rather than
+    // trapping (a `.foo()` call on that Nil then fails with the usual
+    // "expected Function, got Nil"). Scalars (Long/Float/Bool/Nil) keep the
+    // hard TypeError. The for-in iterator protocol only feeds TAG_OBJECT
+    // receivers to this helper, so its lookups are unaffected.
     auto isObj =
         builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT), "is.obj");
     auto okBB = llvm::BasicBlock::Create(ctx_, "prop.ok", fn);
+    auto permBB = llvm::BasicBlock::Create(ctx_, "prop.perm", fn);
+    auto nilBB = llvm::BasicBlock::Create(ctx_, "prop.nil", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "prop.err", fn);
-    builder_.CreateCondBr(isObj, okBB, errBB);
+    auto propOrNilBB = llvm::BasicBlock::Create(ctx_, "prop.or_nil", fn);
+    builder_.CreateCondBr(isObj, okBB, permBB);
 
+    builder_.SetInsertPoint(permBB);
+    llvm::Value* isPerm = builder_.getFalse();
+    for (auto t : {TAG_FUNC, TAG_STRING, TAG_ARRAY, TAG_TUPLE, TAG_SET,
+                   TAG_STRINGVIEW, TAG_TENSOR}) {
+      isPerm = builder_.CreateOr(
+          isPerm, builder_.CreateICmpEQ(tag, builder_.getInt8(t)));
+    }
+    builder_.CreateCondBr(isPerm, nilBB, errBB);
+
+    // Scalars (Long/Float/Bool/Nil) can't carry members. Match the
+    // interpreter's wording (interpreter.h to_object) byte-for-byte.
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Object", tag);
+    emit_type_error_typed("Object, Array, or Tensor", tag);
     builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(nilBB);
+    auto nilResult = llvm::ConstantAggregateZero::get(valueType_);
+    builder_.CreateBr(propOrNilBB);
+    auto nilEnd = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(okBB);
     auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
@@ -14616,6 +14642,15 @@ struct JIT {
     llvm::Value* result = llvm::UndefValue::get(valueType_);
     result = builder_.CreateInsertValue(result, tagPhi, {0});
     result = builder_.CreateInsertValue(result, dataPhi, {1});
+
+    // Join the Object inline-cache result with the permissive-Nil path.
+    auto objResultEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(propOrNilBB);
+    builder_.SetInsertPoint(propOrNilBB);
+    auto propPhi = builder_.CreatePHI(valueType_, 2, "prop.val");
+    propPhi->addIncoming(result, objResultEnd);
+    propPhi->addIncoming(nilResult, nilEnd);
+    result = propPhi;
 
     // Merge with the function-introspection branch when active.
     if (fn_mode) {
