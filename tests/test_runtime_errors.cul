@@ -286,3 +286,18 @@ assert_eq(r_dh.message, "'has' takes 1 argument but 0 given")
 # arity) on both backends — the "type lacks method" path.
 let r_dmiss = try { {a: 1}.nope(1); nil } catch e { e }
 assert_eq(r_dmiss.kind, 'TypeError')
+
+# An iterator-protocol method on a non-iterator-shaped Object (a plain
+# dict has no `next`) is the method-not-found path, NOT a lazy wrapper
+# that fails later. The JIT used to return a lazy iterator for the lazy
+# combinators (map/filter/take) and "target is not iterable" for the
+# terminal ones (sum/reduce); now every iterator method matches interp's
+# "expected Function, got Nil" at the call. (A real iterator with `next`
+# still chains — covered by the iterator tests.)
+let r_dmap = try { {a: 1}.map(fn (x) { x }); nil } catch e { e }
+assert_eq(r_dmap.kind, 'TypeError')
+assert_eq(r_dmap.message, "type error: expected Function, got Nil")
+
+let r_dsum = try { {a: 1}.sum(); nil } catch e { e }
+assert_eq(r_dsum.kind, 'TypeError')
+assert_eq(r_dsum.message, "type error: expected Function, got Nil")

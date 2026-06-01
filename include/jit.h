@@ -17109,6 +17109,33 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   auto tag = extract_tag(receiver);
   auto fn = builder_.GetInsertBlock()->getParent();
 
+  // Iterator-protocol methods (map/filter/reduce/sum/take/...) resolve on
+  // an Object only when it is iterator-shaped. interp's eval_property gates
+  // its iterator fallback on `has("next")` (the `has_next`/`iter` clause is
+  // dead — `iter` is a dict builtin, always present). A plain dict has no
+  // `next`, so `{}.map(f)` is the method-not-found path ("expected
+  // Function, got Nil") on interp, not a lazy wrapper that fails later at
+  // the terminal step. Reject a non-shaped Object here, before any of the
+  // per-method paths (dispatch_arr_iter, the sum/max 3-way, take/skip),
+  // so all of them stay symmetric. Arrays (eager) and real iterators (own
+  // `next`/`has_next`/`iter`) pass straight through.
+  if (iterator_builtins().contains(method)) {
+    auto okBB = llvm::BasicBlock::Create(ctx_, "iter.shaped", fn);
+    auto chkBB = llvm::BasicBlock::Create(ctx_, "iter.objchk", fn);
+    auto badBB = llvm::BasicBlock::Create(ctx_, "iter.unshaped", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), chkBB, okBB);
+    builder_.SetInsertPoint(chkBB);  // object_has is safe only here
+    auto hasNext = emit_object_has(builder_.CreateIntToPtr(extract_data(receiver),
+                                                           ptrTy),
+                                   get_or_create_global_str("next", ".it.next"));
+    builder_.CreateCondBr(hasNext, okBB, badBB);
+    builder_.SetInsertPoint(badBB);
+    emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+  }
+
   // Tensor methods. Dispatch unconditionally on TAG_TENSOR; non-Tensor
   // receivers raise a type error (no overload with other types in M1).
   if (method == "shape" && argsAst.nodes.size() == 0) {
@@ -17729,6 +17756,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // flat_map) store it, terminal drivers (iter_reduce/for_each/...) release
     // it on exhaustion. Since compile_method_call releases the receiver once
     // uniformly, hand the iterator path its own +1 so that consume is balanced.
+    // (Non-iterator-shaped Objects are rejected at the top of
+    // compile_builtin_method, so the Object here is always a real iterator.)
     emit_value_retain(receiver);
     auto lazyRes = lazy(t, d);
     auto lazyEnd = builder_.GetInsertBlock();
