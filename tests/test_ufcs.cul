@@ -89,3 +89,9 @@ assert_eq(in_fn2(), 3)
 # (capturing the outer `size` here used to crash closure setup).
 in_fn3 = fn () { [1, 2, 3, 4].size() }
 assert_eq(in_fn3(), 4)
+
+# UFCS of the sequence-factory globals `range` / `iota`: the receiver is
+# their first positional arg, so `(n).range()` is `range(n)`.
+assert_eq((3).range().collect(), [0, 1, 2])
+assert_eq((1).range(4).collect(), [1, 2, 3])
+assert_eq((3).iota(), [0, 1, 2])

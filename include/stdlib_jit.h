@@ -4611,11 +4611,38 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
 inline llvm::Value* JitExtension::compile_ufcs_builtin(
     JIT& jit, const std::string& method, const peg::Ast& argsAst,
     llvm::Value* receiver) {
-  if (argsAst.nodes.size() != 0) return nullptr;
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   auto line = jit.current_line_val();
   auto col = jit.current_column_val();
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
+
+  // `range`/`iota` are sequence-factory globals, so UFCS feeds the
+  // receiver in as their first positional argument: `(3).range()` →
+  // range(3) = 0..3, `(0).range(5)` → range(0, 5). value_to_long on a
+  // non-Long receiver raises "expected Long, got <T>", matching interp
+  // (so the nonsensical `Math.range(3)` lands on the same error). step
+  // is a keyword-only arg upstream, so UFCS is positional 1..2 only.
+  if ((method == "range" || method == "iota") &&
+      JIT::arg_list_is_positional_only(argsAst) && argsAst.nodes.size() <= 1) {
+    llvm::Value* s;
+    llvm::Value* e;
+    if (argsAst.nodes.empty()) {  // (N).range() → range(0, N)
+      s = jit.builder_.getInt64(0);
+      e = jit.value_to_long(receiver);
+    } else {  // (S).range(E) → range(S, E)
+      s = jit.value_to_long(receiver);
+      e = jit.value_to_long(jit.compile(*argsAst.nodes[0]));
+    }
+    if (method == "iota") {
+      auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
+      return jit.make_array(arr);
+    }
+    auto obj = emit_call(module_->getFunction(rt::math_range),
+                         {s, e, jit.builder_.getInt64(1), line, col});
+    return jit.make_object(obj);
+  }
+
+  if (argsAst.nodes.size() != 0) return nullptr;
   if (method == "puts" || method == "print") {
     auto rt_name = method == "puts" ? rt::puts : rt::print;
     emit_call(module_->getFunction(rt_name),
