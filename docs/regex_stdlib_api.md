@@ -11,6 +11,7 @@ compiled program is the expensive part). It is a culebra-source class wrapping
 the native `_Regex` primitives — the `_Time` / `Time` split.
 
 ```culebra
+# doctest: skip
 let re = Regex.compile("\\d+")          // compile (reused); bad pattern -> error
 let re = Regex.compile("\\w+", "i")     // flags: a string of "i" "m" "s"
 
@@ -44,6 +45,7 @@ offsets** into the subject (Go-style, matching culebra's String model) and
 always fall on grapheme-cluster boundaries.
 
 ```culebra
+# doctest: skip
 m.value          -> String             // the whole-match text
 m.start, m.end   -> Int                // byte offsets
 m.groups         -> [Group | nil]      // groups[0] is the whole match

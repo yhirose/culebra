@@ -1719,16 +1719,18 @@ Regex.compile('\w+').find("  hello world").value // => "hello"
 d.find("no digits")                              // => nil
 d.find_all("a1 b22 c333").size()                 // => 3
 
-let m = Regex.compile('(\d{4})-(\d{2})').find("2026-05")
+let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
 m.groups[1].value                                // => "2026"
+m.named["year"].value                            // => "2026"（(?<name>...) で名前付き）
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
+Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
 d.replace_all("a1 b22", fn (m) { "<{m.value}>" })// => "a<1> b<22>"（コールバック）
 Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
 Regex.compile('hello', "i").test("HELLO world")  // => true（フラグ引数）
 d.find("xyz")?.value ?? "none"                   // ?. / ?? と合成可
 
-for m in d.find_iter("a1 b22") { ... }           // 遅延。いつでも途中終了可
+for m in d.find_iter("a1 b22") { break }         // 遅延。いつでも途中終了可
 d.find_iter("1 2 3").take(2).collect().size()    // => 2（全走査しない）
 Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラル一致）
 ```

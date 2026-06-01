@@ -1789,9 +1789,9 @@ Regex.compile('\w+').find("  hello world").value // => "hello"
 d.find("no digits")                              // => nil
 d.find_all("a1 b22 c333").size()                 // => 3
 
-let m = Regex.compile('(\d{4})-(\d{2})').find("2026-05")
+let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
 m.groups[1].value                                // => "2026"
-m.named["..."]                                   // named via (?<name>...)
+m.named["year"].value                            // => "2026" (named via (?<name>...))
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
 Regex.compile('(\w+)@(\w+)').replace_all("x@y", '$2.$1') // => "y.x"
@@ -1800,7 +1800,7 @@ Regex.compile('\s+').split("the quick  brown")   // => ["the", "quick", "brown"]
 Regex.compile('hello', "i").test("HELLO world")  // => true (flag arg)
 d.find("xyz")?.value ?? "none"                   // composes with ?. / ??
 
-for m in d.find_iter("a1 b22") { ... }           // lazy; stop early any time
+for m in d.find_iter("a1 b22") { break }         // lazy; stop early any time
 d.find_iter("1 2 3").take(2).collect().size()    // => 2 (no full scan)
 Regex.escape("a.b(c)")                           // => `a\.b\(c\)` (literal match)
 ```
