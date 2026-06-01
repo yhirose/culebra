@@ -277,7 +277,11 @@ inline void channel_send_node(long id, sendable::SendNode node) {
   auto core = chan_lookup(id);
   if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
   std::unique_lock<std::mutex> lk(core->m);
-  while (!core->closed && core->q.size() >= core->cap) {
+  // A rendezvous channel (cap 0) holds at most one in-transit value: wait for an
+  // empty slot, enqueue, then block again until a receiver takes it (synchronous
+  // handoff). A bounded channel just waits for room.
+  size_t room = core->cap == 0 ? 1 : core->cap;
+  while (!core->closed && core->q.size() >= room) {
     if (culebra::interrupt_requested())
       throw culebra::CulebraError("Interrupted", "isolate cancelled");
     core->cv.wait_for(lk, std::chrono::milliseconds(50));
@@ -285,8 +289,14 @@ inline void channel_send_node(long id, sendable::SendNode node) {
   if (core->closed)
     throw culebra::CulebraError("ChannelError", "send on a closed channel");
   core->q.push_back(std::move(node));
-  lk.unlock();
   core->cv.notify_all();
+  if (core->cap == 0) {
+    while (!core->closed && !core->q.empty()) {
+      if (culebra::interrupt_requested())
+        throw culebra::CulebraError("Interrupted", "isolate cancelled");
+      core->cv.wait_for(lk, std::chrono::milliseconds(50));
+    }
+  }
 }
 
 inline void channel_send(long id, const Value& v) {
@@ -412,7 +422,7 @@ inline bool _install_channel_hooks() {
 }
 inline const bool _channel_hooks_installed = _install_channel_hooks();
 
-// `Channel.new(cap = 1) -> (tx, rx)`. Bounded; capacity must be >= 1.
+// `Channel.new(cap = 1) -> (tx, rx)`. Bounded; `cap = 0` is rendezvous.
 inline Value make_channel_namespace() {
   using namespace std::literals;
   static const auto cap_default = std::make_shared<Value>(Value(1L));
@@ -423,10 +433,9 @@ inline Value make_channel_namespace() {
             long cap = env->get("cap").to_long();
             long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
             long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
-            if (cap < 1) {
+            if (cap < 0) {
               throw culebra::CulebraError("ValueError",
-                  "Channel.new: capacity must be >= 1 (rendezvous channels are "
-                  "not yet supported)", line, col);
+                  "Channel.new: capacity must be >= 0", line, col);
             }
             auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
             long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);

@@ -1532,7 +1532,11 @@ producer. Note the multi-producer trap: every `tx` (including the parent's
 original) must be dropped for the channel to close — drop the ones you don't
 keep.
 
-Bounded to capacity >= 1 (rendezvous channels are planned next).
+**`Channel.new(0)` is a rendezvous channel** (capacity 0): `send` does not return
+until a receiver takes the value — a synchronous hand-off with no buffering.
+Useful for backpressure (a producer can't run ahead of its consumer). Within a
+single isolate it deadlocks (the send has no one to hand to), so use it across
+isolates. Capacity must be `>= 0`.
 
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 

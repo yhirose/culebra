@@ -1474,7 +1474,10 @@ prod.join()
 channel が閉じるには全ての `tx`（親の元の tx 含む）が drop される必要があります —
 保持しない tx は drop してください。
 
-容量は 1 以上（rendezvous channel は次に予定）。
+**`Channel.new(0)` は rendezvous channel**（容量 0）: `send` は受信者が値を
+受け取るまで返りません — バッファ無しの同期ハンドオフ。backpressure
+（producer が consumer を追い越せない）に有用。単一 isolate 内では deadlock
+（渡す相手がいない）ので isolate 間で使います。容量は `0 以上`。
 
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 

@@ -829,10 +829,9 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
 inline JitValue culebra_jit_channel_new(int64_t n, JitValue* args,
                                         int64_t line, int64_t col) {
   long cap = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 1;
-  if (cap < 1) {
+  if (cap < 0) {
     throw culebra::CulebraError("ValueError",
-        "Channel.new: capacity must be >= 1 (rendezvous channels are not yet "
-        "supported)", line, col);
+        "Channel.new: capacity must be >= 0", line, col);
   }
   auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
   long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
