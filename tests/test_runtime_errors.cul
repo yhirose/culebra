@@ -243,3 +243,20 @@ assert_eq(r_a2.message, "'slice' takes 2 arguments but 3 given")
 # "type lacks method" path), NOT an arity error — on both backends.
 let r_amiss = try { "abc".push(1, 2); nil } catch e { e }
 assert_eq(r_amiss.kind, 'TypeError')
+
+# Passing a non-Function where a higher-order builtin expects a callback
+# is a TypeError with a message naming the parameter — byte-identical on
+# both backends. (interp routes the argument through its typed-param
+# check; the JIT's _culebra_expect_callback matches the wording. The
+# callback param is `f` for every such builtin.)
+let r_cb1 = try { let _ = [1, 2, 3].map({}); nil } catch e { e }
+assert_eq(r_cb1.kind, 'TypeError')
+assert_eq(r_cb1.message, "type error: parameter 'f' expects Function")
+
+let r_cb2 = try { let _ = [1, 2, 3].reduce(0, 5); nil } catch e { e }
+assert_eq(r_cb2.kind, 'TypeError')
+assert_eq(r_cb2.message, "type error: parameter 'f' expects Function")
+
+let r_cb3 = try { let _ = [1, 2, 3].sort_by('x'); nil } catch e { e }
+assert_eq(r_cb3.kind, 'TypeError')
+assert_eq(r_cb3.message, "type error: parameter 'f' expects Function")

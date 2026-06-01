@@ -5860,7 +5860,13 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
   if (fn_tag != TAG_FUNC) {
-    culebra::throw_type_error_at(line, col);
+    // Every higher-order builtin names its callback parameter `f` with a
+    // `Function` annotation, so interp's generic typed-param check reports
+    // "parameter 'f' expects Function" for a non-Function argument. Match
+    // it byte-for-byte (interp routes the arg through check_type; the JIT
+    // validates here) so the two backends stay symmetric.
+    throw culebra::CulebraError("TypeError",
+        "type error: parameter 'f' expects Function", line, col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (fn->arity != expected_arity) {
