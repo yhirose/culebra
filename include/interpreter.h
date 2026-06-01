@@ -464,6 +464,17 @@ inline void collect_locals(
     return;
   }
 
+  if (node.tag == "TRAIT_DECL"_) {
+    // A trait binds no name in the value env (traits live in the trait
+    // registry, not as a value), so nothing enters `locals`. Crucially we
+    // do NOT fall through to the generic recursion: descending would
+    // hoist every trait method's params and body-lets into the enclosing
+    // function's local set, producing a false shadow report between
+    // sibling methods. Method bodies are analyzed on their own by
+    // descend_into_nested. Matches the JIT's collect_fn_locals.
+    return;
+  }
+
   if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_ ||
       node.tag == "ENUM_DECL"_) {
     // Skip leading DECORATOR children (added grammar form
