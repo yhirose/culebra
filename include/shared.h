@@ -69,6 +69,22 @@ inline void throw_if_too_many_positionals(long cap, long n_pos,
       cap, cap == 1 ? "" : "s", n_pos), line, col);
 }
 
+// Count-based ArityError message for a wrong-arity built-in method call,
+// shared by both backends so interp/JIT/AOT emit byte-identical text. A
+// fixed arity renders `'push' takes 1 argument but 3 given`; an optional
+// range renders `'slice' takes 1 to 2 arguments but 3 given`. The `given`
+// count drives nothing; `min`/`max` drive the singular/plural of the
+// expected noun (no period — the printer appends ` at L:C.`).
+inline std::string builtin_arity_error_message(std::string_view method,
+                                               long min, long max, long got) {
+  if (min == max) {
+    return std::format("'{}' takes {} argument{} but {} given", method, min,
+                       min == 1 ? "" : "s", got);
+  }
+  return std::format("'{}' takes {} to {} arguments but {} given", method, min,
+                     max, got);
+}
+
 // --- Numeric formatting / parsing ---
 
 // Shortest round-trip decimal for a double, with a forced decimal point

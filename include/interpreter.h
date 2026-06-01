@@ -841,6 +841,12 @@ struct FunctionValue {
   // args positionally and never accept kwargs; the call site uses this to
   // raise a clean TypeError instead of an opaque ArityError. Matches JIT.
   bool is_builtin_method = false;
+  // True when this built-in wrapper is over an unambiguously value-typed
+  // receiver (Array/String/StringView/Set/Tuple/Tensor) — the cases the
+  // JIT can disambiguate by tag. Gates the positional-arity check so
+  // interp and JIT stay symmetric: object-tag builtins (iterator/dict
+  // methods) are left to a later pass. See [[project_jit_error_symmetry]].
+  bool builtin_arity_checked = false;
   // Defining AST for a user closure (fn / lambda / method), retained so the
   // closure can be REBUILT on another thread's heap by the isolate layer
   // (sendable.h): the eval std::function captures the *parent* Interpreter
@@ -3354,8 +3360,13 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
 // axis (lazy Tensor result) vs no arg (eager Float result).
 template <Op op>
 inline Value _make_tensor_reduction_method() {
+  // Optional axis: `t.sum()` reduces all (Float), `t.sum(axis)` reduces
+  // along an axis (Tensor). Declared as a `*args` catch-all so the arity
+  // is honest (variadic, not the fixed-0 that a `{}` list would imply) —
+  // the positional-arity check keys off this. The body still reads the
+  // overflow via __ARGS__.
   return Value(FunctionValue(
-      {},
+      {FunctionValue::Parameter::make_args_rest("axis")},
       [](std::shared_ptr<Environment> callEnv) {
         const auto& self = callEnv->get("this").to_tensor().impl;
         if (callEnv->has("__ARGS__")) {
@@ -5945,6 +5956,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                 ast.line, ast.column);
           }
         }
+        // Positional arity: a fixed-shape built-in on a value-typed
+        // receiver rejects too few / too many args with a count-based
+        // ArityError (the JIT raises the same — see jit.h). No kwargs
+        // reach here, so the node count is the positional count.
+        if (fn.builtin_arity_checked) {
+          auto b = builtin_arity_bounds(*fn.params);
+          long argc = static_cast<long>(ast.nodes.size());
+          if (argc < b.min || (!b.variadic && argc > b.max)) {
+            throw CulebraError("ArityError",
+                builtin_arity_error_message(fn.name, b.min, b.max, argc),
+                ast.line, ast.column);
+          }
+        }
       }
     }
     CallArgs args;
@@ -6071,7 +6095,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // and reject kwargs. Namespace/user-object methods (own Function
   // properties) pass false so their kwargs/defaults still work.
   static Value _wrap_method_with_this(const Value& prop, const Value& val,
-                                      bool is_builtin = true) {
+                                      bool is_builtin = true,
+                                      std::string_view method_name = {}) {
     const auto& pf = prop.to_function();
     Value wrapped = Value(
         FunctionValue(*pf.params, [=](std::shared_ptr<Environment> callEnv) {
@@ -6081,12 +6106,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Carry introspection metadata (name / return_type /
     // introspection_target) through the method-binding wrapper so
     // `obj.method.name` and friends report the underlying method
-    // info instead of an empty anonymous view.
+    // info instead of an empty anonymous view. Built-in table entries
+    // carry no name on the FunctionValue itself, so adopt the looked-up
+    // method name (also what the arity-error message reports).
     auto& wf = wrapped.get<FunctionValue>();
-    wf.name = pf.name;
+    wf.name = method_name.empty() ? pf.name : method_name;
     wf.return_type = pf.return_type;
     wf.introspection_target = pf.introspection_target;
     wf.is_builtin_method = is_builtin;
+    // Value-typed receivers have an unambiguous JIT tag, so the JIT can
+    // raise the same positional-arity error; gate the check to them.
+    wf.builtin_arity_checked =
+        is_builtin && (val.type == Value::Array || val.type == Value::String ||
+                       val.type == Value::StringView ||
+                       val.type == Value::Set || val.type == Value::Tuple ||
+                       val.type == Value::Tensor);
     return wrapped;
   }
 
@@ -6147,7 +6181,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = string_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
-      return _wrap_method_with_this(it->second, val);
+      return _wrap_method_with_this(it->second, val, true, name);
     }
 
     // Set / Tuple are not ObjectValues either; same dedicated-table dispatch.
@@ -6155,13 +6189,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = set_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
-      return _wrap_method_with_this(it->second, val);
+      return _wrap_method_with_this(it->second, val, true, name);
     }
     if (val.type == Value::Tuple) {
       const auto& methods = tuple_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
-      return _wrap_method_with_this(it->second, val);
+      return _wrap_method_with_this(it->second, val, true, name);
     }
 
     // Function introspection: `fn.name`, `fn.params`, `fn.return_type`.
@@ -6212,7 +6246,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (prop.type == Value::Function) {
         // Own Function properties (user methods, namespace methods like
         // Proc.run) accept kwargs; only builtins()-table methods don't.
-        return _wrap_method_with_this(prop, val, !obj.has_own(name));
+        return _wrap_method_with_this(prop, val, !obj.has_own(name), name);
       }
       return prop;
     }
@@ -6248,7 +6282,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = iterator_builtins();
       auto it = methods.find(name);
       if (it != methods.end()) {
-        return _wrap_method_with_this(it->second, val);
+        return _wrap_method_with_this(it->second, val, true, name);
       }
     }
     return Value();

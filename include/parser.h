@@ -865,6 +865,29 @@ inline bool has_args_rest(const std::vector<P>& params) {
   return false;
 }
 
+// Positional arity bounds for a built-in (fixed-shape) method, derived
+// from its declared parameters — the single source of truth both
+// backends consult. `min` counts the required positional params (no
+// default, not kw-only/rest); `max` is the regular positional count;
+// `variadic` is true when a `*args` catch-all removes the upper bound.
+// A param carries a default when either a default expression (user
+// source) or a literal default Value (C++-built stdlib entry) is set.
+struct ArityBounds {
+  long min;
+  long max;
+  bool variadic;
+};
+template <class P>
+inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
+  long required = 0;
+  for (const auto& p : params) {
+    if (p.kw_only || p.kwargs_rest || p.args_rest) continue;
+    if (p.default_expr == nullptr && p.default_value == nullptr) required++;
+  }
+  return {required, static_cast<long>(regular_param_count(params)),
+          has_args_rest(params)};
+}
+
 // For a PARAMETER AST node, returns the DEFAULT_VALUE's inner expression
 // (or nullptr if the parameter has no default). PARAMETER layout is
 // `[MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?]` and the

@@ -216,3 +216,30 @@ let r_type = try { let _ = 'a' < 1; nil } catch e { e }
 assert_eq(r_type.kind, 'TypeError')
 assert_eq(r_type.line, 215)
 assert_eq(r_type.col, 28)
+
+# --- built-in method arity: symmetric count-based ArityError ---
+# A fixed-shape builtin on a value-typed receiver rejects too few / too
+# many positional args with the same ArityError on interp, JIT, and AOT
+# (this file runs under all three). Too-many used to be silently dropped
+# on interp and surfaced as "expected Function, got Nil" on the JIT;
+# both now match. See [[project_jit_error_symmetry]].
+let r_af = try { [1].push(); nil } catch e { e }
+assert_eq(r_af.kind, 'ArityError')
+assert_eq(r_af.message, "'push' takes 1 argument but 0 given")
+
+let r_am = try { [1].push(1, 2, 3); nil } catch e { e }
+assert_eq(r_am.kind, 'ArityError')
+assert_eq(r_am.message, "'push' takes 1 argument but 3 given")
+
+let r_a0 = try { [1].size(9); nil } catch e { e }
+assert_eq(r_a0.kind, 'ArityError')
+assert_eq(r_a0.message, "'size' takes 0 arguments but 1 given")
+
+let r_a2 = try { [1].slice(0, 1, 2); nil } catch e { e }
+assert_eq(r_a2.kind, 'ArityError')
+assert_eq(r_a2.message, "'slice' takes 2 arguments but 3 given")
+
+# A receiver type that doesn't define the method stays a TypeError (the
+# "type lacks method" path), NOT an arity error — on both backends.
+let r_amiss = try { "abc".push(1, 2); nil } catch e { e }
+assert_eq(r_amiss.kind, 'TypeError')
