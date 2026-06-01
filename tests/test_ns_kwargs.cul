@@ -21,8 +21,11 @@ assert_eq(r2.code, 0)
 let r3 = p.run(["echo", "y"])
 assert_eq(r3.code, 0)
 
-// Bare value, multiple kwargs (order-independent).
-let r4 = p.run(["echo", "z"], timeout: 5, check: false)
+// Bare value, multiple kwargs (order-independent). `timeout` is in
+// milliseconds; use a generous value so the kwarg is exercised without
+// racing `echo` under parallel test load (a tight 5ms would SIGTERM the
+// child and return code -1). Matches test_proc.cul's quick-command case.
+let r4 = p.run(["echo", "z"], timeout: 5000, check: false)
 assert_eq(r4.code, 0)
 
 // Proc.all bare value + kwarg (its name `all` collides with a builtin
