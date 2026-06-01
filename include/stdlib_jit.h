@@ -1636,6 +1636,9 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
   h->set_or_append("_err", JitValue{TAG_LONG, err_fd}, true);
   h->set_or_append("_done", JitValue{TAG_BOOL, 0}, true);
   h->set_or_append("_result", JitValue{TAG_NIL, 0}, true);
+  // A native handle is not Sendable — reject it at the serialize boundary
+  // (jit_serialize checks __nonsendable__), mirroring the interp handle.
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   auto fn = [&](const char* name, auto* f, size_t ar) {
     h->set_or_append(name,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
@@ -1780,6 +1783,9 @@ CULEBRA_RT_INLINE JitValue _jit_file_chunks(JitClosure*, JitValue self,
 CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  // A native handle is not Sendable — reject it at the serialize boundary
+  // (jit_serialize checks __nonsendable__), mirroring the interp handle.
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   auto fn = [&](const char* name, auto* f, size_t ar) {
     h->set_or_append(name,
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(

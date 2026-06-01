@@ -1,0 +1,41 @@
+# SendError symmetry across the spawn family. Runs under BOTH interp and --jit;
+# the interp-vs-jit diff harness guarantees the messages are byte-identical, so
+# these assertions only need to pin the shape.
+
+fn caught(thunk) {
+  try { thunk(); "NO ERROR" } catch e { "{e.kind}: {e.message}" }
+}
+
+mut counter = 0
+
+# A mut-capture closure is rejected at the spawn site, and the message names the
+# operation (Isolate.spawn / Channel.fan_in). Both backends prefix identically.
+let a = caught(fn () { Isolate.spawn(fn () { counter = counter + 1 }) })
+assert_true(a.starts_with("SendError: Isolate.spawn: closure captures the mutable"))
+
+let b = caught(fn () {
+  Channel.fan_in([1], fn (x, tx) { counter = counter + x; tx.send(x) })
+})
+assert_true(b.starts_with("SendError: Channel.fan_in: closure captures the mutable"))
+
+# A native handle (File / Proc / Isolate) is not Sendable — sending one over a
+# channel is rejected on both backends with the same message (the JIT used to
+# serialize a File/Proc handle silently).
+fn send_through(v) {
+  let (tx, rx) = Channel.new(2)
+  tx.send(v)
+}
+let f = caught(fn () { send_through(File.open("README.md", "r")) })
+assert_eq(f, "SendError: a native handle is not Sendable")
+
+let p = caught(fn () { send_through(Proc.spawn(["echo", "hi"])) })
+assert_eq(p, "SendError: a native handle is not Sendable")
+
+let h = caught(fn () { send_through(Isolate.spawn(fn () { 1 })) })
+assert_eq(h, "SendError: a native handle is not Sendable")
+
+# A handle returned out of an isolate is rejected the same way.
+let r = caught(fn () { Isolate.spawn(fn () { File.open("README.md", "r") }).join() })
+assert_eq(r, "SendError: a native handle is not Sendable")
+
+puts("test_send_errors_jit: all assertions passed")

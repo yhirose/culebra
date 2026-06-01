@@ -1807,6 +1807,9 @@ inline Value make_file_handle(int64_t id) {
   using namespace std::literals;
   ObjectValue h;
   h.initialize("_id", Value(static_cast<long>(id)), false);
+  // A native handle (the fd lives in a process-local table) is not Sendable —
+  // reject it at the serialize boundary the same way the JIT handle does.
+  h.initialize("__nonsendable__", Value(true), false);
 
   auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
     return env->get("this").to_object().get("_id").to_long();
@@ -2010,6 +2013,9 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
   h.initialize("_err", Value(static_cast<long>(err_fd)), true);
   h.initialize("_done", Value(false), true);
   h.initialize("_result", Value(), true);
+  // A native handle (pid + pipe fds are process-local) is not Sendable — reject
+  // it at the serialize boundary the same way the JIT handle does.
+  h.initialize("__nonsendable__", Value(true), false);
 
   h.initialize("wait",
       Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {

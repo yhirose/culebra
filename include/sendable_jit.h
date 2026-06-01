@@ -440,10 +440,22 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
         col);
   }
   JitSerCtx sc;
-  sendable::SendNode sclo = jit_serialize({fn_tag, fn_data}, sc);
+  sendable::SendNode sclo;
   std::vector<sendable::SendNode> sargs;
-  sargs.reserve(n_args);
-  for (int64_t i = 0; i < n_args; i++) sargs.push_back(jit_serialize(args[i], sc));
+  // Prefix the operation + carry the spawn-site location, mirroring the interp
+  // (isolate.h). Keeps the SendError message byte-identical across backends.
+  try {
+    sclo = jit_serialize({fn_tag, fn_data}, sc);
+    sargs.reserve(n_args);
+    for (int64_t i = 0; i < n_args; i++)
+      sargs.push_back(jit_serialize(args[i], sc));
+  } catch (culebra::CulebraError& e) {
+    if (e.kind == "SendError" && e.line == 0) {
+      throw culebra::CulebraError(
+          "SendError", std::string("Isolate.spawn: ") + e.what(), line, col);
+    }
+    throw;
+  }
 
   auto core = std::make_shared<IsolateCore>();
   long id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
