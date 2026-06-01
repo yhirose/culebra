@@ -82,4 +82,14 @@ moved_tx.send(42)
 moved_tx.drop()
 assert_eq(data_rx.recv(), 42)
 
+# --- a producer that does NOT explicitly drop its tx still auto-closes: the
+#     spawned closure's captured endpoint drops when the isolate finishes ---
+let (atx, arx) = Channel.new(4)
+let auto_prod = Isolate.spawn(fn () { atx.send(7); atx.send(8) })  # no atx.drop()
+atx.drop()                         # only the parent drops explicitly
+mut auto_got = []
+for v in arx { auto_got.push(v) }  # ends only if the channel actually closes
+auto_prod.join()
+assert_eq(auto_got, [7, 8])
+
 puts("test_channel: all assertions passed")

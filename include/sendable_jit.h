@@ -290,6 +290,11 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
       core->finished = true;
     }
     culebra_runtime_value_release(r.tag, r.data);
+    // Release the closure so its captures drop on the child thread (the interp
+    // path drops them via heap teardown). Without this a captured channel
+    // endpoint never drops, so a producer that relies on auto-close — rather
+    // than an explicit tx.drop() — leaves the channel open and receivers hang.
+    culebra_runtime_value_release(fn.tag, fn.data);
   } catch (culebra::CulebraError& e) {
     std::lock_guard<std::mutex> lk(core->m);
     core->error = e;
