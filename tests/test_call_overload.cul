@@ -77,20 +77,28 @@ test_non_callable_instance = fn () {
   assert_true(threw)
 }
 
-# Phase 1 is positional-only: a kwargs call on a callable instance raises
-# a clean TypeError on both backends (kwargs semantics are a Phase 2
-# concern). Captured by kind so the message text need not match.
+# Phase 1 is positional-only: a kwargs call on a callable instance is not
+# routed to __call__ — it falls through to the normal call path and raises
+# the SAME error both backends give for "called a non-function with
+# kwargs". Asserting the exact message locks interp/JIT symmetry (a
+# divergence would fail the assert on one backend). Keyword args to
+# __call__ are a Phase 2 concern.
 test_kwargs_rejected = fn () {
   class F { new() {} __call__(x) { x + 1 } }
   let f = F.new()
   mut kind = nil
-  try { let _ = f(x: 5) } catch e { kind = e.kind }
+  mut msg = nil
+  try { let _ = f(x: 5) } catch e { kind = e.kind; msg = e.message }
   assert_eq(kind, 'TypeError')
+  assert_eq(msg, 'type error: expected Function, got Object')
 }
 
 # Phase 1 boundary: a bare callable instance passed as a higher-order
 # callback is not yet supported (that is Phase 2). It must raise a clean
-# TypeError rather than silently misbehaving.
+# TypeError rather than silently misbehaving. The message text is NOT
+# asserted here: the callback-validation paths give different wording per
+# backend for ANY non-Function callback (pre-existing, independent of
+# __call__), tracked separately for the error-symmetry work.
 test_callable_as_value_errors = fn () {
   class F { new() {} __call__(x) { x + 1 } }
   mut kind = nil

@@ -5953,17 +5953,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // `__call__(*args)` method, the twin of `__index__`. resolve_class_method
     // gates on class_tag (a plain dict holding a "__call__" key stays
     // non-callable) and honors trait-default `__call__`. Phase 1 is
-    // positional-only — reject kwargs/**splat with a clean TypeError so
-    // both backends agree (the JIT call ABI threads no kwargs into a
-    // closure `this`-call).
-    if (auto bound = resolve_class_method(val, "__call__")) {
-      if (!args.kwargs.empty() || !args.splats.empty()) {
-        throw CulebraError("TypeError",
-            "__call__ does not accept keyword arguments",
-            call_line, call_column);
+    // positional-only: a kwargs/**splat call deliberately does NOT attempt
+    // __call__ and falls through to the normal path, which raises the
+    // exact "type error: expected Function, got Object" the JIT does (its
+    // kwargs path never consults __call__) — keeping both backends
+    // byte-identical. Keyword args to __call__ are a Phase 2 concern.
+    if (args.kwargs.empty() && args.splats.empty()) {
+      if (auto bound = resolve_class_method(val, "__call__")) {
+        return invoke_user_function_with_args(*bound, env, std::move(args),
+                                              call_line, call_column);
       }
-      return invoke_user_function_with_args(*bound, env, std::move(args),
-                                            call_line, call_column);
     }
     return invoke_user_function_with_args(val, env, std::move(args),
                                           call_line, call_column);
