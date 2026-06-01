@@ -920,6 +920,12 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
       }
       st->done.fetch_add(1, std::memory_order_relaxed);  // for on_progress
     }
+    // Release the closure so its captures drop on this worker thread (the interp
+    // worker drops them via heap teardown). Without this a captured channel
+    // endpoint never drops, so an `fn` that relies on auto-close — rather than an
+    // explicit tx.drop() — leaves the channel open and a downstream receiver
+    // hangs. Same fix as run_isolate_child_jit.
+    culebra_runtime_value_release(fn.tag, fn.data);
   } catch (culebra::CulebraError& e) {
     parallel_record_error(*st, 0, e);
   } catch (std::exception& e) {

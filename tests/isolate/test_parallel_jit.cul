@@ -55,4 +55,15 @@ try {
   assert_eq(e.kind, "TypeError")
 }
 
+# a worker fn that captures a tx and relies on auto-close (no explicit drop):
+# the worker-rebuilt tx must drop when the worker ends so the channel closes and
+# a downstream for-in terminates. Regression for the JIT worker not releasing fn.
+let (tx, rx) = Channel.new(8)
+Parallel.each([1, 2, 3], fn (x) { tx.send(x * 10) })
+tx.drop()
+mut drained = []
+for v in rx { drained.push(v) }
+assert_eq(drained.size(), 3)
+assert_eq(drained.reduce(0, |a, b| a + b), 60)
+
 puts("test_parallel_jit: all assertions passed")
