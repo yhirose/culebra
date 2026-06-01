@@ -293,14 +293,19 @@ inline void chan_merge_drop(long mid) {
 // Join the producer isolates of a `fan_in(items, fn)` merge and surface the
 // first error (no-op for fan_in([rx]), which has no producers). Leaves the
 // merge registered so the merged rx still drops cleanly afterward.
+// The producer cores a merge owns, kept alive by copying the shared_ptrs.
+// Both backends join through this; each then re-raises in its own throw form
+// (interp throws a Value, the JIT a CulebraException) so the surfaced error is
+// symmetric — see _jit_merged_join.
+inline std::vector<std::shared_ptr<IsolateCore>> chan_merge_producers(long mid) {
+  std::lock_guard<std::mutex> lk(merge_registry_mutex());
+  auto it = merge_registry().find(mid);
+  if (it == merge_registry().end()) return {};
+  return it->second.producers;
+}
+
 inline void chan_merge_join(long mid) {
-  std::vector<std::shared_ptr<IsolateCore>> producers;
-  {
-    std::lock_guard<std::mutex> lk(merge_registry_mutex());
-    auto it = merge_registry().find(mid);
-    if (it == merge_registry().end()) return;
-    producers = it->second.producers;  // copy the shared_ptrs (keep alive)
-  }
+  std::vector<std::shared_ptr<IsolateCore>> producers = chan_merge_producers(mid);
   std::optional<culebra::CulebraError> first_err;
   std::optional<Value> first_thrown;
   for (auto& core : producers) {

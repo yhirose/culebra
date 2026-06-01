@@ -299,6 +299,19 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     std::lock_guard<std::mutex> lk(core->m);
     core->error = e;
     core->finished = true;
+  } catch (CulebraException& e) {
+    // A raw user `throw <value>` (not a structured error). Serialize the value
+    // so it crosses the isolate boundary; _jit_isolate_extract re-raises it as a
+    // CulebraException on the parent. Mirrors the interp child's `catch (Value&)`.
+    JitValue tv;
+    tv.tag = e.tag;
+    tv.data = e.data;
+    JitSerCtx sc;
+    sendable::SendNode tn = jit_serialize(tv, sc);
+    culebra_runtime_value_release(e.tag, e.data);  // balance the throw's retain
+    std::lock_guard<std::mutex> lk(core->m);
+    core->thrown = std::move(tn);
+    core->finished = true;
   } catch (std::exception& e) {
     std::lock_guard<std::mutex> lk(core->m);
     core->error = culebra::CulebraError("RuntimeError", e.what());
@@ -318,6 +331,15 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
     core->joined = true;
   }
   if (core->error) throw *core->error;
+  if (core->thrown) {
+    // A raw user `throw <value>` from the child. Rebuild it on the parent heap
+    // and re-raise in the JIT's throw form, so a compiled `catch` binds the
+    // value (symmetric with the interp `throw chan_take(*core.thrown)`).
+    JitDeCtx tdc;
+    JitValue tv = jit_deserialize(*core->thrown, tdc);
+    release_inflight_channels(*core->thrown);
+    culebra_runtime_throw(tv.tag, tv.data);  // [[noreturn]]
+  }
   JitDeCtx dc;
   return jit_deserialize(core->result, dc);  // on the parent heap
 }
@@ -623,7 +645,35 @@ inline JitValue _jit_merged_drop(JitClosure*, JitValue self, int64_t, JitValue*)
 inline JitValue _jit_merged_join(JitClosure*, JitValue self, int64_t, JitValue*) {
   long mid = _jit_self_long(self, "__merged_id__");
   culebra_runtime_value_release(self.tag, self.data);
-  chan_merge_join(mid);  // join producers (fan_in(items,fn)); surface first error
+  // Join the producers (fan_in(items, fn)) and surface the first error. Extract
+  // through the JIT path so a structured error re-raises as CulebraError and a
+  // raw `throw <value>` re-raises as a CulebraException — both caught by a
+  // compiled `catch`. (chan_merge_join is the interp twin, using Value throws.)
+  std::optional<culebra::CulebraError> first_err;
+  bool have_thrown = false;
+  int8_t tt = 0;
+  int64_t td = 0;
+  for (auto& core : chan_merge_producers(mid)) {
+    try {
+      _jit_isolate_extract(core);  // joins; re-raises the producer's failure
+    } catch (culebra::CulebraError& e) {
+      if (!first_err && !have_thrown) first_err = e;
+    } catch (CulebraException& e) {
+      // We are the matching catch, so we owe the throw's balancing release
+      // (a compiled `catch` would do it). Keep the first value's origin ref for
+      // the re-raise below; drop any later ones fully.
+      culebra_runtime_value_release(e.tag, e.data);
+      if (!first_err && !have_thrown) {
+        have_thrown = true;
+        tt = e.tag;
+        td = e.data;
+      } else {
+        culebra_runtime_value_release(e.tag, e.data);
+      }
+    }
+  }
+  if (have_thrown) culebra_runtime_throw(tt, td);
+  if (first_err) throw *first_err;
   return {TAG_NIL, 0};
 }
 inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,

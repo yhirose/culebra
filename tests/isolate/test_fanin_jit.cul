@@ -71,7 +71,7 @@ merged.join()
 assert_eq(g2.size(), 15)                       # 3 producers x 5
 assert_eq(g2.reduce(0, |a, b| a + b), 3045)
 
-# a producer error surfaces via merged.join() (structured error, both backends)
+# a structured producer error surfaces via merged.join() (both backends)
 let mf = Channel.fan_in([1, 2], fn (w, tx) {
   tx.send(w)
   if w == 2 { let bad = 1 / 0 }    # ZeroDivisionError
@@ -81,5 +81,22 @@ for v in mf { cf = cf + 1 }
 assert_eq(cf, 2)
 let kind = try { mf.join(); "no error" } catch e { e.kind }
 assert_eq(kind, "ZeroDivisionError")
+
+# a raw `throw <value>` from a producer crosses the isolate boundary intact —
+# join() re-raises the value itself, identically under interp and JIT.
+let mr = Channel.fan_in([7], fn (w, tx) {
+  tx.send(w)
+  throw "boom"
+})
+mut cr = 0
+for v in mr { cr = cr + 1 }
+assert_eq(cr, 1)
+let caught = try { mr.join(); "no error" } catch e { e }
+assert_eq(caught, "boom")
+
+# the same raw-throw symmetry on a plain Isolate.spawn handle
+let h = Isolate.spawn(fn () { throw [1, 2, 3] })
+let ch = try { h.join(); nil } catch e { e }
+assert_eq(ch, [1, 2, 3])
 
 puts("test_fanin_jit: all assertions passed")
