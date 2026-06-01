@@ -1207,13 +1207,18 @@ puts(add3(10))              # => 13
 puts(add3.__call__(10))     # => 13
 ```
 
-A callable instance is also a first-class higher-order callback — pass it
-straight to `map` / `filter` / `reduce` / `sort_by` and the builtin
-invokes its `__call__` per element:
+A class with `__call__` structurally satisfies the `Function` type, so a
+callable instance is a first-class function value: pass it to a
+higher-order builtin (`map` / `filter` / `reduce` / `sort_by`) or bind it
+to any `Function`-annotated parameter, and it is invoked through its
+`__call__`.
 
 ```culebra
 class Scale { new(k) { this.k = k } __call__(x) { x * this.k } }
 puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+
+fn apply_twice(f: Function, x) { f(f(x)) }
+puts(apply_twice(Scale.new(2), 5))   # => 20
 ```
 
 `__call__` itself is positional-only — it takes `*args` (no keyword

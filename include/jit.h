@@ -1575,6 +1575,13 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   std::string_view class_tag_view;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);
+    // A class instance with an own/proto `__call__` satisfies `Function`
+    // (Option A: structural callable). Mirrors interp's type_matches and
+    // the callback adapter; proto-gated so a plain dict isn't callable.
+    if (expected == "Function" && obj->proto) {
+      auto* e = _find_property(obj, "__call__");
+      if (e && e->value.tag == TAG_FUNC) return true;
+    }
     if (auto idx = obj->find_slot("class");
         idx != static_cast<size_t>(-1)) {
       const auto& cls_slot = obj->slots[idx].value;

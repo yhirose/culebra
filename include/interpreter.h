@@ -162,6 +162,15 @@ inline int multifn_specificity(std::string_view param_type,
     return 2;                                  // class instance catch
   }
   if (param_type == arg_type) return 6;
+  // A callable class instance satisfies `Function` (Option A: structural
+  // callable). The arg side carries only a type label here, so score any
+  // non-primitive (class instance / bare Object) at the Object-catch tier
+  // and let the value-aware post-pick check_type confirm it actually has
+  // `__call__` — a non-callable is rejected there, and an exact class
+  // overload (6) still outranks this catch.
+  if (param_type == "Function" && !is_primitive_type_label(arg_type)) {
+    return 2;
+  }
   // Trait conformance: a registered trait scores below concrete and
   // below Union exact, but above the bare-Object catch.
   if (auto* trait = lookup_trait(param_type)) {

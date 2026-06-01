@@ -114,6 +114,22 @@ test_callable_as_value = fn () {
   assert_eq(kind, 'TypeError')
 }
 
+# Phase 2a: a callable instance also binds to a user-declared `Function`
+# parameter (not just builtin callbacks) — structural callability is
+# honored by multidispatch + the param type check. A non-callable bound
+# there is rejected with the same message on both backends.
+test_callable_function_param = fn () {
+  class Mul { new(k) { this.k = k } __call__(x) { x * this.k } }
+  class Plain { new() { this.x = 1 } }
+  fn apply2(cb: Function, v) { cb(cb(v)) }
+  assert_eq(apply2(Mul.new(3), 2), 18)            # 2*3*3
+  assert_eq(apply2(fn (x) { x + 1 }, 0), 2)       # real function still works
+
+  mut msg = nil
+  try { let _ = apply2(Plain.new(), 1) } catch e { msg = e.message }
+  assert_eq(msg, "type error: parameter 'cb' expects Function")
+}
+
 # Acceptance (c): trait-based scalar DeZero. The autograd graph is built
 # through `Mul.new()(a, b)` / `Add.new()(a, b)` — the __call__ form of
 # the proven `.apply(...)` template method — and backprop must agree.
@@ -177,6 +193,7 @@ test_plain_dict_not_callable()
 test_non_callable_instance()
 test_kwargs_rejected()
 test_callable_as_value()
+test_callable_function_param()
 test_dezero_call()
 
 puts('call-overload OK')

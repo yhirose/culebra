@@ -1139,13 +1139,17 @@ puts(add3(10))              # => 13
 puts(add3.__call__(10))     # => 13
 ```
 
-callable インスタンスはそのまま高階コールバックとしても渡せます —
-`map` / `filter` / `reduce` / `sort_by` に渡すと、各要素でその `__call__`
-が呼ばれます:
+`__call__` を持つクラスは `Function` 型を構造的に満たすので、callable
+インスタンスは第一級の関数値です — 高階ビルトイン (`map` / `filter` /
+`reduce` / `sort_by`) に渡しても、`Function` 注釈の任意のパラメータに
+束縛しても、その `__call__` 経由で呼ばれます:
 
 ```culebra
 class Scale { new(k) { this.k = k } __call__(x) { x * this.k } }
 puts([1, 2, 3].map(Scale.new(10)))   # => [10, 20, 30]
+
+fn apply_twice(f: Function, x) { f(f(x)) }
+puts(apply_twice(Scale.new(2), 5))   # => 20
 ```
 
 `__call__` 自体は位置引数のみ — `*args` を受け取り（キーワード引数なし）、
