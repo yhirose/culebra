@@ -188,6 +188,23 @@ inline Value _isolate_extract(IsolateCore& core) {
 // and send it into a spawned isolate. When the last tx endpoint is dropped the
 // channel auto-closes, ending any `for x in rx` — the deadlock-prevention core.
 
+// A consumer waiting on SEVERAL channels at once (Channel.fan_in, the basis for
+// a future select) registers one MergeWaiter on each source's `selectors` list.
+// Any send/close on a source signals every registered waiter. `ready` is a
+// LEVEL-triggered flag (set true, stays true until the waiter rescans): a signal
+// that races ahead of the wait is not lost — the next wait sees `ready` already
+// set. Mirrors Go's `sudog` / crossbeam's `Waker` registered on all cases.
+struct MergeWaiter {
+  std::mutex m;
+  std::condition_variable cv;
+  bool ready = false;
+  void signal() {
+    std::lock_guard<std::mutex> lk(m);
+    ready = true;
+    cv.notify_all();
+  }
+};
+
 struct ChannelCore {
   std::mutex m;
   std::condition_variable cv;
@@ -196,7 +213,13 @@ struct ChannelCore {
   int tx_count = 0;  // active senders (guarded by m)
   int rx_count = 0;  // active receivers
   bool closed = false;
+  std::vector<MergeWaiter*> selectors;  // fan_in waiters (guarded by m)
   explicit ChannelCore(size_t c) : cap(c) {}
+  // Signal every registered fan_in waiter. Caller MUST hold `m` so a waiter
+  // can't be unregistered + destroyed between the read and the signal.
+  void signal_selectors() {
+    for (auto* w : selectors) w->signal();
+  }
 };
 
 inline std::mutex& channel_registry_mutex() {
@@ -216,6 +239,40 @@ inline std::shared_ptr<ChannelCore> chan_lookup(long id) {
   std::lock_guard<std::mutex> lk(channel_registry_mutex());
   auto it = channel_registry().find(id);
   return it == channel_registry().end() ? nullptr : it->second;
+}
+
+// Merged-rx (fan_in) registry: a merged id → its source channel ids. Keyed by
+// id so endpoint methods stay captureless (same pattern as the channel
+// registry), and the registry erase makes drop idempotent (explicit + GC).
+inline std::mutex& merge_registry_mutex() { static std::mutex m; return m; }
+inline std::unordered_map<long, std::vector<long>>& merge_registry() {
+  static std::unordered_map<long, std::vector<long>> r;
+  return r;
+}
+inline long chan_merge_register(std::vector<long> ids) {
+  long id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lk(merge_registry_mutex());
+  merge_registry()[id] = std::move(ids);
+  return id;
+}
+inline std::vector<long> chan_merge_ids(long mid) {
+  std::lock_guard<std::mutex> lk(merge_registry_mutex());
+  auto it = merge_registry().find(mid);
+  return it == merge_registry().end() ? std::vector<long>{} : it->second;
+}
+inline void chan_drop(long id, int role);  // fwd
+// Drop a merged endpoint: release the rx clone fan_in took on each source, and
+// erase the entry. Idempotent — a second call finds no entry and does nothing.
+inline void chan_merge_drop(long mid) {
+  std::vector<long> ids;
+  {
+    std::lock_guard<std::mutex> lk(merge_registry_mutex());
+    auto it = merge_registry().find(mid);
+    if (it == merge_registry().end()) return;
+    ids = std::move(it->second);
+    merge_registry().erase(it);
+  }
+  for (long id : ids) chan_drop(id, /*role=*/1);
 }
 
 inline Value make_channel_endpoint(long id, int role);  // fwd (clone recurses)
@@ -262,6 +319,7 @@ inline void chan_drop(long id, int role) {
       if (core->rx_count > 0) core->rx_count--;
     }
     reclaim = core->tx_count == 0 && core->rx_count == 0;
+    core->signal_selectors();  // a close lets a fan_in waiter re-check (under lk)
   }
   core->cv.notify_all();
   if (reclaim) {
@@ -290,6 +348,7 @@ inline void channel_send_node(long id, sendable::SendNode node) {
     throw culebra::CulebraError("ChannelError", "send on a closed channel");
   core->q.push_back(std::move(node));
   core->cv.notify_all();
+  core->signal_selectors();  // wake any fan_in waiter (under lk = no dangling)
   if (core->cap == 0) {
     while (!core->closed && !core->q.empty()) {
       if (culebra::interrupt_requested())
@@ -336,6 +395,60 @@ inline Value chan_take(const sendable::SendNode& node) {
 inline Value channel_recv(long id) {
   auto node = chan_pop_blocking(id);
   return node ? chan_take(*node) : Value();
+}
+
+// Wait until one of `ids` (rx channels) has a value and pop it; return nullopt
+// once EVERY source is closed and drained. This is the fan_in / select core:
+// register one waiter on each source, then block on it — event-driven, no
+// polling (the 50ms is only the interrupt heartbeat, as in chan_pop_blocking).
+// Mirrors Go's `select` (sudog on every case) and core.async's `alts!` (its
+// `merge` is just a loop over this). Sources that are already closed+empty are
+// skipped; they contribute to the all-closed test but are never popped.
+inline std::optional<sendable::SendNode>
+chan_select_recv(const std::vector<long>& ids) {
+  std::vector<std::shared_ptr<ChannelCore>> cores;
+  cores.reserve(ids.size());
+  for (long id : ids)
+    if (auto c = chan_lookup(id)) cores.push_back(std::move(c));
+
+  MergeWaiter w;
+  for (auto& c : cores) {
+    std::lock_guard<std::mutex> lk(c->m);
+    c->selectors.push_back(&w);  // register before the first scan: no lost wakeup
+  }
+  // Unregister on every exit path (value found / all closed / interrupt throw).
+  struct Unreg {
+    std::vector<std::shared_ptr<ChannelCore>>& cores;
+    MergeWaiter* w;
+    ~Unreg() {
+      for (auto& c : cores) {
+        std::lock_guard<std::mutex> lk(c->m);
+        auto& s = c->selectors;
+        s.erase(std::remove(s.begin(), s.end(), w), s.end());
+      }
+    }
+  } unreg{cores, &w};
+
+  while (true) {
+    bool all_closed = true;
+    for (auto& c : cores) {
+      std::unique_lock<std::mutex> lk(c->m);
+      if (!c->q.empty()) {
+        sendable::SendNode node = std::move(c->q.front());
+        c->q.pop_front();
+        lk.unlock();
+        c->cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
+        return node;
+      }
+      if (!c->closed) all_closed = false;
+    }
+    if (all_closed) return std::nullopt;
+    if (culebra::interrupt_requested())
+      throw culebra::CulebraError("Interrupted", "isolate cancelled");
+    std::unique_lock<std::mutex> lk(w.m);
+    w.cv.wait_for(lk, std::chrono::milliseconds(50), [&] { return w.ready; });
+    w.ready = false;
+  }
 }
 
 inline Value channel_iter(long id) {
@@ -399,6 +512,37 @@ inline Value make_channel_endpoint(long id, int role) {
   return Value(std::move(h));
 }
 
+// A read-only endpoint that merges several source rx channels (Channel.fan_in).
+// recv/iter pull from whichever source is ready (chan_select_recv); it ends once
+// every source is closed. fan_in took one rx clone per source, dropped by
+// chan_merge_drop (idempotent, so explicit drop + GC teardown both run cleanly).
+inline Value make_merged_rx_endpoint(long mid) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("__merged_rx__", Value(true), false);
+  h.initialize("__merged_id__", Value(mid), false);
+  h.initialize("recv",
+      Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
+        auto node = chan_select_recv(chan_merge_ids(mid));
+        return node ? chan_take(*node) : Value();
+      }, ""sv)), false);
+  h.initialize("iter",
+      Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
+        return _make_iterator(
+            [mid](std::shared_ptr<Environment>) -> std::optional<Value> {
+              auto node = chan_select_recv(chan_merge_ids(mid));
+              return node ? _iter_step_value(chan_take(*node))
+                          : _iter_step_done();
+            });
+      }, ""sv)), false);
+  h.initialize("drop",
+      Value(FunctionValue({}, [mid](std::shared_ptr<Environment>) -> Value {
+        chan_merge_drop(mid);  // idempotent (registry erase)
+        return Value();
+      }, "Nil"sv)), false);
+  return Value(std::move(h));
+}
+
 // Register the Sendable hooks (endpoints ship by id + role) once at load.
 inline bool _install_channel_hooks() {
   sendable::channel_extract_hook() =
@@ -450,6 +594,37 @@ inline Value make_channel_namespace() {
             pair.push_back(make_channel_endpoint(id, 1));  // rx
             return Value(TupleValue(std::move(pair)));
           }, "Tuple"sv)), false);
+  // `Channel.fan_in(sources: [rx]) -> rx`. Merge several receivers into one. The
+  // result yields values from whichever source is ready, ending once all sources
+  // close — so N producers can each own their own channel (no shared `tx.clone()`
+  // and no drop bookkeeping). Takes one rx clone per source; reading the original
+  // receivers afterward races the merge, so hand them over and don't reuse them.
+  ns.initialize("fan_in",
+      Value(FunctionValue({{"sources", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            Value sources = env->get("sources");
+            if (sources.type != Value::Array) {
+              throw culebra::CulebraError("TypeError",
+                  "Channel.fan_in: argument must be an Array of receivers",
+                  line, col);
+            }
+            std::vector<long> ids;
+            for (const auto& s : *sources.to_array().values) {
+              if (s.type != Value::Object ||
+                  !s.to_object().has("__channel_endpoint__") ||
+                  s.to_object().get("__channel_role__").to_long() != 1) {
+                throw culebra::CulebraError("TypeError",
+                    "Channel.fan_in: every source must be a receiver (rx)",
+                    line, col);
+              }
+              long id = s.to_object().get("__channel_id__").to_long();
+              chan_bump(id, /*role=*/1, +1);  // the merged endpoint's own rx ref
+              ids.push_back(id);
+            }
+            return make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+          }, ""sv)), false);
   return Value(std::move(ns));
 }
 

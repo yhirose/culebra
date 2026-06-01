@@ -2362,6 +2362,9 @@ inline JitValue _ns_isolate_spawn(JitValue* a, int64_t n) {
 inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
   return culebra_jit_channel_new(n, a, 0, 0);
 }
+inline JitValue _ns_channel_fan_in(JitValue* a, int64_t n) {
+  return culebra_jit_channel_fan_in(n, a, 0, 0);
+}
 
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
 // slab slot 2 — resolved from a positional arg or a `limit:` kwarg by the
@@ -2818,7 +2821,8 @@ inline const NsMethod kNsMethods[] = {
   {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
-  {"Channel", "new", -1, &_ns_channel_new},
+  {"Channel", "new",    -1, &_ns_channel_new},
+  {"Channel", "fan_in",  1, &_ns_channel_fan_in},
   {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
   {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},

@@ -1479,6 +1479,33 @@ channel が閉じるには全ての `tx`（親の元の tx 含む）が drop さ
 （producer が consumer を追い越せない）に有用。単一 isolate 内では deadlock
 （渡す相手がいない）ので isolate 間で使います。容量は `0 以上`。
 
+#### `Channel.fan_in(sources: [rx]) -> rx`
+
+複数の receiver を 1 つに束ねます。返る `rx` は、ready な source から順に値を
+返し（全 source を同時に待つ — Go の `select` / core.async の `merge` と同じ
+イベント駆動、poll ではない）、**全** source が close したら終了します。これに
+より各 producer が `tx.clone()` で 1 本を共有する代わりに**自分専用の channel**を
+持てるので、multi-producer の罠（clone-drop 忘れで consumer が hang）を回避でき
+ます — 各 channel の `tx` は 1 個だけ、1:1 で drop。
+
+```culebra
+# doctest: skip
+mut handles = []
+mut sources = []
+for w in workers {
+  let (tx, rx) = Channel.new()
+  handles.push(Isolate.spawn(fn () { produce(w, tx) }))  # producer の tx は終了時 auto-drop
+  tx.drop()                                               # 親自身の tx（1:1、自明）
+  sources.push(rx)
+}
+for v in Channel.fan_in(sources) { consume(v) }           # 1 本のストリーム、全 producer
+for h in handles { h.join() }                             # handle を保持・エラー回収
+```
+
+merge は渡した receiver を**引き取り**ます — 元の rx を直接読まず、束ねた `rx`
+経由でのみ読んでください（元を読むと merge と競合）。source 間の順序は保たれ
+ません（merge ゆえ）。空リストは即 closed な `rx`、source 1 個はパススルー。
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 高レベル形。配列の各要素に関数を isolate プールで並列適用します（ハンドル管理

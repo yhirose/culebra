@@ -1538,6 +1538,34 @@ Useful for backpressure (a producer can't run ahead of its consumer). Within a
 single isolate it deadlocks (the send has no one to hand to), so use it across
 isolates. Capacity must be `>= 0`.
 
+#### `Channel.fan_in(sources: [rx]) -> rx`
+
+Merge several receivers into one. The returned `rx` yields values from whichever
+source is ready (it waits on all of them at once, like Go's `select` or
+core.async's `merge` — event-driven, not polling), and ends once **every** source
+is closed. This lets each producer own its **own** channel instead of sharing one
+via `tx.clone()`, which sidesteps the multi-producer trap (a forgotten clone-drop
+hanging the consumer) — each channel then has exactly one `tx`, dropped 1:1.
+
+```culebra
+# doctest: skip
+mut handles = []
+mut sources = []
+for w in workers {
+  let (tx, rx) = Channel.new()
+  handles.push(Isolate.spawn(fn () { produce(w, tx) }))  # producer's tx auto-drops on exit
+  tx.drop()                                               # the parent's own tx (1:1, obvious)
+  sources.push(rx)
+}
+for v in Channel.fan_in(sources) { consume(v) }           # one stream, all producers
+for h in handles { h.join() }                             # keep handles alive; collect errors
+```
+
+The merge **takes over** the given receivers — read them only through the merged
+`rx`, not directly (reading an original races the merge). Order across sources is
+not preserved (it is a merge). An empty list yields an immediately-closed `rx`; a
+single source is a pass-through.
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 The high-level form: apply a function to every element of an array across a pool

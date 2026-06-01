@@ -1,0 +1,63 @@
+# Channel.fan_in — merge several receivers into one. Runs under BOTH backends.
+# Each producer owns its own channel (no shared tx.clone bookkeeping); fan_in
+# reads from whichever source is ready and ends once all sources close.
+
+# N producers, each its own channel, merged. Order is non-deterministic, so
+# check the multiset via the sum.
+mut handles = []
+mut sources = []
+for w in [1, 2, 3, 4] {
+  let (tx, rx) = Channel.new(2)
+  handles.push(Isolate.spawn(fn () { for i in 1..6 { tx.send(w * 100 + i) } }))
+  tx.drop()                    # the parent's own sender; the producer's auto-drops
+  sources.push(rx)
+}
+mut got = []
+for v in Channel.fan_in(sources) { got.push(v) }
+for h in handles { h.join() }
+assert_eq(got.size(), 20)                       # 4 producers x 5 values
+assert_eq(got.reduce(0, |a, b| a + b), 5060)    # (101..105)+(201..205)+(301..305)+(401..405)
+
+# explicit recv() until nil also works
+let (t1, r1) = Channel.new(4)
+let (t2, r2) = Channel.new(4)
+t1.send(1)
+t2.send(2)
+t1.send(3)
+t1.drop()
+t2.drop()
+let m = Channel.fan_in([r1, r2])
+mut sum = 0
+mut v = m.recv()
+while v != nil { sum = sum + v; v = m.recv() }
+assert_eq(sum, 6)
+
+# single source is a pass-through
+let (ta, ra) = Channel.new(4)
+ta.send(42)
+ta.drop()
+let one = Channel.fan_in([ra])
+assert_eq(one.recv(), 42)
+assert_eq(one.recv(), nil)
+
+# empty source list → an immediately-closed rx
+mut empty_count = 0
+for v in Channel.fan_in([]) { empty_count = empty_count + 1 }
+assert_eq(empty_count, 0)
+
+# type errors
+try {
+  Channel.fan_in(42)
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+try {
+  let (txx, rxx) = Channel.new()
+  Channel.fan_in([txx])          # a sender, not a receiver
+  assert_true(false)
+} catch e {
+  assert_eq(e.kind, "TypeError")
+}
+
+puts("test_fanin_jit: all assertions passed")

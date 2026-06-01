@@ -594,6 +594,121 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// JIT merged rx (Channel.fan_in). Same JitObject endpoint shape as a channel rx,
+// but reaches several sources via chan_select_recv (the backend-neutral core).
+// The iterator's iter_self/next slots are generic, so only has_next differs.
+inline JitValue _jit_merged_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long mid = _jit_self_long(self, "__merged_id__");
+  auto node = chan_select_recv(chan_merge_ids(mid));
+  JitValue ret{TAG_NIL, 0};
+  if (node) {
+    JitDeCtx dc;
+    ret = jit_deserialize(*node, dc);
+    release_inflight_channels(*node);
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+inline JitValue _jit_merged_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  size_t di = h->find_slot("_dropped");
+  if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
+      h->slots[di].value.data) {
+    return {TAG_NIL, 0};
+  }
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
+  chan_merge_drop(_jit_self_long(self, "__merged_id__"));  // idempotent anyway
+  return {TAG_NIL, 0};
+}
+inline JitValue _jit_merged_iter_has_next(JitClosure*, JitValue self, int64_t,
+                                          JitValue*) {
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  long st = _jit_self_long(self, "_st");
+  JitValue ret;
+  if (st == 1) {
+    ret = {TAG_BOOL, 1};
+  } else if (st == 2) {
+    ret = {TAG_BOOL, 0};
+  } else {
+    auto node = chan_select_recv(chan_merge_ids(_jit_self_long(self, "_mid")));
+    if (node) {
+      JitDeCtx dc;
+      JitValue v = jit_deserialize(*node, dc);
+      release_inflight_channels(*node);
+      it->set_or_append("_lv", v, true);
+      it->set_or_append("_st", JitValue{TAG_LONG, 1}, true);
+      ret = {TAG_BOOL, 1};
+    } else {
+      it->set_or_append("_st", JitValue{TAG_LONG, 2}, true);
+      ret = {TAG_BOOL, 0};
+    }
+  }
+  culebra_runtime_value_release(self.tag, self.data);
+  return ret;
+}
+inline JitValue _jit_merged_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+  long mid = _jit_self_long(self, "__merged_id__");
+  auto* it = culebra_runtime_object_new();
+  it->set_or_append("_mid", JitValue{TAG_LONG, mid}, true);
+  it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
+  it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    it->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("iter", _jit_chan_iter_self);          // reuse: returns self
+  meth("has_next", _jit_merged_iter_has_next);
+  meth("next", _jit_chan_iter_next);          // reuse: hands over _lv
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+inline JitValue _jit_make_merged_rx_endpoint(long mid) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__merged_rx__", JitValue{TAG_BOOL, 1}, false);
+  h->set_or_append("__merged_id__", JitValue{TAG_LONG, mid}, false);
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("recv", _jit_merged_recv);
+  meth("iter", _jit_merged_iter);
+  meth("drop", _jit_merged_drop);
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Channel.fan_in(sources: [rx]) -> merged rx. Take an rx clone of each source
+// and register the merged endpoint over their ids.
+inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
+                                           int64_t line, int64_t col) {
+  if (n < 1 || args[0].tag != TAG_ARRAY) {
+    throw culebra::CulebraError("TypeError",
+        "Channel.fan_in: argument must be an Array of receivers", line, col);
+  }
+  auto* arr = reinterpret_cast<JitArray*>(args[0].data);
+  std::vector<long> ids;
+  ids.reserve(arr->size);
+  for (size_t i = 0; i < arr->size; i++) {
+    JitValue s = arr->items[i];
+    bool ok = s.tag == TAG_OBJECT;
+    JitObject* o = ok ? reinterpret_cast<JitObject*>(s.data) : nullptr;
+    if (!ok || o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
+        o->slots[o->find_slot("__channel_role__")].value.data != 1) {
+      throw culebra::CulebraError("TypeError",
+          "Channel.fan_in: every source must be a receiver (rx)", line, col);
+    }
+    long id = o->slots[o->find_slot("__channel_id__")].value.data;
+    chan_bump(id, /*role=*/1, +1);
+    ids.push_back(id);
+  }
+  return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+}
+
 // ===========================================================================
 // JIT Parallel.map / Parallel.each — reuses the backend-neutral ParallelState
 // (SendNode-based) and fail-fast machinery from isolate.h; only the per-element
