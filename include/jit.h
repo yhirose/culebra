@@ -12257,6 +12257,11 @@ struct JIT {
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), stringBB);
 
     builder_.SetInsertPoint(badBB);
+    // Attribute the not-iterable error to the iterable expression (like
+    // interp's _get_iterator), not the `for` keyword — compile(iter_expr)
+    // above restored current_line_/col to the loop head via PosGuard.
+    if (iter_expr.line) current_line_ = iter_expr.line;
+    if (iter_expr.column) current_column_ = iter_expr.column;
     emit_type_error_typed("Array, Tuple, Set, Object, or String", tag);
     builder_.CreateUnreachable();
 
