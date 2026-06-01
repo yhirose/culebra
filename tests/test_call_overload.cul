@@ -1,0 +1,166 @@
+# Conformance: §10 (operator overloading, __call__). See docs/language.md.
+#
+# `obj(args)` invokes a class instance's `__call__(*args)` method, the
+# twin of `__index__`. Runs on both the tree interpreter and the JIT.
+
+# Basic: a callable class instance behaves like a function.
+test_call_basic = fn () {
+  class Adder {
+    new(b) { this.b = b }
+    __call__(x) { this.b + x }
+  }
+  let f = Adder.new(3)
+  assert_eq(f(10), 13)
+  assert_eq(Adder.new(100)(1), 101)   # call a fresh instance directly
+}
+
+# Variadic positional args reach __call__ through *xs.
+test_call_variadic = fn () {
+  class Sum {
+    new() {}
+    __call__(*xs) {
+      mut total = 0
+      for x in xs { total = total + x }
+      total
+    }
+  }
+  let s = Sum.new()
+  assert_eq(s(), 0)
+  assert_eq(s(1, 2, 3), 6)
+  assert_eq(s(10, 20), 30)
+}
+
+# Chaining: a model whose __call__ invokes its layers' __call__.
+test_call_chain = fn () {
+  class Layer {
+    new(w) { this.w = w }
+    __call__(x) { x * this.w }
+  }
+  class Model {
+    new() { this.l1 = Layer.new(2); this.l2 = Layer.new(3) }
+    __call__(x) { this.l2(this.l1(x)) }
+  }
+  let m = Model.new()
+  assert_eq(m(5), 30)            # 5 * 2 * 3
+}
+
+# Callables in containers / closures: direct call syntax inside a lambda.
+test_call_in_lambda_and_loop = fn () {
+  class Mul {
+    new(k) { this.k = k }
+    __call__(x) { x * this.k }
+  }
+  let fs = [Mul.new(1), Mul.new(2), Mul.new(3)]
+  assert_eq(fs.map(|f| f(10)), [10, 20, 30])
+
+  mut acc = 1
+  for f in fs { acc = f(acc) }   # 1*1*2*3
+  assert_eq(acc, 6)
+}
+
+# A plain dict that merely holds a "__call__" key is NOT callable —
+# __call__ is a class-instance feature, mirroring __index__.
+test_plain_dict_not_callable = fn () {
+  let plain = { __call__: fn(x) { x } }
+  mut threw = false
+  try { let _ = plain(5) } catch e { threw = true }
+  assert_true(threw)
+}
+
+# A class instance without __call__ is not callable; both backends raise
+# a TypeError (captured as a boolean so the message text need not match).
+test_non_callable_instance = fn () {
+  class Plain { new() { this.x = 1 } }
+  let p = Plain.new()
+  mut threw = false
+  try { let _ = p(1) } catch e { threw = true }
+  assert_true(threw)
+}
+
+# Phase 1 is positional-only: a kwargs call on a callable instance raises
+# a clean TypeError on both backends (kwargs semantics are a Phase 2
+# concern). Captured by kind so the message text need not match.
+test_kwargs_rejected = fn () {
+  class F { new() {} __call__(x) { x + 1 } }
+  let f = F.new()
+  mut kind = nil
+  try { let _ = f(x: 5) } catch e { kind = e.kind }
+  assert_eq(kind, 'TypeError')
+}
+
+# Phase 1 boundary: a bare callable instance passed as a higher-order
+# callback is not yet supported (that is Phase 2). It must raise a clean
+# TypeError rather than silently misbehaving.
+test_callable_as_value_errors = fn () {
+  class F { new() {} __call__(x) { x + 1 } }
+  mut kind = nil
+  try { let _ = [1, 2, 3].map(F.new()) } catch e { kind = e.kind }
+  assert_eq(kind, 'TypeError')
+}
+
+# Acceptance (c): trait-based scalar DeZero. The autograd graph is built
+# through `Mul.new()(a, b)` / `Add.new()(a, b)` — the __call__ form of
+# the proven `.apply(...)` template method — and backprop must agree.
+test_dezero_call = fn () {
+  trait DFunction {
+    forward(a, b)
+    backward(gy)
+    __call__(a, b) {
+      let y = Variable.new(this.forward(a.data, b.data))
+      y.set_creator(this)
+      this.inputs = [a, b]
+      this.output = y
+      y
+    }
+  }
+  class Mul {
+    new() { this.inputs = nil; this.output = nil }
+    forward(x, y) { x * y }
+    backward(gy) { [this.inputs[1].data * gy, this.inputs[0].data * gy] }
+  }
+  class Add {
+    new() { this.inputs = nil; this.output = nil }
+    forward(x, y) { x + y }
+    backward(gy) { [gy, gy] }
+  }
+  class Variable {
+    new(data) { this.data = data; this.grad = nil; this.creator = nil }
+    set_creator(f) { this.creator = f }
+    __mul__(o) { Mul.new()(this, o) }
+    __add__(o) { Add.new()(this, o) }
+    backward() {
+      if this.grad == nil { this.grad = 1.0 }
+      mut funcs = [this.creator]
+      while funcs.size() > 0 {
+        let f = funcs.pop()
+        let gxs = f.backward(f.output.grad)
+        mut i = 0
+        while i < f.inputs.size() {
+          let x = f.inputs[i]
+          if x.grad == nil { x.grad = gxs[i] } else { x.grad = x.grad + gxs[i] }
+          if x.creator != nil { funcs.push(x.creator) }
+          i = i + 1
+        }
+      }
+    }
+  }
+  let va = Variable.new(3.0)
+  let vb = Variable.new(2.0)
+  let vy = va * vb + va
+  vy.backward()
+  assert_eq(vy.data, 9.0)
+  assert_eq(va.grad, 3.0)
+  assert_eq(vb.grad, 3.0)
+}
+
+test_call_basic()
+test_call_variadic()
+test_call_chain()
+test_call_in_lambda_and_loop()
+test_plain_dict_not_callable()
+test_non_callable_instance()
+test_kwargs_rejected()
+test_callable_as_value_errors()
+test_dezero_call()
+
+puts('call-overload OK')

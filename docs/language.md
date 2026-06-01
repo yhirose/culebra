@@ -1189,6 +1189,29 @@ g[1] = 99
 puts(g[1])                  # => 99
 ```
 
+**Calling (`__call__`).** A class instance can define `__call__(*args)`
+so `obj(args)` invokes it — the twin of `__index__`. `obj(x)` is exactly
+`obj.__call__(x)`, with the instance bound as `this`. This gives the
+`model(x)` idiom for layered/composable values (a model whose `__call__`
+runs its sub-layers' `__call__`). Like the subscript hooks it fires only
+on class instances, so a plain dict holding a `__call__` key stays an
+ordinary value. Both backends dispatch identically.
+
+```culebra
+class Adder {
+  new(b)       { this.b = b }
+  __call__(x)  { this.b + x }
+}
+let add3 = Adder.new(3)
+puts(add3(10))              # => 13
+puts(add3.__call__(10))     # => 13
+```
+
+Phase 1 is positional-only: `__call__` takes `*args` positional arguments
+(no keyword arguments), and a bare callable instance can be *called*
+directly but not yet passed as a higher-order callback (e.g. to `map`) —
+both raise a clean `TypeError`.
+
 ### Custom string representation (`__str__`)
 
 Defining a 0-arg `__str__` method on an `Object` lets the value

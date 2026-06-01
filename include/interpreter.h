@@ -5949,6 +5949,22 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
     CallArgs args;
     split_call_args(ast, env, args);
+    // Callable class instance: `obj(args)` dispatches to the instance's
+    // `__call__(*args)` method, the twin of `__index__`. resolve_class_method
+    // gates on class_tag (a plain dict holding a "__call__" key stays
+    // non-callable) and honors trait-default `__call__`. Phase 1 is
+    // positional-only — reject kwargs/**splat with a clean TypeError so
+    // both backends agree (the JIT call ABI threads no kwargs into a
+    // closure `this`-call).
+    if (auto bound = resolve_class_method(val, "__call__")) {
+      if (!args.kwargs.empty() || !args.splats.empty()) {
+        throw CulebraError("TypeError",
+            "__call__ does not accept keyword arguments",
+            call_line, call_column);
+      }
+      return invoke_user_function_with_args(*bound, env, std::move(args),
+                                            call_line, call_column);
+    }
     return invoke_user_function_with_args(val, env, std::move(args),
                                           call_line, call_column);
   }
@@ -6538,6 +6554,32 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (has_start) start = eval(*ast.nodes[0], env).to_long();
     if (has_end) end = eval(*ast.nodes[op_idx + 1], env).to_long();
     return _make_range(start, end, ast.nodes[op_idx]->token == "..=");
+  }
+
+  // Resolve a method by name on a class instance, honoring both the
+  // instance's own Function properties and inherited trait defaults
+  // (mirrors eval_property's method lookup, which is where `__call__`
+  // can live when it's a trait default). Returns the `this`-bound
+  // method, or nullopt for a non-instance / missing method. Gated on
+  // class_tag so a plain dict holding a "__call__" key stays an
+  // ordinary value, matching the subscript-overload gate.
+  std::optional<Value> resolve_class_method(const Value& val,
+                                             std::string_view name) {
+    if (val.type != Value::Object || !class_tag(val)) return std::nullopt;
+    const auto& obj = val.to_object();
+    auto it = obj.properties->find(name);
+    if (it != obj.properties->end() &&
+        it->second.val.type == Value::Function) {
+      return _wrap_method_with_this(it->second.val, val);
+    }
+    for (const auto& [trait_name, default_methods] : trait_default_impls_) {
+      auto dit = default_methods.find(std::string(name));
+      if (dit == default_methods.end()) continue;
+      if (type_matches(val, trait_name)) {
+        return _wrap_method_with_this(dit->second, val);
+      }
+    }
+    return std::nullopt;
   }
 
   // Shared special-method dispatch core. Arity 0 (unary) or 1 (binary);

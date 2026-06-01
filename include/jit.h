@@ -3230,6 +3230,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
   return _find_property(obj, key) != nullptr;
 }
 
+// `obj(args)` overload resolution: returns the class instance's
+// `__call__` method as a borrowed TAG_FUNC JitValue, honoring own slots,
+// the class meta (proto), and inherited trait defaults — the same
+// resolution order as culebra_runtime_object_get_ic. Gated on
+// `proto != null` so a plain dict that merely holds a "__call__" key
+// stays non-callable, matching the interp class_tag gate and the
+// __index__ design. Returns Nil for any non-instance / missing method,
+// so the caller raises "type error: expected Function".
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
+    int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return {TAG_NIL, 0};
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  if (!obj->proto) return {TAG_NIL, 0};
+  if (auto* e = _find_property(obj, "__call__")) {
+    if (e->value.tag == TAG_FUNC) return e->value;
+  }
+  for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
+    auto m_it = methods.find("__call__");
+    if (m_it == methods.end() || !m_it->second) continue;
+    if (_culebra_type_matches_single(TAG_OBJECT, data, trait_name)) {
+      return {TAG_FUNC, reinterpret_cast<int64_t>(m_it->second)};
+    }
+  }
+  return {TAG_NIL, 0};
+}
+
 // `match v { x: ClassName => ... }` predicate. Returns true when
 // `obj` carries a String `class` property whose value equals
 // `expected`. Mirrors `culebra::class_tag()` + name comparison in
@@ -6749,6 +6775,7 @@ inline constexpr auto time_add_nanos       = "culebra_runtime_time_add_nanos";
 inline constexpr auto time_start_of_nanos  = "culebra_runtime_time_start_of_nanos";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
+inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
@@ -15289,7 +15316,7 @@ struct JIT {
   llvm::Value* compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
-      bool check_kw_only = false) {
+      bool check_kw_only = false, bool allow_call_overload = true) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto tag = extract_tag(callee);
@@ -15300,9 +15327,47 @@ struct JIT {
     auto errorBB = llvm::BasicBlock::Create(ctx_, "call.error", fn);
     builder_.CreateCondBr(isFunc, callBB, errorBB);
 
+    // Cold path: the callee isn't a function. A callable class instance
+    // (`obj(args)` where obj defines `__call__`, the twin of `__index__`)
+    // dispatches to its `__call__` method here; everything else is a
+    // type error. The hot path (callBB) is untouched. `allow_call_overload`
+    // is cleared on the self-recursive __call__ invocation below so the
+    // reconstruction emits only once (no compile-time recursion).
     builder_.SetInsertPoint(errorBB);
-    emit_type_error_typed("Function", tag);
-    builder_.CreateUnreachable();
+    auto emit_not_function = [&] {
+      emit_type_error_typed("Function", tag);
+      builder_.CreateUnreachable();
+    };
+    llvm::Value* overloadResult = nullptr;
+    llvm::BasicBlock* overloadEndBB = nullptr;
+    if (allow_call_overload) {
+      auto callMethod = emit_call(
+          module_->getOrInsertFunction(
+              rt::class_call_method, valueType_,
+              builder_.getInt8Ty(), builder_.getInt64Ty()),
+          {tag, extract_data(callee)}, "call.method");
+      auto isCallFn = builder_.CreateICmpEQ(
+          extract_tag(callMethod), builder_.getInt8(TAG_FUNC));
+      auto overloadBB = llvm::BasicBlock::Create(ctx_, "call.overload", fn);
+      auto notFnBB = llvm::BasicBlock::Create(ctx_, "call.notfn", fn);
+      builder_.CreateCondBr(isCallFn, overloadBB, notFnBB);
+
+      builder_.SetInsertPoint(notFnBB);
+      emit_not_function();
+
+      builder_.SetInsertPoint(overloadBB);
+      // `callee` becomes `this`; retain so the recursive frame consumes
+      // its own +1 (the original ref stays borrowed, the convention the
+      // normal path shares — see the leak note in the kwargs path).
+      emit_value_retain(callee);
+      overloadResult = compile_function_call_raw(
+          callMethod, callee, userArgs,
+          /*check_kw_only=*/false, /*allow_call_overload=*/false);
+      overloadEndBB = builder_.GetInsertBlock();
+      // Terminator added after callBB so both arms can merge at contBB.
+    } else {
+      emit_not_function();
+    }
 
     builder_.SetInsertPoint(callBB);
     auto clsPtr = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
@@ -15353,7 +15418,23 @@ struct JIT {
         thisVal ? thisVal : make_nil(),
         builder_.getInt64(static_cast<int64_t>(userArgs.size())),
         argsPtr};
-    return emit_call(calleeType, fnPtr, args, "call.result");
+    auto callResult = emit_call(calleeType, fnPtr, args, "call.result");
+
+    // No __call__ overload arm (recursive inner call): callBB is the
+    // only producer, return directly and keep the original shape.
+    if (!allow_call_overload) return callResult;
+
+    // Merge the function-call result with the __call__ dispatch result.
+    auto callEndBB = builder_.GetInsertBlock();
+    auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
+    builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(overloadEndBB);
+    builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(contBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "call.phi");
+    phi->addIncoming(callResult, callEndBB);
+    phi->addIncoming(overloadResult, overloadEndBB);
+    return phi;
   }
 
   // True if every ARG_LIST child is a plain positional expression
