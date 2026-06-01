@@ -3494,34 +3494,87 @@ inline const char* _stdlib_preamble_concat() {
 }
 inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
 
-// Concatenate `user_src` with the stdlib modules it appears to
-// reference (substring match). Used by the JIT and AOT paths to skip
-// Time/Args parsing when scripts don't touch them. A substring hit is
-// a safe over-approximation: false positives (e.g. `let myTime = 1`)
-// just include an unneeded module; only true negatives skip the
-// prepend, preserving correctness.
-inline std::string prepend_stdlib_preamble_selective(
-    std::string_view user_src) {
-  bool needs_time = user_src.find("Time") != std::string_view::npos;
-  bool needs_args = user_src.find("Args") != std::string_view::npos;
-  // Matchers: any `assert_` reference pulls in the family. A naive
-  // substring works because no other stdlib symbol starts with
-  // `assert_`.
-  bool needs_matchers = user_src.find("assert_") != std::string_view::npos;
-  bool needs_regex = user_src.find("Regex") != std::string_view::npos;
-  std::string combined;
-  combined.reserve(
-      (needs_time ? std::strlen(TIME_MODULE_SOURCE) : 0) +
-      (needs_args ? std::strlen(ARGS_MODULE_SOURCE) : 0) +
-      (needs_matchers ? std::strlen(MATCHERS_MODULE_SOURCE) : 0) +
-      (needs_regex ? std::strlen(REGEX_MODULE_SOURCE) : 0) +
-      user_src.size());
-  if (needs_time) combined.append(TIME_MODULE_SOURCE);
-  if (needs_args) combined.append(ARGS_MODULE_SOURCE);
-  if (needs_matchers) combined.append(MATCHERS_MODULE_SOURCE);
-  if (needs_regex) combined.append(REGEX_MODULE_SOURCE);
-  combined.append(user_src);
-  return combined;
+// Build the selective stdlib preamble for a script: only the modules the
+// source appears to reference (substring match). The JIT/AOT backends
+// need these helpers inlined into the entry module because they don't
+// honour the env's lazy bindings (see Phase 3 of
+// [[project-startup-overhead]]); the interpreter binds them lazily and
+// never calls this. A substring hit is a safe over-approximation: false
+// positives (e.g. `let myTime = 1`) just include an unneeded module; only
+// true negatives skip a module, preserving correctness.
+inline std::string stdlib_preamble_for(std::string_view user_src) {
+  // Each module is pulled in when its marker appears anywhere in the
+  // source; `assert_` pulls the whole matcher family (no other stdlib
+  // symbol starts with it). Adding a module is a single row here.
+  static constexpr struct {
+    std::string_view marker;
+    const char* source;
+  } kModules[] = {
+      {"Time", TIME_MODULE_SOURCE},
+      {"Args", ARGS_MODULE_SOURCE},
+      {"assert_", MATCHERS_MODULE_SOURCE},
+      {"Regex", REGEX_MODULE_SOURCE},
+  };
+  std::string preamble;
+  for (const auto& m : kModules) {
+    if (user_src.find(m.marker) != std::string_view::npos)
+      preamble.append(m.source);
+  }
+  return preamble;
+}
+
+// Collect the top-level statements from a parsed program AST. After the
+// AstOptimizer runs, a multi-statement program's root carries the
+// STATEMENTS tag (its children are the statements), while a single-
+// statement program collapses so that the root *is* that lone statement.
+inline std::vector<std::shared_ptr<peg::Ast>> collect_top_level_statements(
+    const std::shared_ptr<peg::Ast>& ast) {
+  using namespace peg::udl;
+  if (!ast) return {};
+  if (ast->tag == "STATEMENTS"_) return ast->nodes;
+  return {ast};
+}
+
+// JIT/AOT only: graft the stdlib preamble into the entry module's tree.
+//
+// The preamble defines helpers (assert_*, Time, …) that user code calls,
+// and those bindings must live in the entry module's top-level scope —
+// dependency modules compile in isolated scopes, so the preamble can't be
+// a separate module. The naive approach (concatenate the preamble onto
+// the source text) shifts every user line down by the preamble's height,
+// desyncing JIT/AOT error locations and in-language `e.line` from the
+// interpreter, which never prepends. Instead we parse the preamble on its
+// own and splice its statements ahead of the user's in a fresh STATEMENTS
+// root: user nodes keep the exact line/column they were parsed with.
+inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules,
+                                   std::string_view user_src) {
+  if (modules.empty()) return;
+  std::string preamble = stdlib_preamble_for(user_src);
+  if (preamble.empty()) return;
+
+  // Retain the preamble bytes for the module's lifetime — the spliced
+  // AST's tokens are string_views into this buffer.
+  auto pre_buf = std::make_shared<std::string>(std::move(preamble));
+  std::vector<std::string> msgs;
+  auto pre_ast = parse_with_transforms("<stdlib>", pre_buf->data(),
+                                       pre_buf->size(), msgs);
+  if (!pre_ast) return;  // stdlib is trusted; a parse failure is a build bug
+
+  // Entry module is last (the loader emits dependencies before it).
+  LoadedModule& entry = modules.back();
+  std::vector<std::shared_ptr<peg::Ast>> stmts =
+      collect_top_level_statements(pre_ast);
+  for (auto& s : collect_top_level_statements(entry.ast)) {
+    stmts.push_back(std::move(s));
+  }
+
+  const char* path = entry.ast ? entry.ast->path.c_str() : "";
+  auto merged = std::make_shared<peg::Ast>(path, size_t{1}, size_t{1},
+                                           "STATEMENTS", stmts);
+  for (auto& child : merged->nodes) child->parent = merged;
+
+  entry.ast = std::move(merged);
+  entry.aux_sources.push_back(std::move(pre_buf));
 }
 
 // Register stdlib modules that should not be parsed/evaluated up front.

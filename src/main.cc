@@ -294,13 +294,17 @@ int run_build(const BuildOptions& opts) {
     std::println(stderr, "culebra build: can't open '{}'", opts.input);
     return 1;
   }
-  auto entry_src = culebra::prepend_stdlib_preamble_selective(
-      std::string_view(buff.data(), buff.size()));
+  std::string_view user_src(buff.data(), buff.size());
   vector<string> msgs;
   culebra::ModuleLoader loader;
   std::vector<culebra::LoadedModule> modules;
   try {
-    modules = loader.load_program(opts.input, entry_src, msgs);
+    // Parse the user source with its natural line numbers, then splice
+    // the stdlib preamble into the entry module's AST. Prepending it as
+    // source text would shift every user line and desync error
+    // locations from the interpreter (see splice_stdlib_preamble).
+    modules = loader.load_program(opts.input, user_src, msgs);
+    culebra::splice_stdlib_preamble(modules, user_src);
   } catch (const culebra::CulebraError& e) {
     cerr << e.kind << ": " << e.what();
     if (e.line > 0 || e.col > 0)
@@ -488,18 +492,16 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     // interp evaluates them sequentially. The JIT path needs the
     // stdlib preamble inlined because it doesn't currently honour
     // the env's lazy bindings (see Phase 3 of [[project-startup-overhead]]).
+    // It's spliced into the entry module's AST *after* parse so user line
+    // numbers stay natural and error locations match interp (see
+    // splice_stdlib_preamble).
     culebra::ModuleLoader loader;
     std::vector<culebra::LoadedModule> modules;
-    std::string jit_src;
-    std::string_view entry_src = user_src;
-#ifdef CULEBRA_JIT_ENABLED
-    if (options.jit) {
-      jit_src = culebra::prepend_stdlib_preamble_selective(user_src);
-      entry_src = jit_src;
-    }
-#endif
     try {
-      modules = loader.load_program(path, entry_src, msgs);
+      modules = loader.load_program(path, user_src, msgs);
+#ifdef CULEBRA_JIT_ENABLED
+      if (options.jit) culebra::splice_stdlib_preamble(modules, user_src);
+#endif
     } catch (const culebra::CulebraError& e) {
       cerr << e.kind << ": " << e.what();
       if (e.line > 0 || e.col > 0) cerr << " at " << e.line << ":" << e.col << ".";

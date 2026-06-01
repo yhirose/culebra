@@ -158,9 +158,10 @@ let r_lvcall = try {
 } catch e { e }
 assert_eq(r_lvcall.kind, 'DispatchError')
 # Column anchors at `ret_f` (col 3), the same node the rvalue path uses.
-# Line is intentionally not pinned: the JIT mis-attributes lvalue-assignment
-# error lines by +1 in some statement contexts (a pre-existing drift, col
-# unaffected) tracked separately; both backends still agree on col.
+# Line and column both match across backends: the JIT no longer shifts
+# error lines by the stdlib preamble height (the preamble is now spliced
+# into the AST after parse, so user nodes keep their natural positions).
+assert_eq(r_lvcall.line, 156)
 assert_eq(r_lvcall.col, 3)
 
 # --- Runtime helpers (throwing stdlib functions) ---
@@ -194,3 +195,24 @@ let r16 = try {
   outer.kind
 }
 assert_eq(r16, 'ZeroDivisionError')
+
+# --- preamble splice keeps error lines aligned with the interpreter ---
+# Regression guard for the JIT/AOT preamble line-drift bug: the `assert_*`
+# calls in this file pull in the stdlib preamble, which is spliced into
+# the entry module's AST after parse. An error therefore reports the line
+# the user actually wrote — the same line the interpreter reports — not
+# one shifted down by the preamble height. Pin exact lines so a
+# reintroduced shift fails loudly.
+let r_attr = try {
+  mut o = {a: 1}
+  o.missing += 1
+  nil
+} catch e { e }
+assert_eq(r_attr.kind, 'AttributeError')
+assert_eq(r_attr.line, 208)
+assert_eq(r_attr.col, 5)
+
+let r_type = try { let _ = 'a' < 1; nil } catch e { e }
+assert_eq(r_type.kind, 'TypeError')
+assert_eq(r_type.line, 215)
+assert_eq(r_type.col, 28)

@@ -23,11 +23,18 @@ namespace culebra {
 // AST's tokens reference it as string_views; using a heap allocation
 // pins the bytes against std::string SSO / std::vector reallocation
 // that would otherwise relocate them and dangle the views.
+//
+// `aux_sources` retains any *additional* buffers whose bytes the AST
+// references after a splice — the JIT/AOT path parses the stdlib
+// preamble separately and grafts its statements into this module's tree
+// (see splice_stdlib_preamble), so the preamble buffer must outlive the
+// module just like `source` does.
 struct LoadedModule {
   std::filesystem::path abs_path;
   std::shared_ptr<std::string> source;
   std::shared_ptr<peg::Ast> ast;
   std::vector<std::filesystem::path> deps;
+  std::vector<std::shared_ptr<std::string>> aux_sources;
 };
 
 // Resolve a relative module path against an importing module's
