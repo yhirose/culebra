@@ -68,3 +68,24 @@ assert_eq('world'.greet(), 'hello world')
 # UFCS doesn't fire when no ARGUMENTS follow (bare property access)
 # `42.double` without () — looks up property, fails normally
 # (can't easily assert this without try/catch; skip)
+
+# UFCS inside a nested function / lambda must capture the free function:
+# the closure-capture analyzer has to see `x.incr()` as a reference to
+# the outer `incr`, the same as a direct `incr(x)` call would. On the JIT
+# this previously failed — the UFCS method name was skipped by the
+# free-variable walk, so `(5).incr()` inside a closure couldn't find the
+# captured `incr` that `incr(5)` resolves fine.
+bump = fn (x) { x + 1 }
+in_fn = fn () { (5).bump() }
+assert_eq(in_fn(), 6)
+in_lambda = || (5).bump()
+assert_eq(in_lambda(), 6)
+# UFCS on an Array receiver inside a closure, too.
+listlen = fn (xs) { xs.reduce(0, fn (a, _x) { a + 1 }) }
+in_fn2 = fn () { [10, 20, 30].listlen() }
+assert_eq(in_fn2(), 3)
+# A builtin method name still wins over the same-named outer `size` fn
+# (defined above) even inside a closure — UFCS must not capture/shadow it
+# (capturing the outer `size` here used to crash closure setup).
+in_fn3 = fn () { [1, 2, 3, 4].size() }
+assert_eq(in_fn3(), 4)

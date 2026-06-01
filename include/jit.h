@@ -9104,6 +9104,26 @@ struct JIT {
     }
   }
 
+  // Record `name` as a free variable of the function under analysis when
+  // it resolves to an outer scope (not a local, not a builtin). Shared by
+  // the IDENTIFIER read path and the UFCS method-name path.
+  void note_free_var(const std::string& name,
+                     const std::set<std::string>& my_locals,
+                     std::vector<const std::set<std::string>*>& outer,
+                     FuncInfo& info) {
+    if (my_locals.contains(name) || is_builtin_var(name)) return;
+    for (auto* scope : outer) {
+      if (scope->contains(name)) {
+        if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
+            info.free_vars.end()) {
+          info.free_vars.push_back(name);
+        }
+        return;
+      }
+    }
+    // else: unresolved (will error at runtime) — don't add as free.
+  }
+
   void visit_for_frees(const peg::Ast& node,
                        const std::set<std::string>& my_locals,
                        std::vector<const std::set<std::string>*>& outer,
@@ -9235,6 +9255,38 @@ struct JIT {
       return;
     }
 
+    // CALL = primary + postfix chain. A `DOT(name)` (or `SAFE_DOT`)
+    // immediately followed by ARGUMENTS is a method call that may resolve
+    // via UFCS to a free function `name(receiver, ...)`. If `name` is an
+    // outer-scope variable, it must be captured so the nested-fn UFCS
+    // lookup (lookup_var at the call site) can find it — otherwise
+    // `(5).dbl()` inside a closure would miss the captured `dbl` that
+    // `dbl(5)` resolves fine. Bare property access (DOT without a
+    // following ARGUMENTS) never uses UFCS, so it's left alone.
+    if (node.tag == "CALL"_) {
+      for (size_t i = 0; i < node.nodes.size(); i++) {
+        const auto& child = *node.nodes[i];
+        bool is_method = (child.original_tag == "DOT"_ ||
+                          child.original_tag == "SAFE_DOT"_) &&
+                         i + 1 < node.nodes.size() &&
+                         node.nodes[i + 1]->original_tag == "ARGUMENTS"_;
+        if (is_method) {
+          // A builtin method name (size/map/...) is shadowed by the
+          // builtin on any receiver that has it, so UFCS never fires for
+          // it — don't capture (capturing a same-named outer fn the
+          // builtin wins over is both useless and breaks closure setup).
+          // Only genuine non-builtin method names are UFCS candidates.
+          auto mname = std::string(child.token);
+          if (!known_builtin_methods().contains(mname)) {
+            note_free_var(mname, my_locals, outer, info);
+          }
+          continue;  // skip the DOT recursion (it would early-return)
+        }
+        visit_for_frees(child, my_locals, outer, info);
+      }
+      return;
+    }
+
     // DOT[IDENTIFIER] is a property name, not a variable reference.
     // The AST optimizer collapses the single-child rule so node.tag
     // reads as IDENTIFIER; use original_tag and check before the
@@ -9248,22 +9300,7 @@ struct JIT {
       // `__ARGS__` is auto-bound by the function prologue; flag use so
       // the prologue can skip the Array allocation when nothing reads it.
       if (name == "__ARGS__") info.uses_args = true;
-      if (my_locals.contains(name) || is_builtin_var(name)) return;
-      // Check if in any outer scope — if so, it's a free var
-      bool in_outer = false;
-      for (auto* scope : outer) {
-        if (scope->contains(name)) {
-          in_outer = true;
-          break;
-        }
-      }
-      if (in_outer) {
-        if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
-            info.free_vars.end()) {
-          info.free_vars.push_back(name);
-        }
-      }
-      // else: unresolved (will error at runtime) — don't add as free
+      note_free_var(name, my_locals, outer, info);
       return;
     }
 
