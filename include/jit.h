@@ -15172,31 +15172,51 @@ struct JIT {
     return phi;
   }
 
-  // Builtin-named method on a user class: give the class's own method priority
-  // over the builtin (interpreter parity). Runtime branch — Object whose class
-  // (proto-aware) defines `method` → call it; otherwise the builtin. Args are
-  // compiled inside whichever branch runs, so a side-effecting argument is
-  // evaluated exactly once. Mirrors compile_method_or_ufcs + the receiver
-  // ownership of compile_method_call (user path keeps receiver; builtin path
-  // releases it).
   // Raise the interpreter's count-based ArityError for a wrong-arity
-  // built-in call on a value-typed receiver. Bounds come straight from
-  // the interpreter's builtin tables (the single source of truth — no
-  // parallel arity data); a runtime tag guard ensures only a receiver
-  // that actually defines the method at a conflicting arity throws, so a
-  // type that lacks the method (`"abc".push(...)`) falls through to the
-  // "expected Function, got Nil" path, matching interp. Object-tag
-  // builtins (iterator/dict) aren't disambiguable by tag here and are
-  // left to the fallback. See [[project_jit_error_symmetry]].
-  void emit_value_builtin_arity_check(const std::string& method,
-                                      const peg::Ast& argsAst,
-                                      llvm::Value* receiver) {
+  // builtin method call. Bounds come straight from the interpreter's
+  // builtin tables (the single source of truth — no parallel arity
+  // data); a runtime tag/shape guard ensures only a receiver that
+  // actually resolves the method at a conflicting arity throws, so a
+  // receiver lacking the method (`"abc".push(...)`, a plain dict's
+  // `.map(...)`) falls through to "expected Function, got Nil", matching
+  // interp. Mirrors eval_property's dispatch order: value-type tables by
+  // tag, then dict builtins on any Object, then iterator builtins on an
+  // iterator-shaped Object. See [[project_jit_error_symmetry]].
+  void emit_builtin_arity_check(const std::string& method,
+                                const peg::Ast& argsAst,
+                                llvm::Value* receiver) {
     long argc = static_cast<long>(argsAst.nodes.size());
-    // (tag → builtin table) for the unambiguously value-typed receivers.
-    // `builtins()` returns a function-local static, so a throwaway
-    // instance suffices and the pointers outlive it; built once.
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto tag = extract_tag(receiver);
+
+    // Emit `if (cond) throw ArityError`, leaving the insert point after.
+    auto throw_if = [&](llvm::Value* cond, long mn, long mx) {
+      auto badBB = llvm::BasicBlock::Create(ctx_, "arity.bad", fn);
+      auto okBB = llvm::BasicBlock::Create(ctx_, "arity.ok", fn);
+      builder_.CreateCondBr(cond, badBB, okBB);
+      builder_.SetInsertPoint(badBB);
+      emit_throw_error("ArityError",
+                       builtin_arity_error_message(method, mn, mx, argc),
+                       argsAst.line, argsAst.column);
+      builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
+      builder_.SetInsertPoint(okBB);
+    };
     using Table = std::unordered_map<std::string_view, Value>;
-    static const std::vector<std::pair<int8_t, const Table*>> tables = [] {
+    // {min,max} when `method` is in `tbl` at an arity rejecting argc (and
+    // not variadic); nullopt otherwise.
+    auto rejecting =
+        [&](const Table& tbl) -> std::optional<std::pair<long, long>> {
+      auto it = tbl.find(method);
+      if (it == tbl.end()) return std::nullopt;
+      auto b = builtin_arity_bounds(*it->second.to_function().params);
+      if (b.variadic || (argc >= b.min && argc <= b.max)) return std::nullopt;
+      return std::pair<long, long>{b.min, b.max};
+    };
+
+    // `builtins()` returns a function-local static, so throwaway instances
+    // suffice and the pointers outlive them; built once.
+    static const std::vector<std::pair<int8_t, const Table*>> valueTables = [] {
       ArrayValue arr;
       TensorValue ten{nullptr};
       return std::vector<std::pair<int8_t, const Table*>>{
@@ -15208,26 +15228,55 @@ struct JIT {
           {TAG_TENSOR, &ten.builtins()},
       };
     }();
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto tag = extract_tag(receiver);
-    for (auto& [t, tbl] : tables) {
-      auto it = tbl->find(method);
-      if (it == tbl->end()) continue;
-      auto b = builtin_arity_bounds(*it->second.to_function().params);
-      if (b.variadic || (argc >= b.min && argc <= b.max)) continue;
-      auto throwBB = llvm::BasicBlock::Create(ctx_, "arity.bad", fn);
-      auto contBB = llvm::BasicBlock::Create(ctx_, "arity.ok", fn);
-      builder_.CreateCondBr(
-          builder_.CreateICmpEQ(tag, builder_.getInt8(t)), throwBB, contBB);
-      builder_.SetInsertPoint(throwBB);
-      emit_throw_error("ArityError",
-                       builtin_arity_error_message(method, b.min, b.max, argc),
-                       argsAst.line, argsAst.column);
-      builder_.CreateBr(contBB);  // unreachable (throw is noreturn) but valid
-      builder_.SetInsertPoint(contBB);
+    static const Table* dictTable = [] {
+      ObjectValue o;
+      return &o.builtins();
+    }();
+
+    for (auto& [t, tbl] : valueTables) {
+      if (auto r = rejecting(*tbl)) {
+        throw_if(builder_.CreateICmpEQ(tag, builder_.getInt8(t)), r->first,
+                 r->second);
+      }
+    }
+
+    // Object-tag builtins. Dict methods (keys/has/size/...) resolve on any
+    // Object; iterator methods (map/filter/...) only on an iterator-shaped
+    // Object, matching eval_property's order (dict-table lookup first,
+    // iterator-protocol fallback second). eval_property's shape test is
+    // `has("next") && (has("has_next") || has("iter"))`, but `iter` is a
+    // dict builtin so `has("iter")` is always true — the effective test
+    // is just "has an own/proto `next`", which is what we probe here.
+    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
+    if (auto r = rejecting(*dictTable)) {
+      throw_if(isObj, r->first, r->second);
+    } else if (auto r = rejecting(iterator_builtins())) {
+      auto shapeBB = llvm::BasicBlock::Create(ctx_, "arity.itshape", fn);
+      auto badBB = llvm::BasicBlock::Create(ctx_, "arity.bad", fn);
+      auto okBB = llvm::BasicBlock::Create(ctx_, "arity.ok", fn);
+      builder_.CreateCondBr(isObj, shapeBB, okBB);
+      builder_.SetInsertPoint(shapeBB);  // object_has is safe only here
+      auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+      auto shaped =
+          emit_object_has(objPtr, get_or_create_global_str("next", ".it.next"));
+      builder_.CreateCondBr(shaped, badBB, okBB);
+      builder_.SetInsertPoint(badBB);
+      emit_throw_error(
+          "ArityError",
+          builtin_arity_error_message(method, r->first, r->second, argc),
+          argsAst.line, argsAst.column);
+      builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
+      builder_.SetInsertPoint(okBB);
     }
   }
 
+  // Builtin-named method on a user class: give the class's own method priority
+  // over the builtin (interpreter parity). Runtime branch — Object whose class
+  // (proto-aware) defines `method` → call it; otherwise the builtin. Args are
+  // compiled inside whichever branch runs, so a side-effecting argument is
+  // evaluated exactly once. Mirrors compile_method_or_ufcs + the receiver
+  // ownership of compile_method_call (user path keeps receiver; builtin path
+  // releases it).
   llvm::Value* compile_user_method_over_builtin(const std::string& method,
                                                 const peg::Ast& argsAst,
                                                 llvm::Value* receiver) {
@@ -15280,14 +15329,13 @@ struct JIT {
         emit_value_release(receiver);  // builtin borrows the receiver
       } else {
         // No native codegen matched this (method, argc). Before the
-        // generic property-get fallback (which yields the "expected
-        // Function, got Nil" of a type that lacks the method), raise a
-        // count-based ArityError when the receiver's *runtime* tag is a
-        // value type that DOES define the method but at a different arity
-        // — matching the interpreter's per-type arity check. A tag the
-        // method isn't defined on falls through, so `"abc".push(1,2)`
-        // stays "expected Function, got Nil" on both backends.
-        emit_value_builtin_arity_check(method, argsAst, receiver);
+        // generic property-get fallback (which yields "expected Function,
+        // got Nil" for a receiver lacking the method), raise a count-based
+        // ArityError when the receiver actually resolves the method at a
+        // different arity — matching the interpreter's per-type check. A
+        // receiver the method isn't defined on falls through, so
+        // `"abc".push(1,2)` stays "expected Function, got Nil" on both.
+        emit_builtin_arity_check(method, argsAst, receiver);
         auto fbMethodVal = compile_property_get(receiver, method);
         builtinRes = compile_function_call(argsAst, fbMethodVal, receiver);
       }

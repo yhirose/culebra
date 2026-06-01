@@ -850,11 +850,11 @@ struct FunctionValue {
   // args positionally and never accept kwargs; the call site uses this to
   // raise a clean TypeError instead of an opaque ArityError. Matches JIT.
   bool is_builtin_method = false;
-  // True when this built-in wrapper is over an unambiguously value-typed
-  // receiver (Array/String/StringView/Set/Tuple/Tensor) — the cases the
-  // JIT can disambiguate by tag. Gates the positional-arity check so
-  // interp and JIT stay symmetric: object-tag builtins (iterator/dict
-  // methods) are left to a later pass. See [[project_jit_error_symmetry]].
+  // True when this wrapper is over a genuine builtin-table method
+  // (value-type / dict / iterator) — the cases the JIT can match. Gates
+  // the positional-arity check so interp and JIT stay symmetric;
+  // trait-default and namespace wrappers (not in any builtin table) are
+  // excluded. See [[project_jit_error_symmetry]].
   bool builtin_arity_checked = false;
   // Defining AST for a user closure (fn / lambda / method), retained so the
   // closure can be REBUILT on another thread's heap by the isolate layer
@@ -6161,13 +6161,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     wf.return_type = pf.return_type;
     wf.introspection_target = pf.introspection_target;
     wf.is_builtin_method = is_builtin;
-    // Value-typed receivers have an unambiguous JIT tag, so the JIT can
-    // raise the same positional-arity error; gate the check to them.
-    wf.builtin_arity_checked =
-        is_builtin && (val.type == Value::Array || val.type == Value::String ||
-                       val.type == Value::StringView ||
-                       val.type == Value::Set || val.type == Value::Tuple ||
-                       val.type == Value::Tensor);
+    // Arity-check genuine builtin-table methods only. The table dispatch
+    // sites pass `method_name` (for the error message); trait-default and
+    // other non-table wrappers don't, so they stay unchecked — keeping
+    // interp symmetric with the JIT, which only knows the builtin tables
+    // (value-type + dict + iterator), not trait defaults.
+    wf.builtin_arity_checked = is_builtin && !method_name.empty();
     return wrapped;
   }
 

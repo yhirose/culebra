@@ -260,3 +260,29 @@ assert_eq(r_cb2.message, "type error: parameter 'f' expects Function")
 let r_cb3 = try { let _ = [1, 2, 3].sort_by('x'); nil } catch e { e }
 assert_eq(r_cb3.kind, 'TypeError')
 assert_eq(r_cb3.message, "type error: parameter 'f' expects Function")
+
+# --- object-tag (iterator / dict) builtin arity (Phase 2) ---
+# Iterator-protocol methods and dict methods are TAG_OBJECT on the JIT,
+# but their arity errors still match interp. Iterator too-many used to be
+# silently dropped on interp and "expected Function, got Nil" on the JIT.
+let r_im = try { [1, 2].iter().map(fn (x) { x }, fn (y) { y }); nil }
+           catch e { e }
+assert_eq(r_im.kind, 'ArityError')
+assert_eq(r_im.message, "'map' takes 1 argument but 2 given")
+
+let r_ic = try { [1, 2].iter().collect(9); nil } catch e { e }
+assert_eq(r_ic.kind, 'ArityError')
+assert_eq(r_ic.message, "'collect' takes 0 arguments but 1 given")
+
+let r_dk = try { {a: 1}.keys(9); nil } catch e { e }
+assert_eq(r_dk.kind, 'ArityError')
+assert_eq(r_dk.message, "'keys' takes 0 arguments but 1 given")
+
+let r_dh = try { {a: 1}.has(); nil } catch e { e }
+assert_eq(r_dh.kind, 'ArityError')
+assert_eq(r_dh.message, "'has' takes 1 argument but 0 given")
+
+# A name that resolves to no builtin at all stays a TypeError (not
+# arity) on both backends — the "type lacks method" path.
+let r_dmiss = try { {a: 1}.nope(1); nil } catch e { e }
+assert_eq(r_dmiss.kind, 'TypeError')
