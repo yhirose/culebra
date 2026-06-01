@@ -4253,6 +4253,16 @@ inline MultifnPick _jit_multifn_resolve(
   return {m_it->second[static_cast<size_t>(pick)].body, name_it->second};
 }
 
+// Call-site source position for the JitFn-ABI dispatcher thunk. The thunk
+// is invoked through the fixed (cls, this, n_args, args) closure ABI, which
+// has no slot for line/col, so a plain `f(1)` that fails to dispatch can't
+// otherwise locate the error. The general call codegen stores the call-site
+// position here just before an indirect closure call; the thunk reads it on
+// the (cold) DispatchError path. Only read after a store on the same call,
+// so the single i64-pair store per call is the only cost on the hot path.
+inline thread_local int64_t _jit_call_site_line = 0;
+inline thread_local int64_t _jit_call_site_col = 0;
+
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
 // dispatcher closure. The `cls` identity (load-bearing comparison in
 // `culebra_runtime_call_with_kwargs` to intercept the kwargs path) is
@@ -4262,9 +4272,19 @@ inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
                                               JitValue /*this_val*/,
                                               int64_t n_args,
                                               JitValue* args) {
-  auto picked = _jit_multifn_resolve(cls, args, n_args, 0, 0);
+  auto picked = _jit_multifn_resolve(cls, args, n_args,
+                                     _jit_call_site_line, _jit_call_site_col);
   return reinterpret_cast<JitFn>(picked.body->fn_ptr)(
       picked.body, {TAG_NIL, 0}, n_args, args);
+}
+
+// Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
+// the DispatchError path. Emitted by compile_function_call_raw just before
+// an indirect closure call. Kept trivial so it inlines to two stores.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
+    int64_t line, int64_t col) {
+  _jit_call_site_line = line;
+  _jit_call_site_col = col;
 }
 
 // Append a method to the named multimethod table (replacing an entry
@@ -6636,6 +6656,7 @@ inline constexpr auto json_parse_kw       = "culebra_runtime_json_parse_kw";
 inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
 inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
+inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
@@ -9639,6 +9660,9 @@ struct JIT {
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::check_pos_count, builder_.getVoidTy(),
                                  ptrTy, builder_.getInt64Ty(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::set_call_site, builder_.getVoidTy(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // REPL top-level binding storage. The active globals dict is
@@ -15278,6 +15302,13 @@ struct JIT {
         builder_.CreateStore(userArgs[i], slot);
       }
     }
+
+    // Record the call-site position for the multifn dispatcher thunk,
+    // which is invoked through this fixed closure ABI and so can't receive
+    // line/col directly. Only read on its (cold) DispatchError path; the
+    // store is two i64 writes to thread-locals.
+    emit_call(module_->getFunction(rt::set_call_site),
+              {current_line_val(), current_column_val()});
 
     auto calleeType = llvm::FunctionType::get(
         valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},

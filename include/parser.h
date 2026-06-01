@@ -970,6 +970,17 @@ inline FunctionView view_lambda(const peg::Ast& lam) {
   return FunctionView{lam.nodes[0].get(), {}, lam.nodes[1]};
 }
 
+// Canonical source position for a call error (DispatchError, etc.): the
+// callee, not the argument list. A CALL node is `callee POSTFIX...`, so
+// nodes[0] is the called expression. Both backends report call errors
+// here so `f(1)` points at `f`, not at `(`. Localizing the child index in
+// parser.h keeps a grammar tweak to the CALL shape from silently shifting
+// every call error's column.
+inline std::pair<size_t, size_t> call_callee_position(const peg::Ast& call) {
+  const auto& callee = *call.nodes[0];
+  return {callee.line, callee.column};
+}
+
 // Parse the built-in trait preamble (`trait Stringer`, `trait Eq`,
 // `trait Comparable` + defaults). Lazily cached so subsequent calls
 // reuse the same AST; the AST is process-lifetime so dependent

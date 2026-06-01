@@ -5917,7 +5917,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_function_call(const peg::Ast& ast,
-                           const std::shared_ptr<Environment>& env, const Value& val) {
+                           const std::shared_ptr<Environment>& env, const Value& val,
+                           size_t call_line, size_t call_column) {
     using namespace peg::udl;
     // Built-in methods (Array/String/Set/... wrappers) parse positionally
     // and never accept kwargs — raise a clean TypeError rather than letting
@@ -5938,7 +5939,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     CallArgs args;
     split_call_args(ast, env, args);
     return invoke_user_function_with_args(val, env, std::move(args),
-                                          ast.line, ast.column);
+                                          call_line, call_column);
   }
 
   // UFCS (D / Nim style): call `fn_val` as if `receiver` were its first
@@ -6272,9 +6273,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& postfix = *ast.nodes[i];
 
       switch (postfix.original_tag) {
-        case "ARGUMENTS"_:
-          val = eval_function_call(postfix, env, val);
+        case "ARGUMENTS"_: {
+          // Attribute call errors to the callee, not the arg list, so a
+          // DispatchError on `f(1)` points at `f` — matching the JIT.
+          auto [cl, cc] = call_callee_position(ast);
+          val = eval_function_call(postfix, env, val, cl, cc);
           break;
+        }
         case "INDEX"_:
           val = eval_array_reference(postfix, env, val);
           break;
@@ -6868,9 +6873,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         const auto& postfix = *ast.nodes[i];
 
         switch (postfix.original_tag) {
-          case "ARGUMENTS"_:
-            lval = eval_function_call(postfix, env, lval);
+          case "ARGUMENTS"_: {
+            // Call errors point at the callee (the postfix chain element
+            // just before the arg list), matching the JIT.
+            const auto& callee = *ast.nodes[i - 1];
+            lval = eval_function_call(postfix, env, lval,
+                                      callee.line, callee.column);
             break;
+          }
           case "INDEX"_:
             lval = eval_array_reference(postfix, env, lval);
             break;
