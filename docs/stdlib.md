@@ -1572,7 +1572,19 @@ failure doesn't lose the others' work — `r.ok ? r.value : r.error`.
 *every* element throws it raises `ParallelError`, and on an empty array it raises
 `ParallelError` (there is no result to return).
 
-(An `on_progress` callback and `map_reduce` are planned.)
+**`on_progress:` reports completion.** Every method also accepts an
+`on_progress: |done, total|` callback. Unlike `fn`, it is **not** Sendable: it
+runs on the calling thread, so it can freely read and mutate captured state
+(e.g. a counter or a progress bar). It is called as elements finish, with the
+running completion count and the total; a throwing callback cancels the run.
+
+```culebra
+# doctest: skip
+Parallel.map(urls, |u| fetch(u),
+             on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+```
+
+(`map_reduce` is planned.)
 
 ---
 

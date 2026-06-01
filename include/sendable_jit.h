@@ -682,6 +682,7 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
         jit_parallel_record_element_error(*st, i,
             culebra::CulebraError("RuntimeError", e.what()));
       }
+      st->done.fetch_add(1, std::memory_order_relaxed);  // for on_progress
     }
   } catch (culebra::CulebraError& e) {
     parallel_record_error(*st, 0, e);
@@ -691,8 +692,35 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   }
 }
 
+// Parent-thread coordinator: polls `done` and calls the JIT closure
+// on_progress(done, total) on the parent heap. Mirrors the interp version; the
+// JIT callback is a JitClosure invoked directly via _culebra_invoke2.
+inline void jit_parallel_progress_coordinator(
+    std::shared_ptr<ParallelState> st, JitClosure* cb,
+    std::exception_ptr& cb_err) {
+  const size_t total = st->items.size();
+  size_t reported = 0;
+  while (reported < total && !st->interrupt.load(std::memory_order_relaxed)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    size_t d = std::min(st->done.load(std::memory_order_relaxed), total);
+    if (d == reported) continue;
+    reported = d;
+    try {
+      JitValue rv = _culebra_invoke2(
+          cb, JitValue{TAG_LONG, static_cast<int64_t>(reported)},
+          JitValue{TAG_LONG, static_cast<int64_t>(total)});
+      culebra_runtime_value_release(rv.tag, rv.data);
+    } catch (...) {
+      cb_err = std::current_exception();
+      st->interrupt.store(true, std::memory_order_relaxed);
+      return;
+    }
+  }
+}
+
 inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
-                                 culebra::PMode mode, int64_t line, int64_t col) {
+                                 culebra::PMode mode, int64_t line, int64_t col,
+                                 JitValue on_progress = JitValue{TAG_NIL, 0}) {
   const char* who = culebra::parallel_mode_name(mode);
   if (items_v.tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
@@ -744,15 +772,22 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, long limit,
       break;
     }
   }
+  std::exception_ptr cb_err;
   if (threads.empty()) {
+    // Cap exhausted: run the whole job on one thread (no live progress).
     std::thread t([st] { jit_parallel_worker(st); });
     t.join();
   } else {
+    if (on_progress.tag == TAG_FUNC) {
+      jit_parallel_progress_coordinator(
+          st, reinterpret_cast<JitClosure*>(on_progress.data), cb_err);
+    }
     for (auto& t : threads) t.join();
   }
 
   release_inflight_channels(st->fn);
   for (const auto& it : st->items) release_inflight_channels(it);
+  if (cb_err) std::rethrow_exception(cb_err);
 
   if (mode == culebra::PMode::Race) {
     if (st->race_won.load()) {

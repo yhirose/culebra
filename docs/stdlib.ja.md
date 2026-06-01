@@ -1511,7 +1511,19 @@ failed: ...`）。
 **`race` は最初の成功**を返し、残りの要素をキャンセルします。*全要素*が例外を
 投げたら `ParallelError`、空配列でも `ParallelError`（返す結果が無いため）。
 
-(`on_progress` callback・`map_reduce` は予定。)
+**`on_progress:` で進捗報告。** どのメソッドも `on_progress: |done, total|`
+callback を受け取れます。`fn` と違い **Sendable ではありません** — 呼び出し
+スレッド上で実行されるので、捕獲した状態（カウンタや進捗バー等）を自由に読み
+書きできます。要素が完了するたびに「完了数・総数」で呼ばれ、callback が例外を
+投げると実行はキャンセルされます。
+
+```culebra
+# doctest: skip
+Parallel.map(urls, |u| fetch(u),
+             on_progress: |done, total| IO.print("\r" + done.to_string() + "/" + total.to_string()))
+```
+
+(`map_reduce` は予定。)
 
 ---
 

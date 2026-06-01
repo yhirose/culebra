@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -469,6 +470,7 @@ struct ParallelState {
   PMode mode = PMode::Map;
   std::vector<sendable::SendNode> results;   // serialized outputs, by index
   std::atomic<size_t> next{0};               // next element to claim
+  std::atomic<size_t> done{0};               // elements finished (on_progress)
   std::atomic<bool> interrupt{false};        // fail-fast / cancellation
   std::mutex err_m;
   bool failed = false;
@@ -590,6 +592,7 @@ inline void parallel_worker(std::shared_ptr<ParallelState> st) {
         parallel_record_element_error(*st, i,
             culebra::CulebraError("RuntimeError", e.what()));
       }
+      st->done.fetch_add(1, std::memory_order_relaxed);  // for on_progress
     }
   } catch (culebra::CulebraError& e) {
     parallel_record_error(*st, 0, e);  // fn itself wasn't Sendable / rebuildable
@@ -610,8 +613,39 @@ inline const char* parallel_mode_name(PMode m) {
   return "map";
 }
 
+// Runs on the parent thread while thread workers drain the queue: polls the
+// shared `done` counter and calls `on_progress(done, total)` on the parent heap
+// each time it advances. Polling (not a CV) keeps the workers' hot path free of
+// a notify; 10 ms granularity is ample for a progress bar. A throwing callback
+// cancels the run (recorded in cb_err, re-raised by parallel_run after join).
+inline void parallel_progress_coordinator(
+    std::shared_ptr<ParallelState> st, const Value& on_progress,
+    const std::shared_ptr<Environment>& env, std::exception_ptr& cb_err) {
+  auto cb_interp = std::make_shared<Interpreter>();
+  const size_t total = st->items.size();
+  size_t reported = 0;
+  while (reported < total && !st->interrupt.load(std::memory_order_relaxed)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    size_t d = std::min(st->done.load(std::memory_order_relaxed), total);
+    if (d == reported) continue;
+    reported = d;
+    try {
+      cb_interp->call_closure(on_progress, env,
+          {Value(static_cast<long>(reported)), Value(static_cast<long>(total))});
+    } catch (...) {
+      // Stash the throw (a CulebraError or a raw `throw <value>` Value) and stop
+      // the workers; parallel_run rethrows it once the threads are joined.
+      cb_err = std::current_exception();
+      st->interrupt.store(true, std::memory_order_relaxed);
+      return;
+    }
+  }
+}
+
 inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
-                          PMode mode, long line, long col) {
+                          PMode mode, long line, long col,
+                          const Value& on_progress = Value(),
+                          std::shared_ptr<Environment> parent_env = nullptr) {
   const char* who = parallel_mode_name(mode);
   if (items_v.type != Value::Array) {
     throw culebra::CulebraError("TypeError",
@@ -646,10 +680,14 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
 
   if (limit < 1) limit = isolate_cap();
   size_t target = std::min(static_cast<size_t>(limit), items.size());
-  // Spawn up to target-1 thread workers (cap-limited); the parent works one
+  // With on_progress the parent can't also be a worker (the callback runs on
+  // the parent heap, an inline worker on a separate one) — it coordinates while
+  // up to `target` workers run on threads. Without it, the parent works one
   // inline, so the pool drains even when no thread slots are free.
+  bool has_progress = on_progress.type == Value::Function;
+  size_t to_spawn = has_progress ? target : target - 1;
   std::vector<std::thread> threads;
-  for (size_t w = 0; w + 1 < target; w++) {
+  for (size_t w = 0; w < to_spawn; w++) {
     if (g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
         isolate_cap()) {
       threads.emplace_back([st] {
@@ -661,8 +699,14 @@ inline Value parallel_run(const Value& items_v, const Value& fn_v, long limit,
       break;
     }
   }
-  parallel_worker(st);
+  std::exception_ptr cb_err;
+  if (has_progress && !threads.empty()) {
+    parallel_progress_coordinator(st, on_progress, parent_env, cb_err);
+  } else {
+    parallel_worker(st);  // no free slot for progress → run inline, no callbacks
+  }
   for (auto& t : threads) t.join();
+  if (cb_err) std::rethrow_exception(cb_err);
 
   // Each worker rebuilt fn (and its claimed item), so the in-flight refs the
   // parent's serialize took are now redundant — release them once.
@@ -707,12 +751,14 @@ inline Value make_parallel_namespace() {
     return Value(FunctionValue(
         {{"items", false, ""sv},
          {"fn", false, ""sv},
-         {"limit", false, ""sv, nullptr, kw_default_zero()}},
+         {"limit", false, ""sv, nullptr, kw_default_zero()},
+         {"on_progress", false, ""sv, nullptr, kw_default_nil()}},
         [mode](std::shared_ptr<Environment> env) -> Value {
           long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
           long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
           return parallel_run(env->get("items"), env->get("fn"),
-                              env->get("limit").to_long(), mode, line, col);
+                              env->get("limit").to_long(), mode, line, col,
+                              env->get("on_progress"), env);
         },
         rt));
   };

@@ -2375,7 +2375,8 @@ inline JitValue _ns_parallel_dispatch(JitValue* a, int64_t n,
                     culebra::parallel_mode_name(mode)));
   }
   long limit = (n >= 3 && a[2].tag == TAG_LONG) ? a[2].data : 0;
-  return jit_parallel_run(a[0], a[1], limit, mode, 0, 0);
+  JitValue on_progress = (n >= 4) ? a[3] : JitValue{TAG_NIL, 0};
+  return jit_parallel_run(a[0], a[1], limit, mode, 0, 0, on_progress);
 }
 inline JitValue _ns_parallel_map(JitValue* a, int64_t n) {
   return _ns_parallel_dispatch(a, n, culebra::PMode::Map);
@@ -2727,14 +2728,16 @@ inline const NsParam kFileWithParams[] = {
 };
 inline const NsParamMeta kFileWithMeta = {kFileWithParams, 3, -1, -1};
 
-// Parallel.map/each(items, fn, limit=0). Mirrors make_parallel_namespace in
-// isolate.h; the NsParamMeta hook resolves a `limit:` kwarg into slab slot 2.
+// Parallel.{map,each,...}(items, fn, limit=0, on_progress=nil). Mirrors
+// make_parallel_namespace in isolate.h; the NsParamMeta hook resolves `limit:`
+// and `on_progress:` kwargs into slab slots 2 and 3.
 inline const NsParam kParallelParams[] = {
-  {"items", false, false, nullptr},
-  {"fn",    false, false, nullptr},
-  {"limit", true,  false, &_ns_def_zero},
+  {"items",       false, false, nullptr},
+  {"fn",          false, false, nullptr},
+  {"limit",       true,  false, &_ns_def_zero},
+  {"on_progress", true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kParallelMeta = {kParallelParams, 3, -1, -1};
+inline const NsParamMeta kParallelMeta = {kParallelParams, 4, -1, -1};
 
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
