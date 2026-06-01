@@ -301,3 +301,25 @@ assert_eq(r_dmap.message, "type error: expected Function, got Nil")
 let r_dsum = try { {a: 1}.sum(); nil } catch e { e }
 assert_eq(r_dsum.kind, 'TypeError')
 assert_eq(r_dsum.message, "type error: expected Function, got Nil")
+
+# A reduction's 1-arg form is the Tensor axis reduction; on a non-Tensor
+# it is whatever interp resolves it to, NOT "expected Tensor". The JIT
+# used to greedily claim `arg-count == 1` for the Tensor path.
+let r_asum = try { [1, 2].sum(9); nil } catch e { e }
+assert_eq(r_asum.kind, 'ArityError')                       # Array.sum takes 0
+assert_eq(r_asum.message, "'sum' takes 0 arguments but 1 given")
+
+let r_amean = try { [1, 2].mean(9); nil } catch e { e }     # Array has no mean
+assert_eq(r_amean.kind, 'TypeError')
+assert_eq(r_amean.message, "type error: expected Function, got Nil")
+
+# Iterator-only methods (collect/count/take/...) on a value type or scalar
+# follow interp's resolution: a value type that lacks them is method-miss,
+# a scalar is the member-access error — not the codegen's "expected Object".
+let r_acoll = try { [1].collect(); nil } catch e { e }
+assert_eq(r_acoll.kind, 'TypeError')
+assert_eq(r_acoll.message, "type error: expected Function, got Nil")
+
+let r_scoll = try { (5).collect(); nil } catch e { e }
+assert_eq(r_scoll.kind, 'TypeError')
+assert_eq(r_scoll.message, "type error: expected Object, Array, or Tensor, got Long")

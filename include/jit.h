@@ -15172,6 +15172,30 @@ struct JIT {
     return phi;
   }
 
+  // Value-typed receiver tags paired with their builtin method table —
+  // the single source for both the arity check and the iterator-method
+  // receiver gate. `builtins()` returns a function-local static, so
+  // throwaway instances suffice and the table pointers outlive them;
+  // built once.
+  using BuiltinTable = std::unordered_map<std::string_view, Value>;
+  static const std::vector<std::pair<int8_t, const BuiltinTable*>>&
+  builtin_value_tables() {
+    static const std::vector<std::pair<int8_t, const BuiltinTable*>> tables =
+        [] {
+          ArrayValue arr;
+          TensorValue ten{nullptr};
+          return std::vector<std::pair<int8_t, const BuiltinTable*>>{
+              {TAG_ARRAY, &arr.builtins()},
+              {TAG_STRING, &string_builtins()},
+              {TAG_STRINGVIEW, &string_builtins()},
+              {TAG_SET, &set_builtins()},
+              {TAG_TUPLE, &tuple_builtins()},
+              {TAG_TENSOR, &ten.builtins()},
+          };
+        }();
+    return tables;
+  }
+
   // Raise the interpreter's count-based ArityError for a wrong-arity
   // builtin method call. Bounds come straight from the interpreter's
   // builtin tables (the single source of truth — no parallel arity
@@ -15214,20 +15238,7 @@ struct JIT {
       return std::pair<long, long>{b.min, b.max};
     };
 
-    // `builtins()` returns a function-local static, so throwaway instances
-    // suffice and the pointers outlive them; built once.
-    static const std::vector<std::pair<int8_t, const Table*>> valueTables = [] {
-      ArrayValue arr;
-      TensorValue ten{nullptr};
-      return std::vector<std::pair<int8_t, const Table*>>{
-          {TAG_ARRAY, &arr.builtins()},
-          {TAG_STRING, &string_builtins()},
-          {TAG_STRINGVIEW, &string_builtins()},
-          {TAG_SET, &set_builtins()},
-          {TAG_TUPLE, &tuple_builtins()},
-          {TAG_TENSOR, &ten.builtins()},
-      };
-    }();
+    auto& valueTables = builtin_value_tables();
     static const Table* dictTable = [] {
       ObjectValue o;
       return &o.builtins();
@@ -15268,6 +15279,20 @@ struct JIT {
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     }
+  }
+
+  // Emit the "this builtin method didn't resolve on this receiver" path,
+  // mirroring interp's eval_property + arity check: a wrong arity on a
+  // method the receiver type HAS → ArityError; a method an object-ish type
+  // lacks → "expected Function, got Nil"; a scalar receiver → the
+  // member-access type error (via compile_property_get). Used by the
+  // builtinBB fallback and the Tensor-reduction guard's non-Tensor branch.
+  llvm::Value* emit_unresolved_builtin_method(const std::string& method,
+                                              const peg::Ast& argsAst,
+                                              llvm::Value* receiver) {
+    emit_builtin_arity_check(method, argsAst, receiver);
+    auto methodVal = compile_property_get(receiver, method);
+    return compile_function_call(argsAst, methodVal, receiver);
   }
 
   // Builtin-named method on a user class: give the class's own method priority
@@ -15328,16 +15353,11 @@ struct JIT {
       if (builtinRes) {
         emit_value_release(receiver);  // builtin borrows the receiver
       } else {
-        // No native codegen matched this (method, argc). Before the
-        // generic property-get fallback (which yields "expected Function,
-        // got Nil" for a receiver lacking the method), raise a count-based
-        // ArityError when the receiver actually resolves the method at a
-        // different arity — matching the interpreter's per-type check. A
-        // receiver the method isn't defined on falls through, so
-        // `"abc".push(1,2)` stays "expected Function, got Nil" on both.
-        emit_builtin_arity_check(method, argsAst, receiver);
-        auto fbMethodVal = compile_property_get(receiver, method);
-        builtinRes = compile_function_call(argsAst, fbMethodVal, receiver);
+        // No native codegen matched this (method, argc): defer to the
+        // shared unresolved-method path (arity error / method-miss /
+        // scalar member error), matching interp. So `"abc".push(1,2)`
+        // stays "expected Function, got Nil" on both backends.
+        builtinRes = emit_unresolved_builtin_method(method, argsAst, receiver);
       }
     }
     auto builtinEnd = builder_.GetInsertBlock();
@@ -17109,29 +17129,46 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   auto tag = extract_tag(receiver);
   auto fn = builder_.GetInsertBlock()->getParent();
 
-  // Iterator-protocol methods (map/filter/reduce/sum/take/...) resolve on
-  // an Object only when it is iterator-shaped. interp's eval_property gates
-  // its iterator fallback on `has("next")` (the `has_next`/`iter` clause is
-  // dead — `iter` is a dict builtin, always present). A plain dict has no
-  // `next`, so `{}.map(f)` is the method-not-found path ("expected
-  // Function, got Nil") on interp, not a lazy wrapper that fails later at
-  // the terminal step. Reject a non-shaped Object here, before any of the
-  // per-method paths (dispatch_arr_iter, the sum/max 3-way, take/skip),
-  // so all of them stay symmetric. Arrays (eager) and real iterators (own
-  // `next`/`has_next`/`iter`) pass straight through.
+  // Iterator-protocol method receiver gate. interp's eval_property resolves
+  // these on a value type whose builtin table holds the method (the eager
+  // form — e.g. Array.map, String.code_points, Tensor.sum) or on an
+  // iterator-shaped Object (own/proto `next`; the `has_next`/`iter` clause
+  // is dead since `iter` is a dict builtin). Any other receiver is the
+  // method-not-found path — `[1].collect()` / `{}.map(f)` are "expected
+  // Function, got Nil", `5.map(f)` is the scalar member-access error — NOT
+  // the per-method codegen's "expected Object" / "expected Array or Object"
+  // wording. Validate up front and route invalid receivers to the shared
+  // unresolved-method path, so every per-method path stays symmetric.
   if (iterator_builtins().contains(method)) {
-    auto okBB = llvm::BasicBlock::Create(ctx_, "iter.shaped", fn);
-    auto chkBB = llvm::BasicBlock::Create(ctx_, "iter.objchk", fn);
-    auto badBB = llvm::BasicBlock::Create(ctx_, "iter.unshaped", fn);
+    // Value-type tags whose builtin table holds this method (the eager
+    // form). Derived from the shared table list so it can't drift.
+    std::vector<int8_t> valueTags;
+    for (auto& [t, tbl] : builtin_value_tables()) {
+      if (tbl->find(method) != tbl->end()) valueTags.push_back(t);
+    }
+
+    auto okBB = llvm::BasicBlock::Create(ctx_, "iter.valid", fn);
+    auto objchkBB = llvm::BasicBlock::Create(ctx_, "iter.objchk", fn);
+    auto badBB = llvm::BasicBlock::Create(ctx_, "iter.invalid", fn);
+    // tag ∈ valueTags → valid (eager); else check Object iterator shape.
+    llvm::Value* isValueTag = builder_.getFalse();
+    for (int8_t vt : valueTags) {
+      isValueTag = builder_.CreateOr(
+          isValueTag, builder_.CreateICmpEQ(tag, builder_.getInt8(vt)));
+    }
+    auto notValBB = llvm::BasicBlock::Create(ctx_, "iter.notval", fn);
+    builder_.CreateCondBr(isValueTag, okBB, notValBB);
+    builder_.SetInsertPoint(notValBB);
     builder_.CreateCondBr(
-        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), chkBB, okBB);
-    builder_.SetInsertPoint(chkBB);  // object_has is safe only here
-    auto hasNext = emit_object_has(builder_.CreateIntToPtr(extract_data(receiver),
-                                                           ptrTy),
-                                   get_or_create_global_str("next", ".it.next"));
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), objchkBB,
+        badBB);
+    builder_.SetInsertPoint(objchkBB);  // object_has is safe only here
+    auto hasNext =
+        emit_object_has(builder_.CreateIntToPtr(extract_data(receiver), ptrTy),
+                        get_or_create_global_str("next", ".it.next"));
     builder_.CreateCondBr(hasNext, okBB, badBB);
     builder_.SetInsertPoint(badBB);
-    emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
+    emit_unresolved_builtin_method(method, argsAst, receiver);  // always throws
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(okBB);
   }
@@ -17197,7 +17234,27 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // handler below (which only accepts 0 args, raising type_error here).
   if ((method == "sum" || method == "mean" || method == "max" ||
        method == "argmax") && argsAst.nodes.size() == 1) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, method.c_str());
+    // The 1-arg form is the Tensor axis reduction. A non-Tensor receiver
+    // is NOT "expected Tensor" — it's whatever interp resolves it to:
+    // `[1,2].sum(9)` is ArityError (Array.sum takes 0), `[1,2].mean(9)`
+    // is method-miss, a scalar is the member-access error. Branch on the
+    // runtime tag (expect_tag already does this compare, so the Tensor
+    // path costs nothing extra) and route non-Tensor to the shared
+    // unresolved-method path.
+    auto tensorBB = llvm::BasicBlock::Create(ctx_, "tred.tensor", fn);
+    auto elseBB = llvm::BasicBlock::Create(ctx_, "tred.else", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "tred.merge", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TENSOR)), tensorBB,
+        elseBB);
+
+    builder_.SetInsertPoint(elseBB);
+    auto elseRes = emit_unresolved_builtin_method(method, argsAst, receiver);
+    auto elseEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(tensorBB);
+    auto tPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
     auto axis = value_to_long(compile(*argsAst.nodes[0]));
     int op_id =
         method == "sum"    ? static_cast<int>(culebra::Op::Sum)
@@ -17207,7 +17264,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reduce_axis),
         {tPtr, builder_.getInt64(op_id), axis}, "trax");
-    return make_tensor(resultPtr);
+    auto tensorRes = make_tensor(resultPtr);
+    auto tensorEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
+    builder_.SetInsertPoint(mergeBB);
+    auto phi = builder_.CreatePHI(valueType_, 2, "tred.res");
+    phi->addIncoming(elseRes, elseEnd);
+    phi->addIncoming(tensorRes, tensorEnd);
+    return phi;
   }
   // Tensor `.mean()` (0-arg). `.sum()` / `.max()` 0-arg fall through
   // to the polymorphic handler below which adds a TAG_TENSOR branch.
