@@ -42,6 +42,8 @@ using BodySource = std::function<bool(std::string& out)>;
 struct HttpRequest {
   std::string method = "GET";      // "GET" / "POST" / "PUT" / "DELETE" / ...
   std::string url;                 // full URL including scheme (http/https).
+  HeaderList params;               // query params, appended to the URL
+                                   // (percent-encoded) as ?k=v&...
   HeaderList headers;              // request headers (verbatim).
   std::string body;                // request body (raw bytes); ignored if
                                    // body_source is set.
@@ -105,6 +107,16 @@ inline HttpResult http_request(const HttpRequest& req) {
   if (!split_url(req.url, origin, path, err)) {
     out.error = std::move(err);
     return out;
+  }
+  // Append query params (percent-encoded), preserving any query already in url.
+  if (!req.params.empty()) {
+    std::string q;
+    for (const auto& [k, v] : req.params) {
+      if (!q.empty()) q += "&";
+      q += httplib::encode_uri_component(k) + "=" +
+           httplib::encode_uri_component(v);
+    }
+    path += (path.find('?') == std::string::npos ? "?" : "&") + q;
   }
 
   httplib::Client cli(origin);

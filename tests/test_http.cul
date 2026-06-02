@@ -64,4 +64,15 @@ assert_eq(body_badtype.kind, "TypeError")
 let body_refused = try { Http.post("http://127.0.0.1:1/x", body: fn () { nil }); nil } catch e { e }
 assert_eq(body_refused.kind, "HttpError")
 
+// --- `params:` query string: offline-deterministic error paths (the encoding
+//     round-trip is in http_test.cc). ---
+
+// params: must be an Object (of String values).
+let params_badtype = try { Http.get("http://127.0.0.1:1/x", params: 123); nil } catch e { e }
+assert_eq(params_badtype.kind, "TypeError")
+
+// params: a non-String value is a TypeError.
+let params_badval = try { Http.get("http://127.0.0.1:1/x", params: {n: 5}); nil } catch e { e }
+assert_eq(params_badval.kind, "TypeError")
+
 puts("test_http: ok")

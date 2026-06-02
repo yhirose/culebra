@@ -1782,6 +1782,9 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 - `headers: Object` — リクエストヘッダ。値がすべて `String` の `Object`。
   非 `String` 値は `TypeError`（デフォルト: なし）。
+- `params: Object` — クエリ文字列パラメータ。`String` 値の `Object` で、URL に
+  percent-encode して付与（`?k=v&…`、URL に既存のクエリがあれば保持）。非 `String`
+  値は `TypeError`（デフォルト: なし）。
 - `timeout: Long` — connect / read / write の各フェーズのタイムアウト（**秒**）。
   `0` はライブラリのデフォルト（デフォルト: `0`）。
 - `follow_redirects: Bool` — `3xx` の `Location` を追跡する（デフォルト: `true`）。

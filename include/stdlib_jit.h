@@ -2536,9 +2536,10 @@ inline JitValue _ns_proc_race(JitValue* a, int64_t) {
 
 #ifdef CULEBRA_HTTP_ENABLED
 namespace _http_adapt {
-// Fill `headers`/`timeout`/`follow_redirects` from the slab into `req`,
-// reading from `base` onward (3 trailing slots). A non-Object/non-nil headers
-// value or non-String header value is a TypeError.
+// Fill `headers`/`timeout`/`follow_redirects`/`params` from the slab into
+// `req`. Layout from `base`: headers, timeout, follow_redirects, into (read by
+// the caller — needs streaming state), params. A non-Object/non-nil headers or
+// params value, or a non-String value within them, is a TypeError.
 inline void common(JitValue* a, int64_t n, int base,
                    culebra::http::HttpRequest& req, const char* ctx) {
   JitValue h = _proc_adapt::at(a, n, base);
@@ -2556,6 +2557,17 @@ inline void common(JitValue* a, int64_t n, int base,
   req.timeout_sec = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
   JitValue fr = _proc_adapt::at(a, n, base + 2);
   req.follow_redirects = !(fr.tag == TAG_BOOL && fr.data == 0);
+  JitValue p = _proc_adapt::at(a, n, base + 4);  // base+3 is `into` (caller)
+  if (p.tag == TAG_OBJECT) {
+    if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(p.data),
+                              req.params)) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: param values must be String", ctx), 0, 0);
+    }
+  } else if (p.tag != TAG_NIL) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: params must be an Object of String", ctx), 0, 0);
+  }
 }
 }  // namespace _http_adapt
 
@@ -3050,8 +3062,9 @@ inline const NsParam kHttpGetParams[] = {
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
   {"into",             true,  false, &_ns_def_nil},
+  {"params",           true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 5, -1, -1};
+inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 6, -1, -1};
 
 // post / put: url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
@@ -3063,8 +3076,9 @@ inline const NsParam kHttpPostParams[] = {
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
   {"into",             true,  false, &_ns_def_nil},
+  {"params",           true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 7, -1, -1};
+inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 8, -1, -1};
 
 // request: method, url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
@@ -3077,8 +3091,9 @@ inline const NsParam kHttpRequestParams[] = {
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
   {"into",             true,  false, &_ns_def_nil},
+  {"params",           true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 8, -1, -1};
+inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 9, -1, -1};
 #endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {

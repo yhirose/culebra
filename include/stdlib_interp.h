@@ -2113,6 +2113,28 @@ inline culebra::http::HeaderList http_parse_headers(const Value& hv,
   return headers;
 }
 
+// Convert the optional `params` kwarg (nil or an Object of String values) into
+// query name/value pairs (percent-encoded by the http core). `ctx` tags errors.
+inline culebra::http::HeaderList http_parse_params(const Value& pv,
+                                                   const char* ctx, long line,
+                                                   long col) {
+  culebra::http::HeaderList params;
+  if (pv.type == Value::Nil) return params;
+  if (pv.type != Value::Object) {
+    throw CulebraError("TypeError",
+        std::format("{}: params must be an Object of String", ctx), line, col);
+  }
+  for (const auto& [k, sym] : *pv.to_object().properties) {
+    if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
+      throw CulebraError("TypeError",
+          std::format("{}: param values must be String", ctx), line, col);
+    }
+    params.emplace_back(std::string(k),
+                        std::string(sym.val.to_string_view()));
+  }
+  return params;
+}
+
 // Wrap an HttpResult as the response Object `{status, ok, body, headers}`.
 // `ok` is true iff the status is 2xx (a 4xx/5xx is a completed round-trip,
 // not a transport error). Transport failures never reach here — the caller
@@ -2137,6 +2159,7 @@ inline void http_fill_common(const std::shared_ptr<Environment>& env,
                              culebra::http::HttpRequest& req, const char* ctx,
                              long line, long col) {
   req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
+  req.params = http_parse_params(env->get("params"), ctx, line, col);
   long timeout = env->get("timeout").to_long();
   req.timeout_sec = timeout > 0 ? timeout : 0;
   req.follow_redirects = env->get("follow_redirects").to_bool();
@@ -2275,11 +2298,16 @@ inline Value make_http_namespace() {
   // per-chunk callback. Streams the response, leaving the result's body empty.
   auto into_param =
       FunctionValue::Parameter{"into", false, ""sv, nullptr, kw_default_nil()};
+  // `params` (query string): an Object of String values, appended to the URL
+  // percent-encoded.
+  auto params_param =
+      FunctionValue::Parameter{"params", false, ""sv, nullptr, kw_default_nil()};
 
   // GET / DELETE / HEAD — no body.
   auto bodyless = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
-        {url_param, headers_param, timeout_param, follow_param, into_param},
+        {url_param, headers_param, timeout_param, follow_param, into_param,
+         params_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2301,7 +2329,7 @@ inline Value make_http_namespace() {
   auto withbody = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
         {url_param, body_param, ct_param, headers_param, timeout_param,
-         follow_param, into_param},
+         follow_param, into_param, params_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2327,7 +2355,8 @@ inline Value make_http_namespace() {
       "request",
       Value(FunctionValue(
           {{"method", false, "String"sv}, url_param, body_param, ct_param,
-           headers_param, timeout_param, follow_param, into_param},
+           headers_param, timeout_param, follow_param, into_param,
+           params_param},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();

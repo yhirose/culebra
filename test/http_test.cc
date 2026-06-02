@@ -52,6 +52,11 @@ int main() {
   svr.Delete("/gone", [](const httplib::Request&, httplib::Response& res) {
     res.status = 204;
   });
+  svr.Get("/q", [](const httplib::Request& req, httplib::Response& res) {
+    // echo the `q` query param back (so the client's params encoding +
+    // the server's decoding round-trip is observable)
+    res.set_content(req.get_param_value("q"), "text/plain");
+  });
   // 404 for anything unmatched is the cpp-httplib default.
 
   int port = svr.bind_to_any_port("127.0.0.1");
@@ -139,6 +144,17 @@ int main() {
     CHECK(r.ok);
     CHECK(r.status == 200);
     CHECK(r.body == "hello streamed upload");
+  }
+
+  // Query params — percent-encoded by the client, decoded by the server.
+  {
+    HttpRequest req;
+    req.url = base + "/q";
+    req.params = {{"q", "a b&c"}, {"n", "5"}};
+    auto r = http_request(req);
+    CHECK(r.ok);
+    CHECK(r.status == 200);
+    CHECK(r.body == "a b&c");  // the `&` and space survived encoding intact
   }
 
   // DELETE 204 — completed round-trip, but not 2xx-with-body; ok is true

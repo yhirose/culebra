@@ -1852,6 +1852,9 @@ Keyword arguments (shared by every method):
 
 - `headers: Object` — request headers; an `Object` whose values are all
   `String`. A non-`String` value is a `TypeError` (default: none).
+- `params: Object` — query-string parameters; an `Object` of `String` values,
+  appended to the URL percent-encoded (`?k=v&…`, preserving any query already in
+  the URL). A non-`String` value is a `TypeError` (default: none).
 - `timeout: Long` — per-phase timeout in **seconds** for connect / read / write;
   `0` uses the library default (default: `0`).
 - `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
