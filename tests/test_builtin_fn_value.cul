@@ -33,3 +33,21 @@ assert_eq([1, 2.0, 3].map(type_of).filter(fn (s) { s == 'Long' }).size(), 2)
 
 # Side-effecting builtin (puts) as a for_each callback — newline per element.
 [7, 8].for_each(puts)
+
+# range / iota as first-class values (variadic: 1 or 2 positional args).
+let r = range
+assert_eq(r(0, 5).collect(), [0, 1, 2, 3, 4])
+assert_eq(r(3).collect(), [0, 1, 2])
+let it = iota
+assert_eq(it(5), [0, 1, 2, 3, 4])
+assert_eq(it(2, 6), [2, 3, 4, 5])
+
+# range / iota handed to a HOF — the variadic builtin runs per element with
+# its `step` default and __ARGS__ supplied, exactly like a direct call.
+assert_eq([1, 2, 3].map(range).map(fn (g) { g.collect() }),
+          [[0], [0, 1], [0, 1, 2]])
+assert_eq([3, 5].map(iota), [[0, 1, 2], [0, 1, 2, 3, 4]])
+
+# Another variadic builtin (Math.min) bound and called directly.
+let mn = Math.min
+assert_eq(mn(3, 1, 2), 1)

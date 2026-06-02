@@ -379,6 +379,13 @@ struct JitClosure {
   int64_t gc_slot = -1;  // see JitArray::gc_slot
 };
 
+// Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
+// range of arg counts, e.g. range/iota/Math.min). Higher-order callback
+// checks (`_culebra_expect_callback`) accept it for any expected arity, since
+// the trampoline validates the real count. Never collides with a real param
+// count, and the well-known-prop arity==0 checks only ever see user methods.
+inline constexpr size_t JIT_VARIADIC_ARITY = static_cast<size_t>(-1);
+
 // Uniform calling convention for every JIT closure. Callers build a
 // stack slab of user args and pass (cls, this, n_args, args_ptr); the
 // callee extracts its declared params from `args` and bundles any
@@ -5917,7 +5924,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
         "type error: parameter 'f' expects Function", line, col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != expected_arity) {
+  if (fn->arity != expected_arity && fn->arity != JIT_VARIADIC_ARITY) {
     throw culebra::CulebraError("TypeError", std::format(
         "type error: {} expects a {}-parameter function",
         method_name, expected_arity), line, col);

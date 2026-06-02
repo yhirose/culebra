@@ -2901,9 +2901,29 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   auto inner = std::make_shared<Environment>(callEnv);
   inner->is_function_frame = true;
   inner->initialize("self", callEnv->get("f"), false);
-  if (!f.params->empty()) {
-    const auto& p = (*f.params)[0];
-    inner->initialize(p.name, v, p.mut);
+  const auto& params = *f.params;
+  // Route the element to __ARGS__ only when there is no leading positional
+  // slot for it: an empty param list (`iota`) or a keyword-only first param
+  // (`range`'s `step`). A builtin reading __ARGS__ then sees the arg the way
+  // the full binder would supply it. Every other shape — including a leading
+  // `*rest`/`**rest` — binds the first param, matching the full binder so the
+  // *rest case keeps erroring symmetrically with the JIT (see user-variadic
+  // task) rather than NameError'ing on an unbound name.
+  bool to_args = params.empty() || params[0].kw_only;
+  if (!to_args) {
+    inner->initialize(params[0].name, v, params[0].mut);
+  } else {
+    ArrayValue rest;
+    rest.values->push_back(v);
+    inner->initialize("__ARGS__", Value(std::move(rest)), false);
+  }
+  // Honor literal defaults for the remaining params (e.g. `range`'s kw-only
+  // `step` defaults to 1), matching the full call binder. AST defaults need
+  // the interpreter to evaluate and are out of this shortcut's reach.
+  for (size_t i = 0; i < params.size(); i++) {
+    if (i == 0 && !to_args) continue;
+    const auto& p = params[i];
+    if (p.default_value) inner->initialize(p.name, *p.default_value, p.mut);
   }
   // A function frame doesn't inherit the caller's __LINE__/__COLUMN__, so a
   // builtin callback that reads them (`to_long`/`to_float`) would NameError

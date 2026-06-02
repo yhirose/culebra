@@ -2090,6 +2090,34 @@ inline JitValue _ns_global_hash(JitValue* a, int64_t) {
   return _ns_adapt::v_long(
       culebra_runtime_hash_any(a[0].tag, a[0].data, 0, 0));
 }
+
+// range/iota as first-class values. Variadic (1-2 positional), so the
+// closure trampoline skips its fixed-arity check and the adapter both
+// validates the count — emitting the same ArityError the direct-call fast
+// path does — and remaps 1 arg to {0, n} / 2 args to {start, end}. Args are
+// strict-Long (never Float): same TypeError wording as the fast path's
+// value_to_long, though the position falls back to 0:0 since the NsMethod
+// adapter ABI carries no call-site line/col.
+inline int64_t _range_arg_long(JitValue v) {
+  if (v.tag != TAG_LONG) culebra_runtime_type_error_typed(0, 0, "Long", v.tag);
+  return v.data;
+}
+inline JitValue _ns_global_range(JitValue* a, int64_t n) {
+  if (n < 1 || n > 2)
+    throw_runtime_error_at("ArityError",
+        builtin_arity_error_message("range", 1, 2, n), 0, 0);
+  int64_t start = n == 2 ? _range_arg_long(a[0]) : 0;
+  int64_t end = _range_arg_long(a[n - 1]);
+  return _ns_adapt::v_object(culebra_runtime_math_range(start, end, 1, 0, 0));
+}
+inline JitValue _ns_global_iota(JitValue* a, int64_t n) {
+  if (n < 1 || n > 2)
+    throw_runtime_error_at("ArityError",
+        builtin_arity_error_message("iota", 1, 2, n), 0, 0);
+  int64_t start = n == 2 ? _range_arg_long(a[0]) : 0;
+  int64_t end = _range_arg_long(a[n - 1]);
+  return _ns_adapt::v_array(culebra_runtime_iota(start, end));
+}
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses
 // the runtime file helpers; streaming lives on the File handle.
 inline JitValue _ns_fs_read(JitValue* a, int64_t) {
@@ -3114,7 +3142,7 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   cls->captures = new JitCell*[1];
   cls->captures[0] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(m));
-  cls->arity = m->arity < 0 ? 0 : static_cast<size_t>(m->arity);
+  cls->arity = m->arity < 0 ? JIT_VARIADIC_ARITY : static_cast<size_t>(m->arity);
   _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
@@ -3320,6 +3348,8 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
+  {"", "range",    -1, &_ns_global_range},
+  {"", "iota",     -1, &_ns_global_iota},
 };
 
 // Materialize (once, cached + pinned for the isolate's lifetime) the closure
