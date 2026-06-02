@@ -4152,6 +4152,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto f = callEnv->get("f");
+         check_callback_arity(f.to_function(), 1, "map");
          return _make_iterator(
              [upstream, f](std::shared_ptr<Environment>) {
                auto v = _iter_next_value(upstream);
@@ -4165,6 +4166,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto p = callEnv->get("p");
+         check_callback_arity(p.to_function(), 1, "filter");
          return _make_iterator(
              [upstream, p](std::shared_ptr<Environment>) {
                for (;;) {
@@ -4218,6 +4220,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto p = callEnv->get("p");
+         check_callback_arity(p.to_function(), 1, "take_while");
          auto exhausted = std::make_shared<bool>(false);
          return _make_iterator(
              [upstream, p, exhausted](std::shared_ptr<Environment>) {
@@ -4238,6 +4241,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto f = callEnv->get("f");
+         check_callback_arity(f.to_function(), 1, "flat_map");
          // nullopt-like sentinel: inner iterator value (or Nil when
          // none is active).
          auto inner = std::make_shared<Value>();

@@ -3819,12 +3819,17 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
                                i64);
 
-  // Iterator lazy factories.
-  jit.module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64);
-  jit.module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64);
+  // Iterator lazy factories. map/filter/take_while carry line+col so the
+  // eager callback-arity check can report the call site (see iter_chain/zip/
+  // flat_map below, which already carry them for the "not iterable" error).
+  jit.module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
+  jit.module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
   jit.module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
-  jit.module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64);
+  jit.module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64,
+                               i64, i64);
   // chain/zip/flat_map carry line+col for the "not iterable" error.
   jit.module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
                                i64, i64);

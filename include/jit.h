@@ -4724,6 +4724,12 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col);
+// Forward-declared so the lazy iterator combinators (defined above the
+// definition) can validate their callback eagerly.
+inline void _culebra_check_callback_arity(int8_t fn_tag, int64_t fn_data,
+                                          size_t expected_arity,
+                                          const char* method_name,
+                                          int64_t line, int64_t col);
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
@@ -5200,7 +5206,8 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
-    int8_t it, int64_t id, int8_t ft, int64_t fd) {
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_check_callback_arity(ft, fd, 1, "map", line, col);
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -5243,7 +5250,8 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
-    int8_t it, int64_t id, int8_t ft, int64_t fd) {
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_check_callback_arity(ft, fd, 1, "filter", line, col);
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -5364,7 +5372,8 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
-    int8_t it, int64_t id, int8_t ft, int64_t fd) {
+    int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
+  _culebra_check_callback_arity(ft, fd, 1, "take_while", line, col);
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -5796,6 +5805,7 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line,
     int64_t col) {
+  _culebra_check_callback_arity(ft, fd, 1, "flat_map", line, col);
   culebra_runtime_value_retain(it, id);
   culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
@@ -5890,23 +5900,27 @@ inline JitValue _culebra_callable_adapter(JitClosure* self, JitValue,
   return reinterpret_cast<JitFn>(m->fn_ptr)(m, inst, n, args);
 }
 
+// Whether `cls` accepts exactly `expected` positional callback args, using the
+// shared callback-arity rule (interp parity). A builtin variadic ns-method
+// closure (JIT_VARIADIC_ARITY) accepts any count — its trampoline validates
+// the real arity. A user closure consults its registered param meta's
+// cb_min/cb_max; absent meta (rare) falls back to exact match.
+inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
+  if (cls->arity == JIT_VARIADIC_ARITY) return true;
+  const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+  if (meta) {
+    return culebra::callback_arity_accepts(meta->cb_min, meta->cb_max,
+                                           static_cast<long>(expected));
+  }
+  return cls->arity == expected;
+}
+
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
-  // Whether `cls` accepts exactly `expected_arity` positional callback args,
-  // using the shared callback-arity rule (interp parity). A builtin variadic
-  // ns-method closure (JIT_VARIADIC_ARITY) accepts any count — its trampoline
-  // validates the real arity. A user closure consults its registered param
-  // meta's cb_min/cb_max; absent meta (rare) falls back to exact match.
-  auto accepts = [&](JitClosure* cls) -> bool {
-    if (cls->arity == JIT_VARIADIC_ARITY) return true;
-    const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
-    if (meta) {
-      return culebra::callback_arity_accepts(
-          meta->cb_min, meta->cb_max, static_cast<long>(expected_arity));
-    }
-    return cls->arity == expected_arity;
+  auto accepts = [&](JitClosure* cls) {
+    return _culebra_callback_arity_ok(cls, expected_arity);
   };
   if (fn_tag != TAG_FUNC) {
     // A callable class instance (own/proto `__call__`) stands in for a
@@ -5952,6 +5966,29 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
         method_name, expected_arity), line, col);
   }
   return fn;
+}
+
+// Eager callback validation for the lazy iterator combinators (map/filter/
+// take_while/flat_map), which capture the raw callback in their wrapper and
+// invoke it per element — so without this a non-Function callback is called as
+// a function pointer and crashes. Builds no adapter (unlike _expect_callback):
+// a non-Function (including a callable instance, which the iterator combinators
+// don't adapt) is rejected, and a Function's arity is checked against the
+// shared rule. Throwing here mirrors the eager terminal HOFs and interp.
+inline void _culebra_check_callback_arity(int8_t fn_tag, int64_t fn_data,
+                                          size_t expected_arity,
+                                          const char* method_name,
+                                          int64_t line, int64_t col) {
+  if (fn_tag != TAG_FUNC) {
+    throw culebra::CulebraError("TypeError",
+        "type error: parameter 'f' expects Function", line, col);
+  }
+  if (!_culebra_callback_arity_ok(reinterpret_cast<JitClosure*>(fn_data),
+                                  expected_arity)) {
+    throw culebra::CulebraError("TypeError", std::format(
+        "type error: {} expects a {}-parameter function",
+        method_name, expected_arity), line, col);
+  }
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
@@ -18059,7 +18096,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           [&](llvm::Value* it, llvm::Value* id) {
             auto f = compile(cb_ast);
             auto out = emit_call(module_->getFunction(rt::iter_map),
-                                 {it, id, extract_tag(f), extract_data(f)});
+                                 {it, id, extract_tag(f), extract_data(f),
+                                  ho_line, ho_col});
             emit_value_release(f);
             return make_object(out);
           });
@@ -18077,7 +18115,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         },
         [&](llvm::Value* it, llvm::Value* id) {
           auto out = emit_call(module_->getFunction(rt::iter_map),
-                               {it, id, ft, fd});
+                               {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
         });
     emit_value_release(f);
@@ -18095,7 +18133,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           [&](llvm::Value* it, llvm::Value* id) {
             auto f = compile(cb_ast);
             auto out = emit_call(module_->getFunction(rt::iter_filter),
-                                 {it, id, extract_tag(f), extract_data(f)});
+                                 {it, id, extract_tag(f), extract_data(f),
+                                  ho_line, ho_col});
             emit_value_release(f);
             return make_object(out);
           });
@@ -18113,7 +18152,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         },
         [&](llvm::Value* it, llvm::Value* id) {
           auto out = emit_call(module_->getFunction(rt::iter_filter),
-                               {it, id, ft, fd});
+                               {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
         });
     emit_value_release(f);
@@ -18424,7 +18463,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_take_while),
-                         {t, d, extract_tag(f), extract_data(f)});
+                         {t, d, extract_tag(f), extract_data(f),
+                          ho_line, ho_col});
     emit_value_release(f);
     return make_object(out);
   }
