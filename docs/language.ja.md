@@ -2893,6 +2893,22 @@ fusion / specialisation の対象として認識し、言語全体の `for`-in �
 といったネームスペース付きの標準ライブラリも同じく `stdlib.ja.md` を
 参照。 出力プリミティブ `puts` / `print` は CLI が追加するグローバルです（§21）。
 
+これらのグローバルはすべて **first-class value** です。変数に束縛したり
+高階関数へ渡したりすると、両バックエンドでクロージャと同じように振る舞います。
+
+```culebra
+[1, 2, 3].map(type_of)               # => ['Long', 'Long', 'Long']
+[1, 2, 3].map(range).map(|r| r.collect())  # => [[0], [0, 1], [0, 1, 2]]
+let f = range
+f(0, 10, step: 2).collect()          # => [0, 2, 4, 6, 8]
+```
+
+直接呼び出しは引き続き fast path で、クロージャ形は名前が値の位置に
+現れたときのみ使われます。`range` / `iota` は 1〜2 個の位置引数と、
+`range` のキーワード専用 `step` もこのクロージャ経由で受け取ります
+(`range(0, 10, **{step: 2})` も動作)。診断 (`ArityError` / 未知キーワード)
+は直接呼び出しと同一です。
+
 ### `to_long(v: Any) -> Long`
 
 `v` を `Long` に変換します:

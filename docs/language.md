@@ -3062,6 +3062,23 @@ standard library (namespaced under `Math`, `IO`, `Sys`) is also
 documented in `stdlib.md`. Output primitives `puts` and `print` are
 CLI-installed globals (§21).
 
+All of these globals are **first-class values**: bind one to a variable
+or hand it to a higher-order function and it behaves like any closure,
+on both backends.
+
+```culebra
+[1, 2, 3].map(type_of)               # => ['Long', 'Long', 'Long']
+[1, 2, 3].map(range).map(|r| r.collect())  # => [[0], [0, 1], [0, 1, 2]]
+let f = range
+f(0, 10, step: 2).collect()          # => [0, 2, 4, 6, 8]
+```
+
+A direct call is still the fast path; the closure form is used only
+when the name appears in value position. `range` / `iota` accept their
+1-2 positional bounds and `range`'s keyword-only `step` through that
+closure too (`range(0, 10, **{step: 2})` works), with the same
+`ArityError` / unknown-keyword diagnostics as the direct call.
+
 ### `to_long(v: Any) -> Long`
 
 Convert `v` to `Long`:
