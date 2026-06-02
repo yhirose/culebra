@@ -16146,14 +16146,40 @@ struct JIT {
     // splat or unknown kwarg bails to the regular dispatch.
     std::vector<const peg::Ast*> positional;
     const peg::Ast* step_ast = nullptr;
+    bool is_seq = (name == "range" || name == "iota");
     for (auto& c : argsAst.nodes) {
-      if (c->tag == "KWARG_SPLAT"_) return nullptr;
+      if (c->tag == "KWARG_SPLAT"_) return nullptr;  // splat: see compile_global
       if (c->tag == "KWARG"_) {
-        if (name != "range" || c->nodes[0]->token != "step") return nullptr;
-        step_ast = c->nodes[1].get();
+        auto kwname = std::string(c->nodes[0]->token);
+        if (name == "range" && kwname == "step") {
+          step_ast = c->nodes[1].get();
+        } else if (is_seq) {
+          // range/iota take only `step:` (range) — any other keyword is
+          // unknown, the same runtime TypeError interp's binder raises
+          // (not a compile-time "does not accept keyword arguments").
+          emit_throw_error(
+              "TypeError",
+              std::format("unknown keyword argument '{}'", kwname),
+              current_line_, current_column_);  // call site, matching interp
+          return make_nil();  // unreachable after the throw
+        } else {
+          return nullptr;  // other global → compile_global handles it
+        }
       } else {
         positional.push_back(c.get());
       }
+    }
+    // range/iota take 1 (end) or 2 (start, end) positionals; outside that
+    // is an ArityError, matching interp — not a silent truncation/empty
+    // range, and not the fall-through "undefined variable" NameError.
+    if ((name == "range" || name == "iota") &&
+        (positional.size() < 1 || positional.size() > 2)) {
+      emit_throw_error(
+          "ArityError",
+          builtin_arity_error_message(name, 1, 2,
+                                      static_cast<long>(positional.size())),
+          current_line_, current_column_);  // call site, matching interp
+      return make_nil();  // unreachable after the throw
     }
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
       if (positional.size() == 1) {

@@ -4380,16 +4380,21 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
 // (start defaults to 0), 2+ args → (start, end). Missing args leave the
 // pair at (0, 0), which yields an empty range/iota.
 inline std::pair<long, long> _parse_range_args(
-    std::shared_ptr<Environment> callEnv) {
-  long start = 0, end = 0;
+    std::shared_ptr<Environment> callEnv, const char* name) {
   const auto& extras = *callEnv->get("__ARGS__").to_array().values;
-  if (extras.size() == 1) {
-    end = extras[0].to_long();
-  } else if (extras.size() >= 2) {
-    start = extras[0].to_long();
-    end = extras[1].to_long();
+  // range/iota take 1 (end) or 2 (start, end) positional arguments — too
+  // few or too many is an error, not a silently-truncated/empty range
+  // (matches the JIT and avoids swallowing `range(a, b, c)` typos).
+  if (extras.size() < 1 || extras.size() > 2) {
+    throw CulebraError(
+        "ArityError",
+        builtin_arity_error_message(name, 1, 2,
+                                    static_cast<long>(extras.size())),
+        callEnv->get("__LINE__").to_long(),
+        callEnv->get("__COLUMN__").to_long());
   }
-  return {start, end};
+  if (extras.size() == 1) return {0, extras[0].to_long()};
+  return {extras[0].to_long(), extras[1].to_long()};
 }
 
 // Language-core globals available in every Environment that opts in via
@@ -4404,7 +4409,7 @@ inline void setup_core_globals(Environment& env) {
       "iota",
       Value(FunctionValue(
           {}, [](std::shared_ptr<Environment> callEnv) {
-            auto [start, end] = _parse_range_args(callEnv);
+            auto [start, end] = _parse_range_args(callEnv, "iota");
             ArrayValue out;
             if (end > start) out.values->reserve(end - start);
             for (long i = start; i < end; i++) {
@@ -4423,7 +4428,7 @@ inline void setup_core_globals(Environment& env) {
       Value(FunctionValue(
           {{"step", false, {}, nullptr, kw_default_one(), true}},
           [](std::shared_ptr<Environment> callEnv) {
-            auto [start, end] = _parse_range_args(callEnv);
+            auto [start, end] = _parse_range_args(callEnv, "range");
             auto step = callEnv->get("step").to_long();
             if (step == 0) {
               auto line = callEnv->get("__LINE__").to_long();

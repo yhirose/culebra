@@ -4834,21 +4834,46 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     std::vector<const peg::Ast*> positional;
     const peg::Ast* step_ast = nullptr;
     bool bail = false;
+    bool unknown_kw = false;
+    std::string unknown_kw_name;
+    const peg::Ast* unknown_kw_node = nullptr;
     for (auto& c : argsAst.nodes) {
-      if (c->tag == "KWARG_SPLAT"_) { bail = true; break; }
+      if (c->tag == "KWARG_SPLAT"_) { bail = true; break; }  // splat: deferred
       if (c->tag == "KWARG"_) {
-        if (method != "range" || c->nodes[0]->token != "step") {
-          bail = true;
+        auto kwname = std::string(c->nodes[0]->token);
+        if (method == "range" && kwname == "step") {
+          step_ast = c->nodes[1].get();
+        } else {
+          // range/iota take only `step:` (range) — any other keyword is
+          // unknown, matching interp's runtime TypeError.
+          unknown_kw = true;
+          unknown_kw_name = kwname;
+          unknown_kw_node = c.get();
           break;
         }
-        step_ast = c->nodes[1].get();
       } else {
         positional.push_back(c.get());
       }
     }
-    // The receiver is the implicit first positional, so at most one
-    // explicit positional arg (start, end).
-    if (!bail && positional.size() <= 1) {
+    if (unknown_kw) {
+      jit.emit_throw_error(
+          "TypeError",
+          std::format("unknown keyword argument '{}'", unknown_kw_name),
+          unknown_kw_node->line, unknown_kw_node->column);
+      return jit.make_nil();  // unreachable after the throw
+    }
+    // The receiver is the implicit first positional, so the total is
+    // 1 (receiver only) or 2 (receiver + start/end). More is an
+    // ArityError, matching interp + the bare-call path.
+    if (!bail) {
+      long total = 1 + static_cast<long>(positional.size());
+      if (total > 2) {
+        jit.emit_throw_error("ArityError",
+                             culebra::builtin_arity_error_message(method, 1, 2,
+                                                                  total),
+                             argsAst.line, argsAst.column);
+        return jit.make_nil();  // unreachable after the throw
+      }
       llvm::Value* s;
       llvm::Value* e;
       if (positional.empty()) {  // (N).range() → range(0, N)

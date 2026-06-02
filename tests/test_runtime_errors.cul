@@ -359,3 +359,22 @@ assert_eq(r_su2.message, "type error: expected Function, got Nil")
 let r_ap = try { (2).push(1); nil } catch e { e }            # Array method on Long
 assert_eq(r_ap.kind, 'TypeError')
 assert_eq(r_ap.message, "type error: expected Object, Array, or Tensor, got Long")
+
+# range / iota take 1 or 2 positional args. Too few/many is an ArityError
+# (no silent truncation, no empty-range), and an unknown keyword is a
+# TypeError — same on bare calls, UFCS, and all three backends.
+let r_r3 = try { range(0, 5, 10); nil } catch e { e }
+assert_eq(r_r3.kind, 'ArityError')
+assert_eq(r_r3.message, "'range' takes 1 to 2 arguments but 3 given")
+
+let r_i0 = try { iota(); nil } catch e { e }
+assert_eq(r_i0.kind, 'ArityError')
+assert_eq(r_i0.message, "'iota' takes 1 to 2 arguments but 0 given")
+
+let r_ik = try { iota(3, step: 2); nil } catch e { e }
+assert_eq(r_ik.kind, 'TypeError')
+assert_eq(r_ik.message, "unknown keyword argument 'step'")
+
+let r_ur = try { (0).range(5, 10); nil } catch e { e }       # UFCS, 3 total positional
+assert_eq(r_ur.kind, 'ArityError')
+assert_eq(r_ur.message, "'range' takes 1 to 2 arguments but 3 given")
