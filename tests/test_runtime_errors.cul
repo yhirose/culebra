@@ -405,3 +405,18 @@ assert_eq(r_nsv.line, 401)
 let r_nshof = try { ["x", "y"].map(Math.abs) } catch e { e }
 assert_eq(r_nshof.kind, 'TypeError')
 assert_eq(r_nshof.line, 405)
+
+# A built-in method on a receiver whose type doesn't support it reports the
+# same receiver-resolution failure on both backends. The JIT's polymorphic
+# dispatchers (size/slice/contains/remove/iter, map/filter/... ) used to leak a
+# per-method type list (`expected Array, Object, String, or Set`); they now
+# route through the shared receiver-error path, matching interp's generic
+# message for a scalar receiver (and "expected Function, got Nil" for a wrong
+# object-ish type, via permissive member access).
+let r_rs = try { (1).size() } catch e { e }
+assert_eq(r_rs.kind, 'TypeError')
+assert_eq(r_rs.message, 'type error: expected Object, Array, or Tensor, got Long')
+let r_rm = try { (1).map(|x| x) } catch e { e }
+assert_eq(r_rm.message, 'type error: expected Object, Array, or Tensor, got Long')
+let r_ri = try { true.iter() } catch e { e }
+assert_eq(r_ri.message, 'type error: expected Object, Array, or Tensor, got Bool')

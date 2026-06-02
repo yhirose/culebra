@@ -15313,8 +15313,7 @@ struct JIT {
     builder_.CreateCondBr(isObj, objBB, errBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Set or Object", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "remove");
 
     // Set: mutating runtime helper.
     builder_.SetInsertPoint(setBB);
@@ -17548,8 +17547,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_SET), setBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Tensor, Tuple, or Set", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "to_array");
 
     builder_.SetInsertPoint(tenBB);
     auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
@@ -17668,8 +17666,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, Object, String, or Set", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "size");
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(builder_.getInt64Ty(), 5, "sz");
@@ -17799,8 +17796,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, String, or Tensor", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "slice");
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(valueType_, 3, "sl");
@@ -17899,8 +17895,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, String, Set, or Tuple", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "contains");
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(valueType_, 4, "ct");
@@ -17922,8 +17917,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), okBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("String or StringView", tag);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(tag, "view");
 
     builder_.SetInsertPoint(okBB);
     auto v = emit_call(module_->getFunction(rt::strlike_view),
@@ -18059,8 +18053,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array or Object", t);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(t, std::string(label) + ".recv");
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);
@@ -18543,8 +18536,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), strBB);
 
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Array, Tuple, Set, Object, or String", t);
-    builder_.CreateUnreachable();
+    emit_receiver_resolution_error(t, "iter");
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(d, ptrTy);

@@ -49,7 +49,8 @@ let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
                'product', 'min', 'max', 'join', 'contains', 'index_of',
                'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
                'trim', 'split', 'code_points', 'iter', 'take', 'skip',
-               'take_while', 'collect', 'count', 'enumerate', 'union']
+               'take_while', 'collect', 'count', 'enumerate', 'union',
+               'to_array', 'view']
 let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
                  '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
 for recv in recvs {
