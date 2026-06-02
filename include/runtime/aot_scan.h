@@ -23,10 +23,14 @@ inline bool aot_uses_tensor(const peg::Ast& node) {
   return false;
 }
 
-// Does the program reference the `Http` namespace? `culebra build` appends the
-// OpenSSL static archives (CULEBRA_SSL_LINK) to the link line only when true —
-// programs that never touch Http avoid the OpenSSL dependency, mirroring the
-// Tensor/BLAS gating. Same conservative bare-identifier match.
+// Does the program reference the `Http` namespace? Reserved for a future
+// no-http runtime archive (mirroring no-tensor): OpenSSL currently can't be
+// gated by reachability because the single runtime archive references it
+// unconditionally (its http helpers are __attribute__((used)), pinned past
+// dead-strip), so `culebra build` links OpenSSL whenever Http is compiled in
+// regardless of this. Once a stubbed no-http archive exists, the build can
+// pick it for programs where this returns false and drop the OpenSSL link.
+// Same conservative bare-identifier match as aot_uses_tensor.
 inline bool aot_uses_http(const peg::Ast& node) {
   using namespace peg::udl;
   if (node.tag == "IDENTIFIER"_ && node.token == "Http") return true;

@@ -396,14 +396,18 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
-  // Http reachability drives the OpenSSL static link (mirrors Tensor/BLAS).
-  bool uses_http = [&]() {
-    for (const auto& m : modules) {
-      if (culebra::aot_uses_http(*m.ast)) return true;
-    }
-    return false;
-  }();
-  std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
+  // OpenSSL is linked into every AOT binary whenever Http support is compiled
+  // in — NOT gated on whether the program references Http. The runtime
+  // archive's http helpers are __attribute__((used)) (so they are emitted for
+  // the in-process JIT to resolve), which on macOS also pins them past
+  // -dead_strip; the archive therefore references httplib's TLS code (hence
+  // OpenSSL: d2i_X509, SSL_CTX_*, ...) unconditionally. Gating the link on
+  // aot_uses_http leaves those references unresolved for non-Http programs
+  // (even `puts(1)` fails to link). Tensor/BLAS can be gated because the
+  // no-tensor archive stubs out the tensor entry points; an equivalent
+  // no-http archive would let us gate OpenSSL by size too (future work).
+  // CULEBRA_SSL_LINK is "" when Http is disabled at build time.
+  std::string ssl = CULEBRA_SSL_LINK;
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
