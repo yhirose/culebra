@@ -8586,6 +8586,13 @@ struct JIT {
   }
 
   void emit_value_release(llvm::Value* val) {
+    // An undef %Value carries no ownership, so there is nothing to release.
+    // Emitting release(undef,undef) is actively unsafe: at -O0 the call reads
+    // whatever garbage the arg registers hold and derefs `data` whenever the
+    // tag byte lands on a refcounted value (SIGBUS). Producers should yield a
+    // real %Value (nil) instead — `compile()` asserts that — but this stays a
+    // permanent backstop since releasing undef is never meaningful.
+    if (llvm::isa<llvm::UndefValue>(val)) return;
     auto tag = extract_tag(val);
     auto data = extract_data(val);
     emit_call(
@@ -9925,6 +9932,7 @@ struct JIT {
     if (ast.line) current_line_ = ast.line;
     if (ast.column) current_column_ = ast.column;
 
+    llvm::Value* compiled = [&]() -> llvm::Value* {
     switch (ast.tag) {
       case "STATEMENTS"_:
         return compile_statements(ast);
@@ -10047,6 +10055,20 @@ struct JIT {
     }
 
     return make_nil();
+    }();
+
+    // Contract: a compiled node yields either a real, release-safe %Value or
+    // the `nullptr` "handled by parent" sentinel — never an `undef` %Value,
+    // which compile_statements would later release into garbage at -O0
+    // (Task #9). After a terminator the result is unreachable (dead), so undef
+    // is fine there. This catches any new declaration/statement compiler that
+    // forgets to return make_nil().
+    auto* insert_bb = builder_.GetInsertBlock();
+    assert((!compiled || (insert_bb && insert_bb->getTerminator()) ||
+            !llvm::isa<llvm::UndefValue>(compiled)) &&
+           "compile() returned an undef %Value; declarations/statements must "
+           "return make_nil()");
+    return compiled;
   }
 
   // --- Statements ---
@@ -13148,7 +13170,12 @@ struct JIT {
       }
     }
     culebra::register_trait(std::move(def));
-    return llvm::UndefValue::get(valueType_);
+    // A trait declaration is a statement with no value; yield nil (a real,
+    // release-safe %Value) rather than undef — compile_statements releases the
+    // previous statement's result, and releasing an undef derefs garbage at
+    // -O0 (Task #9). Other declarations (class/enum/multifn/import) already
+    // return make_nil() for the same reason.
+    return make_nil();
   }
 
   // `enum Name<T> { Ok(T), None }` — a namespace object bound under
