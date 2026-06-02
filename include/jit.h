@@ -1126,6 +1126,27 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   }
 }
 
+// The Set/Object hash containers raise a positionless "unhashable type"
+// CulebraError from deep inside JitValueHash. The interpreter backfills the
+// call-site location at its eval boundary; the JIT has no such boundary for
+// these direct runtime calls, so this wrapper stamps (line, col) onto any
+// positionless error a hashing operation raises — keeping both backends'
+// error locations symmetric. (Templates need C++ linkage, so it sits outside
+// the extern "C" block below.)
+template <class F>
+inline auto _culebra_hash_at(int64_t line, int64_t col, F&& op)
+    -> decltype(op()) {
+  try {
+    return op();
+  } catch (culebra::CulebraError& e) {
+    if (e.line == 0) {
+      e.line = line;
+      e.col = col;
+    }
+    throw;
+  }
+}
+
 // Four ordering predicates share `_culebra_value_ord`'s Nil/cross-type
 // scaffolding; the public extern "C" trampolines below are the only
 // callers. A single `cmp` comparator parameterises the leaf compare.
@@ -2188,10 +2209,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_add(JitSet* set,
   set->members.push_back(v);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_set_contains(JitSet* set,
-                                                               int8_t tag,
-                                                               int64_t data) {
-  return set->index && set->index->contains(JitValue{tag, data});
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_set_contains(
+    JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  return _culebra_hash_at(line, col, [&] {
+    return set->index && set->index->contains(JitValue{tag, data});
+  });
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_set_size(JitSet* set) {
@@ -2266,9 +2288,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
 // Mutating add: returns 1 on insert, 0 if already present. Hands the
 // caller's +1 reference into the set on insert; releases it on dup.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
-    JitSet* set, int8_t tag, int64_t data) {
+    JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitValue v{tag, data};
-  if (!set->index->insert(v).second) {
+  bool inserted = _culebra_hash_at(
+      line, col, [&] { return set->index->insert(v).second; });
+  if (!inserted) {
     _culebra_value_release_impl(tag, data);
     return 0;
   }
@@ -2277,11 +2301,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
 }
 
 // Mutating remove: returns 1 if removed, 0 if absent.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(JitSet* set,
-                                                               int8_t tag,
-                                                               int64_t data) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
+    JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitValue key{tag, data};
-  if (!set->index->erase(key)) return 0;
+  if (!_culebra_hash_at(line, col, [&] { return set->index->erase(key); }))
+    return 0;
   // Find and erase from the members vector (O(n) — same as the interp's
   // OrderedSymbolMap erase pattern).
   for (auto it = set->members.begin(); it != set->members.end(); ++it) {
@@ -6488,7 +6512,7 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
 // original `object_set_any` insert) is also released before erase.
 // `_key_order_erase` drops the key_order entry's +1 separately.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
-    JitObject* obj, int8_t tag, int64_t data) {
+    JitObject* obj, int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
     if (obj->find_slot(cstr) != static_cast<size_t>(-1)) {
@@ -6497,12 +6521,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     }
     return;
   }
+  JitValue key{tag, data};
   if (!obj->non_string_props) {
+    // No non-string keys stored yet, but the interpreter's sidecar still
+    // hashes the key on every remove — an unhashable key (Function, Array,
+    // ...) must raise here too rather than silently no-op.
+    _culebra_hash_at(line, col, [&] { return JitValueHash{}(key); });
     _culebra_value_release_impl(tag, data);
     return;
   }
-  JitValue key{tag, data};
-  auto it = obj->non_string_props->find(key);
+  auto it = _culebra_hash_at(
+      line, col, [&] { return obj->non_string_props->find(key); });
   if (it == obj->non_string_props->end()) {
     _culebra_value_release_impl(tag, data);
     return;
@@ -8847,22 +8876,20 @@ struct JIT {
     auto data = extract_data(v);
 
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto nilBB = llvm::BasicBlock::Create(ctx_, "tobool.nil", fn);
     auto boolBB = llvm::BasicBlock::Create(ctx_, "tobool.bool", fn);
     auto longBB = llvm::BasicBlock::Create(ctx_, "tobool.long", fn);
     auto floatBB = llvm::BasicBlock::Create(ctx_, "tobool.float", fn);
     auto errorBB = llvm::BasicBlock::Create(ctx_, "tobool.error", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "tobool.merge", fn);
 
-    auto sw = builder_.CreateSwitch(tag, errorBB, 4);
-    sw->addCase(builder_.getInt8(TAG_NIL), nilBB);
+    // Nil is NOT falsy: the interpreter's strict to_bool() accepts only
+    // Bool/Long/Float and raises on Nil (nil flows through `?.`/`??`, never
+    // truthiness). Leaving Nil out of the switch sends it to errorBB, so
+    // `!nil` / `if nil` raise the same TypeError on both backends.
+    auto sw = builder_.CreateSwitch(tag, errorBB, 3);
     sw->addCase(builder_.getInt8(TAG_BOOL), boolBB);
     sw->addCase(builder_.getInt8(TAG_LONG), longBB);
     sw->addCase(builder_.getInt8(TAG_FLOAT), floatBB);
-
-    builder_.SetInsertPoint(nilBB);
-    auto nilVal = builder_.getFalse();
-    builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(boolBB);
     auto boolVal =
@@ -8889,8 +8916,7 @@ struct JIT {
     builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 4, "tobool");
-    phi->addIncoming(nilVal, nilBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 3, "tobool");
     phi->addIncoming(boolVal, boolBB);
     phi->addIncoming(longVal, longBB);
     phi->addIncoming(floatVal, floatBB);
@@ -15335,8 +15361,10 @@ struct JIT {
     auto setR = emit_call(
         module_->getOrInsertFunction(
             set_rt, builder_.getInt8Ty(), ptrTy,
-            builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {setPtr, extract_tag(arg), extract_data(arg)});
+            builder_.getInt8Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {setPtr, extract_tag(arg), extract_data(arg),
+         current_line_val(), current_column_val()});
     auto setRes = make_bool(builder_.CreateICmpNE(setR, builder_.getInt8(0)));
     // `set_remove` borrows the arg; `set_add_method` absorbs the +1.
     if (method == "remove") emit_value_release(arg);
@@ -15353,8 +15381,10 @@ struct JIT {
       emit_call(
           module_->getOrInsertFunction(
               rt::object_remove_any, builder_.getVoidTy(), ptrTy,
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {objPtr, extract_tag(arg), extract_data(arg)});
+              builder_.getInt8Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {objPtr, extract_tag(arg), extract_data(arg),
+           current_line_val(), current_column_val()});
       objRes = make_nil();
     } else {
       auto methodVal = compile_property_get(receiver, method);
@@ -17907,8 +17937,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto setFound = emit_call(
         module_->getOrInsertFunction(
             rt::set_contains, builder_.getInt1Ty(), ptrTy,
-            builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {setPtr, extract_tag(vs), extract_data(vs)});
+            builder_.getInt8Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {setPtr, extract_tag(vs), extract_data(vs),
+         current_line_val(), current_column_val()});
     emit_value_release(vs);
     auto setBoolVal = make_bool(setFound);
     auto setEnd = builder_.GetInsertBlock();
