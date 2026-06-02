@@ -95,3 +95,5 @@ assert_eq(in_fn3(), 4)
 assert_eq((3).range().collect(), [0, 1, 2])
 assert_eq((1).range(4).collect(), [1, 2, 3])
 assert_eq((3).iota(), [0, 1, 2])
+# `range`'s `step:` kwarg threads through UFCS too.
+assert_eq((0).range(10, step: 2).collect(), [0, 2, 4, 6, 8])

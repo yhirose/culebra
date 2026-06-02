@@ -4816,6 +4816,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
 inline llvm::Value* JitExtension::compile_ufcs_builtin(
     JIT& jit, const std::string& method, const peg::Ast& argsAst,
     llvm::Value* receiver) {
+  using namespace peg::udl;
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   auto line = jit.current_line_val();
   auto col = jit.current_column_val();
@@ -4825,26 +4826,48 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
   // receiver in as their first positional argument: `(3).range()` →
   // range(3) = 0..3, `(0).range(5)` → range(0, 5). value_to_long on a
   // non-Long receiver raises "expected Long, got <T>", matching interp
-  // (so the nonsensical `Math.range(3)` lands on the same error). step
-  // is a keyword-only arg upstream, so UFCS is positional 1..2 only.
-  if ((method == "range" || method == "iota") &&
-      JIT::arg_list_is_positional_only(argsAst) && argsAst.nodes.size() <= 1) {
-    llvm::Value* s;
-    llvm::Value* e;
-    if (argsAst.nodes.empty()) {  // (N).range() → range(0, N)
-      s = jit.builder_.getInt64(0);
-      e = jit.value_to_long(receiver);
-    } else {  // (S).range(E) → range(S, E)
-      s = jit.value_to_long(receiver);
-      e = jit.value_to_long(jit.compile(*argsAst.nodes[0]));
+  // (so the nonsensical `Math.range(3)` lands on the same error). `range`
+  // also accepts a `step:` kwarg (`(0).range(10, step: 2)`), mirroring the
+  // bare-call path; everything else (splat / unknown kwarg / 3+ start-end
+  // positionals) falls through to regular dispatch.
+  if (method == "range" || method == "iota") {
+    std::vector<const peg::Ast*> positional;
+    const peg::Ast* step_ast = nullptr;
+    bool bail = false;
+    for (auto& c : argsAst.nodes) {
+      if (c->tag == "KWARG_SPLAT"_) { bail = true; break; }
+      if (c->tag == "KWARG"_) {
+        if (method != "range" || c->nodes[0]->token != "step") {
+          bail = true;
+          break;
+        }
+        step_ast = c->nodes[1].get();
+      } else {
+        positional.push_back(c.get());
+      }
     }
-    if (method == "iota") {
-      auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
-      return jit.make_array(arr);
+    // The receiver is the implicit first positional, so at most one
+    // explicit positional arg (start, end).
+    if (!bail && positional.size() <= 1) {
+      llvm::Value* s;
+      llvm::Value* e;
+      if (positional.empty()) {  // (N).range() → range(0, N)
+        s = jit.builder_.getInt64(0);
+        e = jit.value_to_long(receiver);
+      } else {  // (S).range(E) → range(S, E)
+        s = jit.value_to_long(receiver);
+        e = jit.value_to_long(jit.compile(*positional[0]));
+      }
+      if (method == "iota") {
+        auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
+        return jit.make_array(arr);
+      }
+      auto step = step_ast ? jit.value_to_long(jit.compile(*step_ast))
+                           : jit.builder_.getInt64(1);
+      auto obj = emit_call(module_->getFunction(rt::math_range),
+                           {s, e, step, line, col});
+      return jit.make_object(obj);
     }
-    auto obj = emit_call(module_->getFunction(rt::math_range),
-                         {s, e, jit.builder_.getInt64(1), line, col});
-    return jit.make_object(obj);
   }
 
   if (argsAst.nodes.size() != 0) return nullptr;
