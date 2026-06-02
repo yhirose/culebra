@@ -396,6 +396,14 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
+  // Http reachability drives the OpenSSL static link (mirrors Tensor/BLAS).
+  bool uses_http = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_http(*m.ast)) return true;
+    }
+    return false;
+  }();
+  std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -415,9 +423,9 @@ int run_build(const BuildOptions& opts) {
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} {} -o {}", cc, extra,
+  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} -o {}", cc, extra,
                                 shq(obj), shq(lib), dead_strip, no_pie,
-                                libcxx, blas, shq(opts.output));
+                                libcxx, blas, ssl, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

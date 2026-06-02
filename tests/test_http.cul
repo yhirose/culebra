@@ -1,0 +1,41 @@
+// Conformance: stdlib §Http. See docs/stdlib.md and docs/language.md.
+//
+// Http namespace — synchronous HTTP/HTTPS client.
+// Tests run on interp, JIT, and AOT via `just test`; identical stdout.
+// The happy paths (200/POST/headers) need a live server, so they live in
+// the deterministic in-process loopback test test/http_test.cc. Here we
+// cover only the offline-deterministic paths — URL validation, kwarg type
+// errors, and connection refused — which exercise the namespace and the
+// error-object construction identically across all three backends.
+
+// --- URL validation: a missing scheme is an HttpError, not a crash ---
+let no_scheme = try { Http.get("example.com"); nil } catch e { e }
+assert_eq(no_scheme.kind, "HttpError")
+assert_eq(no_scheme.message,
+    "Http.get: Http: URL must include a scheme (http:// or https://): example.com")
+
+// Http.request shares the same validation, tagged with its own context.
+let req_no_scheme = try { Http.request("PATCH", "example.com"); nil } catch e { e }
+assert_eq(req_no_scheme.kind, "HttpError")
+assert_eq(req_no_scheme.message,
+    "Http.request: Http: URL must include a scheme (http:// or https://): example.com")
+
+// --- headers kwarg: must be an Object of String (checked before any I/O) ---
+let bad_headers = try { Http.get("http://127.0.0.1:1", headers: "nope"); nil } catch e { e }
+assert_eq(bad_headers.kind, "TypeError")
+assert_eq(bad_headers.message, "Http.get: headers must be an Object of String")
+
+let bad_header_val = try { Http.get("http://127.0.0.1:1", headers: {X: 1}); nil } catch e { e }
+assert_eq(bad_header_val.kind, "TypeError")
+assert_eq(bad_header_val.message, "Http.get: header values must be String")
+
+// --- transport failure: connection refused surfaces as HttpError ---
+// Port 1 is never listening, so connect() fails immediately and offline.
+let refused = try { Http.get("http://127.0.0.1:1/x"); nil } catch e { e }
+assert_eq(refused.kind, "HttpError")
+
+// POST shares the failure model.
+let refused_post = try { Http.post("http://127.0.0.1:1/x", body: "data"); nil } catch e { e }
+assert_eq(refused_post.kind, "HttpError")
+
+puts("test_http: ok")

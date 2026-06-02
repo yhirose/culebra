@@ -16,6 +16,9 @@
 
 #include <interpreter.h>
 #include <proc.h>
+#ifdef CULEBRA_HTTP_ENABLED
+#include <http.h>
+#endif
 #include <regexlib.h>
 
 #include <algorithm>
@@ -2081,6 +2084,159 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
   return Value(std::move(h));
 }
 
+#ifdef CULEBRA_HTTP_ENABLED
+// Convert the optional `headers` kwarg (nil or an Object of String values)
+// into the header list the http core wants. `ctx` tags type errors.
+inline culebra::http::HeaderList http_parse_headers(const Value& hv,
+                                                    const char* ctx, long line,
+                                                    long col) {
+  culebra::http::HeaderList headers;
+  if (hv.type == Value::Nil) return headers;
+  if (hv.type != Value::Object) {
+    throw CulebraError("TypeError",
+        std::format("{}: headers must be an Object of String", ctx), line, col);
+  }
+  for (const auto& [k, sym] : *hv.to_object().properties) {
+    if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
+      throw CulebraError("TypeError",
+          std::format("{}: header values must be String", ctx), line, col);
+    }
+    headers.emplace_back(std::string(k),
+                         std::string(sym.val.to_string_view()));
+  }
+  return headers;
+}
+
+// Wrap an HttpResult as the response Object `{status, ok, body, headers}`.
+// `ok` is true iff the status is 2xx (a 4xx/5xx is a completed round-trip,
+// not a transport error). Transport failures never reach here — the caller
+// throws HttpError on `!result.ok`.
+inline Value http_result_to_value(culebra::http::HttpResult&& r) {
+  ObjectValue obj;
+  obj.initialize("status", Value(r.status), false);
+  obj.initialize("ok", Value(r.status >= 200 && r.status < 300), false);
+  obj.initialize("body", Value(std::move(r.body)), false);
+  ObjectValue headers;
+  for (auto& [k, v] : r.headers) {
+    headers.initialize(k, Value(std::move(v)), false);
+  }
+  obj.initialize("headers", Value(std::move(headers)), false);
+  return Value(std::move(obj));
+}
+
+// Run one HttpRequest, throwing HttpError on a transport failure (DNS,
+// connection, TLS, timeout) and otherwise returning the response Object.
+inline Value http_run(culebra::http::HttpRequest&& req, const char* ctx,
+                      long line, long col) {
+  auto r = culebra::http::http_request(req);
+  if (!r.ok) {
+    throw CulebraError("HttpError", std::format("{}: {}", ctx, r.error), line,
+                       col);
+  }
+  return http_result_to_value(std::move(r));
+}
+
+// Read the standard tail kwargs (`headers`, `timeout`, `follow_redirects`) off
+// the call environment into `req`. `body`/`content_type`/`method`/`url` are
+// set by the individual builders.
+inline void http_fill_common(const std::shared_ptr<Environment>& env,
+                             culebra::http::HttpRequest& req, const char* ctx,
+                             long line, long col) {
+  req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
+  long timeout = env->get("timeout").to_long();
+  req.timeout_sec = timeout > 0 ? timeout : 0;
+  req.follow_redirects = env->get("follow_redirects").to_bool();
+}
+
+// `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
+// blocks until the response arrives. A 4xx/5xx is a normal result (`ok:false`);
+// a transport failure (DNS/connect/TLS/timeout) throws HttpError.
+inline Value make_http_namespace() {
+  using namespace std::literals;
+  static const auto empty_str_default =
+      std::make_shared<Value>(Value(std::string("")));
+  static const auto text_plain_default =
+      std::make_shared<Value>(Value(std::string("text/plain")));
+  ObjectValue ns;
+
+  auto url_param = FunctionValue::Parameter{"url", false, "String"sv};
+  auto headers_param =
+      FunctionValue::Parameter{"headers", false, ""sv, nullptr, kw_default_nil()};
+  auto timeout_param =
+      FunctionValue::Parameter{"timeout", false, ""sv, nullptr, kw_default_zero()};
+  auto follow_param = FunctionValue::Parameter{"follow_redirects", false, ""sv,
+                                           nullptr, kw_default_true()};
+  auto body_param =
+      FunctionValue::Parameter{"body", false, ""sv, nullptr, empty_str_default};
+  auto ct_param = FunctionValue::Parameter{"content_type", false, ""sv, nullptr,
+                                       text_plain_default};
+
+  // GET / DELETE / HEAD — no body.
+  auto bodyless = [&](const char* method, const char* ctx) {
+    return Value(FunctionValue(
+        {url_param, headers_param, timeout_param, follow_param},
+        [method, ctx](std::shared_ptr<Environment> env) -> Value {
+          long line = env->get("__LINE__").to_long();
+          long col = env->get("__COLUMN__").to_long();
+          culebra::http::HttpRequest req;
+          req.method = method;
+          req.url = env->get("url").to_string();
+          http_fill_common(env, req, ctx, line, col);
+          return http_run(std::move(req), ctx, line, col);
+        },
+        "Object"sv));
+  };
+  ns.initialize("get", bodyless("GET", "Http.get"), false);
+  ns.initialize("delete", bodyless("DELETE", "Http.delete"), false);
+  ns.initialize("head", bodyless("HEAD", "Http.head"), false);
+
+  // POST / PUT — body + content_type.
+  auto withbody = [&](const char* method, const char* ctx) {
+    return Value(FunctionValue(
+        {url_param, body_param, ct_param, headers_param, timeout_param,
+         follow_param},
+        [method, ctx](std::shared_ptr<Environment> env) -> Value {
+          long line = env->get("__LINE__").to_long();
+          long col = env->get("__COLUMN__").to_long();
+          culebra::http::HttpRequest req;
+          req.method = method;
+          req.url = env->get("url").to_string();
+          req.body = env->get("body").to_string();
+          req.content_type = env->get("content_type").to_string();
+          http_fill_common(env, req, ctx, line, col);
+          return http_run(std::move(req), ctx, line, col);
+        },
+        "Object"sv));
+  };
+  ns.initialize("post", withbody("POST", "Http.post"), false);
+  ns.initialize("put", withbody("PUT", "Http.put"), false);
+
+  // `Http.request(method, url, body="", content_type="text/plain",
+  //               headers=nil, timeout=0, follow_redirects=true)` — generic
+  // escape hatch for any method (PATCH, OPTIONS, ...).
+  ns.initialize(
+      "request",
+      Value(FunctionValue(
+          {{"method", false, "String"sv}, url_param, body_param, ct_param,
+           headers_param, timeout_param, follow_param},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            culebra::http::HttpRequest req;
+            req.method = env->get("method").to_string();
+            req.url = env->get("url").to_string();
+            req.body = env->get("body").to_string();
+            req.content_type = env->get("content_type").to_string();
+            http_fill_common(env, req, "Http.request", line, col);
+            return http_run(std::move(req), "Http.request", line, col);
+          },
+          "Object"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
 // `Proc.run(cmd, cwd=nil, env=nil, stdin="", check=false)` — run an external
 // command synchronously. `cmd` is a non-empty Array<String> (no shell). A
 // non-zero exit or signal death is a normal result (`ok:false`); a spawn
@@ -2675,6 +2831,37 @@ inline std::shared_ptr<regexlib::Regex> regex_from_env(
                               env->get("__COLUMN__").to_long());
 }
 
+// `Encoding`: text codec namespace. Grouped into sub-namespaces by scheme
+// (`Encoding.html.*`); base64/hex/json are planned to slot in the same way.
+// The HTML logic is shared with the JIT slow-path adapters via shared.h.
+inline Value make_encoding_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  ObjectValue html;
+  html.initialize(
+      "escape",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::html_escape(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  html.initialize(
+      "unescape",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::html_unescape(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  ns.initialize("html", Value(std::move(html)), false);
+
+  return Value(std::move(ns));
+}
+
 // `_Regex`: low-level stateless primitives over the engine. The user-facing
 // object API `Regex.compile(pat).find(s)` is the culebra-source `Regex` class
 // in REGEX_MODULE_SOURCE, which delegates here — the `_Time` / `Time` split.
@@ -3029,8 +3216,12 @@ inline void setup_built_in_functions(
   env.initialize("GC", make_gc_namespace(), false);
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
+  env.initialize("Encoding", make_encoding_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
+#ifdef CULEBRA_HTTP_ENABLED
+  env.initialize("Http", make_http_namespace(), false);
+#endif
   env.initialize("Isolate", make_isolate_namespace(), false);
   env.initialize("Channel", make_channel_namespace(), false);
   env.initialize("Parallel", make_parallel_namespace(), false);

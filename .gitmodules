@@ -10,3 +10,6 @@
 [submodule "vendor/cpp-embedlib"]
 	path = vendor/cpp-embedlib
 	url = https://github.com/yhirose/cpp-embedlib
+[submodule "vendor/cpp-httplib"]
+	path = vendor/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib

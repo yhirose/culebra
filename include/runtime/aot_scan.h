@@ -23,4 +23,17 @@ inline bool aot_uses_tensor(const peg::Ast& node) {
   return false;
 }
 
+// Does the program reference the `Http` namespace? `culebra build` appends the
+// OpenSSL static archives (CULEBRA_SSL_LINK) to the link line only when true —
+// programs that never touch Http avoid the OpenSSL dependency, mirroring the
+// Tensor/BLAS gating. Same conservative bare-identifier match.
+inline bool aot_uses_http(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_ && node.token == "Http") return true;
+  for (const auto& child : node.nodes) {
+    if (aot_uses_http(*child)) return true;
+  }
+  return false;
+}
+
 }  // namespace culebra

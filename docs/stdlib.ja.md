@@ -45,8 +45,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
-15. [設計上の注記](#15-設計上の注記)
-16. [未収録（将来検討）](#16-未収録将来検討)
+15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
+16. [設計上の注記](#16-設計上の注記)
+17. [未収録（将来検討）](#17-未収録将来検討)
 
 **目的別索引**
 
@@ -65,6 +66,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | CLI 引数解析 | [§10 Args](#10-args) |
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
+| HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
@@ -1742,7 +1744,83 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 ---
 
-## 15. 設計上の注記
+## 15. `Http`
+
+同期 HTTP/HTTPS クライアント（エンジン: vendor の `cpp-httplib` + OpenSSL を
+静的リンク）。各呼び出しはレスポンスが返るまで **blocking** で、async/await は
+ありません。`https://` URL では TLS が自動で有効になり、サーバ証明書の検証には
+システムの信頼ストア（macOS は keychain、Linux はプラットフォームの CA バンドル）
+を使います。
+
+各メソッドは **レスポンス Object** を返し、例外を投げるのは *トランスポート* 失敗の
+ときだけです:
+
+| フィールド | 型 | 意味 |
+|---|---|---|
+| `status` | `Long` | HTTP ステータスコード（`200`、`404` …） |
+| `ok` | `Bool` | `status` が `[200, 300)` の範囲なら `true` |
+| `body` | `String` | レスポンスボディ（生バイト列） |
+| `headers` | `Object` | レスポンスヘッダ（名前→値、String→String） |
+
+**4xx/5xx は通常の結果**（`ok: false`）でありエラーではありません — `status` /
+`ok` で分岐してください。**トランスポート失敗**（DNS・接続拒否・TLS ハンドシェイク・
+タイムアウト）は `HttpError` を投げます。スキーム/ホストの無い不正な URL も
+`HttpError`、不正な `headers` 値は `TypeError` を投げます。
+
+| メソッド | 結果 |
+| --- | --- |
+| `Http.get(url, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
+| `Http.delete(url, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
+| `Http.head(url, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
+| `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
+| `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
+| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — 任意のメソッド（PATCH、OPTIONS …） |
+
+キーワード引数（全メソッド共通）:
+
+- `headers: Object` — リクエストヘッダ。値がすべて `String` の `Object`。
+  非 `String` 値は `TypeError`（デフォルト: なし）。
+- `timeout: Long` — connect / read / write の各フェーズのタイムアウト（**秒**）。
+  `0` はライブラリのデフォルト（デフォルト: `0`）。
+- `follow_redirects: Bool` — `3xx` の `Location` を追跡する（デフォルト: `true`）。
+- `body: String` / `content_type: String`（`post` / `put` / `request` のみ）—
+  リクエストボディとその `Content-Type`（`body` が非空で、かつ `headers` で
+  明示的な `Content-Type` が指定されていない場合のみ付与）。
+
+```culebra
+# doctest: skip
+let r = Http.get("https://api.example.com/users/42")
+if r.ok {
+  let user = JSON.parse(r.body)
+  IO.puts(user.name)
+} else {
+  IO.puts("request failed: {r.status}")
+}
+
+# ヘッダとタイムアウトを指定して JSON を POST。
+let resp = Http.post("https://api.example.com/users",
+                     body: JSON.stringify({name: "alice"}),
+                     content_type: "application/json",
+                     headers: {Authorization: "Bearer " + token},
+                     timeout: 30)
+assert_true(resp.ok)
+
+# トランスポート失敗は throw するが、404 は throw しない。
+let missing = Http.get("https://api.example.com/nope")
+assert_eq(missing.ok, false)        # 404 は通常の結果
+assert_eq(missing.status, 404)
+```
+
+ボディは単一の `String`（全体をメモリに読み込み）で返るので、JSON API では
+[`JSON.parse`](#9-json) と組み合わせます。ストリーミングのダウンロード/アップロードや
+並列の `Http.all` / `Http.race` はまだありません（将来予定）。TLS は現在 OpenSSL を
+静的リンクしていますが、将来 BoringSSL へ切り替えてもビルド設定のみの変更で、この
+API には影響しません（BoringSSL はホスト名検証がより厳格なので、現在通る CN のみの
+証明書のサーバは拒否される可能性があります）。
+
+---
+
+## 16. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1796,7 +1874,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 16. 未収録（将来検討）
+## 17. 未収録（将来検討）
 
 ### 三角関数
 

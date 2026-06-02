@@ -47,8 +47,9 @@ Conventions used below:
 12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
-15. [Design notes](#15-design-notes)
-16. [Not included (yet)](#16-not-included-yet)
+15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
+16. [Design notes](#16-design-notes)
+17. [Not included (yet)](#17-not-included-yet)
 
 **Where to find what**
 
@@ -67,6 +68,7 @@ Conventions used below:
 | CLI argument parsing | [§10 Args](#10-args) |
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
+| Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
@@ -1812,7 +1814,83 @@ model and resource limits are documented in `docs/regexlib.md`.
 
 ---
 
-## 15. Design notes
+## 15. `Http`
+
+Synchronous HTTP/HTTPS client (engine: vendored `cpp-httplib` + OpenSSL,
+statically linked). Each call **blocks** until the response arrives — there is
+no async/await. TLS is automatic for `https://` URLs; the system trust store is
+used to verify server certificates (macOS keychain / the platform CA bundle on
+Linux).
+
+Every method returns a **response Object** and raises only on a *transport*
+failure:
+
+| field | type | meaning |
+|---|---|---|
+| `status` | `Long` | HTTP status code (`200`, `404`, …) |
+| `ok` | `Bool` | `true` iff `status` is in `[200, 300)` |
+| `body` | `String` | response body (raw bytes) |
+| `headers` | `Object` | response headers, keyed by name (String → String) |
+
+A **4xx/5xx response is a normal result** (`ok: false`), not an error — branch
+on `status` / `ok`. A **transport failure** (DNS, connection refused, TLS
+handshake, timeout) throws `HttpError`. A malformed URL (no scheme/host) also
+throws `HttpError`; a bad `headers` value throws `TypeError`.
+
+| Method | Result |
+| --- | --- |
+| `Http.get(url, headers=nil, timeout=0, follow_redirects=true)` | response Object |
+| `Http.delete(url, headers=nil, timeout=0, follow_redirects=true)` | response Object |
+| `Http.head(url, headers=nil, timeout=0, follow_redirects=true)` | response Object |
+| `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
+| `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
+| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
+
+Keyword arguments (shared by every method):
+
+- `headers: Object` — request headers; an `Object` whose values are all
+  `String`. A non-`String` value is a `TypeError` (default: none).
+- `timeout: Long` — per-phase timeout in **seconds** for connect / read / write;
+  `0` uses the library default (default: `0`).
+- `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
+- `body: String` / `content_type: String` (`post` / `put` / `request` only) —
+  request body and its `Content-Type` (the header is set only when `body` is
+  non-empty and no explicit `Content-Type` was passed in `headers`).
+
+```culebra
+# doctest: skip
+let r = Http.get("https://api.example.com/users/42")
+if r.ok {
+  let user = JSON.parse(r.body)
+  IO.puts(user.name)
+} else {
+  IO.puts("request failed: {r.status}")
+}
+
+# POST JSON with explicit headers and a timeout.
+let resp = Http.post("https://api.example.com/users",
+                     body: JSON.stringify({name: "alice"}),
+                     content_type: "application/json",
+                     headers: {Authorization: "Bearer " + token},
+                     timeout: 30)
+assert_true(resp.ok)
+
+# A transport failure throws; a 404 does not.
+let missing = Http.get("https://api.example.com/nope")
+assert_eq(missing.ok, false)        # 404 is a normal result
+assert_eq(missing.status, 404)
+```
+
+The body is returned as a single `String` (read whole into memory); pair it with
+[`JSON.parse`](#9-json) for JSON APIs. There is no streaming download or upload
+yet, and no parallel `Http.all` / `Http.race` — those are planned. TLS currently
+links OpenSSL statically; a future swap to BoringSSL is a build-only change and
+does not affect this API (BoringSSL verifies hostnames more strictly, so a server
+with a CN-only certificate that works today may then be rejected).
+
+---
+
+## 16. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1866,7 +1944,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 16. Not included (yet)
+## 17. Not included (yet)
 
 ### Trigonometry
 

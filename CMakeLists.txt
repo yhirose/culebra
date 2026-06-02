@@ -51,6 +51,61 @@ include_directories(./include)
 include_directories(./vendor/cpp-peglib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
+include_directories(./vendor/cpp-httplib)
+
+# Http stdlib namespace: cpp-httplib (vendored) + OpenSSL for TLS. OpenSSL is
+# linked statically so the `culebra` driver and AOT-built binaries stay
+# self-contained (cpp-httplib's OpenSSL path is identical to a future
+# BoringSSL swap — that is a link-only change). The static .a libs come from
+# Homebrew's openssl@3 on macOS; on Linux from the distro's OpenSSL dev pkg.
+option(CULEBRA_ENABLE_HTTP "Enable builtin Http namespace (requires OpenSSL)" ON)
+if(CULEBRA_ENABLE_HTTP)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+  if(APPLE AND NOT OPENSSL_ROOT_DIR)
+    find_program(BREW_EXECUTABLE brew)
+    if(BREW_EXECUTABLE)
+      execute_process(
+        COMMAND ${BREW_EXECUTABLE} --prefix openssl@3
+        OUTPUT_VARIABLE BREW_OPENSSL_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE BREW_OPENSSL_RESULT)
+      if(BREW_OPENSSL_RESULT EQUAL 0 AND BREW_OPENSSL_PREFIX)
+        set(OPENSSL_ROOT_DIR "${BREW_OPENSSL_PREFIX}")
+        message(STATUS "Homebrew OpenSSL detected at ${BREW_OPENSSL_PREFIX}")
+      endif()
+    endif()
+  endif()
+  find_package(OpenSSL REQUIRED)
+  message(STATUS "Found OpenSSL ${OPENSSL_VERSION} (static)")
+  add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT)
+  # Make OpenSSL headers visible to every TU that includes httplib.h — notably
+  # the culebra_rt archives, which compile httplib.h but don't link OpenSSL
+  # (the AOT consumer's link resolves the symbols via _ssl_link).
+  include_directories(${OPENSSL_INCLUDE_DIR})
+
+  # Link line reused by the driver, the smoke exes, and (as a string) the AOT
+  # build step. Static OpenSSL drags in libdl/libpthread on Linux; on macOS
+  # cpp-httplib reads the system trust store via the Security framework
+  # (CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN auto-enables there).
+  set(_ssl_libs OpenSSL::SSL OpenSSL::Crypto)
+  if(APPLE)
+    list(APPEND _ssl_libs "-framework CoreFoundation" "-framework Security")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _ssl_libs ${CMAKE_DL_LIBS})
+    find_package(Threads REQUIRED)
+    list(APPEND _ssl_libs Threads::Threads)
+  endif()
+
+  # AOT link string: resolve the OpenSSL static archives to absolute paths so
+  # `culebra build` can append them when a program references Http. Mirrors
+  # CULEBRA_BLAS_LINK for Tensor.
+  set(_ssl_link "${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY}")
+  if(APPLE)
+    set(_ssl_link "${_ssl_link} -framework CoreFoundation -framework Security")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_ssl_link "${_ssl_link} -ldl -lpthread")
+  endif()
+endif()
 
 # cpp-embedlib provides the cpp_embedlib_add() macro used below to bake
 # the runtime archives into the `culebra` driver, so `culebra build` can
@@ -239,6 +294,18 @@ elseif(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_BLAS_LINK="")
 endif()
 
+if(CULEBRA_ENABLE_HTTP)
+  target_link_libraries(culebra ${_ssl_libs})
+  # `culebra build` appends this to the link command only when the program
+  # references Http (see aot_scan_namespaces). Programs that never touch Http
+  # avoid the OpenSSL dependency, same as Tensor/BLAS.
+  if(CULEBRA_ENABLE_JIT)
+    target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK="${_ssl_link}")
+  endif()
+elseif(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK="")
+endif()
+
 # Embedding smoke tests. mt_smoke exercises thread_local isolation
 # (parser, GC, exception state); mi_smoke exercises RuntimeScope and
 # per-Runtime hooks. Build them alongside `culebra` so they stay in
@@ -259,6 +326,9 @@ function(culebra_add_smoke_exe name)
     target_link_libraries(${name} ${llvm_libs})
     set_target_properties(${name} PROPERTIES ENABLE_EXPORTS ON)
   endif()
+  if(CULEBRA_ENABLE_HTTP)
+    target_link_libraries(${name} ${_ssl_libs})
+  endif()
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -273,6 +343,17 @@ culebra_add_smoke_exe(utf8_invalid_smoke)
 add_executable(regexlib_test test/regexlib_test.cc)
 target_compile_features(regexlib_test PRIVATE cxx_std_17)
 add_test(NAME regexlib_test COMMAND regexlib_test)
+
+# http.h core test: in-process loopback cpp-httplib server exercises the
+# value-neutral client core (GET/POST/DELETE/404 + transport-error + URL
+# validation). Needs OpenSSL (httplib.h pulls it in under HTTP builds) but the
+# server here is plain HTTP, so the test runs offline.
+if(CULEBRA_ENABLE_HTTP)
+  add_executable(http_test test/http_test.cc)
+  target_compile_features(http_test PRIVATE cxx_std_20)
+  target_link_libraries(http_test ${_ssl_libs})
+  add_test(NAME http_test COMMAND http_test)
+endif()
 
 # Deterministic regression fuzzer: gates on oracle-free robustness invariants
 # (no crash/hang, self-consistent match spans, find_all/search agreement) and

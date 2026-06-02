@@ -10,6 +10,9 @@
 
 #include <jit.h>
 #include <proc.h>
+#ifdef CULEBRA_HTTP_ENABLED
+#include <http.h>
+#endif
 #include <shared.h>
 #include <regexlib.h>
 #include <sendable_jit.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
@@ -1509,6 +1512,43 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
           reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
 }
 
+#ifdef CULEBRA_HTTP_ENABLED
+// Build the `{status, ok, body, headers}` response Object from an HttpResult.
+// `ok` is 2xx; a 4xx/5xx is a completed round-trip (ok:false). Transport
+// failures never reach here — _culebra_http_run throws HttpError first.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
+    culebra::http::HttpResult& r, int64_t line, int64_t col) {
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "status", false, TAG_LONG, r.status, line, col);
+  culebra_runtime_object_set(o, "ok", false, TAG_BOOL,
+      (r.status >= 200 && r.status < 300) ? 1 : 0, line, col);
+  culebra_runtime_object_set(o, "body", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(r.body)), line, col);
+  auto* headers = culebra_runtime_object_new();
+  for (auto& [k, v] : r.headers) {
+    culebra_runtime_object_set(headers, k.c_str(), false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(v)), line, col);
+  }
+  culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
+      reinterpret_cast<int64_t>(headers), line, col);
+  return o;
+}
+
+// Run one HttpRequest; throw HttpError on a transport failure, else return the
+// response Object. Shared by every Http.* adapter.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_http_run(
+    culebra::http::HttpRequest& req, const char* ctx, int64_t line,
+    int64_t col) {
+  auto r = culebra::http::http_request(req);
+  if (!r.ok) {
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+                                line, col);
+  }
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, line, col))};
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
 // --- Proc.spawn live handle (JIT) ---
 // The handle is a JitObject with data slots (_pid/_out/_err/_done/_result) and
 // method-closure slots; each method reads `this` (the handle) via the JitFn
@@ -2337,6 +2377,80 @@ inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
 
+#ifdef CULEBRA_HTTP_ENABLED
+namespace _http_adapt {
+// Fill `headers`/`timeout`/`follow_redirects` from the slab into `req`,
+// reading from `base` onward (3 trailing slots). A non-Object/non-nil headers
+// value or non-String header value is a TypeError.
+inline void common(JitValue* a, int64_t n, int base,
+                   culebra::http::HttpRequest& req, const char* ctx) {
+  JitValue h = _proc_adapt::at(a, n, base);
+  if (h.tag == TAG_OBJECT) {
+    if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(h.data),
+                              req.headers)) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: header values must be String", ctx), 0, 0);
+    }
+  } else if (h.tag != TAG_NIL) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: headers must be an Object of String", ctx), 0, 0);
+  }
+  JitValue to = _proc_adapt::at(a, n, base + 1);
+  req.timeout_sec = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
+  JitValue fr = _proc_adapt::at(a, n, base + 2);
+  req.follow_redirects = !(fr.tag == TAG_BOOL && fr.data == 0);
+}
+}  // namespace _http_adapt
+
+// get/delete/head — slab: url, headers, timeout, follow_redirects.
+inline JitValue _ns_http_bodyless(JitValue* a, int64_t n, const char* method,
+                                  const char* ctx) {
+  culebra::http::HttpRequest req;
+  req.method = method;
+  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  _http_adapt::common(a, n, 1, req, ctx);
+  return _culebra_http_run(req, ctx, 0, 0);
+}
+inline JitValue _ns_http_get(JitValue* a, int64_t n) {
+  return _ns_http_bodyless(a, n, "GET", "Http.get");
+}
+inline JitValue _ns_http_delete(JitValue* a, int64_t n) {
+  return _ns_http_bodyless(a, n, "DELETE", "Http.delete");
+}
+inline JitValue _ns_http_head(JitValue* a, int64_t n) {
+  return _ns_http_bodyless(a, n, "HEAD", "Http.head");
+}
+
+// post/put — slab: url, body, content_type, headers, timeout, follow_redirects.
+inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
+                                  const char* ctx) {
+  culebra::http::HttpRequest req;
+  req.method = method;
+  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  req.body = _culebra_str_view(a[1].tag, a[1].data);
+  req.content_type = _culebra_str_view(a[2].tag, a[2].data);
+  _http_adapt::common(a, n, 3, req, ctx);
+  return _culebra_http_run(req, ctx, 0, 0);
+}
+inline JitValue _ns_http_post(JitValue* a, int64_t n) {
+  return _ns_http_withbody(a, n, "POST", "Http.post");
+}
+inline JitValue _ns_http_put(JitValue* a, int64_t n) {
+  return _ns_http_withbody(a, n, "PUT", "Http.put");
+}
+
+// request(method, url, body, content_type, headers, timeout, follow_redirects).
+inline JitValue _ns_http_request(JitValue* a, int64_t n) {
+  culebra::http::HttpRequest req;
+  req.method = _culebra_str_view(a[0].tag, a[0].data);
+  req.url = _culebra_str_view(a[1].tag, a[1].data);
+  req.body = _culebra_str_view(a[2].tag, a[2].data);
+  req.content_type = _culebra_str_view(a[3].tag, a[3].data);
+  _http_adapt::common(a, n, 4, req, "Http.request");
+  return _culebra_http_run(req, "Http.request", 0, 0);
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
 // Isolate.spawn(fn, *args): a[0] = closure, a[1..] = positional args.
 inline JitValue _ns_isolate_spawn(JitValue* a, int64_t n) {
   if (n < 1) {
@@ -2403,6 +2517,18 @@ inline JitValue _ns_json_stringify(JitValue* a, int64_t) {
 inline JitValue _ns_json_parse(JitValue* a, int64_t) {
   return culebra_runtime_json_parse(_ns_adapt::take_str(a[0]),
                                      /*number_mode=*/"auto", /*lines=*/0);
+}
+
+// Encoding.html.{escape,unescape}: the codec logic is shared with interp via
+// shared.h. Slow-path only (nested namespaces bypass compile_ns_call), so
+// these are reached through the kNsMethods closure trampoline.
+inline JitValue _ns_encoding_html_escape(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::html_escape(_ns_adapt::take_str(a[0]))));
+}
+inline JitValue _ns_encoding_html_unescape(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::html_unescape(_ns_adapt::take_str(a[0]))));
 }
 
 #ifndef CULEBRA_RT_NO_TENSOR
@@ -2657,6 +2783,10 @@ struct NsMethod {
   int8_t arity;  // -1 = variadic
   JitValue (*adapter)(JitValue* args, int64_t n);
   const NsParamMeta* params = nullptr;  // null = all-positional, no defaults
+  // Non-null = method lives in a nested sub-namespace object on the parent
+  // (e.g. `Encoding.html.unescape` has ns="Encoding", sub="html"). Nested
+  // namespaces are slow-path only — they never reach compile_ns_call.
+  const char* sub = nullptr;
 };
 
 // Param metadata for the kwarg-accepting Proc methods. Names/defaults
@@ -2728,6 +2858,49 @@ inline const NsParam kParallelParams[] = {
   {"on_progress", true,  false, &_ns_def_nil},
 };
 inline const NsParamMeta kParallelMeta = {kParallelParams, 4, -1, -1};
+
+#ifdef CULEBRA_HTTP_ENABLED
+// Http.* param metadata. Names/defaults mirror make_http_namespace in
+// stdlib_interp.h; _check_ns_drift_once verifies the two stay in sync.
+inline JitValue _ns_def_true() { return {TAG_BOOL, 1}; }
+inline JitValue _ns_def_text_plain() {
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str("text/plain"))};
+}
+
+// get / delete / head: url, headers=nil, timeout=0, follow_redirects=true.
+inline const NsParam kHttpGetParams[] = {
+  {"url",              false, false, nullptr},
+  {"headers",          true,  false, &_ns_def_nil},
+  {"timeout",          true,  false, &_ns_def_zero},
+  {"follow_redirects", true,  false, &_ns_def_true},
+};
+inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 4, -1, -1};
+
+// post / put: url, body="", content_type="text/plain", headers=nil,
+// timeout=0, follow_redirects=true.
+inline const NsParam kHttpPostParams[] = {
+  {"url",              false, false, nullptr},
+  {"body",             true,  false, &_ns_def_empty_str},
+  {"content_type",     true,  false, &_ns_def_text_plain},
+  {"headers",          true,  false, &_ns_def_nil},
+  {"timeout",          true,  false, &_ns_def_zero},
+  {"follow_redirects", true,  false, &_ns_def_true},
+};
+inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 6, -1, -1};
+
+// request: method, url, body="", content_type="text/plain", headers=nil,
+// timeout=0, follow_redirects=true.
+inline const NsParam kHttpRequestParams[] = {
+  {"method",           false, false, nullptr},
+  {"url",              false, false, nullptr},
+  {"body",             true,  false, &_ns_def_empty_str},
+  {"content_type",     true,  false, &_ns_def_text_plain},
+  {"headers",          true,  false, &_ns_def_nil},
+  {"timeout",          true,  false, &_ns_def_zero},
+  {"follow_redirects", true,  false, &_ns_def_true},
+};
+inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 7, -1, -1};
+#endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
@@ -2807,6 +2980,15 @@ inline const NsMethod kNsMethods[] = {
   {"Proc",   "race",  1, &_ns_proc_race},
   {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
 
+#ifdef CULEBRA_HTTP_ENABLED
+  {"Http",   "get",     1, &_ns_http_get,     &kHttpGetMeta},
+  {"Http",   "delete",  1, &_ns_http_delete,  &kHttpGetMeta},
+  {"Http",   "head",    1, &_ns_http_head,    &kHttpGetMeta},
+  {"Http",   "post",    1, &_ns_http_post,    &kHttpPostMeta},
+  {"Http",   "put",     1, &_ns_http_put,     &kHttpPostMeta},
+  {"Http",   "request", 2, &_ns_http_request, &kHttpRequestMeta},
+#endif
+
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new",    -1, &_ns_channel_new},
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
@@ -2817,6 +2999,11 @@ inline const NsMethod kNsMethods[] = {
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse},
+
+  // Nested sub-namespace (sub="html"): reached only via bare-resolve +
+  // member access, e.g. `Encoding.html.unescape(s)`.
+  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html"},
+  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
@@ -3039,11 +3226,24 @@ inline const bool _jit_ns_kwarg_hook_installed = [] {
 
 inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
   auto* obj = culebra_runtime_object_new();
+  // Sub-namespace objects, created lazily and keyed by `sub` (e.g. "html").
+  // Reachable from `obj` (a pinned root), so the marker keeps them + their
+  // method closures alive for the program's lifetime.
+  std::unordered_map<std::string_view, JitObject*> subs;
   for (auto& m : kNsMethods) {
     if (ns_name != m.ns) continue;
     auto* fn = _jit_make_ns_method_closure(&m);
-    obj->append_slot(m.name,
-                     JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)},
+    JitValue fv{TAG_FUNC, reinterpret_cast<int64_t>(fn)};
+    if (m.sub) {
+      auto& sub = subs[m.sub];
+      if (!sub) sub = culebra_runtime_object_new();
+      sub->append_slot(m.name, fv, /*mut=*/false);
+    } else {
+      obj->append_slot(m.name, fv, /*mut=*/false);
+    }
+  }
+  for (auto& [name, sub] : subs) {
+    obj->append_slot(name, JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(sub)},
                      /*mut=*/false);
   }
   for (auto& c : kNsConstants) {
@@ -4604,7 +4804,12 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "to_long", "to_float",  "to_string", "type_of", "hash",
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel"};
+      "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
+      "Encoding",
+#ifdef CULEBRA_HTTP_ENABLED
+      "Http",
+#endif
+  };
   return names.contains(name);
 }
 
