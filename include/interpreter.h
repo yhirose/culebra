@@ -2905,6 +2905,11 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
     const auto& p = (*f.params)[0];
     inner->initialize(p.name, v, p.mut);
   }
+  // A function frame doesn't inherit the caller's __LINE__/__COLUMN__, so a
+  // builtin callback that reads them (`to_long`/`to_float`) would NameError
+  // when handed to a HOF (`map(to_float)`). Seed 0 like _invoke_callback.
+  inner->initialize("__LINE__", Value(0L), false);
+  inner->initialize("__COLUMN__", Value(0L), false);
   try {
     return f.eval(inner);
   } catch (const ReturnValue& r) {
@@ -3270,6 +3275,10 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                  const auto& p1 = (*f.params)[1];
                  inner->initialize(p1.name, v, p1.mut);
                }
+               // See invoke_unary_callback: a builtin reducer reading
+               // __LINE__/__COLUMN__ would NameError without these.
+               inner->initialize("__LINE__", Value(0L), false);
+               inner->initialize("__COLUMN__", Value(0L), false);
                try {
                  acc = f.eval(inner);
                } catch (const ReturnValue& r) {

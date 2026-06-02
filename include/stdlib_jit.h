@@ -1998,10 +1998,13 @@ namespace _ns_adapt {
 
 [[noreturn]] inline void arity_error(const char* ns, const char* method,
                                        int expected, int64_t got) {
+  // Bare builtin globals carry no namespace — render `method:` not `.method:`.
+  std::string qualified =
+      (ns && ns[0]) ? std::format("{}.{}", ns, method) : std::string(method);
   culebra::throw_runtime_error_at(
       "ArityError",
-      std::format("{}.{}: expected {} positional argument{}, got {}",
-                  ns, method, expected, expected == 1 ? "" : "s", got),
+      std::format("{}: expected {} positional argument{}, got {}",
+                  qualified, expected, expected == 1 ? "" : "s", got),
       0, 0);
 }
 
@@ -2062,6 +2065,30 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
 }
 inline JitValue _ns_io_input(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_input());
+}
+
+// Bare global builtins (`puts`/`print` reuse the IO adapters above)
+// exposed as first-class values: `let f = type_of`, `[1,2,3].map(type_of)`.
+// Each delegates to the very runtime helper the direct-call fast path
+// (compile_global) emits, so the produced value is byte-identical. line/col
+// are 0 — the value/HOF call site can't thread a position through the closure
+// ABI, matching the ns-method adapters above.
+inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_type_of(a[0].tag));
+}
+inline JitValue _ns_global_to_long(JitValue* a, int64_t) {
+  return culebra_runtime_to_long_any(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_global_to_float(JitValue* a, int64_t) {
+  return culebra_runtime_to_float_any(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_global_to_string(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_value_to_display(a[0].tag, a[0].data));
+}
+inline JitValue _ns_global_hash(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_hash_any(a[0].tag, a[0].data, 0, 0));
 }
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses
 // the runtime file helpers; streaming lives on the File handle.
@@ -3261,13 +3288,58 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
 
 struct _JitNamespaceTable {
   std::unordered_map<std::string, JitObject*> entries;
+  // Bare builtin function globals (`puts`, `type_of`, `range`, ...) used
+  // as first-class values, materialized lazily as ns-method closures. Same
+  // lifetime/teardown order as `entries` — both hold heap values that must
+  // be released before the GC heap substate (a lower slot) is destroyed.
+  std::unordered_map<std::string, JitClosure*> builtin_fns;
   ~_JitNamespaceTable() {
     for (auto& [_, obj] : entries) {
       _culebra_value_release_impl(TAG_OBJECT,
                                   reinterpret_cast<int64_t>(obj));
     }
+    for (auto& [_, cls] : builtin_fns) {
+      _culebra_value_release_impl(TAG_FUNC,
+                                  reinterpret_cast<int64_t>(cls));
+    }
   }
 };
+
+// Bare builtin function globals, exposed as first-class values by reusing
+// the ns-method closure machinery (shared trampoline + arity check). Direct
+// calls keep their fast paths (compile_global / try_compile_core_global);
+// only value / higher-order uses (`map(type_of)`, `let f = puts`) reach the
+// closure built here. `ns` is empty — these are not namespaced; the trampoline
+// uses it only for arity-error text, which `_ns_adapt::arity_error` renders
+// name-only when blank.
+inline const NsMethod kBuiltinFns[] = {
+  {"", "puts",      1, &_ns_io_puts},
+  {"", "print",     1, &_ns_io_print},
+  {"", "type_of",   1, &_ns_global_type_of},
+  {"", "to_long",   1, &_ns_global_to_long},
+  {"", "to_float",  1, &_ns_global_to_float},
+  {"", "to_string", 1, &_ns_global_to_string},
+  {"", "hash",      1, &_ns_global_hash},
+};
+
+// Materialize (once, cached + pinned for the isolate's lifetime) the closure
+// for a bare builtin function name, or null if `name` is not one. Mirrors
+// `_jit_namespace_get_or_build`'s caching/pinning so the value can be passed
+// around like any user closure without the GC reclaiming it between uses.
+inline JitClosure* _jit_builtin_fn_closure(const std::string& name) {
+  auto& cache = culebra::runtime_substate<_JitNamespaceTable>(
+                    culebra::kSlotJitNamespaceTable).builtin_fns;
+  auto it = cache.find(name);
+  if (it != cache.end()) return it->second;
+  for (const auto& m : kBuiltinFns) {
+    if (name != m.name) continue;
+    auto* cls = _jit_make_ns_method_closure(&m);
+    _gc_heap().pin(cls);
+    cache.emplace(name, cls);
+    return cls;
+  }
+  return nullptr;
+}
 
 // Namespace names this dispatcher knows how to build. Kept in sync
 // with interp's `setup_built_in_functions` by the drift check below.
@@ -3372,7 +3444,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_namespace_get(const char* name,
                                int8_t* out_tag, int64_t* out_data) {
   _check_ns_drift_once();
-  auto* obj = _jit_namespace_get_or_build(std::string(name ? name : ""));
+  std::string nm(name ? name : "");
+  // Bare builtin function used as a value (`let f = puts`, `map(type_of)`).
+  // Checked before the namespace lookup since these names are not namespaces.
+  if (auto* cls = _jit_builtin_fn_closure(nm)) {
+    culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(cls));
+    *out_tag = TAG_FUNC;
+    *out_data = reinterpret_cast<int64_t>(cls);
+    return;
+  }
+  auto* obj = _jit_namespace_get_or_build(nm);
   if (!obj) {
     culebra::throw_runtime_error_at(
         "NameError",

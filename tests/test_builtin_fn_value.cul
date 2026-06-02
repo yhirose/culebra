@@ -1,0 +1,35 @@
+# Conformance: §18 (builtins). See docs/language.md.
+#
+# Builtin functions as first-class values. The direct-call forms
+# (`type_of(x)`, `puts(x)`) keep their fast paths; binding a builtin to a
+# variable or handing it to a higher-order function exercises the runtime
+# closure path. Runs under interp, --jit, and AOT — all must agree.
+#
+# Run: ./build/culebra tests/test_builtin_fn_value.cul
+#      ./build/culebra --jit tests/test_builtin_fn_value.cul
+
+# Bound to a variable, then called.
+let t = type_of
+assert_eq(t(3.14), 'Float')
+assert_eq(t(1), 'Long')
+assert_eq(t('s'), 'String')
+
+let g = to_string
+assert_eq([g(1), g(true), g(nil)], ['1', 'true', 'nil'])
+
+let h = hash
+assert_eq(h(42), hash(42))
+
+# Passed to higher-order functions (the original motivating case).
+assert_eq([1, 2, 3].map(type_of), ['Long', 'Long', 'Long'])
+assert_eq([1, 2, 3].map(to_float), [1.0, 2.0, 3.0])
+assert_eq([1.9, 2.1, -3.5].map(to_long), [1, 2, -3])
+assert_eq([1, 22, 333].map(to_string), ['1', '22', '333'])
+assert_eq(['1', '2', '3'].map(to_long), [1, 2, 3])
+
+# filter with a builtin predicate-shaped value (to_bool not a builtin; use
+# a chain through map instead — type_of as the discriminator).
+assert_eq([1, 2.0, 3].map(type_of).filter(fn (s) { s == 'Long' }).size(), 2)
+
+# Side-effecting builtin (puts) as a for_each callback — newline per element.
+[7, 8].for_each(puts)
