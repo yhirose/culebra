@@ -48,6 +48,7 @@ Conventions used below:
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
+16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html` escape / unescape)
 16. [Design notes](#16-design-notes)
 17. [Not included (yet)](#17-not-included-yet)
 
@@ -69,6 +70,7 @@ Conventions used below:
 | Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
@@ -1890,7 +1892,43 @@ with a CN-only certificate that works today may then be rejected).
 
 ---
 
-## 16. Design notes
+## 16. `Encoding`
+
+Text codecs, grouped into a **sub-namespace per scheme**. Today that is
+`Encoding.html`; `Encoding.base64` / `Encoding.hex` are planned to slot in
+beside it the same way. The HTML logic is shared between the interpreter and the
+JIT/AOT backends.
+
+### `Encoding.html`
+
+| Function | Result |
+| --- | --- |
+| `Encoding.html.escape(s)` | `String` — replace the five HTML-unsafe characters (`& < > " '`) with entities |
+| `Encoding.html.unescape(s)` | `String` — turn entity references back into their characters |
+
+`escape` replaces `&` first (so the output is always safe to re-escape) and emits
+`&amp;` `&lt;` `&gt;` `&quot;` `&#39;`.
+
+`unescape` handles numeric references `&#DDD;` (decimal) and `&#xHHH;` / `&#XHHH;`
+(hexadecimal, any case), plus a practical set of named references — the common
+typographic, Latin-1, Greek, math, and currency entities, **not** the full HTML5
+table of ~2200 names. A reference must end in `;`; anything that is not a
+well-formed, recognized reference is left **exactly as written** (browser-style
+leniency), so a bare `&` and unknown entities pass through unchanged.
+
+```culebra
+puts(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
+puts(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
+puts(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
+puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
+puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
+puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
+puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+```
+
+---
+
+## 17. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -1944,7 +1982,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 17. Not included (yet)
+## 18. Not included (yet)
 
 ### Trigonometry
 

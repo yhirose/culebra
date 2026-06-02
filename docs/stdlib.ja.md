@@ -46,6 +46,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
+16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html` の escape / unescape）
 16. [設計上の注記](#16-設計上の注記)
 17. [未収録（将来検討）](#17-未収録将来検討)
 
@@ -67,6 +68,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
+| HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
@@ -1820,7 +1822,41 @@ API には影響しません（BoringSSL はホスト名検証がより厳格な
 
 ---
 
-## 16. 設計上の注記
+## 16. `Encoding`
+
+テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間。現状は
+`Encoding.html` のみで、`Encoding.base64` / `Encoding.hex` も同じ形で並べる予定です。
+HTML のロジックはインタプリタと JIT/AOT 両バックエンドで共有しています。
+
+### `Encoding.html`
+
+| 関数 | 結果 |
+| --- | --- |
+| `Encoding.html.escape(s)` | `String` — HTML で危険な 5 文字（`& < > " '`）をエンティティに置換 |
+| `Encoding.html.unescape(s)` | `String` — エンティティ参照を元の文字へ戻す |
+
+`escape` は最初に `&` を置換する（出力を再 escape しても安全）ため、
+`&amp;` `&lt;` `&gt;` `&quot;` `&#39;` を出力します。
+
+`unescape` は数値参照 `&#DDD;`（10 進）と `&#xHHH;` / `&#XHHH;`（16 進、大小問わず）に
+加え、常用の名前付き参照（typographic / Latin-1 / ギリシャ文字 / 数学記号 / 通貨の
+よく使うもの。HTML5 全 ~2200 件ではない）を扱います。参照は `;` で終わる必要があり、
+整形式かつ既知でない参照は**そのまま**残します（ブラウザ流の寛容さ）。単独の `&` や
+未知のエンティティは素通しされます。
+
+```culebra
+puts(Encoding.html.escape("a & b < c"))          # => 'a &amp; b &lt; c'
+puts(Encoding.html.escape("it's fine"))          # => 'it&#39;s fine'
+puts(Encoding.html.unescape("Tom &amp; Jerry"))  # => 'Tom & Jerry'
+puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
+puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
+puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
+puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+```
+
+---
+
+## 17. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -1874,7 +1910,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 17. 未収録（将来検討）
+## 18. 未収録（将来検討）
 
 ### 三角関数
 

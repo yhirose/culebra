@@ -63,6 +63,13 @@ let j = JSON
 assert_eq(j.stringify({a: 1}), '{"a":1}')
 assert_eq(j.parse('{"x":42}').x, 42)
 
+// --- Encoding (nested sub-namespace: Encoding.html.*) ---
+let enc = Encoding
+assert_eq(enc.html.unescape("a &amp; b"), "a & b")
+assert_eq(enc.html.escape("<x>"), "&lt;x&gt;")
+let eh = Encoding.html       // bind the sub-namespace directly
+assert_eq(eh.unescape("&#65;&#x42;"), "AB")
+
 // --- Tensor ---
 let t = Tensor
 let z = t.zeros(2, 3)

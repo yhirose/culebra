@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <format>
 #include <random>
@@ -130,6 +131,166 @@ inline std::string json_escape(std::string_view s) {
     }
   }
   out += '"';
+  return out;
+}
+
+// Append code point `cp` to `out` as UTF-8. Out-of-range / surrogate code
+// points fall back to U+FFFD, matching how the rest of the runtime handles
+// invalid scalar values.
+inline void append_utf8(std::string& out, uint32_t cp) {
+  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
+  if (cp < 0x80) {
+    out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+}
+
+// HTML escape: the five characters that are unsafe in HTML text/attributes.
+// `&` is replaced first so the others' replacements aren't re-escaped.
+inline std::string html_escape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '&':  out += "&amp;";  break;
+      case '<':  out += "&lt;";   break;
+      case '>':  out += "&gt;";   break;
+      case '"':  out += "&quot;"; break;
+      case '\'': out += "&#39;";  break;
+      default:   out += c;
+    }
+  }
+  return out;
+}
+
+// Named character references covered by html_unescape. Not the full HTML5
+// table (~2200 entries) — a practical set of the common typographic, Latin-1,
+// Greek, math, and currency entities. Unknown names are left verbatim.
+inline const std::unordered_map<std::string_view, std::string_view, sv_hash,
+                                std::equal_to<>>&
+html_named_entities() {
+  static const std::unordered_map<std::string_view, std::string_view, sv_hash,
+                                  std::equal_to<>> table = {
+    {"amp", "&"}, {"lt", "<"}, {"gt", ">"}, {"quot", "\""}, {"apos", "'"},
+    {"nbsp", " "}, {"shy", "­"},
+    {"copy", "©"}, {"reg", "®"}, {"trade", "™"},
+    {"hellip", "…"}, {"mdash", "—"}, {"ndash", "–"},
+    {"lsquo", "‘"}, {"rsquo", "’"}, {"ldquo", "“"},
+    {"rdquo", "”"}, {"sbquo", "‚"}, {"bdquo", "„"},
+    {"laquo", "«"}, {"raquo", "»"}, {"lsaquo", "‹"},
+    {"rsaquo", "›"}, {"bull", "•"}, {"middot", "·"},
+    {"dagger", "†"}, {"Dagger", "‡"}, {"prime", "′"},
+    {"Prime", "″"}, {"permil", "‰"},
+    {"emsp", " "}, {"ensp", " "}, {"thinsp", " "},
+    {"deg", "°"}, {"plusmn", "±"}, {"times", "×"},
+    {"divide", "÷"}, {"frac12", "½"}, {"frac14", "¼"},
+    {"frac34", "¾"}, {"sup1", "¹"}, {"sup2", "²"},
+    {"sup3", "³"}, {"micro", "µ"}, {"not", "¬"},
+    {"sect", "§"}, {"para", "¶"}, {"iexcl", "¡"},
+    {"iquest", "¿"}, {"ordf", "ª"}, {"ordm", "º"},
+    {"euro", "€"}, {"pound", "£"}, {"yen", "¥"},
+    {"cent", "¢"}, {"curren", "¤"},
+    {"larr", "←"}, {"uarr", "↑"}, {"rarr", "→"},
+    {"darr", "↓"}, {"harr", "↔"},
+    {"infin", "∞"}, {"ne", "≠"}, {"le", "≤"}, {"ge", "≥"},
+    {"asymp", "≈"}, {"equiv", "≡"}, {"sum", "∑"},
+    {"prod", "∏"}, {"radic", "√"}, {"part", "∂"},
+    {"nabla", "∇"}, {"int", "∫"}, {"minus", "−"},
+    {"agrave", "à"}, {"aacute", "á"}, {"acirc", "â"},
+    {"atilde", "ã"}, {"auml", "ä"}, {"aring", "å"},
+    {"aelig", "æ"}, {"ccedil", "ç"}, {"egrave", "è"},
+    {"eacute", "é"}, {"ecirc", "ê"}, {"euml", "ë"},
+    {"igrave", "ì"}, {"iacute", "í"}, {"icirc", "î"},
+    {"iuml", "ï"}, {"eth", "ð"}, {"ntilde", "ñ"},
+    {"ograve", "ò"}, {"oacute", "ó"}, {"ocirc", "ô"},
+    {"otilde", "õ"}, {"ouml", "ö"}, {"oslash", "ø"},
+    {"ugrave", "ù"}, {"uacute", "ú"}, {"ucirc", "û"},
+    {"uuml", "ü"}, {"yacute", "ý"}, {"thorn", "þ"},
+    {"yuml", "ÿ"}, {"szlig", "ß"},
+    {"Agrave", "À"}, {"Aacute", "Á"}, {"Acirc", "Â"},
+    {"Atilde", "Ã"}, {"Auml", "Ä"}, {"Aring", "Å"},
+    {"AElig", "Æ"}, {"Ccedil", "Ç"}, {"Egrave", "È"},
+    {"Eacute", "É"}, {"Ecirc", "Ê"}, {"Euml", "Ë"},
+    {"Igrave", "Ì"}, {"Iacute", "Í"}, {"Icirc", "Î"},
+    {"Iuml", "Ï"}, {"ETH", "Ð"}, {"Ntilde", "Ñ"},
+    {"Ograve", "Ò"}, {"Oacute", "Ó"}, {"Ocirc", "Ô"},
+    {"Otilde", "Õ"}, {"Ouml", "Ö"}, {"Oslash", "Ø"},
+    {"Ugrave", "Ù"}, {"Uacute", "Ú"}, {"Ucirc", "Û"},
+    {"Uuml", "Ü"}, {"Yacute", "Ý"}, {"THORN", "Þ"},
+    {"alpha", "α"}, {"beta", "β"}, {"gamma", "γ"},
+    {"delta", "δ"}, {"epsilon", "ε"}, {"theta", "θ"},
+    {"lambda", "λ"}, {"mu", "μ"}, {"pi", "π"},
+    {"sigma", "σ"}, {"phi", "φ"}, {"omega", "ω"},
+    {"Gamma", "Γ"}, {"Delta", "Δ"}, {"Theta", "Θ"},
+    {"Lambda", "Λ"}, {"Pi", "Π"}, {"Sigma", "Σ"},
+    {"Phi", "Φ"}, {"Omega", "Ω"},
+  };
+  return table;
+}
+
+// HTML unescape: turn entity references back into their characters. Handles
+// numeric refs `&#DDD;` / `&#xHHH;` (any case) plus the named set in
+// html_named_entities(). A reference must end in `;`; anything that isn't a
+// recognized, well-formed reference is left exactly as written (browser-style
+// leniency), so `&` on its own and unknown entities pass through unchanged.
+inline std::string html_unescape(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  size_t i = 0;
+  while (i < s.size()) {
+    if (s[i] != '&') { out += s[i++]; continue; }
+    size_t semi = s.find(';', i + 1);
+    // Bound the search so a stray '&' doesn't scan the whole string.
+    if (semi == std::string_view::npos || semi - i > 32) {
+      out += s[i++];
+      continue;
+    }
+    std::string_view body = s.substr(i + 1, semi - i - 1);
+    bool replaced = false;
+    if (!body.empty() && body[0] == '#') {  // numeric reference
+      uint32_t cp = 0;
+      bool ok = false;
+      std::string_view digits = body.substr(1);
+      if (!digits.empty() && (digits[0] == 'x' || digits[0] == 'X')) {
+        digits = digits.substr(1);
+        auto r = std::from_chars(digits.data(), digits.data() + digits.size(),
+                                 cp, 16);
+        ok = !digits.empty() && r.ec == std::errc{} &&
+             r.ptr == digits.data() + digits.size();
+      } else {
+        auto r = std::from_chars(digits.data(), digits.data() + digits.size(),
+                                 cp, 10);
+        ok = !digits.empty() && r.ec == std::errc{} &&
+             r.ptr == digits.data() + digits.size();
+      }
+      if (ok) {
+        append_utf8(out, cp);
+        replaced = true;
+      }
+    } else {  // named reference
+      const auto& table = html_named_entities();
+      if (auto it = table.find(body); it != table.end()) {
+        out += it->second;
+        replaced = true;
+      }
+    }
+    if (replaced) {
+      i = semi + 1;
+    } else {
+      out += s[i++];  // leave the '&' as-is and keep scanning
+    }
+  }
   return out;
 }
 

@@ -1,0 +1,49 @@
+// Encoding namespace: HTML entity codec. Grouped as a nested sub-namespace
+// (`Encoding.html.*`) — the first builtin namespace with sub-objects, so this
+// also exercises nested bare-resolve on the JIT/AOT slow path.
+
+// --- escape: the five HTML-unsafe characters ---
+assert_eq(Encoding.html.escape("a & b"), "a &amp; b")
+assert_eq(Encoding.html.escape("<p>"), "&lt;p&gt;")
+assert_eq(Encoding.html.escape("\"quoted\""), "&quot;quoted&quot;")
+assert_eq(Encoding.html.escape("it's"), "it&#39;s")
+assert_eq(Encoding.html.escape("plain text"), "plain text")
+// `&` is escaped first, so existing entities double-escape (round-trip safe).
+assert_eq(Encoding.html.escape("&amp;"), "&amp;amp;")
+
+// --- unescape: named references ---
+assert_eq(Encoding.html.unescape("Tom &amp; Jerry"), "Tom & Jerry")
+assert_eq(Encoding.html.unescape("&lt;p&gt;"), "<p>")
+assert_eq(Encoding.html.unescape("&quot;hi&quot;"), "\"hi\"")
+assert_eq(Encoding.html.unescape("it&#39;s &apos;ok&apos;"), "it's 'ok'")
+assert_eq(Encoding.html.unescape("a&mdash;b&hellip;c"), "a—b…c")
+assert_eq(Encoding.html.unescape("caf&eacute;"), "café")
+
+// --- unescape: numeric references (decimal + hex, any case) ---
+assert_eq(Encoding.html.unescape("&#65;&#66;&#67;"), "ABC")
+assert_eq(Encoding.html.unescape("&#x41;&#X42;"), "AB")
+assert_eq(Encoding.html.unescape("&#12354;&#x3042;"), "ああ")  // Japanese あ
+assert_eq(Encoding.html.unescape("&#128512;"), "😀")          // astral plane
+
+// --- unescape: leniency — anything not a well-formed ref is left verbatim ---
+assert_eq(Encoding.html.unescape("a & b"), "a & b")
+assert_eq(Encoding.html.unescape("&unknownent;"), "&unknownent;")
+assert_eq(Encoding.html.unescape("&amp without semi"), "&amp without semi")
+assert_eq(Encoding.html.unescape("&#bad;"), "&#bad;")
+assert_eq(Encoding.html.unescape("&#x;"), "&#x;")
+assert_eq(Encoding.html.unescape(""), "")
+
+// --- round trip: escape then unescape restores the original ---
+let original = "5 < 10 && \"x\" > 'y' & z"
+assert_eq(Encoding.html.unescape(Encoding.html.escape(original)), original)
+
+// --- first-class value: bound sub-namespace (slow-path conformance) ---
+let h = Encoding.html
+assert_eq(h.unescape("&nbsp;").size(), 2)  // U+00A0 is 2 UTF-8 bytes
+assert_eq(h.escape("<&>"), "&lt;&amp;&gt;")
+
+// --- the whole Encoding namespace is addressable as a value ---
+let enc = Encoding
+assert_eq(enc.html.unescape("&copy;"), "©")
+
+puts("test_encoding ok")
