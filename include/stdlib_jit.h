@@ -1516,9 +1516,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
 }
 
 #ifdef CULEBRA_HTTP_ENABLED
-// Build the `{status, ok, body, headers}` response Object from an HttpResult.
-// `ok` is 2xx; a 4xx/5xx is a completed round-trip (ok:false). Transport
-// failures never reach here — _culebra_http_run throws HttpError first.
+// Defined later; the response object's `json` method needs it before its def.
+CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity);
+
+// `r.json()` — parse the response body as JSON. Method ABI: self arrives +1
+// (release before returning), mirroring the proc/file handle methods.
+CULEBRA_RT_INLINE JitValue _jit_http_json(JitClosure*, JitValue self, int64_t,
+                                          JitValue*) {
+  auto* o = reinterpret_cast<JitObject*>(self.data);
+  size_t i = o->find_slot("body");
+  std::string body;
+  if (i != static_cast<size_t>(-1)) {
+    JitValue b = o->slots[i].value;
+    if (b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW) {
+      body = _culebra_str_view(b.tag, b.data);
+    }
+  }
+  JitValue r = culebra_runtime_json_parse(body.c_str(), "auto", 0);
+  culebra_runtime_value_release(self.tag, self.data);
+  return r;
+}
+
+// Build the `{status, ok, body, headers}` response Object from an HttpResult,
+// plus a `json()` method. `ok` is 2xx; a 4xx/5xx is a completed round-trip
+// (ok:false). Transport failures never reach here — _culebra_http_run throws
+// HttpError first.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
     culebra::http::HttpResult& r, int64_t line, int64_t col) {
   auto* o = culebra_runtime_object_new();
@@ -1534,6 +1557,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
   }
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(headers), line, col);
+  culebra_runtime_object_set(o, "json", false, TAG_FUNC,
+      reinterpret_cast<int64_t>(_jit_make_handle_method(_jit_http_json, 0)),
+      line, col);
   return o;
 }
 
@@ -1602,9 +1628,26 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
 // Configure the request body from the `body` slab value: TAG_STRING → whole;
 // TAG_FUNC → producer (called per chunk, returns next chunk String or nil),
 // streamed chunked. Else → TypeError. Mirrors interp http_setup_body.
-inline void _http_setup_body(JitValue bodyv, JitValue ct,
+inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue ct,
                              culebra::http::HttpRequest& req, JitHttpInto& st,
                              const char* ctx) {
+  // `json` (non-nil) → serialize to JSON, send as application/json. Mutually
+  // exclusive with a (non-empty) body.
+  bool has_json = jsonv.tag != TAG_NIL;
+  bool has_body =
+      bodyv.tag == TAG_FUNC ||
+      ((bodyv.tag == TAG_STRING || bodyv.tag == TAG_STRINGVIEW) &&
+       !std::string_view(_culebra_str_view(bodyv.tag, bodyv.data)).empty());
+  if (has_json && has_body) {
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("{}: pass either body or json, not both", ctx), 0, 0);
+  }
+  if (has_json) {
+    req.body = culebra_runtime_json_stringify(jsonv.tag, jsonv.data, 0, 0, 0);
+    req.content_type = "application/json";
+    return;
+  }
   // ct / body may be nil when this method is reached positional-only (the slow
   // path doesn't materialize defaults) — treat nil as the default: ct =
   // "text/plain", body = empty (no body), matching interp's resolved defaults.
@@ -2601,8 +2644,8 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   req.url = _culebra_str_view(a[0].tag, a[0].data);
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
-  _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 2), req, st,
-                   ctx);
+  _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 8),
+                   _proc_adapt::at(a, n, 2), req, st, ctx);
   _http_setup_into(_proc_adapt::at(a, n, 6), req, st, ctx);
   return _http_run_into(req, st, ctx);
 }
@@ -2621,8 +2664,8 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   req.url = _culebra_str_view(a[1].tag, a[1].data);
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
-  _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 3), req, st,
-                   "Http.request");
+  _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 9),
+                   _proc_adapt::at(a, n, 3), req, st, "Http.request");
   _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
   return _http_run_into(req, st, "Http.request");
 }
@@ -3077,8 +3120,9 @@ inline const NsParam kHttpPostParams[] = {
   {"follow_redirects", true,  false, &_ns_def_true},
   {"into",             true,  false, &_ns_def_nil},
   {"params",           true,  false, &_ns_def_nil},
+  {"json",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 8, -1, -1};
+inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 9, -1, -1};
 
 // request: method, url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
@@ -3092,8 +3136,9 @@ inline const NsParam kHttpRequestParams[] = {
   {"follow_redirects", true,  false, &_ns_def_true},
   {"into",             true,  false, &_ns_def_nil},
   {"params",           true,  false, &_ns_def_nil},
+  {"json",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 9, -1, -1};
+inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 10, -1, -1};
 #endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {

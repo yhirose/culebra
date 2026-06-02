@@ -1833,6 +1833,7 @@ failure:
 | `ok` | `Bool` | `true` iff `status` is in `[200, 300)` |
 | `body` | `String` | response body (raw bytes) |
 | `headers` | `Object` | response headers, keyed by name (String → String) |
+| `json()` | `Any` | parse `body` as JSON (convenience for `JSON.parse(r.body)`) |
 
 A **4xx/5xx response is a normal result** (`ok: false`), not an error — branch
 on `status` / `ok`. A **transport failure** (DNS, connection refused, TLS
@@ -1860,6 +1861,9 @@ Keyword arguments (shared by every method):
 - `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
 - `into: String | Function` — stream the response body to a sink instead of
   buffering it; see Streaming below (default: `nil` = buffer into `body`).
+- `json: Any` (`post` / `put` / `request` only) — serialize the value to JSON
+  and send it as the body with `Content-Type: application/json`. Mutually
+  exclusive with `body` (passing both is a `TypeError`).
 - `body: String | Function` / `content_type: String` (`post` / `put` /
   `request` only) — request body and its `Content-Type` (the header is set only
   when the body is non-empty and no explicit `Content-Type` was passed in
@@ -1868,18 +1872,17 @@ Keyword arguments (shared by every method):
 
 ```culebra
 # doctest: skip
-let r = Http.get("https://api.example.com/users/42")
+let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
-  let user = JSON.parse(r.body)
-  IO.puts(user.name)
+  let users = r.json()                 # parse the response body as JSON
+  IO.puts(users.size().to_string())
 } else {
   IO.puts("request failed: {r.status}")
 }
 
-# POST JSON with explicit headers and a timeout.
+# POST JSON with a header and a timeout (`json:` serializes + sets Content-Type).
 let resp = Http.post("https://api.example.com/users",
-                     body: JSON.stringify({name: "alice"}),
-                     content_type: "application/json",
+                     json: {name: "alice"},
                      headers: {Authorization: "Bearer " + token},
                      timeout: 30)
 assert_true(resp.ok)

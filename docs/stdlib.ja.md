@@ -1763,6 +1763,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 | `ok` | `Bool` | `status` が `[200, 300)` の範囲なら `true` |
 | `body` | `String` | レスポンスボディ（生バイト列） |
 | `headers` | `Object` | レスポンスヘッダ（名前→値、String→String） |
+| `json()` | `Any` | `body` を JSON としてパース（`JSON.parse(r.body)` の糖衣） |
 
 **4xx/5xx は通常の結果**（`ok: false`）でありエラーではありません — `status` /
 `ok` で分岐してください。**トランスポート失敗**（DNS・接続拒否・TLS ハンドシェイク・
@@ -1790,6 +1791,9 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 - `follow_redirects: Bool` — `3xx` の `Location` を追跡する（デフォルト: `true`）。
 - `into: String | Function` — レスポンスボディをバッファせず sink へストリーム
   する（下記ストリーミング参照。デフォルト: `nil` ＝ `body` にバッファ）。
+- `json: Any`（`post` / `put` / `request` のみ）— 値を JSON にシリアライズし、
+  `Content-Type: application/json` でボディとして送信。`body` と排他（両方渡すと
+  `TypeError`）。
 - `body: String | Function` / `content_type: String`（`post` / `put` /
   `request` のみ）— リクエストボディとその `Content-Type`（body が非空で、かつ
   `headers` で明示的な `Content-Type` が指定されていない場合のみ付与）。`String`
@@ -1797,18 +1801,17 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 ```culebra
 # doctest: skip
-let r = Http.get("https://api.example.com/users/42")
+let r = Http.get("https://api.example.com/users", params: {page: "2"})
 if r.ok {
-  let user = JSON.parse(r.body)
-  IO.puts(user.name)
+  let users = r.json()                 # レスポンスボディを JSON としてパース
+  IO.puts(users.size().to_string())
 } else {
   IO.puts("request failed: {r.status}")
 }
 
-# ヘッダとタイムアウトを指定して JSON を POST。
+# ヘッダとタイムアウトを指定して JSON を POST（`json:` が serialize + Content-Type 設定）。
 let resp = Http.post("https://api.example.com/users",
-                     body: JSON.stringify({name: "alice"}),
-                     content_type: "application/json",
+                     json: {name: "alice"},
                      headers: {Authorization: "Bearer " + token},
                      timeout: 30)
 assert_true(resp.ok)

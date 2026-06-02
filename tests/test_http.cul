@@ -75,4 +75,15 @@ assert_eq(params_badtype.kind, "TypeError")
 let params_badval = try { Http.get("http://127.0.0.1:1/x", params: {n: 5}); nil } catch e { e }
 assert_eq(params_badval.kind, "TypeError")
 
+// --- `json:` send / `r.json()`: the round-trip is verified e2e against a local
+//     echo server; here, the offline-deterministic checks. ---
+
+// json: and body: together is a TypeError (checked before any I/O).
+let json_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", json: {a: 1}); nil } catch e { e }
+assert_eq(json_and_body.kind, "TypeError")
+
+// json: alone serializes (then a transport failure surfaces as HttpError).
+let json_refused = try { Http.post("http://127.0.0.1:1/x", json: {a: 1}); nil } catch e { e }
+assert_eq(json_refused.kind, "HttpError")
+
 puts("test_http: ok")

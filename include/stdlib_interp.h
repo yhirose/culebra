@@ -2091,6 +2091,12 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
 }
 
 #ifdef CULEBRA_HTTP_ENABLED
+// Defined later in this header; forward-declared for the Http helpers' `json:`
+// kwarg and `r.json()` method.
+inline std::string json_stringify(const Value& v, int indent, bool sort_keys,
+                                  int depth);
+inline Value json_parse(std::string_view s, std::string_view number_mode);
+
 // Convert the optional `headers` kwarg (nil or an Object of String values)
 // into the header list the http core wants. `ctx` tags type errors.
 inline culebra::http::HeaderList http_parse_headers(const Value& hv,
@@ -2140,6 +2146,7 @@ inline culebra::http::HeaderList http_parse_params(const Value& pv,
 // not a transport error). Transport failures never reach here — the caller
 // throws HttpError on `!result.ok`.
 inline Value http_result_to_value(culebra::http::HttpResult&& r) {
+  using namespace std::literals;
   ObjectValue obj;
   obj.initialize("status", Value(r.status), false);
   obj.initialize("ok", Value(r.status >= 200 && r.status < 300), false);
@@ -2149,6 +2156,14 @@ inline Value http_result_to_value(culebra::http::HttpResult&& r) {
     headers.initialize(k, Value(std::move(v)), false);
   }
   obj.initialize("headers", Value(std::move(headers)), false);
+  // `r.json()` — parse the body as JSON (convenience for `JSON.parse(r.body)`).
+  obj.initialize(
+      "json",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> env) {
+        return json_parse(env->get("this").to_object().get("body")
+                              .to_string_view(), "auto"sv);
+      }, "Any"sv)),
+      false);
   return Value(std::move(obj));
 }
 
@@ -2232,14 +2247,32 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
   return http_result_to_value(std::move(r));
 }
 
-// Configure the request body from the `body` kwarg (post/put/request): a String
-// is sent whole; a Function is a producer — called per chunk, returning the next
-// chunk String or nil at end — streamed chunked so a big upload never lives in
-// memory at once. Anything else → TypeError. `ct` is the content_type kwarg.
-inline void http_setup_body(const Value& bodyv, const Value& ct,
+// Configure the request body from the `body` / `json` kwargs (post/put/request).
+// `json` (non-nil) serializes the value to JSON and sends it as
+// application/json. Otherwise `body`: a String is sent whole; a Function is a
+// producer — called per chunk, returning the next chunk String or nil at end —
+// streamed chunked so a big upload never lives in memory at once. `body` and
+// `json` together is a TypeError; a non-String/Function body is a TypeError.
+inline void http_setup_body(const Value& bodyv, const Value& jsonv,
+                            const Value& ct,
                             const std::shared_ptr<Environment>& env,
                             culebra::http::HttpRequest& req, HttpIntoState& st,
                             const char* ctx, long line, long col) {
+  bool has_json = jsonv.type != Value::Nil;
+  bool has_body = bodyv.type == Value::Function ||
+                  ((bodyv.type == Value::String ||
+                    bodyv.type == Value::StringView) &&
+                   !bodyv.to_string_view().empty());
+  if (has_json && has_body) {
+    throw CulebraError(
+        "TypeError",
+        std::format("{}: pass either body or json, not both", ctx), line, col);
+  }
+  if (has_json) {
+    req.body = json_stringify(jsonv, 0, false, 0);
+    req.content_type = "application/json";
+    return;
+  }
   req.content_type = ct.to_string();
   if (bodyv.type == Value::Function) {
     if (!st.cb_interp) st.cb_interp = std::make_shared<Interpreter>();
@@ -2302,6 +2335,10 @@ inline Value make_http_namespace() {
   // percent-encoded.
   auto params_param =
       FunctionValue::Parameter{"params", false, ""sv, nullptr, kw_default_nil()};
+  // `json` (post/put/request): serialize the value to JSON and send it as
+  // application/json. Mutually exclusive with `body`.
+  auto json_param =
+      FunctionValue::Parameter{"json", false, ""sv, nullptr, kw_default_nil()};
 
   // GET / DELETE / HEAD — no body.
   auto bodyless = [&](const char* method, const char* ctx) {
@@ -2329,7 +2366,7 @@ inline Value make_http_namespace() {
   auto withbody = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
         {url_param, body_param, ct_param, headers_param, timeout_param,
-         follow_param, into_param, params_param},
+         follow_param, into_param, params_param, json_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2338,8 +2375,9 @@ inline Value make_http_namespace() {
           req.url = env->get("url").to_string();
           http_fill_common(env, req, ctx, line, col);
           HttpIntoState st;
-          http_setup_body(env->get("body"), env->get("content_type"), env, req,
-                          st, ctx, line, col);
+          http_setup_body(env->get("body"), env->get("json"),
+                          env->get("content_type"), env, req, st, ctx, line,
+                          col);
           http_setup_into(env->get("into"), env, req, st, ctx, line, col);
           return http_run_into(req, st, ctx, line, col);
         },
@@ -2356,7 +2394,7 @@ inline Value make_http_namespace() {
       Value(FunctionValue(
           {{"method", false, "String"sv}, url_param, body_param, ct_param,
            headers_param, timeout_param, follow_param, into_param,
-           params_param},
+           params_param, json_param},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -2365,8 +2403,9 @@ inline Value make_http_namespace() {
             req.url = env->get("url").to_string();
             http_fill_common(env, req, "Http.request", line, col);
             HttpIntoState st;
-            http_setup_body(env->get("body"), env->get("content_type"), env,
-                            req, st, "Http.request", line, col);
+            http_setup_body(env->get("body"), env->get("json"),
+                            env->get("content_type"), env, req, st,
+                            "Http.request", line, col);
             http_setup_into(env->get("into"), env, req, st, "Http.request",
                             line, col);
             return http_run_into(req, st, "Http.request", line, col);
