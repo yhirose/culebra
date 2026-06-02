@@ -177,7 +177,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_abs(
 inline JitValue _culebra_numeric_reduce(const JitValue* args, int64_t n,
                                         int64_t line, int64_t col,
                                         bool pick_less) {
-  if (n < 2) throw_type_error_at(line, col);
+  // min/max are variadic over >=1 numeric arg (max(5) == 5), matching the
+  // interpreter's numeric_reduce (which rejects only the empty arg list).
+  if (n < 1) throw_type_error_at(line, col);
   bool any_float = false;
   for (int64_t i = 0; i < n; i++) {
     if (args[i].tag != TAG_LONG && args[i].tag != TAG_FLOAT) {
@@ -1996,17 +1998,16 @@ inline void install_jit_stdlib() { JitExtension::install(); }
 
 namespace _ns_adapt {
 
-[[noreturn]] inline void arity_error(const char* ns, const char* method,
+[[noreturn]] inline void arity_error(const char* /*ns*/, const char* /*method*/,
                                        int expected, int64_t got,
                                        int64_t line = 0, int64_t col = 0) {
-  // Bare builtin globals carry no namespace — render `method:` not `.method:`.
-  std::string qualified =
-      (ns && ns[0]) ? std::format("{}.{}", ns, method) : std::string(method);
+  // Nameless count message (see ns_fn_arity_error_message): the interpreter
+  // does not carry the qualified name on these FunctionValues, so dropping it
+  // keeps `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` byte-identical
+  // across backends.
   culebra::throw_runtime_error_at(
-      "ArityError",
-      std::format("{}: expected {} positional argument{}, got {}",
-                  qualified, expected, expected == 1 ? "" : "s", got),
-      line, col);
+      "ArityError", culebra::ns_fn_arity_error_message(expected, got), line,
+      col);
 }
 
 inline const char* take_str(JitValue v) {
@@ -4182,7 +4183,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto variadic_reduce = [&](const char* rt_name,
                                llvm::CmpInst::Predicate pred) -> llvm::Value* {
       auto n = argsAst.nodes.size();
-      if (n < 2) return nullptr;
+      // >=1 numeric arg (max(5) == 5). n==1 takes the general slab path
+      // below (the n==2 branch is just a no-alloca fast path).
+      if (n < 1) return nullptr;
       if (n == 2) {
         auto a = compile(*argsAst.nodes[0]);
         auto b = compile(*argsAst.nodes[1]);

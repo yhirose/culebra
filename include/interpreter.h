@@ -856,6 +856,15 @@ struct FunctionValue {
   // trait-default and namespace wrappers (not in any builtin table) are
   // excluded. See [[project_jit_error_symmetry]].
   bool builtin_arity_checked = false;
+  // True for the root stdlib functions (namespace methods like `Math.abs`
+  // and bare globals like `type_of`) that declare a fixed positional
+  // signature: invoke_user_function_with_args then rejects the wrong
+  // positional count with the same count-based ArityError the JIT raises.
+  // Set by mark_strict_arity_builtins after setup, so synthesized native
+  // closures (enum/class constructors, which look identical — body ==
+  // nullptr, fixed params) are NOT swept in. Variadic natives (min/max,
+  // range) are skipped at marking time.
+  bool strict_arity = false;
   // Defining AST for a user closure (fn / lambda / method), retained so the
   // closure can be REBUILT on another thread's heap by the isolate layer
   // (sendable.h): the eval std::function captures the *parent* Interpreter
@@ -5928,6 +5937,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
 
+    // Native built-in functions (namespace methods / bare globals, body ==
+    // nullptr) that declare a fixed positional signature reject the wrong
+    // positional count with a count-based ArityError, matching the JIT's
+    // _ns_adapt path so `Math.abs(1, 2)` / `let f = Math.abs; f()` agree.
+    // Value-type *methods* (is_builtin_method) are arity-checked at the call
+    // site with their own message; variadic / zero-declared-param natives
+    // (min/max, range, Tensor ctors — empty params reading __ARGS__, or
+    // *args) carry no positional cap and are skipped. The flag is set only on
+    // the root stdlib functions (see mark_strict_arity_builtins), so
+    // synthesized native closures (enum/class constructors) are unaffected.
+    if (f.strict_arity) {
+      auto b = builtin_arity_bounds(params);
+      if (!b.variadic && b.max > 0) {
+        long got = static_cast<long>(args.positional.size());
+        if (got < b.min || got > b.max) {
+          throw CulebraError("ArityError",
+                             ns_fn_arity_error_message(b.max, got),
+                             static_cast<long>(call_line),
+                             static_cast<long>(call_column));
+        }
+      }
+    }
+
     // A. Merge splats into a single name→value map (later splat wins).
     std::unordered_map<std::string_view, Value> merged;
     for (const auto& sv : args.splats) {
@@ -6258,6 +6290,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // interp symmetric with the JIT, which only knows the builtin tables
     // (value-type + dict + iterator), not trait defaults.
     wf.builtin_arity_checked = is_builtin && !method_name.empty();
+    // Namespace methods (Math.abs, ...) are reached through this wrapper, so
+    // carry the strict-arity flag through it or `Math.abs(1, 2)` would slip
+    // past the positional check that `type_of(1, 2)` (unwrapped) hits.
+    wf.strict_arity = pf.strict_arity;
     return wrapped;
   }
 

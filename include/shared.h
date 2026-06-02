@@ -86,6 +86,18 @@ inline std::string builtin_arity_error_message(std::string_view method,
                      max, got);
 }
 
+// Count-based arity error for a built-in *function* (namespace method or
+// bare global) invoked as a value with the wrong number of positional args:
+// "expected N positional argument(s), got M". Deliberately nameless: the
+// interpreter does not carry the qualified name on these FunctionValues, so a
+// nameless message lets both backends render byte-identical text for
+// `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` alike. Distinct from
+// builtin_arity_error_message, which names value-type *methods*.
+inline std::string ns_fn_arity_error_message(long expected, long got) {
+  return std::format("expected {} positional argument{}, got {}", expected,
+                     expected == 1 ? "" : "s", got);
+}
+
 // --- Numeric formatting / parsing ---
 
 // Shortest round-trip decimal for a double, with a forced decimal point

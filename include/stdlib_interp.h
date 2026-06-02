@@ -92,16 +92,22 @@ inline Value make_math_namespace() {
     return Value(acc);
   };
 
+  // Modeled as `min(*args)` / `max(*args)`: the >=1 positional args are read
+  // from __ARGS__ by numeric_reduce. Declaring `*args` (rather than an empty
+  // list) makes the arity variadic so they stay usable as higher-order
+  // callbacks (`map(Math.max)`), matching the JIT — mirrors range/iota.
   ns.initialize(
       "min",
-      Value(FunctionValue({}, [numeric_reduce](std::shared_ptr<Environment> env) {
+      Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
+                          [numeric_reduce](std::shared_ptr<Environment> env) {
         return numeric_reduce(env, [](double a, double b) { return a < b; });
       })),
       false);
 
   ns.initialize(
       "max",
-      Value(FunctionValue({}, [numeric_reduce](std::shared_ptr<Environment> env) {
+      Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
+                          [numeric_reduce](std::shared_ptr<Environment> env) {
         return numeric_reduce(env, [](double a, double b) { return a > b; });
       })),
       false);
@@ -3786,11 +3792,41 @@ inline void register_stdlib_lazy_modules(Environment& env) {
       MATCHERS_MODULE_SOURCE);
 }
 
+// Flag the root stdlib functions (namespace methods like `Math.abs` + bare
+// globals like `type_of`) that declare a fixed positional signature as
+// strict-arity, so invoke_user_function_with_args rejects the wrong
+// positional count with the same count-based ArityError the JIT raises.
+// Runs once, after setup and before any user code, so the synthesized native
+// closures created during eval (enum/class constructors — body == nullptr,
+// fixed params, otherwise indistinguishable) are never swept in. Variadic /
+// zero-positional-param natives (min/max, range, iota, Tensor ctors) carry no
+// cap and are left unflagged. Recurses into namespace objects (incl. nested,
+// e.g. `Encoding.html`).
+inline void _mark_strict_arity(Value& v) {
+  if (v.type == Value::Function) {
+    auto& f = v.get<FunctionValue>();
+    if (f.body == nullptr && !f.is_builtin_method) {
+      auto b = builtin_arity_bounds(*f.params);
+      if (!b.variadic && b.max > 0) f.strict_arity = true;
+    }
+  } else if (v.type == Value::Object) {
+    auto& obj = v.get<ObjectValue>();
+    if (obj.properties) {
+      for (auto& entry : *obj.properties) _mark_strict_arity(entry.second.val);
+    }
+  }
+}
+
+inline void mark_strict_arity_builtins(Environment& env) {
+  for (auto& [name, sym] : env.dictionary) _mark_strict_arity(sym.val);
+}
+
 inline std::shared_ptr<Environment> environment(
     const std::vector<std::string>& argv = {}) {
   auto env = std::make_shared<Environment>();
   setup_core_globals(*env);
   setup_built_in_functions(*env, argv);
+  mark_strict_arity_builtins(*env);
   register_stdlib_lazy_modules(*env);
   return env;
 }
