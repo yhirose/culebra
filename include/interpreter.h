@@ -2636,21 +2636,24 @@ inline std::optional<Value> _iter_next_value(const Value& upstream) {
   return _invoke_method_no_args(upstream, "next");
 }
 
+// Bind positional callback args into a function frame (defined below, after
+// bind_overflow_args). Forward-declared so the iterator callback invokers can
+// share the one binder that handles *args / defaults / __ARGS__ builtins.
+inline void bind_callback_params(Environment& frame, const FunctionValue& f,
+                                 std::initializer_list<Value> args);
+
 // Invoke a user-supplied callable (mapper/predicate/reducer callback)
 // on the given argument. Used by Iterator methods where the callback
 // body runs repeatedly per step. No `this` is bound — callbacks are
 // free-function calls — but `self` refers to the callback for
-// recursion. Wrong arity falls through silently (0-param accepts),
-// matching the existing Array higher-order conventions.
+// recursion. Arity is validated once at the iterator HOF entry
+// (check_callback_arity); the binder handles *args / defaults uniformly.
 inline Value _invoke_callback(const Value& fn_val, const Value& a) {
   const auto& fn = fn_val.to_function();
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
   env->initialize("self", fn_val, false);
-  if (!fn.params->empty()) {
-    const auto& p = (*fn.params)[0];
-    env->initialize(p.name, a, p.mut);
-  }
+  bind_callback_params(*env, fn, {a});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
   try {
@@ -2666,13 +2669,7 @@ inline Value _invoke_callback(const Value& fn_val, const Value& a,
   auto env = std::make_shared<Environment>();
   env->is_function_frame = true;
   env->initialize("self", fn_val, false);
-  const auto& params = *fn.params;
-  if (!params.empty()) {
-    env->initialize(params[0].name, a, params[0].mut);
-  }
-  if (params.size() >= 2) {
-    env->initialize(params[1].name, b, params[1].mut);
-  }
+  bind_callback_params(*env, fn, {a, b});
   env->initialize("__LINE__", Value(0L), false);
   env->initialize("__COLUMN__", Value(0L), false);
   try {
@@ -2869,6 +2866,67 @@ inline void bind_overflow_args(
   }
 }
 
+// Bind `args` positionally into `frame` for callback `f`, routing overflow
+// into a `*args` catch-all and honoring literal/kw-only defaults the same way
+// the full call binder does. Every higher-order callback invocation goes
+// through here so a variadic (`fn (*xs)`) or defaulted callback binds exactly
+// like a direct call. The caller sets up `self` and seeds __LINE__/__COLUMN__;
+// this only binds the parameters. `args` is an initializer_list so the common
+// 1-2 arg call sites avoid a heap-backed vector.
+inline void bind_callback_params(Environment& frame, const FunctionValue& f,
+                                 std::initializer_list<Value> args) {
+  const auto& params = *f.params;
+  size_t regulars = regular_param_count(params);
+  size_t pos = 0;
+  for (const auto& p : params) {
+    if (p.kwargs_rest) {
+      frame.initialize(p.name, Value(ObjectValue{}), false);
+      continue;
+    }
+    if (p.args_rest) continue;  // bound from the overflow Array below
+    if (p.kw_only) {
+      if (p.default_value) frame.initialize(p.name, *p.default_value, p.mut);
+      continue;
+    }
+    if (pos < args.size()) {
+      frame.initialize(p.name, args.begin()[pos], p.mut);
+      pos++;
+    } else if (p.default_value) {
+      frame.initialize(p.name, *p.default_value, p.mut);
+    }
+  }
+  // Only build the overflow Array (and bind `__ARGS__` / `*args`) when there
+  // is surplus or a `*args` catch-all to fill. A plain fixed-arity callback —
+  // the common case — skips the per-call ArrayValue allocation and its GC
+  // registration entirely; every `__ARGS__`-reading builtin either declares
+  // `*args` or has zero regular params, so it still falls inside this guard.
+  if (regulars < args.size() || has_args_rest(params)) {
+    ArrayValue extras;
+    for (size_t i = regulars; i < args.size(); ++i) {
+      extras.values->push_back(args.begin()[i]);
+    }
+    bind_overflow_args(params, frame, Value(std::move(extras)));
+  }
+}
+
+// Reject a higher-order callback that can't be invoked with exactly
+// `expected` positional args, mirroring the JIT's `_culebra_expect_callback`
+// so both backends accept/reject the same callbacks (see
+// `callback_arity_accepts`). Thrown once per HOF call (before the loop) so an
+// empty receiver still errors symmetrically. Position is left unset for the
+// eval wrapper to backfill from the call site, matching the JIT's call-site
+// line/col.
+inline void check_callback_arity(const FunctionValue& f, long expected,
+                                 std::string_view method) {
+  auto b = builtin_arity_bounds(*f.params);
+  long cb_max = b.variadic ? -1 : b.max;
+  if (!callback_arity_accepts(b.min, cb_max, expected)) {
+    throw CulebraError("TypeError",
+        std::format("type error: {} expects a {}-parameter function",
+                    method, expected));
+  }
+}
+
 // Resolve a higher-order builtin's callback argument to a FunctionValue.
 // A plain function is returned as-is; a callable class instance (own/proto
 // `__call__`) is wrapped so the builtin invokes it like any function, with
@@ -2901,30 +2959,10 @@ inline Value invoke_unary_callback(std::shared_ptr<Environment> callEnv,
   auto inner = std::make_shared<Environment>(callEnv);
   inner->is_function_frame = true;
   inner->initialize("self", callEnv->get("f"), false);
-  const auto& params = *f.params;
-  // Route the element to __ARGS__ only when there is no leading positional
-  // slot for it: an empty param list (`iota`) or a keyword-only first param
-  // (`range`'s `step`). A builtin reading __ARGS__ then sees the arg the way
-  // the full binder would supply it. Every other shape — including a leading
-  // `*rest`/`**rest` — binds the first param, matching the full binder so the
-  // *rest case keeps erroring symmetrically with the JIT (see user-variadic
-  // task) rather than NameError'ing on an unbound name.
-  bool to_args = params.empty() || params[0].kw_only;
-  if (!to_args) {
-    inner->initialize(params[0].name, v, params[0].mut);
-  } else {
-    ArrayValue rest;
-    rest.values->push_back(v);
-    inner->initialize("__ARGS__", Value(std::move(rest)), false);
-  }
-  // Honor literal defaults for the remaining params (e.g. `range`'s kw-only
-  // `step` defaults to 1), matching the full call binder. AST defaults need
-  // the interpreter to evaluate and are out of this shortcut's reach.
-  for (size_t i = 0; i < params.size(); i++) {
-    if (i == 0 && !to_args) continue;
-    const auto& p = params[i];
-    if (p.default_value) inner->initialize(p.name, *p.default_value, p.mut);
-  }
+  // Bind the element through the shared callback binder so a `*args` /
+  // defaulted / __ARGS__-reading (range/iota) callback binds exactly like a
+  // direct call. Arity is validated once at the HOF entry (check_callback_arity).
+  bind_callback_params(*inner, f, {v});
   // A function frame doesn't inherit the caller's __LINE__/__COLUMN__, so a
   // builtin callback that reads them (`to_long`/`to_float`) would NameError
   // when handed to a HOF (`map(to_float)`). Seed 0 like _invoke_callback.
@@ -3244,6 +3282,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "map");
                              ArrayValue out;
                              out.values->reserve(arr.values->size());
                              for (const auto& v : *arr.values) {
@@ -3257,6 +3296,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "filter");
                              ArrayValue out;
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
@@ -3271,6 +3311,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "for_each");
                              for (const auto& v : *arr.values) {
                                invoke_unary_callback(callEnv, f, v);
                              }
@@ -3282,19 +3323,15 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
            [](std::shared_ptr<Environment> callEnv) {
              const auto& arr = callEnv->get("this").to_array();
              auto f = as_callback(callEnv->get("f"));
+             check_callback_arity(f, 2, "reduce");
              Value acc = callEnv->get("init");
              for (const auto& v : *arr.values) {
                auto inner = std::make_shared<Environment>(callEnv);
                inner->is_function_frame = true;
                inner->initialize("self", callEnv->get("f"), false);
-               if (f.params->size() >= 1) {
-                 const auto& p0 = (*f.params)[0];
-                 inner->initialize(p0.name, acc, p0.mut);
-               }
-               if (f.params->size() >= 2) {
-                 const auto& p1 = (*f.params)[1];
-                 inner->initialize(p1.name, v, p1.mut);
-               }
+               // Bind (acc, elem) through the shared binder so a `*args` /
+               // defaulted reducer binds like a direct call.
+               bind_callback_params(*inner, f, {acc, v});
                // See invoke_unary_callback: a builtin reducer reading
                // __LINE__/__COLUMN__ would NameError without these.
                inner->initialize("__LINE__", Value(0L), false);
@@ -3312,6 +3349,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "find");
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
                                        .to_bool()) return v;
@@ -3323,6 +3361,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "any");
                              for (const auto& v : *arr.values) {
                                if (invoke_unary_callback(callEnv, f, v)
                                        .to_bool()) return Value(true);
@@ -3334,6 +3373,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "all");
                              for (const auto& v : *arr.values) {
                                if (!invoke_unary_callback(callEnv, f, v)
                                         .to_bool()) return Value(false);
@@ -3345,6 +3385,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "flat_map");
                              ArrayValue out;
                              for (const auto& v : *arr.values) {
                                auto r = invoke_unary_callback(callEnv, f, v);
@@ -3406,6 +3447,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
                              auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "sort_by");
                              auto& vs = *arr.values;
                              std::vector<std::pair<Value, size_t>> keyed;
                              keyed.reserve(vs.size());
@@ -4295,6 +4337,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto f = callEnv->get("f");
+         check_callback_arity(f.to_function(), 1, "for_each");
          while (auto v = _iter_next_value(upstream)) {
            _invoke_callback(f, *v);
          }
@@ -4307,6 +4350,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
          auto upstream = callEnv->get("this");
          auto acc = callEnv->get("init");
          auto f = callEnv->get("f");
+         check_callback_arity(f.to_function(), 2, "reduce");
          while (auto v = _iter_next_value(upstream)) {
            acc = _invoke_callback(f, acc, *v);
          }
@@ -4318,6 +4362,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto p = callEnv->get("p");
+         check_callback_arity(p.to_function(), 1, "find");
          while (auto v = _iter_next_value(upstream)) {
            if (_invoke_callback(p, *v).to_bool()) return *v;
          }
@@ -4329,6 +4374,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto p = callEnv->get("p");
+         check_callback_arity(p.to_function(), 1, "any");
          while (auto v = _iter_next_value(upstream)) {
            if (_invoke_callback(p, *v).to_bool()) return Value(true);
          }
@@ -4340,6 +4386,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto p = callEnv->get("p");
+         check_callback_arity(p.to_function(), 1, "all");
          while (auto v = _iter_next_value(upstream)) {
            if (!_invoke_callback(p, *v).to_bool()) return Value(false);
          }
@@ -4437,7 +4484,13 @@ inline void setup_core_globals(Environment& env) {
   env.initialize(
       "iota",
       Value(FunctionValue(
-          {}, [](std::shared_ptr<Environment> callEnv) {
+          // Modeled as `iota(*args)` — the 1-or-2 positional args are read
+          // from __ARGS__ by _parse_range_args. Declaring `*args` (rather
+          // than an empty list) makes the arity variadic so iota stays usable
+          // as a higher-order callback (`map(iota)`), matching the JIT's
+          // JIT_VARIADIC_ARITY treatment and the NsParamMeta args_rest model.
+          {FunctionValue::Parameter::make_args_rest("args")},
+          [](std::shared_ptr<Environment> callEnv) {
             auto [start, end] = _parse_range_args(callEnv, "iota");
             ArrayValue out;
             if (end > start) out.values->reserve(end - start);
@@ -4455,7 +4508,12 @@ inline void setup_core_globals(Environment& env) {
   env.initialize(
       "range",
       Value(FunctionValue(
-          {{"step", false, {}, nullptr, kw_default_one(), true}},
+          // Modeled as `range(*args, step=1)`: the 1-or-2 positional args are
+          // read from __ARGS__, `step` is keyword-only. The `*args` makes the
+          // arity variadic so range stays usable as a higher-order callback
+          // (`map(range)`), matching the JIT's JIT_VARIADIC_ARITY treatment.
+          {FunctionValue::Parameter::make_args_rest("args"),
+           {"step", false, {}, nullptr, kw_default_one(), true}},
           [](std::shared_ptr<Environment> callEnv) {
             auto [start, end] = _parse_range_args(callEnv, "range");
             auto step = callEnv->get("step").to_long();

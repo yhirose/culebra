@@ -2871,6 +2871,31 @@ words.sort_by(fn (s) { s.size() })
 puts(words)                                      # ['fig', 'apple', 'banana']
 ```
 
+**Callback arity.** A higher-order method calls its callback with a fixed
+number of arguments (one for `map` / `filter` / `find` / …, two for
+`reduce`), and the callback must accept exactly that many. A function with
+the wrong fixed arity is a `TypeError` — checked once before iterating, so it
+fails even on an empty receiver:
+
+```culebra
+[1, 2, 3].reduce(0, |x| x)        # !! reduce expects a 2-parameter function
+```
+
+```culebra
+[1, 2, 3].map(fn (a, b) { a })    # !! map expects a 1-parameter function
+```
+
+A `*args` callback absorbs whatever it is given, so it works at any arity —
+the per-call arguments arrive as the rest Array:
+
+```culebra
+puts([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
+puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+```
+
+This is why `range` / `iota` (variadic builtins) can be passed directly as
+callbacks. The rule is identical under the interpreter, `--jit`, and AOT.
+
 ### 17.3 Object methods
 
 | Signature                        | Description                                |
@@ -3067,10 +3092,10 @@ or hand it to a higher-order function and it behaves like any closure,
 on both backends.
 
 ```culebra
-[1, 2, 3].map(type_of)               # => ['Long', 'Long', 'Long']
-[1, 2, 3].map(range).map(|r| r.collect())  # => [[0], [0, 1], [0, 1, 2]]
+puts([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
+puts([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-f(0, 10, step: 2).collect()          # => [0, 2, 4, 6, 8]
+puts(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 ```
 
 A direct call is still the fast path; the closure form is used only

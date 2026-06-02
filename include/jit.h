@@ -3728,11 +3728,19 @@ struct JitParamMeta {
   // surfaces `T` / `Array<T>` for Generic class methods. Same layout
   // as `type_names`; empty string when unannotated.
   const char* const* declared_type_names;
+  // Positional callback-arity bounds (single source of truth shared with
+  // interp via `callback_arity_accepts`): `cb_min` is the required
+  // positional count, `cb_max` the total regular positional count, or -1
+  // when a `*args` catch-all removes the upper bound. Consulted by
+  // `_culebra_expect_callback` so the JIT accepts/rejects higher-order
+  // callbacks exactly like the interpreter.
+  int64_t cb_min;
+  int64_t cb_max;
 };
 
 // Layout matches the LLVM struct emitted in emit_param_meta_global.
 // Adding a field requires updating both — the assert catches drift.
-static_assert(sizeof(JitParamMeta) == 10 * sizeof(int64_t),
+static_assert(sizeof(JitParamMeta) == 12 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
 
 // thread_local: keyed by per-thread JIT-compiled fn pointers (see the
@@ -5886,6 +5894,20 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
+  // Whether `cls` accepts exactly `expected_arity` positional callback args,
+  // using the shared callback-arity rule (interp parity). A builtin variadic
+  // ns-method closure (JIT_VARIADIC_ARITY) accepts any count — its trampoline
+  // validates the real arity. A user closure consults its registered param
+  // meta's cb_min/cb_max; absent meta (rare) falls back to exact match.
+  auto accepts = [&](JitClosure* cls) -> bool {
+    if (cls->arity == JIT_VARIADIC_ARITY) return true;
+    const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
+    if (meta) {
+      return culebra::callback_arity_accepts(
+          meta->cb_min, meta->cb_max, static_cast<long>(expected_arity));
+    }
+    return cls->arity == expected_arity;
+  };
   if (fn_tag != TAG_FUNC) {
     // A callable class instance (own/proto `__call__`) stands in for a
     // function: synthesize an adapter closure that forwards to __call__
@@ -5896,7 +5918,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
       auto* e = obj->proto ? _find_property(obj, "__call__") : nullptr;
       if (e && e->value.tag == TAG_FUNC) {
         auto* call_cls = reinterpret_cast<JitClosure*>(e->value.data);
-        if (call_cls->arity != expected_arity) {
+        if (!accepts(call_cls)) {
           throw culebra::CulebraError("TypeError", std::format(
               "type error: {} expects a {}-parameter function",
               method_name, expected_arity), line, col);
@@ -5924,7 +5946,7 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
         "type error: parameter 'f' expects Function", line, col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
-  if (fn->arity != expected_arity && fn->arity != JIT_VARIADIC_ARITY) {
+  if (!accepts(fn)) {
     throw culebra::CulebraError("TypeError", std::format(
         "type error: {} expects a {}-parameter function",
         method_name, expected_arity), line, col);
@@ -14160,10 +14182,23 @@ struct JIT {
     // Restore outer context before emitting the closure at the caller's
     // insertion point — the cell captures come from the outer scope.
     saver.restore();
+    // Positional callback-arity bounds, mirroring interp's
+    // builtin_arity_bounds: regular params are those before the kw-only
+    // separator and the `**kwargs` slot (which is always last); `*args`
+    // makes the upper bound unbounded (cb_max = -1). Consulted by
+    // _culebra_expect_callback so HOF callback arity matches the interpreter.
+    size_t regular_end = firstKwOnlyIdx ? *firstKwOnlyIdx
+                       : kwargsRestIdx ? *kwargsRestIdx
+                                       : paramNames.size();
+    long cbMin = 0;
+    for (size_t i = 0; i < regular_end; i++) {
+      if (!paramDefaults[i]) cbMin++;
+    }
+    long cbMax = argsRestName ? -1 : static_cast<long>(regular_end);
     auto* paramMeta = emit_param_meta_global(
         fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx,
         std::string(declName), std::string(returnType), paramMuts,
-        paramTypeNames, paramDeclaredTypeNames);
+        paramTypeNames, paramDeclaredTypeNames, cbMin, cbMax);
     return emit_closure_build(fn, info, paramNames.size(), paramMeta);
   }
 
@@ -14183,7 +14218,8 @@ struct JIT {
       const std::string& returnType = {},
       const std::vector<bool>& paramMuts = {},
       const std::vector<std::string>& paramTypes = {},
-      const std::vector<std::string>& paramDeclaredTypes = {}) {
+      const std::vector<std::string>& paramDeclaredTypes = {},
+      long cbMin = 0, long cbMax = 0) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
     auto i8Ty = builder_.getInt8Ty();
@@ -14200,7 +14236,7 @@ struct JIT {
           returnType, fnBase + ".pmeta.ret");
       auto metaTy = llvm::StructType::get(ctx_,
           {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-           ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
+           ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty});
       auto nullPtr = llvm::ConstantPointerNull::get(ptrTy);
       auto metaInit = llvm::ConstantStruct::get(
           metaTy,
@@ -14210,7 +14246,9 @@ struct JIT {
            llvm::ConstantInt::get(i64Ty, -1),
            llvm::ConstantExpr::getBitCast(fnNameG, ptrTy),
            llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
-           nullPtr, nullPtr, nullPtr});
+           nullPtr, nullPtr, nullPtr,
+           llvm::ConstantInt::get(i64Ty, cbMin),
+           llvm::ConstantInt::get(i64Ty, cbMax)});
       auto metaGlobal = new llvm::GlobalVariable(
           *module_, metaTy, /*isConstant=*/true,
           llvm::GlobalValue::PrivateLinkage, metaInit,
@@ -14312,7 +14350,7 @@ struct JIT {
     // fields at the end so kwargs dispatch consumers stay unaffected.
     auto metaTy = llvm::StructType::get(ctx_,
         {ptrTy, ptrTy, i64Ty, i64Ty, i64Ty,
-         ptrTy, ptrTy, ptrTy, ptrTy, ptrTy});
+         ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty});
     auto metaInit = llvm::ConstantStruct::get(
         metaTy,
         {llvm::ConstantExpr::getBitCast(namesGlobal, ptrTy),
@@ -14327,7 +14365,9 @@ struct JIT {
          llvm::ConstantExpr::getBitCast(retTyG, ptrTy),
          llvm::ConstantExpr::getBitCast(mutBitsGlobal, ptrTy),
          llvm::ConstantExpr::getBitCast(typesGlobal, ptrTy),
-         llvm::ConstantExpr::getBitCast(declaredGlobal, ptrTy)});
+         llvm::ConstantExpr::getBitCast(declaredGlobal, ptrTy),
+         llvm::ConstantInt::get(i64Ty, cbMin),
+         llvm::ConstantInt::get(i64Ty, cbMax)});
     auto metaGlobal = new llvm::GlobalVariable(
         *module_, metaTy, /*isConstant=*/true,
         llvm::GlobalValue::PrivateLinkage, metaInit,

@@ -1,0 +1,66 @@
+# Conformance: §18 (builtins / higher-order functions). See docs/language.md.
+#
+# Higher-order callback arity is validated identically by both backends: a
+# callback must be invocable with exactly the arg count the HOF supplies
+# (map/filter/... → 1, reduce → 2). A `*args` callback absorbs any surplus, so
+# it works for any arity; a fixed-arity callback must match exactly. The check
+# fires once at the HOF entry, so an empty receiver still rejects a bad arity.
+#
+# Run: ./build/culebra tests/test_callback_arity.cul
+#      ./build/culebra --jit tests/test_callback_arity.cul
+
+# --- Variadic callbacks are accepted and bind *args correctly ---------------
+# A `*args` callback collects the per-element args into an Array.
+assert_eq([10, 20].map(fn (*xs) { xs.size() }), [1, 1])          # map → 1 arg
+assert_eq([1, 2, 3].reduce(0, fn (*xs) { xs.size() }), 2)        # reduce → 2 args
+assert_eq([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }), 3) # acc + 1 each
+assert_eq([1, 2, 3].map(fn (a, *xs) { a }), [1, 2, 3])           # rest empty
+
+# Same through iterators (terminal HOFs) and as a lazy stage's terminal.
+assert_eq(range(1, 4).find(fn (*xs) { xs[0] == 2 }), 2)
+assert_eq(range(1, 4).reduce(0, fn (a, b) { a + b }), 6)
+
+# range / iota stay usable as higher-order callbacks (variadic builtins).
+assert_eq([2, 4].map(iota), [[0, 1], [0, 1, 2, 3]])
+
+# --- Fixed-arity mismatches are rejected, identically on both backends ------
+# #10: a 1-parameter function can't be a 2-arg reducer (was silently 0 in interp).
+let r10 = try { [1, 2, 3].reduce(0, |x| x); nil } catch e { e }
+assert_eq(r10.kind, 'TypeError')
+assert_eq(r10.message, 'type error: reduce expects a 2-parameter function')
+
+# A 2-parameter function can't be a 1-arg mapper (was silently accepted in interp).
+let rm2 = try { [1, 2, 3].map(fn (a, b) { a }); nil } catch e { e }
+assert_eq(rm2.kind, 'TypeError')
+assert_eq(rm2.message, 'type error: map expects a 1-parameter function')
+
+# A 0-parameter function can't be a 1-arg mapper either.
+let rm0 = try { [1, 2, 3].map(fn () { 9 }); nil } catch e { e }
+assert_eq(rm0.kind, 'TypeError')
+
+# Too many params for reduce.
+let r3 = try { [1, 2, 3].reduce(0, fn (a, b, c) { a }); nil } catch e { e }
+assert_eq(r3.kind, 'TypeError')
+
+# A defaulted extra param does not shrink the required callback arity: a HOF
+# always supplies its fixed count, so `fn (a, b = 9)` is rejected by `map`
+# (expects exactly 1) on both backends rather than diverging.
+let rd = try { [1, 2, 3].map(fn (a, b = 9) { a + b }); nil } catch e { e }
+assert_eq(rd.kind, 'TypeError')
+
+# The same fixed-arity function IS accepted where the count matches.
+assert_eq([1, 2, 3].reduce(0, fn (a, b = 9) { a + b }), 6)
+
+# --- The check fires before iterating, so an empty receiver still errors ----
+let re = try { [].map(fn (a, b) { a }); nil } catch e { e }
+assert_eq(re.kind, 'TypeError')
+let rei = try { range(5, 5).reduce(0, |x| x); nil } catch e { e }
+assert_eq(rei.kind, 'TypeError')
+
+# --- Callable instances (`__call__`) follow the same rule -------------------
+class Dbl { new() {} __call__(x) { x * 2 } }
+class Two { new() {} __call__(a, b) { a } }
+assert_eq([1, 2, 3].map(Dbl.new()), [2, 4, 6])           # __call__ arity matches
+let rc = try { [1, 2, 3].map(Two.new()); nil } catch e { e }  # 2-arg __call__ to map
+assert_eq(rc.kind, 'TypeError')
+assert_eq(rc.message, 'type error: map expects a 1-parameter function')

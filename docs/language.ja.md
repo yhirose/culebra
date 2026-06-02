@@ -2707,6 +2707,30 @@ words.sort_by(fn (s) { s.size() })
 puts(words)                                      # ['fig', 'apple', 'banana']
 ```
 
+**コールバックの引数個数。** 高階メソッドはコールバックを固定個数の引数で呼ぶ
+（`map` / `filter` / `find` などは 1 個、`reduce` は 2 個）。コールバックは
+ちょうどその個数を受け取れなければならない。固定引数個数が合わない関数は
+`TypeError`。チェックは反復の前に 1 度だけ行われるので、空のレシーバでも失敗する:
+
+```culebra
+[1, 2, 3].reduce(0, |x| x)        # !! reduce expects a 2-parameter function
+```
+
+```culebra
+[1, 2, 3].map(fn (a, b) { a })    # !! map expects a 1-parameter function
+```
+
+`*args` コールバックは渡された分をすべて吸収するので任意の個数で使える。各呼び出しの
+引数は rest 配列として届く:
+
+```culebra
+puts([10, 20].map(fn (*xs) { xs.size() }))                # => [1, 1]
+puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
+```
+
+`range` / `iota`（可変長ビルトイン）をそのままコールバックとして渡せるのはこのため。
+この規則はインタプリタ・`--jit`・AOT で同一。
+
 ### 17.3 オブジェクトメソッド
 
 | シグネチャ                        | 説明                                       |
@@ -2897,10 +2921,10 @@ fusion / specialisation の対象として認識し、言語全体の `for`-in �
 高階関数へ渡したりすると、両バックエンドでクロージャと同じように振る舞います。
 
 ```culebra
-[1, 2, 3].map(type_of)               # => ['Long', 'Long', 'Long']
-[1, 2, 3].map(range).map(|r| r.collect())  # => [[0], [0, 1], [0, 1, 2]]
+puts([1, 2, 3].map(type_of))                     # => ['Long', 'Long', 'Long']
+puts([1, 2, 3].map(range).map(|r| r.collect()))  # => [[0], [0, 1], [0, 1, 2]]
 let f = range
-f(0, 10, step: 2).collect()          # => [0, 2, 4, 6, 8]
+puts(f(0, 10, step: 2).collect())                # => [0, 2, 4, 6, 8]
 ```
 
 直接呼び出しは引き続き fast path で、クロージャ形は名前が値の位置に

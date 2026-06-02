@@ -888,6 +888,26 @@ inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
           has_args_rest(params)};
 }
 
+// Whether a callback declaring `cb_min` required and `cb_max` total regular
+// positional params (cb_max < 0 means a `*args` catch-all removed the upper
+// bound) can stand in for a higher-order callback invoked with exactly
+// `expected` positional args. The single source of truth both backends
+// consult (interp's `check_callback_arity`, the JIT's
+// `_culebra_expect_callback`) so they accept and reject the same callbacks.
+//
+// A variadic callback absorbs any surplus, so it only needs its required
+// params met (`expected >= cb_min`). A fixed-arity callback must be called
+// with *exactly* its regular count: a HOF always supplies `expected` args, so
+// accepting fewer would leave a defaulted param unfilled — and a callback's
+// parameter defaults are arbitrary expressions only the full call binder can
+// evaluate, which the per-element callback path deliberately doesn't run.
+// Requiring `expected == cb_max` means every regular param is positionally
+// filled, so no default ever needs evaluating and both backends behave
+// identically (matching the JIT's historical exact-arity callback rule).
+inline bool callback_arity_accepts(long cb_min, long cb_max, long expected) {
+  return cb_max < 0 ? expected >= cb_min : expected == cb_max;
+}
+
 // For a PARAMETER AST node, returns the DEFAULT_VALUE's inner expression
 // (or nullptr if the parameter has no default). PARAMETER layout is
 // `[MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?]` and the
