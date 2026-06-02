@@ -378,3 +378,17 @@ assert_eq(r_ik.message, "unknown keyword argument 'step'")
 let r_ur = try { (0).range(5, 10); nil } catch e { e }       # UFCS, 3 total positional
 assert_eq(r_ur.kind, 'ArityError')
 assert_eq(r_ur.message, "'range' takes 1 to 2 arguments but 3 given")
+
+# Same diagnostics through the value/closure path (range/iota as first-class
+# values routed via call_with_kwargs), not just the direct-call fast path.
+let r_sp = try { iota(0, 6, **{step: 2}); nil } catch e { e }   # iota has no step
+assert_eq(r_sp.kind, 'TypeError')
+assert_eq(r_sp.message, "unknown keyword argument 'step'")
+
+let r_vp = try { let f = range; f(0, 10, 5); nil } catch e { e } # 3rd positional
+assert_eq(r_vp.kind, 'ArityError')
+assert_eq(r_vp.message, "'range' takes 1 to 2 arguments but 3 given")
+
+let r_bo = try { range(0, 10, **{bogus: 1}); nil } catch e { e }
+assert_eq(r_bo.kind, 'TypeError')
+assert_eq(r_bo.message, "unknown keyword argument 'bogus'")

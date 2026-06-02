@@ -51,3 +51,15 @@ assert_eq([3, 5].map(iota), [[0, 1, 2], [0, 1, 2, 3, 4]])
 # Another variadic builtin (Math.min) bound and called directly.
 let mn = Math.min
 assert_eq(mn(3, 1, 2), 1)
+
+# range's keyword-only `step` and `**` splat survive the value/closure path,
+# not just the direct-call fast path. (The bare-positional and kwarg/splat
+# calls all build the same args-rest slab.)
+assert_eq(r(0, 10, step: 2).collect(), [0, 2, 4, 6, 8])
+assert_eq(r(0, 10, **{step: 3}).collect(), [0, 3, 6, 9])
+let kw = {step: 2}
+assert_eq(range(0, 10, **kw).collect(), [0, 2, 4, 6, 8])   # direct splat
+
+# Args-rest arity is validated off the collected positionals: 1 arg is `end`,
+# a stray 3rd positional is an error even through the closure path.
+assert_eq(r(7).collect(), [0, 1, 2, 3, 4, 5, 6])

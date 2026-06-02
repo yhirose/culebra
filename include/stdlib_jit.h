@@ -2091,31 +2091,38 @@ inline JitValue _ns_global_hash(JitValue* a, int64_t) {
       culebra_runtime_hash_any(a[0].tag, a[0].data, 0, 0));
 }
 
-// range/iota as first-class values. Variadic (1-2 positional), so the
-// closure trampoline skips its fixed-arity check and the adapter both
-// validates the count — emitting the same ArityError the direct-call fast
-// path does — and remaps 1 arg to {0, n} / 2 args to {start, end}. Args are
-// strict-Long (never Float): same TypeError wording as the fast path's
+// range/iota as first-class values, via the args-rest NsParamMeta (kRangeMeta
+// / kIotaMeta): the resolver/trampoline hand a canonical slab whose first slot
+// is the positional-args Array and (for range) whose second slot is `step`.
+// The adapter validates the 1-2 arg count — same ArityError the direct-call
+// fast path emits — and remaps 1 arg to {0, n} / 2 args to {start, end}. Args
+// are strict-Long (never Float): same TypeError wording as the fast path's
 // value_to_long, though the position falls back to 0:0 since the NsMethod
 // adapter ABI carries no call-site line/col.
 inline int64_t _range_arg_long(JitValue v) {
   if (v.tag != TAG_LONG) culebra_runtime_type_error_typed(0, 0, "Long", v.tag);
   return v.data;
 }
-inline JitValue _ns_global_range(JitValue* a, int64_t n) {
-  if (n < 1 || n > 2)
+// Resolve {start, end} from the collected positionals Array (1 arg → {0, n}).
+inline void _range_bounds(JitValue argsArray, const char* name,
+                          int64_t& start, int64_t& end) {
+  auto* arr = reinterpret_cast<JitArray*>(argsArray.data);
+  int64_t cnt = arr->size;
+  if (cnt < 1 || cnt > 2)
     throw_runtime_error_at("ArityError",
-        builtin_arity_error_message("range", 1, 2, n), 0, 0);
-  int64_t start = n == 2 ? _range_arg_long(a[0]) : 0;
-  int64_t end = _range_arg_long(a[n - 1]);
-  return _ns_adapt::v_object(culebra_runtime_math_range(start, end, 1, 0, 0));
+        builtin_arity_error_message(name, 1, 2, cnt), 0, 0);
+  start = cnt == 2 ? _range_arg_long(arr->items[0]) : 0;
+  end = _range_arg_long(arr->items[cnt - 1]);
 }
-inline JitValue _ns_global_iota(JitValue* a, int64_t n) {
-  if (n < 1 || n > 2)
-    throw_runtime_error_at("ArityError",
-        builtin_arity_error_message("iota", 1, 2, n), 0, 0);
-  int64_t start = n == 2 ? _range_arg_long(a[0]) : 0;
-  int64_t end = _range_arg_long(a[n - 1]);
+inline JitValue _ns_global_range(JitValue* a, int64_t) {
+  int64_t start, end;
+  _range_bounds(a[0], "range", start, end);
+  int64_t step = _range_arg_long(a[1]);
+  return _ns_adapt::v_object(culebra_runtime_math_range(start, end, step, 0, 0));
+}
+inline JitValue _ns_global_iota(JitValue* a, int64_t) {
+  int64_t start, end;
+  _range_bounds(a[0], "iota", start, end);
   return _ns_adapt::v_array(culebra_runtime_iota(start, end));
 }
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses
@@ -2820,11 +2827,19 @@ struct NsParamMeta {
   int n_params;
   int kwargs_rest_idx;    // -1 = none
   int first_kw_only_idx;  // -1 = none
+  // Index of the positional catch-all (`*args`) slot, or -1. All positional
+  // arguments collect into an Array here (range/iota: the 1-2 start/end args),
+  // letting a method mix variadic positionals with keyword-only params the
+  // way the interp binder does. Assumes no regular positional param precedes
+  // it (true for range/iota). Default-initialized so existing aggregate
+  // initializers (which omit it) keep -1.
+  int args_rest_idx = -1;
 };
 
 inline JitValue _ns_def_nil()   { return {TAG_NIL, 0}; }
 inline JitValue _ns_def_false() { return {TAG_BOOL, 0}; }
 inline JitValue _ns_def_zero()  { return {TAG_LONG, 0}; }
+inline JitValue _ns_def_one()   { return {TAG_LONG, 1}; }
 inline JitValue _ns_def_empty_str() {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(""))};
 }
@@ -3098,10 +3113,85 @@ inline const NsConstant kNsConstants[] = {
 
 // --- Trampoline + factory + lazy table ---
 
+// Build the canonical slab for an args-rest method (range/iota): every
+// positional collects into a fresh Array at `args_rest_idx` (these methods
+// have no regular positional param before it), and each remaining slot fills
+// from `merged` kwargs (moved out) or its default. Mirrors the interp binder
+// for `range(*args, step=1)`, so the bare-positional trampoline and the
+// kwarg/splat resolver hand the adapter an identical slab. The caller owns +1
+// on every positional and every value in `merged`; ownership transfers into
+// the returned slab (released by the caller after the adapter runs). On a
+// missing-required / unknown-keyword error the slab and `merged` are released
+// here before throwing.
+inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
+    const NsParamMeta* pm, int64_t n_pos, JitValue* positional,
+    std::unordered_map<std::string_view, JitValue>& merged,
+    int64_t line, int64_t col) {
+  std::vector<JitValue> slab(pm->n_params, JitValue{TAG_NIL, 0});
+  auto* arr = culebra_runtime_array_new();
+  for (int64_t i = 0; i < n_pos; i++)
+    culebra_runtime_array_push(arr, positional[i].tag, positional[i].data);
+  slab[pm->args_rest_idx] = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  auto cleanup = [&]() {
+    for (auto& sv : slab) _culebra_value_release_impl(sv.tag, sv.data);
+    for (auto& [_, v] : merged) _culebra_value_release_impl(v.tag, v.data);
+  };
+  for (int i = 0; i < pm->n_params; i++) {
+    if (i == pm->args_rest_idx) continue;
+    auto it = merged.find(pm->params[i].name);
+    if (it != merged.end()) {
+      slab[i] = it->second;
+      merged.erase(it);
+    } else if (pm->params[i].has_default) {
+      slab[i] = pm->params[i].make_default();
+    } else {
+      cleanup();
+      throw culebra::CulebraError("ArityError",
+          std::format("missing required argument '{}'", pm->params[i].name),
+          line, col);
+    }
+  }
+  if (!merged.empty()) {
+    auto bad = std::string(merged.begin()->first);
+    cleanup();
+    throw culebra::CulebraError("TypeError",
+        std::format("unknown keyword argument '{}'", bad), line, col);
+  }
+  return slab;
+}
+
+// Run an args-rest method's adapter over its canonical (caller-owned) slab,
+// always releasing the slab afterward — including if the adapter throws.
+// Shared by the bare-positional trampoline and the kwarg/splat resolver.
+inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
+                                            std::vector<JitValue>& slab) {
+  auto release = [&]() {
+    for (auto& sv : slab) _culebra_value_release_impl(sv.tag, sv.data);
+  };
+  try {
+    auto r = m->adapter(slab.data(), m->params->n_params);
+    release();
+    return r;
+  } catch (...) {
+    release();
+    throw;
+  }
+}
+
 inline JitValue _jit_ns_method_trampoline(
     JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
+  // Args-rest method (range/iota) on the bare-positional path: build the same
+  // canonical [rest-Array, kw-only...] slab the kwarg resolver produces, so a
+  // single adapter shape serves both. The positionals are absorbed into the
+  // Array, so the slab (not `args`) is what gets released afterward.
+  if (m->params && m->params->args_rest_idx >= 0) {
+    std::unordered_map<std::string_view, JitValue> none;
+    auto slab = _jit_ns_build_args_rest_slab(m->params, n_args, args, none,
+                                             0, 0);
+    return _jit_ns_dispatch_owned_slab(m, slab);
+  }
   auto release_args = [&]() {
     for (int64_t i = 0; i < n_args; i++) {
       _culebra_value_release_impl(args[i].tag, args[i].data);
@@ -3206,6 +3296,18 @@ inline bool _jit_ns_kwarg_resolve(
     } else {
       merged.emplace(kw_keys[i], kw_vals[i]);
     }
+  }
+
+  // Args-rest method (range/iota): positionals collect into the rest Array
+  // instead of binding fixed slots, so the variadic 1-2 start/end args coexist
+  // with the keyword-only `step`. The shared builder yields the same canonical
+  // slab the bare-positional trampoline does; dispatch the adapter directly
+  // (the slab is already canonical) and release it after.
+  if (pm->args_rest_idx >= 0) {
+    auto slab = _jit_ns_build_args_rest_slab(pm, n_pos, positional, merged,
+                                             line, col);
+    *out = _jit_ns_dispatch_owned_slab(m, slab);
+    return true;
   }
 
   int n = pm->n_params;
@@ -3333,6 +3435,21 @@ struct _JitNamespaceTable {
   }
 };
 
+// range/iota carry an args-rest param: the 1-2 positional start/end args
+// collect into an Array (slot 0), and range adds a keyword-only `step`
+// (slot 1, default 1). This mirrors the interp signature `range(*args,
+// step=1)` so the kwarg/splat resolver and the bare-positional trampoline
+// hand the adapter an identical [positionals-Array, step?] slab.
+inline const NsParam kRangeParams[] = {
+  {"args", false, false, nullptr},
+  {"step", true,  true,  &_ns_def_one},
+};
+inline const NsParamMeta kRangeMeta = {kRangeParams, 2, -1, 1, 0};
+inline const NsParam kIotaParams[] = {
+  {"args", false, false, nullptr},
+};
+inline const NsParamMeta kIotaMeta = {kIotaParams, 1, -1, -1, 0};
+
 // Bare builtin function globals, exposed as first-class values by reusing
 // the ns-method closure machinery (shared trampoline + arity check). Direct
 // calls keep their fast paths (compile_global / try_compile_core_global);
@@ -3348,8 +3465,8 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
-  {"", "range",    -1, &_ns_global_range},
-  {"", "iota",     -1, &_ns_global_iota},
+  {"", "range",    -1, &_ns_global_range, &kRangeMeta},
+  {"", "iota",     -1, &_ns_global_iota,  &kIotaMeta},
 };
 
 // Materialize (once, cached + pinned for the isolate's lifetime) the closure
@@ -3763,11 +3880,14 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   // downstream call dispatch can take over.
   if (!JIT::arg_list_is_positional_only(argsAst)) {
     if (jit.lookup_fn_ast(name) != nullptr) return nullptr;
-    static const std::set<std::string_view> known_globals = {
-        "puts", "print", "to_long", "to_float",
-        "to_string", "type_of", "iota", "range", "hash",
+    // range/iota accept a `step` kwarg / `**` splat — fall through to nullptr
+    // so the general path resolves them as their args-rest closure and routes
+    // through call_with_kwargs (the resolver handles step + unknown-kwarg).
+    // The genuinely positional-only globals keep their clean SyntaxError.
+    static const std::set<std::string_view> kwarg_rejecting_globals = {
+        "puts", "print", "to_long", "to_float", "to_string", "type_of", "hash",
     };
-    if (known_globals.contains(name)) {
+    if (kwarg_rejecting_globals.contains(name)) {
       throw culebra::CulebraError("SyntaxError",
           std::format("'{}' does not accept keyword arguments", name),
           argsAst.line, argsAst.column);
