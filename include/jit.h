@@ -14966,9 +14966,63 @@ struct JIT {
                                    llvm::PointerType::get(ctx_, 0));
   }
 
+  // Emit interp's eval_property resolution-failure error for a builtin
+  // method whose receiver is the wrong type: a scalar (Nil/Bool/Long/
+  // Float — interp's to_object rejects it) → the member-access error
+  // "expected Object, Array, or Tensor, got <T>"; any object-ish value
+  // simply lacks the method → "expected Function, got Nil". Assumes the
+  // builder is at the failure block and terminates it (unreachable).
+  void emit_receiver_resolution_error(llvm::Value* tag,
+                                      const std::string& prefix) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto isScalar = builder_.CreateOr(
+        builder_.CreateOr(
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_NIL)),
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL))),
+        builder_.CreateOr(
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG)),
+            builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT))));
+    auto scalarBB = llvm::BasicBlock::Create(ctx_, prefix + ".scalar", fn);
+    auto objishBB = llvm::BasicBlock::Create(ctx_, prefix + ".objish", fn);
+    builder_.CreateCondBr(isScalar, scalarBB, objishBB);
+    builder_.SetInsertPoint(scalarBB);
+    emit_type_error_typed("Object, Array, or Tensor", tag);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(objishBB);
+    emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
+    builder_.CreateUnreachable();
+  }
+
+  // Like expect_tag but for a builtin method's RECEIVER: a wrong type
+  // reproduces interp's resolution failure (see emit_receiver_resolution_
+  // error) instead of leaking "expected <SpecificType>, got X". Same fast
+  // path and return value as expect_tag (one tag compare); only the cold
+  // mismatch branch differs.
+  llvm::Value* expect_receiver_tag(llvm::Value* receiver, int8_t expected,
+                                   const char* bb_prefix) {
+    auto tag = extract_tag(receiver);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto okBB =
+        llvm::BasicBlock::Create(ctx_, std::string(bb_prefix) + ".ok", fn);
+    auto badBB =
+        llvm::BasicBlock::Create(ctx_, std::string(bb_prefix) + ".rcverr", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(expected)), okBB, badBB);
+    builder_.SetInsertPoint(badBB);
+    emit_receiver_resolution_error(tag, bb_prefix);
+    builder_.SetInsertPoint(okBB);
+    return builder_.CreateIntToPtr(extract_data(receiver),
+                                   llvm::PointerType::get(ctx_, 0));
+  }
+
   // Coerce a String/StringView receiver to a null-terminated cstr.
   // StringView is materialized via strlike_to_cstr (leak-bounded).
-  llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix) {
+  // `as_receiver` makes a wrong type report interp's method-resolution
+  // failure ("expected Function, got Nil" / scalar member error) rather
+  // than the argument-style "expected String" — pass it at receiver sites
+  // (`"x".upper()`), leave it false for string *arguments* (split's sep).
+  llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix,
+                                   bool as_receiver = false) {
     auto tag = extract_tag(val);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto okBB = llvm::BasicBlock::Create(
@@ -14980,8 +15034,12 @@ struct JIT {
     auto cond = builder_.CreateOr(isStr, isView);
     builder_.CreateCondBr(cond, okBB, errBB);
     builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("String", tag);
-    builder_.CreateUnreachable();
+    if (as_receiver) {
+      emit_receiver_resolution_error(tag, bb_prefix);
+    } else {
+      emit_type_error_typed("String", tag);
+      builder_.CreateUnreachable();
+    }
     builder_.SetInsertPoint(okBB);
     return emit_call(module_->getFunction(rt::strlike_to_cstr),
                      {tag, extract_data(val)});
@@ -17254,13 +17312,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // Tensor methods. Dispatch unconditionally on TAG_TENSOR; non-Tensor
   // receivers raise a type error (no overload with other types in M1).
   if (method == "shape" && argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "shape");
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "shape");
     auto arrPtr = emit_call(
         module_->getFunction(rt::tensor_shape), {tPtr}, "tshape");
     return make_array(arrPtr);
   }
   if (method == "pow" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_TENSOR, "pow");
+    expect_receiver_tag(receiver, TAG_TENSOR, "pow");
     auto exp = compile(*argsAst.nodes[0]);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_binop),
@@ -17272,13 +17330,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_tensor(resultPtr);
   }
   if (method == "transpose" && argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "transpose");
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "transpose");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_transpose), {tPtr}, "tt");
     return make_tensor(resultPtr);
   }
   if (method == "clone" && argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "clone");
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "clone");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_clone), {tPtr}, "tcl");
     return make_tensor(resultPtr);
@@ -17287,7 +17345,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // `.softmax()`. Each is a no-arg unary over the receiver Tensor.
   if ((method == "relu" || method == "sigmoid" || method == "softmax") &&
       argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, method.c_str());
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, method.c_str());
     int op_id = method == "relu"    ? static_cast<int>(culebra::Op::Relu)
               : method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
                                     : static_cast<int>(culebra::Op::Softmax);
@@ -17297,7 +17355,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_tensor(resultPtr);
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "reshape");
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "reshape");
     auto dims = compile(*argsAst.nodes[0]);
     emit_type_check(dims, "Array", "Tensor.reshape argument");
     auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
@@ -17355,7 +17413,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // Tensor `.mean()` (0-arg). `.sum()` / `.max()` 0-arg fall through
   // to the polymorphic handler below which adds a TAG_TENSOR branch.
   if (method == "mean" && argsAst.nodes.size() == 0) {
-    auto tPtr = expect_tag(receiver, TAG_TENSOR, "mean");
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "mean");
     auto v = emit_call(
         module_->getFunction(rt::tensor_reduce_all),
         {tPtr, builder_.getInt64(static_cast<int>(culebra::Op::Mean))},
@@ -17411,7 +17469,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return phi;
   }
   if (method == "dot" && argsAst.nodes.size() == 1) {
-    auto aPtr = expect_tag(receiver, TAG_TENSOR, "dot");
+    auto aPtr = expect_receiver_tag(receiver, TAG_TENSOR, "dot");
     auto other = compile(*argsAst.nodes[0]);
     emit_type_check(other, "Tensor", "Tensor.dot argument");
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
@@ -17421,7 +17479,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return make_tensor(resultPtr);
   }
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
-    auto wPtr = expect_tag(receiver, TAG_TENSOR, "linear_sigmoid");
+    auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
     auto xv = compile(*argsAst.nodes[0]);
     emit_type_check(xv, "Tensor", "linear_sigmoid x");
     auto bv = compile(*argsAst.nodes[1]);
@@ -17512,7 +17570,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if ((method == "union" || method == "intersect" ||
        method == "diff"  || method == "sym_diff") &&
       argsAst.nodes.size() == 1) {
-    auto aPtr = expect_tag(receiver, TAG_SET, method.c_str());
+    auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
     emit_type_check(other, "Set", "Set operation argument");
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
@@ -17529,7 +17587,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // subset/superset: both operands Set, returns Bool.
   if ((method == "subset" || method == "superset") &&
       argsAst.nodes.size() == 1) {
-    auto aPtr = expect_tag(receiver, TAG_SET, method.c_str());
+    auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
     emit_type_check(other, "Set", "Set predicate argument");
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
@@ -17550,7 +17608,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // --- Array methods ---
 
   if (method == "push" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "push");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "push");
     auto val = compile(*argsAst.nodes[0]);
     emit_call(module_->getFunction(rt::array_push),
                         {arrPtr, extract_tag(val), extract_data(val)});
@@ -17558,7 +17616,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "pop" && argsAst.nodes.size() == 0) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "pop");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "pop");
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "pop.tag");
     auto outData =
@@ -17574,7 +17632,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "reverse" && argsAst.nodes.size() == 0) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "rev");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "rev");
     emit_call(module_->getFunction(rt::array_reverse),
                         {arrPtr});
     return make_nil();
@@ -17637,7 +17695,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "join" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "join");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
     auto sep = compile(*argsAst.nodes[0]);
     emit_type_check(sep, "String", "join separator");
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
@@ -17648,7 +17706,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "index_of" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "iof");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
     auto v = compile(*argsAst.nodes[0]);
     auto idx = emit_call(
         module_->getFunction(rt::array_index_of),
@@ -17758,28 +17816,28 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "upper" && argsAst.nodes.size() == 0) {
-    auto strPtr = coerce_strlike_cstr(receiver, "up");
+    auto strPtr = coerce_strlike_cstr(receiver, "up", true);
     auto s = emit_call(
         module_->getFunction(rt::str_upper), {strPtr});
     return make_string(s);
   }
 
   if (method == "lower" && argsAst.nodes.size() == 0) {
-    auto strPtr = coerce_strlike_cstr(receiver, "lo");
+    auto strPtr = coerce_strlike_cstr(receiver, "lo", true);
     auto s = emit_call(
         module_->getFunction(rt::str_lower), {strPtr});
     return make_string(s);
   }
 
   if (method == "trim" && argsAst.nodes.size() == 0) {
-    auto strPtr = coerce_strlike_cstr(receiver, "tr");
+    auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     auto s = emit_call(
         module_->getFunction(rt::str_trim), {strPtr});
     return make_string(s);
   }
 
   if (method == "split" && argsAst.nodes.size() == 1) {
-    auto strPtr = coerce_strlike_cstr(receiver, "sp");
+    auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
     auto sep = compile(*argsAst.nodes[0]);
     auto sepPtr = coerce_strlike_cstr(sep, "sp.sep");
     auto arr = emit_call(
@@ -17792,7 +17850,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // Array via str_split, wrap it in array_iter so the iter protocol
   // composes. True lazy is a later refinement.
   if (method == "split_iter" && argsAst.nodes.size() == 1) {
-    auto strPtr = coerce_strlike_cstr(receiver, "spli");
+    auto strPtr = coerce_strlike_cstr(receiver, "spli", true);
     auto sep = compile(*argsAst.nodes[0]);
     auto sepPtr = coerce_strlike_cstr(sep, "spli.sep");
     auto arr = emit_call(
@@ -17803,7 +17861,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
-    auto strPtr = coerce_strlike_cstr(receiver, "sw");
+    auto strPtr = coerce_strlike_cstr(receiver, "sw", true);
     auto p = compile(*argsAst.nodes[0]);
     auto pPtr = coerce_strlike_cstr(p, "sw.pre");
     auto r = emit_call(
@@ -17814,7 +17872,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
-    auto strPtr = coerce_strlike_cstr(receiver, "ew");
+    auto strPtr = coerce_strlike_cstr(receiver, "ew", true);
     auto p = compile(*argsAst.nodes[0]);
     auto pPtr = coerce_strlike_cstr(p, "ew.suf");
     auto r = emit_call(
@@ -17827,14 +17885,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // --- Object methods ---
 
   if (method == "keys" && argsAst.nodes.size() == 0) {
-    auto objPtr = expect_tag(receiver, TAG_OBJECT, "keys");
+    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "keys");
     auto arr = emit_call(
         module_->getFunction(rt::object_keys), {objPtr});
     return make_array(arr);
   }
 
   if (method == "has" && argsAst.nodes.size() == 1) {
-    auto objPtr = expect_tag(receiver, TAG_OBJECT, "has");
+    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "has");
     auto key = compile(*argsAst.nodes[0]);
     // Any hashable key. String tries the shape path first (so user
     // `obj.has("foo")` matches `obj.foo`); non-String / runtime
@@ -18252,7 +18310,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // Iterator-only methods — require an iterator-protocol Object
   // receiver (Array users call `.iter()` first, matching interp).
   if (method == "collect" && argsAst.nodes.size() == 0) {
-    expect_tag(receiver, TAG_OBJECT, "collect");
+    expect_receiver_tag(receiver, TAG_OBJECT, "collect");
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_collect), {t, d});
@@ -18260,7 +18318,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "count" && argsAst.nodes.size() == 0) {
-    expect_tag(receiver, TAG_OBJECT, "count");
+    expect_receiver_tag(receiver, TAG_OBJECT, "count");
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto n = emit_call(module_->getFunction(rt::iter_count), {t, d});
@@ -18268,7 +18326,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "take" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_OBJECT, "take");
+    expect_receiver_tag(receiver, TAG_OBJECT, "take");
     auto n = value_to_long(compile(*argsAst.nodes[0]));
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -18278,7 +18336,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "skip" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_OBJECT, "skip");
+    expect_receiver_tag(receiver, TAG_OBJECT, "skip");
     auto n = value_to_long(compile(*argsAst.nodes[0]));
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -18288,7 +18346,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_OBJECT, "take_while");
+    expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
     auto f = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -18299,7 +18357,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "enumerate" && argsAst.nodes.size() == 0) {
-    expect_tag(receiver, TAG_OBJECT, "enumerate");
+    expect_receiver_tag(receiver, TAG_OBJECT, "enumerate");
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out =
@@ -18308,7 +18366,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "chain" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_OBJECT, "chain");
+    expect_receiver_tag(receiver, TAG_OBJECT, "chain");
     auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -18320,7 +18378,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "zip" && argsAst.nodes.size() == 1) {
-    expect_tag(receiver, TAG_OBJECT, "zip");
+    expect_receiver_tag(receiver, TAG_OBJECT, "zip");
     auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -18332,14 +18390,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "code_points" && argsAst.nodes.size() == 0) {
-    auto strPtr = coerce_strlike_cstr(receiver, "code_points");
+    auto strPtr = coerce_strlike_cstr(receiver, "code_points", true);
     auto out =
         emit_call(module_->getFunction(rt::str_code_points), {strPtr});
     return make_object(out);
   }
 
   if (method == "graphemes" && argsAst.nodes.size() == 0) {
-    auto strPtr = coerce_strlike_cstr(receiver, "graphemes");
+    auto strPtr = coerce_strlike_cstr(receiver, "graphemes", true);
     auto out =
         emit_call(module_->getFunction(rt::str_graphemes), {strPtr});
     return make_object(out);
@@ -18424,7 +18482,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "sort_by" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_tag(receiver, TAG_ARRAY, "sort_by");
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "sort_by");
     auto f = compile(*argsAst.nodes[0]);
     emit_call(
         module_->getFunction(rt::array_sort_by),

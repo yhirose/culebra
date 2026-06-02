@@ -334,3 +334,28 @@ assert_eq(r_mc.kind, 'TypeError')
 assert_eq(r_mc.message, "type error: expected Function, got Nil")
 # The valid fused path still produces the collected array.
 assert_eq([1, 2, 3].iter().map(fn (x) { x * 2 }).collect(), [2, 4, 6])
+
+# A type-specific builtin method on the WRONG receiver resolves like
+# interp, not via the codegen's "expected <SpecificType>". A scalar can't
+# be an object → the member-access error; an object-ish value of the wrong
+# type just lacks the method → "expected Function, got Nil". (The JIT used
+# to leak "expected String/Tensor/Set, got X".)
+let r_su = try { (2).upper(); nil } catch e { e }            # String method on Long
+assert_eq(r_su.kind, 'TypeError')
+assert_eq(r_su.message, "type error: expected Object, Array, or Tensor, got Long")
+
+let r_au = try { [1].upper(); nil } catch e { e }            # String method on Array
+assert_eq(r_au.kind, 'TypeError')
+assert_eq(r_au.message, "type error: expected Function, got Nil")
+
+let r_tp = try { (2).pow(3); nil } catch e { e }             # Tensor method on Long
+assert_eq(r_tp.kind, 'TypeError')
+assert_eq(r_tp.message, "type error: expected Object, Array, or Tensor, got Long")
+
+let r_su2 = try { [1].union([2]); nil } catch e { e }        # Set method on Array
+assert_eq(r_su2.kind, 'TypeError')
+assert_eq(r_su2.message, "type error: expected Function, got Nil")
+
+let r_ap = try { (2).push(1); nil } catch e { e }            # Array method on Long
+assert_eq(r_ap.kind, 'TypeError')
+assert_eq(r_ap.message, "type error: expected Object, Array, or Tensor, got Long")
