@@ -3392,7 +3392,7 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                                if (r.type != Value::Array) {
                                  throw CulebraError("TypeError",
                                      "type error: flat_map callback must "
-                                     "return an Array.");
+                                     "return an Array");
                                }
                                for (const auto& e : *r.to_array().values) {
                                  out.values->push_back(e);

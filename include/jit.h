@@ -2450,7 +2450,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
     *out_data = reinterpret_cast<int64_t>(v);
     return;
   }
-  culebra::throw_type_error_at(line, col);
+  // Non-sliceable receiver: match the interpreter's eval_slice, which falls
+  // through to `to_array()` and reports `expected Array, got <type>`.
+  culebra::throw_type_mismatch("Array", _culebra_tag_name(tag), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
@@ -15109,10 +15111,14 @@ struct JIT {
   // StringView is materialized via strlike_to_cstr (leak-bounded).
   // `as_receiver` makes a wrong type report interp's method-resolution
   // failure ("expected Function, got Nil" / scalar member error) rather
-  // than the argument-style "expected String" — pass it at receiver sites
+  // than the argument-style error — pass it at receiver sites
   // (`"x".upper()`), leave it false for string *arguments* (split's sep).
+  // For arguments, `arg_param` carries the interpreter's parameter name so
+  // the canonical "parameter '<name>' expects StringLike" message matches
+  // interp's check_type (the methods declare these args `: StringLike`).
   llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix,
-                                   bool as_receiver = false) {
+                                   bool as_receiver = false,
+                                   const char* arg_param = nullptr) {
     auto tag = extract_tag(val);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto okBB = llvm::BasicBlock::Create(
@@ -15126,6 +15132,12 @@ struct JIT {
     builder_.SetInsertPoint(errBB);
     if (as_receiver) {
       emit_receiver_resolution_error(tag, bb_prefix);
+    } else if (arg_param) {
+      // We are in the not-StringLike branch, so this always throws the
+      // canonical parameter-type error (StringLike ⊇ String/StringView).
+      emit_type_check(val, "StringLike",
+                      std::string("parameter '") + arg_param + "'");
+      builder_.CreateUnreachable();
     } else {
       emit_type_error_typed("String", tag);
       builder_.CreateUnreachable();
@@ -17685,7 +17697,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other, "Set", "Set operation argument");
+    emit_type_check(other, "Set", "parameter 'other'");
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
                         : method == "intersect" ? rt::set_intersect
@@ -17702,7 +17714,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other, "Set", "Set predicate argument");
+    emit_type_check(other, "Set", "parameter 'other'");
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "subset" ? rt::set_subset
                                              : rt::set_superset;
@@ -17754,14 +17766,37 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // slice works on Array, String, StringView, and Tensor.
   // String/StringView return TAG_STRINGVIEW into the source bytes.
   if (method == "slice" && argsAst.nodes.size() == 2) {
-    auto start = value_to_long(compile(*argsAst.nodes[0]));
-    auto end = value_to_long(compile(*argsAst.nodes[1]));
-
     auto arrBB = llvm::BasicBlock::Create(ctx_, "sl.arr", fn);
     auto strBB = llvm::BasicBlock::Create(ctx_, "sl.str", fn);
     auto tenBB = llvm::BasicBlock::Create(ctx_, "sl.ten", fn);
     auto errBB = llvm::BasicBlock::Create(ctx_, "sl.err", fn);
+    auto argBB = llvm::BasicBlock::Create(ctx_, "sl.arg", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "sl.merge", fn);
+
+    // Validate the receiver before the arguments so a non-sliceable
+    // receiver reports the method-resolution error first, matching interp:
+    // `(1).slice(0, cb)` is "expected Object, Array, or Tensor, got Long"
+    // (and `{}.slice(...)` is "expected Function, got Nil"), not the
+    // argument-type error. The JIT previously coerced the args up front and
+    // surfaced "expected Long, got Function" instead.
+    auto guard = builder_.CreateSwitch(tag, errBB, 4);
+    guard->addCase(builder_.getInt8(TAG_ARRAY), argBB);
+    guard->addCase(builder_.getInt8(TAG_STRING), argBB);
+    guard->addCase(builder_.getInt8(TAG_STRINGVIEW), argBB);
+    guard->addCase(builder_.getInt8(TAG_TENSOR), argBB);
+
+    builder_.SetInsertPoint(errBB);
+    emit_receiver_resolution_error(tag, "slice");
+
+    // Receiver OK: check the bounds with the canonical parameter-type
+    // message (`start`/`end` are declared `: Long` on the interp methods).
+    builder_.SetInsertPoint(argBB);
+    auto startVal = compile(*argsAst.nodes[0]);
+    auto endVal = compile(*argsAst.nodes[1]);
+    emit_type_check(startVal, "Long", "parameter 'start'");
+    emit_type_check(endVal, "Long", "parameter 'end'");
+    auto start = extract_data(startVal);
+    auto end = extract_data(endVal);
 
     auto sw = builder_.CreateSwitch(tag, errBB, 4);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
@@ -17795,9 +17830,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tenBBEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, "slice");
-
+    // errBB was already filled by the receiver guard above; the second
+    // dispatch switch shares it as a (statically unreachable) default.
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(valueType_, 3, "sl");
     phi->addIncoming(arrVal, arrBBEnd);
@@ -17809,7 +17843,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "join" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
     auto sep = compile(*argsAst.nodes[0]);
-    emit_type_check(sep, "String", "join separator");
+    emit_type_check(sep, "String", "parameter 'sep'");
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
     auto s = emit_call(
         module_->getFunction(rt::array_join), {arrPtr, sepPtr});
@@ -17858,7 +17892,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
                             {tag, extract_data(receiver)});
     auto sub = compile(*argsAst.nodes[0]);
-    auto subPtr = coerce_strlike_cstr(sub, "ct.sub");
+    auto subPtr = coerce_strlike_cstr(sub, "ct.sub", false, "sub");
     auto strFound = emit_call(
         module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
@@ -17949,7 +17983,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "split" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
     auto sep = compile(*argsAst.nodes[0]);
-    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep");
+    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep", false, "sep");
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
@@ -17962,7 +17996,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "split_iter" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "spli", true);
     auto sep = compile(*argsAst.nodes[0]);
-    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep");
+    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep", false, "sep");
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
@@ -17973,7 +18007,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sw", true);
     auto p = compile(*argsAst.nodes[0]);
-    auto pPtr = coerce_strlike_cstr(p, "sw.pre");
+    auto pPtr = coerce_strlike_cstr(p, "sw.pre", false, "prefix");
     auto r = emit_call(
         module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
@@ -17984,7 +18018,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "ew", true);
     auto p = compile(*argsAst.nodes[0]);
-    auto pPtr = coerce_strlike_cstr(p, "ew.suf");
+    auto pPtr = coerce_strlike_cstr(p, "ew.suf", false, "suffix");
     auto r = emit_call(
         module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
