@@ -1787,9 +1787,10 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 - `follow_redirects: Bool` — `3xx` の `Location` を追跡する（デフォルト: `true`）。
 - `into: String | Function` — レスポンスボディをバッファせず sink へストリーム
   する（下記ストリーミング参照。デフォルト: `nil` ＝ `body` にバッファ）。
-- `body: String` / `content_type: String`（`post` / `put` / `request` のみ）—
-  リクエストボディとその `Content-Type`（`body` が非空で、かつ `headers` で
-  明示的な `Content-Type` が指定されていない場合のみ付与）。
+- `body: String | Function` / `content_type: String`（`post` / `put` /
+  `request` のみ）— リクエストボディとその `Content-Type`（body が非空で、かつ
+  `headers` で明示的な `Content-Type` が指定されていない場合のみ付与）。`String`
+  は全体を送信、`Function` は **producer** として chunked ストリーム（下記参照）。
 
 ```culebra
 # doctest: skip
@@ -1838,8 +1839,22 @@ Http.get("https://example.com/big.csv", into: fn (chunk) { bytes = bytes + chunk
 Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
 ```
 
-リクエストボディ（アップロード）のストリーミングはまだありません — リクエストの
-`body` は `String` 全体として送られます。
+**ストリーミング（アップロード）。** 対称に、`body:`（`post` / `put` /
+`request`）へ `Function` を渡すとリクエストボディを chunked でストリームします
+（大きなアップロードもメモリに全部載せない）。producer は繰り返し呼ばれ、次の
+chunk `String` を返し、`nil` でストリーム終端を示します:
+
+```culebra
+# doctest: skip
+let f = File.open("big.bin")
+Http.post(url, body: fn () {
+  let chunk = f.read(65536)
+  chunk.size() > 0 ? chunk : nil          # nil で終端
+}, content_type: "application/octet-stream")
+```
+
+producer は呼び出しスレッド上で実行され（捕捉状態を mutable に扱える）、throw すれば
+アップロードは中断されエラーが伝播します。`String`/`nil` 以外を返すと `TypeError`。
 
 **並列・レースリクエスト**は HTTP 専用 API を使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを `Http.get` に適用します — JS の `Promise.all`/`race` や Elixir の

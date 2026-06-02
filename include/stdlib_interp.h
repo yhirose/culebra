@@ -2209,6 +2209,46 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
   return http_result_to_value(std::move(r));
 }
 
+// Configure the request body from the `body` kwarg (post/put/request): a String
+// is sent whole; a Function is a producer — called per chunk, returning the next
+// chunk String or nil at end — streamed chunked so a big upload never lives in
+// memory at once. Anything else → TypeError. `ct` is the content_type kwarg.
+inline void http_setup_body(const Value& bodyv, const Value& ct,
+                            const std::shared_ptr<Environment>& env,
+                            culebra::http::HttpRequest& req, HttpIntoState& st,
+                            const char* ctx, long line, long col) {
+  req.content_type = ct.to_string();
+  if (bodyv.type == Value::Function) {
+    if (!st.cb_interp) st.cb_interp = std::make_shared<Interpreter>();
+    Value producer = bodyv;
+    req.body_source = [&st, producer, env, ctx, line, col](
+                          std::string& out) -> bool {
+      try {
+        Value r = st.cb_interp->call_closure(producer, env, {});
+        if (r.type == Value::Nil) return false;  // end of stream
+        if (r.type != Value::String && r.type != Value::StringView) {
+          throw CulebraError(
+              "TypeError",
+              std::format("{}: body producer must return a String or nil", ctx),
+              line, col);
+        }
+        out = r.to_string_view();
+        return true;
+      } catch (...) {
+        st.eptr = std::current_exception();  // abort; rethrown after send
+        return false;
+      }
+    };
+  } else if (bodyv.type == Value::String || bodyv.type == Value::StringView) {
+    req.body = bodyv.to_string_view();
+  } else {
+    throw CulebraError(
+        "TypeError",
+        std::format("{}: body must be a String or a Function (producer)", ctx),
+        line, col);
+  }
+}
+
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
 // blocks until the response arrives. A 4xx/5xx is a normal result (`ok:false`);
 // a transport failure (DNS/connect/TLS/timeout) throws HttpError.
@@ -2268,10 +2308,10 @@ inline Value make_http_namespace() {
           culebra::http::HttpRequest req;
           req.method = method;
           req.url = env->get("url").to_string();
-          req.body = env->get("body").to_string();
-          req.content_type = env->get("content_type").to_string();
           http_fill_common(env, req, ctx, line, col);
           HttpIntoState st;
+          http_setup_body(env->get("body"), env->get("content_type"), env, req,
+                          st, ctx, line, col);
           http_setup_into(env->get("into"), env, req, st, ctx, line, col);
           return http_run_into(req, st, ctx, line, col);
         },
@@ -2294,10 +2334,10 @@ inline Value make_http_namespace() {
             culebra::http::HttpRequest req;
             req.method = env->get("method").to_string();
             req.url = env->get("url").to_string();
-            req.body = env->get("body").to_string();
-            req.content_type = env->get("content_type").to_string();
             http_fill_common(env, req, "Http.request", line, col);
             HttpIntoState st;
+            http_setup_body(env->get("body"), env->get("content_type"), env,
+                            req, st, "Http.request", line, col);
             http_setup_into(env->get("into"), env, req, st, "Http.request",
                             line, col);
             return http_run_into(req, st, "Http.request", line, col);

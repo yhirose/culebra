@@ -53,4 +53,15 @@ assert_eq(into_badtype.kind, "TypeError")
 let into_refused = try { Http.get("http://127.0.0.1:1/x", into: fn (c) { nil }); nil } catch e { e }
 assert_eq(into_refused.kind, "HttpError")
 
+// --- `body:` streaming source (upload): offline-deterministic error paths.
+//     Happy path (chunked upload echoed back) is in http_test.cc. ---
+
+// body: must be a String or a producer Function (checked before any I/O).
+let body_badtype = try { Http.post("http://127.0.0.1:1/x", body: 123); nil } catch e { e }
+assert_eq(body_badtype.kind, "TypeError")
+
+// body: a producer Function + transport failure still surfaces as HttpError.
+let body_refused = try { Http.post("http://127.0.0.1:1/x", body: fn () { nil }); nil } catch e { e }
+assert_eq(body_refused.kind, "HttpError")
+
 puts("test_http: ok")

@@ -1598,6 +1598,50 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
   return {TAG_OBJECT,
           reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
+
+// Configure the request body from the `body` slab value: TAG_STRING → whole;
+// TAG_FUNC → producer (called per chunk, returns next chunk String or nil),
+// streamed chunked. Else → TypeError. Mirrors interp http_setup_body.
+inline void _http_setup_body(JitValue bodyv, JitValue ct,
+                             culebra::http::HttpRequest& req, JitHttpInto& st,
+                             const char* ctx) {
+  // ct / body may be nil when this method is reached positional-only (the slow
+  // path doesn't materialize defaults) — treat nil as the default: ct =
+  // "text/plain", body = empty (no body), matching interp's resolved defaults.
+  req.content_type = (ct.tag == TAG_STRING || ct.tag == TAG_STRINGVIEW)
+                         ? std::string(_culebra_str_view(ct.tag, ct.data))
+                         : "text/plain";
+  if (bodyv.tag == TAG_NIL) return;  // missing → no request body
+  if (bodyv.tag == TAG_FUNC) {
+    auto* producer = reinterpret_cast<JitClosure*>(bodyv.data);
+    req.body_source = [producer, &st, ctx](std::string& out) -> bool {
+      try {
+        JitValue r = _culebra_invoke0(producer);
+        if (r.tag == TAG_NIL) return false;  // end of stream
+        if (r.tag != TAG_STRING && r.tag != TAG_STRINGVIEW) {
+          _culebra_value_release_impl(r.tag, r.data);
+          throw culebra::CulebraError(
+              "TypeError",
+              std::format("{}: body producer must return a String or nil", ctx),
+              0, 0);
+        }
+        out = _culebra_str_view(r.tag, r.data);
+        _culebra_value_release_impl(r.tag, r.data);
+        return true;
+      } catch (...) {
+        st.eptr = std::current_exception();  // abort; rethrown after send
+        return false;
+      }
+    };
+  } else if (bodyv.tag == TAG_STRING || bodyv.tag == TAG_STRINGVIEW) {
+    req.body = _culebra_str_view(bodyv.tag, bodyv.data);
+  } else {
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("{}: body must be a String or a Function (producer)", ctx),
+        0, 0);
+  }
+}
 #endif  // CULEBRA_HTTP_ENABLED
 
 // --- Proc.spawn live handle (JIT) ---
@@ -2543,10 +2587,10 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   culebra::http::HttpRequest req;
   req.method = method;
   req.url = _culebra_str_view(a[0].tag, a[0].data);
-  req.body = _culebra_str_view(a[1].tag, a[1].data);
-  req.content_type = _culebra_str_view(a[2].tag, a[2].data);
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
+  _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 2), req, st,
+                   ctx);
   _http_setup_into(_proc_adapt::at(a, n, 6), req, st, ctx);
   return _http_run_into(req, st, ctx);
 }
@@ -2563,10 +2607,10 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   culebra::http::HttpRequest req;
   req.method = _culebra_str_view(a[0].tag, a[0].data);
   req.url = _culebra_str_view(a[1].tag, a[1].data);
-  req.body = _culebra_str_view(a[2].tag, a[2].data);
-  req.content_type = _culebra_str_view(a[3].tag, a[3].data);
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
+  _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 3), req, st,
+                   "Http.request");
   _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
   return _http_run_into(req, st, "Http.request");
 }

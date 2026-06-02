@@ -1857,9 +1857,11 @@ Keyword arguments (shared by every method):
 - `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
 - `into: String | Function` — stream the response body to a sink instead of
   buffering it; see Streaming below (default: `nil` = buffer into `body`).
-- `body: String` / `content_type: String` (`post` / `put` / `request` only) —
-  request body and its `Content-Type` (the header is set only when `body` is
-  non-empty and no explicit `Content-Type` was passed in `headers`).
+- `body: String | Function` / `content_type: String` (`post` / `put` /
+  `request` only) — request body and its `Content-Type` (the header is set only
+  when the body is non-empty and no explicit `Content-Type` was passed in
+  `headers`). A `String` is sent whole; a `Function` is a **producer** streamed
+  chunked — see Streaming below.
 
 ```culebra
 # doctest: skip
@@ -1909,8 +1911,23 @@ Http.get("https://example.com/big.csv", into: fn (chunk) { bytes = bytes + chunk
 Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
 ```
 
-Request-body (upload) streaming is not available yet — a request `body` is sent
-as a whole `String`.
+**Streaming (upload).** Symmetrically, pass a `Function` as `body:` (on
+`post` / `put` / `request`) to stream the request body chunked, so a large
+upload never lives in memory at once. The producer is called repeatedly and
+returns the next chunk `String`, or `nil` to end the stream:
+
+```culebra
+# doctest: skip
+let f = File.open("big.bin")
+Http.post(url, body: fn () {
+  let chunk = f.read(65536)
+  chunk.size() > 0 ? chunk : nil          # nil signals end-of-stream
+}, content_type: "application/octet-stream")
+```
+
+The producer runs on the calling thread (it may mutate captured state); if it
+throws, the upload is aborted and the error propagates. A non-`String`/non-`nil`
+return is a `TypeError`.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
 combinators over `Http.get`, not an HTTP-specific API — the same shape as

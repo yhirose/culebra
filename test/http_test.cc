@@ -120,6 +120,27 @@ int main() {
     CHECK(r.body == "{\"a\":1}");
   }
 
+  // Streaming upload via body_source — chunks are sent (chunked transfer) and
+  // the server reassembles them; /echo returns the whole body. This is what
+  // Http.post(..., body: fn(){...}) rides on.
+  {
+    HttpRequest req;
+    req.method = "POST";
+    req.url = base + "/echo";
+    req.content_type = "text/plain";
+    const char* parts[] = {"hello ", "streamed ", "upload"};
+    size_t i = 0;
+    req.body_source = [&](std::string& out) {
+      if (i >= 3) return false;          // end of stream
+      out = parts[i++];
+      return true;
+    };
+    auto r = http_request(req);
+    CHECK(r.ok);
+    CHECK(r.status == 200);
+    CHECK(r.body == "hello streamed upload");
+  }
+
   // DELETE 204 — completed round-trip, but not 2xx-with-body; ok is true
   // (204 is in [200,300)).
   {

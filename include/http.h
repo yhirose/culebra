@@ -33,15 +33,24 @@ using HeaderList = std::vector<std::pair<std::string, std::string>>;
 // `Http.download` (sink → file) and `Http.get(..., on_chunk:)` (sink → closure).
 using BodySink = std::function<bool(const char* data, size_t len)>;
 
+// Per-chunk source for streaming the request body (upload). Fill `out` with the
+// next chunk and return true; return false at end-of-stream. When set, the body
+// is sent chunked (Transfer-Encoding: chunked) instead of `body` whole — so a
+// large upload never has to live in memory at once.
+using BodySource = std::function<bool(std::string& out)>;
+
 struct HttpRequest {
   std::string method = "GET";      // "GET" / "POST" / "PUT" / "DELETE" / ...
   std::string url;                 // full URL including scheme (http/https).
   HeaderList headers;              // request headers (verbatim).
-  std::string body;                // request body (raw bytes).
-  std::string content_type;        // applied iff body set and no explicit CT.
+  std::string body;                // request body (raw bytes); ignored if
+                                   // body_source is set.
+  std::string content_type;        // applied iff body/body_source set and no
+                                   // explicit Content-Type header.
   long timeout_sec = 0;            // per-phase timeout; 0 => library default.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
+  BodySource body_source = nullptr;// set → stream the request body (chunked).
 };
 
 struct HttpResult {
@@ -120,7 +129,33 @@ inline HttpResult http_request(const HttpRequest& req) {
     hreq.headers.emplace(k, v);
     if (_iequals(k, "Content-Type")) has_ct = true;
   }
-  if (!req.body.empty()) {
+  if (req.body_source) {
+    // Streaming upload: send the body chunked, pulling from the source. The
+    // provider writes one non-empty chunk per call (skipping empties so the
+    // chunked writer always makes progress) and calls sink.done() at EOF.
+    if (!has_ct && !req.content_type.empty()) {
+      hreq.headers.emplace("Content-Type", req.content_type);
+    }
+    // Announce chunked framing: send() writes chunked bytes from the provider
+    // but does not set this header itself (Post(ContentProvider) normally
+    // would), so the server wouldn't know to de-chunk the body.
+    hreq.headers.emplace("Transfer-Encoding", "chunked");
+    hreq.is_chunked_content_provider_ = true;
+    hreq.content_provider_ = [src = req.body_source](
+                                 size_t, size_t, httplib::DataSink& sink) -> bool {
+      std::string chunk;
+      while (true) {
+        if (!src(chunk)) {
+          sink.done();
+          return true;
+        }
+        if (!chunk.empty()) {
+          sink.write(chunk.data(), chunk.size());
+          return true;
+        }
+      }
+    };
+  } else if (!req.body.empty()) {
     hreq.body = req.body;
     if (!has_ct && !req.content_type.empty()) {
       hreq.headers.emplace("Content-Type", req.content_type);
