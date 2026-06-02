@@ -1814,11 +1814,24 @@ assert_eq(missing.status, 404)
 ```
 
 ボディは単一の `String`（全体をメモリに読み込み）で返るので、JSON API では
-[`JSON.parse`](#9-json) と組み合わせます。ストリーミングのダウンロード/アップロードや
-並列の `Http.all` / `Http.race` はまだありません（将来予定）。TLS は現在 OpenSSL を
-静的リンクしていますが、将来 BoringSSL へ切り替えてもビルド設定のみの変更で、この
-API には影響しません（BoringSSL はホスト名検証がより厳格なので、現在通る CN のみの
-証明書のサーバは拒否される可能性があります）。
+[`JSON.parse`](#9-json) と組み合わせます。ストリーミングのダウンロード/アップロードは
+まだありません（大きなレスポンスも全体をメモリに読み込みます）。
+
+**並列・レースリクエスト**は HTTP 専用 API を使わず、汎用の [`Parallel`](#12-isolate)
+コンビネータを `Http.get` に適用します — JS の `Promise.all`/`race` や Elixir の
+`Task.async_stream` と同じ形です:
+
+```culebra
+# doctest: skip
+let urls = ["https://api.example/a", "https://api.example/b"]
+Parallel.map(urls, |u| Http.get(u).body)        # all、入力順（fail-fast）
+Parallel.map_settled(urls, |u| Http.get(u))     # allSettled: [{ok, value, error}, ...]
+Parallel.race(urls, |u| Http.get(u))            # 最速成功が勝ち、残りはキャンセル
+```
+
+TLS は現在 OpenSSL を静的リンクしていますが、将来 BoringSSL へ切り替えてもビルド設定
+のみの変更で、この API には影響しません（BoringSSL はホスト名検証がより厳格なので、
+現在通る CN のみの証明書のサーバは拒否される可能性があります）。
 
 ---
 

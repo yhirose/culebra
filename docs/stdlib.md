@@ -1884,11 +1884,24 @@ assert_eq(missing.status, 404)
 ```
 
 The body is returned as a single `String` (read whole into memory); pair it with
-[`JSON.parse`](#9-json) for JSON APIs. There is no streaming download or upload
-yet, and no parallel `Http.all` / `Http.race` — those are planned. TLS currently
-links OpenSSL statically; a future swap to BoringSSL is a build-only change and
-does not affect this API (BoringSSL verifies hostnames more strictly, so a server
-with a CN-only certificate that works today may then be rejected).
+[`JSON.parse`](#9-json) for JSON APIs. Streaming download/upload is not available
+yet — large responses are read whole into memory.
+
+**Parallel and racing requests** use the general [`Parallel`](#12-isolate)
+combinators over `Http.get`, not an HTTP-specific API — the same shape as
+`Promise.all`/`race` in JS or `Task.async_stream` in Elixir:
+
+```culebra
+# doctest: skip
+let urls = ["https://api.example/a", "https://api.example/b"]
+Parallel.map(urls, |u| Http.get(u).body)        # all, input order (fail-fast)
+Parallel.map_settled(urls, |u| Http.get(u))     # allSettled: [{ok, value, error}, ...]
+Parallel.race(urls, |u| Http.get(u))            # first success wins, cancels the rest
+```
+
+TLS currently links OpenSSL statically; a future swap to BoringSSL is a build-only
+change and does not affect this API (BoringSSL verifies hostnames more strictly, so
+a server with a CN-only certificate that works today may then be rejected).
 
 ---
 
