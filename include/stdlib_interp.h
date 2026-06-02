@@ -2130,18 +2130,6 @@ inline Value http_result_to_value(culebra::http::HttpResult&& r) {
   return Value(std::move(obj));
 }
 
-// Run one HttpRequest, throwing HttpError on a transport failure (DNS,
-// connection, TLS, timeout) and otherwise returning the response Object.
-inline Value http_run(culebra::http::HttpRequest&& req, const char* ctx,
-                      long line, long col) {
-  auto r = culebra::http::http_request(req);
-  if (!r.ok) {
-    throw CulebraError("HttpError", std::format("{}: {}", ctx, r.error), line,
-                       col);
-  }
-  return http_result_to_value(std::move(r));
-}
-
 // Read the standard tail kwargs (`headers`, `timeout`, `follow_redirects`) off
 // the call environment into `req`. `body`/`content_type`/`method`/`url` are
 // set by the individual builders.
@@ -2152,6 +2140,73 @@ inline void http_fill_common(const std::shared_ptr<Environment>& env,
   long timeout = env->get("timeout").to_long();
   req.timeout_sec = timeout > 0 ? timeout : 0;
   req.follow_redirects = env->get("follow_redirects").to_bool();
+}
+
+// Backing state for an `into:` response sink, owned by the call for the whole
+// request: the output file (String into), the callback's interpreter, and any
+// exception the callback raised (rethrown after the request returns).
+struct HttpIntoState {
+  std::ofstream ofs;
+  std::shared_ptr<Interpreter> cb_interp;
+  std::exception_ptr eptr;
+};
+
+// Configure `req.body_sink` from the `into` kwarg, streaming the response body
+// instead of buffering it: nil → buffer (no streaming); String → write the
+// body to that file path; Function → call it with each chunk. Else → TypeError.
+inline void http_setup_into(const Value& into,
+                            const std::shared_ptr<Environment>& env,
+                            culebra::http::HttpRequest& req, HttpIntoState& st,
+                            const char* ctx, long line, long col) {
+  if (into.type == Value::Nil) return;
+  if (into.type == Value::String || into.type == Value::StringView) {
+    std::string path(into.to_string_view());
+    st.ofs.open(path, std::ios::binary);
+    if (!st.ofs) {
+      throw CulebraError(
+          "IOError",
+          std::format("{}: cannot open '{}' for writing", ctx, path), line,
+          col);
+    }
+    req.body_sink = [&st](const char* d, size_t n) {
+      st.ofs.write(d, static_cast<std::streamsize>(n));
+      return static_cast<bool>(st.ofs);
+    };
+  } else if (into.type == Value::Function) {
+    st.cb_interp = std::make_shared<Interpreter>();
+    Value cb = into;
+    req.body_sink = [&st, cb, env](const char* d, size_t n) -> bool {
+      try {
+        std::vector<Value> args;
+        args.emplace_back(std::string(d, n));
+        st.cb_interp->call_closure(cb, env, std::move(args));
+        return true;
+      } catch (...) {
+        st.eptr = std::current_exception();  // abort; rethrown after send
+        return false;
+      }
+    };
+  } else {
+    throw CulebraError(
+        "TypeError",
+        std::format("{}: into must be a String path or a Function", ctx), line,
+        col);
+  }
+}
+
+// Run a request (whose sink may have been set by http_setup_into): rethrow a
+// callback exception first, then map a transport failure to HttpError, else
+// return the response Object ({status, ok, body, headers}; body empty when
+// streamed via `into`).
+inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
+                           const char* ctx, long line, long col) {
+  auto r = culebra::http::http_request(req);
+  if (st.eptr) std::rethrow_exception(st.eptr);
+  if (!r.ok) {
+    throw CulebraError("HttpError", std::format("{}: {}", ctx, r.error), line,
+                       col);
+  }
+  return http_result_to_value(std::move(r));
 }
 
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
@@ -2176,11 +2231,15 @@ inline Value make_http_namespace() {
       FunctionValue::Parameter{"body", false, ""sv, nullptr, empty_str_default};
   auto ct_param = FunctionValue::Parameter{"content_type", false, ""sv, nullptr,
                                        text_plain_default};
+  // `into` (response sink): nil → buffer body; String → file path; Function →
+  // per-chunk callback. Streams the response, leaving the result's body empty.
+  auto into_param =
+      FunctionValue::Parameter{"into", false, ""sv, nullptr, kw_default_nil()};
 
   // GET / DELETE / HEAD — no body.
   auto bodyless = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
-        {url_param, headers_param, timeout_param, follow_param},
+        {url_param, headers_param, timeout_param, follow_param, into_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2188,7 +2247,9 @@ inline Value make_http_namespace() {
           req.method = method;
           req.url = env->get("url").to_string();
           http_fill_common(env, req, ctx, line, col);
-          return http_run(std::move(req), ctx, line, col);
+          HttpIntoState st;
+          http_setup_into(env->get("into"), env, req, st, ctx, line, col);
+          return http_run_into(req, st, ctx, line, col);
         },
         "Object"sv));
   };
@@ -2200,7 +2261,7 @@ inline Value make_http_namespace() {
   auto withbody = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
         {url_param, body_param, ct_param, headers_param, timeout_param,
-         follow_param},
+         follow_param, into_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2210,7 +2271,9 @@ inline Value make_http_namespace() {
           req.body = env->get("body").to_string();
           req.content_type = env->get("content_type").to_string();
           http_fill_common(env, req, ctx, line, col);
-          return http_run(std::move(req), ctx, line, col);
+          HttpIntoState st;
+          http_setup_into(env->get("into"), env, req, st, ctx, line, col);
+          return http_run_into(req, st, ctx, line, col);
         },
         "Object"sv));
   };
@@ -2218,13 +2281,13 @@ inline Value make_http_namespace() {
   ns.initialize("put", withbody("PUT", "Http.put"), false);
 
   // `Http.request(method, url, body="", content_type="text/plain",
-  //               headers=nil, timeout=0, follow_redirects=true)` — generic
-  // escape hatch for any method (PATCH, OPTIONS, ...).
+  //               headers=nil, timeout=0, follow_redirects=true, into=nil)` —
+  // generic escape hatch for any method (PATCH, OPTIONS, ...).
   ns.initialize(
       "request",
       Value(FunctionValue(
           {{"method", false, "String"sv}, url_param, body_param, ct_param,
-           headers_param, timeout_param, follow_param},
+           headers_param, timeout_param, follow_param, into_param},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -2234,7 +2297,10 @@ inline Value make_http_namespace() {
             req.body = env->get("body").to_string();
             req.content_type = env->get("content_type").to_string();
             http_fill_common(env, req, "Http.request", line, col);
-            return http_run(std::move(req), "Http.request", line, col);
+            HttpIntoState st;
+            http_setup_into(env->get("into"), env, req, st, "Http.request",
+                            line, col);
+            return http_run_into(req, st, "Http.request", line, col);
           },
           "Object"sv)),
       false);

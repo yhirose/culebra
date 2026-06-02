@@ -1785,6 +1785,8 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 - `timeout: Long` — connect / read / write の各フェーズのタイムアウト（**秒**）。
   `0` はライブラリのデフォルト（デフォルト: `0`）。
 - `follow_redirects: Bool` — `3xx` の `Location` を追跡する（デフォルト: `true`）。
+- `into: String | Function` — レスポンスボディをバッファせず sink へストリーム
+  する（下記ストリーミング参照。デフォルト: `nil` ＝ `body` にバッファ）。
 - `body: String` / `content_type: String`（`post` / `put` / `request` のみ）—
   リクエストボディとその `Content-Type`（`body` が非空で、かつ `headers` で
   明示的な `Content-Type` が指定されていない場合のみ付与）。
@@ -1813,9 +1815,31 @@ assert_eq(missing.ok, false)        # 404 は通常の結果
 assert_eq(missing.status, 404)
 ```
 
-ボディは単一の `String`（全体をメモリに読み込み）で返るので、JSON API では
-[`JSON.parse`](#9-json) と組み合わせます。ストリーミングのダウンロード/アップロードは
-まだありません（大きなレスポンスも全体をメモリに読み込みます）。
+`get`/`post` 等はボディ全体を単一の `String`（メモリに読み込み）で返すので、
+JSON API では [`JSON.parse`](#9-json) と組み合わせます。
+
+**ストリーミング（ダウンロード）— `into:` 引数。** メモリに載らない大きな
+レスポンスは、`into:` を渡してバッファせず sink へストリームします。任意のメソッドで
+使え、返る `body` は空になります（バイトは sink へ流れる）。`into:` が受ける型:
+
+* **`String`** — ファイルパス。ボディをそのファイルへ直接書き出します。
+* **`Function`** — `|chunk|` クロージャ。到着した各 chunk で呼ばれます。コールバックは
+  呼び出しスレッド上で実行されるので捕捉した状態を自由に読み書きでき、throw すれば
+  転送は中断されエラーが伝播します。
+
+```culebra
+# doctest: skip
+Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")   # → ファイル
+
+mut bytes = 0
+Http.get("https://example.com/big.csv", into: fn (chunk) { bytes = bytes + chunk.size() })
+
+# 任意のメソッド。例: レスポンスがストリームで返る POST:
+Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
+```
+
+リクエストボディ（アップロード）のストリーミングはまだありません — リクエストの
+`body` は `String` 全体として送られます。
 
 **並列・レースリクエスト**は HTTP 専用 API を使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを `Http.get` に適用します — JS の `Promise.all`/`race` や Elixir の

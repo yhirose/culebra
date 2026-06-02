@@ -1855,6 +1855,8 @@ Keyword arguments (shared by every method):
 - `timeout: Long` — per-phase timeout in **seconds** for connect / read / write;
   `0` uses the library default (default: `0`).
 - `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
+- `into: String | Function` — stream the response body to a sink instead of
+  buffering it; see Streaming below (default: `nil` = buffer into `body`).
 - `body: String` / `content_type: String` (`post` / `put` / `request` only) —
   request body and its `Content-Type` (the header is set only when `body` is
   non-empty and no explicit `Content-Type` was passed in `headers`).
@@ -1883,9 +1885,32 @@ assert_eq(missing.ok, false)        # 404 is a normal result
 assert_eq(missing.status, 404)
 ```
 
-The body is returned as a single `String` (read whole into memory); pair it with
-[`JSON.parse`](#9-json) for JSON APIs. Streaming download/upload is not available
-yet — large responses are read whole into memory.
+The `get`/`post`/etc. methods return the whole body as a single `String` (read
+into memory); pair it with [`JSON.parse`](#9-json) for JSON APIs.
+
+**Streaming (download) — the `into:` argument.** For a response too large to
+hold in memory, pass `into:` to stream the body to a sink instead of buffering
+it. It works on any method and leaves the returned `body` empty (the bytes go to
+the sink). `into:` accepts:
+
+* a **`String`** — a file path; the body is written straight to that file.
+* a **`Function`** — a `|chunk|` closure called with each chunk as it arrives.
+  The callback runs on the calling thread, so it may read and mutate captured
+  state; if it throws, the transfer is aborted and the error propagates.
+
+```culebra
+# doctest: skip
+Http.get("https://example.com/big.tar.gz", into: "big.tar.gz")   # → file
+
+mut bytes = 0
+Http.get("https://example.com/big.csv", into: fn (chunk) { bytes = bytes + chunk.size() })
+
+# any method, e.g. a POST whose response streams back:
+Http.post("https://example.com/query", body: q, into: fn (chunk) { handle(chunk) })
+```
+
+Request-body (upload) streaming is not available yet — a request `body` is sent
+as a whole `String`.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
 combinators over `Http.get`, not an HTTP-specific API — the same shape as

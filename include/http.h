@@ -17,6 +17,7 @@
 // is purely a link-time decision and does not touch this file.
 
 #include <cctype>
+#include <functional>
 #include <httplib.h>
 #include <string>
 #include <utility>
@@ -26,6 +27,12 @@ namespace culebra::http {
 
 using HeaderList = std::vector<std::pair<std::string, std::string>>;
 
+// Per-chunk sink for streaming the response body. Return false to abort the
+// transfer. When set on a request, the body is delivered to this sink as it
+// arrives and HttpResult::body stays empty (no whole-body buffering). Used by
+// `Http.download` (sink → file) and `Http.get(..., on_chunk:)` (sink → closure).
+using BodySink = std::function<bool(const char* data, size_t len)>;
+
 struct HttpRequest {
   std::string method = "GET";      // "GET" / "POST" / "PUT" / "DELETE" / ...
   std::string url;                 // full URL including scheme (http/https).
@@ -34,6 +41,7 @@ struct HttpRequest {
   std::string content_type;        // applied iff body set and no explicit CT.
   long timeout_sec = 0;            // per-phase timeout; 0 => library default.
   bool follow_redirects = true;    // 3xx Location chasing.
+  BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
 };
 
 struct HttpResult {
@@ -117,6 +125,12 @@ inline HttpResult http_request(const HttpRequest& req) {
     if (!has_ct && !req.content_type.empty()) {
       hreq.headers.emplace("Content-Type", req.content_type);
     }
+  }
+  // Streaming: route the response body to the sink as it arrives instead of
+  // buffering it into res->body (which then stays empty).
+  if (req.body_sink) {
+    hreq.content_receiver = [&req](const char* data, size_t len, uint64_t,
+                                   uint64_t) { return req.body_sink(data, len); };
   }
 
   auto res = cli.send(hreq);

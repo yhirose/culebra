@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <system_error>
 
@@ -1536,18 +1537,66 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
   return o;
 }
 
-// Run one HttpRequest; throw HttpError on a transport failure, else return the
-// response Object. Shared by every Http.* adapter.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_http_run(
-    culebra::http::HttpRequest& req, const char* ctx, int64_t line,
-    int64_t col) {
+// Backing state for an `into:` response sink, owned by the adapter for the
+// whole request: the output file (String into) and any callback exception
+// (rethrown after the request returns).
+struct JitHttpInto {
+  std::ofstream ofs;
+  std::exception_ptr eptr;
+};
+
+// Configure `req.body_sink` from the `into` slab value: nil → buffer the body;
+// TAG_STRING → write to that file path; TAG_FUNC → call per chunk. Else →
+// TypeError. Mirrors interp http_setup_into.
+inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
+                             JitHttpInto& st, const char* ctx) {
+  if (into.tag == TAG_NIL) return;
+  if (into.tag == TAG_STRING || into.tag == TAG_STRINGVIEW) {
+    std::string path(_culebra_str_view(into.tag, into.data));
+    st.ofs.open(path, std::ios::binary);
+    if (!st.ofs) {
+      throw culebra::CulebraError(
+          "IOError",
+          std::format("{}: cannot open '{}' for writing", ctx, path), 0, 0);
+    }
+    req.body_sink = [&st](const char* d, size_t n) {
+      st.ofs.write(d, static_cast<std::streamsize>(n));
+      return static_cast<bool>(st.ofs);
+    };
+  } else if (into.tag == TAG_FUNC) {
+    auto* cb = reinterpret_cast<JitClosure*>(into.data);
+    req.body_sink = [cb, &st](const char* d, size_t n) -> bool {
+      try {
+        JitValue chunk{TAG_STRING, reinterpret_cast<int64_t>(
+                                       _culebra_heap_str(std::string(d, n)))};
+        JitValue r = _culebra_invoke1(cb, chunk);  // consumes chunk's +1
+        _culebra_value_release_impl(r.tag, r.data);
+        return true;
+      } catch (...) {
+        st.eptr = std::current_exception();  // abort; rethrown after send
+        return false;
+      }
+    };
+  } else {
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("{}: into must be a String path or a Function", ctx), 0, 0);
+  }
+}
+
+// Run a request (whose sink may have been set by _http_setup_into): rethrow a
+// callback exception first, then map a transport failure to HttpError, else
+// return the response Object. Shared by every Http.* adapter.
+inline JitValue _http_run_into(culebra::http::HttpRequest& req,
+                               JitHttpInto& st, const char* ctx) {
   auto r = culebra::http::http_request(req);
+  if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
     throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
-                                line, col);
+                                0, 0);
   }
   return {TAG_OBJECT,
-          reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, line, col))};
+          reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
@@ -2466,14 +2515,16 @@ inline void common(JitValue* a, int64_t n, int base,
 }
 }  // namespace _http_adapt
 
-// get/delete/head — slab: url, headers, timeout, follow_redirects.
+// get/delete/head — slab: url, headers, timeout, follow_redirects, into.
 inline JitValue _ns_http_bodyless(JitValue* a, int64_t n, const char* method,
                                   const char* ctx) {
   culebra::http::HttpRequest req;
   req.method = method;
   req.url = _culebra_str_view(a[0].tag, a[0].data);
   _http_adapt::common(a, n, 1, req, ctx);
-  return _culebra_http_run(req, ctx, 0, 0);
+  JitHttpInto st;
+  _http_setup_into(_proc_adapt::at(a, n, 4), req, st, ctx);
+  return _http_run_into(req, st, ctx);
 }
 inline JitValue _ns_http_get(JitValue* a, int64_t n) {
   return _ns_http_bodyless(a, n, "GET", "Http.get");
@@ -2485,7 +2536,8 @@ inline JitValue _ns_http_head(JitValue* a, int64_t n) {
   return _ns_http_bodyless(a, n, "HEAD", "Http.head");
 }
 
-// post/put — slab: url, body, content_type, headers, timeout, follow_redirects.
+// post/put — slab: url, body, content_type, headers, timeout,
+// follow_redirects, into.
 inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
                                   const char* ctx) {
   culebra::http::HttpRequest req;
@@ -2494,7 +2546,9 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   req.body = _culebra_str_view(a[1].tag, a[1].data);
   req.content_type = _culebra_str_view(a[2].tag, a[2].data);
   _http_adapt::common(a, n, 3, req, ctx);
-  return _culebra_http_run(req, ctx, 0, 0);
+  JitHttpInto st;
+  _http_setup_into(_proc_adapt::at(a, n, 6), req, st, ctx);
+  return _http_run_into(req, st, ctx);
 }
 inline JitValue _ns_http_post(JitValue* a, int64_t n) {
   return _ns_http_withbody(a, n, "POST", "Http.post");
@@ -2503,7 +2557,8 @@ inline JitValue _ns_http_put(JitValue* a, int64_t n) {
   return _ns_http_withbody(a, n, "PUT", "Http.put");
 }
 
-// request(method, url, body, content_type, headers, timeout, follow_redirects).
+// request — slab: method, url, body, content_type, headers, timeout,
+// follow_redirects, into.
 inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   culebra::http::HttpRequest req;
   req.method = _culebra_str_view(a[0].tag, a[0].data);
@@ -2511,7 +2566,9 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   req.body = _culebra_str_view(a[2].tag, a[2].data);
   req.content_type = _culebra_str_view(a[3].tag, a[3].data);
   _http_adapt::common(a, n, 4, req, "Http.request");
-  return _culebra_http_run(req, "Http.request", 0, 0);
+  JitHttpInto st;
+  _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
+  return _http_run_into(req, st, "Http.request");
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
@@ -2939,17 +2996,21 @@ inline JitValue _ns_def_text_plain() {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str("text/plain"))};
 }
 
-// get / delete / head: url, headers=nil, timeout=0, follow_redirects=true.
+// `into` (response sink): nil → buffer; String → file path; Function → per-chunk
+// callback. Shared trailing kwarg on every Http method (default nil).
+// get / delete / head: url, headers=nil, timeout=0, follow_redirects=true,
+// into=nil.
 inline const NsParam kHttpGetParams[] = {
   {"url",              false, false, nullptr},
   {"headers",          true,  false, &_ns_def_nil},
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
+  {"into",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 4, -1, -1};
+inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 5, -1, -1};
 
 // post / put: url, body="", content_type="text/plain", headers=nil,
-// timeout=0, follow_redirects=true.
+// timeout=0, follow_redirects=true, into=nil.
 inline const NsParam kHttpPostParams[] = {
   {"url",              false, false, nullptr},
   {"body",             true,  false, &_ns_def_empty_str},
@@ -2957,11 +3018,12 @@ inline const NsParam kHttpPostParams[] = {
   {"headers",          true,  false, &_ns_def_nil},
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
+  {"into",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 6, -1, -1};
+inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 7, -1, -1};
 
 // request: method, url, body="", content_type="text/plain", headers=nil,
-// timeout=0, follow_redirects=true.
+// timeout=0, follow_redirects=true, into=nil.
 inline const NsParam kHttpRequestParams[] = {
   {"method",           false, false, nullptr},
   {"url",              false, false, nullptr},
@@ -2970,8 +3032,9 @@ inline const NsParam kHttpRequestParams[] = {
   {"headers",          true,  false, &_ns_def_nil},
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
+  {"into",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 7, -1, -1};
+inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 8, -1, -1};
 #endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {

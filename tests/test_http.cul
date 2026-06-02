@@ -38,4 +38,19 @@ assert_eq(refused.kind, "HttpError")
 let refused_post = try { Http.post("http://127.0.0.1:1/x", body: "data"); nil } catch e { e }
 assert_eq(refused_post.kind, "HttpError")
 
+// --- `into:` streaming sink: offline-deterministic error paths (happy paths
+//     need a server, covered by the in-process loopback test http_test.cc) ---
+
+// into: a String path that can't be opened is an IOError (before any I/O).
+let into_badpath = try { Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f"); nil } catch e { e }
+assert_eq(into_badpath.kind, "IOError")
+
+// into: anything but nil / String / Function is a TypeError (before any I/O).
+let into_badtype = try { Http.get("http://127.0.0.1:1/x", into: 123); nil } catch e { e }
+assert_eq(into_badtype.kind, "TypeError")
+
+// into: a callback still surfaces a transport failure as HttpError.
+let into_refused = try { Http.get("http://127.0.0.1:1/x", into: fn (c) { nil }); nil } catch e { e }
+assert_eq(into_refused.kind, "HttpError")
+
 puts("test_http: ok")

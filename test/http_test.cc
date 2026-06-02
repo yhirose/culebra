@@ -76,6 +76,37 @@ int main() {
     CHECK(found);
   }
 
+  // Streaming GET via body_sink — chunks delivered, res->body stays empty
+  // (this is what Http.download / Http.stream ride on).
+  {
+    HttpRequest req;
+    req.url = base + "/hello";
+    std::string streamed;
+    req.body_sink = [&streamed](const char* d, size_t n) {
+      streamed.append(d, n);
+      return true;
+    };
+    auto r = http_request(req);
+    CHECK(r.ok);
+    CHECK(r.status == 200);
+    CHECK(r.body.empty());            // not buffered into the result
+    CHECK(streamed == "hello world"); // delivered to the sink instead
+  }
+
+  // body_sink returning false aborts the transfer (no crash).
+  {
+    HttpRequest req;
+    req.url = base + "/hello";
+    int calls = 0;
+    req.body_sink = [&calls](const char*, size_t) {
+      ++calls;
+      return false;  // abort immediately
+    };
+    auto r = http_request(req);
+    CHECK(calls >= 1);
+    (void)r;  // transport may report ok or a canceled error; must not crash
+  }
+
   // POST echo — body round-trips, content_type applied.
   {
     HttpRequest req;
