@@ -9533,13 +9533,15 @@ struct JIT {
   }
 
   // One JIT instance per compilation. `func_info_` and
-  // `scope_has_defer_` are keyed by `peg::Ast*` and never cleared —
-  // only the `JIT::run`-local instance keeps pointer stability.
-  // Reusing an instance across compilations would collide on reused
-  // node addresses; the assert below guards future misuse.
+  // `scope_has_defer_` are keyed by `peg::Ast*` and never cleared — they
+  // accumulate across the modules of a single compilation, which is safe
+  // because every module's AST stays live for the whole run, so their node
+  // addresses never collide. (A multi-module program calls this once per
+  // module on the same instance — see the build/run loops.) The instance
+  // must not be reused across *separate* compilations, where a freed AST's
+  // addresses could be recycled; callers enforce that by constructing a
+  // fresh `JIT` per compilation.
   FuncInfo analyze_program(const peg::Ast& programAst) {
-    assert(func_info_.empty() && scope_has_defer_.empty() &&
-           "JIT reused — analyze_program expects a fresh instance");
     std::vector<const std::set<std::string>*> outer;
     std::set<std::string> my_locals;
     collect_fn_locals(programAst, my_locals, outer);
