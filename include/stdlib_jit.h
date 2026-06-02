@@ -1997,7 +1997,8 @@ inline void install_jit_stdlib() { JitExtension::install(); }
 namespace _ns_adapt {
 
 [[noreturn]] inline void arity_error(const char* ns, const char* method,
-                                       int expected, int64_t got) {
+                                       int expected, int64_t got,
+                                       int64_t line = 0, int64_t col = 0) {
   // Bare builtin globals carry no namespace — render `method:` not `.method:`.
   std::string qualified =
       (ns && ns[0]) ? std::format("{}.{}", ns, method) : std::string(method);
@@ -2005,7 +2006,7 @@ namespace _ns_adapt {
       "ArityError",
       std::format("{}: expected {} positional argument{}, got {}",
                   qualified, expected, expected == 1 ? "" : "s", got),
-      0, 0);
+      line, col);
 }
 
 inline const char* take_str(JitValue v) {
@@ -3182,44 +3183,57 @@ inline JitValue _jit_ns_method_trampoline(
     JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
-  // Args-rest method (range/iota) on the bare-positional path: build the same
-  // canonical [rest-Array, kw-only...] slab the kwarg resolver produces, so a
-  // single adapter shape serves both. The positionals are absorbed into the
-  // Array, so the slab (not `args`) is what gets released afterward.
-  if (m->params && m->params->args_rest_idx >= 0) {
-    std::unordered_map<std::string_view, JitValue> none;
-    auto slab = _jit_ns_build_args_rest_slab(m->params, n_args, args, none,
-                                             0, 0);
-    return _jit_ns_dispatch_owned_slab(m, slab);
-  }
-  auto release_args = [&]() {
-    for (int64_t i = 0; i < n_args; i++) {
-      _culebra_value_release_impl(args[i].tag, args[i].data);
-    }
-  };
-  // Methods with NsParamMeta accept a variable arity (required params up to
-  // the full param count); the kwarg resolver fills a full-arity slab and
-  // bare positional calls pass a prefix. Methods without params keep the
-  // strict fixed-arity check.
-  if (m->params) {
-    int64_t n_required = 0;
-    for (int i = 0; i < m->params->n_params; i++) {
-      if (!m->params->params[i].has_default) n_required++;
-    }
-    if (n_args < n_required || n_args > m->params->n_params) {
-      release_args();
-      _ns_adapt::arity_error(m->ns, m->name, n_required, n_args);
-    }
-  } else if (m->arity >= 0 && n_args != m->arity) {
-    release_args();
-    _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args);
-  }
+  // The closure ABI carries no line/col, so snapshot the call-site position
+  // recorded just before this indirect call (general call codegen emits
+  // set_call_site). An adapter/arity error thrown without a position gets it
+  // backfilled below — the JIT analog of interp's eval-wrapper, so a builtin
+  // called as a value (`let a = Math.abs; a("x")`) reports its call site like
+  // the interpreter. Snapshot into locals: a nested call inside the adapter
+  // would overwrite the thread-local.
+  int64_t line = _jit_call_site_line, col = _jit_call_site_col;
   try {
-    auto r = m->adapter(args, n_args);
-    release_args();
-    return r;
-  } catch (...) {
-    release_args();
+    // Args-rest method (range/iota) on the bare-positional path: build the same
+    // canonical [rest-Array, kw-only...] slab the kwarg resolver produces, so a
+    // single adapter shape serves both. The positionals are absorbed into the
+    // Array, so the slab (not `args`) is what gets released afterward.
+    if (m->params && m->params->args_rest_idx >= 0) {
+      std::unordered_map<std::string_view, JitValue> none;
+      auto slab = _jit_ns_build_args_rest_slab(m->params, n_args, args, none,
+                                               line, col);
+      return _jit_ns_dispatch_owned_slab(m, slab);
+    }
+    auto release_args = [&]() {
+      for (int64_t i = 0; i < n_args; i++) {
+        _culebra_value_release_impl(args[i].tag, args[i].data);
+      }
+    };
+    // Methods with NsParamMeta accept a variable arity (required params up to
+    // the full param count); the kwarg resolver fills a full-arity slab and
+    // bare positional calls pass a prefix. Methods without params keep the
+    // strict fixed-arity check.
+    if (m->params) {
+      int64_t n_required = 0;
+      for (int i = 0; i < m->params->n_params; i++) {
+        if (!m->params->params[i].has_default) n_required++;
+      }
+      if (n_args < n_required || n_args > m->params->n_params) {
+        release_args();
+        _ns_adapt::arity_error(m->ns, m->name, n_required, n_args, line, col);
+      }
+    } else if (m->arity >= 0 && n_args != m->arity) {
+      release_args();
+      _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args, line, col);
+    }
+    try {
+      auto r = m->adapter(args, n_args);
+      release_args();
+      return r;
+    } catch (...) {
+      release_args();
+      throw;
+    }
+  } catch (culebra::CulebraError& e) {
+    if (e.line == 0) { e.line = line; e.col = col; }
     throw;
   }
 }
@@ -3337,7 +3351,7 @@ inline bool _jit_ns_kwarg_resolve(
       _culebra_value_release_impl(positional[k].tag, positional[k].data);
     for (auto& [_, v] : merged)
       _culebra_value_release_impl(v.tag, v.data);
-    _ns_adapt::arity_error(m->ns, m->name, n, n_pos);
+    _ns_adapt::arity_error(m->ns, m->name, n, n_pos, line, col);
   }
   // Remaining params: from merged kwargs, else default, else ArityError.
   for (int i = static_cast<int>(n_pos); i < n; i++) {

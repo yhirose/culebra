@@ -392,3 +392,16 @@ assert_eq(r_vp.message, "'range' takes 1 to 2 arguments but 3 given")
 let r_bo = try { range(0, 10, **{bogus: 1}); nil } catch e { e }
 assert_eq(r_bo.kind, 'TypeError')
 assert_eq(r_bo.message, "unknown keyword argument 'bogus'")
+
+# A builtin / namespace method bound to a value then called reports its call
+# site on both backends — the JIT used to drop the position to 0 because the
+# closure ABI carries no line/col (the ns trampoline now backfills from the
+# recorded call site, the analog of interp's eval-wrapper). Single-line so the
+# caught error's line equals the statement's own line.
+let r_nsv = try { let a = Math.abs; a("x") } catch e { e }
+assert_eq(r_nsv.kind, 'TypeError')
+assert_eq(r_nsv.line, 401)
+# Through a higher-order call, the error is attributed to the HOF call site.
+let r_nshof = try { ["x", "y"].map(Math.abs) } catch e { e }
+assert_eq(r_nshof.kind, 'TypeError')
+assert_eq(r_nshof.line, 405)

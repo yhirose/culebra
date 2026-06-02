@@ -5919,6 +5919,12 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
                                             int64_t line, int64_t col) {
+  // Record the HOF call site so a callback invoked per element (which the
+  // runtime calls through the bare closure ABI, no line/col) can report it on
+  // a position-less throw — e.g. a builtin handed in as a value, `["x"].
+  // map(Math.abs)`, whose ns trampoline backfills from this. Matches interp's
+  // eval-wrapper, which attributes such errors to the enclosing HOF call.
+  culebra_runtime_set_call_site(line, col);
   auto accepts = [&](JitClosure* cls) {
     return _culebra_callback_arity_ok(cls, expected_arity);
   };
