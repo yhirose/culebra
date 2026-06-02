@@ -1,0 +1,92 @@
+# Differential-test corpus generator. Emits case lines (one `_p(...)` call per
+# line) to stdout; the driver prepends preamble.cul to form the manifest, then
+# runs it under interp / --jit / AOT and diffs the outputs byte-for-byte. Any
+# divergence is an interp/JIT asymmetry.
+#
+# Generation is template-combinator, not random: it sweeps the seams where
+# divergences cluster (operators x operands, methods x receiver types x arg
+# shapes, builtins-as-values x call forms, indexing/slicing). Each generated
+# body is syntactically valid culebra — a wrong type/arity is a *runtime* error,
+# caught and recorded by `_p`, never a parse error that would break the run.
+# Run: culebra misc/difftest/gen.cul > cases.cul
+mut out = []
+fn emit(line) { out.push(line) }
+
+# A case: label (for the diff report) + a body expression whose outcome is
+# compared. Labels use single-quote raw strings so embedded `"`/`{}` need no
+# escaping (no generated operand contains a single quote).
+# `"..."` interpolates `{expr}`, so the literal braces of the generated lambda
+# come from single-quote raw strings; the label/body are plain concatenation.
+fn case(label, body) { emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")") }
+
+# Receiver expressions spanning every value type. Parenthesized so a scalar
+# receiver (`(1).size()`) and a method/index chain both parse.
+let recvs = ['1', '1.5', 'true', 'nil', '"abc"', '[1, 2, 3]', '{a: 1, b: 2}',
+             '(1, 2, 3)', '{1, 2, 3}']
+
+# --- Dimension 1: operators x operand-type pairs --------------------------
+let operands = ['1', '2', '1.5', '"a"', '"b"', 'true', 'nil', '[1, 2]', '{a: 1}', '(1, 2)']
+let binops = ['+', '-', '*', '/', '%', '<', '<=', '>', '>=', '==', '!=']
+for op in binops {
+  for l in operands {
+    for r in operands {
+      case("op|" + op + "|" + l + "|" + r, "(" + l + ") " + op + " (" + r + ")")
+    }
+  }
+}
+for u in ['-', '!'] {
+  for x in operands {
+    case("un|" + u + "|" + x, u + "(" + x + ")")
+  }
+}
+
+# --- Dimension 2: methods x receiver types x arg shapes -------------------
+# Methods spanning Array/String/Object/Set/Tuple/iterator builtins. Applying
+# every method to every receiver with every arg shape mostly errors; the point
+# is that the error (kind/message/position) must match across backends.
+let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
+               'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by', 'sum',
+               'product', 'min', 'max', 'join', 'contains', 'index_of',
+               'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
+               'trim', 'split', 'code_points', 'iter', 'take', 'skip',
+               'take_while', 'collect', 'count', 'enumerate', 'union']
+let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
+                 '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
+for recv in recvs {
+  for m in methods {
+    for a in argshapes {
+      case("m|" + recv + "|" + m + "|" + a, "(" + recv + ")." + m + "(" + a + ")")
+    }
+  }
+}
+
+# --- Dimension 3: builtins / ns-methods as values x call forms ------------
+# Covers the direct-vs-as-value duality: a builtin called directly, bound to a
+# variable, or handed to a higher-order / lazy combinator. `arg` is good or bad.
+let vals = ['Math.abs', 'Math.sqrt', 'Math.max', 'Math.min', 'range', 'iota',
+            'type_of', 'to_long', 'to_float', 'to_string', 'hash']
+let vargs = ['1', '"x"', '', '1, 2', '1, 2, 3']
+for v in vals {
+  for a in vargs {
+    case("v-direct|" + v + "|" + a, v + "(" + a + ")")
+    case("v-let|" + v + "|" + a, "let _f = " + v + "; _f(" + a + ")")
+  }
+  # As a higher-order callback (eager array, then lazy iterator).
+  case("v-map|" + v, '[1, "x"].map(' + v + ")")
+  case("v-mapnum|" + v, "[1, 2, 3].map(" + v + ")")
+  case("v-lazy|" + v, "[1, 2, 3].iter().map(" + v + ").collect()")
+  case("v-reduce|" + v, "[1, 2, 3].reduce(0, " + v + ")")
+}
+
+# --- Dimension 4: indexing and slicing x receiver types -------------------
+let indices = ['0', '1', '-1', '100', '"a"', '"missing"']
+for recv in recvs {
+  for i in indices {
+    case("idx|" + recv + "|" + i, "(" + recv + ")[" + i + "]")
+  }
+  for s in ['0..2', '1..', '..2', '-2..-1', '0..100', '2..0'] {
+    case("slice|" + recv + "|" + s, "(" + recv + ")[" + s + "]")
+  }
+}
+
+print(out.join("\n"))

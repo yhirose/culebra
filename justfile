@@ -252,6 +252,15 @@ test BACKEND='all': build
 doctest: build
     ./build/culebra test --doc tests/doctest docs
 
+# Differential test: generate the template-combinator corpus (misc/difftest)
+# and assert interp == jit byte-for-byte over every case. Enumerates the full
+# current interp/JIT divergence population in one run; exits non-zero on any
+# asymmetry. AOT is covered transitively (`just test` asserts aot == jit).
+[doc("Differential interp-vs-JIT test over the generated corpus")]
+[group("test")]
+difftest: build
+    misc/difftest/run.sh ./build/culebra
+
 # Microbenchmark regression check: every tests/perf/*.cul on interp
 # and JIT, asserts speedup meets the per-bench `# perf: min_speedup N`
 # directive declared in the file header. Not part of `just test`
