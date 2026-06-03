@@ -1701,13 +1701,8 @@ inline Value make_shared_buffer_namespace() {
                               cls),
                   line, col);
             }
-            auto core = std::make_shared<culebra::SharedBufferCore>();
-            core->bytes = std::make_shared<std::vector<uint8_t>>(
-                layout->stride * static_cast<size_t>(count), 0);
-            core->layout = *layout;
-            core->class_name = cls;
-            core->count = static_cast<size_t>(count);
-            long id = culebra::register_shared_buffer(std::move(core));
+            long id = culebra::make_shared_buffer(
+                *layout, cls, static_cast<size_t>(count));
             ObjectValue buf;
             buf.initialize("__sharedbuffer_id__", Value(id), false);
             buf.initialize("__sharedbuffer_count__", Value(count), false);

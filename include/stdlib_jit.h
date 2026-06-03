@@ -2761,6 +2761,50 @@ inline JitValue _ns_channel_fan_in(JitValue* a, int64_t n) {
   return culebra_jit_channel_fan_in(n, a, 0, 0);
 }
 
+// SharedBuffer.new(count, Cls): allocate a zero-initialized byte store of
+// `count` @packable records and return a buffer handle. Slow-path only (no
+// compile_ns_call fast path); the adapter builds everything directly. See
+// [[project_packable_c3]].
+inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
+  if (n != 2) {
+    throw culebra::CulebraError("ArityError",
+        "SharedBuffer.new: expected 2 arguments (count, Class)");
+  }
+  if (a[0].tag != TAG_LONG) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.new: count must be an integer");
+  }
+  long count = a[0].data;
+  if (count < 0) {
+    throw culebra::CulebraError("ValueError",
+        "SharedBuffer.new: count must be >= 0");
+  }
+  if (a[1].tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.new: second argument must be a @packable class");
+  }
+  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
+  auto mi = cls->find_slot("__packable__");
+  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.new: second argument must be a @packable class");
+  }
+  std::string_view cname =
+      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
+  const auto* layout = culebra::lookup_packable_layout(cname);
+  if (!layout) {
+    throw culebra::CulebraError("TypeError",
+        std::format("SharedBuffer.new: no @packable layout for `{}`", cname));
+  }
+  long id = culebra::make_shared_buffer(*layout, std::string(cname),
+                                        static_cast<size_t>(count));
+  auto* buf = culebra_runtime_object_new();
+  buf->is_shared_buffer = true;
+  culebra_runtime_object_set(buf, "__sharedbuffer_id__", false, TAG_LONG, id, 0, 0);
+  culebra_runtime_object_set(buf, "__sharedbuffer_count__", false, TAG_LONG, count, 0, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(buf)};
+}
+
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
 // slab slot 2 — resolved from a positional arg or a `limit:` kwarg by the
 // NsParamMeta hook (kParallelMeta), defaulting to 0 (= the cap). The four modes
@@ -3357,6 +3401,7 @@ inline const NsMethod kNsMethods[] = {
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new",    -1, &_ns_channel_new},
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
+  {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
   {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
   {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},
@@ -5357,7 +5402,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
-      "Encoding",
+      "Encoding", "SharedBuffer",
 #if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
       "Http",
 #endif

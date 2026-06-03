@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "packable.h"
 #include "parser.h"
 #include "shared.h"
 
@@ -155,10 +156,31 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     }
     case "CLASS_DECL"_: {
       size_t i = culebra::first_non_decorator_index(node);
-      for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);
+      bool is_packable = false;
+      for (size_t d = 0; d < i; d++) {
+        walk(*node.nodes[d]);
+        if (culebra::is_packable_decorator(*node.nodes[d])) is_packable = true;
+      }
+      // `@packable` constrains typed fields to fixed scalar types. Validate
+      // here so the error fires pre-eval on every backend at the field's
+      // position (the layout calc in eval/compile is then only a safety net).
+      auto class_name =
+          culebra::parse_generic_head(node.nodes[i]->token).outer;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         if (mv.is_field || mv.is_typed_field) {
+          if (is_packable && mv.is_typed_field &&
+              !culebra::is_packable_type(mv.type_annotation)) {
+            diags_.push_back(Diagnostic{
+                "SyntaxError",
+                std::format(
+                    "@packable class `{}`: field `{}` has non-packable type "
+                    "`{}` (expected a fixed scalar: Float32/Float64/Int8/"
+                    "Int16/Int32/Int64/Byte/Bool)",
+                    class_name, mv.name, mv.type_annotation),
+                static_cast<long>(mv.name_line),
+                static_cast<long>(mv.name_col), Severity::Error});
+          }
           if (mv.value) walk(*mv.value);
           continue;
         }

@@ -1,0 +1,73 @@
+# Conformance: C3 @packable + SharedBuffer + zero-copy view.
+#
+# A @packable class declares a fixed C-ABI byte layout over its typed
+# fields. SharedBuffer.new(n, Cls) allocates n zero-initialized records;
+# buf[i] is a packed view whose .field reads/writes the backing bytes
+# directly (zero copy). interp / JIT / AOT are byte-identical.
+#
+# Run: ./build/culebra tests/test_packable.cul
+#      ./build/culebra --jit tests/test_packable.cul
+
+@packable class Vec2 {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+
+let buf = SharedBuffer.new(3, Vec2)
+assert_eq(buf.size, 3)
+assert_eq(buf.count, 3)
+assert_eq(buf.len, 3)
+
+# Zero-initialized.
+assert_eq(buf[0].x, 0.0)
+assert_eq(buf[0].y, 0.0)
+
+# Write then read back through a fresh view (zero copy).
+buf[0].x = 1.5
+buf[0].y = 2.5
+assert_eq(buf[0].x, 1.5)
+assert_eq(buf[0].y, 2.5)
+
+# Elements are independent.
+buf[1].x = 9.0
+assert_eq(buf[1].x, 9.0)
+assert_eq(buf[0].x, 1.5)
+
+# A stored view aliases the same bytes.
+let v = buf[0]
+v.x = 42.0
+assert_eq(buf[0].x, 42.0)
+
+# Compound assignment.
+buf[2].x = 10.0
+buf[2].x += 5.0
+assert_eq(buf[2].x, 15.0)
+
+# Negative indexing.
+buf[-1].y = 7.0
+assert_eq(buf[2].y, 7.0)
+
+# Mixed scalar types exercise natural alignment (Bool, Int64, Int32, Byte).
+@packable class Mix {
+  flag: Bool = false
+  big: Int64 = 0
+  small: Int32 = 0
+  b: Byte = 0
+}
+
+let m = SharedBuffer.new(2, Mix)
+assert_eq(m[0].flag, false)
+assert_eq(m[0].big, 0)
+m[0].flag = true
+m[0].big = 1234567890123
+m[0].small = -7
+m[0].b = 255
+assert_eq(m[0].flag, true)
+assert_eq(m[0].big, 1234567890123)
+assert_eq(m[0].small, -7)
+assert_eq(m[0].b, 255)
+# Second record untouched.
+assert_eq(m[1].big, 0)
+assert_eq(m[1].flag, false)
+
+puts("packable ok")

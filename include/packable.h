@@ -159,4 +159,17 @@ inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(long id) {
   return it == shared_buffer_registry().end() ? nullptr : it->second;
 }
 
+// Allocate a zero-initialized SharedBuffer of `count` records laid out per
+// `layout`, register it, and return its id. Pure metadata + raw bytes (no
+// Value / JitValue), so interp and JIT share this construction.
+inline long make_shared_buffer(const PackableLayout& layout,
+                               std::string class_name, size_t count) {
+  auto core = std::make_shared<SharedBufferCore>();
+  core->bytes = std::make_shared<std::vector<uint8_t>>(layout.stride * count, 0);
+  core->layout = layout;
+  core->class_name = std::move(class_name);
+  core->count = count;
+  return register_shared_buffer(std::move(core));
+}
+
 }  // namespace culebra

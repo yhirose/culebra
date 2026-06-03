@@ -5,6 +5,7 @@
 // Conservative backstop collector (docs/jit_gc_design.md).
 #include <jit_gc.h>
 #include <module_loader.h>
+#include <packable.h>
 #include <parser.h>
 #include <runtime/rt_macros.h>
 #include <shared.h>
@@ -246,6 +247,12 @@ struct JitObject {
   // semantics. Trailing field so existing JitObject IR layout is
   // undisturbed.
   int64_t mut_count = 0;
+  // @packable handle discriminators — set once at construction. O(1)
+  // type checks for the object get/set/index helpers, avoiding a
+  // marker-name shape scan on every (non-packable) property/subscript.
+  // Trailing fields; codegen only GEPs earlier members via offsetof.
+  bool is_packed_view = false;
+  bool is_shared_buffer = false;
 
   // --- Shape-based property access helpers ---
 
@@ -2876,6 +2883,161 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
 
+// --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----
+// SharedBuffer handles and packed views are plain JitObjects carrying
+// hidden marker slots (the same scheme the interp uses); the native byte
+// store lives in culebra::shared_buffer_registry(), referenced by id.
+// These helpers are called from the object get/set/index runtime helpers
+// below, mirroring the interp's eval_property / eval_array_reference hooks
+// — same logical interception points in both backends. See
+// [[project_packable_c3]].
+inline bool _jit_is_packed_view(JitObject* obj) { return obj->is_packed_view; }
+inline bool _jit_is_shared_buffer(JitObject* obj) {
+  return obj->is_shared_buffer;
+}
+
+// Decode field `f` from a record's raw bytes into a primitive JitValue.
+inline JitValue _jit_packable_read_field(const uint8_t* base,
+                                         const culebra::PackableField& f) {
+  const uint8_t* p = base + f.offset;
+  if (f.type == "Float32") {
+    float v; std::memcpy(&v, p, 4);
+    return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(v))};
+  }
+  if (f.type == "Float64" || f.type == "Float") {
+    double v; std::memcpy(&v, p, 8);
+    return {TAG_FLOAT, _culebra_double_to_bits(v)};
+  }
+  if (f.type == "Int8")  { int8_t  v; std::memcpy(&v, p, 1); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "Int16") { int16_t v; std::memcpy(&v, p, 2); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "Int32") { int32_t v; std::memcpy(&v, p, 4); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "Int64" || f.type == "Long") {
+    int64_t v; std::memcpy(&v, p, 8); return {TAG_LONG, v};
+  }
+  if (f.type == "Byte") { uint8_t v; std::memcpy(&v, p, 1); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "Bool") { uint8_t v; std::memcpy(&v, p, 1); return {TAG_BOOL, v ? 1 : 0}; }
+  return {TAG_NIL, 0};
+}
+
+// Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion
+// mirrors the interp (Long<->Float implicit). The caller owns release of a
+// non-primitive value on the error path.
+inline void _jit_packable_write_field(uint8_t* base,
+                                      const culebra::PackableField& f,
+                                      int8_t tag, int64_t data) {
+  uint8_t* p = base + f.offset;
+  auto as_double = [&]() -> double {
+    if (tag == TAG_LONG) return static_cast<double>(data);
+    if (tag == TAG_FLOAT) return _culebra_float_to_double(data);
+    throw culebra::CulebraError("TypeError",
+        "type error: expected Long or Float");
+  };
+  auto as_long = [&]() -> int64_t {
+    if (tag == TAG_LONG) return data;
+    if (tag == TAG_FLOAT) return static_cast<int64_t>(_culebra_float_to_double(data));
+    throw culebra::CulebraError("TypeError", "type error: expected Long");
+  };
+  if (f.type == "Float32") { float v = static_cast<float>(as_double()); std::memcpy(p, &v, 4); return; }
+  if (f.type == "Float64" || f.type == "Float") { double v = as_double(); std::memcpy(p, &v, 8); return; }
+  if (f.type == "Int8")  { int8_t  v = static_cast<int8_t>(as_long());  std::memcpy(p, &v, 1); return; }
+  if (f.type == "Int16") { int16_t v = static_cast<int16_t>(as_long()); std::memcpy(p, &v, 2); return; }
+  if (f.type == "Int32") { int32_t v = static_cast<int32_t>(as_long()); std::memcpy(p, &v, 4); return; }
+  if (f.type == "Int64" || f.type == "Long") { int64_t v = as_long(); std::memcpy(p, &v, 8); return; }
+  if (f.type == "Byte")  { uint8_t v = static_cast<uint8_t>(as_long()); std::memcpy(p, &v, 1); return; }
+  if (f.type == "Bool") {
+    bool b;
+    if (tag == TAG_BOOL || tag == TAG_LONG) b = (data != 0);
+    else if (tag == TAG_FLOAT) b = (_culebra_float_to_double(data) != 0.0);
+    else throw culebra::CulebraError("TypeError",
+             "type error: expected Bool, Long, or Float");
+    uint8_t v = b ? 1 : 0; std::memcpy(p, &v, 1); return;
+  }
+}
+
+// Resolve a packed view to (core, record base pointer).
+inline std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
+_jit_packed_view_record(JitObject* view) {
+  long id = view->slots[view->find_slot("__packedview_id__")].value.data;
+  long idx = view->slots[view->find_slot("__packedview_index__")].value.data;
+  auto core = culebra::lookup_shared_buffer(id);
+  if (!core) {
+    throw culebra::CulebraError("ValueError",
+        "packed view references a freed SharedBuffer");
+  }
+  uint8_t* base = core->bytes->data() +
+                  static_cast<size_t>(idx) * core->layout.stride;
+  return {core, base};
+}
+
+inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
+                                    int64_t line = 0, int64_t col = 0) {
+  auto [core, base] = _jit_packed_view_record(view);
+  const auto* f = core->layout.find(key);
+  if (!f) {
+    throw culebra::CulebraError("AttributeError",
+        std::format("@packable {} has no field `{}`", core->class_name, key),
+        line, col);
+  }
+  return _jit_packable_read_field(base, *f);
+}
+
+inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
+                                 int64_t data, int64_t line, int64_t col) {
+  auto [core, base] = _jit_packed_view_record(view);
+  const auto* f = core->layout.find(key);
+  if (!f) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("AttributeError",
+        std::format("@packable {} has no field `{}`", core->class_name, key),
+        line, col);
+  }
+  _jit_packable_write_field(base, *f, tag, data);
+}
+
+// `buf[i]` -> a fresh packed-view handle over element `i` (refcount 1,
+// caller owns it; the backing bytes outlive the view via the registry).
+inline JitObject* _jit_shared_buffer_index(JitObject* buf, long idx,
+                                           int64_t line, int64_t col) {
+  long id = buf->slots[buf->find_slot("__sharedbuffer_id__")].value.data;
+  auto core = culebra::lookup_shared_buffer(id);
+  long n = static_cast<long>(core->count);
+  if (idx < 0) idx += n;
+  if (idx < 0 || idx >= n) {
+    throw culebra::CulebraError("IndexError", "index out of range", line, col);
+  }
+  auto* view = culebra_runtime_object_new();
+  view->is_packed_view = true;
+  culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
+  culebra_runtime_object_set(view, "__packedview_index__", false, TAG_LONG, idx, 0, 0);
+  return view;
+}
+
+// Register a @packable class layout at *runtime* (when its declaration
+// executes), from a compact "name:Type;name:Type" spec the codegen emits.
+// AOT compiles and runs in separate processes, so a compile-time
+// registration would be invisible to the standalone binary — the layout
+// must land in the running process's registry. JIT/interp run in the same
+// process, so this is equivalent there. The spec's field types are already
+// lint-validated, so compute_packable_layout won't throw here.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_packable(
+    const char* name, const char* spec) {
+  std::vector<std::pair<std::string, std::string>> fields;
+  std::string_view s(spec);
+  size_t i = 0;
+  while (i < s.size()) {
+    size_t semi = s.find(';', i);
+    if (semi == std::string_view::npos) semi = s.size();
+    auto seg = s.substr(i, semi - i);
+    auto colon = seg.find(':');
+    if (colon != std::string_view::npos) {
+      fields.emplace_back(std::string(seg.substr(0, colon)),
+                          std::string(seg.substr(colon + 1)));
+    }
+    i = semi + 1;
+  }
+  culebra::register_packable_layout(name, culebra::compute_packable_layout(name, fields));
+}
+
 // `[...x]` array spread: append an iterable's elements to `arr` (each
 // retained). MVP sources: Array / Tuple / Set. The spread value's own
 // reference is dropped by the caller.
@@ -2954,7 +3116,16 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
-    int8_t val_tag, int64_t val_data) {
+    int8_t val_tag, int64_t val_data, int64_t line, int64_t col) {
+  // `buf[i] = v` on a SharedBuffer: a packed record has no Value form, so
+  // reject (set fields via `buf[i].field = v`). Matches the interp guard.
+  if (_jit_is_shared_buffer(obj)) {
+    _culebra_value_release_impl(val_tag, val_data);
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    throw culebra::CulebraError("TypeError",
+        "cannot assign to a SharedBuffer element directly; "
+        "set fields via buf[i].field = value", line, col);
+  }
   if (key_tag == TAG_STRING) {
     // Subscript overloading is a class-instance feature (proto != null); a
     // class instance may define `__setindex__` for keys that aren't one of
@@ -3043,6 +3214,18 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
+  // (the index coerces Long/Float like the interp's `key.to_long()`).
+  if (_jit_is_shared_buffer(obj)) {
+    long idx = (key_tag == TAG_LONG)    ? key_data
+             : (key_tag == TAG_FLOAT)   ? static_cast<long>(_culebra_float_to_double(key_data))
+             : throw culebra::CulebraError("TypeError",
+                   "type error: expected Long or Float", line, col);
+    auto* view = _jit_shared_buffer_index(obj, idx, line, col);
+    *out_tag = TAG_OBJECT;
+    *out_data = reinterpret_cast<int64_t>(view);
+    return;
+  }
   // String keys: unified with shape access (see object_set_any).
   if (key_tag == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
@@ -3132,6 +3315,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
     int8_t tag, int64_t data, int64_t line, int64_t col) {
+  // `view.field = v`: write straight into the shared backing bytes (zero
+  // copy). Never populates the IC (the field is not an own slot), so every
+  // write reaches this slow path and is intercepted. Matches the interp.
+  if (_jit_is_packed_view(obj)) {
+    _jit_packed_view_set(obj, key, tag, data, line, col);
+    return;
+  }
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
@@ -3233,7 +3423,25 @@ _jit_trait_default_impls();
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
     JitObject* obj, const char* key, JitPropIC* ic, int8_t* out_tag,
-    int64_t* out_data) {
+    int64_t* out_data, int64_t line, int64_t col) {
+  // @packable handles: a packed view's `.field` reads the backing bytes
+  // (zero copy); a buffer's `.size`/`.count`/`.len` reports its length.
+  // Returns a primitive — no retain needed. (Always reaches the slow path:
+  // these names are never own slots, so the IC stays cold.)
+  if (_jit_is_packed_view(obj)) {
+    auto v = _jit_packed_view_get(obj, key, line, col);
+    *out_tag = v.tag;
+    *out_data = v.data;
+    return;
+  }
+  if (_jit_is_shared_buffer(obj)) {
+    std::string_view k(key);
+    if (k == "size" || k == "count" || k == "len") {
+      *out_tag = TAG_LONG;
+      *out_data = obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data;
+      return;
+    }
+  }
   if (obj->shape) {
     auto idx = obj->shape->offset(key);
     if (idx != static_cast<size_t>(-1)) {
@@ -3268,6 +3476,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
+  // A packed view's "properties" are its @packable fields (not real
+  // slots), so the compound-assign existence pre-check (`view.x += v`)
+  // resolves against the layout.
+  if (_jit_is_packed_view(obj)) {
+    auto [core, base] = _jit_packed_view_record(obj);
+    (void)base;
+    return core->layout.find(key) != nullptr;
+  }
   return _find_property(obj, key) != nullptr;
 }
 
@@ -7003,6 +7219,7 @@ inline constexpr auto object_set_ic       = "culebra_runtime_object_set_ic";
 inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
 inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
+inline constexpr auto register_packable   = "culebra_runtime_register_packable";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
@@ -10455,9 +10672,11 @@ struct JIT {
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty()),
             {objPtr, extract_tag(key), extract_data(key),
-             builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val)});
+             builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val),
+             current_line_val(), current_column_val()});
         continue;
       }
 
@@ -11012,10 +11231,13 @@ struct JIT {
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
+                builder_.getInt64Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty()),
             {objPtr, extract_tag(keyVal), extract_data(keyVal),
              builder_.getInt1(mut), extract_tag(to_store_obj),
-             extract_data(to_store_obj)});
+             extract_data(to_store_obj),
+             builder_.getInt64(static_cast<int64_t>(finalPostfix.line)),
+             builder_.getInt64(static_cast<int64_t>(finalPostfix.column))});
         // object_set_any consumed to_store_obj's +1; re-retain for the
         // merge so callers see a +1 result.
         emit_value_retain(to_store_obj);
@@ -13350,6 +13572,14 @@ struct JIT {
         culebra::reject_class_decl_in_class_body(*body_node, class_name);
     }
 
+    // `@packable`: flips the class into a fixed-layout struct. Detected
+    // here (not a callable decorator); the layout is computed + registered
+    // below once the typed fields are gathered.
+    bool is_packable = false;
+    for (size_t i = 0; i < dec_end; i++) {
+      if (culebra::is_packable_decorator(*ast.nodes[i])) { is_packable = true; break; }
+    }
+
     const peg::Ast* new_ast = nullptr;
     std::vector<std::string> method_names;
     std::vector<const peg::Ast*> method_asts;
@@ -13357,13 +13587,17 @@ struct JIT {
     std::vector<const peg::Ast*> static_asts;
     std::vector<std::string> static_field_names;
     std::vector<const peg::Ast*> static_field_asts;
+    // Declared (name, type) pairs in field order, for the @packable layout.
+    std::vector<std::pair<std::string, std::string>> packable_fields;
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
       if (mv.is_typed_field) {
-        // Typed instance fields are interp-first in this slice; the JIT
-        // instance layout doesn't wire them yet (see C3 plan). Skip so
-        // existing classes compile unchanged.
+        // Typed instance fields don't materialize as JIT instance slots
+        // yet (interp-first; see C3 plan), but @packable reads their
+        // declared type to lay out the byte record.
+        packable_fields.push_back(
+            {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
       }
       if (mv.is_field) {
@@ -13564,6 +13798,27 @@ struct JIT {
                       extract_tag(static_field_vals[i]),
                       extract_data(static_field_vals[i]));
     }
+    // @packable: register the fixed C-ABI layout and mark the class object
+    // so SharedBuffer.new can recover the class name. Registration is
+    // emitted as a *runtime* call (executed when the class declaration runs)
+    // because AOT compiles and runs in separate processes — a compile-time
+    // registration would be invisible to the standalone binary. The field
+    // spec is "name:Type;..."; field types are already lint-validated.
+    if (is_packable) {
+      std::string spec;
+      for (const auto& [fname, ftype] : packable_fields) {
+        if (!spec.empty()) spec += ';';
+        spec += fname; spec += ':'; spec += ftype;
+      }
+      emit_call(
+          module_->getOrInsertFunction(rt::register_packable,
+                                       builder_.getVoidTy(), ptrTy, ptrTy),
+          {get_or_create_global_str(class_name, ".pkg.name"),
+           get_or_create_global_str(spec, ".pkg.spec")});
+      auto markerVal = make_string(emit_str_literal(class_name));
+      emit_object_set(classObj, "__packable__", /*mut=*/false,
+                      extract_tag(markerVal), extract_data(markerVal));
+    }
     auto classVal = make_object(classObj);
 
     // Apply decorators (bottom-up): each takes the current class
@@ -13571,9 +13826,10 @@ struct JIT {
     // in the same `classSlot` so method-capture references resolve
     // to the decorated value at call time.
     for (size_t i = dec_end; i > 0; --i) {
-      // `@derive(...)` was consumed into method injection above — it is
-      // not a callable decorator.
+      // `@derive(...)` was consumed into method injection above, and
+      // `@packable` is a layout constraint, not a callable decorator.
       if (!culebra::view_derive(*ast.nodes[i - 1]).empty()) continue;
+      if (culebra::is_packable_decorator(*ast.nodes[i - 1])) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
       auto decoCallee = compile(dec_expr);
       classVal = compile_function_call_raw(decoCallee, nullptr, {classVal});
@@ -14959,8 +15215,11 @@ struct JIT {
     emit_call(
         module_->getOrInsertFunction(rt::object_get_ic,
                                      builder_.getVoidTy(), ptrTy, ptrTy,
-                                     ptrTy, ptrTy, ptrTy),
-        {objPtr, keyPtr, icGlobal, outTag, outData});
+                                     ptrTy, ptrTy, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {objPtr, keyPtr, icGlobal, outTag, outData, current_line_val(),
+         current_column_val()});
     auto slowTag = builder_.CreateLoad(i8Ty, outTag, "slow.tag");
     auto slowData = builder_.CreateLoad(i64Ty, outData, "slow.data");
     builder_.CreateBr(mergeBB);
