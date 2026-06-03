@@ -31,6 +31,22 @@ check_same() {
   fi
 }
 
+# Like check_same but without the position requirement — for diagnostics that
+# carry no `at L:C.` (e.g. an uncaught top-level `throw`).
+check_eq() {
+  local name="$1" prog="$2"
+  printf '%s\n' "$prog" > "$TMP/t.cul"
+  local out_i out_j
+  out_i=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  out_j=$("$CULEBRA" --jit "$TMP/t.cul" 2>&1)
+  if [[ "$out_i" != "$out_j" ]]; then
+    echo "FAIL [$name]: interp/jit diverge"
+    echo "  interp: $out_i"
+    echo "  jit:    $out_j"
+    fail=1
+  fi
+}
+
 # compound-declare and `??=` throw in the JIT without an explicit position;
 # the compile() wrapper must backfill the ASSIGNMENT node's line/col.
 check_same "compound declare"   'let x += 1'
@@ -64,6 +80,14 @@ check_same "to_long bad type"         'true.to_long()'
 check_same "to_long bad type (Array)" '[1].to_long()'
 check_same "to_float bad type"        'true.to_float()'
 check_same "to_long bad string"       '"abc".to_long()'
+
+# An uncaught top-level `throw` prints `uncaught: <value>`. A thrown string
+# prints raw (it's the message), matching the interp's str_display — the JIT
+# once quoted it (`uncaught: 'boom'`). Non-strings already agreed.
+check_eq "uncaught throw string"      'throw "boom"'
+check_eq "uncaught throw int"         'throw 42'
+check_eq "uncaught throw object"      'throw {code: 1, msg: "x"}'
+check_eq "uncaught throw array"       'throw [1, "a"]'
 
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

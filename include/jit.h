@@ -1219,6 +1219,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
   }
 }
 
+// str_display equivalent for an uncaught throw value: a top-level String /
+// StringView prints raw (it's the error message), everything else uses the
+// repr form. Matches the interp's `Value::str_display` (raw string, else
+// `str()`), so `throw "boom"` → `uncaught: boom` on both backends. Note it
+// does NOT honor `__str__` — the interp's uncaught path uses plain
+// str_display, not the _with_special variant, so value_to_display (which
+// does honor __str__) is deliberately not reused here.
+inline std::string _culebra_uncaught_display(int8_t type, int64_t data) {
+  if (type == TAG_STRING) {
+    auto* p = reinterpret_cast<const char*>(data);
+    return std::string(p, _str_len(p));
+  }
+  if (type == TAG_STRINGVIEW) {
+    auto* v = reinterpret_cast<const JitStringView*>(data);
+    return std::string(v->ptr, v->len);
+  }
+  return _culebra_value_to_str_impl(type, data);
+}
+
 // For interpolation / print / to_string: strings unquoted, Objects
 // with `__str__` return their custom form.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_value_to_display(
@@ -8291,7 +8310,7 @@ struct JIT {
       return reply_fn();
     } catch (const CulebraException& e) {
       _culebra_value_release_impl(e.tag, e.data);
-      auto s = _culebra_value_to_str_impl(e.tag, e.data);
+      auto s = _culebra_uncaught_display(e.tag, e.data);
       try { culebra_runtime_defer_run_to(0); } catch (...) {}
       throw std::runtime_error(std::format("uncaught: {}", s));
     }
@@ -17244,7 +17263,7 @@ struct JIT {
     } catch (const CulebraException& e) {
       // Balance the retain performed in culebra_runtime_throw.
       _culebra_value_release_impl(e.tag, e.data);
-      auto s = _culebra_value_to_str_impl(e.tag, e.data);
+      auto s = _culebra_uncaught_display(e.tag, e.data);
       // Run (best-effort) any top-level defers the uncaught throw
       // skipped, so the global defer stack is drained between runs.
       try {

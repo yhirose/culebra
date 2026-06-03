@@ -39,7 +39,7 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     // Balance the retain performed in `culebra_runtime_throw`; format
     // matches `JIT::exec` so AOT and --jit produce identical stderr.
     _culebra_value_release_impl(e.tag, e.data);
-    auto s = _culebra_value_to_str_impl(e.tag, e.data);
+    auto s = _culebra_uncaught_display(e.tag, e.data);
     try {
       culebra_runtime_defer_run_to(0);
     } catch (...) {
