@@ -39,6 +39,66 @@ using BodySink = std::function<bool(const char* data, size_t len)>;
 // large upload never has to live in memory at once.
 using BodySource = std::function<bool(std::string& out)>;
 
+// One server-sent event (text/event-stream).
+struct SseEvent {
+  std::string type = "message";  // the `event:` field, default "message".
+  std::string data;              // `data:` lines joined with '\n'.
+  std::string id;                // the last `id:` field, if any.
+};
+// Return false from the handler to stop the stream.
+using SseHandler = std::function<bool(const SseEvent&)>;
+
+// Incremental SSE parser (WHATWG event-stream): feed response-body chunks via
+// feed(); on each complete event (terminated by a blank line) it calls
+// `handler`. Use it as a BodySink: `req.body_sink = [&d](p,n){ return d.feed(p,n); }`.
+struct SseDecoder {
+  SseHandler handler;
+  std::string buf_;   // bytes not yet split into a complete line.
+  std::string ev_type_, ev_data_, ev_id_;
+  bool have_field_ = false;
+
+  bool feed(const char* data, size_t n) {
+    buf_.append(data, n);
+    size_t start = 0;
+    for (;;) {
+      size_t nl = buf_.find('\n', start);
+      if (nl == std::string::npos) break;
+      std::string line = buf_.substr(start, nl - start);
+      start = nl + 1;
+      if (!line.empty() && line.back() == '\r') line.pop_back();  // CRLF
+      if (line.empty()) {  // blank line → dispatch the buffered event
+        if (have_field_) {
+          SseEvent e{ev_type_.empty() ? "message" : ev_type_, ev_data_, ev_id_};
+          if (!handler(e)) return false;
+        }
+        ev_type_.clear();
+        ev_data_.clear();
+        ev_id_.clear();
+        have_field_ = false;
+        continue;
+      }
+      if (line[0] == ':') continue;  // comment
+      size_t colon = line.find(':');
+      std::string field = line.substr(0, colon);
+      std::string value = colon == std::string::npos ? "" : line.substr(colon + 1);
+      if (!value.empty() && value[0] == ' ') value.erase(0, 1);  // one space
+      if (field == "event") {
+        ev_type_ = value;
+        have_field_ = true;
+      } else if (field == "data") {
+        if (!ev_data_.empty()) ev_data_ += '\n';
+        ev_data_ += value;
+        have_field_ = true;
+      } else if (field == "id") {
+        ev_id_ = value;
+        have_field_ = true;
+      }  // `retry:` and unknown fields are ignored.
+    }
+    buf_.erase(0, start);
+    return true;
+  }
+};
+
 struct HttpRequest {
   std::string method = "GET";      // "GET" / "POST" / "PUT" / "DELETE" / ...
   std::string url;                 // full URL including scheme (http/https).

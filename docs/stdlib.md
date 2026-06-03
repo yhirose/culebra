@@ -1850,6 +1850,7 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
+| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — streams Server-Sent Events to `on_event`; see below |
 
 Keyword arguments (shared by every method):
 
@@ -1938,6 +1939,37 @@ Http.post(url, body: fn () {
 The producer runs on the calling thread (it may mutate captured state); if it
 throws, the upload is aborted and the error propagates. A non-`String`/non-`nil`
 return is a `TypeError`.
+
+### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
+
+Open a [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+(`text/event-stream`) stream — a long-lived `GET` whose `on_event` callback is
+invoked once per event as it arrives. This is the wire format that streaming
+LLM and chat APIs use. The call blocks for the life of the stream and returns
+the final response Object after the server closes it.
+
+Each event is an Object with three String fields:
+
+| field   | meaning |
+|---------|---------|
+| `event` | the `event:` type, or `"message"` when the server sends none |
+| `data`  | the `data:` payload; multiple `data:` lines are joined with `\n` |
+| `id`    | the last `id:` field seen, or `""` |
+
+```culebra
+# doctest: skip
+Http.sse("https://api.example/v1/stream", fn (e) {
+  if e.data == "[DONE]" { return }
+  let delta = JSON.parse(e.data)
+  IO.print(delta.choices[0].delta.content)
+})
+```
+
+`Accept: text/event-stream` is sent automatically unless you set `Accept`
+yourself. Comment lines (`: ...`) and the `retry:` field are ignored. The
+callback runs on the calling thread (it may mutate captured state); returning
+ends handling of that event, and throwing aborts the stream and propagates the
+error. A transport failure is an `HttpError`.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
 combinators over `Http.get`, not an HTTP-specific API — the same shape as

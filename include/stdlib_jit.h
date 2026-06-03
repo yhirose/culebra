@@ -2688,6 +2688,53 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
   return _http_run_into(req, st, "Http.request");
 }
+
+// sse — slab: url, on_event, headers, timeout, follow_redirects. A GET that
+// streams a text/event-stream response and calls on_event with each event
+// Object {event, data, id}. Mirrors interp Http.sse. common() at base 2 reads
+// headers@2/timeout@3/follow@4 (its params@base+4 lands out of slab → nil).
+inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
+  const char* ctx = "Http.sse";
+  culebra::http::HttpRequest req;
+  req.method = "GET";
+  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  auto* cb = reinterpret_cast<JitClosure*>(a[1].data);  // on_event Function
+  _http_adapt::common(a, n, 2, req, ctx);
+  bool has_accept = false;
+  for (auto& [k, v] : req.headers) {
+    if (culebra::http::_iequals(k, "Accept")) has_accept = true;
+  }
+  if (!has_accept) req.headers.emplace_back("Accept", "text/event-stream");
+  std::exception_ptr eptr;
+  culebra::http::SseDecoder dec;
+  dec.handler = [cb, &eptr](const culebra::http::SseEvent& e) -> bool {
+    try {
+      auto* ev = culebra_runtime_object_new();
+      culebra_runtime_object_set(ev, "event", false, TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(e.type)), 0, 0);
+      culebra_runtime_object_set(ev, "data", false, TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(e.data)), 0, 0);
+      culebra_runtime_object_set(ev, "id", false, TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(e.id)), 0, 0);
+      JitValue r = _culebra_invoke1(cb, {TAG_OBJECT,
+                                         reinterpret_cast<int64_t>(ev)});
+      _culebra_value_release_impl(r.tag, r.data);
+      return true;
+    } catch (...) {
+      eptr = std::current_exception();  // abort; rethrown after send
+      return false;
+    }
+  };
+  req.body_sink = [&dec](const char* d, size_t s) { return dec.feed(d, s); };
+  auto r = culebra::http::http_request(req);
+  if (eptr) std::rethrow_exception(eptr);
+  if (!r.ok) {
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+                                0, 0);
+  }
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
+}
 #endif  // CULEBRA_HTTP_ENABLED
 
 // Isolate.spawn(fn, *args): a[0] = closure, a[1..] = positional args.
@@ -3174,6 +3221,16 @@ inline const NsParam kHttpRequestParams[] = {
   {"form",             true,  false, &_ns_def_nil},
 };
 inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 11, -1, -1};
+
+// sse: url, on_event, headers=nil, timeout=0, follow_redirects=true.
+inline const NsParam kHttpSseParams[] = {
+  {"url",              false, false, nullptr},
+  {"on_event",         false, false, nullptr},
+  {"headers",          true,  false, &_ns_def_nil},
+  {"timeout",          true,  false, &_ns_def_zero},
+  {"follow_redirects", true,  false, &_ns_def_true},
+};
+inline const NsParamMeta kHttpSseMeta = {kHttpSseParams, 5, -1, -1};
 #endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {
@@ -3261,6 +3318,7 @@ inline const NsMethod kNsMethods[] = {
   {"Http",   "post",    1, &_ns_http_post,    &kHttpPostMeta},
   {"Http",   "put",     1, &_ns_http_put,     &kHttpPostMeta},
   {"Http",   "request", 2, &_ns_http_request, &kHttpRequestMeta},
+  {"Http",   "sse",     2, &_ns_http_sse,     &kHttpSseMeta},
 #endif
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},

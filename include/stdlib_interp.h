@@ -2446,6 +2446,66 @@ inline Value make_http_namespace() {
           "Object"sv)),
       false);
 
+  // `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` —
+  // open a Server-Sent Events (text/event-stream) GET and call `on_event` with
+  // each event Object `{event, data, id}` as it arrives. Blocks for the life of
+  // the stream. The callback runs on the calling thread (may mutate captured
+  // state); returning/throwing from it ends the stream (a throw propagates).
+  ns.initialize(
+      "sse",
+      Value(FunctionValue(
+          {url_param,
+           FunctionValue::Parameter{"on_event", false, "Function"sv},
+           headers_param, timeout_param, follow_param},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            culebra::http::HttpRequest req;
+            req.method = "GET";
+            req.url = env->get("url").to_string();
+            const Value cb = env->get("on_event");
+            req.headers =
+                http_parse_headers(env->get("headers"), "Http.sse", line, col);
+            long timeout = env->get("timeout").to_long();
+            req.timeout_sec = timeout > 0 ? timeout : 0;
+            req.follow_redirects = env->get("follow_redirects").to_bool();
+            bool has_accept = false;
+            for (auto& [k, v] : req.headers) {
+              if (culebra::http::_iequals(k, "Accept")) has_accept = true;
+            }
+            if (!has_accept) {
+              req.headers.emplace_back("Accept", "text/event-stream");
+            }
+            auto cb_interp = std::make_shared<Interpreter>();
+            std::exception_ptr eptr;
+            culebra::http::SseDecoder dec;
+            dec.handler = [&](const culebra::http::SseEvent& e) -> bool {
+              try {
+                ObjectValue ev;
+                ev.initialize("event", Value(std::string(e.type)), false);
+                ev.initialize("data", Value(std::string(e.data)), false);
+                ev.initialize("id", Value(std::string(e.id)), false);
+                cb_interp->call_closure(cb, env, {Value(std::move(ev))});
+                return true;
+              } catch (...) {
+                eptr = std::current_exception();
+                return false;
+              }
+            };
+            req.body_sink = [&dec](const char* d, size_t n) {
+              return dec.feed(d, n);
+            };
+            auto r = culebra::http::http_request(req);
+            if (eptr) std::rethrow_exception(eptr);
+            if (!r.ok) {
+              throw CulebraError(
+                  "HttpError", std::format("Http.sse: {}", r.error), line, col);
+            }
+            return http_result_to_value(std::move(r));
+          },
+          "Object"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 #endif  // CULEBRA_HTTP_ENABLED

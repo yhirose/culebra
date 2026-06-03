@@ -1780,6 +1780,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — 任意のメソッド（PATCH、OPTIONS …） |
+| `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — Server-Sent Events を `on_event` にストリーム（後述） |
 
 キーワード引数（全メソッド共通）:
 
@@ -1865,6 +1866,37 @@ Http.post(url, body: fn () {
 
 producer は呼び出しスレッド上で実行され（捕捉状態を mutable に扱える）、throw すれば
 アップロードは中断されエラーが伝播します。`String`/`nil` 以外を返すと `TypeError`。
+
+### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
+
+[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+（`text/event-stream`）ストリームを開きます — 長寿命の `GET` で、イベントが届くたびに
+`on_event` コールバックを 1 回ずつ呼びます。ストリーミング LLM/チャット API が使う
+ワイヤ形式です。呼び出しはストリームが続く間 blocking で、サーバが閉じた後に最終的な
+レスポンス Object を返します。
+
+各イベントは 3 つの String フィールドを持つ Object です:
+
+| フィールド | 意味 |
+|---------|---------|
+| `event` | `event:` タイプ。サーバが送らない場合は `"message"` |
+| `data`  | `data:` ペイロード。複数の `data:` 行は `\n` で連結 |
+| `id`    | 最後に見た `id:` フィールド。無ければ `""` |
+
+```culebra
+# doctest: skip
+Http.sse("https://api.example/v1/stream", fn (e) {
+  if e.data == "[DONE]" { return }
+  let delta = JSON.parse(e.data)
+  IO.print(delta.choices[0].delta.content)
+})
+```
+
+`Accept` を自分で設定しない限り `Accept: text/event-stream` は自動で送られます。
+コメント行（`: ...`）と `retry:` フィールドは無視されます。コールバックは呼び出し
+スレッド上で実行され（捕捉状態を mutable に扱える）、return でそのイベントの処理を
+終え、throw するとストリームを中断してエラーを伝播します。トランスポート失敗は
+`HttpError` です。
 
 **並列・レースリクエスト**は HTTP 専用 API を使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを `Http.get` に適用します — JS の `Promise.all`/`race` や Elixir の

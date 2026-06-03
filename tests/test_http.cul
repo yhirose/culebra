@@ -99,4 +99,16 @@ assert_eq(form_badval.kind, "TypeError")
 let form_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", form: {a: "1"}); nil } catch e { e }
 assert_eq(form_and_body.kind, "TypeError")
 
+// --- `Http.sse` (Server-Sent Events): offline-deterministic paths. The event
+//     stream itself needs a server (SseDecoder is unit-tested in http_test.cc);
+//     here, the error model. ---
+
+// on_event is required: calling without it is an ArityError before any I/O.
+let sse_noarg = try { Http.sse("http://127.0.0.1:1/x"); nil } catch e { e }
+assert_eq(sse_noarg.kind, "ArityError")
+
+// a transport failure surfaces as HttpError (same as the other verbs).
+let sse_refused = try { Http.sse("http://127.0.0.1:1/x", fn (e) { nil }); nil } catch e { e }
+assert_eq(sse_refused.kind, "HttpError")
+
 puts("test_http: ok")

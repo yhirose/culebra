@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -45,6 +46,44 @@ int main() {
   CHECK(culebra::http::encode_query({{"a", "b c"}, {"x", "1&2"}}) ==
         "a=b%20c&x=1%262");
   CHECK(culebra::http::encode_query({}) == "");
+
+  // SseDecoder: parse a text/event-stream, including a comment, a typed event
+  // with id, multi-line data, and an event split across two feed() calls (so
+  // the line buffer carries a partial line). This is what Http.sse rides on.
+  {
+    std::vector<culebra::http::SseEvent> events;
+    culebra::http::SseDecoder dec;
+    dec.handler = [&events](const culebra::http::SseEvent& e) {
+      events.push_back(e);
+      return true;
+    };
+    auto feed = [&dec](const char* s) { return dec.feed(s, std::strlen(s)); };
+    feed(": comment\ndata: hello\n\n");
+    feed("event: chat\nid: 42\ndata: line1\nda");  // partial last line
+    feed("ta: line2\n\n");
+    CHECK(events.size() == 2);
+    CHECK(events[0].type == "message");      // default when no event: field
+    CHECK(events[0].data == "hello");
+    CHECK(events[0].id.empty());
+    CHECK(events[1].type == "chat");
+    CHECK(events[1].id == "42");
+    CHECK(events[1].data == "line1\nline2");  // data lines joined with '\n'
+  }
+
+  // SseDecoder: returning false from the handler stops dispatch (the stream is
+  // aborted) — what a throwing on_event callback maps to.
+  {
+    int calls = 0;
+    culebra::http::SseDecoder dec;
+    dec.handler = [&calls](const culebra::http::SseEvent&) {
+      ++calls;
+      return false;  // abort after the first event
+    };
+    const char* stream = "data: a\n\ndata: b\n\n";
+    bool ok = dec.feed(stream, std::strlen(stream));
+    CHECK(!ok);          // feed reports the abort
+    CHECK(calls == 1);   // second event never dispatched
+  }
 
   httplib::Server svr;
   svr.Get("/hello", [](const httplib::Request&, httplib::Response& res) {
