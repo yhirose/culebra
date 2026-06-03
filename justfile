@@ -230,10 +230,18 @@ test BACKEND='all': build
         echo "test isolate OK (interp + jit symmetry)"
     }
 
+    # Differential corpus: generate the template-combinator programs and
+    # diff interp vs JIT byte-for-byte (misc/difftest). Complements the
+    # per-file run_diff_interp_jit above with systematic seam coverage.
+    # run.sh exits non-zero on any divergence, which aborts `test`.
+    run_difftest() {
+        misc/difftest/run.sh ./build/culebra
+    }
+
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
-      all)    run_diff_interp_jit; run_embed; run_culebra_test_self; run_isolate; run_aot; echo "test OK" ;;
+      all)    run_diff_interp_jit; run_difftest; run_embed; run_culebra_test_self; run_isolate; run_aot; echo "test OK" ;;
       interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
       aot)    run_aot ;;
