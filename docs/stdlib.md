@@ -48,7 +48,7 @@ Conventions used below:
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
-16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html` escape / unescape)
+16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html` escape / unescape, `Encoding.base64`)
 16. [Design notes](#16-design-notes)
 17. [Not included (yet)](#17-not-included-yet)
 
@@ -1955,10 +1955,10 @@ a server with a CN-only certificate that works today may then be rejected).
 
 ## 16. `Encoding`
 
-Text codecs, grouped into a **sub-namespace per scheme**. Today that is
-`Encoding.html`; `Encoding.base64` / `Encoding.hex` are planned to slot in
-beside it the same way. The HTML logic is shared between the interpreter and the
-JIT/AOT backends.
+Text codecs, grouped into a **sub-namespace per scheme** (`Encoding.html`,
+`Encoding.base64`; `Encoding.hex` is planned to slot in beside them the same
+way). The codec logic is shared between the interpreter and the JIT/AOT
+backends.
 
 ### `Encoding.html`
 
@@ -1985,6 +1985,26 @@ puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
 puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
 puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
 puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+```
+
+### `Encoding.base64`
+
+| Function | Result |
+| --- | --- |
+| `Encoding.base64.encode(s)` | `String` — base64 (RFC 4648 standard alphabet, `=` padding) |
+| `Encoding.base64.decode(s)` | `String` — the decoded bytes; raises `ValueError` on invalid input |
+
+`encode` is binary-safe (any byte string, including multi-byte UTF-8).
+`decode` tolerates ASCII whitespace in the input (so line-wrapped base64
+decodes) and `=` padding; an out-of-alphabet character raises `ValueError`.
+
+```culebra
+puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
+puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+
+# e.g. an HTTP Basic auth header
+let cred = Encoding.base64.encode(user + ":" + password)
+let r = Http.get(url, headers: {Authorization: "Basic " + cred})
 ```
 
 ---

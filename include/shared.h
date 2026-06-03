@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <format>
 #include <random>
+#include <optional>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -301,6 +302,66 @@ inline std::string html_unescape(std::string_view s) {
       i = semi + 1;
     } else {
       out += s[i++];  // leave the '&' as-is and keep scanning
+    }
+  }
+  return out;
+}
+
+// Base64 (RFC 4648, standard alphabet, `=` padding). Shared by the interp and
+// JIT `Encoding.base64.*` adapters.
+inline std::string base64_encode(std::string_view in) {
+  static const char tbl[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((in.size() + 2) / 3) * 4);
+  auto u = [&](size_t k) { return static_cast<unsigned char>(in[k]); };
+  size_t i = 0;
+  for (; i + 2 < in.size(); i += 3) {
+    unsigned n = (u(i) << 16) | (u(i + 1) << 8) | u(i + 2);
+    out += tbl[(n >> 18) & 63];
+    out += tbl[(n >> 12) & 63];
+    out += tbl[(n >> 6) & 63];
+    out += tbl[n & 63];
+  }
+  if (size_t rem = in.size() - i; rem == 1) {
+    unsigned n = u(i) << 16;
+    out += tbl[(n >> 18) & 63];
+    out += tbl[(n >> 12) & 63];
+    out += "==";
+  } else if (rem == 2) {
+    unsigned n = (u(i) << 16) | (u(i + 1) << 8);
+    out += tbl[(n >> 18) & 63];
+    out += tbl[(n >> 12) & 63];
+    out += tbl[(n >> 6) & 63];
+    out += '=';
+  }
+  return out;
+}
+
+// Decode standard base64. Returns nullopt on an invalid character; ASCII
+// whitespace (so wrapped base64 decodes) and `=` padding are tolerated.
+inline std::optional<std::string> base64_decode(std::string_view in) {
+  auto val = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+  std::string out;
+  out.reserve(in.size() / 4 * 3);
+  int buf = 0, bits = 0;
+  for (char c : in) {
+    if (c == '=') break;  // padding → end of data
+    if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+    int v = val(c);
+    if (v < 0) return std::nullopt;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += static_cast<char>((buf >> bits) & 0xFF);
     }
   }
   return out;

@@ -46,4 +46,25 @@ assert_eq(h.escape("<&>"), "&lt;&amp;&gt;")
 let enc = Encoding
 assert_eq(enc.html.unescape("&copy;"), "©")
 
+// --- base64 (RFC 4648, standard alphabet + `=` padding) ---
+assert_eq(Encoding.base64.encode("user:pass"), "dXNlcjpwYXNz")
+assert_eq(Encoding.base64.encode(""), "")
+assert_eq(Encoding.base64.encode("a"), "YQ==")        // 1 byte → 2 pad
+assert_eq(Encoding.base64.encode("ab"), "YWI=")       // 2 bytes → 1 pad
+assert_eq(Encoding.base64.encode("abc"), "YWJj")      // 3 bytes → no pad
+assert_eq(Encoding.base64.decode("dXNlcjpwYXNz"), "user:pass")
+assert_eq(Encoding.base64.decode("YQ=="), "a")
+assert_eq(Encoding.base64.decode(""), "")
+// round trip, binary-safe (multi-byte UTF-8 survives)
+let bin = "hello, 世界! \n\t"
+assert_eq(Encoding.base64.decode(Encoding.base64.encode(bin)), bin)
+// whitespace in encoded input is tolerated (wrapped base64)
+assert_eq(Encoding.base64.decode("dXNlcjpw\nYXNz"), "user:pass")
+// invalid characters → ValueError
+let b64bad = try { Encoding.base64.decode("!!!!"); nil } catch e { e.kind }
+assert_eq(b64bad, "ValueError")
+// bound sub-namespace as a value
+let b = Encoding.base64
+assert_eq(b.decode(b.encode("xyz")), "xyz")
+
 puts("test_encoding ok")

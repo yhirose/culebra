@@ -46,7 +46,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
-16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html` の escape / unescape）
+16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html` の escape / unescape、`Encoding.base64`）
 16. [設計上の注記](#16-設計上の注記)
 17. [未収録（将来検討）](#17-未収録将来検討)
 
@@ -1882,9 +1882,9 @@ TLS は現在 OpenSSL を静的リンクしていますが、将来 BoringSSL �
 
 ## 16. `Encoding`
 
-テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間。現状は
-`Encoding.html` のみで、`Encoding.base64` / `Encoding.hex` も同じ形で並べる予定です。
-HTML のロジックはインタプリタと JIT/AOT 両バックエンドで共有しています。
+テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間
+（`Encoding.html`、`Encoding.base64`。`Encoding.hex` も同じ形で並べる予定）。
+コーデックのロジックはインタプリタと JIT/AOT 両バックエンドで共有しています。
 
 ### `Encoding.html`
 
@@ -1910,6 +1910,26 @@ puts(Encoding.html.unescape("caf&eacute; &mdash; x")) # => 'café — x'
 puts(Encoding.html.unescape("&#65;&#x42;"))      # => 'AB'
 puts(Encoding.html.unescape("&#12354;"))         # => 'あ'
 puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
+```
+
+### `Encoding.base64`
+
+| 関数 | 結果 |
+| --- | --- |
+| `Encoding.base64.encode(s)` | `String` — base64（RFC 4648 標準アルファベット、`=` パディング） |
+| `Encoding.base64.decode(s)` | `String` — デコード結果。不正入力は `ValueError` |
+
+`encode` はバイナリセーフ（マルチバイト UTF-8 を含む任意のバイト列）。`decode` は
+入力中の ASCII 空白（行折り返し base64）と `=` パディングを許容し、アルファベット外の
+文字は `ValueError`。
+
+```culebra
+puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
+puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+
+# 例: HTTP Basic 認証ヘッダ
+let cred = Encoding.base64.encode(user + ":" + password)
+let r = Http.get(url, headers: {Authorization: "Basic " + cred})
 ```
 
 ---

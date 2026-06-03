@@ -3039,6 +3039,36 @@ inline Value make_encoding_namespace() {
       false);
   ns.initialize("html", Value(std::move(html)), false);
 
+  ObjectValue base64;
+  base64.initialize(
+      "encode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::base64_encode(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  base64.initialize(
+      "decode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            auto r = culebra::base64_decode(
+                                env->get("s").to_string_view());
+                            if (!r) {
+                              throw CulebraError(
+                                  "ValueError",
+                                  "Encoding.base64.decode: invalid base64", line,
+                                  col);
+                            }
+                            return Value(std::move(*r));
+                          },
+                          "String"sv)),
+      false);
+  ns.initialize("base64", Value(std::move(base64)), false);
+
   return Value(std::move(ns));
 }
 

@@ -2750,6 +2750,20 @@ inline JitValue _ns_encoding_html_unescape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
       _culebra_heap_str(culebra::html_unescape(_ns_adapt::take_str(a[0]))));
 }
+// Encoding.base64.{encode,decode}: shared codec; decode raises ValueError on
+// invalid input (same as interp).
+inline JitValue _ns_encoding_base64_encode(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::base64_encode(_ns_adapt::take_str(a[0]))));
+}
+inline JitValue _ns_encoding_base64_decode(JitValue* a, int64_t) {
+  auto r = culebra::base64_decode(_ns_adapt::take_str(a[0]));
+  if (!r) {
+    throw culebra::CulebraError("ValueError",
+        "Encoding.base64.decode: invalid base64", 0, 0);
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(*r));
+}
 
 #ifndef CULEBRA_RT_NO_TENSOR
 // Tensor
@@ -3243,6 +3257,8 @@ inline const NsMethod kNsMethods[] = {
   // member access, e.g. `Encoding.html.unescape(s)`.
   {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html"},
   {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html"},
+  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64"},
+  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
