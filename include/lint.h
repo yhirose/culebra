@@ -111,6 +111,27 @@ class ScopeWalker {
     for (const auto& c : node.nodes) walk(*c);
   }
 
+  // Reject a duplicate parameter name in one parameter list. The earlier
+  // binding is unreachable (calls bind last-wins), so it is always a mistake
+  // — every mainstream language rejects it. `_` (sink) may repeat. Pattern
+  // params (`fn ({a, b})`) are skipped (sound: only certain duplicates among
+  // plain/rest params are flagged).
+  void check_dup_params(const peg::Ast& params) {
+    std::set<std::string, std::less<>> seen;
+    for (const auto& p : params.nodes) {
+      if (culebra::is_kw_only_sep(*p) || culebra::is_pattern_param(*p)) continue;
+      auto loc = culebra::extract_param_name_loc(*p);
+      if (is_sink(loc.name)) continue;
+      if (!seen.insert(std::string(loc.name)).second) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            std::format("duplicate parameter '{}'", loc.name),
+            static_cast<long>(loc.line), static_cast<long>(loc.column),
+            Severity::Error});
+      }
+    }
+  }
+
   void walk(const peg::Ast& node);
 };
 
@@ -120,6 +141,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "LAMBDA"_: {
       auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
                                         : culebra::view_lambda(node);
+      check_dup_params(*fv.params);
       LoopDepthGuard g(loop_depth_, 0);
       scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
       return;
@@ -187,6 +209,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);   // decorators: outer
       if (i + 1 >= node.nodes.size()) { walk_children(node); return; }
+      check_dup_params(*node.nodes[i + 1]);
       LoopDepthGuard g(loop_depth_, 0);
       scoped(*node.nodes.back(),
              [&](Scope& s) { collect_idents(*node.nodes[i + 1], s.muts); });
@@ -224,6 +247,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           if (mv.value) walk(*mv.value);
           continue;
         }
+        check_dup_params(*mv.params);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
       return;
@@ -234,6 +258,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       LoopDepthGuard g(loop_depth_, 0);
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
+        check_dup_params(*tv.params);
         if (!tv.body) continue;   // signature-only method: nothing to walk
         scoped(*tv.body, [&](Scope& s) { collect_idents(*tv.params, s.muts); });
       }

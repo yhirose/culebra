@@ -90,5 +90,31 @@ expect_accept "nested loop in fn"       'for i in [1] {
   fn f() { for j in [1, 2] { break } }
 }'
 
+# Duplicate parameter names: the earlier binding is unreachable (calls bind
+# last-wins), so it aborts before eval with "SyntaxError: duplicate parameter".
+expect_dup_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  if [[ "$out" == *RAN* || "$out" != *"duplicate parameter"* ]]; then
+    echo "FAIL dup-reject [$1]: $out"; fail=1
+  fi
+}
+expect_dup_reject "fn dup"              'fn f(x, x) { x }'
+expect_dup_reject "fn dup non-adjacent" 'fn f(a, b, a) { a }'
+expect_dup_reject "lambda dup"          'let g = |x, x| x'
+expect_dup_reject "typed dup"           'fn f(x: Int, x: Int) { x }'
+expect_dup_reject "param vs rest dup"   'fn f(x, *x) { x }'
+expect_dup_reject "ctor dup"            'class C { new(a, a) { } }'
+expect_dup_reject "method dup"          'class C { greet(name, name) { } }'
+expect_dup_reject "trait sig dup"       'trait T { sig(a, a) }'
+
+# Accepted (sound-negative): `_` sink may repeat; distinct names / patterns ok.
+expect_accept "sink params repeat"      'fn f(_, _) { 1 }'
+expect_accept "distinct params"         'fn f(x, y) { x + y }'
+expect_accept "defaulted distinct"      'fn f(a, b = 5) { a }'
+expect_accept "args-rest distinct"      'fn f(x, *args) { x }'
+expect_accept "destructuring param"     'fn f({a, b}) { a }'
+expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1
