@@ -1203,6 +1203,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_puts(int8_t type,
     case TAG_TENSOR:
     case TAG_TUPLE:
     case TAG_SET:
+    case TAG_FUNC:
       std::cout << _culebra_value_to_str_impl(type, data) << std::endl;
       break;
     default:
