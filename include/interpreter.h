@@ -2,6 +2,7 @@
 
 #include <generator_transform.h>
 #include <module_loader.h>
+#include <packable.h>
 #include <parser.h>
 #include <shared.h>
 #include <tensor.h>
@@ -5582,6 +5583,146 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value();  // reference types default to nil
   }
 
+  // --- @packable SharedBuffer: raw bytes <-> Value bridge ---------------
+  // Decode field `f` from a record's raw bytes into a primitive Value.
+  // Integers widen to Long, Float32/64 to Float, Bool to Bool. memcpy
+  // keeps it alignment-safe and avoids strict-aliasing UB.
+  static Value packable_read_field(const uint8_t* base,
+                                   const culebra::PackableField& f) {
+    const uint8_t* p = base + f.offset;
+    if (f.type == "Float32") {
+      float v; std::memcpy(&v, p, 4);
+      return Value(static_cast<double>(v));
+    }
+    if (f.type == "Float64" || f.type == "Float") {
+      double v; std::memcpy(&v, p, 8);
+      return Value(v);
+    }
+    if (f.type == "Int8") {
+      int8_t v; std::memcpy(&v, p, 1);
+      return Value(static_cast<long>(v));
+    }
+    if (f.type == "Int16") {
+      int16_t v; std::memcpy(&v, p, 2);
+      return Value(static_cast<long>(v));
+    }
+    if (f.type == "Int32") {
+      int32_t v; std::memcpy(&v, p, 4);
+      return Value(static_cast<long>(v));
+    }
+    if (f.type == "Int64" || f.type == "Long") {
+      int64_t v; std::memcpy(&v, p, 8);
+      return Value(static_cast<long>(v));
+    }
+    if (f.type == "Byte") {
+      uint8_t v; std::memcpy(&v, p, 1);
+      return Value(static_cast<long>(v));
+    }
+    if (f.type == "Bool") {
+      uint8_t v; std::memcpy(&v, p, 1);
+      return Value(v != 0);
+    }
+    return Value();
+  }
+
+  // Encode `val` into field `f`'s raw bytes (truncating wide integers to
+  // the field width, like a C store). Numeric coercion mirrors the
+  // language's implicit Long<->Float rules.
+  static void packable_write_field(uint8_t* base,
+                                   const culebra::PackableField& f,
+                                   const Value& val) {
+    uint8_t* p = base + f.offset;
+    if (f.type == "Float32") {
+      float v = static_cast<float>(val.to_double_coerce());
+      std::memcpy(p, &v, 4); return;
+    }
+    if (f.type == "Float64" || f.type == "Float") {
+      double v = val.to_double_coerce();
+      std::memcpy(p, &v, 8); return;
+    }
+    if (f.type == "Int8") {
+      int8_t v = static_cast<int8_t>(val.to_long());
+      std::memcpy(p, &v, 1); return;
+    }
+    if (f.type == "Int16") {
+      int16_t v = static_cast<int16_t>(val.to_long());
+      std::memcpy(p, &v, 2); return;
+    }
+    if (f.type == "Int32") {
+      int32_t v = static_cast<int32_t>(val.to_long());
+      std::memcpy(p, &v, 4); return;
+    }
+    if (f.type == "Int64" || f.type == "Long") {
+      int64_t v = static_cast<int64_t>(val.to_long());
+      std::memcpy(p, &v, 8); return;
+    }
+    if (f.type == "Byte") {
+      uint8_t v = static_cast<uint8_t>(val.to_long());
+      std::memcpy(p, &v, 1); return;
+    }
+    if (f.type == "Bool") {
+      uint8_t v = val.to_bool() ? 1 : 0;
+      std::memcpy(p, &v, 1); return;
+    }
+  }
+
+  // A packed view is a lightweight ObjectValue handle carrying the
+  // buffer id + element index — `buf[i]`. Field reads/writes hit the
+  // shared backing bytes directly (zero copy): two views of the same
+  // element observe each other's writes.
+  static bool is_packed_view(const Value& v) {
+    return v.type == Value::Object &&
+           v.to_object().has("__packedview_id__");
+  }
+  static bool is_shared_buffer(const Value& v) {
+    return v.type == Value::Object &&
+           v.to_object().has("__sharedbuffer_id__");
+  }
+
+  // Resolve a packed view to (core, record base pointer). Throws if the
+  // buffer was somehow freed (no public free yet, but keeps the lookup
+  // honest).
+  std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
+  packed_view_record(const Value& view) {
+    const auto& o = view.to_object();
+    long id = o.get("__packedview_id__").to_long();
+    long idx = o.get("__packedview_index__").to_long();
+    auto core = culebra::lookup_shared_buffer(id);
+    if (!core) {
+      throw CulebraError("ValueError",
+                         "packed view references a freed SharedBuffer");
+    }
+    uint8_t* base = core->bytes->data() +
+                    static_cast<size_t>(idx) * core->layout.stride;
+    return {core, base};
+  }
+
+  Value packed_view_get(const Value& view, std::string_view name) {
+    auto [core, base] = packed_view_record(view);
+    const auto* f = core->layout.find(name);
+    if (!f) {
+      throw CulebraError(
+          "AttributeError",
+          std::format("@packable {} has no field `{}`", core->class_name,
+                      name));
+    }
+    return packable_read_field(base, *f);
+  }
+
+  void packed_view_set(const Value& view, std::string_view name,
+                       const Value& val, size_t line, size_t col) {
+    auto [core, base] = packed_view_record(view);
+    const auto* f = core->layout.find(name);
+    if (!f) {
+      throw CulebraError(
+          "AttributeError",
+          std::format("@packable {} has no field `{}`", core->class_name,
+                      name),
+          static_cast<long>(line), static_cast<long>(col));
+    }
+    packable_write_field(base, *f, val);
+  }
+
   Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
@@ -5591,10 +5732,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     size_t k = 0;
     std::vector<const peg::Ast*> decorators;
     std::vector<std::string_view> derive_traits;
+    bool is_packable = false;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
       auto traits = culebra::view_derive(*ast.nodes[k]);
       if (!traits.empty()) {
         derive_traits.insert(derive_traits.end(), traits.begin(), traits.end());
+      } else if (culebra::is_packable_decorator(*ast.nodes[k])) {
+        is_packable = true;
       } else {
         decorators.push_back(ast.nodes[k].get());
       }
@@ -5637,6 +5781,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // the field order (the @packable layout reads it). Default value, or
     // the type's zero value when omitted.
     std::vector<std::pair<std::string_view, Value>> field_template;
+    // Declared (name, type) pairs in field order — the @packable layout
+    // reads this to compute byte offsets.
+    std::vector<std::pair<std::string, std::string>> packable_fields;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
@@ -5644,6 +5791,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         Value init = mv.value ? eval(*mv.value, env)
                               : zero_value_for_type(mv.type_annotation);
         field_template.push_back({mv.name, std::move(init)});
+        packable_fields.push_back(
+            {std::string(mv.name), std::string(mv.type_annotation)});
         continue;
       }
       if (mv.is_field) {
@@ -5754,8 +5903,24 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           env));
     }
 
+    // @packable: compute the fixed C-ABI layout (throws on a non-fixed
+    // field type) and register it under the class name. A hidden marker
+    // property lets `SharedBuffer.new(n, Cls)` recover the class name from
+    // the class value to look the layout up.
+    if (is_packable) {
+      auto layout =
+          culebra::compute_packable_layout(class_name, packable_fields);
+      culebra::register_packable_layout(std::string(class_name),
+                                        std::move(layout));
+    }
+
     ObjectValue class_obj;
     class_obj.properties->emplace("new", Symbol{constructor, false});
+    if (is_packable) {
+      class_obj.properties->emplace(
+          "__packable__",
+          Symbol{Value(std::string(class_name)), false});
+    }
     for (auto& [name, fn_val] : static_template) {
       class_obj.properties->emplace(name, Symbol{std::move(fn_val), false});
     }
@@ -6234,6 +6399,24 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (auto ct = class_tag(key); ct && *ct == "Range") {
       return eval_slice(val, key);
     }
+    // SharedBuffer[i]: hand back a packed view over element `i` (zero
+    // copy — the view points back at the shared backing bytes).
+    if (val.type == Value::Object &&
+        val.to_object().has("__sharedbuffer_id__")) {
+      const auto& buf = val.to_object();
+      long id = buf.get("__sharedbuffer_id__").to_long();
+      auto core = culebra::lookup_shared_buffer(id);
+      long n = static_cast<long>(core->count);
+      long idx = key.to_long();
+      if (idx < 0) idx += n;
+      if (idx < 0 || idx >= n) {
+        throw CulebraError("IndexError", "index out of range");
+      }
+      ObjectValue view;
+      view.initialize("__packedview_id__", Value(id), false);
+      view.initialize("__packedview_index__", Value(idx), false);
+      return Value(std::move(view));
+    }
     // Object[k]: look up the Value-keyed sidecar. A class instance may
     // define `__index__(key)` to handle subscripts the sidecar misses
     // (e.g. an integer index into a wrapped collection).
@@ -6393,6 +6576,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   Value eval_property(const peg::Ast& ast, const std::shared_ptr<Environment>& env,
                       const Value& val) {
     auto name = ast.token;
+
+    // @packable SharedBuffer handles: a packed view's `.field` reads the
+    // backing bytes; a buffer's `.size`/`.count`/`.len` reports its length.
+    if (val.type == Value::Object) {
+      const auto& o = val.to_object();
+      if (o.has("__packedview_id__")) return packed_view_get(val, name);
+      if (o.has("__sharedbuffer_id__") &&
+          (name == "size" || name == "count" || name == "len")) {
+        return o.get("__sharedbuffer_count__");
+      }
+    }
 
     // String and StringView share the same method table; the
     // dispatch site bridges receiver type with to_string_view().
@@ -7205,6 +7399,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
       switch (postfix.original_tag) {
         case "INDEX"_: {
+          // Whole-element assignment `buf[i] = ...` isn't supported — a
+          // packed record has no Value form; write fields individually.
+          if (is_shared_buffer(lval)) {
+            throw CulebraError(
+                "TypeError",
+                "cannot assign to a SharedBuffer element directly; "
+                "set fields via buf[i].field = value",
+                static_cast<long>(postfix.line),
+                static_cast<long>(postfix.column));
+          }
           // `obj[k] = v` on an Object. String keys flow into the same
           // slot as `obj.foo`; other hashable keys live in the sidecar.
           // Existing slots honor their `mut` flag (matches the DOT path
@@ -7263,6 +7467,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           return rval;
         }
         case "DOT"_: {
+          // `buf[i].field = v` / `view.field = v`: write straight into the
+          // shared backing bytes (zero copy).
+          if (is_packed_view(lval)) {
+            auto name = postfix.token;
+            if (compound) {
+              Value cur = packed_view_get(lval, name);
+              Value new_val = apply_compound_op(cur, rval, base_op, env);
+              packed_view_set(lval, name, new_val, postfix.line,
+                              postfix.column);
+              return new_val;
+            }
+            packed_view_set(lval, name, rval, postfix.line, postfix.column);
+            return rval;
+          }
           auto& obj = lval.to_object();
           auto name = postfix.token;
           if (compound) {

@@ -787,6 +787,18 @@ inline std::vector<std::string_view> view_derive(const peg::Ast& decorator) {
   return traits;
 }
 
+// Detect the bare `@packable` decorator. Like `@derive`, it is not a
+// callable applied to the class — it flips the class into a fixed-layout
+// struct (declared fields only, fixed scalar types, no dynamic fields).
+// The CALL collapses to the identifier when there are no args, so the
+// decorator's child is the bare `packable` identifier.
+inline bool is_packable_decorator(const peg::Ast& decorator) {
+  if (decorator.nodes.empty()) return false;
+  const auto& c = *decorator.nodes[0];
+  if (c.nodes.empty()) return c.token == "packable";       // bare identifier
+  return c.nodes[0]->token == "packable";                  // CALL form
+}
+
 // Resolve a `@derive` trait name to the method it generates and the
 // runtime selector the JIT uses (`make_derived_method`). Throws the
 // canonical SyntaxError on an unknown name so interp / JIT diagnostics

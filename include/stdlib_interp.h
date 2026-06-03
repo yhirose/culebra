@@ -1660,6 +1660,64 @@ inline Value make_gc_namespace() {
   return Value(std::move(ns));
 }
 
+// `SharedBuffer.new(count, Cls)` allocates a flat, zero-initialized byte
+// store holding `count` records laid out per the @packable class `Cls`,
+// and returns a buffer handle. `buf[i]` yields a packed view whose
+// `.field` reads/writes the backing bytes directly (zero copy). The
+// native storage lives in a global registry; the handle just carries its
+// integer id (a Value can't hold a raw shared_ptr). See
+// [[project_packable_c3]].
+inline Value make_shared_buffer_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "new",
+      Value(FunctionValue(
+          {{"count", false, ""sv}, {"type", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line =
+                env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col =
+                env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            long count = env->get("count").to_long();
+            const Value& tv = env->get("type");
+            if (count < 0) {
+              throw culebra::CulebraError(
+                  "ValueError", "SharedBuffer.new: count must be >= 0", line,
+                  col);
+            }
+            if (tv.type != Value::Object || !tv.to_object().has("__packable__")) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  "SharedBuffer.new: second argument must be a @packable class",
+                  line, col);
+            }
+            const auto& cls = tv.to_object().get("__packable__").get<std::string>();
+            const auto* layout = culebra::lookup_packable_layout(cls);
+            if (!layout) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  std::format("SharedBuffer.new: no @packable layout for `{}`",
+                              cls),
+                  line, col);
+            }
+            auto core = std::make_shared<culebra::SharedBufferCore>();
+            core->bytes = std::make_shared<std::vector<uint8_t>>(
+                layout->stride * static_cast<size_t>(count), 0);
+            core->layout = *layout;
+            core->class_name = cls;
+            core->count = static_cast<size_t>(count);
+            long id = culebra::register_shared_buffer(std::move(core));
+            ObjectValue buf;
+            buf.initialize("__sharedbuffer_id__", Value(id), false);
+            buf.initialize("__sharedbuffer_count__", Value(count), false);
+            return Value(std::move(buf));
+          },
+          "Object"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // Build the `{code, stdout, stderr, ok, signal}` result Object shared by
 // the interp Proc.run lambda. `signal` is nil unless the child was killed.
 // Build the `{code, stdout, stderr, ok, signal, error, timed_out}` result
@@ -3578,6 +3636,7 @@ inline void setup_built_in_functions(
   env.initialize("Isolate", make_isolate_namespace(), false);
   env.initialize("Channel", make_channel_namespace(), false);
   env.initialize("Parallel", make_parallel_namespace(), false);
+  env.initialize("SharedBuffer", make_shared_buffer_namespace(), false);
 }
 
 // Embedded culebra source for stdlib modules that are easier to express
