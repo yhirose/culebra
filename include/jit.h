@@ -7475,6 +7475,12 @@ struct JIT {
   struct LoopBlocks {
     llvm::BasicBlock* continue_target;
     llvm::BasicBlock* break_target;
+    // For a `for` body that contains defers, the defer-stack mark captured
+    // at the start of each iteration. break/continue run the iteration's
+    // defers back to this mark before branching (matching interp's eval_for,
+    // which runs_deferred on both signals). null when the body has no defer
+    // and for `while` (whose body defers are function-scoped — see docs).
+    llvm::Value* defer_mark = nullptr;
   };
   std::vector<LoopBlocks> loop_stack_;
 
@@ -9791,6 +9797,20 @@ struct JIT {
       // enclosing function to carry a personality, so flag it here even
       // though no try/defer is present.
       info.has_eh = true;
+      // nodes: [pattern, iterable, BLOCK]. The body is a per-iteration scope:
+      // a defer in it fires each iteration (docs: "defer in a loop body fires
+      // on every iteration"), not at function exit. Scan the body with
+      // at_fn_top=false and absorb its defers here (mark the body node) so
+      // they don't bubble up to has_fn_defer; pattern/iterable stay at the
+      // enclosing level. (`while` deliberately does NOT do this — its body is
+      // not a scope, so its defers are function-scoped, matching interp.)
+      for (size_t i = 0; i + 1 < node.nodes.size(); i++)
+        scan_eh_defer(*node.nodes[i], at_fn_top, info);
+      if (node.nodes.size() >= 3 &&
+          scan_eh_defer(*node.nodes.back(), /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(&*node.nodes.back());
+      }
+      return false;  // the body absorbs its own defers
     }
     if (node.tag == "LEXICAL_SCOPE"_) {
       bool inner = false;
@@ -12787,6 +12807,12 @@ struct JIT {
       throw culebra::CulebraError("SyntaxError", "break outside loop",
                                   ast.line, ast.column);
     }
+    // Run the current iteration's defers before leaving the loop (interp's
+    // eval_for runs_deferred in its BreakSignal handler). null when the body
+    // has no defer / for `while`.
+    if (auto* m = loop_stack_.back().defer_mark) {
+      emit_call(module_->getFunction(rt::defer_run_to), {m});
+    }
     branch_then_dead(loop_stack_.back().break_target, "break.dead");
     return make_nil();
   }
@@ -12795,6 +12821,11 @@ struct JIT {
     if (loop_stack_.empty()) {
       throw culebra::CulebraError("SyntaxError", "continue outside loop",
                                   ast.line, ast.column);
+    }
+    // Run this iteration's defers before continuing (interp runs_deferred in
+    // its ContinueSignal handler).
+    if (auto* m = loop_stack_.back().defer_mark) {
+      emit_call(module_->getFunction(rt::defer_run_to), {m});
     }
     branch_then_dead(loop_stack_.back().continue_target, "continue.dead");
     return make_nil();
@@ -12963,7 +12994,24 @@ struct JIT {
       builder_.SetInsertPoint(okBB);
     }
 
-    loop_stack_.push_back({continue_bb, break_bb});
+    // A defer in the body fires at the end of each iteration (docs §defer).
+    // Capture the defer-stack mark here and run back to it on every exit
+    // path — normal fall-through, break/continue (via loop_stack_), and an
+    // in-flight exception (the cleanup landingpad). Mirrors compile_lexical_
+    // scope, plus the loop-control paths that interp's eval_for covers.
+    bool has_defer = scope_has_defer_.contains(&body);
+    llvm::Value* mark = nullptr;
+    llvm::BasicBlock* cleanupBB = nullptr;
+    llvm::BasicBlock* savedLpad = current_lpad_;
+    if (has_defer) {
+      mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                 "for.body.mark");
+      auto fn = builder_.GetInsertBlock()->getParent();
+      cleanupBB = llvm::BasicBlock::Create(ctx_, "for.body.cleanup", fn);
+      current_lpad_ = cleanupBB;
+    }
+
+    loop_stack_.push_back({continue_bb, break_bb, mark});
     // compile_statements hands back the body block's final-statement value as
     // an owned (+1) temporary; the loop discards it each iteration, so release
     // it (else a body ending in a heap expression — `for x in xs { f(x) }`,
@@ -12975,9 +13023,17 @@ struct JIT {
     }
 
     pop_scope();
+    current_lpad_ = savedLpad;
 
     if (!builder_.GetInsertBlock()->getTerminator()) {
+      if (has_defer) {
+        emit_call(module_->getFunction(rt::defer_run_to), {mark});
+      }
       builder_.CreateBr(continue_bb);
+    }
+
+    if (has_defer) {
+      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "for.body.exc");
     }
   }
 

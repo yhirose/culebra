@@ -1,0 +1,52 @@
+# `defer` in a loop body fires at the end of every iteration (docs §defer),
+# not at function exit — the interp and JIT must agree. The interp-vs-JIT
+# diff in `just test` guards this; the JIT once accumulated for-body defers
+# to function/program exit (`1 2 done c c` instead of `1 c 2 c done`).
+
+# Basic per-iteration firing.
+for i in [1, 2] {
+  defer { puts("c") }
+  puts(i)
+}
+puts("---")
+
+# continue runs the current iteration's defers before the next iteration.
+for i in [1, 2, 3] {
+  defer { puts("cont:" + i.to_string()) }
+  if i == 2 { continue }
+  puts(i)
+}
+puts("---")
+
+# break runs the current iteration's defers before leaving the loop.
+for i in [1, 2, 3] {
+  defer { puts("brk:" + i.to_string()) }
+  if i == 2 { break }
+  puts(i)
+}
+puts("---")
+
+# Multiple defers fire LIFO within an iteration.
+for i in [1, 2] {
+  defer { puts("a") }
+  defer { puts("b") }
+  puts(i)
+}
+puts("---")
+
+# A nested block's defer fires at the block exit; the loop body's defer at
+# the iteration exit.
+for i in [1, 2] {
+  { defer { puts("inner") } }
+  defer { puts("outer") }
+  puts(i)
+}
+puts("---")
+
+# Each for-loop kind (array / range / string / object-keys) routes through
+# the same per-iteration defer path.
+for i in 0..2 { defer { puts("r") }; puts(i) }
+puts("---")
+for ch in "ab" { defer { puts("s") }; puts(ch) }
+puts("---")
+for k in {x: 1, y: 2} { defer { puts("o") }; puts(k) }
