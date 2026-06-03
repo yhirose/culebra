@@ -423,3 +423,10 @@ endforeach()
 add_test(NAME lint_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/lint_test.sh
                  $<TARGET_FILE:culebra>)
+
+# Compile-time error position symmetry (include/jit.h compile() wrapper):
+# the JIT must backfill the compiling node's line/col onto position-less
+# compile-time throws, matching the interp's eval() stamping byte-for-byte.
+add_test(NAME jit_error_pos_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_error_pos_test.sh
+                 $<TARGET_FILE:culebra>)

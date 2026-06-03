@@ -10201,7 +10201,9 @@ struct JIT {
     if (ast.line) current_line_ = ast.line;
     if (ast.column) current_column_ = ast.column;
 
-    llvm::Value* compiled = [&]() -> llvm::Value* {
+    llvm::Value* compiled = nullptr;
+    try {
+    compiled = [&]() -> llvm::Value* {
     switch (ast.tag) {
       case "STATEMENTS"_:
         return compile_statements(ast);
@@ -10325,6 +10327,20 @@ struct JIT {
 
     return make_nil();
     }();
+    } catch (culebra::CulebraError& e) {
+      // Backfill this (deepest) compiling node's position onto a compile-time
+      // error thrown without one — the JIT mirror of the interp's eval()
+      // wrapper (interpreter.h ~4644), where the innermost eval() stamps the
+      // location. Keeps interp/JIT line/col identical even when a compile_*
+      // throw site omits ast.line/column, so the recurring "forgot the
+      // position" seam cannot reopen. Position-bearing throws (and runtime
+      // errors, which carry their own call-site position) are untouched.
+      if (e.line == 0 && e.col == 0) {
+        e.line = static_cast<long>(ast.line);
+        e.col = static_cast<long>(ast.column);
+      }
+      throw;
+    }
 
     // Contract: a compiled node yields either a real, release-safe %Value or
     // the `nullptr` "handled by parent" sentinel — never an `undef` %Value,
@@ -10892,9 +10908,10 @@ struct JIT {
     auto base_op = av.op_base;
 
     if (compound && (let || mut)) {
+      // Position omitted on purpose: compile()'s wrapper backfills this
+      // ASSIGNMENT node's line/col. Demonstrates the backfill on a real path.
       throw culebra::CulebraError("SyntaxError",
-          "compound assignment cannot declare a new variable.",
-          static_cast<long>(ast.line), static_cast<long>(ast.column));
+          "compound assignment cannot declare a new variable.");
     }
 
     // `??=` (nil-coalescing assign) short-circuits: the RHS IR is emitted
@@ -10904,9 +10921,9 @@ struct JIT {
     bool nil_coalesce = compound && base_op == "??";
     // `??=` is MVP-limited to a simple variable target (matches interp).
     if (nil_coalesce && lvalcnt != 1) {
+      // Position backfilled by compile()'s wrapper (the ASSIGNMENT node).
       throw culebra::CulebraError("SyntaxError",
-          "`??=` is only supported on a simple variable target.",
-          static_cast<long>(ast.line), static_cast<long>(ast.column));
+          "`??=` is only supported on a simple variable target.");
     }
     auto compile_rhs = [&]() {
       auto v = compile(*av.rhs);
