@@ -10681,7 +10681,8 @@ struct JIT {
     // `??=` is MVP-limited to a simple variable target (matches interp).
     if (nil_coalesce && lvalcnt != 1) {
       throw culebra::CulebraError("SyntaxError",
-          "`??=` is only supported on a simple variable target.");
+          "`??=` is only supported on a simple variable target.",
+          static_cast<long>(ast.line), static_cast<long>(ast.column));
     }
     auto compile_rhs = [&]() {
       auto v = compile(*av.rhs);

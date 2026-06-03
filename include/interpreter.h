@@ -7092,7 +7092,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // write on indexed / property lvalues is a JIT-parity follow-up).
     if (nil_coalesce && lvalcnt != 1) {
       throw CulebraError("SyntaxError",
-          "`??=` is only supported on a simple variable target.");
+          "`??=` is only supported on a simple variable target.",
+          static_cast<long>(ast.line), static_cast<long>(ast.column));
     }
 
     auto eval_rhs = [&]() {
