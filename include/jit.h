@@ -10670,7 +10670,8 @@ struct JIT {
 
     if (compound && (let || mut)) {
       throw culebra::CulebraError("SyntaxError",
-          "compound assignment cannot declare a new variable.");
+          "compound assignment cannot declare a new variable.",
+          static_cast<long>(ast.line), static_cast<long>(ast.column));
     }
 
     // `??=` (nil-coalescing assign) short-circuits: the RHS IR is emitted
@@ -13969,6 +13970,16 @@ struct JIT {
         paramMuts.push_back(false);
         paramPatterns.push_back(pv.pattern);
         continue;
+      }
+      // A required positional param after a defaulted one is a SyntaxError
+      // (kw-only params, which follow `*`, are exempt) — interp rejects this
+      // in its param builder; mirror it here so the JIT doesn't silently
+      // accept `fn f(a = 1, b)`.
+      if (!pv.default_value && firstDefaulted && !firstKwOnlyIdx) {
+        throw culebra::CulebraError("SyntaxError", std::format(
+            "non-default parameter '{}' follows a default parameter",
+            std::string(pv.name)),
+            static_cast<long>(pv.name_line), static_cast<long>(pv.name_col));
       }
       paramPatterns.push_back(nullptr);
       paramNames.push_back(std::string(pv.name));

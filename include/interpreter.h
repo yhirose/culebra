@@ -7080,7 +7080,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     if (compound && (let || mut)) {
       throw CulebraError("SyntaxError",
-          "compound assignment cannot declare a new variable.");
+          "compound assignment cannot declare a new variable.",
+          static_cast<long>(ast.line), static_cast<long>(ast.column));
     }
 
     auto base_op = av.op_base;
