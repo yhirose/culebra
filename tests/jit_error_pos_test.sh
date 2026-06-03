@@ -57,5 +57,13 @@ check_same "type_of extra"            '(5).type_of(9)'
 check_same "to_long extra"            '"5".to_long(9)'
 check_same "to_float extra"           '(5).to_float(9)'
 
+# A bad UFCS conversion attributes its type/parse error to the call's arg
+# list (matching interp's eval_ufcs_call, which invokes with args_ast's
+# position) — not the receiver. Both kind+message and position must agree.
+check_same "to_long bad type"         'true.to_long()'
+check_same "to_long bad type (Array)" '[1].to_long()'
+check_same "to_float bad type"        'true.to_float()'
+check_same "to_long bad string"       '"abc".to_long()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

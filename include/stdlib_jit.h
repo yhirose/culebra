@@ -5548,13 +5548,20 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     emit_value_release(receiver);
     return make_nil();
   }
+  // to_long/to_float attribute a bad-conversion error to the call's argument
+  // list, matching interp's UFCS path (eval_ufcs_call invokes with
+  // args_ast.line/column, which the builtin reads as __LINE__/__COLUMN__).
+  // The generic `line`/`col` above point at the receiver, so use the args
+  // node here.
+  auto argLine = builder_.getInt64(argsAst.line);
+  auto argCol = builder_.getInt64(argsAst.column);
   if (method == "to_long") {
     // Polymorphic Long/Float/String, mirroring compile_global's bare
     // `to_long(x)` — interp's `(123).to_long()` accepts a Long, so the
     // String-only `rt::to_long` here used to wrongly reject it.
     auto r = emit_call(
         module_->getFunction(rt::to_long_any),
-        {extract_tag(receiver), extract_data(receiver), line, col});
+        {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);
     return r;
   }
@@ -5563,7 +5570,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     // `to_float(x)`. Returns a full Value (the runtime picks the tag).
     auto r = emit_call(
         module_->getFunction(rt::to_float_any),
-        {extract_tag(receiver), extract_data(receiver), line, col});
+        {extract_tag(receiver), extract_data(receiver), argLine, argCol});
     emit_value_release(receiver);
     return r;
   }
