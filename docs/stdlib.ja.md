@@ -1761,6 +1761,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 |---|---|---|
 | `status` | `Long` | HTTP ステータスコード（`200`、`404` …） |
 | `ok` | `Bool` | `status` が `[200, 300)` の範囲なら `true` |
+| `reason` | `String` | ステータス文言（`"OK"`、`"Not Found"` …） |
 | `body` | `String` | レスポンスボディ（生バイト列） |
 | `headers` | `Object` | レスポンスヘッダ（名前→値、String→String） |
 | `json()` | `Any` | `body` を JSON としてパース（`JSON.parse(r.body)` の糖衣） |
@@ -1792,8 +1793,10 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 - `into: String | Function` — レスポンスボディをバッファせず sink へストリーム
   する（下記ストリーミング参照。デフォルト: `nil` ＝ `body` にバッファ）。
 - `json: Any`（`post` / `put` / `request` のみ）— 値を JSON にシリアライズし、
-  `Content-Type: application/json` でボディとして送信。`body` と排他（両方渡すと
-  `TypeError`）。
+  `Content-Type: application/json` でボディとして送信。
+- `form: Object`（`post` / `put` / `request` のみ）— `String` 値の `Object` を
+  `application/x-www-form-urlencoded` ボディとして送信（percent-encode）。`body` /
+  `json` / `form` は最大1つ（複数指定は `TypeError`）。
 - `body: String | Function` / `content_type: String`（`post` / `put` /
   `request` のみ）— リクエストボディとその `Content-Type`（body が非空で、かつ
   `headers` で明示的な `Content-Type` が指定されていない場合のみ付与）。`String`

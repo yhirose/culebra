@@ -1831,6 +1831,7 @@ failure:
 |---|---|---|
 | `status` | `Long` | HTTP status code (`200`, `404`, …) |
 | `ok` | `Bool` | `true` iff `status` is in `[200, 300)` |
+| `reason` | `String` | status reason phrase (`"OK"`, `"Not Found"`, …) |
 | `body` | `String` | response body (raw bytes) |
 | `headers` | `Object` | response headers, keyed by name (String → String) |
 | `json()` | `Any` | parse `body` as JSON (convenience for `JSON.parse(r.body)`) |
@@ -1862,8 +1863,10 @@ Keyword arguments (shared by every method):
 - `into: String | Function` — stream the response body to a sink instead of
   buffering it; see Streaming below (default: `nil` = buffer into `body`).
 - `json: Any` (`post` / `put` / `request` only) — serialize the value to JSON
-  and send it as the body with `Content-Type: application/json`. Mutually
-  exclusive with `body` (passing both is a `TypeError`).
+  and send it as the body with `Content-Type: application/json`.
+- `form: Object` (`post` / `put` / `request` only) — an `Object` of `String`
+  values sent as an `application/x-www-form-urlencoded` body (percent-encoded).
+  At most one of `body` / `json` / `form` may be given (else `TypeError`).
 - `body: String | Function` / `content_type: String` (`post` / `put` /
   `request` only) — request body and its `Content-Type` (the header is set only
   when the body is non-empty and no explicit `Content-Type` was passed in

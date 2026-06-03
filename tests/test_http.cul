@@ -86,4 +86,17 @@ assert_eq(json_and_body.kind, "TypeError")
 let json_refused = try { Http.post("http://127.0.0.1:1/x", json: {a: 1}); nil } catch e { e }
 assert_eq(json_refused.kind, "HttpError")
 
+// --- `form:` (application/x-www-form-urlencoded): offline error paths. The
+//     encoding round-trip is verified e2e. ---
+
+// form: must be an Object of String values.
+let form_badtype = try { Http.post("http://127.0.0.1:1/x", form: "nope"); nil } catch e { e }
+assert_eq(form_badtype.kind, "TypeError")
+let form_badval = try { Http.post("http://127.0.0.1:1/x", form: {n: 5}); nil } catch e { e }
+assert_eq(form_badval.kind, "TypeError")
+
+// at most one of body / json / form.
+let form_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", form: {a: "1"}); nil } catch e { e }
+assert_eq(form_and_body.kind, "TypeError")
+
 puts("test_http: ok")

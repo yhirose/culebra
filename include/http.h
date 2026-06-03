@@ -58,6 +58,7 @@ struct HttpRequest {
 struct HttpResult {
   bool ok = false;        // transport succeeded and a response was received.
   long status = 0;        // HTTP status code (0 when ok is false).
+  std::string reason;     // status reason phrase ("OK", "Not Found", …).
   std::string body;       // response body (raw bytes).
   HeaderList headers;     // response headers (insertion order from server).
   std::string error;      // transport error text (empty when ok).
@@ -101,6 +102,17 @@ inline bool split_url(const std::string& url, std::string& origin,
   return true;
 }
 
+// Percent-encode name/value pairs as `k=v&k2=v2` (application/x-www-form-
+// urlencoded form). Shared by query params (`?`+this) and `form:` bodies.
+inline std::string encode_query(const HeaderList& pairs) {
+  std::string q;
+  for (const auto& [k, v] : pairs) {
+    if (!q.empty()) q += "&";
+    q += httplib::encode_uri_component(k) + "=" + httplib::encode_uri_component(v);
+  }
+  return q;
+}
+
 inline HttpResult http_request(const HttpRequest& req) {
   HttpResult out;
   std::string origin, path, err;
@@ -110,13 +122,8 @@ inline HttpResult http_request(const HttpRequest& req) {
   }
   // Append query params (percent-encoded), preserving any query already in url.
   if (!req.params.empty()) {
-    std::string q;
-    for (const auto& [k, v] : req.params) {
-      if (!q.empty()) q += "&";
-      q += httplib::encode_uri_component(k) + "=" +
-           httplib::encode_uri_component(v);
-    }
-    path += (path.find('?') == std::string::npos ? "?" : "&") + q;
+    path += (path.find('?') == std::string::npos ? "?" : "&") +
+            encode_query(req.params);
   }
 
   httplib::Client cli(origin);
@@ -187,6 +194,7 @@ inline HttpResult http_request(const HttpRequest& req) {
   }
   out.ok = true;
   out.status = res->status;
+  out.reason = res->reason;
   out.body = std::move(res->body);
   out.headers.reserve(res->headers.size());
   for (const auto& [k, v] : res->headers) {

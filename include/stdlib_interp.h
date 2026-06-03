@@ -2141,6 +2141,26 @@ inline culebra::http::HeaderList http_parse_params(const Value& pv,
   return params;
 }
 
+// Convert the `form` kwarg (an Object of String values) into name/value pairs
+// for an application/x-www-form-urlencoded body. `ctx` tags errors.
+inline culebra::http::HeaderList http_parse_form(const Value& fv,
+                                                 const char* ctx, long line,
+                                                 long col) {
+  culebra::http::HeaderList form;
+  if (fv.type != Value::Object) {
+    throw CulebraError("TypeError",
+        std::format("{}: form must be an Object of String", ctx), line, col);
+  }
+  for (const auto& [k, sym] : *fv.to_object().properties) {
+    if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
+      throw CulebraError("TypeError",
+          std::format("{}: form values must be String", ctx), line, col);
+    }
+    form.emplace_back(std::string(k), std::string(sym.val.to_string_view()));
+  }
+  return form;
+}
+
 // Wrap an HttpResult as the response Object `{status, ok, body, headers}`.
 // `ok` is true iff the status is 2xx (a 4xx/5xx is a completed round-trip,
 // not a transport error). Transport failures never reach here — the caller
@@ -2150,6 +2170,7 @@ inline Value http_result_to_value(culebra::http::HttpResult&& r) {
   ObjectValue obj;
   obj.initialize("status", Value(r.status), false);
   obj.initialize("ok", Value(r.status >= 200 && r.status < 300), false);
+  obj.initialize("reason", Value(std::move(r.reason)), false);
   obj.initialize("body", Value(std::move(r.body)), false);
   ObjectValue headers;
   for (auto& [k, v] : r.headers) {
@@ -2254,23 +2275,31 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
 // streamed chunked so a big upload never lives in memory at once. `body` and
 // `json` together is a TypeError; a non-String/Function body is a TypeError.
 inline void http_setup_body(const Value& bodyv, const Value& jsonv,
-                            const Value& ct,
+                            const Value& formv, const Value& ct,
                             const std::shared_ptr<Environment>& env,
                             culebra::http::HttpRequest& req, HttpIntoState& st,
                             const char* ctx, long line, long col) {
   bool has_json = jsonv.type != Value::Nil;
+  bool has_form = formv.type != Value::Nil;
   bool has_body = bodyv.type == Value::Function ||
                   ((bodyv.type == Value::String ||
                     bodyv.type == Value::StringView) &&
                    !bodyv.to_string_view().empty());
-  if (has_json && has_body) {
+  if (has_json + has_form + has_body > 1) {
     throw CulebraError(
         "TypeError",
-        std::format("{}: pass either body or json, not both", ctx), line, col);
+        std::format("{}: pass at most one of body, json, form", ctx), line,
+        col);
   }
   if (has_json) {
     req.body = json_stringify(jsonv, 0, false, 0);
     req.content_type = "application/json";
+    return;
+  }
+  if (has_form) {
+    req.body = culebra::http::encode_query(
+        http_parse_form(formv, ctx, line, col));
+    req.content_type = "application/x-www-form-urlencoded";
     return;
   }
   req.content_type = ct.to_string();
@@ -2339,6 +2368,10 @@ inline Value make_http_namespace() {
   // application/json. Mutually exclusive with `body`.
   auto json_param =
       FunctionValue::Parameter{"json", false, ""sv, nullptr, kw_default_nil()};
+  // `form` (post/put/request): an Object of String values sent as an
+  // application/x-www-form-urlencoded body. Mutually exclusive with body/json.
+  auto form_param =
+      FunctionValue::Parameter{"form", false, ""sv, nullptr, kw_default_nil()};
 
   // GET / DELETE / HEAD — no body.
   auto bodyless = [&](const char* method, const char* ctx) {
@@ -2366,7 +2399,7 @@ inline Value make_http_namespace() {
   auto withbody = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
         {url_param, body_param, ct_param, headers_param, timeout_param,
-         follow_param, into_param, params_param, json_param},
+         follow_param, into_param, params_param, json_param, form_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -2376,8 +2409,8 @@ inline Value make_http_namespace() {
           http_fill_common(env, req, ctx, line, col);
           HttpIntoState st;
           http_setup_body(env->get("body"), env->get("json"),
-                          env->get("content_type"), env, req, st, ctx, line,
-                          col);
+                          env->get("form"), env->get("content_type"), env, req,
+                          st, ctx, line, col);
           http_setup_into(env->get("into"), env, req, st, ctx, line, col);
           return http_run_into(req, st, ctx, line, col);
         },
@@ -2394,7 +2427,7 @@ inline Value make_http_namespace() {
       Value(FunctionValue(
           {{"method", false, "String"sv}, url_param, body_param, ct_param,
            headers_param, timeout_param, follow_param, into_param,
-           params_param, json_param},
+           params_param, json_param, form_param},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -2404,8 +2437,8 @@ inline Value make_http_namespace() {
             http_fill_common(env, req, "Http.request", line, col);
             HttpIntoState st;
             http_setup_body(env->get("body"), env->get("json"),
-                            env->get("content_type"), env, req, st,
-                            "Http.request", line, col);
+                            env->get("form"), env->get("content_type"), env, req,
+                            st, "Http.request", line, col);
             http_setup_into(env->get("into"), env, req, st, "Http.request",
                             line, col);
             return http_run_into(req, st, "Http.request", line, col);

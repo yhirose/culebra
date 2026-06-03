@@ -41,6 +41,11 @@ using culebra::http::HttpRequest;
 }  // namespace
 
 int main() {
+  // encode_query: form-urlencoding shared by params: and form:.
+  CHECK(culebra::http::encode_query({{"a", "b c"}, {"x", "1&2"}}) ==
+        "a=b%20c&x=1%262");
+  CHECK(culebra::http::encode_query({}) == "");
+
   httplib::Server svr;
   svr.Get("/hello", [](const httplib::Request&, httplib::Response& res) {
     res.set_header("X-Test", "yes");
@@ -73,6 +78,7 @@ int main() {
     auto r = http_request(req);
     CHECK(r.ok);
     CHECK(r.status == 200);
+    CHECK(r.reason == "OK");           // status reason phrase
     CHECK(r.body == "hello world");
     bool found = false;
     for (auto& [k, v] : r.headers) {

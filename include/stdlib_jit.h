@@ -1548,6 +1548,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* _culebra_http_result_to_object(
   culebra_runtime_object_set(o, "status", false, TAG_LONG, r.status, line, col);
   culebra_runtime_object_set(o, "ok", false, TAG_BOOL,
       (r.status >= 200 && r.status < 300) ? 1 : 0, line, col);
+  culebra_runtime_object_set(o, "reason", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(r.reason)), line, col);
   culebra_runtime_object_set(o, "body", false, TAG_STRING,
       reinterpret_cast<int64_t>(_culebra_heap_str(r.body)), line, col);
   auto* headers = culebra_runtime_object_new();
@@ -1628,24 +1630,39 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
 // Configure the request body from the `body` slab value: TAG_STRING → whole;
 // TAG_FUNC → producer (called per chunk, returns next chunk String or nil),
 // streamed chunked. Else → TypeError. Mirrors interp http_setup_body.
-inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue ct,
-                             culebra::http::HttpRequest& req, JitHttpInto& st,
-                             const char* ctx) {
-  // `json` (non-nil) → serialize to JSON, send as application/json. Mutually
-  // exclusive with a (non-empty) body.
+inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
+                             JitValue ct, culebra::http::HttpRequest& req,
+                             JitHttpInto& st, const char* ctx) {
+  // At most one of body / json / form. `json` → application/json; `form` →
+  // application/x-www-form-urlencoded.
   bool has_json = jsonv.tag != TAG_NIL;
+  bool has_form = formv.tag != TAG_NIL;
   bool has_body =
       bodyv.tag == TAG_FUNC ||
       ((bodyv.tag == TAG_STRING || bodyv.tag == TAG_STRINGVIEW) &&
        !std::string_view(_culebra_str_view(bodyv.tag, bodyv.data)).empty());
-  if (has_json && has_body) {
+  if (has_json + has_form + has_body > 1) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("{}: pass either body or json, not both", ctx), 0, 0);
+        std::format("{}: pass at most one of body, json, form", ctx), 0, 0);
   }
   if (has_json) {
     req.body = culebra_runtime_json_stringify(jsonv.tag, jsonv.data, 0, 0, 0);
     req.content_type = "application/json";
+    return;
+  }
+  if (has_form) {
+    if (formv.tag != TAG_OBJECT) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: form must be an Object of String", ctx), 0, 0);
+    }
+    culebra::http::HeaderList pairs;
+    if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(formv.data), pairs)) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: form values must be String", ctx), 0, 0);
+    }
+    req.body = culebra::http::encode_query(pairs);
+    req.content_type = "application/x-www-form-urlencoded";
     return;
   }
   // ct / body may be nil when this method is reached positional-only (the slow
@@ -2645,7 +2662,8 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 8),
-                   _proc_adapt::at(a, n, 2), req, st, ctx);
+                   _proc_adapt::at(a, n, 9), _proc_adapt::at(a, n, 2), req, st,
+                   ctx);
   _http_setup_into(_proc_adapt::at(a, n, 6), req, st, ctx);
   return _http_run_into(req, st, ctx);
 }
@@ -2665,7 +2683,8 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 9),
-                   _proc_adapt::at(a, n, 3), req, st, "Http.request");
+                   _proc_adapt::at(a, n, 10), _proc_adapt::at(a, n, 3), req, st,
+                   "Http.request");
   _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
   return _http_run_into(req, st, "Http.request");
 }
@@ -3135,8 +3154,9 @@ inline const NsParam kHttpPostParams[] = {
   {"into",             true,  false, &_ns_def_nil},
   {"params",           true,  false, &_ns_def_nil},
   {"json",             true,  false, &_ns_def_nil},
+  {"form",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 9, -1, -1};
+inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 10, -1, -1};
 
 // request: method, url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
@@ -3151,8 +3171,9 @@ inline const NsParam kHttpRequestParams[] = {
   {"into",             true,  false, &_ns_def_nil},
   {"params",           true,  false, &_ns_def_nil},
   {"json",             true,  false, &_ns_def_nil},
+  {"form",             true,  false, &_ns_def_nil},
 };
-inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 10, -1, -1};
+inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 11, -1, -1};
 #endif  // CULEBRA_HTTP_ENABLED
 
 inline const NsMethod kNsMethods[] = {
