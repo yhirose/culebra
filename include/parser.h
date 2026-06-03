@@ -80,7 +80,12 @@ const auto grammar_ = R"(
   # never at statement-prefix position, so the two uses are
   # unambiguous.
   DECORATOR                <-  '@' _ CALL
-  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
+  # A class member is one of: a typed instance field (`x: Float32`,
+  # `x: Float32 = 0.0` — the type annotation distinguishes it), a static
+  # field (`static x = expr`), or a method (`f(a) { ... }`). The typed
+  # field alternative must come first so its `: Type` is matched before
+  # the bare-`=` static field. See MethodView / view_method.
+  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS _ BLOCK)
   STATIC_MOD               <-  K('static')?
 
   DEBUGGER                 <-  debugger
@@ -645,32 +650,55 @@ inline TraitMethodView view_trait_method(const peg::Ast& m) {
 }
 
 // View of a METHOD AST node — see grammar:
-//   METHOD <- STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
-// `is_field` distinguishes the two tails (size 3 vs 4). One central
-// accessor avoids walker drift when the rule changes again.
+//   METHOD <- STATIC_MOD _ IDENTIFIER _
+//               (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION
+//                / PARAMETERS _ BLOCK)
+// Three member forms, told apart by the tag of nodes[2]:
+//   - typed instance field (`x: Float32`, `x: Float32 = 0.0`): nodes[2]
+//     is TYPE_ANNOTATION; an optional default expression is nodes[3].
+//   - static field (`static x = expr`): nodes[2] is the value expression.
+//   - method (`f(a) { ... }`): nodes[2] is PARAMETERS, body is nodes[3].
+// One central accessor avoids walker drift when the rule changes again.
 struct MethodView {
   bool is_static;
   std::string_view name;
   size_t name_line;
   size_t name_col;
-  bool is_field;
-  const peg::Ast* params;                       // nullptr if field
-  const std::shared_ptr<peg::Ast>* body;        // nullptr if field
-  const peg::Ast* value;                        // nullptr if method
+  bool is_field;                  // static field: `static x = expr`
+  bool is_typed_field;            // typed instance field: `x: Type [= expr]`
+  std::string_view type_annotation;  // typed field's type token; else empty
+  const peg::Ast* params;         // nullptr unless method
+  const std::shared_ptr<peg::Ast>* body;  // nullptr unless method
+  const peg::Ast* value;          // static field value OR typed field
+                                  // default; nullptr when neither
 };
 
 inline MethodView view_method(const peg::Ast& m) {
+  using namespace peg::udl;
   const auto& ident = *m.nodes[1];
-  bool is_field = m.nodes.size() == 3;
+  bool is_static = m.nodes[0]->token == "static";
+  const auto& third = *m.nodes[2];
+  if (third.tag == "TYPE_ANNOTATION"_) {
+    return MethodView{
+        is_static, ident.token, ident.line, ident.column,
+        /*is_field=*/false, /*is_typed_field=*/true,
+        /*type_annotation=*/third.token,
+        /*params=*/nullptr, /*body=*/nullptr,
+        /*value=*/m.nodes.size() == 4 ? m.nodes[3].get() : nullptr,
+    };
+  }
+  if (third.tag == "PARAMETERS"_) {
+    return MethodView{
+        is_static, ident.token, ident.line, ident.column,
+        /*is_field=*/false, /*is_typed_field=*/false, /*type_annotation=*/{},
+        /*params=*/m.nodes[2].get(), /*body=*/&m.nodes[3], /*value=*/nullptr,
+    };
+  }
+  // Bare `= EXPRESSION`: static field.
   return MethodView{
-      m.nodes[0]->token == "static",
-      ident.token,
-      ident.line,
-      ident.column,
-      is_field,
-      is_field ? nullptr : m.nodes[2].get(),
-      is_field ? nullptr : &m.nodes[3],
-      is_field ? m.nodes[2].get() : nullptr,
+      is_static, ident.token, ident.line, ident.column,
+      /*is_field=*/true, /*is_typed_field=*/false, /*type_annotation=*/{},
+      /*params=*/nullptr, /*body=*/nullptr, /*value=*/m.nodes[2].get(),
   };
 }
 

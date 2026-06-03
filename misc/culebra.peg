@@ -64,7 +64,12 @@
   # never at statement-prefix position, so the two uses are
   # unambiguous.
   DECORATOR                <-  '@' _ CALL
-  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ ('=' _ EXPRESSION / PARAMETERS _ BLOCK)
+  # A class member is one of: a typed instance field (`x: Float32`,
+  # `x: Float32 = 0.0` — the type annotation distinguishes it), a static
+  # field (`static x = expr`), or a method (`f(a) { ... }`). The typed
+  # field alternative must come first so its `: Type` is matched before
+  # the bare-`=` static field. See MethodView / view_method.
+  METHOD                   <-  STATIC_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS _ BLOCK)
   STATIC_MOD               <-  K('static')?
 
   DEBUGGER                 <-  debugger

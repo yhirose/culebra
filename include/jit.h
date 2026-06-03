@@ -9389,8 +9389,8 @@ struct JIT {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
         auto mv = culebra::view_method(method);
-        if (mv.is_field) {
-          visit_for_frees(*mv.value, my_locals, outer, info);
+        if (mv.is_field || mv.is_typed_field) {
+          if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
           continue;
         }
         outer.push_back(&my_locals);
@@ -13344,8 +13344,10 @@ struct JIT {
 
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       auto mv = culebra::view_method(*ast.nodes[i]);
-      culebra::reject_class_decl_in_class_body(
-          mv.is_field ? *mv.value : **mv.body, class_name);
+      const peg::Ast* body_node =
+          (mv.is_typed_field || mv.is_field) ? mv.value : mv.body->get();
+      if (body_node)
+        culebra::reject_class_decl_in_class_body(*body_node, class_name);
     }
 
     const peg::Ast* new_ast = nullptr;
@@ -13358,6 +13360,12 @@ struct JIT {
     for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
+      if (mv.is_typed_field) {
+        // Typed instance fields are interp-first in this slice; the JIT
+        // instance layout doesn't wire them yet (see C3 plan). Skip so
+        // existing classes compile unchanged.
+        continue;
+      }
       if (mv.is_field) {
         culebra::require_static_field(mv, class_name);
         static_field_names.push_back(std::string(mv.name));

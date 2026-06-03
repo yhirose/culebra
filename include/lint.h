@@ -158,7 +158,10 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
-        if (mv.is_field) { if (mv.value) walk(*mv.value); continue; }
+        if (mv.is_field || mv.is_typed_field) {
+          if (mv.value) walk(*mv.value);
+          continue;
+        }
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
       return;

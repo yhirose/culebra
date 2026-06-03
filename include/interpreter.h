@@ -584,8 +584,8 @@ inline void descend_into_nested(
     }
     for (size_t j = i + 1; j < node.nodes.size(); j++) {
       auto mv = culebra::view_method(*node.nodes[j]);
-      if (mv.is_field) {
-        descend_into_nested(*mv.value, my_locals, outer);
+      if (mv.is_field || mv.is_typed_field) {
+        if (mv.value) descend_into_nested(*mv.value, my_locals, outer);
         continue;
       }
       outer.push_back(&my_locals);
@@ -5568,6 +5568,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // bare instance with only the class tag and methods. Methods close
   // over the defining scope but `this` is bound fresh per method call
   // via the existing method-dispatch protocol.
+  // Zero value for a declared field type when no default is supplied
+  // (`x: Float32` -> 0.0). Numeric types get their numeric zero, Bool
+  // false, String "", and any reference type nil — the Go/C#/Java
+  // "zero value" rule. Mirrored in the JIT backend.
+  Value zero_value_for_type(std::string_view type) {
+    if (type == "Float32" || type == "Float64" || type == "Float")
+      return Value(0.0);
+    if (type == "Bool") return Value(false);
+    if (type == "String") return Value(std::string());
+    if (type == "Long" || type == "Byte" || type.starts_with("Int"))
+      return Value(static_cast<long>(0));
+    return Value();  // reference types default to nil
+  }
+
   Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
@@ -5611,16 +5625,27 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // within a method body, which are scope boundaries).
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       auto mv = culebra::view_method(*ast.nodes[i]);
-      reject_class_decl_in_class_body(mv.is_field ? *mv.value : **mv.body,
-                                       class_name);
+      const peg::Ast* body_node =
+          (mv.is_typed_field || mv.is_field) ? mv.value : mv.body->get();
+      if (body_node) reject_class_decl_in_class_body(*body_node, class_name);
     }
     const peg::Ast* new_ast = nullptr;
     std::vector<std::pair<std::string_view, Value>> method_template;
     std::vector<std::pair<std::string_view, Value>> static_template;
     std::vector<std::pair<std::string_view, Value>> static_field_template;
+    // Typed instance fields (`x: Float32 = 0.0`). Declaration order is
+    // the field order (the @packable layout reads it). Default value, or
+    // the type's zero value when omitted.
+    std::vector<std::pair<std::string_view, Value>> field_template;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       const auto& m = *ast.nodes[i];
       auto mv = culebra::view_method(m);
+      if (mv.is_typed_field) {
+        Value init = mv.value ? eval(*mv.value, env)
+                              : zero_value_for_type(mv.type_annotation);
+        field_template.push_back({mv.name, std::move(init)});
+        continue;
+      }
       if (mv.is_field) {
         culebra::require_static_field(mv, class_name);
         Value val = eval(*mv.value, env);
@@ -5647,12 +5672,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       inject_derived_methods(method_template, class_name, derive_traits);
     }
 
-    auto build_instance = [class_name, method_template]() {
+    auto build_instance = [class_name, method_template, field_template]() {
       ObjectValue instance;
       instance.properties->emplace(
           "class", Symbol{Value(std::string(class_name)), false});
       for (const auto& [name, val] : method_template) {
         instance.properties->emplace(name, Symbol{val, false});
+      }
+      // Typed fields are mutable instance state (like `this.x = ...`).
+      for (const auto& [name, val] : field_template) {
+        instance.properties->emplace(name, Symbol{val, true});
       }
       return instance;
     };
