@@ -77,17 +77,23 @@ if(CULEBRA_ENABLE_HTTP)
   endif()
   find_package(OpenSSL REQUIRED)
   message(STATUS "Found OpenSSL ${OPENSSL_VERSION} (static)")
-  add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT)
-  # Make OpenSSL headers visible to every TU that includes httplib.h — notably
-  # the culebra_rt archives, which compile httplib.h but don't link OpenSSL
-  # (the AOT consumer's link resolves the symbols via _ssl_link).
-  include_directories(${OPENSSL_INCLUDE_DIR})
+  # zlib enables gzip/deflate: cpp-httplib then auto-sends Accept-Encoding and
+  # transparently decompresses responses (decompress_ defaults true). System
+  # zlib (libz) is ubiquitous on macOS/Linux; linked dynamically.
+  find_package(ZLIB REQUIRED)
+  message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
+  add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT
+                          CPPHTTPLIB_ZLIB_SUPPORT)
+  # Make OpenSSL + zlib headers visible to every TU that includes httplib.h —
+  # notably the culebra_rt archives, which compile httplib.h but don't link
+  # these (the AOT consumer's link resolves the symbols via _ssl_link).
+  include_directories(${OPENSSL_INCLUDE_DIR} ${ZLIB_INCLUDE_DIRS})
 
   # Link line reused by the driver, the smoke exes, and (as a string) the AOT
   # build step. Static OpenSSL drags in libdl/libpthread on Linux; on macOS
   # cpp-httplib reads the system trust store via the Security framework
   # (CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN auto-enables there).
-  set(_ssl_libs OpenSSL::SSL OpenSSL::Crypto)
+  set(_ssl_libs OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
   if(APPLE)
     list(APPEND _ssl_libs "-framework CoreFoundation" "-framework Security")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -98,8 +104,8 @@ if(CULEBRA_ENABLE_HTTP)
 
   # AOT link string: resolve the OpenSSL static archives to absolute paths so
   # `culebra build` can append them when a program references Http. Mirrors
-  # CULEBRA_BLAS_LINK for Tensor.
-  set(_ssl_link "${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY}")
+  # CULEBRA_BLAS_LINK for Tensor. zlib is linked dynamically (-lz).
+  set(_ssl_link "${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} -lz")
   if(APPLE)
     set(_ssl_link "${_ssl_link} -framework CoreFoundation -framework Security")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")

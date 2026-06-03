@@ -1822,7 +1822,8 @@ Synchronous HTTP/HTTPS client (engine: vendored `cpp-httplib` + OpenSSL,
 statically linked). Each call **blocks** until the response arrives — there is
 no async/await. TLS is automatic for `https://` URLs; the system trust store is
 used to verify server certificates (macOS keychain / the platform CA bundle on
-Linux).
+Linux). `gzip` / `deflate` responses are decompressed transparently — `body`
+is always the decoded content.
 
 Every method returns a **response Object** and raises only on a *transport*
 failure:
