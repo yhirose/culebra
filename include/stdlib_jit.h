@@ -5488,6 +5488,58 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     }
   }
 
+  // Arity-1 global builtins reachable via UFCS (`x.f()` == `f(x)`). interp
+  // resolves these against the global env, so they all work as methods and an
+  // extra positional arg is an ArityError on the arity-1 global — not the
+  // property-get TypeError the JIT used to fall into when it only handled the
+  // 0-arg form. (hash and to_float were also missing here entirely, so
+  // `x.hash()` / `x.to_float()` failed outright.) puts/print are variadic and
+  // handled separately below.
+  static const std::set<std::string_view> arity1_globals = {
+      "to_long", "to_float", "to_string", "type_of", "hash"};
+  if (arity1_globals.contains(method) && argsAst.nodes.size() != 0) {
+    long extra = static_cast<long>(argsAst.nodes.size());
+    // `to_string` is *also* a 0-arg value-method on String/StringView in the
+    // interp (the StringView→String materializer), which reports a
+    // value-method arity message for those receivers; every other type uses
+    // the arity-1 global. Branch on the receiver tag so the JIT matches interp
+    // byte-for-byte. (The receiver type isn't known until runtime.)
+    if (method == "to_string") {
+      auto fn = builder_.GetInsertBlock()->getParent();
+      auto svBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.sv", fn);
+      auto glBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.gl", fn);
+      auto deadBB = llvm::BasicBlock::Create(ctx_, "tostr.arity.dead", fn);
+      auto tag = extract_tag(receiver);
+      auto isStr = builder_.CreateOr(
+          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
+          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)),
+          "tostr.is.str");
+      builder_.CreateCondBr(isStr, svBB, glBB);
+      // String/StringView: value-method (0 expected, `extra` given).
+      builder_.SetInsertPoint(svBB);
+      jit.emit_throw_error(
+          "ArityError",
+          culebra::builtin_arity_error_message("to_string", 0, 0, extra),
+          argsAst.line, argsAst.column);
+      builder_.CreateBr(deadBB);
+      // Everything else: arity-1 global (receiver is arg 0, so 1 + extra).
+      builder_.SetInsertPoint(glBB);
+      jit.emit_throw_error("ArityError",
+                           culebra::ns_fn_arity_error_message(1, 1 + extra),
+                           argsAst.line, argsAst.column);
+      builder_.CreateBr(deadBB);
+      builder_.SetInsertPoint(deadBB);
+      return make_nil();  // unreachable: both predecessors throw
+    }
+    // Other arity-1 globals have no value-method form: the receiver is the
+    // implicit arg 0, so the total is 1 + the extras. The nameless message
+    // matches interp's global-UFCS arity error.
+    jit.emit_throw_error("ArityError",
+                         culebra::ns_fn_arity_error_message(1, 1 + extra),
+                         argsAst.line, argsAst.column);
+    return make_nil();  // unreachable after the throw
+  }
+
   if (argsAst.nodes.size() != 0) return nullptr;
   if (method == "puts" || method == "print") {
     auto rt_name = method == "puts" ? rt::puts : rt::print;
@@ -5497,13 +5549,23 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     return make_nil();
   }
   if (method == "to_long") {
-    emit_type_check(receiver, "String", "to_long argument");
-    auto strPtr =
-        builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    // Polymorphic Long/Float/String, mirroring compile_global's bare
+    // `to_long(x)` — interp's `(123).to_long()` accepts a Long, so the
+    // String-only `rt::to_long` here used to wrongly reject it.
     auto r = emit_call(
-        module_->getFunction(rt::to_long), {strPtr, line, col});
+        module_->getFunction(rt::to_long_any),
+        {extract_tag(receiver), extract_data(receiver), line, col});
     emit_value_release(receiver);
-    return make_long(r);
+    return r;
+  }
+  if (method == "to_float") {
+    // Polymorphic Long/Float/String, mirroring compile_global's bare
+    // `to_float(x)`. Returns a full Value (the runtime picks the tag).
+    auto r = emit_call(
+        module_->getFunction(rt::to_float_any),
+        {extract_tag(receiver), extract_data(receiver), line, col});
+    emit_value_release(receiver);
+    return r;
   }
   if (method == "to_string") {
     auto s = emit_call(
@@ -5517,6 +5579,13 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
                                  {extract_tag(receiver)});
     emit_value_release(receiver);
     return make_string(s);
+  }
+  if (method == "hash") {
+    auto h = emit_call(
+        module_->getFunction(rt::hash_any),
+        {extract_tag(receiver), extract_data(receiver), line, col});
+    emit_value_release(receiver);
+    return make_long(h);
   }
   return nullptr;
 }

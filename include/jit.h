@@ -1284,8 +1284,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     return r->data;
   }
   // Primitives go through the same hash that JitObject's AnyKeyMap uses;
-  // unhashable inputs (Array / Set / Function / Tensor) throw there.
-  return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
+  // unhashable inputs (Array / Set / Function / Tensor) throw there — but
+  // positionless, since the container use has no call site. Backfill the
+  // call-site line/col (same pattern as the interp eval / JIT compile
+  // wrappers) so `hash([1,2])` and `[1,2].hash()` carry a position like
+  // the interp.
+  try {
+    return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
+  } catch (culebra::CulebraError& e) {
+    if (e.line == 0 && e.col == 0) {
+      e.line = static_cast<int>(line);
+      e.col = static_cast<int>(col);
+    }
+    throw;
+  }
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_concat(

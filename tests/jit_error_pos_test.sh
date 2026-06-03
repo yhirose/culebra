@@ -43,5 +43,19 @@ check_same "*args not last"     'fn f(*xs, y) { y }'
 check_same "break outside loop" 'break'
 check_same "continue in fn"     'fn f() { continue }'
 
+# UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
+# to_float). The JIT used to fall through to a property-get TypeError on a
+# wrong-arity call (and lacked hash/to_float entirely); now it raises the
+# same ArityError as the interp. `to_string` is special — a String/StringView
+# value-method (0-arg) vs the arity-1 global elsewhere — so cover both.
+check_same "to_string extra (Long)"   '(1).to_string(9)'
+check_same "to_string extra (String)" '"x".to_string(9)'
+check_same "to_string extra (Array)"  '[1].to_string(9)'
+check_same "hash extra (Long)"        '(1).hash(9)'
+check_same "hash extra (String)"      '"x".hash(9)'
+check_same "type_of extra"            '(5).type_of(9)'
+check_same "to_long extra"            '"5".to_long(9)'
+check_same "to_float extra"           '(5).to_float(9)'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
