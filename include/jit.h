@@ -3482,22 +3482,53 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
     void* fn_ptr, size_t n_captures, size_t arity);
 
 // --- Enum (sum type) support ---------------------------------------
+// Call-site source position for the JitFn-ABI dispatcher thunk. The thunk
+// is invoked through the fixed (cls, this, n_args, args) closure ABI, which
+// has no slot for line/col, so a plain `f(1)` that fails to dispatch can't
+// otherwise locate the error. The general call codegen stores the call-site
+// position here just before an indirect closure call; the thunk reads it on
+// the (cold) DispatchError path. Only read after a store on the same call,
+// so the single i64-pair store per call is the only cost on the hot path.
+inline thread_local int64_t _jit_call_site_line = 0;
+inline thread_local int64_t _jit_call_site_col = 0;
+
 // Build a variant instance: tagged with `class` = variant name and
-// `__enum` = parent enum name, with positional payload fields
-// `_0.._n` taking ownership of the caller's args (object_set transfers
-// the +1, mirroring the default-ctor path in build_class_instance).
+// `__enum` = parent enum name, with the `arity` declared payload fields
+// `_0.._{arity-1}` taking ownership of the caller's args (object_set
+// transfers the +1, mirroring the default-ctor path). `n_args` is what the
+// caller actually passed: too few raises "missing required argument '_k'"
+// and too many drops (and releases) the extras — matching the interpreter's
+// ctor binding, which binds `_0.._{arity-1}` positionally. `line`/`col`
+// locate the arity error (the direct-call emit passes the call site; the
+// ctor-as-value thunk passes the recorded `_jit_call_site`).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
     const char* variant_name, const char* enum_name, int64_t n_args,
-    JitValue* args) {
+    JitValue* args, int64_t arity, int64_t line, int64_t col) {
+  if (n_args < arity) {
+    // Mirror interp: report the first unbound positional field, after
+    // releasing the args we took ownership of but won't store.
+    auto missing = culebra::positional_field_name(static_cast<size_t>(n_args));
+    for (int64_t i = 0; i < n_args; i++) {
+      _culebra_value_release_impl(args[i].tag, args[i].data);
+    }
+    throw culebra::CulebraError(
+        "ArityError",
+        std::format("missing required argument '{}'", missing), line, col);
+  }
   auto* inst = culebra_runtime_object_new();
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
                              reinterpret_cast<int64_t>(variant_name), 0, 0);
   culebra_runtime_object_set(inst, "__enum", /*mut*/ false, TAG_STRING,
                              reinterpret_cast<int64_t>(enum_name), 0, 0);
-  for (int64_t i = 0; i < n_args; i++) {
+  for (int64_t i = 0; i < arity; i++) {
     auto fname = culebra::positional_field_name(static_cast<size_t>(i));
     culebra_runtime_object_set(inst, fname.data(), /*mut*/ false, args[i].tag,
                                args[i].data, 0, 0);
+  }
+  // Drop excess positional args (interp ignores them); release the +1 we
+  // were handed so they don't leak.
+  for (int64_t i = arity; i < n_args; i++) {
+    _culebra_value_release_impl(args[i].tag, args[i].data);
   }
   for (auto& entry : inst->slots) entry.mut = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
@@ -3526,9 +3557,10 @@ inline JitValue _jit_variant_ctor_thunk(JitClosure* cls, JitValue /*this*/,
   auto& info = _jit_variant_ctor_info();
   auto it = info.find(cls);
   if (it == info.end()) return {TAG_NIL, 0};
-  return culebra_runtime_build_variant(_intern_str(it->second.first),
-                                        _intern_str(it->second.second), n_args,
-                                        args);
+  return culebra_runtime_build_variant(
+      _intern_str(it->second.first), _intern_str(it->second.second), n_args,
+      args, static_cast<int64_t>(cls->arity), _jit_call_site_line,
+      _jit_call_site_col);
 }
 
 // Create a payload-variant constructor closure (`Result.Ok`): a closure
@@ -4327,16 +4359,6 @@ inline MultifnPick _jit_multifn_resolve(
   }
   return {m_it->second[static_cast<size_t>(pick)].body, name_it->second};
 }
-
-// Call-site source position for the JitFn-ABI dispatcher thunk. The thunk
-// is invoked through the fixed (cls, this, n_args, args) closure ABI, which
-// has no slot for line/col, so a plain `f(1)` that fails to dispatch can't
-// otherwise locate the error. The general call codegen stores the call-site
-// position here just before an indirect closure call; the thunk reads it on
-// the (cold) DispatchError path. Only read after a store on the same call,
-// so the single i64-pair store per call is the only cost on the hot path.
-inline thread_local int64_t _jit_call_site_line = 0;
-inline thread_local int64_t _jit_call_site_col = 0;
 
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
 // dispatcher closure. The `cls` identity (load-bearing comparison in
@@ -13221,9 +13243,11 @@ struct JIT {
         // Nullary variant: build the singleton instance now.
         auto inst = emit_call(
             module_->getOrInsertFunction(rt::build_variant, valueType_, ptrTy,
-                                         ptrTy, i64Ty, ptrTy),
+                                         ptrTy, i64Ty, ptrTy, i64Ty, i64Ty,
+                                         i64Ty),
             {variant_g, enum_g, builder_.getInt64(0),
-             llvm::ConstantPointerNull::get(ptrTy)},
+             llvm::ConstantPointerNull::get(ptrTy), builder_.getInt64(0),
+             current_line_val(), current_column_val()},
             "variant.inst");
         emit_object_set(enumObj, variant, /*mut=*/false, extract_tag(inst),
                         extract_data(inst));
