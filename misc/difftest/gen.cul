@@ -90,4 +90,59 @@ for recv in recvs {
   }
 }
 
+# --- Dimension 5: value display (puts / to_string) ------------------------
+# The display path differs from to_string for some tags (e.g. a Function
+# value: puts printed `[unknown]` under the JIT while to_string gave
+# `[function]`). `puts(V)` prints before _p's own line, so a display
+# divergence shows up on that leading line; `to_string(V)` is compared via
+# `_show` on the returned String.
+let disp_vals = ['to_long', 'Math.abs', 'print', 'fn (x) { x }', '|x| x',
+                 '1', '1.5', 'true', 'nil', '"s"', '[1, 2]', '{a: 1}',
+                 '(1, 2)', '{1, 2}', 'range', 'iota']
+for v in disp_vals {
+  case("disp-puts|" + v, "puts(" + v + ")")
+  case("disp-str|" + v, "to_string(" + v + ")")
+}
+
+# --- Dimension 6: class / enum construction x arity -----------------------
+# Constructors are synthesized native closures (no source body), so they
+# can diverge from the interpreter on arity the way builtin functions did.
+# The decl lives inside the case thunk, so each `E`/`C` is fresh.
+# Single-quote raw strings: the decl braces must not be read as `"{...}"`
+# interpolation.
+let enum_pre = 'enum E { V(Long), W }; '
+let class_pre = 'class C { new(a) { this.a = a } }; '
+for a in ['', '1', '1, 2', '1, 2, 3'] {
+  case("ctor-enum|" + a, enum_pre + "E.V(" + a + ")")
+  case("ctor-class|" + a, class_pre + "C.new(" + a + ")")
+}
+case("ctor-enum-nullary", enum_pre + "E.W")
+case("ctor-enum-nullary-call", enum_pre + "E.W()")
+
+# --- Dimension 7: lazy iterator combinators over an erroring stream --------
+# D3's v-lazy maps over `[1, 2, 3]` (never errors); these run the callback
+# over `[1, "x"]` so a per-element type error tests the callback's error
+# kind / message / *position* through the lazy pipeline (the eager forms
+# are covered by D3's v-map). Terminal `collect`/`count`/`for_each`.
+let lazycbs = ['map(to_long)', 'filter(to_long)', 'take_while(to_long)',
+               'flat_map(to_long)', 'map(Math.abs)', 'map(|x| x + 1)']
+for c in lazycbs {
+  case("lazyerr-collect|" + c, '[1, "x"].iter().' + c + ".collect()")
+  case("lazyerr-count|" + c, '[1, "x"].iter().' + c + ".count()")
+}
+
+# --- Dimension 8: keyword args / kwargs splat -----------------------------
+# Positional splat `f(*xs)` is unimplemented (parse error on both), so only
+# keyword + `**{}` forms appear here. Good and bad keywords.
+let kwcases = ['range(0, 5, step: 2).collect()',
+               'range(0, 5, **{step: 2}).collect()',
+               'range(0, 5, step: 0).collect()',
+               'range(0, 5, **{bad: 2}).collect()',
+               'range(0, 5, bad: 2).collect()',
+               '[1, 2, 3].sort_by(key: |x| x)',
+               'Math.abs(x: 1)']
+for kc in kwcases {
+  case("kw|" + kc, kc)
+}
+
 print(out.join("\n"))

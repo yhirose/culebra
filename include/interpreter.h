@@ -5949,6 +5949,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // synthesized native closures (enum/class constructors) are unaffected.
     if (f.strict_arity) {
       auto b = builtin_arity_bounds(params);
+      // A pure positional builtin (all params required, no defaults / kw-only
+      // / **rest) carries no kwarg metadata on the JIT side, where such a
+      // closure rejects keyword/`**` arguments outright. Rich ns-methods
+      // (Proc.run, FS.remove, JSON.stringify, ...) declare defaulted/kw-only
+      // params and accept keywords, so only the bare positional builtins
+      // (Math.abs, type_of, ...) reject here.
+      bool kwarg_capable = b.min != b.max ||
+                           first_kw_only_index(params).has_value();
+      for (const auto& p : params) {
+        if (p.kwargs_rest) kwarg_capable = true;
+      }
+      if (!kwarg_capable && (!args.kwargs.empty() || !args.splats.empty())) {
+        throw CulebraError("TypeError",
+                           "function does not accept keyword arguments",
+                           static_cast<long>(call_line),
+                           static_cast<long>(call_column));
+      }
       if (!b.variadic && b.max > 0) {
         long got = static_cast<long>(args.positional.size());
         if (got < b.min || got > b.max) {
