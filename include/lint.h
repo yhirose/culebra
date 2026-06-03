@@ -73,6 +73,20 @@ class ScopeWalker {
  private:
   std::vector<Scope> scopes_;
   std::vector<Diagnostic>& diags_;
+  int loop_depth_ = 0;
+
+  // RAII override of loop_depth_ for the span of a body walk: a loop body
+  // bumps it (+1), a function / lambda / method / class / trait body resets
+  // it to 0 — break/continue cannot cross a function boundary, matching the
+  // JIT's per-function loop_stack_ and every mainstream language. (The interp
+  // instead lets a BreakSignal propagate dynamically through a call, the
+  // divergence this rule removes.)
+  struct LoopDepthGuard {
+    int& slot;
+    int saved;
+    LoopDepthGuard(int& s, int v) : slot(s), saved(s) { slot = v; }
+    ~LoopDepthGuard() { slot = saved; }
+  };
 
   // Innermost-first lookup: 'l' = let (immutable), 'm' = mutable, 0 = unknown.
   char classify(std::string_view name) const {
@@ -106,20 +120,43 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "LAMBDA"_: {
       auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
                                         : culebra::view_lambda(node);
+      LoopDepthGuard g(loop_depth_, 0);
       scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
       return;
     }
-    case "LEXICAL_SCOPE"_:   // LEXICAL_SCOPE <- BLOCK; DEFER <- [BLOCK].
-    case "DEFER"_:           // Walk the children (statements) in a child
-      scopes_.emplace_back();  // scope — not the node itself (infinite recursion).
+    case "LEXICAL_SCOPE"_:   // LEXICAL_SCOPE <- BLOCK: a child variable scope
+      scopes_.emplace_back();  // that shares the enclosing loop / control flow.
+      walk_children(node);     // Walk the statements, not the node (recursion).
+      scopes_.pop_back();
+      return;
+    case "DEFER"_: {
+      // DEFER <- [BLOCK]: the body is a deferred thunk — a separate closure
+      // in the JIT — so it is a function boundary for break/continue. A
+      // `defer { break }` cannot reach the enclosing loop (the JIT segfaults
+      // on it today, the interp silently propagates), so reset loop depth.
+      scopes_.emplace_back();
+      LoopDepthGuard g(loop_depth_, 0);
       walk_children(node);
       scopes_.pop_back();
       return;
+    }
+    case "WHILE"_: {
+      // [condition, BLOCK]: WHILE shares the enclosing variable scope (no
+      // push), but its body is inside the loop. The condition is evaluated
+      // before the loop is entered, so it stays at the enclosing loop depth
+      // (matches the JIT pushing loop_stack_ only around the body).
+      if (node.nodes.size() < 2) { walk_children(node); return; }
+      walk(*node.nodes[0]);
+      LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
+      walk(*node.nodes[1]);
+      return;
+    }
     case "FOR"_: {
       // [pattern, iterable, BLOCK]: iterable in the enclosing scope, loop
-      // var + body in a child scope.
+      // var + body in a child scope that is inside the loop.
       if (node.nodes.size() < 3) { walk_children(node); return; }
       walk(*node.nodes[1]);
+      LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
       scoped(*node.nodes[2],
              [&](Scope& s) { collect_idents(*node.nodes[0], s.muts); });
       return;
@@ -150,6 +187,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);   // decorators: outer
       if (i + 1 >= node.nodes.size()) { walk_children(node); return; }
+      LoopDepthGuard g(loop_depth_, 0);
       scoped(*node.nodes.back(),
              [&](Scope& s) { collect_idents(*node.nodes[i + 1], s.muts); });
       return;
@@ -166,6 +204,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // position (the layout calc in eval/compile is then only a safety net).
       auto class_name =
           culebra::parse_generic_head(node.nodes[i]->token).outer;
+      // Method bodies and field initializers are function-boundary contexts.
+      LoopDepthGuard g(loop_depth_, 0);
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         if (mv.is_field || mv.is_typed_field) {
@@ -191,6 +231,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     case "TRAIT_DECL"_: {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);
+      LoopDepthGuard g(loop_depth_, 0);
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
         if (!tv.body) continue;   // signature-only method: nothing to walk
@@ -198,6 +239,21 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       }
       return;
     }
+    case "BREAK"_:
+    case "CONTINUE"_:
+      // Sound static check: a break/continue with no enclosing loop (within
+      // the same function) is certain to fail. The JIT already raises this
+      // at compile time; the interp throws an uncaught Break/ContinueSignal
+      // and aborts the process. Hoisting it here gives all backends the same
+      // SyntaxError + position before eval.
+      if (loop_depth_ == 0) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            node.tag == "BREAK"_ ? "break outside loop" : "continue outside loop",
+            static_cast<long>(node.line), static_cast<long>(node.column),
+            Severity::Error});
+      }
+      return;
     case "ASSIGNMENT"_: {
       auto av = culebra::view_assignment(node);
       walk(*av.rhs);
