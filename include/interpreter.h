@@ -4161,7 +4161,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto f = callEnv->get("f");
+         auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "map");
          return _make_iterator(
              [upstream, f](std::shared_ptr<Environment>) {
@@ -4175,7 +4175,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto p = callEnv->get("p");
+         auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "filter");
          return _make_iterator(
              [upstream, p](std::shared_ptr<Environment>) {
@@ -4229,7 +4229,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto p = callEnv->get("p");
+         auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "take_while");
          auto exhausted = std::make_shared<bool>(false);
          return _make_iterator(
@@ -4250,7 +4250,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto f = callEnv->get("f");
+         auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "flat_map");
          // nullopt-like sentinel: inner iterator value (or Nil when
          // none is active).
@@ -4350,7 +4350,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"f", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto f = callEnv->get("f");
+         auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 1, "for_each");
          while (auto v = _iter_next_value(upstream)) {
            _invoke_callback(f, *v);
@@ -4363,7 +4363,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
          auto acc = callEnv->get("init");
-         auto f = callEnv->get("f");
+         auto f = Value(as_callback(callEnv->get("f")));
          check_callback_arity(f.to_function(), 2, "reduce");
          while (auto v = _iter_next_value(upstream)) {
            acc = _invoke_callback(f, acc, *v);
@@ -4375,7 +4375,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto p = callEnv->get("p");
+         auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "find");
          while (auto v = _iter_next_value(upstream)) {
            if (_invoke_callback(p, *v).to_bool()) return *v;
@@ -4387,7 +4387,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto p = callEnv->get("p");
+         auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "any");
          while (auto v = _iter_next_value(upstream)) {
            if (_invoke_callback(p, *v).to_bool()) return Value(true);
@@ -4399,7 +4399,7 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
        Value(FunctionValue({{"p", false, "Function"sv}},
                            [](std::shared_ptr<Environment> callEnv) {
          auto upstream = callEnv->get("this");
-         auto p = callEnv->get("p");
+         auto p = Value(as_callback(callEnv->get("p")));
          check_callback_arity(p.to_function(), 1, "all");
          while (auto v = _iter_next_value(upstream)) {
            if (!_invoke_callback(p, *v).to_bool()) return Value(false);

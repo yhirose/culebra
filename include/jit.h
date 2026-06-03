@@ -5025,11 +5025,11 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             const char* method_name,
                                             int64_t line, int64_t col);
 // Forward-declared so the lazy iterator combinators (defined above the
-// definition) can validate their callback eagerly.
-inline void _culebra_check_callback_arity(int8_t fn_tag, int64_t fn_data,
-                                          size_t expected_arity,
-                                          const char* method_name,
-                                          int64_t line, int64_t col);
+// definition) can validate + normalize their callback eagerly.
+inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
+                                             size_t expected_arity,
+                                             const char* method_name,
+                                             int64_t line, int64_t col);
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
@@ -5526,11 +5526,10 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  _culebra_check_callback_arity(ft, fd, 1, "map", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "map", line, col);
   culebra_runtime_value_retain(it, id);
-  culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
-  auto* f = culebra_runtime_cell_new(ft, fd);
+  auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
@@ -5571,11 +5570,10 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  _culebra_check_callback_arity(ft, fd, 1, "filter", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "filter", line, col);
   culebra_runtime_value_retain(it, id);
-  culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
-  auto* f = culebra_runtime_cell_new(ft, fd);
+  auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
@@ -5694,11 +5692,10 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  _culebra_check_callback_arity(ft, fd, 1, "take_while", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "take_while", line, col);
   culebra_runtime_value_retain(it, id);
-  culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
-  auto* p = culebra_runtime_cell_new(ft, fd);
+  auto* p = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto* stopped = culebra_runtime_cell_new(TAG_BOOL, 0);
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* up_has_next_cell = up_cells.has_next;
@@ -6130,11 +6127,10 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line,
     int64_t col) {
-  _culebra_check_callback_arity(ft, fd, 1, "flat_map", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "flat_map", line, col);
   culebra_runtime_value_retain(it, id);
-  culebra_runtime_value_retain(ft, fd);
   auto* up = culebra_runtime_cell_new(it, id);
-  auto* f = culebra_runtime_cell_new(ft, fd);
+  auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto* inner = culebra_runtime_cell_new(TAG_NIL, 0);
   auto up_cells = _iter_cache_closure_cells({it, id});
   auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
@@ -6299,27 +6295,27 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   return fn;
 }
 
-// Eager callback validation for the lazy iterator combinators (map/filter/
-// take_while/flat_map), which capture the raw callback in their wrapper and
-// invoke it per element — so without this a non-Function callback is called as
-// a function pointer and crashes. Builds no adapter (unlike _expect_callback):
-// a non-Function (including a callable instance, which the iterator combinators
-// don't adapt) is rejected, and a Function's arity is checked against the
-// shared rule. Throwing here mirrors the eager terminal HOFs and interp.
-inline void _culebra_check_callback_arity(int8_t fn_tag, int64_t fn_data,
-                                          size_t expected_arity,
-                                          const char* method_name,
-                                          int64_t line, int64_t col) {
-  if (fn_tag != TAG_FUNC) {
-    throw culebra::CulebraError("TypeError",
-        "type error: parameter 'f' expects Function", line, col);
+// Validate + normalize a callback for a LAZY iterator combinator (map/filter/
+// take_while/flat_map), which captures it in its wrapper and invokes it per
+// element. Returns a +1-owned closure for the combinator to capture: a plain
+// Function (retained), or — for a callable class instance (Option A) — an
+// adapter that forwards to __call__ with `this` bound. Reuses
+// _culebra_expect_callback (the eager-HOF path / interp's as_callback) so all
+// iterator HOFs accept a callable identically. The caller transfers the
+// returned reference into its capture cell with no extra retain.
+inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
+                                             size_t expected_arity,
+                                             const char* method_name,
+                                             int64_t line, int64_t col) {
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, expected_arity,
+                                      method_name, line, col);
+  // _expect_callback hands back a fresh +1 adapter for a callable instance,
+  // or the borrowed raw closure for a Function — retain the latter so the
+  // capture cell owns a reference either way.
+  if (fn_tag == TAG_FUNC) {
+    culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   }
-  if (!_culebra_callback_arity_ok(reinterpret_cast<JitClosure*>(fn_data),
-                                  expected_arity)) {
-    throw culebra::CulebraError("TypeError", std::format(
-        "type error: {} expects a {}-parameter function",
-        method_name, expected_arity), line, col);
-  }
+  return fn;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
