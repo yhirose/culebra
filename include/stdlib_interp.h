@@ -3105,8 +3105,8 @@ inline std::shared_ptr<regexlib::Regex> regex_from_env(
 }
 
 // `Encoding`: text codec namespace. Grouped into sub-namespaces by scheme
-// (`Encoding.html.*`); base64/hex/json are planned to slot in the same way.
-// The HTML logic is shared with the JIT slow-path adapters via shared.h.
+// (`Encoding.html` / `base64` / `hex` / `url`). The codec logic is shared
+// with the JIT slow-path adapters via shared.h.
 inline Value make_encoding_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -3161,6 +3161,56 @@ inline Value make_encoding_namespace() {
                           "String"sv)),
       false);
   ns.initialize("base64", Value(std::move(base64)), false);
+
+  ObjectValue hex;
+  hex.initialize(
+      "encode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::hex_encode(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  hex.initialize(
+      "decode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            auto r = culebra::hex_decode(
+                                env->get("s").to_string_view());
+                            if (!r) {
+                              throw CulebraError(
+                                  "ValueError",
+                                  "Encoding.hex.decode: invalid hex", line, col);
+                            }
+                            return Value(std::move(*r));
+                          },
+                          "String"sv)),
+      false);
+  ns.initialize("hex", Value(std::move(hex)), false);
+
+  ObjectValue url;
+  url.initialize(
+      "encode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::url_encode(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  url.initialize(
+      "decode",
+      Value(FunctionValue({{"s", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return Value(culebra::url_decode(
+                                env->get("s").to_string_view()));
+                          },
+                          "String"sv)),
+      false);
+  ns.initialize("url", Value(std::move(url)), false);
 
   return Value(std::move(ns));
 }

@@ -2166,6 +2166,14 @@ namespace _ns_adapt {
 inline const char* take_str(JitValue v) {
   return v.tag == TAG_STRING ? reinterpret_cast<const char*>(v.data) : "";
 }
+// Length-authoritative view of a TAG_STRING (header-backed, so embedded NUL
+// survives). Use this instead of take_str for binary-safe codecs where a
+// strlen would truncate at the first NUL byte.
+inline std::string_view take_sv(JitValue v) {
+  return v.tag == TAG_STRING
+             ? _str_sv(reinterpret_cast<const char*>(v.data))
+             : std::string_view{};
+}
 inline JitArray* take_array(JitValue v) {
   return v.tag == TAG_ARRAY ? reinterpret_cast<JitArray*>(v.data) : nullptr;
 }
@@ -2810,25 +2818,50 @@ inline JitValue _ns_json_parse(JitValue* a, int64_t) {
 // these are reached through the kNsMethods closure trampoline.
 inline JitValue _ns_encoding_html_escape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::html_escape(_ns_adapt::take_str(a[0]))));
+      _culebra_heap_str(culebra::html_escape(_ns_adapt::take_sv(a[0]))));
 }
 inline JitValue _ns_encoding_html_unescape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::html_unescape(_ns_adapt::take_str(a[0]))));
+      _culebra_heap_str(culebra::html_unescape(_ns_adapt::take_sv(a[0]))));
 }
 // Encoding.base64.{encode,decode}: shared codec; decode raises ValueError on
-// invalid input (same as interp).
+// invalid input (same as interp). take_sv (not take_str) keeps the codecs
+// binary-safe — embedded NUL bytes must not truncate the input.
 inline JitValue _ns_encoding_base64_encode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::base64_encode(_ns_adapt::take_str(a[0]))));
+      _culebra_heap_str(culebra::base64_encode(_ns_adapt::take_sv(a[0]))));
 }
 inline JitValue _ns_encoding_base64_decode(JitValue* a, int64_t) {
-  auto r = culebra::base64_decode(_ns_adapt::take_str(a[0]));
+  auto r = culebra::base64_decode(_ns_adapt::take_sv(a[0]));
   if (!r) {
     throw culebra::CulebraError("ValueError",
         "Encoding.base64.decode: invalid base64", 0, 0);
   }
   return _ns_adapt::v_string(_culebra_heap_str(*r));
+}
+// Encoding.hex.{encode,decode}: shared codec; decode raises ValueError on
+// invalid input (same as interp).
+inline JitValue _ns_encoding_hex_encode(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::hex_encode(_ns_adapt::take_sv(a[0]))));
+}
+inline JitValue _ns_encoding_hex_decode(JitValue* a, int64_t) {
+  auto r = culebra::hex_decode(_ns_adapt::take_sv(a[0]));
+  if (!r) {
+    throw culebra::CulebraError("ValueError",
+        "Encoding.hex.decode: invalid hex", 0, 0);
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(*r));
+}
+// Encoding.url.{encode,decode}: percent-encoding; decode is lenient (never
+// fails), matching interp.
+inline JitValue _ns_encoding_url_encode(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::url_encode(_ns_adapt::take_sv(a[0]))));
+}
+inline JitValue _ns_encoding_url_decode(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::url_decode(_ns_adapt::take_sv(a[0]))));
 }
 
 #ifndef CULEBRA_RT_NO_TENSOR
@@ -3338,6 +3371,10 @@ inline const NsMethod kNsMethods[] = {
   {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html"},
   {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64"},
   {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64"},
+  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex"},
+  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex"},
+  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url"},
+  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},

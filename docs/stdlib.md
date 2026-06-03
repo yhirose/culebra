@@ -48,7 +48,7 @@ Conventions used below:
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
-16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html` escape / unescape, `Encoding.base64`)
+16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
 16. [Design notes](#16-design-notes)
 17. [Not included (yet)](#17-not-included-yet)
 
@@ -1992,9 +1992,9 @@ a server with a CN-only certificate that works today may then be rejected).
 ## 16. `Encoding`
 
 Text codecs, grouped into a **sub-namespace per scheme** (`Encoding.html`,
-`Encoding.base64`; `Encoding.hex` is planned to slot in beside them the same
-way). The codec logic is shared between the interpreter and the JIT/AOT
-backends.
+`Encoding.base64`, `Encoding.hex`, `Encoding.url`). The codec logic is shared
+between the interpreter and the JIT/AOT backends, and every codec is
+binary-safe (embedded NUL bytes survive a round trip).
 
 ### `Encoding.html`
 
@@ -2037,10 +2037,48 @@ decodes) and `=` padding; an out-of-alphabet character raises `ValueError`.
 ```culebra
 puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
 puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+```
 
+```culebra
+# doctest: skip
 # e.g. an HTTP Basic auth header
 let cred = Encoding.base64.encode(user + ":" + password)
 let r = Http.get(url, headers: {Authorization: "Basic " + cred})
+```
+
+### `Encoding.hex`
+
+| Function | Result |
+| --- | --- |
+| `Encoding.hex.encode(s)` | `String` — lower-case hex, two digits per byte |
+| `Encoding.hex.decode(s)` | `String` — the decoded bytes; raises `ValueError` on invalid input |
+
+`encode` always emits lower-case digits. `decode` accepts either case and
+raises `ValueError` on an odd-length string or any non-hex character.
+
+```culebra
+puts(Encoding.hex.encode("abc"))   # => '616263'
+puts(Encoding.hex.decode("616263")) # => 'abc'
+puts(Encoding.hex.decode("00FF").size()) # => 2
+```
+
+### `Encoding.url`
+
+| Function | Result |
+| --- | --- |
+| `Encoding.url.encode(s)` | `String` — percent-encode (RFC 3986) |
+| `Encoding.url.decode(s)` | `String` — decode percent-escapes |
+
+`encode` keeps the unreserved set `A-Z a-z 0-9 - _ . ~` verbatim and turns every
+other byte into `%XX` with upper-case hex, so a space becomes `%20` (not `+`)
+and multi-byte UTF-8 is percent-encoded byte by byte. `decode` is lenient: a
+`%` not followed by two hex digits is left **as written**, and a literal `+`
+stays a `+` (so `encode`/`decode` round-trip exactly).
+
+```culebra
+puts(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
+puts(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
+puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 ```
 
 ---

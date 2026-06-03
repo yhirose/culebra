@@ -46,7 +46,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
-16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html` の escape / unescape、`Encoding.base64`）
+16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
 16. [設計上の注記](#16-設計上の注記)
 17. [未収録（将来検討）](#17-未収録将来検討)
 
@@ -1919,8 +1919,9 @@ TLS は現在 OpenSSL を静的リンクしていますが、将来 BoringSSL �
 ## 16. `Encoding`
 
 テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間
-（`Encoding.html`、`Encoding.base64`。`Encoding.hex` も同じ形で並べる予定）。
-コーデックのロジックはインタプリタと JIT/AOT 両バックエンドで共有しています。
+（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）。
+コーデックのロジックはインタプリタと JIT/AOT 両バックエンドで共有しており、
+いずれもバイナリセーフ（埋め込み NUL バイトも往復で保持）です。
 
 ### `Encoding.html`
 
@@ -1962,10 +1963,47 @@ puts(Encoding.html.unescape("&unknownent;"))     # => '&unknownent;'
 ```culebra
 puts(Encoding.base64.encode("user:pass"))   # => 'dXNlcjpwYXNz'
 puts(Encoding.base64.decode("dXNlcjpwYXNz")) # => 'user:pass'
+```
 
+```culebra
+# doctest: skip
 # 例: HTTP Basic 認証ヘッダ
 let cred = Encoding.base64.encode(user + ":" + password)
 let r = Http.get(url, headers: {Authorization: "Basic " + cred})
+```
+
+### `Encoding.hex`
+
+| 関数 | 結果 |
+| --- | --- |
+| `Encoding.hex.encode(s)` | `String` — 小文字 16 進、1 バイトにつき 2 桁 |
+| `Encoding.hex.decode(s)` | `String` — デコード結果。不正入力は `ValueError` |
+
+`encode` は常に小文字で出力します。`decode` は大小いずれの桁も受け付け、奇数長や
+16 進以外の文字は `ValueError`。
+
+```culebra
+puts(Encoding.hex.encode("abc"))   # => '616263'
+puts(Encoding.hex.decode("616263")) # => 'abc'
+puts(Encoding.hex.decode("00FF").size()) # => 2
+```
+
+### `Encoding.url`
+
+| 関数 | 結果 |
+| --- | --- |
+| `Encoding.url.encode(s)` | `String` — パーセントエンコード（RFC 3986） |
+| `Encoding.url.decode(s)` | `String` — パーセントエスケープをデコード |
+
+`encode` は非予約集合 `A-Z a-z 0-9 - _ . ~` をそのまま残し、それ以外のバイトを
+大文字 16 進の `%XX` にします（空白は `+` ではなく `%20`、マルチバイト UTF-8 は
+バイト単位でエンコード）。`decode` は寛容で、2 桁の 16 進が続かない `%` は**そのまま**
+残し、リテラルの `+` も `+` のまま（`encode`/`decode` がちょうど往復します）。
+
+```culebra
+puts(Encoding.url.encode("a b&c"))   # => 'a%20b%26c'
+puts(Encoding.url.decode("a%20b%26c")) # => 'a b&c'
+puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 ```
 
 ---

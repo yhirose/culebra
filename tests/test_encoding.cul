@@ -67,4 +67,36 @@ assert_eq(b64bad, "ValueError")
 let b = Encoding.base64
 assert_eq(b.decode(b.encode("xyz")), "xyz")
 
+// --- hex (lower-case, two digits per byte) ---
+assert_eq(Encoding.hex.encode("abc"), "616263")
+assert_eq(Encoding.hex.encode(""), "")
+assert_eq(Encoding.hex.encode("\x00\xff"), "00ff")    // full byte range
+assert_eq(Encoding.hex.decode("616263"), "abc")
+assert_eq(Encoding.hex.decode("00FF"), "\x00\xff")    // upper-case digits ok
+assert_eq(Encoding.hex.decode(""), "")
+// round trip, binary-safe (multi-byte UTF-8 survives)
+assert_eq(Encoding.hex.decode(Encoding.hex.encode(bin)), bin)
+// odd length → ValueError
+let hexodd = try { Encoding.hex.decode("abc"); nil } catch e { e.kind }
+assert_eq(hexodd, "ValueError")
+// non-hex character → ValueError
+let hexbad = try { Encoding.hex.decode("zz"); nil } catch e { e.kind }
+assert_eq(hexbad, "ValueError")
+
+// --- url (RFC 3986 percent-encoding; unreserved A-Za-z0-9-_.~ kept) ---
+assert_eq(Encoding.url.encode("a b"), "a%20b")        // space → %20, not +
+assert_eq(Encoding.url.encode("a+b=c&d"), "a%2Bb%3Dc%26d")
+assert_eq(Encoding.url.encode("foo-_.~"), "foo-_.~")  // unreserved untouched
+assert_eq(Encoding.url.encode("café"), "caf%C3%A9")   // UTF-8 bytes percent-encoded
+assert_eq(Encoding.url.decode("a%20b"), "a b")
+assert_eq(Encoding.url.decode("caf%C3%A9"), "café")
+assert_eq(Encoding.url.decode("%6a%6B"), "jk")        // either hex case
+// lenient: a malformed `%` and a literal `+` are left verbatim (round-trips)
+assert_eq(Encoding.url.decode("100%"), "100%")
+assert_eq(Encoding.url.decode("%zz"), "%zz")
+assert_eq(Encoding.url.decode("a+b"), "a+b")
+// round trip
+let q = "name=José Pérez & co. (50%)"
+assert_eq(Encoding.url.decode(Encoding.url.encode(q)), q)
+
 puts("test_encoding ok")

@@ -367,6 +367,84 @@ inline std::optional<std::string> base64_decode(std::string_view in) {
   return out;
 }
 
+// One hex digit → its value, or -1 if not [0-9a-fA-F]. Shared by hex_decode
+// and url_decode (the percent-escape body is two hex digits).
+inline int hex_digit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// Lower-case hex encode: each byte becomes two hex digits. Shared by the
+// interp and JIT `Encoding.hex.*` adapters.
+inline std::string hex_encode(std::string_view in) {
+  static const char tbl[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(in.size() * 2);
+  for (unsigned char c : in) {
+    out += tbl[c >> 4];
+    out += tbl[c & 0xF];
+  }
+  return out;
+}
+
+// Decode hex. Returns nullopt on an odd length or any non-hex character;
+// both upper- and lower-case digits are accepted.
+inline std::optional<std::string> hex_decode(std::string_view in) {
+  if (in.size() % 2 != 0) return std::nullopt;
+  std::string out;
+  out.reserve(in.size() / 2);
+  for (size_t i = 0; i < in.size(); i += 2) {
+    int hi = hex_digit(in[i]), lo = hex_digit(in[i + 1]);
+    if (hi < 0 || lo < 0) return std::nullopt;
+    out += static_cast<char>((hi << 4) | lo);
+  }
+  return out;
+}
+
+// Percent-encode per RFC 3986: the unreserved set `A-Za-z0-9-_.~` is kept
+// verbatim, every other byte becomes `%XX` with upper-case hex (so a space
+// is `%20`, not `+`). Shared by the interp and JIT `Encoding.url.*` adapters.
+inline std::string url_encode(std::string_view in) {
+  static const char tbl[] = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(in.size());
+  for (unsigned char c : in) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+        c == '~') {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += tbl[c >> 4];
+      out += tbl[c & 0xF];
+    }
+  }
+  return out;
+}
+
+// Decode percent-encoding: `%XX` (either hex case) becomes its byte. A `%`
+// not followed by two hex digits is left verbatim (lenient, like Python's
+// urllib unquote), and `+` stays literal so url_encode/url_decode round-trip
+// exactly. Never fails.
+inline std::string url_decode(std::string_view in) {
+  std::string out;
+  out.reserve(in.size());
+  for (size_t i = 0; i < in.size();) {
+    if (in[i] == '%' && i + 2 < in.size()) {
+      int hi = hex_digit(in[i + 1]), lo = hex_digit(in[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out += static_cast<char>((hi << 4) | lo);
+        i += 3;
+        continue;
+      }
+    }
+    out += in[i++];
+  }
+  return out;
+}
+
 // Location lives in the CulebraError's line/col fields; the top-level
 // printer (src/main.cc) appends ` at L:C.` once, so messages must not
 // embed it themselves (else it prints twice).
