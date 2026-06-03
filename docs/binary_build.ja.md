@@ -35,8 +35,9 @@ culebra build path/to/program.cul -o ./program
 
 ### ランタイムアーカイブの配布
 
-両方のランタイムアーカイブ（`libculebra_rt.a`、
-`libculebra_rt_no_tensor.a`）は cpp-embedlib によって **`culebra`
+4 つのランタイムアーカイブ（`libculebra_rt.a` と
+`_no_tensor` / `_no_http` / `_no_tensor_no_http` variant）は
+cpp-embedlib によって **`culebra`
 ドライバに直接埋め込まれています**。ドライバは単体で完結する 1
 バイナリで、サイドカーの `.a` ファイルを別途インストールする必要
 はありません。`culebra build` の初回呼び出し時に必要なアーカイ
@@ -54,6 +55,21 @@ culebra build path/to/program.cul -o ./program
 ブに置き換えられた第二のランタイムアーカイブです。
 `culebra_runtime_num_add` から `cblas_*` への静的到達経路が断ち
 切られるため、`Accelerate` / BLAS 依存自体もバイナリから外せます。
+
+## Http-free バイナリ
+
+同じことが `Http` namespace にも独立に当てはまります。AST に
+`Http` 識別子が無ければ `_no_http` archive を選択します。これは
+http namespace（と `httplib.h` の include）を丸ごとコンパイル除外
+したアーカイブです。runtime の http ヘルパは in-process JIT のため
+`__attribute__((used))` が付いており、`-dead_strip` /
+`--gc-sections` を貫通するのでフル archive からは tree-shake でき
+ません。`_no_http` archive はそれらをそもそも含まないので、http
+コードが消えれば OpenSSL も zlib も参照されずリンクから外れます。
+こちらが効果は大きく、`puts(1)` バイナリが ~10 MB → ~5 MB に半減
+します（OpenSSL は静的リンク）。2 軸は合成可能で、Tensor も Http
+も使わないプログラムは `libculebra_rt_no_tensor_no_http.a` をリンク
+し BLAS も OpenSSL も避けます。
 
 `otool -L`（macOS）や `ldd`（Linux）で確認できます:
 

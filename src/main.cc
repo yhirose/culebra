@@ -119,9 +119,14 @@ static std::filesystem::path culebra_cache_dir() {
 // driver writes the archive once per (culebra binary × machine) and
 // reuses it on subsequent invocations.
 static std::filesystem::path materialize_rt_archive(
-    bool uses_tensor, std::string& err) {
-  const char* name =
-      uses_tensor ? "libculebra_rt.a" : "libculebra_rt_no_tensor.a";
+    bool uses_tensor, bool uses_http, std::string& err) {
+  // Four prebuilt archives across the tensor x http axes; pick the
+  // leanest one the program actually needs so the AOT link can drop
+  // BLAS (no-tensor) and/or OpenSSL+zlib (no-http).
+  std::string name = "libculebra_rt";
+  if (!uses_tensor) name += "_no_tensor";
+  if (!uses_http) name += "_no_http";
+  name += ".a";
   auto cache = culebra_cache_dir() / name;
   if (std::filesystem::exists(cache)) return cache;
 
@@ -336,6 +341,14 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
+  // Http reachability picks the no-http archive (drops OpenSSL + zlib),
+  // mirroring the tensor axis.
+  auto any_uses_http = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_http(*m.ast)) return true;
+    }
+    return false;
+  };
 
   // Reject early: cross-compile + Tensor would need a target-specific
   // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
@@ -358,6 +371,7 @@ int run_build(const BuildOptions& opts) {
   if (rc != 0) return rc;
 
   bool uses_tensor = cross ? false : any_uses_tensor();
+  bool uses_http = cross ? false : any_uses_http();
 
   // Tensor reachability drives the archive choice. The no-tensor
   // archive's stubbed tensor entry points break the static
@@ -371,7 +385,7 @@ int run_build(const BuildOptions& opts) {
     return 1;
   } else {
     std::string err;
-    auto path = materialize_rt_archive(uses_tensor, err);
+    auto path = materialize_rt_archive(uses_tensor, uses_http, err);
     if (path.empty()) {
       std::println(stderr, "culebra build: {}", err);
       return 1;
@@ -396,18 +410,18 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
-  // OpenSSL is linked into every AOT binary whenever Http support is compiled
-  // in — NOT gated on whether the program references Http. The runtime
-  // archive's http helpers are __attribute__((used)) (so they are emitted for
-  // the in-process JIT to resolve), which on macOS also pins them past
-  // -dead_strip; the archive therefore references httplib's TLS code (hence
-  // OpenSSL: d2i_X509, SSL_CTX_*, ...) unconditionally. Gating the link on
-  // aot_uses_http leaves those references unresolved for non-Http programs
-  // (even `puts(1)` fails to link). Tensor/BLAS can be gated because the
-  // no-tensor archive stubs out the tensor entry points; an equivalent
-  // no-http archive would let us gate OpenSSL by size too (future work).
-  // CULEBRA_SSL_LINK is "" when Http is disabled at build time.
-  std::string ssl = CULEBRA_SSL_LINK;
+  // OpenSSL (+ zlib, both in CULEBRA_SSL_LINK) is linked only when the program
+  // references Http. The runtime archive's http helpers are
+  // __attribute__((used)) (emitted for the in-process JIT to resolve), and
+  // `used` pins them past -dead_strip / --gc-sections, so the archive would
+  // reference httplib's TLS/zlib code (d2i_X509, SSL_CTX_*, inflate, ...)
+  // unconditionally — gating the link alone left those unresolved for non-Http
+  // programs. The no-http runtime archive (CULEBRA_RT_NO_HTTP) drops the http
+  // namespace entirely, breaking that reachability chain, so a non-Http program
+  // links neither the archive's http code nor OpenSSL/zlib. Same shape as the
+  // no-tensor archive gating BLAS above. CULEBRA_SSL_LINK is "" when Http is
+  // disabled at build time.
+  std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a

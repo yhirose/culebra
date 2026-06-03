@@ -241,7 +241,32 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_options(culebra_rt_no_tensor PRIVATE
     -ffunction-sections -fdata-sections)
 
-  # Embed both runtime archives into the `culebra` driver via
+  # Http-free variants. `culebra build` picks one of these when the AST
+  # scan reports no Http references — CULEBRA_RT_NO_HTTP drops the http
+  # namespace (and its httplib.h include) entirely, so the static
+  # reachability chain to OpenSSL / zlib is broken and they can be left
+  # out of the AOT link. Crossed with the tensor axis, that's 2x2 = 4
+  # archives total.
+  add_library(culebra_rt_no_http STATIC ./src/runtime/culebra_rt.cc)
+  target_compile_features(culebra_rt_no_http PRIVATE cxx_std_23)
+  target_compile_definitions(culebra_rt_no_http PRIVATE
+    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
+    CULEBRA_RT_DEFINE_RUNTIME=1
+    CULEBRA_RT_NO_HTTP=1)
+  target_compile_options(culebra_rt_no_http PRIVATE
+    -ffunction-sections -fdata-sections)
+
+  add_library(culebra_rt_no_tensor_no_http STATIC ./src/runtime/culebra_rt.cc)
+  target_compile_features(culebra_rt_no_tensor_no_http PRIVATE cxx_std_23)
+  target_compile_definitions(culebra_rt_no_tensor_no_http PRIVATE
+    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
+    CULEBRA_RT_DEFINE_RUNTIME=1
+    CULEBRA_RT_NO_TENSOR=1
+    CULEBRA_RT_NO_HTTP=1)
+  target_compile_options(culebra_rt_no_tensor_no_http PRIVATE
+    -ffunction-sections -fdata-sections)
+
+  # Embed all four runtime archives into the `culebra` driver via
   # cpp-embedlib. `culebra build` materializes them to
   # ~/.cache/culebra/<fingerprint>/ on first use, so the driver is a
   # single self-contained binary. `--rt-lib=<path>` overrides the
@@ -258,16 +283,23 @@ if(CULEBRA_ENABLE_JIT)
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_no_tensor_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_no_http_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_no_tensor_no_http_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_tensor_no_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
   cpp_embedlib_add(culebra_rt_assets
     FILES
       "${_rt_archive}"
       "${_rt_no_tensor_archive}"
+      "${_rt_no_http_archive}"
+      "${_rt_no_tensor_no_http_archive}"
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
     NAMESPACE CulebraRT)
   # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
   # the asset library to wait for the real archive targets too, so the
   # .a files actually exist when the embed step runs.
-  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_no_tensor)
+  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_no_tensor
+    culebra_rt_no_http culebra_rt_no_tensor_no_http)
   target_link_libraries(culebra culebra_rt_assets)
 endif()
 

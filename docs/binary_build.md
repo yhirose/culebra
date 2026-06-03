@@ -35,7 +35,8 @@ The default invocation targets the host platform.
 
 ### Runtime archive distribution
 
-Both runtime archives (`libculebra_rt.a`, `libculebra_rt_no_tensor.a`)
+All four runtime archives (`libculebra_rt.a` and its
+`_no_tensor` / `_no_http` / `_no_tensor_no_http` variants)
 are **embedded directly into the `culebra` driver** via cpp-embedlib.
 The driver is a single self-contained binary — no sibling `.a` files
 need to be installed. On first invocation of `culebra build`, the
@@ -54,6 +55,21 @@ the `TAG_TENSOR` case in value release / to-string, etc.) are
 replaced with abort-on-call stubs. Because the static reachability
 chain from `culebra_runtime_num_add` to `cblas_*` is broken, the
 binary also drops the `Accelerate` / BLAS dependency.
+
+## Http-free binaries
+
+The same applies, independently, to the `Http` namespace. If the AST
+has no bare `Http` identifier, the link picks a `_no_http` archive
+whose http namespace (and its `httplib.h` include) is compiled out
+entirely. The runtime's http helpers are `__attribute__((used))` for
+the in-process JIT, which pins them past `-dead_strip` /
+`--gc-sections` — so they can't be tree-shaken from the full archive,
+but the `_no_http` archive simply doesn't contain them. With the http
+code gone, nothing references OpenSSL or zlib and both drop from the
+link. This is the larger win: a `puts(1)` binary halves from ~10 MB
+to ~5 MB (OpenSSL is statically linked). The two axes compose, so a
+program using neither Tensor nor Http links
+`libculebra_rt_no_tensor_no_http.a` and avoids both BLAS and OpenSSL.
 
 Verify with `otool -L` (macOS) / `ldd` (Linux):
 

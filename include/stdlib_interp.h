@@ -16,7 +16,7 @@
 
 #include <interpreter.h>
 #include <proc.h>
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 #include <http.h>
 #endif
 #include <regexlib.h>
@@ -2090,7 +2090,7 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
   return Value(std::move(h));
 }
 
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 // Defined later in this header; forward-declared for the Http helpers' `json:`
 // kwarg and `r.json()` method.
 inline std::string json_stringify(const Value& v, int indent, bool sort_keys,
@@ -3522,7 +3522,7 @@ inline void setup_built_in_functions(
   env.initialize("Encoding", make_encoding_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
   env.initialize("Http", make_http_namespace(), false);
 #endif
   env.initialize("Isolate", make_isolate_namespace(), false);

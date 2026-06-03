@@ -209,16 +209,22 @@ Random.uniform 等に多数あります。
 で生成した AOT バイナリも配布したい場合** (詳細は
 [`binary_build.ja.md`](binary_build.ja.md))、LLVM 依存なしの同じヘル
 パ群を **static archive** として持つ必要がある。CMake は
-`-DCULEBRA_ENABLE_JIT=ON` で 2 種類の archive を出力する:
+`-DCULEBRA_ENABLE_JIT=ON` で、Tensor 軸 (BLAS / Accelerate を落とす)
+と Http 軸 (OpenSSL / zlib を落とす) の 2 軸 = 2×2 の 4 archive を
+出力する:
 
-| Archive | 含むもの |
-|---|---|
-| `libculebra_rt.a` | 全 stdlib runtime ヘルパ (Math / IO / FS / Time / Random / Sys / Tensor / JSON) |
-| `libculebra_rt_no_tensor.a` | Tensor エントリポイントを abort スタブ化 — BLAS / Accelerate の link を bin から落とせる |
+| Archive | Tensor | Http |
+|---|---|---|
+| `libculebra_rt.a` | ✓ | ✓ |
+| `libculebra_rt_no_tensor.a` | スタブ (BLAS なし) | ✓ |
+| `libculebra_rt_no_http.a` | ✓ | 除外 (OpenSSL/zlib なし) |
+| `libculebra_rt_no_tensor_no_http.a` | スタブ | 除外 |
 
-`culebra build` は AST スキャンで `Tensor` namespace 参照があれば前
-者、なければ後者を自動選択。fizzbuzz 規模のバイナリは 1.2 MB → 350 KB
-に縮む。
+`culebra build` は AST スキャンで自動選択する: `Tensor` / `Http`
+namespace 参照がそれぞれの軸で重い variant を選ぶので、どちらも触ら
+ないプログラムは最小 archive を link し BLAS も OpenSSL も避ける。
+OpenSSL を落とすだけで約 5 MB 効く (`puts(1)` バイナリが ~10 MB →
+~5 MB に半減)。
 
 ### AOT 経路を組み込む embedder
 

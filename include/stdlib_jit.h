@@ -10,7 +10,7 @@
 
 #include <jit.h>
 #include <proc.h>
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 #include <http.h>
 #endif
 #include <shared.h>
@@ -1515,7 +1515,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
           reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
 }
 
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 // Defined later; the response object's `json` method needs it before its def.
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
     JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity);
@@ -2594,7 +2594,7 @@ inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
 
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 namespace _http_adapt {
 // Fill `headers`/`timeout`/`follow_redirects`/`params` from the slab into
 // `req`. Layout from `base`: headers, timeout, follow_redirects, into (read by
@@ -3167,7 +3167,7 @@ inline const NsParam kParallelParams[] = {
 };
 inline const NsParamMeta kParallelMeta = {kParallelParams, 4, -1, -1};
 
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
 // Http.* param metadata. Names/defaults mirror make_http_namespace in
 // stdlib_interp.h; _check_ns_drift_once verifies the two stay in sync.
 inline JitValue _ns_def_true() { return {TAG_BOOL, 1}; }
@@ -3311,7 +3311,7 @@ inline const NsMethod kNsMethods[] = {
   {"Proc",   "race",  1, &_ns_proc_race},
   {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
 
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
   {"Http",   "get",     1, &_ns_http_get,     &kHttpGetMeta},
   {"Http",   "delete",  1, &_ns_http_delete,  &kHttpGetMeta},
   {"Http",   "head",    1, &_ns_http_head,    &kHttpGetMeta},
@@ -5321,7 +5321,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Encoding",
-#ifdef CULEBRA_HTTP_ENABLED
+#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
       "Http",
 #endif
   };

@@ -205,17 +205,22 @@ as `inline` into the embedder's TUs — fine for one binary, but if you
 also want to **ship binaries produced by `culebra build`** (the AOT
 mode, see [`binary_build.md`](binary_build.md)), those need a static
 archive of the same helpers without the LLVM dependency. CMake emits
-two such archives when configured with `-DCULEBRA_ENABLE_JIT=ON`:
+these across two independent axes — Tensor (drops BLAS / Accelerate)
+and Http (drops OpenSSL / zlib) — i.e. 2×2 = four archives, when
+configured with `-DCULEBRA_ENABLE_JIT=ON`:
 
-| Archive | Includes |
-|---|---|
-| `libculebra_rt.a` | Every stdlib runtime helper (Math / IO / FS / Time / Random / Sys / Tensor / JSON) |
-| `libculebra_rt_no_tensor.a` | Tensor entry points stubbed to abort — drops the BLAS / Accelerate link from your binary |
+| Archive | Tensor | Http |
+|---|---|---|
+| `libculebra_rt.a` | ✓ | ✓ |
+| `libculebra_rt_no_tensor.a` | stubbed (no BLAS) | ✓ |
+| `libculebra_rt_no_http.a` | ✓ | dropped (no OpenSSL/zlib) |
+| `libculebra_rt_no_tensor_no_http.a` | stubbed | dropped |
 
-`culebra build` picks between them automatically: if the source AST
-references the `Tensor` namespace, the full archive is used;
-otherwise the no-tensor variant. The smaller fizzbuzz-class binary
-ends up around 350 KB instead of 1.2 MB.
+`culebra build` picks one automatically from the source AST: the
+`Tensor` and `Http` namespaces each select the heavier variant on
+their axis, so a program that touches neither links the smallest
+archive and avoids both BLAS and OpenSSL. Dropping OpenSSL alone is
+worth ~5 MB (a `puts(1)` binary halves from ~10 MB to ~5 MB).
 
 ### Embedders that bundle the AOT pathway
 
