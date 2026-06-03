@@ -3743,6 +3743,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 inline thread_local int64_t _jit_call_site_line = 0;
 inline thread_local int64_t _jit_call_site_col = 0;
 
+// Source position of a higher-order call's callback ARGUMENT, stored by the
+// JIT right before a HOF runtime call (after the argument is evaluated). A
+// non-Function callback is reported here, matching the interp's typed-param
+// check, which attributes "parameter '<name>' expects Function" to the
+// argument's location — distinct from `_jit_call_site`, which carries the HOF
+// *call* site for a callback's own per-element throw.
+inline thread_local int64_t _jit_callback_arg_line = 0;
+inline thread_local int64_t _jit_callback_arg_col = 0;
+
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
@@ -4635,6 +4644,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
   _jit_call_site_col = col;
 }
 
+// Record the position of a HOF's callback argument (see _jit_callback_arg_*),
+// emitted by the JIT just before a HOF runtime call so a non-Function
+// callback's type error points at the argument like the interp.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
+    int64_t line, int64_t col) {
+  _jit_callback_arg_line = line;
+  _jit_callback_arg_col = col;
+}
+
 // Append a method to the named multimethod table (replacing an entry
 // with an identical param-type sequence — REPL / re-decl semantics).
 // Returns the dispatcher closure for `name`, creating it on first
@@ -5020,15 +5038,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
 // Forward declared — defined later alongside the array higher-order
 // runtime helpers.
+// `param_name` is the callback parameter's name in the method's signature
+// ("f" or "p"), used to match the interp's typed-param error verbatim.
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
+                                            const char* param_name,
                                             int64_t line, int64_t col);
 // Forward-declared so the lazy iterator combinators (defined above the
 // definition) can validate + normalize their callback eagerly.
 inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
                                              size_t expected_arity,
                                              const char* method_name,
+                                             const char* param_name,
                                              int64_t line, int64_t col);
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
@@ -5313,7 +5335,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "for_each", line, col);
+  auto* fn = _culebra_expect_callback(ft, fd, 1, "for_each", "f", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -5327,7 +5349,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
     int8_t it, int64_t id, int8_t init_tag, int64_t init_data,
     int8_t ft, int64_t fd, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(ft, fd, 2, "reduce", line, col);
+  auto* fn = _culebra_expect_callback(ft, fd, 2, "reduce", "f", line, col);
   JitValue acc = {init_tag, init_data};
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
@@ -5342,7 +5364,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "find", line, col);
+  auto* fn = _culebra_expect_callback(ft, fd, 1, "find", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -5364,7 +5386,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "any", line, col);
+  auto* fn = _culebra_expect_callback(ft, fd, 1, "any", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -5379,7 +5401,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(ft, fd, 1, "all", line, col);
+  auto* fn = _culebra_expect_callback(ft, fd, 1, "all", "p", line, col);
   JitValue v;
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
@@ -5526,7 +5548,7 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_capture_callback(ft, fd, 1, "map", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "map", "f", line, col);
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
@@ -5570,7 +5592,7 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_capture_callback(ft, fd, 1, "filter", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "filter", "p", line, col);
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
@@ -5692,7 +5714,7 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line, int64_t col) {
-  auto* fn = _culebra_capture_callback(ft, fd, 1, "take_while", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "take_while", "p", line, col);
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* p = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
@@ -6127,7 +6149,7 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
     int8_t it, int64_t id, int8_t ft, int64_t fd, int64_t line,
     int64_t col) {
-  auto* fn = _culebra_capture_callback(ft, fd, 1, "flat_map", line, col);
+  auto* fn = _culebra_capture_callback(ft, fd, 1, "flat_map", "f", line, col);
   culebra_runtime_value_retain(it, id);
   auto* up = culebra_runtime_cell_new(it, id);
   auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
@@ -6239,6 +6261,7 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
 inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
                                             size_t expected_arity,
                                             const char* method_name,
+                                            const char* param_name,
                                             int64_t line, int64_t col) {
   // Record the HOF call site so a callback invoked per element (which the
   // runtime calls through the bare closure ABI, no line/col) can report it on
@@ -6278,13 +6301,14 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
         return adapter;
       }
     }
-    // Every higher-order builtin names its callback parameter `f` with a
-    // `Function` annotation, so interp's generic typed-param check reports
-    // "parameter 'f' expects Function" for a non-Function argument. Match
-    // it byte-for-byte (interp routes the arg through check_type; the JIT
-    // validates here) so the two backends stay symmetric.
+    // A non-Function (non-callable) argument: the interp routes it through
+    // the method's typed-param check (`<param>: Function`), which reports
+    // "parameter '<name>' expects Function" at the ARGUMENT's position. Match
+    // both the param name (f/p, per method) and the position (the JIT stores
+    // the argument site in _jit_callback_arg_* just before the HOF call).
     throw culebra::CulebraError("TypeError",
-        "type error: parameter 'f' expects Function", line, col);
+        std::format("type error: parameter '{}' expects Function", param_name),
+        _jit_callback_arg_line, _jit_callback_arg_col);
   }
   auto* fn = reinterpret_cast<JitClosure*>(fn_data);
   if (!accepts(fn)) {
@@ -6306,9 +6330,10 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
 inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
                                              size_t expected_arity,
                                              const char* method_name,
+                                             const char* param_name,
                                              int64_t line, int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, expected_arity,
-                                      method_name, line, col);
+                                      method_name, param_name, line, col);
   // _expect_callback hands back a fresh +1 adapter for a callable instance,
   // or the borrowed raw closure for a Function — retain the latter so the
   // capture cell owns a reference either way.
@@ -6320,7 +6345,7 @@ inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"map", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"map", "f", line, col);
   auto* out = culebra_runtime_array_new();
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
@@ -6333,7 +6358,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"filter", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"filter", "f", line, col);
   auto* out = culebra_runtime_array_new();
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
@@ -6351,7 +6376,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"for_each", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"for_each", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -6364,7 +6389,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col,
     int8_t* out_tag, int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"find", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"find", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -6384,7 +6409,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"any", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"any", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -6398,7 +6423,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"all", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"all", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
@@ -6412,7 +6437,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"flat_map", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"flat_map", "f", line, col);
   auto* out = culebra_runtime_array_new();
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
@@ -6439,7 +6464,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
 // (including during a throw from the key comparison).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"sort_by", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"sort_by", "f", line, col);
   std::vector<std::pair<JitValue, size_t>> keyed;
   keyed.reserve(arr->size);
   auto release_keys = [&] {
@@ -6477,7 +6502,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
     JitArray* arr, int8_t init_tag, int64_t init_data, int8_t fn_tag,
     int64_t fn_data, int64_t line, int64_t col, int8_t* out_tag,
     int64_t* out_data) {
-  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 2, "reduce", line, col);
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 2, "reduce", "f", line, col);
   JitValue acc = {init_tag, init_data};
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
@@ -7135,6 +7160,7 @@ inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
 inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
+inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
@@ -9038,6 +9064,16 @@ struct JIT {
          builder_.getInt64(line), builder_.getInt64(col)});
   }
 
+  // Store a HOF callback argument's source position (emitted right before the
+  // HOF runtime call, after the argument is compiled) so a non-Function
+  // callback's "parameter '<name>' expects Function" points at the argument,
+  // matching the interp's typed-param check.
+  void emit_set_callback_arg_site(const peg::Ast& cb_ast) {
+    emit_call(module_->getFunction(rt::set_callback_arg_site),
+              {builder_.getInt64(static_cast<long>(cb_ast.line)),
+               builder_.getInt64(static_cast<long>(cb_ast.column))});
+  }
+
   // Emit a typed type-error throw with "expected X, got Y" context.
   // `expected` is a compile-time string literal; `got_tag` is the i8
   // LLVM value of the actual operand's runtime tag (e.g. extract_tag(v)).
@@ -10206,6 +10242,10 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::set_call_site, builder_.getVoidTy(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::set_callback_arg_site,
+                                 builder_.getVoidTy(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // REPL top-level binding storage. The active globals dict is
@@ -18556,6 +18596,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   auto ho_line = current_line_val();
   auto ho_col = current_column_val();
 
+  // A callback-taking method sets this to its callback ARGUMENT node before
+  // calling dispatch_arr_iter, so the dispatcher records the argument's
+  // position for a non-Function rejection (matches interp's typed-param
+  // check, which points at the argument). null for argument-less methods.
+  const peg::Ast* hof_cb = nullptr;
+
   // Emit Array-or-Iterator dispatch with the supplied eager/lazy body
   // emitters. Bodies produce the %Value result for their branch.
   auto dispatch_arr_iter =
@@ -18564,6 +18610,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           std::function<llvm::Value*(llvm::Value* iterTag,
                                      llvm::Value* iterData)>
               lazy) -> llvm::Value* {
+    // The callback (if any) is already compiled by now, so this runs after
+    // the argument is evaluated and before the HOF runtime call.
+    if (hof_cb) emit_set_callback_arg_site(*hof_cb);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto arrBB = llvm::BasicBlock::Create(
@@ -18609,6 +18658,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "map" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];
+    hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
       // Skip the closure construction entirely on the eager path; the
       // iterator (lazy) path still needs a closure, so we only emit
@@ -18649,6 +18699,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "filter" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];
+    hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
       return dispatch_arr_iter(
           "filter",
@@ -18686,6 +18737,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "for_each" && argsAst.nodes.size() == 1) {
     const auto& cb_ast = *argsAst.nodes[0];
+    hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/1)) {
       return dispatch_arr_iter(
           "foreach",
@@ -18720,6 +18772,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "reduce" && argsAst.nodes.size() == 2) {
     const auto& cb_ast = *argsAst.nodes[1];
+    hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
       auto init = compile(*argsAst.nodes[0]);
       return dispatch_arr_iter(
@@ -18770,6 +18823,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "find" && argsAst.nodes.size() == 1) {
+    hof_cb = argsAst.nodes[0].get();
     auto f = compile(*argsAst.nodes[0]);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
@@ -18801,6 +18855,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
+    hof_cb = argsAst.nodes[0].get();
     auto f = compile(*argsAst.nodes[0]);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
@@ -18825,6 +18880,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
+    hof_cb = argsAst.nodes[0].get();
     auto f = compile(*argsAst.nodes[0]);
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
@@ -18985,6 +19041,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "take_while" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
     auto f = compile(*argsAst.nodes[0]);
+    emit_set_callback_arg_site(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_take_while),
@@ -19121,6 +19178,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "sort_by" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "sort_by");
     auto f = compile(*argsAst.nodes[0]);
+    emit_set_callback_arg_site(*argsAst.nodes[0]);
     emit_call(
         module_->getFunction(rt::array_sort_by),
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});

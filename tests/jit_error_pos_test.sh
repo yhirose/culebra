@@ -89,5 +89,18 @@ check_eq "uncaught throw int"         'throw 42'
 check_eq "uncaught throw object"      'throw {code: 1, msg: "x"}'
 check_eq "uncaught throw array"       'throw [1, "a"]'
 
+# A non-Function passed to an iterator/array higher-order method reports
+# "parameter '<name>' expects Function" at the ARGUMENT's position, with the
+# method's actual param name (map/for_each/... → 'f', filter/find/any/all/
+# take_while → 'p'). The JIT once hardcoded 'f' and pointed at 1:1.
+check_same "non-fn to eager map"      '[1, 2, 3].map(99)'
+check_same "non-fn to eager filter"   '[1, 2, 3].filter(42)'
+check_same "non-fn to lazy map"       '[1, 2, 3].iter().map({a: 1}).collect()'
+check_same "non-fn to lazy filter"    '[1, 2, 3].iter().filter(42).collect()'
+check_same "non-fn to lazy find"      '[1, 2, 3].iter().find(42).collect()'
+check_same "non-fn to lazy take_while" '[1, 2, 3].iter().take_while(42).collect()'
+check_same "non-fn to sort_by"        '[1, 2, 3].sort_by(42)'
+check_same "non-fn to reduce"         '[1, 2, 3].reduce(0, 42)'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
