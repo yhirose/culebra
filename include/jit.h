@@ -5231,6 +5231,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_max(
 // Cells transfer their +1 to the closure; callers should not retain
 // after handing a value to a factory.
 
+// Lazy-combinator call-site plumbing. A lazy map/filter/take_while/flat_map
+// invokes its callback per element through the bare closure ABI (no line/
+// col), so a builtin handed in as a value (`[..].iter().map(to_long)`) whose
+// ns trampoline throws position-less would lose its location — unlike the
+// eager HOFs, which record it via `_culebra_expect_callback`. Each factory
+// appends a packed `(line<<32|col)` cell as its LAST user capture (just
+// before `_iter_wrap_new`'s two trailing lookahead cells), and the fast_fn
+// publishes it via `_jit_call_site` right before invoking the callback.
+inline JitCell* _iter_pos_cell(int64_t line, int64_t col) {
+  return culebra_runtime_cell_new(TAG_LONG,
+                                  (line << 32) | (col & 0xFFFFFFFF));
+}
+inline void _iter_publish_call_site(JitClosure* cls) {
+  // Last user capture = captures[n-3]; [n-2]/[n-1] are the lookahead pair.
+  int64_t packed = cls->captures[cls->n_captures - 3]->value.data;
+  culebra_runtime_set_call_site(packed >> 32, packed & 0xFFFFFFFF);
+}
+
 // map: captures upstream + fn. Fast form feeds cascading raw-advance
 // through chained wrappers so a deep map/filter/take stack pays zero
 // step-object allocations per iteration. Upstream's `next` closure is
@@ -5248,6 +5266,7 @@ inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
     return;
   }
   auto* fn_cls = reinterpret_cast<JitClosure*>(fnv.data);
+  _iter_publish_call_site(cls);
   auto mapped = _culebra_invoke1(fn_cls, {tag, data});
   *done = false;
   *out_tag = mapped.tag;
@@ -5265,7 +5284,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_map_fast_fn>(
-      {up, f, up_has_next_cell, up_next_cell});
+      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)});
 }
 
 // filter: captures upstream + predicate + cached upstream next.
@@ -5285,6 +5304,7 @@ inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
     }
     JitValue v = {tag, data};
     culebra_runtime_value_retain(v.tag, v.data);  // for callback
+    _iter_publish_call_site(cls);
     auto r = _culebra_invoke1(fn_cls, v);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
@@ -5309,7 +5329,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_filter_fast_fn>(
-      {up, f, up_has_next_cell, up_next_cell});
+      {up, f, up_has_next_cell, up_next_cell, _iter_pos_cell(line, col)});
 }
 
 // take: captures upstream + remaining (Long cell, decremented each step)
@@ -5406,6 +5426,7 @@ inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
   }
   JitValue v = {tag, data};
   culebra_runtime_value_retain(v.tag, v.data);
+  _iter_publish_call_site(cls);
   auto r = _culebra_invoke1(fn_cls, v);
   bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
   _culebra_value_release_impl(r.tag, r.data);
@@ -5432,7 +5453,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
   auto* up_has_next_cell = up_cells.has_next;
   auto* up_next_cell = up_cells.next;
   return _iter_wrap_fast<&_iter_take_while_fast_fn>(
-      {up, p, stopped, up_has_next_cell, up_next_cell});
+      {up, p, stopped, up_has_next_cell, up_next_cell,
+       _iter_pos_cell(line, col)});
 }
 
 // enumerate: captures upstream + index + cached upstream next.
@@ -5543,8 +5565,10 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
                                                      nullptr);
     }
   }
-  throw culebra::CulebraError("TypeError", "type error: target is not iterable",
-                              line, col);
+  // Match interp's for-in / flat_map coercion wording (throw_type_mismatch),
+  // not a JIT-only "target is not iterable".
+  culebra::throw_type_mismatch("Array, Tuple, Set, Object, or String",
+                               _culebra_tag_name(t), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
@@ -5839,6 +5863,7 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
       *done = true;
       return;
     }
+    culebra_runtime_set_call_site(line, col);
     auto mapped = _culebra_invoke1(fn_cls, {tag, data});
     _culebra_value_release_impl(tag, data);
     auto iv = _iter_coerce_iterable(mapped.tag, mapped.data, line, col);
