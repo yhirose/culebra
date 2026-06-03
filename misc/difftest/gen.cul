@@ -145,4 +145,84 @@ for kc in kwcases {
   case("kw|" + kc, kc)
 }
 
+# --- Dimension 9: generators / yield --------------------------------------
+# Generators lower to a flat-dispatch CPS engine — structurally a different
+# implementation from the interpreter, so drive a generator declared inside
+# the thunk through each terminal (collect/count/next/for-in), including an
+# error mid-stream (position) and control-flow shapes. Single-quote raw so
+# the `{ ... }` bodies are not read as interpolation.
+let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
+            'fn gg() { yield 1; yield to_long("x"); yield 3 }; gg().collect()',
+            'fn gg() { for x in [1, 2] { yield x * 10 } }; gg().collect()',
+            'fn gg() { yield 1; return; yield 2 }; gg().collect()',
+            'fn gg() { }; gg().collect()',
+            'fn gg() { yield 1; yield 2 }; gg().count()',
+            'fn gg() { yield 7 }; gg().next()',
+            'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s']
+for g in gens {
+  case("gen|" + g, g)
+}
+
+# --- Dimension 10: try / catch / throw ------------------------------------
+# Exception propagation + the caught error's kind/message/line, including
+# throws raised inside an eager HOF, a lazy pipeline, and a raw user throw.
+let trys = ['try { to_long("x") } catch e { e.kind }',
+            'try { to_long("x") } catch e { e.message }',
+            'try { to_long("x") } catch e { e.line }',
+            'try { [1].map(|x| to_long("x")) } catch e { e.kind }',
+            'try { [1, "x"].iter().map(to_long).collect() } catch e { e.line }',
+            'try { throw {kind: "K", message: "m"} } catch e { e.kind }',
+            'try { throw {kind: "K", message: "m"} } catch e { e.message }',
+            'try { 1 + 1 } catch e { -1 }']
+for t in trys {
+  case("try|" + t, t)
+}
+
+# --- Dimension 11: match / patterns ---------------------------------------
+let me_pre = 'enum E { A(Long), B }; '
+let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',
+               me_pre + 'match E.B { A(x) => x, B => 0, _ => -1 }',
+               me_pre + 'match E.A(5) { B => 0 }',
+               'match 5 { 1 => "a", 5 => "b", _ => "c" }',
+               'match "z" { "a" => 1, _ => 2 }',
+               'match [1, 2] { [a, b] => a + b, _ => 0 }',
+               'match (1, 2) { (a, b) => a + b, _ => 0 }',
+               'match 5 { x: Long => "long", _ => "other" }']
+for m in matches {
+  case("match|" + m, m)
+}
+
+# --- Dimension 12: numeric edge cases -------------------------------------
+let nums = ['(1 << 63)', '(1 << 64)', '(-1 >> 1)', '(0.0 / 0.0)', '(1.0 / 0.0)',
+            '(-5) % 3', '(5) % (-3)', '(0xff) + (0b1010) + (0o17)',
+            '(2 ** 10)', '(2 ** 63)', '(~0)', '(~5)', '(5 / 0)', '(5 % 0)',
+            '(1.5 % 0.5)']
+for n in nums {
+  case("num|" + n, n)
+}
+
+# --- Dimension 13: string formatting / escapes ----------------------------
+let strs = ['let _x = 3.14159; "v={_x:.2f}"', 'let _n = 42; "n={_n:05}"',
+            'let _n = 255; "h={_n:x}"', '"a\tb\nc".size()', '"caf\u{e9}".size()',
+            '"a\x41b".size()', '"hello".slice(1, 3)', '"hello"[1..3]',
+            'let _s = "x"; "interp={_s}{_s}"']
+for s in strs {
+  case("str|" + s, s)
+}
+
+# --- Dimension 14: compound / destructure assignment ----------------------
+# `??=` on a property/index is a parse error (simple-variable only), so it is
+# excluded — the manifest must parse as a whole.
+let assigns = ['let o = {a: 1}; o.a += 5; o.a',
+               'let o = {a: 1}; o.a += "x"; o.a',
+               'mut a = [1, 2, 3]; a[0] += 10; a[0]',
+               'mut a = [1, 2, 3]; a[0] += "x"; a[0]',
+               'let (a, b) = (1, 2); a + b',
+               '(mut a, mut b) = (1, 2); a - b',
+               'mut x = nil; x ??= 5; x',
+               'mut x = 3; x ??= 5; x']
+for a in assigns {
+  case("assign|" + a, a)
+}
+
 print(out.join("\n"))
