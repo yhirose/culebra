@@ -223,7 +223,16 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
 // so the zero-copy cross-isolate share lane can later hand the same
 // storage to another isolate (C3 step ②→③).
 struct SharedBufferCore {
-  std::shared_ptr<std::vector<uint8_t>> bytes;
+  // Storage-independent view: every reader/writer addresses bytes through
+  // `data`, regardless of where they live. Phase A has only Heap; File /
+  // Shared (mmap) land in later phases and point `data` at the mapped region.
+  uint8_t* data = nullptr;
+  size_t byte_size = 0;
+  enum class Storage { Heap };
+  Storage storage = Storage::Heap;
+  // Heap storage owns the bytes here; `data` points into it. (mmap storages
+  // will instead keep an fd and munmap in a destructor.)
+  std::shared_ptr<std::vector<uint8_t>> heap_bytes;
   PackableLayout layout;
   std::string class_name;
   size_t count = 0;
@@ -266,7 +275,10 @@ inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(long id) {
 inline long make_shared_buffer(const PackableLayout& layout,
                                std::string class_name, size_t count) {
   auto core = std::make_shared<SharedBufferCore>();
-  core->bytes = std::make_shared<std::vector<uint8_t>>(layout.stride * count, 0);
+  core->byte_size = layout.stride * count;
+  core->heap_bytes = std::make_shared<std::vector<uint8_t>>(core->byte_size, 0);
+  core->data = core->heap_bytes->data();  // fixed-size vector → never reallocs
+  core->storage = SharedBufferCore::Storage::Heap;
   core->layout = layout;
   core->class_name = std::move(class_name);
   core->count = count;

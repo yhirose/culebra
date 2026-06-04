@@ -3021,7 +3021,7 @@ _jit_packed_view_record(JitObject* view) {
     throw culebra::CulebraError("ValueError",
         "packed view references a freed SharedBuffer");
   }
-  uint8_t* base = core->bytes->data() +
+  uint8_t* base = core->data +
                   static_cast<size_t>(idx) * core->layout.stride;
   return {core, base};
 }
@@ -3092,11 +3092,11 @@ inline culebra::PackableField _jit_fa_elem_field(JitObject* v) {
 inline long _jit_fa_len(JitObject* v) {
   auto core = _jit_fa_core(v);
   int32_t n;
-  std::memcpy(&n, core->bytes->data() + _jit_fa_field_long(v, "__fa_off__"), 4);
+  std::memcpy(&n, core->data + _jit_fa_field_long(v, "__fa_off__"), 4);
   return n;
 }
 inline uint8_t* _jit_fa_elem_ptr(JitObject* v, long i) {
-  return _jit_fa_core(v)->bytes->data() + _jit_fa_field_long(v, "__fa_off__") +
+  return _jit_fa_core(v)->data + _jit_fa_field_long(v, "__fa_off__") +
          _jit_fa_field_long(v, "__fa_dataoff__") +
          i * _jit_fa_field_long(v, "__fa_esize__");
 }
@@ -3172,7 +3172,7 @@ inline JitValue _jit_fa_push(JitClosure*, JitValue self, int64_t n,
     _jit_packable_write_field(_jit_fa_elem_ptr(v, len), _jit_fa_elem_field(v),
                               args[0].tag, args[0].data);
   int32_t nl = static_cast<int32_t>(len + 1);
-  std::memcpy(core->bytes->data() + _jit_fa_field_long(v, "__fa_off__"), &nl, 4);
+  std::memcpy(core->data + _jit_fa_field_long(v, "__fa_off__"), &nl, 4);
   return {TAG_NIL, 0};
 }
 inline JitValue _jit_fa_get_m(JitClosure*, JitValue self, int64_t n,

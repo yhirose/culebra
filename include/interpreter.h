@@ -5412,11 +5412,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             o.get("__fa_etype__").get<std::string>()};
   }
   static long fa_len(const FaView& v) {
-    int32_t n; std::memcpy(&n, v.core->bytes->data() + v.off, 4); return n;
+    int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
   }
   static void fa_set_len(const FaView& v, long n) {
     int32_t x = static_cast<int32_t>(n);
-    std::memcpy(v.core->bytes->data() + v.off, &x, 4);
+    std::memcpy(v.core->data + v.off, &x, 4);
   }
   static culebra::PackableField fa_elem_field(const FaView& v) {
     culebra::PackableField f;
@@ -5425,7 +5425,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return f;
   }
   static uint8_t* fa_elem_ptr(const FaView& v, long i) {
-    return v.core->bytes->data() + v.off + v.dataoff + i * v.esize;
+    return v.core->data + v.off + v.dataoff + i * v.esize;
   }
   static bool is_fixed_array_view(const Value& v) {
     return v.type == Value::Object && v.to_object().has("__fa_id__");
@@ -5508,7 +5508,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       throw CulebraError("ValueError",
                          "packed view references a freed SharedBuffer");
     }
-    uint8_t* base = core->bytes->data() +
+    uint8_t* base = core->data +
                     static_cast<size_t>(idx) * core->layout.stride;
     return {core, base};
   }
