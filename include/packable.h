@@ -99,6 +99,34 @@ inline bool is_packable_type(std::string_view t) {
   return packable_field_info(t).size != 0;
 }
 
+// Small integer code for a packable scalar, so a JIT FixedArray view can
+// store its element type in a numeric slot (no JIT-string allocation) and
+// map back to the name for the byte read/write switch. -1 = not a scalar.
+inline int packable_scalar_code(std::string_view t) {
+  if (t == "Float32") return 0;
+  if (t == "Float64" || t == "Float") return 1;
+  if (t == "Int8") return 2;
+  if (t == "Int16") return 3;
+  if (t == "Int32") return 4;
+  if (t == "Int64" || t == "Long") return 5;
+  if (t == "Byte") return 6;
+  if (t == "Bool") return 7;
+  return -1;
+}
+inline std::string_view packable_scalar_name(int code) {
+  switch (code) {
+    case 0: return "Float32";
+    case 1: return "Float64";
+    case 2: return "Int8";
+    case 3: return "Int16";
+    case 4: return "Int32";
+    case 5: return "Int64";
+    case 6: return "Byte";
+    case 7: return "Bool";
+  }
+  return "";
+}
+
 // A single fixed-layout field: its name, the type token as written
 // (`Float32`, `FixedArray<Int32, 8>`, ...), and the byte offset/size from
 // C-ABI natural alignment. FixedArray fields carry their element layout so

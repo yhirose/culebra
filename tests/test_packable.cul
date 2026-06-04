@@ -77,4 +77,38 @@ tmp[0].x = 1.0
 tmp.drop()
 assert_throws('ValueError', fn () { tmp[0].x })
 
+# --- FixedArray<T,N> fields: fixed-capacity inline collection ---------------
+@packable class Vec {
+  n: Int32 = 0
+  xs: FixedArray<Float32, 4>
+}
+let vb = SharedBuffer.new(2, Vec)
+let a = vb[0]
+assert_eq(a.xs.size(), 0)         # zero-initialized
+assert_eq(a.xs.capacity(), 4)
+a.xs.push(1.5)
+a.xs.push(2.5)
+assert_eq(a.xs.size(), 2)
+assert_eq(a.xs.get(0), 1.5)
+assert_eq(a.xs[1], 2.5)
+a.xs[0] = 9.0
+assert_eq(a.xs[0], 9.0)
+a.xs[1] += 0.5                    # compound
+assert_eq(a.xs[1], 3.0)
+mut fasum = 0.0
+for x in a.xs { fasum = fasum + x }
+assert_eq(fasum, 12.0)
+a.n = 7                           # scalar field coexists
+assert_eq(a.n, 7)
+assert_eq(vb[1].xs.size(), 0)     # second record independent
+assert_throws('IndexError', fn () { a.xs[5] })      # out of range
+assert_throws('TypeError', fn () { vb[0].xs = 1 })  # whole-field assign
+
+@packable class Two { xs: FixedArray<Int32, 2> }
+let tb = SharedBuffer.new(1, Two)
+let t = tb[0]
+t.xs.push(1)
+t.xs.push(2)
+assert_throws('IndexError', fn () { t.xs.push(3) })  # capacity full
+
 puts("packable ok")

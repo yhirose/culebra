@@ -416,20 +416,7 @@ inline JitValue _jit_isolate_drop(JitClosure*, JitValue self, int64_t, JitValue*
   return {TAG_NIL, 0};
 }
 
-// A captureless native method closure (reads its state from `self`). Same
-// shape as Proc's _jit_make_handle_method; kept local so this header depends
-// only on jit.h (and can be included before stdlib_jit.h's helpers).
-inline JitClosure* _jit_native_method(
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
-  auto* c = new JitClosure();
-  c->refcount = 1;
-  c->fn_ptr = reinterpret_cast<void*>(fn);
-  c->n_captures = 0;
-  c->captures = nullptr;
-  c->arity = 0;
-  _gc_register(c, GC_TAG_FUNC);
-  return c;
-}
+// _jit_native_method (captureless native method closure) now lives in jit.h.
 
 inline JitValue _jit_build_isolate_handle(long id) {
   auto* h = culebra_runtime_object_new();
