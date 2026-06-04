@@ -3000,6 +3000,10 @@ inline JitObject* _jit_shared_buffer_index(JitObject* buf, long idx,
                                            int64_t line, int64_t col) {
   long id = buf->slots[buf->find_slot("__sharedbuffer_id__")].value.data;
   auto core = culebra::lookup_shared_buffer(id);
+  if (!core) {
+    throw culebra::CulebraError("ValueError",
+        "SharedBuffer has been dropped", line, col);
+  }
   long n = static_cast<long>(core->count);
   if (idx < 0) idx += n;
   if (idx < 0 || idx >= n) {

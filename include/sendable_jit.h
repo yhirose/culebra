@@ -85,6 +85,15 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         n.b = (role == 1);
         return n;
       }
+      // SharedBuffer handle — the other shared-reference exception: ship its
+      // id and bump the in-flight ref (released after the node is consumed).
+      if (o->is_shared_buffer) {
+        long id = o->slots[o->find_slot("__sharedbuffer_id__")].value.data;
+        culebra::shared_buffer_bump(id, +1);
+        n.kind = K::SharedBuffer;
+        n.i = id;
+        return n;
+      }
       if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
         sendable::send_error("a native handle is not Sendable");
       if (!ctx.visiting.insert(o).second)
@@ -155,6 +164,7 @@ inline JitValue jit_float(double d) {
 }
 
 inline JitValue _jit_make_channel_endpoint(long id, int role);  // fwd
+inline JitValue _jit_make_shared_buffer_handle(long id, long count);  // fwd
 
 inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
@@ -196,13 +206,9 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         o->set_or_append(n.entries[k].first.s, val, mut);
       }
-      // A SharedBuffer handle crosses the isolate boundary by value (its
-      // hidden id), giving the child a zero-copy view of the same backing
-      // bytes (process-global registry). Restore the O(1) discriminators so
-      // the rebuilt handle routes through the packable get/set/index paths —
-      // the flags aren't slots, so generic Object copy alone would drop them.
-      if (o->find_slot("__sharedbuffer_id__") != static_cast<size_t>(-1))
-        o->is_shared_buffer = true;
+      // A bare packed view (rare — usually the buffer crosses, not a view)
+      // arrives as a generic Object; restore its O(1) discriminator, which is
+      // a flag, not a slot. Buffers take the dedicated K::SharedBuffer path.
       if (o->find_slot("__packedview_id__") != static_cast<size_t>(-1))
         o->is_packed_view = true;
       return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
@@ -240,6 +246,12 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Channel:
       chan_bump(n.i, n.b ? 1 : 0, +1);  // this rebuilt endpoint's own ref
       return _jit_make_channel_endpoint(n.i, n.b ? 1 : 0);
+    case K::SharedBuffer: {
+      culebra::shared_buffer_bump(n.i, +1);  // the rebuilt handle's own ref
+      auto core = culebra::lookup_shared_buffer(n.i);
+      return _jit_make_shared_buffer_handle(
+          n.i, core ? static_cast<long>(core->count) : 0);
+    }
   }
   return {TAG_NIL, 0};
 }
@@ -527,16 +539,23 @@ inline JitValue _jit_chan_recv(JitClosure*, JitValue self, int64_t, JitValue*) {
   return ret;
 }
 
-inline JitValue _jit_chan_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
-  auto* h = reinterpret_cast<JitObject*>(self.data);
+// True if the handle was already dropped; otherwise marks it dropped. Shared
+// by the channel and SharedBuffer drop handlers so their refcount moves once
+// across explicit `drop()` + GC teardown.
+inline bool _jit_handle_drop_consumed(JitObject* h) {
   size_t di = h->find_slot("_dropped");
   if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
       h->slots[di].value.data) {
-    return {TAG_NIL, 0};  // already dropped (explicit + GC are idempotent)
+    return true;
   }
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
-  chan_drop(_jit_self_long(self, "__channel_id__"),
-            static_cast<int>(_jit_self_long(self, "__channel_role__")));
+  return false;
+}
+
+inline JitValue _jit_chan_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
+    chan_drop(_jit_self_long(self, "__channel_id__"),
+              static_cast<int>(_jit_self_long(self, "__channel_role__")));
   return {TAG_NIL, 0};
 }
 
@@ -633,6 +652,32 @@ inline JitValue _jit_make_channel_endpoint(long id, int role) {
     meth("recv", _jit_chan_recv);
     meth("iter", _jit_chan_iter);
   }
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Idempotent SharedBuffer handle drop (explicit `buf.drop()` + GC teardown).
+inline JitValue _jit_shared_buffer_drop(JitClosure*, JitValue self, int64_t,
+                                        JitValue*) {
+  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
+    culebra::shared_buffer_drop(_jit_self_long(self, "__sharedbuffer_id__"));
+  return {TAG_NIL, 0};
+}
+
+// Build a JIT SharedBuffer handle: markers + O(1) discriminator flag + a
+// GC-driven `drop` that releases the buffer's ref. Mirrors the channel
+// endpoint and the interp make_shared_buffer_handle.
+inline JitValue _jit_make_shared_buffer_handle(long id, long count) {
+  auto* h = culebra_runtime_object_new();
+  h->is_shared_buffer = true;
+  h->set_or_append("__sharedbuffer_id__", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__sharedbuffer_count__", JitValue{TAG_LONG, count}, false);
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
+  h->set_or_append(
+      "drop",
+      JitValue{TAG_FUNC,
+               reinterpret_cast<int64_t>(_jit_native_method(_jit_shared_buffer_drop))},
+      false);
   h->has_drop = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }

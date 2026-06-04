@@ -34,6 +34,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "packable.h"  // SharedBufferCore lifecycle (shared_buffer_drop)
 #include "sendable.h"
 
 namespace culebra {
@@ -342,6 +343,9 @@ inline void chan_drop(long id, int role);  // fwd (release uses it)
 inline void release_inflight_channels(const sendable::SendNode& n) {
   using K = sendable::SendNode::K;
   if (n.kind == K::Channel) { chan_drop(n.i, n.b ? 1 : 0); return; }
+  // A SharedBuffer node holds the same kind of in-flight ref (bumped at
+  // extract); release it once the node has been consumed.
+  if (n.kind == K::SharedBuffer) { culebra::shared_buffer_drop(n.i); return; }
   for (const auto& e : n.elems) release_inflight_channels(e);
   for (const auto& e : n.entries) {
     release_inflight_channels(e.first);
@@ -526,19 +530,24 @@ inline Value channel_iter(long id) {
       });
 }
 
-// Idempotent endpoint drop: an endpoint can be dropped both explicitly
-// (`tx.drop()`) and again by the GC when its isolate's heap tears down, so the
-// count must move exactly once per endpoint. The `_dropped` flag (on the same
-// shared property map both call paths see) guards the second call.
-inline Value _chan_drop_once(const Value& self, long id, int role) {
+// A shared-resource handle (channel endpoint / SharedBuffer) can be dropped
+// both explicitly (`x.drop()`) and again by the GC at heap teardown, so its
+// refcount must move exactly once. Returns true if `self` was already dropped;
+// otherwise marks it dropped (via the `_dropped` flag on the shared property
+// map both call paths see) and returns false.
+inline bool _handle_drop_consumed(const Value& self) {
   auto& props = *self.to_object().properties;
   if (auto it = props.find("_dropped");
       it != props.end() && it->second.val.type == Value::Bool &&
       it->second.val.to_bool()) {
-    return Value();
+    return true;
   }
   props.insert_or_assign("_dropped", Symbol{Value(true), true});
-  chan_drop(id, role);
+  return false;
+}
+
+inline Value _chan_drop_once(const Value& self, long id, int role) {
+  if (!_handle_drop_consumed(self)) chan_drop(id, role);
   return Value();
 }
 
@@ -615,6 +624,44 @@ inline Value make_merged_rx_endpoint(long mid) {
       }, "Nil"sv)), false);
   return Value(std::move(h));
 }
+
+// --- SharedBuffer handle lifecycle (mirrors the channel endpoint) ---------
+inline Value _shared_buffer_drop_once(const Value& self, long id) {
+  if (!_handle_drop_consumed(self)) culebra::shared_buffer_drop(id);
+  return Value();
+}
+
+// Build a SharedBuffer handle: hidden id/count markers plus a GC-driven `drop`
+// that releases the buffer's ref (freeing it at the last handle).
+inline Value make_shared_buffer_handle(long id, long count) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("__sharedbuffer_id__", Value(id), false);
+  h.initialize("__sharedbuffer_count__", Value(count), false);
+  h.initialize("_dropped", Value(false), true);
+  h.initialize("drop",
+      Value(FunctionValue({}, [id](std::shared_ptr<Environment> env) -> Value {
+        return _shared_buffer_drop_once(env->get("this"), id);
+      }, "Nil"sv)), false);
+  return Value(std::move(h));
+}
+
+// Register the SharedBuffer Sendable hooks (handles ship by id) once at load.
+inline bool _install_shared_buffer_hooks() {
+  sendable::sharedbuffer_extract_hook() = [](const Value& v) -> long {
+    long id = v.to_object().get("__sharedbuffer_id__").to_long();
+    culebra::shared_buffer_bump(id, +1);  // in-flight ref, released after rebuild
+    return id;
+  };
+  sendable::sharedbuffer_rebuild_hook() = [](long id) -> Value {
+    culebra::shared_buffer_bump(id, +1);  // the rebuilt handle's own ref
+    auto core = culebra::lookup_shared_buffer(id);
+    return make_shared_buffer_handle(
+        id, core ? static_cast<long>(core->count) : 0);
+  };
+  return true;
+}
+inline const bool _shared_buffer_hooks_installed = _install_shared_buffer_hooks();
 
 // Register the Sendable hooks (endpoints ship by id + role) once at load.
 inline bool _install_channel_hooks() {

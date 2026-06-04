@@ -132,6 +132,11 @@ struct SharedBufferCore {
   PackableLayout layout;
   std::string class_name;
   size_t count = 0;
+  // Live handle count (guarded by shared_buffer_mutex). The core — and its
+  // bytes — is reclaimed when the last handle drops. Crossing an isolate
+  // boundary bumps it (the child gets its own handle); a transient in-flight
+  // bump covers the serialize→rebuild gap. Mirrors ChannelCore.tx_count.
+  long refcount = 0;
 };
 
 inline std::map<long, std::shared_ptr<SharedBufferCore>>&
@@ -160,8 +165,9 @@ inline std::shared_ptr<SharedBufferCore> lookup_shared_buffer(long id) {
 }
 
 // Allocate a zero-initialized SharedBuffer of `count` records laid out per
-// `layout`, register it, and return its id. Pure metadata + raw bytes (no
-// Value / JitValue), so interp and JIT share this construction.
+// `layout`, register it (refcount 1 for the handle the caller builds), and
+// return its id. Pure metadata + raw bytes (no Value / JitValue), so interp
+// and JIT share this construction.
 inline long make_shared_buffer(const PackableLayout& layout,
                                std::string class_name, size_t count) {
   auto core = std::make_shared<SharedBufferCore>();
@@ -169,7 +175,32 @@ inline long make_shared_buffer(const PackableLayout& layout,
   core->layout = layout;
   core->class_name = std::move(class_name);
   core->count = count;
+  core->refcount = 1;
   return register_shared_buffer(std::move(core));
+}
+
+// Adjust a buffer's live-handle count (+1 on cross-isolate transfer / rebuild,
+// in-flight protection during serialization).
+inline void shared_buffer_bump(long id, long delta) {
+  std::lock_guard<std::mutex> lk(shared_buffer_mutex());
+  auto it = shared_buffer_registry().find(id);
+  if (it != shared_buffer_registry().end()) it->second->refcount += delta;
+}
+
+// Drop one handle; reclaim the core (freeing its bytes) when the count hits 0.
+// The shared_ptr is released outside the registry lock so a concurrent
+// lookup that still holds a copy stays valid.
+inline void shared_buffer_drop(long id) {
+  std::shared_ptr<SharedBufferCore> dead;
+  {
+    std::lock_guard<std::mutex> lk(shared_buffer_mutex());
+    auto it = shared_buffer_registry().find(id);
+    if (it == shared_buffer_registry().end()) return;
+    if (--it->second->refcount <= 0) {
+      dead = it->second;
+      shared_buffer_registry().erase(it);
+    }
+  }
 }
 
 }  // namespace culebra

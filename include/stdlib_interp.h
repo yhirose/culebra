@@ -1660,6 +1660,11 @@ inline Value make_gc_namespace() {
   return Value(std::move(ns));
 }
 
+// Built by make_shared_buffer_handle in isolate.h (next to the channel
+// endpoint + Sendable hooks, where sendable.h is available). Forward-declared
+// here so SharedBuffer.new can hand back a proper handle.
+inline Value make_shared_buffer_handle(long id, long count);
+
 // `SharedBuffer.new(count, Cls)` allocates a flat, zero-initialized byte
 // store holding `count` records laid out per the @packable class `Cls`,
 // and returns a buffer handle. `buf[i]` yields a packed view whose
@@ -1703,10 +1708,7 @@ inline Value make_shared_buffer_namespace() {
             }
             long id = culebra::make_shared_buffer(
                 *layout, cls, static_cast<size_t>(count));
-            ObjectValue buf;
-            buf.initialize("__sharedbuffer_id__", Value(id), false);
-            buf.initialize("__sharedbuffer_count__", Value(count), false);
-            return Value(std::move(buf));
+            return make_shared_buffer_handle(id, count);
           },
           "Object"sv)),
       false);

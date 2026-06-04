@@ -6406,6 +6406,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& buf = val.to_object();
       long id = buf.get("__sharedbuffer_id__").to_long();
       auto core = culebra::lookup_shared_buffer(id);
+      if (!core) throw CulebraError("ValueError", "SharedBuffer has been dropped");
       long n = static_cast<long>(core->count);
       long idx = key.to_long();
       if (idx < 0) idx += n;

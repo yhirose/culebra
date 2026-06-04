@@ -2798,11 +2798,7 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
   }
   long id = culebra::make_shared_buffer(*layout, std::string(cname),
                                         static_cast<size_t>(count));
-  auto* buf = culebra_runtime_object_new();
-  buf->is_shared_buffer = true;
-  culebra_runtime_object_set(buf, "__sharedbuffer_id__", false, TAG_LONG, id, 0, 0);
-  culebra_runtime_object_set(buf, "__sharedbuffer_count__", false, TAG_LONG, count, 0, 0);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(buf)};
+  return _jit_make_shared_buffer_handle(id, count);
 }
 
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in

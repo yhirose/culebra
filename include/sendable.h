@@ -40,7 +40,7 @@ namespace culebra::sendable {
 // ---------------------------------------------------------------------------
 struct SendNode {
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel };
+                 Closure, Channel, SharedBuffer };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
@@ -301,6 +301,21 @@ inline std::function<Value(const ChannelRef&)>& channel_rebuild_hook() {
   return f;
 }
 
+// SharedBuffer is the other shared-reference Sendable exception (a @packable
+// buffer crosses by its registry id, giving the child a zero-copy view of the
+// same bytes). `extract` reads the id and bumps the buffer refcount (in-flight
+// protection so a temporary buffer can't be reclaimed before the child rebuilds
+// it); `rebuild` materializes a fresh handle over the same id (bumping its own
+// ref, released by that handle's drop). Same shape as the channel hooks.
+inline std::function<long(const Value&)>& sharedbuffer_extract_hook() {
+  static std::function<long(const Value&)> f;
+  return f;
+}
+inline std::function<Value(long)>& sharedbuffer_rebuild_hook() {
+  static std::function<Value(long)> f;
+  return f;
+}
+
 inline SendNode serialize(const Value& v, SerCtx& ctx) {
   SendNode n;
   // Array / Set / Tuple share the same shape: cycle-guard the backing store,
@@ -342,6 +357,14 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
         n.kind = SendNode::K::Channel;
         n.i = ref.id;
         n.b = (ref.role == 1);
+        return n;
+      }
+      // SharedBuffer handle: ship the buffer by id (shared, not copied).
+      // Like the channel endpoint, checked before the __nonsendable__ guard
+      // since the handle also carries a native `drop` method.
+      if (obj.has("__sharedbuffer_id__")) {
+        n.kind = SendNode::K::SharedBuffer;
+        n.i = sharedbuffer_extract_hook()(v);
         return n;
       }
       if (obj.has("__nonsendable__"))
@@ -449,6 +472,8 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
     case K::Str:   return Value(std::string(n.s));
     case K::Channel:
       return channel_rebuild_hook()(ChannelRef{n.i, n.b ? 1 : 0});
+    case K::SharedBuffer:
+      return sharedbuffer_rebuild_hook()(n.i);
     case K::Array: {
       ArrayValue av;
       av.values->reserve(n.elems.size());

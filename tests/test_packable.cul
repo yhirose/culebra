@@ -70,4 +70,11 @@ assert_eq(m[0].b, 255)
 assert_eq(m[1].big, 0)
 assert_eq(m[1].flag, false)
 
+# Explicit drop frees the buffer; using the handle afterward errors (rather
+# than crashing or silently leaking) — proof the core was reclaimed.
+let tmp = SharedBuffer.new(1, Vec2)
+tmp[0].x = 1.0
+tmp.drop()
+assert_throws('ValueError', fn () { tmp[0].x })
+
 puts("packable ok")

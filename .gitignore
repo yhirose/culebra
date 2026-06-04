@@ -49,3 +49,6 @@ build-asan/
 # settings (plansDirectory, etc.).
 .claude/*
 !.claude/settings.json
+
+# Local scratch probes (kept out of git)
+tmp/
