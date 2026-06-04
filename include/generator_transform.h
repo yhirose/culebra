@@ -124,6 +124,33 @@ inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
   return found;
 }
 
+// Locate the first named function definition (`fn name(...) { ... }`, a
+// MULTIFN_DECL) that appears as a statement inside a generator body — at the
+// top level or nested in its control flow (if / for / while / block / try),
+// but NOT inside a nested fn VALUE (an anonymous `fn (...) {...}` / `|x| ...`,
+// which opens its own scope and binds fine). Returns nullptr if none. Used to
+// reject the construct uniformly: the JIT's CPS lowering doesn't bind such a
+// definition in the generator's state frame, so interp and JIT diverge.
+inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
+  using namespace peg::udl;
+  const peg::Ast* found = nullptr;
+  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+    for (auto& c : n.nodes) {
+      if (found) return;
+      if (c->tag == "MULTIFN_DECL"_) {
+        found = c.get();
+        return;
+      }
+      // A nested fn VALUE keeps its own scope; its body is not part of the
+      // generator's flattened frame, so leave it (and its inner defs) alone.
+      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_) continue;
+      walk(*c);
+    }
+  };
+  walk(body);
+  return found;
+}
+
 // Slice the source range an AST node spans. peg::Ast carries
 // `position` + `length` in bytes; safe so long as `src` is the same
 // buffer that produced `node`.
@@ -714,6 +741,22 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         "catch e { ... }) or use a top-level `defer { ... }` for cleanup.",
         static_cast<long>(bad->line),
         static_cast<long>(bad->column));
+  }
+
+  // A named function definition inside a generator body has no good CPS
+  // lowering — the JIT doesn't bind it in the generator's state frame, so it
+  // raised NameError while the interp ran it, an interp/JIT divergence. Reject
+  // it uniformly (like the yield-in-try rule). Anonymous fn / lambda VALUES
+  // (`let f = |x| ...` / `let f = fn (x) { ... }`) work and are unaffected.
+  if (auto* fd = find_nested_fndef(*ast->nodes.back())) {
+    throw CulebraError(
+        "SyntaxError",
+        "a named function definition cannot appear inside a generator body "
+        "(a function that uses yield). Bind a lambda instead (let f = |x| ... "
+        "/ let f = fn (x) { ... }) or define the function outside the "
+        "generator.",
+        static_cast<long>(fd->line),
+        static_cast<long>(fd->column));
   }
 
   // Desugar yielding for-in loops to while + iterator, re-parsing each

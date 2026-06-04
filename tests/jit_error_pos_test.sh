@@ -113,5 +113,16 @@ check_same "tensor sum bad axis"     'Tensor.zeros([2, 3]).sum(9)'
 check_same "tensor slice oob"        'Tensor.zeros([3]).slice(5, 9)'
 check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4]).sum()'
 
+# A named function definition inside a generator body has no CPS lowering (the
+# JIT didn't bind it → NameError, while the interp ran it — a divergence). The
+# generator transform now rejects it uniformly before eval, like yield-in-try.
+# Anonymous fn / lambda VALUES inside a generator still work (not rejected).
+check_same "fn-def in generator"        'fn g() { fn h(x) { x * 3 }; yield h(2) }
+g().collect()'
+check_same "nested generator-def"       'fn g() { fn inner() { yield 1 }; for x in inner() { yield x } }
+g().collect()'
+check_same "fn-def in if in generator"  'fn g() { if true { fn h() { 1 } }; yield 1 }
+g().collect()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
