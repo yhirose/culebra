@@ -474,6 +474,17 @@ struct FunctionValue {
   // Definition environment — used only to evaluate parameter defaults
   // (for body execution, `eval` closes over this env itself).
   std::shared_ptr<Environment> def_env;
+  // Evaluates a parameter's `default_expr` (an AST node) against a scope,
+  // using the defining Interpreter. Set by `make_function_value` ONLY when
+  // the function has an expr-default param (so the common no-default closure
+  // stays a null std::function = no allocation). It is the single bridge that
+  // lets the free-function callback binder (`bind_callback_params`, defined
+  // before the Interpreter class) evaluate user defaults, so a HOF callback
+  // binds defaults exactly like a direct call. Null for C++/stdlib functions
+  // (they carry literal `default_value`s instead) and rebuilt by the isolate
+  // layer since it runs through `make_function_value`.
+  std::function<Value(const peg::Ast&, const std::shared_ptr<Environment>&)>
+      eval_default_expr;
   // True when `eval` ALSO closes over `def_env` (the make_function_value
   // path), so this FunctionValue holds TWO shared_ptr refs to `def_env`
   // (the field + the eval capture). The cycle collector must subtract both
@@ -2524,33 +2535,68 @@ inline void bind_overflow_args(
   }
 }
 
+// Resolve parameter `p`'s default the way the full call binder does, so the
+// two binders share one implementation and cannot drift. A user `default_expr`
+// (AST) is evaluated against the function's `def_env` plus the earlier params
+// already bound in `earlier`; a C++ `default_value` is used directly. Returns
+// nullopt when the param has no default (a missing required argument — the
+// caller decides whether that is an error). `eval_fn` is the AST evaluator:
+// the interpreter's `eval` member at a normal call site, or `f.eval_default_expr`
+// (which closes over the interpreter) from the free-function callback binder.
+// Invariant: any param with a `default_expr` was built by make_function_value,
+// which sets `eval_default_expr`, so `eval_fn` is non-null whenever it is used.
+template <class EvalFn>
+inline std::optional<Value> resolve_param_default(const FunctionValue& f,
+                                                  size_t p,
+                                                  const Environment& earlier,
+                                                  EvalFn&& eval_fn) {
+  const auto& param = (*f.params)[p];
+  if (param.default_expr) {
+    auto defEnv = std::make_shared<Environment>(f.def_env);
+    defEnv->outer = f.def_env;
+    for (size_t j = 0; j < p; j++) {
+      const auto& pj = (*f.params)[j];
+      if (earlier.has(pj.name))
+        defEnv->initialize(pj.name, earlier.get(pj.name), false);
+    }
+    return eval_fn(*param.default_expr, defEnv);
+  }
+  if (param.default_value) return *param.default_value;
+  return std::nullopt;
+}
+
 // Bind `args` positionally into `frame` for callback `f`, routing overflow
-// into a `*args` catch-all and honoring literal/kw-only defaults the same way
-// the full call binder does. Every higher-order callback invocation goes
-// through here so a variadic (`fn (*xs)`) or defaulted callback binds exactly
-// like a direct call. The caller sets up `self` and seeds __LINE__/__COLUMN__;
-// this only binds the parameters. `args` is an initializer_list so the common
-// 1-2 arg call sites avoid a heap-backed vector.
+// into a `*args` catch-all and honoring defaults (literal AND expression) the
+// same way the full call binder does — via the shared `resolve_param_default`.
+// Every higher-order callback invocation goes through here so a variadic
+// (`fn (*xs)`) or defaulted callback binds exactly like a direct call. The
+// caller sets up `self` and seeds __LINE__/__COLUMN__; this only binds the
+// parameters. `args` is an initializer_list so the common 1-2 arg call sites
+// avoid a heap-backed vector.
 inline void bind_callback_params(Environment& frame, const FunctionValue& f,
                                  std::initializer_list<Value> args) {
   const auto& params = *f.params;
   size_t regulars = regular_param_count(params);
   size_t pos = 0;
-  for (const auto& p : params) {
+  for (size_t i = 0; i < params.size(); i++) {
+    const auto& p = params[i];
     if (p.kwargs_rest) {
       frame.initialize(p.name, Value(ObjectValue{}), false);
       continue;
     }
     if (p.args_rest) continue;  // bound from the overflow Array below
     if (p.kw_only) {
-      if (p.default_value) frame.initialize(p.name, *p.default_value, p.mut);
+      // A callback receives positional args only, so a kw-only param always
+      // takes its default (expression or literal), same as the full binder.
+      if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr))
+        frame.initialize(p.name, *dv, p.mut);
       continue;
     }
     if (pos < args.size()) {
       frame.initialize(p.name, args.begin()[pos], p.mut);
       pos++;
-    } else if (p.default_value) {
-      frame.initialize(p.name, *p.default_value, p.mut);
+    } else if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr)) {
+      frame.initialize(p.name, *dv, p.mut);
     }
   }
   // Only build the overflow Array (and bind `__ARGS__` / `*args`) when there
@@ -4902,6 +4948,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // definition environment as a collectable node — a self-referential
     // closure forms a cycle through it that RC alone can't break.
     fv.eval_captures_def_env = true;
+    // If any parameter has an expression default, give the callback binder a
+    // bridge to evaluate it (the binder is a free function declared before the
+    // Interpreter, so it can't call `eval` directly). Only set it when needed
+    // so the common no-default closure stays a null std::function (no alloc).
+    for (const auto& p : params) {
+      if (p.default_expr) {
+        fv.eval_default_expr =
+            [self = shared_from_this()](
+                const peg::Ast& expr,
+                const std::shared_ptr<Environment>& scope) {
+              return self->eval(expr, scope);
+            };
+        break;
+      }
+    }
     // Retain the defining AST so the isolate layer can rebuild this closure
     // on another thread (see FunctionValue::params_ast/body).
     fv.params_ast = &params_ast;
@@ -6006,20 +6067,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       } else if (auto it = merged.find(params[p].name); it != merged.end()) {
         v = std::move(it->second);
         merged.erase(it);
-      } else if (params[p].default_expr) {
-        // Default needs access to the FUNCTION's definition env (for any
-        // closure-captured names) plus any earlier params. Build a fresh
-        // env over def_env and copy already-bound earlier params in.
-        // (Environment's ctor only inits `level`; set `outer` explicitly.)
-        auto defEnv = std::make_shared<Environment>(f.def_env);
-        defEnv->outer = f.def_env;
-        for (size_t j = 0; j < p; j++) {
-          defEnv->initialize(params[j].name, callEnv->get(params[j].name),
-                             false);
-        }
-        v = eval(*params[p].default_expr, defEnv);
-      } else if (params[p].default_value) {
-        v = *params[p].default_value;
+      } else if (auto dv = resolve_param_default(
+                     f, p, *callEnv,
+                     [this](const peg::Ast& e,
+                            const std::shared_ptr<Environment>& s) {
+                       return eval(e, s);
+                     })) {
+        // Default (expression evaluated against def_env + earlier params, or
+        // a literal) — shared with the callback binder via resolve_param_default.
+        v = std::move(*dv);
       } else {  // No default — required and missing.
         throw CulebraError("ArityError", std::format(
             "missing required argument '{}'", params[p].name),

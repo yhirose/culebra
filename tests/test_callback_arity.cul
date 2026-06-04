@@ -90,3 +90,20 @@ assert_eq(range(1, 9).take_while(fn (*xs) { xs[0] < 3 }).collect(), [1, 2])
 let lnf = try { range(1, 4).map(5).collect(); nil } catch e { e }
 assert_eq(lnf.kind, 'TypeError')
 assert_eq(lnf.message, "type error: parameter 'f' expects Function")
+
+# --- Expression defaults bind in callbacks exactly like a direct call -------
+# A `*args` callback whose earlier param carries an expression default used to
+# diverge: the interp's callback binder only applied LITERAL defaults, so
+# reading the defaulted param raised NameError while the JIT (and a direct
+# call) applied it. Both backends now evaluate `default_expr` in the callback
+# path, matching `f(x)`.
+assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) { b }), [9, 9, 9])        # literal default
+assert_eq([1, 2, 3].map(fn (a, b = 9, *xs) { xs }), [[], [], []])   # rest still empty
+assert_eq([1, 2, 3].map(fn (a, b = a * 10, *xs) { b }), [10, 20, 30]) # default sees earlier param
+let cap = 100
+assert_eq([1, 2, 3].map(fn (a, b = cap, *xs) { b }), [100, 100, 100]) # default sees closure var
+# Same through a 2-arg reducer.
+assert_eq([1, 2].reduce(0, fn (acc, x, c = 5, *xs) { acc + x + c }), 13)
+# A direct call is the reference semantics the callback path now matches.
+let g = fn (a, b = 9, *xs) { b }
+assert_eq(g(1), 9)
