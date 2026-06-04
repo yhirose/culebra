@@ -1718,6 +1718,37 @@ Workers writing **disjoint** elements need no synchronization. Two isolates
 writing the **same** element concurrently is a data race — partition the work
 (as above) so each element has a single writer.
 
+#### Variable-count fields: `FixedArray<T, N>`
+
+A `@packable` field may be a `FixedArray<T, N>` — a fixed-**capacity** inline
+collection (`N` elements of a scalar `T`) whose **count** varies at runtime. It
+is laid out fully inline (`[len][T × N]`, no pointers), so variable-count data
+still fits a shared record — the VARCHAR(N) / fixed-array pattern.
+
+```culebra
+# doctest: skip
+@packable class Body {
+  mass: Float32 = 0.0
+  trail: FixedArray<Float32, 8>   # up to 8 points, starts empty
+}
+
+let bodies = SharedBuffer.new(100, Body)
+let b = bodies[0]
+b.trail.push(1.5)
+b.trail.push(2.5)
+b.trail.size()        # => 2   (capacity() => 8)
+b.trail[0]            # => 1.5
+b.trail[1] = 9.0
+for p in b.trail { ... }
+```
+
+The view supports `.size()` / `.capacity()` / `.push(v)` / `.get(i)` /
+`.set(i, v)` / `arr[i]` (read & write) / `for x in arr`. `push` past capacity
+and an out-of-range index raise `IndexError`. The element type must be a fixed
+scalar. Assigning the whole field (`record.field = ...`) is a `TypeError` —
+mutate it through the view. The view reads/writes the record's bytes in place,
+so it shares across isolates with the buffer.
+
 ---
 
 ## 13. Matchers

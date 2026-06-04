@@ -1653,6 +1653,36 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
 が同時に書くのはデータ競合であり、作業を分割して（上記のように）各要素
 の writer を 1 つにするのは呼び出し側の責任。
 
+#### 可変個数フィールド: `FixedArray<T, N>`
+
+`@packable` フィールドには `FixedArray<T, N>` を使える — スカラ `T` を
+**容量** `N` 個まで保持する固定容量のインラインコレクションで、**個数**は
+実行時に可変。完全インライン展開（`[len][T × N]`、ポインタなし）なので、
+可変個数のデータも共有レコードに載る（VARCHAR(N) / 固定長配列の手法）。
+
+```culebra
+# doctest: skip
+@packable class Body {
+  mass: Float32 = 0.0
+  trail: FixedArray<Float32, 8>   # 最大 8 点、初期は空
+}
+
+let bodies = SharedBuffer.new(100, Body)
+let b = bodies[0]
+b.trail.push(1.5)
+b.trail.push(2.5)
+b.trail.size()        # => 2   (capacity() => 8)
+b.trail[0]            # => 1.5
+b.trail[1] = 9.0
+for p in b.trail { ... }
+```
+
+view は `.size()` / `.capacity()` / `.push(v)` / `.get(i)` / `.set(i, v)` /
+`arr[i]`（読み書き）/ `for x in arr` をサポート。容量超過の `push` と範囲外
+の添字は `IndexError`。要素型は固定スカラに限る。フィールドまるごとの代入
+（`record.field = ...`）は `TypeError` — view 経由で変更する。view はレコード
+のバイトをその場で読み書きするので、buffer とともに isolate 間で共有される。
+
 ---
 
 ## 13. Matchers
