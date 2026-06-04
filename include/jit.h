@@ -1155,6 +1155,31 @@ inline auto _culebra_hash_at(int64_t line, int64_t col, F&& op)
   }
 }
 
+// Source position of the operation currently executing, published by the JIT
+// right before a fallible runtime call whose helper raises a *positionless*
+// CulebraError (the value-neutral lib helpers in tensor.h / regexlib.h / ...
+// throw with no line/col). This is the JIT/AOT mirror of the interpreter's
+// eval() boundary, which stamps the location of the node it evaluates: the
+// interp walks nodes so position is implicit, whereas compiled code must
+// publish it. The three points where a runtime error leaves compiled control —
+// `culebra_runtime_try_translate` (caught), `JIT::exec` (--jit uncaught), and
+// `culebra_aot_bootstrap` (AOT uncaught) — backfill a positionless error from
+// here, so a helper that forgets to carry a location still comes out symmetric
+// instead of position-less. New fallible call classes opt in by publishing
+// here (see `emit_set_op_pos`); the consume side is universal. (Globals here,
+// not the extern "C" block below, since the helper takes a C++ reference.)
+inline thread_local int64_t _jit_op_line = 0;
+inline thread_local int64_t _jit_op_col = 0;
+
+// Stamp the published op position onto a positionless runtime error. Shared by
+// the three exception boundaries above.
+inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
+  if (e.line == 0 && e.col == 0) {
+    e.line = _jit_op_line;
+    e.col = _jit_op_col;
+  }
+}
+
 // Four ordering predicates share `_culebra_value_ord`'s Nil/cross-type
 // scaffolding; the public extern "C" trampolines below are the only
 // callers. A single `cmp` comparator parameterises the leaf compare.
@@ -3645,7 +3670,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   };
   try {
     throw;
-  } catch (const culebra::CulebraError& e) {
+  } catch (culebra::CulebraError& e) {
+    _jit_backfill_op_pos(e);  // positionless runtime error → published op pos
     build(e.kind, e.what(), e.line, e.col);
   } catch (const std::runtime_error& e) {
     build("RuntimeError", e.what(), 0, 0);
@@ -4868,6 +4894,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
     int64_t line, int64_t col) {
   _jit_call_site_line = line;
   _jit_call_site_col = col;
+}
+
+// Publish the current op's source position for the positionless-error backfill
+// (see `_jit_op_line`). Emitted just before a fallible runtime call; trivial so
+// it inlines to two stores on the cold-relative-to-the-call path.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
+    int64_t line, int64_t col) {
+  _jit_op_line = line;
+  _jit_op_col = col;
 }
 
 // Record the position of a HOF's callback argument (see _jit_callback_arg_*),
@@ -7386,6 +7421,7 @@ inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
 inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
+inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
@@ -8603,6 +8639,18 @@ struct JIT {
   llvm::Value* compile_builtin_method(const std::string& method,
                                       const peg::Ast& argsAst,
                                       llvm::Value* receiver);
+
+  // Publish the current node's source position (current_line_/column_, which
+  // PosGuard keeps pointing at the innermost compiling node — the method-call
+  // node here, since arg compiles restore it) just before a fallible runtime
+  // call. A positionless CulebraError the call raises is then backfilled at the
+  // exception boundaries (see _jit_op_line). Two i64 stores; emit only before
+  // calls whose helper can throw without a position (e.g. Tensor ops).
+  void emit_set_op_pos() {
+    emit_call(module_->getFunction(rt::set_op_pos),
+              {builder_.getInt64(static_cast<int64_t>(current_line_)),
+               builder_.getInt64(static_cast<int64_t>(current_column_))});
+  }
 
   // Higher-order-function inlining: when a HOF (map/filter/reduce/...)
   // is called with a literal lambda or fn expression as the callback,
@@ -10468,6 +10516,9 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::set_call_site, builder_.getVoidTy(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::set_op_pos, builder_.getVoidTy(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::set_callback_arg_site,
@@ -17532,6 +17583,12 @@ struct JIT {
         culebra_runtime_defer_run_to(0);
       } catch (...) {}
       throw std::runtime_error(std::format("uncaught: {}", s));
+    } catch (culebra::CulebraError& e) {
+      // Uncaught runtime error (kind/message). Backfill a positionless one
+      // from the published op position before it reaches main.cc's formatter,
+      // mirroring the interp eval boundary; aot_bootstrap does the same.
+      _jit_backfill_op_pos(e);
+      throw;
     }
   }
 };
@@ -18242,6 +18299,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto dims = compile(*argsAst.nodes[0]);
     emit_type_check(dims, "Array", "Tensor.reshape argument");
     auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
+    emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reshape), {tPtr, dimsPtr}, "tr");
     emit_value_release(dims);
@@ -18280,6 +18338,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       : method == "mean"   ? static_cast<int>(culebra::Op::Mean)
       : method == "max"    ? static_cast<int>(culebra::Op::Max)
                            : static_cast<int>(culebra::Op::Argmax);
+    emit_set_op_pos();  // tensor_reduce_axis raises positionless on bad axis
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reduce_axis),
         {tPtr, builder_.getInt64(op_id), axis}, "trax");
@@ -18579,6 +18638,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(tenBB);
     auto tenPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    emit_set_op_pos();  // tensor_slice raises positionless on out-of-bounds
     auto newTen = emit_call(
         module_->getFunction(rt::tensor_slice),
         {tenPtr, start, end});

@@ -46,8 +46,18 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
     std::fprintf(stderr, "uncaught: %s\n", s.c_str());
     return 1;
-  } catch (const culebra::CulebraError& e) {
-    std::fprintf(stderr, "%s: %s\n", e.kind.c_str(), e.what());
+  } catch (culebra::CulebraError& e) {
+    // Backfill a positionless runtime error from the published op position
+    // (JIT::exec does the same before main.cc formats it), then print
+    // `kind: msg at L:C.` so AOT matches `culebra --jit` / the interpreter.
+    _jit_backfill_op_pos(e);
+    if (e.line > 0 || e.col > 0) {
+      std::fprintf(stderr, "%s: %s at %lld:%lld.\n", e.kind.c_str(), e.what(),
+                   static_cast<long long>(e.line),
+                   static_cast<long long>(e.col));
+    } else {
+      std::fprintf(stderr, "%s: %s\n", e.kind.c_str(), e.what());
+    }
     return 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s\n", e.what());

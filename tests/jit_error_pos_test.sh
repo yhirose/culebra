@@ -102,5 +102,16 @@ check_same "non-fn to lazy take_while" '[1, 2, 3].iter().take_while(42).collect(
 check_same "non-fn to sort_by"        '[1, 2, 3].sort_by(42)'
 check_same "non-fn to reduce"         '[1, 2, 3].reduce(0, 42)'
 
+# RUNTIME errors from value-neutral lib helpers (tensor.h) are thrown without
+# a position. The interp backfills it at its eval boundary; the JIT now mirrors
+# this by publishing the op position (emit_set_op_pos) before the fallible call
+# and backfilling at the runtime exception boundaries. Without it these printed
+# location-less on the JIT/AOT while the interp carried `at L:C`.
+check_same "tensor reshape mismatch" 'Tensor.zeros([6]).reshape([4])'
+check_same "tensor reshape neg dim"  'Tensor.zeros([6]).reshape([-2])'
+check_same "tensor sum bad axis"     'Tensor.zeros([2, 3]).sum(9)'
+check_same "tensor slice oob"        'Tensor.zeros([3]).slice(5, 9)'
+check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4]).sum()'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1
