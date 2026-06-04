@@ -878,7 +878,11 @@ class _JitKwargResolver {
     merged_.erase(it);
     if (v.tag != want_tag) {
       _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("{}: '{}' must be {}", ctx_, name, want_name));
+      // Canonical typed-param message, matching the interp binder
+      // (`parameter '<name>' expects <Type>`). `ctx_` is kept for the
+      // ad-hoc Proc messages that still build their own strings.
+      fail(std::format("type error: parameter '{}' expects {}", name,
+                       want_name));
     }
     return v;
   }
@@ -893,7 +897,7 @@ class _JitKwargResolver {
     merged_.erase(it);
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
       _culebra_value_release_impl(v.tag, v.data);
-      fail(std::format("{}: '{}' must be String", ctx_, name));
+      fail(std::format("type error: parameter '{}' expects String", name));
     }
     std::string s(_culebra_str_view(v.tag, v.data));
     _culebra_value_release_impl(v.tag, v.data);
@@ -4381,8 +4385,9 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return jit.emit_value_release(v);                                         \
   };                                                                          \
   auto emit_type_check = [&](llvm::Value* v, std::string_view t,              \
-                             const char* w) {                                 \
-    return jit.emit_type_check(v, t, w);                                      \
+                             const char* w,                                   \
+                             const peg::Ast* a = nullptr) {                   \
+    return jit.emit_type_check(v, t, w, a);                                   \
   };                                                                          \
   auto compile = [&](const peg::Ast& a) { return jit.compile(a); };           \
   auto emit_output_call = [&](const char* rt, const peg::Ast& a) {            \
@@ -4654,7 +4659,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // Whole-file read/write convenience (open+read/write+close).
     if (method == "read" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS.read argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto s = emit_call(module_->getFunction(rt::read_file),
                          {ptr, line, col});
@@ -4663,9 +4668,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "write" && argsAst.nodes.size() == 2) {
       auto p = compile(*argsAst.nodes[0]);
-      emit_type_check(p, "String", "FS.write path");
+      emit_type_check(p, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto c = compile(*argsAst.nodes[1]);
-      emit_type_check(c, "String", "FS.write content");
+      emit_type_check(c, "String", "parameter 'content'",
+                      argsAst.nodes[1].get());
       auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
       auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
       emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
@@ -4678,7 +4684,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_string = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS path argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto s = emit_call(module_->getFunction(rt_name), {p});
       emit_value_release(arg);
@@ -4693,7 +4699,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_bool = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS path argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto i = emit_call(module_->getFunction(rt_name), {p});
       emit_value_release(arg);
@@ -4707,7 +4713,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (path, line, col) -> Long. IOError on missing.
     if (method == "size" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS.size argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto n = emit_call(module_->getFunction(rt::fs_size),
                          {p, line, col});
@@ -4718,7 +4724,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (path, line, col) -> Array*.
     if (method == "list_dir" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS.list_dir argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto a = emit_call(module_->getFunction(rt::fs_list_dir),
                          {p, line, col});
@@ -4730,7 +4736,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto path_to_void = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "FS path argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       emit_call(module_->getFunction(rt_name), {p, line, col});
       emit_value_release(arg);
@@ -4795,7 +4801,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "from_iso_nanos" && a.size() == 1) {
       auto arg = compile(*a[0]);
-      emit_type_check(arg, "String", "_Time.from_iso_nanos argument");
+      emit_type_check(arg, "String", "parameter 's'", a[0].get());
       auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto n = emit_call(module_->getFunction(rt::time_from_iso_nanos),
                          {p, line, col});
@@ -4804,9 +4810,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "parse_nanos" && a.size() == 2) {
       auto s = compile(*a[0]);
-      emit_type_check(s, "String", "_Time.parse_nanos argument");
+      emit_type_check(s, "String", "parameter 's'", a[0].get());
       auto f = compile(*a[1]);
-      emit_type_check(f, "String", "_Time.parse_nanos format");
+      emit_type_check(f, "String", "parameter 'fmt'", a[1].get());
       auto sp = builder_.CreateIntToPtr(extract_data(s), ptrTy);
       auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
       auto n = emit_call(module_->getFunction(rt::time_parse_nanos),
@@ -4836,7 +4842,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "format_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
       auto f = compile(*a[1]);
-      emit_type_check(f, "String", "_Time.format_nanos format");
+      emit_type_check(f, "String", "parameter 'fmt'", a[1].get());
       auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
       auto u = eat_bool_i64(*a[2]);
       auto s = emit_call(module_->getFunction(rt::time_format_nanos),
@@ -4846,7 +4852,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "from_parts_nanos" && a.size() == 2) {
       auto obj = compile(*a[0]);
-      emit_type_check(obj, "Object", "_Time.from_parts_nanos argument");
+      emit_type_check(obj, "Object", "parameter 'p'", a[0].get());
       auto op = builder_.CreateIntToPtr(extract_data(obj), ptrTy);
       auto u = eat_bool_i64(*a[1]);
       auto n = emit_call(module_->getFunction(rt::time_from_parts_nanos),
@@ -4870,7 +4876,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "start_of_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
       auto unit = compile(*a[1]);
-      emit_type_check(unit, "String", "_Time.start_of_nanos unit");
+      emit_type_check(unit, "String", "parameter 'unit'", a[1].get());
       auto up = builder_.CreateIntToPtr(extract_data(unit), ptrTy);
       auto u = eat_bool_i64(*a[2]);
       auto r = emit_call(module_->getFunction(rt::time_start_of_nanos),
@@ -4913,7 +4919,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "shuffle" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "Array", "Random.shuffle argument");
+      emit_type_check(arg, "Array", "parameter 'a'", argsAst.nodes[0].get());
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       emit_call(module_->getFunction(rt::random_shuffle), {ap});
       emit_value_release(arg);
@@ -4921,9 +4927,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "weighted_choice" && argsAst.nodes.size() == 2) {
       auto pop = compile(*argsAst.nodes[0]);
-      emit_type_check(pop, "Array", "Random.weighted_choice population");
+      emit_type_check(pop, "Array", "parameter 'pop'", argsAst.nodes[0].get());
       auto wts = compile(*argsAst.nodes[1]);
-      emit_type_check(wts, "Array", "Random.weighted_choice weights");
+      emit_type_check(wts, "Array", "parameter 'weights'",
+                      argsAst.nodes[1].get());
       auto pp = builder_.CreateIntToPtr(extract_data(pop), ptrTy);
       auto wp = builder_.CreateIntToPtr(extract_data(wts), ptrTy);
       auto r = emit_call(
@@ -5032,13 +5039,14 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       llvm::Value* indent_val = nullptr;
       if (positional.size() == 2) {
         indent_val = compile(*positional[1]);
-        emit_type_check(indent_val, "Long",
-                        "JSON.stringify indent argument");
+        // Positional arg: interp reports at the argument's source location.
+        emit_type_check(indent_val, "Long", "parameter 'indent'",
+                        positional[1]);
         indent = extract_data(indent_val);
       } else if (auto* in_ast = take_kwarg("indent")) {
         indent_val = compile(*in_ast);
-        emit_type_check(indent_val, "Long",
-                        "JSON.stringify indent argument");
+        // Keyword arg: interp's typed-param binder reports at the call site.
+        emit_type_check(indent_val, "Long", "parameter 'indent'");
         indent = extract_data(indent_val);
       }
       // Bool kwargs: sort_keys, lines. Both default to false; both can
@@ -5055,11 +5063,11 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       };
       llvm::Value* sort_keys = builder_.getInt8(0);
       llvm::Value* sort_val = nullptr;
-      compile_bool_kwarg("sort_keys", "JSON.stringify sort_keys argument",
+      compile_bool_kwarg("sort_keys", "parameter 'sort_keys'",
                          sort_keys, sort_val);
       llvm::Value* lines = builder_.getInt8(0);
       llvm::Value* lines_val = nullptr;
-      compile_bool_kwarg("lines", "JSON.stringify lines argument",
+      compile_bool_kwarg("lines", "parameter 'lines'",
                          lines, lines_val);
       check_no_unknown();
       auto s = emit_call(
@@ -5074,7 +5082,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
     if (method == "parse" && positional.size() == 1) {
       auto arg = compile(*positional[0]);
-      emit_type_check(arg, "String", "JSON.parse argument");
+      emit_type_check(arg, "String", "parameter 's'", positional[0]);
       auto sp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       // number_mode: pass as String pointer. Default literal "auto".
       llvm::Value* modePtr =
@@ -5082,8 +5090,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       llvm::Value* mode_val = nullptr;
       if (auto* nm_ast = take_kwarg("number_mode")) {
         mode_val = compile(*nm_ast);
-        emit_type_check(mode_val, "String",
-                        "JSON.parse number_mode argument");
+        emit_type_check(mode_val, "String", "parameter 'number_mode'");
         modePtr = builder_.CreateIntToPtr(extract_data(mode_val), ptrTy);
       }
       // lines: Bool kwarg, dynamic-typechecked.
@@ -5091,8 +5098,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       llvm::Value* lines_val = nullptr;
       if (auto* ln_ast = take_kwarg("lines")) {
         lines_val = compile(*ln_ast);
-        emit_type_check(lines_val, "Bool",
-                        "JSON.parse lines argument");
+        emit_type_check(lines_val, "Bool", "parameter 'lines'");
         lines = builder_.CreateTrunc(extract_data(lines_val),
                                       builder_.getInt8Ty());
       }
@@ -5114,7 +5120,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "env" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "Sys.env argument");
+      emit_type_check(arg, "String", "parameter 'name'", argsAst.nodes[0].get());
       auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto s = emit_call(module_->getFunction(rt::sys_env), {ptr});
       emit_value_release(arg);
@@ -5164,7 +5170,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto arg = compile(*argsAst.nodes[0]);
       // Match interp's generic param-type message ("parameter 'a' expects
       // Array"); Tensor.from's stdlib param is named `a`.
-      emit_type_check(arg, "Array", "parameter 'a'");
+      emit_type_check(arg, "Array", "parameter 'a'", argsAst.nodes[0].get());
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});
@@ -5173,7 +5179,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "from_csv" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "Tensor.from_csv argument");
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
       auto pp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from_csv), {pp});
@@ -5296,7 +5302,7 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
     return make_string(s);
   }
   // method == "parse"
-  emit_type_check(v_val, "String", "JSON.parse argument");
+  emit_type_check(v_val, "String", "parameter 's'", positional[0]);
   auto sPtr = builder_.CreateIntToPtr(extract_data(v_val), ptrTy);
   auto v = emit_call(
       module_->getOrInsertFunction(

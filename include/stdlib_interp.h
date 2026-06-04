@@ -1545,7 +1545,14 @@ inline Value make_tensor_namespace() {
             if (!env->has("__ARGS__")) return Value();
             const auto& args = *env->get("__ARGS__").to_array().values;
             for (const auto& v : args) {
-              if (v.type != Value::Tensor) throw_type_error_at(line, col);
+              // Match the JIT's descriptive message (Tensor.eval is variadic,
+              // so there's no single typed param to name); both report at the
+              // call site.
+              if (v.type != Value::Tensor)
+                throw CulebraError(
+                    "TypeError",
+                    "type error: Tensor.eval argument expects Tensor", line,
+                    col);
               tensor_eval_node(*v.to_tensor().impl);
             }
             return Value();
@@ -3070,18 +3077,16 @@ inline Value make_json_namespace() {
       Value(FunctionValue(
           {
               {"v", false},
-              {"indent", false, ""sv, nullptr, kw_default_zero()},
-              {"sort_keys", false, ""sv, nullptr, kw_default_false()},
-              {"lines", false, ""sv, nullptr, kw_default_false()},
+              {"indent", false, "Long"sv, nullptr, kw_default_zero()},
+              {"sort_keys", false, "Bool"sv, nullptr, kw_default_false()},
+              {"lines", false, "Bool"sv, nullptr, kw_default_false()},
           },
           [](std::shared_ptr<Environment> env) {
             const auto& v = env->get("v");
-            auto indent_v = env->get("indent");
-            if (indent_v.type != Value::Long) {
-              throw CulebraError("TypeError",
-                  "JSON.stringify: indent must be Long");
-            }
-            int indent = static_cast<int>(indent_v.get<long>());
+            // indent/sort_keys/lines carry type annotations, so the typed-param
+            // binder already rejected non-Long / non-Bool with the shared
+            // `parameter '<name>' expects <Type>` message (matching the JIT).
+            int indent = static_cast<int>(env->get("indent").get<long>());
             bool sort_keys = env->get("sort_keys").to_bool();
             bool lines = env->get("lines").to_bool();
             if (lines) {
@@ -3107,7 +3112,7 @@ inline Value make_json_namespace() {
       Value(FunctionValue(
           {
               {"s", false, "String"sv},
-              {"lines", false, ""sv, nullptr, kw_default_false()},
+              {"lines", false, "Bool"sv, nullptr, kw_default_false()},
               {"number_mode", false, "String"sv, nullptr,
                json_number_mode_auto},
           },

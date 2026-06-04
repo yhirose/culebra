@@ -9399,21 +9399,29 @@ struct JIT {
     builder_.SetInsertPoint(okBB);
   }
 
+  // `arg_ast`, when non-null, fixes the reported position to that argument
+  // expression — mirroring interp, which binds typed stdlib params at the
+  // argument's source location (interpreter.h check_type with
+  // args.positional_locs[p]). Callers that pass nothing keep the call-site
+  // position (used by user-function param checks, return values, etc.).
   void emit_type_check(llvm::Value* val, std::string_view expected_type,
-                       std::string_view context) {
+                       std::string_view context,
+                       const peg::Ast* arg_ast = nullptr) {
     if (expected_type.empty() || expected_type == "Any") return;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto tag = extract_tag(val);
     auto data = extract_data(val);
     auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
     auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
+    auto lineV = arg_ast ? builder_.getInt64(arg_ast->line) : current_line_val();
+    auto colV = arg_ast ? builder_.getInt64(arg_ast->column)
+                        : current_column_val();
     emit_call(
         module_->getOrInsertFunction(
             rt::type_check, builder_.getVoidTy(),
             builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
             builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {tag, data, expPtr, ctxPtr, current_line_val(),
-         current_column_val()});
+        {tag, data, expPtr, ctxPtr, lineV, colV});
   }
 
   // Cache of compile-time string constants to avoid duplicate globals per
@@ -18303,7 +18311,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "reshape" && argsAst.nodes.size() == 1) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "reshape");
     auto dims = compile(*argsAst.nodes[0]);
-    emit_type_check(dims, "Array", "Tensor.reshape argument");
+    emit_type_check(dims, "Array", "parameter 'dims'", argsAst.nodes[0].get());
     auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
     emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
     auto resultPtr = emit_call(
@@ -18418,7 +18426,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "dot" && argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_TENSOR, "dot");
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other, "Tensor", "Tensor.dot argument");
+    emit_type_check(other, "Tensor", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_dot), {aPtr, bPtr}, "td");
@@ -18428,9 +18436,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
     auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
     auto xv = compile(*argsAst.nodes[0]);
-    emit_type_check(xv, "Tensor", "linear_sigmoid x");
+    emit_type_check(xv, "Tensor", "parameter 'x'", argsAst.nodes[0].get());
     auto bv = compile(*argsAst.nodes[1]);
-    emit_type_check(bv, "Tensor", "linear_sigmoid b");
+    emit_type_check(bv, "Tensor", "parameter 'b'", argsAst.nodes[1].get());
     auto xp = builder_.CreateIntToPtr(extract_data(xv), ptrTy);
     auto bp = builder_.CreateIntToPtr(extract_data(bv), ptrTy);
     auto resultPtr = emit_call(
