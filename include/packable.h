@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -41,18 +42,77 @@ inline PackableTypeInfo packable_type_info(std::string_view t) {
   return {0, 0};
 }
 
+inline size_t packable_align_up(size_t n, size_t a) {
+  return (n + a - 1) / a * a;
+}
+
+inline std::string_view _packable_trim(std::string_view s) {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+  return s;
+}
+
+// Layout of a whole field — a scalar, or a `FixedArray<T, N>` (a fixed-
+// capacity inline collection: `[len:i32][T × N]`, no pointers, so it fits a
+// @packable record). size 0 means the type isn't a packable field type.
+struct PackableFieldInfo {
+  size_t size = 0;
+  size_t align = 1;
+  bool is_fixed_array = false;
+  std::string elem_type;     // FixedArray element scalar type
+  size_t capacity = 0;       // N
+  size_t elem_size = 0;      // sizeof(T)
+  size_t data_offset = 0;    // byte offset of T[0] within the field (after len)
+};
+
+inline PackableFieldInfo packable_field_info(std::string_view t) {
+  constexpr std::string_view kFA = "FixedArray<";
+  if (t.starts_with(kFA) && t.ends_with(">")) {
+    auto inner = t.substr(kFA.size(), t.size() - kFA.size() - 1);  // "T , N"
+    auto comma = inner.rfind(',');
+    if (comma == std::string_view::npos) return {};
+    auto elem = _packable_trim(inner.substr(0, comma));
+    auto nstr = _packable_trim(inner.substr(comma + 1));
+    auto ei = packable_type_info(elem);
+    if (ei.size == 0) return {};  // element must be a fixed scalar
+    long n = 0;
+    auto [ptr, ec] =
+        std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
+    if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
+      return {};
+    PackableFieldInfo fi;
+    fi.is_fixed_array = true;
+    fi.elem_type = std::string(elem);
+    fi.capacity = static_cast<size_t>(n);
+    fi.elem_size = ei.size;
+    fi.align = std::max<size_t>(4, ei.align);   // the inline len is an i32
+    fi.data_offset = packable_align_up(4, ei.align);
+    fi.size = fi.data_offset + fi.capacity * ei.size;
+    return fi;
+  }
+  auto si = packable_type_info(t);
+  if (si.size == 0) return {};
+  return {si.size, si.align, false, "", 0, 0, 0};
+}
+
 inline bool is_packable_type(std::string_view t) {
-  return packable_type_info(t).size != 0;
+  return packable_field_info(t).size != 0;
 }
 
 // A single fixed-layout field: its name, the type token as written
-// (`Float32`, `Int64`, ...), and the byte offset/size computed from
-// C-ABI natural alignment.
+// (`Float32`, `FixedArray<Int32, 8>`, ...), and the byte offset/size from
+// C-ABI natural alignment. FixedArray fields carry their element layout so
+// the view can address `[len][T × N]` inline.
 struct PackableField {
   std::string name;
   std::string type;
   size_t offset;
   size_t size;
+  bool is_fixed_array = false;
+  std::string elem_type;
+  size_t capacity = 0;
+  size_t elem_size = 0;
+  size_t data_offset = 0;  // offset of T[0] within the field (after len)
 };
 
 // Full layout of a @packable class: ordered fields + total stride (record
@@ -69,10 +129,6 @@ struct PackableLayout {
   }
 };
 
-inline size_t packable_align_up(size_t n, size_t a) {
-  return (n + a - 1) / a * a;
-}
-
 // Compute the C-ABI layout for an ordered list of (name, type) fields.
 // Throws SyntaxError on a non-fixed field type — that is the @packable
 // constraint surfacing at declaration time.
@@ -82,17 +138,28 @@ inline PackableLayout compute_packable_layout(
   PackableLayout layout;
   size_t off = 0;
   for (const auto& [name, type] : fields) {
-    auto info = packable_type_info(type);
+    auto info = packable_field_info(type);
     if (info.size == 0) {
       throw CulebraError(
           "SyntaxError",
           std::format("@packable class `{}`: field `{}` has non-packable "
-                      "type `{}` (expected a fixed scalar: Float32/Float64/"
-                      "Int8/Int16/Int32/Int64/Byte/Bool)",
+                      "type `{}` (expected a fixed scalar — Float32/Float64/"
+                      "Int8/Int16/Int32/Int64/Byte/Bool — or "
+                      "FixedArray<scalar, N>)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
-    layout.fields.push_back({name, type, off, info.size});
+    PackableField f;
+    f.name = name;
+    f.type = type;
+    f.offset = off;
+    f.size = info.size;
+    f.is_fixed_array = info.is_fixed_array;
+    f.elem_type = info.elem_type;
+    f.capacity = info.capacity;
+    f.elem_size = info.elem_size;
+    f.data_offset = info.data_offset;
+    layout.fields.push_back(std::move(f));
     off += info.size;
     layout.align = std::max(layout.align, info.align);
   }

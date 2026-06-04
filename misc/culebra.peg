@@ -256,7 +256,8 @@
   # `Long | Float` use one shared definition. Captured verbatim into
   # the surrounding TYPE_ANNOTATION / RETURN_TYPE token — whitespace and
   # the `?` sugar are canonicalized later by canonicalize_type_annotation.
-  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* _sp_ '>' )? '?'?
+  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_ARG ( _sp_ ',' _sp_ TYPE_ARG )* _sp_ '>' )? '?'?
+  TYPE_ARG                 <-  TYPE_REF / [0-9]+
   TYPE_REF                 <-  TYPE_NAME ( _sp_ '|' _sp_ TYPE_NAME )*
   TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >
   RETURN_TYPE              <-  '->' _ < TYPE_REF >

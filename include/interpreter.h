@@ -5682,6 +5682,113 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Resolve a packed view to (core, record base pointer). Throws if the
   // buffer was somehow freed (no public free yet, but keeps the lookup
   // honest).
+  // --- FixedArray<T,N> view: a fixed-capacity inline collection laid out as
+  // `[len:i32][T × N]` inside a @packable record. `record.field` yields this
+  // view; its methods + `[i]` + for-in read/write the backing bytes in place
+  // (zero copy, shared across isolates with the buffer). -------------------
+  struct FaView {
+    std::shared_ptr<culebra::SharedBufferCore> core;
+    long off;      // absolute byte offset of the field (the i32 len lives here)
+    long cap;      // capacity N
+    long dataoff;  // byte offset of T[0] within the field (after len)
+    long esize;    // sizeof(T)
+    std::string etype;
+  };
+  static FaView fa_resolve(const Value& view) {
+    const auto& o = view.to_object();
+    auto core = culebra::lookup_shared_buffer(o.get("__fa_id__").to_long());
+    if (!core) throw CulebraError("ValueError", "SharedBuffer has been dropped");
+    return {core, o.get("__fa_off__").to_long(), o.get("__fa_cap__").to_long(),
+            o.get("__fa_dataoff__").to_long(), o.get("__fa_esize__").to_long(),
+            o.get("__fa_etype__").get<std::string>()};
+  }
+  static long fa_len(const FaView& v) {
+    int32_t n; std::memcpy(&n, v.core->bytes->data() + v.off, 4); return n;
+  }
+  static void fa_set_len(const FaView& v, long n) {
+    int32_t x = static_cast<int32_t>(n);
+    std::memcpy(v.core->bytes->data() + v.off, &x, 4);
+  }
+  static culebra::PackableField fa_elem_field(const FaView& v) {
+    culebra::PackableField f;
+    f.type = v.etype;
+    f.offset = 0;
+    return f;
+  }
+  static uint8_t* fa_elem_ptr(const FaView& v, long i) {
+    return v.core->bytes->data() + v.off + v.dataoff + i * v.esize;
+  }
+  static bool is_fixed_array_view(const Value& v) {
+    return v.type == Value::Object && v.to_object().has("__fa_id__");
+  }
+  static Value fa_get(const Value& view, long i) {
+    auto v = fa_resolve(view);
+    long n = fa_len(v);
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) throw CulebraError("IndexError", "index out of range");
+    return packable_read_field(fa_elem_ptr(v, i), fa_elem_field(v));
+  }
+  static void fa_set(const Value& view, long i, const Value& val) {
+    auto v = fa_resolve(view);
+    long n = fa_len(v);
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) throw CulebraError("IndexError", "index out of range");
+    packable_write_field(fa_elem_ptr(v, i), fa_elem_field(v), val);
+  }
+  static Value make_fixed_array_view(long id, long abs_off,
+                                     const culebra::PackableField& f) {
+    using namespace std::literals;
+    ObjectValue h;
+    h.initialize("__fa_id__", Value(id), false);
+    h.initialize("__fa_off__", Value(abs_off), false);
+    h.initialize("__fa_cap__", Value(static_cast<long>(f.capacity)), false);
+    h.initialize("__fa_dataoff__", Value(static_cast<long>(f.data_offset)), false);
+    h.initialize("__fa_esize__", Value(static_cast<long>(f.elem_size)), false);
+    h.initialize("__fa_etype__", Value(std::string(f.elem_type)), false);
+    h.initialize("size", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fa_len(fa_resolve(e->get("this"))));
+        }, "Long"sv)), false);
+    h.initialize("capacity", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fa_resolve(e->get("this")).cap);
+        }, "Long"sv)), false);
+    h.initialize("push", Value(FunctionValue({{"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) -> Value {
+          auto v = fa_resolve(e->get("this"));
+          long n = fa_len(v);
+          if (n >= v.cap)
+            throw CulebraError("IndexError",
+                std::format("FixedArray is full (capacity {})", v.cap));
+          packable_write_field(fa_elem_ptr(v, n), fa_elem_field(v), e->get("v"));
+          fa_set_len(v, n + 1);
+          return Value();
+        }, "Nil"sv)), false);
+    h.initialize("get", Value(FunctionValue({{"i", false, ""sv}},
+        [](std::shared_ptr<Environment> e) {
+          return fa_get(e->get("this"), e->get("i").to_long());
+        })), false);
+    h.initialize("set", Value(FunctionValue({{"i", false, ""sv}, {"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) -> Value {
+          fa_set(e->get("this"), e->get("i").to_long(), e->get("v"));
+          return Value();
+        }, "Nil"sv)), false);
+    h.initialize("iter", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          Value self = e->get("this");
+          auto idx = std::make_shared<long>(0);
+          return _make_iterator(
+              [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
+                auto v = fa_resolve(self);
+                if (*idx >= fa_len(v)) return _iter_step_done();
+                Value e2 = fa_get(self, *idx);
+                (*idx)++;
+                return _iter_step_value(std::move(e2));
+              });
+        })), false);
+    return Value(std::move(h));
+  }
+
   std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
   packed_view_record(const Value& view) {
     const auto& o = view.to_object();
@@ -5706,6 +5813,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           std::format("@packable {} has no field `{}`", core->class_name,
                       name));
     }
+    if (f->is_fixed_array) {
+      const auto& o = view.to_object();
+      long abs_off = o.get("__packedview_index__").to_long() *
+                         static_cast<long>(core->layout.stride) +
+                     static_cast<long>(f->offset);
+      return make_fixed_array_view(o.get("__packedview_id__").to_long(),
+                                   abs_off, *f);
+    }
     return packable_read_field(base, *f);
   }
 
@@ -5718,6 +5833,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           "AttributeError",
           std::format("@packable {} has no field `{}`", core->class_name,
                       name),
+          static_cast<long>(line), static_cast<long>(col));
+    }
+    if (f->is_fixed_array) {
+      throw CulebraError(
+          "TypeError",
+          std::format("cannot assign to FixedArray field `{}`; mutate it via "
+                      ".push(...) / [i] = ...", name),
           static_cast<long>(line), static_cast<long>(col));
     }
     packable_write_field(base, *f, val);
@@ -6398,6 +6520,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // Tuple -> new tuple. Works for literal (`xs[1..3]`) and stored ranges.
     if (auto ct = class_tag(key); ct && *ct == "Range") {
       return eval_slice(val, key);
+    }
+    // FixedArray view `arr[i]`: read element i from the inline bytes.
+    if (is_fixed_array_view(val)) {
+      return fa_get(val, key.to_long());
     }
     // SharedBuffer[i]: hand back a packed view over element `i` (zero
     // copy — the view points back at the shared backing bytes).
@@ -7400,6 +7526,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
       switch (postfix.original_tag) {
         case "INDEX"_: {
+          // FixedArray view `arr[i] = v` (and compound `arr[i] += v`): write
+          // element i into the inline bytes.
+          if (is_fixed_array_view(lval)) {
+            long i = eval(postfix, env).to_long();
+            if (compound) {
+              Value cur = fa_get(lval, i);
+              Value nv = apply_compound_op(cur, rval, base_op, env);
+              fa_set(lval, i, nv);
+              return nv;
+            }
+            fa_set(lval, i, rval);
+            return rval;
+          }
           // Whole-element assignment `buf[i] = ...` isn't supported — a
           // packed record has no Value form; write fields individually.
           if (is_shared_buffer(lval)) {
