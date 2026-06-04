@@ -7420,6 +7420,7 @@ inline constexpr auto json_parse_kw       = "culebra_runtime_json_parse_kw";
 inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
 inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
+inline constexpr auto proc_race           = "culebra_runtime_proc_race";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
 inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";

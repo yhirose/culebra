@@ -1960,21 +1960,17 @@ inline ProcLaunchArgs proc_parse_launch(
     }
     la.argv.emplace_back(v.to_string_view());
   }
+  // cwd (String?) / env (Object?) / stdin (String) carry type annotations,
+  // so the binder already rejected wrong types with the shared
+  // `parameter '<name>' expects <Type>` message — only the nil-vs-present
+  // dispatch and the per-value env String check remain here.
   const auto& cwd_v = env->get("cwd");
   if (cwd_v.type != Value::Nil) {
-    if (cwd_v.type != Value::String && cwd_v.type != Value::StringView) {
-      throw CulebraError("TypeError",
-          std::format("{}: cwd must be String", ctx), line, col);
-    }
     la.cwd_str = cwd_v.to_string_view();
     la.has_cwd = true;
   }
   const auto& env_v = env->get("env");
   if (env_v.type != Value::Nil) {
-    if (env_v.type != Value::Object) {
-      throw CulebraError("TypeError",
-          std::format("{}: env must be Object", ctx), line, col);
-    }
     for (const auto& [k, sym] : *env_v.to_object().properties) {
       if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
         throw CulebraError("TypeError",
@@ -1985,12 +1981,7 @@ inline ProcLaunchArgs proc_parse_launch(
     }
     la.has_env = true;
   }
-  const auto& stdin_v = env->get("stdin");
-  if (stdin_v.type != Value::String && stdin_v.type != Value::StringView) {
-    throw CulebraError("TypeError",
-        std::format("{}: stdin must be String", ctx), line, col);
-  }
-  la.stdin_data = stdin_v.to_string_view();
+  la.stdin_data = env->get("stdin").to_string_view();
   // `share: {name: buf}` — anonymous SharedBuffer.shared(...) buffers the child
   // inherits by fd. Each becomes a CULEBRA_SHARE_<name> env entry the child's
   // SharedBuffer.receive reads, plus an fd the child un-CLOEXECs.
@@ -2748,11 +2739,11 @@ inline Value make_proc_namespace() {
       Value(FunctionValue(
           {
               {"cmd", false, "Array"sv},
-              {"cwd", false, ""sv, nullptr, kw_default_nil()},
-              {"env", false, ""sv, nullptr, kw_default_nil()},
-              {"stdin", false, ""sv, nullptr, proc_stdin_default},
-              {"check", false, ""sv, nullptr, kw_default_false()},
-              {"timeout", false, ""sv, nullptr, kw_default_zero()},
+              {"cwd", false, "String?"sv, nullptr, kw_default_nil()},
+              {"env", false, "Object?"sv, nullptr, kw_default_nil()},
+              {"stdin", false, "String"sv, nullptr, proc_stdin_default},
+              {"check", false, "Bool"sv, nullptr, kw_default_false()},
+              {"timeout", false, "Long"sv, nullptr, kw_default_zero()},
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
@@ -2795,10 +2786,10 @@ inline Value make_proc_namespace() {
       Value(FunctionValue(
           {
               {"commands", false, "Array"sv},
-              {"limit", false, ""sv, nullptr, kw_default_zero()},
-              {"timeout", false, ""sv, nullptr, kw_default_zero()},
-              {"fail_fast", false, ""sv, nullptr, kw_default_false()},
-              {"retries", false, ""sv, nullptr, kw_default_zero()},
+              {"limit", false, "Long"sv, nullptr, kw_default_zero()},
+              {"timeout", false, "Long"sv, nullptr, kw_default_zero()},
+              {"fail_fast", false, "Bool"sv, nullptr, kw_default_false()},
+              {"retries", false, "Long"sv, nullptr, kw_default_zero()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -2864,9 +2855,9 @@ inline Value make_proc_namespace() {
       Value(FunctionValue(
           {
               {"cmd", false, "Array"sv},
-              {"cwd", false, ""sv, nullptr, kw_default_nil()},
-              {"env", false, ""sv, nullptr, kw_default_nil()},
-              {"stdin", false, ""sv, nullptr, proc_stdin_default},
+              {"cwd", false, "String?"sv, nullptr, kw_default_nil()},
+              {"env", false, "Object?"sv, nullptr, kw_default_nil()},
+              {"stdin", false, "String"sv, nullptr, proc_stdin_default},
               {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {

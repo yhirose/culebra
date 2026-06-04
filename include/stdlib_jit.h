@@ -904,14 +904,40 @@ class _JitKwargResolver {
     return s;
   }
 
-  // Resolve an `env` Object-of-String kwarg into name/value pairs (appended to
-  // `out`). Returns true if `env` was present. A non-String value is a
-  // TypeError tagged with ctx_.
+  // Like take_string but for an optional (`String?`) kwarg: an explicit nil is
+  // treated as absent (→ nullopt), matching interp's nil-default params (cwd).
+  // A non-String / non-Nil value fails with the `String?` message.
+  std::optional<std::string> take_string_or_nil(std::string_view name) {
+    auto it = merged_.find(name);
+    if (it == merged_.end()) return std::nullopt;
+    auto v = it->second;
+    merged_.erase(it);
+    if (v.tag == TAG_NIL) return std::nullopt;
+    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
+      _culebra_value_release_impl(v.tag, v.data);
+      fail(std::format("type error: parameter '{}' expects String?", name));
+    }
+    std::string s(_culebra_str_view(v.tag, v.data));
+    _culebra_value_release_impl(v.tag, v.data);
+    return s;
+  }
+
+  // Resolve an `env` (`Object?`) kwarg into name/value pairs (appended to
+  // `out`). Returns true if a non-nil Object was present. An explicit nil is
+  // absent (interp's nil default); a non-Object / non-Nil fails `Object?`; a
+  // non-String value inside is tagged with ctx_.
   bool take_env(std::vector<std::pair<std::string, std::string>>& out) {
-    auto v = take_typed("env", TAG_OBJECT, "Object");
-    if (!v) return false;
-    bool ok = _ns_env_object_pairs(reinterpret_cast<JitObject*>(v->data), out);
-    _culebra_value_release_impl(v->tag, v->data);
+    auto it = merged_.find("env");
+    if (it == merged_.end()) return false;
+    auto raw = it->second;
+    merged_.erase(it);
+    if (raw.tag == TAG_NIL) return false;
+    if (raw.tag != TAG_OBJECT) {
+      _culebra_value_release_impl(raw.tag, raw.data);
+      fail("type error: parameter 'env' expects Object?");
+    }
+    bool ok = _ns_env_object_pairs(reinterpret_cast<JitObject*>(raw.data), out);
+    _culebra_value_release_impl(raw.tag, raw.data);
     if (!ok) fail(std::string(ctx_) + ": env values must be String", "TypeError");
     return true;
   }
@@ -922,11 +948,21 @@ class _JitKwargResolver {
   // Returns true if `share` was present.
   bool take_share(std::vector<std::pair<std::string, std::string>>& env_out,
                   std::vector<int>& fds_out) {
-    auto v = take_typed("share", TAG_OBJECT, "Object");
-    if (!v) return false;
-    // Collect (name, buffer id) first so a validation throw can't leak `v`.
+    // `share` is an optional Object (nil = absent, like interp's nil default);
+    // a non-Object / non-Nil reuses interp's descriptive top-level message.
+    auto it = merged_.find("share");
+    if (it == merged_.end()) return false;
+    auto raw = it->second;
+    merged_.erase(it);
+    if (raw.tag == TAG_NIL) return false;
+    if (raw.tag != TAG_OBJECT) {
+      _culebra_value_release_impl(raw.tag, raw.data);
+      fail(std::string(ctx_) +
+           ": share must be an Object of name -> SharedBuffer");
+    }
+    // Collect (name, buffer id) first so a validation throw can't leak `raw`.
     std::vector<std::pair<std::string, long>> entries;
-    auto* obj = reinterpret_cast<JitObject*>(v->data);
+    auto* obj = reinterpret_cast<JitObject*>(raw.data);
     if (obj->shape) {
       for (size_t k = 0; k < obj->shape->names.size(); k++) {
         const std::string& name = obj->shape->names[k];
@@ -936,14 +972,14 @@ class _JitKwargResolver {
                               ->find_slot("__sharedbuffer_id__")
                         : static_cast<size_t>(-1);
         if (si == static_cast<size_t>(-1)) {
-          _culebra_value_release_impl(v->tag, v->data);
+          _culebra_value_release_impl(raw.tag, raw.data);
           fail(std::format("{}: share `{}` must be a SharedBuffer", ctx_, name));
         }
         entries.emplace_back(
             name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
       }
     }
-    _culebra_value_release_impl(v->tag, v->data);
+    _culebra_value_release_impl(raw.tag, raw.data);
     for (auto& [name, id] : entries) {
       auto [fd, env_val] = culebra::prepare_share_buffer(id, name);
       env_out.emplace_back(culebra::share_env_key(name), std::move(env_val));
@@ -1462,12 +1498,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
     int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.run");
+  // Resolve in interp's param-declaration order (cwd, env, stdin, check,
+  // timeout) so that when several kwargs are ill-typed the *first* reported
+  // error matches the interp binder.
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
-  if (auto v = kw.take_string("cwd")) {
+  if (auto v = kw.take_string_or_nil("cwd")) {
     cwd_str = std::move(*v);
     cwd_ptr = &cwd_str;
   }
+  std::vector<std::pair<std::string, std::string>> overrides;
+  bool has_env = kw.take_env(overrides);
   std::string stdin_data;
   if (auto v = kw.take_string("stdin")) {
     stdin_data = std::move(*v);
@@ -1478,8 +1519,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   }
   int64_t timeout = 0;
   if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
-  std::vector<std::pair<std::string, std::string>> overrides;
-  bool has_env = kw.take_env(overrides);
   std::vector<int> share_fds;
   bool has_share = kw.take_share(overrides, share_fds);
   const std::vector<std::pair<std::string, std::string>>* env_ptr =
@@ -2095,16 +2134,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.spawn");
+  // Param-declaration order: cwd, env, stdin, share (see Proc.run note).
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
-  if (auto v = kw.take_string("cwd")) {
+  if (auto v = kw.take_string_or_nil("cwd")) {
     cwd_str = std::move(*v);
     cwd_ptr = &cwd_str;
   }
-  std::string stdin_data;
-  if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
   std::vector<std::pair<std::string, std::string>> overrides;
   bool has_env = kw.take_env(overrides);
+  std::string stdin_data;
+  if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
   std::vector<int> share_fds;
   bool has_share = kw.take_share(overrides, share_fds);
   const std::vector<std::pair<std::string, std::string>>* env_ptr =
@@ -4572,6 +4612,24 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.spawn",
                                             rt::proc_spawn_kw);
   }
+  // Proc.race(commands) — no kwargs. Handled here (rather than via the generic
+  // kNsMethods trampoline) so `commands` gets the same typed-`Array` message +
+  // argument position as run/all/spawn; the runtime keeps its backstop checks.
+  if (ns == "Proc" && method == "race" && argsAst.nodes.size() == 1) {
+    auto arg = compile(*argsAst.nodes[0]);
+    emit_type_check(arg, "Array", "parameter 'commands'",
+                    argsAst.nodes[0].get());
+    auto line = builder_.getInt64(callAst.line);
+    auto col = builder_.getInt64(callAst.column);
+    auto r = emit_call(
+        module_->getOrInsertFunction(
+            rt::proc_race, jit.valueType_, builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {extract_tag(arg), extract_data(arg), line, col});
+    emit_value_release(arg);
+    return r;
+  }
 
   if (ns == "Math") {
     auto build_block = [&](const char* tag) {
@@ -5491,6 +5549,14 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   }
 
   auto cmd_val = compile(*positional[0]);
+  // The positional command list is a typed `Array` param on the interp side
+  // (`cmd` for run/spawn, `commands` for all); mirror its message + argument
+  // position here so a non-Array is rejected identically (the runtime impls
+  // keep a backstop check for the element/empty cases).
+  jit.emit_type_check(cmd_val, "Array",
+                      std::strcmp(ctx, "Proc.all") == 0 ? "parameter 'commands'"
+                                                        : "parameter 'cmd'",
+                      positional[0]);
   std::vector<llvm::Constant*> kwKeys;
   std::vector<llvm::Value*> kwVals;
   for (auto& [name, ast] : explicit_kwargs) {
