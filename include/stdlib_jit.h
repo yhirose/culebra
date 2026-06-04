@@ -3959,7 +3959,7 @@ culebra_runtime_namespace_get(const char* name,
   if (!obj) {
     culebra::throw_runtime_error_at(
         "NameError",
-        std::format("undefined variable '{}'...", name ? name : ""),
+        std::format("undefined variable '{}'", name ? name : ""),
         0, 0);
   }
   culebra_runtime_value_retain(TAG_OBJECT,
@@ -5118,7 +5118,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "from" && argsAst.nodes.size() == 1) {
       auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "Array", "Tensor.from argument");
+      // Match interp's generic param-type message ("parameter 'a' expects
+      // Array"); Tensor.from's stdlib param is named `a`.
+      emit_type_check(arg, "Array", "parameter 'a'");
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});

@@ -505,6 +505,14 @@ struct FunctionValue {
   // `__KWARGS__` param list for the dispatch protocol — without this
   // redirect, introspection would expose that internal detail.
   std::shared_ptr<FunctionValue> introspection_target;
+  // Multimethod accumulation table for a `fn name(...)` dispatcher: the
+  // shared method vector its `eval` closure dispatches over. Carried on the
+  // binding itself (not a global by-name registry) so a same-scope overload
+  // appends to THIS table while a nested or redeclared `fn name` in another
+  // scope or activation gets its own — matching lexical scoping and the JIT.
+  // Opaque `shared_ptr<void>` to dodge the order cycle (MultiMethod is
+  // defined later, inside Interpreter); eval_multifn_decl casts it back.
+  std::shared_ptr<void> multimethod_table;
   // True for the wrapper produced by _wrap_method_with_this around a
   // built-in method (Array/String/Set/...). Built-in methods parse their
   // args positionally and never accept kwargs; the call site uses this to
@@ -1477,6 +1485,13 @@ struct Environment : std::enable_shared_from_this<Environment> {
     return outer && outer->has(s);
   }
 
+  // Local-frame-only existence (does not walk `outer`). Used by
+  // eval_multifn_decl to merge same-scope `fn name` overloads while a
+  // nested or redeclared `fn name` shadows rather than mutates an outer one.
+  bool has_own(std::string_view s) const {
+    return dictionary.find(s) != dictionary.end();
+  }
+
   // `_` is a non-binding sink: any binding form (`let _`, `for _ in`,
   // `fn(_, _, x)`, `match { _ => }`) drops the value instead of
   // introducing a name. Shadow checking happens statically via
@@ -1497,7 +1512,7 @@ struct Environment : std::enable_shared_from_this<Environment> {
       return outer->get(s);
     }
     throw CulebraError("NameError",
-                       std::format("undefined variable '{}'...", s));
+                       std::format("undefined variable '{}'", s));
   }
 
   // Register `source` to be parsed + evaluated lazily on first
@@ -1634,7 +1649,7 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
   auto& sym = properties->at(name);
   if (!sym.mut) {
     throw CulebraError("ImmutableError",
-                       std::format("immutable property '{}'...", name));
+                       std::format("immutable property '{}'", name));
   }
   _check_drop_contract(name, val);
   sym.val = val;
@@ -4301,13 +4316,6 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // always wins a tie.
     bool variadic = false;
   };
-  // Method tables for top-level `fn name(...)` decls. The dispatcher
-  // registered in env captures a shared_ptr to one of these vectors,
-  // so subsequent decls just push_back here. Owned here (not in env)
-  // because env's keys are std::string_view into AST tokens, and the
-  // synthesized table key has to outlive any such view.
-  std::map<std::string, std::shared_ptr<std::vector<MultiMethod>>>
-      multimethods_;
 
   // Cached module values keyed by absolute on-disk path. The driver
   // walks the dependency graph (ModuleLoader), evaluates each module
@@ -5198,76 +5206,93 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
     }
 
-    auto it = multimethods_.find(name_owned);
-    if (it == multimethods_.end()) {
-      auto methods = std::make_shared<std::vector<MultiMethod>>();
-      methods->push_back(std::move(method));
-      multimethods_[name_owned] = methods;
-
-      // Synthetic `**__KWARGS__` catch-all on the dispatcher so kwargs
-      // pass through to method dispatch (Julia-flavored kwsorter:
-      // multimethod picks on positional types, then the picked
-      // method's signature absorbs kwargs / splats).
-      auto self = shared_from_this();
-      auto first_method_snapshot =
-          std::make_shared<FunctionValue>(fn_val.get<FunctionValue>());
-      auto dispatcher = Value(FunctionValue(
-          {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
-          [self = std::move(self), methods, name_owned](std::shared_ptr<Environment> callEnv) {
-            auto line = callEnv->get("__LINE__").to_long();
-            auto col = callEnv->get("__COLUMN__").to_long();
-            const auto& args = *callEnv->get("__ARGS__").to_array().values;
-            auto pick = self->pick_method(*methods, args);
-            if (pick.status == PickResult::NoMatch) {
-              throw CulebraError("DispatchError", std::format(
-                  "no matching method for `{}`", name_owned), line, col);
-            }
-            if (pick.status == PickResult::Ambiguous) {
-              throw CulebraError("DispatchError", std::format(
-                  "ambiguous dispatch for `{}`", name_owned), line, col);
-            }
-            CallArgs call_args;
-            call_args.positional = args;
-            call_args.positional_locs.assign(
-                args.size(),
-                {static_cast<size_t>(line), static_cast<size_t>(col)});
-            call_args.splats.push_back(callEnv->get("__KWARGS__"));
-            return self->invoke_user_function_with_args(
-                (*methods)[pick.idx].body, callEnv, std::move(call_args),
-                static_cast<size_t>(line), static_cast<size_t>(col));
-          }));
-      // Surface the first method on the dispatcher for introspection.
-      // The dispatcher keeps its synthetic `__KWARGS__` params for the
-      // multifn protocol; eval_property reads `introspection_target`
-      // instead of `params` so callers see the user-facing signature.
-      dispatcher.get<FunctionValue>().name = std::string(name_view);
-      dispatcher.get<FunctionValue>().introspection_target =
-          first_method_snapshot;
-      env->initialize(name_view, dispatcher, false);
-      return Value();
+    // Accumulate onto an existing dispatcher only when one is bound in THIS
+    // scope frame (has_own, not the lexical chain). That keeps same-scope
+    // overloads merging into one dispatcher while a nested or redeclared
+    // `fn name` in a different scope — or the same decl re-run in a fresh
+    // activation — gets its own table, shadowing any outer binding. (A
+    // global by-name registry conflated all of these: it skipped the env
+    // bind on every decl after the first, so a re-entered `fn name` was
+    // never bound in its new scope, and re-entrancy corrupted the table.)
+    std::shared_ptr<std::vector<MultiMethod>> methods_ptr;
+    if (env->has_own(name_owned)) {
+      const auto& existing = env->get(name_owned);
+      if (existing.type == Value::Function &&
+          existing.get<FunctionValue>().multimethod_table) {
+        methods_ptr = std::static_pointer_cast<std::vector<MultiMethod>>(
+            existing.get<FunctionValue>().multimethod_table);
+      }
     }
 
-    auto& methods = *it->second;
-    for (size_t i = 0; i < methods.size(); i++) {
-      if (methods[i].param_types == method.param_types) {
-        methods[i] = std::move(method);
-        // Refresh the dispatcher's introspection_target whenever the
-        // FIRST method is redefined — the dispatcher exposes the
-        // first method's signature via `fn.params` / `fn.return_type`,
-        // and stale snapshots would diverge from the JIT path which
-        // re-reads methods.front() at every introspect call.
-        if (i == 0 && env->has(name_owned)) {
-          auto& disp = const_cast<Value&>(env->get(name_owned));
-          if (disp.type == Value::Function) {
+    if (methods_ptr) {
+      auto& methods = *methods_ptr;
+      for (size_t i = 0; i < methods.size(); i++) {
+        if (methods[i].param_types == method.param_types) {
+          methods[i] = std::move(method);
+          // Refresh the dispatcher's introspection_target whenever the
+          // FIRST method is redefined — the dispatcher exposes the
+          // first method's signature via `fn.params` / `fn.return_type`,
+          // and stale snapshots would diverge from the JIT path which
+          // re-reads methods.front() at every introspect call.
+          if (i == 0) {
+            auto& disp = const_cast<Value&>(env->get(name_owned));
             disp.get<FunctionValue>().introspection_target =
                 std::make_shared<FunctionValue>(
                     methods[0].body.get<FunctionValue>());
           }
+          return Value();
         }
-        return Value();
       }
+      methods.push_back(std::move(method));
+      return Value();
     }
-    methods.push_back(std::move(method));
+
+    // Fresh binding: first `fn name` in this scope, or one shadowing an
+    // outer decl. Build a new method table + dispatcher and bind it here.
+    auto methods = std::make_shared<std::vector<MultiMethod>>();
+    methods->push_back(std::move(method));
+
+    // Synthetic `**__KWARGS__` catch-all on the dispatcher so kwargs
+    // pass through to method dispatch (Julia-flavored kwsorter:
+    // multimethod picks on positional types, then the picked
+    // method's signature absorbs kwargs / splats).
+    auto self = shared_from_this();
+    auto first_method_snapshot =
+        std::make_shared<FunctionValue>(fn_val.get<FunctionValue>());
+    auto dispatcher = Value(FunctionValue(
+        {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
+        [self = std::move(self), methods, name_owned](std::shared_ptr<Environment> callEnv) {
+          auto line = callEnv->get("__LINE__").to_long();
+          auto col = callEnv->get("__COLUMN__").to_long();
+          const auto& args = *callEnv->get("__ARGS__").to_array().values;
+          auto pick = self->pick_method(*methods, args);
+          if (pick.status == PickResult::NoMatch) {
+            throw CulebraError("DispatchError", std::format(
+                "no matching method for `{}`", name_owned), line, col);
+          }
+          if (pick.status == PickResult::Ambiguous) {
+            throw CulebraError("DispatchError", std::format(
+                "ambiguous dispatch for `{}`", name_owned), line, col);
+          }
+          CallArgs call_args;
+          call_args.positional = args;
+          call_args.positional_locs.assign(
+              args.size(),
+              {static_cast<size_t>(line), static_cast<size_t>(col)});
+          call_args.splats.push_back(callEnv->get("__KWARGS__"));
+          return self->invoke_user_function_with_args(
+              (*methods)[pick.idx].body, callEnv, std::move(call_args),
+              static_cast<size_t>(line), static_cast<size_t>(col));
+        }));
+    // Surface the first method on the dispatcher for introspection.
+    // The dispatcher keeps its synthetic `__KWARGS__` params for the
+    // multifn protocol; eval_property reads `introspection_target`
+    // instead of `params` so callers see the user-facing signature.
+    dispatcher.get<FunctionValue>().name = std::string(name_view);
+    dispatcher.get<FunctionValue>().introspection_target = first_method_snapshot;
+    dispatcher.get<FunctionValue>().multimethod_table =
+        std::static_pointer_cast<void>(methods);
+    env->initialize(name_view, dispatcher, false);
     return Value();
   }
 
@@ -6790,8 +6815,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (op == "|") acc |= rhs;
       else if (op == "^") acc ^= rhs;
       else if (op == "&") acc &= rhs;
-      else if (op == "<<") acc <<= rhs;
-      else if (op == ">>") acc >>= rhs;
+      // Shift count is taken modulo the operand width (low 6 bits), the
+      // hardware/Java/C# rule. This keeps a count >= 64 (or negative)
+      // well-defined — C++ would be UB — so interp and JIT agree (the JIT
+      // masks the same way before its `shl`/`ashr`). `1 << 64 == 1`.
+      else if (op == "<<") acc <<= (rhs & 63);
+      else if (op == ">>") acc >>= (rhs & 63);
       else throw std::logic_error("invalid bitwise operator");
     }
     return Value(acc);

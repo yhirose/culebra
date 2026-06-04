@@ -526,7 +526,9 @@ Division or modulo by zero raises `divide by 0 error at L:C` for both
 shift), and unary `~` (complement) operate on **two `Long` operands**
 (one for `~`); any non-`Long` operand raises `type error`. `>>` is an
 arithmetic (sign-preserving) shift, matching `Long`'s signedness. Shifts
-wrap like the rest of `Long` arithmetic (no bignum).
+wrap like the rest of `Long` arithmetic (no bignum); the shift count is
+taken modulo 64 (its low 6 bits), so `1 << 64 == 1` and a negative count
+wraps the same way.
 
     0b1100 & 0b1010   # → 8
     12 ^ 10           # → 6
@@ -1626,7 +1628,7 @@ being executed. Recursion without giving the function a name:
 
 `this` is bound for the duration of a method call. Outside a method
 call, `this` is not in scope; accessing it raises
-`undefined variable 'this'...`.
+`undefined variable 'this'`.
 
 ### Closures
 

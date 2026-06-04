@@ -11073,7 +11073,7 @@ struct JIT {
           // raises a catchable exception under --jit. The runtime
           // throw fires before this property would be installed.
           emit_throw_error("NameError",
-              std::format("undefined variable '{}'...", name),
+              std::format("undefined variable '{}'", name),
               pv.key->line, pv.key->column);
           val = make_nil();
         } else {
@@ -11206,7 +11206,7 @@ struct JIT {
     // Match interp's eval-time NameError so `try { undefined } catch e
     // { ... }` works under --jit too.
     emit_throw_error("NameError",
-        std::format("undefined variable '{}'...", name),
+        std::format("undefined variable '{}'", name),
         ast.line, ast.column);
     return make_nil();
   }
@@ -12128,8 +12128,14 @@ struct JIT {
       if (op == "|") r = builder_.CreateOr(ld, rd, "bor");
       else if (op == "^") r = builder_.CreateXor(ld, rd, "bxor");
       else if (op == "&") r = builder_.CreateAnd(ld, rd, "band");
-      else if (op == "<<") r = builder_.CreateShl(ld, rd, "shl");
-      else r = builder_.CreateAShr(ld, rd, "ashr");  // ">>" (signed)
+      else {
+        // Mask the shift count to the low 6 bits (operand width) so a count
+        // >= 64 is well-defined instead of LLVM `poison` — matching interp's
+        // `rhs & 63` (hardware/Java/C# rule). `1 << 64 == 1`.
+        auto sh = builder_.CreateAnd(rd, builder_.getInt64(63), "shcnt");
+        if (op == "<<") r = builder_.CreateShl(ld, sh, "shl");
+        else r = builder_.CreateAShr(ld, sh, "ashr");  // ">>" (signed)
+      }
       auto intResult = make_long(r);
       auto intEnd = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
