@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>      // open
+#include <sys/mman.h>   // mmap / munmap / msync (POSIX; file/shm storage)
+#include <unistd.h>     // close / ftruncate
+
 #include <shared.h>  // CulebraError
 
 // @packable fixed-layout structs and the SharedBuffer backing store.
@@ -224,15 +228,17 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
 // storage to another isolate (C3 step ②→③).
 struct SharedBufferCore {
   // Storage-independent view: every reader/writer addresses bytes through
-  // `data`, regardless of where they live. Phase A has only Heap; File /
-  // Shared (mmap) land in later phases and point `data` at the mapped region.
+  // `data`, regardless of where they live. Heap owns a vector; File maps a
+  // file (Shared/fd lands in Phase C). `data` always points at the bytes.
   uint8_t* data = nullptr;
   size_t byte_size = 0;
-  enum class Storage { Heap };
+  enum class Storage { Heap, File };
   Storage storage = Storage::Heap;
-  // Heap storage owns the bytes here; `data` points into it. (mmap storages
-  // will instead keep an fd and munmap in a destructor.)
+  // Heap: owns the vector here. File: the mmap is munmap'd + fd closed in the
+  // destructor (heap_bytes stays empty).
   std::shared_ptr<std::vector<uint8_t>> heap_bytes;
+  int fd = -1;            // File: backing fd (for msync/close)
+  std::string name;       // File: the path (introspection / cross-proc by path)
   PackableLayout layout;
   std::string class_name;
   size_t count = 0;
@@ -241,6 +247,14 @@ struct SharedBufferCore {
   // boundary bumps it (the child gets its own handle); a transient in-flight
   // bump covers the serialize→rebuild gap. Mirrors ChannelCore.tx_count.
   long refcount = 0;
+
+  SharedBufferCore() = default;
+  SharedBufferCore(const SharedBufferCore&) = delete;  // only held by shared_ptr
+  SharedBufferCore& operator=(const SharedBufferCore&) = delete;
+  ~SharedBufferCore() {
+    if (storage != Storage::Heap && data) munmap(data, byte_size);
+    if (fd >= 0) close(fd);
+  }
 };
 
 inline std::map<long, std::shared_ptr<SharedBufferCore>>&
@@ -284,6 +298,54 @@ inline long make_shared_buffer(const PackableLayout& layout,
   core->count = count;
   core->refcount = 1;
   return register_shared_buffer(std::move(core));
+}
+
+// File-backed SharedBuffer: mmap `count` records over `path` (created/sized if
+// needed). Writes go to the file's page cache (visible to other processes that
+// mmap the same path; durable after flush/close). The file persists; the user
+// deletes it like any file. Throws IOError on an OS failure.
+inline long make_shared_buffer_file(const PackableLayout& layout,
+                                    std::string class_name, size_t count,
+                                    const std::string& path) {
+  size_t bytes = layout.stride * count;
+  int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
+  if (fd < 0) {
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.file: cannot open `{}`", path));
+  }
+  if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+    ::close(fd);
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.file: cannot size `{}`", path));
+  }
+  void* p = bytes ? ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+                           fd, 0)
+                  : nullptr;
+  if (bytes && p == MAP_FAILED) {
+    ::close(fd);
+    throw CulebraError("IOError",
+        std::format("SharedBuffer.file: cannot map `{}`", path));
+  }
+  auto core = std::make_shared<SharedBufferCore>();
+  core->data = static_cast<uint8_t*>(p);
+  core->byte_size = bytes;
+  core->storage = SharedBufferCore::Storage::File;
+  core->fd = fd;
+  core->name = path;
+  core->layout = layout;
+  core->class_name = std::move(class_name);
+  core->count = count;
+  core->refcount = 1;
+  return register_shared_buffer(std::move(core));
+}
+
+// Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap.
+inline void shared_buffer_flush(long id) {
+  auto core = lookup_shared_buffer(id);
+  if (core && core->storage != SharedBufferCore::Storage::Heap && core->data &&
+      core->byte_size) {
+    ::msync(core->data, core->byte_size, MS_SYNC);
+  }
 }
 
 // Adjust a buffer's live-handle count (+1 on cross-isolate transfer / rebuild,

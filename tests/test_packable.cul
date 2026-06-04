@@ -111,4 +111,22 @@ t.xs.push(1)
 t.xs.push(2)
 assert_throws('IndexError', fn () { t.xs.push(3) })  # capacity full
 
+# --- File-backed storage: SharedBuffer.file (mmap, persists to a file) ------
+@packable class FCell {
+  v: Int64 = 0
+}
+mut tmpdir = Sys.env("TMPDIR")
+if tmpdir == "" { tmpdir = "/tmp" }
+let fpath = tmpdir + "/culebra_test_packable_file.bin"
+let fb = SharedBuffer.file(fpath, 3, FCell)
+fb[0].v = 7
+fb[1].v = 8
+fb.flush()                          # msync to disk (file-only method)
+assert_eq(fb[0].v, 7)
+let fb2 = SharedBuffer.file(fpath, 3, FCell)   # reopen same path → same bytes
+assert_eq(fb2[0].v, 7)
+assert_eq(fb2[1].v, 8)
+assert_eq(SharedBuffer.new(1, FCell).count, 1) # heap path still works
+FS.remove(fpath)                    # cleanup
+
 puts("packable ok")

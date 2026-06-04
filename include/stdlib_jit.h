@@ -2801,6 +2801,49 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
   return _jit_make_shared_buffer_handle(id, count);
 }
 
+// SharedBuffer.file(path, count, Cls): file-backed mmap (persistent). Mirrors
+// _ns_sharedbuffer_new + the interp `file` method.
+inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
+  if (n != 3) {
+    throw culebra::CulebraError("ArityError",
+        "SharedBuffer.file: expected 3 arguments (path, count, Class)");
+  }
+  if (a[0].tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.file: path must be a String");
+  }
+  std::string path(_str_sv(reinterpret_cast<const char*>(a[0].data)));
+  if (a[1].tag != TAG_LONG) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.file: count must be an integer");
+  }
+  long count = a[1].data;
+  if (count < 0) {
+    throw culebra::CulebraError("ValueError",
+        "SharedBuffer.file: count must be >= 0");
+  }
+  if (a[2].tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.file: type must be a @packable class");
+  }
+  auto* cls = reinterpret_cast<JitObject*>(a[2].data);
+  auto mi = cls->find_slot("__packable__");
+  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.file: type must be a @packable class");
+  }
+  std::string_view cname =
+      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
+  const auto* layout = culebra::lookup_packable_layout(cname);
+  if (!layout) {
+    throw culebra::CulebraError("TypeError",
+        std::format("SharedBuffer.file: no @packable layout for `{}`", cname));
+  }
+  long id = culebra::make_shared_buffer_file(*layout, std::string(cname),
+                                             static_cast<size_t>(count), path);
+  return _jit_make_shared_buffer_handle(id, count);
+}
+
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
 // slab slot 2 — resolved from a positional arg or a `limit:` kwarg by the
 // NsParamMeta hook (kParallelMeta), defaulting to 0 (= the cap). The four modes
@@ -3398,6 +3441,7 @@ inline const NsMethod kNsMethods[] = {
   {"Channel", "new",    -1, &_ns_channel_new},
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
   {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
+  {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
   {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
   {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},

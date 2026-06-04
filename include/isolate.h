@@ -643,6 +643,16 @@ inline Value make_shared_buffer_handle(long id, long count) {
       Value(FunctionValue({}, [id](std::shared_ptr<Environment> env) -> Value {
         return _shared_buffer_drop_once(env->get("this"), id);
       }, "Nil"sv)), false);
+  // File-backed buffers get `flush()` (msync dirty pages to disk). Heap/Shared
+  // have no such method — the data interface is otherwise identical.
+  auto core = culebra::lookup_shared_buffer(id);
+  if (core && core->storage == culebra::SharedBufferCore::Storage::File) {
+    h.initialize("flush",
+        Value(FunctionValue({}, [id](std::shared_ptr<Environment>) -> Value {
+          culebra::shared_buffer_flush(id);
+          return Value();
+        }, "Nil"sv)), false);
+  }
   return Value(std::move(h));
 }
 

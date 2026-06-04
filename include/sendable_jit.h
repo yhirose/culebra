@@ -651,6 +651,14 @@ inline JitValue _jit_shared_buffer_drop(JitClosure*, JitValue self, int64_t,
   return {TAG_NIL, 0};
 }
 
+// `flush()` on a file-backed buffer (msync). Only attached to file handles.
+inline JitValue _jit_shared_buffer_flush(JitClosure*, JitValue self, int64_t,
+                                         JitValue*) {
+  culebra::shared_buffer_flush(_jit_self_long(self, "__sharedbuffer_id__"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+
 // Build a JIT SharedBuffer handle: markers + O(1) discriminator flag + a
 // GC-driven `drop` that releases the buffer's ref. Mirrors the channel
 // endpoint and the interp make_shared_buffer_handle.
@@ -665,6 +673,16 @@ inline JitValue _jit_make_shared_buffer_handle(long id, long count) {
       JitValue{TAG_FUNC,
                reinterpret_cast<int64_t>(_jit_native_method(_jit_shared_buffer_drop))},
       false);
+  // File-backed buffers additionally expose `flush()` (msync) — mirrors the
+  // interp make_shared_buffer_handle.
+  auto core = culebra::lookup_shared_buffer(id);
+  if (core && core->storage == culebra::SharedBufferCore::Storage::File) {
+    h->set_or_append(
+        "flush",
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+                               _jit_native_method(_jit_shared_buffer_flush))},
+        false);
+  }
   h->has_drop = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }

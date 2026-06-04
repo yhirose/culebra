@@ -1712,6 +1712,51 @@ inline Value make_shared_buffer_namespace() {
           },
           "Object"sv)),
       false);
+  // `SharedBuffer.file(path, count, Cls)` — file-backed (mmap), persistent.
+  // Same buffer interface; the handle additionally exposes `flush()`.
+  ns.initialize(
+      "file",
+      Value(FunctionValue(
+          {{"path", false, ""sv}, {"count", false, ""sv}, {"type", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line =
+                env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col =
+                env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            const Value& pathv = env->get("path");
+            if (!pathv.is_stringlike()) {
+              throw culebra::CulebraError(
+                  "TypeError", "SharedBuffer.file: path must be a String", line,
+                  col);
+            }
+            std::string path(pathv.to_string_view());
+            long count = env->get("count").to_long();
+            const Value& tv = env->get("type");
+            if (count < 0) {
+              throw culebra::CulebraError(
+                  "ValueError", "SharedBuffer.file: count must be >= 0", line,
+                  col);
+            }
+            if (tv.type != Value::Object || !tv.to_object().has("__packable__")) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  "SharedBuffer.file: type must be a @packable class", line, col);
+            }
+            const auto& cls = tv.to_object().get("__packable__").get<std::string>();
+            const auto* layout = culebra::lookup_packable_layout(cls);
+            if (!layout) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  std::format("SharedBuffer.file: no @packable layout for `{}`",
+                              cls),
+                  line, col);
+            }
+            long id = culebra::make_shared_buffer_file(
+                *layout, cls, static_cast<size_t>(count), path);
+            return make_shared_buffer_handle(id, count);
+          },
+          "Object"sv)),
+      false);
   return Value(std::move(ns));
 }
 
