@@ -184,13 +184,18 @@ let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',
                me_pre + 'match E.B { A(x) => x, B => 0, _ => -1 }',
                me_pre + 'match E.A(5) { B => 0 }',
                'match 5 { 1 => "a", 5 => "b", _ => "c" }',
-               'match "z" { "a" => 1, _ => 2 }',
                'match [1, 2] { [a, b] => a + b, _ => 0 }',
                'match (1, 2) { (a, b) => a + b, _ => 0 }',
                'match 5 { x: Long => "long", _ => "other" }']
 for m in matches {
   case("match|" + m, m)
 }
+# String value patterns use single-quote string literals: the pattern
+# grammar's STRING is raw (single-quote), so `'a'` is a constant pattern
+# while a `"..."` is an interpolated string (not a pattern). Backtick raw
+# string keeps the single quotes; a fixed label avoids embedding them
+# (the label itself is emitted inside a single-quoted string).
+case("match-string", `match 'z' { 'a' => 1, 'z' => 2, _ => 3 }`)
 
 # --- Dimension 12: numeric edge cases -------------------------------------
 let nums = ['(1 << 63)', '(1 << 64)', '(-1 >> 1)', '(0.0 / 0.0)', '(1.0 / 0.0)',
@@ -218,11 +223,39 @@ let assigns = ['let o = {a: 1}; o.a += 5; o.a',
                'mut a = [1, 2, 3]; a[0] += 10; a[0]',
                'mut a = [1, 2, 3]; a[0] += "x"; a[0]',
                'let (a, b) = (1, 2); a + b',
-               '(mut a, mut b) = (1, 2); a - b',
+               'mut (a, b) = (1, 2); a - b',
                'mut x = nil; x ??= 5; x',
                'mut x = 3; x ??= 5; x']
 for a in assigns {
   case("assign|" + a, a)
+}
+
+# --- Dimension 15: Tensor construction / ops / errors ---------------------
+# Tensor is a separate runtime object with its own JIT codegen, so it was a
+# corpus blind spot. Use only deterministic constructors (`zeros`/`ones`/
+# `from`) — `randn` is random — and observe via `.shape()`, display, or
+# `.to_array()` after `Tensor.eval`. The error cases pin the kind/message/
+# *position* of the type, reshape, slice, and index guards across backends.
+let tensors = ['Tensor.zeros(2, 3).shape()',
+               'Tensor.zeros(2, 3)',
+               'Tensor.zeros("f64", 2, 3)',
+               'Tensor.ones(2, 2).to_array()',
+               'Tensor.from([1.0, 2.0, 3.0]).shape()',
+               'Tensor.from([[1, 2], [3, 4]]).shape()',
+               'Tensor.from(5)',
+               'Tensor.zeros(2, 3).reshape([3, 2]).shape()',
+               'Tensor.zeros(2, 3).reshape([4, 4])',
+               'Tensor.zeros(2, 3).transpose().shape()',
+               'Tensor.zeros(5, 2).slice(1, 3).shape()',
+               'Tensor.zeros(3, 2).slice(5, 9)',
+               'Tensor.zeros(2, 3).sum()',
+               'let a = Tensor.ones(2, 2); let b = Tensor.ones(2, 2); ' +
+                 'let c = a + b; Tensor.eval(c); c.to_array()',
+               'let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]]); ' +
+                 'let b = Tensor.ones(2, 2); let c = a * b; ' +
+                 'Tensor.eval(c); c.to_array()']
+for t in tensors {
+  case("tensor|" + t, t)
 }
 
 print(out.join("\n"))
