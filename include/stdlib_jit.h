@@ -916,6 +916,42 @@ class _JitKwargResolver {
     return true;
   }
 
+  // Resolve a `share` Object (name -> SharedBuffer handle) into CULEBRA_SHARE_*
+  // env entries (appended to `env_out`) plus the fds the child inherits
+  // (appended to `fds_out`). Mirrors the interp proc_parse_launch share branch.
+  // Returns true if `share` was present.
+  bool take_share(std::vector<std::pair<std::string, std::string>>& env_out,
+                  std::vector<int>& fds_out) {
+    auto v = take_typed("share", TAG_OBJECT, "Object");
+    if (!v) return false;
+    // Collect (name, buffer id) first so a validation throw can't leak `v`.
+    std::vector<std::pair<std::string, long>> entries;
+    auto* obj = reinterpret_cast<JitObject*>(v->data);
+    if (obj->shape) {
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        const std::string& name = obj->shape->names[k];
+        const JitValue& bv = obj->slots[k].value;
+        size_t si = (bv.tag == TAG_OBJECT)
+                        ? reinterpret_cast<JitObject*>(bv.data)
+                              ->find_slot("__sharedbuffer_id__")
+                        : static_cast<size_t>(-1);
+        if (si == static_cast<size_t>(-1)) {
+          _culebra_value_release_impl(v->tag, v->data);
+          fail(std::format("{}: share `{}` must be a SharedBuffer", ctx_, name));
+        }
+        entries.emplace_back(
+            name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
+      }
+    }
+    _culebra_value_release_impl(v->tag, v->data);
+    for (auto& [name, id] : entries) {
+      auto [fd, env_val] = culebra::prepare_share_buffer(id, name);
+      env_out.emplace_back(culebra::share_env_key(name), std::move(env_val));
+      fds_out.push_back(fd);
+    }
+    return true;
+  }
+
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
@@ -1370,7 +1406,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_over,
     const std::string& stdin_data, bool check, int64_t timeout,
-    int64_t line, int64_t col) {
+    int64_t line, int64_t col,
+    const std::vector<int>* inherit_fds = nullptr) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
         "Proc.run: cmd must be Array", line, col);
@@ -1392,7 +1429,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_run_impl(
   }
 
   auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data,
-                                       timeout > 0 ? timeout : 0);
+                                       timeout > 0 ? timeout : 0, inherit_fds);
   if (!oc.spawned) {
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.run: {} failed: {}.", oc.err_what,
@@ -1442,11 +1479,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   int64_t timeout = 0;
   if (auto v = kw.take_typed("timeout", TAG_LONG, "Long")) timeout = v->data;
   std::vector<std::pair<std::string, std::string>> overrides;
+  bool has_env = kw.take_env(overrides);
+  std::vector<int> share_fds;
+  bool has_share = kw.take_share(overrides, share_fds);
   const std::vector<std::pair<std::string, std::string>>* env_ptr =
-      kw.take_env(overrides) ? &overrides : nullptr;
+      (has_env || has_share) ? &overrides : nullptr;
+  const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
   kw.validate_consumed();
   return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
-                                stdin_data, check, timeout, line, col);
+                                stdin_data, check, timeout, line, col, fds_ptr);
 }
 
 // Proc.all core (shared by trampoline + kwarg adapter). `commands` is not
@@ -2008,7 +2049,8 @@ CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_over,
-    const std::string& stdin_data, int64_t line, int64_t col) {
+    const std::string& stdin_data, int64_t line, int64_t col,
+    const std::vector<int>* inherit_fds = nullptr) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
         "Proc.spawn: cmd must be Array", line, col);
@@ -2028,7 +2070,8 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     throw culebra::CulebraError("ValueError",
         "Proc.spawn: empty command", line, col);
   }
-  auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, stdin_data);
+  auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, stdin_data,
+                                          inherit_fds);
   if (!sr.spawned) {
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.spawn: {} failed: {}.", sr.err_what,
@@ -2061,11 +2104,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
   std::string stdin_data;
   if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
   std::vector<std::pair<std::string, std::string>> overrides;
+  bool has_env = kw.take_env(overrides);
+  std::vector<int> share_fds;
+  bool has_share = kw.take_share(overrides, share_fds);
   const std::vector<std::pair<std::string, std::string>>* env_ptr =
-      kw.take_env(overrides) ? &overrides : nullptr;
+      (has_env || has_share) ? &overrides : nullptr;
+  const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
   kw.validate_consumed();
   return _culebra_proc_spawn_build(cmd_tag, cmd_data, cwd_ptr, env_ptr,
-                                   stdin_data, line, col);
+                                   stdin_data, line, col, fds_ptr);
 }
 
 }  // extern "C"
@@ -2848,6 +2895,80 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
   return _jit_make_shared_buffer_handle(id, count);
 }
 
+// SharedBuffer.shared(count, Cls): anonymous fd-backed RAM, shareable with a
+// child process via Proc.run `share:`. Mirrors _ns_sharedbuffer_new.
+inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
+  if (n != 2) {
+    throw culebra::CulebraError("ArityError",
+        "SharedBuffer.shared: expected 2 arguments (count, Class)");
+  }
+  if (a[0].tag != TAG_LONG) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.shared: count must be an integer");
+  }
+  long count = a[0].data;
+  if (count < 0) {
+    throw culebra::CulebraError("ValueError",
+        "SharedBuffer.shared: count must be >= 0");
+  }
+  if (a[1].tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.shared: second argument must be a @packable class");
+  }
+  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
+  auto mi = cls->find_slot("__packable__");
+  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.shared: second argument must be a @packable class");
+  }
+  std::string_view cname =
+      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
+  const auto* layout = culebra::lookup_packable_layout(cname);
+  if (!layout) {
+    throw culebra::CulebraError("TypeError",
+        std::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
+  }
+  long id = culebra::make_shared_buffer_shared(*layout, std::string(cname),
+                                               static_cast<size_t>(count));
+  return _jit_make_shared_buffer_handle(id, count);
+}
+
+// SharedBuffer.receive(name, Cls): child side — mmap the buffer the parent
+// passed via Proc.run `share:`. `count` is the parent's (read from the env).
+inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
+  if (n != 2) {
+    throw culebra::CulebraError("ArityError",
+        "SharedBuffer.receive: expected 2 arguments (name, Class)");
+  }
+  if (a[0].tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.receive: name must be a String");
+  }
+  std::string_view name = _str_sv(reinterpret_cast<const char*>(a[0].data));
+  if (a[1].tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.receive: second argument must be a @packable class");
+  }
+  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
+  auto mi = cls->find_slot("__packable__");
+  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.receive: second argument must be a @packable class");
+  }
+  std::string_view cname =
+      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
+  const auto* layout = culebra::lookup_packable_layout(cname);
+  if (!layout) {
+    throw culebra::CulebraError("TypeError",
+        std::format("SharedBuffer.receive: no @packable layout for `{}`", cname));
+  }
+  long id = culebra::make_shared_buffer_from_share_env(*layout,
+                                                       std::string(cname), name);
+  auto core = culebra::lookup_shared_buffer(id);
+  return _jit_make_shared_buffer_handle(
+      id, core ? static_cast<long>(core->count) : 0);
+}
+
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in
 // slab slot 2 — resolved from a positional arg or a `limit:` kwarg by the
 // NsParamMeta hook (kParallelMeta), defaulting to 0 (= the cap). The four modes
@@ -3446,6 +3567,8 @@ inline const NsMethod kNsMethods[] = {
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
   {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
   {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
+  {"SharedBuffer", "shared", 2, &_ns_sharedbuffer_shared},
+  {"SharedBuffer", "receive", 2, &_ns_sharedbuffer_receive},
   {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
   {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
   {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},
@@ -3814,6 +3937,12 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
     auto* a = culebra_runtime_sys_argv();
     obj->append_slot(
         "argv", JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(a)},
+        /*mut=*/false);
+    obj->append_slot(
+        "executable",
+        JitValue{TAG_STRING, reinterpret_cast<int64_t>(
+                                 _culebra_heap_str(
+                                     culebra::current_executable_path()))},
         /*mut=*/false);
   }
   return obj;

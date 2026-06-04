@@ -65,12 +65,12 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | CLI 引数解析 | [§10 Args](#10-args) |
-| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env` |
+| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.executable` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
-| 固定レイアウトデータをスレッド間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` |
+| 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -829,6 +829,18 @@ puts(Sys.env('HOME'))          # '/Users/alice'
 puts(Sys.env('NOT_A_VAR'))     # ''
 ```
 
+### `Sys.executable -> String`
+
+実行中の culebra バイナリの絶対パス。`culebra` が `PATH` にあることに頼らず、
+インタプリタのワーカーコピーを起動するのに使う — 例
+`Proc.run([Sys.executable, "worker.cul"], ...)`。（AOT ビルドされたプログラムでは
+その単体バイナリ自身のパスになる。）
+
+```culebra
+# doctest: skip
+puts(Sys.executable)           # '/usr/local/bin/culebra'
+```
+
 ---
 
 ## 8. `Tensor`
@@ -1208,7 +1220,7 @@ throw 値の `kind` は次のいずれか:
 シェルを介さないのでクォートやインジェクションの心配がありません
 （`["git", "commit", "-m", msg]` は `msg` をそのまま渡します）。
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil) -> Object`
 
 `cmd` を完了まで実行し、結果 Object を返します:
 
@@ -1262,6 +1274,11 @@ Proc.run(["make", "install"], cwd: "/src/app", env: {PREFIX: "/usr/local"}, chec
 出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdout と
 stderr は並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
+`share: {名前: buf}` は 1 つ以上の `SharedBuffer.shared(...)` buffer を子プロセス
+へ渡す（子は `SharedBuffer.receive(name, Class)` で再アタッチする）。子は culebra
+プロセスである必要があり、通常は `[Sys.executable, "worker.cul"]`。詳細は
+[SharedBuffer › プロセス間での共有](#プロセス間での共有zero-copy)。
+
 ### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0) -> Array<Object>`
 
 複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
@@ -1311,7 +1328,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="") -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil) -> handle`
 
 コマンドを起動し、完了を待たずに即座に**ライブハンドル**を返します。ハンドルは
 3 つのメソッドを持ちます:
@@ -1607,7 +1624,34 @@ Parallel.map(urls, |u| fetch(u),
 #### `SharedBuffer.new(count, Class) -> buffer`
 
 `Class` のレイアウトで `count` 個のゼロ初期化レコードを確保する。
-`buffer.size`（`.count` / `.len` も同じ）が要素数を返す。
+`buffer.size`（`.count` / `.len` も同じ）が要素数を返す。バイトはこのプロセス
+のヒープに置かれる — isolate（スレッド）間では共有できるが、プロセス間では
+共有できない。
+
+#### `SharedBuffer.file(path, count, Class) -> buffer`
+
+同じ buffer を、メモリマップしたファイル（`MAP_SHARED`）で裏打ちする。書き込み
+はファイルのページに届く — **永続**（ファイルはプロセスより長生き）で、同じ
+`path` をマップした別プロセスからも見える。ハンドルに `flush()`（dirty ページを
+`msync` でディスクへ）が付く。ファイルは普通のファイルなので `FS.remove(path)`
+で削除する。`path` を RAM 上の場所（Linux なら `/dev/shm/...` など）に向ければ、
+ディスク永続なしの共有メモリになる。
+
+```culebra
+# doctest: skip
+@packable class Cell { v: Int64 = 0 }
+let buf = SharedBuffer.file("/tmp/grid.bin", 100, Cell)
+buf[0].v = 42
+buf.flush()                   # ディスクへ永続化
+```
+
+#### `SharedBuffer.shared(count, Class) -> buffer`
+
+同じ buffer を、**匿名の**共有メモリ（名前のない fd — Linux は `memfd`、macOS は
+即 unlink した POSIX shm オブジェクト）で裏打ちする。名前を持たず、ディスクにも
+触れない。全ハンドルが drop されるとカーネルが解放する。用途は、`Proc.run` /
+`Proc.spawn` の `share:` で**子プロセス**へ渡すこと（下記
+[プロセス間での共有](#プロセス間での共有zero-copy)）。
 
 #### `buffer[i] -> view`
 
@@ -1652,6 +1696,46 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
 **disjoint な**要素を書くワーカーは同期不要。同じ要素を複数の isolate
 が同時に書くのはデータ競合であり、作業を分割して（上記のように）各要素
 の writer を 1 つにするのは呼び出し側の責任。
+
+#### プロセス間での共有（zero copy）
+
+`SharedBuffer.shared(...)` の buffer は、別の isolate だけでなく**子プロセス**へ
+も渡せる。親は `Proc.run`（または `Proc.spawn`）の `share:` キーワード（`名前 ->
+buffer` の Object）で渡し、子はその名前で `SharedBuffer.receive(name, Class)` に
+よって再アタッチする。両プロセスが同じ物理ページをマップする — コピーや
+シリアライズなしで書き込みが見える。
+
+```culebra
+# doctest: skip
+# --- parent.cul ---
+@packable class Cell { v: Int64 = 0 }
+let grid = SharedBuffer.shared(4, Cell)
+grid[0].v = 100
+Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
+puts(grid[0].v)               # 子の書き込みをここで読み戻す
+grid.drop()
+```
+
+```culebra
+# doctest: skip
+# --- worker.cul ---
+@packable class Cell { v: Int64 = 0 }
+let grid = SharedBuffer.receive("grid", Cell)
+for i in 0..grid.count { grid[i].v = grid[i].v + (i + 1) * 10 }
+grid.drop()
+```
+
+`receive` は名前と `@packable` 型だけを取る — 要素数は親由来（なので
+`grid.count` が一致する）。子は同じ `@packable` クラスを宣言し、`receive` は
+レコードサイズの一致を確認して、レイアウト不一致・未知の名前・
+`SharedBuffer.shared(...)` でない buffer のときは `ValueError` を投げる（ヒープと
+ファイルの buffer はこの方法では渡せない — ファイル buffer は `path` を開き直して
+共有する）。`Sys.executable` は実行中の culebra バイナリのパスで、インタプリタの
+ワーカーコピーを起動するのに使う。
+
+`Proc.run` は子の終了までブロックするので、戻った時点で子の書き込みは完了して
+いる。並行な子は `Proc.spawn` してそれぞれ `wait()` する。isolate と同様、各子が
+**disjoint な**要素を持つようにして書き込みが競合しないようにする。
 
 #### 可変個数フィールド: `FixedArray<T, N>`
 

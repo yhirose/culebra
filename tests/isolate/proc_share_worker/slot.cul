@@ -1,0 +1,11 @@
+# Disjoint-write worker: each spawned copy owns exactly one cell (its SLOT) of
+# the shared buffer, so concurrent copies never touch the same element — the
+# share-nothing/disjoint pattern that needs no lock.
+@packable class Cell {
+  v: Int64 = 0
+}
+
+let grid = SharedBuffer.receive("grid", Cell)
+let slot = Sys.env("SLOT").to_long()
+grid[slot].v = (slot + 1) * 100
+grid.drop()

@@ -14,9 +14,14 @@
 #include <utility>
 #include <vector>
 
-#include <fcntl.h>      // open
-#include <sys/mman.h>   // mmap / munmap / msync (POSIX; file/shm storage)
-#include <unistd.h>     // close / ftruncate
+#include <cstdio>      // snprintf / sscanf (anonymous shm name; share env)
+#include <cstdlib>     // getenv (share env)
+#include <fcntl.h>     // open
+#include <sys/mman.h>  // mmap / munmap / msync / shm_open (POSIX; file/shm)
+#include <unistd.h>    // close / ftruncate
+#if defined(__linux__)
+#include <sys/syscall.h>  // SYS_memfd_create (anonymous shm fd)
+#endif
 
 #include <shared.h>  // CulebraError
 
@@ -232,12 +237,12 @@ struct SharedBufferCore {
   // file (Shared/fd lands in Phase C). `data` always points at the bytes.
   uint8_t* data = nullptr;
   size_t byte_size = 0;
-  enum class Storage { Heap, File };
+  enum class Storage { Heap, File, Shared };
   Storage storage = Storage::Heap;
-  // Heap: owns the vector here. File: the mmap is munmap'd + fd closed in the
-  // destructor (heap_bytes stays empty).
+  // Heap: owns the vector here. File/Shared: the mmap is munmap'd + fd closed in
+  // the destructor (heap_bytes stays empty).
   std::shared_ptr<std::vector<uint8_t>> heap_bytes;
-  int fd = -1;            // File: backing fd (for msync/close)
+  int fd = -1;            // File/Shared: backing fd (for msync/close/inherit)
   std::string name;       // File: the path (introspection / cross-proc by path)
   PackableLayout layout;
   std::string class_name;
@@ -337,6 +342,161 @@ inline long make_shared_buffer_file(const PackableLayout& layout,
   core->count = count;
   core->refcount = 1;
   return register_shared_buffer(std::move(core));
+}
+
+// Create an anonymous shared-memory fd of `bytes` bytes — RAM only, no name on
+// disk. The fd is CLOEXEC by default so it does NOT leak into unrelated Proc
+// children; the `share:` mechanism clears CLOEXEC on exactly the child that
+// opts in. Linux: memfd_create. macOS/BSD: shm_open a unique name, then
+// shm_unlink it immediately so only the live fd keeps the object alive (the
+// kernel refcounts it across processes; the last close frees it). Throws
+// IOError on an OS failure.
+inline int make_anon_shm_fd(size_t bytes) {
+  int fd = -1;
+#if defined(__linux__)
+  // MFD_CLOEXEC == 1U; spell it literally to avoid a header-version dependency.
+  fd = static_cast<int>(::syscall(SYS_memfd_create, "culebra_shm", 1U));
+  if (fd < 0)
+    throw CulebraError("IOError", "SharedBuffer.shared: memfd_create failed");
+#else
+  // POSIX shm: a unique name (pid + counter), created exclusively, then
+  // unlinked right away. PSHMNAMLEN is small (31 on macOS), so keep it short.
+  static std::atomic<unsigned> ctr{0};
+  unsigned k = ctr.fetch_add(1, std::memory_order_relaxed);
+  char nm[32];
+  std::snprintf(nm, sizeof(nm), "/cul_%d_%u", static_cast<int>(::getpid()), k);
+  fd = ::shm_open(nm, O_RDWR | O_CREAT | O_EXCL, 0600);
+  if (fd < 0)
+    throw CulebraError("IOError", "SharedBuffer.shared: shm_open failed");
+  ::shm_unlink(nm);
+  ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+  if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+    ::close(fd);
+    throw CulebraError("IOError", "SharedBuffer.shared: cannot size the buffer");
+  }
+  return fd;
+}
+
+// mmap an open fd of `bytes` bytes MAP_SHARED into a fresh SharedBufferCore.
+// Shared by make_shared_buffer_shared (owns the fd it created) and the child's
+// make_shared_buffer_receive (owns the fd it inherited). The core closes the fd
+// + munmaps in its destructor either way. Throws IOError on a map failure.
+inline long _adopt_shared_fd(const PackableLayout& layout,
+                             std::string class_name, size_t count, int fd,
+                             size_t bytes) {
+  void* p = bytes ? ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+                           fd, 0)
+                  : nullptr;
+  if (bytes && p == MAP_FAILED) {
+    ::close(fd);
+    throw CulebraError("IOError", "SharedBuffer: cannot map shared memory");
+  }
+  auto core = std::make_shared<SharedBufferCore>();
+  core->data = static_cast<uint8_t*>(p);
+  core->byte_size = bytes;
+  core->storage = SharedBufferCore::Storage::Shared;
+  core->fd = fd;
+  core->layout = layout;
+  core->class_name = std::move(class_name);
+  core->count = count;
+  core->refcount = 1;
+  return register_shared_buffer(std::move(core));
+}
+
+// Anonymous-fd SharedBuffer: a name-less RAM region shared with child processes
+// via fd inheritance (Proc `share:`). Same buffer interface as heap/file; the
+// fd lives in the core and ships to the child by number. Throws IOError on an
+// OS failure.
+inline long make_shared_buffer_shared(const PackableLayout& layout,
+                                      std::string class_name, size_t count) {
+  size_t bytes = layout.stride * count;
+  int fd = make_anon_shm_fd(bytes);
+  return _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
+}
+
+// Child side of `share:`: mmap an fd inherited from the parent. `count` and the
+// byte size are the parent's (passed through the environment); this only maps
+// the bytes. Throws IOError on a map failure.
+inline long make_shared_buffer_receive(const PackableLayout& layout,
+                                       std::string class_name, size_t count,
+                                       int fd) {
+  return _adopt_shared_fd(layout, std::move(class_name), count, fd,
+                          layout.stride * count);
+}
+
+// The environment-variable name a `share:` buffer travels under, keyed by the
+// user's name for it. The parent sets it (`fd:bytes:stride:count`), the child's
+// SharedBuffer.receive reads it. One place so both ends agree on the spelling.
+inline std::string share_env_key(std::string_view name) {
+  return "CULEBRA_SHARE_" + std::string(name);
+}
+inline std::string share_env_value(int fd, size_t bytes, size_t stride,
+                                   size_t count) {
+  return std::format("{}:{}:{}:{}", fd, bytes, stride, count);
+}
+
+// Parent side of `Proc.run(..., share: {name: buf})`: validate that `buf` is an
+// anonymous-fd (Shared) buffer and return its fd plus the env value the child
+// reads. Only `.shared()` buffers cross a process boundary this way — heap is
+// isolate-local, and a file buffer is shared by re-opening its path. The fd
+// isn't touched here (CLOEXEC is cleared in the child, for that child only).
+// Throws ValueError on a dropped or wrong-storage buffer.
+inline std::pair<int, std::string> prepare_share_buffer(long id,
+                                                        std::string_view name) {
+  auto core = lookup_shared_buffer(id);
+  if (!core) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: SharedBuffer has been dropped", name));
+  }
+  if (core->storage != SharedBufferCore::Storage::Shared) {
+    throw CulebraError(
+        "ValueError",
+        std::format("Proc share `{}`: only a SharedBuffer.shared(...) buffer "
+                    "can be shared with a child process (heap is isolate-local; "
+                    "share a file buffer by re-opening its path)",
+                    name));
+  }
+  return {core->fd, share_env_value(core->fd, core->byte_size,
+                                    core->layout.stride, core->count)};
+}
+
+// Child side of `SharedBuffer.receive(name, T)`: look the buffer up in the
+// environment (it was passed via Proc.run `share:`), validate the parent's
+// record stride against this process's @packable layout (a cheap drift guard),
+// then mmap the inherited fd. `count` is the parent's — the child never states
+// it. Throws ValueError if the name isn't present or the layouts disagree.
+inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
+                                              std::string class_name,
+                                              std::string_view name) {
+  std::string key = share_env_key(name);
+  const char* v = std::getenv(key.c_str());
+  if (!v) {
+    throw CulebraError(
+        "ValueError",
+        std::format("SharedBuffer.receive: no shared buffer named `{}` "
+                    "(pass it from the parent via Proc.run share:)",
+                    name));
+  }
+  long fd = -1, bytes = -1, stride = -1, count = -1;
+  if (std::sscanf(v, "%ld:%ld:%ld:%ld", &fd, &bytes, &stride, &count) != 4 ||
+      fd < 0 || bytes < 0 || stride < 0 || count < 0) {
+    throw CulebraError(
+        "ValueError",
+        std::format("SharedBuffer.receive: malformed share entry for `{}`",
+                    name));
+  }
+  if (static_cast<size_t>(stride) != layout.stride) {
+    throw CulebraError(
+        "ValueError",
+        std::format("SharedBuffer.receive: layout mismatch for `{}` (parent "
+                    "record is {} bytes, this @packable `{}` is {})",
+                    name, stride, class_name, layout.stride));
+  }
+  return make_shared_buffer_receive(layout, std::move(class_name),
+                                    static_cast<size_t>(count),
+                                    static_cast<int>(fd));
 }
 
 // Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap.

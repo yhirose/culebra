@@ -1,0 +1,13 @@
+# Cross-process worker for test_proc_share_jit.cul: attach the buffer the parent
+# shared via Proc.run `share:`, bump each cell by (i+1)*10, then detach. The
+# writes land in the shared pages and are visible to the parent once we exit.
+@packable class Cell {
+  v: Int64 = 0
+}
+
+let grid = SharedBuffer.receive("grid", Cell)
+let n = grid.count
+for i in 0..n {
+  grid[i].v = grid[i].v + (i + 1) * 10
+}
+grid.drop()

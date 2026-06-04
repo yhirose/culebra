@@ -1600,6 +1600,10 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
   }
   ns.initialize("argv", Value(std::move(arr)), false);
 
+  // Absolute path to the running culebra binary, for re-spawning a worker copy
+  // of the interpreter (e.g. Proc.run([Sys.executable, "worker.cul"], ...)).
+  ns.initialize("executable", Value(culebra::current_executable_path()), false);
+
   ns.initialize(
       "exit",
       Value(FunctionValue({{"code", false, "Long"sv}},
@@ -1764,6 +1768,90 @@ inline Value make_shared_buffer_namespace() {
           },
           "Object"sv)),
       false);
+  // `SharedBuffer.shared(count, Cls)` — anonymous fd-backed RAM, shareable with
+  // a child process via Proc.run `share:`. Same interface as `new`; the handle
+  // additionally carries a fd that the child inherits.
+  ns.initialize(
+      "shared",
+      Value(FunctionValue(
+          {{"count", false, ""sv}, {"type", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line =
+                env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col =
+                env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            long count = env->get("count").to_long();
+            const Value& tv = env->get("type");
+            if (count < 0) {
+              throw culebra::CulebraError(
+                  "ValueError", "SharedBuffer.shared: count must be >= 0", line,
+                  col);
+            }
+            if (tv.type != Value::Object || !tv.to_object().has("__packable__")) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  "SharedBuffer.shared: second argument must be a @packable "
+                  "class",
+                  line, col);
+            }
+            const auto& cls = tv.to_object().get("__packable__").get<std::string>();
+            const auto* layout = culebra::lookup_packable_layout(cls);
+            if (!layout) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  std::format("SharedBuffer.shared: no @packable layout for `{}`",
+                              cls),
+                  line, col);
+            }
+            long id = culebra::make_shared_buffer_shared(
+                *layout, cls, static_cast<size_t>(count));
+            return make_shared_buffer_handle(id, count);
+          },
+          "Object"sv)),
+      false);
+  // `SharedBuffer.receive(name, Cls)` — child side: mmap the buffer the parent
+  // passed via Proc.run `share:`. `count` is the parent's (read from the
+  // environment); the child only names the buffer + its @packable type.
+  ns.initialize(
+      "receive",
+      Value(FunctionValue(
+          {{"name", false, ""sv}, {"type", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line =
+                env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col =
+                env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            const Value& namev = env->get("name");
+            if (!namev.is_stringlike()) {
+              throw culebra::CulebraError(
+                  "TypeError", "SharedBuffer.receive: name must be a String",
+                  line, col);
+            }
+            const Value& tv = env->get("type");
+            if (tv.type != Value::Object || !tv.to_object().has("__packable__")) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  "SharedBuffer.receive: second argument must be a @packable "
+                  "class",
+                  line, col);
+            }
+            const auto& cls = tv.to_object().get("__packable__").get<std::string>();
+            const auto* layout = culebra::lookup_packable_layout(cls);
+            if (!layout) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  std::format("SharedBuffer.receive: no @packable layout for `{}`",
+                              cls),
+                  line, col);
+            }
+            long id = culebra::make_shared_buffer_from_share_env(
+                *layout, cls, namev.to_string_view());
+            auto core = culebra::lookup_shared_buffer(id);
+            return make_shared_buffer_handle(
+                id, core ? static_cast<long>(core->count) : 0);
+          },
+          "Object"sv)),
+      false);
   return Value(std::move(ns));
 }
 
@@ -1841,9 +1929,15 @@ struct ProcLaunchArgs {
   std::vector<std::pair<std::string, std::string>> overrides;
   bool has_env = false;
   std::string stdin_data;
+  std::vector<int> share_fds;  // SharedBuffer.shared fds the child inherits.
   const std::string* cwd_ptr() const { return has_cwd ? &cwd_str : nullptr; }
   const std::vector<std::pair<std::string, std::string>>* env_ptr() const {
-    return has_env ? &overrides : nullptr;
+    // The share buffers add CULEBRA_SHARE_* entries to `overrides`, so a custom
+    // env exists whenever the user gave `env:` OR `share:`.
+    return (has_env || !share_fds.empty()) ? &overrides : nullptr;
+  }
+  const std::vector<int>* share_ptr() const {
+    return share_fds.empty() ? nullptr : &share_fds;
   }
 };
 
@@ -1897,6 +1991,29 @@ inline ProcLaunchArgs proc_parse_launch(
         std::format("{}: stdin must be String", ctx), line, col);
   }
   la.stdin_data = stdin_v.to_string_view();
+  // `share: {name: buf}` — anonymous SharedBuffer.shared(...) buffers the child
+  // inherits by fd. Each becomes a CULEBRA_SHARE_<name> env entry the child's
+  // SharedBuffer.receive reads, plus an fd the child un-CLOEXECs.
+  const auto& share_v = env->get("share");
+  if (share_v.type != Value::Nil) {
+    if (share_v.type != Value::Object) {
+      throw CulebraError("TypeError",
+          std::format("{}: share must be an Object of name -> SharedBuffer",
+                      ctx), line, col);
+    }
+    for (const auto& [k, sym] : *share_v.to_object().properties) {
+      if (sym.val.type != Value::Object ||
+          !sym.val.to_object().has("__sharedbuffer_id__")) {
+        throw CulebraError("TypeError",
+            std::format("{}: share `{}` must be a SharedBuffer", ctx, k),
+            line, col);
+      }
+      long id = sym.val.to_object().get("__sharedbuffer_id__").to_long();
+      auto [fd, env_val] = culebra::prepare_share_buffer(id, k);
+      la.overrides.emplace_back(culebra::share_env_key(k), std::move(env_val));
+      la.share_fds.push_back(fd);
+    }
+  }
   return la;
 }
 
@@ -2636,6 +2753,7 @@ inline Value make_proc_namespace() {
               {"stdin", false, ""sv, nullptr, proc_stdin_default},
               {"check", false, ""sv, nullptr, kw_default_false()},
               {"timeout", false, ""sv, nullptr, kw_default_zero()},
+              {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -2648,7 +2766,7 @@ inline Value make_proc_namespace() {
 
             auto oc = culebra::proc::run_command(la.argv, la.cwd_ptr(),
                                                  la.env_ptr(), la.stdin_data,
-                                                 timeout);
+                                                 timeout, la.share_ptr());
             if (!oc.spawned) {
               throw CulebraError("ProcessError",
                   std::format("Proc.run: {} failed: {}.", oc.err_what,
@@ -2749,13 +2867,15 @@ inline Value make_proc_namespace() {
               {"cwd", false, ""sv, nullptr, kw_default_nil()},
               {"env", false, ""sv, nullptr, kw_default_nil()},
               {"stdin", false, ""sv, nullptr, proc_stdin_default},
+              {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
             auto la = proc_parse_launch(env, "Proc.spawn", line, col);
             auto sr = culebra::proc::spawn_detached(la.argv, la.cwd_ptr(),
-                                                    la.env_ptr(), la.stdin_data);
+                                                    la.env_ptr(), la.stdin_data,
+                                                    la.share_ptr());
             if (!sr.spawned) {
               throw CulebraError("ProcessError",
                   std::format("Proc.spawn: {} failed: {}.", sr.err_what,

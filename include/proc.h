@@ -193,7 +193,8 @@ inline Child spawn_child(
     const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
     const std::string* stdin_data,
-    size_t index) {
+    size_t index,
+    const std::vector<int>* inherit_fds = nullptr) {
   Child c;
   c.index = index;
   c.stdin_data = stdin_data;
@@ -275,6 +276,16 @@ inline Child spawn_child(
         int e = errno;
         (void)!write(exec_pipe[1], &e, sizeof(e));
         _exit(127);
+      }
+    }
+    // Opt the shared-memory fds INTO inheritance: they are CLOEXEC in the
+    // parent (so they don't leak into unrelated children), so clear it here in
+    // the child that the caller chose to share with. fcntl is async-signal-safe.
+    if (inherit_fds) {
+      for (int sfd : *inherit_fds) {
+        if (sfd < 0) continue;
+        int fl = fcntl(sfd, F_GETFD, 0);
+        if (fl >= 0) fcntl(sfd, F_SETFD, fl & ~FD_CLOEXEC);
       }
     }
     if (custom_env) environ = cenvp.data();
@@ -515,11 +526,12 @@ inline RunOutcome run_command(
     const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
     const std::string& stdin_data,
-    long timeout_ms = 0) {
+    long timeout_ms = 0,
+    const std::vector<int>* inherit_fds = nullptr) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::Child c =
-      _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+      _detail::spawn_child(argv, cwd, env_overrides, sp, 0, inherit_fds);
   if (c.done) return std::move(c.outcome);
   if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
@@ -710,10 +722,12 @@ struct SpawnResult {
 inline SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
     const std::vector<std::pair<std::string, std::string>>* env_overrides,
-    const std::string& stdin_data) {
+    const std::string& stdin_data,
+    const std::vector<int>* inherit_fds = nullptr) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
-  _detail::Child c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+  _detail::Child c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0,
+                                          inherit_fds);
   SpawnResult sr;
   if (c.done) {
     sr.err_no = c.outcome.err_no;

@@ -39,7 +39,7 @@ Conventions used below:
 4. [`File`](#4-file) — stateful handle for streaming read/write/seek
 5. [`Time`](#5-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
 6. [`Random`](#6-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-7. [`Sys`](#7-sys) — argv, exit, env
+7. [`Sys`](#7-sys) — argv, exit, env, executable
 8. [`Tensor`](#8-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 9. [`JSON`](#9-json) — stringify / parse round-trip
 10. [`Args`](#10-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
@@ -67,12 +67,12 @@ Conventions used below:
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
-| Process info | `Sys.argv`, `Sys.exit`, `Sys.env` |
+| Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.executable` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
-| Share fixed-layout data across threads (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` |
+| Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -854,6 +854,18 @@ puts(Sys.env('HOME'))          # '/Users/alice'
 puts(Sys.env('NOT_A_VAR'))     # ''
 ```
 
+### `Sys.executable -> String`
+
+Absolute path to the running culebra binary. Use it to launch a worker copy of
+the interpreter — e.g. `Proc.run([Sys.executable, "worker.cul"], ...)` — instead
+of relying on `culebra` being on `PATH`. (In an AOT-built program it is the path
+to that standalone binary.)
+
+```culebra
+# doctest: skip
+puts(Sys.executable)           # '/usr/local/bin/culebra'
+```
+
 ---
 
 ## 8. `Tensor`
@@ -1251,7 +1263,7 @@ output. The command is an `Array<String>` — `cmd[0]` is the executable
 quoting or injection concerns: `["git", "commit", "-m", msg]` passes
 `msg` verbatim however it's spelled.
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil) -> Object`
 
 Runs `cmd` to completion and returns a result Object:
 
@@ -1309,6 +1321,11 @@ Output is buffered in full, so a command that emits gigabytes will use
 that much memory. stdout and stderr are drained concurrently, so a
 command that fills both will not deadlock.
 
+`share: {name: buf}` hands one or more `SharedBuffer.shared(...)` buffers to the
+child process (which re-attaches each with `SharedBuffer.receive(name, Class)`).
+The child must be a culebra process — typically `[Sys.executable, "worker.cul"]`.
+See [SharedBuffer › Sharing across processes](#sharing-across-processes-zero-copy).
+
 ### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0) -> Array<Object>`
 
 Runs many commands in parallel and returns their result Objects in input
@@ -1363,7 +1380,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="") -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil) -> handle`
 
 Starts a command and returns immediately with a **live handle**, without
 waiting for it. The handle has three methods:
@@ -1671,7 +1688,33 @@ value (`0`, `0.0`, `false`).
 #### `SharedBuffer.new(count, Class) -> buffer`
 
 Allocates `count` zero-initialized records laid out per `Class`. `buffer.size`
-(also `.count` / `.len`) reports the element count.
+(also `.count` / `.len`) reports the element count. The bytes live in this
+process's heap — shareable across isolates (threads), not across processes.
+
+#### `SharedBuffer.file(path, count, Class) -> buffer`
+
+Same buffer, backed by a memory-mapped file (`MAP_SHARED`). Writes go to the
+file's pages — **persistent** (the file outlives the process) and visible to any
+other process that maps the same `path`. The handle gains a `flush()` method
+(`msync` the dirty pages to disk); the file is an ordinary file you remove with
+`FS.remove(path)`. Pointing `path` at a RAM-backed location (e.g. `/dev/shm/...`
+on Linux) gives shared memory without disk durability.
+
+```culebra
+# doctest: skip
+@packable class Cell { v: Int64 = 0 }
+let buf = SharedBuffer.file("/tmp/grid.bin", 100, Cell)
+buf[0].v = 42
+buf.flush()                   # durable on disk
+```
+
+#### `SharedBuffer.shared(count, Class) -> buffer`
+
+Same buffer, backed by **anonymous** shared memory (a name-less fd — `memfd` on
+Linux, an immediately-unlinked POSIX shm object on macOS). It holds no name and
+touches no disk; the kernel frees it once every handle is dropped. Its purpose
+is to be handed to a **child process** via `Proc.run` / `Proc.spawn` `share:`
+(see [Sharing across processes](#sharing-across-processes-zero-copy) below).
 
 #### `buffer[i] -> view`
 
@@ -1717,6 +1760,46 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
 Workers writing **disjoint** elements need no synchronization. Two isolates
 writing the **same** element concurrently is a data race — partition the work
 (as above) so each element has a single writer.
+
+#### Sharing across processes (zero copy)
+
+A `SharedBuffer.shared(...)` buffer can be handed to a **child process**, not
+just another isolate. The parent passes it to `Proc.run` (or `Proc.spawn`) under
+the `share:` keyword — an Object of `name -> buffer` — and the child re-attaches
+it by that name with `SharedBuffer.receive(name, Class)`. Both processes map the
+same physical pages: writes are visible without copying or serializing.
+
+```culebra
+# doctest: skip
+# --- parent.cul ---
+@packable class Cell { v: Int64 = 0 }
+let grid = SharedBuffer.shared(4, Cell)
+grid[0].v = 100
+Proc.run([Sys.executable, "worker.cul"], share: {grid: grid})
+puts(grid[0].v)               # the child's write, read back here
+grid.drop()
+```
+
+```culebra
+# doctest: skip
+# --- worker.cul ---
+@packable class Cell { v: Int64 = 0 }
+let grid = SharedBuffer.receive("grid", Cell)
+for i in 0..grid.count { grid[i].v = grid[i].v + (i + 1) * 10 }
+grid.drop()
+```
+
+`receive` takes only the name and the `@packable` type — the element count comes
+from the parent (so `grid.count` matches). The child declares the same
+`@packable` class; `receive` checks the record sizes agree and raises a
+`ValueError` on a layout mismatch, an unknown name, or a buffer that wasn't a
+`SharedBuffer.shared(...)` (heap and file buffers don't cross this way — a file
+buffer is shared by re-opening its `path`). `Sys.executable` is the path to the
+running culebra binary, for launching a worker copy of the interpreter.
+
+`Proc.run` blocks until the child exits, so its writes are complete on return.
+For concurrent children, `Proc.spawn` each and `wait()` them; as with isolates,
+let each child own **disjoint** elements so the writes never race.
 
 #### Variable-count fields: `FixedArray<T, N>`
 

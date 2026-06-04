@@ -19,6 +19,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include <climits>   // PATH_MAX (Sys.executable)
+#include <cstring>   // strlen (Sys.executable)
+#include <unistd.h>  // readlink (Sys.executable)
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _NSGetExecutablePath (Sys.executable)
+#endif
+
 namespace culebra {
 
 // Transparent hash/eq for std::string-keyed unordered_map that allows
@@ -56,6 +63,30 @@ class CulebraError : public std::runtime_error {
         line(l),
         col(c) {}
 };
+
+// Absolute path to the running culebra executable, for re-spawning a worker
+// copy of the interpreter (Sys.executable). macOS: _NSGetExecutablePath;
+// Linux: /proc/self/exe. Empty string if it can't be resolved. Backend-neutral
+// so interp and JIT both surface the same value.
+inline std::string current_executable_path() {
+#if defined(__APPLE__)
+  uint32_t sz = 0;
+  _NSGetExecutablePath(nullptr, &sz);  // first call reports the needed size
+  std::string buf(sz, '\0');
+  if (_NSGetExecutablePath(buf.data(), &sz) != 0) return "";
+  buf.resize(std::strlen(buf.c_str()));
+  char real[PATH_MAX];
+  if (::realpath(buf.c_str(), real)) return real;
+  return buf;
+#elif defined(__linux__)
+  char buf[PATH_MAX];
+  ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n <= 0) return "";
+  return std::string(buf, static_cast<size_t>(n));
+#else
+  return "";
+#endif
+}
 
 // Throw TypeError "takes N positional argument(s) but M given" when M
 // exceeds the cap. `cap < 0` means no `*` separator (no cap); `cap ==
