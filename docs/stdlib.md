@@ -44,7 +44,7 @@ Conventions used below:
 9. [`JSON`](#9-json) — stringify / parse round-trip
 10. [`Args`](#10-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — run external commands synchronously, capture stdout/stderr/exit
-12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary
+12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary; `Channel`, `Parallel`, and `SharedBuffer` (zero-copy shared fixed-layout data) live here too
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
@@ -72,6 +72,7 @@ Conventions used below:
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
+| Share fixed-layout data across threads (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -1642,6 +1643,80 @@ Parallel.map(urls, |u| fetch(u),
 ```
 
 (`map_reduce` is planned.)
+
+### SharedBuffer — zero-copy shared fixed-layout data
+
+`SharedBuffer` holds a flat array of fixed-layout records that several
+isolates read and write **without copying** — the one place the isolate
+model shares mutable memory, kept safe by restricting the records to fixed
+scalar fields (no references, no pointers).
+
+A record type is an ordinary class marked `@packable`, whose fields carry a
+type annotation and an optional default:
+
+```culebra
+# doctest: skip
+@packable class Vec2 {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+```
+
+`@packable` fixes the byte layout (C-ABI natural alignment). Every field
+must be a fixed scalar — `Float32`, `Float64`/`Float`, `Int8`, `Int16`,
+`Int32`, `Int64`/`Long`, `Byte`, or `Bool`. A non-scalar field is a
+`SyntaxError` at load time. A field with no default takes the type's zero
+value (`0`, `0.0`, `false`).
+
+#### `SharedBuffer.new(count, Class) -> buffer`
+
+Allocates `count` zero-initialized records laid out per `Class`. `buffer.size`
+(also `.count` / `.len`) reports the element count.
+
+#### `buffer[i] -> view`
+
+Indexing yields a **view** over element `i` (negative indices count from the
+end). Reading or writing `view.field` goes straight to the backing bytes — no
+per-record object is materialized:
+
+```culebra
+@packable class Vec2 {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+let buf = SharedBuffer.new(3, Vec2)
+puts(buf.size)                # 3
+buf[0].x = 1.5                # writes the bytes in place
+let v = buf[0]                # a stored view aliases the same element
+v.y = 2.5
+puts([buf[0].x, buf[0].y])    # [1.5, 2.5]
+```
+
+Whole-element assignment (`buf[i] = ...`) is a `TypeError` — a record has no
+standalone value form, so set its fields individually. An unknown field is an
+`AttributeError`; an out-of-range index is an `IndexError`.
+
+#### Sharing across isolates (zero copy)
+
+A buffer crosses an isolate boundary **by reference** — the child reads and
+writes the same bytes. Unlike every other value (copied at the boundary), a
+SharedBuffer is shared, the same exception channels make. This makes the
+classic data-parallel pattern — workers updating disjoint elements —
+allocation-free:
+
+```culebra
+# doctest: skip
+@packable class Cell { v: Int64 = 0 }
+let cells = SharedBuffer.new(8, Cell)
+
+Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
+
+# cells now holds 0, 1, 4, 9, 16, 25, 36, 49
+```
+
+Workers writing **disjoint** elements need no synchronization. Two isolates
+writing the **same** element concurrently is a data race — partition the work
+(as above) so each element has a single writer.
 
 ---
 

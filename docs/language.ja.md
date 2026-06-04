@@ -3283,6 +3283,15 @@ Point.marked  # true
 multimethod 側を先に定義してから別名でラップした decorated fn を作
 る形にする。
 
+### 組み込みデコレータ: `@packable`
+
+`@packable` は呼び出し可能値ではなく、クラスを**固定レイアウトの値型**
+として印付ける。フィールドはスカラ型注釈と任意のデフォルトを持ち
+(`x: Float32 = 0.0`)、デコレータがそのバイトレイアウト (C ABI アライン
+メント) を確定する。`@packable` クラスは、isolate 間で zero-copy 共有
+される `SharedBuffer` の要素型になる —
+[stdlib §12 SharedBuffer](stdlib.ja.md#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) を参照。
+
 ### `@` matmul 演算子と衝突しない理由
 
 `@` は行列乗算演算子 (PEP 465) としても使われる。両者は決して重ならな

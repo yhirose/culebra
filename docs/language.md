@@ -3466,6 +3466,15 @@ dispatch — the decorator's return value binds directly to `name`.
 Combine the patterns by writing the multimethod first and then a
 separate decorated wrapper if you need both.
 
+### Built-in decorator: `@packable`
+
+`@packable` is not a callable — it marks a class as a **fixed-layout
+value type**. Its fields carry a scalar type annotation with an optional
+default (`x: Float32 = 0.0`), and the decorator fixes their byte layout
+(C-ABI alignment). Packable classes back `SharedBuffer`, the zero-copy
+buffer shared across isolates — see
+[stdlib §12 SharedBuffer](stdlib.md#sharedbuffer--zero-copy-shared-fixed-layout-data).
+
 ### Why `@` doesn't collide with the matmul operator
 
 `@` is also the binary matrix-multiplication operator (PEP 465).

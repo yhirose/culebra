@@ -42,7 +42,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 9. [`JSON`](#9-json) — stringify / parse の相互変換
 10. [`Args`](#10-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
-12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー
+12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー。`Channel` / `Parallel` / `SharedBuffer`（zero-copy 共有する固定レイアウトデータ）も同節
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
@@ -70,6 +70,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
+| 固定レイアウトデータをスレッド間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -1578,6 +1579,79 @@ Parallel.map(urls, |u| fetch(u),
 ```
 
 (`map_reduce` は予定。)
+
+### SharedBuffer — zero-copy で共有する固定レイアウトデータ
+
+`SharedBuffer` は固定レイアウトのレコード列を保持し、複数の isolate が
+**コピーせず**読み書きできる。isolate モデルで唯一 mutable メモリを共
+有する場所であり、レコードを固定スカラフィールド（参照やポインタを含
+まない）に限定することで安全性を保つ。
+
+レコード型は `@packable` を付けた通常のクラスで、各フィールドは型注釈
+と任意のデフォルトを持つ:
+
+```culebra
+# doctest: skip
+@packable class Vec2 {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+```
+
+`@packable` はバイトレイアウト（C ABI 自然アライメント）を確定する。
+各フィールドは固定スカラ — `Float32`, `Float64`/`Float`, `Int8`,
+`Int16`, `Int32`, `Int64`/`Long`, `Byte`, `Bool` — でなければならず、
+非スカラフィールドはロード時に `SyntaxError`。デフォルト省略時は型の
+ゼロ値（`0` / `0.0` / `false`）。
+
+#### `SharedBuffer.new(count, Class) -> buffer`
+
+`Class` のレイアウトで `count` 個のゼロ初期化レコードを確保する。
+`buffer.size`（`.count` / `.len` も同じ）が要素数を返す。
+
+#### `buffer[i] -> view`
+
+添字アクセスは要素 `i` の **view** を返す（負の添字は末尾から数える）。
+`view.field` の読み書きは backing bytes に直接届く — レコードごとのオブ
+ジェクトは生成されない:
+
+```culebra
+@packable class Vec2 {
+  x: Float32 = 0.0
+  y: Float32 = 0.0
+}
+let buf = SharedBuffer.new(3, Vec2)
+puts(buf.size)                # 3
+buf[0].x = 1.5                # その場でバイトを書く
+let v = buf[0]                # 保持した view は同じ要素を指す
+v.y = 2.5
+puts([buf[0].x, buf[0].y])    # [1.5, 2.5]
+```
+
+要素まるごとの代入（`buf[i] = ...`）は `TypeError` — レコードは単独の値
+形を持たないので、フィールドを個別に設定する。未知のフィールドは
+`AttributeError`、範囲外の添字は `IndexError`。
+
+#### isolate 間での共有（zero copy）
+
+buffer は isolate 境界を **参照で**越える — 子は同じバイトを読み書きす
+る。他のすべての値（境界でコピーされる）と異なり、SharedBuffer は共有
+される（channel と同じ例外）。これにより、ワーカーが disjoint な要素を
+更新する典型的なデータ並列パターンがアロケーションなしで書ける:
+
+```culebra
+# doctest: skip
+@packable class Cell { v: Int64 = 0 }
+let cells = SharedBuffer.new(8, Cell)
+
+Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
+
+# cells は 0, 1, 4, 9, 16, 25, 36, 49 を保持
+```
+
+**disjoint な**要素を書くワーカーは同期不要。同じ要素を複数の isolate
+が同時に書くのはデータ競合であり、作業を分割して（上記のように）各要素
+の writer を 1 つにするのは呼び出し側の責任。
 
 ---
 
