@@ -196,6 +196,15 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         o->set_or_append(n.entries[k].first.s, val, mut);
       }
+      // A SharedBuffer handle crosses the isolate boundary by value (its
+      // hidden id), giving the child a zero-copy view of the same backing
+      // bytes (process-global registry). Restore the O(1) discriminators so
+      // the rebuilt handle routes through the packable get/set/index paths —
+      // the flags aren't slots, so generic Object copy alone would drop them.
+      if (o->find_slot("__sharedbuffer_id__") != static_cast<size_t>(-1))
+        o->is_shared_buffer = true;
+      if (o->find_slot("__packedview_id__") != static_cast<size_t>(-1))
+        o->is_packed_view = true;
       return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
     }
     case K::Closure: {
