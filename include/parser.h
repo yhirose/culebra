@@ -1114,4 +1114,60 @@ inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble() {
   return cached;
 }
 
+// Invoke `f(name, line, column)` for each identifier that `pattern`
+// would bind on a successful match. `_` (sink) is skipped. A pure AST
+// helper (no runtime types), shared by the interpreter, the JIT, and the
+// static lint pass.
+template <typename F>
+inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
+  using namespace peg::udl;
+  if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
+    for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
+    return;
+  }
+  auto emit = [&](std::string_view name, size_t line, size_t col) {
+    if (name != "_") f(name, line, col);
+  };
+  switch (pattern.tag) {
+    case "IDENTIFIER"_:
+      emit(pattern.token, pattern.line, pattern.column);
+      return;
+    case "TYPED_IDENT"_: {
+      auto& id = *pattern.nodes[0];
+      emit(id.token, id.line, id.column);
+      return;
+    }
+    case "ARRAY_PATTERN"_:
+    case "TUPLE_PATTERN"_:
+      for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
+      return;
+    case "CTOR_PATTERN"_:
+      // nodes[0] = CTOR_PATH (the ctor name token); nodes[1..] are the
+      // positional payload sub-patterns, each of which may bind.
+      for (size_t i = 1; i < pattern.nodes.size(); i++) {
+        for_each_pattern_binding(*pattern.nodes[i], f);
+      }
+      return;
+    case "REST_PATTERN"_: {
+      auto& id = *pattern.nodes[0];
+      emit(id.token, id.line, id.column);
+      return;
+    }
+    case "OBJECT_PATTERN"_:
+      for (auto& entry : pattern.nodes) {
+        // `OBJECT_PAT_ENTRY` carries [IDENTIFIER, PATTERN]; recurse
+        // into the sub-pattern. Bare IDENTIFIER is the shorthand form
+        // — bind the key as the slot name.
+        if (entry->tag == "OBJECT_PAT_ENTRY"_) {
+          for_each_pattern_binding(*entry->nodes[1], f);
+        } else {
+          emit(entry->token, entry->line, entry->column);
+        }
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 }  // namespace culebra

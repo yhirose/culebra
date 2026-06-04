@@ -59,19 +59,10 @@ inline bool _invoke_user_eq(const Value& a, const Value& b);
 inline std::unordered_map<std::string_view, Value>& string_builtins();
 inline std::unordered_map<std::string_view, Value>& iterator_builtins();
 
-// --- Static shadow analyzer ---
-// (throw_shadow_error lives in shared.h — shared by interp and JIT.)
-//
-// Walks the AST once before eval, raising ShadowError at any binding
-// site that would shadow a name from an enclosing function scope. This
-// matches the JIT's compile-time check (jit.h `collect_fn_locals` /
-// `visit_for_frees`) so both backends reject shadow violations
-// uniformly — including dead code that never executes.
-//
-// `outer[0]` is the top-level scope: those names act as globals and
-// may be shadowed freely. `outer[1..]` are enclosing function scopes
-// whose names would be captured by the current function and so are
-// off-limits for re-binding.
+// The static shadow analyzer now lives in lint.h (`lint::check_shadow`),
+// the shared home for pre-eval static checks. The interpreter invokes it
+// before evaluation; the JIT performs the equivalent check inline during
+// compilation (jit.h `collect_fn_locals` / `visit_for_frees`).
 
 // `_` is the non-binding sink in patterns and parameters.
 inline bool is_sink_name(std::string_view s) { return s == "_"; }
@@ -281,20 +272,6 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
   return static_cast<int64_t>(best_idx);
 }
 
-namespace _shadow {
-
-inline void check(std::string_view name, size_t line, size_t col,
-                  const std::vector<const std::set<std::string, std::less<>>*>& outer) {
-  if (is_sink_name(name)) return;
-  for (size_t i = 1; i < outer.size(); i++) {
-    if (outer[i]->contains(name)) {
-      throw_shadow_error(name, line, col);
-    }
-  }
-}
-
-}  // namespace _shadow
-
 // Walk an AST subtree and throw SyntaxError if a CLASS_DECL appears
 // in the current scope. Stops at FUNCTION / LAMBDA / LEXICAL_SCOPE
 // boundaries because those re-open a fresh scope (class declarations
@@ -328,335 +305,6 @@ inline void reject_class_decl_in_class_body(
   for (const auto& c : node.nodes) {
     reject_class_decl_in_class_body(*c, outer_class);
   }
-}
-
-// Invoke `f(name, line, column)` for each identifier that `pattern`
-// would bind on a successful match. `_` (sink) is skipped.
-template <typename F>
-inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
-  using namespace peg::udl;
-  if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
-    for (auto& sub : pattern.nodes) for_each_pattern_binding(*sub, f);
-    return;
-  }
-  auto emit = [&](std::string_view name, size_t line, size_t col) {
-    if (!is_sink_name(name)) f(name, line, col);
-  };
-  switch (pattern.tag) {
-    case "IDENTIFIER"_:
-      emit(pattern.token, pattern.line, pattern.column);
-      return;
-    case "TYPED_IDENT"_: {
-      auto& id = *pattern.nodes[0];
-      emit(id.token, id.line, id.column);
-      return;
-    }
-    case "ARRAY_PATTERN"_:
-    case "TUPLE_PATTERN"_:
-      for (auto& e : pattern.nodes) for_each_pattern_binding(*e, f);
-      return;
-    case "CTOR_PATTERN"_:
-      // nodes[0] = CTOR_PATH (the ctor name token); nodes[1..] are the
-      // positional payload sub-patterns, each of which may bind.
-      for (size_t i = 1; i < pattern.nodes.size(); i++) {
-        for_each_pattern_binding(*pattern.nodes[i], f);
-      }
-      return;
-    case "REST_PATTERN"_: {
-      auto& id = *pattern.nodes[0];
-      emit(id.token, id.line, id.column);
-      return;
-    }
-    case "OBJECT_PATTERN"_:
-      for (auto& entry : pattern.nodes) {
-        // `OBJECT_PAT_ENTRY` carries [IDENTIFIER, PATTERN]; recurse
-        // into the sub-pattern. Bare IDENTIFIER is the shorthand form
-        // — bind the key as the slot name.
-        if (entry->tag == "OBJECT_PAT_ENTRY"_) {
-          for_each_pattern_binding(*entry->nodes[1], f);
-        } else {
-          emit(entry->token, entry->line, entry->column);
-        }
-      }
-      return;
-    default:
-      return;
-  }
-}
-
-namespace _shadow {
-
-inline void check_pattern(
-    const peg::Ast& pattern,
-    const std::vector<const std::set<std::string, std::less<>>*>& outer) {
-  for_each_pattern_binding(
-      pattern, [&](std::string_view name, size_t line, size_t col) {
-        check(name, line, col, outer);
-      });
-}
-
-void analyze_fn_body(const peg::Ast& params_ast, const peg::Ast& body_ast,
-                     std::vector<const std::set<std::string, std::less<>>*>& outer);
-
-// Phase 1: walk this function's body, collecting binding sites into
-// `locals` and checking shadow violations. Stops at nested function
-// boundaries (recursed into in phase 2).
-inline void collect_locals(
-    const peg::Ast& node, std::set<std::string, std::less<>>& locals,
-    const std::vector<const std::set<std::string, std::less<>>*>& outer) {
-  using namespace peg::udl;
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
-
-  if (node.tag == "MATCH"_) {
-    // Match-arm bindings are arm-scoped at runtime, but we register
-    // them in the enclosing function's locals so nested closures
-    // inside an arm body can capture them. This over-approximates
-    // (a closure in a *different* arm would see the previous arm's
-    // names too) but only affects free-var resolution, never the
-    // shadow check itself — `check` looks at outer[1..] only.
-    for (auto& arm : node.nodes[1]->nodes) {
-      check_pattern(*arm->nodes[0], outer);
-      for_each_pattern_binding(
-          *arm->nodes[0], [&](std::string_view name, size_t, size_t) {
-            locals.insert(std::string(name));
-          });
-    }
-    // fall through to walk arm bodies
-  }
-
-  if (node.tag == "TRY"_) {
-    auto& id = *node.nodes[1];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
-    if (!is_sink_name(name)) locals.insert(name);
-    // fall through
-  }
-
-  if (node.tag == "FOR"_) {
-    auto& var = *node.nodes[0];
-    // The loop variable may be a destructuring pattern (`for (i, x) in`).
-    if (is_pattern_param(var)) {
-      check_pattern(var, outer);
-    } else {
-      check(std::string(var.token), var.line, var.column, outer);
-    }
-    // FOR binding is block-scoped; deliberately not added to enclosing
-    // locals so a same-named binding outside the loop doesn't see it.
-    collect_locals(*node.nodes[1], locals, outer);
-    collect_locals(*node.nodes[2], locals, outer);
-    return;
-  }
-
-  if (node.tag == "ASSIGNMENT"_) {
-    auto av = culebra::view_assignment(node);
-    if (av.lvalcnt == 1 && !av.compound) {
-      auto ident_node = node.nodes[av.lvaloff];
-      if (ident_node->tag == "IDENTIFIER"_) {
-        auto name = std::string(ident_node->token);
-        if (av.is_let || av.is_mut) {
-          check(name, ident_node->line, ident_node->column, outer);
-          if (!is_sink_name(name)) locals.insert(name);
-        } else {
-          // Bare assignment is auto-local only when the name doesn't
-          // already exist in any outer scope.
-          bool in_outer = false;
-          for (auto* s : outer) {
-            if (s->contains(name)) {
-              in_outer = true;
-              break;
-            }
-          }
-          if (!in_outer && !is_sink_name(name)) locals.insert(name);
-        }
-      }
-    }
-    collect_locals(*node.nodes.back(), locals, outer);
-    return;
-  }
-
-  if (node.tag == "TRAIT_DECL"_) {
-    // A trait binds no name in the value env (traits live in the trait
-    // registry, not as a value), so nothing enters `locals`. Crucially we
-    // do NOT fall through to the generic recursion: descending would
-    // hoist every trait method's params and body-lets into the enclosing
-    // function's local set, producing a false shadow report between
-    // sibling methods. Method bodies are analyzed on their own by
-    // descend_into_nested. Matches the JIT's collect_fn_locals.
-    return;
-  }
-
-  if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_ ||
-      node.tag == "ENUM_DECL"_) {
-    // Skip leading DECORATOR children (added grammar form
-    // `@expr ... fn name() {...}` / `@expr ... class Name {...}`).
-    // ENUM_DECL binds its enum name the same way (CLASS_HEAD node).
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      collect_locals(*node.nodes[i], locals, outer);
-      i++;
-    }
-    auto& id = *node.nodes[i];
-    // Both CLASS_DECL and MULTIFN_DECL now use CLASS_HEAD, which may
-    // carry Generic params (`Box<T>`, `min<T: Bound>`); strip via
-    // parse_generic_head so the binding lives under the outer name.
-    auto name = std::string(parse_generic_head(id.token).outer);
-    check(name, id.line, id.column, outer);
-    if (!is_sink_name(name)) locals.insert(name);
-    return;
-  }
-
-  // IMPORT_STMT introduces a local binding for the imported namespace.
-  if (node.tag == "IMPORT_STMT"_) {
-    auto& id = *node.nodes[0];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
-    if (!is_sink_name(name)) locals.insert(name);
-    return;
-  }
-
-  // DESTRUCTURE_ASSIGN binds a pattern to a value.
-  if (node.tag == "DESTRUCTURE_ASSIGN"_) {
-    const auto& pattern = *node.nodes[1];
-    check_pattern(pattern, outer);
-    for_each_pattern_binding(
-        pattern, [&](std::string_view name, size_t, size_t) {
-          locals.insert(std::string(name));
-        });
-    collect_locals(*node.nodes[2], locals, outer);
-    return;
-  }
-
-  for (auto& c : node.nodes) collect_locals(*c, locals, outer);
-}
-
-// Phase 2: descend into nested function bodies with the now-populated
-// outer chain.
-inline void descend_into_nested(
-    const peg::Ast& node,
-    const std::set<std::string, std::less<>>& my_locals,
-    std::vector<const std::set<std::string, std::less<>>*>& outer) {
-  using namespace peg::udl;
-
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) {
-    // FUNCTION's RETURN_TYPE (if present) is metadata only — the
-    // shadow walker only needs params + body, which `view_function`
-    // resolves uniformly for both forms.
-    auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
-                                       : culebra::view_lambda(node);
-    outer.push_back(&my_locals);
-    analyze_fn_body(*fv.params, *fv.body, outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "MULTIFN_DECL"_) {
-    // [DECORATOR*, IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK]
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      // Decorators are evaluated in the outer scope, not the fn's
-      // inner scope — descend with the current `outer`.
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    outer.push_back(&my_locals);
-    analyze_fn_body(*node.nodes[i + 1], *node.nodes.back(), outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "DEFER"_) {
-    // [BLOCK] — same scope rules as a 0-param nested function.
-    outer.push_back(&my_locals);
-    std::set<std::string, std::less<>> defer_locals;
-    collect_locals(*node.nodes[0], defer_locals, outer);
-    descend_into_nested(*node.nodes[0], defer_locals, outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "CLASS_DECL"_) {
-    // [DECORATOR*, CLASS_HEAD, METHOD ...]. Each METHOD is viewed
-    // through `view_method` so size 3 (static field) and size 4
-    // (method) share the same handling.
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      auto mv = culebra::view_method(*node.nodes[j]);
-      if (mv.is_field || mv.is_typed_field) {
-        if (mv.value) descend_into_nested(*mv.value, my_locals, outer);
-        continue;
-      }
-      outer.push_back(&my_locals);
-      analyze_fn_body(*mv.params, **mv.body, outer);
-      outer.pop_back();
-    }
-    return;
-  }
-
-  if (node.tag == "TRAIT_DECL"_) {
-    // [DECORATOR*, CLASS_HEAD, TRAIT_METHOD ...] — each TRAIT_METHOD is
-    // [IDENTIFIER, PARAMETERS, RETURN_TYPE?, TRAIT_BODY?]. Default-body
-    // methods are nested fns whose body must pass the shadow check;
-    // signature-only methods have no body to analyze.
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      auto tv = culebra::view_trait_method(*node.nodes[j]);
-      if (!tv.body) continue;
-      outer.push_back(&my_locals);
-      analyze_fn_body(*tv.params, *tv.body, outer);
-      outer.pop_back();
-    }
-    return;
-  }
-
-  for (auto& c : node.nodes) descend_into_nested(*c, my_locals, outer);
-}
-
-inline void analyze_fn_body(
-    const peg::Ast& params_ast, const peg::Ast& body_ast,
-    std::vector<const std::set<std::string, std::less<>>*>& outer) {
-  std::set<std::string, std::less<>> my_locals;
-  for (auto& p : params_ast.nodes) {
-    if (is_kw_only_sep(*p)) continue;
-    if (is_pattern_param(*p)) {
-      // Destructuring param (`fn ({a, b})`) — register every name the
-      // pattern binds (not a single param node).
-      check_pattern(*p, outer);
-      for_each_pattern_binding(
-          *p, [&](std::string_view nm, size_t, size_t) {
-            if (!is_sink_name(std::string(nm))) my_locals.insert(std::string(nm));
-          });
-      continue;
-    }
-    auto [name_sv, line, col] = extract_param_name_loc(*p);
-    auto name = std::string(name_sv);
-    check(name, line, col, outer);
-    if (!is_sink_name(name)) my_locals.insert(name);
-  }
-  collect_locals(body_ast, my_locals, outer);
-  descend_into_nested(body_ast, my_locals, outer);
-}
-
-}  // namespace _shadow
-
-// Top-level entry: run the static shadow check over an entire script
-// AST before evaluation begins. Throws a `ShadowError` CulebraError on
-// the first violation encountered. `outer` starts empty — top-level
-// names enter the chain only when a nested function pushes them, so
-// the first scope (`outer[0]` from a nested function's perspective)
-// is the top-level / "globals" frame which `check` skips.
-inline void check_shadow_static(const peg::Ast& ast) {
-  std::set<std::string, std::less<>> top_locals;
-  std::vector<const std::set<std::string, std::less<>>*> outer;
-  _shadow::collect_locals(ast, top_locals, outer);
-  _shadow::descend_into_nested(ast, top_locals, outer);
 }
 
 // Cycle collector for ObjectValue/ArrayValue (shared_ptr-based).
@@ -1821,7 +1469,7 @@ struct Environment : std::enable_shared_from_this<Environment> {
   // `_` is a non-binding sink: any binding form (`let _`, `for _ in`,
   // `fn(_, _, x)`, `match { _ => }`) drops the value instead of
   // introducing a name. Shadow checking happens statically via
-  // `check_shadow_static` (see top of file) before evaluation begins.
+  // `lint::check_shadow` (lint.h) before evaluation begins.
 
   const Value& get(std::string_view s) const {
     if (auto it = dictionary.find(s); it != dictionary.end()) {
@@ -7946,7 +7594,7 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
     }
   };
   try {
-    for (const auto& m : modules) check_shadow_static(*m.ast);
+    for (const auto& m : modules) lint::check_shadow(*m.ast);
 
     for (size_t i = 0; i + 1 < modules.size(); ++i) {
       const auto& m = modules[i];
@@ -8010,7 +7658,7 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     }
   };
   try {
-    check_shadow_static(*ast);
+    lint::check_shadow(*ast);
     // Held by shared_ptr so FunctionValues created during eval (which
     // capture `shared_from_this()`) can keep the Interpreter alive
     // past this call's stack scope — see comment on `Interpreter`.
