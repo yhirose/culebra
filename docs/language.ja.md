@@ -1646,7 +1646,8 @@ for {index, value} in xs.iter().enumerate() { ... } # オブジェクトパタ�
 ### `return`
 
 関数本体内でのみ有効。指定した値（または `nil`）で関数を抜けます。
-トップレベルでの `return` はエラー。
+関数の外の `return` は `SyntaxError`（実行前に検査）。スクリプトは
+最後の文で終了し、早期終了は `Sys.exit` を使う。
 
 ### `debugger`
 

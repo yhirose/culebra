@@ -116,5 +116,28 @@ expect_accept "args-rest distinct"      'fn f(x, *args) { x }'
 expect_accept "destructuring param"     'fn f({a, b}) { a }'
 expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 
+# `return` outside any function is a SyntaxError (docs §return; `Sys.exit`
+# is the early-exit mechanism, and the module interface is `export`, so a
+# top-level return value goes nowhere).
+expect_syntax_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  if [[ "$out" == *RAN* || "$out" != *"return outside function"* ]]; then
+    echo "FAIL return-reject [$1]: $out"; fail=1
+  fi
+}
+expect_syntax_reject "top-level return value" 'return 5'
+expect_syntax_reject "top-level bare return"  'return'
+expect_syntax_reject "return in top if"       'if true { return 1 }'
+expect_syntax_reject "return in top for"      'for i in [1] { return }'
+
+# Accepted: `return` inside a function / lambda / method, or a defer closure
+# (a defer body is its own closure, so its `return` exits the defer).
+expect_accept "return in fn"            'fn f() { return 5 }'
+expect_accept "return in nested loop"   'fn f() { for i in [1] { return i } }'
+expect_accept "return in method"        'class C { m() { return 9 } }'
+expect_accept "return in defer"         'fn f() { defer { return } }'
+expect_accept "return in top defer"     'for i in [1] { defer { return } }'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

@@ -88,6 +88,17 @@ class ScopeWalker {
     ~LoopDepthGuard() { slot = saved; }
   };
 
+  // Nesting depth inside function-like bodies (function / lambda / method /
+  // defer closure). `return` is valid only when this is > 0; a top-level
+  // `return` is a SyntaxError (docs §return; a defer's own `return` exits the
+  // defer closure, so a defer body counts as a boundary).
+  int fn_depth_ = 0;
+  struct FnDepthGuard {
+    int& slot;
+    explicit FnDepthGuard(int& s) : slot(s) { ++slot; }
+    ~FnDepthGuard() { --slot; }
+  };
+
   // Innermost-first lookup: 'l' = let (immutable), 'm' = mutable, 0 = unknown.
   char classify(std::string_view name) const {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
@@ -143,6 +154,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
                                         : culebra::view_lambda(node);
       check_dup_params(*fv.params);
       LoopDepthGuard g(loop_depth_, 0);
+      FnDepthGuard fg(fn_depth_);
       scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
       return;
     }
@@ -156,8 +168,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // in the JIT — so it is a function boundary for break/continue. A
       // `defer { break }` cannot reach the enclosing loop (the JIT segfaults
       // on it today, the interp silently propagates), so reset loop depth.
+      // It is also a function boundary for `return` (which exits the defer
+      // closure, docs §defer).
       scopes_.emplace_back();
       LoopDepthGuard g(loop_depth_, 0);
+      FnDepthGuard fg(fn_depth_);
       walk_children(node);
       scopes_.pop_back();
       return;
@@ -211,6 +226,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       if (i + 1 >= node.nodes.size()) { walk_children(node); return; }
       check_dup_params(*node.nodes[i + 1]);
       LoopDepthGuard g(loop_depth_, 0);
+      FnDepthGuard fg(fn_depth_);
       scoped(*node.nodes.back(),
              [&](Scope& s) { collect_idents(*node.nodes[i + 1], s.muts); });
       return;
@@ -248,6 +264,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           continue;
         }
         check_dup_params(*mv.params);
+        FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
       return;
@@ -260,6 +277,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
         check_dup_params(*tv.params);
         if (!tv.body) continue;   // signature-only method: nothing to walk
+        FnDepthGuard fg(fn_depth_);
         scoped(*tv.body, [&](Scope& s) { collect_idents(*tv.params, s.muts); });
       }
       return;
@@ -278,6 +296,21 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             static_cast<long>(node.line), static_cast<long>(node.column),
             Severity::Error});
       }
+      return;
+    case "RETURN"_:
+      // `return` is valid only inside a function body (docs §return). A
+      // top-level `return` is silently swallowed by the interp's module
+      // ReturnValue catch today; the module interface is `export`, so the
+      // returned value goes nowhere — hoist it to a SyntaxError like the
+      // break/continue control-flow checks. Walk the return value (if any)
+      // for nested diagnostics regardless.
+      if (fn_depth_ == 0) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError", "return outside function",
+            static_cast<long>(node.line), static_cast<long>(node.column),
+            Severity::Error});
+      }
+      walk_children(node);
       return;
     case "ASSIGNMENT"_: {
       auto av = culebra::view_assignment(node);

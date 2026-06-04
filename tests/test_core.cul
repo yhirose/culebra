@@ -1305,4 +1305,4 @@ fn test_value_equality_semantics() {
 }
 test_value_equality_semantics()
 
-return // end
+// end

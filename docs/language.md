@@ -1739,7 +1739,9 @@ value (the loop's value remains `nil`).
 ### `return`
 
 Valid only inside a function body. Exits the enclosing function with
-the given value (or `nil`). Using `return` at top level is an error.
+the given value (or `nil`). `return` outside any function is a
+`SyntaxError` (checked before the program runs) — a script ends at its
+last statement, or exits early via `Sys.exit`.
 
 ### `debugger`
 
