@@ -4387,6 +4387,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count(
 
 struct JitMultiMethodEntry {
   std::vector<std::string> param_types;  // empty = "Any"
+  // Regular param names, parallel to param_types — a required param omitted
+  // positionally may be covered by a keyword of the same name.
+  std::vector<std::string> param_names;
   JitClosure* body;                       // +1 owned by this entry
   bool variadic = false;                  // has a `*args` catch-all
   // Required regular params (no default); matches arity [min_params,
@@ -4814,14 +4817,18 @@ inline std::string_view _jit_value_dyn_type(JitValue v) {
 // algorithm in interpreter.h.
 inline int64_t _jit_multifn_pick(
     const std::vector<JitMultiMethodEntry>& methods,
-    const std::vector<std::string_view>& arg_types) {
+    const std::vector<std::string_view>& arg_types,
+    const std::vector<std::string_view>& kwarg_keys = {}) {
   return culebra::multifn_pick(
-      methods, arg_types,
+      methods, arg_types, kwarg_keys,
       [](const JitMultiMethodEntry& m) -> const std::vector<std::string>& {
         return m.param_types;
       },
       [](const JitMultiMethodEntry& m) { return m.variadic; },
-      [](const JitMultiMethodEntry& m) { return m.min_params; });
+      [](const JitMultiMethodEntry& m) { return m.min_params; },
+      [](const JitMultiMethodEntry& m) -> const std::vector<std::string>& {
+        return m.param_names;
+      });
 }
 
 // Recover (body, name) for a multifn dispatcher closure given the
@@ -4835,7 +4842,8 @@ struct MultifnPick {
 inline MultifnPick _jit_multifn_resolve(
     JitClosure* cls, JitValue* positional, int64_t n_pos,
     int64_t line, int64_t col,
-    std::function<void()> release = nullptr) {
+    std::function<void()> release = nullptr,
+    const std::vector<std::string_view>& kwarg_keys = {}) {
   auto name_it = _jit_multifn_dispatcher_names().find(cls);
   if (name_it == _jit_multifn_dispatcher_names().end()) {
     if (release) release();
@@ -4864,7 +4872,7 @@ inline MultifnPick _jit_multifn_resolve(
                                           positional[i].data, trait_name);
     }
   }
-  auto pick = _jit_multifn_pick(m_it->second, arg_types);
+  auto pick = _jit_multifn_pick(m_it->second, arg_types, kwarg_keys);
   if (pick == -1) {
     throw culebra::CulebraError("DispatchError",
         fail("no matching method"), line, col);
@@ -4929,7 +4937,8 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
                                              const char* const* param_types,
                                              int64_t n_param_types,
                                              int64_t variadic,
-                                             int64_t min_arity) {
+                                             int64_t min_arity,
+                                             const char* const* param_names) {
   std::string name(name_cstr);
   JitMultiMethodEntry method;
   // Caller's `body` arrives at +1; the table takes that ownership
@@ -4938,10 +4947,13 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   method.variadic = variadic != 0;
   method.min_params = static_cast<size_t>(min_arity);
   method.param_types.reserve(static_cast<size_t>(n_param_types));
+  method.param_names.reserve(static_cast<size_t>(n_param_types));
   for (int64_t i = 0; i < n_param_types; i++) {
     // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
     method.param_types.emplace_back(culebra::canonicalize_type_annotation(
         param_types[i] ? param_types[i] : ""));
+    method.param_names.emplace_back(
+        param_names && param_names[i] ? param_names[i] : "");
   }
 
   auto& tbl = _jit_multimethods();
@@ -5097,8 +5109,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // dispatcher, so the recursion bottoms out in the meta-lookup
   // branch below.
   if (cls->fn_ptr == reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk)) {
+    // Keyword names (explicit + `**` splat) so dispatch can let a kwarg cover
+    // a required param. Mirrors interp's __KWARGS__ key set.
+    std::vector<std::string_view> kwarg_keys;
+    for (int64_t i = 0; i < n_kw; i++) kwarg_keys.push_back(kw_keys[i]);
+    for (int64_t i = 0; i < n_splat; i++) {
+      if (splat_objs[i].tag != TAG_OBJECT) continue;
+      auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
+      if (obj->shape)
+        for (const auto& nm : obj->shape->names) kwarg_keys.push_back(nm);
+    }
     auto picked = _jit_multifn_resolve(
-        cls, positional, n_pos, line, col, release_owned);
+        cls, positional, n_pos, line, col, release_owned, kwarg_keys);
     return culebra_runtime_call_with_kwargs(
         picked.body, this_val, n_pos, positional, n_kw, kw_keys, kw_vals,
         n_splat, splat_objs, line, col);
@@ -10327,12 +10349,14 @@ struct JIT {
     // multifn_register_and_install:
     //   JitClosure* (const char* name, JitClosure* body,
     //                const char** param_types, int64_t n_param_types,
-    //                int64_t variadic, int64_t min_arity)
+    //                int64_t variadic, int64_t min_arity,
+    //                const char** param_names)
     module_->getOrInsertFunction(rt::multifn_register_and_install,
                                  ptrTy, ptrTy, ptrTy, ptrTy,
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
+                                 builder_.getInt64Ty(),
+                                 ptrTy);
     // User-level throw: stashes tag+data in globals and raises a
     // C++ exception; try/catch landingpads read the globals back.
     module_->getOrInsertFunction(rt::throw_,
@@ -14478,7 +14502,9 @@ struct JIT {
     // Only regular params participate in multifn type dispatch —
     // kw-only and `**rest` params are not part of the dispatch key.
     std::vector<llvm::Constant*> typePtrs;
+    std::vector<llvm::Constant*> namePtrs;  // parallel param names (coverage)
     typePtrs.reserve(params_ast->nodes.size());
+    namePtrs.reserve(params_ast->nodes.size());
     bool mf_variadic = false;
     int64_t mf_min_arity = 0;  // regular params without a default (required)
     for (auto& p : params_ast->nodes) {
@@ -14486,6 +14512,10 @@ struct JIT {
       if (culebra::is_args_rest(*p)) { mf_variadic = true; continue; }
       if (culebra::is_kwargs_rest(*p)) continue;
       if (culebra::extract_default_expr(*p) == nullptr) mf_min_arity++;
+      auto nm = culebra::view_parameter(*p).name;
+      namePtrs.push_back(nm.empty()
+                             ? llvm::ConstantPointerNull::get(ptrTy)
+                             : get_or_create_global_str(std::string(nm), ".pn"));
       auto t = extract_type_annotation(*p, 2);
       if (t.empty()) {
         typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
@@ -14501,27 +14531,29 @@ struct JIT {
     }
     auto n_param_types = static_cast<int64_t>(typePtrs.size());
 
-    llvm::Value* paramTypesPtr;
-    if (typePtrs.empty()) {
-      paramTypesPtr = llvm::ConstantPointerNull::get(ptrTy);
-    } else {
-      auto arrayTy = llvm::ArrayType::get(ptrTy, typePtrs.size());
-      auto initializer = llvm::ConstantArray::get(arrayTy, typePtrs);
+    auto build_str_array = [&](const std::vector<llvm::Constant*>& ptrs,
+                               const char* tag) -> llvm::Value* {
+      if (ptrs.empty()) return llvm::ConstantPointerNull::get(ptrTy);
+      auto arrayTy = llvm::ArrayType::get(ptrTy, ptrs.size());
+      auto initializer = llvm::ConstantArray::get(arrayTy, ptrs);
       auto gv = new llvm::GlobalVariable(
           *module_, arrayTy, /*isConstant=*/true,
-          llvm::GlobalValue::PrivateLinkage, initializer, ".paramtypes");
-      paramTypesPtr = builder_.CreateBitCast(gv, ptrTy);
-    }
+          llvm::GlobalValue::PrivateLinkage, initializer, tag);
+      return builder_.CreateBitCast(gv, ptrTy);
+    };
+    llvm::Value* paramTypesPtr = build_str_array(typePtrs, ".paramtypes");
+    llvm::Value* paramNamesPtr = build_str_array(namePtrs, ".paramnames");
 
     auto namePtr = get_or_create_global_str(name, ".mname");
     auto dispatcherPtr = emit_call(
         module_->getOrInsertFunction(rt::multifn_register_and_install,
                                      ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,
-                                     i64Ty),
+                                     i64Ty, ptrTy),
         {namePtr, bodyClosurePtr, paramTypesPtr,
          builder_.getInt64(n_param_types),
          builder_.getInt64(mf_variadic ? 1 : 0),
-         builder_.getInt64(mf_min_arity)},
+         builder_.getInt64(mf_min_arity),
+         paramNamesPtr},
         "multifn.disp");
 
     auto dispatcherVal = make_func(dispatcherPtr);

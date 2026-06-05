@@ -73,7 +73,9 @@ struct SendNode {
   // re-registered on the child. mf_name non-empty selects this form.
   std::string mf_name;
   std::vector<std::vector<std::string>> mf_param_types;
+  std::vector<std::vector<std::string>> mf_param_names;
   std::vector<bool> mf_variadic;
+  std::vector<size_t> mf_min_params;
   int ref_id = -1;          // closure identity (for back-references)
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
 };

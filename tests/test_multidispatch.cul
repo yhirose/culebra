@@ -139,4 +139,25 @@ assert_eq(vd(1), 2)
 assert_eq(vd(1, 2), 3)
 assert_eq(vd(1, 2, 9, 9), 5)
 
+# A keyword argument may cover a *required* param the positional args didn't
+# fill (CLOS-style: keywords contribute to applicability). Order-independent.
+fn kwc(a, b = 10) { a + b }
+assert_eq(kwc(a: 1, b: 2), 3)      # both required+optional by keyword
+assert_eq(kwc(a: 5), 15)           # required by keyword, b defaulted
+assert_eq(kwc(b: 7, a: 1), 8)      # keyword order doesn't matter
+fn kwc3(a, b = 2, c = 3) { a * 100 + b * 10 + c }
+assert_eq(kwc3(a: 1), 123)
+assert_eq(kwc3(a: 1, c: 9), 129)
+
+# A required param supplied by NO argument is still unmatched (sound).
+let miss = try { kwc(b: 5); 'no error' } catch e { e.kind }
+assert_eq(miss, 'DispatchError')
+
+# Selection still scores on positional args, so type-distinguished overloads
+# dispatch as usual; keywords don't change which overload is most specific.
+fn kt(a: Long) { 'long' }
+fn kt(a: String) { 'str' }
+assert_eq(kt(5), 'long')
+assert_eq(kt('x'), 'str')
+
 puts("test_multidispatch: OK")

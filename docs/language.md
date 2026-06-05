@@ -3310,16 +3310,25 @@ Multimethods only apply to **top-level `fn name(...)` declarations**.
 **Default parameters and arity.** A method with default parameters
 matches any call whose positional-argument count is between its
 required count (params without a default) and its total param count;
-the unsupplied tail is filled from the defaults, and an omitted
-parameter may instead be supplied as a trailing keyword. Among equally
+the unsupplied tail is filled from the defaults. Among equally
 type-specific matches, the one that fills fewer parameters by default
 wins (a more exact arity is more specific).
 
+A **keyword argument** may also cover a required parameter that the
+positional arguments didn't fill — keywords contribute to *which
+methods are applicable*. Selection itself still scores on the
+positional arguments only, so two overloads that differ solely by a
+keyword (or keyword-supplied type) are **ambiguous**, not silently
+disambiguated. A required parameter supplied by neither a positional
+argument nor a keyword leaves the call unmatched (`DispatchError`).
+
 ```
 fn at(a, b = 10) { a + b }
-at(1)        # → 11   (b defaulted)
-at(1, 2)     # → 3
-at(1, b: 2)  # → 3    (b by keyword)
+at(1)              # → 11   (b defaulted)
+at(1, 2)           # → 3
+at(1, b: 2)        # → 3    (b by keyword)
+at(a: 1, b: 2)     # → 3    (a — required — covered by keyword)
+at(b: 9)           # !! DispatchError — required `a` not supplied
 ```
 
 ### Syntax

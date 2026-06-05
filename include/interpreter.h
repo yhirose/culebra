@@ -207,11 +207,24 @@ inline int multifn_specificity(std::string_view param_type,
 // variadic entry matches any arity >= its required count. Among equal-
 // type-specificity fixed-arity matches, the entry that fills fewer params by
 // default (smaller regular count) wins; a genuine tie is ambiguous.
-template <class Entry, class ParamsOf, class IsVariadic, class MinArityOf>
+//
+// `names_of(entry)` returns the regular param names (parallel to params_of) and
+// `kwarg_keys` lists the keyword-argument names supplied at the call. A required
+// param not covered by a positional argument may instead be covered by a kwarg
+// of the same name (CLOS-style: keywords contribute to *applicability* only).
+// Selection still scores on positional args, so overloads that differ only by
+// keyword are ambiguous — a deliberate, runtime-dispatch-friendly choice.
+template <class Entry, class ParamsOf, class IsVariadic, class MinArityOf,
+          class NamesOf>
 inline int64_t multifn_pick(const std::vector<Entry>& methods,
                              const std::vector<std::string_view>& arg_types,
+                             const std::vector<std::string_view>& kwarg_keys,
                              ParamsOf params_of, IsVariadic is_variadic_of,
-                             MinArityOf min_arity_of) {
+                             MinArityOf min_arity_of, NamesOf names_of) {
+  auto has_kwarg = [&](std::string_view n) {
+    for (auto k : kwarg_keys) if (k == n) return true;
+    return false;
+  };
   std::vector<int> score(arg_types.size());
   std::vector<int> best_score(arg_types.size());
   size_t best_idx = 0;
@@ -223,9 +236,17 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
     const auto& params = params_of(methods[i]);
     bool variadic = is_variadic_of(methods[i]);
     size_t min_a = min_arity_of(methods[i]);
-    if (variadic ? arg_types.size() < min_a
-                 : (arg_types.size() < min_a || arg_types.size() > params.size())) {
-      continue;
+    // Too many positional args (a fixed-arity entry can't absorb them).
+    if (!variadic && arg_types.size() > params.size()) continue;
+    // Every required param past the positional prefix must be named by a kwarg
+    // (defaults are trailing, so required params are the leading [0, min_a)).
+    if (arg_types.size() < min_a) {
+      const auto& names = names_of(methods[i]);
+      bool covered = true;
+      for (size_t r = arg_types.size(); r < min_a; r++) {
+        if (r >= names.size() || !has_kwarg(names[r])) { covered = false; break; }
+      }
+      if (!covered) continue;
     }
     bool ok = true;
     for (size_t p = 0; p < arg_types.size(); p++) {
@@ -4337,6 +4358,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   struct MultiMethod {
     std::vector<std::string> param_types;
+    // Regular param names, parallel to param_types. A required param omitted
+    // positionally may be covered by a keyword argument of the same name.
+    std::vector<std::string> param_names;
     Value body;
     // `*args` catch-all: matches any arity >= param_types.size(); the
     // surplus args are absorbed (scored as Any) so a fixed-arity entry
@@ -5053,7 +5077,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Adapter around the shared `culebra::multifn_pick` template — maps
   // its int64_t return into the interp-side PickResult enum.
   PickResult pick_method(const std::vector<MultiMethod>& methods,
-                         const std::vector<Value>& args) {
+                         const std::vector<Value>& args,
+                         const std::vector<std::string_view>& kwarg_keys = {}) {
     std::vector<std::string_view> arg_types(args.size());
     for (size_t p = 0; p < args.size(); p++) {
       arg_types[p] = value_dyn_type(args[p]);
@@ -5066,12 +5091,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         (void)type_matches(arg, trait_name);
       }
     }
-    auto r = multifn_pick(methods, arg_types,
+    auto r = multifn_pick(methods, arg_types, kwarg_keys,
                           [](const MultiMethod& m) -> const std::vector<std::string>& {
                             return m.param_types;
                           },
                           [](const MultiMethod& m) { return m.variadic; },
-                          [](const MultiMethod& m) { return m.min_params; });
+                          [](const MultiMethod& m) { return m.min_params; },
+                          [](const MultiMethod& m) -> const std::vector<std::string>& {
+                            return m.param_names;
+                          });
     if (r == -1) return {PickResult::NoMatch, 0};
     if (r == -2) return {PickResult::Ambiguous, 0};
     return {PickResult::Match, static_cast<size_t>(r)};
@@ -5236,6 +5264,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (p.kw_only || p.kwargs_rest) continue;
       // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
       method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
+      method.param_names.emplace_back(p.name);
       // A param without a default is required; the rest may be omitted (filled
       // by their default) or supplied by keyword.
       if (p.default_expr == nullptr && p.default_value == nullptr)
@@ -5301,7 +5330,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           auto line = callEnv->get("__LINE__").to_long();
           auto col = callEnv->get("__COLUMN__").to_long();
           const auto& args = *callEnv->get("__ARGS__").to_array().values;
-          auto pick = self->pick_method(*methods, args);
+          // Keyword names supplied at the call (explicit + `**` splat, both
+          // merged into the dispatcher's `**__KWARGS__`). They let a kwarg
+          // cover a required param the positional args didn't fill.
+          std::vector<std::string_view> kwarg_keys;
+          {
+            const auto& kw = callEnv->get("__KWARGS__");
+            if (kw.type == Value::Object) {
+              for (const auto& k : *kw.get<ObjectValue>().key_order) {
+                if (k.type == Value::String) kwarg_keys.push_back(k.to_string_view());
+              }
+            }
+          }
+          auto pick = self->pick_method(*methods, args, kwarg_keys);
           if (pick.status == PickResult::NoMatch) {
             throw CulebraError("DispatchError", std::format(
                 "no matching method for `{}`", name_owned), line, col);

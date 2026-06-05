@@ -133,7 +133,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         const auto& methods = _jit_multimethods()[n.mf_name];
         for (const auto& mth : methods) {
           n.mf_param_types.push_back(mth.param_types);
+          n.mf_param_names.push_back(mth.param_names);
           n.mf_variadic.push_back(mth.variadic);
+          n.mf_min_params.push_back(mth.min_params);
           n.elems.push_back(jit_serialize(
               JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mth.body)}, ctx));
         }
@@ -228,8 +230,10 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         for (size_t i = 0; i < n.elems.size(); i++) {
           JitValue body = jit_deserialize(n.elems[i], ctx);
           methods.push_back({n.mf_param_types[i],
+                             n.mf_param_names[i],
                              reinterpret_cast<JitClosure*>(body.data),
-                             n.mf_variadic[i]});
+                             n.mf_variadic[i],
+                             n.mf_min_params[i]});
         }
         return cv;
       }
