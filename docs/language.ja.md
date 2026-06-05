@@ -2593,6 +2593,8 @@ matcher 一族 `assert_true` / `assert_eq` 等）は
 | `s.upper() -> String`                           | ASCII の大文字化                      |
 | `s.lower() -> String`                           | ASCII の小文字化                      |
 | `s.trim() -> String`                            | 前後の空白（` `, `\t`, `\n`, `\r`）を除去 |
+| `s.trim_start(chars: StringLike = "") -> String` | 先頭側を除去。引数なし → 空白、`chars` → その集合の先頭 scalar（範囲非対応） |
+| `s.trim_end(chars: StringLike = "") -> String`  | 末尾側を除去。例 `s.trim_end("\n")` |
 | `s.tr(from: StringLike, to: StringLike) -> String` | scalar 単位の変換（Ruby `tr`、文字リスト形式 — `a-z` 範囲や `^` は非対応）。`s` の各 scalar が `from` にあれば `to` の同位置 scalar に置換。`to` が短ければ末尾 scalar を繰り返し、空 `to` は削除。`s.tr("０１２３４５６７８９", "0123456789")` |
 | `s.split(sep: StringLike) -> Array<StringView>` | `sep` の出現ごとに分割。 `sep` が空なら `[s]`。 要素は 1 個の source を共有 |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split` の遅延版。 巨大入力で `.take(n)` する場合の早期終了に |

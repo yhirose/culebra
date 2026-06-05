@@ -647,6 +647,43 @@ inline size_t utf8_scalar_len(unsigned char c) {
   return 1;
 }
 
+// Trim scalars in `chars` from one or both ends. An empty `chars` trims
+// ASCII whitespace (the no-arg `trim`/`trim_start`/`trim_end` default).
+// Returns a view into `s`. Shared by interp + JIT so both agree.
+inline std::string_view trim_chars(std::string_view s, std::string_view chars,
+                                   bool left, bool right) {
+  auto in_set = [&](std::string_view ch) {
+    if (chars.empty()) {
+      return ch.size() == 1 && std::isspace(static_cast<unsigned char>(ch[0]));
+    }
+    for (size_t i = 0; i < chars.size();) {
+      size_t n = utf8_scalar_len(static_cast<unsigned char>(chars[i]));
+      if (i + n > chars.size()) n = 1;
+      if (chars.substr(i, n) == ch) return true;
+      i += n;
+    }
+    return false;
+  };
+  size_t b = 0, e = s.size();
+  if (left) {
+    while (b < e) {
+      size_t n = utf8_scalar_len(static_cast<unsigned char>(s[b]));
+      if (b + n > e) n = 1;
+      if (!in_set(s.substr(b, n))) break;
+      b += n;
+    }
+  }
+  if (right) {
+    while (e > b) {
+      size_t st = e - 1;  // walk back over UTF-8 continuation bytes
+      while (st > b && (static_cast<unsigned char>(s[st]) & 0xC0) == 0x80) st--;
+      if (!in_set(s.substr(st, e - st))) break;
+      e = st;
+    }
+  }
+  return s.substr(b, e - b);
+}
+
 // Per-scalar translation (Ruby `String#tr`, character-list form — no `a-z`
 // ranges or `^` negation). Each Unicode scalar of `s` that appears in `from`
 // is replaced by the scalar at the same position in `to`; if `to` is shorter

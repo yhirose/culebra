@@ -1503,6 +1503,10 @@ inline const std::shared_ptr<Value>& kw_default_nil() {
   static const auto v = std::make_shared<Value>(Value{});
   return v;
 }
+inline const std::shared_ptr<Value>& kw_default_empty_str() {
+  static const auto v = std::make_shared<Value>(Value(std::string()));
+  return v;
+}
 
 struct Environment : std::enable_shared_from_this<Environment> {
   Environment(std::shared_ptr<Environment> parent = nullptr)
@@ -3514,6 +3518,24 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
          const auto& s = callEnv->get("this").to_string();
          return Value(std::string(trim_ascii(s)));
        }))},
+      // Directional trim. No arg → ASCII whitespace; `chars` → trim leading
+      // (trim_start) / trailing (trim_end) scalars in that set. See trim_chars.
+      {"trim_start"sv,
+       Value(FunctionValue(
+           {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(std::string(culebra::trim_chars(
+                 callEnv->get("this").to_string_view(),
+                 callEnv->get("chars").to_string_view(), true, false)));
+           }))},
+      {"trim_end"sv,
+       Value(FunctionValue(
+           {{"chars", false, "StringLike"sv, nullptr, kw_default_empty_str()}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(std::string(culebra::trim_chars(
+                 callEnv->get("this").to_string_view(),
+                 callEnv->get("chars").to_string_view(), false, true)));
+           }))},
       // Per-scalar translation (Ruby `tr`, character-list form). See
       // culebra::str_tr — `to` shorter repeats its last scalar; empty `to`
       // deletes. e.g. s.tr("０１２３４５６７８９", "0123456789").

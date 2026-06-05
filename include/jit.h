@@ -6994,6 +6994,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_tr(
       culebra::str_tr(_str_sv(s), _str_sv(from), _str_sv(to)));
 }
 
+// `s.trim_start(chars)` / `s.trim_end(chars)` — empty `chars` trims ASCII
+// whitespace. Shares culebra::trim_chars with the interp.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim_start(
+    const char* s, const char* chars) {
+  return _culebra_heap_str(
+      culebra::trim_chars(_str_sv(s), _str_sv(chars), true, false));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim_end(
+    const char* s, const char* chars) {
+  return _culebra_heap_str(
+      culebra::trim_chars(_str_sv(s), _str_sv(chars), false, true));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
     const char* s, const char* sep) {
   auto* r = culebra_runtime_array_new();
@@ -7709,6 +7722,8 @@ inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
 inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
 inline constexpr auto str_trim            = "culebra_runtime_str_trim";
 inline constexpr auto str_tr              = "culebra_runtime_str_tr";
+inline constexpr auto str_trim_start      = "culebra_runtime_str_trim_start";
+inline constexpr auto str_trim_end        = "culebra_runtime_str_trim_end";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
 inline constexpr auto throw_              = "culebra_runtime_throw";
 inline constexpr auto to_long             = "culebra_runtime_to_long";
@@ -8901,7 +8916,8 @@ struct JIT {
     static const std::unordered_set<std::string_view> known = {
         "size",        "push",       "pop",      "reverse", "slice",
         "join",        "index_of",   "contains", "upper",   "lower",
-        "trim",        "tr",         "split",      "starts_with", "ends_with",
+        "trim",        "tr",         "trim_start", "trim_end",
+        "split",       "starts_with", "ends_with",
         "keys",        "has",        "remove",
         // Array eager + iterator lazy / terminal methods. Tag-dispatched
         // in compile_builtin_method — Array receivers keep the eager
@@ -10539,6 +10555,8 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_lower, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_trim, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_tr, ptrTy, ptrTy, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_trim_start, ptrTy, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_trim_end, ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy,
                                  ptrTy);
     module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
@@ -19016,6 +19034,25 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
     emit_value_release(from);
     emit_value_release(to);
+    return make_string(s);
+  }
+
+  if ((method == "trim_start" || method == "trim_end") &&
+      argsAst.nodes.size() <= 1) {
+    auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
+    // `chars` is optional — pass "" (whitespace mode) when omitted.
+    llvm::Value* chars = nullptr;
+    llvm::Value* charsPtr;
+    if (argsAst.nodes.empty()) {
+      charsPtr = emit_str_literal("");
+    } else {
+      chars = compile(*argsAst.nodes[0]);
+      charsPtr = coerce_strlike_cstr(chars, "tr.chars", false, "chars");
+    }
+    auto* fn = module_->getFunction(
+        method == "trim_start" ? rt::str_trim_start : rt::str_trim_end);
+    auto s = emit_call(fn, {strPtr, charsPtr});
+    if (chars) emit_value_release(chars);
     return make_string(s);
   }
 

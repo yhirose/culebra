@@ -1,0 +1,26 @@
+// Directional trim: trim_start / trim_end. No arg → ASCII whitespace; a
+// `chars` arg trims leading/trailing scalars in that set.
+
+// whitespace, one side
+assert_eq("  hi  ".trim_start(), "hi  ")
+assert_eq("  hi  ".trim_end(), "  hi")
+
+// char set
+assert_eq("xxhixx".trim_start("x"), "hixx")
+assert_eq("xxhixx".trim_end("x"), "xxhi")
+
+// the rstrip-newlines case
+assert_eq("text\n\n".trim_end("\n"), "text")
+
+// multiple chars in the set; chaining the two sides
+assert_eq("//a/b//".trim_start("/").trim_end("/"), "a/b")
+assert_eq("  \t x \t ".trim_start().trim_end(), "x")
+
+// no match → unchanged
+assert_eq("ab".trim_start("z"), "ab")
+assert_eq("ab".trim_end("z"), "ab")
+
+// multibyte trim char
+assert_eq("　全角　".trim_start("　").trim_end("　"), "全角")
+
+IO.puts("test_string_trim_dir OK")
