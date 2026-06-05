@@ -4274,6 +4274,20 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "let metas = `\\.^$|?*+()[]{}`; let mut out = \"\"; "
     "for c in s { if metas.contains(c) { out = out + `\\` + c } else { out = out + c } }; "
     "out }, "
+    // One-shot namespace forms — `Regex.find(pat, s)` hides the `compile`
+    // step for single uses (Python `re.search`/`sub`/...). Reuse for a
+    // pattern still wants `Regex.compile(pat)`; the underlying engine caches
+    // by pattern so the one-shots pay no recompile. Names match the compiled
+    // Regex's methods. Flags go inline ((?i)/(?m)/(?s)).
+    "find: fn(pattern, s) { _Regex.find(pattern, s) }, "
+    "match: fn(pattern, s) { _Regex.match(pattern, s) }, "
+    "find_all: fn(pattern, s) { _Regex.find_all(pattern, s) }, "
+    "test: fn(pattern, s) { _Regex.test(pattern, s) }, "
+    "split: fn(pattern, s) { _Regex.split(pattern, s) }, "
+    // replace_all routes through the class method so the String-template and
+    // Function-callback repl forms are handled in one place. (`Regex` here is
+    // the class in lexical scope — `.new`, not the namespace's `.compile`.)
+    "replace_all: fn(pattern, s, repl) { Regex.new(pattern).replace_all(s, repl) }, "
     "Regex: Regex } "
     "}; "
     "let Regex = _regex_module()\n";

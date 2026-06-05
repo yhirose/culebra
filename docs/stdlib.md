@@ -2011,6 +2011,28 @@ so the `StringView` results of `String.split` / `.slice` compose directly:
 | `Regex.compile(pat, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
 | `Regex.escape(s)` | `String` — backslash-quote every metacharacter so `s` matches literally |
 
+For a single use, the namespace methods below take the pattern directly and
+hide the `compile` step (like Python `re.search` / `re.sub`). Reusing one
+pattern across many inputs still wants `Regex.compile(pat)`, but the engine
+caches by pattern so the one-shot forms pay no recompile. Put flags inline
+(`(?i)` / `(?m)` / `(?s)`).
+
+| One-shot | Equivalent |
+| --- | --- |
+| `Regex.find(pat, s)` | `Regex.compile(pat).find(s)` — `Match` or `nil` |
+| `Regex.match(pat, s)` | anchored match at the start |
+| `Regex.find_all(pat, s)` | `[Match]` |
+| `Regex.test(pat, s)` | `Bool` |
+| `Regex.split(pat, s)` | `[String]` |
+| `Regex.replace_all(pat, s, repl)` | `String` — template or `fn (Match) -> String` repl |
+
+```culebra
+Regex.find('(\d+)', "ab12")[1]                   // => "12"
+Regex.test('(?i)hello', "HELLO")                 // => true (inline flag)
+Regex.replace_all('[;；]', "a;b；c", "、")        // => "a、b、c"
+Regex.find('x', "y")?.value ?? "none"            // => "none" (composes with ?. / ??)
+```
+
 | Method | Result |
 | --- | --- |
 | `re.test(s)` | `Bool` — does the pattern match anywhere in `s` |

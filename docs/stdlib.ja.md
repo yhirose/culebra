@@ -1938,6 +1938,20 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `Regex.compile(pat, flags)` | `Regex` — `flags` は `"i"` / `"m"` / `"s"` の文字列 |
 | `Regex.escape(s)` | `String` — メタ文字を全てバックスラッシュエスケープし `s` をリテラル一致に |
 
+その場限りの利用には、下の namespace メソッドがパターンを直接受け取り `compile` を隠します
+（Python `re.search` / `re.sub` と同様）。1 つのパターンを多数の入力に再利用するなら
+`Regex.compile(pat)` を使いますが、エンジンがパターンでキャッシュするので one-shot 形に再コンパイルの
+コストはありません。フラグはインライン（`(?i)` / `(?m)` / `(?s)`）で。
+
+| one-shot | 等価 |
+| --- | --- |
+| `Regex.find(pat, s)` | `Regex.compile(pat).find(s)` — `Match` または `nil` |
+| `Regex.match(pat, s)` | 先頭アンカーのマッチ |
+| `Regex.find_all(pat, s)` | `[Match]` |
+| `Regex.test(pat, s)` | `Bool` |
+| `Regex.split(pat, s)` | `[String]` |
+| `Regex.replace_all(pat, s, repl)` | `String` — テンプレート または `fn (Match) -> String` の repl |
+
 | メソッド | 結果 |
 | --- | --- |
 | `re.test(s)` | `Bool` — `s` のどこかにマッチするか |

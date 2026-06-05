@@ -1,0 +1,36 @@
+// One-shot Regex namespace forms — `Regex.find(pat, s)` etc. hide the
+// `compile` step for single uses. Names mirror the compiled Regex's methods.
+
+// find / match (return a Match or nil)
+let m = Regex.find('(\d+)-(\d+)', "ab 12-34 cd")
+assert_eq(m[1], "12")
+assert_eq(m[2], "34")
+assert_eq(Regex.find('\d+', "no digits"), nil)
+assert_eq(Regex.match('\d+', "12ab").value, "12")   // anchored at start
+assert_eq(Regex.match('\d+', "ab12"), nil)
+
+// test (Bool)
+assert_eq(Regex.test('\d+', "abc123"), true)
+assert_eq(Regex.test('\d+', "abc"), false)
+
+// find_all
+assert_eq(Regex.find_all('\d+', "a1 b22 c333").size(), 3)
+
+// split
+assert_eq(Regex.split('\s+', "the quick  brown"), ["the", "quick", "brown"])
+
+// replace_all — String template repl and Function repl
+assert_eq(Regex.replace_all('[;；]', "a;b；c", "、"), "a、b、c")
+assert_eq(Regex.replace_all('(\w+)@(\w+)', "x@y", '$2.$1'), "y.x")
+assert_eq(Regex.replace_all('\d+', "a1 b22", fn (m) { "<{m.value}>" }), "a<1> b<22>")
+
+// inline flags work (no flags arg on the one-shot forms)
+assert_eq(Regex.test('(?i)hello', "HELLO world"), true)
+
+// composes with ?. / ??
+assert_eq(Regex.find('x', "y")?.value ?? "none", "none")
+
+// the reuse path (Regex.compile) is unchanged
+assert_eq(Regex.compile('\d+').find_all("a1 b2").size(), 2)
+
+IO.puts("test_regex_oneshot OK")
