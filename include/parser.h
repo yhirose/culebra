@@ -182,7 +182,7 @@ const auto grammar_ = R"(
   # needs `?` then `?`) or `!=` (that needs `!` then `=`).
   CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ SAFE_DOT / _ SAFE_INDEX / _ DOT / NONNULL)*
   ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
-  ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)*)?
+  ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)* _ ','?)?
   ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
   KWARG_SPLAT              <-  '**' _ EXPRESSION
   KWARG                    <-  IDENTIFIER _ ':' _ EXPRESSION
@@ -195,7 +195,7 @@ const auto grammar_ = R"(
   # Array element list. SPREAD_ELEM (`...expr`) splices an iterable's
   # elements into the literal (`[...a, x]`). SPREAD_ELEM is kept by the
   # AstOptimizer so it doesn't collapse to its inner EXPRESSION.
-  SEQUENCE                 <-  (SEQ_ELEM (_ ',' _ SEQ_ELEM)*)?
+  SEQUENCE                 <-  (SEQ_ELEM (_ ',' _ SEQ_ELEM)* _ ','?)?
   SEQ_ELEM                 <-  SPREAD_ELEM / EXPRESSION
   SPREAD_ELEM              <-  '...' _ EXPRESSION
 
@@ -223,13 +223,13 @@ const auto grammar_ = R"(
   CTOR_PATH                <-  < IdentInitChar IdentChar* ( '.' IdentInitChar IdentChar* )? >
   TYPED_IDENT              <-  IDENTIFIER _ TYPE_ANNOTATION
 
-  ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)*)? _ ']'
+  ARRAY_PATTERN            <-  '[' _ (ARRAY_PAT_ELEM (_ ',' _ ARRAY_PAT_ELEM)* _ ','?)? _ ']'
   ARRAY_PAT_ELEM           <-  REST_PATTERN / PATTERN
   REST_PATTERN             <-  '...' _ IDENTIFIER
 
   # OBJECT_PAT_ENTRY: either `key: PATTERN` (value match / nested) or
   # a bare identifier (shorthand for `name: name`).
-  OBJECT_PATTERN           <-  '{' _ (OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)*)? _ '}'
+  OBJECT_PATTERN           <-  '{' _ (OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)* _ ','?)? _ '}'
   OBJECT_PAT_ENTRY         <-  IDENTIFIER _ ':' _ PATTERN
                             /  IDENTIFIER
 
@@ -254,8 +254,8 @@ const auto grammar_ = R"(
   # Object literals as the body are EXPRESSION-position OBJECTs:
   # `|x| {a: x}` returns `{a: x}` unambiguously.
   LAMBDA                   <-  LAMBDA_PARAMS _ EXPRESSION
-  LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ '|'
-  PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)*)? _ ')'
+  LAMBDA_PARAMS            <-  '|' _ (PARAMETER (_ ',' _ PARAMETER)* _ ','?)? _ '|'
+  PARAMETERS               <-  '(' _ (PARAMETER (_ ',' _ PARAMETER)* _ ','?)? _ ')'
   # A parameter may be a destructuring pattern — `fn ({a, b})`,
   # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
   # the matching argument (desugared to a synthetic param + a destructure
@@ -306,7 +306,7 @@ const auto grammar_ = R"(
   # A member is either a `...spread` or a key/value property. SPREAD_ELEM
   # is a direct OBJECT child (kept by the optimizer) so eval sees it
   # uncollapsed — same shape as array SEQ_ELEM.
-  OBJECT                   <-  '{' _ ((SPREAD_ELEM / OBJECT_PROPERTY) (_ ',' _ (SPREAD_ELEM / OBJECT_PROPERTY))*)? _ '}'
+  OBJECT                   <-  '{' _ ((SPREAD_ELEM / OBJECT_PROPERTY) (_ ',' _ (SPREAD_ELEM / OBJECT_PROPERTY))* _ ','?)? _ '}'
   OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
                             /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 

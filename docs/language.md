@@ -125,6 +125,15 @@ contextual and only recognized after `:` or `->`.
 * Boolean: `true`, `false`.
 * Nil: `nil`.
 
+**Trailing comma.** A single trailing comma is allowed after the last
+element of an array `[1, 2,]`, object `{a: 1,}`, set `{1, 2,}`, tuple
+`(1, 2,)`, argument list `f(1, 2,)`, parameter list `fn g(a, b,)`,
+lambda params `|a, b,|`, and destructuring pattern `let [a, b,] = …`
+(the Python / Rust / JS convention — cleaner diffs and reordering).
+A leading or doubled comma is still a syntax error. Note `(x,)` and
+`{x,}` are *not* merely cosmetic: the comma marks a one-element tuple
+and a one-element set respectively.
+
 ### Operators and punctuation
 
     ==  !=  <=  <  >=  >        # comparison
