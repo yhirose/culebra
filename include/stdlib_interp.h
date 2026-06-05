@@ -2414,9 +2414,15 @@ inline void http_fill_common(const std::shared_ptr<Environment>& env,
                              long line, long col) {
   req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
   req.params = http_parse_params(env->get("params"), ctx, line, col);
-  long timeout = env->get("timeout").to_long();
+  // nil means "unset" → use the default (matching every other optional kwarg
+  // here and the JIT, which can't tell an explicit `timeout: nil` from a
+  // positionally-absent slot). A present non-nil still goes through the strict
+  // to_long()/to_bool() coercion.
+  const auto& tv = env->get("timeout");
+  long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
   req.timeout_sec = timeout > 0 ? timeout : 0;
-  req.follow_redirects = env->get("follow_redirects").to_bool();
+  const auto& fv = env->get("follow_redirects");
+  req.follow_redirects = fv.type == Value::Nil ? true : fv.to_bool();
 }
 
 // Backing state for an `into:` response sink, owned by the call for the whole
@@ -2520,7 +2526,9 @@ inline void http_setup_body(const Value& bodyv, const Value& jsonv,
     req.content_type = "application/x-www-form-urlencoded";
     return;
   }
-  req.content_type = ct.to_string();
+  // nil content_type means "unset" → the default (mirrors the JIT + the other
+  // optional kwargs); a present non-String still hits to_string()'s strict check.
+  req.content_type = ct.type == Value::Nil ? "text/plain" : ct.to_string();
   if (bodyv.type == Value::Function) {
     if (!st.cb_interp) st.cb_interp = std::make_shared<Interpreter>();
     Value producer = bodyv;
@@ -2684,9 +2692,11 @@ inline Value make_http_namespace() {
             const Value cb = env->get("on_event");
             req.headers =
                 http_parse_headers(env->get("headers"), "Http.sse", line, col);
-            long timeout = env->get("timeout").to_long();
+            const auto& tv = env->get("timeout");
+            long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
             req.timeout_sec = timeout > 0 ? timeout : 0;
-            req.follow_redirects = env->get("follow_redirects").to_bool();
+            const auto& fv = env->get("follow_redirects");
+            req.follow_redirects = fv.type == Value::Nil ? true : fv.to_bool();
             bool has_accept = false;
             for (auto& [k, v] : req.headers) {
               if (culebra::http::_iequals(k, "Accept")) has_accept = true;
