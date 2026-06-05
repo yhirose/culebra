@@ -5923,10 +5923,9 @@ inline llvm::Value* JitExtension::compile_nested_ns_call(
     JIT& jit, std::string_view ns, std::string_view sub,
     std::string_view method, const peg::Ast& argsAst,
     const peg::Ast& callAst) {
-  // A user-shadowed `let Encoding = {...}` must win over the builtin: bail to
-  // the generic path (compile_call), which resolves the local. (The 2-segment
-  // compile_ns_call path lacks this guard — a separate pre-existing bug.)
-  if (jit.lookup_var(std::string(ns)) != nullptr) return nullptr;
+  // (Shadowing — `let Encoding = {...}` — is handled uniformly upstream in
+  // compile_call_with_builtins, which routes a shadowed callee to compile_call
+  // before any builtin dispatch.)
   // Only the statically-known nested codecs (e.g. `Encoding.base64.encode`),
   // and only positional-only calls — anything else (an unknown method, kwargs
   // on a param-less codec) falls through to the generic sub-namespace-object

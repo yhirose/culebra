@@ -17215,6 +17215,15 @@ struct JIT {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
 
+    // A user binding that shadows a builtin name wins, exactly as interp's
+    // scope lookup does (`let Math = {...}; Math.abs(x)` calls the local, not
+    // the builtin namespace). Skip every builtin/namespace/fusion peephole so
+    // the regular path resolves the local. Compile-time only — no runtime cost.
+    if (calleeNode->tag == "IDENTIFIER"_ &&
+        lookup_var(std::string(calleeNode->token))) {
+      return compile_call(ast);
+    }
+
     if (auto v = try_compile_range_fusion(ast)) return v;
 
     llvm::Value* start = nullptr;
