@@ -5727,16 +5727,42 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   auto& explicit_kwargs = scanned.explicit_kwargs;
   auto& seen_explicit = scanned.seen_explicit;
   auto& splats = scanned.splats;
-  // cmd is required; extra positionals bind to the leading params (cwd/env/…)
-  // by name, like interp's binder. Too few → "expected 1, got 0"; too many
-  // (beyond the declared params) → the param-count cap. Both at the call site.
-  if (positional.empty() ||
-      positional.size() > static_cast<size_t>(meta->n_params)) {
-    throw culebra::CulebraError("ArityError",
-        culebra::ns_fn_arity_error_message(
-            positional.empty() ? meta->min_arity : meta->n_params,
-            static_cast<long>(positional.size())),
-        callAst.line, callAst.column);
+  // Arity (too few / too many positionals) and positional-vs-keyword conflict
+  // are statically known here, but interp reports them at RUNTIME (catchable,
+  // after evaluating every argument). Mirror that: evaluate all arg expressions
+  // in source order for their side effects, then emit a runtime IR throw — so a
+  // `try` around the call catches it on every backend, like interp. (cmd is
+  // required; extra positionals bind the leading params cwd/env/… by name.)
+  bool too_few = positional.empty();
+  bool too_many = positional.size() > static_cast<size_t>(meta->n_params);
+  std::string conflict_param;  // first param given both positionally and by kw
+  for (size_t i = 1; i < positional.size() &&
+                     i < static_cast<size_t>(meta->n_params); i++) {
+    if (seen_explicit.count(meta->params[i].name)) {
+      conflict_param = std::string(meta->params[i].name);
+      break;
+    }
+  }
+  if (too_few || too_many || !conflict_param.empty()) {
+    for (auto& child : argsAst.nodes) {  // evaluate every arg (source order)
+      const peg::Ast* expr = child->tag == "KWARG"_ ? child->nodes[1].get()
+                           : child->tag == "KWARG_SPLAT"_ ? child->nodes[0].get()
+                                                          : child.get();
+      emit_value_release(compile(*expr));
+    }
+    if (too_few || too_many) {
+      jit.emit_throw_error("ArityError",
+          culebra::ns_fn_arity_error_message(
+              too_few ? meta->min_arity : meta->n_params,
+              static_cast<long>(positional.size())),
+          callAst.line, callAst.column);
+    } else {
+      jit.emit_throw_error("TypeError",
+          std::format("got argument '{}' both positionally and as a keyword",
+                      conflict_param),
+          callAst.line, callAst.column);
+    }
+    return make_nil();  // unreachable: emit_throw_error is noreturn
   }
 
   auto cmd_val = compile(*positional[0]);
@@ -5757,13 +5783,7 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   // Positionals after cmd → kwargs named after params[1..] (cwd, env, …). A
   // param given both positionally and by keyword is an error, matching interp.
   for (size_t i = 1; i < positional.size(); i++) {
-    std::string_view pname = meta->params[i].name;
-    if (seen_explicit.count(pname)) {
-      throw culebra::CulebraError("TypeError",
-          std::format("got argument '{}' both positionally and as a keyword",
-                      pname),
-          callAst.line, callAst.column);
-    }
+    std::string_view pname = meta->params[i].name;  // conflict already ruled out
     kwKeys.push_back(builder_.CreateGlobalString(std::string(pname), ".kwkey"));
     auto pv = compile(*positional[i]);
     // A typed param bound positionally (e.g. Proc.run's cwd: String?) is checked
