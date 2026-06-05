@@ -371,10 +371,13 @@ inline Value make_fs_namespace() {
     throw CulebraError("IOError", std::move(msg), line, col);
   };
 
-  // `FS.join(parts...)` — varargs path concat. Empty arg list -> "".
+  // `FS.join(parts...)` — varargs path concat. Empty arg list -> "". Declared
+  // `*args` (the positionals are read from __ARGS__) so the arity is variadic;
+  // an empty formal list would now read as a strict 0-arity native.
   ns.initialize(
       "join",
-      Value(FunctionValue({}, [throw_io](std::shared_ptr<Environment> env) {
+      Value(FunctionValue({FunctionValue::Parameter::make_args_rest("args")},
+                          [throw_io](std::shared_ptr<Environment> env) {
         long line = env->get("__LINE__").to_long();
         long col = env->get("__COLUMN__").to_long();
         if (!env->has("__ARGS__")) return Value(std::string(""));
@@ -1508,12 +1511,12 @@ inline Value make_tensor_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
-  // Variadic ctor: declared with no formal params so every positional
-  // arg lands in __ARGS__. Layout is [optional dtype string, shape
-  // varargs OR single Array of Long].
+  // Variadic ctor: declared `*args` so every positional arg lands in __ARGS__
+  // and the arity stays variadic (an empty formal list now reads as strict
+  // 0-arity). Layout is [optional dtype string, shape varargs OR single Array].
   auto make_ctor = [](TensorPtr (*kernel)(TensorShape, Dtype)) {
     return Value(FunctionValue(
-        {},
+        {FunctionValue::Parameter::make_args_rest("args")},
         [kernel](std::shared_ptr<Environment> env) {
           auto line = env->get("__LINE__").to_long();
           auto col = env->get("__COLUMN__").to_long();
@@ -1538,7 +1541,7 @@ inline Value make_tensor_namespace() {
   ns.initialize(
       "eval",
       Value(FunctionValue(
-          {},
+          {FunctionValue::Parameter::make_args_rest("args")},
           [](std::shared_ptr<Environment> env) {
             auto line = env->get("__LINE__").to_long();
             auto col = env->get("__COLUMN__").to_long();
@@ -4371,7 +4374,12 @@ inline void _mark_strict_arity(Value& v) {
     auto& f = v.get<FunctionValue>();
     if (f.body == nullptr && !f.is_builtin_method) {
       auto b = builtin_arity_bounds(*f.params);
-      if (!b.variadic && b.max > 0) f.strict_arity = true;
+      // Any fixed (non-variadic) signature is strict, including a genuine
+      // 0-arity native like `GC.stat` — extra positionals are an ArityError,
+      // matching the JIT (which rejects on its registered arity). The variadic
+      // natives that read __ARGS__ (min/max, FS.join, Tensor ctors / eval) all
+      // declare `*args`, so `!b.variadic` already excludes them.
+      if (!b.variadic) f.strict_arity = true;
     }
   } else if (v.type == Value::Object) {
     auto& obj = v.get<ObjectValue>();

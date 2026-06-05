@@ -6031,7 +6031,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                            static_cast<long>(call_line),
                            static_cast<long>(call_column));
       }
-      if (!b.variadic && b.max > 0) {
+      if (!b.variadic) {
         long got = static_cast<long>(args.positional.size());
         if (got < b.min || got > b.max) {
           throw CulebraError("ArityError",
