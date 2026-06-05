@@ -18527,7 +18527,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other, "Set", "parameter 'other'");
+    emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
                         : method == "intersect" ? rt::set_intersect
@@ -18544,7 +18544,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
     auto other = compile(*argsAst.nodes[0]);
-    emit_type_check(other, "Set", "parameter 'other'");
+    emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "subset" ? rt::set_subset
                                              : rt::set_superset;

@@ -2265,6 +2265,19 @@ inline std::string_view take_sv(JitValue v) {
              ? _str_sv(reinterpret_cast<const char*>(v.data))
              : std::string_view{};
 }
+// String-or-StringView view that *enforces* the type, raising the binder's
+// canonical `parameter '<name>' expects String` (the position is 0/0 and gets
+// backfilled to the call site by the ns trampoline). Slow-path codecs whose
+// interp twins declare a `String`-typed param use this so a non-String is a
+// type error on both backends rather than silently coercing to "".
+inline std::string_view require_sv(JitValue v, const char* param) {
+  if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
+    culebra::throw_runtime_error_at(
+        "TypeError",
+        std::format("type error: parameter '{}' expects String", param), 0, 0);
+  }
+  return _culebra_str_view(v.tag, v.data);
+}
 inline JitArray* take_array(JitValue v) {
   return v.tag == TAG_ARRAY ? reinterpret_cast<JitArray*>(v.data) : nullptr;
 }
@@ -3066,21 +3079,21 @@ inline JitValue _ns_json_parse(JitValue* a, int64_t) {
 // these are reached through the kNsMethods closure trampoline.
 inline JitValue _ns_encoding_html_escape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::html_escape(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::html_escape(_ns_adapt::require_sv(a[0], "s"))));
 }
 inline JitValue _ns_encoding_html_unescape(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::html_unescape(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::html_unescape(_ns_adapt::require_sv(a[0], "s"))));
 }
 // Encoding.base64.{encode,decode}: shared codec; decode raises ValueError on
 // invalid input (same as interp). take_sv (not take_str) keeps the codecs
 // binary-safe — embedded NUL bytes must not truncate the input.
 inline JitValue _ns_encoding_base64_encode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::base64_encode(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::base64_encode(_ns_adapt::require_sv(a[0], "s"))));
 }
 inline JitValue _ns_encoding_base64_decode(JitValue* a, int64_t) {
-  auto r = culebra::base64_decode(_ns_adapt::take_sv(a[0]));
+  auto r = culebra::base64_decode(_ns_adapt::require_sv(a[0], "s"));
   if (!r) {
     throw culebra::CulebraError("ValueError",
         "Encoding.base64.decode: invalid base64", 0, 0);
@@ -3091,10 +3104,10 @@ inline JitValue _ns_encoding_base64_decode(JitValue* a, int64_t) {
 // invalid input (same as interp).
 inline JitValue _ns_encoding_hex_encode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::hex_encode(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::hex_encode(_ns_adapt::require_sv(a[0], "s"))));
 }
 inline JitValue _ns_encoding_hex_decode(JitValue* a, int64_t) {
-  auto r = culebra::hex_decode(_ns_adapt::take_sv(a[0]));
+  auto r = culebra::hex_decode(_ns_adapt::require_sv(a[0], "s"));
   if (!r) {
     throw culebra::CulebraError("ValueError",
         "Encoding.hex.decode: invalid hex", 0, 0);
@@ -3105,11 +3118,11 @@ inline JitValue _ns_encoding_hex_decode(JitValue* a, int64_t) {
 // fails), matching interp.
 inline JitValue _ns_encoding_url_encode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::url_encode(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::url_encode(_ns_adapt::require_sv(a[0], "s"))));
 }
 inline JitValue _ns_encoding_url_decode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::url_decode(_ns_adapt::take_sv(a[0]))));
+      _culebra_heap_str(culebra::url_decode(_ns_adapt::require_sv(a[0], "s"))));
 }
 
 #ifndef CULEBRA_RT_NO_TENSOR
@@ -4981,6 +4994,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "sleep" && a.size() == 1) {
       auto secs = compile(*a[0]);
+      emit_type_check(secs, "Float", "parameter 'secs'", a[0].get());
       auto d = jit.coerce_to_double(secs);
       emit_call(module_->getFunction(rt::time_sleep), {d});
       emit_value_release(secs);
@@ -5301,7 +5315,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
   if (ns == "Sys") {
     if (method == "exit" && argsAst.nodes.size() == 1) {
-      auto code = value_to_long(compile(*argsAst.nodes[0]));
+      auto codeVal = compile(*argsAst.nodes[0]);
+      emit_type_check(codeVal, "Long", "parameter 'code'",
+                      argsAst.nodes[0].get());
+      auto code = value_to_long(codeVal);
       emit_call(module_->getFunction(rt::sys_exit), {code});
       return make_nil();  // unreachable; sys_exit terminates the process
     }
