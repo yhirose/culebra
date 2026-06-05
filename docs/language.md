@@ -2761,6 +2761,7 @@ receiver is never mutated.
 | `s.upper() -> String`                           | ASCII uppercase.                     |
 | `s.lower() -> String`                           | ASCII lowercase.                     |
 | `s.trim() -> String`                            | Remove leading/trailing whitespace (` `, `\t`, `\n`, `\r`). |
+| `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation (Ruby `tr`, character-list form — no `a-z` ranges or `^`). Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
 | `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
 | `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |

@@ -637,6 +637,53 @@ inline std::string ascii_lower(std::string s) {
   return s;
 }
 
+// Byte length of the UTF-8 scalar that starts at leading byte `c`. A
+// continuation or invalid byte reports 1, so callers always advance.
+inline size_t utf8_scalar_len(unsigned char c) {
+  if (c < 0x80) return 1;
+  if ((c >> 5) == 0x6) return 2;
+  if ((c >> 4) == 0xE) return 3;
+  if ((c >> 3) == 0x1E) return 4;
+  return 1;
+}
+
+// Per-scalar translation (Ruby `String#tr`, character-list form — no `a-z`
+// ranges or `^` negation). Each Unicode scalar of `s` that appears in `from`
+// is replaced by the scalar at the same position in `to`; if `to` is shorter
+// its last scalar repeats, and an empty `to` deletes the matched scalars.
+// Shared by the interp String method and the JIT runtime so both agree.
+inline std::string str_tr(std::string_view s, std::string_view from,
+                          std::string_view to) {
+  auto scalars = [](std::string_view x) {
+    std::vector<std::string_view> v;
+    for (size_t i = 0; i < x.size();) {
+      size_t n = utf8_scalar_len(static_cast<unsigned char>(x[i]));
+      if (i + n > x.size()) n = 1;
+      v.push_back(x.substr(i, n));
+      i += n;
+    }
+    return v;
+  };
+  auto from_s = scalars(from);
+  auto to_s = scalars(to);
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size();) {
+    size_t n = utf8_scalar_len(static_cast<unsigned char>(s[i]));
+    if (i + n > s.size()) n = 1;
+    std::string_view ch = s.substr(i, n);
+    auto it = std::find(from_s.begin(), from_s.end(), ch);
+    if (it == from_s.end()) {
+      out += ch;
+    } else if (!to_s.empty()) {
+      size_t idx = static_cast<size_t>(it - from_s.begin());
+      out += to_s[idx < to_s.size() ? idx : to_s.size() - 1];
+    }  // else: `to` empty → delete (append nothing)
+    i += n;
+  }
+  return out;
+}
+
 // True iff `name` has a `|` at the outermost bracket depth (i.e. a
 // top-level Union alt separator). `Array<Long | Float>` returns
 // false — the `|` lives inside `<...>`. Callers gate the Union

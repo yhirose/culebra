@@ -3514,6 +3514,18 @@ inline std::unordered_map<std::string_view, Value>& string_builtins() {
          const auto& s = callEnv->get("this").to_string();
          return Value(std::string(trim_ascii(s)));
        }))},
+      // Per-scalar translation (Ruby `tr`, character-list form). See
+      // culebra::str_tr — `to` shorter repeats its last scalar; empty `to`
+      // deletes. e.g. s.tr("０１２３４５６７８９", "0123456789").
+      {"tr"sv,
+       Value(FunctionValue(
+           {{"from", false, "StringLike"sv}, {"to", false, "StringLike"sv}},
+           [](std::shared_ptr<Environment> callEnv) {
+             return Value(culebra::str_tr(
+                 callEnv->get("this").to_string_view(),
+                 callEnv->get("from").to_string_view(),
+                 callEnv->get("to").to_string_view()));
+           }))},
       // Array<StringView>. Returning Array (eager) matches
       // Python/JS/Swift/Ruby/Go; for early exit use `split_iter`.
       {"split"sv,

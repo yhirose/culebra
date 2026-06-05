@@ -1,0 +1,29 @@
+// String.tr(from, to): per-scalar translation (Ruby tr, character-list form;
+// no `a-z` ranges or `^` negation). `to` shorter repeats its last scalar; an
+// empty `to` deletes the matched scalars.
+
+// 1:1 map, multibyte -> ASCII (the zen-to-han digit case)
+assert_eq("０１２３456789".tr("０１２３", "0123"), "0123456789")
+
+// 1:1 map, two chars
+assert_eq("hello".tr("el", "ip"), "hippo")
+
+// single char
+assert_eq("hello".tr("l", "L"), "heLLo")
+
+// no match -> unchanged
+assert_eq("hello".tr("xyz", "abc"), "hello")
+
+// `to` shorter than `from` -> last scalar repeats
+assert_eq("hello".tr("lo", "L"), "heLLL")
+
+// empty `to` -> delete matched scalars
+assert_eq("hello world".tr("lo", ""), "he wrd")
+
+// no ranges: "A-C" is the literal scalars A, -, C
+assert_eq("A-B-C".tr("A-C", "x"), "xxBxx")
+
+// full-width to ASCII roundtrip-ish (multibyte both sides)
+assert_eq("ＡＢ".tr("ＡＢ", "ＸＹ"), "ＸＹ")
+
+IO.puts("test_string_tr OK")

@@ -6986,6 +6986,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_trim(
   return _culebra_heap_str(trimmed);
 }
 
+// `s.tr(from, to)` — per-scalar translation; shares culebra::str_tr with
+// the interp so both backends agree byte-for-byte.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_str_tr(
+    const char* s, const char* from, const char* to) {
+  return _culebra_heap_str(
+      culebra::str_tr(_str_sv(s), _str_sv(from), _str_sv(to)));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_str_split(
     const char* s, const char* sep) {
   auto* r = culebra_runtime_array_new();
@@ -7700,6 +7708,7 @@ inline constexpr auto str_contains        = "culebra_runtime_str_contains";
 inline constexpr auto str_starts_with     = "culebra_runtime_str_starts_with";
 inline constexpr auto str_ends_with       = "culebra_runtime_str_ends_with";
 inline constexpr auto str_trim            = "culebra_runtime_str_trim";
+inline constexpr auto str_tr              = "culebra_runtime_str_tr";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
 inline constexpr auto throw_              = "culebra_runtime_throw";
 inline constexpr auto to_long             = "culebra_runtime_to_long";
@@ -8892,7 +8901,7 @@ struct JIT {
     static const std::unordered_set<std::string_view> known = {
         "size",        "push",       "pop",      "reverse", "slice",
         "join",        "index_of",   "contains", "upper",   "lower",
-        "trim",        "split",      "starts_with", "ends_with",
+        "trim",        "tr",         "split",      "starts_with", "ends_with",
         "keys",        "has",        "remove",
         // Array eager + iterator lazy / terminal methods. Tag-dispatched
         // in compile_builtin_method — Array receivers keep the eager
@@ -10529,6 +10538,7 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_upper, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_lower, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_trim, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_tr, ptrTy, ptrTy, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_split, ptrTy, ptrTy,
                                  ptrTy);
     module_->getOrInsertFunction(rt::str_slice, ptrTy, ptrTy,
@@ -18993,6 +19003,19 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     auto s = emit_call(
         module_->getFunction(rt::str_trim), {strPtr});
+    return make_string(s);
+  }
+
+  if (method == "tr" && argsAst.nodes.size() == 2) {
+    auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
+    auto from = compile(*argsAst.nodes[0]);
+    auto fromPtr = coerce_strlike_cstr(from, "tr.from", false, "from");
+    auto to = compile(*argsAst.nodes[1]);
+    auto toPtr = coerce_strlike_cstr(to, "tr.to", false, "to");
+    auto s = emit_call(
+        module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
+    emit_value_release(from);
+    emit_value_release(to);
     return make_string(s);
   }
 
