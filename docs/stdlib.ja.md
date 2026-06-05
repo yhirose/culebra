@@ -814,15 +814,21 @@ Random.weighted_choice(['hit', 'miss'], [1, 9])   # ~10% 'hit'
 
 ### `Sys.argv -> Array`
 
-スクリプトにコマンドラインで渡された `String` 引数の配列。単独の
-`--` より後ろが取り込まれ、`culebra` 実行ファイルとスクリプトパス
-自体は含みません。`--` ブロックが無い場合や REPL 実行時は空配列
-です。
+スクリプトにコマンドラインで渡された `String` 引数の配列。最初の
+非フラグ引数がスクリプトパスで、**それより後ろ**がすべて `argv`
+として取り込まれます（Python / Node の慣習）。culebra 自身のフラグ
+（`--jit`・`--debug` など）はスクリプトパスより前に置く必要があり
+ます。末尾引数が無い場合や REPL 実行時は空配列です。
 
 ```culebra
-# $ culebra run.cul -- hello world
+# $ culebra run.cul hello world
 puts(Sys.argv)        # ['hello', 'world']
+# $ culebra --jit run.cul hello   →  ['hello']   (--jit は culebra 用)
 ```
+
+単独の `--` は任意の escape hatch です。フラグ解析を打ち切るので、
+ダッシュで始まるファイル名でも次の引数をスクリプトにできます
+（例: `culebra -- -weird.cul`）。通常は不要です。
 
 ### `Sys.exit(code: Long) -> Nil`
 

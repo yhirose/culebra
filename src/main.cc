@@ -460,33 +460,37 @@ int run_build(const BuildOptions& opts) {
 Options parse_command_line(int argc, const char** argv) {
   Options options;
 
+  // culebra's own flags must precede the script path. The first non-flag
+  // argument is THE script; everything after it is passed verbatim to the
+  // script as Sys.argv (the Python / Node convention) — no `--` needed.
+  // `--` remains an optional escape hatch: it stops flag parsing, so the
+  // next argument becomes the script even if it begins with a dash (e.g. a
+  // file literally named `-x`).
   int argi = 1;
-  bool past_separator = false;
+  bool no_flags = false;     // past `--`: stop interpreting culebra flags
+  bool seen_script = false;  // script captured: everything else is its argv
   while (argi < argc) {
     string arg = argv[argi++];
-    if (past_separator) {
+    if (seen_script) {
       options.script_argv.push_back(std::move(arg));
       continue;
     }
-    if (arg == "--") {
-      past_separator = true;
-    } else if (arg == "--shell") {
-      options.shell = true;
-    } else if (arg == "--ast") {
-      options.print_ast = true;
-    } else if (arg == "--debug") {
-      options.debug = true;
+    if (!no_flags) {
+      if (arg == "--") { no_flags = true; continue; }
+      if (arg == "--shell") { options.shell = true; continue; }
+      if (arg == "--ast") { options.print_ast = true; continue; }
+      if (arg == "--debug") { options.debug = true; continue; }
 #ifdef CULEBRA_JIT_ENABLED
-    } else if (arg == "--jit") {
-      options.jit = true;
-    } else if (arg == "--emit-llvm") {
-      options.emit_llvm = true;
-    } else if (arg.starts_with("-O")) {
-      options.opt_level = std::stoi(arg.substr(2));
+      if (arg == "--jit") { options.jit = true; continue; }
+      if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
+      if (arg.starts_with("-O")) {
+        options.opt_level = std::stoi(arg.substr(2));
+        continue;
+      }
 #endif
-    } else {
-      options.script_path_list.push_back(arg);
     }
+    options.script_path_list.push_back(std::move(arg));
+    seen_script = true;
   }
 
   if (!options.shell) {

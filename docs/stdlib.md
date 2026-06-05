@@ -839,14 +839,21 @@ Process-level information.
 ### `Sys.argv -> Array`
 
 Array of `String` arguments passed to the script on the command
-line. Everything after a standalone `--` is captured; the
-`culebra` executable and script paths themselves are excluded.
-Empty when no `--` block was given or when running in the REPL.
+line. The first non-flag argument is the script path; **everything
+after it** is captured as `argv` (the Python / Node convention).
+culebra's own flags (`--jit`, `--debug`, …) must precede the script
+path. Empty when the script is invoked with no trailing arguments or
+when running in the REPL.
 
 ```culebra
-# $ culebra run.cul -- hello world
+# $ culebra run.cul hello world
 puts(Sys.argv)        # ['hello', 'world']
+# $ culebra --jit run.cul hello   →  ['hello']   (--jit is culebra's)
 ```
+
+A standalone `--` is an optional escape hatch: it stops flag parsing,
+so the next argument becomes the script even if it begins with a dash
+(e.g. `culebra -- -weird.cul`). It is otherwise unnecessary.
 
 ### `Sys.exit(code: Long) -> Nil`
 
