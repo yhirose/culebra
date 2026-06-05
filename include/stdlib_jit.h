@@ -3384,6 +3384,12 @@ struct NsParam {
   bool has_default;
   bool kw_only;
   JitValue (*make_default)();  // null when has_default == false
+  // Declared type of a positional param, e.g. "String" / "Function". When set,
+  // the compile side emits an inline type check at the *argument's* source
+  // position (matching interp's binder), instead of letting the runtime
+  // adapter reject it positionlessly. Default-initialized so existing aggregate
+  // initializers (which omit it) keep nullptr = unchecked.
+  const char* type = nullptr;
 };
 
 struct NsParamMeta {
@@ -3421,6 +3427,10 @@ struct NsMethod {
   // (e.g. `Encoding.html.unescape` has ns="Encoding", sub="html"). Nested
   // namespaces are slow-path only — they never reach compile_ns_call.
   const char* sub = nullptr;
+  // Declared type of the (single) leading positional, for methods without an
+  // NsParamMeta (e.g. the Encoding codecs: arg0_type="String"). Lets the
+  // compile side emit an inline type check at the argument position.
+  const char* arg0_type = nullptr;
 };
 
 // Param metadata for the kwarg-accepting Proc methods. Names/defaults
@@ -3506,7 +3516,7 @@ inline JitValue _ns_def_text_plain() {
 // get / delete / head: url, headers=nil, timeout=0, follow_redirects=true,
 // into=nil.
 inline const NsParam kHttpGetParams[] = {
-  {"url",              false, false, nullptr},
+  {"url",              false, false, nullptr, "String"},
   {"headers",          true,  false, &_ns_def_nil},
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
@@ -3518,7 +3528,7 @@ inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 6, -1, -1};
 // post / put: url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
 inline const NsParam kHttpPostParams[] = {
-  {"url",              false, false, nullptr},
+  {"url",              false, false, nullptr, "String"},
   {"body",             true,  false, &_ns_def_empty_str},
   {"content_type",     true,  false, &_ns_def_text_plain},
   {"headers",          true,  false, &_ns_def_nil},
@@ -3534,8 +3544,8 @@ inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 10, -1, -1};
 // request: method, url, body="", content_type="text/plain", headers=nil,
 // timeout=0, follow_redirects=true, into=nil.
 inline const NsParam kHttpRequestParams[] = {
-  {"method",           false, false, nullptr},
-  {"url",              false, false, nullptr},
+  {"method",           false, false, nullptr, "String"},
+  {"url",              false, false, nullptr, "String"},
   {"body",             true,  false, &_ns_def_empty_str},
   {"content_type",     true,  false, &_ns_def_text_plain},
   {"headers",          true,  false, &_ns_def_nil},
@@ -3550,8 +3560,8 @@ inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 11, -1, -1};
 
 // sse: url, on_event, headers=nil, timeout=0, follow_redirects=true.
 inline const NsParam kHttpSseParams[] = {
-  {"url",              false, false, nullptr},
-  {"on_event",         false, false, nullptr},
+  {"url",              false, false, nullptr, "String"},
+  {"on_event",         false, false, nullptr, "Function"},
   {"headers",          true,  false, &_ns_def_nil},
   {"timeout",          true,  false, &_ns_def_zero},
   {"follow_redirects", true,  false, &_ns_def_true},
@@ -3664,14 +3674,14 @@ inline const NsMethod kNsMethods[] = {
 
   // Nested sub-namespace (sub="html"): reached only via bare-resolve +
   // member access, e.g. `Encoding.html.unescape(s)`.
-  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html"},
-  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html"},
-  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64"},
-  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64"},
-  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex"},
-  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex"},
-  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url"},
-  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url"},
+  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html",   "String"},
+  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html",   "String"},
+  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64", "String"},
+  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64", "String"},
+  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex",    "String"},
+  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex",    "String"},
+  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url",    "String"},
+  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url",    "String"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
@@ -4206,6 +4216,13 @@ inline void _check_ns_drift_once() {
             ip.default_expr != nullptr || ip.default_value != nullptr;
         if (ip_has_default != jp.has_default) {
           fail(m, std::format("param '{}' default flag mismatch", jp.name));
+        }
+        // When the JIT table declares a positional type (used to emit the
+        // arg-position type check), it must match interp's annotation so the
+        // two backends reject the same values. A one-sided edit trips here.
+        if (jp.type != nullptr && std::string_view(jp.type) != ip.type_name) {
+          fail(m, std::format("param '{}' type '{}' != interp '{}'", jp.name,
+                              jp.type, std::string(ip.type_name)));
         }
       }
     }
