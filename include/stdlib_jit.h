@@ -2185,6 +2185,12 @@ struct JitExtension {
                                         std::string_view method,
                                         const peg::Ast& argsAst,
                                         const peg::Ast& callAst);
+  static llvm::Value* compile_nested_ns_call(JIT& jit,
+                                              std::string_view ns,
+                                              std::string_view sub,
+                                              std::string_view method,
+                                              const peg::Ast& argsAst,
+                                              const peg::Ast& callAst);
   static llvm::Value* compile_ns_prop(JIT& jit,
                                         std::string_view ns,
                                         std::string_view prop);
@@ -2228,6 +2234,7 @@ struct JitExtension {
         .declare_runtime = &declare_runtime,
         .compile_global = &compile_global,
         .compile_ns_call = &compile_ns_call,
+        .compile_nested_ns_call = &compile_nested_ns_call,
         .compile_ns_prop = &compile_ns_prop,
         .is_builtin_var = &is_builtin_var,
         .compile_ufcs_builtin = &compile_ufcs_builtin,
@@ -5816,11 +5823,22 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   posVals.reserve(positional.size());
   for (size_t i = 0; i < positional.size(); i++) {
     auto v = compile(*positional[i]);
-    if (m->params && static_cast<int>(i) < m->params->n_params &&
-        m->params->params[i].type != nullptr) {
-      jit.emit_type_check(v, m->params->params[i].type,
-                          std::format("parameter '{}'",
-                                      m->params->params[i].name),
+    // Typed positional: NsParamMeta methods (Http) carry per-param types +
+    // names; a param-less method (the Encoding codecs) carries a single
+    // `arg0_type` whose interp param is named "s".
+    const char* ptype = nullptr;
+    std::string pname;
+    if (m->params) {
+      if (static_cast<int>(i) < m->params->n_params) {
+        ptype = m->params->params[i].type;
+        pname = m->params->params[i].name;
+      }
+    } else if (i == 0) {
+      ptype = m->arg0_type;
+      pname = "s";
+    }
+    if (ptype != nullptr) {
+      jit.emit_type_check(v, ptype, std::format("parameter '{}'", pname),
                           positional[i]);
     }
     posVals.push_back(v);
@@ -5880,6 +5898,25 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
        valsSlab, builder_.getInt64(static_cast<int64_t>(splatVals.size())),
        splatSlab, builder_.getInt64(callAst.line),
        builder_.getInt64(callAst.column)});
+}
+
+inline llvm::Value* JitExtension::compile_nested_ns_call(
+    JIT& jit, std::string_view ns, std::string_view sub,
+    std::string_view method, const peg::Ast& argsAst,
+    const peg::Ast& callAst) {
+  // A user-shadowed `let Encoding = {...}` must win over the builtin: bail to
+  // the generic path (compile_call), which resolves the local. (The 2-segment
+  // compile_ns_call path lacks this guard — a separate pre-existing bug.)
+  if (jit.lookup_var(std::string(ns)) != nullptr) return nullptr;
+  // Only the statically-known nested codecs (e.g. `Encoding.base64.encode`),
+  // and only positional-only calls — anything else (an unknown method, kwargs
+  // on a param-less codec) falls through to the generic sub-namespace-object
+  // method dispatch, which matches interp there.
+  if (!JIT::arg_list_is_positional_only(argsAst)) return nullptr;
+  std::string sub_s(sub);
+  const NsMethod* m = _lookup_ns_method(ns, method, sub_s.c_str());
+  if (!m) return nullptr;
+  return compile_ns_method_kwargs(jit, m, argsAst, callAst);
 }
 
 inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,

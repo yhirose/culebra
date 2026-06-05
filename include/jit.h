@@ -8835,6 +8835,15 @@ struct JIT {
                                      std::string_view method,
                                      const peg::Ast& argsAst,
                                      const peg::Ast& callAst);
+    // CALL with a nested `Namespace.sub.method(args)` callee (e.g.
+    // `Encoding.base64.encode(x)`). Returns nullptr to fall through to the
+    // generic sub-namespace-object method dispatch.
+    llvm::Value* (*compile_nested_ns_call)(JIT&,
+                                            std::string_view ns,
+                                            std::string_view sub,
+                                            std::string_view method,
+                                            const peg::Ast& argsAst,
+                                            const peg::Ast& callAst);
     // Bare `Namespace.property` reference (no call following).
     llvm::Value* (*compile_ns_prop)(JIT&,
                                      std::string_view ns,
@@ -17221,6 +17230,18 @@ struct JIT {
           h.compile_ns_call) {
         start = h.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
         if (start) next_idx = 3;
+      }
+      // Nested `Ns.sub.method(args)` (e.g. `Encoding.base64.encode(x)`): try
+      // the extension's typed-positional fast path before the generic
+      // sub-namespace-object method dispatch (compile_ns_prop + the postfix
+      // loop). `prop` is the sub-namespace; nodes[2] the method.
+      if (!start && ast.nodes.size() >= 4 &&
+          ast.nodes[2]->original_tag == "DOT"_ &&
+          ast.nodes[3]->original_tag == "ARGUMENTS"_ &&
+          h.compile_nested_ns_call) {
+        start = h.compile_nested_ns_call(*this, ns, prop, ast.nodes[2]->token,
+                                         *ast.nodes[3], ast);
+        if (start) next_idx = 4;
       }
       if (!start && h.compile_ns_prop) {
         start = h.compile_ns_prop(*this, ns, prop);
