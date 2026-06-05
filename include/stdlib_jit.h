@@ -1752,9 +1752,15 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
   // ct / body may be nil when this method is reached positional-only (the slow
   // path doesn't materialize defaults) — treat nil as the default: ct =
   // "text/plain", body = empty (no body), matching interp's resolved defaults.
-  req.content_type = (ct.tag == TAG_STRING || ct.tag == TAG_STRINGVIEW)
-                         ? std::string(_culebra_str_view(ct.tag, ct.data))
-                         : "text/plain";
+  // interp resolves content_type via the strict Value::to_string(), so a
+  // present non-String raises `expected String, got <T>` rather than coercing.
+  if (ct.tag == TAG_STRING || ct.tag == TAG_STRINGVIEW) {
+    req.content_type = std::string(_culebra_str_view(ct.tag, ct.data));
+  } else if (ct.tag == TAG_NIL) {
+    req.content_type = "text/plain";
+  } else {
+    culebra::throw_type_mismatch("String", _culebra_tag_name(ct.tag), 0, 0);
+  }
   if (bodyv.tag == TAG_NIL) return;  // missing → no request body
   if (bodyv.tag == TAG_FUNC) {
     auto* producer = reinterpret_cast<JitClosure*>(bodyv.data);
@@ -2726,9 +2732,31 @@ inline void common(JitValue* a, int64_t n, int base,
         std::format("{}: headers must be an Object of String", ctx), 0, 0);
   }
   JitValue to = _proc_adapt::at(a, n, base + 1);
+  // interp reads timeout via the strict Value::to_long(): a present non-Long
+  // (Float/String) raises `expected Long, got <T>` rather than silently
+  // coercing to 0. Nil is "absent" here — the positional trampoline pads
+  // missing optional slots with nil, so nil must stay equivalent to the
+  // default 0. (0/0 → backfilled to the call site.)
+  if (to.tag != TAG_LONG && to.tag != TAG_NIL) {
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(to.tag), 0, 0);
+  }
   req.timeout_sec = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
   JitValue fr = _proc_adapt::at(a, n, base + 2);
-  req.follow_redirects = !(fr.tag == TAG_BOOL && fr.data == 0);
+  // interp reads follow_redirects via the strict Value::to_bool() (default
+  // true): Bool/Long/Float are truthy, anything else raises `expected Bool,
+  // Long, or Float, got <T>`. Nil is "absent" → the default true (the
+  // positional trampoline pads missing optional slots with nil). Don't use the
+  // releasing _extract_bool helper — the slab owns `fr` and frees it later.
+  if (fr.tag == TAG_NIL) {
+    req.follow_redirects = true;
+  } else if (fr.tag == TAG_BOOL || fr.tag == TAG_LONG) {
+    req.follow_redirects = fr.data != 0;
+  } else if (fr.tag == TAG_FLOAT) {
+    req.follow_redirects = _culebra_float_to_double(fr.data) != 0.0;
+  } else {
+    culebra::throw_type_mismatch("Bool, Long, or Float",
+                                 _culebra_tag_name(fr.tag), 0, 0);
+  }
   JitValue p = _proc_adapt::at(a, n, base + 4);  // base+3 is `into` (caller)
   if (p.tag == TAG_OBJECT) {
     if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(p.data),
@@ -2748,7 +2776,7 @@ inline JitValue _ns_http_bodyless(JitValue* a, int64_t n, const char* method,
                                   const char* ctx) {
   culebra::http::HttpRequest req;
   req.method = method;
-  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  req.url = _ns_adapt::require_sv(a[0], "url");
   _http_adapt::common(a, n, 1, req, ctx);
   JitHttpInto st;
   _http_setup_into(_proc_adapt::at(a, n, 4), req, st, ctx);
@@ -2770,7 +2798,7 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
                                   const char* ctx) {
   culebra::http::HttpRequest req;
   req.method = method;
-  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  req.url = _ns_adapt::require_sv(a[0], "url");
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 8),
@@ -2790,8 +2818,8 @@ inline JitValue _ns_http_put(JitValue* a, int64_t n) {
 // follow_redirects, into.
 inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   culebra::http::HttpRequest req;
-  req.method = _culebra_str_view(a[0].tag, a[0].data);
-  req.url = _culebra_str_view(a[1].tag, a[1].data);
+  req.method = _ns_adapt::require_sv(a[0], "method");
+  req.url = _ns_adapt::require_sv(a[1], "url");
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 9),
@@ -2809,7 +2837,11 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   const char* ctx = "Http.sse";
   culebra::http::HttpRequest req;
   req.method = "GET";
-  req.url = _culebra_str_view(a[0].tag, a[0].data);
+  req.url = _ns_adapt::require_sv(a[0], "url");
+  if (a[1].tag != TAG_FUNC) {  // interp's on_event is a typed Function param
+    culebra::throw_runtime_error_at(
+        "TypeError", "type error: parameter 'on_event' expects Function", 0, 0);
+  }
   auto* cb = reinterpret_cast<JitClosure*>(a[1].data);  // on_event Function
   _http_adapt::common(a, n, 2, req, ctx);
   bool has_accept = false;
@@ -3885,7 +3917,12 @@ inline bool _jit_ns_kwarg_resolve(
   if (pm->args_rest_idx >= 0) {
     auto slab = _jit_ns_build_args_rest_slab(pm, n_pos, positional, merged,
                                              line, col);
-    *out = _jit_ns_dispatch_owned_slab(m, slab);
+    try {
+      *out = _jit_ns_dispatch_owned_slab(m, slab);
+    } catch (culebra::CulebraError& e) {
+      if (e.line == 0) { e.line = line; e.col = col; }
+      throw;
+    }
     return true;
   }
 
@@ -3949,8 +3986,17 @@ inline bool _jit_ns_kwarg_resolve(
         std::format("unknown keyword argument '{}'", bad), line, col);
   }
 
-  // Dispatch through the trampoline (it releases the slab values).
-  *out = _jit_ns_method_trampoline(cls, this_val, n, slab.data());
+  // Dispatch through the trampoline (it releases the slab values). The
+  // trampoline backfills a positionless error from the thread-local
+  // _jit_call_site, which the kwarg path may not have set — so backfill here
+  // too, from the call site passed in (matches interp's call-site position for
+  // adapter-internal type errors like `Http.get(params: 5)`).
+  try {
+    *out = _jit_ns_method_trampoline(cls, this_val, n, slab.data());
+  } catch (culebra::CulebraError& e) {
+    if (e.line == 0) { e.line = line; e.col = col; }
+    throw;
+  }
   return true;
 }
 
