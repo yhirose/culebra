@@ -51,11 +51,18 @@ m.start, m.end   -> Int                // byte offsets
 m.groups         -> [Group | nil]      // groups[0] is the whole match
 m.named          -> {name: Group}      // named captures, by name
 // Group: g.value -> String, g.start / g.end -> Int
-// positional: m.groups[1].value ; named: m.named["year"].value
+// subscript = captures accessor (string directly):
+m[1]             -> String | nil       // positional group; m[0] = whole match
+m["year"]        -> String | nil       // named group
+// miss (out of range / unmatched / unknown name) -> nil; composes with ?? ""
+// negative i wraps like an array; m["value"] is nil (use m.value / m[0])
+// spans still via the Group objects: m.groups[1].start, m.named["year"].end
 ```
 
-`Match` is a plain **data object** (fields only, no methods) so it crosses the
-interp/JIT value boundary unchanged — the native primitive builds it directly.
+`Match` is a plain **data object** (fields only) so it crosses the interp/JIT
+value boundary unchanged — the native primitive builds it directly. The
+subscript routing is an O(1) `is_match` flag on the object (interp `ObjectValue`
+/ JIT `JitObject`), invisible to `str()`, so it never touches the data shape.
 
 ## Design choices (cross-language synthesis)
 

@@ -3271,6 +3271,7 @@ inline JitValue _jit_regex_group(const regexlib::Capture& c) {
 
 inline JitValue _jit_regex_match(const regexlib::MatchResult& m) {
   auto* o = culebra_runtime_object_new();
+  o->is_match = true;  // route `m[i]` / `m["name"]` to capture groups
   culebra_runtime_object_set(o, "value", false, TAG_STRING,
                              reinterpret_cast<int64_t>(_culebra_heap_str(m.str)),
                              0, 0);

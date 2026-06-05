@@ -2033,6 +2033,14 @@ A `Match` is a data object (and `nil` means no match):
 | `m.groups` | `[Group \| nil]`; `groups[0]` is the whole match |
 | `m.named` | `{name: Group}` — named captures |
 
+Subscripts are the captures accessor: `m[i]` returns positional group `i`'s
+text (`m[0]` is the whole match, negative indices wrap like an array) and
+`m["name"]` returns a named group's text. Any miss — index out of range, an
+unmatched optional group, or an unknown name — is `nil`, so it composes with
+`?? ""`. Subscripting reaches only captures, never the record fields, so the
+whole match is `m.value` or `m[0]` (not `m["value"]`). Use the dot fields when
+you need spans (`m.groups[i].start`).
+
 `Group` has `.value`, `.start`, `.end`. An invalid pattern raises `RegexError`.
 
 ```culebra
@@ -2043,7 +2051,11 @@ d.find("no digits")                              // => nil
 d.find_all("a1 b22 c333").size()                 // => 3
 
 let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
-m.groups[1].value                                // => "2026"
+m[1]                                             // => "2026" (positional capture)
+m["year"]                                        // => "2026" (named capture)
+m[0]                                             // => "2026-05" (whole match)
+m[9] ?? "none"                                   // => "none" (miss -> nil)
+m.groups[1].value                                // => "2026" (Group object, for spans)
 m.named["year"].value                            // => "2026" (named via (?<name>...))
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"

@@ -624,6 +624,11 @@ struct ObjectValue {
   // leave this empty; str() falls back to the `properties` walk in that
   // case.
   std::shared_ptr<std::vector<Value>> key_order;
+  // A Regex MatchResult: routes `m[i]` / `m["name"]` subscripts to its
+  // capture groups (see eval_array_reference) instead of the usual
+  // property/sidecar lookup. A plain marker, invisible to str()/iteration —
+  // mirrors the JIT's JitObject::is_match flag for byte-for-byte symmetry.
+  bool is_match = false;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -6323,6 +6328,31 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                           args_ast.line, args_ast.column);
   }
 
+  // `m[key]` on a Regex match: key is a Long (positional group, negative
+  // wraps like an array) or a String/StringView (named group). Returns the
+  // group's value string, or nil for any miss. A group slot is a
+  // `{value,start,end}` object, or nil when that group did not participate.
+  static Value match_capture(const ObjectValue& m, const Value& key) {
+    auto group_value = [](const Value& g) -> Value {
+      return g.type == Value::Object ? g.to_object().get("value") : Value();
+    };
+    if (key.type == Value::Long) {
+      const auto& groups = *m.get("groups").to_array().values;
+      long n = static_cast<long>(groups.size());
+      long i = key.to_long();
+      if (i < 0) i += n;
+      if (i < 0 || i >= n) return Value();
+      return group_value(groups[i]);
+    }
+    if (key.type == Value::String || key.type == Value::StringView) {
+      const auto& named = m.get("named").to_object();
+      auto name = key.to_string_view();
+      if (!named.has_own(name)) return Value();
+      return group_value(named.get(name));
+    }
+    return Value();
+  }
+
   Value eval_array_reference(const peg::Ast& ast,
                              const std::shared_ptr<Environment>& env,
                              const Value& val) {
@@ -6361,6 +6391,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // (e.g. an integer index into a wrapped collection).
     if (val.type == Value::Object) {
       const auto& obj = val.to_object();
+      // Regex match: `[]` is the captures accessor (Ruby/JS model). Long ->
+      // positional group, String -> named group; a miss (out of range,
+      // unmatched, or no such name) is nil so it composes with `?? ""`. The
+      // record fields (`m.value`, spans) stay on dot access.
+      if (obj.is_match) return match_capture(obj, key);
       if (obj.has(key)) return obj.get(key);
       // Subscript overloading is a class-instance feature; a plain dict
       // miss is a KeyError even if it happens to hold an `__index__` value.

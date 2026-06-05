@@ -3290,10 +3290,14 @@ inline Value regex_group_value(const regexlib::Capture& c) {
   return Value(std::move(g));
 }
 
-// A match -> { value, start, end, groups: [Group|nil], group(i|name) }.
+// A match -> { value, start, end, groups: [Group|nil], named: {name: Group} }.
+// Subscripts access captures directly: `m[i]` -> positional group value,
+// `m["name"]` -> named group value (nil when absent / unmatched). The dot
+// fields stay for spans (`m.groups[i].start`) and the whole match (`m.value`).
 inline Value regex_match_value(const regexlib::MatchResult& m) {
   using namespace std::literals;
   ObjectValue mo;
+  mo.is_match = true;
   mo.initialize("value", Value(std::string(m.str)), false);
   mo.initialize("start", Value(static_cast<long>(m.begin)), false);
   mo.initialize("end", Value(static_cast<long>(m.end)), false);

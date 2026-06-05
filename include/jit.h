@@ -254,6 +254,9 @@ struct JitObject {
   bool is_packed_view = false;
   bool is_shared_buffer = false;
   bool is_fixed_array_view = false;
+  // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
+  // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
+  bool is_match = false;
 
   // --- Shape-based property access helpers ---
 
@@ -3485,6 +3488,45 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
   return true;
 }
 
+// A capture-group slot (`{value,start,end}` object, or nil when the group
+// did not participate) -> its value string (+1 owned), or nil. Mirrors the
+// interp match_capture's group_value lambda.
+inline JitValue _jit_match_group_value(JitValue g) {
+  if (g.tag != TAG_OBJECT) return JitValue{TAG_NIL, 0};
+  auto* go = reinterpret_cast<JitObject*>(g.data);
+  size_t vi = go->find_slot("value");
+  if (vi == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+  JitValue v = go->slots[vi].value;
+  culebra_runtime_value_retain(v.tag, v.data);
+  return v;
+}
+
+// `m[key]` on a Regex match: Long -> positional group (negative wraps like an
+// array), String/StringView -> named group. Any miss is nil. Returns a +1
+// owned value. The interp twin is Interpreter::match_capture.
+inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
+                                 int64_t key_data) {
+  if (key_tag == TAG_LONG) {
+    size_t gi = m->find_slot("groups");
+    if (gi == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+    auto* arr = reinterpret_cast<JitArray*>(m->slots[gi].value.data);
+    long n = static_cast<long>(arr->size);
+    long i = key_data;
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) return JitValue{TAG_NIL, 0};
+    return _jit_match_group_value(arr->items[i]);
+  }
+  if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
+    size_t ni = m->find_slot("named");
+    if (ni == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+    auto* named = reinterpret_cast<JitObject*>(m->slots[ni].value.data);
+    size_t si = named->find_slot(_culebra_str_view(key_tag, key_data));
+    if (si == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+    return _jit_match_group_value(named->slots[si].value);
+  }
+  return JitValue{TAG_NIL, 0};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
@@ -3510,6 +3552,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     auto* view = _jit_shared_buffer_index(obj, idx, line, col);
     *out_tag = TAG_OBJECT;
     *out_data = reinterpret_cast<int64_t>(view);
+    return;
+  }
+  // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
+  // positional, String/StringView -> named). A miss is nil. Record fields
+  // (`m.value`, spans) stay on dot access. Borrowed cstring keys (TAG_STRING)
+  // are not freed; a heap StringView key is released like the sidecar path.
+  if (obj->is_match) {
+    JitValue r = _jit_match_index(obj, key_tag, key_data);
+    *out_tag = r.tag;
+    *out_data = r.data;
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
   // String keys: unified with shape access (see object_set_any).

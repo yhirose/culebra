@@ -1,0 +1,38 @@
+// Regex match の添字アクセス `m[i]` / `m["name"]`（captures 専用アクセサ）。
+// dot は record（メタ情報）、`[]` は captures、という Ruby/JS 準拠モデル。
+
+let m = Regex.compile('(\d+)-(\d+)').find("12-34")
+
+// 位置グループ: m[0] = マッチ全体, m[1..] = 各群（文字列を直接返す）
+puts(m[0])            // 12-34
+puts(m[1])            // 12
+puts(m[2])            // 34
+
+// 負数は配列同様にラップ
+puts(m[-1])           // 34
+puts(m[-2])           // 12
+
+// 範囲外 → nil（throw しない、?? と合成）
+puts(m[9] == nil)     // true
+puts(m[9] ?? "none")  // none
+
+// dot のメタ情報は不変
+puts(m.value)         // 12-34
+puts(m.start)         // 0
+puts(m.groups[1].start)  // 0  (span は従来通り)
+
+// 名前付きグループ: m["name"]
+let d = Regex.compile('(?<y>\d{4})-(?<mo>\d{2})').find("2026-06")
+puts(d["y"])          // 2026
+puts(d["mo"])         // 06
+puts(d["nope"] == nil)   // true  (無い名前 → nil)
+puts(d["value"] == nil)  // true  ([] は captures 専用、プロパティは引かない)
+
+// 未マッチの optional group → nil
+let o = Regex.compile('(a)(b)?').find("a")
+puts(o[1])            // a
+puts(o[2] == nil)     // true
+
+// 実用形: m[i] で wol_say 風の置換が簡潔に
+let cite = Regex.compile('(\d+):(\d+)').find("86:5")
+puts("{cite[1]}章{cite[2]}節")   // 86章5節

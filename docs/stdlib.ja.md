@@ -1960,6 +1960,13 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `m.groups` | `[Group \| nil]`; `groups[0]` はマッチ全体 |
 | `m.named` | `{name: Group}` — 名前付きキャプチャ |
 
+添字はキャプチャ専用アクセサです。`m[i]` は位置グループ `i` の文字列（`m[0]` は
+マッチ全体、負数は配列同様にラップ）、`m["name"]` は名前付きグループの文字列を返します。
+ミス（範囲外・未マッチの省略可能グループ・無い名前）はすべて `nil` なので `?? ""` と
+合成できます。添字はキャプチャだけに届きレコードのフィールドには届かないため、マッチ全体は
+`m.value` か `m[0]`（`m["value"]` ではない）。span が要る時は dot フィールド
+（`m.groups[i].start`）を使います。
+
 `Group` は `.value` / `.start` / `.end` を持ちます。不正なパターンは `RegexError` を送出。
 
 ```culebra
@@ -1970,7 +1977,11 @@ d.find("no digits")                              // => nil
 d.find_all("a1 b22 c333").size()                 // => 3
 
 let m = Regex.compile('(?<year>\d{4})-(\d{2})').find("2026-05")
-m.groups[1].value                                // => "2026"
+m[1]                                             // => "2026"（位置キャプチャ）
+m["year"]                                        // => "2026"（名前付きキャプチャ）
+m[0]                                             // => "2026-05"（マッチ全体）
+m[9] ?? "none"                                   // => "none"（ミス -> nil）
+m.groups[1].value                                // => "2026"（Group オブジェクト、span 用）
 m.named["year"].value                            // => "2026"（(?<name>...) で名前付き）
 
 d.replace_all("a1 b22 c333", "#")                // => "a# b# c#"
