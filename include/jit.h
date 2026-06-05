@@ -4004,6 +4004,16 @@ inline thread_local int64_t _jit_call_site_col = 0;
 inline thread_local int64_t _jit_callback_arg_line = 0;
 inline thread_local int64_t _jit_callback_arg_col = 0;
 
+// Source position of the FIRST argument of an indirect closure call, stored
+// just before the call (alongside _jit_call_site). A stdlib method used as a
+// value (`let f = FS.read; f(5)`) reaches its arg0 type check through the
+// closure ABI, which carries no per-arg position; the ns-method dispatch reads
+// this so the error points at the argument like the interp binder, not at the
+// call site. Set on every indirect call (defaults to the call site when there
+// is no argument), so it is never stale.
+inline thread_local int64_t _jit_call_arg0_line = 0;
+inline thread_local int64_t _jit_call_arg0_col = 0;
+
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
@@ -4906,6 +4916,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
     int64_t line, int64_t col) {
   _jit_call_site_line = line;
   _jit_call_site_col = col;
+  // Default the arg0 position to the call site so it is never stale on paths
+  // that set only the call site (e.g. a HOF invoking a callback per element).
+  // The direct indirect-call path overrides this via set_call_arg0_site.
+  _jit_call_arg0_line = line;
+  _jit_call_arg0_col = col;
 }
 
 // Publish the current op's source position for the positionless-error backfill
@@ -4924,6 +4939,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
     int64_t line, int64_t col) {
   _jit_callback_arg_line = line;
   _jit_callback_arg_col = col;
+}
+
+// Record the position of an indirect call's first argument (see
+// _jit_call_arg0_*), emitted just before the call so an ns-method-as-value's
+// arg0 type error points at the argument. Trivial: two thread-local stores.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_arg0_site(
+    int64_t line, int64_t col) {
+  _jit_call_arg0_line = line;
+  _jit_call_arg0_col = col;
 }
 
 // Append a method to the named multimethod table (replacing an entry
@@ -7453,6 +7477,7 @@ inline constexpr auto proc_race           = "culebra_runtime_proc_race";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
 inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
+inline constexpr auto set_call_arg0_site  = "culebra_runtime_set_call_arg0_site";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
@@ -10572,6 +10597,10 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::set_callback_arg_site,
+                                 builder_.getVoidTy(),
+                                 builder_.getInt64Ty(),
+                                 builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::set_call_arg0_site,
                                  builder_.getVoidTy(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
@@ -16569,7 +16598,8 @@ struct JIT {
   llvm::Value* compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
-      bool check_kw_only = false, bool allow_call_overload = true) {
+      bool check_kw_only = false, bool allow_call_overload = true,
+      const peg::Ast* arg0_ast = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto tag = extract_tag(callee);
@@ -16662,6 +16692,15 @@ struct JIT {
     // store is two i64 writes to thread-locals.
     emit_call(module_->getFunction(rt::set_call_site),
               {current_line_val(), current_column_val()});
+    // Record the first argument's position for an ns-method-as-value's arg0
+    // type check (read in _jit_ns_method_dispatch). Only when there is a real
+    // arg to point at — set_call_site above already defaulted arg0 to the call
+    // site, so a no-arg call needs no extra store.
+    if (arg0_ast) {
+      emit_call(module_->getFunction(rt::set_call_arg0_site),
+                {builder_.getInt64(arg0_ast->line),
+                 builder_.getInt64(arg0_ast->column)});
+    }
 
     auto calleeType = llvm::FunctionType::get(
         valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},
@@ -16926,8 +16965,11 @@ struct JIT {
     for (auto& argNode : argsAst.nodes) {
       userArgs.push_back(compile(*argNode));
     }
-    return compile_function_call_raw(callee, thisVal, userArgs,
-                                     /*check_kw_only=*/any_kw_only_in_program_);
+    return compile_function_call_raw(
+        callee, thisVal, userArgs,
+        /*check_kw_only=*/any_kw_only_in_program_,
+        /*allow_call_overload=*/true,
+        argsAst.nodes.empty() ? nullptr : argsAst.nodes[0].get());
   }
 
   // Indirect / UFCS / method kwargs path. Compiles ARG_LIST into

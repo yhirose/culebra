@@ -3789,7 +3789,8 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
 // argument/call position explicitly).
 inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
                                         JitValue* args, int64_t line,
-                                        int64_t col) {
+                                        int64_t col, int64_t arg0_line,
+                                        int64_t arg0_col) {
   const NsParamMeta* pm = _ns_meta(m);
   try {
     // Args-rest method (range/iota): build the same canonical
@@ -3823,9 +3824,10 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // As-value / HOF path: a param-less method's lenient adapter would coerce a
     // wrong-typed leading positional (FS.read(5) → IOError, Tensor.from(5) →
     // empty). Reject it first with interp's `parameter '<name>' expects <Type>`
-    // — the type the entry carries as arg0_type/arg0_name. (The syntactic call
-    // form checks at the argument position in compile_ns_call and never reaches
-    // here.)
+    // — the type the entry carries as arg0_type/arg0_name. Report at the
+    // argument's position (arg0_line/col, threaded from the indirect call site),
+    // matching the interp binder; the syntactic call form checks inline in
+    // compile_ns_call and never reaches here.
     if (!pm && m->arg0_type != nullptr && n_args >= 1 &&
         !_culebra_type_matches_single(args[0].tag, args[0].data,
                                       m->arg0_type)) {
@@ -3834,7 +3836,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
           "TypeError",
           std::format("type error: parameter '{}' expects {}",
                       m->arg0_name ? m->arg0_name : "", m->arg0_type),
-          line, col);
+          arg0_line, arg0_col);
     }
     try {
       auto r = m->adapter(args, n_args);
@@ -3854,12 +3856,13 @@ inline JitValue _jit_ns_method_trampoline(
     JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
-  // The closure ABI carries no line/col, so snapshot the call-site position
-  // recorded just before this indirect call (general call codegen emits
-  // set_call_site). Snapshot into locals: a nested call inside the adapter
-  // would overwrite the thread-local.
+  // The closure ABI carries no line/col, so snapshot the positions recorded
+  // just before this indirect call (general call codegen emits set_call_site +
+  // set_call_arg0_site). Pass both: the call site for arity errors and the
+  // first argument's position for the arg0 type check (matching interp).
   return _jit_ns_method_dispatch(m, n_args, args, _jit_call_site_line,
-                                 _jit_call_site_col);
+                                 _jit_call_site_col, _jit_call_arg0_line,
+                                 _jit_call_arg0_col);
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
@@ -4016,7 +4019,9 @@ inline bool _jit_ns_kwarg_resolve_core(
   // call-site position for adapter-internal type errors like
   // `Http.get(params: 5)`; the typed-positional checks already fired earlier at
   // the argument position).
-  *out = _jit_ns_method_dispatch(m, n, slab.data(), line, col);
+  // pm is non-null here, so the dispatch's arg0 type check is inert; pass the
+  // call site for arg0 (the typed positionals were already checked inline).
+  *out = _jit_ns_method_dispatch(m, n, slab.data(), line, col, line, col);
   return true;
 }
 
@@ -4154,10 +4159,12 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m) {
             sp->params.push_back(NsParam{
                 cp.name, has_default, cp.kw_only,
                 has_default ? cp.default_value.get() : nullptr,
-                // Only required leading positionals carry a compile-side type
-                // check (defaulted params are checked by the adapter, not at the
-                // argument position) — preserving the prior hand-table behavior.
-                has_default ? std::string_view{} : cp.type_name});
+                // Canonical declared type for every param. The compile side
+                // emits a runtime type check at the argument's source position
+                // for any positional bound to a typed param (leading required
+                // or a defaulted one passed positionally), matching the interp
+                // binder — see compile_single_positional_kwargs / _kwargs.
+                cp.type_name});
             if (cp.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
             if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
             if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
@@ -4320,8 +4327,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_method_call_kw(
   }
   // Param-less method (no NsParamMeta, e.g. the Encoding codecs): the resolver
   // bailed without consuming. The caller passes no kwargs/splats for these, so
-  // dispatch the positionals directly (dispatch consumes them).
-  return _jit_ns_method_dispatch(m, n_pos, positional, line, col);
+  // dispatch the positionals directly (dispatch consumes them). The typed arg0
+  // was already checked inline at its position by the caller, so the dispatch's
+  // arg0 check is inert here; pass the call site for it.
+  return _jit_ns_method_dispatch(m, n_pos, positional, line, col, line, col);
 }
 }  // extern "C"
 
@@ -5756,7 +5765,13 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
           callAst.line, callAst.column);
     }
     kwKeys.push_back(builder_.CreateGlobalString(std::string(pname), ".kwkey"));
-    kwVals.push_back(compile(*positional[i]));
+    auto pv = compile(*positional[i]);
+    // A typed param bound positionally (e.g. Proc.run's cwd: String?) is checked
+    // at the argument's position, matching the interp binder — otherwise the
+    // adapter rejects it later at the call site. No-op for untyped params.
+    jit.emit_type_check(pv, meta->params[i].type,
+                        std::format("parameter '{}'", pname), positional[i]);
+    kwVals.push_back(pv);
   }
   std::vector<llvm::Value*> splatVals;
   for (auto* ast : splats) splatVals.push_back(compile(*ast));
