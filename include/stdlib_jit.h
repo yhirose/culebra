@@ -3413,21 +3413,23 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   return _ns_adapt::v_array(arr);
 }
 
-// Per-parameter metadata for stdlib methods that accept kwargs / have
-// defaults. Defaults are produced by a factory fn (mirrors kNsConstants'
-// late-bound `build`) so heap values like "" can be materialized fresh
-// per call. Methods without kwargs leave NsMethod::params null.
+// Per-parameter view for stdlib methods that accept kwargs / have defaults.
+// Derived once (per process) from the canonical interp FunctionValue::Parameter
+// list — never hand-authored — so the JIT binder and the interp binder cannot
+// drift. `name`/`type` are string_views into the canonical params (stable for
+// the process); `canon_default` points at the canonical default Value and is
+// converted fresh to a JitValue per use (so heap defaults like "" stay
+// per-call owned). Built by `_ns_meta` from the canonical params.
 struct NsParam {
-  const char* name;
+  std::string_view name;
   bool has_default;
   bool kw_only;
-  JitValue (*make_default)();  // null when has_default == false
-  // Declared type of a positional param, e.g. "String" / "Function". When set,
-  // the compile side emits an inline type check at the *argument's* source
-  // position (matching interp's binder), instead of letting the runtime
-  // adapter reject it positionlessly. Default-initialized so existing aggregate
-  // initializers (which omit it) keep nullptr = unchecked.
-  const char* type = nullptr;
+  const culebra::Value* canon_default;  // null iff !has_default
+  // Declared type of a *required* leading positional ("String" / "Function" /
+  // "Array"); empty for defaulted params. When set, the compile side emits an
+  // inline type check at the argument's source position (matching interp's
+  // binder) instead of letting the runtime adapter reject it positionlessly.
+  std::string_view type;
 };
 
 struct NsParamMeta {
@@ -3443,17 +3445,6 @@ struct NsParamMeta {
   // initializers (which omit it) keep -1.
   int args_rest_idx = -1;
 };
-
-inline JitValue _ns_def_nil()   { return {TAG_NIL, 0}; }
-inline JitValue _ns_def_false() { return {TAG_BOOL, 0}; }
-inline JitValue _ns_def_zero()  { return {TAG_LONG, 0}; }
-inline JitValue _ns_def_one()   { return {TAG_LONG, 1}; }
-inline JitValue _ns_def_empty_str() {
-  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(""))};
-}
-inline JitValue _ns_def_mode_r() {
-  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str("r"))};
-}
 
 struct NsMethod {
   const char* ns;
@@ -3474,141 +3465,96 @@ struct NsMethod {
   const char* arg0_name = nullptr;
 };
 
-// Param metadata for the kwarg-accepting Proc methods. Names/defaults
-// mirror make_proc_namespace() in stdlib_interp.h; _check_ns_drift_once
-// verifies the two stay in sync (debug builds).
-inline const NsParam kProcRunParams[] = {
-  {"cmd",     false, false, nullptr},
-  {"cwd",     true,  false, &_ns_def_nil},
-  {"env",     true,  false, &_ns_def_nil},
-  {"stdin",   true,  false, &_ns_def_empty_str},
-  {"check",   true,  false, &_ns_def_false},
-  {"timeout", true,  false, &_ns_def_zero},
-};
-inline const NsParamMeta kProcRunMeta = {kProcRunParams, 6, -1, -1};
+// --- Single source of truth for the calling convention -----------------------
+// The JIT binder's per-parameter view (NsParamMeta / NsParam) is DERIVED, once
+// per process, from the canonical interp FunctionValue::Parameter list — never
+// hand-authored — so the interp and JIT binders cannot drift. Only the choice
+// of *which* methods use a kwarg/default slab (a JIT codegen-strategy decision,
+// see _ns_method_uses_kwarg_slab) is JIT-side; the param data all flows from
+// the canonical spec.
 
-inline const NsParam kProcAllParams[] = {
-  {"commands",  false, false, nullptr},
-  {"limit",     true,  false, &_ns_def_zero},
-  {"timeout",   true,  false, &_ns_def_zero},
-  {"fail_fast", true,  false, &_ns_def_false},
-  {"retries",   true,  false, &_ns_def_zero},
-};
-inline const NsParamMeta kProcAllMeta = {kProcAllParams, 5, -1, -1};
-
-inline const NsParam kProcSpawnParams[] = {
-  {"cmd",   false, false, nullptr},
-  {"cwd",   true,  false, &_ns_def_nil},
-  {"env",   true,  false, &_ns_def_nil},
-  {"stdin", true,  false, &_ns_def_empty_str},
-};
-inline const NsParamMeta kProcSpawnMeta = {kProcSpawnParams, 4, -1, -1};
-
-// FS.remove(path, recursive=false) / FS.copy(src, dst, recursive=false).
-// Names/defaults mirror make_fs_namespace in stdlib_interp.h.
-inline const NsParam kFsRemoveParams[] = {
-  {"path",      false, false, nullptr},
-  {"recursive", true,  false, &_ns_def_false},
-};
-inline const NsParamMeta kFsRemoveMeta = {kFsRemoveParams, 2, -1, -1};
-
-inline const NsParam kFsCopyParams[] = {
-  {"src",       false, false, nullptr},
-  {"dst",       false, false, nullptr},
-  {"recursive", true,  false, &_ns_def_false},
-};
-inline const NsParamMeta kFsCopyMeta = {kFsCopyParams, 3, -1, -1};
-
-// File.open(path, mode="r") / File.with(path, mode="r", fn).
-inline const NsParam kFileOpenParams[] = {
-  {"path", false, false, nullptr},
-  {"mode", true,  false, &_ns_def_mode_r},
-};
-inline const NsParamMeta kFileOpenMeta = {kFileOpenParams, 2, -1, -1};
-
-inline const NsParam kFileWithParams[] = {
-  {"path", false, false, nullptr},
-  {"mode", true,  false, &_ns_def_mode_r},
-  {"fn",   false, false, nullptr},
-};
-inline const NsParamMeta kFileWithMeta = {kFileWithParams, 3, -1, -1};
-
-// Parallel.{map,each,...}(items, fn, limit=0, on_progress=nil). Mirrors
-// make_parallel_namespace in isolate.h; the NsParamMeta hook resolves `limit:`
-// and `on_progress:` kwargs into slab slots 2 and 3.
-inline const NsParam kParallelParams[] = {
-  {"items",       false, false, nullptr},
-  {"fn",          false, false, nullptr},
-  {"limit",       true,  false, &_ns_def_zero},
-  {"on_progress", true,  false, &_ns_def_nil},
-};
-inline const NsParamMeta kParallelMeta = {kParallelParams, 4, -1, -1};
-
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
-// Http.* param metadata. Names/defaults mirror make_http_namespace in
-// stdlib_interp.h; _check_ns_drift_once verifies the two stay in sync.
-inline JitValue _ns_def_true() { return {TAG_BOOL, 1}; }
-inline JitValue _ns_def_text_plain() {
-  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str("text/plain"))};
+// A fresh JitValue for a canonical stdlib default Value. Stdlib defaults are
+// scalars (nil / bool / long / float / string); heap strings are re-allocated
+// per call so each binding owns its own +1.
+inline JitValue _jit_default_from_value(const culebra::Value& v) {
+  switch (v.type) {
+    case culebra::Value::Nil:    return {TAG_NIL, 0};
+    case culebra::Value::Bool:   return {TAG_BOOL, v.get<bool>() ? 1 : 0};
+    case culebra::Value::Long:   return {TAG_LONG, v.get<long>()};
+    case culebra::Value::Float:  return jit_float(v.get<double>());
+    case culebra::Value::String:
+      return {TAG_STRING,
+              reinterpret_cast<int64_t>(_culebra_heap_str(v.to_string()))};
+    default:
+      throw culebra::CulebraError("InternalError",
+          "unsupported stdlib default value", 0, 0);
+  }
 }
 
-// `into` (response sink): nil → buffer; String → file path; Function → per-chunk
-// callback. Shared trailing kwarg on every Http method (default nil).
-// get / delete / head: url, headers=nil, timeout=0, follow_redirects=true,
-// into=nil.
-inline const NsParam kHttpGetParams[] = {
-  {"url",              false, false, nullptr, "String"},
-  {"headers",          true,  false, &_ns_def_nil},
-  {"timeout",          true,  false, &_ns_def_zero},
-  {"follow_redirects", true,  false, &_ns_def_true},
-  {"into",             true,  false, &_ns_def_nil},
-  {"params",           true,  false, &_ns_def_nil},
-};
-inline const NsParamMeta kHttpGetMeta = {kHttpGetParams, 6, -1, -1};
+// The canonical interp environment, built once. Param specs are immutable, so a
+// single shared instance serves every isolate / thread. environment() is a
+// standalone factory available at JIT compile time, JIT runtime, and inside the
+// AOT runtime archive (culebra_rt.cc includes stdlib_interp.h).
+inline const culebra::Environment& _canonical_env() {
+  static const std::shared_ptr<culebra::Environment> env =
+      culebra::environment();
+  return *env;
+}
 
-// post / put: url, body="", content_type="text/plain", headers=nil,
-// timeout=0, follow_redirects=true, into=nil.
-inline const NsParam kHttpPostParams[] = {
-  {"url",              false, false, nullptr, "String"},
-  {"body",             true,  false, &_ns_def_empty_str},
-  {"content_type",     true,  false, &_ns_def_text_plain},
-  {"headers",          true,  false, &_ns_def_nil},
-  {"timeout",          true,  false, &_ns_def_zero},
-  {"follow_redirects", true,  false, &_ns_def_true},
-  {"into",             true,  false, &_ns_def_nil},
-  {"params",           true,  false, &_ns_def_nil},
-  {"json",             true,  false, &_ns_def_nil},
-  {"form",             true,  false, &_ns_def_nil},
-};
-inline const NsParamMeta kHttpPostMeta = {kHttpPostParams, 10, -1, -1};
+// Resolve an NsMethod to its canonical interp parameter list, or null. Handles
+// namespace methods (Ns.method), nested sub-namespace methods (Ns.sub.method),
+// and bare globals (ns == "" → e.g. range / iota in the global dictionary).
+inline const std::vector<culebra::FunctionValue::Parameter>*
+_canon_params(const NsMethod* m) {
+  const auto& env = _canonical_env();
+  const culebra::Value* fnv = nullptr;
+  if (m->ns == nullptr || m->ns[0] == '\0') {
+    auto it = env.dictionary.find(std::string(m->name));
+    if (it != env.dictionary.end()) fnv = &it->second.val;
+  } else {
+    auto it = env.dictionary.find(std::string(m->ns));
+    if (it == env.dictionary.end() ||
+        it->second.val.type != culebra::Value::Object) return nullptr;
+    const auto& ns_obj = it->second.val.to_object();
+    if (m->sub != nullptr) {
+      if (!ns_obj.has(m->sub)) return nullptr;
+      const auto& sub_v = ns_obj.get(m->sub);
+      if (sub_v.type != culebra::Value::Object) return nullptr;
+      const auto& sub_obj = sub_v.to_object();
+      if (!sub_obj.has(m->name)) return nullptr;
+      fnv = &sub_obj.get(m->name);
+    } else {
+      if (!ns_obj.has(m->name)) return nullptr;
+      fnv = &ns_obj.get(m->name);
+    }
+  }
+  if (fnv == nullptr || fnv->type != culebra::Value::Function) return nullptr;
+  return fnv->to_function().params.get();
+}
 
-// request: method, url, body="", content_type="text/plain", headers=nil,
-// timeout=0, follow_redirects=true, into=nil.
-inline const NsParam kHttpRequestParams[] = {
-  {"method",           false, false, nullptr, "String"},
-  {"url",              false, false, nullptr, "String"},
-  {"body",             true,  false, &_ns_def_empty_str},
-  {"content_type",     true,  false, &_ns_def_text_plain},
-  {"headers",          true,  false, &_ns_def_nil},
-  {"timeout",          true,  false, &_ns_def_zero},
-  {"follow_redirects", true,  false, &_ns_def_true},
-  {"into",             true,  false, &_ns_def_nil},
-  {"params",           true,  false, &_ns_def_nil},
-  {"json",             true,  false, &_ns_def_nil},
-  {"form",             true,  false, &_ns_def_nil},
-};
-inline const NsParamMeta kHttpRequestMeta = {kHttpRequestParams, 11, -1, -1};
+// Whether this method's JIT adapter consumes a kwarg/default slab (built by the
+// shared resolver) rather than taking raw positional args. This is a JIT-adapter
+// contract, NOT derivable from the canonical spec: several raw-adapter methods
+// (Channel.fan_in, Isolate.spawn, the File handle's read, …) also carry
+// canonical defaults / *args yet must keep their raw argv. So the *membership*
+// of this set is listed explicitly; the per-parameter DATA for the members is
+// still derived from the canonical params by `_ns_meta` (the single source).
+inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
+  std::string_view ns(m->ns ? m->ns : ""), nm(m->name);
+  if (ns == "Proc")     return nm == "run" || nm == "all" || nm == "spawn";
+  if (ns == "FS")       return nm == "remove" || nm == "copy";
+  if (ns == "File")     return nm == "open" || nm == "with";
+  if (ns == "Parallel") return nm == "map" || nm == "each" ||
+                                nm == "map_settled" || nm == "race";
+  if (ns == "Http")     return true;  // all Http methods take kwargs
+  if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
+  return false;
+}
 
-// sse: url, on_event, headers=nil, timeout=0, follow_redirects=true.
-inline const NsParam kHttpSseParams[] = {
-  {"url",              false, false, nullptr, "String"},
-  {"on_event",         false, false, nullptr, "Function"},
-  {"headers",          true,  false, &_ns_def_nil},
-  {"timeout",          true,  false, &_ns_def_zero},
-  {"follow_redirects", true,  false, &_ns_def_true},
-};
-inline const NsParamMeta kHttpSseMeta = {kHttpSseParams, 5, -1, -1};
-#endif  // CULEBRA_HTTP_ENABLED
+// Derived param spec for a method, or null if it doesn't use a kwarg slab.
+// Built once per process; lock-free reads after init (see definition below
+// kBuiltinFns, where the method tables it walks are in scope).
+inline const NsParamMeta* _ns_meta(const NsMethod* m);
 
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
@@ -3644,10 +3590,10 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "size",      1, &_ns_fs_size,      nullptr, nullptr, "String", "path"},
   {"FS",     "list_dir",  1, &_ns_fs_list_dir,  nullptr, nullptr, "String", "path"},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
-  {"FS",     "remove",    1, &_ns_fs_remove, &kFsRemoveMeta},
+  {"FS",     "remove",    1, &_ns_fs_remove},
   {"FS",     "stat",      1, &_ns_fs_stat},
   {"FS",     "rename",    2, &_ns_fs_rename},
-  {"FS",     "copy",      2, &_ns_fs_copy, &kFsCopyMeta},
+  {"FS",     "copy",      2, &_ns_fs_copy},
   {"FS",     "normpath",  1, &_ns_fs_normpath},
   {"FS",     "is_abs",    1, &_ns_fs_is_abs},
   {"FS",     "abspath",   1, &_ns_fs_abspath},
@@ -3658,8 +3604,8 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "walk",      1, &_ns_fs_walk},
   {"FS",     "glob",      1, &_ns_fs_glob},
 
-  {"File",   "open",      1, &_ns_file_open, &kFileOpenMeta},
-  {"File",   "with",      2, &_ns_file_with, &kFileWithMeta},
+  {"File",   "open",      1, &_ns_file_open},
+  {"File",   "with",      2, &_ns_file_with},
 
   {"Random", "seed",            1, &_ns_random_seed},
   {"Random", "int",             2, &_ns_random_int},
@@ -3686,19 +3632,19 @@ inline const NsMethod kNsMethods[] = {
   {"_Regex", "replace_all", 3, &_ns_regex_replace_all},
   {"_Regex", "split",       2, &_ns_regex_split},
 
-  {"Proc",   "run",   1, &_ns_proc_run,   &kProcRunMeta},
-  {"Proc",   "all",   1, &_ns_proc_all,   &kProcAllMeta},
+  {"Proc",   "run",   1, &_ns_proc_run},
+  {"Proc",   "all",   1, &_ns_proc_all},
   {"Proc",   "race",  1, &_ns_proc_race},
-  {"Proc",   "spawn", 1, &_ns_proc_spawn, &kProcSpawnMeta},
+  {"Proc",   "spawn", 1, &_ns_proc_spawn},
 
 #if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
-  {"Http",   "get",     1, &_ns_http_get,     &kHttpGetMeta},
-  {"Http",   "delete",  1, &_ns_http_delete,  &kHttpGetMeta},
-  {"Http",   "head",    1, &_ns_http_head,    &kHttpGetMeta},
-  {"Http",   "post",    1, &_ns_http_post,    &kHttpPostMeta},
-  {"Http",   "put",     1, &_ns_http_put,     &kHttpPostMeta},
-  {"Http",   "request", 2, &_ns_http_request, &kHttpRequestMeta},
-  {"Http",   "sse",     2, &_ns_http_sse,     &kHttpSseMeta},
+  {"Http",   "get",     1, &_ns_http_get},
+  {"Http",   "delete",  1, &_ns_http_delete},
+  {"Http",   "head",    1, &_ns_http_head},
+  {"Http",   "post",    1, &_ns_http_post},
+  {"Http",   "put",     1, &_ns_http_put},
+  {"Http",   "request", 2, &_ns_http_request},
+  {"Http",   "sse",     2, &_ns_http_sse},
 #endif
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
@@ -3708,10 +3654,10 @@ inline const NsMethod kNsMethods[] = {
   {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
   {"SharedBuffer", "shared", 2, &_ns_sharedbuffer_shared},
   {"SharedBuffer", "receive", 2, &_ns_sharedbuffer_receive},
-  {"Parallel", "map",         2, &_ns_parallel_map,         &kParallelMeta},
-  {"Parallel", "each",        2, &_ns_parallel_each,        &kParallelMeta},
-  {"Parallel", "map_settled", 2, &_ns_parallel_map_settled, &kParallelMeta},
-  {"Parallel", "race",        2, &_ns_parallel_race,        &kParallelMeta},
+  {"Parallel", "map",         2, &_ns_parallel_map},
+  {"Parallel", "each",        2, &_ns_parallel_each},
+  {"Parallel", "map_settled", 2, &_ns_parallel_map_settled},
+  {"Parallel", "race",        2, &_ns_parallel_race},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
   {"JSON",   "parse",     1, &_ns_json_parse, nullptr, nullptr, "String", "s"},
@@ -3795,7 +3741,7 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
       slab[i] = it->second;
       merged.erase(it);
     } else if (pm->params[i].has_default) {
-      slab[i] = pm->params[i].make_default();
+      slab[i] = _jit_default_from_value(*pm->params[i].canon_default);
     } else {
       cleanup();
       throw culebra::CulebraError("ArityError",
@@ -3821,7 +3767,7 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
     for (auto& sv : slab) _culebra_value_release_impl(sv.tag, sv.data);
   };
   try {
-    auto r = m->adapter(slab.data(), m->params->n_params);
+    auto r = m->adapter(slab.data(), _ns_meta(m)->n_params);
     release();
     return r;
   } catch (...) {
@@ -3839,14 +3785,15 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
 inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
                                         JitValue* args, int64_t line,
                                         int64_t col) {
+  const NsParamMeta* pm = _ns_meta(m);
   try {
     // Args-rest method (range/iota): build the same canonical
     // [rest-Array, kw-only...] slab the kwarg resolver produces, so a single
     // adapter shape serves both. The positionals are absorbed into the Array,
     // so the slab (not `args`) is what gets released afterward.
-    if (m->params && m->params->args_rest_idx >= 0) {
+    if (pm && pm->args_rest_idx >= 0) {
       std::unordered_map<std::string_view, JitValue> none;
-      auto slab = _jit_ns_build_args_rest_slab(m->params, n_args, args, none,
+      auto slab = _jit_ns_build_args_rest_slab(pm, n_args, args, none,
                                                line, col);
       return _jit_ns_dispatch_owned_slab(m, slab);
     }
@@ -3859,12 +3806,12 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // the full param count); the kwarg resolver fills a full-arity slab and
     // bare positional calls pass a prefix. Methods without params keep the
     // strict fixed-arity check.
-    if (m->params) {
+    if (pm) {
       int64_t n_required = 0;
-      for (int i = 0; i < m->params->n_params; i++) {
-        if (!m->params->params[i].has_default) n_required++;
+      for (int i = 0; i < pm->n_params; i++) {
+        if (!pm->params[i].has_default) n_required++;
       }
-      if (n_args < n_required || n_args > m->params->n_params) {
+      if (n_args < n_required || n_args > pm->n_params) {
         release_args();
         _ns_adapt::arity_error(m->ns, m->name, n_required, n_args, line, col);
       }
@@ -3878,7 +3825,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // — the type the entry carries as arg0_type/arg0_name. (The syntactic call
     // form checks at the argument position in compile_ns_call and never reaches
     // here.)
-    if (!m->params && m->arg0_type != nullptr && n_args >= 1 &&
+    if (!pm && m->arg0_type != nullptr && n_args >= 1 &&
         !_culebra_type_matches_single(args[0].tag, args[0].data,
                                       m->arg0_type)) {
       release_args();
@@ -3939,8 +3886,8 @@ inline bool _jit_ns_kwarg_resolve_core(
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) {
-  if (!m->params) return false;  // method doesn't take kwargs
-  const NsParamMeta* pm = m->params;
+  const NsParamMeta* pm = _ns_meta(m);
+  if (!pm) return false;  // method doesn't take kwargs
 
   auto release_all = [&]() {
     for (int64_t i = 0; i < n_pos; i++)
@@ -4038,7 +3985,7 @@ inline bool _jit_ns_kwarg_resolve_core(
       filled[i] = true;
       merged.erase(it);
     } else if (pm->params[i].has_default) {
-      slab[i] = pm->params[i].make_default();
+      slab[i] = _jit_default_from_value(*pm->params[i].canon_default);
       filled[i] = true;
     } else {
       for (int k = 0; k < n; k++)
@@ -4158,21 +4105,6 @@ struct _JitNamespaceTable {
   }
 };
 
-// range/iota carry an args-rest param: the 1-2 positional start/end args
-// collect into an Array (slot 0), and range adds a keyword-only `step`
-// (slot 1, default 1). This mirrors the interp signature `range(*args,
-// step=1)` so the kwarg/splat resolver and the bare-positional trampoline
-// hand the adapter an identical [positionals-Array, step?] slab.
-inline const NsParam kRangeParams[] = {
-  {"args", false, false, nullptr},
-  {"step", true,  true,  &_ns_def_one},
-};
-inline const NsParamMeta kRangeMeta = {kRangeParams, 2, -1, 1, 0};
-inline const NsParam kIotaParams[] = {
-  {"args", false, false, nullptr},
-};
-inline const NsParamMeta kIotaMeta = {kIotaParams, 1, -1, -1, 0};
-
 // Bare builtin function globals, exposed as first-class values by reusing
 // the ns-method closure machinery (shared trampoline + arity check). Direct
 // calls keep their fast paths (compile_global / try_compile_core_global);
@@ -4188,9 +4120,64 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
-  {"", "range",    -1, &_ns_global_range, &kRangeMeta},
-  {"", "iota",     -1, &_ns_global_iota,  &kIotaMeta},
+  {"", "range",    -1, &_ns_global_range},
+  {"", "iota",     -1, &_ns_global_iota},
 };
+
+namespace _ns_spec_detail {
+struct DerivedSpec {
+  std::vector<NsParam> params;  // params.data() backs meta.params
+  NsParamMeta meta;
+};
+}  // namespace _ns_spec_detail
+
+// Build (once, lock-free reads after) the derived NsParamMeta for every method
+// whose adapter consumes a kwarg/default slab, reading the canonical interp
+// FunctionValue params. Specs live in `storage` (unique_ptr → stable address);
+// `meta.params` points at each spec's vector buffer (sized exactly, never
+// reallocated after build), and `canon_default` points into the canonical
+// param's default Value (kept alive by `_canonical_env`).
+inline const NsParamMeta* _ns_meta(const NsMethod* m) {
+  static std::vector<std::unique_ptr<_ns_spec_detail::DerivedSpec>> storage;
+  static const std::unordered_map<const NsMethod*, const NsParamMeta*> table =
+      [&] {
+        std::unordered_map<const NsMethod*, const NsParamMeta*> t;
+        auto add = [&](const NsMethod& nm) {
+          if (!_ns_method_uses_kwarg_slab(&nm)) return;
+          const auto* cps = _canon_params(&nm);
+          if (cps == nullptr) return;  // canonical lookup failed — skip
+          auto sp = std::make_unique<_ns_spec_detail::DerivedSpec>();
+          sp->params.reserve(cps->size());
+          int kwargs_rest_idx = -1, first_kw_only_idx = -1, args_rest_idx = -1;
+          for (int i = 0; i < static_cast<int>(cps->size()); i++) {
+            const auto& cp = (*cps)[i];
+            bool has_default =
+                cp.default_expr != nullptr || cp.default_value != nullptr;
+            sp->params.push_back(NsParam{
+                cp.name, has_default, cp.kw_only,
+                has_default ? cp.default_value.get() : nullptr,
+                // Only required leading positionals carry a compile-side type
+                // check (defaulted params are checked by the adapter, not at the
+                // argument position) — preserving the prior hand-table behavior.
+                has_default ? std::string_view{} : cp.type_name});
+            if (cp.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
+            if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
+            if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
+          }
+          sp->meta = NsParamMeta{sp->params.data(),
+                                 static_cast<int>(sp->params.size()),
+                                 kwargs_rest_idx, first_kw_only_idx,
+                                 args_rest_idx};
+          t.emplace(&nm, &sp->meta);
+          storage.push_back(std::move(sp));
+        };
+        for (const auto& nm : kNsMethods) add(nm);
+        for (const auto& nm : kBuiltinFns) add(nm);
+        return t;
+      }();
+  auto it = table.find(m);
+  return it == table.end() ? nullptr : it->second;
+}
 
 // Materialize (once, cached + pinned for the isolate's lifetime) the closure
 // for a bare builtin function name, or null if `name` is not one. Mirrors
@@ -4254,16 +4241,17 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
 }
 
 #ifndef NDEBUG
-// One-shot drift detector: if interp's setup_built_in_functions
-// binds a namespace this dispatcher doesn't know about, abort the
-// process with a clear message at first slow-path resolve. Catches
-// the case where someone adds a new stdlib namespace (e.g. `Net`)
-// to stdlib_interp.h and forgets to update kNsMethods here.
+// One-shot namespace-coverage check: if interp's setup_built_in_functions binds
+// a namespace this dispatcher doesn't know about, abort with a clear message at
+// first slow-path resolve. Catches adding a new stdlib namespace (e.g. `Net`)
+// to stdlib_interp.h while forgetting to add adapters + kNsMethods rows here.
+// Per-parameter drift is no longer possible (NsParamMeta is derived from the
+// canonical interp params by _ns_meta), so there is nothing else to verify.
 inline void _check_ns_drift_once() {
   static const bool checked = []() {
     static const std::set<std::string_view> kInternalNs = {"_Time"};
-    auto env = culebra::environment();
-    for (const auto& [key, sym] : env->dictionary) {
+    const auto& env = _canonical_env();
+    for (const auto& [key, sym] : env.dictionary) {
       if (sym.val.type != culebra::Value::Object) continue;
       std::string_view n(key);
       if (kInternalNs.contains(n)) continue;
@@ -4274,55 +4262,6 @@ inline void _check_ns_drift_once() {
             "and table rows for it.\n",
             std::string(n).c_str());
         std::abort();
-      }
-    }
-    // For methods carrying NsParamMeta (kwarg/default support), verify the
-    // JIT-side param names + default flags match the interp's FunctionValue
-    // definition. Catches a one-sided signature edit (e.g. adding a kwarg to
-    // make_proc_namespace but forgetting the kProc*Params table).
-    auto fail = [](const NsMethod& m, const std::string& why) {
-      std::fprintf(stderr,
-          "culebra: JIT param-meta drift for %s.%s — %s. Sync the "
-          "kNsMethods NsParamMeta with make_%s_namespace in "
-          "stdlib_interp.h.\n",
-          m.ns, m.name, why.c_str(), m.ns);
-      std::abort();
-    };
-    for (const auto& m : kNsMethods) {
-      if (!m.params) continue;
-      auto ns_it = env->dictionary.find(m.ns);
-      if (ns_it == env->dictionary.end() ||
-          ns_it->second.val.type != culebra::Value::Object) {
-        fail(m, "interp namespace not found");
-      }
-      const auto& ns_obj = ns_it->second.val.to_object();
-      if (!ns_obj.has(m.name)) fail(m, "interp method not found");
-      const auto& fn_val = ns_obj.get(m.name);
-      if (fn_val.type != culebra::Value::Function) fail(m, "not a Function");
-      const auto& params = *fn_val.to_function().params;
-      if (static_cast<int>(params.size()) != m.params->n_params) {
-        fail(m, std::format("param count {} != NsParamMeta {}",
-                            params.size(), m.params->n_params));
-      }
-      for (int i = 0; i < m.params->n_params; i++) {
-        const auto& ip = params[i];
-        const auto& jp = m.params->params[i];
-        if (ip.name != jp.name) {
-          fail(m, std::format("param {} name '{}' != '{}'", i,
-                              std::string(ip.name), jp.name));
-        }
-        bool ip_has_default =
-            ip.default_expr != nullptr || ip.default_value != nullptr;
-        if (ip_has_default != jp.has_default) {
-          fail(m, std::format("param '{}' default flag mismatch", jp.name));
-        }
-        // When the JIT table declares a positional type (used to emit the
-        // arg-position type check), it must match interp's annotation so the
-        // two backends reject the same values. A one-sided edit trips here.
-        if (jp.type != nullptr && std::string_view(jp.type) != ip.type_name) {
-          fail(m, std::format("param '{}' type '{}' != interp '{}'", jp.name,
-                              jp.type, std::string(ip.type_name)));
-        }
       }
     }
     return true;
@@ -4812,16 +4751,19 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   // marshaller into the matching `_kw` runtime fn. Proc.race is positional-only
   // and falls through to the namespace-object trampoline.
   if (ns == "Proc" && method == "run") {
-    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.run",
-                                            rt::proc_run_kw, &kProcRunMeta);
+    return compile_single_positional_kwargs(
+        jit, argsAst, callAst, "Proc.run", rt::proc_run_kw,
+        _ns_meta(_lookup_ns_method("Proc", "run")));
   }
   if (ns == "Proc" && method == "all") {
-    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.all",
-                                            rt::proc_all_kw, &kProcAllMeta);
+    return compile_single_positional_kwargs(
+        jit, argsAst, callAst, "Proc.all", rt::proc_all_kw,
+        _ns_meta(_lookup_ns_method("Proc", "all")));
   }
   if (ns == "Proc" && method == "spawn") {
-    return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.spawn",
-                                            rt::proc_spawn_kw, &kProcSpawnMeta);
+    return compile_single_positional_kwargs(
+        jit, argsAst, callAst, "Proc.spawn", rt::proc_spawn_kw,
+        _ns_meta(_lookup_ns_method("Proc", "spawn")));
   }
   // Proc.race(commands) — no kwargs. Handled here (rather than via the generic
   // kNsMethods trampoline) so `commands` gets the same typed-`Array` message +
@@ -5887,23 +5829,24 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   // matching interp.
   std::vector<llvm::Value*> posVals;
   posVals.reserve(positional.size());
+  const NsParamMeta* pm = _ns_meta(m);
   for (size_t i = 0; i < positional.size(); i++) {
     auto v = compile(*positional[i]);
     // Typed positional: NsParamMeta methods (Http) carry per-param types +
     // names; a param-less method (the Encoding codecs) carries a single
     // `arg0_type` whose interp param is named "s".
-    const char* ptype = nullptr;
+    std::string_view ptype;
     std::string pname;
-    if (m->params) {
-      if (static_cast<int>(i) < m->params->n_params) {
-        ptype = m->params->params[i].type;
-        pname = m->params->params[i].name;
+    if (pm) {
+      if (static_cast<int>(i) < pm->n_params) {
+        ptype = pm->params[i].type;
+        pname = std::string(pm->params[i].name);
       }
     } else if (i == 0) {
-      ptype = m->arg0_type;
+      if (m->arg0_type) ptype = m->arg0_type;
       if (m->arg0_name) pname = m->arg0_name;
     }
-    if (ptype != nullptr) {
+    if (!ptype.empty()) {
       jit.emit_type_check(v, ptype, std::format("parameter '{}'", pname),
                           positional[i]);
     }
