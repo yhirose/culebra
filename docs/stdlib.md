@@ -256,6 +256,29 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
+### `IO.read_all() -> String`
+
+Read all of standard input to EOF. The portable replacement for
+`FS.read("/dev/stdin")` (which is POSIX-only — `/dev/stdin` doesn't exist on
+Windows). Empty string on immediate EOF.
+
+```culebra
+# doctest: skip
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.read_all() }
+```
+
+### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`
+
+Write to standard error — the twins of `puts` / `print`. `eputs` quotes
+strings and adds a newline (like `puts`); `eprint` writes the raw display
+form (like `print`). Use for diagnostics that shouldn't mix into stdout.
+
+```culebra
+# doctest: skip
+IO.eputs("warning: retrying")     # → stderr
+if !ok { IO.eprint("error: {msg}\n") }
+```
+
 ### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
 
 Whether the given standard stream is connected to a terminal (POSIX

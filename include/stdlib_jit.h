@@ -2364,6 +2364,17 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
 inline JitValue _ns_io_input(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_input());
 }
+inline JitValue _ns_io_read_all(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_read_all());
+}
+inline JitValue _ns_io_eputs(JitValue* a, int64_t) {
+  culebra_runtime_eputs(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_io_eprint(JitValue* a, int64_t) {
+  culebra_runtime_eprint(a[0].tag, a[0].data);
+  return _ns_adapt::v_nil();
+}
 // Per-stream terminal detection (POSIX isatty). Slow-path only (no fast-path
 // branch / runtime helper / declare_runtime — like GC.stat): reached through
 // the kNsMethods trampoline on both JIT and AOT. Matches the interp's
@@ -3566,6 +3577,9 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "input",     0, &_ns_io_input},
+  {"IO",     "read_all",  0, &_ns_io_read_all},
+  {"IO",     "eputs",     1, &_ns_io_eputs},
+  {"IO",     "eprint",    1, &_ns_io_eprint},
   {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},
   {"IO",     "stdout_is_terminal", 0, &_ns_io_stdout_is_terminal},
   {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},

@@ -243,6 +243,46 @@ inline Value make_io_namespace() {
                           "String"sv)),
       false);
 
+  // Read all of standard input to EOF (the portable replacement for
+  // `FS.read("/dev/stdin")`, which is POSIX-only). Empty on immediate EOF.
+  ns.initialize(
+      "read_all",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment>) {
+                            std::lock_guard<std::mutex> lk(stdio_mutex());
+                            std::string all(
+                                (std::istreambuf_iterator<char>(std::cin)),
+                                std::istreambuf_iterator<char>());
+                            return Value(std::move(all));
+                          },
+                          "String"sv)),
+      false);
+
+  // Write to standard error — the twin of print / puts (no stderr writer
+  // existed before). eputs quotes + newline like puts; eprint is raw.
+  ns.initialize("eputs",
+                Value(FunctionValue({{"arg", true}},
+                                    [](std::shared_ptr<Environment> env) {
+                                      auto s = str_quoted_with_special(
+                                          env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cerr << s << std::endl;
+                                      return Value();
+                                    })),
+                false);
+  ns.initialize("eprint",
+                Value(FunctionValue({{"arg", true}},
+                                    [](std::shared_ptr<Environment> env) {
+                                      auto s = str_display_with_special(
+                                          env->get("arg"));
+                                      std::lock_guard<std::mutex> lk(
+                                          stdio_mutex());
+                                      std::cerr << s;
+                                      return Value();
+                                    })),
+                false);
+
   // Terminal detection (POSIX isatty) per standard stream. Lets a script
   // branch on interactivity: prompt vs read a pipe (stdin), colorize vs emit
   // plain output (stdout/stderr). Mirrors Rust `io::stdin().is_terminal()` /

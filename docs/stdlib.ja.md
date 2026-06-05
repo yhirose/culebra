@@ -248,6 +248,22 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
+### `IO.read_all() -> String`
+
+標準入力を EOF まで全て読み取ります。`FS.read("/dev/stdin")`（POSIX 専用＝
+Windows に `/dev/stdin` は無い）の移植可能な代替。即 EOF なら空文字列。
+
+```culebra
+# doctest: skip
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.read_all() }
+```
+
+### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`
+
+標準エラーへ書き出します（`puts` / `print` の双子）。`eputs` は文字列を
+クォートし改行を付けます（`puts` 同様）、`eprint` は生の表示形（`print` 同様）。
+stdout に混ぜたくない診断出力に使います。
+
 ### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
 
 指定した標準ストリームが端末に接続されているか（POSIX `isatty`）を返し
