@@ -7874,6 +7874,13 @@ struct JIT {
     // EH/defer emission flags (populated by scan_eh_defer):
     bool has_eh = false;        // contains TRY or any scope with defers
     bool has_fn_defer = false;  // contains DEFER directly in fn body
+    bool has_any_defer = false; // contains DEFER at any depth (fn or a nested
+                                // scope/arm). Drives whether the fn establishes
+                                // a defer-stack mark so an early return/break/
+                                // continue runs the still-pending defers — even
+                                // when the only defers live in a lexical scope
+                                // or a match block arm (interp runs these via
+                                // its unwind catch-all).
     // True if the function body references the auto-bound `__ARGS__`
     // identifier (overflow args Array). When false, the prologue skips
     // building the Array entirely — saves a heap allocation per call
@@ -10310,6 +10317,7 @@ struct JIT {
     using namespace peg::udl;
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return false;
     if (node.tag == "DEFER"_) {
+      info.has_any_defer = true;
       if (at_fn_top) {
         info.has_fn_defer = true;
         // Function-level defers run on throw via a cleanup landingpad
@@ -10355,6 +10363,24 @@ struct JIT {
         info.has_eh = true;
       }
       return false;  // this scope absorbs its own defers
+    }
+    if (node.tag == "MATCH"_) {
+      // nodes: [subject EXPRESSION, MATCH_ARMS]. A block arm's body is its
+      // own scope (like a lexical block): a defer in it fires at arm exit,
+      // not function exit (matching interp's eval_match, which runs the arm
+      // scope's deferred on exit). Scan subject + each arm's pattern/guard at
+      // the enclosing level; absorb each arm body's defers into the body node.
+      scan_eh_defer(*node.nodes[0], at_fn_top, info);
+      for (auto& arm : node.nodes[1]->nodes) {
+        for (size_t i = 0; i + 1 < arm->nodes.size(); i++)
+          scan_eh_defer(*arm->nodes[i], at_fn_top, info);
+        auto& body = *arm->nodes.back();
+        if (scan_eh_defer(body, /*at_fn_top=*/false, info)) {
+          scope_has_defer_.insert(&body);
+          info.has_eh = true;
+        }
+      }
+      return false;  // arm bodies absorb their own defers
     }
     bool any = false;
     for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
@@ -13322,10 +13348,44 @@ struct JIT {
       }
 
       builder_.SetInsertPoint(body_bb);
-      auto body_val = compile(*arms[ai]->nodes[next_idx]);
-      builder_.CreateStore(body_val, resultAlloca);
+      const auto& body_node = *arms[ai]->nodes[next_idx];
+      // A block arm (`=> { ...; defer { ... }; val }`) is its own defer
+      // scope: defers fire when the arm's braces close, while the arm value
+      // (owned +1) survives them. Mark the defer stack on entry and run to it
+      // on the normal path; the cleanup landingpad covers the throw path, and
+      // early exits (return/break) run these via the enclosing fn/loop mark.
+      // Mirrors interp's eval_match, which runs the arm scope's deferred on
+      // every exit. scope_has_defer_ is populated by scan_eh_defer's MATCH
+      // case, so non-block / defer-free arms pay nothing.
+      bool body_has_defer = scope_has_defer_.contains(&body_node);
+      llvm::Value* arm_mark = nullptr;
+      llvm::BasicBlock* arm_cleanupBB = nullptr;
+      llvm::BasicBlock* arm_savedLpad = current_lpad_;
+      if (body_has_defer) {
+        arm_mark = builder_.CreateCall(
+            module_->getFunction(rt::defer_mark), {}, "arm.mark");
+        arm_cleanupBB = llvm::BasicBlock::Create(ctx_, "arm.cleanup", fn);
+        current_lpad_ = arm_cleanupBB;
+      }
+      auto body_val = compile(body_node);
+      // A block arm can terminate its block early (`return`/`break`/`continue`
+      // /`throw` — only reachable now that arm bodies may be multi-statement).
+      // When it does, the store/branch/defer-run below must not append past
+      // the terminator: the early-exit path already ran the enclosing
+      // fn/loop defers (which include this arm's), so skip them here.
       if (!builder_.GetInsertBlock()->getTerminator()) {
+        if (body_has_defer) {
+          current_lpad_ = arm_savedLpad;
+          emit_call(module_->getFunction(rt::defer_run_to), {arm_mark});
+        }
+        builder_.CreateStore(body_val, resultAlloca);
         builder_.CreateBr(endBB);
+      } else if (body_has_defer) {
+        current_lpad_ = arm_savedLpad;
+      }
+      if (body_has_defer) {
+        emit_cleanup_landingpad(arm_cleanupBB, arm_mark, arm_savedLpad,
+                                "arm.exc");
       }
 
       pop_scope();
@@ -14980,20 +15040,27 @@ struct JIT {
     builder_.SetInsertPoint(entryBB);
     push_scope();
 
-    // Function-level cleanup landingpad. Emitted only when the body
-    // contains a fn-level `defer` — that's the case the JIT used to
-    // skip on throw, and is the user-visible Phase 1 fix. Functions
-    // without fn-level defer still rely on (a) the cycle GC for
-    // throw-unwound locals and (b) per-`try`/scope landingpads for
-    // localized cleanup. Making this unconditional is appealing but
-    // currently destabilizes class-ctor and dispatcher emit paths
-    // that synthesize closures without going through compile_fn_common.
     llvm::Value* fnMark = nullptr;
     llvm::BasicBlock* fnCleanupBB = nullptr;
-    if (info.has_fn_defer) {
+    // Establish a defer-stack mark whenever the body has *any* defer (fn-level
+    // or inside a nested lexical scope / match arm), so `compile_return` /
+    // `compile_break` / `compile_continue` run the still-pending defers on an
+    // early exit. interp runs these via its scope-unwind catch-all; without
+    // the mark the JIT would silently skip a nested scope's defer on `return`.
+    if (info.has_any_defer) {
       fnMark = builder_.CreateCall(
           module_->getFunction(rt::defer_mark), {}, "fn.mark");
       current_fn_defer_mark_ = fnMark;
+    }
+    // Function-level cleanup landingpad. Emitted only when the body contains a
+    // fn-level `defer` — that's the throw case the JIT used to skip. Functions
+    // whose only defers are nested rely on those scopes'/arms' own cleanup
+    // landingpads for the throw path; functions without any defer rely on the
+    // cycle GC for throw-unwound locals and per-`try`/scope landingpads for
+    // localized cleanup. Making this frame-wide pad unconditional is appealing
+    // but currently destabilizes class-ctor and dispatcher emit paths that
+    // synthesize closures without going through compile_fn_common.
+    if (info.has_fn_defer) {
       fnCleanupBB = BasicBlock::Create(ctx_, "fn.cleanup", fn);
       current_lpad_ = fnCleanupBB;
     }

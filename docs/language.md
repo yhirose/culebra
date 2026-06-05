@@ -1823,6 +1823,38 @@ the value is `nil`.
   but mutating a reference-typed element mutates the shared object.
 * The `match` subject is evaluated exactly once.
 
+### Arm bodies
+
+An arm body is normally a single expression. To run several statements,
+write a brace **block** — the arm evaluates to the block's last statement
+value (Rust-style):
+
+    let kind = match tok {
+      '+' => { let p = prec(tok); register(p); "op" },
+      _   => "atom",
+    }
+
+A block arm is its own scope: pattern bindings and any `let` inside it are
+visible only within the arm, and a `defer` fires when the arm's braces
+close (LIFO, before the arm value is consumed). `return` / `break` /
+`continue` inside a block arm behave as they would anywhere — and still run
+the arm's pending defers on the way out.
+
+The arm parser tries an expression first, so a brace that *is* a valid
+literal keeps its literal meaning, not a block:
+
+    match x {
+      0 => {},          # empty Object
+      1 => {a: v},      # Object literal
+      2 => {p, q, r},   # Set literal (two or more elements)
+      _ => { f(); g() } # block: runs f() then g(), yields g()'s value
+    }
+
+One sharp edge falls out of object **shorthand**: a brace wrapping a single
+bare identifier, `{ v }`, is the object `{v: v}`, not a block yielding `v`.
+Write `_ => v` (no braces) for that, or `{ v; }` to force a block. The same
+applies to a lone `{ break }` / `{ continue }` — use `{ break; }`.
+
 ### Exhaustiveness
 
 No static exhaustiveness check is performed. If no arm matches, the

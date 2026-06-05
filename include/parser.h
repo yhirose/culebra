@@ -207,7 +207,10 @@ const auto grammar_ = R"(
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
   MATCH_ARMS               <-  (MATCH_ARM (_ ',' _ MATCH_ARM)* _ ','?)?
-  MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ EXPRESSION
+  # Arm body: a single EXPRESSION, or a brace BLOCK for multi-statement arms
+  # (`=> { stmt; expr }`, Rust-style; the arm yields the block's last value).
+  # EXPRESSION is tried first so object/set literals keep their meaning.
+  MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ (EXPRESSION / BLOCK)
   GUARD                    <-  if _ EXPRESSION
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*

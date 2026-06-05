@@ -4958,7 +4958,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         next++;
         if (!guard_val.to_bool()) continue;
       }
-      return eval(*arm->nodes[next], armEnv);
+      // armEnv is a real scope, so run its deferred on exit — a block arm
+      // (`=> { ...; defer { ... }; val }`) may register defers that must
+      // fire when the arm's braces close, mirroring lexical-scope semantics
+      // (LIFO, the arm value stays alive across them). A single-expression
+      // arm registers no defers, so this is a no-op for it.
+      Value result;
+      try {
+        result = eval(*arm->nodes[next], armEnv);
+      } catch (...) {
+        run_deferred(armEnv);
+        throw;
+      }
+      run_deferred(armEnv);
+      return result;
     }
     return Value();  // no arm matched → nil
   }
