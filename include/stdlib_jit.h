@@ -2174,7 +2174,8 @@ namespace culebra {
 // JIT in jit.h so each member can reach the JIT internals it needs
 // (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
 // class having to expose them publicly.
-struct NsMethod;  // defined below; referenced by compile_ns_method_kwargs
+struct NsMethod;     // defined below; referenced by compile_ns_method_kwargs
+struct NsParamMeta;  // defined below; referenced by compile_single_positional_kwargs
 
 struct JitExtension {
   static void declare_runtime(JIT& jit);
@@ -2203,13 +2204,15 @@ struct JitExtension {
   static llvm::Value* compile_json_kwargs_adapter(
       JIT& jit, std::string_view method, const peg::Ast& argsAst);
 
-  // Marshals a `(single positional, kwargs..., **splat)` ARG_LIST into a
-  // runtime `_kw` function (cmd_tag, cmd_data, keys/vals slabs, splat slab,
-  // line, col). Shared by Proc.run (rt::proc_run_kw) and Proc.all
-  // (rt::proc_all_kw); the positional is released after the call.
+  // Marshals a `(cmd, kwargs..., **splat)` ARG_LIST into a runtime `_kw`
+  // function (cmd_tag, cmd_data, keys/vals slabs, splat slab, line, col).
+  // Shared by Proc.run (rt::proc_run_kw) / Proc.all (rt::proc_all_kw) /
+  // Proc.spawn. Extra positionals after cmd bind to the leading params by
+  // name (from `meta`) — i.e. `Proc.run(cmd, "/tmp")` sets cwd positionally,
+  // matching interp — so they're folded into the kwarg slab here.
   static llvm::Value* compile_single_positional_kwargs(
       JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
-      const char* ctx, const char* rt_name);
+      const char* ctx, const char* rt_name, const NsParamMeta* meta);
 
   // Generic compile of an `Ns.method(pos..., kwargs...)` call against a
   // statically-resolved NsMethod (Http). Compiles each positional once,
@@ -4810,15 +4813,15 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   // and falls through to the namespace-object trampoline.
   if (ns == "Proc" && method == "run") {
     return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.run",
-                                            rt::proc_run_kw);
+                                            rt::proc_run_kw, &kProcRunMeta);
   }
   if (ns == "Proc" && method == "all") {
     return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.all",
-                                            rt::proc_all_kw);
+                                            rt::proc_all_kw, &kProcAllMeta);
   }
   if (ns == "Proc" && method == "spawn") {
     return compile_single_positional_kwargs(jit, argsAst, callAst, "Proc.spawn",
-                                            rt::proc_spawn_kw);
+                                            rt::proc_spawn_kw, &kProcSpawnMeta);
   }
   // Proc.race(commands) — no kwargs. Handled here (rather than via the generic
   // kNsMethods trampoline) so `commands` gets the same typed-`Array` message +
@@ -5720,13 +5723,14 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
 
 inline llvm::Value* JitExtension::compile_single_positional_kwargs(
     JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
-    const char* ctx, const char* rt_name) {
+    const char* ctx, const char* rt_name, const NsParamMeta* meta) {
   CULEBRA_JIT_EXT_BODY_ALIASES(jit);
   using namespace peg::udl;
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto i64Ty = builder_.getInt64Ty();
 
-  // Scan ARG_LIST: exactly one positional, the rest kwargs / splats.
+  // Scan ARG_LIST: cmd + (kwargs / **splat). Extra positionals after cmd are
+  // folded into the kwarg slab below, bound to the leading params by name.
   std::vector<const peg::Ast*> positional;
   std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
   std::set<std::string_view> seen_explicit;
@@ -5754,12 +5758,15 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
       positional.push_back(child.get());
     }
   }
-  if (positional.size() != 1) {
-    // Count-based message at the call site, matching interp's binder for the
-    // too-few case (`Proc.run()` → "expected 1 positional argument, got 0").
+  // cmd is required; extra positionals bind to the leading params (cwd/env/…)
+  // by name, like interp's binder. Too few → "expected 1, got 0"; too many
+  // (beyond the declared params) → the param-count cap. Both at the call site.
+  if (positional.empty() ||
+      positional.size() > static_cast<size_t>(meta->n_params)) {
     throw culebra::CulebraError("ArityError",
         culebra::ns_fn_arity_error_message(
-            1, static_cast<long>(positional.size())),
+            positional.empty() ? 1 : meta->n_params,
+            static_cast<long>(positional.size())),
         callAst.line, callAst.column);
   }
 
@@ -5777,6 +5784,19 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   for (auto& [name, ast] : explicit_kwargs) {
     kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
     kwVals.push_back(compile(*ast));
+  }
+  // Positionals after cmd → kwargs named after params[1..] (cwd, env, …). A
+  // param given both positionally and by keyword is an error, matching interp.
+  for (size_t i = 1; i < positional.size(); i++) {
+    std::string_view pname = meta->params[i].name;
+    if (seen_explicit.count(pname)) {
+      throw culebra::CulebraError("TypeError",
+          std::format("got argument '{}' both positionally and as a keyword",
+                      pname),
+          callAst.line, callAst.column);
+    }
+    kwKeys.push_back(builder_.CreateGlobalString(std::string(pname), ".kwkey"));
+    kwVals.push_back(compile(*positional[i]));
   }
   std::vector<llvm::Value*> splatVals;
   for (auto* ast : splats) splatVals.push_back(compile(*ast));
