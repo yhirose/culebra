@@ -248,6 +248,21 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
+### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
+
+指定した標準ストリームが端末に接続されているか（POSIX `isatty`）を返し
+ます。対話性に応じた分岐に使えます。stdin ならプロンプト表示かパイプ
+読み取りか、stdout / stderr なら色付けかプレーン出力か。Rust の
+`io::stdin().is_terminal()` / Node の `process.stdin.isTTY` 相当。スト
+リームがファイルやパイプにリダイレクトされている場合は `false` を返し
+ます。
+
+```culebra
+# doctest: skip
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
+if IO.stdout_is_terminal() { puts(colorize(msg)) } else { puts(msg) }
+```
+
 `IO` は標準ストリームとコンソールの名前空間です。ファイルの読み書きは
 `FS`（`FS.read` / `FS.write` / `FS.exists`）にあります。
 

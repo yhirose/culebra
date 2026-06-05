@@ -25,6 +25,7 @@
 #include <fstream>
 #include <limits>
 #include <system_error>
+#include <unistd.h>  // isatty (IO.*_is_terminal)
 
 namespace culebra {
 // main.cc (or any embedder) populates this before calling JIT::run.
@@ -2358,6 +2359,19 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
 inline JitValue _ns_io_input(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_input());
 }
+// Per-stream terminal detection (POSIX isatty). Slow-path only (no fast-path
+// branch / runtime helper / declare_runtime — like GC.stat): reached through
+// the kNsMethods trampoline on both JIT and AOT. Matches the interp's
+// IO.*_is_terminal returning a plain Bool.
+inline JitValue _ns_io_stdin_is_terminal(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(isatty(STDIN_FILENO));
+}
+inline JitValue _ns_io_stdout_is_terminal(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(isatty(STDOUT_FILENO));
+}
+inline JitValue _ns_io_stderr_is_terminal(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(isatty(STDERR_FILENO));
+}
 
 // Bare global builtins (`puts`/`print` reuse the IO adapters above)
 // exposed as first-class values: `let f = type_of`, `[1,2,3].map(type_of)`.
@@ -3592,6 +3606,9 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "input",     0, &_ns_io_input},
+  {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},
+  {"IO",     "stdout_is_terminal", 0, &_ns_io_stdout_is_terminal},
+  {"IO",     "stderr_is_terminal", 0, &_ns_io_stderr_is_terminal},
 
   {"Math",   "abs",       1, &_ns_math_abs},
   {"Math",   "log",       1, &_ns_math_log},

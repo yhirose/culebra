@@ -256,6 +256,21 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
+### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
+
+Whether the given standard stream is connected to a terminal (POSIX
+`isatty`). Lets a script branch on interactivity: prompt vs. read a
+pipe (stdin), colorize vs. emit plain output (stdout / stderr).
+Equivalent to Rust `io::stdin().is_terminal()` / Node
+`process.stdin.isTTY`. Each returns `false` when the stream is
+redirected to a file or pipe.
+
+```culebra
+# doctest: skip
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { FS.read("/dev/stdin") }
+if IO.stdout_is_terminal() { puts(colorize(msg)) } else { puts(msg) }
+```
+
 `IO` is the standard-stream and console namespace. File reading and
 writing live under `FS` (`FS.read` / `FS.write` / `FS.exists`).
 

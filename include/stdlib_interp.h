@@ -37,6 +37,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unistd.h>  // isatty (IO.*_is_terminal)
 #include <vector>
 
 namespace culebra {
@@ -241,6 +242,19 @@ inline Value make_io_namespace() {
                           },
                           "String"sv)),
       false);
+
+  // Terminal detection (POSIX isatty) per standard stream. Lets a script
+  // branch on interactivity: prompt vs read a pipe (stdin), colorize vs emit
+  // plain output (stdout/stderr). Mirrors Rust `io::stdin().is_terminal()` /
+  // Node `process.stdin.isTTY`.
+  auto is_terminal = [](int fd) {
+    return Value(FunctionValue(
+        {}, [fd](std::shared_ptr<Environment>) { return Value(isatty(fd) != 0); },
+        "Bool"sv));
+  };
+  ns.initialize("stdin_is_terminal", is_terminal(STDIN_FILENO), false);
+  ns.initialize("stdout_is_terminal", is_terminal(STDOUT_FILENO), false);
+  ns.initialize("stderr_is_terminal", is_terminal(STDERR_FILENO), false);
 
   // File I/O lives on FS (FS.read / FS.write / FS.exists). IO is the
   // standard-stream + console namespace: puts / print / input.

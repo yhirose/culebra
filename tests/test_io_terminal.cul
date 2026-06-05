@@ -1,0 +1,22 @@
+// Conformance: stdlib §IO. See docs/stdlib.md.
+//
+// IO.{stdin,stdout,stderr}_is_terminal — POSIX isatty per standard stream.
+// The contract is shape + symmetry: each returns a plain Bool, dispatched
+// identically across interp / JIT / AOT (the cross-backend diff in `just test`
+// enforces value agreement — isatty on the same fd is backend-independent).
+
+assert_eq(type_of(IO.stdin_is_terminal()), "Bool")
+assert_eq(type_of(IO.stdout_is_terminal()), "Bool")
+assert_eq(type_of(IO.stderr_is_terminal()), "Bool")
+
+// stdout is reliably non-terminal here: the test harness captures it through a
+// pipe (`$(...)`), so this is a stable assertion. stdin/stderr are inherited
+// from the parent and may or may not be a tty, so we don't pin their value.
+assert_eq(IO.stdout_is_terminal(), false)
+
+// ns-method as a first-class value goes through the slow-path trampoline
+// (no fast-path branch), so exercise that too.
+let f = IO.stderr_is_terminal
+assert_eq(type_of(f()), "Bool")
+
+puts("ok")
