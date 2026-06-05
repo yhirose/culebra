@@ -3444,6 +3444,10 @@ struct NsParamMeta {
   // it (true for range/iota). Default-initialized so existing aggregate
   // initializers (which omit it) keep -1.
   int args_rest_idx = -1;
+  // Minimum required positional arity, computed once at derivation by the
+  // shared `culebra::builtin_arity_bounds` (the single source of the arity
+  // rule, also used by the interp binder) — not recomputed per call.
+  int min_arity = 0;
 };
 
 struct NsMethod {
@@ -3451,13 +3455,14 @@ struct NsMethod {
   const char* name;
   int8_t arity;  // -1 = variadic
   JitValue (*adapter)(JitValue* args, int64_t n);
-  const NsParamMeta* params = nullptr;  // null = all-positional, no defaults
   // Non-null = method lives in a nested sub-namespace object on the parent
   // (e.g. `Encoding.html.unescape` has ns="Encoding", sub="html"). Nested
-  // namespaces are slow-path only — they never reach compile_ns_call.
+  // namespaces are slow-path only — they never reach compile_ns_call. The
+  // kwarg/default spec (NsParamMeta) is derived from the canonical interp
+  // params by `_ns_meta` — see _ns_method_uses_kwarg_slab — not stored here.
   const char* sub = nullptr;
   // Declared type + interp param name of the (single) leading positional, for
-  // methods without an NsParamMeta (e.g. FS.read: arg0_name="path",
+  // methods that don't use a kwarg slab (e.g. FS.read: arg0_name="path",
   // arg0_type="String"; Tensor.from: "a"/"Array"). Lets the compile side emit
   // an inline check at the argument position, and `_jit_ns_method_dispatch`
   // check the as-value / HOF path (where there is no inline check).
@@ -3578,17 +3583,17 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "clamp",     3, &_ns_math_clamp},
 
   {"FS",     "join",     -1, &_ns_fs_join},
-  {"FS",     "basename",  1, &_ns_fs_basename,  nullptr, nullptr, "String", "path"},
-  {"FS",     "dirname",   1, &_ns_fs_dirname,   nullptr, nullptr, "String", "path"},
-  {"FS",     "extension", 1, &_ns_fs_extension, nullptr, nullptr, "String", "path"},
-  {"FS",     "stem",      1, &_ns_fs_stem,      nullptr, nullptr, "String", "path"},
-  {"FS",     "exists",    1, &_ns_fs_exists,    nullptr, nullptr, "String", "path"},
-  {"FS",     "is_file",   1, &_ns_fs_is_file,   nullptr, nullptr, "String", "path"},
-  {"FS",     "is_dir",    1, &_ns_fs_is_dir,    nullptr, nullptr, "String", "path"},
-  {"FS",     "read",      1, &_ns_fs_read,      nullptr, nullptr, "String", "path"},
+  {"FS",     "basename",  1, &_ns_fs_basename, nullptr, "String", "path"},
+  {"FS",     "dirname",   1, &_ns_fs_dirname, nullptr, "String", "path"},
+  {"FS",     "extension", 1, &_ns_fs_extension, nullptr, "String", "path"},
+  {"FS",     "stem",      1, &_ns_fs_stem, nullptr, "String", "path"},
+  {"FS",     "exists",    1, &_ns_fs_exists, nullptr, "String", "path"},
+  {"FS",     "is_file",   1, &_ns_fs_is_file, nullptr, "String", "path"},
+  {"FS",     "is_dir",    1, &_ns_fs_is_dir, nullptr, "String", "path"},
+  {"FS",     "read",      1, &_ns_fs_read, nullptr, "String", "path"},
   {"FS",     "write",     2, &_ns_fs_write},
-  {"FS",     "size",      1, &_ns_fs_size,      nullptr, nullptr, "String", "path"},
-  {"FS",     "list_dir",  1, &_ns_fs_list_dir,  nullptr, nullptr, "String", "path"},
+  {"FS",     "size",      1, &_ns_fs_size, nullptr, "String", "path"},
+  {"FS",     "list_dir",  1, &_ns_fs_list_dir, nullptr, "String", "path"},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
   {"FS",     "remove",    1, &_ns_fs_remove},
   {"FS",     "stat",      1, &_ns_fs_stat},
@@ -3611,11 +3616,11 @@ inline const NsMethod kNsMethods[] = {
   {"Random", "int",             2, &_ns_random_int},
   {"Random", "uniform",         2, &_ns_random_uniform},
   {"Random", "gauss",           2, &_ns_random_gauss},
-  {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, nullptr, "Array", "a"},
+  {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, "Array", "a"},
   {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
 
   {"Sys",    "exit", 1, &_ns_sys_exit},
-  {"Sys",    "env",  1, &_ns_sys_env, nullptr, nullptr, "String", "name"},
+  {"Sys",    "env",  1, &_ns_sys_env, nullptr, "String", "name"},
   {"Sys",    "time", 0, &_ns_sys_time},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
@@ -3660,25 +3665,25 @@ inline const NsMethod kNsMethods[] = {
   {"Parallel", "race",        2, &_ns_parallel_race},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
-  {"JSON",   "parse",     1, &_ns_json_parse, nullptr, nullptr, "String", "s"},
+  {"JSON",   "parse",     1, &_ns_json_parse, nullptr, "String", "s"},
 
   // Nested sub-namespace (sub="html"): reached only via bare-resolve +
   // member access, e.g. `Encoding.html.unescape(s)`.
-  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html",   "String", "s"},
-  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html",   "String", "s"},
-  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64", "String", "s"},
-  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64", "String", "s"},
-  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex",    "String", "s"},
-  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex",    "String", "s"},
-  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url",    "String", "s"},
-  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url",    "String", "s"},
+  {"Encoding", "escape",   1, &_ns_encoding_html_escape, "html",   "String", "s"},
+  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, "html",   "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, "base64", "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, "base64", "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_hex_encode, "hex",    "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_hex_decode, "hex",    "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
-  {"Tensor", "from",      1, &_ns_tensor_from,     nullptr, nullptr, "Array",  "a"},
-  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, nullptr, "String", "path"},
+  {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
+  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
 #endif
 };
@@ -3807,13 +3812,9 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // bare positional calls pass a prefix. Methods without params keep the
     // strict fixed-arity check.
     if (pm) {
-      int64_t n_required = 0;
-      for (int i = 0; i < pm->n_params; i++) {
-        if (!pm->params[i].has_default) n_required++;
-      }
-      if (n_args < n_required || n_args > pm->n_params) {
+      if (n_args < pm->min_arity || n_args > pm->n_params) {
         release_args();
-        _ns_adapt::arity_error(m->ns, m->name, n_required, n_args, line, col);
+        _ns_adapt::arity_error(m->ns, m->name, pm->min_arity, n_args, line, col);
       }
     } else if (m->arity >= 0 && n_args != m->arity) {
       release_args();
@@ -3995,11 +3996,8 @@ inline bool _jit_ns_kwarg_resolve_core(
       // Count-based message (required count, got positionals) — the shared
       // canonical form interp's binder uses, so `Http.get()` /
       // `Http.request("GET")` etc. report identically across backends.
-      int n_required = 0;
-      for (int k = 0; k < n; k++)
-        if (!pm->params[k].has_default) n_required++;
       throw culebra::CulebraError("ArityError",
-          culebra::ns_fn_arity_error_message(n_required, n_pos), line, col);
+          culebra::ns_fn_arity_error_message(pm->min_arity, n_pos), line, col);
     }
   }
   // Any leftover kwargs are unknown to this method.
@@ -4167,7 +4165,9 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m) {
           sp->meta = NsParamMeta{sp->params.data(),
                                  static_cast<int>(sp->params.size()),
                                  kwargs_rest_idx, first_kw_only_idx,
-                                 args_rest_idx};
+                                 args_rest_idx,
+                                 static_cast<int>(
+                                     culebra::builtin_arity_bounds(*cps).min)};
           t.emplace(&nm, &sp->meta);
           storage.push_back(std::move(sp));
         };
@@ -5707,7 +5707,7 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
       positional.size() > static_cast<size_t>(meta->n_params)) {
     throw culebra::CulebraError("ArityError",
         culebra::ns_fn_arity_error_message(
-            positional.empty() ? 1 : meta->n_params,
+            positional.empty() ? meta->min_arity : meta->n_params,
             static_cast<long>(positional.size())),
         callAst.line, callAst.column);
   }
