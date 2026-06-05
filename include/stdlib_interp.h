@@ -3467,13 +3467,16 @@ inline Value make_encoding_namespace() {
 inline Value make_regex_primitives_namespace() {
   using namespace std::literals;
   ObjectValue ns;
-  const std::vector<FunctionValue::Parameter> ps = {{"pattern", false, "String"sv},
-                                                    {"s", false, "String"sv}};
+  // Subject + pattern accept either string flavor (String / StringView), so
+  // results of String.split / .slice (which return StringView) compose with
+  // Regex methods. Mirrors the StringLike-typed String methods.
+  const std::vector<FunctionValue::Parameter> ps = {{"pattern", false, "StringLike"sv},
+                                                    {"s", false, "StringLike"sv}};
 
   // _Regex.check(pattern) -> Nil  (validate eagerly at Regex.compile time)
   ns.initialize("check",
                 Value(FunctionValue(
-                    {{"pattern", false, "String"sv}},
+                    {{"pattern", false, "StringLike"sv}},
                     [](std::shared_ptr<Environment> env) -> Value {
                       regex_compile_cached(
                           std::string(env->get("pattern").to_string()),
@@ -3523,8 +3526,8 @@ inline Value make_regex_primitives_namespace() {
   ns.initialize(
       "find_from",
       Value(FunctionValue(
-          {{"pattern", false, "String"sv},
-           {"s", false, "String"sv},
+          {{"pattern", false, "StringLike"sv},
+           {"s", false, "StringLike"sv},
            {"pos", false, "Long"sv}},
           [](std::shared_ptr<Environment> env) -> Value {
             auto re = regex_from_env(env);
@@ -3645,9 +3648,9 @@ inline Value make_regex_primitives_namespace() {
 
   ns.initialize("replace_all",
                 Value(FunctionValue(
-                    {{"pattern", false, "String"sv},
-                     {"s", false, "String"sv},
-                     {"repl", false, "String"sv}},
+                    {{"pattern", false, "StringLike"sv},
+                     {"s", false, "StringLike"sv},
+                     {"repl", false, "StringLike"sv}},
                     [](std::shared_ptr<Environment> env) -> Value {
                       auto re = regex_from_env(env);
                       std::string s{env->get("s").to_string()};

@@ -2296,11 +2296,13 @@ inline std::string_view take_sv(JitValue v) {
 // backfilled to the call site by the ns trampoline). Slow-path codecs whose
 // interp twins declare a `String`-typed param use this so a non-String is a
 // type error on both backends rather than silently coercing to "".
-inline std::string_view require_sv(JitValue v, const char* param) {
+inline std::string_view require_sv(JitValue v, const char* param,
+                                   const char* type_name = "String") {
   if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
     culebra::throw_runtime_error_at(
         "TypeError",
-        std::format("type error: parameter '{}' expects String", param), 0, 0);
+        std::format("type error: parameter '{}' expects {}", param, type_name),
+        0, 0);
   }
   return _culebra_str_view(v.tag, v.data);
 }
@@ -3230,13 +3232,13 @@ inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
 // subject, ...); flags are inline ((?i)/(?m)/(?s)). A Match is a data object
 // { value, start, end, groups:[Group|nil], named:{name:Group} }; no-match nil.
 //===------------------------------------------------------------------------//
-inline std::shared_ptr<regexlib::Regex> _jit_regex_compile(const char* pat) {
+inline std::shared_ptr<regexlib::Regex> _jit_regex_compile(std::string_view pat) {
   // Stateless cache keyed by pattern (own thread-local; see the /simplify note
   // about sharing with stdlib_interp's regex_compile_cached).
   static thread_local std::unordered_map<std::string,
                                          std::shared_ptr<regexlib::Regex>>
       cache;
-  std::string p = pat ? pat : "";
+  std::string p(pat);
   auto it = cache.find(p);
   if (it != cache.end()) return it->second;
   std::shared_ptr<regexlib::Regex> re;
@@ -3292,27 +3294,27 @@ inline JitValue _jit_regex_match(const regexlib::MatchResult& m) {
 }
 
 inline JitValue _ns_regex_check(JitValue* a, int64_t) {
-  _jit_regex_compile(_ns_adapt::take_str(a[0]));  // validate; throws on bad pattern
+  _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));  // validate; throws on bad pattern
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_test(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  return _ns_adapt::v_bool(re->test(_ns_adapt::take_str(a[1])));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  return _ns_adapt::v_bool(re->test(_ns_adapt::require_sv(a[1], "s", "StringLike")));
 }
 inline JitValue _ns_regex_find(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  auto m = re->search(_ns_adapt::take_str(a[1]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  auto m = re->search(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_match(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  auto m = re->match(_ns_adapt::take_str(a[1]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  auto m = re->match(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
     auto mv = _jit_regex_match(m);
     culebra_runtime_array_push(arr, mv.tag, mv.data);
   }
@@ -3321,9 +3323,9 @@ inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
 // find_all_str(pattern, s) -> [String]: matched texts only, no Match objects
 // (the per-match Object structure dominated match-dense workloads). See interp.
 inline JitValue _ns_regex_find_all_str(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
     culebra_runtime_array_push(
         arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(m.str)));
   }
@@ -3331,33 +3333,33 @@ inline JitValue _ns_regex_find_all_str(JitValue* a, int64_t) {
 }
 // count(pattern, s) -> Long: number of non-overlapping matches, no objects.
 inline JitValue _ns_regex_count(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   return JitValue{TAG_LONG, static_cast<int64_t>(
-                                re->find_all(_ns_adapt::take_str(a[1])).size())};
+                                re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike")).size())};
 }
 // find_all_index(pattern, s) -> [Int]: flat byte spans [s0,e0,s1,e1,...].
 // Longs are inline in the JitArray, so the whole result is one allocation.
 inline JitValue _ns_regex_find_all_index(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::take_str(a[1]))) {
+  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
     culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin));
     culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end));
   }
   return _ns_adapt::v_array(arr);
 }
 inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  std::string out =
-      re->replace_all(_ns_adapt::take_str(a[1]), _ns_adapt::take_str(a[2]));
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  std::string out = re->replace_all(_ns_adapt::require_sv(a[1], "s", "StringLike"),
+                                    _ns_adapt::require_sv(a[2], "repl", "StringLike"));
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
 // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
 // twin in stdlib_interp.h: leftmost match at/after byte `pos` with absolute
 // offsets, plus the grapheme-correct resume position.
 inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  std::string s = _ns_adapt::take_str(a[1]);
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   long pos = static_cast<long>(a[2].data);
   auto* out = culebra_runtime_object_new();
   auto miss = [&](long nxt) {
@@ -3392,8 +3394,8 @@ inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
   return _ns_adapt::v_object(out);
 }
 inline JitValue _ns_regex_split(JitValue* a, int64_t) {
-  auto re = _jit_regex_compile(_ns_adapt::take_str(a[0]));
-  std::string s = _ns_adapt::take_str(a[1]);
+  auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
+  std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   auto* arr = culebra_runtime_array_new();
   size_t cursor = 0;
   for (auto& m : re->find_all(s)) {

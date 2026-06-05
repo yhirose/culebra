@@ -1928,6 +1928,10 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 （`Regex.compile('hello', "i")`）か、パターン内にインライン: `(?i)` 大文字小文字
 無視、`(?m)` 複数行、`(?s)` dotall。
 
+パターンと対象文字列はどちらの文字列型（`String` / `StringView`）も受け付ける
+ので、`String.split` / `.slice` が返す `StringView` をそのまま渡せます:
+`Regex.compile('\d+').find_all(line.slice(0, 80))`。
+
 | コンストラクタ / 静的 | 結果 |
 | --- | --- |
 | `Regex.compile(pat)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
