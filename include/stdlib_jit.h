@@ -4042,9 +4042,14 @@ inline bool _jit_ns_kwarg_resolve_core(
         if (filled[k]) _culebra_value_release_impl(slab[k].tag, slab[k].data);
       for (auto& [_, v] : merged)
         _culebra_value_release_impl(v.tag, v.data);
+      // Count-based message (required count, got positionals) — the shared
+      // canonical form interp's binder uses, so `Http.get()` /
+      // `Http.request("GET")` etc. report identically across backends.
+      int n_required = 0;
+      for (int k = 0; k < n; k++)
+        if (!pm->params[k].has_default) n_required++;
       throw culebra::CulebraError("ArityError",
-          std::format("missing required argument '{}'",
-                      pm->params[i].name), line, col);
+          culebra::ns_fn_arity_error_message(n_required, n_pos), line, col);
     }
   }
   // Any leftover kwargs are unknown to this method.
@@ -5750,9 +5755,12 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
     }
   }
   if (positional.size() != 1) {
+    // Count-based message at the call site, matching interp's binder for the
+    // too-few case (`Proc.run()` → "expected 1 positional argument, got 0").
     throw culebra::CulebraError("ArityError",
-        std::format("{}: expected exactly one positional argument", ctx),
-        argsAst.line, argsAst.column);
+        culebra::ns_fn_arity_error_message(
+            1, static_cast<long>(positional.size())),
+        callAst.line, callAst.column);
   }
 
   auto cmd_val = compile(*positional[0]);

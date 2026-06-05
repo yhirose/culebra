@@ -6055,8 +6055,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!b.variadic) {
         long got = static_cast<long>(args.positional.size());
         if (got < b.min || got > b.max) {
+          // Too few → report the required count (b.min); too many → the cap
+          // (b.max). Reporting b.max for too-few was misleading for methods
+          // with optional params (`Http.get()` → "expected 6", only url is
+          // required). The JIT reports the same required count.
           throw CulebraError("ArityError",
-                             ns_fn_arity_error_message(b.max, got),
+                             ns_fn_arity_error_message(got < b.min ? b.min
+                                                                   : b.max,
+                                                       got),
                              static_cast<long>(call_line),
                              static_cast<long>(call_column));
         }
