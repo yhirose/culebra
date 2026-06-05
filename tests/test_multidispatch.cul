@@ -113,4 +113,30 @@ assert_eq(paint('box', color: 'green'), 'green box')
 fn collect(tag: String, **opts) { "{tag}:{opts.a}" }
 assert_eq(collect('hi', a: 99, b: 5), 'hi:99')
 
+# Regular (positional) params with defaults: a multimethod matches arg counts
+# in [required, total], filling the tail from defaults. The omitted param may
+# also be supplied as a trailing keyword. (Previously these raised
+# DispatchError — dispatch matched arity exactly, ignoring defaults.)
+fn deff(a, b = 10) { a + b }
+assert_eq(deff(1), 11)             # default applied
+assert_eq(deff(1, 2), 3)           # positional
+assert_eq(deff(1, b: 2), 3)        # trailing keyword
+fn deff2(a, b = 2, c = 3) { a * 100 + b * 10 + c }
+assert_eq(deff2(1), 123)
+assert_eq(deff2(1, 5), 153)
+assert_eq(deff2(1, c: 7), 127)     # skip b, set c by keyword
+
+# An exact-arity overload outranks a default-filled one of equal type
+# specificity (fewer params filled by default = more specific).
+fn ovd(a) { 'one' }
+fn ovd(a, b = 9) { 'two' }
+assert_eq(ovd(5), 'one')
+assert_eq(ovd(5, 6), 'two')
+
+# Defaults compose with a `*args` tail.
+fn vd(a, b = 1, *rest) { a + b + rest.size() }
+assert_eq(vd(1), 2)
+assert_eq(vd(1, 2), 3)
+assert_eq(vd(1, 2, 9, 9), 5)
+
 puts("test_multidispatch: OK")

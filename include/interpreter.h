@@ -201,10 +201,17 @@ inline int multifn_specificity(std::string_view param_type,
 // `*args` catch-all. A variadic entry matches any arity >= its regular
 // count; the surplus positions score as Any (0), and on an otherwise
 // exact tie a non-variadic (fixed-arity) entry wins.
-template <class Entry, class ParamsOf, class IsVariadic>
+// `min_arity_of(entry)` returns how many regular params are *required* (have no
+// default). A fixed-arity entry matches arg counts in `[min, params.size()]`;
+// the unsupplied tail is filled by each param's default at call time. A
+// variadic entry matches any arity >= its required count. Among equal-
+// type-specificity fixed-arity matches, the entry that fills fewer params by
+// default (smaller regular count) wins; a genuine tie is ambiguous.
+template <class Entry, class ParamsOf, class IsVariadic, class MinArityOf>
 inline int64_t multifn_pick(const std::vector<Entry>& methods,
                              const std::vector<std::string_view>& arg_types,
-                             ParamsOf params_of, IsVariadic is_variadic_of) {
+                             ParamsOf params_of, IsVariadic is_variadic_of,
+                             MinArityOf min_arity_of) {
   std::vector<int> score(arg_types.size());
   std::vector<int> best_score(arg_types.size());
   size_t best_idx = 0;
@@ -215,8 +222,9 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
   for (size_t i = 0; i < methods.size(); i++) {
     const auto& params = params_of(methods[i]);
     bool variadic = is_variadic_of(methods[i]);
-    if (variadic ? arg_types.size() < params.size()
-                 : params.size() != arg_types.size()) {
+    size_t min_a = min_arity_of(methods[i]);
+    if (variadic ? arg_types.size() < min_a
+                 : (arg_types.size() < min_a || arg_types.size() > params.size())) {
       continue;
     }
     bool ok = true;
@@ -263,7 +271,11 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
         if (params.size() > best_regular) take();
         else if (params.size() == best_regular) ambiguous = true;
       } else if (!best_variadic && !variadic) {
-        ambiguous = true;
+        // Both fixed-arity, equal type-specificity: prefer the entry that
+        // fills fewer params by default (the more exact arity match). Equal
+        // regular counts are genuinely ambiguous.
+        if (params.size() < best_regular) take();
+        else if (params.size() == best_regular) ambiguous = true;
       }
     }
   }
@@ -4330,6 +4342,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // surplus args are absorbed (scored as Any) so a fixed-arity entry
     // always wins a tie.
     bool variadic = false;
+    // Required regular params (those without a default). The entry matches
+    // arg counts in [min_params, param_types.size()]; the unsupplied tail is
+    // filled by defaults at call time.
+    size_t min_params = 0;
   };
 
   // Cached module values keyed by absolute on-disk path. The driver
@@ -5054,7 +5070,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                           [](const MultiMethod& m) -> const std::vector<std::string>& {
                             return m.param_types;
                           },
-                          [](const MultiMethod& m) { return m.variadic; });
+                          [](const MultiMethod& m) { return m.variadic; },
+                          [](const MultiMethod& m) { return m.min_params; });
     if (r == -1) return {PickResult::NoMatch, 0};
     if (r == -2) return {PickResult::Ambiguous, 0};
     return {PickResult::Match, static_cast<size_t>(r)};
@@ -5219,6 +5236,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (p.kw_only || p.kwargs_rest) continue;
       // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
       method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
+      // A param without a default is required; the rest may be omitted (filled
+      // by their default) or supplied by keyword.
+      if (p.default_expr == nullptr && p.default_value == nullptr)
+        method.min_params++;
     }
 
     // Accumulate onto an existing dispatcher only when one is bound in THIS

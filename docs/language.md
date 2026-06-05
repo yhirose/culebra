@@ -3307,6 +3307,21 @@ area("hello")  # → 5      (String)
 Anonymous function expressions `let f = fn(...) {...}` are unaffected.
 Multimethods only apply to **top-level `fn name(...)` declarations**.
 
+**Default parameters and arity.** A method with default parameters
+matches any call whose positional-argument count is between its
+required count (params without a default) and its total param count;
+the unsupplied tail is filled from the defaults, and an omitted
+parameter may instead be supplied as a trailing keyword. Among equally
+type-specific matches, the one that fills fewer parameters by default
+wins (a more exact arity is more specific).
+
+```
+fn at(a, b = 10) { a + b }
+at(1)        # → 11   (b defaulted)
+at(1, 2)     # → 3
+at(1, b: 2)  # → 3    (b by keyword)
+```
+
 ### Syntax
 
 ```

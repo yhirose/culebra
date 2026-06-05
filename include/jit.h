@@ -4389,6 +4389,9 @@ struct JitMultiMethodEntry {
   std::vector<std::string> param_types;  // empty = "Any"
   JitClosure* body;                       // +1 owned by this entry
   bool variadic = false;                  // has a `*args` catch-all
+  // Required regular params (no default); matches arity [min_params,
+  // param_types.size()]. Mirrors interp's MultiMethod::min_params.
+  size_t min_params = 0;
 };
 
 // thread_local: holds +1 closure refs from this thread's JIT run.
@@ -4817,7 +4820,8 @@ inline int64_t _jit_multifn_pick(
       [](const JitMultiMethodEntry& m) -> const std::vector<std::string>& {
         return m.param_types;
       },
-      [](const JitMultiMethodEntry& m) { return m.variadic; });
+      [](const JitMultiMethodEntry& m) { return m.variadic; },
+      [](const JitMultiMethodEntry& m) { return m.min_params; });
 }
 
 // Recover (body, name) for a multifn dispatcher closure given the
@@ -4924,13 +4928,15 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
                                              JitClosure* body,
                                              const char* const* param_types,
                                              int64_t n_param_types,
-                                             int64_t variadic) {
+                                             int64_t variadic,
+                                             int64_t min_arity) {
   std::string name(name_cstr);
   JitMultiMethodEntry method;
   // Caller's `body` arrives at +1; the table takes that ownership
   // outright. On replace, the displaced body's +1 is released below.
   method.body = body;
   method.variadic = variadic != 0;
+  method.min_params = static_cast<size_t>(min_arity);
   method.param_types.reserve(static_cast<size_t>(n_param_types));
   for (int64_t i = 0; i < n_param_types; i++) {
     // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
@@ -10321,9 +10327,10 @@ struct JIT {
     // multifn_register_and_install:
     //   JitClosure* (const char* name, JitClosure* body,
     //                const char** param_types, int64_t n_param_types,
-    //                int64_t variadic)
+    //                int64_t variadic, int64_t min_arity)
     module_->getOrInsertFunction(rt::multifn_register_and_install,
                                  ptrTy, ptrTy, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // User-level throw: stashes tag+data in globals and raises a
@@ -14473,10 +14480,12 @@ struct JIT {
     std::vector<llvm::Constant*> typePtrs;
     typePtrs.reserve(params_ast->nodes.size());
     bool mf_variadic = false;
+    int64_t mf_min_arity = 0;  // regular params without a default (required)
     for (auto& p : params_ast->nodes) {
       if (culebra::is_kw_only_sep(*p)) break;
       if (culebra::is_args_rest(*p)) { mf_variadic = true; continue; }
       if (culebra::is_kwargs_rest(*p)) continue;
+      if (culebra::extract_default_expr(*p) == nullptr) mf_min_arity++;
       auto t = extract_type_annotation(*p, 2);
       if (t.empty()) {
         typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
@@ -14507,10 +14516,12 @@ struct JIT {
     auto namePtr = get_or_create_global_str(name, ".mname");
     auto dispatcherPtr = emit_call(
         module_->getOrInsertFunction(rt::multifn_register_and_install,
-                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty),
+                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,
+                                     i64Ty),
         {namePtr, bodyClosurePtr, paramTypesPtr,
          builder_.getInt64(n_param_types),
-         builder_.getInt64(mf_variadic ? 1 : 0)},
+         builder_.getInt64(mf_variadic ? 1 : 0),
+         builder_.getInt64(mf_min_arity)},
         "multifn.disp");
 
     auto dispatcherVal = make_func(dispatcherPtr);
