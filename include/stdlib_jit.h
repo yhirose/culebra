@@ -4740,6 +4740,64 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return jit.emit_call(callee, args);                                       \
   }
 
+// An ARG_LIST split into positionals / explicit kwargs / **splats. The single
+// AST-scan shared by every kwarg-accepting stdlib compile path (Proc / Http /
+// JSON), so the merge order and the two structural errors (duplicate keyword,
+// positional-after-keyword) are defined once. Those errors are NOT thrown here:
+// interp reports them at runtime (catchable), so the scan records the first one
+// and the caller re-emits it as a runtime IR throw — matching interp and the
+// general kwargs path. `err_eval_count` is how many leading args the caller
+// evaluates (for side effects) before the throw, mirroring interp's
+// evaluate-then-error point: the whole list for a duplicate keyword (caught in
+// the binder after a full collection), but only up to the offending arg for a
+// positional-after-keyword (caught mid-collection, before that arg is run).
+struct ScannedArgs {
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+  std::set<std::string_view> seen_explicit;
+  std::vector<const peg::Ast*> splats;
+  const char* err_kind = nullptr;  // "TypeError" | "SyntaxError" | nullptr
+  std::string err_msg;
+  long err_line = 0, err_col = 0;
+  size_t err_eval_count = 0;
+};
+
+inline ScannedArgs _jit_scan_arg_list(const peg::Ast& argsAst) {
+  using namespace peg::udl;
+  ScannedArgs s;
+  bool saw_named = false;
+  for (size_t i = 0; i < argsAst.nodes.size(); i++) {
+    const auto& child = argsAst.nodes[i];
+    if (child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+      s.splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      saw_named = true;
+      auto name = child->nodes[0]->token;
+      if (!s.seen_explicit.insert(name).second) {
+        s.err_kind = "TypeError";
+        s.err_msg = std::format("duplicate keyword argument '{}'", name);
+        s.err_line = static_cast<long>(child->line);
+        s.err_col = static_cast<long>(child->column);
+        s.err_eval_count = argsAst.nodes.size();  // interp evals the full list
+        return s;
+      }
+      s.explicit_kwargs.emplace_back(name, child->nodes[1].get());
+    } else {
+      if (saw_named) {
+        s.err_kind = "SyntaxError";
+        s.err_msg = "positional argument follows keyword argument";
+        s.err_line = static_cast<long>(child->line);
+        s.err_col = static_cast<long>(child->column);
+        s.err_eval_count = i;  // interp throws before evaluating this arg
+        return s;
+      }
+      s.positional.push_back(child.get());
+    }
+  }
+  return s;
+}
+
 inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
                                                     std::string_view ns,
                                                     std::string_view method,
@@ -5320,6 +5378,15 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (ns == "JSON") {
     using namespace peg::udl;
 
+    // Duplicate-keyword / positional-after-keyword are runtime-catchable errors
+    // on interp; re-emit as a runtime throw instead of a compile-time abort.
+    // Checked before the literal/dynamic-splat split so it covers both paths.
+    if (auto sc = _jit_scan_arg_list(argsAst); sc.err_kind) {
+      return emit_malformed_arg_throw(jit, argsAst, sc.err_eval_count,
+                                      sc.err_kind, sc.err_msg, sc.err_line,
+                                      sc.err_col);
+    }
+
     // Dynamic `**variable` splat: enumerate at runtime via the
     // kwarg adapter (`culebra_runtime_json_{stringify,parse}_kw`).
     // Literal `**{...}` flattens at compile time below.
@@ -5339,15 +5406,14 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (later splat wins), then explicit kwargs layer on top regardless
     // of source order. Literal `**{...}` only; dynamic splats handled
     // above through the runtime adapter.
+    // Duplicate-keyword / positional-after-keyword already rejected above, so
+    // this only splits + flattens literal `**{...}` splats.
     std::vector<const peg::Ast*> positional;
     std::map<std::string_view, const peg::Ast*> kwargs;
     std::vector<std::pair<std::string_view, const peg::Ast*>>
         explicit_kwargs;
-    std::set<std::string_view> seen_explicit;
-    bool saw_named = false;
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
-        saw_named = true;
         const auto& operand = *child->nodes[0];
         if (operand.tag != "OBJECT"_) {
           throw culebra::CulebraError("SyntaxError",
@@ -5370,20 +5436,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
         continue;
       }
       if (child->tag == "KWARG"_) {
-        saw_named = true;
-        auto name = child->nodes[0]->token;
-        if (!seen_explicit.insert(name).second) {
-          throw culebra::CulebraError("TypeError",
-              std::format("duplicate keyword argument '{}'", name),
-              argsAst.line, argsAst.column);
-        }
-        explicit_kwargs.emplace_back(name, child->nodes[1].get());
+        explicit_kwargs.emplace_back(child->nodes[0]->token,
+                                     child->nodes[1].get());
       } else {
-        if (saw_named) {
-          throw culebra::CulebraError("SyntaxError",
-              "positional argument follows keyword argument",
-              argsAst.line, argsAst.column);
-        }
         positional.push_back(child.get());
       }
     }
@@ -5590,35 +5645,15 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto i64Ty = builder_.getInt64Ty();
 
-  // Scan ARG_LIST. JSON adapters expect exactly one positional (v/s).
-  std::vector<const peg::Ast*> positional;
-  std::vector<std::pair<std::string_view, const peg::Ast*>>
-      explicit_kwargs;
-  std::set<std::string_view> seen_explicit;
-  std::vector<const peg::Ast*> splats;
-  bool saw_named = false;
-  for (auto& child : argsAst.nodes) {
-    if (child->tag == "KWARG_SPLAT"_) {
-      saw_named = true;
-      splats.push_back(child->nodes[0].get());
-    } else if (child->tag == "KWARG"_) {
-      saw_named = true;
-      auto name = child->nodes[0]->token;
-      if (!seen_explicit.insert(name).second) {
-        throw culebra::CulebraError("TypeError",
-            std::format("duplicate keyword argument '{}'", name),
-            argsAst.line, argsAst.column);
-      }
-      explicit_kwargs.emplace_back(name, child->nodes[1].get());
-    } else {
-      if (saw_named) {
-        throw culebra::CulebraError("SyntaxError",
-            "positional argument follows keyword argument",
-            argsAst.line, argsAst.column);
-      }
-      positional.push_back(child.get());
-    }
-  }
+  // Syntax errors (duplicate keyword / positional-after-keyword) were already
+  // rejected by compile_ns_call's JSON branch before routing here, so reuse the
+  // shared scan purely to split the arg list. JSON adapters expect exactly one
+  // positional (v/s); the arity check below stays a compile-time throw (the
+  // positional-`indent` binding divergence vs interp is a separate follow-up).
+  auto sc = _jit_scan_arg_list(argsAst);
+  auto& positional = sc.positional;
+  auto& explicit_kwargs = sc.explicit_kwargs;
+  auto& splats = sc.splats;
   if (positional.size() != 1) {
     throw culebra::CulebraError("ArityError",
         std::format("JSON.{}: expected exactly one positional argument "
@@ -5697,63 +5732,6 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
   return v;
 }
 
-// An ARG_LIST split into positionals / explicit kwargs / **splats. The single
-// AST-scan shared by every kwarg-accepting stdlib compile path, so the merge
-// order and the two structural errors (duplicate keyword, positional-after-
-// keyword) are defined once. Those errors are NOT thrown here: interp reports
-// them at runtime (catchable), so the scan records the first one and the caller
-// re-emits it as a runtime IR throw — matching interp and the general kwargs
-// path. `err_eval_count` is how many leading args the caller evaluates (for
-// side effects) before the throw, mirroring interp's evaluate-then-error point:
-// the whole list for a duplicate keyword (caught in the binder after a full
-// collection), but only up to the offending arg for a positional-after-keyword
-// (caught mid-collection, before that arg is evaluated).
-struct ScannedArgs {
-  std::vector<const peg::Ast*> positional;
-  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
-  std::set<std::string_view> seen_explicit;
-  std::vector<const peg::Ast*> splats;
-  const char* err_kind = nullptr;  // "TypeError" | "SyntaxError" | nullptr
-  std::string err_msg;
-  long err_line = 0, err_col = 0;
-  size_t err_eval_count = 0;
-};
-
-inline ScannedArgs _jit_scan_arg_list(const peg::Ast& argsAst) {
-  using namespace peg::udl;
-  ScannedArgs s;
-  bool saw_named = false;
-  for (size_t i = 0; i < argsAst.nodes.size(); i++) {
-    const auto& child = argsAst.nodes[i];
-    if (child->tag == "KWARG_SPLAT"_) {
-      saw_named = true;
-      s.splats.push_back(child->nodes[0].get());
-    } else if (child->tag == "KWARG"_) {
-      saw_named = true;
-      auto name = child->nodes[0]->token;
-      if (!s.seen_explicit.insert(name).second) {
-        s.err_kind = "TypeError";
-        s.err_msg = std::format("duplicate keyword argument '{}'", name);
-        s.err_line = static_cast<long>(child->line);
-        s.err_col = static_cast<long>(child->column);
-        s.err_eval_count = argsAst.nodes.size();  // interp evals the full list
-        return s;
-      }
-      s.explicit_kwargs.emplace_back(name, child->nodes[1].get());
-    } else {
-      if (saw_named) {
-        s.err_kind = "SyntaxError";
-        s.err_msg = "positional argument follows keyword argument";
-        s.err_line = static_cast<long>(child->line);
-        s.err_col = static_cast<long>(child->column);
-        s.err_eval_count = i;  // interp throws before evaluating this arg
-        return s;
-      }
-      s.positional.push_back(child.get());
-    }
-  }
-  return s;
-}
 
 inline llvm::Value* JitExtension::emit_malformed_arg_throw(
     JIT& jit, const peg::Ast& argsAst, size_t eval_count, const char* kind,
