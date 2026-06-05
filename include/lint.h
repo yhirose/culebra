@@ -37,6 +37,35 @@ using namespace peg::udl;
 
 inline bool is_sink(std::string_view s) { return s == "_"; }
 
+// True when a `"..."` literal carries an interpolation (`{expr}`), so it is
+// not a compile-time constant. Object-literal keys and match patterns are
+// constant positions: a constant `"..."` (or `'...'`) is allowed there, but
+// an interpolating one is rejected (the runtime value isn't known statically).
+inline bool interpolated_string_has_expr(const peg::Ast& node) {
+  if (node.tag != "INTERPOLATED_STRING"_) return false;
+  for (const auto& c : node.nodes)
+    if (c->tag == "INTERP_EXPR"_) return true;
+  return false;
+}
+
+// Recursively flag interpolating `"..."` literals used as patterns (a match
+// arm's pattern subtree — leaves plus nested ctor/array/object/tuple
+// sub-patterns). Guards and arm bodies are walked normally, not here.
+inline void check_pattern_const_strings(const peg::Ast& pat,
+                                        std::vector<Diagnostic>& diags) {
+  if (pat.tag == "INTERPOLATED_STRING"_) {
+    if (interpolated_string_has_expr(pat)) {
+      diags.push_back(Diagnostic{
+          "SyntaxError",
+          "interpolated string is not a constant pattern (use '...' or a guard)",
+          static_cast<long>(pat.line), static_cast<long>(pat.column),
+          Severity::Error});
+    }
+    return;
+  }
+  for (const auto& c : pat.nodes) check_pattern_const_strings(*c, diags);
+}
+
 // Over-approximate binding capture: insert every IDENTIFIER token under
 // `node` into `out`. Used for params / patterns / catch vars, where
 // over-binding only ever weakens detection (a missed reassignment), never
@@ -213,6 +242,9 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       walk(*node.nodes[0]);
       for (const auto& arm : node.nodes[1]->nodes) {
         if (arm->nodes.empty()) continue;
+        // A pattern is a constant position: reject interpolating `"..."`
+        // patterns (the guard/body below may interpolate freely).
+        check_pattern_const_strings(*arm->nodes[0], diags_);
         scopes_.emplace_back();
         collect_idents(*arm->nodes[0], scopes_.back().muts);
         for (size_t i = 1; i < arm->nodes.size(); i++) walk(*arm->nodes[i]);
@@ -313,6 +345,26 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       }
       walk_children(node);
       return;
+    case "OBJECT"_: {
+      // Object-literal keys are a constant position: a literal `"..."` key is
+      // its constant text, but an interpolating one has no static key. Flag it
+      // pre-eval on every backend (the eval/compile path would otherwise build
+      // a dynamic key silently). Spread elements carry no key.
+      for (const auto& prop : node.nodes) {
+        if (prop->tag != "OBJECT_PROPERTY"_) continue;
+        auto pv = culebra::view_object_property(*prop);
+        if (interpolated_string_has_expr(*pv.key)) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              "interpolated string is not a constant object key (use '...' "
+              "or assign with o[key] = value)",
+              static_cast<long>(pv.key->line),
+              static_cast<long>(pv.key->column), Severity::Error});
+        }
+      }
+      walk_children(node);
+      return;
+    }
     case "ASSIGNMENT"_: {
       auto av = culebra::view_assignment(node);
       walk(*av.rhs);

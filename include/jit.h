@@ -12710,7 +12710,24 @@ struct JIT {
         return builder_.CreateAnd(is_float, eq);
       }
       case "STRING"_:
-      case "INTERPOLATED_CONTENT"_: {
+      case "INTERPOLATED_CONTENT"_:
+      case "INTERPOLATED_STRING"_: {
+        // STRING is raw; INTERPOLATED_CONTENT is one decoded chunk; an
+        // INTERPOLATED_STRING `"..."` literal pattern concatenates its
+        // decoded content chunks. Only constant ones are valid — lint
+        // rejects interpolating ones pre-execution; defend by making an
+        // INTERP_EXPR child a never-match (mirrors interp try_pattern).
+        std::string pat_str;
+        if (pattern.tag == "INTERPOLATED_CONTENT"_) {
+          pat_str = decode_interpolated_content(pattern.token);
+        } else if (pattern.tag == "INTERPOLATED_STRING"_) {
+          for (const auto& child : pattern.nodes) {
+            if (child->tag != "INTERPOLATED_CONTENT"_) return builder_.getFalse();
+            pat_str += decode_interpolated_content(child->token);
+          }
+        } else {
+          pat_str = std::string(pattern.token);
+        }
         // Tag-gate the strcmp via CondBr: an AND would still execute
         // str_eq on the wrong-tag branch and segfault when subject is
         // nil (data=0) or any non-string with a non-pointer data slot.
@@ -12718,9 +12735,6 @@ struct JIT {
         auto is_str = builder_.CreateOr(
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)));
-        auto pat_str = pattern.tag == "INTERPOLATED_CONTENT"_
-                           ? decode_interpolated_content(pattern.token)
-                           : std::string(pattern.token);
         auto lit = emit_str_literal(pat_str);
         auto fn = builder_.GetInsertBlock()->getParent();
         auto eqBB = llvm::BasicBlock::Create(ctx_, "str.eq", fn);

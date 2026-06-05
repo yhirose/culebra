@@ -211,7 +211,7 @@ const auto grammar_ = R"(
   GUARD                    <-  if _ EXPRESSION
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
-  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING /
+  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING / RAW_STRING / INTERPOLATED_STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
   WILDCARD                 <-  '_' !IdentChar
   # Enum constructor pattern: `Ok(x)`, `Result.Ok(x)`, `Pair(a, b)`.
@@ -307,7 +307,7 @@ const auto grammar_ = R"(
   # is a direct OBJECT child (kept by the optimizer) so eval sees it
   # uncollapsed — same shape as array SEQ_ELEM.
   OBJECT                   <-  '{' _ ((SPREAD_ELEM / OBJECT_PROPERTY) (_ ',' _ (SPREAD_ELEM / OBJECT_PROPERTY))* _ ','?)? _ '}'
-  OBJECT_PROPERTY          <-  MUTABLE _ (FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
+  OBJECT_PROPERTY          <-  MUTABLE _ (STRING / RAW_STRING / INTERPOLATED_STRING / FLOAT / NUMBER / NIL / BOOLEAN / TUPLE) _ ':' _ EXPRESSION
                             /  MUTABLE _ IDENTIFIER (_ ':' _ EXPRESSION)?
 
   ARRAY                    <-  '[' _ SEQUENCE _ ']' (_ '(' _ EXPRESSION (_ ',' _ EXPRESSION)? _ ')')?

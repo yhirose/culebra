@@ -957,6 +957,16 @@ Dot-form names (`obj.key`) are identifiers (`[A-Za-z_][A-Za-z0-9_]*`)
 that go through the fast shape path. Non-identifier keys reach the
 subscript path below.
 
+A key may also be a **string literal** — `'...'`, a backtick string, or a
+`"..."` with no interpolation — which is how you write keys that aren't
+identifiers (hyphens, spaces, etc.):
+
+    let headers = {"User-Agent": "curl", "X-Trace-Id": id}
+    headers["User-Agent"]    # read non-identifier keys with [ ]
+
+A key must be a compile-time constant, so an *interpolating* `"...{x}..."`
+is a SyntaxError; build a dynamic key with `o[k] = v` instead.
+
 ### Non-String keys
 
 In addition to String keys (`{name: 'alice'}`), Object literals accept
@@ -1779,7 +1789,7 @@ the value is `nil`.
 
 | Form              | Matches                                  |
 |-------------------|------------------------------------------|
-| `0`, `'x'`, `nil`, `true` | Literal equality                  |
+| `0`, `'x'`, `"x"`, `nil`, `true` | Literal equality (a string pattern is `'...'`, a backtick string, or a `"..."` with no interpolation) |
 | `name`            | Any value, binds it to `name`            |
 | `_`               | Any value, no binding                    |
 | `name: Type`      | Value whose type is `Type`; binds        |
@@ -1795,6 +1805,9 @@ the value is `nil`.
 
 ### Semantics
 
+* A literal pattern must be a compile-time constant. An *interpolating*
+  `"...{x}..."` is a SyntaxError — match against the runtime value with a
+  guard instead (`s if s == x => ...`).
 * Patterns are tried left-to-right, and sub-patterns are evaluated
   depth-first.
 * A binding `name` introduced by the pattern is visible in the guard

@@ -4748,6 +4748,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return (val.type == Value::String || val.type == Value::StringView) &&
                val.to_string_view() ==
                    decode_interpolated_content(pattern.token);
+      case "INTERPOLATED_STRING"_: {
+        // A `"..."` literal pattern. Only constant ones (no `{expr}`) are
+        // valid — lint rejects interpolating ones pre-execution; defend by
+        // treating an INTERP_EXPR child as a non-match. Concatenate the
+        // decoded content chunks (handles "" → empty and multi-chunk).
+        if (val.type != Value::String && val.type != Value::StringView) {
+          return false;
+        }
+        std::string s;
+        for (const auto& child : pattern.nodes) {
+          if (child->tag != "INTERPOLATED_CONTENT"_) return false;
+          s += decode_interpolated_content(child->token);
+        }
+        return val.to_string_view() == s;
+      }
       case "IDENTIFIER"_: {
         bind_pattern_name(env, pattern, val, mut);
         return true;
