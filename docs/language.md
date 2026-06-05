@@ -2876,6 +2876,7 @@ return a new `Array` and leave the receiver unchanged.
 | `a.min() -> Long`                           | Smallest element. All elements must be `Long`. Throws on empty. |
 | `a.max() -> Long`                           | Largest element. All elements must be `Long`. Throws on empty. |
 | `a.sort_by(key: Function) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). |
+| `a.sorted_by(key: Function) -> Array` | Like `sort_by` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted_by(f).join(",")`). |
 
 ```culebra
 mut a = [1, 2, 3]

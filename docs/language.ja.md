@@ -2708,6 +2708,7 @@ Array や String スカラーを回す場合は `for c in s { ... }`
 | `a.min() -> Long`                           | 最小値。全要素が `Long` である必要あり。空配列では例外 |
 | `a.max() -> Long`                           | 最大値。全要素が `Long` である必要あり。空配列では例外 |
 | `a.sort_by(key: Function) -> Nil` *(破壊的)* | `key(x)` を比較キーとして昇順に in-place で安定ソート。`key` は 1 引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり |
+| `a.sorted_by(key: Function) -> Array` | `sort_by` の非破壊版。新しいソート済み Array を返し、受け手は不変＝チェーン可（`xs.sorted_by(f).join(",")`） |
 
 ```culebra
 mut a = [1, 2, 3]

@@ -3242,6 +3242,33 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              vs = std::move(sorted);
                              return Value();
                            }))},
+      // Non-mutating sort_by: returns a new sorted Array, leaving the
+      // receiver unchanged — so it chains (`xs.sorted_by(f).join(",")`).
+      {"sorted_by"sv,
+       Value(FunctionValue({{"f", false, "Function"sv}},
+                           [](std::shared_ptr<Environment> callEnv) {
+                             auto& arr = callEnv->get("this").to_array();
+                             auto f = as_callback(callEnv->get("f"));
+                             check_callback_arity(f, 1, "sorted_by");
+                             auto& vs = *arr.values;
+                             std::vector<std::pair<Value, size_t>> keyed;
+                             keyed.reserve(vs.size());
+                             for (size_t i = 0; i < vs.size(); i++) {
+                               keyed.emplace_back(
+                                   invoke_unary_callback(callEnv, f, vs[i]), i);
+                             }
+                             std::stable_sort(
+                                 keyed.begin(), keyed.end(),
+                                 [](const auto& a, const auto& b) {
+                                   return a.first < b.first;
+                                 });
+                             ArrayValue out;
+                             out.values->reserve(vs.size());
+                             for (auto& [k, i] : keyed) {
+                               out.values->push_back(vs[i]);
+                             }
+                             return Value(std::move(out));
+                           }))},
       // Iterator protocol: yield elements in index order.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {

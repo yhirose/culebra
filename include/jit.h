@@ -6862,6 +6862,44 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
   release_keys();
 }
 
+// Non-mutating sort_by: returns a fresh array with the elements in sorted
+// order; the receiver is untouched, so it chains. The new array owns its own
+// refs to the (shared) elements.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+  auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "sorted_by", "f",
+                                      line, col);
+  std::vector<std::pair<JitValue, size_t>> keyed;
+  keyed.reserve(arr->size);
+  auto release_keys = [&] {
+    for (auto& [k, _] : keyed) _culebra_value_release_impl(k.tag, k.data);
+  };
+  try {
+    for (size_t i = 0; i < arr->size; i++) {
+      auto e = arr->items[i];
+      culebra_runtime_value_retain(e.tag, e.data);
+      keyed.emplace_back(_culebra_invoke1(fn, e), i);
+    }
+    std::stable_sort(keyed.begin(), keyed.end(),
+                     [line, col](const auto& a, const auto& b) {
+                       return _culebra_value_ord(
+                           a.first.tag, a.first.data, b.first.tag, b.first.data,
+                           [](double x, double y) { return x < y; }, line, col);
+                     });
+  } catch (...) {
+    release_keys();
+    throw;
+  }
+  release_keys();
+  auto* out = culebra_runtime_array_new();
+  for (auto& [k, idx] : keyed) {
+    auto e = arr->items[idx];
+    culebra_runtime_value_retain(e.tag, e.data);
+    culebra_runtime_array_push(out, e.tag, e.data);
+  }
+  return out;
+}
+
 // reduce returns the final accumulator via out-params (avoids relying on
 // cross-language struct-return ABI).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
@@ -7519,6 +7557,7 @@ inline constexpr auto is_range            = "culebra_runtime_is_range";
 inline constexpr auto range_iter          = "culebra_runtime_range_iter";
 inline constexpr auto array_slice2        = "culebra_runtime_array_slice2";
 inline constexpr auto array_sort_by       = "culebra_runtime_array_sort_by";
+inline constexpr auto array_sorted_by     = "culebra_runtime_array_sorted_by";
 // Tuple allocates a JitArray and returns it tagged TAG_TUPLE; storage
 // is shared with Array but the tag forbids mutation everywhere
 // downstream.
@@ -8924,6 +8963,7 @@ struct JIT {
         // path; iterator-protocol Objects route to the lazy runtime.
         "map",         "filter",     "reduce",   "for_each",
         "find",        "any",        "all",      "flat_map", "sort_by",
+        "sorted_by",
         "sum",         "product",    "min",      "max",
         "collect",     "count",      "take",     "skip",
         "take_while",  "chain",      "zip",      "enumerate",
@@ -10639,6 +10679,11 @@ struct JIT {
     // sort_by (arr, fn_tag, fn_data, line, col)
     module_->getOrInsertFunction(
         rt::array_sort_by, builder_.getVoidTy(), ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
+        builder_.getInt64Ty());
+    // sorted_by — same args, returns a new array (ptr)
+    module_->getOrInsertFunction(
+        rt::array_sorted_by, ptrTy, ptrTy,
         builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty());
     // sum/product/min/max: (arr, line, col) -> i64
@@ -19728,6 +19773,17 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
     emit_value_release(f);
     return make_nil();
+  }
+
+  if (method == "sorted_by" && argsAst.nodes.size() == 1) {
+    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "sorted_by");
+    auto f = compile(*argsAst.nodes[0]);
+    emit_set_callback_arg_site(*argsAst.nodes[0]);
+    auto out = emit_call(
+        module_->getFunction(rt::array_sorted_by),
+        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
+    emit_value_release(f);
+    return make_array(out);
   }
 
   return nullptr;
