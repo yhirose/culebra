@@ -7418,6 +7418,7 @@ inline constexpr auto json_stringify_kw   = "culebra_runtime_json_stringify_kw";
 inline constexpr auto json_parse          = "culebra_runtime_json_parse";
 inline constexpr auto json_parse_kw       = "culebra_runtime_json_parse_kw";
 inline constexpr auto proc_run_kw         = "culebra_runtime_proc_run_kw";
+inline constexpr auto ns_method_call_kw   = "culebra_runtime_ns_method_call_kw";
 inline constexpr auto proc_all_kw         = "culebra_runtime_proc_all_kw";
 inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
 inline constexpr auto proc_race           = "culebra_runtime_proc_race";

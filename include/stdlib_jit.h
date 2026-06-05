@@ -2173,6 +2173,8 @@ namespace culebra {
 // JIT in jit.h so each member can reach the JIT internals it needs
 // (builder_/module_/valueType_/make_*/extract_*/...) without the JIT
 // class having to expose them publicly.
+struct NsMethod;  // defined below; referenced by compile_ns_method_kwargs
+
 struct JitExtension {
   static void declare_runtime(JIT& jit);
   static llvm::Value* compile_global(JIT& jit, const std::string& name,
@@ -2201,6 +2203,16 @@ struct JitExtension {
   static llvm::Value* compile_single_positional_kwargs(
       JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
       const char* ctx, const char* rt_name);
+
+  // Generic compile of an `Ns.method(pos..., kwargs...)` call against a
+  // statically-resolved NsMethod (Http). Compiles each positional once,
+  // emits an inline type check at the *argument* position for any leading
+  // positional whose NsParam carries a declared type, then dispatches the
+  // compiled args through `culebra_runtime_ns_method_call_kw` (which consumes
+  // them — no caller-side release).
+  static llvm::Value* compile_ns_method_kwargs(
+      JIT& jit, const NsMethod* m, const peg::Ast& argsAst,
+      const peg::Ast& callAst);
 
   static llvm::Value* emit_output_call(JIT& jit, const char* rt_name,
                                          const peg::Ast& argsAst);
@@ -3786,23 +3798,20 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
   }
 }
 
-inline JitValue _jit_ns_method_trampoline(
-    JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
-  const auto* m = reinterpret_cast<const NsMethod*>(
-      cls->captures[0]->value.data);
-  // The closure ABI carries no line/col, so snapshot the call-site position
-  // recorded just before this indirect call (general call codegen emits
-  // set_call_site). An adapter/arity error thrown without a position gets it
-  // backfilled below — the JIT analog of interp's eval-wrapper, so a builtin
-  // called as a value (`let a = Math.abs; a("x")`) reports its call site like
-  // the interpreter. Snapshot into locals: a nested call inside the adapter
-  // would overwrite the thread-local.
-  int64_t line = _jit_call_site_line, col = _jit_call_site_col;
+// Core ns-method dispatch: arity-check `n_args` against `m`, run the adapter
+// (consuming/releasing `args`), and backfill a positionless error to
+// (line,col). Shared by the closure trampoline (which snapshots the call site
+// from the thread-local) and the `NsMethod*`-driven entry used by
+// compile_ns_call for Http / the nested Encoding codecs (which pass the
+// argument/call position explicitly).
+inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
+                                        JitValue* args, int64_t line,
+                                        int64_t col) {
   try {
-    // Args-rest method (range/iota) on the bare-positional path: build the same
-    // canonical [rest-Array, kw-only...] slab the kwarg resolver produces, so a
-    // single adapter shape serves both. The positionals are absorbed into the
-    // Array, so the slab (not `args`) is what gets released afterward.
+    // Args-rest method (range/iota): build the same canonical
+    // [rest-Array, kw-only...] slab the kwarg resolver produces, so a single
+    // adapter shape serves both. The positionals are absorbed into the Array,
+    // so the slab (not `args`) is what gets released afterward.
     if (m->params && m->params->args_rest_idx >= 0) {
       std::unordered_map<std::string_view, JitValue> none;
       auto slab = _jit_ns_build_args_rest_slab(m->params, n_args, args, none,
@@ -3845,6 +3854,18 @@ inline JitValue _jit_ns_method_trampoline(
   }
 }
 
+inline JitValue _jit_ns_method_trampoline(
+    JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
+  // The closure ABI carries no line/col, so snapshot the call-site position
+  // recorded just before this indirect call (general call codegen emits
+  // set_call_site). Snapshot into locals: a nested call inside the adapter
+  // would overwrite the thread-local.
+  return _jit_ns_method_dispatch(m, n_args, args, _jit_call_site_line,
+                                 _jit_call_site_col);
+}
+
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   auto* cls = new JitClosure();
   cls->refcount = 1;
@@ -3858,22 +3879,18 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   return cls;
 }
 
-// Resolve a kwarg/splat call against an ns-method closure carrying
-// NsParamMeta. Mirrors culebra_runtime_call_with_kwargs' merge order
-// (splat first, explicit kwargs override) but fills missing defaulted
-// slots with the param's real default value (the C++ adapters have no
-// callee prologue to expand a TAG_UNFILLED sentinel). Builds a
-// full-arity positional slab and dispatches through the trampoline.
-inline bool _jit_ns_kwarg_resolve(
-    JitClosure* cls, JitValue this_val, int64_t n_pos, JitValue* positional,
+// Resolve a kwarg/splat call against an ns-method `m` carrying NsParamMeta.
+// Mirrors culebra_runtime_call_with_kwargs' merge order (splat first, explicit
+// kwargs override) but fills missing defaulted slots with the param's real
+// default value (the C++ adapters have no callee prologue to expand a
+// TAG_UNFILLED sentinel). Builds a full-arity positional slab and dispatches
+// through `_jit_ns_method_dispatch`. Consumes positional/kwarg/splat values.
+// Returns false (without consuming) when `m` has no NsParamMeta.
+inline bool _jit_ns_kwarg_resolve_core(
+    const NsMethod* m, int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) {
-  if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
-    return false;
-  }
-  const auto* m = reinterpret_cast<const NsMethod*>(
-      cls->captures[0]->value.data);
   if (!m->params) return false;  // method doesn't take kwargs
   const NsParamMeta* pm = m->params;
 
@@ -3996,18 +4013,30 @@ inline bool _jit_ns_kwarg_resolve(
         std::format("unknown keyword argument '{}'", bad), line, col);
   }
 
-  // Dispatch through the trampoline (it releases the slab values). The
-  // trampoline backfills a positionless error from the thread-local
-  // _jit_call_site, which the kwarg path may not have set — so backfill here
-  // too, from the call site passed in (matches interp's call-site position for
-  // adapter-internal type errors like `Http.get(params: 5)`).
-  try {
-    *out = _jit_ns_method_trampoline(cls, this_val, n, slab.data());
-  } catch (culebra::CulebraError& e) {
-    if (e.line == 0) { e.line = line; e.col = col; }
-    throw;
-  }
+  // Dispatch the full-arity slab (it releases the slab values, and backfills a
+  // positionless adapter error from the passed call site — matching interp's
+  // call-site position for adapter-internal type errors like
+  // `Http.get(params: 5)`; the typed-positional checks already fired earlier at
+  // the argument position).
+  *out = _jit_ns_method_dispatch(m, n, slab.data(), line, col);
   return true;
+}
+
+// Closure-ABI wrapper: extract the NsMethod from the closure and resolve.
+// Returns false (the hook's "not mine" signal) for non-ns closures.
+inline bool _jit_ns_kwarg_resolve(
+    JitClosure* cls, JitValue /*this_val*/, int64_t n_pos, JitValue* positional,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
+    JitValue* out) {
+  if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
+    return false;
+  }
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
+  return _jit_ns_kwarg_resolve_core(m, n_pos, positional, n_kw, kw_keys,
+                                    kw_vals, n_splat, splat_objs, line, col,
+                                    out);
 }
 
 // Install the kwarg hook once, before any JIT call runs.
@@ -4139,6 +4168,23 @@ inline bool _is_known_ns(std::string_view name) {
   return name == "Sys";  // Sys has only constants in some configs
 }
 
+// Resolve `Ns[.sub].method` to its NsMethod, or null. `sub` is nullptr for a
+// top-level method (e.g. Http.get) and the sub-namespace name for a nested one
+// (e.g. Encoding.base64.encode → sub="base64"). Resolution is by name (not a
+// baked pointer) so the same call works under AOT, where the kNsMethods table
+// address differs from JIT-compile time.
+inline const NsMethod* _lookup_ns_method(std::string_view ns,
+                                         std::string_view method,
+                                         const char* sub = nullptr) {
+  for (auto& m : kNsMethods) {
+    bool sub_match = sub == nullptr
+                         ? m.sub == nullptr
+                         : (m.sub != nullptr && std::string_view(sub) == m.sub);
+    if (sub_match && ns == m.ns && method == m.name) return &m;
+  }
+  return nullptr;
+}
+
 inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
                     culebra::kSlotJitNamespaceTable).entries;
@@ -4259,6 +4305,31 @@ culebra_runtime_namespace_get(const char* name,
                                 reinterpret_cast<int64_t>(obj));
   *out_tag = TAG_OBJECT;
   *out_data = reinterpret_cast<int64_t>(obj);
+}
+
+// Direct ns-method call entry used by compile_ns_call's typed-positional fast
+// path (Http + the nested Encoding codecs). The method is identified by
+// ns/method/sub *names* (not a baked NsMethod* — that would be invalid under
+// AOT, where the table lives at a different address) and resolved here. Routes
+// through the same resolver/dispatch the closure trampoline uses, so
+// kwargs/splats/defaults/arity all behave identically — only the
+// typed-positional type errors have already been emitted at the argument
+// position by the caller. Consumes the positional/kwarg/splat values.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_method_call_kw(
+    const char* ns, const char* method, const char* sub,
+    int64_t n_pos, JitValue* positional,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
+  const NsMethod* m = _lookup_ns_method(ns, method, sub);
+  JitValue out;
+  if (_jit_ns_kwarg_resolve_core(m, n_pos, positional, n_kw, kw_keys, kw_vals,
+                                 n_splat, splat_objs, line, col, &out)) {
+    return out;
+  }
+  // Param-less method (no NsParamMeta, e.g. the Encoding codecs): the resolver
+  // bailed without consuming. The caller passes no kwargs/splats for these, so
+  // dispatch the positionals directly (dispatch consumes them).
+  return _jit_ns_method_dispatch(m, n_pos, positional, line, col);
 }
 }  // extern "C"
 
@@ -4664,7 +4735,8 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // culebra_runtime_call_with_kwargs → the ns-method kwarg hook). The
     // hook resolves kwargs/defaults for methods carrying NsParamMeta and
     // raises a clean error for those that don't — matching the interp.
-    static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc"};
+    static const std::set<std::string_view> kwarg_aware_ns = {"JSON", "Proc",
+                                                              "Http"};
     if (!kwarg_aware_ns.contains(ns)) {
       return nullptr;
     }
@@ -4672,6 +4744,16 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
+
+  // Http.<method>(url[, method], ...kwargs): compile the call against the
+  // statically-resolved NsMethod so the typed positional(s) (url/method/
+  // on_event) get an inline type check at the argument position, matching
+  // interp. kwargs/arity/dispatch reuse the shared resolver.
+  if (ns == "Http") {
+    if (const NsMethod* m = _lookup_ns_method("Http", method)) {
+      return compile_ns_method_kwargs(jit, m, argsAst, callAst);
+    }
+  }
 
   // Proc.run / Proc.all route their (positional + kwargs) ARG_LIST through one
   // marshaller into the matching `_kw` runtime fn. Proc.race is positional-only
@@ -5686,6 +5768,118 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
   // The _kw fn doesn't consume the positional; release it here.
   emit_value_release(cmd_val);
   return r;
+}
+
+inline llvm::Value* JitExtension::compile_ns_method_kwargs(
+    JIT& jit, const NsMethod* m, const peg::Ast& argsAst,
+    const peg::Ast& callAst) {
+  CULEBRA_JIT_EXT_BODY_ALIASES(jit);
+  using namespace peg::udl;
+  auto ptrTy = llvm::PointerType::get(ctx_, 0);
+  auto i64Ty = builder_.getInt64Ty();
+
+  // Scan ARG_LIST into positionals / explicit kwargs / splats (same shape as
+  // compile_single_positional_kwargs, but N positionals).
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+  std::set<std::string_view> seen_explicit;
+  std::vector<const peg::Ast*> splats;
+  bool saw_named = false;
+  for (auto& child : argsAst.nodes) {
+    if (child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+      splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      saw_named = true;
+      auto name = child->nodes[0]->token;
+      if (!seen_explicit.insert(name).second) {
+        throw culebra::CulebraError("TypeError",
+            std::format("duplicate keyword argument '{}'", name),
+            argsAst.line, argsAst.column);
+      }
+      explicit_kwargs.emplace_back(name, child->nodes[1].get());
+    } else {
+      if (saw_named) {
+        throw culebra::CulebraError("SyntaxError",
+            "positional argument follows keyword argument",
+            argsAst.line, argsAst.column);
+      }
+      positional.push_back(child.get());
+    }
+  }
+
+  // Compile each positional once; emit an inline type check at the argument's
+  // position for any leading positional that declares a type. Arity (too many
+  // / too few) and unknown-kwarg are left to the resolver (call-site position),
+  // matching interp.
+  std::vector<llvm::Value*> posVals;
+  posVals.reserve(positional.size());
+  for (size_t i = 0; i < positional.size(); i++) {
+    auto v = compile(*positional[i]);
+    if (m->params && static_cast<int>(i) < m->params->n_params &&
+        m->params->params[i].type != nullptr) {
+      jit.emit_type_check(v, m->params->params[i].type,
+                          std::format("parameter '{}'",
+                                      m->params->params[i].name),
+                          positional[i]);
+    }
+    posVals.push_back(v);
+  }
+
+  std::vector<llvm::Constant*> kwKeys;
+  std::vector<llvm::Value*> kwVals;
+  for (auto& [name, ast] : explicit_kwargs) {
+    kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
+    kwVals.push_back(compile(*ast));
+  }
+  std::vector<llvm::Value*> splatVals;
+  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+
+  auto fn = builder_.GetInsertBlock()->getParent();
+  llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+  auto alloc_slab = [&](llvm::Type* ty, size_t n,
+                        const char* name) -> llvm::Value* {
+    if (n == 0) return llvm::ConstantPointerNull::get(ptrTy);
+    return entryB.CreateAlloca(ty, builder_.getInt64(static_cast<int64_t>(n)),
+                              name);
+  };
+  auto store_at = [&](llvm::Value* base, llvm::Type* ty, size_t i,
+                      llvm::Value* val) {
+    auto slot = builder_.CreateInBoundsGEP(
+        ty, base, {builder_.getInt64(static_cast<int64_t>(i))});
+    builder_.CreateStore(val, slot);
+  };
+  auto posSlab = alloc_slab(jit.valueType_, posVals.size(), "ns.pos");
+  auto keysSlab = alloc_slab(ptrTy, kwKeys.size(), "ns.kw.keys");
+  auto valsSlab = alloc_slab(jit.valueType_, kwVals.size(), "ns.kw.vals");
+  auto splatSlab = alloc_slab(jit.valueType_, splatVals.size(), "ns.kw.splat");
+  for (size_t i = 0; i < posVals.size(); i++)
+    store_at(posSlab, jit.valueType_, i, posVals[i]);
+  for (size_t i = 0; i < kwKeys.size(); i++) {
+    store_at(keysSlab, ptrTy, i, kwKeys[i]);
+    store_at(valsSlab, jit.valueType_, i, kwVals[i]);
+  }
+  for (size_t i = 0; i < splatVals.size(); i++)
+    store_at(splatSlab, jit.valueType_, i, splatVals[i]);
+
+  // Identify the method by name (AOT-safe; a baked NsMethod* would be invalid
+  // in the separately-linked AOT binary). `sub` is null for top-level methods.
+  auto nsStr = jit.get_or_create_global_str(m->ns, ".nsm.ns");
+  auto methodStr = jit.get_or_create_global_str(m->name, ".nsm.method");
+  auto subStr = m->sub ? jit.get_or_create_global_str(m->sub, ".nsm.sub")
+                       : llvm::ConstantPointerNull::get(ptrTy);
+  // Signature: (ns, method, sub, n_pos, pos*, n_kw, keys*, vals*, n_splat,
+  // splat*, line, col) -> JitValue. The entry consumes all arg values.
+  return emit_call(
+      module_->getOrInsertFunction(
+          rt::ns_method_call_kw, jit.valueType_, ptrTy, ptrTy, ptrTy, i64Ty,
+          ptrTy, i64Ty, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty),
+      {nsStr, methodStr, subStr,
+       builder_.getInt64(static_cast<int64_t>(posVals.size())), posSlab,
+       builder_.getInt64(static_cast<int64_t>(kwVals.size())), keysSlab,
+       valsSlab, builder_.getInt64(static_cast<int64_t>(splatVals.size())),
+       splatSlab, builder_.getInt64(callAst.line),
+       builder_.getInt64(callAst.column)});
 }
 
 inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
