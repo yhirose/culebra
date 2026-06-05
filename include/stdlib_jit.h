@@ -3462,10 +3462,13 @@ struct NsMethod {
   // (e.g. `Encoding.html.unescape` has ns="Encoding", sub="html"). Nested
   // namespaces are slow-path only — they never reach compile_ns_call.
   const char* sub = nullptr;
-  // Declared type of the (single) leading positional, for methods without an
-  // NsParamMeta (e.g. the Encoding codecs: arg0_type="String"). Lets the
-  // compile side emit an inline type check at the argument position.
+  // Declared type + interp param name of the (single) leading positional, for
+  // methods without an NsParamMeta (e.g. FS.read: arg0_name="path",
+  // arg0_type="String"; Tensor.from: "a"/"Array"). Lets the compile side emit
+  // an inline check at the argument position, and `_jit_ns_method_dispatch`
+  // check the as-value / HOF path (where there is no inline check).
   const char* arg0_type = nullptr;
+  const char* arg0_name = nullptr;
 };
 
 // Param metadata for the kwarg-accepting Proc methods. Names/defaults
@@ -3626,17 +3629,17 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "clamp",     3, &_ns_math_clamp},
 
   {"FS",     "join",     -1, &_ns_fs_join},
-  {"FS",     "basename",  1, &_ns_fs_basename},
-  {"FS",     "dirname",   1, &_ns_fs_dirname},
-  {"FS",     "extension", 1, &_ns_fs_extension},
-  {"FS",     "stem",      1, &_ns_fs_stem},
-  {"FS",     "exists",    1, &_ns_fs_exists},
-  {"FS",     "is_file",   1, &_ns_fs_is_file},
-  {"FS",     "is_dir",    1, &_ns_fs_is_dir},
-  {"FS",     "read",      1, &_ns_fs_read},
+  {"FS",     "basename",  1, &_ns_fs_basename,  nullptr, nullptr, "String", "path"},
+  {"FS",     "dirname",   1, &_ns_fs_dirname,   nullptr, nullptr, "String", "path"},
+  {"FS",     "extension", 1, &_ns_fs_extension, nullptr, nullptr, "String", "path"},
+  {"FS",     "stem",      1, &_ns_fs_stem,      nullptr, nullptr, "String", "path"},
+  {"FS",     "exists",    1, &_ns_fs_exists,    nullptr, nullptr, "String", "path"},
+  {"FS",     "is_file",   1, &_ns_fs_is_file,   nullptr, nullptr, "String", "path"},
+  {"FS",     "is_dir",    1, &_ns_fs_is_dir,    nullptr, nullptr, "String", "path"},
+  {"FS",     "read",      1, &_ns_fs_read,      nullptr, nullptr, "String", "path"},
   {"FS",     "write",     2, &_ns_fs_write},
-  {"FS",     "size",      1, &_ns_fs_size},
-  {"FS",     "list_dir",  1, &_ns_fs_list_dir},
+  {"FS",     "size",      1, &_ns_fs_size,      nullptr, nullptr, "String", "path"},
+  {"FS",     "list_dir",  1, &_ns_fs_list_dir,  nullptr, nullptr, "String", "path"},
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
   {"FS",     "remove",    1, &_ns_fs_remove, &kFsRemoveMeta},
   {"FS",     "stat",      1, &_ns_fs_stat},
@@ -3659,11 +3662,11 @@ inline const NsMethod kNsMethods[] = {
   {"Random", "int",             2, &_ns_random_int},
   {"Random", "uniform",         2, &_ns_random_uniform},
   {"Random", "gauss",           2, &_ns_random_gauss},
-  {"Random", "shuffle",         1, &_ns_random_shuffle},
+  {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, nullptr, "Array", "a"},
   {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
 
   {"Sys",    "exit", 1, &_ns_sys_exit},
-  {"Sys",    "env",  1, &_ns_sys_env},
+  {"Sys",    "env",  1, &_ns_sys_env, nullptr, nullptr, "String", "name"},
   {"Sys",    "time", 0, &_ns_sys_time},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
@@ -3708,25 +3711,25 @@ inline const NsMethod kNsMethods[] = {
   {"Parallel", "race",        2, &_ns_parallel_race,        &kParallelMeta},
 
   {"JSON",   "stringify", 1, &_ns_json_stringify},
-  {"JSON",   "parse",     1, &_ns_json_parse},
+  {"JSON",   "parse",     1, &_ns_json_parse, nullptr, nullptr, "String", "s"},
 
   // Nested sub-namespace (sub="html"): reached only via bare-resolve +
   // member access, e.g. `Encoding.html.unescape(s)`.
-  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html",   "String"},
-  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html",   "String"},
-  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64", "String"},
-  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64", "String"},
-  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex",    "String"},
-  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex",    "String"},
-  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url",    "String"},
-  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url",    "String"},
+  {"Encoding", "escape",   1, &_ns_encoding_html_escape,   nullptr, "html",   "String", "s"},
+  {"Encoding", "unescape", 1, &_ns_encoding_html_unescape, nullptr, "html",   "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_base64_encode, nullptr, "base64", "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_base64_decode, nullptr, "base64", "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_hex_encode,    nullptr, "hex",    "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_hex_decode,    nullptr, "hex",    "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_url_encode,    nullptr, "url",    "String", "s"},
+  {"Encoding", "decode",   1, &_ns_encoding_url_decode,    nullptr, "url",    "String", "s"},
 
 #ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
-  {"Tensor", "from",      1, &_ns_tensor_from},
-  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv},
+  {"Tensor", "from",      1, &_ns_tensor_from,     nullptr, nullptr, "Array",  "a"},
+  {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, nullptr, "String", "path"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
 #endif
 };
@@ -3865,6 +3868,22 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     } else if (m->arity >= 0 && n_args != m->arity) {
       release_args();
       _ns_adapt::arity_error(m->ns, m->name, m->arity, n_args, line, col);
+    }
+    // As-value / HOF path: a param-less method's lenient adapter would coerce a
+    // wrong-typed leading positional (FS.read(5) → IOError, Tensor.from(5) →
+    // empty). Reject it first with interp's `parameter '<name>' expects <Type>`
+    // — the type the entry carries as arg0_type/arg0_name. (The syntactic call
+    // form checks at the argument position in compile_ns_call and never reaches
+    // here.)
+    if (!m->params && m->arg0_type != nullptr && n_args >= 1 &&
+        !_culebra_type_matches_single(args[0].tag, args[0].data,
+                                      m->arg0_type)) {
+      release_args();
+      culebra::throw_runtime_error_at(
+          "TypeError",
+          std::format("type error: parameter '{}' expects {}",
+                      m->arg0_name ? m->arg0_name : "", m->arg0_type),
+          line, col);
     }
     try {
       auto r = m->adapter(args, n_args);
@@ -5854,7 +5873,7 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
       }
     } else if (i == 0) {
       ptype = m->arg0_type;
-      pname = "s";
+      if (m->arg0_name) pname = m->arg0_name;
     }
     if (ptype != nullptr) {
       jit.emit_type_check(v, ptype, std::format("parameter '{}'", pname),
