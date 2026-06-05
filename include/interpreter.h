@@ -2332,6 +2332,21 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 // free-function calls — but `self` refers to the callback for
 // recursion. Arity is validated once at the iterator HOF entry
 // (check_callback_arity); the binder handles *args / defaults uniformly.
+inline Value _invoke_callback(const Value& fn_val) {
+  const auto& fn = fn_val.to_function();
+  auto env = std::make_shared<Environment>();
+  env->is_function_frame = true;
+  env->initialize("self", fn_val, false);
+  bind_callback_params(*env, fn, {});
+  env->initialize("__LINE__", Value(0L), false);
+  env->initialize("__COLUMN__", Value(0L), false);
+  try {
+    return fn.eval(env);
+  } catch (const ReturnValue& r) {
+    return r.value;
+  }
+}
+
 inline Value _invoke_callback(const Value& fn_val, const Value& a) {
   const auto& fn = fn_val.to_function();
   auto env = std::make_shared<Environment>();

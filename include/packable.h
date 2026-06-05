@@ -17,7 +17,10 @@
 #include <cstdio>      // snprintf / sscanf (anonymous shm name; share env)
 #include <cstdlib>     // getenv (share env)
 #include <fcntl.h>     // open
+#include <pthread.h>   // PROCESS_SHARED mutex (with_lock, cross-process)
+#include <sched.h>     // sched_yield (lock-init wait spin)
 #include <sys/mman.h>  // mmap / munmap / msync / shm_open (POSIX; file/shm)
+#include <sys/stat.h>  // fstat (file reopener waits for the creator to size it)
 #include <unistd.h>    // close / ftruncate
 #if defined(__linux__)
 #include <sys/syscall.h>  // SYS_memfd_create (anonymous shm fd)
@@ -225,6 +228,28 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
   return it == packable_layout_registry().end() ? nullptr : &it->second;
 }
 
+// --- with_lock escape hatch: the cross-process lock header ----------------
+// A File/Shared buffer reserves a fixed-size header at the very front of its
+// mapped region holding a PROCESS_SHARED pthread mutex; records start right
+// after it (`data = map_base + kLockHeader`). Heap buffers carry no header and
+// use a plain std::mutex in the core — they never leave the process. The
+// header is a fixed 128 bytes: room for a pthread_mutex_t on every supported
+// platform (macOS 64B, Linux 40B) plus the ready flag, and a multiple of the
+// 8-byte max record alignment so the records stay naturally aligned.
+inline constexpr size_t kLockHeader = 128;
+struct SharedLockHeader {
+  uint32_t ready;        // 0 = mutex uninitialized, 1 = ready (read via atomic_ref)
+  uint32_t _pad;
+  pthread_mutex_t mutex;
+};
+static_assert(sizeof(SharedLockHeader) <= kLockHeader,
+              "the pthread lock header must fit in the reserved prefix");
+// Bounded escape for the creator-init race: a receiver/reopener yields up to
+// this many times for the creator to publish the lock, then gives up rather
+// than spin forever on a wedged creator. The creator finishes within
+// microseconds, so the cap is never reached in practice.
+inline constexpr long kInitSpinLimit = 100'000'000;
+
 // Backing store for a SharedBuffer: a flat byte vector holding `count`
 // records of `layout.stride` bytes each. A global registry owns the core
 // and culebra references it by integer id — the same indirection Channels
@@ -232,16 +257,19 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
 // so the zero-copy cross-isolate share lane can later hand the same
 // storage to another isolate (C3 step ②→③).
 struct SharedBufferCore {
-  // Storage-independent view: every reader/writer addresses bytes through
-  // `data`, regardless of where they live. Heap owns a vector; File maps a
-  // file (Shared/fd lands in Phase C). `data` always points at the bytes.
+  // Storage-independent view: every reader/writer addresses records through
+  // `data`. Heap owns a vector; File/Shared map an fd. For File/Shared, `data`
+  // points past the kLockHeader prefix; `map_base` is the raw mmap base (used
+  // for munmap/msync and to reach the lock header). Heap leaves map_base null.
   uint8_t* data = nullptr;
-  size_t byte_size = 0;
+  uint8_t* map_base = nullptr;
+  size_t byte_size = 0;   // mapped size (File/Shared: kLockHeader + records)
   enum class Storage { Heap, File, Shared };
   Storage storage = Storage::Heap;
   // Heap: owns the vector here. File/Shared: the mmap is munmap'd + fd closed in
   // the destructor (heap_bytes stays empty).
   std::shared_ptr<std::vector<uint8_t>> heap_bytes;
+  std::mutex heap_mutex;  // Heap with_lock (cross-isolate, same process)
   int fd = -1;            // File/Shared: backing fd (for msync/close/inherit)
   std::string name;       // File: the path (introspection / cross-proc by path)
   PackableLayout layout;
@@ -257,9 +285,60 @@ struct SharedBufferCore {
   SharedBufferCore(const SharedBufferCore&) = delete;  // only held by shared_ptr
   SharedBufferCore& operator=(const SharedBufferCore&) = delete;
   ~SharedBufferCore() {
-    if (storage != Storage::Heap && data) munmap(data, byte_size);
+    if (storage != Storage::Heap && map_base) munmap(map_base, byte_size);
     if (fd >= 0) close(fd);
   }
+};
+
+// --- Lock header accessors + lifecycle ------------------------------------
+// The pthread mutex lives at the front of a File/Shared mapping; heap has none.
+inline SharedLockHeader* shared_lock_header(const SharedBufferCore& core) {
+  return reinterpret_cast<SharedLockHeader*>(core.map_base);
+}
+// Creator side: initialize the PROCESS_SHARED mutex, then publish ready=1 so
+// receivers (fork children / file reopeners) may use it. The backing pages are
+// zero-filled (ftruncate), so ready starts at 0.
+inline void shared_lock_init(SharedBufferCore& core) {
+  auto* h = shared_lock_header(core);
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+  pthread_mutex_init(&h->mutex, &attr);
+  pthread_mutexattr_destroy(&attr);
+  std::atomic_ref<uint32_t>(h->ready).store(1, std::memory_order_release);
+}
+// Receiver side: spin until the creator has published the mutex. For `.shared`
+// the parent initializes before forking, so the child sees ready=1 at once;
+// only a racing file reopener actually waits.
+inline void shared_lock_wait_ready(SharedBufferCore& core) {
+  std::atomic_ref<uint32_t> ready(shared_lock_header(core)->ready);
+  for (long i = 0; ready.load(std::memory_order_acquire) != 1; ++i) {
+    if (i > kInitSpinLimit) {
+      throw CulebraError("IOError",
+          "SharedBuffer: timed out waiting for the lock to initialize");
+    }
+    sched_yield();
+  }
+}
+inline void shared_buffer_lock(SharedBufferCore& core) {
+  if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.lock();
+  else pthread_mutex_lock(&shared_lock_header(core)->mutex);
+}
+inline void shared_buffer_unlock(SharedBufferCore& core) {
+  if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.unlock();
+  else pthread_mutex_unlock(&shared_lock_header(core)->mutex);
+}
+// RAII lock guard that also pins the core alive across the user callback (so a
+// callback that drops the buffer can't free the mutex out from under us).
+struct SharedBufferLockGuard {
+  std::shared_ptr<SharedBufferCore> core;
+  explicit SharedBufferLockGuard(std::shared_ptr<SharedBufferCore> c)
+      : core(std::move(c)) {
+    shared_buffer_lock(*core);
+  }
+  ~SharedBufferLockGuard() { shared_buffer_unlock(*core); }
+  SharedBufferLockGuard(const SharedBufferLockGuard&) = delete;
+  SharedBufferLockGuard& operator=(const SharedBufferLockGuard&) = delete;
 };
 
 inline std::map<long, std::shared_ptr<SharedBufferCore>>&
@@ -306,33 +385,57 @@ inline long make_shared_buffer(const PackableLayout& layout,
 }
 
 // File-backed SharedBuffer: mmap `count` records over `path` (created/sized if
-// needed). Writes go to the file's page cache (visible to other processes that
-// mmap the same path; durable after flush/close). The file persists; the user
-// deletes it like any file. Throws IOError on an OS failure.
+// needed). The region is `kLockHeader` (a PROCESS_SHARED lock) followed by the
+// records, so a buffer shared by re-opening the same path can synchronize with
+// with_lock. Writes go to the file's page cache (visible to other processes
+// that mmap the same path; durable after flush/close). The file persists; the
+// user deletes it like any file. The process that wins an exclusive create
+// initializes the lock; everyone else waits for it. Throws IOError on an OS
+// failure.
 inline long make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
-  size_t bytes = layout.stride * count;
-  int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
+  size_t bytes = kLockHeader + layout.stride * count;
+  // O_EXCL picks exactly one creator; the loser reopens the existing file.
+  bool creator = true;
+  int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0644);
   if (fd < 0) {
-    throw CulebraError("IOError",
-        std::format("SharedBuffer.file: cannot open `{}`", path));
+    creator = false;
+    fd = ::open(path.c_str(), O_RDWR, 0644);
+    if (fd < 0) {
+      throw CulebraError("IOError",
+          std::format("SharedBuffer.file: cannot open `{}`", path));
+    }
   }
-  if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
-    ::close(fd);
-    throw CulebraError("IOError",
-        std::format("SharedBuffer.file: cannot size `{}`", path));
+  if (creator) {
+    if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+      ::close(fd);
+      throw CulebraError("IOError",
+          std::format("SharedBuffer.file: cannot size `{}`", path));
+    }
+  } else {
+    // The creator may still be sizing the file; wait until it's big enough.
+    for (long i = 0;; ++i) {
+      struct stat st;
+      if (::fstat(fd, &st) == 0 && static_cast<size_t>(st.st_size) >= bytes)
+        break;
+      if (i > kInitSpinLimit) {
+        ::close(fd);
+        throw CulebraError("IOError",
+            std::format("SharedBuffer.file: `{}` not ready", path));
+      }
+      sched_yield();
+    }
   }
-  void* p = bytes ? ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
-                           fd, 0)
-                  : nullptr;
-  if (bytes && p == MAP_FAILED) {
+  void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED) {
     ::close(fd);
     throw CulebraError("IOError",
         std::format("SharedBuffer.file: cannot map `{}`", path));
   }
   auto core = std::make_shared<SharedBufferCore>();
-  core->data = static_cast<uint8_t*>(p);
+  core->map_base = static_cast<uint8_t*>(p);
+  core->data = core->map_base + kLockHeader;
   core->byte_size = bytes;
   core->storage = SharedBufferCore::Storage::File;
   core->fd = fd;
@@ -341,6 +444,8 @@ inline long make_shared_buffer_file(const PackableLayout& layout,
   core->class_name = std::move(class_name);
   core->count = count;
   core->refcount = 1;
+  if (creator) shared_lock_init(*core);
+  else shared_lock_wait_ready(*core);
   return register_shared_buffer(std::move(core));
 }
 
@@ -378,22 +483,23 @@ inline int make_anon_shm_fd(size_t bytes) {
   return fd;
 }
 
-// mmap an open fd of `bytes` bytes MAP_SHARED into a fresh SharedBufferCore.
-// Shared by make_shared_buffer_shared (owns the fd it created) and the child's
-// make_shared_buffer_receive (owns the fd it inherited). The core closes the fd
-// + munmaps in its destructor either way. Throws IOError on a map failure.
+// mmap an open fd of `bytes` bytes (kLockHeader + records) MAP_SHARED into a
+// fresh SharedBufferCore. `data` lands past the lock header. Shared by
+// make_shared_buffer_shared (owns the fd it created) and the child's
+// make_shared_buffer_receive (owns the fd it inherited). The caller initializes
+// or waits on the lock; the core closes the fd + munmaps in its destructor
+// either way. Throws IOError on a map failure.
 inline long _adopt_shared_fd(const PackableLayout& layout,
                              std::string class_name, size_t count, int fd,
                              size_t bytes) {
-  void* p = bytes ? ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
-                           fd, 0)
-                  : nullptr;
-  if (bytes && p == MAP_FAILED) {
+  void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED) {
     ::close(fd);
     throw CulebraError("IOError", "SharedBuffer: cannot map shared memory");
   }
   auto core = std::make_shared<SharedBufferCore>();
-  core->data = static_cast<uint8_t*>(p);
+  core->map_base = static_cast<uint8_t*>(p);
+  core->data = core->map_base + kLockHeader;
   core->byte_size = bytes;
   core->storage = SharedBufferCore::Storage::Shared;
   core->fd = fd;
@@ -406,23 +512,29 @@ inline long _adopt_shared_fd(const PackableLayout& layout,
 
 // Anonymous-fd SharedBuffer: a name-less RAM region shared with child processes
 // via fd inheritance (Proc `share:`). Same buffer interface as heap/file; the
-// fd lives in the core and ships to the child by number. Throws IOError on an
-// OS failure.
+// fd lives in the core and ships to the child by number. The parent is the
+// creator, so it initializes the lock before any child can fork. Throws
+// IOError on an OS failure.
 inline long make_shared_buffer_shared(const PackableLayout& layout,
                                       std::string class_name, size_t count) {
-  size_t bytes = layout.stride * count;
+  size_t bytes = kLockHeader + layout.stride * count;
   int fd = make_anon_shm_fd(bytes);
-  return _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
+  long id = _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
+  shared_lock_init(*lookup_shared_buffer(id));
+  return id;
 }
 
 // Child side of `share:`: mmap an fd inherited from the parent. `count` and the
 // byte size are the parent's (passed through the environment); this only maps
-// the bytes. Throws IOError on a map failure.
+// the bytes and waits for the parent-initialized lock. Throws IOError on a map
+// failure.
 inline long make_shared_buffer_receive(const PackableLayout& layout,
                                        std::string class_name, size_t count,
                                        int fd) {
-  return _adopt_shared_fd(layout, std::move(class_name), count, fd,
-                          layout.stride * count);
+  long id = _adopt_shared_fd(layout, std::move(class_name), count, fd,
+                             kLockHeader + layout.stride * count);
+  shared_lock_wait_ready(*lookup_shared_buffer(id));
+  return id;
 }
 
 // The environment-variable name a `share:` buffer travels under, keyed by the
@@ -502,9 +614,9 @@ inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
 // Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap.
 inline void shared_buffer_flush(long id) {
   auto core = lookup_shared_buffer(id);
-  if (core && core->storage != SharedBufferCore::Storage::Heap && core->data &&
-      core->byte_size) {
-    ::msync(core->data, core->byte_size, MS_SYNC);
+  if (core && core->storage != SharedBufferCore::Storage::Heap &&
+      core->map_base && core->byte_size) {
+    ::msync(core->map_base, core->byte_size, MS_SYNC);
   }
 }
 

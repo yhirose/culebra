@@ -129,4 +129,29 @@ assert_eq(fb2[1].v, 8)
 assert_eq(SharedBuffer.new(1, FCell).count, 1) # heap path still works
 FS.remove(fpath)                    # cleanup
 
+# --- with_lock: the synchronization escape hatch ---------------------------
+@packable class Counter {
+  n: Int64 = 0
+}
+# Runs the callback holding the lock and returns its value; mutations stick.
+let lb = SharedBuffer.new(1, Counter)
+assert_eq(lb.with_lock(fn() { lb[0].n = lb[0].n + 41; 99 }), 99)
+assert_eq(lb[0].n, 41)
+assert_eq(lb.with_lock(fn() { "released" }), "released")  # lock freed each call
+# Contended read-modify-write across isolates: the lock makes it exact (a
+# lost-update race would undercount 8 * 1000).
+let shared_counter = SharedBuffer.new(1, Counter)
+Parallel.each(iota(0, 8), fn(w) {
+  mut k = 0
+  while k < 1000 {
+    shared_counter.with_lock(fn() { shared_counter[0].n = shared_counter[0].n + 1 })
+    k = k + 1
+  }
+})
+assert_eq(shared_counter[0].n, 8000)
+# A non-function argument is a TypeError; using a dropped buffer is a ValueError.
+assert_throws('TypeError', fn () { lb.with_lock(3) })
+lb.drop()
+assert_throws('ValueError', fn () { lb.with_lock(fn() { 1 }) })
+
 puts("packable ok")

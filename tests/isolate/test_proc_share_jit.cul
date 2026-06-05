@@ -10,6 +10,7 @@
 
 let add_worker = "tests/isolate/proc_share_worker/add.cul"
 let slot_worker = "tests/isolate/proc_share_worker/slot.cul"
+let lock_worker = "tests/isolate/proc_share_worker/lock.cul"
 
 # --- round trip, child under interp ---------------------------------------
 let g1 = SharedBuffer.shared(4, Cell)
@@ -49,6 +50,22 @@ assert_eq(grid[1].v, 200)
 assert_eq(grid[2].v, 300)
 assert_eq(grid[3].v, 400)
 grid.drop()
+
+# --- contended writes under with_lock (Proc.spawn) ------------------------
+# Four child processes (two interp, two JIT) each bump the SAME cell 500 times.
+# The PROCESS_SHARED mutex in the buffer header serializes the read-modify-write
+# across processes AND across backends, so the total is exact (a lost-update
+# race would undercount).
+let tally = SharedBuffer.shared(1, Cell)
+let bumpers = []
+for w in 0..4 {
+  let argv = if w % 2 == 0 { [Sys.executable, lock_worker] }
+             else { [Sys.executable, "--jit", lock_worker] }
+  bumpers.push(Proc.spawn(argv, share: {grid: tally}, env: {REPS: "500"}))
+}
+for h in bumpers { h.wait() }
+assert_eq(tally[0].v, 2000)   # 4 procs * 500, none lost
+tally.drop()
 
 # --- error paths (symmetric interp/JIT) -----------------------------------
 # receive a name the parent never shared.

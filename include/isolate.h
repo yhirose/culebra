@@ -643,6 +643,27 @@ inline Value make_shared_buffer_handle(long id, long count) {
       Value(FunctionValue({}, [id](std::shared_ptr<Environment> env) -> Value {
         return _shared_buffer_drop_once(env->get("this"), id);
       }, "Nil"sv)), false);
+  // `with_lock(fn)` runs `fn()` while holding the buffer's lock (a std::mutex
+  // for heap, a PROCESS_SHARED pthread mutex in the mapped header for
+  // file/shared), then returns its value. The lock is released on any exit,
+  // including a throw. The escape hatch for multi-field consistent updates;
+  // disjoint writes need no lock.
+  h.initialize("with_lock",
+      Value(FunctionValue({{"fn", false, ""sv}},
+          [id](std::shared_ptr<Environment> env) -> Value {
+            Value fnv = env->get("fn");
+            if (fnv.type != Value::Function) {
+              throw culebra::CulebraError(
+                  "TypeError", "SharedBuffer.with_lock expects a function");
+            }
+            auto core = culebra::lookup_shared_buffer(id);
+            if (!core) {
+              throw culebra::CulebraError("ValueError",
+                  "SharedBuffer has been dropped");
+            }
+            culebra::SharedBufferLockGuard guard(std::move(core));
+            return _invoke_callback(fnv);
+          }, ""sv)), false);
   // File-backed buffers get `flush()` (msync dirty pages to disk). Heap/Shared
   // have no such method — the data interface is otherwise identical.
   auto core = culebra::lookup_shared_buffer(id);

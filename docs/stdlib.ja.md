@@ -1695,7 +1695,8 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
 
 **disjoint な**要素を書くワーカーは同期不要。同じ要素を複数の isolate
 が同時に書くのはデータ競合であり、作業を分割して（上記のように）各要素
-の writer を 1 つにするのは呼び出し側の責任。
+の writer を 1 つにするか、共有更新を [`with_lock`](#bufferwith_lockfn-で同期する)
+で守るのは呼び出し側の責任。
 
 #### プロセス間での共有（zero copy）
 
@@ -1736,6 +1737,38 @@ grid.drop()
 `Proc.run` は子の終了までブロックするので、戻った時点で子の書き込みは完了して
 いる。並行な子は `Proc.spawn` してそれぞれ `wait()` する。isolate と同様、各子が
 **disjoint な**要素を持つようにして書き込みが競合しないようにする。
+
+#### `buffer.with_lock(fn)` で同期する
+
+disjoint な書き込みは同期不要。2 つの書き手が本当に**同じ**データに触れざるを
+得ないとき — カウンタや、一貫性を保ちたい複数フィールドの更新など — に
+`with_lock` が escape hatch になる。callback を buffer のロックを保持したまま
+実行し、callback の戻り値を返す。ロックは例外送出を含むあらゆる脱出経路で
+解放される。
+
+```culebra
+# doctest: skip
+@packable class Counter { n: Int64 = 0 }
+let tally = SharedBuffer.new(1, Counter)
+
+Parallel.each(iota(0, 8), fn (w) {
+  for _ in 0..1000 {
+    tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
+  }
+})
+puts(tally[0].n)              # ちょうど 8000 — lost update なし
+```
+
+同じ呼び出しが**プロセス間**でも効く。`.shared` / `.file` の buffer は
+プロセス共有ロックを持つので、`share:` で渡された子（あるいは同じファイル
+`path` を再オープンした別プロセス）どうしが排他される。callback は短く保つ
+こと — すべての holder を直列化する。ロックは**再入不可**で、callback の中から
+同じ buffer の `with_lock` を再度呼ぶとデッドロックする。引数が関数でなければ
+`TypeError`、drop 済みの buffer は `ValueError`。
+
+`.file` の buffer はこのロック用に先頭へ小さな固定ヘッダを確保するので、その
+バイト列は素のレコード配列ではなく culebra のコンテナ形式になる — 外部ツールが
+ファイルを直接読む場合は注意。
 
 #### 可変個数フィールド: `FixedArray<T, N>`
 

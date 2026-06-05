@@ -1,0 +1,15 @@
+# Contended-write worker: every spawned copy hammers the SAME cell, bumping it
+# REPS times under with_lock. The PROCESS_SHARED mutex in the buffer's header
+# serializes the read-modify-write across processes, so no increment is lost.
+@packable class Cell {
+  v: Int64 = 0
+}
+
+let grid = SharedBuffer.receive("grid", Cell)
+let reps = Sys.env("REPS").to_long()
+mut k = 0
+while k < reps {
+  grid.with_lock(fn() { grid[0].v = grid[0].v + 1 })
+  k = k + 1
+}
+grid.drop()

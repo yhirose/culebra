@@ -1759,7 +1759,8 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) { cells[i].v = i * i })
 
 Workers writing **disjoint** elements need no synchronization. Two isolates
 writing the **same** element concurrently is a data race — partition the work
-(as above) so each element has a single writer.
+(as above) so each element has a single writer, or guard the shared update with
+[`with_lock`](#synchronizing-with-bufferwith_lockfn).
 
 #### Sharing across processes (zero copy)
 
@@ -1800,6 +1801,39 @@ running culebra binary, for launching a worker copy of the interpreter.
 `Proc.run` blocks until the child exits, so its writes are complete on return.
 For concurrent children, `Proc.spawn` each and `wait()` them; as with isolates,
 let each child own **disjoint** elements so the writes never race.
+
+#### Synchronizing with `buffer.with_lock(fn)`
+
+Disjoint writes need no synchronization. When two writers genuinely must touch
+the **same** data — a counter, a multi-field update that has to stay consistent
+— `with_lock` is the escape hatch: it runs the callback while holding the
+buffer's lock and returns the callback's value. The lock is released on every
+exit, including a thrown exception.
+
+```culebra
+# doctest: skip
+@packable class Counter { n: Int64 = 0 }
+let tally = SharedBuffer.new(1, Counter)
+
+Parallel.each(iota(0, 8), fn (w) {
+  for _ in 0..1000 {
+    tally.with_lock(fn () { tally[0].n = tally[0].n + 1 })
+  }
+})
+puts(tally[0].n)              # 8000 exactly — no lost updates
+```
+
+The same call works across **processes**: a `.shared` or `.file` buffer carries
+a process-shared lock, so children handed the buffer via `share:` (or another
+process re-opening the same file `path`) mutually exclude each other. Keep the
+callback short — it serializes every holder. The lock is **not reentrant**:
+calling `with_lock` again on the same buffer from inside the callback
+deadlocks. A non-function argument is a `TypeError`; a dropped buffer is a
+`ValueError`.
+
+A `.file` buffer reserves a small fixed header at the front of the file for this
+lock, so its bytes are culebra's container format rather than a bare array of
+your records — keep that in mind if an external tool reads the file directly.
 
 #### Variable-count fields: `FixedArray<T, N>`
 

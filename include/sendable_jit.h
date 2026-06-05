@@ -659,6 +659,25 @@ inline JitValue _jit_shared_buffer_flush(JitClosure*, JitValue self, int64_t,
   return {TAG_NIL, 0};
 }
 
+// `with_lock(fn)`: run `fn()` holding the buffer's lock, return its value. The
+// guard + JitMethodSelf release the lock and `self` on any exit (mirrors the
+// interp make_shared_buffer_handle with_lock).
+inline JitValue _jit_shared_buffer_with_lock(JitClosure*, JitValue self,
+                                             int64_t n_args, JitValue* args) {
+  JitMethodSelf _s{self};
+  if (n_args < 1 || args[0].tag != TAG_FUNC) {
+    throw culebra::CulebraError("TypeError",
+        "SharedBuffer.with_lock expects a function");
+  }
+  auto core = culebra::lookup_shared_buffer(
+      _jit_self_long(self, "__sharedbuffer_id__"));
+  if (!core) {
+    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
+  }
+  culebra::SharedBufferLockGuard guard(std::move(core));
+  return _culebra_invoke0(reinterpret_cast<JitClosure*>(args[0].data));
+}
+
 // Build a JIT SharedBuffer handle: markers + O(1) discriminator flag + a
 // GC-driven `drop` that releases the buffer's ref. Mirrors the channel
 // endpoint and the interp make_shared_buffer_handle.
@@ -672,6 +691,11 @@ inline JitValue _jit_make_shared_buffer_handle(long id, long count) {
       "drop",
       JitValue{TAG_FUNC,
                reinterpret_cast<int64_t>(_jit_native_method(_jit_shared_buffer_drop))},
+      false);
+  h->set_or_append(
+      "with_lock",
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+                             _jit_native_method(_jit_shared_buffer_with_lock))},
       false);
   // File-backed buffers additionally expose `flush()` (msync) — mirrors the
   // interp make_shared_buffer_handle.
