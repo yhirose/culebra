@@ -5,11 +5,6 @@ if exists("b:current_syntax")
   finish
 endif
 
-" Comments
-syn keyword culCommentTodo  TODO FIXME XXX TBD contained
-syn match   culLineComment  "\%(\/\/\|#\).*"      contains=culCommentTodo,@Spell
-syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
-
 " Numbers — float patterns first so the integer rule does not steal them.
 syn match   culFloat        "\<\d\+\.\d\+\%([eE][-+]\?\d\+\)\?\>"
 syn match   culFloat        "\<\d\+[eE][-+]\?\d\+\>"
@@ -24,6 +19,12 @@ syn region  culInterp       matchgroup=culInterpDelim
 " Operators (multi-char first so prefixes don't shadow them)
 syn match   culOperator     "&&\|||\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
 syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
+
+" Comments — defined after operators so '//' and '/*' win the '/' over culOperator.
+" (When two matches start at the same column, Vim gives the later one priority.)
+syn keyword culCommentTodo  TODO FIXME XXX TBD contained
+syn match   culLineComment  "\%(\/\/\|#\).*"      contains=culCommentTodo,@Spell
+syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
 
 " Keywords (PEG-derived keywords are auto-generated from misc/keyword-map.txt
 " by `just sync-grammar`; non-PEG identifiers are below).

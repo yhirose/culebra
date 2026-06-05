@@ -1,0 +1,16 @@
+# Difftest manifest preamble (static). The driver prepends this to the
+# generator's case lines. `_p` runs one case's thunk and prints a single
+# deterministic record: the typed result on success, or the caught error's
+# kind/message/line/column — so the driver can diff interp vs --jit vs AOT
+# structurally (success values AND error shape) line by line.
+fn _show(v) { type_of(v) + ":" + to_string(v) }
+fn _p(label, thunk) {
+  # `print` writes the string raw (no quoting, no newline); append "\n"
+  # ourselves so each case is one line. (`puts` would quote the String.)
+  let r = try { "ok=" + _show(thunk()) }
+    catch e {
+      "err=" + e.kind + "|" + e.message + "|" +
+        e.line.to_string() + "|" + e.column.to_string()
+    }
+  print(label + " ::: " + r + "\n")
+}

@@ -1,0 +1,261 @@
+# Differential-test corpus generator. Emits case lines (one `_p(...)` call per
+# line) to stdout; the driver prepends preamble.cul to form the manifest, then
+# runs it under interp / --jit / AOT and diffs the outputs byte-for-byte. Any
+# divergence is an interp/JIT asymmetry.
+#
+# Generation is template-combinator, not random: it sweeps the seams where
+# divergences cluster (operators x operands, methods x receiver types x arg
+# shapes, builtins-as-values x call forms, indexing/slicing). Each generated
+# body is syntactically valid culebra — a wrong type/arity is a *runtime* error,
+# caught and recorded by `_p`, never a parse error that would break the run.
+# Run: culebra tools/difftest/gen.cul > cases.cul
+mut out = []
+fn emit(line) { out.push(line) }
+
+# A case: label (for the diff report) + a body expression whose outcome is
+# compared. Labels use single-quote raw strings so embedded `"`/`{}` need no
+# escaping (no generated operand contains a single quote).
+# `"..."` interpolates `{expr}`, so the literal braces of the generated lambda
+# come from single-quote raw strings; the label/body are plain concatenation.
+fn case(label, body) { emit("_p('" + label + "', fn () " + '{ ' + body + ' }' + ")") }
+
+# Receiver expressions spanning every value type. Parenthesized so a scalar
+# receiver (`(1).size()`) and a method/index chain both parse.
+let recvs = ['1', '1.5', 'true', 'nil', '"abc"', '[1, 2, 3]', '{a: 1, b: 2}',
+             '(1, 2, 3)', '{1, 2, 3}']
+
+# --- Dimension 1: operators x operand-type pairs --------------------------
+let operands = ['1', '2', '1.5', '"a"', '"b"', 'true', 'nil', '[1, 2]', '{a: 1}', '(1, 2)']
+let binops = ['+', '-', '*', '/', '%', '<', '<=', '>', '>=', '==', '!=']
+for op in binops {
+  for l in operands {
+    for r in operands {
+      case("op|" + op + "|" + l + "|" + r, "(" + l + ") " + op + " (" + r + ")")
+    }
+  }
+}
+for u in ['-', '!'] {
+  for x in operands {
+    case("un|" + u + "|" + x, u + "(" + x + ")")
+  }
+}
+
+# --- Dimension 2: methods x receiver types x arg shapes -------------------
+# Methods spanning Array/String/Object/Set/Tuple/iterator builtins. Applying
+# every method to every receiver with every arg shape mostly errors; the point
+# is that the error (kind/message/position) must match across backends.
+let methods = ['size', 'push', 'pop', 'slice', 'map', 'filter', 'reduce',
+               'find', 'any', 'all', 'for_each', 'flat_map', 'sort_by', 'sum',
+               'product', 'min', 'max', 'join', 'contains', 'index_of',
+               'reverse', 'keys', 'values', 'has', 'remove', 'upper', 'lower',
+               'trim', 'split', 'code_points', 'iter', 'take', 'skip',
+               'take_while', 'collect', 'count', 'enumerate', 'union',
+               'to_array', 'view']
+let argshapes = ['', '0', '"x"', '1, 2', '0, 1, 2', '|x| x', '|x| x > 0',
+                 '0, |a, b| a + b', 'fn (a, b) { a }', '[1]']
+for recv in recvs {
+  for m in methods {
+    for a in argshapes {
+      case("m|" + recv + "|" + m + "|" + a, "(" + recv + ")." + m + "(" + a + ")")
+    }
+  }
+}
+
+# --- Dimension 3: builtins / ns-methods as values x call forms ------------
+# Covers the direct-vs-as-value duality: a builtin called directly, bound to a
+# variable, or handed to a higher-order / lazy combinator. `arg` is good or bad.
+let vals = ['Math.abs', 'Math.sqrt', 'Math.max', 'Math.min', 'range', 'iota',
+            'type_of', 'to_long', 'to_float', 'to_string', 'hash']
+let vargs = ['1', '"x"', '', '1, 2', '1, 2, 3']
+for v in vals {
+  for a in vargs {
+    case("v-direct|" + v + "|" + a, v + "(" + a + ")")
+    case("v-let|" + v + "|" + a, "let _f = " + v + "; _f(" + a + ")")
+  }
+  # As a higher-order callback (eager array, then lazy iterator).
+  case("v-map|" + v, '[1, "x"].map(' + v + ")")
+  case("v-mapnum|" + v, "[1, 2, 3].map(" + v + ")")
+  case("v-lazy|" + v, "[1, 2, 3].iter().map(" + v + ").collect()")
+  case("v-reduce|" + v, "[1, 2, 3].reduce(0, " + v + ")")
+}
+
+# --- Dimension 4: indexing and slicing x receiver types -------------------
+let indices = ['0', '1', '-1', '100', '"a"', '"missing"']
+for recv in recvs {
+  for i in indices {
+    case("idx|" + recv + "|" + i, "(" + recv + ")[" + i + "]")
+  }
+  for s in ['0..2', '1..', '..2', '-2..-1', '0..100', '2..0'] {
+    case("slice|" + recv + "|" + s, "(" + recv + ")[" + s + "]")
+  }
+}
+
+# --- Dimension 5: value display (puts / to_string) ------------------------
+# The display path differs from to_string for some tags (e.g. a Function
+# value: puts printed `[unknown]` under the JIT while to_string gave
+# `[function]`). `puts(V)` prints before _p's own line, so a display
+# divergence shows up on that leading line; `to_string(V)` is compared via
+# `_show` on the returned String.
+let disp_vals = ['to_long', 'Math.abs', 'print', 'fn (x) { x }', '|x| x',
+                 '1', '1.5', 'true', 'nil', '"s"', '[1, 2]', '{a: 1}',
+                 '(1, 2)', '{1, 2}', 'range', 'iota']
+for v in disp_vals {
+  case("disp-puts|" + v, "puts(" + v + ")")
+  case("disp-str|" + v, "to_string(" + v + ")")
+}
+
+# --- Dimension 6: class / enum construction x arity -----------------------
+# Constructors are synthesized native closures (no source body), so they
+# can diverge from the interpreter on arity the way builtin functions did.
+# The decl lives inside the case thunk, so each `E`/`C` is fresh.
+# Single-quote raw strings: the decl braces must not be read as `"{...}"`
+# interpolation.
+let enum_pre = 'enum E { V(Long), W }; '
+let class_pre = 'class C { new(a) { this.a = a } }; '
+for a in ['', '1', '1, 2', '1, 2, 3'] {
+  case("ctor-enum|" + a, enum_pre + "E.V(" + a + ")")
+  case("ctor-class|" + a, class_pre + "C.new(" + a + ")")
+}
+case("ctor-enum-nullary", enum_pre + "E.W")
+case("ctor-enum-nullary-call", enum_pre + "E.W()")
+
+# --- Dimension 7: lazy iterator combinators over an erroring stream --------
+# D3's v-lazy maps over `[1, 2, 3]` (never errors); these run the callback
+# over `[1, "x"]` so a per-element type error tests the callback's error
+# kind / message / *position* through the lazy pipeline (the eager forms
+# are covered by D3's v-map). Terminal `collect`/`count`/`for_each`.
+let lazycbs = ['map(to_long)', 'filter(to_long)', 'take_while(to_long)',
+               'flat_map(to_long)', 'map(Math.abs)', 'map(|x| x + 1)']
+for c in lazycbs {
+  case("lazyerr-collect|" + c, '[1, "x"].iter().' + c + ".collect()")
+  case("lazyerr-count|" + c, '[1, "x"].iter().' + c + ".count()")
+}
+
+# --- Dimension 8: keyword args / kwargs splat -----------------------------
+# Positional splat `f(*xs)` is unimplemented (parse error on both), so only
+# keyword + `**{}` forms appear here. Good and bad keywords.
+let kwcases = ['range(0, 5, step: 2).collect()',
+               'range(0, 5, **{step: 2}).collect()',
+               'range(0, 5, step: 0).collect()',
+               'range(0, 5, **{bad: 2}).collect()',
+               'range(0, 5, bad: 2).collect()',
+               '[1, 2, 3].sort_by(key: |x| x)',
+               'Math.abs(x: 1)']
+for kc in kwcases {
+  case("kw|" + kc, kc)
+}
+
+# --- Dimension 9: generators / yield --------------------------------------
+# Generators lower to a flat-dispatch CPS engine — structurally a different
+# implementation from the interpreter, so drive a generator declared inside
+# the thunk through each terminal (collect/count/next/for-in), including an
+# error mid-stream (position) and control-flow shapes. Single-quote raw so
+# the `{ ... }` bodies are not read as interpolation.
+let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
+            'fn gg() { yield 1; yield to_long("x"); yield 3 }; gg().collect()',
+            'fn gg() { for x in [1, 2] { yield x * 10 } }; gg().collect()',
+            'fn gg() { yield 1; return; yield 2 }; gg().collect()',
+            'fn gg() { }; gg().collect()',
+            'fn gg() { yield 1; yield 2 }; gg().count()',
+            'fn gg() { yield 7 }; gg().next()',
+            'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s']
+for g in gens {
+  case("gen|" + g, g)
+}
+
+# --- Dimension 10: try / catch / throw ------------------------------------
+# Exception propagation + the caught error's kind/message/line, including
+# throws raised inside an eager HOF, a lazy pipeline, and a raw user throw.
+let trys = ['try { to_long("x") } catch e { e.kind }',
+            'try { to_long("x") } catch e { e.message }',
+            'try { to_long("x") } catch e { e.line }',
+            'try { [1].map(|x| to_long("x")) } catch e { e.kind }',
+            'try { [1, "x"].iter().map(to_long).collect() } catch e { e.line }',
+            'try { throw {kind: "K", message: "m"} } catch e { e.kind }',
+            'try { throw {kind: "K", message: "m"} } catch e { e.message }',
+            'try { 1 + 1 } catch e { -1 }']
+for t in trys {
+  case("try|" + t, t)
+}
+
+# --- Dimension 11: match / patterns ---------------------------------------
+let me_pre = 'enum E { A(Long), B }; '
+let matches = [me_pre + 'match E.A(5) { A(x) => x, _ => -1 }',
+               me_pre + 'match E.B { A(x) => x, B => 0, _ => -1 }',
+               me_pre + 'match E.A(5) { B => 0 }',
+               'match 5 { 1 => "a", 5 => "b", _ => "c" }',
+               'match [1, 2] { [a, b] => a + b, _ => 0 }',
+               'match (1, 2) { (a, b) => a + b, _ => 0 }',
+               'match 5 { x: Long => "long", _ => "other" }']
+for m in matches {
+  case("match|" + m, m)
+}
+# String value patterns use single-quote string literals: the pattern
+# grammar's STRING is raw (single-quote), so `'a'` is a constant pattern
+# while a `"..."` is an interpolated string (not a pattern). Backtick raw
+# string keeps the single quotes; a fixed label avoids embedding them
+# (the label itself is emitted inside a single-quoted string).
+case("match-string", `match 'z' { 'a' => 1, 'z' => 2, _ => 3 }`)
+
+# --- Dimension 12: numeric edge cases -------------------------------------
+let nums = ['(1 << 63)', '(1 << 64)', '(-1 >> 1)', '(0.0 / 0.0)', '(1.0 / 0.0)',
+            '(-5) % 3', '(5) % (-3)', '(0xff) + (0b1010) + (0o17)',
+            '(2 ** 10)', '(2 ** 63)', '(~0)', '(~5)', '(5 / 0)', '(5 % 0)',
+            '(1.5 % 0.5)']
+for n in nums {
+  case("num|" + n, n)
+}
+
+# --- Dimension 13: string formatting / escapes ----------------------------
+let strs = ['let _x = 3.14159; "v={_x:.2f}"', 'let _n = 42; "n={_n:05}"',
+            'let _n = 255; "h={_n:x}"', '"a\tb\nc".size()', '"caf\u{e9}".size()',
+            '"a\x41b".size()', '"hello".slice(1, 3)', '"hello"[1..3]',
+            'let _s = "x"; "interp={_s}{_s}"']
+for s in strs {
+  case("str|" + s, s)
+}
+
+# --- Dimension 14: compound / destructure assignment ----------------------
+# `??=` on a property/index is a parse error (simple-variable only), so it is
+# excluded — the manifest must parse as a whole.
+let assigns = ['let o = {a: 1}; o.a += 5; o.a',
+               'let o = {a: 1}; o.a += "x"; o.a',
+               'mut a = [1, 2, 3]; a[0] += 10; a[0]',
+               'mut a = [1, 2, 3]; a[0] += "x"; a[0]',
+               'let (a, b) = (1, 2); a + b',
+               'mut (a, b) = (1, 2); a - b',
+               'mut x = nil; x ??= 5; x',
+               'mut x = 3; x ??= 5; x']
+for a in assigns {
+  case("assign|" + a, a)
+}
+
+# --- Dimension 15: Tensor construction / ops / errors ---------------------
+# Tensor is a separate runtime object with its own JIT codegen, so it was a
+# corpus blind spot. Use only deterministic constructors (`zeros`/`ones`/
+# `from`) — `randn` is random — and observe via `.shape()`, display, or
+# `.to_array()` after `Tensor.eval`. The error cases pin the kind/message/
+# *position* of the type, reshape, slice, and index guards across backends.
+let tensors = ['Tensor.zeros(2, 3).shape()',
+               'Tensor.zeros(2, 3)',
+               'Tensor.zeros("f64", 2, 3)',
+               'Tensor.ones(2, 2).to_array()',
+               'Tensor.from([1.0, 2.0, 3.0]).shape()',
+               'Tensor.from([[1, 2], [3, 4]]).shape()',
+               'Tensor.from(5)',
+               'Tensor.zeros(2, 3).reshape([3, 2]).shape()',
+               'Tensor.zeros(2, 3).reshape([4, 4])',
+               'Tensor.zeros(2, 3).transpose().shape()',
+               'Tensor.zeros(5, 2).slice(1, 3).shape()',
+               'Tensor.zeros(3, 2).slice(5, 9)',
+               'Tensor.zeros(2, 3).sum()',
+               'let a = Tensor.ones(2, 2); let b = Tensor.ones(2, 2); ' +
+                 'let c = a + b; Tensor.eval(c); c.to_array()',
+               'let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]]); ' +
+                 'let b = Tensor.ones(2, 2); let c = a * b; ' +
+                 'Tensor.eval(c); c.to_array()']
+for t in tensors {
+  case("tensor|" + t, t)
+}
+
+print(out.join("\n"))
