@@ -5663,6 +5663,46 @@ inline llvm::Value* JitExtension::compile_json_kwargs_adapter(
   return v;
 }
 
+// An ARG_LIST split into positionals / explicit kwargs / **splats. The single
+// AST-scan shared by every kwarg-accepting stdlib compile path, so the merge
+// order and the two structural errors (duplicate keyword, positional-after-
+// keyword) are defined once.
+struct ScannedArgs {
+  std::vector<const peg::Ast*> positional;
+  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
+  std::set<std::string_view> seen_explicit;
+  std::vector<const peg::Ast*> splats;
+};
+
+inline ScannedArgs _jit_scan_arg_list(const peg::Ast& argsAst) {
+  using namespace peg::udl;
+  ScannedArgs s;
+  bool saw_named = false;
+  for (auto& child : argsAst.nodes) {
+    if (child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+      s.splats.push_back(child->nodes[0].get());
+    } else if (child->tag == "KWARG"_) {
+      saw_named = true;
+      auto name = child->nodes[0]->token;
+      if (!s.seen_explicit.insert(name).second) {
+        throw culebra::CulebraError("TypeError",
+            std::format("duplicate keyword argument '{}'", name),
+            argsAst.line, argsAst.column);
+      }
+      s.explicit_kwargs.emplace_back(name, child->nodes[1].get());
+    } else {
+      if (saw_named) {
+        throw culebra::CulebraError("SyntaxError",
+            "positional argument follows keyword argument",
+            argsAst.line, argsAst.column);
+      }
+      s.positional.push_back(child.get());
+    }
+  }
+  return s;
+}
+
 inline llvm::Value* JitExtension::compile_single_positional_kwargs(
     JIT& jit, const peg::Ast& argsAst, const peg::Ast& callAst,
     const char* ctx, const char* rt_name, const NsParamMeta* meta) {
@@ -5673,33 +5713,11 @@ inline llvm::Value* JitExtension::compile_single_positional_kwargs(
 
   // Scan ARG_LIST: cmd + (kwargs / **splat). Extra positionals after cmd are
   // folded into the kwarg slab below, bound to the leading params by name.
-  std::vector<const peg::Ast*> positional;
-  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
-  std::set<std::string_view> seen_explicit;
-  std::vector<const peg::Ast*> splats;
-  bool saw_named = false;
-  for (auto& child : argsAst.nodes) {
-    if (child->tag == "KWARG_SPLAT"_) {
-      saw_named = true;
-      splats.push_back(child->nodes[0].get());
-    } else if (child->tag == "KWARG"_) {
-      saw_named = true;
-      auto name = child->nodes[0]->token;
-      if (!seen_explicit.insert(name).second) {
-        throw culebra::CulebraError("TypeError",
-            std::format("duplicate keyword argument '{}'", name),
-            argsAst.line, argsAst.column);
-      }
-      explicit_kwargs.emplace_back(name, child->nodes[1].get());
-    } else {
-      if (saw_named) {
-        throw culebra::CulebraError("SyntaxError",
-            "positional argument follows keyword argument",
-            argsAst.line, argsAst.column);
-      }
-      positional.push_back(child.get());
-    }
-  }
+  auto scanned = _jit_scan_arg_list(argsAst);
+  auto& positional = scanned.positional;
+  auto& explicit_kwargs = scanned.explicit_kwargs;
+  auto& seen_explicit = scanned.seen_explicit;
+  auto& splats = scanned.splats;
   // cmd is required; extra positionals bind to the leading params (cwd/env/…)
   // by name, like interp's binder. Too few → "expected 1, got 0"; too many
   // (beyond the declared params) → the param-count cap. Both at the call site.
@@ -5795,33 +5813,10 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
 
   // Scan ARG_LIST into positionals / explicit kwargs / splats (same shape as
   // compile_single_positional_kwargs, but N positionals).
-  std::vector<const peg::Ast*> positional;
-  std::vector<std::pair<std::string_view, const peg::Ast*>> explicit_kwargs;
-  std::set<std::string_view> seen_explicit;
-  std::vector<const peg::Ast*> splats;
-  bool saw_named = false;
-  for (auto& child : argsAst.nodes) {
-    if (child->tag == "KWARG_SPLAT"_) {
-      saw_named = true;
-      splats.push_back(child->nodes[0].get());
-    } else if (child->tag == "KWARG"_) {
-      saw_named = true;
-      auto name = child->nodes[0]->token;
-      if (!seen_explicit.insert(name).second) {
-        throw culebra::CulebraError("TypeError",
-            std::format("duplicate keyword argument '{}'", name),
-            argsAst.line, argsAst.column);
-      }
-      explicit_kwargs.emplace_back(name, child->nodes[1].get());
-    } else {
-      if (saw_named) {
-        throw culebra::CulebraError("SyntaxError",
-            "positional argument follows keyword argument",
-            argsAst.line, argsAst.column);
-      }
-      positional.push_back(child.get());
-    }
-  }
+  auto scanned = _jit_scan_arg_list(argsAst);
+  auto& positional = scanned.positional;
+  auto& explicit_kwargs = scanned.explicit_kwargs;
+  auto& splats = scanned.splats;
 
   // Compile each positional once; emit an inline type check at the argument's
   // position for any leading positional that declares a type. Arity (too many
