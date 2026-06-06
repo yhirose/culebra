@@ -1522,6 +1522,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
       got, declared), line, col);
 }
 
+// Forward-declared (defined with the other call-site thread-locals below) so
+// the arity-missing helper can report at the call site rather than the callee's
+// baked def position.
+extern thread_local int64_t _jit_call_site_line;
+extern thread_local int64_t _jit_call_site_col;
+
 // Name-aware arity error: callee passes its declared parameter name
 // table (a const char* array, NUL-terminated entries) and the runtime
 // throws "missing required argument 'X'" where X is the first slot
@@ -1531,7 +1537,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_arity_missing(const char* const* names, int64_t got,
                                int64_t line, int64_t col) {
   const char* missing = (names && names[got]) ? names[got] : "";
-  culebra::throw_missing_required_arg_at(missing, line, col);
+  // The prologue bakes its own def position; interp reports a missing required
+  // argument at the CALL site, which set_call_site published before the
+  // invocation. Use it when set, falling back to the passed def position.
+  int64_t l = _jit_call_site_line ? _jit_call_site_line : line;
+  int64_t c = _jit_call_site_line ? _jit_call_site_col : col;
+  culebra::throw_missing_required_arg_at(missing, l, c);
 }
 
 // C++ exception thrown by `culebra_runtime_throw` when user code runs
