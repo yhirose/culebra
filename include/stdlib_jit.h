@@ -3848,19 +3848,20 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     }
     // As-value / HOF path: a param-less method's lenient adapter would coerce a
     // wrong-typed leading positional (FS.read(5) → IOError, Tensor.from(5) →
-    // empty). Reject it first with interp's `parameter '<name>' expects <Type>`
-    // — the type the entry carries as arg0_type/arg0_name. Report at the
-    // argument's position (arg0_line/col, threaded from the indirect call site),
-    // matching the interp binder; the syntactic call form checks inline in
-    // compile_ns_call and never reaches here.
+    // empty), so reject it first. interp doesn't run a declared-type binder for
+    // a callback — the method body's coercion fails with `Value::_throw_type_error`
+    // ("type error: expected <T>, got <actual>"); mirror that exact wording here
+    // (not the binder's "parameter '<name>' expects <T>", which the syntactic
+    // direct-call form emits inline in compile_ns_call). Reported at the
+    // argument's position (arg0_line/col, threaded from the indirect call site).
     if (!pm && m->arg0_type != nullptr && n_args >= 1 &&
         !_culebra_type_matches_single(args[0].tag, args[0].data,
                                       m->arg0_type)) {
+      const char* got = culebra_runtime_type_of(args[0].tag);
       release_args();
       culebra::throw_runtime_error_at(
           "TypeError",
-          std::format("type error: parameter '{}' expects {}",
-                      m->arg0_name ? m->arg0_name : "", m->arg0_type),
+          std::format("type error: expected {}, got {}", m->arg0_type, got),
           arg0_line, arg0_col);
     }
     try {
