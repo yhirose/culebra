@@ -60,7 +60,7 @@ check-grammar-sync:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
-[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all). JOBS=N controls parallelism (default: number of CPU cores).")]
+[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + AOT (set on the slow macOS CI runner).")]
 [group("test")]
 test BACKEND='all': build
     #!/usr/bin/env bash
@@ -247,7 +247,18 @@ test BACKEND='all': build
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
-      all)    run_diff_interp_jit; run_difftest; run_embed; run_culebra_test_self; run_isolate; run_aot; echo "test OK" ;;
+      # CULEBRA_TEST_SKIP_HEAVY skips the two platform-independent heavy phases
+      # (the 5114-case generated difftest + per-test AOT links). CI sets it on
+      # the slow macOS runner — those run on Linux CI and in local dev.
+      all)
+        run_diff_interp_jit
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || run_difftest
+        run_embed
+        run_culebra_test_self
+        run_isolate
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || run_aot
+        echo "test OK"
+        ;;
       interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
       aot)    run_aot ;;

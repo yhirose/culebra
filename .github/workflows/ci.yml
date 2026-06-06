@@ -7,7 +7,7 @@ on:
   # Weekly build on master to keep the per-OS ccache warm. GitHub evicts a
   # cache after 7 days without access; this repo's local-first workflow can go
   # long stretches without a CI push, and a cold cache makes the macOS build
-  # ~10x slower (it swaps — see `job_cap` below). PR/push cache restores also
+  # ~10x slower (it swaps — see `build_jobs` below). PR/push cache restores also
   # refresh the 7-day timer, so this is just the backstop for quiet weeks.
   schedule:
     - cron: '0 4 * * 1'
@@ -24,26 +24,28 @@ jobs:
             # uses Apple's ld-prime (Xcode 15+) by default — fast enough,
             # no override needed.
             linker_flag: -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
-            # Empty = no cap (all cores). The 16 GB Ubuntu runner has headroom
-            # for parallel LLVM-header-heavy TUs (~3 GB each) and AOT links.
-            job_cap: ""
+            # build_jobs empty = all cores (16 GB Ubuntu has headroom for the
+            # ~3 GB-per-TU parallel compile). Ubuntu runs the full test suite.
+            build_jobs: ""
+            skip_heavy: ""
           - os: macos-latest
             linker_flag: ""
-            # Cap parallelism on the 7 GB macOS runner. Both the build
-            # (`make -j`, each LLVM-header-heavy TU ~3 GB) and the test phase's
-            # AOT pass (`run_aot` links one native binary per test via
-            # `xargs -P$JOBS`, each link pulling the LLVM-heavy runtime archive)
-            # are memory-heavy. At the default 3-wide they overshoot 7 GB →
-            # swap → ~10x slowdown. 2-wide (~6 GB) avoids it. Counterintuitive
-            # but real: fewer jobs is FASTER here. Ubuntu (16 GB) keeps all
-            # cores (empty = no cap).
-            job_cap: "2"
+            # The 7 GB macOS runner swaps when compiling >2 LLVM-header-heavy
+            # TUs (~3 GB each) at once — cap the build to 2 (cuts ~64 min → ~18).
+            build_jobs: "2"
+            # The test suite's two heavy phases (the 5114-case difftest + the
+            # per-test AOT links) are platform-independent and run on Ubuntu CI
+            # and in local dev; the slow 3-core macOS runner takes ~30 min on
+            # them for no extra coverage, so skip them here. macOS still does
+            # the clean-env build + interp/JIT symmetry + ctest + isolate +
+            # microgpt smoke.
+            skip_heavy: "1"
     runs-on: ${{ matrix.os }}
     env:
-      # `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}` and `just test`'s
-      # `xargs -P${JOBS:-<ncpu>}` both honor these.
-      CULEBRA_BUILD_JOBS: ${{ matrix.job_cap }}
-      JOBS: ${{ matrix.job_cap }}
+      # `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}` honors this.
+      CULEBRA_BUILD_JOBS: ${{ matrix.build_jobs }}
+      # `just test` skips difftest + AOT when this is non-empty.
+      CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
 
     steps:
       - uses: actions/checkout@v5
