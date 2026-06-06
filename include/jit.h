@@ -155,7 +155,16 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 extern "C" {
 
 struct JitValue {
-  int8_t tag;
+  // `tag` is int64_t (not int8_t) so the struct is two full eightbytes. A
+  // `{i8, i64}` return is ABI-coerced by the C compiler to `[2 x i64]` (the i8
+  // padded to an eightbyte), which does NOT match how the JIT lowers a literal
+  // `{i8, i64}` return — reading the tag straight off a native call's result
+  // then yields the data's low bytes. `{i64, i64}` has one unambiguous
+  // two-register return ABI that the JIT and the C runtime agree on. Layout is
+  // unchanged (16 bytes, tag at 0, data at 8); only the former 7 padding bytes
+  // become part of the tag (always 0 — tags are small). The JIT truncates the
+  // tag back to i8 on extraction, so downstream tag logic is unaffected.
+  int64_t tag;
   int64_t data;
 };
 
@@ -5565,8 +5574,13 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
 // available (see `_iter_advance_raw`).
 inline bool _iter_pull(JitClosure* has_next_cls, JitClosure* next_cls,
                        JitValue iter_val, JitValue& out_v) {
-  return _iter_advance_raw(has_next_cls, next_cls, iter_val,
-                            &out_v.tag, &out_v.data);
+  // out_tag is i8 (the IR alloca ABI); JitValue::tag is now i64, so write
+  // through an i8 temp and widen.
+  int8_t tag;
+  bool ok = _iter_advance_raw(has_next_cls, next_cls, iter_val, &tag,
+                              &out_v.data);
+  out_v.tag = tag;
+  return ok;
 }
 
 // Forward decl: `culebra_runtime_cell_retain` is defined further down
@@ -9193,8 +9207,10 @@ struct JIT {
   JIT(llvm::LLVMContext* ctx, llvm::Module* mod, llvm::IRBuilder<>& builder)
       : ctx_(*ctx), module_(mod), builder_(builder) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    // {i64 tag, i64 data}: two full eightbytes so the struct's by-value ABI
+    // (esp. register return) matches the C `JitValue` exactly — see JitValue.
     valueType_ = llvm::StructType::create(
-        ctx_, {builder_.getInt8Ty(), builder_.getInt64Ty()}, "Value");
+        ctx_, {builder_.getInt64Ty(), builder_.getInt64Ty()}, "Value");
     // All refcounted types have i32 refcount as field 0.
     cellType_ = llvm::StructType::create(
         ctx_, {builder_.getInt64Ty(), valueType_}, "Cell");
@@ -9704,7 +9720,8 @@ struct JIT {
   // `data` must already be i64; callers zext/bitcast/ptrtoint as needed.
   llvm::Value* make_value(uint8_t tag, llvm::Value* data) {
     llvm::Value* val = llvm::UndefValue::get(valueType_);
-    val = builder_.CreateInsertValue(val, builder_.getInt8(tag), {0});
+    // tag occupies the full i64 field (zero-extended); see JitValue.
+    val = builder_.CreateInsertValue(val, builder_.getInt64(tag), {0});
     val = builder_.CreateInsertValue(val, data, {1});
     return val;
   }
@@ -9746,7 +9763,31 @@ struct JIT {
   }
 
   llvm::Value* extract_tag(llvm::Value* v) {
-    return builder_.CreateExtractValue(v, {0}, "tag");
+    // The tag field is i64 (see JitValue); truncate to i8 so all downstream
+    // tag comparisons (getInt8(TAG_*)) and runtime calls keep their i8 ABI.
+    // For a value built by the JIT the high bytes are 0; for one returned by a
+    // C runtime fn they are padding — the truncation discards them either way.
+    return builder_.CreateTrunc(builder_.CreateExtractValue(v, {0}),
+                                builder_.getInt8Ty(), "tag");
+  }
+
+  // Widen an i8 tag to the i64 Value tag field for `insertvalue ..., {0}`.
+  // Tag logic stays i8 throughout; only the field write needs the full width.
+  llvm::Value* i64tag(llvm::Value* tag) {
+    return tag->getType()->isIntegerTy(64)
+               ? tag
+               : builder_.CreateZExt(tag, builder_.getInt64Ty(), "tag.w");
+  }
+
+  // Build a Value from a runtime (tag, data) pair — the i8-tag twin of the
+  // compile-time make_value above. The single place that widens the tag to the
+  // i64 field, so no construction site can forget it (and reopen the
+  // native-call tag bug — see JitValue). `data` must already be i64.
+  llvm::Value* make_value(llvm::Value* tag, llvm::Value* data) {
+    llvm::Value* val = llvm::UndefValue::get(valueType_);
+    val = builder_.CreateInsertValue(val, i64tag(tag), {0});
+    val = builder_.CreateInsertValue(val, data, {1});
+    return val;
   }
 
   llvm::Value* extract_data(llvm::Value* v) {
@@ -11479,9 +11520,7 @@ struct JIT {
                                      "repl.tag.v");
       auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
                                       "repl.data.v");
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, tag, {0});
-      v = builder_.CreateInsertValue(v, data, {1});
+      llvm::Value* v = make_value(tag, data);
       return v;
     }
     // bare stdlib namespace (e.g. `let m = IO`) — fetch its lazy-built
@@ -11508,9 +11547,7 @@ struct JIT {
                                       "ns.tag.v");
       auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
                                        "ns.data.v");
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, tag, {0});
-      v = builder_.CreateInsertValue(v, data, {1});
+      llvm::Value* v = make_value(tag, data);
       return v;
     }
     // Match interp's eval-time NameError so `try { undefined } catch e
@@ -11860,9 +11897,7 @@ struct JIT {
                current_column_val()});
           auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
           auto curData = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-          llvm::Value* cur = llvm::UndefValue::get(valueType_);
-          cur = builder_.CreateInsertValue(cur, curTag, {0});
-          cur = builder_.CreateInsertValue(cur, curData, {1});
+          llvm::Value* cur = make_value(curTag, curData);
           // array_get returns a +0 borrow; emit_arith_step does not consume
           // operands; the Tensor in-place path retains lhs itself before
           // returning. So no retain/release is needed on `cur`.
@@ -11913,9 +11948,7 @@ struct JIT {
           auto curTag = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
           auto curData =
               builder_.CreateLoad(builder_.getInt64Ty(), outData);
-          llvm::Value* cur = llvm::UndefValue::get(valueType_);
-          cur = builder_.CreateInsertValue(cur, curTag, {0});
-          cur = builder_.CreateInsertValue(cur, curData, {1});
+          llvm::Value* cur = make_value(curTag, curData);
           to_store_obj =
               emit_arith_step(cur, rval, base_op, /*inplace=*/true);
           emit_value_release(rval);
@@ -13114,9 +13147,7 @@ struct JIT {
            current_column_val()});
       auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
       auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, t, {0});
-      v = builder_.CreateInsertValue(v, d, {1});
+      llvm::Value* v = make_value(t, d);
       return v;
     };
 
@@ -13246,9 +13277,7 @@ struct JIT {
           {objPtr, keyPtr, outTag, outData});
       auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
       auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, t, {0});
-      v = builder_.CreateInsertValue(v, d, {1});
+      llvm::Value* v = make_value(t, d);
       if (sub_pattern) {
         // Full `key: PATTERN` form: recursively match the value.
         auto m = emit_pattern(*sub_pattern, v, is_mut);
@@ -13336,9 +13365,7 @@ struct JIT {
           {objPtr, keyPtr, outTag, outData});
       auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
       auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-      llvm::Value* v = llvm::UndefValue::get(valueType_);
-      v = builder_.CreateInsertValue(v, t, {0});
-      v = builder_.CreateInsertValue(v, d, {1});
+      llvm::Value* v = make_value(t, d);
       auto m = emit_pattern(*pattern.nodes[i], v, is_mut);
       auto contBB2 = llvm::BasicBlock::Create(ctx_, "ctor.cont", fn);
       builder_.CreateCondBr(m, contBB2, failBB);
@@ -13791,9 +13818,7 @@ struct JIT {
          current_column_val()});
     auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto d = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* elem = llvm::UndefValue::get(valueType_);
-    elem = builder_.CreateInsertValue(elem, t, {0});
-    elem = builder_.CreateInsertValue(elem, d, {1});
+    llvm::Value* elem = make_value(t, d);
 
     emit_for_body_iteration(var, elem, body, incBB, endBB);
 
@@ -13907,9 +13932,7 @@ struct JIT {
         builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca, "for.p.tag");
     auto outData = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca,
                                        "for.p.data");
-    llvm::Value* loop_val = llvm::UndefValue::get(valueType_);
-    loop_val = builder_.CreateInsertValue(loop_val, outTag, {0});
-    loop_val = builder_.CreateInsertValue(loop_val, outData, {1});
+    llvm::Value* loop_val = make_value(outTag, outData);
     // Route in-body exceptions through excLpadBB so iter dispose + release
     // fire before unwinding continues. Restore the prior landingpad after
     // the body finishes so the cleanupBB / break paths still inherit the
@@ -14110,7 +14133,7 @@ struct JIT {
     llvm::Value* bodyData;
     if (has_new) {
       auto bodyVal = load_capture(1);
-      bodyTag = builder_.CreateExtractValue(bodyVal, {0});
+      bodyTag = extract_tag(bodyVal);  // i8 (tag field is now i64)
       bodyData = builder_.CreateExtractValue(bodyVal, {1});
     } else {
       bodyTag = builder_.getInt8(TAG_NIL);
@@ -14684,9 +14707,7 @@ struct JIT {
                                     "mod.tag.v");
     auto data = builder_.CreateLoad(builder_.getInt64Ty(), dataSlot,
                                      "mod.data.v");
-    llvm::Value* v = llvm::UndefValue::get(valueType_);
-    v = builder_.CreateInsertValue(v, tag, {0});
-    v = builder_.CreateInsertValue(v, data, {1});
+    llvm::Value* v = make_value(tag, data);
     declare_local(name, v);
     return make_nil();
   }
@@ -16042,9 +16063,7 @@ struct JIT {
     dataPhi->addIncoming(fastData, fastEnd);
     dataPhi->addIncoming(slowData, slowEnd);
 
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagPhi, {0});
-    result = builder_.CreateInsertValue(result, dataPhi, {1});
+    llvm::Value* result = make_value(tagPhi, dataPhi);
 
     // Join the Object inline-cache result with the permissive-Nil path.
     auto objResultEnd = builder_.GetInsertBlock();
@@ -16138,9 +16157,7 @@ struct JIT {
     builder_.SetInsertPoint(mergeBB);
     auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
     auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return result;
   }
 
@@ -16162,9 +16179,7 @@ struct JIT {
          outTag, outData, current_line_val(), current_column_val()});
     auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
     auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return result;
   }
 
@@ -17950,9 +17965,7 @@ struct JIT {
         "culebra_runtime_get_thrown_data", builder_.getInt64Ty());
     auto tagVal = builder_.CreateCall(getTag, {}, "exc.tag");
     auto dataVal = builder_.CreateCall(getData, {}, "exc.data");
-    llvm::Value* caught = llvm::UndefValue::get(valueType_);
-    caught = builder_.CreateInsertValue(caught, tagVal, {0});
-    caught = builder_.CreateInsertValue(caught, dataVal, {1});
+    llvm::Value* caught = make_value(tagVal, dataVal);
     builder_.CreateStore(caught, caughtSlot);
     builder_.CreateBr(catchBB);
 
@@ -18118,9 +18131,7 @@ inline void JIT::emit_array_unary_inline_loop(
        current_column_val()});
   auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
   auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
-  llvm::Value* elem = UndefValue::get(valueType_);
-  elem = builder_.CreateInsertValue(elem, t, {0});
-  elem = builder_.CreateInsertValue(elem, d, {1});
+  llvm::Value* elem = make_value(t, d);
 
   emit_value_retain(elem);
   emit_unary_lambda_body(lambda_ast, elem, std::forward<PerIter>(per_iter));
@@ -18264,9 +18275,7 @@ inline llvm::Value* JIT::emit_inlined_array_reduce(
        current_column_val()});
   auto t = builder_.CreateLoad(builder_.getInt8Ty(), eTagAlloca);
   auto d = builder_.CreateLoad(builder_.getInt64Ty(), eDataAlloca);
-  llvm::Value* elem = UndefValue::get(valueType_);
-  elem = builder_.CreateInsertValue(elem, t, {0});
-  elem = builder_.CreateInsertValue(elem, d, {1});
+  llvm::Value* elem = make_value(t, d);
   emit_value_retain(elem);
 
   // Move the current acc out of its alloca for the body. The body's
@@ -18340,9 +18349,7 @@ inline void JIT::emit_iter_unary_inline_loop(
   builder_.SetInsertPoint(bodyBB);
   auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
   auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
-  llvm::Value* elem = UndefValue::get(valueType_);
-  elem = builder_.CreateInsertValue(elem, t, {0});
-  elem = builder_.CreateInsertValue(elem, d, {1});
+  llvm::Value* elem = make_value(t, d);
   // iter_advance returns a +1-owned Value; we hand that ref to the
   // param slot directly (no extra retain).
   emit_unary_lambda_body(lambda_ast, elem, std::forward<PerIter>(per_iter));
@@ -18611,9 +18618,7 @@ inline llvm::Value* JIT::emit_inlined_iter_reduce(
   builder_.SetInsertPoint(bodyBB);
   auto t = builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca);
   auto d = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca);
-  llvm::Value* elem = UndefValue::get(valueType_);
-  elem = builder_.CreateInsertValue(elem, t, {0});
-  elem = builder_.CreateInsertValue(elem, d, {1});
+  llvm::Value* elem = make_value(t, d);
 
   // Move acc out of the alloca into the body's scope (same ownership
   // dance as emit_inlined_array_reduce). iter_advance handed elem in
@@ -19003,9 +19008,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                         {arrPtr, outTag, outData});
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return result;
   }
 
@@ -19501,9 +19504,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_for_each(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            llvm::Value* iter_val = llvm::UndefValue::get(valueType_);
-            iter_val = builder_.CreateInsertValue(iter_val, it, {0});
-            iter_val = builder_.CreateInsertValue(iter_val, id, {1});
+            llvm::Value* iter_val = make_value(it, id);
             return emit_inlined_iter_for_each(iter_val, cb_ast);
           });
     }
@@ -19537,9 +19538,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_reduce(arrPtr, init, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            llvm::Value* iter_val = llvm::UndefValue::get(valueType_);
-            iter_val = builder_.CreateInsertValue(iter_val, it, {0});
-            iter_val = builder_.CreateInsertValue(iter_val, id, {1});
+            llvm::Value* iter_val = make_value(it, id);
             return emit_inlined_iter_reduce(iter_val, init, cb_ast);
           });
     }
@@ -19572,9 +19571,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     emit_value_release(f);
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return result;
   }
 
@@ -19604,9 +19601,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     emit_value_release(f);
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
-    llvm::Value* result = llvm::UndefValue::get(valueType_);
-    result = builder_.CreateInsertValue(result, tagLoaded, {0});
-    result = builder_.CreateInsertValue(result, dataLoaded, {1});
+    llvm::Value* result = make_value(tagLoaded, dataLoaded);
     return result;
   }
 

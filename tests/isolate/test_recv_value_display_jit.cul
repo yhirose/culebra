@@ -1,0 +1,42 @@
+# Regression: a value received across the isolate/channel boundary must read
+# back with the correct type tag in the JIT, not just the correct data. The
+# value is rebuilt by jit_deserialize and returned from a native method
+# (rx.recv / handle.join); reading its tag straight off that return used to
+# yield garbage ("Unknown" / "[unknown]") because the C `JitValue` return is
+# ABI-coerced to `[2 x i64]` while the JIT called it as `{i8, i64}`. type_of /
+# `==` / interpolation all depend on the tag, so they broke; `.size()` and
+# arithmetic (which read the data) masked it. Now the Value struct is
+# `{i64, i64}`, so the ABI matches.
+
+# --- every scalar/container type round-trips with its tag intact ---
+fn roundtrip(v) {
+  let (tx, rx) = Channel.new(1)
+  tx.send(v)
+  tx.drop()
+  rx.recv()
+}
+
+let s = roundtrip("hello")
+assert_eq(type_of(s), "String")   # was "Unknown" in the JIT
+assert_eq(s, "hello")             # was eq-no in the JIT
+assert_eq(s.size(), 5)
+
+assert_eq(type_of(roundtrip(42)), "Long")
+assert_eq(roundtrip(42), 42)
+assert_eq(type_of(roundtrip(3.5)), "Float")
+assert_eq(roundtrip(3.5), 3.5)
+assert_eq(type_of(roundtrip(true)), "Bool")
+assert_eq(type_of(roundtrip([1, 2, 3])), "Array")
+assert_eq(roundtrip([1, 2, 3]), [1, 2, 3])
+assert_eq(type_of(roundtrip({"k": 1})), "Object")
+
+# interpolation reads the tag too
+assert_eq("got {roundtrip("x")}", "got x")
+
+# --- an isolate join result (also deserialized) keeps its tag ---
+let h = Isolate.spawn(fn () { "from-isolate" })
+let r = h.join()
+assert_eq(type_of(r), "String")
+assert_eq(r, "from-isolate")
+
+puts("test_recv_value_display: all assertions passed")
