@@ -96,7 +96,10 @@ jobs:
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install llvm just ccache
+          # coreutils provides `gtimeout` — `just test` uses it to bound each
+          # test so a frozen macOS VM fails the phase fast instead of hanging
+          # the job (macOS has no native `timeout`). Ubuntu's is built in.
+          brew install llvm just ccache coreutils
 
       # Compiler cache for incremental CI builds. Without it every PR
       # push re-compiles culebra from scratch (~4 min macOS / 7 min

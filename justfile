@@ -73,6 +73,22 @@ test BACKEND='all': build
     # behavior when debugging.
     JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 
+    # Portable per-invocation timeout. A stalled CI runner (GitHub's scarce
+    # macOS VMs occasionally freeze a process mid-test) should fail the phase
+    # fast — naming the offending file — instead of hanging the job for 30 min
+    # until it's force-cancelled. `cul` wraps every culebra invocation; ctest
+    # carries its own --timeout, and the difftest batch is wrapped at its phase.
+    # macOS lacks `timeout`; CI brew-installs coreutils for `gtimeout`. If
+    # neither exists (a bare local run) we fall through with no limit so dev
+    # never breaks on a missing dep.
+    TIMEOUT_BIN=""
+    if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
+    elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
+    CULEBRA_TEST_TIMEOUT="${CULEBRA_TEST_TIMEOUT:-300}"
+    cul() { ${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} ./build/culebra "$@"; }
+    export -f cul
+    export TIMEOUT_BIN CULEBRA_TEST_TIMEOUT
+
     # Per-recipe scratch dir for parallel job artifacts (per-file
     # stdout/stderr, .fail markers). Cleaned on exit.
     job_dir="${TMPDIR:-/tmp}/culebra-test-$$"
@@ -107,7 +123,7 @@ test BACKEND='all': build
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
-            if ! ./build/culebra "$f" > "$d/$name.out" 2> "$d/$name.err"; then
+            if ! cul "$f" > "$d/$name.out" 2> "$d/$name.err"; then
                 touch "$d/$name.fail"
             fi
         ' _ '{}' "$d"
@@ -120,7 +136,7 @@ test BACKEND='all': build
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
-            if ! ./build/culebra --jit "$f" > "$d/$name.out" 2> "$d/$name.err"; then
+            if ! cul --jit "$f" > "$d/$name.out" 2> "$d/$name.err"; then
                 touch "$d/$name.fail"
             fi
         ' _ '{}' "$d"
@@ -133,10 +149,10 @@ test BACKEND='all': build
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
-            out_interp=$(./build/culebra "$f" 2> "$d/$name.interp.err") || \
+            out_interp=$(cul "$f" 2> "$d/$name.interp.err") || \
                 { touch "$d/$name.fail"; echo "interp crashed for $f:" > "$d/$name.err"; \
                   cat "$d/$name.interp.err" >> "$d/$name.err"; exit 0; }
-            out_jit=$(./build/culebra --jit "$f" 2> "$d/$name.jit.err") || \
+            out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err") || \
                 { touch "$d/$name.fail"; echo "jit crashed for $f:" > "$d/$name.err"; \
                   cat "$d/$name.jit.err" >> "$d/$name.err"; exit 0; }
             if [[ "$out_interp" != "$out_jit" ]]; then
@@ -163,7 +179,7 @@ test BACKEND='all': build
             f="$1"; d="$2"; out_dir="$3"
             name=$(basename "$f" .cul)
             bin="$out_dir/$name"
-            if ! ./build/culebra build "$f" -o "$bin" 2> "$d/$name.build.err"; then
+            if ! cul build "$f" -o "$bin" 2> "$d/$name.build.err"; then
                 {
                     echo "build failed: $f"
                     cat "$d/$name.build.err"
@@ -171,8 +187,8 @@ test BACKEND='all': build
                 touch "$d/$name.fail"
                 exit 0
             fi
-            out_aot=$("$bin")
-            out_jit=$(./build/culebra --jit "$f")
+            out_aot=$(${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$bin")
+            out_jit=$(cul --jit "$f")
             if [[ "$out_aot" != "$out_jit" ]]; then
                 {
                     echo "AOT and JIT outputs differ for $f:"
@@ -199,12 +215,12 @@ test BACKEND='all': build
     # @parametrize). The subdir layout keeps these out of the
     # `tests/*.cul` glob that direct interp/JIT runs use.
     run_culebra_test_self() {
-        ./build/culebra test tests/culebra_test_self/ > /dev/null
+        cul test tests/culebra_test_self/ > /dev/null
         # Sanity-check the JSON reporter: final line is a run_end with
         # failed=0 and errored_files=0; every other line begins with
         # one of the documented event tags.
         local last
-        last=$(./build/culebra test --reporter json tests/culebra_test_self/ | tail -1)
+        last=$(cul test --reporter json tests/culebra_test_self/ | tail -1)
         case "$last" in
             *'"event":"run_end"'*'"failed":0'*'"errored_files":0'*) ;;
             *) echo "json reporter: bad run_end line: $last" >&2; exit 1 ;;
@@ -215,7 +231,7 @@ test BACKEND='all': build
         # because the test fails by design — what matters is that the
         # runner itself doesn't crash.
         local throw_out
-        throw_out=$(./build/culebra test --reporter json \
+        throw_out=$(cul test --reporter json \
             tests/culebra_test_throw_self/ 2>&1) || true
         case "$throw_out" in
             *'"event":"test_fail"'*'"kind":"RawThrowKind"'*'"event":"run_end"'*) ;;
@@ -231,10 +247,10 @@ test BACKEND='all': build
     # under --jit (e.g. the runtime mut-capture SendError and the `limit:` kwarg).
     run_isolate() {
         for f in tests/isolate/*.cul; do
-            ./build/culebra "$f" > /dev/null
+            cul "$f" > /dev/null || { echo "test isolate FAIL (or timed out): $f" >&2; exit 1; }
         done
         for f in tests/isolate/*_jit.cul; do
-            ./build/culebra --jit "$f" > /dev/null
+            cul --jit "$f" > /dev/null || { echo "test isolate FAIL (or timed out): --jit $f" >&2; exit 1; }
         done
         echo "test isolate OK (interp + jit symmetry)"
     }
@@ -244,7 +260,10 @@ test BACKEND='all': build
     # per-file run_diff_interp_jit above with systematic seam coverage.
     # run.sh exits non-zero on any divergence, which aborts `test`.
     run_difftest() {
-        tools/difftest/run.sh ./build/culebra
+        # A batch of 5114 generated cases, not a single invocation, so it gets
+        # its own generous wall-clock bound (well above the honest runtime) —
+        # only a genuine hang trips it.
+        ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh ./build/culebra
     }
 
     # Announce each phase with the running elapsed time, so a slow/stalled CI
