@@ -243,9 +243,18 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # do NOT depend on LLVM. Suppress the abi-breaking-check witness
   # symbol (`llvm::DisableABIBreakingChecks`) that every LLVM-header
   # TU would otherwise pull in.
+  # Tensor is no longer an archive *variant*. The cblas-bearing body
+  # lives in a single choke (culebra::tensor_eval_node); CULEBRA_RT_-
+  # TENSOR_EVAL_WEAK compiles it as a weak throwing stub here, so the
+  # core archive references no cblas symbol even though the full Tensor
+  # namespace + culebra_runtime_tensor_* helpers stay real. The strong
+  # body is force-loaded from culebra_rt_tensor (below) only when the
+  # program uses Tensor — collapsing the tensor axis from 2 variants to
+  # this one stub flag (see DESIGN_linear_rt.md).
   target_compile_definitions(culebra_rt PRIVATE
     LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
-    CULEBRA_RT_DEFINE_RUNTIME=1)
+    CULEBRA_RT_DEFINE_RUNTIME=1
+    CULEBRA_RT_TENSOR_EVAL_WEAK=1)
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -253,79 +262,60 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   target_compile_options(culebra_rt PRIVATE
     -ffunction-sections -fdata-sections)
 
-  # Tensor-free variant. `culebra build` picks this when AST scan
-  # reports no Tensor references — `culebra_runtime_tensor_binop` and
-  # the tensor cases in value-release / value-to-str fall through to
-  # nullptr / no-op stubs, breaking the static reachability chain to
-  # cblas / tensor.h kernels so Accelerate / BLAS can be dropped too.
-  add_library(culebra_rt_no_tensor STATIC ./src/runtime/culebra_rt.cc)
-  target_compile_features(culebra_rt_no_tensor PRIVATE cxx_std_23)
-  target_compile_definitions(culebra_rt_no_tensor PRIVATE
-    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
-    CULEBRA_RT_DEFINE_RUNTIME=1
-    CULEBRA_RT_NO_TENSOR=1)
-  target_compile_options(culebra_rt_no_tensor PRIVATE
+  # Tensor feature object: the strong real tensor_eval_node (the lone
+  # cblas anchor). Force-loaded into the AOT binary only when the AST
+  # scan reports Tensor use (see materialize + -force_load in main.cc).
+  add_library(culebra_rt_tensor STATIC ./src/runtime/culebra_rt_tensor.cc)
+  target_compile_features(culebra_rt_tensor PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_tensor PRIVATE
     -ffunction-sections -fdata-sections)
 
-  # Http-free variants. `culebra build` picks one of these when the AST
-  # scan reports no Http references — CULEBRA_RT_NO_HTTP drops the http
-  # namespace (and its httplib.h include) entirely, so the static
-  # reachability chain to OpenSSL / zlib is broken and they can be left
-  # out of the AOT link. Crossed with the tensor axis, that's 2x2 = 4
-  # archives total.
+  # Http-free variant. Picked when the AST scan reports no Http use —
+  # CULEBRA_RT_NO_HTTP drops the http namespace (and its httplib.h
+  # include), breaking the reachability chain to OpenSSL / zlib so they
+  # can be left out of the AOT link. The tensor axis folds in via the
+  # weak stub above, so the http axis is the only remaining variant:
+  # 2 core archives + 1 tensor object = 3 (was 2x2 = 4). Phase 2 will
+  # fold http the same way for a true N+1.
   add_library(culebra_rt_no_http STATIC ./src/runtime/culebra_rt.cc)
   target_compile_features(culebra_rt_no_http PRIVATE cxx_std_23)
   target_compile_definitions(culebra_rt_no_http PRIVATE
     LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
     CULEBRA_RT_DEFINE_RUNTIME=1
+    CULEBRA_RT_TENSOR_EVAL_WEAK=1
     CULEBRA_RT_NO_HTTP=1)
   target_compile_options(culebra_rt_no_http PRIVATE
     -ffunction-sections -fdata-sections)
 
-  add_library(culebra_rt_no_tensor_no_http STATIC ./src/runtime/culebra_rt.cc)
-  target_compile_features(culebra_rt_no_tensor_no_http PRIVATE cxx_std_23)
-  target_compile_definitions(culebra_rt_no_tensor_no_http PRIVATE
-    LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
-    CULEBRA_RT_DEFINE_RUNTIME=1
-    CULEBRA_RT_NO_TENSOR=1
-    CULEBRA_RT_NO_HTTP=1)
-  target_compile_options(culebra_rt_no_tensor_no_http PRIVATE
-    -ffunction-sections -fdata-sections)
-
-  # Embed all four runtime archives into the `culebra` driver via
-  # cpp-embedlib. `culebra build` materializes them to
-  # ~/.cache/culebra/<fingerprint>/ on first use, so the driver is a
-  # single self-contained binary. `--rt-lib=<path>` overrides the
-  # archive for cross-compile (env override removed — the flag is
-  # explicit and covers every case).
+  # Embed the runtime archives into the `culebra` driver via
+  # cpp-embedlib. `culebra build` materializes the core archive (+ the
+  # tensor object when needed) to ~/.cache/culebra/<fingerprint>/ on
+  # first use, so the driver is a single self-contained binary.
+  # `--rt-lib=<path>` overrides the core archive for cross-compile.
   #
   # cpp-embedlib computes relative paths at configure time, so passing
   # $<TARGET_FILE:...> generator expressions doesn't work. Reconstruct
   # the archive paths from CMake's static library naming convention
-  # instead — these resolve to libculebra_rt.a / libculebra_rt_no_tensor.a
-  # in the build dir, which is where CMake writes STATIC libraries by
-  # default.
+  # instead — these resolve to libculebra_rt*.a in the build dir, where
+  # CMake writes STATIC libraries by default.
   set(_rt_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt${CMAKE_STATIC_LIBRARY_SUFFIX}")
-  set(_rt_no_tensor_archive
-    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_tensor_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_no_http_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
-  set(_rt_no_tensor_no_http_archive
-    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_no_tensor_no_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
   cpp_embedlib_add(culebra_rt_assets
     FILES
       "${_rt_archive}"
-      "${_rt_no_tensor_archive}"
+      "${_rt_tensor_archive}"
       "${_rt_no_http_archive}"
-      "${_rt_no_tensor_no_http_archive}"
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
     NAMESPACE CulebraRT)
   # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
   # the asset library to wait for the real archive targets too, so the
   # .a files actually exist when the embed step runs.
-  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_no_tensor
-    culebra_rt_no_http culebra_rt_no_tensor_no_http)
+  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_tensor
+    culebra_rt_no_http)
   target_link_libraries(culebra culebra_rt_assets)
   endif()
 endif()

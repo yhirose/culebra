@@ -471,7 +471,25 @@ inline void _tensor_run_binop(TensorImpl& t) {
   else                       _tensor_run_binop_for_dtype<double>(t);
 }
 
-inline void tensor_eval_node(TensorImpl& t);
+// tensor_eval_node is the single cblas choke: every _tensor_run_* kernel
+// (the only cblas callers) is reached only from here. To let `culebra
+// build` drop BLAS for programs that never evaluate a tensor, its linkage
+// is partitioned across the AOT runtime archives (see
+// DESIGN_linear_rt.md / project memory):
+//   - core archive   (CULEBRA_RT_TENSOR_EVAL_WEAK):   weak throwing stub,
+//     so the archive references no cblas symbol at all.
+//   - tensor archive (CULEBRA_RT_TENSOR_EVAL_STRONG): strong real body,
+//     force-loaded only when the program uses Tensor (overrides the stub).
+//   - header-only / in-process JIT (neither): the normal inline body.
+#if defined(CULEBRA_RT_TENSOR_EVAL_STRONG)
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE
+#elif defined(CULEBRA_RT_TENSOR_EVAL_WEAK)
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE __attribute__((weak))
+#else
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE inline
+#endif
+
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t);
 
 // In-place elementwise binop: `dst = dst OP rhs` writing into dst's
 // own buffer. Skips the per-step allocation that `t = t + x` would
@@ -1004,15 +1022,16 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
 // contiguous buf for each unevaluated node, run kernel.
 // is_evaluated() short-circuits shared subgraphs so each node runs
 // exactly once across an eval batch (and across re-evals).
-inline void tensor_eval_node(TensorImpl& t) {
-#ifdef CULEBRA_RT_NO_TENSOR
-  // The no-tensor runtime links no BLAS. This is the single entry to every
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
+#if defined(CULEBRA_RT_NO_TENSOR) || defined(CULEBRA_RT_TENSOR_EVAL_WEAK)
+  // The core runtime archive links no BLAS. This is the single entry to every
   // tensor kernel (cblas lives below here), so stubbing it keeps cblas out of
-  // libculebra_rt_no_tensor.a. The interp Tensor namespace is reachable in that
-  // archive only because environment() is pulled in by isolate child setup; a
-  // NO_TENSOR binary never creates a tensor value, so this stays unreachable.
-  // Throw defensively if that invariant ever breaks — mirrors the JIT-side
-  // _no_tensor_abort() stubs.
+  // the archive. The Tensor namespace and the culebra_runtime_tensor_* helpers
+  // stay real in core, but they reach cblas only through this function — with a
+  // stub body the _tensor_run_* kernels go unreferenced and are never emitted.
+  // The strong override (CULEBRA_RT_TENSOR_EVAL_STRONG) is force-loaded when the
+  // program uses Tensor; this stub then never runs. Throw defensively in case
+  // that invariant ever breaks — mirrors the JIT-side _no_tensor_abort() stubs.
   (void)t;
   throw CulebraError("InternalError",
                      "tensor runtime entered in NO_TENSOR binary", 0, 0);

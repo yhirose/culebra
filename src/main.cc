@@ -114,19 +114,12 @@ static std::filesystem::path culebra_cache_dir() {
        / asset_fingerprint();
 }
 
-// Materialize one of the embedded runtime archives to the on-disk
-// cache and return its path. The linker needs a real file, so the
-// driver writes the archive once per (culebra binary × machine) and
-// reuses it on subsequent invocations.
-static std::filesystem::path materialize_rt_archive(
-    bool uses_tensor, bool uses_http, std::string& err) {
-  // Four prebuilt archives across the tensor x http axes; pick the
-  // leanest one the program actually needs so the AOT link can drop
-  // BLAS (no-tensor) and/or OpenSSL+zlib (no-http).
-  std::string name = "libculebra_rt";
-  if (!uses_tensor) name += "_no_tensor";
-  if (!uses_http) name += "_no_http";
-  name += ".a";
+// Materialize one embedded runtime archive (by file name) to the on-disk
+// cache and return its path. The linker needs a real file, so the driver
+// writes the archive once per (culebra binary × machine) and reuses it on
+// subsequent invocations.
+static std::filesystem::path materialize_archive(
+    const std::string& name, std::string& err) {
   auto cache = culebra_cache_dir() / name;
   if (std::filesystem::exists(cache)) return cache;
 
@@ -373,9 +366,10 @@ int run_build(const BuildOptions& opts) {
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
 
-  // Tensor reachability drives the archive choice. The no-tensor
-  // archive's stubbed tensor entry points break the static
-  // reachability chain to cblas so Accelerate / BLAS drops out too.
+  // Http reachability drives the core-archive choice (no-http drops the
+  // OpenSSL/zlib reachability chain). Tensor is no longer a variant: the
+  // core archive carries a weak stub for the cblas choke, and the strong
+  // body is force-loaded from libculebra_rt_tensor.a only when needed.
   std::string lib;
   if (!opts.rt_lib.empty()) {
     lib = opts.rt_lib;
@@ -385,7 +379,9 @@ int run_build(const BuildOptions& opts) {
     return 1;
   } else {
     std::string err;
-    auto path = materialize_rt_archive(uses_tensor, uses_http, err);
+    std::string core = uses_http ? "libculebra_rt.a"
+                                  : "libculebra_rt_no_http.a";
+    auto path = materialize_archive(core, err);
     if (path.empty()) {
       std::println(stderr, "culebra build: {}", err);
       return 1;
@@ -409,6 +405,27 @@ int run_build(const BuildOptions& opts) {
 
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
+
+  // Tensor feature object. Its strong tensor_eval_node overrides the core
+  // archive's weak stub, but only if it is actually pulled into the link —
+  // a plain `-l`/archive append won't do it (the weak def already
+  // satisfies the symbol), so the object must be *force-loaded*. ld64 uses
+  // -force_load; GNU ld uses --whole-archive. Cross builds rely on
+  // --rt-lib carrying tensor support, so skip there.
+  std::string tensor_lib;
+  if (uses_tensor && opts.rt_lib.empty() && !cross) {
+    std::string err;
+    auto path = materialize_archive("libculebra_rt_tensor.a", err);
+    if (path.empty()) {
+      std::println(stderr, "culebra build: {}", err);
+      return 1;
+    }
+    auto q = std::format("'{}'", path.string());
+    tensor_lib = target_is_macho
+        ? std::format("-Wl,-force_load,{}", q)
+        : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
+  }
+
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
   // OpenSSL (+ zlib, both in CULEBRA_SSL_LINK) is linked only when the program
   // references Http. The runtime archive's http helpers are
@@ -441,9 +458,9 @@ int run_build(const BuildOptions& opts) {
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} -o {}", cc, extra,
-                                shq(obj), shq(lib), dead_strip, no_pie,
-                                libcxx, blas, ssl, shq(opts.output));
+  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+                                shq(obj), shq(lib), tensor_lib, dead_strip,
+                                no_pie, libcxx, blas, ssl, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
