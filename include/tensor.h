@@ -474,8 +474,7 @@ inline void _tensor_run_binop(TensorImpl& t) {
 // tensor_eval_node is the single cblas choke: every _tensor_run_* kernel
 // (the only cblas callers) is reached only from here. To let `culebra
 // build` drop BLAS for programs that never evaluate a tensor, its linkage
-// is partitioned across the AOT runtime archives (see
-// DESIGN_linear_rt.md / project memory):
+// is partitioned across the AOT runtime archives:
 //   - core archive   (CULEBRA_RT_TENSOR_EVAL_WEAK):   weak throwing stub,
 //     so the archive references no cblas symbol at all.
 //   - tensor archive (CULEBRA_RT_TENSOR_EVAL_STRONG): strong real body,

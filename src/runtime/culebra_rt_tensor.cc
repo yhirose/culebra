@@ -1,5 +1,5 @@
-// Tensor feature object for the linear-scaling AOT runtime (see
-// DESIGN_linear_rt.md). Emits the single strong definition of
+// Tensor feature object for the linear-scaling AOT runtime. Emits the
+// single strong definition of
 // `culebra::tensor_eval_node` — the lone cblas choke point — which the
 // AOT link force-loads only when the program uses Tensor, overriding the
 // weak throwing stub in the core archive. cblas / Accelerate symbols are

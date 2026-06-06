@@ -1,5 +1,5 @@
-// Http feature object for the linear-scaling AOT runtime (see
-// DESIGN_linear_rt.md). Emits the single strong definition of
+// Http feature object for the linear-scaling AOT runtime. Emits the
+// single strong definition of
 // culebra::http::http_request — the lone OpenSSL/zlib choke (the only
 // code that instantiates httplib::Client) — which the AOT link
 // force-loads only when the program uses Http, overriding the weak stub

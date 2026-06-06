@@ -183,7 +183,7 @@ inline std::string encode_query(const HeaderList& pairs) {
 // http_request is the single OpenSSL/zlib choke: httplib::Client (the only
 // code that pulls in TLS + gzip) is instantiated only inside this body.
 // Its linkage is partitioned across the AOT runtime archives exactly like
-// tensor_eval_node (see DESIGN_linear_rt.md):
+// tensor_eval_node:
 //   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stub, never
 //     touches httplib::Client, so the archive references no ssl/zlib symbol
 //     (merely including httplib.h pulls none — verified).

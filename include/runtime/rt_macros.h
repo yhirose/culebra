@@ -27,5 +27,6 @@
 // The cblas / OpenSSL reachability chains are broken per-feature by a
 // single weak choke stub in the core archive (culebra::tensor_eval_node,
 // culebra::http::http_request), with the strong body force-loaded from a
-// feature object only when the program uses it. See DESIGN_linear_rt.md
-// and the CULEBRA_RT_TENSOR_EVAL_* / CULEBRA_RT_HTTP_REQUEST_* gates.
+// feature object only when the program uses it. See the
+// CULEBRA_RT_TENSOR_EVAL_* / CULEBRA_RT_HTTP_REQUEST_* gates and the
+// force-load wiring in `culebra build` (src/main.cc).
