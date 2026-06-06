@@ -180,7 +180,35 @@ inline std::string encode_query(const HeaderList& pairs) {
   return q;
 }
 
-inline HttpResult http_request(const HttpRequest& req) {
+// http_request is the single OpenSSL/zlib choke: httplib::Client (the only
+// code that pulls in TLS + gzip) is instantiated only inside this body.
+// Its linkage is partitioned across the AOT runtime archives exactly like
+// tensor_eval_node (see DESIGN_linear_rt.md):
+//   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stub, never
+//     touches httplib::Client, so the archive references no ssl/zlib symbol
+//     (merely including httplib.h pulls none — verified).
+//   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real body,
+//     force-loaded only when the program uses Http (overrides the stub).
+//   - header-only / in-process JIT (neither): the normal inline body.
+#if defined(CULEBRA_RT_HTTP_REQUEST_STRONG)
+#define CULEBRA_RT_HTTP_LINKAGE
+#elif defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+#define CULEBRA_RT_HTTP_LINKAGE __attribute__((weak))
+#else
+#define CULEBRA_RT_HTTP_LINKAGE inline
+#endif
+
+CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  // Core archive stub: the real httplib::Client path is force-loaded from
+  // culebra_rt_http only when the program uses Http, so a binary built
+  // without Http never reaches httplib. Unreachable in practice (the Http
+  // namespace is never called there); report gracefully rather than abort.
+  (void)req;
+  HttpResult stub;
+  stub.error = "Http runtime not linked (no Http use detected at build)";
+  return stub;
+#else
   HttpResult out;
   std::string origin, path, err;
   if (!split_url(req.url, origin, path, err)) {
@@ -311,6 +339,7 @@ inline HttpResult http_request(const HttpRequest& req) {
     out.headers.emplace_back(k, v);
   }
   return out;
+#endif  // CULEBRA_RT_HTTP_REQUEST_WEAK
 }
 
 }  // namespace culebra::http

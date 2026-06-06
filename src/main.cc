@@ -142,16 +142,37 @@ static std::filesystem::path materialize_archive(
     return {};
   }
 
-  std::ofstream out(cache, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    err = std::format("can't write '{}'", cache.string());
-    return {};
+  // Write to a per-process temp file, then atomically rename into place.
+  // Concurrent `culebra build` invocations (e.g. a parallel test run)
+  // share this cache; without the rename one process would truncate
+  // `cache` while another reads the half-written file and links a corrupt
+  // archive. rename(2) is atomic on one filesystem, so a reader sees
+  // either no file (and writes its own) or the complete archive.
+  auto tmp = cache;
+  tmp += std::format(".tmp.{}", ::getpid());
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      err = std::format("can't write '{}'", tmp.string());
+      return {};
+    }
+    out.write(reinterpret_cast<const char*>(data->data()),
+              static_cast<std::streamsize>(data->size()));
+    if (!out) {
+      err = std::format("write failed for '{}'", tmp.string());
+      return {};
+    }
   }
-  out.write(reinterpret_cast<const char*>(data->data()),
-            static_cast<std::streamsize>(data->size()));
-  if (!out) {
-    err = std::format("write failed for '{}'", cache.string());
-    return {};
+  std::filesystem::rename(tmp, cache, ec);
+  if (ec) {
+    // Lost a race (another process renamed first) or cross-device link —
+    // if the destination is now a complete archive, use it; else report.
+    std::filesystem::remove(tmp);
+    if (!std::filesystem::exists(cache)) {
+      err = std::format("can't finalize '{}': {}", cache.string(),
+                        ec.message());
+      return {};
+    }
   }
   return cache;
 }
@@ -366,10 +387,12 @@ int run_build(const BuildOptions& opts) {
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
 
-  // Http reachability drives the core-archive choice (no-http drops the
-  // OpenSSL/zlib reachability chain). Tensor is no longer a variant: the
-  // core archive carries a weak stub for the cblas choke, and the strong
-  // body is force-loaded from libculebra_rt_tensor.a only when needed.
+  // The core archive is feature-axis-free: both heavy deps (cblas via
+  // tensor_eval_node, OpenSSL/zlib via http_request) are weak stubs here,
+  // so the same archive serves every program. The strong bodies are
+  // force-loaded from the per-feature objects below only when the scan
+  // reports the feature in use. One core archive, N feature objects — no
+  // 2^N variant matrix.
   std::string lib;
   if (!opts.rt_lib.empty()) {
     lib = opts.rt_lib;
@@ -379,9 +402,7 @@ int run_build(const BuildOptions& opts) {
     return 1;
   } else {
     std::string err;
-    std::string core = uses_http ? "libculebra_rt.a"
-                                  : "libculebra_rt_no_http.a";
-    auto path = materialize_archive(core, err);
+    auto path = materialize_archive("libculebra_rt.a", err);
     if (path.empty()) {
       std::println(stderr, "culebra build: {}", err);
       return 1;
@@ -406,38 +427,46 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
 
-  // Tensor feature object. Its strong tensor_eval_node overrides the core
-  // archive's weak stub, but only if it is actually pulled into the link —
-  // a plain `-l`/archive append won't do it (the weak def already
-  // satisfies the symbol), so the object must be *force-loaded*. ld64 uses
-  // -force_load; GNU ld uses --whole-archive. Cross builds rely on
-  // --rt-lib carrying tensor support, so skip there.
-  std::string tensor_lib;
-  if (uses_tensor && opts.rt_lib.empty() && !cross) {
+  // A feature object's strong choke (tensor_eval_node / http_request)
+  // overrides the core archive's weak stub only if it is actually pulled
+  // into the link. A plain `-l`/archive append won't do it — the weak def
+  // already satisfies the symbol, so the member is never loaded (verified)
+  // — the object must be *force-loaded*: ld64 -force_load / GNU ld
+  // --whole-archive. Returns the link fragment, or sets feature_failed + prints.
+  bool feature_failed = false;
+  auto force_load_feature = [&](const char* archive) -> std::string {
     std::string err;
-    auto path = materialize_archive("libculebra_rt_tensor.a", err);
+    auto path = materialize_archive(archive, err);
     if (path.empty()) {
       std::println(stderr, "culebra build: {}", err);
-      return 1;
+      feature_failed = true;
+      return "";
     }
     auto q = std::format("'{}'", path.string());
-    tensor_lib = target_is_macho
+    return target_is_macho
         ? std::format("-Wl,-force_load,{}", q)
         : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
-  }
+  };
+
+  // Cross builds rely on --rt-lib carrying the feature support, so skip
+  // force-loading the embedded feature objects there.
+  bool host_build = opts.rt_lib.empty() && !cross;
+  std::string tensor_lib =
+      (uses_tensor && host_build) ? force_load_feature("libculebra_rt_tensor.a")
+                                  : "";
+  std::string http_lib =
+      (uses_http && host_build) ? force_load_feature("libculebra_rt_http.a")
+                                : "";
+  if (feature_failed) return 1;
 
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
   // OpenSSL (+ zlib, both in CULEBRA_SSL_LINK) is linked only when the program
-  // references Http. The runtime archive's http helpers are
-  // __attribute__((used)) (emitted for the in-process JIT to resolve), and
-  // `used` pins them past -dead_strip / --gc-sections, so the archive would
-  // reference httplib's TLS/zlib code (d2i_X509, SSL_CTX_*, inflate, ...)
-  // unconditionally — gating the link alone left those unresolved for non-Http
-  // programs. The no-http runtime archive (CULEBRA_RT_NO_HTTP) drops the http
-  // namespace entirely, breaking that reachability chain, so a non-Http program
-  // links neither the archive's http code nor OpenSSL/zlib. Same shape as the
-  // no-tensor archive gating BLAS above. CULEBRA_SSL_LINK is "" when Http is
-  // disabled at build time.
+  // references Http. The cblas/ssl reachability is broken in the core archive
+  // by the weak choke stubs (tensor_eval_node / http_request), so a non-Http
+  // program references no httplib TLS/zlib symbol and can omit these. The
+  // strong http_request is force-loaded via http_lib above when needed, which
+  // is what pulls in the symbols these flags resolve. CULEBRA_SSL_LINK is ""
+  // when Http is disabled at build time.
   std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
@@ -458,9 +487,10 @@ int run_build(const BuildOptions& opts) {
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} -o {}", cc, extra,
-                                shq(obj), shq(lib), tensor_lib, dead_strip,
-                                no_pie, libcxx, blas, ssl, shq(opts.output));
+  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} {} -o {}", cc,
+                                extra, shq(obj), shq(lib), tensor_lib, http_lib,
+                                dead_strip, no_pie, libcxx, blas, ssl,
+                                shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

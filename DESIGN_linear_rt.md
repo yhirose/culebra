@@ -88,14 +88,36 @@ Tensor entry set (weak-stub in core / strong-real in tensor):
 Everything else stays strong in core.
 
 ## Phasing
-1. **Tensor axis first** (clean: explicit runtime symbols). Collapse
-   tensor variants → weak/strong split. 4 archives → 2 (http axis still
-   variant-based temporarily, i.e. core comes in {http, no_http} until
-   phase 2). Prove no-tensor AOT links sans BLAS + tensor AOT works.
-2. **Http axis** — messier: no extern-C runtime, the ssl/zlib choke is
-   `httplib::Client` inside the Http namespace method bodies in
-   stdlib_interp.h / stdlib_jit.h. Factor those bodies into an http TU.
-   Then N+1 = core + tensor + http = 3.
+1. **Tensor axis** — DONE (commit 3c7666f). Single choke
+   `tensor_eval_node` weak in core / strong in culebra_rt_tensor.cc,
+   force-loaded on Tensor use. 4 → 3 archives.
+2. **Http axis** — DONE. Turned out to ALSO be a single choke:
+   `culebra::http::http_request` (http.h:176) is the only code that
+   instantiates `httplib::Client`, so the same recipe applies. Verified
+   that merely including httplib.h (no Client use) references zero
+   ssl/zlib symbols, so the weak stub keeps core clean. core now carries
+   weak stubs for BOTH chokes; culebra_rt_http.cc holds the strong
+   http_request. The no_http variant is gone → **N+1 = core + tensor +
+   http = 3** (was 2^2 = 4).
+
+Verified (macOS): no-feature AOT binary links neither Accelerate nor
+OpenSSL/zlib; tensor links Accelerate only; http links OpenSSL/zlib only;
+AOT==JIT for 91/91 tests/*.cul; the strong http_request runs in AOT (real
+"connection refused", not the stub message).
+
+Also fixed an exposed latent race: materialize_archive's check-then-write
+let concurrent `culebra build` invocations read a half-written shared
+archive. Now writes a per-pid temp + atomic rename. (More likely to bite
+now that one core archive serves every program.)
+
+## Remaining / cleanup
+- The `#ifdef CULEBRA_RT_NO_TENSOR` / `CULEBRA_RT_NO_HTTP` blocks in
+  jit.h / stdlib_*.h / tensor.h are now dead (no target defines them; the
+  real branch always wins). Harmless but should be removed in a cleanup
+  pass — deferred to avoid churn while other sessions edit jit.h.
+- Linux: force-load uses `--whole-archive`; needs CI verification (the
+  weak-override + whole-archive path is GNU ld, untested here).
+- DELETE this file + run_aot_regression.sh before merging to master.
 
 ## Open risks
 - Linux force-load equivalent (`--whole-archive`/`-u`) — CI both OSes.
