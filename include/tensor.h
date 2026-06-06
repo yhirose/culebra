@@ -1023,7 +1023,7 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
 // is_evaluated() short-circuits shared subgraphs so each node runs
 // exactly once across an eval batch (and across re-evals).
 CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
-#if defined(CULEBRA_RT_NO_TENSOR) || defined(CULEBRA_RT_TENSOR_EVAL_WEAK)
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
   // The core runtime archive links no BLAS. This is the single entry to every
   // tensor kernel (cblas lives below here), so stubbing it keeps cblas out of
   // the archive. The Tensor namespace and the culebra_runtime_tensor_* helpers
@@ -1031,10 +1031,10 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
   // stub body the _tensor_run_* kernels go unreferenced and are never emitted.
   // The strong override (CULEBRA_RT_TENSOR_EVAL_STRONG) is force-loaded when the
   // program uses Tensor; this stub then never runs. Throw defensively in case
-  // that invariant ever breaks — mirrors the JIT-side _no_tensor_abort() stubs.
+  // that invariant ever breaks.
   (void)t;
   throw CulebraError("InternalError",
-                     "tensor runtime entered in NO_TENSOR binary", 0, 0);
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
 #else
   if (t.is_evaluated()) return;
   for (auto& in : t.inputs) tensor_eval_node(*in);
@@ -1068,7 +1068,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
     case Op::Const:
       break;  // unreachable: Const is_evaluated() above
   }
-#endif  // CULEBRA_RT_NO_TENSOR
+#endif  // CULEBRA_RT_TENSOR_EVAL_WEAK
 }
 
 // "Tensor 3x4 f32" — used by interp and (in M1.1) JIT puts/str paths.

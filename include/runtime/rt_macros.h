@@ -24,10 +24,8 @@
 #define CULEBRA_RT_INLINE inline
 #endif
 
-// `CULEBRA_RT_NO_TENSOR` flips tensor entry points into nullptr / no-op
-// stubs so the static reachability chain from `culebra_runtime_num_add`
-// → `_try_tensor_binop` → `culebra::tensor_binop` → cblas is broken.
-// `src/runtime/culebra_rt.cc` builds the regular `libculebra_rt.a`;
-// the same source compiled with this macro becomes
-// `libculebra_rt_no_tensor.a`, which AOT-built CLIs that never
-// reference Tensor link against (skipping Accelerate / BLAS entirely).
+// The cblas / OpenSSL reachability chains are broken per-feature by a
+// single weak choke stub in the core archive (culebra::tensor_eval_node,
+// culebra::http::http_request), with the strong body force-loaded from a
+// feature object only when the program uses it. See DESIGN_linear_rt.md
+// and the CULEBRA_RT_TENSOR_EVAL_* / CULEBRA_RT_HTTP_REQUEST_* gates.

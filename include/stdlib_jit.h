@@ -10,7 +10,7 @@
 
 #include <jit.h>
 #include <proc.h>
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
+#if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
 #endif
 #include <shared.h>
@@ -1548,7 +1548,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
           reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
 }
 
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
+#if defined(CULEBRA_HTTP_ENABLED)
 // Defined later; the response object's `json` method needs it before its def.
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
     JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity);
@@ -2284,11 +2284,9 @@ inline bool require_bool(JitValue v, const char* param) {
 inline JitArray* take_array(JitValue v) {
   return v.tag == TAG_ARRAY ? reinterpret_cast<JitArray*>(v.data) : nullptr;
 }
-#ifndef CULEBRA_RT_NO_TENSOR
 inline JitTensor* take_tensor(JitValue v) {
   return v.tag == TAG_TENSOR ? reinterpret_cast<JitTensor*>(v.data) : nullptr;
 }
-#endif
 inline JitObject* take_object(JitValue v) {
   return v.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(v.data) : nullptr;
 }
@@ -2314,11 +2312,9 @@ inline JitValue v_array(JitArray* a)     {
 inline JitValue v_object(JitObject* o)   {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
 }
-#ifndef CULEBRA_RT_NO_TENSOR
 inline JitValue v_tensor(JitTensor* t)   {
   return {TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
-#endif
 
 }  // namespace _ns_adapt
 
@@ -2733,7 +2729,7 @@ inline JitValue _ns_proc_race(JitValue* a, int64_t) {
   return culebra_runtime_proc_race(a[0].tag, a[0].data, 0, 0);
 }
 
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
+#if defined(CULEBRA_HTTP_ENABLED)
 namespace _http_adapt {
 // Fill `headers`/`timeout`/`follow_redirects`/`params` from the slab into
 // `req`. Layout from `base`: headers, timeout, follow_redirects, into (read by
@@ -3199,7 +3195,6 @@ inline JitValue _ns_encoding_url_decode(JitValue* a, int64_t) {
       _culebra_heap_str(culebra::url_decode(_ns_adapt::require_sv(a[0], "s"))));
 }
 
-#ifndef CULEBRA_RT_NO_TENSOR
 // Tensor
 inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
@@ -3229,7 +3224,6 @@ inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
   }
   return _ns_adapt::v_nil();
 }
-#endif  // CULEBRA_RT_NO_TENSOR
 
 // --- The dispatch table ---
 
@@ -3651,7 +3645,7 @@ inline const NsMethod kNsMethods[] = {
   {"Proc",   "race",  1, &_ns_proc_race},
   {"Proc",   "spawn", 1, &_ns_proc_spawn},
 
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
+#if defined(CULEBRA_HTTP_ENABLED)
   {"Http",   "get",     1, &_ns_http_get},
   {"Http",   "delete",  1, &_ns_http_delete},
   {"Http",   "head",    1, &_ns_http_head},
@@ -3687,14 +3681,12 @@ inline const NsMethod kNsMethods[] = {
   {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
   {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
 
-#ifndef CULEBRA_RT_NO_TENSOR
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
-#endif
 };
 
 // Namespace-level constants (Math.pi, etc). Slot values are immutable
@@ -5782,7 +5774,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Encoding", "SharedBuffer",
-#if defined(CULEBRA_HTTP_ENABLED) && !defined(CULEBRA_RT_NO_HTTP)
+#if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif
   };

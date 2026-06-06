@@ -764,12 +764,10 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       s += "}";
       return s;
     }
-#ifndef CULEBRA_RT_NO_TENSOR
     case TAG_TENSOR: {
       auto* t = reinterpret_cast<JitTensor*>(data);
       return tensor_str(*t->impl);
     }
-#endif
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
       _JitStrGuard guard(obj);
@@ -1954,14 +1952,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_binop(
 // lands in M2.1.
 inline std::optional<JitValue> _try_tensor_binop(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int op_id) {
-#ifdef CULEBRA_RT_NO_TENSOR
-  (void)lt; (void)ld; (void)rt; (void)rd; (void)op_id;
-  return std::nullopt;
-#else
   if (lt != TAG_TENSOR && rt != TAG_TENSOR) return std::nullopt;
   auto* t = culebra_runtime_tensor_binop(lt, ld, rt, rd, op_id);
   return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(t)};
-#endif
 }
 
 #define CUL_NUM_BINOP(name, opstr, method, expr, reflect, op_id)        \
@@ -2129,10 +2122,6 @@ CUL_DEF_ORD_OP(geq, >=,
 inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
                                     int8_t rt, int64_t rd,
                                     culebra::Op op) {
-#ifdef CULEBRA_RT_NO_TENSOR
-  (void)lt; (void)ld; (void)rt; (void)rd; (void)op;
-  return {TAG_NIL, 0};
-#else
   auto* lhs_t = reinterpret_cast<JitTensor*>(ld);
   culebra::TensorPtr rhs;
   if (rt == TAG_TENSOR) {
@@ -2146,7 +2135,6 @@ inline JitValue _try_tensor_inplace(int8_t lt, int64_t ld,
     return {lt, ld};
   }
   return {TAG_NIL, 0};  // sentinel: in-place did not run
-#endif
 }
 
 #define CUL_NUM_INPLACE(name, op_enum)                                  \
@@ -2623,61 +2611,6 @@ _culebra_parse_tensor_ctor_args(const JitValue* args, int64_t n, int64_t line,
   return {dt, culebra::TensorShape(std::move(dims))};
 }
 
-#ifdef CULEBRA_RT_NO_TENSOR
-
-// Stub block: polymorphic dispatch (e.g. `Array.slice` / `Array.shape`
-// in compile_call) statically references the TAG_TENSOR branch even
-// when AST scan reports no Tensor use. These stubs satisfy the linker
-// without dragging in tensor.h / cblas; at runtime no tensor value
-// can be created in a NO_TENSOR binary so the branches stay
-// unreachable. Bodies throw defensively in case that invariant ever
-// breaks — the AOT bootstrap catches CulebraError and produces the
-// same diagnostic format as `JIT::exec`.
-
-[[noreturn]] inline void _no_tensor_abort() {
-  throw culebra::CulebraError(
-      "InternalError",
-      "tensor runtime entered in NO_TENSOR binary", 0, 0);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_zeros(
-    const JitValue*, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_ones(
-    const JitValue*, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_randn(
-    const JitValue*, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from(
-    JitArray*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_shape(
-    JitTensor*) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_binop(
-    int8_t, int64_t, int8_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tensor_eval_one(
-    JitTensor*) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_transpose(
-    JitTensor*) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
-    JitTensor*) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_slice(
-    JitTensor*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
-    JitTensor*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from_csv(
-    const char*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_dot(
-    JitTensor*, JitTensor*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_unary(
-    JitTensor*, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_linear_sigmoid(
-    JitTensor*, JitTensor*, JitTensor*, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reduce_axis(
-    JitTensor*, int64_t, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_reduce_all(
-    JitTensor*, int64_t, int64_t, int64_t) { _no_tensor_abort(); }
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
-    JitTensor*, JitArray*) { _no_tensor_abort(); }
-
-#else  // !CULEBRA_RT_NO_TENSOR
 
 inline JitTensor* _culebra_jit_tensor_register(culebra::TensorPtr impl) {
   auto* t = new JitTensor{1, -1, std::move(impl)};
@@ -2894,7 +2827,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reshape(
       t->impl, culebra::TensorShape(std::move(new_dims))));
 }
 
-#endif  // !CULEBRA_RT_NO_TENSOR
 
 // --- Object runtime ---
 
@@ -4811,11 +4743,9 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       delete o;
       break;
     }
-#ifndef CULEBRA_RT_NO_TENSOR
     case GC_TAG_TENSOR:
       delete static_cast<JitTensor*>(obj);  // ~JitTensor drops the shared_ptr
       break;
-#endif
     case GC_TAG_SET: {
       auto* s = static_cast<JitSet*>(obj);
       delete s->index;
@@ -7476,7 +7406,6 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       }
       break;
     }
-#ifndef CULEBRA_RT_NO_TENSOR
     case GC_TAG_TENSOR: {
       auto* t = reinterpret_cast<JitTensor*>(data);
       if (--t->refcount == 0) {
@@ -7485,7 +7414,6 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
       }
       break;
     }
-#endif
     case GC_TAG_SET: {
       auto* s = reinterpret_cast<JitSet*>(data);
       if (--s->refcount == 0) {
