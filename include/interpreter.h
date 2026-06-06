@@ -2544,6 +2544,19 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                                  return Value();
                                }
                              }
+                             // erase(key) on an EMPTY unordered_map skips
+                             // hashing on libstdc++ (but not libc++), so the
+                             // ValueHash unhashable-type throw wouldn't fire
+                             // there — an unhashable key (Function/Array/...)
+                             // would silently no-op on Linux and throw on
+                             // macOS. Reject it explicitly so remove() is
+                             // consistent across stdlibs and matches the JIT
+                             // (which always throws). A non-empty map hashes in
+                             // erase() on both, so only the empty case needs it.
+                             if (obj.non_string_props->empty()) {
+                               (void)ValueHash{}(key);  // throws if unhashable
+                               return Value();
+                             }
                              if (obj.non_string_props->erase(key) > 0) {
                                // Same: drop matching entry from key_order.
                                auto& ko = *obj.key_order;
