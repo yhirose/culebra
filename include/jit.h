@@ -4468,6 +4468,17 @@ inline bool (*_jit_ns_kwarg_hook)(
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) = nullptr;
 
+// stdlib_jit.h installs this hook so an ns-method closure passed as a HOF
+// callback is arity-gated by its real declared bounds. ns-method closures
+// share one trampoline fn_ptr (so they carry no per-fn JitParamMeta) and a
+// kwarg-capable method is created with JIT_VARIADIC_ARITY, which would
+// otherwise accept any callback arity. The hook writes the method's
+// callback bounds (cb_max < 0 = variadic) derived from the SAME canonical
+// params the interp's check_callback_arity reads, and returns true; it
+// returns false for non-ns closures so the regular path runs.
+inline bool (*_jit_ns_callback_arity_hook)(
+    JitClosure* cls, long* cb_min, long* cb_max) = nullptr;
+
 // Enforce kw-only at runtime for dynamic-callee positional calls.
 // `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
 // kw-only slot positionally without the compile-time static check
@@ -5211,6 +5222,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     }
   };
 
+  // Validate `**` splat operands up front — before the multifn dispatcher
+  // branch / ns hook / meta lookup. A non-Object or non-String-keyed operand
+  // must raise the interp's TypeError ("**: splat operand must be Object" /
+  // "**: splat key must be String"), not be silently skipped while building
+  // the dispatcher's kwarg key set and then surface as a DispatchError.
+  for (int64_t i = 0; i < n_splat; i++) {
+    auto sv = splat_objs[i];
+    if (sv.tag != TAG_OBJECT) {
+      release_owned();
+      throw culebra::CulebraError("TypeError", std::format(
+          "**: splat operand must be Object, got {}",
+          _culebra_tag_name(sv.tag)), line, col);
+    }
+    auto* obj = reinterpret_cast<JitObject*>(sv.data);
+    if (obj->non_string_props && !obj->non_string_props->empty()) {
+      release_owned();
+      throw culebra::CulebraError("TypeError",
+          "**: splat key must be String", line, col);
+    }
+  }
+
   // Multifn dispatchers route through here too: their fn_ptr has no
   // JitParamMeta (kwargs flow on top of the existing positional pick,
   // Julia kwsorter style). Pick on positional types, then recurse
@@ -5252,23 +5284,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
         "function does not accept keyword arguments", line, col);
   }
 
-  // Validate splat operands and merge each Object's String-keyed
-  // entries into a single name → JitValue map.
+  // Merge each splat Object's String-keyed entries into a single
+  // name → JitValue map. Operands were already validated (Object +
+  // String keys) at function entry, so no re-check here.
   std::unordered_map<std::string_view, JitValue> merged;
   for (int64_t i = 0; i < n_splat; i++) {
-    auto sv = splat_objs[i];
-    if (sv.tag != TAG_OBJECT) {
-      release_owned();
-      throw culebra::CulebraError("TypeError", std::format(
-          "**: splat operand must be Object, got {}",
-          _culebra_tag_name(sv.tag)), line, col);
-    }
-    auto* obj = reinterpret_cast<JitObject*>(sv.data);
-    if (obj->non_string_props && !obj->non_string_props->empty()) {
-      release_owned();
-      throw culebra::CulebraError("TypeError",
-          "**: splat key must be String", line, col);
-    }
+    auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
     if (!obj->shape) continue;
     for (size_t k = 0; k < obj->shape->names.size(); k++) {
       // Retain each value so the merged map owns +1; the matching
@@ -6647,6 +6668,18 @@ inline JitValue _culebra_callable_adapter(JitClosure* self, JitValue,
 // the real arity. A user closure consults its registered param meta's
 // cb_min/cb_max; absent meta (rare) falls back to exact match.
 inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
+  // ns-method closures share one trampoline fn_ptr (no per-fn JitParamMeta)
+  // and a kwarg-capable method is JIT_VARIADIC_ARITY, which would wrongly
+  // accept any callback arity. Consult the hook for its real bounds first so
+  // e.g. `map(JSON.stringify)` (1 required + 1 optional) is rejected like the
+  // interp's gate.
+  if (_jit_ns_callback_arity_hook) {
+    long cb_min, cb_max;
+    if (_jit_ns_callback_arity_hook(cls, &cb_min, &cb_max)) {
+      return culebra::callback_arity_accepts(cb_min, cb_max,
+                                             static_cast<long>(expected));
+    }
+  }
   if (cls->arity == JIT_VARIADIC_ARITY) return true;
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);
   if (meta) {
@@ -17127,16 +17160,18 @@ struct JIT {
         saw_named = true;
         auto name = child->nodes[0]->token;
         if (!seen_explicit.insert(name).second) {
+          // Report at the offending keyword's own position (the interp points
+          // at the duplicate KWARG node via split_call_args, not the call site).
           emit_throw_error("TypeError",
               std::format("duplicate keyword argument '{}'", name),
-              argsAst.line, argsAst.column);
+              child->line, child->column);
         }
         explicit_kwargs.emplace_back(name, child->nodes[1].get());
       } else {
         if (saw_named) {
           emit_throw_error("SyntaxError",
               "positional argument follows keyword argument",
-              argsAst.line, argsAst.column);
+              child->line, child->column);
         }
         positional.push_back(child.get());
       }
@@ -17293,16 +17328,17 @@ struct JIT {
         saw_named = true;
         auto name = child->nodes[0]->token;
         if (!seen_explicit.insert(name).second) {
+          // Offending keyword's own position (interp parity — see split_call_args).
           emit_throw_error("TypeError",
               std::format("duplicate keyword argument '{}'", name),
-              argsAst.line, argsAst.column);
+              child->line, child->column);
         }
         explicit_kwargs.emplace_back(name, child->nodes[1].get());
       } else {
         if (saw_named) {
           emit_throw_error("SyntaxError",
               "positional argument follows keyword argument",
-              argsAst.line, argsAst.column);
+              child->line, child->column);
         }
         positional.push_back(child.get());
       }

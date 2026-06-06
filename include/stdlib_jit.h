@@ -4067,9 +4067,28 @@ inline bool _jit_ns_kwarg_resolve(
                                     out);
 }
 
-// Install the kwarg hook once, before any JIT call runs.
+// Callback-arity bounds for an ns-method closure handed to a HOF. Derives
+// (cb_min, cb_max) from the SAME canonical params interp's check_callback_arity
+// reads (builtin_arity_bounds over _canon_params), so both backends gate an
+// ns-method callback identically. Returns false for non-ns closures.
+inline bool _jit_ns_callback_arity(JitClosure* cls, long* cb_min, long* cb_max) {
+  if (cls->fn_ptr != reinterpret_cast<void*>(_jit_ns_method_trampoline)) {
+    return false;
+  }
+  const auto* m = reinterpret_cast<const NsMethod*>(
+      cls->captures[0]->value.data);
+  const auto* cps = _canon_params(m);
+  if (!cps) return false;  // no canonical params → fall back to closure arity
+  auto b = culebra::builtin_arity_bounds(*cps);
+  *cb_min = b.min;
+  *cb_max = b.variadic ? -1 : b.max;
+  return true;
+}
+
+// Install the kwarg + callback-arity hooks once, before any JIT call runs.
 inline const bool _jit_ns_kwarg_hook_installed = [] {
   _jit_ns_kwarg_hook = &_jit_ns_kwarg_resolve;
+  _jit_ns_callback_arity_hook = &_jit_ns_callback_arity;
   return true;
 }();
 

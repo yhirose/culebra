@@ -546,6 +546,15 @@ struct FunctionValue {
   // Opaque `shared_ptr<void>` to dodge the order cycle (MultiMethod is
   // defined later, inside Interpreter); eval_multifn_decl casts it back.
   std::shared_ptr<void> multimethod_table;
+  // For a multimethod dispatcher handed to a higher-order builtin: true if
+  // SOME overload can be invoked with `expected` positional args (the
+  // callback-arity gate). The dispatcher's own synthetic `**__KWARGS__`
+  // params don't reflect the overloads' real arities, and a free function
+  // (check_callback_arity) can't decode multimethod_table since MultiMethod
+  // is defined later — so eval_multifn_decl bakes this predicate, closing
+  // over the shared (live) method table so later overloads are reflected.
+  // Empty for non-dispatchers. See [[project_jit_error_symmetry]].
+  std::function<bool(long expected)> multimethod_accepts_arity;
   // True for the wrapper produced by _wrap_method_with_this around a
   // built-in method (Array/String/Set/...). Built-in methods parse their
   // args positionally and never accept kwargs; the call site uses this to
@@ -2694,6 +2703,18 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
 // line/col.
 inline void check_callback_arity(const FunctionValue& f, long expected,
                                  std::string_view method) {
+  // A multimethod dispatcher accepts the callback if ANY overload can be
+  // invoked with `expected` positional args; the per-element call then
+  // dispatches to the matching overload (the JIT accepts the same way). Its
+  // own synthetic `**__KWARGS__` params don't reflect the overloads' arities.
+  if (f.multimethod_accepts_arity) {
+    if (!f.multimethod_accepts_arity(expected)) {
+      throw CulebraError("TypeError",
+          std::format("type error: {} expects a {}-parameter function",
+                      method, expected));
+    }
+    return;
+  }
   auto b = builtin_arity_bounds(*f.params);
   long cb_max = b.variadic ? -1 : b.max;
   if (!callback_arity_accepts(b.min, cb_max, expected)) {
@@ -5480,6 +5501,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     dispatcher.get<FunctionValue>().introspection_target = first_method_snapshot;
     dispatcher.get<FunctionValue>().multimethod_table =
         std::static_pointer_cast<void>(methods);
+    // Callback-arity gate: accept if any overload takes `expected` positional
+    // args. Closes over the shared `methods` table so overloads appended after
+    // this decl are reflected without rebuilding the predicate.
+    dispatcher.get<FunctionValue>().multimethod_accepts_arity =
+        [methods](long expected) {
+          for (const auto& m : *methods) {
+            long cb_max = m.variadic ? -1 : static_cast<long>(m.param_types.size());
+            if (callback_arity_accepts(static_cast<long>(m.min_params), cb_max,
+                                       expected))
+              return true;
+          }
+          return false;
+        };
     env->initialize(name_view, dispatcher, false);
     return Value();
   }

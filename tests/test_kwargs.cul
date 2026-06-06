@@ -210,4 +210,34 @@ let e7 = try {
 } catch e { e }
 assert_true(e7.kind == 'TypeError' && e7.message.contains('splat key'))
 
+# A `**` splat whose ONLY effect is the bad operand (no positional to dispatch
+# on) must still report the splat type error, not a DispatchError — the JIT
+# used to validate the splat only after picking an overload, so a non-Object
+# operand with nothing else to match on surfaced as "no matching method".
+# Validation now runs up front, before dispatch, on both backends.
+fn one(a) { a }
+let s1 = try { one(**[1, 2]); nil } catch e { e }
+assert_true(s1.kind == 'TypeError' && s1.message.contains('splat operand'))
+let s2 = try { one(**5); nil } catch e { e }
+assert_true(s2.kind == 'TypeError' && s2.message.contains('splat operand'))
+let s3 = try {
+  let o = {}
+  o[1] = 2
+  one(**o)
+  nil
+} catch e { e }
+assert_true(s3.kind == 'TypeError' && s3.message.contains('splat key'))
+
+# A duplicate / misplaced keyword reports at the offending argument's own
+# position on both backends (the JIT used to point at the call site). The
+# position itself is held symmetric by the interp==jit invariant; here we
+# pin the kind + message.
+fn pos2(a, b) { [a, b] }
+let p1 = try { pos2(a: 1, a: 2); nil } catch e { e }
+assert_eq(p1.kind, 'TypeError')
+assert_true(p1.message.contains('duplicate'))
+let p2 = try { pos2(b: 1, 2); nil } catch e { e }
+assert_eq(p2.kind, 'SyntaxError')
+assert_true(p2.message.contains('positional argument follows'))
+
 IO.puts('test_kwargs OK')

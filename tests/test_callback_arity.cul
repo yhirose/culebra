@@ -107,3 +107,36 @@ assert_eq([1, 2].reduce(0, fn (acc, x, c = 5, *xs) { acc + x + c }), 13)
 # A direct call is the reference semantics the callback path now matches.
 let g = fn (a, b = 9, *xs) { b }
 assert_eq(g(1), 9)
+
+# --- Named free functions / multimethods as callbacks -----------------------
+# A named free function resolves to a multimethod dispatcher value; the gate
+# now reads the overloads' real arities (it used to read the dispatcher's
+# synthetic `**__KWARGS__` params and reject every named-fn callback, while
+# the JIT accepted them — a backend split). Accept iff some overload takes the
+# supplied arg count; the per-element call dispatches to it.
+fn dbl(a) { a * 2 }
+assert_eq([1, 2, 3].map(dbl), [2, 4, 6])              # single-method, 1 param
+let alias = dbl
+assert_eq([1, 2].map(alias), [2, 4])                  # via let-binding
+fn vararg(a, *xs) { [a, xs] }
+assert_eq([1, 2].map(vararg), [[1, []], [2, []]])     # variadic overload accepted
+
+# An overloaded name: the 1-arg overload is picked per element.
+fn ov(a) { a + 1 }
+fn ov(a, b) { a + b }
+assert_eq([10, 20].map(ov), [11, 21])
+
+# No overload taking 1 arg → rejected at the HOF entry (both backends).
+fn needs2(a, b) { a + b }
+let rn = try { [1, 2].map(needs2); nil } catch e { e }
+assert_eq(rn.kind, 'TypeError')
+assert_eq(rn.message, 'type error: map expects a 1-parameter function')
+
+# --- A multi-arg stdlib method as a 1-arg callback is rejected ---------------
+# JSON.stringify is (value, indent=0, sort_keys=false, lines=false): max arity
+# 4, so a 1-arg `map` callback doesn't match (expected == max is false). The
+# JIT used to accept it (its ns-method closure was JIT_VARIADIC_ARITY); it now
+# gates on the method's real declared bounds like the interp.
+let rj = try { [1, 2].map(JSON.stringify); nil } catch e { e }
+assert_eq(rj.kind, 'TypeError')
+assert_eq(rj.message, 'type error: map expects a 1-parameter function')
