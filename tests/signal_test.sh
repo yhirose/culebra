@@ -95,23 +95,84 @@ check_stdin() {
   fi
 }
 
+# A request blocked waiting on a server that accepts but never responds is
+# interruptible by a single Ctrl+C, not just the force-killing second press (a
+# watcher thread calls Client::stop() to shut the in-flight socket). Needs
+# python3 for a hang-server; skipped otherwise.
+HAVE_PY=0
+command -v python3 >/dev/null 2>&1 && HAVE_PY=1
+
+cat > "$TMP/hang_server.py" <<'EOF'
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(1)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))   # report the chosen port to the parent
+c, _ = s.accept()                       # accept, then hang (never reply)
+time.sleep(60)
+EOF
+
+cat > "$TMP/http.cul" <<'EOF'
+defer { IO.eprint("DEFER\n") }
+let port = IO.read_all().trim()
+let resp = Http.get("http://127.0.0.1:{port}/", timeout: 60000)
+IO.eprint("GOT {resp.status}\n")
+EOF
+
+# check_http <desc> -- <command...>
+# Starts a server that accepts then hangs, runs the program (port fed on stdin)
+# so it blocks in Http.get, then sends SIGINT. Expects an uncaught Interrupted:
+# the defer runs and it exits 130 — without ever getting a response ("GOT").
+check_http() {
+  local desc="$1"; shift
+  [ "$1" = "--" ] && shift
+  if [ "$HAVE_PY" != 1 ]; then echo "skip [$desc] (no python3)"; return; fi
+  local portf="$TMP/port"
+  rm -f "$portf"
+  python3 "$TMP/hang_server.py" "$portf" & local spid=$!
+  local i; for i in $(seq 1 50); do [ -s "$portf" ] && break; sleep 0.1; done
+  if [ ! -s "$portf" ]; then
+    echo "FAIL [$desc]: hang-server never reported a port"; fail=1
+    kill "$spid" 2>/dev/null; return
+  fi
+  echo "$(cat "$portf")" | "$@" > "$TMP/out" 2>&1 & local pid=$!
+  sleep 1.5
+  kill -INT "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  local code=$?
+  kill "$spid" 2>/dev/null; rm -f "$portf"
+  local out; out="$(tr '\n' '|' < "$TMP/out")"
+  if [ "$code" = 130 ] && [ "$out" = 'DEFER|interrupted|' ]; then
+    echo "ok [$desc]"
+  else
+    echo "FAIL [$desc]: exit=$code out='$out' (want exit=130 out='DEFER|interrupted|')"
+    fail=1
+  fi
+}
+
 # --- interpreter ---
 check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" "$TMP/uncaught.cul"
 check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" "$TMP/caught.cul"
 check_stdin "interp stdin" -- "$CULEBRA" "$TMP/stdin.cul"
+check_http  "interp http"  -- "$CULEBRA" "$TMP/http.cul"
 
 # --- JIT ---
 check "jit uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/uncaught.cul"
 check "jit caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/caught.cul"
 check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
+check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
 
 # --- AOT (skip if this build can't produce binaries) ---
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
-   && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1; then
+   && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1; then
   check "aot uncaught" 130 "$UNCAUGHT_OUT" -- "$TMP/uncaught_aot"
   check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
   check_stdin "aot stdin" -- "$TMP/stdin_aot"
+  check_http  "aot http"  -- "$TMP/http_aot"
 else
   echo "skip [aot] (culebra build unavailable)"
 fi

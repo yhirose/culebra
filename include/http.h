@@ -16,12 +16,19 @@
 // set by the build). The same code path serves a future BoringSSL swap — that
 // is purely a link-time decision and does not touch this file.
 
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <httplib.h>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 
 namespace culebra::http {
 
@@ -247,7 +254,50 @@ inline HttpResult http_request(const HttpRequest& req) {
                                    uint64_t) { return req.body_sink(data, len); };
   }
 
+  // Cooperative Ctrl+C / isolate-cancel. send() blocks deep in the socket layer
+  // (connect, response-header wait, body) — not a runtime safepoint, and the
+  // internal poll/select swallow EINTR, so a single SIGINT couldn't break a hung
+  // request (only the second, force-killing press). A watcher thread polls the
+  // interrupt flag and, when it fires, calls cli.stop() — cpp-httplib's
+  // documented thread-safe way to shut down an in-flight socket so the blocked
+  // send() errors out. send() itself stays on THIS thread so the streaming
+  // callbacks (body_sink/body_source, which call back into culebra) keep running
+  // on the thread that owns the interpreter/JIT state. The flag is read, never
+  // consumed, here; after send() returns, throw_if_interrupted() honors a pending
+  // interrupt with the same cooperative Interrupted the loop safepoint raises.
+  // The watcher checks the process SIGINT flag and this thread's isolate-cancel
+  // flag (captured now — the watcher runs on a different thread, so its own
+  // current_runtime() would be the wrong one).
+  auto* isolate_flag = current_runtime().interrupt_flag;
+  std::mutex watch_m;
+  std::condition_variable watch_cv;
+  bool watch_done = false;
+  std::thread watcher([&] {
+    auto fired = [&] {
+      if (culebra_g_sigint.load(std::memory_order_relaxed)) return true;
+      return isolate_flag && isolate_flag != &culebra_g_sigint &&
+             isolate_flag->load(std::memory_order_relaxed);
+    };
+    std::unique_lock<std::mutex> lk(watch_m);
+    while (!watch_done) {
+      watch_cv.wait_for(lk, std::chrono::milliseconds(50));
+      if (watch_done) break;
+      // Keep calling stop() (not just once) so we still catch the socket if the
+      // interrupt fires before it opens — e.g. mid DNS/connect.
+      if (fired()) cli.stop();
+    }
+  });
+
   auto res = cli.send(hreq);
+
+  {
+    std::lock_guard<std::mutex> lk(watch_m);
+    watch_done = true;
+  }
+  watch_cv.notify_all();
+  watcher.join();
+  throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
+
   if (!res) {
     out.error = "Http: " + httplib::to_string(res.error());
     return out;
