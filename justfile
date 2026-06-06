@@ -15,12 +15,15 @@ build *extra:
 
 # Fast dev build: LTO off (saves ~15-25 s link), still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
+# CULEBRA_DEV_NO_RT skips the four AOT runtime archives (each a full
+# culebra_rt.cc recompile), so a header touch rebuilds one TU instead of
+# five. `culebra build` (AOT) is disabled here — use `just build` for it.
 # Pair with ccache (auto-detected by CMake) for near-instant rebuilds
 # when only ephemeral mtimes changed.
 [group("build")]
 dev *extra:
     mkdir -p build-dev
-    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
+    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
     cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Build without JIT (interpreter only, no LLVM)

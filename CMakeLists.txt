@@ -39,6 +39,13 @@ endif()
 # 14, Clang vs GCC) and chokes on cross-version LTO bitcode. Object
 # code only for archives keeps `culebra build` portable.
 option(CULEBRA_LTO "Enable ThinLTO for the culebra driver (Release)" ON)
+# Inner-loop dev switch: skip building+embedding the four AOT runtime
+# archives. Each archive is a full recompile of culebra_rt.cc (which
+# pulls in the interpreter + JIT headers), so embedding all four turns a
+# single-TU header touch into a five-TU rebuild. With this ON, only
+# main.cc recompiles + relinks; `culebra build` (AOT) then errors
+# cleanly. `just dev` passes this; `just build`/`just test all` do not.
+option(CULEBRA_DEV_NO_RT "Skip AOT runtime archives for fast inner-loop builds" OFF)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err)
 if(CULEBRA_LTO AND _ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -206,6 +213,25 @@ if(CULEBRA_ENABLE_JIT)
   # platform (no-op on macOS).
   set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
 
+  if(CULEBRA_DEV_NO_RT)
+  # Fast inner-loop build: don't compile or embed the runtime archives.
+  # Provide a stub culebra_rt_assets.h so main.cc still links; an empty
+  # CulebraRT::FS makes `culebra build` (AOT) fail with a clear
+  # "embedded runtime archive ... not found" instead of crashing.
+  set(_dev_rt_stub_dir "${CMAKE_CURRENT_BINARY_DIR}/dev_rt_stub")
+  file(WRITE "${_dev_rt_stub_dir}/culebra_rt_assets.h"
+"// Auto-generated dev stub (CULEBRA_DEV_NO_RT). No AOT runtime embedded.
+#pragma once
+#include <cpp-embedlib/cpp-embedlib.h>
+#include <span>
+namespace CulebraRT {
+inline constexpr std::span<const ::cpp_embedlib::detail::StorageEntry> _entries{};
+inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
+} // namespace CulebraRT
+")
+  target_include_directories(culebra PRIVATE "${_dev_rt_stub_dir}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-embedlib/include")
+  else()
   # Static archive of the runtime helpers used by AOT-built CLI
   # binaries. `culebra build foo.cul -o foo` emits an object that
   # references `culebra_runtime_*` symbols; the link step pulls those
@@ -301,6 +327,7 @@ if(CULEBRA_ENABLE_JIT)
   add_dependencies(culebra_rt_assets culebra_rt culebra_rt_no_tensor
     culebra_rt_no_http culebra_rt_no_tensor_no_http)
   target_link_libraries(culebra culebra_rt_assets)
+  endif()
 endif()
 
 # Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
