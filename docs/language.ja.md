@@ -2371,6 +2371,14 @@ kill するのではなく、Python の `KeyboardInterrupt` と同じモデル�
 * 1回目が未処理のまま（safepoint に到達しない wedged なプログラム）の
   2回目の Ctrl+C は、デフォルト動作で強制終了します。
 
+REPL では Ctrl+C は実行中の評価を中断してプロンプトに戻ります（セッション
+を終了させません。`Interrupted` を read-eval ループが catch します）。wedged
+な評価中の 2 回目の押下は従来どおり強制終了します。
+
+Ctrl+C を throw でなく「値」として受け取りたい場合（長時間サービスの graceful
+shutdown パターン）は、`Signal.notify` でチャネルを登録します（stdlib ガイドの
+*Signal* セクション参照）。
+
 挙動はインタプリタ / JIT / AOT バイナリで同一です。`Interrupted` は
 ソース位置を持ちません（`line`/`col` は `0`）— 割り込みは非同期で、
 特定の式に紐づかないためです。

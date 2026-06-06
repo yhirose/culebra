@@ -2914,6 +2914,25 @@ inline JitValue _ns_channel_fan_in(JitValue* a, int64_t n) {
   return culebra_jit_channel_fan_in(n, a, 0, 0);
 }
 
+// Signal.notify(tx) / Signal.reset() — JIT mirror of make_signal_namespace.
+inline JitValue _ns_signal_notify(JitValue* a, int64_t n) {
+  bool ok = n >= 1 && a[0].tag == TAG_OBJECT;
+  JitObject* o = ok ? reinterpret_cast<JitObject*>(a[0].data) : nullptr;
+  if (!ok ||
+      o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
+      o->slots[o->find_slot("__channel_role__")].value.data != 0) {
+    throw culebra::CulebraError(
+        "TypeError", "Signal.notify: argument must be a channel tx endpoint", 0,
+        0);
+  }
+  signal_notify_register(o->slots[o->find_slot("__channel_id__")].value.data);
+  return {TAG_NIL, 0};
+}
+inline JitValue _ns_signal_reset(JitValue*, int64_t) {
+  signal_notify_reset();
+  return {TAG_NIL, 0};
+}
+
 // SharedBuffer.new(count, Cls): allocate a zero-initialized byte store of
 // `count` @packable records and return a buffer handle. Slow-path only (no
 // compile_ns_call fast path); the adapter builds everything directly. See
@@ -3658,6 +3677,8 @@ inline const NsMethod kNsMethods[] = {
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
   {"Channel", "new",    -1, &_ns_channel_new},
   {"Channel", "fan_in", -1, &_ns_channel_fan_in},
+  {"Signal",  "notify", 1, &_ns_signal_notify},
+  {"Signal",  "reset",  0, &_ns_signal_reset},
   {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
   {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
   {"SharedBuffer", "shared", 2, &_ns_sharedbuffer_shared},
@@ -5773,7 +5794,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
-      "Encoding", "SharedBuffer",
+      "Signal",  "Encoding", "SharedBuffer",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

@@ -2530,6 +2530,14 @@ Ctrl+C raises a cooperative, catchable `Interrupted` — Python's
   that never reaches a safepoint) force-terminates with the default
   disposition.
 
+In the REPL, Ctrl+C interrupts the running evaluation and returns to the
+prompt instead of killing the session (the `Interrupted` is caught by the
+read-eval loop); a second press during a wedged eval still force-quits.
+
+To receive Ctrl+C as a value instead of a throw — the graceful-shutdown
+pattern for a long-running service — register a channel with `Signal.notify`
+(see the stdlib guide's *Signal* section).
+
 The behaviour is identical under the interpreter, JIT, and AOT binaries.
 `Interrupted` carries no source position (`line`/`col` are `0`): the
 interrupt is asynchronous, not tied to a particular expression.

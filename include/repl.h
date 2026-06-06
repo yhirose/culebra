@@ -90,6 +90,17 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
                 bool jit_mode = false) {
   using namespace std;
 
+  // Ctrl+C interrupts the running eval and returns to the prompt (rather than
+  // killing the REPL): the handler sets the global SIGINT flag, the interp /
+  // JIT safepoints throw a catchable Interrupted, and the per-input try/catch
+  // below prints it and loops. During line editing linenoise holds the
+  // terminal in raw mode with ISIG disabled, so Ctrl+C there is the literal
+  // 0x03 it handles itself (cancel the line) — no signal — and only an
+  // in-flight eval (cooked mode) sees SIGINT. The flag is cleared before each
+  // eval so a stray press at the prompt doesn't carry into the next one and
+  // the force-kill second press only applies within a single wedged eval.
+  install_sigint_handler();
+
 #ifdef CULEBRA_JIT_ENABLED
   // Per-session JIT instance + globals dict. addIRModule of each input
   // keeps the prior input's compiled functions live, and run_repl
@@ -222,6 +233,10 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
         if (print_ast) {
           cout << peg::ast_to_s(ast);
         }
+        // Fresh interrupt state per eval: a Ctrl+C only cancels the eval it
+        // lands in, and the second (force-killing) press is scoped to one
+        // wedged eval.
+        culebra_g_sigint.store(false, std::memory_order_relaxed);
 
 #ifdef CULEBRA_JIT_ENABLED
         if (jit_mode) {

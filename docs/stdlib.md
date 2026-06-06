@@ -1707,6 +1707,37 @@ Parallel.map(urls, |u| fetch(u),
 
 (`map_reduce` is planned.)
 
+### Signal — `Signal.notify` / `Signal.reset`
+
+By default Ctrl+C raises a cooperative `Interrupted` (see the language guide's
+*Interruption* section). For a long-running service you usually want the
+opposite: catch the signal at one place and shut down on your own terms.
+`Signal.notify(tx)` switches Ctrl+C from *throw* to *deliver* — each press sends
+`"SIGINT"` to the channel's `tx` endpoint instead of interrupting the running
+code, so the program blocks on `rx.recv()` (or `for sig in rx`) and drives its
+own graceful shutdown. This is Go's `signal.Notify` model.
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(1)
+Signal.notify(tx)              # Ctrl+C now goes to the channel, not a throw
+serve_in_background()
+rx.recv()                      # blocks until the first Ctrl+C
+puts("shutting down…")
+drain_and_close()
+```
+
+| call | notes |
+|---|---|
+| `Signal.notify(tx)` | route Ctrl+C to this channel's `tx` (a non-blocking send — if the buffer is full the extra signal is dropped, as Go does); the throw is suppressed while active. Use a buffered channel (`Channel.new(1)`). |
+| `Signal.reset()` | restore the default `Interrupted`-throw behavior and release the channel `notify` was holding. |
+
+`notify` retains its own sender on the channel, so it stays open even after you
+`tx.drop()` your copy — `reset()` releases it. There is no force-kill escalation
+while notify is active: the program opted to handle signals itself (call
+`reset()` if you want a later Ctrl+C to abort). The delivery runs from a
+background poller, so a press is observed within a few tens of milliseconds.
+
 ### SharedBuffer — zero-copy shared fixed-layout data
 
 `SharedBuffer` holds a flat array of fixed-layout records that several

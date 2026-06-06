@@ -1272,6 +1272,16 @@ extern "C" {
 __attribute__((used)) inline std::atomic<bool> culebra_g_sigint{false};
 }
 
+// Signal.notify (Go's signal.Notify model). When a program registers a channel
+// to receive Ctrl+C, `culebra_g_signal_notify` is set: the handler then relays
+// the signal to a delivery thread (via `culebra_g_signal_pending`) instead of
+// latching the throw flag, so the running code keeps going and the program
+// drives its own shutdown by reading the channel. Both are plain host-side
+// atomics (no JIT IR references them). The registry + delivery thread live in
+// isolate.h; here is only the handler's branch. See [[project_concurrency]].
+inline std::atomic<bool> culebra_g_signal_notify{false};
+inline std::atomic<bool> culebra_g_signal_pending{false};
+
 // True iff `f` is the process SIGINT flag (a Ctrl+C) rather than a per-isolate
 // cancel — the poll uses this to pick the message and the one-shot consume.
 inline bool is_sigint_flag(const std::atomic<bool>* f) {
@@ -1283,6 +1293,13 @@ inline bool is_sigint_flag(const std::atomic<bool>* f) {
 // disposition and re-raises, so a wedged program that never reaches a safepoint
 // can still be force-killed. Only atomic ops + signal()/raise() run here.
 inline void _culebra_sigint_handler(int sig) {
+  // Notify mode (Signal.notify): relay to the registered channel via the
+  // delivery thread instead of throwing. No force-kill escalation — the program
+  // opted to handle signals itself (Signal.reset() restores default behavior).
+  if (culebra_g_signal_notify.load(std::memory_order_relaxed)) {
+    culebra_g_signal_pending.store(true, std::memory_order_relaxed);
+    return;
+  }
   if (culebra_g_sigint.exchange(true, std::memory_order_relaxed)) {
     std::signal(sig, SIG_DFL);
     std::raise(sig);

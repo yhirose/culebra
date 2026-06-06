@@ -152,27 +152,104 @@ check_http() {
   fi
 }
 
+# Signal.notify (Go's signal.Notify): a registered channel receives the signal
+# instead of the program throwing, so Ctrl+C wakes a blocked rx.recv() and the
+# program shuts down on its own terms (exit 0). We assert the delivery + clean
+# shutdown — the symmetric guarantee — not the received value's text (a separate
+# pre-existing JIT bug renders deserialized values' display, but delivery works).
+cat > "$TMP/signotify.cul" <<'EOF'
+let (tx, rx) = Channel.new(1)
+Signal.notify(tx)
+tx.drop()                  # notify keeps its own sender; the channel stays open
+IO.eprint("READY\n")
+rx.recv()                  # blocks until Ctrl+C is delivered to the channel
+IO.eprint("SHUTDOWN\n")
+EOF
+
+# check_signotify <desc> -- <command...>
+# Runs the program, waits until it's armed ("READY"), sends one SIGINT, and
+# expects a graceful exit 0 with SHUTDOWN printed (the signal reached recv()).
+check_signotify() {
+  local desc="$1"; shift
+  [ "$1" = "--" ] && shift
+  "$@" > "$TMP/out" 2>&1 & local pid=$!
+  ( sleep 12; kill -9 "$pid" 2>/dev/null ) & local wd=$!
+  local i; for i in $(seq 1 100); do grep -q READY "$TMP/out" 2>/dev/null && break; sleep 0.1; done
+  kill -INT "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null; local code=$?
+  kill "$wd" 2>/dev/null
+  local out; out="$(tr '\n' '|' < "$TMP/out")"
+  if [ "$code" = 0 ] && [ "$out" = 'READY|SHUTDOWN|' ]; then
+    echo "ok [$desc]"
+  else
+    echo "FAIL [$desc]: exit=$code out='$out' (want exit=0 out='READY|SHUTDOWN|')"
+    fail=1
+  fi
+}
+
+# REPL: Ctrl+C interrupts the running eval and returns to the prompt instead of
+# killing the session. The program (fed from a plain file) evals `mut i=0`, then
+# blocks in the tight loop while `puts(42)` waits unread; a SIGINT interrupts the
+# loop, the REPL reads `puts(42)`, prints it, hits EOF, and exits 0. We assert
+# the survival ("42" runs after the interrupt) — robust across the two backends'
+# differing value-echo formatting.
+cat > "$TMP/repl.cul" <<'EOF'
+mut i=0
+while true { i=i+1 }
+puts(42)
+EOF
+
+# check_repl <desc> <warmup> -- <command...>
+check_repl() {
+  local desc="$1" warm="$2"; shift 2
+  [ "$1" = "--" ] && shift
+  "$@" < "$TMP/repl.cul" > "$TMP/out" 2>&1 & local pid=$!
+  ( sleep 12; kill -9 "$pid" 2>/dev/null ) & local wd=$!
+  sleep "$warm"
+  kill -INT "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null; local code=$?
+  kill "$wd" 2>/dev/null
+  local out; out="$(tr '\n' '|' < "$TMP/out")"
+  if [ "$code" = 0 ] && printf '%s' "$out" | grep -q 42; then
+    echo "ok [$desc]"
+  else
+    echo "FAIL [$desc]: exit=$code out='$out' (want exit=0, output containing 42)"
+    fail=1
+  fi
+}
+
 # --- interpreter ---
 check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" "$TMP/uncaught.cul"
 check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" "$TMP/caught.cul"
 check_stdin "interp stdin" -- "$CULEBRA" "$TMP/stdin.cul"
 check_http  "interp http"  -- "$CULEBRA" "$TMP/http.cul"
+check_signotify "interp signotify" -- "$CULEBRA" "$TMP/signotify.cul"
+check_repl  "interp repl" 1.5 -- "$CULEBRA"
 
 # --- JIT ---
 check "jit uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/uncaught.cul"
 check "jit caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/caught.cul"
 check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
 check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
+check_signotify "jit signotify" -- "$CULEBRA" --jit "$TMP/signotify.cul"
+# The JIT REPL is pre-existingly non-functional (it aborts/hangs at startup
+# compiling its stdlib preamble), so its interrupt can't be exercised end-to-end
+# here. The wiring is identical to the JIT script-mode loop cases above (same
+# install_sigint_handler + global-flag safepoint), which DO run. See the Task.
+echo "skip [jit repl] (JIT REPL pre-existingly broken at startup)"
 
 # --- AOT (skip if this build can't produce binaries) ---
+# (REPL has no AOT form; it is an interp/JIT driver only.)
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
-   && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1; then
+   && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/signotify.cul" -o "$TMP/signotify_aot" >/dev/null 2>&1; then
   check "aot uncaught" 130 "$UNCAUGHT_OUT" -- "$TMP/uncaught_aot"
   check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
   check_stdin "aot stdin" -- "$TMP/stdin_aot"
   check_http  "aot http"  -- "$TMP/http_aot"
+  check_signotify "aot signotify" -- "$TMP/signotify_aot"
 else
   echo "skip [aot] (culebra build unavailable)"
 fi

@@ -3739,6 +3739,7 @@ inline Value make_regex_primitives_namespace() {
 // full stdlib (environment(), Interpreter), hence the bottom include.
 inline Value make_isolate_namespace();
 inline Value make_channel_namespace();
+inline Value make_signal_namespace();
 inline Value make_parallel_namespace();
 
 inline void setup_built_in_functions(
@@ -3865,6 +3866,7 @@ inline void setup_built_in_functions(
 #endif
   env.initialize("Isolate", make_isolate_namespace(), false);
   env.initialize("Channel", make_channel_namespace(), false);
+  env.initialize("Signal", make_signal_namespace(), false);
   env.initialize("Parallel", make_parallel_namespace(), false);
   env.initialize("SharedBuffer", make_shared_buffer_namespace(), false);
 }

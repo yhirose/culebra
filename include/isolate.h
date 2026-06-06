@@ -378,6 +378,85 @@ inline void chan_drop(long id, int role) {
   }
 }
 
+// Non-blocking enqueue: push iff there is room, else drop and return false.
+// Used by Signal.notify delivery, which (like Go's signal relay) must never
+// block — a full buffer means the program hasn't drained, so the extra signal
+// is dropped rather than wedging the delivery thread.
+inline bool channel_try_send_node(long id, sendable::SendNode node) {
+  auto core = chan_lookup(id);
+  if (!core) return false;
+  std::lock_guard<std::mutex> lk(core->m);
+  if (core->closed) return false;
+  size_t room = core->cap == 0 ? 1 : core->cap;
+  if (core->q.size() >= room) return false;  // full → drop
+  core->q.push_back(std::move(node));
+  core->cv.notify_all();
+  core->signal_selectors();
+  return true;
+}
+
+// --- Signal.notify (Go signal.Notify model) -------------------------------
+//
+// `Signal.notify(tx)` registers a channel's tx endpoint to receive a "SIGINT"
+// string on each Ctrl+C, in place of the cooperative Interrupted throw — so a
+// program drives its own graceful shutdown (block on `rx.recv()`, then clean
+// up) instead of unwinding. The SIGINT handler (shared.h) can't touch a channel
+// (not async-signal-safe), so it only sets `culebra_g_signal_pending`; a
+// detached delivery thread polls that flag and relays to every registered
+// channel with a non-blocking send (drop if full, as Go does). `Signal.reset()`
+// restores default (throw) behavior. notify retains a tx on each channel so it
+// stays open while registered even if the user drops their own endpoint.
+inline std::mutex& signal_registry_mutex() { static std::mutex m; return m; }
+inline std::vector<long>& signal_channel_ids() {
+  static std::vector<long> v;
+  return v;
+}
+
+inline void _signal_delivery_loop() {
+  for (;;) {
+    if (culebra_g_signal_pending.exchange(false, std::memory_order_relaxed)) {
+      std::vector<long> ids;
+      {
+        std::lock_guard<std::mutex> lk(signal_registry_mutex());
+        ids = signal_channel_ids();
+      }
+      for (long id : ids) {
+        sendable::SendNode n;
+        n.kind = sendable::SendNode::K::Str;
+        n.s = "SIGINT";
+        channel_try_send_node(id, std::move(n));
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
+
+inline void _ensure_signal_delivery_thread() {
+  static std::once_flag once;
+  std::call_once(once, [] { std::thread(_signal_delivery_loop).detach(); });
+}
+
+inline void signal_notify_register(long id) {
+  chan_bump(id, /*role=*/0, +1);  // retain a runtime sender → channel stays open
+  {
+    std::lock_guard<std::mutex> lk(signal_registry_mutex());
+    signal_channel_ids().push_back(id);
+  }
+  culebra_g_signal_notify.store(true, std::memory_order_relaxed);
+  _ensure_signal_delivery_thread();
+}
+
+inline void signal_notify_reset() {
+  culebra_g_signal_notify.store(false, std::memory_order_relaxed);
+  std::vector<long> ids;
+  {
+    std::lock_guard<std::mutex> lk(signal_registry_mutex());
+    ids.swap(signal_channel_ids());
+  }
+  for (long id : ids) chan_drop(id, /*role=*/0);  // release the retained senders
+  culebra_g_signal_pending.store(false, std::memory_order_relaxed);
+}
+
 // Backend-neutral enqueue: the caller has already serialized the value (interp
 // or JIT) into a neutral node. Blocks while the buffer is full; interrupt- and
 // close-aware.
@@ -842,6 +921,37 @@ inline Value make_channel_namespace() {
             return make_merged_rx_endpoint(
                 chan_merge_register(std::move(ids), std::move(producers)));
           }, ""sv)), false);
+  return Value(std::move(ns));
+}
+
+// `Signal.notify(tx)` / `Signal.reset()` — Go's signal.Notify graceful-shutdown
+// model. notify registers a channel tx endpoint to receive "SIGINT" on Ctrl+C
+// (suppressing the throw); reset restores default behavior. The machinery is in
+// signal_notify_register / signal_notify_reset above.
+inline Value make_signal_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize("notify",
+      Value(FunctionValue({{"tx", false, ""sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->has("__LINE__") ? env->get("__LINE__").to_long() : 0;
+            long col = env->has("__COLUMN__") ? env->get("__COLUMN__").to_long() : 0;
+            const Value& tx = env->get("tx");
+            if (tx.type != Value::Object ||
+                !tx.to_object().has("__channel_endpoint__") ||
+                tx.to_object().get("__channel_role__").to_long() != 0) {
+              throw culebra::CulebraError("TypeError",
+                  "Signal.notify: argument must be a channel tx endpoint", line,
+                  col);
+            }
+            signal_notify_register(tx.to_object().get("__channel_id__").to_long());
+            return Value();
+          }, "Nil"sv)), false);
+  ns.initialize("reset",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment>) -> Value {
+            signal_notify_reset();
+            return Value();
+          }, "Nil"sv)), false);
   return Value(std::move(ns));
 }
 

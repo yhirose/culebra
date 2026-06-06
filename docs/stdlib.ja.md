@@ -1635,6 +1635,37 @@ Parallel.map(urls, |u| fetch(u),
 
 (`map_reduce` は予定。)
 
+### Signal — `Signal.notify` / `Signal.reset`
+
+既定では Ctrl+C は協調的な `Interrupted` を throw します（言語ガイドの
+*割り込み* 節を参照）。長時間動くサービスでは逆に、シグナルを一箇所で受けて
+自分の都合で shutdown したいことが多いです。`Signal.notify(tx)` は Ctrl+C を
+*throw* から *配信* に切り替えます — 各押下が実行中コードを中断する代わりに
+チャネルの `tx` に `"SIGINT"` を送るので、プログラムは `rx.recv()`（または
+`for sig in rx`）でブロックして自前の graceful shutdown を駆動できます。Go の
+`signal.Notify` モデルです。
+
+```culebra
+# doctest: skip
+let (tx, rx) = Channel.new(1)
+Signal.notify(tx)              # Ctrl+C は throw でなくチャネルへ
+serve_in_background()
+rx.recv()                      # 最初の Ctrl+C までブロック
+puts("shutting down…")
+drain_and_close()
+```
+
+| 呼び出し | 備考 |
+|---|---|
+| `Signal.notify(tx)` | Ctrl+C をこのチャネルの `tx` へ流す（非ブロッキング送信 — バッファ満杯なら超過分はドロップ、Go と同じ）。有効中は throw を抑制。バッファ付き（`Channel.new(1)`）を使う。 |
+| `Signal.reset()` | 既定の `Interrupted` throw 動作に戻し、`notify` が保持していたチャネルを解放。 |
+
+`notify` は自分用の送信端をチャネルに保持するので、こちらの `tx.drop()` 後も
+開いたままになります（`reset()` で解放）。notify 有効中は強制終了へのエスカ
+レーションはありません（自分でシグナルを扱うと宣言したため。後続の Ctrl+C で
+中断させたいなら `reset()` を呼ぶ）。配信はバックグラウンドのポーラ経由なので、
+押下は数十ミリ秒以内に観測されます。
+
 ### SharedBuffer — zero-copy で共有する固定レイアウトデータ
 
 `SharedBuffer` は固定レイアウトのレコード列を保持し、複数の isolate が

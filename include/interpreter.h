@@ -8014,6 +8014,10 @@ inline bool interpret(const std::shared_ptr<peg::Ast>& ast,
     // capture `shared_from_this()`) can keep the Interpreter alive
     // past this call's stack scope — see comment on `Interpreter`.
     auto interp = std::make_shared<Interpreter>(debugger);
+    // Wire the cooperative-interrupt flag so a single-AST caller (the REPL)
+    // observes Ctrl+C at safepoints, just like interpret_modules does. Null
+    // when no SIGINT handler is installed → check_interrupt is a no-op.
+    interp->interrupt_flag_ = current_runtime().interrupt_flag;
     // Built-in trait preamble: run once before user code so REPL /
     // single-AST callers (which bypass interpret_modules) also see
     // Stringer / Eq / Comparable. trait_registry is process-wide but
