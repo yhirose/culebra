@@ -3615,11 +3615,13 @@ expression.
 
 ## 21. Command-line interface
 
-    culebra [flags] [script.cul ...] [-- arg ...]
+    culebra [flags] [script.cul ...] [arg ...]
 
-Everything after a standalone `--` is captured verbatim and exposed to
-the script as `Sys.argv` (see [`docs/stdlib.md`](stdlib.md)). Without
-a `--`, `Sys.argv` is empty.
+Everything after the script path is captured verbatim and exposed to the
+script as `Sys.argv` (the Python / Node convention — no `--` needed; see
+[`docs/stdlib.md`](stdlib.md)). A standalone `--` before the script is an
+optional escape hatch: it stops flag parsing, so the next argument is taken
+as the script even if it begins with a dash.
 
 ### Flags
 

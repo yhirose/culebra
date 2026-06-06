@@ -3424,11 +3424,12 @@ fn ...` は前の式の matmul 継続ではなく、独立した 2 statement と
 
 ## 21. コマンドラインインタフェース
 
-    culebra [flags] [script.cul ...] [-- arg ...]
+    culebra [flags] [script.cul ...] [arg ...]
 
-単独の `--` より後の引数はそのまま `Sys.argv` としてスクリプトに
-渡されます（[`docs/stdlib.ja.md`](stdlib.ja.md) 参照）。`--` が無い
-場合 `Sys.argv` は空配列です。
+スクリプトパスより後の引数はそのまま `Sys.argv` としてスクリプトに
+渡されます（Python / Node 流 — `--` 不要。[`docs/stdlib.ja.md`](stdlib.ja.md)
+参照）。スクリプトより前の単独の `--` は任意のエスケープハッチで、フラグ
+解析を止めるため、ダッシュ始まりの名前でも次の引数がスクリプトとして扱われます。
 
 ### フラグ
 

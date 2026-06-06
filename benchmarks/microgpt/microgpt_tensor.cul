@@ -13,7 +13,7 @@
 # - Otherwise identical: rmsnorm, causal attention with KV cache,
 #   ReLU MLP, residuals, lm_head + softmax + cross-entropy.
 #
-# Usage: ./build/culebra --jit benchmarks/microgpt/microgpt_tensor.cul -- [num_steps]
+# Usage: ./build/culebra --jit benchmarks/microgpt/microgpt_tensor.cul [num_steps]
 
 Random.seed(42)
 

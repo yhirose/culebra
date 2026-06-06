@@ -287,8 +287,8 @@ perf: build
 [doc("Run microgpt 5 training steps on both backends (large-scale JIT smoke)")]
 [group("bench")]
 smoke-microgpt: build fetch-names
-    ./build/culebra       benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
-    ./build/culebra --jit benchmarks/microgpt/microgpt.cul -- 5 0 > /dev/null
+    ./build/culebra       benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
+    ./build/culebra --jit benchmarks/microgpt/microgpt.cul 5 0 > /dev/null
     @echo "smoke-microgpt OK: 5 steps completed on both backends"
 
 # Download Karpathy's names dataset for benchmarks/microgpt.

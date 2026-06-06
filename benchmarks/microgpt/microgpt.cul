@@ -2,7 +2,7 @@
 # algorithm. Reference implementation for the benchmark; reads from
 # benchmarks/microgpt/names.txt.
 #
-# Usage: ./build/culebra [--jit] benchmarks/microgpt/microgpt.cul -- [num_steps] [n_samples]
+# Usage: ./build/culebra [--jit] benchmarks/microgpt/microgpt.cul [num_steps] [n_samples]
 
 Random.seed(42) # Let there be order among chaos
 
