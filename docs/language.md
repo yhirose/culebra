@@ -2503,6 +2503,35 @@ A `return` inside a defer body exits only the defer closure, not the
 enclosing function. `throw` inside a defer body aborts that defer and
 propagates as a regular exception.
 
+### Interruption (Ctrl+C)
+
+Ctrl+C raises a cooperative, catchable `Interrupted` — Python's
+`KeyboardInterrupt` model rather than an abrupt kill:
+
+    try {
+      serve()                       # long-running loop
+    } catch e {
+      puts("shutting down: {e.kind}")   # → Interrupted
+      cleanup()
+    }
+
+* The running computation stops at the next loop iteration or statement
+  boundary and throws `Interrupted`. A tight loop (even `while true {}`)
+  is interruptible.
+* It unwinds like any exception, so `defer` blocks run on the way out.
+* If you `catch` it, execution resumes normally — the interrupt is
+  one-shot, so a server / REPL can treat Ctrl+C as "cancel the current
+  request" and keep going.
+* If it reaches the top uncaught, top-level defers run and the program
+  exits with status `130` (128 + SIGINT), the conventional code.
+* A second Ctrl+C while the first is still pending (a wedged program
+  that never reaches a safepoint) force-terminates with the default
+  disposition.
+
+The behaviour is identical under the interpreter, JIT, and AOT binaries.
+`Interrupted` carries no source position (`line`/`col` are `0`): the
+interrupt is asynchronous, not tied to a particular expression.
+
 ### Scope guard pattern
 
 When cleanup must be registered from code that cannot place its own

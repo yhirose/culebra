@@ -33,6 +33,10 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
   }
 
+  // Cooperative Ctrl+C, same as the CLI: the program's loop safepoints and
+  // (if it runs the interpreter) statement poll observe the flag.
+  culebra::install_sigint_handler();
+
   try {
     main_fn();
   } catch (const CulebraException& e) {
@@ -47,6 +51,16 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     std::fprintf(stderr, "uncaught: %s\n", s.c_str());
     return 1;
   } catch (culebra::CulebraError& e) {
+    // Drain top-level defers the uncaught error skipped (mirrors JIT::exec).
+    try {
+      culebra_runtime_defer_run_to(0);
+    } catch (...) {
+    }
+    // Uncaught Ctrl+C / cancel: clean message + conventional 128+SIGINT.
+    if (e.kind == "Interrupted") {
+      std::fprintf(stderr, "interrupted\n");
+      return 130;
+    }
     // Backfill a positionless runtime error from the published op position
     // (JIT::exec does the same before main.cc formats it), then print
     // `kind: msg at L:C.` so AOT matches `culebra --jit` / the interpreter.

@@ -506,6 +506,13 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // preamble (handled in Phase 3 of [[project-startup-overhead]]).
   startup_profile::mark("run_scripts begin");
 
+  // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
+  // Runtime at the global flag. The interpreter's statement poll and the JIT's
+  // loop safepoint observe it and throw a catchable `Interrupted`.
+  if (!options.script_path_list.empty()) {
+    culebra::install_sigint_handler();
+  }
+
   for (auto path : options.script_path_list) {
     vector<char> buff;
     if (!read_file(path.c_str(), buff)) {
@@ -735,6 +742,11 @@ int main(int argc, const char** argv) {
 #endif
     }
   } catch (const culebra::CulebraError& e) {
+    // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.
+    if (e.kind == "Interrupted") {
+      cerr << "interrupted" << endl;
+      return 130;
+    }
     cerr << e.kind << ": " << e.what();
     if (e.line > 0 || e.col > 0) {
       cerr << " at " << e.line << ":" << e.col << ".";

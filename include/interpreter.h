@@ -4470,7 +4470,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // line/col fields (only when they are still zero). Keep the
       // message untouched so `e.message` is identical across interp
       // and JIT; main.cc prints line/col separately from the fields.
-      if (e.line == 0 && e.col == 0) {
+      // An Interrupted (async Ctrl+C / cancel) has no meaningful source
+      // position — leave it 0:0 so it matches the JIT safepoint's throw.
+      if (e.line == 0 && e.col == 0 && e.kind != "Interrupted") {
         e.line = static_cast<long>(ast.line);
         e.col = static_cast<long>(ast.column);
       }
@@ -4486,16 +4488,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   }
 
+  // Cooperative interrupt poll. Throws Interrupted when this thread's flag is
+  // set: a Ctrl+C (the process SIGINT flag) is one-shot — consumed here so a
+  // `catch` can resume (Python's KeyboardInterrupt model) — while an isolate
+  // cancel stays sticky. Called at statement boundaries AND at every loop
+  // iteration, so even a tight single-statement loop (whose body collapses
+  // below a STATEMENT-tagged node) stays interruptible, mirroring the JIT's
+  // loop safepoint. Null flag (no handler installed) → no-op.
+  void check_interrupt() {
+    if (interrupt_flag_ &&
+        interrupt_flag_->load(std::memory_order_relaxed)) {
+      if (is_sigint_flag(interrupt_flag_)) {
+        culebra_g_sigint.store(false, std::memory_order_relaxed);
+        throw CulebraError("Interrupted", "interrupted");
+      }
+      throw CulebraError("Interrupted", "isolate cancelled");
+    }
+  }
+
   Value _eval_dispatch(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     if (ast.original_tag == "STATEMENT"_) {
-      // Cooperative cancellation: an isolate being dropped/cancelled unwinds
-      // here at the next statement boundary. Null (main thread) → no-op.
-      if (interrupt_flag_ &&
-          interrupt_flag_->load(std::memory_order_relaxed)) {
-        throw CulebraError("Interrupted", "isolate cancelled");
-      }
+      check_interrupt();
       if (debugger_) {
         auto force_to_break = ast.tag == "DEBUGGER"_;
         debugger_(ast, *env, force_to_break);
@@ -4648,6 +4663,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
   Value eval_while(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     for (;;) {
+      check_interrupt();
       auto cond = eval(*ast.nodes[0], env);
       if (!cond.to_bool()) {
         break;
@@ -4716,6 +4732,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                       static_cast<long>(var.column));
       }
       try {
+        check_interrupt();  // inside the try so an interrupt still disposes
         eval(body, scopeEnv);
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
@@ -7878,6 +7895,10 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
   for (const auto& m : orig_modules) modules.push_back(m);
 
   auto interp = std::make_shared<Interpreter>(debugger);
+  // Inherit any interrupt flag installed on this thread's Runtime (the CLI
+  // points it at the SIGINT flag for Ctrl+C; isolates set their own). The
+  // statement poll reads interp->interrupt_flag_.
+  interp->interrupt_flag_ = current_runtime().interrupt_flag;
   auto flush_top_defers = [&] {
     while (!env->deferred.empty()) {
       auto fn = std::move(env->deferred.back());
@@ -7923,6 +7944,10 @@ inline bool interpret_modules(const std::vector<LoadedModule>& orig_modules,
     msgs.push_back(std::format("uncaught: {}", e.str_display()));
   } catch (const CulebraError& e) {
     flush_top_defers();
+    // An uncaught Interrupted (Ctrl+C / cancel) is a process-level event, not a
+    // normal error to format: propagate it so the CLI can exit 130. Top-level
+    // defers already ran above.
+    if (e.kind == "Interrupted") throw;
     if (e.line > 0 || e.col > 0) {
       msgs.push_back(std::format("{}: {} at {}:{}.",
                                   e.kind, e.what(), e.line, e.col));

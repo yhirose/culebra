@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <csignal>
 #include <cctype>
 #include <mutex>
 #include <cerrno>
@@ -1252,6 +1253,44 @@ inline Runtime& current_runtime() {
 inline bool interrupt_requested() {
   auto* f = current_runtime().interrupt_flag;
   return f && f->load(std::memory_order_relaxed);
+}
+
+// --- Ctrl+C (SIGINT) cooperative interruption ---------------------------
+//
+// A process-wide one-shot flag set by the installed SIGINT handler. The main
+// thread's Runtime::interrupt_flag and the main interpreter's poll both point
+// here, and the JIT/AOT loop safepoint reads the same symbol inline. It is
+// distinct from an isolate's cancel flag (sticky + per-isolate): a Ctrl+C is
+// consumed when the cooperative `Interrupted` is thrown, so a `catch` can
+// resume (Python's KeyboardInterrupt model). `extern "C"` + `used` keeps the
+// symbol resolvable by the in-process JIT and linkable by AOT output.
+extern "C" {
+__attribute__((used)) inline std::atomic<bool> culebra_g_sigint{false};
+}
+
+// True iff `f` is the process SIGINT flag (a Ctrl+C) rather than a per-isolate
+// cancel — the poll uses this to pick the message and the one-shot consume.
+inline bool is_sigint_flag(const std::atomic<bool>* f) {
+  return f == &culebra_g_sigint;
+}
+
+// Async-signal-safe SIGINT handler: the first Ctrl+C latches the flag; a second
+// one (while the first is still pending / unhandled) restores the default
+// disposition and re-raises, so a wedged program that never reaches a safepoint
+// can still be force-killed. Only atomic ops + signal()/raise() run here.
+inline void _culebra_sigint_handler(int sig) {
+  if (culebra_g_sigint.exchange(true, std::memory_order_relaxed)) {
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+  }
+}
+
+// Install the SIGINT handler and point the current (main) thread's Runtime at
+// the global flag, so blocking channel waits and the statement poll observe
+// Ctrl+C. CLI-only: embedders opt in by calling this.
+inline void install_sigint_handler() {
+  current_runtime().interrupt_flag = &culebra_g_sigint;
+  std::signal(SIGINT, _culebra_sigint_handler);
 }
 
 // Serializes stdout/stderr writes so concurrent isolates don't interleave

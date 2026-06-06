@@ -17,6 +17,7 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -1426,6 +1427,18 @@ culebra_runtime_throw_error(const char* kind, const char* msg,
                              int64_t line, int64_t col) {
   culebra::throw_runtime_error_at(kind ? kind : "", msg ? msg : "",
                                    line, col);
+}
+
+// Loop safepoint slow path. The JIT/AOT loop backedge inlines a relaxed load of
+// `culebra_g_sigint` and calls this only when it is set: consume the one-shot
+// Ctrl+C flag and throw the cooperative Interrupted (the interpreter's poll
+// mirrors this exactly). Unwinds via the same path as any runtime error — the
+// loop's enclosing function carries a personality (scan_eh_defer flags loops as
+// has_eh). A racing consumer that already cleared the flag just returns.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_safepoint() {
+  if (culebra::culebra_g_sigint.exchange(false, std::memory_order_relaxed)) {
+    throw culebra::CulebraError("Interrupted", "interrupted");
+  }
 }
 
 // JIT module table — keyed by absolute module path, value is the
@@ -7784,6 +7797,7 @@ inline constexpr auto str_tr              = "culebra_runtime_str_tr";
 inline constexpr auto str_trim_start      = "culebra_runtime_str_trim_start";
 inline constexpr auto str_trim_end        = "culebra_runtime_str_trim_end";
 inline constexpr auto str_upper           = "culebra_runtime_str_upper";
+inline constexpr auto safepoint           = "culebra_runtime_safepoint";
 inline constexpr auto throw_              = "culebra_runtime_throw";
 inline constexpr auto to_long             = "culebra_runtime_to_long";
 inline constexpr auto to_long_any         = "culebra_runtime_to_long_any";
@@ -8000,6 +8014,37 @@ struct JIT {
       return inv;
     }
     return builder_.CreateCall(callee, args, name);
+  }
+
+  // Loop safepoint: inline a relaxed load of the process Ctrl+C flag and a
+  // cold branch to the throwing slow path. One byte load + one not-taken branch
+  // on the hot path; the throw (and one-shot consume) live in the rarely-taken
+  // `culebra_runtime_safepoint`. Emitted once per loop iteration so even a tight
+  // loop is interruptible — mirroring the interpreter's per-iteration poll. The
+  // enclosing function gets a personality via scan_eh_defer flagging loops as
+  // has_eh, so the throw unwinds cleanly even with no try in scope.
+  void emit_safepoint() {
+    auto i8Ty = builder_.getInt8Ty();
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto gv = module_->getOrInsertGlobal("culebra_g_sigint", i8Ty);
+    auto ld = builder_.CreateLoad(i8Ty, gv, "sigint");
+    ld->setAtomic(llvm::AtomicOrdering::Monotonic);
+    ld->setAlignment(llvm::Align(1));
+    auto hit = builder_.CreateICmpNE(
+        ld, llvm::ConstantInt::get(i8Ty, 0), "sigint.hit");
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "safepoint.slow", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "safepoint.cont", fn);
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(hit, slowBB, contBB,
+                          mdb.createBranchWeights(1, 1u << 20));
+    builder_.SetInsertPoint(slowBB);
+    // Throws Interrupted when still set; returns (rejoining the loop) if a
+    // racing consumer already cleared the flag.
+    emit_call(module_->getFunction(rt::safepoint), {});
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(contBB);
+    }
+    builder_.SetInsertPoint(contBB);
   }
 
   // Indirect-call overload (function pointer + explicit FunctionType).
@@ -10333,6 +10378,16 @@ struct JIT {
       for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
       return any;
     }
+    if (node.tag == "WHILE"_) {
+      // The loop safepoint (emit_safepoint) can throw Interrupted on Ctrl+C, so
+      // the enclosing function needs a personality to unwind through. (FOR sets
+      // has_eh below for its dispose landingpad; WHILE's body is not a scope, so
+      // flag it here.)
+      info.has_eh = true;
+      bool any = false;
+      for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
+      return any;
+    }
     if (node.tag == "FOR"_) {
       // for-in over the iterator protocol (Object iter() path) emits an
       // exception landingpad in compile_for_protocol_loop so iter.dispose()
@@ -10562,6 +10617,8 @@ struct JIT {
     module_->getOrInsertFunction(rt::defer_run_to,
                                  builder_.getVoidTy(),
                                  builder_.getInt64Ty());
+    // Loop safepoint slow path (throws Interrupted on Ctrl+C).
+    module_->getOrInsertFunction(rt::safepoint, builder_.getVoidTy());
     module_->getOrInsertFunction(
         rt::type_check, builder_.getVoidTy(),
         builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
@@ -13414,6 +13471,7 @@ struct JIT {
     builder_.CreateCondBr(b, bodyBB, endBB);
 
     builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();  // Ctrl+C breaks even a tight `while true {}`
     loop_stack_.push_back({condBB, endBB});
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
@@ -13721,6 +13779,7 @@ struct JIT {
     builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), endBB, bodyBB);
 
     builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();
     emit_call(
         module_->getOrInsertFunction(
             rt::array_get, builder_.getVoidTy(), ptrTy,
@@ -13841,6 +13900,7 @@ struct JIT {
     builder_.CreateCondBr(alive, bodyBB, cleanupBB);
 
     builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();
     auto outTag =
         builder_.CreateLoad(builder_.getInt8Ty(), outTagAlloca, "for.p.tag");
     auto outData = builder_.CreateLoad(builder_.getInt64Ty(), outDataAlloca,
@@ -13915,6 +13975,7 @@ struct JIT {
         bodyBB);
 
     builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();
     auto scalarPtr = emit_call(
         module_->getOrInsertFunction(rt::str_scalar_at, ptrTy, ptrTy,
                                      builder_.getInt64Ty(),
@@ -17942,10 +18003,17 @@ struct JIT {
       } catch (...) {}
       throw std::runtime_error(std::format("uncaught: {}", s));
     } catch (culebra::CulebraError& e) {
+      // Run (best-effort) any top-level defers the uncaught error skipped, so
+      // the global defer stack is drained — mirrors the CulebraException path
+      // above and the interpreter's flush_top_defers (e.g. a top-level `defer`
+      // still fires on an uncaught Ctrl+C / runtime error).
+      try { culebra_runtime_defer_run_to(0); } catch (...) {}
       // Uncaught runtime error (kind/message). Backfill a positionless one
       // from the published op position before it reaches main.cc's formatter,
-      // mirroring the interp eval boundary; aot_bootstrap does the same.
-      _jit_backfill_op_pos(e);
+      // mirroring the interp eval boundary; aot_bootstrap does the same. An
+      // Interrupted (async Ctrl+C) has no real source position — leave it 0:0
+      // to match interp (which skips stamping it).
+      if (e.kind != "Interrupted") _jit_backfill_op_pos(e);
       throw;
     }
   }

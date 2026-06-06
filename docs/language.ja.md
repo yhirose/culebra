@@ -2345,6 +2345,33 @@ defer 本体内の `return` は**defer 閉包のみ**を抜けます（外側の
 関数を抜けません）。defer 本体内の `throw` は defer を中断して
 通常の例外として伝播します。
 
+### 割り込み（Ctrl+C）
+
+Ctrl+C は協調的で catch 可能な `Interrupted` を発生させます。即座に
+kill するのではなく、Python の `KeyboardInterrupt` と同じモデルです:
+
+    try {
+      serve()                       # 長時間ループ
+    } catch e {
+      puts("shutting down: {e.kind}")   # → Interrupted
+      cleanup()
+    }
+
+* 実行中の計算は次のループ反復または文の境界で停止し `Interrupted`
+  を throw します。tight なループ（`while true {}` でも）も中断可能。
+* 通常の例外と同じく unwind するので、抜ける途中で `defer` が走ります。
+* `catch` すれば実行は通常どおり再開します。割り込みは one-shot なので、
+  サーバや REPL は Ctrl+C を「現在のリクエストをキャンセル」として扱い
+  処理を続けられます。
+* 未捕捉でトップに達した場合はトップレベルの `defer` が走り、慣例の
+  ステータス `130`（128 + SIGINT）で終了します。
+* 1回目が未処理のまま（safepoint に到達しない wedged なプログラム）の
+  2回目の Ctrl+C は、デフォルト動作で強制終了します。
+
+挙動はインタプリタ / JIT / AOT バイナリで同一です。`Interrupted` は
+ソース位置を持ちません（`line`/`col` は `0`）— 割り込みは非同期で、
+特定の式に紐づかないためです。
+
 ### Scope guard パターン
 
 コールバック内部から「呼び出し側スコープで cleanup したい」など、
