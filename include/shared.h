@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <climits>   // PATH_MAX (Sys.executable)
@@ -32,6 +33,37 @@
 #endif
 
 namespace culebra {
+
+// Names of value-type built-in methods (Array / String / Set / Tuple / Object-
+// dict / Iterator / Tensor). These are dispatched inline by the JIT (no stored
+// closure) and table-wrapped by the interp, so a BARE reference to one
+// (`let m = [1,2].map`) is not a first-class value on either backend — both
+// reject it (call it, or wrap it in a lambda). A user-defined property/method
+// of the same name on an Object/class is found first and stays first-class, so
+// this set is only consulted after the stored-property lookup misses. Single
+// source for both backends' bare-method-reference check AND the JIT's
+// known_builtin_methods() (which delegates here so the list never drifts).
+inline const std::unordered_set<std::string_view>& builtin_method_names() {
+  static const std::unordered_set<std::string_view> kNames = {
+      "size",       "push",        "pop",        "reverse",    "slice",
+      "join",       "index_of",    "contains",   "upper",      "lower",
+      "trim",       "tr",          "trim_start", "trim_end",   "split",
+      "starts_with","ends_with",   "keys",       "has",        "remove",
+      "map",        "filter",      "reduce",     "for_each",   "find",
+      "any",        "all",         "flat_map",   "sort_by",    "sorted_by",
+      "sum",        "product",     "min",        "max",        "collect",
+      "count",      "take",        "skip",       "take_while", "chain",
+      "zip",        "enumerate",   "code_points","graphemes",  "iter",
+      "view",       "split_iter",  "shape",      "pow",        "transpose",
+      "reshape",    "mean",        "argmax",     "to_array",   "dot",
+      "linear_sigmoid", "clone",   "relu",       "sigmoid",    "softmax",
+      "union",      "intersect",   "diff",       "sym_diff",   "subset",
+      "superset"};
+  return kNames;
+}
+inline bool is_builtin_method_name(std::string_view name) {
+  return builtin_method_names().count(name) > 0;
+}
 
 // Transparent hash/eq for std::string-keyed unordered_map that allows
 // std::string_view lookups without constructing a temporary std::string

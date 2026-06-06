@@ -9021,36 +9021,13 @@ struct JIT {
   // Method names with JIT-native codegen in compile_builtin_method.
   // Exposed so a startup self-check (see culebra.h) can guard against
   // drift from the interpreter's builtin tables.
+  // Single source in shared.h (culebra::builtin_method_names), shared with the
+  // interp + both backends' bare-method-reference rejection so the list can't
+  // drift. Array/String/Set/Tuple/Object-dict/Iterator/Tensor methods are
+  // tag-dispatched in compile_builtin_method; a user class defining a same-named
+  // method gets priority via compile_user_method_over_builtin.
   static const std::unordered_set<std::string_view>& known_builtin_methods() {
-    static const std::unordered_set<std::string_view> known = {
-        "size",        "push",       "pop",      "reverse", "slice",
-        "join",        "index_of",   "contains", "upper",   "lower",
-        "trim",        "tr",         "trim_start", "trim_end",
-        "split",       "starts_with", "ends_with",
-        "keys",        "has",        "remove",
-        // Array eager + iterator lazy / terminal methods. Tag-dispatched
-        // in compile_builtin_method — Array receivers keep the eager
-        // path; iterator-protocol Objects route to the lazy runtime.
-        "map",         "filter",     "reduce",   "for_each",
-        "find",        "any",        "all",      "flat_map", "sort_by",
-        "sorted_by",
-        "sum",         "product",    "min",      "max",
-        "collect",     "count",      "take",     "skip",
-        "take_while",  "chain",      "zip",      "enumerate",
-        "code_points", "graphemes",  "iter",
-        "view",        "split_iter",
-        // Tensor methods. Activations relu/sigmoid/softmax are instance
-        // methods (`t.relu()`); a user class defining its own `relu` is
-        // unaffected because compile_user_method_over_builtin gives the
-        // class method priority over a same-named builtin.
-        "shape",       "pow",        "transpose",  "reshape",
-        "mean",        "argmax",     "to_array",   "dot",
-        "linear_sigmoid", "clone",
-        "relu",        "sigmoid",    "softmax",
-        "union",       "intersect",  "diff",
-        "sym_diff",    "subset",     "superset",
-        "to_array"};
-    return known;
+    return culebra::builtin_method_names();
   }
   // Extension hooks. Built-in functions and namespaces (Math, IO, Random,
   // Sys, ...) live outside the language core; an embedder installs them
@@ -9558,6 +9535,33 @@ struct JIT {
                          {ptrTy, builder_.getInt64Ty(),
                           builder_.getInt64Ty()}),
         {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
+  }
+
+  // Reject a bare reference to a value-type built-in method (`let m = x.map`):
+  // it is dispatched inline with no closure to hand back, so it's not a
+  // first-class value on either backend. `propResult` is the property-get
+  // result — Nil for such a method (and for an Object lacking an own property
+  // of this name); a user-defined own property resolves to a non-Nil value and
+  // stays first-class, so only the Nil case throws. No-op when `name` isn't a
+  // built-in method name.
+  void emit_reject_bare_builtin_method(llvm::Value* propResult,
+                                       const std::string& name,
+                                       const peg::Ast& postfix) {
+    if (!culebra::is_builtin_method_name(name)) return;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto isNil = builder_.CreateICmpEQ(extract_tag(propResult),
+                                       builder_.getInt8(TAG_NIL));
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "bm.throw", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "bm.cont", fn);
+    builder_.CreateCondBr(isNil, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("TypeError",
+                     "built-in method '" + name +
+                         "' cannot be used as a value (call it, or wrap it in "
+                         "a lambda)",
+                     postfix.line, postfix.column);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
   }
 
   // Throw a "missing required argument 'name'" ArityError at runtime.
@@ -15852,6 +15856,7 @@ struct JIT {
             } else {
               emit_value_swap_owned(callee, receiver);
             }
+            emit_reject_bare_builtin_method(callee, name, postfix);
           }
           break;
         }
@@ -17686,6 +17691,7 @@ struct JIT {
             } else {
               emit_value_swap_owned(callee, receiver);
             }
+            emit_reject_bare_builtin_method(callee, name, postfix);
           }
           break;
         }

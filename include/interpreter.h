@@ -6688,8 +6688,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   Value eval_property(const peg::Ast& ast, const std::shared_ptr<Environment>& env,
-                      const Value& val) {
+                      const Value& val, bool as_value = false) {
     auto name = ast.token;
+
+    // A bare reference to a value-type built-in method (`let m = x.map`, not
+    // `x.map(...)`) is not a first-class value: the JIT dispatches it inline
+    // with no closure to hand back, so both backends reject it. Called only at
+    // the built-in method wrap sites below (after special properties like
+    // SharedBuffer `.size` / function introspection are resolved), so those
+    // stay unaffected.
+    auto reject_if_bare = [&](std::string_view mname) {
+      if (as_value && is_builtin_method_name(mname)) {
+        throw CulebraError("TypeError",
+            std::format("built-in method '{}' cannot be used as a value "
+                        "(call it, or wrap it in a lambda)", mname),
+            ast.line, ast.column);
+      }
+    };
 
     // @packable SharedBuffer handles: a packed view's `.field` reads the
     // backing bytes; a buffer's `.size`/`.count`/`.len` reports its length.
@@ -6708,6 +6723,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = string_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
+      reject_if_bare(name);
       return _wrap_method_with_this(it->second, val, true, name);
     }
 
@@ -6716,12 +6732,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = set_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
+      reject_if_bare(name);
       return _wrap_method_with_this(it->second, val, true, name);
     }
     if (val.type == Value::Tuple) {
       const auto& methods = tuple_builtins();
       auto it = methods.find(name);
       if (it == methods.end()) return Value();
+      reject_if_bare(name);
       return _wrap_method_with_this(it->second, val, true, name);
     }
 
@@ -6772,7 +6790,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& prop = obj.get(name);
       if (prop.type == Value::Function) {
         // Own Function properties (user methods, namespace methods like
-        // Proc.run) accept kwargs; only builtins()-table methods don't.
+        // Proc.run) accept kwargs and stay first-class; only builtins()-table
+        // methods (not an own property — `[1,2].map`) are rejected as bare
+        // values.
+        if (!obj.has_own(name)) reject_if_bare(name);
         return _wrap_method_with_this(prop, val, !obj.has_own(name), name);
       }
       return prop;
@@ -6809,6 +6830,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       const auto& methods = iterator_builtins();
       auto it = methods.find(name);
       if (it != methods.end()) {
+        reject_if_bare(name);
         return _wrap_method_with_this(it->second, val, true, name);
       }
     }
@@ -6895,7 +6917,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               break;
             }
           }
-          val = eval_property(postfix, env, val);
+          // A bare reference to a value-type built-in method (`let m = x.map`)
+          // is not a first-class value — eval_property rejects it when invoked
+          // as a value (not immediately called). Passing `!next_is_args` lets
+          // the same wrap sites that produce a callable method distinguish a
+          // call from a bare reference; special properties (SharedBuffer .size,
+          // function introspection) are handled before those sites and are
+          // unaffected.
+          val = eval_property(postfix, env, val, /*as_value=*/!next_is_args);
           break;
         }
         case "SAFE_INDEX"_:

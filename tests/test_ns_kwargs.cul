@@ -104,4 +104,24 @@ assert_eq(v2.message, "type error: parameter 'path' expects String")
 let v3 = nm_err(fn () { [5].map(FS.read).collect() })
 assert_eq(v3.message, "type error: expected String, got Long")
 
+// --- value-type built-in methods are not first-class values ----------------
+// `let m = [1,2].map` is not a usable value (the JIT dispatches it inline with
+// no closure), so both backends reject a bare reference. Immediate calls and
+// user-defined methods are unaffected.
+let bm = nm_err(fn () { let m = [1, 2].map; m(fn (x) { x }) })
+assert_eq(bm.kind, 'TypeError')
+assert_true(bm.message.contains("built-in method 'map' cannot be used as a value"))
+let bs = nm_err(fn () { let s = "x".upper; s() })
+assert_true(bs.message.contains("'upper' cannot be used as a value"))
+// Immediate method calls still work.
+assert_eq([1, 2].map(fn (x) { x * 2 }), [2, 4])
+assert_eq("hi".upper(), "HI")
+// A user-defined method IS a first-class value (stays callable through a var).
+class Doubler { new () {} run (x) { x * 2 } }
+let d = Doubler.new()
+let um = d.run
+assert_eq(um(21), 42)
+// A genuinely missing member is still Nil (not a method name → not rejected).
+assert_eq([1, 2].nonexistent_xyz, nil)
+
 IO.puts("test_ns_kwargs OK")
