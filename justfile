@@ -11,7 +11,10 @@ default:
 build *extra:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{extra}} .. > /dev/null
-    cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+    # CULEBRA_BUILD_JOBS overrides the parallel job count (defaults to all
+    # cores). CI sets it to cap RAM on the memory-tight macOS runner — an
+    # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
+    cd build && make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
 
 # Fast dev build: LTO off (saves ~15-25 s link), still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
