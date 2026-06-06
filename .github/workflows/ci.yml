@@ -7,7 +7,7 @@ on:
   # Weekly build on master to keep the per-OS ccache warm. GitHub evicts a
   # cache after 7 days without access; this repo's local-first workflow can go
   # long stretches without a CI push, and a cold cache makes the macOS build
-  # ~10x slower (it swaps — see `build_jobs` below). PR/push cache restores also
+  # ~10x slower (it swaps — see `job_cap` below). PR/push cache restores also
   # refresh the 7-day timer, so this is just the backstop for quiet weeks.
   schedule:
     - cron: '0 4 * * 1'
@@ -24,20 +24,26 @@ jobs:
             # uses Apple's ld-prime (Xcode 15+) by default — fast enough,
             # no override needed.
             linker_flag: -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
-            # Empty → `just build` uses all cores. The 16 GB Ubuntu runner has
-            # headroom for parallel LLVM-header-heavy TUs (~3 GB each).
-            build_jobs: ""
+            # Empty = no cap (all cores). The 16 GB Ubuntu runner has headroom
+            # for parallel LLVM-header-heavy TUs (~3 GB each) and AOT links.
+            job_cap: ""
           - os: macos-latest
             linker_flag: ""
-            # Cap parallel compile jobs: the macOS runner has only 7 GB RAM, and
-            # each LLVM-header-heavy TU peaks at ~3 GB. The default `-j3` (3
-            # cores) → ~9 GB → swap → a ~10x-slower build. `-j2` → ~6 GB, no
-            # swap. (Counterintuitive but real: fewer jobs is FASTER here.)
-            build_jobs: "2"
+            # Cap parallelism on the 7 GB macOS runner. Both the build
+            # (`make -j`, each LLVM-header-heavy TU ~3 GB) and the test phase's
+            # AOT pass (`run_aot` links one native binary per test via
+            # `xargs -P$JOBS`, each link pulling the LLVM-heavy runtime archive)
+            # are memory-heavy. At the default 3-wide they overshoot 7 GB →
+            # swap → ~10x slowdown. 2-wide (~6 GB) avoids it. Counterintuitive
+            # but real: fewer jobs is FASTER here. Ubuntu (16 GB) keeps all
+            # cores (empty = no cap).
+            job_cap: "2"
     runs-on: ${{ matrix.os }}
-    # Honored by `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}`.
     env:
-      CULEBRA_BUILD_JOBS: ${{ matrix.build_jobs }}
+      # `just build`'s `make -j${CULEBRA_BUILD_JOBS:-<ncpu>}` and `just test`'s
+      # `xargs -P${JOBS:-<ncpu>}` both honor these.
+      CULEBRA_BUILD_JOBS: ${{ matrix.job_cap }}
+      JOBS: ${{ matrix.job_cap }}
 
     steps:
       - uses: actions/checkout@v5
