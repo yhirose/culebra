@@ -5152,11 +5152,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     }
   };
 
+  // stdlib namespace methods route through the hook FIRST — before the
+  // splat validation below — because an ns-method (strict_arity) checks its
+  // positional arity *before* validating splat operands, mirroring the
+  // interp's strict_arity block: `JSON.stringify(**5)` is `ArityError: got 0`,
+  // not a splat TypeError. The resolver does that ordering itself; reaching the
+  // splat-first validation below would pre-empt it. (User fns / multifn
+  // dispatchers, handled after, are splat-first like the interp's user binder.)
+  if (_jit_ns_kwarg_hook) {
+    JitValue out;
+    if (_jit_ns_kwarg_hook(cls, this_val, n_pos, positional, n_kw, kw_keys,
+                           kw_vals, n_splat, splat_objs, line, col, &out)) {
+      return out;
+    }
+  }
+
   // Validate `**` splat operands up front — before the multifn dispatcher
-  // branch / ns hook / meta lookup. A non-Object or non-String-keyed operand
-  // must raise the interp's TypeError ("**: splat operand must be Object" /
-  // "**: splat key must be String"), not be silently skipped while building
-  // the dispatcher's kwarg key set and then surface as a DispatchError.
+  // branch / meta lookup (but after the ns hook, see above). A non-Object or
+  // non-String-keyed operand must raise the interp's TypeError ("**: splat
+  // operand must be Object" / "**: splat key must be String"), not be silently
+  // skipped while building the dispatcher's kwarg key set and then surface as a
+  // DispatchError.
   for (int64_t i = 0; i < n_splat; i++) {
     auto sv = splat_objs[i];
     if (sv.tag != TAG_OBJECT) {
@@ -5195,16 +5211,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     return culebra_runtime_call_with_kwargs(
         picked.body, this_val, n_pos, positional, n_kw, kw_keys, kw_vals,
         n_splat, splat_objs, line, col);
-  }
-
-  // stdlib namespace methods route through the hook (their shared
-  // trampoline fn_ptr has no per-fn JitParamMeta).
-  if (_jit_ns_kwarg_hook) {
-    JitValue out;
-    if (_jit_ns_kwarg_hook(cls, this_val, n_pos, positional, n_kw, kw_keys,
-                           kw_vals, n_splat, splat_objs, line, col, &out)) {
-      return out;
-    }
   }
 
   const JitParamMeta* meta = _jit_lookup_param_meta(cls->fn_ptr);

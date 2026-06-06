@@ -48,4 +48,41 @@ assert_eq([1, 2, 3].all(fn (x) { x > 0 }), true)
 assert_eq([1, 2, 3].map(fn (x) { x * 2 }), [2, 4, 6])
 assert_eq("hi".upper(), "HI")
 
+// --- ns-method arity / splat check ORDER matches interp -------------------
+// A strict-arity ns-method checks its positional count BEFORE validating splat
+// operands, mirroring the interp's strict_arity block: a `**`splat (which only
+// carries keywords) never satisfies a required positional, and the ArityError
+// fires before any splat type error. Same kind/message/timing on both backends.
+fn nm_err(thunk) { try { thunk(); nil } catch e { e } }
+
+// 0 positional + bad splat → ArityError (arity checked first), not a splat error.
+let a1 = nm_err(fn () { JSON.stringify(**5) })
+assert_eq(a1.kind, 'ArityError')
+assert_true(a1.message.contains('expected 1 positional argument, got 0'))
+// A required positional given only as a keyword is still missing for arity.
+let a2 = nm_err(fn () { JSON.stringify(v: {a: 1}) })
+assert_eq(a2.kind, 'ArityError')
+assert_true(a2.message.contains('got 0'))
+// With the required positional present, a bad splat IS reported (Object check,
+// with the operand's type — the message carries `, got <type>`).
+let a3 = nm_err(fn () { JSON.stringify({a: 1}, **5) })
+assert_eq(a3.kind, 'TypeError')
+assert_eq(a3.message, '**: splat operand must be Object, got Long')
+// A non-String splat key is rejected (was silently dropped on the JIT before).
+let a4 = nm_err(fn () {
+  let o = {}
+  o[1] = 2
+  JSON.stringify({a: 1}, **o)
+})
+assert_eq(a4.kind, 'TypeError')
+assert_true(a4.message.contains('splat key must be String'))
+// Too many positionals report the cap (max), not the required count.
+let a5 = nm_err(fn () { JSON.parse("[1]", true, "auto", 9) })
+assert_eq(a5.kind, 'ArityError')
+assert_true(a5.message.contains('expected 3 positional arguments, got 4'))
+// Same order through the other slab path (FS / Parallel use the Proc-style
+// marshaller, which must agree too).
+let a6 = nm_err(fn () { FS.remove(**5) })
+assert_eq(a6.kind, 'ArityError')
+
 IO.puts("test_ns_kwargs OK")

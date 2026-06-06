@@ -3466,6 +3466,12 @@ struct NsParamMeta {
   // shared `culebra::builtin_arity_bounds` (the single source of the arity
   // rule, also used by the interp binder) — not recomputed per call.
   int min_arity = 0;
+  // Maximum positional arity (positional-bindable param count), from the same
+  // `builtin_arity_bounds`. The resolver checks `n_pos` against [min,max] up
+  // front — before merging splats/kwargs — exactly as the interp's strict_arity
+  // block does, so kwargs/splats never satisfy a required positional and the
+  // arity error fires at the same point on both backends.
+  int max_arity = 0;
 };
 
 struct NsMethod {
@@ -3835,9 +3841,13 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // bare positional calls pass a prefix. Methods without params keep the
     // strict fixed-arity check.
     if (pm) {
-      if (n_args < pm->min_arity || n_args > pm->n_params) {
+      if (n_args < pm->min_arity || n_args > pm->max_arity) {
         release_args();
-        _ns_adapt::arity_error(m->ns, m->name, pm->min_arity, n_args, line, col);
+        // Too few → required count; too many → the cap (interp parity).
+        _ns_adapt::arity_error(
+            m->ns, m->name,
+            n_args > pm->max_arity ? pm->max_arity : pm->min_arity, n_args,
+            line, col);
       }
     } else if (m->arity >= 0 && n_args != m->arity) {
       release_args();
@@ -3925,15 +3935,36 @@ inline bool _jit_ns_kwarg_resolve_core(
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
   };
 
+  // Arity check on positional count — up front, before merging splats/kwargs,
+  // mirroring the interp's strict_arity block (invoke_user_function_with_args):
+  // a required positional is never satisfied by a keyword/splat, and the
+  // ArityError fires before any splat type check. Variadic (args_rest) methods
+  // carry no positional cap (handled below), so skip — matching interp's
+  // `if (!b.variadic)`. Too few reports the required count, too many the cap.
+  if (pm->args_rest_idx < 0 &&
+      (n_pos < pm->min_arity || n_pos > pm->max_arity)) {
+    release_all();
+    throw culebra::CulebraError("ArityError",
+        culebra::ns_fn_arity_error_message(
+            n_pos < pm->min_arity ? pm->min_arity : pm->max_arity, n_pos),
+        line, col);
+  }
+
   // Merge splats then explicit kwargs (each owns +1 in `merged`).
   std::unordered_map<std::string_view, JitValue> merged;
   for (int64_t i = 0; i < n_splat; i++) {
     if (splat_objs[i].tag != TAG_OBJECT) {
       release_all();
-      throw culebra::CulebraError("TypeError",
-          "**: splat operand must be Object", line, col);
+      throw culebra::CulebraError("TypeError", std::format(
+          "**: splat operand must be Object, got {}",
+          _culebra_tag_name(splat_objs[i].tag)), line, col);
     }
     auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
+    if (obj->non_string_props && !obj->non_string_props->empty()) {
+      release_all();
+      throw culebra::CulebraError("TypeError",
+          "**: splat key must be String", line, col);
+    }
     if (obj->shape) {
       for (size_t k = 0; k < obj->shape->names.size(); k++) {
         auto& sv = obj->slots[k].value;
@@ -4211,12 +4242,13 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m) {
             if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
             if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
           }
+          auto _ab = culebra::builtin_arity_bounds(*cps);
           sp->meta = NsParamMeta{sp->params.data(),
                                  static_cast<int>(sp->params.size()),
                                  kwargs_rest_idx, first_kw_only_idx,
                                  args_rest_idx,
-                                 static_cast<int>(
-                                     culebra::builtin_arity_bounds(*cps).min)};
+                                 static_cast<int>(_ab.min),
+                                 static_cast<int>(_ab.max)};
           t.emplace(&nm, &sp->meta);
           storage.push_back(std::move(sp));
         };
