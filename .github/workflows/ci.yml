@@ -46,6 +46,15 @@ jobs:
       CULEBRA_BUILD_JOBS: ${{ matrix.build_jobs }}
       # `just test` skips difftest + AOT when this is non-empty.
       CULEBRA_TEST_SKIP_HEAVY: ${{ matrix.skip_heavy }}
+      # ccache as the compiler launcher via env (job-wide) — not just the build
+      # step's -D flags — so EVERY cmake configure agrees, including the
+      # `just build` prereq that `just test` / `just smoke-microgpt` re-run.
+      # With only the -D flags, that reconfigure dropped the launcher, changed
+      # every compile command, and recompiled everything WITHOUT ccache
+      # (~12 min) inside the test step.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
 
     steps:
       - uses: actions/checkout@v5
@@ -108,13 +117,9 @@ jobs:
         run: just check-grammar-sync
 
       - name: Build (interpreter + JIT)
-        env:
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
-        run: just build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ${{ matrix.linker_flag }}
+        run: just build ${{ matrix.linker_flag }}
 
       - name: Report ccache stats
-        env:
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: ccache -s
 
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
