@@ -189,7 +189,10 @@ test BACKEND='all': build
     }
 
     run_embed() {
-        (cd build && ctest --output-on-failure)
+        # --timeout: bound each test so a stalled CI runner (GitHub's scarce
+        # macOS VMs occasionally freeze a process) fails fast instead of hanging
+        # the job for hours. 300 s is ~8x the slowest legit test (signal_test).
+        (cd build && ctest --output-on-failure --timeout 300)
     }
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,
@@ -244,6 +247,10 @@ test BACKEND='all': build
         tools/difftest/run.sh ./build/culebra
     }
 
+    # Announce each phase with the running elapsed time, so a slow/stalled CI
+    # run shows where it is (otherwise the silent phases — difftest, the
+    # interp/jit sweep — emit nothing until they finish).
+    phase() { echo ">>> [${SECONDS}s] $1"; }
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
@@ -251,13 +258,13 @@ test BACKEND='all': build
       # (the 5114-case generated difftest + per-test AOT links). CI sets it on
       # the slow macOS runner — those run on Linux CI and in local dev.
       all)
-        run_diff_interp_jit
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || run_difftest
-        run_embed
-        run_culebra_test_self
-        run_isolate
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || run_aot
-        echo "test OK"
+        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
+        phase "ctest (embedding smokes)"; run_embed
+        phase "culebra-test self"; run_culebra_test_self
+        phase "isolate (interp + jit)"; run_isolate
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
+        phase "done"; echo "test OK"
         ;;
       interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
