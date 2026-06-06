@@ -85,4 +85,23 @@ assert_true(a5.message.contains('expected 3 positional arguments, got 4'))
 let a6 = nm_err(fn () { FS.remove(**5) })
 assert_eq(a6.kind, 'ArityError')
 
+// --- ns-method-as-value: binder wording + argument position ----------------
+// Calling a method through a value (`let g = ns.method; g(...)`) goes through
+// the binder, not a callback, so a wrong-typed argument gets the binder's
+// "parameter '<name>' expects <T>" wording AT THAT ARGUMENT's position — like a
+// direct call. The JIT used to report a callback-style "expected <T>, got
+// <actual>" at the call site (it only threaded the first argument's position).
+let gp = JSON.parse
+let v1 = nm_err(fn () { gp("[1]", 5) })   // 2nd positional binds `lines: Bool`
+assert_eq(v1.kind, 'TypeError')
+assert_eq(v1.message, "type error: parameter 'lines' expects Bool")
+assert_eq(v1.col, 35)                     // points at the `5`, not the call site
+let gr = FS.read
+let v2 = nm_err(fn () { gr(5) })          // arg0 of a param-less method
+assert_eq(v2.kind, 'TypeError')
+assert_eq(v2.message, "type error: parameter 'path' expects String")
+// A callback keeps the body-coercion wording (the value path must not leak in).
+let v3 = nm_err(fn () { [5].map(FS.read).collect() })
+assert_eq(v3.message, "type error: expected String, got Long")
+
 IO.puts("test_ns_kwargs OK")

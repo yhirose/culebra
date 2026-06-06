@@ -3889,10 +3889,41 @@ inline JitValue _jit_ns_method_trampoline(
     JitClosure* cls, JitValue /*this_val*/, int64_t n_args, JitValue* args) {
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
+  // As-value call (`let g = ns.method; g(...)`): the indirect-call codegen
+  // threaded each argument's source position into _jit_argpos_*. Type-check the
+  // positionals against the method's declared param types with the interp
+  // binder's wording ("parameter '<name>' expects <T>") at the argument's
+  // position — exactly like a direct call. A HOF callback leaves the count 0,
+  // so this is skipped and the dispatch's body-coercion arg0 check runs below
+  // (matching the interp's callback wording). Args-rest methods (range/iota)
+  // bind positionals into the rest Array, so they keep the dispatch path.
+  if (_jit_argpos_n > 0) {
+    const NsParamMeta* pm = _ns_meta(m);
+    for (int64_t i = 0; i < n_args && i < _jit_argpos_n; i++) {
+      std::string_view ty, pname;
+      if (pm) {
+        if (pm->args_rest_idx < 0 && i < pm->n_params) {
+          ty = pm->params[i].type;
+          pname = pm->params[i].name;
+        }
+      } else if (i == 0 && m->arg0_type) {
+        ty = m->arg0_type;
+        pname = m->arg0_name ? m->arg0_name : "";
+      }
+      if (!ty.empty() &&
+          !_culebra_value_matches_type(args[i].tag, args[i].data, ty)) {
+        for (int64_t k = 0; k < n_args; k++)
+          _culebra_value_release_impl(args[k].tag, args[k].data);
+        culebra::throw_runtime_error_at(
+            "TypeError",
+            std::format("type error: parameter '{}' expects {}", pname, ty),
+            _jit_argpos_line[i], _jit_argpos_col[i]);
+      }
+    }
+  }
   // The closure ABI carries no line/col, so snapshot the positions recorded
-  // just before this indirect call (general call codegen emits set_call_site +
-  // set_call_arg0_site). Pass both: the call site for arity errors and the
-  // first argument's position for the arg0 type check (matching interp).
+  // just before this indirect call. Pass the call site for arity errors and
+  // arg0's position for the (callback) body-coercion arg0 type check.
   return _jit_ns_method_dispatch(m, n_args, args, _jit_call_site_line,
                                  _jit_call_site_col, _jit_call_arg0_line,
                                  _jit_call_arg0_col);

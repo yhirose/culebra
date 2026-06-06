@@ -1775,26 +1775,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_type_matches(
   return _culebra_type_matches_single(tag, data, std::string_view(expected));
 }
 
+// Whether a value satisfies a (possibly Union) type annotation. Empty / "Any"
+// matches anything; a top-level `A | B` is any-of. Shared by the throwing
+// `culebra_runtime_type_check` and the ns-method-as-value arg check so both
+// decide membership identically.
+inline bool _culebra_value_matches_type(int8_t tag, int64_t data,
+                                        std::string_view expected) {
+  if (expected.empty() || expected == "Any") return true;
+  // Depth-aware gate so `Array<Long | Float>`'s inner `|` doesn't trigger a
+  // Union split that's then never used.
+  if (culebra::has_toplevel_pipe(expected)) {
+    for (auto cand : culebra::split_union_types(expected))
+      if (_culebra_type_matches_single(tag, data, cand)) return true;
+    return false;
+  }
+  return _culebra_type_matches_single(tag, data, expected);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
     int8_t tag, int64_t data, const char* expected, const char* context,
     int64_t line, int64_t col) {
   if (expected == nullptr || expected[0] == '\0') return;
-  // `Any` annotation accepts every value — bail before the Union split
-  // and per-alt match. Hot when generic helpers carry `: Any` params.
-  if (std::strcmp(expected, "Any") == 0) return;
-  // Union types: any-of match across pipe-separated alternatives.
-  // Compare on string_view — no per-alternative std::string copy.
-  // Depth-aware gate so `Array<Long | Float>`'s inner `|` doesn't
-  // trigger a Union split that's then never used.
-  std::string_view sv(expected);
-  if (culebra::has_toplevel_pipe(sv)) {
-    for (auto cand : culebra::split_union_types(sv)) {
-      if (_culebra_type_matches_single(tag, data, cand)) return;
-    }
-    throw culebra::CulebraError("TypeError", std::format(
-        "type error: {} expects {}", context, expected), line, col);
-  }
-  if (_culebra_type_matches_single(tag, data, sv)) return;
+  if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
   throw culebra::CulebraError("TypeError", std::format(
       "type error: {} expects {}", context, expected), line, col);
 }
@@ -4031,6 +4033,19 @@ inline thread_local int64_t _jit_callback_arg_col = 0;
 inline thread_local int64_t _jit_call_arg0_line = 0;
 inline thread_local int64_t _jit_call_arg0_col = 0;
 
+// Per-argument source positions for an indirect (as-value) ns-method call,
+// threaded by the indirect-call codegen so a wrong-typed argument is rejected
+// at that argument's position with the interp binder's wording ("parameter
+// '<name>' expects <T>"), exactly like a direct call. `_jit_argpos_n` is the
+// count; 0 means "no per-arg positions" — a HOF callback path, where
+// set_call_site reset it and the dispatch's body-coercion arg0 check runs
+// instead (matching interp's callback wording). Capped at K; a longer arg list
+// leaves the overflow positions at the call site.
+inline constexpr int _JIT_ARGPOS_MAX = 16;
+inline thread_local int64_t _jit_argpos_line[_JIT_ARGPOS_MAX] = {};
+inline thread_local int64_t _jit_argpos_col[_JIT_ARGPOS_MAX] = {};
+inline thread_local int _jit_argpos_n = 0;
+
 // Build a variant instance: tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
@@ -4942,11 +4957,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
     int64_t line, int64_t col) {
   _jit_call_site_line = line;
   _jit_call_site_col = col;
-  // Default the arg0 position to the call site so it is never stale on paths
-  // that set only the call site (e.g. a HOF invoking a callback per element).
-  // The direct indirect-call path overrides this via set_call_arg0_site.
+  // Default the arg0 position to the call site: it is read only on the
+  // (callback) body-coercion arg0 type-error path, where the call site is the
+  // right position. The as-value path instead threads per-arg positions below.
   _jit_call_arg0_line = line;
   _jit_call_arg0_col = col;
+  // Reset the per-arg position count: only the indirect (as-value) call path
+  // repopulates it (via set_arg_pos) right after this. A HOF callback reaches
+  // its per-element call with the count still 0, marking it as the callback
+  // path so the dispatch uses body-coercion wording.
+  _jit_argpos_n = 0;
+}
+
+// Record the position of the indirect call's i-th argument (see _jit_argpos_*),
+// emitted per argument just before the call. Bounds-checked; the count tracks
+// the highest index seen so the trampoline knows how many are valid.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_arg_pos(
+    int64_t i, int64_t line, int64_t col) {
+  if (i < 0 || i >= _JIT_ARGPOS_MAX) return;
+  _jit_argpos_line[i] = line;
+  _jit_argpos_col[i] = col;
+  if (static_cast<int>(i) + 1 > _jit_argpos_n)
+    _jit_argpos_n = static_cast<int>(i) + 1;
 }
 
 // Publish the current op's source position for the positionless-error backfill
@@ -4965,15 +4997,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
     int64_t line, int64_t col) {
   _jit_callback_arg_line = line;
   _jit_callback_arg_col = col;
-}
-
-// Record the position of an indirect call's first argument (see
-// _jit_call_arg0_*), emitted just before the call so an ns-method-as-value's
-// arg0 type error points at the argument. Trivial: two thread-local stores.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_arg0_site(
-    int64_t line, int64_t col) {
-  _jit_call_arg0_line = line;
-  _jit_call_arg0_col = col;
 }
 
 // Append a method to the named multimethod table (replacing an entry
@@ -7587,7 +7610,7 @@ inline constexpr auto proc_race           = "culebra_runtime_proc_race";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
 inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
-inline constexpr auto set_call_arg0_site  = "culebra_runtime_set_call_arg0_site";
+inline constexpr auto set_arg_pos         = "culebra_runtime_set_arg_pos";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
@@ -10793,8 +10816,8 @@ struct JIT {
                                  builder_.getVoidTy(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::set_call_arg0_site,
-                                 builder_.getVoidTy(),
+    module_->getOrInsertFunction(rt::set_arg_pos, builder_.getVoidTy(),
+                                 builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // REPL top-level binding storage. The active globals dict is
@@ -16851,7 +16874,7 @@ struct JIT {
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
       bool check_kw_only = false, bool allow_call_overload = true,
-      const peg::Ast* arg0_ast = nullptr) {
+      llvm::ArrayRef<const peg::Ast*> arg_asts = {}) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
     auto tag = extract_tag(callee);
@@ -16944,14 +16967,17 @@ struct JIT {
     // store is two i64 writes to thread-locals.
     emit_call(module_->getFunction(rt::set_call_site),
               {current_line_val(), current_column_val()});
-    // Record the first argument's position for an ns-method-as-value's arg0
-    // type check (read in _jit_ns_method_dispatch). Only when there is a real
-    // arg to point at — set_call_site above already defaulted arg0 to the call
-    // site, so a no-arg call needs no extra store.
-    if (arg0_ast) {
-      emit_call(module_->getFunction(rt::set_call_arg0_site),
-                {builder_.getInt64(arg0_ast->line),
-                 builder_.getInt64(arg0_ast->column)});
+    // Thread each argument's source position so an ns-method-as-value's
+    // wrong-typed argument is rejected at that argument's position with the
+    // interp binder's wording (read in _jit_ns_method_trampoline). set_call_site
+    // above reset the count to 0; a HOF callback reaches its per-element call
+    // with it still 0 (the body-coercion path). Capped at _JIT_ARGPOS_MAX.
+    for (size_t i = 0; i < arg_asts.size() && i < _JIT_ARGPOS_MAX; i++) {
+      if (!arg_asts[i]) continue;
+      emit_call(module_->getFunction(rt::set_arg_pos),
+                {builder_.getInt64(static_cast<int64_t>(i)),
+                 builder_.getInt64(arg_asts[i]->line),
+                 builder_.getInt64(arg_asts[i]->column)});
     }
 
     auto calleeType = llvm::FunctionType::get(
@@ -17215,15 +17241,17 @@ struct JIT {
           argsAst, callee, thisVal);
     }
     std::vector<llvm::Value*> userArgs;
+    std::vector<const peg::Ast*> argAsts;
     userArgs.reserve(argsAst.nodes.size());
+    argAsts.reserve(argsAst.nodes.size());
     for (auto& argNode : argsAst.nodes) {
       userArgs.push_back(compile(*argNode));
+      argAsts.push_back(argNode.get());
     }
     return compile_function_call_raw(
         callee, thisVal, userArgs,
         /*check_kw_only=*/any_kw_only_in_program_,
-        /*allow_call_overload=*/true,
-        argsAst.nodes.empty() ? nullptr : argsAst.nodes[0].get());
+        /*allow_call_overload=*/true, argAsts);
   }
 
   // Indirect / UFCS / method kwargs path. Compiles ARG_LIST into
