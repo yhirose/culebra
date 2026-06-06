@@ -100,9 +100,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_print(int8_t type,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
   std::string line;
-  if (!std::getline(std::cin, line)) {
-    return _culebra_heap_str(std::string(""));
-  }
+  // Interruptible; empty string at EOF (unchanged behaviour).
+  culebra::read_stdin_line_interruptible(line);
   return _culebra_heap_str(line);
 }
 

@@ -1255,11 +1255,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eputs(int8_t type,
   _culebra_puts_to(std::cerr, type, data);
 }
 
-// `IO.read_all()` — read standard input to EOF (portable stdin read).
+// `IO.read_all()` — read standard input to EOF (portable, interruptible: a
+// single Ctrl+C breaks the wait — see read_stdin_all_interruptible).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_all() {
-  std::string all((std::istreambuf_iterator<char>(std::cin)),
-                  std::istreambuf_iterator<char>());
-  return _culebra_heap_str(all);
+  return _culebra_heap_str(culebra::read_stdin_all_interruptible());
 }
 
 // str_display equivalent for an uncaught throw value: a top-level String /

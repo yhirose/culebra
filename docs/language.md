@@ -2517,7 +2517,8 @@ Ctrl+C raises a cooperative, catchable `Interrupted` — Python's
 
 * The running computation stops at the next loop iteration or statement
   boundary and throws `Interrupted`. A tight loop (even `while true {}`)
-  is interruptible.
+  is interruptible, as is a wait on `IO.read_all` / `IO.input` (blocking
+  on stdin).
 * It unwinds like any exception, so `defer` blocks run on the way out.
 * If you `catch` it, execution resumes normally — the interrupt is
   one-shot, so a server / REPL can treat Ctrl+C as "cancel the current

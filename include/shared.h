@@ -22,7 +22,11 @@
 
 #include <climits>   // PATH_MAX (Sys.executable)
 #include <cstring>   // strlen (Sys.executable)
-#include <unistd.h>  // readlink (Sys.executable)
+#include <cstdio>    // Windows stdin fallback (read_stdin_*_interruptible)
+#include <unistd.h>  // readlink (Sys.executable), read (interruptible stdin)
+#if !defined(_WIN32)
+#include <poll.h>    // interruptible stdin (poll fd 0 between interrupt checks)
+#endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath (Sys.executable)
 #endif
@@ -1291,6 +1295,121 @@ inline void _culebra_sigint_handler(int sig) {
 inline void install_sigint_handler() {
   current_runtime().interrupt_flag = &culebra_g_sigint;
   std::signal(SIGINT, _culebra_sigint_handler);
+}
+
+// Throw the cooperative Interrupted if an interrupt is pending — for blocking
+// syscalls that poll between waits (interruptible stdin below). Checks the
+// process SIGINT flag directly (like the JIT safepoint), so it works regardless
+// of which Runtime is active — the JIT runs under a fresh RuntimeScope whose
+// borrowed flag is null. A Ctrl+C is one-shot (consumed so a `catch` can
+// resume); an isolate's cancel flag (this thread's borrowed flag, if any) stays
+// sticky and keeps its own message.
+inline void throw_if_interrupted() {
+  if (culebra_g_sigint.load(std::memory_order_relaxed)) {
+    culebra_g_sigint.store(false, std::memory_order_relaxed);
+    throw CulebraError("Interrupted", "interrupted");
+  }
+  auto* f = current_runtime().interrupt_flag;
+  if (f && f != &culebra_g_sigint && f->load(std::memory_order_relaxed)) {
+    throw CulebraError("Interrupted", "isolate cancelled");
+  }
+}
+
+// --- Interruptible stdin --------------------------------------------------
+//
+// A plain `std::cin` read is not a cooperative safepoint: a program blocked
+// waiting for stdin couldn't be stopped by a single Ctrl+C (only the second,
+// force-killing press). These read the raw fd in a `poll` loop that wakes every
+// ~200ms to honor the interrupt flag, throwing Interrupted if it fires — so a
+// single Ctrl+C breaks a stdin wait too. `IO.read_all` / `IO.input` (both
+// backends) route through here. A thread-local buffer holds bytes read past a
+// line so the next read sees them. POSIX only; Windows keeps the blocking
+// `std::cin`/stdio path (not a current build target).
+
+#if !defined(_WIN32)
+inline std::string& _stdin_leftover() {
+  static thread_local std::string buf;
+  return buf;
+}
+
+// Wait for more bytes on fd 0, appending one chunk to the leftover buffer.
+// Returns false at EOF. Polls the interrupt flag between (and on) waits.
+inline bool _stdin_fill() {
+  char chunk[65536];
+  for (;;) {
+    throw_if_interrupted();
+    struct pollfd pfd{/*fd=*/0, /*events=*/POLLIN, /*revents=*/0};
+    int r = ::poll(&pfd, 1, 200);
+    if (r < 0) {
+      if (errno == EINTR) continue;  // signal arrived → re-check the flag
+      return false;                  // real poll error → treat as EOF
+    }
+    if (r == 0) continue;            // timeout → re-check the flag
+    ssize_t n = ::read(0, chunk, sizeof(chunk));
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return false;
+    }
+    if (n == 0) return false;        // EOF
+    _stdin_leftover().append(chunk, static_cast<size_t>(n));
+    return true;
+  }
+}
+#endif
+
+// Read all of stdin to EOF, interruptibly.
+inline std::string read_stdin_all_interruptible() {
+#if defined(_WIN32)
+  std::string out;
+  char chunk[65536];
+  size_t n;
+  while ((n = std::fread(chunk, 1, sizeof(chunk), stdin)) > 0)
+    out.append(chunk, n);
+  return out;
+#else
+  std::string out;
+  out.swap(_stdin_leftover());       // take anything already buffered
+  while (_stdin_fill()) {
+    out += _stdin_leftover();
+    _stdin_leftover().clear();
+  }
+  return out;
+#endif
+}
+
+// Read one line (without the trailing newline) interruptibly. Returns false at
+// EOF with nothing read; a final unterminated line is returned once.
+inline bool read_stdin_line_interruptible(std::string& out) {
+  out.clear();
+#if defined(_WIN32)
+  int c;
+  bool any = false;
+  while ((c = std::fgetc(stdin)) != EOF) {
+    any = true;
+    if (c == '\n') break;
+    out.push_back(static_cast<char>(c));
+  }
+  if (!out.empty() && out.back() == '\r') out.pop_back();
+  return any;
+#else
+  auto& buf = _stdin_leftover();
+  for (;;) {
+    auto nl = buf.find('\n');
+    if (nl != std::string::npos) {
+      out.assign(buf, 0, nl);
+      buf.erase(0, nl + 1);
+      if (!out.empty() && out.back() == '\r') out.pop_back();
+      return true;
+    }
+    if (!_stdin_fill()) {            // EOF
+      if (buf.empty()) return false;
+      out.swap(buf);                 // trailing line with no newline
+      buf.clear();
+      if (!out.empty() && out.back() == '\r') out.pop_back();
+      return true;
+    }
+  }
+#endif
 }
 
 // Serializes stdout/stderr writes so concurrent isolates don't interleave

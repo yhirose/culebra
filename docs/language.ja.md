@@ -2358,7 +2358,8 @@ kill するのではなく、Python の `KeyboardInterrupt` と同じモデル�
     }
 
 * 実行中の計算は次のループ反復または文の境界で停止し `Interrupted`
-  を throw します。tight なループ（`while true {}` でも）も中断可能。
+  を throw します。tight なループ（`while true {}` でも）も中断可能で、
+  `IO.read_all` / `IO.input`（stdin 待ち）も同様に中断できます。
 * 通常の例外と同じく unwind するので、抜ける途中で `defer` が走ります。
 * `catch` すれば実行は通常どおり再開します。割り込みは one-shot なので、
   サーバや REPL は Ctrl+C を「現在のリクエストをキャンセル」として扱い

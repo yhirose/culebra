@@ -235,9 +235,8 @@ inline Value make_io_namespace() {
       Value(FunctionValue({},
                           [](std::shared_ptr<Environment>) {
                             std::string line;
-                            if (!std::getline(std::cin, line)) {
-                              return Value(std::string(""));
-                            }
+                            // Interruptible; empty string at EOF (unchanged).
+                            read_stdin_line_interruptible(line);
                             return Value(std::move(line));
                           },
                           "String"sv)),
@@ -249,11 +248,10 @@ inline Value make_io_namespace() {
       "read_all",
       Value(FunctionValue({},
                           [](std::shared_ptr<Environment>) {
-                            std::lock_guard<std::mutex> lk(stdio_mutex());
-                            std::string all(
-                                (std::istreambuf_iterator<char>(std::cin)),
-                                std::istreambuf_iterator<char>());
-                            return Value(std::move(all));
+                            // No stdio_mutex: holding it across a blocking,
+                            // interruptible stdin read would stall every
+                            // isolate's output, and stdin is single-consumer.
+                            return Value(read_stdin_all_interruptible());
                           },
                           "String"sv)),
       false);
