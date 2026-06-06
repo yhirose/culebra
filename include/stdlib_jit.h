@@ -5716,18 +5716,46 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
   auto& explicit_kwargs = scanned.explicit_kwargs;
   auto& splats = scanned.splats;
 
-  // Compile each positional once; emit an inline type check at the argument's
-  // position for any leading positional that declares a type. Arity (too many
-  // / too few) and unknown-kwarg are left to the resolver (call-site position),
-  // matching interp.
+  // Compile each positional once (no type check yet). interp evaluates ALL
+  // arguments first, then checks arity, then type-checks per param — so a too-
+  // many/too-few call raises ArityError before any positional type error. We
+  // therefore defer the type checks until after the arity gate below.
   std::vector<llvm::Value*> posVals;
   posVals.reserve(positional.size());
   const NsParamMeta* pm = _ns_meta(m);
   for (size_t i = 0; i < positional.size(); i++) {
-    auto v = compile(*positional[i]);
-    // Typed positional: NsParamMeta methods (Http) carry per-param types +
-    // names; a param-less method (the Encoding codecs) carries a single
-    // `arg0_type` whose interp param is named "s".
+    posVals.push_back(compile(*positional[i]));
+  }
+
+  std::vector<llvm::Constant*> kwKeys;
+  std::vector<llvm::Value*> kwVals;
+  for (auto& [name, ast] : explicit_kwargs) {
+    kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
+    kwVals.push_back(compile(*ast));
+  }
+  std::vector<llvm::Value*> splatVals;
+  for (auto* ast : splats) splatVals.push_back(compile(*ast));
+
+  // Arity gate, after all arguments are evaluated — interp's strict_arity block
+  // fires here, before the per-param type checks and before splat validation.
+  // (Non-pm codecs keep the resolver's own checks.) args-rest methods carry no
+  // positional cap.
+  if (pm && pm->args_rest_idx < 0) {
+    long npos = static_cast<long>(positional.size());
+    if (npos < pm->min_arity || npos > pm->max_arity) {
+      jit.emit_throw_error(
+          "ArityError",
+          culebra::ns_fn_arity_error_message(
+              npos < pm->min_arity ? pm->min_arity : pm->max_arity, npos),
+          static_cast<size_t>(callAst.line),
+          static_cast<size_t>(callAst.column));
+      return make_nil();  // unreachable: emit_throw_error is noreturn
+    }
+  }
+
+  // Now the per-param type checks, at each argument's source position (matching
+  // interp's binder). A param-less codec carries a single arg0_type (param "s").
+  for (size_t i = 0; i < positional.size(); i++) {
     std::string_view ptype;
     std::string pname;
     if (pm) {
@@ -5740,20 +5768,10 @@ inline llvm::Value* JitExtension::compile_ns_method_kwargs(
       if (m->arg0_name) pname = m->arg0_name;
     }
     if (!ptype.empty()) {
-      jit.emit_type_check(v, ptype, std::format("parameter '{}'", pname),
+      jit.emit_type_check(posVals[i], ptype, std::format("parameter '{}'", pname),
                           positional[i]);
     }
-    posVals.push_back(v);
   }
-
-  std::vector<llvm::Constant*> kwKeys;
-  std::vector<llvm::Value*> kwVals;
-  for (auto& [name, ast] : explicit_kwargs) {
-    kwKeys.push_back(builder_.CreateGlobalString(std::string(name), ".kwkey"));
-    kwVals.push_back(compile(*ast));
-  }
-  std::vector<llvm::Value*> splatVals;
-  for (auto* ast : splats) splatVals.push_back(compile(*ast));
 
   auto fn = builder_.GetInsertBlock()->getParent();
   llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
