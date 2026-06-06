@@ -15,6 +15,14 @@
 //
 // run_command / run_all / run_race share one spawn + drain + reap core
 // (the drain loop is the most deadlock-prone code, so it lives once).
+//
+// Cooperative interrupts: the blocking poll loops wake at least every
+// kInterruptPollMs to honor a pending Ctrl+C (process SIGINT) or this isolate's
+// cancel, SIGKILL their children, and raise the cooperative `Interrupted` via
+// throw_if_interrupted() — so a single Ctrl+C stops `Proc.run` symmetrically
+// across interp/JIT/AOT rather than relying on a post-call safepoint (which the
+// JIT lacks between statements). Same wiring as the interruptible stdin / Http
+// paths; pulling shared.h keeps proc.h value-neutral (no Value / JitValue).
 
 #include <cerrno>
 #include <chrono>
@@ -28,6 +36,8 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+#include <shared.h>  // culebra_g_sigint / interrupt_requested / throw_if_interrupted
 
 extern char** environ;
 
@@ -117,6 +127,24 @@ inline long now_ms() {
 
 // Grace period between SIGTERM and SIGKILL when a child overruns its timeout.
 inline constexpr long kKillGraceMs = 100;
+
+// Poll loops cap their wait at this many ms so a pending Ctrl+C / isolate cancel
+// is honored within ~kInterruptPollMs even when no child fd becomes ready and
+// the child does not exit on the signal itself.
+inline constexpr int kInterruptPollMs = 100;
+
+// True when a cooperative interrupt (process Ctrl+C or this isolate's cancel) is
+// pending. Read-only — the one-shot consume + throw happens via
+// throw_if_interrupted() once the blocking loop has killed/reaped its children.
+inline bool interrupt_pending() {
+  return culebra_g_sigint.load(std::memory_order_relaxed) || interrupt_requested();
+}
+
+// Clamp a poll() timeout (ms; -1 == block) so the loop wakes at least every
+// kInterruptPollMs to re-check the interrupt flag and re-enforce deadlines.
+inline int clamp_interrupt_timeout(int pto) {
+  return (pto < 0 || pto > kInterruptPollMs) ? kInterruptPollMs : pto;
+}
 
 // Restores the previous SIGPIPE disposition on scope exit. We must ignore
 // SIGPIPE while writing a child's stdin: if the child exits early and closes
@@ -537,12 +565,17 @@ inline RunOutcome run_command(
 
   std::vector<_detail::Child> running;
   running.push_back(std::move(c));
+  _detail::ScopeKiller killer(running);  // SIGKILL + reap the child if we throw.
   char buf[65536];
   while (running[0].out_open || running[0].err_open || running[0].in_open) {
-    int pto = _detail::deadline_poll_timeout(running);
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    int pto = _detail::clamp_interrupt_timeout(_detail::deadline_poll_timeout(running));
     if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
   }
-  return _detail::reap_child(running[0]);
+  RunOutcome oc = _detail::reap_child(running[0]);
+  killer.disarm();
+  throw_if_interrupted();  // a Ctrl+C that landed as the child finished
+  return oc;
 }
 
 // Runs every command with at most `limit` concurrent children (0 => default).
@@ -627,7 +660,8 @@ inline std::vector<RunOutcome> run_all(
 
   char buf[65536];
   while (finished < n && failed_index < 0) {
-    int pto = _detail::deadline_poll_timeout(running);
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
+    int pto = _detail::clamp_interrupt_timeout(_detail::deadline_poll_timeout(running));
     if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
     // Reap finished children (both pipes EOF), then backfill to keep <= limit.
     for (size_t k = 0; k < running.size();) {
@@ -648,6 +682,7 @@ inline std::vector<RunOutcome> run_all(
   // everything has been reaped.
   _detail::kill_and_reap(running);
   killer.disarm();
+  throw_if_interrupted();  // a Ctrl+C that landed as the batch finished
   if (out_failed && failed_index >= 0) *out_failed = static_cast<size_t>(failed_index);
   return results;
 }
@@ -687,7 +722,10 @@ inline std::pair<size_t, RunOutcome> run_race(
 
   char buf[65536];
   while (winner == SIZE_MAX && !running.empty()) {
-    if (!_detail::poll_step(running, buf, sizeof(buf), -1)) break;
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
+    if (!_detail::poll_step(running, buf, sizeof(buf),
+                            _detail::clamp_interrupt_timeout(-1)))
+      break;
     for (size_t k = 0; k < running.size(); k++) {
       _detail::Child& c = running[k];
       if (!c.out_open && !c.err_open && !c.in_open) {
@@ -701,6 +739,7 @@ inline std::pair<size_t, RunOutcome> run_race(
 
   _detail::kill_and_reap(running);
   killer.disarm();
+  throw_if_interrupted();  // a Ctrl+C that landed as the winner finished
   return {winner, std::move(win_oc)};
 }
 

@@ -152,6 +152,40 @@ check_http() {
   fi
 }
 
+# A program blocked in Proc.run is interruptible by a single Ctrl+C, not just
+# the force-killing second press: run_command's poll loop wakes periodically to
+# honor the flag, SIGKILLs the child, and raises the cooperative Interrupted.
+# The child here IGNORES SIGINT, so the process-group signal alone won't stop it
+# — only the active poll-loop kill does. This also pins the interp/JIT symmetry:
+# before the fix the JIT had no post-call safepoint and ran on past Proc.run.
+cat > "$TMP/proc.cul" <<'EOF'
+defer { IO.eprint("DEFER\n") }
+Proc.run(["sh", "-c", "trap '' INT; sleep 30"])
+IO.eprint("GOT\n")
+EOF
+
+# check_proc <desc> -- <command...>
+# Runs a program blocked in Proc.run on a SIGINT-ignoring child, sends one
+# SIGINT, and expects an uncaught Interrupted: the defer runs and it exits 130
+# without reaching the line after Proc.run ("GOT" never prints).
+check_proc() {
+  local desc="$1"; shift
+  [ "$1" = "--" ] && shift
+  "$@" > "$TMP/out" 2>&1 &
+  local pid=$!
+  sleep 1
+  kill -INT "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  local code=$?
+  local out; out="$(tr '\n' '|' < "$TMP/out")"
+  if [ "$code" = 130 ] && [ "$out" = 'DEFER|interrupted|' ]; then
+    echo "ok [$desc]"
+  else
+    echo "FAIL [$desc]: exit=$code out='$out' (want exit=130 out='DEFER|interrupted|')"
+    fail=1
+  fi
+}
+
 # Signal.notify (Go's signal.Notify): a registered channel receives the signal
 # instead of the program throwing, so Ctrl+C wakes a blocked rx.recv() and the
 # program shuts down on its own terms (exit 0). We assert the delivery + clean
@@ -223,6 +257,7 @@ check "interp uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" "$TMP/uncaught.cul"
 check "interp caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" "$TMP/caught.cul"
 check_stdin "interp stdin" -- "$CULEBRA" "$TMP/stdin.cul"
 check_http  "interp http"  -- "$CULEBRA" "$TMP/http.cul"
+check_proc  "interp proc"  -- "$CULEBRA" "$TMP/proc.cul"
 check_signotify "interp signotify" -- "$CULEBRA" "$TMP/signotify.cul"
 check_repl  "interp repl" 1.5 -- "$CULEBRA"
 
@@ -231,6 +266,7 @@ check "jit uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/uncaught.cul"
 check "jit caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/caught.cul"
 check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
 check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
+check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
 check_signotify "jit signotify" -- "$CULEBRA" --jit "$TMP/signotify.cul"
 # The JIT REPL is pre-existingly non-functional (it aborts/hangs at startup
 # compiling its stdlib preamble), so its interrupt can't be exercised end-to-end
@@ -244,11 +280,13 @@ if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/proc.cul" -o "$TMP/proc_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/signotify.cul" -o "$TMP/signotify_aot" >/dev/null 2>&1; then
   check "aot uncaught" 130 "$UNCAUGHT_OUT" -- "$TMP/uncaught_aot"
   check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
   check_stdin "aot stdin" -- "$TMP/stdin_aot"
   check_http  "aot http"  -- "$TMP/http_aot"
+  check_proc  "aot proc"  -- "$TMP/proc_aot"
   check_signotify "aot signotify" -- "$TMP/signotify_aot"
 else
   echo "skip [aot] (culebra build unavailable)"
