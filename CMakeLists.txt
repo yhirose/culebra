@@ -400,6 +400,7 @@ endfunction()
 culebra_add_smoke_exe(mt_smoke)
 culebra_add_smoke_exe(mi_smoke)
 culebra_add_smoke_exe(define_smoke)
+culebra_add_smoke_exe(signal_smoke)
 culebra_add_smoke_exe(utf8_invalid_smoke)
 
 # regexlib is a standalone header-only library (destined for cpp-regexlib); its
