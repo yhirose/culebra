@@ -5255,7 +5255,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     std::vector<std::string_view> kwarg_keys;
     for (int64_t i = 0; i < n_kw; i++) kwarg_keys.push_back(kw_keys[i]);
     for (int64_t i = 0; i < n_splat; i++) {
-      if (splat_objs[i].tag != TAG_OBJECT) continue;
+      // Operands were validated as Objects at function entry.
       auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
       if (obj->shape)
         for (const auto& nm : obj->shape->names) kwarg_keys.push_back(nm);
@@ -6671,7 +6671,7 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
   // ns-method closures share one trampoline fn_ptr (no per-fn JitParamMeta)
   // and a kwarg-capable method is JIT_VARIADIC_ARITY, which would wrongly
   // accept any callback arity. Consult the hook for its real bounds first so
-  // e.g. `map(JSON.stringify)` (1 required + 1 optional) is rejected like the
+  // e.g. `map(JSON.stringify)` (1 required + 3 optional) is rejected like the
   // interp's gate.
   if (_jit_ns_callback_arity_hook) {
     long cb_min, cb_max;
