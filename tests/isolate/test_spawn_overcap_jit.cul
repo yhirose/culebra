@@ -1,0 +1,23 @@
+# Regression: an Isolate.spawn'd channel producer must run on a real thread even
+# when the isolate-concurrency cap is exceeded. The over-cap fallback runs the
+# closure synchronously on the spawning thread, which deadlocks a streaming
+# producer — it fills its bounded channel and blocks on the next send with no
+# consumer draining yet (the `for v in fan_in` loop hasn't started). The justfile
+# runs this file with CULEBRA_ISOLATE_LIMIT=1 so EVERY producer is "over cap";
+# before the fix it hung there (surfaced as an intermittent macOS-CI hang on the
+# 3-core runner, whose default cap is tiny). Runs under interp and --jit.
+mut handles = []
+mut sources = []
+for w in [1, 2, 3, 4, 5, 6] {
+  let (tx, rx) = Channel.new(2)
+  handles.push(Isolate.spawn(fn () { for i in 1..6 { tx.send(w * 10 + i) } }))
+  tx.drop()                       # the producer's own tx auto-drops on exit
+  sources.push(rx)
+}
+mut total = 0
+mut sum = 0
+for v in Channel.fan_in(sources) { total = total + 1; sum = sum + v }
+for h in handles { h.join() }
+assert_eq(total, 30)              # 6 producers x 5 values
+assert_eq(sum, 1140)             # sum over w in 1..6 of (50*w + 15) = 50*21 + 90
+puts("test_spawn_overcap: passed")

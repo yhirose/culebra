@@ -354,6 +354,26 @@ inline void release_inflight_channels(const sendable::SendNode& n) {
   for (const auto& c : n.captures) release_inflight_channels(c.second);
 }
 
+// Does a serialized value carry a channel endpoint (captured by a closure, held
+// in a collection, or passed as an arg)? Such a value makes its isolate an
+// inter-isolate primitive that may block on send/recv whose only unblocker is
+// ANOTHER isolate running concurrently — so it must run on a real thread, never
+// the inline-over-cap fallback (which would deadlock: a streaming producer fills
+// a bounded channel with no consumer draining it yet). Mirrors the structure
+// walk of release_inflight_channels.
+inline bool node_carries_channel(const sendable::SendNode& n) {
+  using K = sendable::SendNode::K;
+  if (n.kind == K::Channel) return true;
+  for (const auto& e : n.elems)
+    if (node_carries_channel(e)) return true;
+  for (const auto& e : n.entries)
+    if (node_carries_channel(e.first) || node_carries_channel(e.second))
+      return true;
+  for (const auto& c : n.captures)
+    if (node_carries_channel(c.second)) return true;
+  return false;
+}
+
 // Drop one endpoint: when the last tx is gone the channel auto-closes (waking
 // receivers); when no endpoint of either kind remains the core is reclaimed.
 inline void chan_drop(long id, int role) {
@@ -1388,9 +1408,21 @@ inline Value make_isolate_namespace() {
             }
 
             auto core = std::make_shared<IsolateCore>();
-            bool threaded =
+            // A closure (or arg) carrying a channel endpoint may block on a peer
+            // isolate, so it MUST run on its own thread — the inline-over-cap
+            // fallback runs synchronously on the spawning thread and would
+            // deadlock (e.g. a streaming producer fills a bounded channel before
+            // any consumer starts). This mirrors fan_in(items, fn), which always
+            // threads its producers. CPU-bound closures still honor the cap and
+            // may run inline. The counter is always bumped so run_isolate_child's
+            // matching fetch_sub balances; a forced thread may exceed the cap.
+            bool must_thread = node_carries_channel(sclosure);
+            for (const auto& a : sargs)
+              if (!must_thread && node_carries_channel(a)) must_thread = true;
+            bool under_cap =
                 g_live_isolates().fetch_add(1, std::memory_order_relaxed) <
                 isolate_cap();
+            bool threaded = must_thread || under_cap;
             if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
 
             if (threaded) {

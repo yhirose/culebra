@@ -252,6 +252,16 @@ test BACKEND='all': build
         for f in tests/isolate/*_jit.cul; do
             cul --jit "$f" > /dev/null || { echo "test isolate FAIL (or timed out): --jit $f" >&2; exit 1; }
         done
+        # Over-cap regression guard (both backends): force the isolate cap to 1 so
+        # every spawned producer takes the over-cap path, which must still run on
+        # a real thread. Inline-over-cap would deadlock a streaming producer (it
+        # fills a bounded channel with no consumer yet) — the cause of an
+        # intermittent macOS-CI hang on the 3-core runner. `cul`'s timeout makes a
+        # regression fail fast instead of hanging.
+        for f in tests/isolate/test_spawn_overcap*.cul; do
+            CULEBRA_ISOLATE_LIMIT=1 cul "$f" > /dev/null || { echo "test isolate FAIL (over-cap interp): $f" >&2; exit 1; }
+            CULEBRA_ISOLATE_LIMIT=1 cul --jit "$f" > /dev/null || { echo "test isolate FAIL (over-cap jit): $f" >&2; exit 1; }
+        done
         echo "test isolate OK (interp + jit symmetry)"
     }
 

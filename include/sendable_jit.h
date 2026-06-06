@@ -475,8 +475,17 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
     std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
     jit_isolate_reg()[id] = core;
   }
-  bool threaded =
+  // A channel-carrying closure (or arg) may block on a peer isolate, so it MUST
+  // run concurrently — never the synchronous over-cap fallback below, which
+  // joins immediately and would deadlock (e.g. a streaming producer fills a
+  // bounded channel before any consumer starts). Mirrors the interp spawn and
+  // fan_in(items, fn). CPU-bound closures still honor the cap.
+  bool must_thread = node_carries_channel(sclo);
+  for (const auto& a : sargs)
+    if (!must_thread && node_carries_channel(a)) must_thread = true;
+  bool under_cap =
       g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
+  bool threaded = must_thread || under_cap;
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
   core->thread = std::thread([core, sclo = std::move(sclo),
                               sargs = std::move(sargs), threaded]() mutable {
