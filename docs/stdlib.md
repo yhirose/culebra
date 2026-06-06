@@ -1160,12 +1160,13 @@ let arr = JSON.parse("1\n2\n3\n", lines: true)
 puts(arr)                                            # [1, 2, 3]
 ```
 
-JIT note: built-in `JSON.{stringify, parse}` accept kwargs on both
-backends, including literal `**{key: val, ...}` splats AND dynamic
-`**variable` splats. Literal splats flatten at compile time (no
-runtime overhead); dynamic splats route through a per-built-in
-runtime adapter that enumerates the splat Object's keys on the
-fly — same algorithm interp uses.
+JIT note: built-in `JSON.{stringify, parse}` route through the same
+canonical call resolver every other namespace method uses, so every
+call shape behaves identically to the interpreter: positional binding
+(`JSON.stringify(v, 2)` sets `indent`, `JSON.parse(s, true)` sets
+`lines`), keyword arguments, and both literal `**{...}` and dynamic
+`**variable` splats. Used as a first-class value the binding is the
+same (`let f = JSON.stringify; f(v, indent: 2)`).
 
 ---
 

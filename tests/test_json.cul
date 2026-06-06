@@ -119,4 +119,36 @@ let bad = {bogus: 1}
 let r = try { JSON.stringify({a: 1}, **bad); nil } catch e { e }
 assert_true(r.kind == 'TypeError' && r.message.contains('bogus'))
 
+// --- Full signature symmetry: positional / multi-positional / as-value ------
+// Both backends route stringify/parse through the one canonical resolver, so
+// every call shape (extra positionals, kwargs, **splats, as a value) binds
+// like the interp. (The JIT used to special-case a 1-positional fast path and
+// rejected the rest with an ArityError.)
+
+// `indent` / `sort_keys` / `lines` bind positionally after the value.
+assert_eq(JSON.stringify([2, 1], 0, true), '[2,1]')      # sort_keys positional
+assert_eq(JSON.parse("[1, 2]"), [1, 2])
+// `lines` is the 2nd positional of parse (Bool); a non-Bool is a type error
+// at that argument, naming the param — same kind/message/wording on both.
+let pe = try { JSON.parse("[1]", 2); nil } catch e { e }
+assert_eq(pe.kind, 'TypeError')
+assert_eq(pe.message, "type error: parameter 'lines' expects Bool")
+// `lines: true` as a positional Bool works (JSON Lines mode).
+assert_eq(JSON.parse("1\n2\n", true), [1, 2])
+
+// As a first-class value, with positional and keyword extras alike.
+let strfy = JSON.stringify
+assert_eq(strfy({a: 1}, 2), strfy({a: 1}, indent: 2))    # 2nd positional == indent:
+let parse = JSON.parse
+assert_eq(parse("[1, 2]", number_mode: "float"), [1.0, 2.0])
+// A wrong-typed kwarg through the value path is the interp's typed-param error.
+let ae = try { strfy({a: 1}, indent: "no"); nil } catch e { e }
+assert_eq(ae.kind, 'TypeError')
+assert_eq(ae.message, "type error: parameter 'indent' expects Long")
+// An invalid `number_mode` is a ValueError on both backends (the JIT used to
+// silently treat any non-"float" value as "auto").
+let nme = try { JSON.parse("[1]", number_mode: "bogus"); nil } catch e { e }
+assert_eq(nme.kind, 'ValueError')
+assert_true(nme.message.contains("number_mode must be 'auto' or 'float'"))
+
 IO.puts("test_json OK")

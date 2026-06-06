@@ -1116,12 +1116,13 @@ let arr = JSON.parse("1\n2\n3\n", lines: true)
 puts(arr)                                            # [1, 2, 3]
 ```
 
-JIT メモ: ビルトインの `JSON.{stringify, parse}` は両バックエンドで
-kwargs を直接受け付け、リテラル `**{key: val, ...}` splat と動的
-`**variable` splat の両方が動作します。リテラル splat は
-コンパイル時にフラット化されオーバーヘッドゼロ、動的 splat は
-built-in 専用 runtime adapter が Object のキーを実行時に列挙
-（インタプリタと同じアルゴリズム）。
+JIT メモ: ビルトインの `JSON.{stringify, parse}` は他の名前空間
+メソッドと同じ正準呼び出しリゾルバを経由するため、すべての呼び出し
+形がインタプリタと同一に振る舞います。位置引数の束縛
+（`JSON.stringify(v, 2)` は `indent`、`JSON.parse(s, true)` は
+`lines`）、キーワード引数、リテラル `**{...}` と動的 `**variable`
+splat の両方。第一級の値として使った場合も束縛は同じです
+（`let f = JSON.stringify; f(v, indent: 2)`）。
 
 ---
 
