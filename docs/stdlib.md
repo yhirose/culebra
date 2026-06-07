@@ -49,8 +49,9 @@ Conventions used below:
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
-16. [Design notes](#16-design-notes)
-17. [Not included (yet)](#17-not-included-yet)
+17. [`Compress`](#17-compress) — gzip (de)compression for data and files
+18. [Design notes](#18-design-notes)
+19. [Not included (yet)](#19-not-included-yet)
 
 **Where to find what**
 
@@ -71,6 +72,8 @@ Conventions used below:
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
+| Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
+| gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -2421,7 +2424,40 @@ puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 
 ---
 
-## 17. Design notes
+## 17. `Compress`
+
+gzip (de)compression, backed by zlib. Both functions are binary-safe (embedded
+NUL bytes survive a round trip) and interoperate with the standard `gzip` tool.
+
+| Function | Result |
+| --- | --- |
+| `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper) |
+| `Compress.gunzip(data: String) -> String` | the decompressed bytes; raises `ValueError` on malformed input |
+
+`gunzip` auto-detects the header, so it decompresses both gzip and zlib
+(`deflate`) streams. A truncated or non-gzip input raises `ValueError`.
+
+```culebra
+let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
+let z = Compress.gzip(original)
+puts(z.size() < original.size())          # => true
+puts(Compress.gunzip(z) == original)      # => true
+```
+
+```culebra
+# doctest: skip
+# Read a .gz file and write one back
+let text = Compress.gunzip(FS.read("logs.gz"))
+FS.write("out.gz", Compress.gzip(text))
+```
+
+HTTP responses are decompressed transparently by the `Http` client (it sends
+`Accept-Encoding` and inflates `Content-Encoding: gzip` automatically), so
+`Compress` is for data and files you handle yourself, not for `Http` bodies.
+
+---
+
+## 18. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -2475,7 +2511,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 18. Not included (yet)
+## 19. Not included (yet)
 
 ### Trigonometry
 

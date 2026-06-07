@@ -40,4 +40,16 @@ inline bool aot_uses_http(const peg::Ast& node) {
   return false;
 }
 
+// Does the program reference the `Compress` namespace? Drives the libz link
+// and the force-load of libculebra_rt_compress.a (the lone zlib choke), exactly
+// like aot_uses_tensor/http. Same conservative bare-identifier match.
+inline bool aot_uses_compress(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_ && node.token == "Compress") return true;
+  for (const auto& child : node.nodes) {
+    if (aot_uses_compress(*child)) return true;
+  }
+  return false;
+}
+
 }  // namespace culebra

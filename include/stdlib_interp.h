@@ -14,6 +14,7 @@
 // interpreter.h to wire stdlib into a fresh Environment via
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
+#include <compress.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3389,6 +3390,49 @@ inline std::shared_ptr<regexlib::Regex> regex_from_env(
                               env->get("__COLUMN__").to_long());
 }
 
+// `Compress`: gzip (de)compression namespace. The zlib logic is shared with
+// the JIT slow-path adapters via compress.h. Binary-safe (to_string_view keeps
+// embedded NUL); gunzip raises ValueError on malformed input.
+inline Value make_compress_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "gzip",
+      Value(FunctionValue({{"data", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            auto r = culebra::compress::gzip(
+                                env->get("data").to_string_view());
+                            if (!r.error.empty()) {
+                              throw CulebraError("ValueError",
+                                                 "Compress.gzip: " + r.error,
+                                                 line, col);
+                            }
+                            return Value(std::move(r.data));
+                          },
+                          "String"sv)),
+      false);
+  ns.initialize(
+      "gunzip",
+      Value(FunctionValue({{"data", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            auto r = culebra::compress::gunzip(
+                                env->get("data").to_string_view());
+                            if (!r.error.empty()) {
+                              throw CulebraError("ValueError",
+                                                 "Compress.gunzip: " + r.error,
+                                                 line, col);
+                            }
+                            return Value(std::move(r.data));
+                          },
+                          "String"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // `Encoding`: text codec namespace. Grouped into sub-namespaces by scheme
 // (`Encoding.html` / `base64` / `hex` / `url`). The codec logic is shared
 // with the JIT slow-path adapters via shared.h.
@@ -3859,6 +3903,7 @@ inline void setup_built_in_functions(
   env.initialize("Tensor", make_tensor_namespace(), false);
   env.initialize("JSON", make_json_namespace(), false);
   env.initialize("Encoding", make_encoding_namespace(), false);
+  env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
 #if defined(CULEBRA_HTTP_ENABLED)

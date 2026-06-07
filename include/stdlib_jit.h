@@ -8,6 +8,7 @@
 // install the stdlib by calling `culebra::install_jit_stdlib()` once
 // before `JIT::run()`.
 
+#include <compress.h>
 #include <jit.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3214,6 +3215,25 @@ inline JitValue _ns_encoding_url_decode(JitValue* a, int64_t) {
       _culebra_heap_str(culebra::url_decode(_ns_adapt::require_sv(a[0], "s"))));
 }
 
+// Compress.{gzip,gunzip}: shared zlib logic via compress.h; gunzip raises
+// ValueError on malformed input (same message as interp). require_sv keeps the
+// data binary-safe (embedded NUL must not truncate). Slow-path only.
+inline JitValue _ns_compress_gzip(JitValue* a, int64_t) {
+  auto r = culebra::compress::gzip(_ns_adapt::require_sv(a[0], "data"));
+  if (!r.error.empty()) {
+    throw culebra::CulebraError("ValueError", "Compress.gzip: " + r.error, 0, 0);
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(r.data));
+}
+inline JitValue _ns_compress_gunzip(JitValue* a, int64_t) {
+  auto r = culebra::compress::gunzip(_ns_adapt::require_sv(a[0], "data"));
+  if (!r.error.empty()) {
+    throw culebra::CulebraError("ValueError", "Compress.gunzip: " + r.error, 0,
+                                0);
+  }
+  return _ns_adapt::v_string(_culebra_heap_str(r.data));
+}
+
 // Tensor
 inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
@@ -3707,6 +3727,8 @@ inline const NsMethod kNsMethods[] = {
   {"Encoding", "decode",   1, &_ns_encoding_hex_decode, "hex",    "String", "s"},
   {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
   {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
+  {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
+  {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
@@ -5875,7 +5897,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
-      "Signal",  "Encoding", "SharedBuffer",
+      "Signal",  "Encoding", "Compress",  "SharedBuffer",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

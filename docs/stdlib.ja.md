@@ -47,8 +47,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
-16. [設計上の注記](#16-設計上の注記)
-17. [未収録（将来検討）](#17-未収録将来検討)
+17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
+18. [設計上の注記](#18-設計上の注記)
+19. [未収録（将来検討）](#19-未収録将来検討)
 
 **目的別索引**
 
@@ -69,6 +70,8 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
+| base64 / hex / url のエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
+| データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
@@ -2327,7 +2330,40 @@ puts(Encoding.url.encode("café"))    # => 'caf%C3%A9'
 
 ---
 
-## 17. 設計上の注記
+## 17. `Compress`
+
+zlib を用いた gzip 圧縮・展開。どちらの関数もバイナリセーフ（埋め込み NUL も
+往復で保持）で、標準の `gzip` ツールと相互運用できます。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Compress.gzip(data: String) -> String` | gzip 圧縮したバイト列（RFC 1952 ラッパー） |
+| `Compress.gunzip(data: String) -> String` | 展開したバイト列。不正な入力は `ValueError` |
+
+`gunzip` はヘッダを自動判別するので、gzip と zlib（`deflate`）の両方を展開します。
+切り詰められた入力や gzip でない入力は `ValueError`。
+
+```culebra
+let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"
+let z = Compress.gzip(original)
+puts(z.size() < original.size())          # => true
+puts(Compress.gunzip(z) == original)      # => true
+```
+
+```culebra
+# doctest: skip
+# .gz ファイルを読み書き
+let text = Compress.gunzip(FS.read("logs.gz"))
+FS.write("out.gz", Compress.gzip(text))
+```
+
+HTTP レスポンスは `Http` クライアントが透過的に展開します（`Accept-Encoding` を
+送り、`Content-Encoding: gzip` を自動で展開）。したがって `Compress` は自分で扱う
+データやファイル向けで、`Http` のボディには不要です。
+
+---
+
+## 18. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -2381,7 +2417,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 18. 未収録（将来検討）
+## 19. 未収録（将来検討）
 
 ### 三角関数
 

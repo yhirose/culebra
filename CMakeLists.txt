@@ -60,6 +60,19 @@ include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-httplib)
 
+# zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when
+# Http is enabled, cpp-httplib's transparent response gzip. Found unconditionally
+# so Compress works in builds without Http. System libz is ubiquitous on
+# macOS/Linux and linked dynamically (macOS ships no static libz.a); a non-
+# Compress, non-Http AOT binary still omits it via the weak gzip/gunzip choke in
+# the core archive (see compress.h / aot_uses_compress).
+find_package(ZLIB REQUIRED)
+message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
+include_directories(${ZLIB_INCLUDE_DIRS})
+# AOT link fragment appended by `culebra build` only when the program references
+# Compress (or Http) — resolved to the system libz (-lz, dynamic).
+set(_zlib_link "-lz")
+
 # Http stdlib namespace: cpp-httplib (vendored) + OpenSSL for TLS. OpenSSL is
 # linked statically so the `culebra` driver and AOT-built binaries stay
 # self-contained (cpp-httplib's OpenSSL path is identical to a future
@@ -84,17 +97,16 @@ if(CULEBRA_ENABLE_HTTP)
   endif()
   find_package(OpenSSL REQUIRED)
   message(STATUS "Found OpenSSL ${OPENSSL_VERSION} (static)")
-  # zlib enables gzip/deflate: cpp-httplib then auto-sends Accept-Encoding and
-  # transparently decompresses responses (decompress_ defaults true). System
-  # zlib (libz) is ubiquitous on macOS/Linux; linked dynamically.
-  find_package(ZLIB REQUIRED)
-  message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
+  # cpp-httplib then auto-sends Accept-Encoding and transparently decompresses
+  # gzip responses (decompress_ defaults true). zlib is found unconditionally
+  # above (also used by the Compress namespace).
   add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT
                           CPPHTTPLIB_ZLIB_SUPPORT)
-  # Make OpenSSL + zlib headers visible to every TU that includes httplib.h —
-  # notably the culebra_rt archives, which compile httplib.h but don't link
-  # these (the AOT consumer's link resolves the symbols via _ssl_link).
-  include_directories(${OPENSSL_INCLUDE_DIR} ${ZLIB_INCLUDE_DIRS})
+  # Make OpenSSL headers visible to every TU that includes httplib.h — notably
+  # the culebra_rt archives, which compile httplib.h but don't link it (the AOT
+  # consumer's link resolves the symbols via _ssl_link). zlib headers are added
+  # unconditionally above.
+  include_directories(${OPENSSL_INCLUDE_DIR})
 
   # Link line reused by the driver, the smoke exes, and (as a string) the AOT
   # build step. Static OpenSSL drags in libdl/libpthread on Linux; on macOS
@@ -255,7 +267,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
     CULEBRA_RT_DEFINE_RUNTIME=1
     CULEBRA_RT_TENSOR_EVAL_WEAK=1
-    CULEBRA_RT_HTTP_REQUEST_WEAK=1)
+    CULEBRA_RT_HTTP_REQUEST_WEAK=1
+    CULEBRA_RT_COMPRESS_WEAK=1)
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -283,6 +296,15 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   target_compile_options(culebra_rt_http PRIVATE
     -ffunction-sections -fdata-sections)
 
+  # Compress feature object: the strong real culebra::compress::gzip/gunzip
+  # (the lone zlib anchor — the only code that calls deflate/inflate).
+  # Force-loaded only when the AST scan reports Compress use, mirroring the
+  # tensor/http objects, so a non-Compress binary references no libz symbol.
+  add_library(culebra_rt_compress STATIC ./src/runtime/culebra_rt_compress.cc)
+  target_compile_features(culebra_rt_compress PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_compress PRIVATE
+    -ffunction-sections -fdata-sections)
+
   # Embed the runtime archives into the `culebra` driver via
   # cpp-embedlib. `culebra build` materializes the core archive (+ the
   # tensor / http feature objects when needed) to
@@ -301,18 +323,21 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_tensor${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_http_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_compress_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_compress${CMAKE_STATIC_LIBRARY_SUFFIX}")
   cpp_embedlib_add(culebra_rt_assets
     FILES
       "${_rt_archive}"
       "${_rt_tensor_archive}"
       "${_rt_http_archive}"
+      "${_rt_compress_archive}"
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
     NAMESPACE CulebraRT)
   # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
   # the asset library to wait for the real archive targets too, so the
   # .a files actually exist when the embed step runs.
   add_dependencies(culebra_rt_assets culebra_rt culebra_rt_tensor
-    culebra_rt_http)
+    culebra_rt_http culebra_rt_compress)
   target_link_libraries(culebra culebra_rt_assets)
   endif()
 endif()
@@ -358,6 +383,15 @@ elseif(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SSL_LINK="")
 endif()
 
+# zlib for the Compress namespace: always linked into the `culebra` driver (the
+# in-process interp/JIT run gzip/gunzip directly). `culebra build` appends the
+# AOT link fragment only when the program references Compress (see
+# aot_uses_compress) — non-Compress AOT binaries omit libz.
+target_link_libraries(culebra ZLIB::ZLIB)
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_ZLIB_LINK="${_zlib_link}")
+endif()
+
 # Embedding smoke tests. mt_smoke exercises thread_local isolation
 # (parser, GC, exception state); mi_smoke exercises RuntimeScope and
 # per-Runtime hooks. Build them alongside `culebra` so they stay in
@@ -381,6 +415,9 @@ function(culebra_add_smoke_exe name)
   if(CULEBRA_ENABLE_HTTP)
     target_link_libraries(${name} ${_ssl_libs})
   endif()
+  # The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
+  # zlib directly, so every smoke exe needs libz.
+  target_link_libraries(${name} ZLIB::ZLIB)
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
 

@@ -1,0 +1,46 @@
+// Compress namespace: gzip (de)compression. The zlib logic is shared between
+// the interp and the JIT slow-path adapters via compress.h, so this also
+// exercises bare-resolve + as-value dispatch on the JIT/AOT slow path.
+
+// --- round trip: gunzip(gzip(s)) restores the original ---
+let s = "hello, culebra! hello, culebra! hello, culebra! hello, culebra!"
+assert_eq(Compress.gunzip(Compress.gzip(s)), s)
+
+// gzip of repetitive text is smaller than the input
+assert_true(Compress.gzip(s).size() < s.size())
+
+// --- empty input round-trips ---
+assert_eq(Compress.gunzip(Compress.gzip("")), "")
+
+// --- binary-safe: embedded NUL bytes survive and don't truncate ---
+let b = "a\x00b\x00c"
+assert_eq(b.size(), 5)
+assert_eq(Compress.gunzip(Compress.gzip(b)), b)
+
+// --- non-ASCII (UTF-8 bytes) round-trips verbatim ---
+let u = "café — 日本語 — 😀"
+assert_eq(Compress.gunzip(Compress.gzip(u)), u)
+
+// --- gunzip also accepts zlib-wrapped streams (auto-detected header) ---
+// (covered transitively: gzip uses the gzip wrapper, decoded by the same call)
+
+// --- errors: malformed input raises ValueError ---
+assert_throws("ValueError", fn () { Compress.gunzip("not gzip data at all") })
+let e = try { Compress.gunzip("not gzip data at all"); nil } catch e { e }
+assert_eq(e.message, "Compress.gunzip: invalid gzip data")
+
+// --- errors: a non-String argument raises TypeError (declared param type) ---
+assert_throws("TypeError", fn () { Compress.gzip(42) })
+assert_throws("TypeError", fn () { Compress.gunzip([1, 2, 3]) })
+
+// --- first-class value: bound namespace method (slow-path conformance) ---
+let f = Compress.gzip
+let g = Compress.gunzip
+assert_eq(g(f(s)), s)
+
+// --- higher-order: passed as a callback ---
+let parts = ["one", "two", "three"]
+let zs = parts.map(Compress.gzip)
+assert_eq(zs.map(Compress.gunzip), parts)
+
+puts("compress tests passed")

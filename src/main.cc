@@ -403,6 +403,14 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
+  // Compress reachability force-loads the zlib choke object and appends libz,
+  // mirroring the tensor/http axes.
+  auto any_uses_compress = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_compress(*m.ast)) return true;
+    }
+    return false;
+  };
 
   // Reject early: cross-compile + Tensor would need a target-specific
   // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
@@ -426,6 +434,7 @@ int run_build(const BuildOptions& opts) {
 
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
+  bool uses_compress = cross ? false : any_uses_compress();
 
   // The core archive is feature-axis-free: both heavy deps (cblas via
   // tensor_eval_node, OpenSSL/zlib via http_request) are weak stubs here,
@@ -497,6 +506,10 @@ int run_build(const BuildOptions& opts) {
   std::string http_lib =
       (uses_http && host_build) ? force_load_feature("libculebra_rt_http.a")
                                 : "";
+  std::string compress_lib =
+      (uses_compress && host_build)
+          ? force_load_feature("libculebra_rt_compress.a")
+          : "";
   if (feature_failed) return 1;
 
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
@@ -508,6 +521,11 @@ int run_build(const BuildOptions& opts) {
   // is what pulls in the symbols these flags resolve. CULEBRA_SSL_LINK is ""
   // when Http is disabled at build time.
   std::string ssl = uses_http ? CULEBRA_SSL_LINK : "";
+  // libz: appended when the program references Compress. Http already pulls zlib
+  // via CULEBRA_SSL_LINK; a duplicate -lz when both are used is harmless (the
+  // linker dedupes). The strong gzip/gunzip are force-loaded via compress_lib
+  // above, which is what references the symbols this flag resolves.
+  std::string zlib = uses_compress ? CULEBRA_ZLIB_LINK : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -527,10 +545,10 @@ int run_build(const BuildOptions& opts) {
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} {} -o {}", cc,
-                                extra, shq(obj), shq(lib), tensor_lib, http_lib,
-                                dead_strip, no_pie, libcxx, blas, ssl,
-                                shq(opts.output));
+  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} {} {} {} -o {}",
+                                cc, extra, shq(obj), shq(lib), tensor_lib,
+                                http_lib, compress_lib, dead_strip, no_pie,
+                                libcxx, blas, ssl, zlib, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
