@@ -63,7 +63,7 @@ int main() {
 #endif
 
   // --- 1. throw_if_interrupted: throws "interrupted" and consumes (one-shot).
-  culebra::culebra_g_sigint.store(true);
+  culebra::request_interrupt();
   {
     bool threw = false;
     try {
@@ -104,7 +104,7 @@ int main() {
     auto env = culebra::environment({});
     auto interp = std::make_shared<culebra::Interpreter>();
     interp->interrupt_flag_ = &culebra::culebra_g_sigint;
-    culebra::culebra_g_sigint.store(true);
+    culebra::request_interrupt();
     bool threw = false;
     try {
       interp->eval(*ast, env);
@@ -120,7 +120,7 @@ int main() {
   // --- 4. JIT: the loop safepoint throws Interrupted, flag consumed.
   {
     auto ast = parse_or_die(kLoop);
-    culebra::culebra_g_sigint.store(true);
+    culebra::request_interrupt();
     bool threw = false;
     try {
       culebra::JIT::run(ast);
@@ -138,7 +138,7 @@ int main() {
   // safepoint), is caught, and the program resumes — JIT::run does NOT throw.
   {
     auto ast = parse_or_die(kCatchLoop);
-    culebra::culebra_g_sigint.store(true);
+    culebra::request_interrupt();
     bool propagated = false;
     try {
       culebra::JIT::run(ast);

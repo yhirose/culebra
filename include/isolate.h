@@ -67,6 +67,17 @@ inline std::atomic<int>& g_live_isolates() {
   return n;
 }
 
+struct IsolateCore;
+// Request cancellation of a still-running isolate: set its sticky per-thread
+// `interrupt` flag AND the global JIT wake flag (so a JIT isolate's tight loop
+// branches to its safepoint). Counted once per core so the wake stays set until
+// every cancelled isolate is reaped. Use everywhere `interrupt` would be set.
+inline void mark_isolate_cancelled(IsolateCore& core);
+// Pair of mark_isolate_cancelled: release this core's pending count (if it was
+// counted) and clear the wake when nothing remains pending. Called at reap (the
+// dtor, after join).
+inline void _reap_isolate_cancel(IsolateCore& core);
+
 // Shared, GC-external result slot for one spawned isolate. Holds the OS thread
 // plus its completion state; the result crosses the boundary as a neutral
 // SendNode (threaded) or, for the inline fallback, as a parent-heap Value.
@@ -78,6 +89,7 @@ struct IsolateCore {
   bool joined = false;
   bool ran_inline = false;
   std::atomic<bool> interrupt{false};           // set by drop() to cancel
+  std::atomic<bool> cancel_counted{false};      // contributed to g_cancel_pending
 
   Value inline_result;                          // ran_inline: parent-heap result
   sendable::SendNode result;                    // threaded: neutral result
@@ -89,11 +101,30 @@ struct IsolateCore {
   // std::terminate. `join`/`drop` normally join first; this covers the rest.
   ~IsolateCore() {
     if (thread.joinable()) {
-      interrupt.store(true, std::memory_order_relaxed);
+      mark_isolate_cancelled(*this);  // unwedge a still-running (maybe JIT) loop
       thread.join();
     }
+    _reap_isolate_cancel(*this);
   }
 };
+
+inline void mark_isolate_cancelled(IsolateCore& core) {
+  core.interrupt.store(true, std::memory_order_relaxed);
+  if (!core.cancel_counted.exchange(true, std::memory_order_relaxed)) {
+    culebra::culebra_g_cancel_pending.fetch_add(1, std::memory_order_relaxed);
+  }
+  culebra::culebra_g_wake.store(true, std::memory_order_relaxed);
+}
+
+inline void _reap_isolate_cancel(IsolateCore& core) {
+  if (core.cancel_counted.exchange(false, std::memory_order_relaxed)) {
+    if (culebra::culebra_g_cancel_pending.fetch_sub(
+            1, std::memory_order_relaxed) == 1 &&
+        !culebra::culebra_g_sigint.load(std::memory_order_relaxed)) {
+      culebra::culebra_g_wake.store(false, std::memory_order_relaxed);
+    }
+  }
+}
 
 // Child-thread entry point: fresh Runtime (→ own GC heap) + fresh stdlib env,
 // rebuild the closure, run it, serialize the result back. Runs every value
@@ -1343,9 +1374,9 @@ inline Value make_isolate_handle(std::shared_ptr<IsolateCore> core) {
             if (core->joined) return Value();
             if (core->thread.joinable()) {
               // Ask the isolate to stop (it unwinds at its next statement
-              // boundary / blocking channel op), then wait + join so no thread
-              // is left detached.
-              core->interrupt.store(true, std::memory_order_relaxed);
+              // boundary / loop safepoint / blocking channel op), then wait +
+              // join so no thread is left detached.
+              mark_isolate_cancelled(*core);
               {
                 std::unique_lock<std::mutex> lk(core->m);
                 core->cv.wait(lk, [&] { return core->finished; });

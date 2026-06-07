@@ -4533,7 +4533,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     if (interrupt_flag_ &&
         interrupt_flag_->load(std::memory_order_relaxed)) {
       if (is_sigint_flag(interrupt_flag_)) {
-        culebra_g_sigint.store(false, std::memory_order_relaxed);
+        _consume_sigint();
         throw CulebraError("Interrupted", "interrupted");
       }
       throw CulebraError("Interrupted", "isolate cancelled");

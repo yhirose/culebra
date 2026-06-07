@@ -1436,15 +1436,15 @@ culebra_runtime_throw_error(const char* kind, const char* msg,
 }
 
 // Loop safepoint slow path. The JIT/AOT loop backedge inlines a relaxed load of
-// `culebra_g_sigint` and calls this only when it is set: consume the one-shot
-// Ctrl+C flag and throw the cooperative Interrupted (the interpreter's poll
-// mirrors this exactly). Unwinds via the same path as any runtime error — the
-// loop's enclosing function carries a personality (scan_eh_defer flags loops as
-// has_eh). A racing consumer that already cleared the flag just returns.
+// `culebra_g_wake` and calls this only when it is set. `throw_if_interrupted`
+// consults the per-thread interrupt flag: a real Ctrl+C is consumed and throws
+// "interrupted"; an isolate's cancel throws the sticky "isolate cancelled"; a
+// false wake (set for another thread) just returns. The interpreter's poll
+// (check_interrupt) mirrors the same decision. Unwinds via the same path as any
+// runtime error — the loop's enclosing function carries a personality
+// (scan_eh_defer flags loops as has_eh).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_safepoint() {
-  if (culebra::culebra_g_sigint.exchange(false, std::memory_order_relaxed)) {
-    throw culebra::CulebraError("Interrupted", "interrupted");
-  }
+  culebra::throw_if_interrupted();
 }
 
 // JIT module table — keyed by absolute module path, value is the
@@ -8028,18 +8028,20 @@ struct JIT {
     return builder_.CreateCall(callee, args, name);
   }
 
-  // Loop safepoint: inline a relaxed load of the process Ctrl+C flag and a
-  // cold branch to the throwing slow path. One byte load + one not-taken branch
-  // on the hot path; the throw (and one-shot consume) live in the rarely-taken
-  // `culebra_runtime_safepoint`. Emitted once per loop iteration so even a tight
-  // loop is interruptible — mirroring the interpreter's per-iteration poll. The
-  // enclosing function gets a personality via scan_eh_defer flagging loops as
-  // has_eh, so the throw unwinds cleanly even with no try in scope.
+  // Loop safepoint: inline a relaxed load of the process "wake" flag and a cold
+  // branch to the throwing slow path. One byte load + one not-taken branch on the
+  // hot path; the truth check (Ctrl+C vs per-isolate cancel) and the throw live
+  // in the rarely-taken `culebra_runtime_safepoint`. The wake flag is set by both
+  // a real Ctrl+C and a per-isolate cancel, so even a JIT isolate's tight loop —
+  // whose only interrupt is its `core->interrupt`, invisible to inlined code — is
+  // interruptible, mirroring the interpreter's per-iteration poll. The enclosing
+  // function gets a personality via scan_eh_defer flagging loops as has_eh, so the
+  // throw unwinds cleanly even with no try in scope.
   void emit_safepoint() {
     auto i8Ty = builder_.getInt8Ty();
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto gv = module_->getOrInsertGlobal("culebra_g_sigint", i8Ty);
-    auto ld = builder_.CreateLoad(i8Ty, gv, "sigint");
+    auto gv = module_->getOrInsertGlobal("culebra_g_wake", i8Ty);
+    auto ld = builder_.CreateLoad(i8Ty, gv, "wake");
     ld->setAtomic(llvm::AtomicOrdering::Monotonic);
     ld->setAlignment(llvm::Align(1));
     auto hit = builder_.CreateICmpNE(

@@ -1302,6 +1302,29 @@ inline bool interrupt_requested() {
 // symbol resolvable by the in-process JIT and linkable by AOT output.
 extern "C" {
 __attribute__((used)) inline std::atomic<bool> culebra_g_sigint{false};
+// The JIT/AOT loop safepoint inlines a load of THIS flag — not the per-thread
+// interrupt flag, which inlined codegen can't cheaply read. Set whenever ANY
+// interrupt becomes pending (a real Ctrl+C OR a per-isolate cancel), so a tight
+// JIT loop branches to the cold slow path; the slow path then consults the
+// per-thread `interrupt_flag` for the truth (Ctrl+C vs which isolate). Cleared
+// once nothing remains pending, so loops return to the one-load fast path.
+__attribute__((used)) inline std::atomic<bool> culebra_g_wake{false};
+}
+
+// Count of isolates cancelled but not yet reaped. Keeps `culebra_g_wake` set
+// while a cancelled JIT isolate may still be spinning toward its next safepoint;
+// the last reap (IsolateCore's dtor) clears the wake. Host-side only — no JIT IR
+// references it.
+inline std::atomic<int> culebra_g_cancel_pending{0};
+
+// Consume a pending Ctrl+C (so a `catch` can resume) and release the JIT wake
+// flag when nothing else is pending. Shared by the interp poll, the JIT
+// safepoint, and the stdin poll so the wake is dropped uniformly.
+inline void _consume_sigint() {
+  culebra_g_sigint.store(false, std::memory_order_relaxed);
+  if (culebra_g_cancel_pending.load(std::memory_order_relaxed) == 0) {
+    culebra_g_wake.store(false, std::memory_order_relaxed);
+  }
 }
 
 // Signal.notify (Go's signal.Notify model). When a program registers a channel
@@ -1335,7 +1358,22 @@ inline void _culebra_sigint_handler(int sig) {
   if (culebra_g_sigint.exchange(true, std::memory_order_relaxed)) {
     std::signal(sig, SIG_DFL);
     std::raise(sig);
+  } else {
+    // First Ctrl+C: wake the JIT/AOT loop safepoints (atomic store is
+    // async-signal-safe). The slow path consumes the one-shot flag.
+    culebra_g_wake.store(true, std::memory_order_relaxed);
   }
+}
+
+// Request a cooperative interrupt (a "Ctrl+C") from an embedder or test, without
+// a real signal: set the throw flag AND the JIT/AOT wake flag, so a running loop
+// — interpreter or JIT — stops at its next safepoint. The signal handler sets the
+// same pair (plus the double-press force-kill escalation). Set both: the interp
+// poll reads the throw flag directly; the inlined JIT safepoint reads only the
+// wake flag (it can't cheaply read the per-thread flag).
+inline void request_interrupt() {
+  culebra_g_sigint.store(true, std::memory_order_relaxed);
+  culebra_g_wake.store(true, std::memory_order_relaxed);
 }
 
 // Install the SIGINT handler and point the current (main) thread's Runtime at
@@ -1354,13 +1392,19 @@ inline void install_sigint_handler() {
 // resume); an isolate's cancel flag (this thread's borrowed flag, if any) stays
 // sticky and keeps its own message.
 inline void throw_if_interrupted() {
-  if (culebra_g_sigint.load(std::memory_order_relaxed)) {
-    culebra_g_sigint.store(false, std::memory_order_relaxed);
-    throw CulebraError("Interrupted", "interrupted");
-  }
   auto* f = current_runtime().interrupt_flag;
+  // Per-thread isolate cancel: sticky, its own message. Checked first so an
+  // isolate thread reports its own cancel instead of consuming a Ctrl+C wake.
   if (f && f != &culebra_g_sigint && f->load(std::memory_order_relaxed)) {
     throw CulebraError("Interrupted", "isolate cancelled");
+  }
+  // Ctrl+C: one-shot. Only the main/CLI context — whose interrupt_flag IS the
+  // sigint flag, or is null under a borrowed JIT RuntimeScope — consumes it. An
+  // isolate thread that merely saw the wake leaves the flag for the main thread.
+  if (culebra_g_sigint.load(std::memory_order_relaxed) &&
+      (!f || f == &culebra_g_sigint)) {
+    _consume_sigint();
+    throw CulebraError("Interrupted", "interrupted");
   }
 }
 

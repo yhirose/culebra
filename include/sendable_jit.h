@@ -405,7 +405,7 @@ inline JitValue _jit_isolate_drop(JitClosure*, JitValue self, int64_t, JitValue*
   long id = _jit_isolate_self_id(self);
   auto core = jit_isolate_lookup(id);
   if (core && !core->joined && core->thread.joinable()) {
-    core->interrupt.store(true, std::memory_order_relaxed);
+    mark_isolate_cancelled(*core);  // sets the JIT wake so a tight loop unwinds
     {
       std::unique_lock<std::mutex> lk(core->m);
       core->cv.wait(lk, [&] { return core->finished; });
