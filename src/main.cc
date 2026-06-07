@@ -202,8 +202,9 @@ void print_usage(ostream& os) {
         "  --ast              Print the parsed AST instead of running it\n"
         "  --debug            Print debug diagnostics while running\n"
 #ifdef CULEBRA_JIT_ENABLED
-        "  --jit              Run through the LLVM JIT instead of the\n"
-        "                     tree-walking interpreter (same observable output)\n"
+        "  --jit              Run a script through the LLVM JIT instead of the\n"
+        "                     tree-walking interpreter (same observable output).\n"
+        "                     The REPL always uses the interpreter.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif
@@ -847,10 +848,18 @@ int main(int argc, const char** argv) {
 
     if (options.shell) {
 #ifdef CULEBRA_JIT_ENABLED
-      culebra::repl(env, options.print_ast, options.jit);
-#else
-      culebra::repl(env, options.print_ast);
+      // The REPL always runs on the interpreter (tier 0). A REPL line is never
+      // a hot loop, so JIT-compiling each input only adds compile latency for
+      // no gain — the same reason V8 / the JVM / LuaJIT start interpreted and
+      // only JIT hot code. `--jit` is for scripts (`culebra --jit FILE`), where
+      // a hot loop can pay off; combined with the REPL it's a no-op, so note it.
+      if (options.jit) {
+        std::fprintf(stderr,
+            "note: the REPL runs on the interpreter; --jit applies to scripts "
+            "(culebra --jit FILE)\n");
+      }
 #endif
+      culebra::repl(env, options.print_ast);
     }
   } catch (const culebra::CulebraError& e) {
     // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.

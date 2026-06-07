@@ -86,8 +86,14 @@ inline std::string repl_history_path() {
   return std::string(home) + "/.culebra_history";
 }
 
-inline int repl(std::shared_ptr<Environment> env, bool print_ast,
-                bool jit_mode = false) {
+// The REPL always runs on the interpreter (tier 0). A REPL line is never a hot
+// loop, so JIT-compiling each input only adds latency for no gain — the same
+// reason V8 / the JVM / LuaJIT start interpreted and only JIT hot code. `--jit`
+// is for scripts (`culebra --jit FILE`); the CLI routes the REPL here regardless
+// (see main.cc). The per-input JIT REPL path (JIT::run_repl) is consequently
+// dead; remove it in a dedicated cleanup (it is woven through the JIT codegen's
+// is_repl_session_ paths).
+inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   using namespace std;
 
   // Ctrl+C interrupts the running eval and returns to the prompt (rather than
@@ -101,40 +107,8 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
   // the force-kill second press only applies within a single wedged eval.
   install_sigint_handler();
 
-#ifdef CULEBRA_JIT_ENABLED
-  // Per-session JIT instance + globals dict. addIRModule of each input
-  // keeps the prior input's compiled functions live, and run_repl
-  // reads/writes `jit_globals` so `let x = 1` followed by `puts(x)`
-  // works across inputs (mirrors other JIT-backed REPLs). Preamble
-  // (stdlib `Time` module) is compiled into `jit_globals` once at
-  // session start so subsequent inputs resolve `Time.*` normally.
-  std::unique_ptr<llvm::orc::LLJIT> jit_handle;
-  JitReplGlobals jit_globals;
-  if (jit_mode) {
-    JIT::ensure_native_target_init();
-    jit_handle = JIT::create_jit_instance();
-    std::vector<std::string> pre_msgs;
-    auto pre_src = STDLIB_PREAMBLE_SOURCE;
-    auto pre_ast = parse_with_transforms("<stdlib>", pre_src,
-                                         std::strlen(pre_src), pre_msgs);
-    if (!pre_ast) {
-      std::fprintf(stderr, "culebra: stdlib preamble failed to parse\n");
-      for (auto& m : pre_msgs) std::fprintf(stderr, "  %s", m.c_str());
-      std::abort();
-    }
-    try {
-      auto v = JIT::run_repl(pre_ast, jit_globals, *jit_handle);
-      _culebra_value_release_impl(v.tag, v.data);
-    } catch (std::exception& e) {
-      std::fprintf(stderr, "culebra: stdlib preamble failed in JIT REPL: %s\n",
-                   e.what());
-      std::abort();
-    }
-  }
-#endif
-  // interp REPL relies on the env's lazy Time / Args bindings registered
-  // by `environment()`; no explicit preamble load needed. JIT REPL still
-  // pre-runs the preamble above (Phase 3 of [[project-startup-overhead]]).
+  // The interp REPL relies on the env's lazy Time / Args / Regex bindings
+  // registered by `environment()`; no explicit preamble load is needed.
 
   // Default linenoise cap is 100 entries, which is small by REPL
   // convention (bash ≈ 500, python / node ≈ 1000). Bump before
@@ -188,8 +162,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
 
   for (;;) {
     bool continuing = !accum.empty();
-    auto prompt = continuing ? "...> "
-                             : (jit_mode ? "jit> " : "cul> ");
+    auto prompt = continuing ? "...> " : "cul> ";
     bool eof_signal = false;
     auto line = linenoise::Readline(prompt, eof_signal);
 
@@ -237,23 +210,6 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast,
         // lands in, and the second (force-killing) press is scoped to one
         // wedged eval.
         culebra_g_sigint.store(false, std::memory_order_relaxed);
-
-#ifdef CULEBRA_JIT_ENABLED
-        if (jit_mode) {
-          try {
-            auto v = JIT::run_repl(ast, jit_globals, *jit_handle);
-            if (v.tag != TAG_NIL) {
-              cout << _culebra_value_to_str_impl(v.tag, v.data) << endl;
-            }
-            _culebra_value_release_impl(v.tag, v.data);
-            add_history(full_line);
-            continue;
-          } catch (exception& e) {
-            cout << e.what() << endl;
-            continue;
-          }
-        }
-#endif
 
         Value val;
         if (interpret(ast, env, val, msgs)) {
