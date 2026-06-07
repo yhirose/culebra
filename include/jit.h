@@ -10969,8 +10969,9 @@ struct JIT {
       case "INTERPOLATED_CONTENT"_:
         return compile_interpolated_content(ast);
       case "INTERPOLATED_STRING"_:
-      case "TRIPLE_STRING"_:
         return compile_interpolated_string(ast);
+      case "TRIPLE_STRING"_:
+        return compile_triple_string(ast);
       case "ARRAY"_:
         return compile_array(ast);
       case "TUPLE"_:
@@ -11401,6 +11402,38 @@ struct JIT {
     return make_object(objPtr);
   }
 
+  // Emit the string piece for a `{expr}` / `{expr:spec}` interpolation (or a
+  // defensive bare expression node). Shared by the `"..."` and `"""..."""`
+  // paths so the interpolation codegen stays single-sourced.
+  llvm::Value* compile_interp_expr(const peg::Ast& node) {
+    using namespace peg::udl;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    if (node.tag == "INTERP_EXPR"_ && node.nodes.size() > 1) {
+      // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
+      auto val = compile(*node.nodes[0]);
+      auto specPtr = get_or_create_global_str(
+          std::string(node.nodes[1]->token), ".fmtspec");
+      return emit_call(
+          module_->getOrInsertFunction(rt::format_value, ptrTy,
+                                       builder_.getInt8Ty(),
+                                       builder_.getInt64Ty(), ptrTy,
+                                       builder_.getInt64Ty(),
+                                       builder_.getInt64Ty()),
+          {extract_tag(val), extract_data(val), specPtr,
+           builder_.getInt64(node.line), builder_.getInt64(node.column)},
+          "fmt");
+    }
+    // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive) a
+    // bare expr node.
+    auto exprNode = (node.tag == "INTERP_EXPR"_) ? node.nodes[0].get() : &node;
+    auto val = compile(*exprNode);
+    return emit_call(
+        module_->getOrInsertFunction(rt::value_to_display, ptrTy,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty()),
+        {extract_tag(val), extract_data(val)}, "disp");
+  }
+
   llvm::Value* compile_interpolated_string(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -11414,35 +11447,9 @@ struct JIT {
           node->tag == "TRIPLE_CONTENT"_) {
         // Raw text between expressions; decode escape sequences first
         // (\n \r \t \\ \" \{) so the runtime sees the resolved bytes.
-        auto decoded = decode_interpolated_content(node->token);
-        piece = emit_str_literal(decoded);
-      } else if (node->tag == "INTERP_EXPR"_ && node->nodes.size() > 1) {
-        // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
-        auto val = compile(*node->nodes[0]);
-        auto specPtr = get_or_create_global_str(
-            std::string(node->nodes[1]->token), ".fmtspec");
-        piece = emit_call(
-            module_->getOrInsertFunction(rt::format_value, ptrTy,
-                                         builder_.getInt8Ty(),
-                                         builder_.getInt64Ty(), ptrTy,
-                                         builder_.getInt64Ty(),
-                                         builder_.getInt64Ty()),
-            {extract_tag(val), extract_data(val), specPtr,
-             builder_.getInt64(node->line), builder_.getInt64(node->column)},
-            "fmt");
+        piece = emit_str_literal(decode_interpolated_content(node->token));
       } else {
-        // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive)
-        // a bare expr node.
-        auto exprNode = (node->tag == "INTERP_EXPR"_) ? node->nodes[0].get()
-                                                      : node.get();
-        auto val = compile(*exprNode);
-        auto tag = extract_tag(val);
-        auto data = extract_data(val);
-        piece = emit_call(
-            module_->getOrInsertFunction(rt::value_to_display,
-                                         ptrTy, builder_.getInt8Ty(),
-                                         builder_.getInt64Ty()),
-            {tag, data}, "disp");
+        piece = compile_interp_expr(*node);
       }
       result = emit_call(
           module_->getOrInsertFunction(rt::str_concat, ptrTy,
@@ -11451,6 +11458,45 @@ struct JIT {
     }
 
     return make_string(result);
+  }
+
+  // `"""..."""` — Swift-style block dedent (see normalize_triple_pieces) when
+  // the opening `"""` is followed by a newline; otherwise a raw interpolated
+  // string. The dedent lives in the shared parser.h helper so it can never
+  // diverge from the interpreter.
+  llvm::Value* compile_triple_string(const peg::Ast& ast) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto pieces = normalize_triple_pieces(ast);
+
+    // Fold consecutive literal text into one constant so a pure-literal block
+    // string (the common case) becomes a single compile-time string with no
+    // runtime concat chain — the efficiency payoff of resolving the dedent at
+    // compile time rather than via a runtime method.
+    llvm::Value* result = nullptr;
+    std::string pending;
+    auto flush = [&] {
+      if (pending.empty()) return;
+      auto* lit = emit_str_literal(pending);
+      pending.clear();
+      result = result ? emit_call(module_->getOrInsertFunction(
+                                      rt::str_concat, ptrTy, ptrTy, ptrTy),
+                                  {result, lit}, "concat")
+                      : lit;
+    };
+    for (const auto& p : pieces) {
+      if (!p.expr) {
+        pending += decode_interpolated_content(p.text);
+        continue;
+      }
+      flush();
+      auto* piece = compile_interp_expr(*p.expr);
+      result = result ? emit_call(module_->getOrInsertFunction(
+                                      rt::str_concat, ptrTy, ptrTy, ptrTy),
+                                  {result, piece}, "concat")
+                      : piece;
+    }
+    flush();
+    return make_string(result ? result : emit_str_literal(""));
   }
 
   // --- Identifier ---

@@ -4764,8 +4764,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       case "FLOAT"_:
         return eval_float(ast, env);
       case "INTERPOLATED_STRING"_:
-      case "TRIPLE_STRING"_:
         return eval_interpolated_string(ast, env);
+      case "TRIPLE_STRING"_:
+        return eval_triple_string(ast, env);
       case "DEBUGGER"_:
         return Value();
       case "RETURN"_:
@@ -7998,6 +7999,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return format_value_string(str_display_with_special(v), spec, line, col);
   }
 
+  // Append a `{expr}` / `{expr:spec}` interpolation (or a defensive bare
+  // expression node) to `s`. Shared by the `"..."` and `"""..."""` paths so
+  // the interpolation semantics stay single-sourced.
+  void append_interp_expr(std::string& s, const peg::Ast& node,
+                          const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+    if (node.tag == "INTERP_EXPR"_) {
+      // `{expr}` → [EXPRESSION]; `{expr:spec}` → [EXPRESSION, FORMAT_SPEC].
+      const auto& val = eval(*node.nodes[0], env);
+      if (node.nodes.size() > 1) {
+        s += apply_format_spec(val, node.nodes[1]->token,
+                               static_cast<long>(node.line),
+                               static_cast<long>(node.column));
+      } else {
+        s += str_display_with_special(val);
+      }
+    } else {
+      // Defensive: a bare expression child (shouldn't occur now that
+      // INTERP_EXPR is kept, but keeps old ASTs working).
+      s += str_display_with_special(eval(node, env));
+    }
+  }
+
   Value eval_interpolated_string(const peg::Ast& ast,
                                  const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
@@ -8006,25 +8030,29 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (node->tag == "INTERPOLATED_CONTENT"_ ||
           node->tag == "TRIPLE_CONTENT"_) {
         s += decode_interpolated_content(node->token);
-      } else if (node->tag == "INTERP_EXPR"_) {
-        // `{expr}` → [EXPRESSION]; `{expr:spec}` → [EXPRESSION, FORMAT_SPEC].
-        const auto& val = eval(*node->nodes[0], env);
-        if (node->nodes.size() > 1) {
-          s += apply_format_spec(val, node->nodes[1]->token,
-                                 static_cast<long>(node->line),
-                                 static_cast<long>(node->column));
-        } else {
-          s += str_display_with_special(val);
-        }
       } else {
-        // Defensive: a bare expression child (shouldn't occur now that
-        // INTERP_EXPR is kept, but keeps old ASTs working).
-        const auto& val = eval(*node, env);
-        s += str_display_with_special(val);
+        append_interp_expr(s, *node, env);
       }
     }
     return Value(std::move(s));
   };
+
+  // `"""..."""` — Swift-style block dedent (see normalize_triple_pieces) when
+  // the opening `"""` is followed by a newline; otherwise a raw interpolated
+  // string. The dedent itself lives in the shared parser.h helper so it can
+  // never diverge from the JIT.
+  Value eval_triple_string(const peg::Ast& ast,
+                           const std::shared_ptr<Environment>& env) {
+    std::string s;
+    for (const auto& piece : normalize_triple_pieces(ast)) {
+      if (!piece.expr) {
+        s += decode_interpolated_content(piece.text);
+      } else {
+        append_interp_expr(s, *piece.expr, env);
+      }
+    }
+    return Value(std::move(s));
+  }
 
   void eval_return(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     if (ast.nodes.empty()) {

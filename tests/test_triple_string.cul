@@ -28,4 +28,39 @@ assert_eq(msg, "role: \"assistant\", brace: \{x}")
 // Single-quote raw is unchanged (regex literal).
 assert_eq('\d+', "\\d+")
 
+// --- Swift-style block form ---
+// When the opening `"""` is followed by a newline, the leading/trailing
+// newlines are dropped and each line is dedented by the indentation of the
+// closing `"""`.
+let html = """
+    <html>
+    </html>
+    """
+assert_eq(html, "<html>\n</html>")
+
+// Interpolation inside a block; relative indentation is preserved.
+let block = """
+    Hello {name}
+      indented more
+    """
+assert_eq(block, "Hello Alice\n  indented more")
+
+// Blank lines are normalized to empty (their whitespace is not significant).
+let para = """
+    a
+
+    c
+    """
+assert_eq(para, "a\n\nc")
+
+// A block with only the delimiter lines is the empty string.
+assert_eq("""
+    """, "")
+
+// Inline form is unaffected: content on the opening line is raw (no dedent),
+// so the historical single-line and inline-multiline shapes still work.
+assert_eq("""Hello {name}!""", "Hello Alice!")
+assert_eq("""line one
+line two""", "line one\nline two")
+
 IO.puts("test_triple_string OK")

@@ -365,6 +365,9 @@ const auto grammar_ = R"(
   # embedded LLM prompts. Reuses INTERP_EXPR; TRIPLE_CONTENT stops at
   # `"""` or `{` and still decodes `\X` escapes (use `\{` for a literal
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
+  # Swift-style block form (opening `"""` followed by a newline) strips the
+  # leading/trailing newline and dedents by the closing delimiter's indent —
+  # see normalize_triple_pieces (shared by interp + JIT, so it can't diverge).
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 
@@ -568,6 +571,118 @@ inline std::string decode_interpolated_content(std::string_view raw) {
       }
     }
     out += c;
+  }
+  return out;
+}
+
+// A normalized piece of an interpolated/triple string: either a literal text
+// chunk (still escape-encoded — the caller runs decode_interpolated_content on
+// it) or an INTERP_EXPR (or defensive bare-expression) node to evaluate.
+struct InterpPiece {
+  std::string text;                 // literal chunk; valid when expr == nullptr
+  const peg::Ast* expr = nullptr;   // INTERP_EXPR / bare expr node, else nullptr
+};
+
+// Swift-style "block string" normalization for a TRIPLE_STRING node. In BLOCK
+// form (opening `"""` followed by a newline) the surrounding newlines are
+// dropped and every line is dedented by the closing `"""`'s indentation (the
+// authority — an under-indented non-blank line is a SyntaxError); blank lines
+// become empty. Any other triple string (content on the opening line, incl. the
+// single-line form) is returned verbatim. Either way the returned pieces are the
+// single source both backends iterate, so the dedent can't diverge.
+inline std::vector<InterpPiece> normalize_triple_pieces(const peg::Ast& ast) {
+  using namespace peg::udl;
+
+  auto verbatim = [&] {
+    std::vector<InterpPiece> pieces;
+    pieces.reserve(ast.nodes.size());
+    for (const auto& child : ast.nodes) {
+      if (child->tag == "TRIPLE_CONTENT"_) {
+        pieces.push_back({std::string(child->token), nullptr});
+      } else {
+        pieces.push_back({{}, child.get()});
+      }
+    }
+    return pieces;
+  };
+
+  // Block form requires the first child to be a TRIPLE_CONTENT whose text is
+  // horizontal whitespace up to a newline.
+  if (ast.nodes.empty() || ast.nodes.front()->tag != "TRIPLE_CONTENT"_) {
+    return verbatim();
+  }
+  std::string_view head = ast.nodes.front()->token;
+  size_t nl = head.find('\n');
+  if (nl == std::string_view::npos) return verbatim();
+  for (size_t i = 0; i < nl; i++) {
+    char c = head[i];
+    if (c != ' ' && c != '\t' && c != '\r') return verbatim();
+  }
+
+  // Split children into source lines (newlines are dropped here and re-added
+  // when the dedented pieces are emitted). A line is a list of pieces.
+  std::vector<std::vector<InterpPiece>> lines(1);
+  auto push_text = [&](std::string_view t) {
+    if (!t.empty()) lines.back().push_back({std::string(t), nullptr});
+  };
+  for (const auto& child : ast.nodes) {
+    if (child->tag != "TRIPLE_CONTENT"_) {
+      lines.back().push_back({{}, child.get()});
+      continue;
+    }
+    std::string_view raw = child->token;
+    size_t start = 0;
+    for (size_t i = 0; i < raw.size(); i++) {
+      if (raw[i] != '\n') continue;
+      size_t end = i;
+      if (end > start && raw[end - 1] == '\r') end--;  // CRLF → LF
+      push_text(raw.substr(start, end - start));
+      lines.emplace_back();
+      start = i + 1;
+    }
+    push_text(raw.substr(start));
+  }
+
+  // The closing line (whitespace before the closing `"""`) sets the indent.
+  std::string indent;
+  for (const auto& p : lines.back()) {
+    bool ws_only = !p.expr;
+    if (ws_only)
+      for (char c : p.text)
+        if (c != ' ' && c != '\t') { ws_only = false; break; }
+    if (!ws_only) {
+      throw CulebraError("SyntaxError",
+          "closing \"\"\" of a multi-line string must be on its own line.");
+    }
+    indent += p.text;
+  }
+  lines.pop_back();              // drop closing-delimiter line
+  lines.erase(lines.begin());   // drop opening newline (whitespace-only)
+
+  std::vector<InterpPiece> out;
+  for (size_t li = 0; li < lines.size(); li++) {
+    if (li > 0) out.push_back({"\n", nullptr});  // re-insert line breaks
+    auto& line = lines[li];
+
+    bool blank = true;
+    for (const auto& p : line) {
+      if (p.expr) { blank = false; break; }
+      for (char c : p.text)
+        if (c != ' ' && c != '\t') { blank = false; break; }
+      if (!blank) break;
+    }
+    if (blank) continue;  // normalize blank lines to empty
+
+    if (!indent.empty()) {
+      if (line.front().expr || line.front().text.size() < indent.size() ||
+          line.front().text.compare(0, indent.size(), indent) != 0) {
+        throw CulebraError("SyntaxError",
+            "insufficient indentation in multi-line string literal — every "
+            "line must be indented to at least the closing \"\"\".");
+      }
+      line.front().text.erase(0, indent.size());
+    }
+    for (auto& p : line) out.push_back(std::move(p));
   }
   return out;
 }

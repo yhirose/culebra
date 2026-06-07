@@ -349,6 +349,8 @@
   # embedded LLM prompts. Reuses INTERP_EXPR; TRIPLE_CONTENT stops at
   # `"""` or `{` and still decodes `\X` escapes (use `\{` for a literal
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
+  # Swift-style block form (opening `"""` followed by a newline) strips the
+  # leading/trailing newline and dedents by the closing delimiter's indent.
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 

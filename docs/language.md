@@ -763,6 +763,31 @@ forms and `\n` / `\{` escapes) but single and double quotes inside need
 no escaping — only `"""` closes it. Handy for embedded LLM prompts and
 snippets that contain quotes. Use `\{` for a literal open brace.
 
+#### Block form (Swift-style dedent)
+
+When the opening `"""` is immediately followed by a newline, the string is
+a *block string*. The newline after the opening `"""` and the newline before
+the closing `"""` are not part of the value, and every line is dedented by
+the indentation of the closing `"""`, so the literal can be indented to match
+the surrounding code without that indentation leaking into the string:
+
+    let html = """
+        <html>
+        </html>
+        """
+    # => "<html>\n</html>"
+
+The dedent is resolved once, when the literal is built (the JIT folds a
+pure-literal block into a single constant) — there is no separate runtime
+`trimIndent`-style pass over an already-allocated string. Relative indentation
+beyond the closing delimiter is preserved, and blank lines are normalized to
+empty. A non-blank line indented less than the closing `"""`, or a closing
+`"""` that does not sit on its own line, is a `SyntaxError`.
+
+A triple string whose content begins on the opening line (including the
+single-line `"""..."""` form) is *not* a block string: it is taken raw, with
+no dedent, exactly as before.
+
 ### Interpolated strings
 
     "hello {name}"
