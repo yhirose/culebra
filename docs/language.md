@@ -2812,15 +2812,17 @@ make_thing = fn () {
 }                                        # drop fires here
 ```
 
-Binding a `drop`-bearing object at the **top level** may leave it
-alive until program exit because the drop function captures the
-top-level environment, creating an environment-level cycle that the
-object-only cycle collector does not break. For script-wide
-resources, prefer `defer` (§15) or explicit cleanup.
+Binding a `drop`-bearing object at the **top level** leaves it alive
+until program exit *without* running `drop`, on every backend. The
+interpreter's top-level `Environment` is itself a reference cycle —
+the functions bound in it capture it — so it is never torn down and
+its bindings leak un-dropped; the JIT and AOT suppress `drop` at the
+top-level scope release to match. For script-wide resources, prefer
+`defer` (§15) or explicit cleanup.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
-interpreter — at scope exit and when the cycle collector breaks an
-unreachable cycle. The well-known property contract (`drop`/`iter`/
+interpreter — at scope exit, but never on cycle members or top-level
+bindings (as above). The well-known property contract (`drop`/`iter`/
 `next` must be a 0-arg `Function`) is enforced at assignment time on
 both backends.
 
@@ -4005,11 +4007,12 @@ embedding Culebra should be aware:
 
 ### Top-level drop note (§16)
 
-Top-level bindings to `drop`-bearing objects may live until program
-exit due to environment-level cycles on either backend (see §16 for
-the worked example). The mechanism is not JIT-specific; use `defer`
-or a factory function for script-wide resources regardless of which
-backend you run on.
+Top-level bindings to `drop`-bearing objects live until program exit
+without running `drop`, on either backend (see §16 for the worked
+example): the interpreter never tears down its cyclic global
+environment, and the JIT/AOT suppress drop at the top-level scope
+release to match. Use `defer` or a factory function for script-wide
+resources regardless of which backend you run on.
 
 When in doubt, the interpreter is authoritative — any JIT deviation
 in observable behavior is treated as a bug.

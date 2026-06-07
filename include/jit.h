@@ -451,6 +451,17 @@ inline bool& _jit_drop_suppressed() {
   return v;
 }
 
+// Toggle the suppression flag from emitted IR. `__culebra_main` wraps its
+// top-level scope release at program exit in set(1)/set(0): top-level
+// bindings are leaked without `drop`, matching the interpreter (whose global
+// `Environment` is itself a refcount cycle and so is never torn down). The
+// flag is restored to 0 afterward so a thread that goes on to run another
+// isolate's `__culebra_main` keeps normal per-scope drop semantics.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_set_drop_suppressed(int8_t v) {
+  _jit_drop_suppressed() = (v != 0);
+}
+
 // Forward decls for the refcount helpers — `culebra_runtime_module_*`
 // is emitted before the helper definitions further down (line 1430-ish)
 // because the runtime header is one big TU and the module table sits
@@ -7743,6 +7754,7 @@ inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
 inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
 inline constexpr auto defer_push          = "culebra_runtime_defer_push";
 inline constexpr auto defer_run_to        = "culebra_runtime_defer_run_to";
+inline constexpr auto set_drop_suppressed = "culebra_runtime_set_drop_suppressed";
 inline constexpr auto div_zero            = "culebra_runtime_div_zero";
 inline constexpr auto input               = "culebra_runtime_input";
 inline constexpr auto math_pow            = "culebra_runtime_math_pow";
@@ -8356,7 +8368,7 @@ struct JIT {
         builder.CreateCall(
             mod->getFunction(rt::defer_run_to), {mainMark});
       }
-      jit.release_all_scopes_for_exit();
+      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
       builder.CreateRetVoid();
     }
 
@@ -8498,7 +8510,7 @@ struct JIT {
         builder.CreateCall(
             mod->getFunction(rt::defer_run_to), {mainMark});
       }
-      jit.release_all_scopes_for_exit();
+      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
@@ -8587,7 +8599,7 @@ struct JIT {
         builder.CreateCall(
             mod->getFunction(rt::defer_run_to), {mainMark});
       }
-      jit.release_all_scopes_for_exit();
+      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
@@ -8769,7 +8781,7 @@ struct JIT {
         builder.CreateCall(
             mod->getFunction(rt::defer_run_to), {mainMark});
       }
-      jit.release_all_scopes_for_exit();
+      jit.release_all_scopes_for_exit(/*suppress_drop=*/true);
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
@@ -9227,10 +9239,22 @@ struct JIT {
   // callee — this is what gives auto-drop interp-equivalent timing.
   // Throw / break / continue paths still leak their inner-scope slots
   // until the cycle collector runs (matches prior JIT behaviour).
-  void release_all_scopes_for_exit() {
+  // `suppress_drop` is set only at `__culebra_main`'s exit: the top-level
+  // scopes hold every top-level binding, and at program exit those leak
+  // without `drop` to match the interpreter (whose global Environment is a
+  // refcount cycle that is never torn down). Function returns leave it false
+  // so ordinary scope-exit drop is unaffected.
+  void release_all_scopes_for_exit(bool suppress_drop = false) {
+    if (suppress_drop) emit_set_drop_suppressed(1);
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
       release_scope_slots(*it);
     }
+    if (suppress_drop) emit_set_drop_suppressed(0);
+  }
+
+  void emit_set_drop_suppressed(int8_t v) {
+    builder_.CreateCall(module_->getFunction(rt::set_drop_suppressed),
+                        {builder_.getInt8(v)});
   }
 
   void pop_scope() {
@@ -10612,6 +10636,9 @@ struct JIT {
     module_->getOrInsertFunction(rt::defer_run_to,
                                  builder_.getVoidTy(),
                                  builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::set_drop_suppressed,
+                                 builder_.getVoidTy(),
+                                 builder_.getInt8Ty());
     // Loop safepoint slow path (throws Interrupted on Ctrl+C).
     module_->getOrInsertFunction(rt::safepoint, builder_.getVoidTy());
     module_->getOrInsertFunction(

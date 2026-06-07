@@ -1,0 +1,36 @@
+// Top-level bindings must NOT run `drop` at program exit on any backend.
+// The interpreter's global Environment is itself a refcount cycle (the
+// closures bound in it capture it), so it is never torn down and its
+// bindings leak un-dropped; the JIT/AOT suppress drop at __culebra_main's
+// top-level scope release to match. Inner-scope drops MUST still fire.
+//
+// Two guards: the `drop_count` assert proves the inner-scope drop fired
+// (it runs during make_inner's scope exit, before the assert); the printed
+// `DROP:` lines + the interp==jit difftest/symmetry sweep prove no
+// top-level drop ran — a regression re-adds a `DROP:top-*` line on the
+// JIT/AOT, diverging from the interpreter.
+
+mut drop_count = 0
+
+class R {
+  new(n) { this.name = n }
+  drop() { drop_count = drop_count + 1; puts("DROP:" + this.name) }
+}
+
+fn make_inner() {
+  let x = R.new("inner")        // inner-scope: drop fires at function exit
+  x.name
+}
+
+make_inner()
+assert_eq(drop_count, 1)        // inner-scope drop really fired
+
+// Plain and closure-captured top-level bindings: none may drop at exit.
+// (Both are objects the JIT/AOT would otherwise release at __culebra_main
+// exit — so a regression here re-introduces a `DROP:top-*` line.)
+let g_plain = R.new("top-plain")
+let g_lam = R.new("top-lam")
+let keep = || g_lam.name        // top-level closure capturing a binding
+
+assert_eq(drop_count, 1)        // still 1: no top-level drop ran before exit
+puts("toplevel-drop test: OK")
