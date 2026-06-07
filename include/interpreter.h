@@ -3337,11 +3337,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
          return Value(best);
        }))},
       {"sort_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       Value(FunctionValue({{"f", false, "Function"sv},
+                            {"reverse", false, "Bool"sv, nullptr,
+                             kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
                              auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "sort_by");
+                             bool reverse = callEnv->get("reverse").to_bool();
                              auto& vs = *arr.values;
                              std::vector<std::pair<Value, size_t>> keyed;
                              keyed.reserve(vs.size());
@@ -3351,8 +3354,9 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              }
                              std::stable_sort(
                                  keyed.begin(), keyed.end(),
-                                 [](const auto& a, const auto& b) {
-                                   return a.first < b.first;
+                                 [reverse](const auto& a, const auto& b) {
+                                   return reverse ? (b.first < a.first)
+                                                  : (a.first < b.first);
                                  });
                              std::vector<Value> sorted;
                              sorted.reserve(vs.size());
@@ -3363,11 +3367,14 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
       // Non-mutating sort_by: returns a new sorted Array, leaving the
       // receiver unchanged — so it chains (`xs.sorted_by(f).join(",")`).
       {"sorted_by"sv,
-       Value(FunctionValue({{"f", false, "Function"sv}},
+       Value(FunctionValue({{"f", false, "Function"sv},
+                            {"reverse", false, "Bool"sv, nullptr,
+                             kw_default_false(), true}},
                            [](std::shared_ptr<Environment> callEnv) {
                              auto& arr = callEnv->get("this").to_array();
                              auto f = as_callback(callEnv->get("f"));
                              check_callback_arity(f, 1, "sorted_by");
+                             bool reverse = callEnv->get("reverse").to_bool();
                              auto& vs = *arr.values;
                              std::vector<std::pair<Value, size_t>> keyed;
                              keyed.reserve(vs.size());
@@ -3377,8 +3384,9 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
                              }
                              std::stable_sort(
                                  keyed.begin(), keyed.end(),
-                                 [](const auto& a, const auto& b) {
-                                   return a.first < b.first;
+                                 [reverse](const auto& a, const auto& b) {
+                                   return reverse ? (b.first < a.first)
+                                                  : (a.first < b.first);
                                  });
                              ArrayValue out;
                              out.values->reserve(vs.size());
@@ -6519,7 +6527,19 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // the unconsumed kwargs surface as an opaque ArityError. Matches JIT.
     if (val.type == Value::Function) {
       const auto& fn = val.get<FunctionValue>();
+      // A builtin method that declares a keyword-only / defaulted / **rest
+      // parameter (e.g. `sort_by(f, reverse: true)`) is kwarg-capable: defer
+      // to the general binder below, which handles keywords + arity exactly
+      // like the namespace methods (Http.get, ...). Only the pure positional
+      // builtins keep the fast early gate.
+      bool kw_capable = false;
       if (fn.is_builtin_method) {
+        auto bb = builtin_arity_bounds(*fn.params);
+        kw_capable = bb.min != bb.max;
+        for (const auto& p : *fn.params)
+          if (p.kw_only || p.kwargs_rest) kw_capable = true;
+      }
+      if (fn.is_builtin_method && !kw_capable) {
         for (const auto& child : ast.nodes) {
           if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
             throw CulebraError("TypeError",

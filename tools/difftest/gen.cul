@@ -392,4 +392,19 @@ for r in reps {
   case("replace|" + r, r)
 }
 
+# --- Dimension 21: sort_by / sorted_by reverse: kwarg ---------------------
+# Keyword-only `reverse:` (stable descending). Both backends must agree on
+# the order (incl. tie stability) and on the unknown-keyword TypeError.
+let sorts = [
+  '[3, 1, 2].sorted_by(|x| x)',
+  '[3, 1, 2].sorted_by(|x| x, reverse: true)',
+  '[3, 1, 2].sorted_by(|x| x, reverse: false)',
+  '["bb", "a", "ccc"].sorted_by(|s| s.size(), reverse: true)',
+  '[(1, "a"), (1, "b"), (0, "c")].sorted_by(|t| t[0], reverse: true)',
+  'mut a = [3, 1, 2]; a.sort_by(|x| x, reverse: true); a',
+  'mut k = nil; try { [1].sorted_by(|x| x, bad: 1) } catch e { k = e.kind }; k']
+for s in sorts {
+  case("sortrev|" + s, s)
+}
+
 print(out.join("\n"))

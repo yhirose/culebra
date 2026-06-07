@@ -6965,7 +6965,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
 // in place by those keys. Mutates. Keys are released on every exit path
 // (including during a throw from the key comparison).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
-    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
+    int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1,"sort_by", "f", line, col);
   std::vector<std::pair<JitValue, size_t>> keyed;
   keyed.reserve(arr->size);
@@ -6979,11 +6980,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
       keyed.emplace_back(_culebra_invoke1(fn, e), i);
     }
     std::stable_sort(keyed.begin(), keyed.end(),
-                     [line, col](const auto& a, const auto& b) {
+                     [reverse, line, col](const auto& a, const auto& b) {
+                       const auto& x = reverse ? b : a;
+                       const auto& y = reverse ? a : b;
                        return _culebra_value_ord(
-                           a.first.tag, a.first.data,
-                           b.first.tag, b.first.data,
-                           [](double x, double y) { return x < y; },
+                           x.first.tag, x.first.data,
+                           y.first.tag, y.first.data,
+                           [](double p, double q) { return p < q; },
                            line, col);
                      });
     std::vector<JitValue> sorted(arr->size);
@@ -7002,7 +7005,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
 // order; the receiver is untouched, so it chains. The new array owns its own
 // refs to the (shared) elements.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
-    JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
+    JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
+    int64_t col) {
   auto* fn = _culebra_expect_callback(fn_tag, fn_data, 1, "sorted_by", "f",
                                       line, col);
   std::vector<std::pair<JitValue, size_t>> keyed;
@@ -7017,10 +7021,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
       keyed.emplace_back(_culebra_invoke1(fn, e), i);
     }
     std::stable_sort(keyed.begin(), keyed.end(),
-                     [line, col](const auto& a, const auto& b) {
+                     [reverse, line, col](const auto& a, const auto& b) {
+                       const auto& x = reverse ? b : a;
+                       const auto& y = reverse ? a : b;
                        return _culebra_value_ord(
-                           a.first.tag, a.first.data, b.first.tag, b.first.data,
-                           [](double x, double y) { return x < y; }, line, col);
+                           x.first.tag, x.first.data, y.first.tag, y.first.data,
+                           [](double p, double q) { return p < q; }, line, col);
                      });
   } catch (...) {
     release_keys();
@@ -10768,16 +10774,16 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
-    // sort_by (arr, fn_tag, fn_data, line, col)
+    // sort_by (arr, fn_tag, fn_data, reverse, line, col)
     module_->getOrInsertFunction(
         rt::array_sort_by, builder_.getVoidTy(), ptrTy,
-        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
-        builder_.getInt64Ty());
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt1Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty());
     // sorted_by — same args, returns a new array (ptr)
     module_->getOrInsertFunction(
         rt::array_sorted_by, ptrTy, ptrTy,
-        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt64Ty(),
-        builder_.getInt64Ty());
+        builder_.getInt8Ty(), builder_.getInt64Ty(), builder_.getInt1Ty(),
+        builder_.getInt64Ty(), builder_.getInt64Ty());
     // sum/product/min/max: (arr, line, col) -> i64
     module_->getOrInsertFunction(rt::array_sum, builder_.getInt64Ty(),
                                  ptrTy, builder_.getInt64Ty(),
@@ -16498,6 +16504,26 @@ struct JIT {
     return tables;
   }
 
+  // Whether some builtin value-type method named `method` declares a
+  // keyword-only / defaulted / **rest parameter — i.e. it can take keyword
+  // args (e.g. `sort_by(f, reverse: true)`). Consulted by the builtin
+  // kwarg gate so such a call isn't rejected before compile_builtin_method
+  // gets to bind the keyword. Over-approximates across receiver types (the
+  // actual per-(method,argc) dispatch still happens in the builtin codegen).
+  static bool builtin_method_is_kwarg_capable(const std::string& method) {
+    for (auto& [tag, table] : builtin_value_tables()) {
+      auto it = table->find(method);
+      if (it == table->end() || it->second.type != Value::Function) continue;
+      const auto& params = *it->second.get<FunctionValue>().params;
+      if (culebra::builtin_arity_bounds(params).min !=
+          culebra::builtin_arity_bounds(params).max)
+        return true;
+      for (const auto& p : params)
+        if (p.kw_only || p.kwargs_rest) return true;
+    }
+    return false;
+  }
+
   // Raise the interpreter's count-based ArityError for a wrong-arity
   // builtin method call. Bounds come straight from the interpreter's
   // builtin tables (the single source of truth — no parallel arity
@@ -16511,33 +16537,99 @@ struct JIT {
   void emit_builtin_arity_check(const std::string& method,
                                 const peg::Ast& argsAst,
                                 llvm::Value* receiver) {
+    using namespace peg::udl;
     long argc = static_cast<long>(argsAst.nodes.size());
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto tag = extract_tag(receiver);
 
-    // Emit `if (cond) throw ArityError`, leaving the insert point after.
-    auto throw_if = [&](llvm::Value* cond, long mn, long mx) {
+    // An error to raise: kind + message + source position. Count-based
+    // builtin errors point at the ARGUMENTS node (interp's ast.line/col);
+    // kwarg-capable "rich" errors point at the call expression root
+    // (interp's call_line/col == current_line_/current_column_).
+    struct Err {
+      std::string kind, msg;
+      size_t line, col;
+    };
+    // Emit `if (cond) throw e`, leaving the insert point after.
+    auto throw_if = [&](llvm::Value* cond, const Err& e) {
       auto badBB = llvm::BasicBlock::Create(ctx_, "arity.bad", fn);
       auto okBB = llvm::BasicBlock::Create(ctx_, "arity.ok", fn);
       builder_.CreateCondBr(cond, badBB, okBB);
       builder_.SetInsertPoint(badBB);
-      emit_throw_error("ArityError",
-                       builtin_arity_error_message(method, mn, mx, argc),
-                       argsAst.line, argsAst.column);
+      emit_throw_error(e.kind.c_str(), e.msg, e.line, e.col);
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     };
     using Table = std::unordered_map<std::string_view, Value>;
-    // {min,max} when `method` is in `tbl` at an arity rejecting argc (and
-    // not variadic); nullopt otherwise.
-    auto rejecting =
-        [&](const Table& tbl) -> std::optional<std::pair<long, long>> {
+    // The error `method` would raise on this arg shape when it resolves in
+    // `tbl`, or nullopt if the call is valid / the method is absent. A pure
+    // positional builtin uses the count-based ArityError; a kwarg-capable one
+    // (declares a defaulted / keyword-only / **rest param, e.g. sort_by's
+    // `reverse:`) mirrors interp's general binder, so adding a keyword-only
+    // param to any builtin method stays interp/JIT-symmetric with no
+    // per-method JIT error code.
+    auto error_for = [&](const Table& tbl) -> std::optional<Err> {
       auto it = tbl.find(method);
-      if (it == tbl.end()) return std::nullopt;
-      auto b = builtin_arity_bounds(*it->second.to_function().params);
-      if (b.variadic || (argc >= b.min && argc <= b.max)) return std::nullopt;
-      return std::pair<long, long>{b.min, b.max};
+      if (it == tbl.end() || it->second.type != Value::Function)
+        return std::nullopt;
+      const auto& params = *it->second.to_function().params;
+      auto b = builtin_arity_bounds(params);
+      bool kwcap = b.min != b.max;
+      for (const auto& p : params)
+        if (p.kw_only || p.kwargs_rest) kwcap = true;
+      if (!kwcap) {
+        if (b.variadic || (argc >= b.min && argc <= b.max)) return std::nullopt;
+        return Err{"ArityError",
+                   builtin_arity_error_message(method, b.min, b.max, argc),
+                   argsAst.line, argsAst.column};
+      }
+      // Kwarg-capable: replicate interp's bind order (too-many positional →
+      // per-param missing / positional+keyword conflict → leftover unknown
+      // keyword). Args are static here, so the whole check is compile-time.
+      long n_pos = 0;
+      std::vector<std::string_view> kw_names;
+      bool has_splat = false, has_rest = false;
+      for (const auto& n : argsAst.nodes) {
+        if (n->tag == "KWARG"_) kw_names.push_back(n->nodes[0]->token);
+        else if (n->tag == "KWARG_SPLAT"_) has_splat = true;
+        else n_pos++;
+      }
+      for (const auto& p : params) if (p.kwargs_rest) has_rest = true;
+      if (has_splat) return std::nullopt;  // dynamic **splat: bound at runtime
+      auto named = [&](std::string_view nm) {
+        for (auto k : kw_names) if (k == nm) return true;
+        return false;
+      };
+      // Rich errors point at the call root (interp's call_line/col).
+      size_t rl = current_line_, rc = current_column_;
+      if (!b.variadic && n_pos > b.max)
+        return Err{"TypeError",
+            std::format("takes {} positional argument{} but {} given", b.max,
+                        b.max == 1 ? "" : "s", n_pos), rl, rc};
+      for (size_t i = 0; i < params.size(); i++) {
+        const auto& p = params[i];
+        if (p.kwargs_rest || p.args_rest) continue;
+        bool filled_pos = static_cast<long>(i) < n_pos && !p.kw_only;
+        if (filled_pos && named(p.name))
+          return Err{"TypeError",
+              std::format("got argument '{}' both positionally and as a keyword",
+                          p.name), rl, rc};
+        bool has_def = p.default_expr != nullptr || p.default_value != nullptr;
+        if (!filled_pos && !named(p.name) && !has_def)
+          return Err{"ArityError",
+              std::format("missing required argument '{}'", p.name), rl, rc};
+      }
+      if (!has_rest)
+        for (auto kn : kw_names) {
+          bool known = false;
+          for (const auto& p : params)
+            if (!p.kwargs_rest && p.name == kn) { known = true; break; }
+          if (!known)
+            return Err{"TypeError", std::format("unknown keyword argument '{}'",
+                                                std::string(kn)), rl, rc};
+        }
+      return std::nullopt;
     };
 
     auto& valueTables = builtin_value_tables();
@@ -16547,9 +16639,8 @@ struct JIT {
     }();
 
     for (auto& [t, tbl] : valueTables) {
-      if (auto r = rejecting(*tbl)) {
-        throw_if(builder_.CreateICmpEQ(tag, builder_.getInt8(t)), r->first,
-                 r->second);
+      if (auto e = error_for(*tbl)) {
+        throw_if(builder_.CreateICmpEQ(tag, builder_.getInt8(t)), *e);
       }
     }
 
@@ -16561,9 +16652,9 @@ struct JIT {
     // dict builtin so `has("iter")` is always true — the effective test
     // is just "has an own/proto `next`", which is what we probe here.
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-    if (auto r = rejecting(*dictTable)) {
-      throw_if(isObj, r->first, r->second);
-    } else if (auto r = rejecting(iterator_builtins())) {
+    if (auto e = error_for(*dictTable)) {
+      throw_if(isObj, *e);
+    } else if (auto e = error_for(iterator_builtins())) {
       auto shapeBB = llvm::BasicBlock::Create(ctx_, "arity.itshape", fn);
       auto badBB = llvm::BasicBlock::Create(ctx_, "arity.bad", fn);
       auto okBB = llvm::BasicBlock::Create(ctx_, "arity.ok", fn);
@@ -16574,10 +16665,7 @@ struct JIT {
           emit_object_has(objPtr, get_or_create_global_str("next", ".it.next"));
       builder_.CreateCondBr(shaped, badBB, okBB);
       builder_.SetInsertPoint(badBB);
-      emit_throw_error(
-          "ArityError",
-          builtin_arity_error_message(method, r->first, r->second, argc),
-          argsAst.line, argsAst.column);
+      emit_throw_error(e->kind.c_str(), e->msg, e->line, e->col);
       builder_.CreateBr(okBB);  // unreachable (throw is noreturn) but valid
       builder_.SetInsertPoint(okBB);
     }
@@ -16640,7 +16728,8 @@ struct JIT {
     // accepts keywords — raise the same TypeError the interp does.
     builder_.SetInsertPoint(builtinBB);
     llvm::Value* builtinRes;
-    if (!arg_list_is_positional_only(argsAst)) {
+    if (!arg_list_is_positional_only(argsAst) &&
+        !builtin_method_is_kwarg_capable(method)) {
       emit_throw_error("TypeError",
           std::format("built-in method '{}' does not accept keyword "
                       "arguments", method),
@@ -19833,26 +19922,47 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     return phi;
   }
 
-  if (method == "sort_by" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "sort_by");
-    auto f = compile(*argsAst.nodes[0]);
-    emit_set_callback_arg_site(*argsAst.nodes[0]);
-    emit_call(
-        module_->getFunction(rt::array_sort_by),
-        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
-    emit_value_release(f);
-    return make_nil();
-  }
-
-  if (method == "sorted_by" && argsAst.nodes.size() == 1) {
-    auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "sorted_by");
-    auto f = compile(*argsAst.nodes[0]);
-    emit_set_callback_arg_site(*argsAst.nodes[0]);
-    auto out = emit_call(
-        module_->getFunction(rt::array_sorted_by),
-        {arrPtr, extract_tag(f), extract_data(f), ho_line, ho_col});
-    emit_value_release(f);
-    return make_array(out);
+  // sort_by / sorted_by accept one positional callback plus an optional
+  // keyword-only `reverse:` (sort descending, stable). Handle only the valid
+  // shape here (one positional, no unknown keyword); any malformed call
+  // returns null and is reported by emit_builtin_arity_check, which raises
+  // interp's generic binder errors for kwarg-capable builtins.
+  if (method == "sort_by" || method == "sorted_by") {
+    using namespace peg::udl;
+    const peg::Ast* cb = nullptr;
+    const peg::Ast* rev_expr = nullptr;
+    int npos = 0;
+    bool only_known_kw = true;
+    for (auto& n : argsAst.nodes) {
+      if (n->tag == "KWARG"_) {
+        if (n->nodes[0]->token == "reverse" && !rev_expr) rev_expr = n->nodes[1].get();
+        else only_known_kw = false;
+      } else if (n->tag == "KWARG_SPLAT"_) {
+        only_known_kw = false;
+      } else {
+        npos++;
+        if (!cb) cb = n.get();
+      }
+    }
+    if (npos == 1 && only_known_kw) {
+      auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
+      auto f = compile(*cb);
+      emit_set_callback_arg_site(*cb);
+      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr))
+                                  : builder_.getInt1(false);
+      if (method == "sort_by") {
+        emit_call(module_->getFunction(rt::array_sort_by),
+                  {arrPtr, extract_tag(f), extract_data(f), rev, ho_line,
+                   ho_col});
+        emit_value_release(f);
+        return make_nil();
+      }
+      auto out = emit_call(module_->getFunction(rt::array_sorted_by),
+                           {arrPtr, extract_tag(f), extract_data(f), rev,
+                            ho_line, ho_col});
+      emit_value_release(f);
+      return make_array(out);
+    }
   }
 
   return nullptr;
