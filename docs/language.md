@@ -1721,13 +1721,16 @@ endpoints present) is iterable; an open-ended range used for slicing
 (`xs[2..]`) has no iteration end and raises if iterated.
 
 **Destructuring loop variable.** The `var` may be a pattern, matched
-against each element's shape (a mismatch raises `ValueError`):
+against each element's shape (a mismatch raises `ValueError`).
+Comma-separated targets without parens are sugar for a tuple pattern:
+`for k, v in xs` means `for (k, v) in xs`.
 
 ```culebra
 # doctest: skip
 for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # array pattern
 for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # tuple pattern
-for {index, value} in xs.iter().enumerate() { ... } # object pattern
+for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # bare comma == (k, v)
+for i, v in xs.enumerate() { ... }                  # (index, value) tuples
 ```
 
 The iterator protocol (see §17.5) requires the target to be either an
@@ -1740,8 +1743,8 @@ Passing any other type raises `type error`.
 function, the script is rejected (see §6).
 
 **JIT**: `for` / `break` / `continue` compile under `--jit` for
-direct iteration over `Array`, `Object` (yields keys in ascending
-order), and `String` (UTF-8 scalar walk). Objects that carry their
+direct iteration over `Array`, `Object` (yields `(key, value)` pairs in
+insertion order), and `String` (UTF-8 scalar walk). Objects that carry their
 own `iter` property (user-defined iterators, `range`,
 `String.code_points()` / `.graphemes()`, iterator method chains) are
 driven through the iterator protocol at runtime — same semantics as
@@ -3003,17 +3006,19 @@ callbacks. The rule is identical under the interpreter, `--jit`, and AOT.
 | Signature                        | Description                                |
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | Number of own properties.                  |
-| `o.keys() -> Array`              | `Array` of `String` keys in insertion order (matches display order — §8). |
+| `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
+| `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`. Ignores built-in method names. |
 | `o.remove(key: String) -> Nil` *(mutating)* | Delete the property named `key` if present. |
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-puts(o.keys())   # ['b', 'a', 'c']  (insertion order)
-puts(o.has('a')) # true
+puts(o.keys())            # ['b', 'a', 'c']  (insertion order)
+puts(o.values().collect()) # [2, 1, 3]
+puts(o.has('a'))          # true
 mut p = {a: 1, b: 2}
 p.remove('a')
-puts(p)          # {b: 2}
+puts(p)                   # {b: 2}
 ```
 
 ### 17.4 Special identifiers
@@ -3055,7 +3060,7 @@ Iterable wrapper.
 | Type | `iter()` yields | Order |
 |---|---|---|
 | `Array` | elements | index order (0..size-1) |
-| `Object` | keys | insertion order (matches `o.keys()`) |
+| `Object` | `(key, value)` tuples | insertion order (matches `o.keys()`) |
 | `String` | one-scalar `String` per UTF-8 code point | byte order |
 
 `String` iteration walks the UTF-8 buffer lazily, so iterating a
@@ -3064,20 +3069,31 @@ rest. The yielded values are 1-scalar `String`s, not integer code
 points — use `.map` on the iterator to project into whatever shape
 you need.
 
+Iterating an `Object` yields `(key, value)` pairs (Ruby-style), so the
+natural loop is `for k, v in obj` and `obj.iter()` is the entries view
+(it chains and `collect`s like any iterator). The single-axis views are
+`obj.keys()` (an `Array`) and `obj.values()` (a lazy iterator):
+
+```culebra
+for k, v in {a: 1, b: 2} { puts("{k}={v}") }   # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
+for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
+```
+
 **Object iter and structural mutation**: rewriting the *value* of an
 existing key during iteration is allowed; adding or removing keys
-raises `RuntimeError` (matches Python `dict` semantics). The `for k in
-obj` sugar uses the same protocol.
+raises `RuntimeError` (matches Python `dict` semantics). The
+`for k, v in obj` sugar uses the same protocol.
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k in o.iter() { o[k] = 99 }
+for k, v in o.iter() { o[k] = 99 }
 puts(o.x)            # => 99
 ```
 
 ```culebra
 mut o = {a: 1}
-for k in o.iter() { o["b"] = 2 }
+for k, v in o.iter() { o["b"] = 2 }
                      # !! Object changed size during iteration
 ```
 
@@ -3105,7 +3121,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.flat_map(f)` | Iterator | `f(x)` must return an iterable; results concatenated |
 | `it.chain(other)` | Iterator | yields `it` then `other` |
 | `it.zip(other)` | Iterator | yields `{first, second}` pairs; stops at the shorter side |
-| `it.enumerate()` | Iterator | yields `{index, value}` with `index` starting at `0` |
+| `it.enumerate()` | Iterator | yields `(index, value)` tuples with `index` starting at `0`. Also a direct `Array` method (`arr.enumerate()`) returning a lazy iterator. |
 
 | Terminal | Result | Notes |
 |---|---|---|

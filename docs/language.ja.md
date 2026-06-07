@@ -1619,20 +1619,22 @@ JIT では捕捉された可変変数はヒープの**セル**に配置され、
 ```culebra
 for x in [1, 2, 3] { puts(x) }
 
-for k in {b: 2, a: 1} { puts(k) }   # キーを昇順
+for k, v in {b: 2, a: 1} { puts("{k}={v}") }   # (key, value) ペアを挿入順
 
 for i in 0..10 { puts(i) }          # 排他範囲（0..9）
 for i in 0..=10 { puts(i) }         # 包含範囲（0..10）
 ```
 
 **ループ変数の分解。** `var` はパターンにでき、各要素の形にマッチさせる
-（不一致は `ValueError`）:
+（不一致は `ValueError`）。括弧なしのカンマ区切りはタプルパターンの糖衣で、
+`for k, v in xs` は `for (k, v) in xs` と同じ:
 
 ```culebra
 # doctest: skip
 for [a, b] in [[1, 2], [3, 4]] { puts(a + b) }      # 配列パターン
 for (k, v) in [(1, 'a'), (2, 'b')] { puts(k) }      # タプルパターン
-for {index, value} in xs.iter().enumerate() { ... } # オブジェクトパターン
+for k, v in {a: 1, b: 2} { puts("{k}={v}") }        # 括弧なし == (k, v)
+for i, v in xs.enumerate() { ... }                  # (index, value) タプル
 ```
 
 イテレータプロトコル（§17.5）により、対象は `iter` メソッドを持つ
@@ -1644,7 +1646,7 @@ for {index, value} in xs.iter().enumerate() { ... } # オブジェクトパタ�
 外側関数でキャプチャ済みの名前をシャドウしそうな場合、スクリプトは
 拒否されます（§6 参照）。
 
-**JIT**: `--jit` では `Array` / `Object`（キーを昇順で列挙）/
+**JIT**: `--jit` では `Array` / `Object`（`(key, value)` ペアを挿入順）/
 `String`（UTF-8 スカラー単位）に対する直接反復として `for` /
 `break` / `continue` が動作します。加えて、独自の `iter`
 プロパティを持つ Object（ユーザー定義 iterator・`range`・
@@ -2834,13 +2836,15 @@ puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 | シグネチャ                        | 説明                                       |
 |----------------------------------|--------------------------------------------|
 | `o.size() -> Long`               | 自身のプロパティ数                          |
-| `o.keys() -> Array`              | キーの `String` 配列を挿入順で返す（表示順と同じ — §8） |
+| `o.keys() -> Array`              | キーの配列を挿入順で返す（表示順と同じ — §8） |
+| `o.values() -> Iterator`        | 値を挿入順で返す遅延イテレータ。`o.iter()`（`(key, value)` ペアを yield）の値だけのビュー。他のイテレータ同様に連鎖／`collect` できる |
 | `o.has(key: String) -> Bool`     | `key` を自身のプロパティとして持つか。ビルトインメソッド名は含まない |
 | `o.remove(key: String) -> Nil` *(破壊的)* | `key` が存在すれば削除              |
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
-puts(o.keys())   # ['b', 'a', 'c']  (挿入順)
+puts(o.keys())            # ['b', 'a', 'c']  (挿入順)
+puts(o.values().collect()) # [2, 1, 3]
 puts(o.has('a')) # true
 mut p = {a: 1, b: 2}
 p.remove('a')
@@ -2883,7 +2887,7 @@ Iterable ラッパなしで動作します。
 | 型 | `iter()` が yield するもの | 順序 |
 |---|---|---|
 | `Array` | 要素 | インデックス順 (0..size-1) |
-| `Object` | キー | 挿入順（`o.keys()` と一致） |
+| `Object` | `(key, value)` タプル | 挿入順（`o.keys()` と一致） |
 | `String` | UTF-8 スカラ1つ分の `String` | バイト順 |
 
 `String` の反復は UTF-8 バッファを遅延 walk するため、100 MB の文字列
@@ -2891,20 +2895,31 @@ Iterable ラッパなしで動作します。
 値は 1-scalar の `String` で、整数の code point ではありません。
 `.map` で必要な形に変換してください。
 
+`Object` の反復は `(key, value)` ペアを yield します（Ruby 流）。なので
+自然なループは `for k, v in obj` で、`obj.iter()` はエントリのビュー
+（他のイテレータ同様に連鎖・`collect` できる）です。片側だけのビューは
+`obj.keys()`（`Array`）と `obj.values()`（遅延イテレータ）:
+
+```culebra
+for k, v in {a: 1, b: 2} { puts("{k}={v}") }   # 'a=1' then 'b=2'
+for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
+for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
+```
+
 **Object iter と構造変更**: 反復中に既存キーの *値* を上書きするのは
 許可されますが、キーの追加・削除は `RuntimeError` を送出します
-（Python `dict` と同じ意味論）。`for k in obj` の sugar も同じ
+（Python `dict` と同じ意味論）。`for k, v in obj` の sugar も同じ
 プロトコルに従います。
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k in o.iter() { o[k] = 99 }
+for k, v in o.iter() { o[k] = 99 }
 puts(o.x)            # => 99
 ```
 
 ```culebra
 mut o = {a: 1}
-for k in o.iter() { o["b"] = 2 }
+for k, v in o.iter() { o["b"] = 2 }
                      # !! Object changed size during iteration
 ```
 
@@ -2932,7 +2947,7 @@ puts(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())   # => [20, 40]
 | `it.flat_map(f)` | Iterator | `f(x)` は iterable を返す必要あり、結果を連結 |
 | `it.chain(other)` | Iterator | `it` の次に `other` を yield |
 | `it.zip(other)` | Iterator | `{first, second}` のペアを yield、短い側で終了 |
-| `it.enumerate()` | Iterator | `{index, value}` を yield（`index` は 0 起点） |
+| `it.enumerate()` | Iterator | `(index, value)` タプルを yield（`index` は 0 起点）。`Array` の直接メソッド（`arr.enumerate()`）でもあり、遅延イテレータを返す |
 
 | 終端 | 戻り値 | 説明 |
 |---|---|---|
