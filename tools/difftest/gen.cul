@@ -328,4 +328,25 @@ for it in iters {
   case("forin|" + it, it)
 }
 
+# --- Dimension 18: multimethod lexical scope isolation --------------------
+# Each `_p` thunk is its own lexical scope. A `fn name` declared in one thunk
+# must NOT contribute an overload to a same-named `fn` in another thunk. The
+# JIT once keyed every multimethod by source name in a thread_local global
+# table, so a sibling scope's overload silently satisfied a call the local
+# signature alone would reject (a wrong result instead of the interp's
+# DispatchError). Two thunks declare `fn lx` with disjoint arities; the second,
+# run after the first has populated the (formerly shared) table, would
+# mis-dispatch if the leak were still present.
+# Bodies hold literal `{...}` decl braces, so they are single-quote raw (a
+# double-quoted body would read the braces as `{expr}` interpolation).
+case("scope-iso|decl-1-arg", 'fn lx(x) { x }; lx(41)')
+case("scope-iso|call-arity-only-local",
+     'fn lx(x, y) { x + y }; try { lx(99) } catch e { e.kind }')
+# Same-scope overloads still merge into one dispatcher within a thunk.
+case("scope-iso|same-scope-overload",
+     'fn ov(x) { 1 }; fn ov(x, y) { 2 }; [ov(0), ov(0, 0)]')
+# A nested helper rebuilt across two activations keeps a stable table.
+case("scope-iso|nested-reentrant",
+     'fn mk(n) { fn h(x) { x * 2 }; h(n) }; [mk(3), mk(4)]')
+
 print(out.join("\n"))

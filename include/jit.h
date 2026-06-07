@@ -4479,6 +4479,14 @@ _jit_multimethods() {
   return tbl;
 }
 
+// Recover the user-facing name from a multimethod registry key. Keys are
+// lexically scoped as `name\x1f<uid>` (see JIT::multifn_scope_key); the
+// suffix is internal, so diagnostics strip it back to the source name.
+inline std::string_view _jit_multifn_display(std::string_view key) {
+  auto sep = key.find('\x1f');
+  return sep == std::string_view::npos ? key : key.substr(0, sep);
+}
+
 // Trait default-method bodies on the JIT side. Outer map keyed by
 // trait name, inner by method name. Holds a +1 reference on each
 // closure for the program's lifetime.
@@ -4924,7 +4932,8 @@ inline MultifnPick _jit_multifn_resolve(
   auto m_it = tbl.find(name_it->second);
   auto fail = [&](const char* what) -> std::string {
     if (release) release();
-    return std::format("{} for `{}`", what, name_it->second);
+    return std::format("{} for `{}`", what,
+                       _jit_multifn_display(name_it->second));
   };
   if (m_it == tbl.end()) {
     throw culebra::CulebraError("DispatchError",
@@ -8030,6 +8039,14 @@ struct JIT {
     // list at compile time. Only same-scope direct bindings populate
     // this map; captured / reassigned closures do not.
     std::map<std::string, const peg::Ast*> fn_asts;
+    // Lexical key into the thread_local multimethod registry for each
+    // `fn name` dispatcher declared directly in this scope. Same-scope
+    // `fn name` overloads share one key (one dispatcher + method table);
+    // a same-named decl in a different scope gets a distinct key, so its
+    // overloads never bleed into an unrelated scope's table. Mirrors the
+    // interp, where the table lives on the dispatcher value bound per
+    // scope frame (see register_named_function's has_own decision).
+    std::map<std::string, std::string> multifn_keys;
   };
 
   // RAII snapshot of compiler per-function state. Entering a nested
@@ -9226,6 +9243,26 @@ struct JIT {
   llvm::StructType* closureType_;  // {ptr fn, i64 n, ptr captures}
 
   std::vector<Scope> scopes_;
+
+  // Monotonic source of unique suffixes for multimethod registry keys.
+  // One per fresh (per-scope) `fn name` dispatcher; see multifn_scope_key.
+  int multifn_uid_counter_ = 0;
+
+  // Compute the registry key for a `fn name` declared in the current
+  // scope. Same-scope overloads reuse the scope's recorded key (so they
+  // merge into one dispatcher / method table); the first decl in a scope
+  // mints a fresh key carrying a unique suffix. The plain source name is
+  // recoverable for diagnostics via _jit_multifn_display.
+  std::string multifn_scope_key(const std::string& name) {
+    auto& keys = scopes_.back().multifn_keys;
+    auto it = keys.find(name);
+    if (it != keys.end()) return it->second;
+    std::string key = name;
+    key.push_back('\x1f');  // unit separator: cannot occur in an identifier
+    key += std::to_string(multifn_uid_counter_++);
+    keys.emplace(name, key);
+    return key;
+  }
 
   // Analysis results for each FUNCTION AST node (plus the main program)
   std::map<const peg::Ast*, FuncInfo> func_info_;
@@ -14995,7 +15032,14 @@ struct JIT {
     llvm::Value* paramTypesPtr = build_str_array(typePtrs, ".paramtypes");
     llvm::Value* paramNamesPtr = build_str_array(namePtrs, ".paramnames");
 
-    auto namePtr = get_or_create_global_str(name, ".mname");
+    // Key the registry per lexical scope so a same-named `fn` in an
+    // unrelated scope gets its own dispatcher + method table (interp
+    // parity — see Scope::multifn_keys). The REPL keeps the plain name:
+    // its inputs compile in fresh JIT instances but share the
+    // thread_local registry, so a stable name is what lets a later input
+    // extend an earlier overload set.
+    auto regKey = is_repl_session_ ? name : multifn_scope_key(name);
+    auto namePtr = get_or_create_global_str(regKey, ".mname");
     auto dispatcherPtr = emit_call(
         module_->getOrInsertFunction(rt::multifn_register_and_install,
                                      ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,

@@ -160,4 +160,28 @@ fn kt(a: String) { 'str' }
 assert_eq(kt(5), 'long')
 assert_eq(kt('x'), 'str')
 
+# A nested `fn name` is scoped to its enclosing scope: a same-named `fn` in a
+# sibling scope must NOT see it. (The JIT once funneled every `fn name` into one
+# by-name global table, so `scope1`'s `g/1` silently satisfied `scope2`'s `g(99)`
+# — a wrong result, not the DispatchError the interp raises.)
+fn scope1() { fn g(x) { x }; g(1) }
+fn scope2() { fn g(x, y) { x + y }; g(99) }
+assert_eq(scope1(), 1)
+let leak = try { scope2(); 'no error' } catch e { e.kind }
+assert_eq(leak, 'DispatchError')
+
+# Same-scope overloads still merge into one dispatcher.
+fn merged() {
+  fn h(x) { 'one' }
+  fn h(x, y) { 'two' }
+  [h(1), h(1, 2)]
+}
+assert_eq(merged(), ['one', 'two'])
+
+# A nested helper survives across two activations of its enclosing function
+# (the per-scope table is rebuilt on each entry without bleeding state).
+fn twice(n) { fn k(x) { x * 2 }; k(n) }
+assert_eq(twice(10), 20)
+assert_eq(twice(21), 42)
+
 puts("test_multidispatch: OK")
