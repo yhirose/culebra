@@ -2165,12 +2165,14 @@ inline Value _index_value_pair(long index, Value v) {
 }
 
 // Single driver for Object iteration: for-in / .iter() (Pairs), .values()
-// (Values) and for-in / .iter() (Pairs). Keys are snapshotted up front so
-// `next` stays O(1); the value (and thus each pair) is read live at the
-// step, so updating an existing key's value mid-iteration is observed
-// while adding/removing a key bumps mut_count and raises — matching
-// Python dict semantics. Class instances (no key_order) fall back to the
-// property-map walk, String keys only.
+// (Values) and for-in / .iter() (Pairs). The keys are snapshotted at loop
+// start, so iteration is over that stable snapshot: entries ADDED during
+// the loop are not visited, entries REMOVED are skipped, and each value is
+// read live at the step (a value update is observed). There is no
+// structural-mutation guard — the key snapshot makes mutating the object
+// in the loop body safe (keys can't shift under the iterator), so the
+// common `for k, v in obj { obj[...] = ... }` works. Class instances (no
+// key_order) fall back to the property-map walk, String keys only.
 enum class ObjectIterMode { Values, Pairs };
 
 inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
@@ -2180,13 +2182,11 @@ inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
         nsprops;
     std::vector<Value> keys;
     size_t index = 0;
-    size_t version = 0;
     ObjectIterMode mode = ObjectIterMode::Pairs;
   };
   auto st = std::make_shared<State>();
   st->props = obj.properties;
   st->nsprops = obj.non_string_props;
-  st->version = st->props->mut_count();
   st->mode = mode;
   if (obj.key_order && !obj.key_order->empty()) {
     st->keys.reserve(obj.key_order->size());
@@ -2197,24 +2197,29 @@ inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
   }
   return _make_iterator(
       [st](std::shared_ptr<Environment>) -> std::optional<Value> {
-        if (st->props->mut_count() != st->version) {
-          throw CulebraError("RuntimeError",
-                             "Object changed size during iteration");
+        while (st->index < st->keys.size()) {
+          Value key = st->keys[st->index];
+          st->index++;
+          const Value* val = nullptr;
+          if (key.type == Value::String) {
+            auto sv = key.template get<std::string>();
+            if (!st->props->contains(sv)) continue;  // removed → skip
+            val = &st->props->at(sv).val;
+          } else {
+            auto it = st->nsprops->find(key);
+            if (it == st->nsprops->end()) continue;  // removed → skip
+            val = &it->second.val;
+          }
+          if (st->mode == ObjectIterMode::Values) {
+            return _iter_step_value(*val);
+          }
+          std::vector<Value> pair;
+          pair.reserve(2);
+          pair.push_back(std::move(key));
+          pair.push_back(*val);
+          return _iter_step_value(Value(TupleValue(std::move(pair))));
         }
-        if (st->index >= st->keys.size()) return _iter_step_done();
-        Value key = st->keys[st->index];
-        st->index++;
-        Value val = (key.type == Value::String)
-                        ? st->props->at(key.template get<std::string>()).val
-                        : st->nsprops->at(key).val;
-        if (st->mode == ObjectIterMode::Values) {
-          return _iter_step_value(std::move(val));
-        }
-        std::vector<Value> pair;
-        pair.reserve(2);
-        pair.push_back(std::move(key));
-        pair.push_back(std::move(val));
-        return _iter_step_value(Value(TupleValue(std::move(pair))));
+        return _iter_step_done();
       });
 }
 

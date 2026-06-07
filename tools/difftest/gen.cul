@@ -323,7 +323,10 @@ let iters = [
   '[5, 6].iter().enumerate().collect()',
   'mut r = []; for k, (a, b) in {x: (1, 2), y: (3, 4)} { r.push((k, a + b)) }; r',
   'mut r = []; for (a, b) in {p: (1, 2), q: (3, 4)}.values() { r.push(a + b) }; r',
-  'mut o = {a: 1}; mut k = nil; try { for x, y in o { o["b"] = 2 } } catch e { k = e.kind }; k']
+  // Snapshot-tolerant mutation: add (not visited), remove (skipped), live value.
+  'mut o = {a: 1, b: 2}; mut s = []; for k, v in o { o["z"] = 9; s.push(k) }; s',
+  'mut o = {a: 1, b: 2, c: 3}; mut s = []; for k, v in o { if k == "a" { o.remove("c") }; s.push(k) }; s',
+  'mut o = {a: 1, b: 2}; mut s = []; for k, v in o.values() { o[k + "2"] = v; s.push(v) }; s']
 for it in iters {
   case("forin|" + it, it)
 }

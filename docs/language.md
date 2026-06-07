@@ -3110,21 +3110,26 @@ for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
 for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
 ```
 
-**Object iter and structural mutation**: rewriting the *value* of an
-existing key during iteration is allowed; adding or removing keys
-raises `RuntimeError` (matches Python `dict` semantics). The
-`for k, v in obj` sugar uses the same protocol.
+**Object iter and mutation**: iteration is over a snapshot of the keys
+taken at loop start, so mutating the object in the loop body is safe (no
+fail-fast guard, unlike Python `dict`). Keys **added** during the loop
+are not visited; keys **removed** are skipped; each value is read **live**
+at its step. This makes the setdefault pattern — adding derived entries
+while iterating — work without copying. The `for k, v in obj` sugar uses
+the same protocol.
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k, v in o.iter() { o[k] = 99 }
+for k, v in o.iter() { o[k] = 99 }   # update existing values
 puts(o.x)            # => 99
 ```
 
 ```culebra
-mut o = {a: 1}
-for k, v in o.iter() { o["b"] = 2 }
-                     # !! Object changed size during iteration
+mut books = {a: ('alpha', 1)}
+for reading, n in books.values() {   # add aliases while iterating
+  if !books.has(reading) { books[reading] = (reading, n) }
+}
+puts(books.has('alpha'))   # => true
 ```
 
 **Iterator methods**: any Object exposing the iterator interface —

@@ -6442,49 +6442,56 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_enumerate_any(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj);
 
-// Object for-in / .iter() fast fn — yields `(key, value)` tuples. Same
-// captures/guard as the values iterator; the key comes from the snapshot
-// array, the value is read live. The key gets a fresh +1 for the tuple
-// (the snapshot array keeps its own); `object_get_any` returns the value
-// +1 and consumes refcounted keys, so retain once more for it.
+// Presence check that does NOT consume the key (unlike object_has_value's
+// non-String path). Used by the object iterators to skip keys removed
+// mid-iteration without disturbing the snapshot array's reference.
+inline bool _jit_obj_has_key(JitObject* obj, JitValue key) {
+  if (key.tag == TAG_STRING) {
+    return _find_property(obj, reinterpret_cast<const char*>(key.data)) !=
+           nullptr;
+  }
+  return obj->non_string_props &&
+         obj->non_string_props->contains({key.tag, key.data});
+}
+
+// Object for-in / .iter() fast fn — yields `(key, value)` tuples over the
+// key snapshot. No structural-mutation guard: keys added during iteration
+// are not in the snapshot (not visited), keys removed are skipped, and the
+// value is read live. The key gets a fresh +1 for the tuple (the snapshot
+// array keeps its own); `object_get_any` returns the value +1 and consumes
+// refcounted keys, so retain once more for it.
 inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
                                             bool* done, int8_t* out_tag,
                                             int64_t* out_data) {
   auto obj_cell = cls->captures[0];
   auto arr_cell = cls->captures[1];
   auto idx_cell = cls->captures[2];
-  auto snap_cell = cls->captures[3];
   auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
-  if (obj->mut_count != snap_cell->value.data) {
-    culebra_runtime_throw_error(
-        "RuntimeError", "Object changed size during iteration", 0, 0);
-    *done = true;
-    return;
-  }
   auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
-  int64_t idx = idx_cell->value.data;
-  if (static_cast<size_t>(idx) >= arr->size) {
-    *done = true;
+  while (static_cast<size_t>(idx_cell->value.data) < arr->size) {
+    auto key = arr->items[idx_cell->value.data];
+    idx_cell->value.data++;
+    if (!_jit_obj_has_key(obj, key)) continue;  // removed → skip
+    int8_t vt;
+    int64_t vd;
+    culebra_runtime_value_retain(key.tag, key.data);
+    culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0);
+    culebra_runtime_value_retain(key.tag, key.data);
+    auto* pair = culebra_runtime_tuple_new();
+    culebra_runtime_tuple_push(pair, key.tag, key.data);
+    culebra_runtime_tuple_push(pair, vt, vd);
+    *done = false;
+    *out_tag = TAG_TUPLE;
+    *out_data = reinterpret_cast<int64_t>(pair);
     return;
   }
-  auto key = arr->items[idx];
-  idx_cell->value.data = idx + 1;
-  int8_t vt;
-  int64_t vd;
-  culebra_runtime_value_retain(key.tag, key.data);
-  culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0);
-  culebra_runtime_value_retain(key.tag, key.data);
-  auto* pair = culebra_runtime_tuple_new();
-  culebra_runtime_tuple_push(pair, key.tag, key.data);
-  culebra_runtime_tuple_push(pair, vt, vd);
-  *done = false;
-  *out_tag = TAG_TUPLE;
-  *out_data = reinterpret_cast<int64_t>(pair);
+  *done = true;
 }
 
 // Object.iter(): yield `(key, value)` pairs in insertion order (Ruby-style
-// entries view). Structural mutation (add/delete) during iteration raises;
-// value updates on existing keys are allowed and observed.
+// entries view). Iterates a snapshot of the keys taken here; mutating the
+// object in the loop body is safe (adds not visited, removes skipped, value
+// read live).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
     JitObject* obj) {
   auto* keys = culebra_runtime_object_keys(obj);
@@ -6494,42 +6501,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
   auto* arr_cell = culebra_runtime_cell_new(
       TAG_ARRAY, reinterpret_cast<int64_t>(keys));
   auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* snap_cell = culebra_runtime_cell_new(TAG_LONG, obj->mut_count);
   return _iter_wrap_fast<&_iter_from_object_pairs_fast_fn>(
-      {obj_cell, arr_cell, idx_cell, snap_cell});
+      {obj_cell, arr_cell, idx_cell});
 }
 
-// Object.values() fast fn — same captures/guard as the key iterator but
-// yields the live value for each snapshotted key, so a mid-iteration value
-// update is observed (matching interp). `object_get_any` returns a +1
-// value and consumes refcounted keys, so retain the key first to keep the
-// snapshot array's reference intact (no-op for String/Long/... keys).
+// Object.values() fast fn — the value-only view of the pairs iterator.
+// Same snapshot + skip-removed + live-read; yields the value directly.
 inline void _iter_from_object_values_fast_fn(JitClosure* cls, JitValue,
                                              bool* done, int8_t* out_tag,
                                              int64_t* out_data) {
   auto obj_cell = cls->captures[0];
   auto arr_cell = cls->captures[1];
   auto idx_cell = cls->captures[2];
-  auto snap_cell = cls->captures[3];
   auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
-  if (obj->mut_count != snap_cell->value.data) {
-    culebra_runtime_throw_error(
-        "RuntimeError", "Object changed size during iteration", 0, 0);
-    *done = true;
-    return;
-  }
   auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
-  int64_t idx = idx_cell->value.data;
-  if (static_cast<size_t>(idx) >= arr->size) {
-    *done = true;
+  while (static_cast<size_t>(idx_cell->value.data) < arr->size) {
+    auto key = arr->items[idx_cell->value.data];
+    idx_cell->value.data++;
+    if (!_jit_obj_has_key(obj, key)) continue;  // removed → skip
+    culebra_runtime_value_retain(key.tag, key.data);
+    culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data, 0,
+                                   0);
+    *done = false;
     return;
   }
-  auto key = arr->items[idx];
-  idx_cell->value.data = idx + 1;
-  culebra_runtime_value_retain(key.tag, key.data);
-  culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data, 0,
-                                 0);
-  *done = false;
+  *done = true;
 }
 
 // Object.values(): lazy iterator over values in insertion order. Snapshots
@@ -6544,9 +6540,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
   auto* arr_cell = culebra_runtime_cell_new(
       TAG_ARRAY, reinterpret_cast<int64_t>(keys));
   auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* snap_cell = culebra_runtime_cell_new(TAG_LONG, obj->mut_count);
   return _iter_wrap_fast<&_iter_from_object_values_fast_fn>(
-      {obj_cell, arr_cell, idx_cell, snap_cell});
+      {obj_cell, arr_cell, idx_cell});
 }
 
 // Dispatch helper: prefer the user `iter` method when present so an

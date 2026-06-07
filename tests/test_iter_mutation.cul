@@ -1,62 +1,60 @@
 # Conformance: §17 (iterator protocol). See docs/language.md §25.
 #
-# Object iter fail-fast on structural mutation.
-#
-# Matches Python dict semantics: rewriting existing keys mid-iter is
-# allowed (size unchanged), adding or removing keys raises
-# RuntimeError. Object iteration yields (key, value) pairs; covers both
-# the explicit `.iter()` form and the `for k, v in obj` sugar; exercised
-# on both backends.
+# Object iteration is snapshot-tolerant: the keys are snapshotted at loop
+# start, so mutating the object in the loop body is safe — entries ADDED
+# during the loop are not visited, entries REMOVED are skipped, and each
+# value is read live. No structural-mutation guard (unlike Python's
+# fail-fast). Object iteration yields (key, value) pairs; covers the
+# explicit `.iter()` form and the `for k, v in obj` sugar, on both backends.
 
-# 1. Value updates on existing keys are allowed.
-mut a = {mut x: 1, mut y: 2, mut z: 3}
+# 1. Values are read live at each step: updating a not-yet-visited key's
+#    value during the loop is observed when that key's turn comes.
+mut a = {mut x: 1, mut y: 2}
+mut a_vals = []
 for k, v in a.iter() {
-  a[k] = 99
+  if k == "x" { a["y"] = 99 }   # change y's value while visiting x
+  a_vals.push(v)
 }
-assert_eq(a.x, 99)
-assert_eq(a.y, 99)
-assert_eq(a.z, 99)
+assert_eq(a_vals, [1, 99])      # x = 1 (own value), then y read live = 99
 
-# 2. Adding a key mid-iter raises.
+# 2. Adding a key mid-iter does not raise; the new key is not visited.
 mut b = {x: 1}
-mut add_raised = false
-try {
-  for k, v in b.iter() {
-    b["new_key"] = 2
-  }
-} catch e {
-  add_raised = true
-  assert_eq(e.kind, "RuntimeError")
+mut b_seen = []
+for k, v in b.iter() {
+  b["new_key"] = 2
+  b_seen.push(k)
 }
-assert_true(add_raised)
+assert_eq(b_seen, ["x"])          # only the snapshot key
+assert_true(b.has("new_key"))     # but the add did take effect
 
-# 3. Removing a key mid-iter raises.
-mut c = {x: 1, y: 2}
-mut del_raised = false
-try {
-  for k, v in c.iter() {
-    c.remove("y")
-  }
-} catch e {
-  del_raised = true
-  assert_eq(e.kind, "RuntimeError")
+# 3. Removing a not-yet-visited key mid-iter skips it (no raise).
+mut c = {x: 1, y: 2, z: 3}
+mut c_seen = []
+for k, v in c.iter() {
+  if k == "x" { c.remove("z") }
+  c_seen.push(k)
 }
-assert_true(del_raised)
+assert_eq(c_seen, ["x", "y"])     # z removed before its turn → skipped
 
-# 4. The `for k, v in obj` sugar enforces the same protocol.
+# 4. The `for k, v in obj` sugar has the same tolerance (a fresh key per
+#    step so each add creates a new slot).
 mut d = {a: 1, b: 2}
-mut sugar_raised = false
-try {
-  for k, v in d {
-    d["c"] = 3
-  }
-} catch e {
-  sugar_raised = true
-  assert_eq(e.kind, "RuntimeError")
+mut d_seen = []
+for k, v in d {
+  d[k + "2"] = v
+  d_seen.push(k)
 }
-assert_true(sugar_raised)
+assert_eq(d_seen, ["a", "b"])     # a2 / b2 added but not visited
 
-# 5. Mutating a *different* Object mid-iter is fine.
+# 5. The setdefault-style pattern: add derived entries while iterating.
+mut books = {"創": ("創世記", "章"), "詩": ("詩編", "編")}
+for reading, unit in books.values() {
+  if !books.has(reading) { books[reading] = (reading, unit) }
+}
+assert_eq(books.size(), 4)
+assert_true(books.has("創世記") && books.has("詩編"))
+
+# 6. Mutating a *different* Object mid-iter is fine.
 let src = {a: 1, b: 2}
 mut dst = {}
 for k, v in src.iter() {

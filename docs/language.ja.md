@@ -2935,21 +2935,25 @@ for k in {a: 1, b: 2}.keys() { puts(k) }       # 'a' then 'b'
 for v in {a: 1, b: 2}.values() { puts(v) }     # 1 then 2
 ```
 
-**Object iter と構造変更**: 反復中に既存キーの *値* を上書きするのは
-許可されますが、キーの追加・削除は `RuntimeError` を送出します
-（Python `dict` と同じ意味論）。`for k, v in obj` の sugar も同じ
-プロトコルに従います。
+**Object iter と変更**: 反復はループ開始時に取ったキーのスナップショット
+を回すので、ループ本体で対象を変更しても安全（Python `dict` と違い
+fail-fast ガードは無い）。反復中に**追加**したキーは対象に入らず、
+**削除**したキーはスキップ、各値はその時点で**ライブ**に読む。これにより
+「反復しながら派生エントリを追加する」setdefault 的パターンがコピー無しで
+書ける。`for k, v in obj` の sugar も同じプロトコル。
 
 ```culebra
 mut o = {mut x: 1, mut y: 2}
-for k, v in o.iter() { o[k] = 99 }
+for k, v in o.iter() { o[k] = 99 }   # 既存の値を更新
 puts(o.x)            # => 99
 ```
 
 ```culebra
-mut o = {a: 1}
-for k, v in o.iter() { o["b"] = 2 }
-                     # !! Object changed size during iteration
+mut books = {a: ('alpha', 1)}
+for reading, n in books.values() {   # 反復しながら別名を追加
+  if !books.has(reading) { books[reading] = (reading, n) }
+}
+puts(books.has('alpha'))   # => true
 ```
 
 **イテレータメソッド**: イテレータ・インターフェイスを満たす Object
