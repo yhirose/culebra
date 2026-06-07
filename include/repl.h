@@ -90,9 +90,7 @@ inline std::string repl_history_path() {
 // loop, so JIT-compiling each input only adds latency for no gain — the same
 // reason V8 / the JVM / LuaJIT start interpreted and only JIT hot code. `--jit`
 // is for scripts (`culebra --jit FILE`); the CLI routes the REPL here regardless
-// (see main.cc). The per-input JIT REPL path (JIT::run_repl) is consequently
-// dead; remove it in a dedicated cleanup (it is woven through the JIT codegen's
-// is_repl_session_ paths).
+// (see main.cc). There is no JIT REPL path — the JIT compiles whole scripts.
 inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   using namespace std;
 
@@ -155,9 +153,8 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   // Memory is O(session length). Typical interactive sessions
   // (hundreds of inputs) sit in the tens-of-KB range, which we
   // accept. A very long-running REPL (>>10K accepted inputs) would
-  // accumulate noticeably; an LRU-style eviction parallel to the
-  // JIT's per-input ResourceTracker (see `JIT::run_repl`) is the
-  // natural future cleanup.
+  // accumulate noticeably; an LRU-style eviction is the natural
+  // future cleanup.
   std::vector<std::string> retained_sources_;
 
   for (;;) {
