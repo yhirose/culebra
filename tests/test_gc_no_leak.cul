@@ -74,4 +74,21 @@ assert_lt(measure_delta(fn () {
   0
 }), TOL)
 
+// A nested `fn name` that captures an enclosing local forms a dispatcher↔env
+// cycle (the body lives in the dispatcher's multimethod table, not the env
+// binding). Plain refcounting can't break it; the interp cycle collector must
+// subtract the dispatcher→body→def_env edge or every call leaks the body plus
+// its captured locals (~2 objects/call). Re-run the decl many times per work()
+// so the delta dwarfs TOL if the edge is ever missed again.
+assert_lt(measure_delta(fn () {
+  fn outer() {
+    let b = Box.new(1)
+    fn inner() { b.data }   // nested multimethod decl capturing `b`
+    inner()
+  }
+  mut k = 0
+  while k < 100 { outer(); k = k + 1 }
+  0
+}), TOL)
+
 puts("gc no-leak tests passed")

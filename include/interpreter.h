@@ -525,6 +525,10 @@ struct FunctionValue {
   // looks externally rooted and never gets reclaimed. Stdlib/C++ functions
   // leave this false (their `eval` captures no Environment; def_env is null).
   bool eval_captures_def_env = false;
+  // Exact gc_refs multiplicity of this fn's `def_env` edge: 2 when `eval`
+  // also captures it (two shared_ptr refs), else 1. Single source for the
+  // cycle collector — under-count leaks, over-count is a use-after-free.
+  long def_env_multiplicity() const { return eval_captures_def_env ? 2L : 1L; }
   // Declared name for introspection (`fn.name`). Empty for anonymous
   // expressions (lambdas, `fn (x) { ... }`). Set by the caller after
   // construction so stdlib FunctionValues stay one-liners. Owned
@@ -555,6 +559,15 @@ struct FunctionValue {
   // over the shared (live) method table so later overloads are reflected.
   // Empty for non-dispatchers. See [[project_jit_error_symmetry]].
   std::function<bool(long expected)> multimethod_accepts_arity;
+  // Cycle-collector hook: enumerates each overload body's captured def_env
+  // with the body's own multiplicity (2 when the body's `eval` also captures
+  // it). A nested `fn name` closes over its activation env, but the body
+  // lives in `multimethod_table` (not the env binding), so InterpGC can't
+  // reach that edge by walking values — without it the dispatcher↔env cycle
+  // leaks (a fresh body + captured locals per call). Baked in
+  // eval_multifn_decl where MultiMethod is visible; empty for non-dispatchers.
+  std::function<void(const std::function<void(Environment*, long)>&)>
+      multimethod_for_each_body_env;
   // True for the wrapper produced by _wrap_method_with_this around a
   // built-in method (Array/String/Set/...). Built-in methods parse their
   // args positionally and never accept kwargs; the call site uses this to
@@ -5569,6 +5582,18 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     dispatcher.get<FunctionValue>().introspection_target = first_method_snapshot;
     dispatcher.get<FunctionValue>().multimethod_table =
         std::static_pointer_cast<void>(methods);
+    // Expose each overload body's def_env edge to the cycle collector
+    // (see FunctionValue::multimethod_for_each_body_env). Closes over the
+    // shared table so overloads appended after this decl are reflected.
+    dispatcher.get<FunctionValue>().multimethod_for_each_body_env =
+        [methods](const std::function<void(Environment*, long)>& emit) {
+          for (auto& m : *methods) {
+            if (m.body.type != Value::Function) continue;
+            auto& bfv = m.body.get<FunctionValue>();
+            if (bfv.def_env)
+              emit(bfv.def_env.get(), bfv.def_env_multiplicity());
+          }
+        };
     // Callback-arity gate: accept if any overload takes `expected` positional
     // args. Closes over the shared `methods` table so overloads appended after
     // this decl are reflected without rebuilding the predicate.
@@ -8246,8 +8271,19 @@ inline void InterpGC::collect() {
   // walk and bounds recursion through untracked-container cycles. Missing an
   // edge only under-counts gc_refs (a bounded leak); only OVER-counting could
   // free a live node, which is why the Function multiplicity must be exact.
+  //
+  // A multimethod dispatcher's overload bodies (and its introspection
+  // snapshot) close over the same activation env but live in
+  // `multimethod_table`, not the env binding, so plain value-walking misses
+  // that edge. We subtract it via the baked enumerator — but a dispatcher
+  // Value can be aliased into several bindings while its bodies hold the env
+  // only ONCE, so the subtract pass must process each shared table just once
+  // (`mm_dedup`). The mark pass leaves `mm_dedup` null and always traverses,
+  // so a live dispatcher keeps its bodies' env reachable.
+  std::unordered_set<void*> mm_seen;
+  std::unordered_set<void*>* mm_dedup = nullptr;
   auto walk_node = [&](void* ptr, bool is_env, auto&& emit) {
-    auto walk_value = [&emit](const Value& val, bool descend, auto&& wv) -> void {
+    auto walk_value = [&](const Value& val, bool descend, auto&& wv) -> void {
       switch (val.type) {
         case Value::Array:
           emit(val.template get<ArrayValue>().values.get(), 1L);
@@ -8255,7 +8291,17 @@ inline void InterpGC::collect() {
         case Value::Function: {
           auto& fv = val.template get<FunctionValue>();
           if (fv.def_env)
-            emit(fv.def_env.get(), fv.eval_captures_def_env ? 2L : 1L);
+            emit(fv.def_env.get(), fv.def_env_multiplicity());
+          // Dispatcher overload bodies + introspection snapshot (see above).
+          if (fv.multimethod_table &&
+              (!mm_dedup || mm_dedup->insert(fv.multimethod_table.get()).second)) {
+            if (fv.multimethod_for_each_body_env)
+              fv.multimethod_for_each_body_env(
+                  [&emit](Environment* e, long mult) { emit(e, mult); });
+            if (fv.introspection_target && fv.introspection_target->def_env)
+              emit(fv.introspection_target->def_env.get(),
+                   fv.introspection_target->def_env_multiplicity());
+          }
           break;
         }
         case Value::Object:
@@ -8287,13 +8333,16 @@ inline void InterpGC::collect() {
     }
   };
 
-  // Subtract internal references.
+  // Subtract internal references. Dedup shared multimethod tables so each
+  // dispatcher's body→env edges are subtracted exactly once.
+  mm_dedup = &mm_seen;
   for (auto& l : live) {
     walk_node(l.ptr, l.is_env, [&](void* p, long mult) {
       auto it = gc_refs.find(p);
       if (it != gc_refs.end()) it->second.refs -= mult;
     });
   }
+  mm_dedup = nullptr;  // mark pass always traverses (idempotent)
 
   // Mark external roots and BFS-propagate reachability.
   std::unordered_set<void*> reachable;
