@@ -3993,10 +3993,14 @@ embedding Culebra should be aware:
   thread-local `JitReplGlobals` dict accessed via
   `culebra_runtime_repl_{get,set}`. User code observes the same
   binding behavior across statements.
-* **Thread safety.** Neither backend is thread-safe: `_GcTracker`,
-  `InterpGC`, `ShapeRegistry`, and the deferred-stack state are
-  process-wide. Embedders that share a Culebra runtime across
-  threads must serialize calls themselves.
+* **Thread safety.** Most runtime state — the interpreter and JIT
+  garbage collectors, the defer stack, REPL globals, the interrupt
+  flag — lives in a `thread_local` `Runtime`, so concurrent isolates
+  on separate threads do not share it. The two process-global intern
+  tables, the `ShapeRegistry` and the trait registry, are
+  mutex-guarded. Execution within a single `Runtime` is
+  single-threaded: an embedder that drives one `Runtime` from
+  multiple threads must serialize the calls itself.
 
 ### Top-level drop note (§16)
 

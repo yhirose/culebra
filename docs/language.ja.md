@@ -3756,10 +3756,13 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
   トップレベル `Environment` スコープに保持。JIT は thread_local
   `JitReplGlobals` 辞書を経由（`culebra_runtime_repl_{get,set}`）。
   ユーザコードから観測される束縛挙動は statement 間で同一。
-* **スレッド安全性.** どちらの backend もスレッドセーフではない:
-  `_GcTracker` / `InterpGC` / `ShapeRegistry` / defer stack 状態は
-  プロセス共有。Culebra runtime をスレッド間で共有する組み込み側は
-  自前でシリアライズする必要があります。
+* **スレッド安全性.** ほとんどのランタイム状態（インタプリタ/JIT の
+  GC、defer stack、REPL globals、interrupt flag）は `thread_local` な
+  `Runtime` に置かれ、別スレッドで動く並行 isolate 間で共有されません。
+  プロセス共有の 2 つの intern テーブル（`ShapeRegistry` と trait
+  registry）は mutex でガードされています。単一 `Runtime` 内の実行は
+  シングルスレッドなので、1 つの `Runtime` を複数スレッドから駆動する
+  組み込み側は自前で呼び出しをシリアライズする必要があります。
 
 ### トップレベル drop に関する注意 (§16)
 
