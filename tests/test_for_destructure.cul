@@ -15,12 +15,20 @@ for (a, b) in [(2, 3), (4, 5)] {
 }
 assert_eq(prod, 2 * 3 * 4 * 5)
 
-// Object pattern over `enumerate()` (yields `{index, value}`).
+// Bare-comma target + tuple yield from `enumerate()` (`(index, value)`),
+// called directly on the Array.
 mut pairs = []
-for {index, value} in ["a", "b", "c"].iter().enumerate() {
-  pairs.push((index, value))
+for i, v in ["a", "b", "c"].enumerate() {
+  pairs.push((i, v))
 }
 assert_eq(pairs, [(0, "a"), (1, "b"), (2, "c")])
+
+// Same via the explicit iterator, with a parenthesized tuple pattern.
+mut pairs2 = []
+for (i, v) in ["a", "b", "c"].iter().enumerate() {
+  pairs2.push((i, v))
+}
+assert_eq(pairs2, [(0, "a"), (1, "b"), (2, "c")])
 
 // Nested pattern.
 mut firsts = []

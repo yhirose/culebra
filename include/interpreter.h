@@ -2142,6 +2142,15 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
   });
 }
 
+// `(index, value)` tuple yielded by enumerate (on arrays and iterators).
+inline Value _index_value_pair(long index, Value v) {
+  std::vector<Value> pair;
+  pair.reserve(2);
+  pair.push_back(Value(index));
+  pair.push_back(std::move(v));
+  return Value(TupleValue(std::move(pair)));
+}
+
 // Single driver for Object iteration: for-in / .iter() (Pairs), .values()
 // (Values), and the legacy key walk (Keys). Keys are snapshotted up front
 // so `next` stays O(1); the value (and thus each pair) is read live at
@@ -3120,6 +3129,22 @@ inline std::unordered_map<std::string_view, Value>& ArrayValue::builtins() {
          auto& vs = *val.to_array().values;
          std::reverse(vs.begin(), vs.end());
          return Value();
+       }))},
+      // Lazy iterator of `(index, value)` tuples — no intermediate Array
+      // (unlike the eager map/filter), so `for i, v in arr.enumerate()`
+      // streams. Snapshots the backing vector by shared_ptr.
+      {"enumerate"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         auto vec = callEnv->get("this").to_array().values;
+         auto index = std::make_shared<long>(0);
+         return _make_iterator([vec, index](std::shared_ptr<Environment>) {
+           if (static_cast<size_t>(*index) >= vec->size()) {
+             return _iter_step_done();
+           }
+           auto pair = _index_value_pair(*index, (*vec)[*index]);
+           (*index)++;
+           return _iter_step_value(std::move(pair));
+         });
        }))},
       {"map"sv,
        Value(FunctionValue({{"f", false, "Function"sv}},
@@ -4217,11 +4242,9 @@ inline std::unordered_map<std::string_view, Value>& iterator_builtins() {
              [upstream, index](std::shared_ptr<Environment>) {
                auto v = _iter_next_value(upstream);
                if (!v) return _iter_step_done();
-               ObjectValue pair;
-               pair.initialize("index", Value(*index), false);
-               pair.initialize("value", std::move(*v), false);
+               auto pair = _index_value_pair(*index, std::move(*v));
                (*index)++;
-               return _iter_step_value(Value(std::move(pair)));
+               return _iter_step_value(std::move(pair));
              });
        }))},
 

@@ -6156,13 +6156,14 @@ inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
     *done = true;
     return;
   }
-  auto* pair = culebra_runtime_object_new();
-  culebra_runtime_object_set(pair, "index", false, TAG_LONG,
-                             idx_cell->value.data, 0, 0);
-  culebra_runtime_object_set(pair, "value", false, tag, data, 0, 0);
+  // Yield `(index, value)` as a Tuple. tuple_push takes ownership of the
+  // value's +1 (same as object_set did before), so no extra retain.
+  auto* pair = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(pair, TAG_LONG, idx_cell->value.data);
+  culebra_runtime_tuple_push(pair, tag, data);
   idx_cell->value.data++;
   *done = false;
-  *out_tag = TAG_OBJECT;
+  *out_tag = TAG_TUPLE;
   *out_data = reinterpret_cast<int64_t>(pair);
 }
 
@@ -6428,6 +6429,28 @@ inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_iter(
     JitArray* arr) {
   return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
+}
+
+// `recv.enumerate()`: lazy `(index, value)` iterator over any iterable.
+// An Array is turned into an iterator first (so `arr.enumerate()` streams
+// without the eager map/filter Array path); an existing iterator object is
+// enumerated as-is. Mirrors interp (Array method + iterator combinator).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_enumerate_any(
+    int8_t tag, int64_t data) {
+  if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
+    auto* it = culebra_runtime_array_iter(reinterpret_cast<JitArray*>(data));
+    auto* r = culebra_runtime_iter_enumerate(
+        TAG_OBJECT, reinterpret_cast<int64_t>(it));
+    // iter_enumerate took its own +1; drop the temporary iterator's.
+    culebra_runtime_value_release(TAG_OBJECT, reinterpret_cast<int64_t>(it));
+    return r;
+  }
+  if (tag != TAG_OBJECT) {
+    culebra_runtime_throw_error(
+        "TypeError", "type error: expected Object", 0, 0);
+    return nullptr;
+  }
+  return culebra_runtime_iter_enumerate(tag, data);
 }
 
 // Object.iter() fast fn. Captures: [obj_cell, keys_array_cell, idx_cell,
@@ -7845,6 +7868,7 @@ inline constexpr auto iter_take_while      = "culebra_runtime_iter_take_while";
 inline constexpr auto iter_chain           = "culebra_runtime_iter_chain";
 inline constexpr auto iter_zip             = "culebra_runtime_iter_zip";
 inline constexpr auto iter_enumerate       = "culebra_runtime_iter_enumerate";
+inline constexpr auto enumerate_any        = "culebra_runtime_enumerate_any";
 inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";
@@ -19908,11 +19932,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
 
   if (method == "enumerate" && argsAst.nodes.size() == 0) {
-    expect_receiver_tag(receiver, TAG_OBJECT, "enumerate");
+    // Accepts an Array (streamed) or an iterator object; enumerate_any
+    // normalizes to an iterator and yields `(index, value)` tuples.
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
-    auto out =
-        emit_call(module_->getFunction(rt::iter_enumerate), {t, d});
+    auto out = emit_call(
+        module_->getOrInsertFunction(rt::enumerate_any, ptrTy,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty()),
+        {t, d});
     return make_object(out);
   }
 

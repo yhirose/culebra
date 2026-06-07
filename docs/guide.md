@@ -391,8 +391,8 @@ puts([10, 20, 30].iter().find(|x| x > 15))    # => 20
 ### 5.3 `enumerate`, `zip`, `flat_map`, `skip`, `take_while`
 
 ```culebra
-for p in ['fizz', 'buzz', 'bang'].iter().enumerate() {
-  puts("{p.index}: {p.value}")
+for i, v in ['fizz', 'buzz', 'bang'].enumerate() {
+  puts("{i}: {v}")
 }
 # => |
 # '0: fizz'
