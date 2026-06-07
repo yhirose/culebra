@@ -368,22 +368,28 @@ const auto grammar_ = R"(
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 
-  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is always
-  # RAW — no escape decoding, no `{...}` interpolation — regardless of which
-  # quote delimits it, so regex metacharacters, `\d`/`\w`, and `{n}`
-  # quantifiers all pass through verbatim (the `re` prefix overrides the
-  # usual interpolation of `"..."`). The closing quote is the only delimiter;
-  # `{}` cannot be a `{expr}` interpolation here because it collides with
-  # quantifiers (build dynamic patterns with `Regex.compile(...)` instead).
-  # Optional trailing flag letters (i/m/s) follow the closing quote. After
-  # parsing, a REGEX_LIT is desugared to `Regex.compile(<body>, <flags>)`
-  # so both backends reuse the existing Regex machinery (see desugar in
-  # parser.h). `re` not followed by a quote falls through to IDENTIFIER, so
-  # `re` stays usable as an ordinary name.
+  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is RAW — no
+  # escape decoding — regardless of which quote delimits it, so regex
+  # metacharacters, `\d`/`\w`, and `{n}` quantifiers all pass through verbatim
+  # (the `re` prefix overrides the usual escape handling of `"..."`). The one
+  # exception is `${expr}` interpolation: it uses `$`, not the bare `{` of
+  # `"..."`, precisely because `{n}` is a quantifier here — `${...}` cannot
+  # collide with one (a `$` anchor is never quantified in practice). A literal
+  # `$` before a `{` is written `\$` (the regex escape for a literal dollar),
+  # which also suppresses interpolation. After parsing, a REGEX_LIT is
+  # desugared to `Regex.compile(<pattern>, <flags>)`, where `<pattern>` is a
+  # raw STRING when there is no interpolation, or a `+`-concatenation of raw
+  # STRINGs and `Regex.interp(expr)` calls when there is — so both backends
+  # reuse the existing Regex machinery (see desugar in parser.h). `re` not
+  # followed by a quote falls through to IDENTIFIER, so `re` stays a name.
   REGEX_LIT                <-  're' REGEX_BODY REGEX_FLAGS
-  REGEX_BODY               <-  ['] < (!['] .)* > [']
-                            /  '"' < (!'"' .)* > '"'
-                            /  '`' < (!'`' .)* > '`'
+  REGEX_BODY               <-  ['] (REGEX_INTERP / REGEX_CONTENT_SQ)* [']
+                            /  '"' (REGEX_INTERP / REGEX_CONTENT_DQ)* '"'
+                            /  '`' (REGEX_INTERP / REGEX_CONTENT_BT)* '`'
+  REGEX_INTERP             <-  '${' _ EXPRESSION _ '}'
+  REGEX_CONTENT_SQ         <-  < ('\\$' / !['] !'${' .)+ >                { ast_name: REGEX_CONTENT }
+  REGEX_CONTENT_DQ         <-  < ('\\$' / !'"' !'${' .)+ >                { ast_name: REGEX_CONTENT }
+  REGEX_CONTENT_BT         <-  < ('\\$' / !'`' !'${' .)+ >                { ast_name: REGEX_CONTENT }
   REGEX_FLAGS              <-  < [ims]* >
 
   ~class                   <-  K('class')
@@ -1099,17 +1105,30 @@ inline std::pair<size_t, size_t> call_callee_position(const peg::Ast& call) {
 // modules' string_views aliasing the source stay valid.
 inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble();
 
+inline std::shared_ptr<peg::Ast> desugar_regex_literals(
+    std::shared_ptr<peg::Ast> node);
+
 // A `re'...'` / `re"..."` / `` re`...` `` literal is desugared, after AST
-// optimization, into an ordinary `Regex.compile(<body>, <flags>)` call so both
-// backends reuse the existing Regex machinery (no new eval/codegen paths). The
-// REGEX_LIT node carries two token children: the raw body (a view into the
-// source, like any STRING) and the flag letters ("" when absent).
+// optimization, into an ordinary `Regex.compile(<pattern>, <flags>)` call so
+// both backends reuse the existing Regex machinery (no new eval/codegen paths).
+// The REGEX_LIT node carries two children: a REGEX_BODY (a sequence of raw
+// REGEX_CONTENT tokens and `${expr}` REGEX_INTERP nodes) and a REGEX_FLAGS
+// token ("" when absent).
+//
+// `<pattern>` is built from the body parts:
+//   * no interpolation  -> a single raw STRING (byte-identical to the original,
+//                          interpolation-free desugar).
+//   * with interpolation -> a `+`-concatenation whose operands are raw STRINGs
+//                          (literal runs) and `Regex.interp(expr)` calls (one
+//                          per `${expr}`). `Regex.interp` escapes a String so
+//                          it matches literally and splices a compiled Regex as
+//                          a non-capturing group — injection-safe by default.
 inline std::shared_ptr<peg::Ast> make_regex_compile_call(const peg::Ast& lit) {
   using Node = peg::Ast;
   const char* path = lit.path.c_str();
   size_t ln = lit.line, col = lit.column;
-  const auto& body = *lit.nodes[0];
-  const auto& flags = *lit.nodes[1];
+  const auto& body = *lit.nodes[0];   // REGEX_BODY
+  const auto& flags = *lit.nodes[1];  // REGEX_FLAGS
 
   // Both backends resolve a `Ns.method(args)` call by the *original_tag* of
   // each child (PRIMARY callee / DOT method / ARGUMENTS list / ARG_ITEM args),
@@ -1130,10 +1149,68 @@ inline std::shared_ptr<peg::Ast> make_regex_compile_call(const peg::Ast& lit) {
                  std::vector<std::shared_ptr<Node>> kids) {
     return std::make_shared<Node>(Node(path, ln, col, name, kids), orig);
   };
+  // Relabel an existing node's `original_tag` (here, to ARG_ITEM) while keeping
+  // its tag and children, matching the shape the optimizer emits for a
+  // hand-written call argument.
+  auto as_arg = [&](const std::shared_ptr<Node>& n) {
+    return std::make_shared<Node>(Node(*n, "ARG_ITEM"));
+  };
+
+  // `Regex.interp(<expr>)` — wraps an interpolated expression. Nested regex
+  // literals inside `${...}` are desugared first (the outer walk does not
+  // recurse into a call it just synthesized).
+  auto make_interp_call = [&](const peg::Ast& interp) {
+    std::shared_ptr<Node> expr = desugar_regex_literals(interp.nodes[0]);
+    std::vector<std::shared_ptr<Node>> a;
+    a.push_back(as_arg(expr));
+    std::vector<std::shared_ptr<Node>> c;
+    c.push_back(
+        tok("IDENTIFIER", "PRIMARY", std::string_view("Regex"), ln, col));
+    c.push_back(tok("IDENTIFIER", "DOT", std::string_view("interp"), ln, col));
+    c.push_back(grp("ARG_LIST", "ARGUMENTS", std::move(a)));
+    return grp("CALL", "CALL", std::move(c));
+  };
+
+  using namespace peg::udl;
+
+  // Build the pattern operands in source order: a raw STRING per REGEX_CONTENT
+  // run, a `Regex.interp(expr)` call per REGEX_INTERP.
+  std::vector<std::shared_ptr<Node>> operands;
+  bool has_interp = false;
+  for (const auto& part : body.nodes) {
+    if (part->tag == "REGEX_INTERP"_) {
+      has_interp = true;
+      operands.push_back(make_interp_call(*part));
+    } else {  // REGEX_CONTENT
+      operands.push_back(
+          tok("STRING", "STRING", part->token, part->line, part->column));
+    }
+  }
+
+  std::shared_ptr<Node> pattern;
+  if (!has_interp) {
+    // Single raw STRING (empty body -> ""). Identical to the original desugar.
+    std::string_view text = operands.empty() ? std::string_view("")
+                                             : operands.front()->token;
+    pattern = tok("STRING", "ARG_ITEM", text, body.line, body.column);
+  } else if (operands.size() == 1) {
+    pattern = as_arg(operands.front());  // lone `${expr}` -> just the call
+  } else {
+    // Interleave operands with `+` into a left-associative ADDITIVE chain:
+    // [op0, '+', op1, '+', op2, ...]. eval_bin_expression / compile_additive
+    // both read children as (operand, operator, operand, ...).
+    std::vector<std::shared_ptr<Node>> chain;
+    chain.push_back(operands.front());
+    for (size_t i = 1; i < operands.size(); ++i) {
+      chain.push_back(tok("ADDITIVE_OPERATOR", "ADDITIVE_OPERATOR",
+                          std::string_view("+"), ln, col));
+      chain.push_back(operands[i]);
+    }
+    pattern = grp("ADDITIVE", "ARG_ITEM", std::move(chain));
+  }
 
   std::vector<std::shared_ptr<Node>> args;
-  args.push_back(
-      tok("STRING", "ARG_ITEM", body.token, body.line, body.column));
+  args.push_back(std::move(pattern));
   if (!flags.token.empty()) {
     args.push_back(
         tok("STRING", "ARG_ITEM", flags.token, flags.line, flags.column));
@@ -1190,7 +1267,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "CTOR_PATTERN",
                "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
-               "TRIPLE_STRING", "REGEX_LIT", "SPREAD_ELEM",
+               "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
+               "SPREAD_ELEM",
                "IMPORT_STMT", "EXPORT_STMT"});
 
     return desugar_regex_literals(opt.optimize(ast));

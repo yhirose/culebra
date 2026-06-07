@@ -407,4 +407,28 @@ for s in sorts {
   case("sortrev|" + s, s)
 }
 
+# --- Dimension 22: regex literal `${expr}` interpolation ------------------
+# Desugars to a `+`-concatenation of raw STRINGs and `Regex.interp(expr)`
+# calls feeding `Regex.compile`; `Regex.interp` (shared stdlib helper) must
+# escape Strings / splice Regexes identically on both backends. Bodies are
+# single-quote raw, so the inner regex literals use the `re"..."` form and
+# keep `\d` / `\$` verbatim.
+let interps = [
+  'let x = "a.b"; re"^${x}$".test("a.b")',
+  'let x = "a.b"; re"^${x}$".test("axb")',
+  'let n = 42; re"v${n}".test("v42")',
+  'let d = re"\d+"; re"id=${d};".test("id=123;")',
+  'let d = re"\d+"; re"id=${d};".test("id=;")',
+  're"a{2,3}".test("aaa")',
+  're"\${2}".test("$$")',
+  'let a = "foo"; let b = "bar"; re"${a}-${b}".test("foo-bar")',
+  're"a${re"\d"}b".test("a5b")',
+  'let num = re"[0-9]+"; re"(${num})".find("x42y")[1]',
+  'let nm = "abc"; re"${nm}"i.test("ABC")',
+  're"".test("")',
+  'let p = "c.t"; Regex.interp(p)']
+for r in interps {
+  case("regex_interp|" + r, r)
+}
+
 print(out.join("\n"))

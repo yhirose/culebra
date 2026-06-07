@@ -352,22 +352,28 @@
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
 
-  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is always
-  # RAW — no escape decoding, no `{...}` interpolation — regardless of which
-  # quote delimits it, so regex metacharacters, `\d`/`\w`, and `{n}`
-  # quantifiers all pass through verbatim (the `re` prefix overrides the
-  # usual interpolation of `"..."`). The closing quote is the only delimiter;
-  # `{}` cannot be a `{expr}` interpolation here because it collides with
-  # quantifiers (build dynamic patterns with `Regex.compile(...)` instead).
-  # Optional trailing flag letters (i/m/s) follow the closing quote. After
-  # parsing, a REGEX_LIT is desugared to `Regex.compile(<body>, <flags>)`
-  # so both backends reuse the existing Regex machinery (see desugar in
-  # parser.h). `re` not followed by a quote falls through to IDENTIFIER, so
-  # `re` stays usable as an ordinary name.
+  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is RAW — no
+  # escape decoding — regardless of which quote delimits it, so regex
+  # metacharacters, `\d`/`\w`, and `{n}` quantifiers all pass through verbatim
+  # (the `re` prefix overrides the usual escape handling of `"..."`). The one
+  # exception is `${expr}` interpolation: it uses `$`, not the bare `{` of
+  # `"..."`, precisely because `{n}` is a quantifier here — `${...}` cannot
+  # collide with one (a `$` anchor is never quantified in practice). A literal
+  # `$` before a `{` is written `\$` (the regex escape for a literal dollar),
+  # which also suppresses interpolation. After parsing, a REGEX_LIT is
+  # desugared to `Regex.compile(<pattern>, <flags>)`, where `<pattern>` is a
+  # raw STRING when there is no interpolation, or a `+`-concatenation of raw
+  # STRINGs and `Regex.interp(expr)` calls when there is — so both backends
+  # reuse the existing Regex machinery (see desugar in parser.h). `re` not
+  # followed by a quote falls through to IDENTIFIER, so `re` stays a name.
   REGEX_LIT                <-  're' REGEX_BODY REGEX_FLAGS
-  REGEX_BODY               <-  ['] < (!['] .)* > [']
-                            /  '"' < (!'"' .)* > '"'
-                            /  '`' < (!'`' .)* > '`'
+  REGEX_BODY               <-  ['] (REGEX_INTERP / REGEX_CONTENT_SQ)* [']
+                            /  '"' (REGEX_INTERP / REGEX_CONTENT_DQ)* '"'
+                            /  '`' (REGEX_INTERP / REGEX_CONTENT_BT)* '`'
+  REGEX_INTERP             <-  '${' _ EXPRESSION _ '}'
+  REGEX_CONTENT_SQ         <-  < ('\\$' / !['] !'${' .)+ >                { ast_name: REGEX_CONTENT }
+  REGEX_CONTENT_DQ         <-  < ('\\$' / !'"' !'${' .)+ >                { ast_name: REGEX_CONTENT }
+  REGEX_CONTENT_BT         <-  < ('\\$' / !'`' !'${' .)+ >                { ast_name: REGEX_CONTENT }
   REGEX_FLAGS              <-  < [ims]* >
 
   ~class                   <-  K('class')

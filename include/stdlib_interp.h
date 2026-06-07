@@ -4331,6 +4331,23 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "yield r.m; "
     "pos = r.nxt "
     "} }; "
+    // escape(s): backslash-quote every regex metacharacter so `s` matches
+    // literally. The metachar set is a backtick raw string (holds { } \\).
+    // Top-level so both the `escape` namespace form and `_regex_interp` reuse
+    // it (inside the module the name `Regex` is the class, not the namespace,
+    // so they cannot call `Regex.escape`).
+    "fn _regex_escape(s) { "
+    "let metas = `\\.^$|?*+()[]{}`; let mut out = \"\"; "
+    "for c in s { if metas.contains(c) { out = out + `\\` + c } else { out = out + c } }; "
+    "out }; "
+    // _regex_interp(x): splice an interpolated value into a `re\"...${x}...\"`
+    // literal. A compiled Regex is spliced as a non-capturing group `(?:src)`
+    // so its quantifiers/alternation compose (note: the engine applies any
+    // inline flags it carries globally); every other value is stringified and
+    // escaped so it matches literally — injection-safe by default.
+    "fn _regex_interp(x) { "
+    "if type_of(x) == \"Object\" && x.has(\"class\") && x[\"class\"] == \"Regex\" "
+    "{ \"(?:\" + x._pat + \")\" } else { _regex_escape(\"{x}\") } }; "
     "let _regex_module = fn () { "
     "class Regex { "
     "new(pattern) { this._pat = pattern; _Regex.check(pattern) } "
@@ -4353,12 +4370,10 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "}; "
     "{ compile: fn(pattern, flags = \"\") { "
     "Regex.new(if flags == \"\" { pattern } else { \"(?\" + flags + \")\" + pattern }) }, "
-    // escape(s): backslash-quote every regex metacharacter so `s` matches
-    // literally. The metachar set is a backtick raw string (holds { } \\).
-    "escape: fn(s) { "
-    "let metas = `\\.^$|?*+()[]{}`; let mut out = \"\"; "
-    "for c in s { if metas.contains(c) { out = out + `\\` + c } else { out = out + c } }; "
-    "out }, "
+    // escape / interp delegate to the top-level helpers (see above) so the
+    // `re\"...\"` desugar can call `Regex.interp` and reuse the same escaping.
+    "escape: _regex_escape, "
+    "interp: _regex_interp, "
     // One-shot namespace forms — `Regex.find(pat, s)` hides the `compile`
     // step for single uses (Python `re.search`/`sub`/...). Reuse for a
     // pattern still wants `Regex.compile(pat)`; the underlying engine caches

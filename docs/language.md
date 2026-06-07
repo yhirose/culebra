@@ -704,6 +704,7 @@ the cleanest form for regex patterns that mix apostrophes and braces
     re"\d{4}-\d{2}"     # `re` makes the body raw, so {4} is a quantifier
     re`["']\w+`         # backtick body: holds both ' and "
     re"hello"i          # trailing flags (i / m / s)
+    re"^${word}$"       # ${expr} interpolation (escaped / spliced, see below)
 
 A `re'...'` / `re"..."` / `` re`...` `` literal evaluates to a compiled
 [`Regex`](stdlib.md#14-regex) value — it is exactly `Regex.compile(<body>,
@@ -713,13 +714,34 @@ A `re'...'` / `re"..."` / `` re`...` `` literal evaluates to a compiled
     re"hello"i.test("HELLO")              # => true
 
 The body is **raw regardless of the quote** — the `re` prefix turns off
-escape decoding *and* `{...}` interpolation, so `\d`, `\w`, and `{n}`
-quantifiers pass through verbatim and the closing quote is the only
-delimiter. This is why `"..."` works here even though it interpolates
-elsewhere: a regex `{4}` quantifier would otherwise collide with a
-`{expr}` interpolation. For a **dynamic** pattern, build a string and pass
-it to `Regex.compile(...)` (there is no interpolation inside a literal —
-this also avoids regex injection):
+escape decoding, so `\d`, `\w`, and `{n}` quantifiers pass through verbatim
+and the closing quote is the only delimiter.
+
+The one structured form is **`${expr}` interpolation**. It uses `$`, not
+the bare `{` of a normal `"..."`, precisely so it cannot collide with a
+`{n}` quantifier (a `$` anchor is never quantified in practice):
+
+    let word = "a.b"
+    re"^${word}$".test("a.b")             # => true
+    re"^${word}$".test("axb")             # => false — the `.` is escaped
+
+Interpolation is **type-driven and injection-safe by default**:
+
+  - a **String** (or any non-Regex value, stringified) is *escaped*, so it
+    matches **literally** — metacharacters in the value lose their meaning;
+  - a compiled **`Regex`** is spliced as a non-capturing group `(?:src)`,
+    so its quantifiers and alternation **compose** into the pattern (the
+    engine applies any inline flags it carries to the whole match).
+
+```
+let digits = re"\d+"
+re"id=${digits};".test("id=123;")         # => true — composed
+```
+
+To write a literal `$` immediately before a `{`, use `\$` (the regex
+escape for a literal dollar), which also suppresses interpolation:
+`re"\${2}"` matches two dollar signs. Still build a **fully dynamic**
+pattern with `Regex.compile(...)`:
 
     let n = 4
     Regex.compile('\d{' + n.to_s() + '}')

@@ -1,9 +1,10 @@
 // Conformance: `re"..."` regex literals. A literal desugars (after parsing)
-// to `Regex.compile(<body>, <flags>)`, so it is a compiled Regex value and
+// to `Regex.compile(<pattern>, <flags>)`, so it is a compiled Regex value and
 // reuses the whole Regex object API. The body is RAW across all three quote
-// flavors — no escape decoding, no `{...}` interpolation — so `\d`, `\w` and
-// `{n}` quantifiers pass through verbatim. The closing quote is the only
-// delimiter; optional trailing flag letters (i/m/s) follow it.
+// flavors — no escape decoding — so `\d`, `\w` and `{n}` quantifiers pass
+// through verbatim. The one structured form is `${expr}` interpolation (uses
+// `$`, not bare `{`, so it can't collide with a `{n}` quantifier). The closing
+// quote is the only delimiter; optional trailing flag letters (i/m/s) follow.
 
 // --- single-quote body ---
 assert_true(re'\d+'.test("abc 123"))
@@ -45,3 +46,51 @@ let re = 5
 assert_eq(re, 5)
 let result = 7
 assert_eq(result, 7)
+
+// === ${expr} interpolation ===
+
+// String values are escaped so they match LITERALLY — regex metacharacters in
+// the value lose their special meaning (injection-safe by default).
+let word = "a.b"
+assert_true(re"^${word}$".test("a.b"))
+assert_false(re"^${word}$".test("axb"))   // the `.` is escaped, not a wildcard
+
+// Non-string values are stringified, then escaped.
+let n = 42
+assert_true(re"v${n}".test("v42"))
+
+// A compiled Regex is spliced as a non-capturing group `(?:src)`, so its
+// quantifiers/alternation compose into the surrounding pattern.
+let digits = re"\d+"
+assert_true(re"id=${digits};".test("id=123;"))
+assert_false(re"id=${digits};".test("id=;"))
+
+// `{n}` quantifiers are untouched by interpolation (they use `{`, not `${`).
+assert_true(re"a{2,3}".test("aaa"))
+assert_false(re"a{2,3}".test("a"))
+
+// A `$` anchor and a `\$` literal dollar still work; `\$` before `{` also
+// suppresses interpolation (literal `$` repeated twice here).
+assert_true(re"x$".test("x"))
+assert_true(re"\${2}".test("$$"))
+
+// Multiple interpolations, and interpolation at the start.
+let a = "foo"
+let b = "bar"
+assert_true(re"${a}-${b}".test("foo-bar"))
+assert_true(re"${a}#".test("foo#"))
+assert_true(re"#${a}".test("#foo"))
+
+// Arbitrary expressions inside ${...}: indexing, and a nested regex literal.
+let parts = ["cat", "dog"]
+assert_true(re"^${parts[0]}$".test("cat"))
+assert_true(re"a${re'\d'}b".test("a5b"))
+assert_false(re"a${re'\d'}b".test("axb"))
+
+// Interpolated composition still captures.
+let num = re"[0-9]+"
+assert_eq(re"(${num})".find("x42y")[1], "42")
+
+// Interpolation composes with trailing flags.
+let name = "abc"
+assert_true(re"${name}"i.test("ABC"))

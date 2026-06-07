@@ -2062,7 +2062,9 @@ in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 For a constant pattern, the [`re"..."` literal](language.md#regex-literals) is
 shorthand for `Regex.compile(...)` — `re'\d+'` and `re"hello"i` are the same
 compiled `Regex`, with the body always raw and flags trailing the closing
-quote. Use `Regex.compile(...)` directly when the pattern is built at runtime.
+quote. A literal also supports `${expr}` interpolation (escaped for a String,
+spliced for a `Regex` — see `Regex.interp` below). Use `Regex.compile(...)`
+directly when the *whole* pattern is built at runtime.
 
 The pattern and subject accept either string flavor (`String` or `StringView`),
 so the `StringView` results of `String.split` / `.slice` compose directly:
@@ -2073,6 +2075,7 @@ so the `StringView` results of `String.split` / `.slice` compose directly:
 | `Regex.compile(pat)` | `Regex` — compile (reused); bad pattern raises |
 | `Regex.compile(pat, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
 | `Regex.escape(s)` | `String` — backslash-quote every metacharacter so `s` matches literally |
+| `Regex.interp(x)` | `String` — splice helper for `re"...${x}..."`: a `Regex` → `(?:src)`, anything else → escaped to match literally |
 
 For a single use, the namespace methods below take the pattern directly and
 hide the `compile` step (like Python `re.search` / `re.sub`). Reusing one

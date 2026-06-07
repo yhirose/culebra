@@ -1982,7 +1982,9 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 定数パターンには [`re"..."` リテラル](language.ja.md#regex-リテラル)が
 `Regex.compile(...)` の短縮形として使えます — `re'\d+'` や `re"hello"i` は
 同じコンパイル済み `Regex` で、本体は常に raw、フラグは閉じクォートの直後。
-実行時に組み立てるパターンは `Regex.compile(...)` を直接使ってください。
+リテラルは `${expr}` 補間も使えます（String はエスケープ、`Regex` は合成
+— 下記 `Regex.interp` 参照）。**全体**を実行時に組み立てるパターンは
+`Regex.compile(...)` を直接使ってください。
 
 パターンと対象文字列はどちらの文字列型（`String` / `StringView`）も受け付ける
 ので、`String.split` / `.slice` が返す `StringView` をそのまま渡せます:
@@ -1993,6 +1995,7 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `Regex.compile(pat)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
 | `Regex.compile(pat, flags)` | `Regex` — `flags` は `"i"` / `"m"` / `"s"` の文字列 |
 | `Regex.escape(s)` | `String` — メタ文字を全てバックスラッシュエスケープし `s` をリテラル一致に |
+| `Regex.interp(x)` | `String` — `re"...${x}..."` 用の合成ヘルパ: `Regex` → `(?:src)`、それ以外 → エスケープしてリテラル一致 |
 
 その場限りの利用には、下の namespace メソッドがパターンを直接受け取り `compile` を隠します
 （Python `re.search` / `re.sub` と同様）。1 つのパターンを多数の入力に再利用するなら
