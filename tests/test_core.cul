@@ -956,6 +956,21 @@ test_drop = fn () {
   { let _n = make_nf() }
   GC.stat()
   assert_eq(events.size(), 0)
+  // 4) Same nested `fn name` re-declared per call, each capturing a fresh
+  // drop resource. The JIT replaces (and releases) the prior body on each
+  // re-declaration; that displaced body is cycle-held garbage, so its
+  // `drop` must be suppressed too — otherwise the JIT would fire drop on
+  // every-but-the-last while the interp (treating each as a cycle) fires
+  // none. Neither should fire.
+  events = []
+  make_each = fn (tag) {
+    let res = { id: tag, drop: fn () { events.push(tag) } }
+    fn use_res() { res.id }
+    use_res()
+  }
+  make_each('a'); make_each('b'); make_each('c')
+  GC.stat()
+  assert_eq(events.size(), 0)
 }
 
 // JIT-safe subset of UFCS tests. Broader coverage including the

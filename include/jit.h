@@ -440,6 +440,16 @@ inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 inline void _culebra_cell_release(JitCell* c);
 inline void _culebra_call_drop_if_present(JitObject* o);
+// Raised while releasing a replaced multimethod body so the cascade does not
+// fire `drop` on what it captured. A nested `fn name` that captures a local
+// is a self-referential closure (a cycle at the language level, even though
+// the JIT pins it as an acyclic root), and cycle-held resources never run
+// `drop` — matching the interp cycle collector and the single-declaration
+// case where the pinned body is swept without drop. See _culebra_call_drop.
+inline bool& _jit_drop_suppressed() {
+  static thread_local bool v = false;
+  return v;
+}
 
 // Forward decls for the refcount helpers — `culebra_runtime_module_*`
 // is emitted before the helper definitions further down (line 1430-ish)
@@ -4975,8 +4985,14 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   bool replaced = false;
   for (auto& existing : methods) {
     if (existing.param_types == method.param_types) {
+      // The displaced body is cycle-held garbage (its captured locals form a
+      // self-referential closure); reclaim it without firing `drop`, matching
+      // the interp cycle collector and the single-declaration sweep path.
+      bool prev = _jit_drop_suppressed();
+      _jit_drop_suppressed() = true;
       _culebra_value_release_impl(
           TAG_FUNC, reinterpret_cast<int64_t>(existing.body));
+      _jit_drop_suppressed() = prev;
       existing = std::move(method);
       replaced = true;
       break;
@@ -7436,6 +7452,7 @@ inline void _culebra_cell_release(JitCell* c);
 // reference (matches interp's documented warning).
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
+  if (_jit_drop_suppressed()) return;  // cycle-held resource — no finalizer
   // Walks proto so class-sugar instances find their inherited `drop`.
   auto* entry = _find_property(o, "drop");
   if (!entry) return;
