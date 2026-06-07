@@ -38,7 +38,7 @@ assert_eq({a: 1, b: 2}.size(), 2)        # Object builtin wins
 # Object HOF via UFCS
 map_keys_to = fn (o, f) {
   mut r = []
-  for k in o { r.push(f(k)) }
+  for k in o.keys() { r.push(f(k)) }
   r
 }
 o = {b: 2, a: 1}

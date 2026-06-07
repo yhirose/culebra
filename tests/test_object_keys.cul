@@ -96,12 +96,12 @@ assert_eq(ks[0], "a")
 assert_eq(ks[2], 10)
 assert_eq(ks[3], (1, 2))
 
-// for-in yields the same keys as keys() — String and non-String
-// interleaved in insertion order. (Regression: interp's for-in used to
-// walk only the String shape, dropping non-String keys, so it diverged
-// from both keys() and size().)
+// for-in yields (key, value) pairs; the keys (first of each pair) match
+// keys() — String and non-String interleaved in insertion order.
+// (Regression: interp's for-in used to walk only the String shape,
+// dropping non-String keys, so it diverged from both keys() and size().)
 mut iter_keys = []
-for k in bag2 { iter_keys.push(k) }
+for k, v in bag2 { iter_keys.push(k) }
 assert_eq(iter_keys, ks)
 
 bag2.remove(10)

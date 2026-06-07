@@ -4,12 +4,13 @@
 #
 # Matches Python dict semantics: rewriting existing keys mid-iter is
 # allowed (size unchanged), adding or removing keys raises
-# RuntimeError. Covers both the explicit `.iter()` form and the
-# `for k in obj` sugar; exercised on both backends.
+# RuntimeError. Object iteration yields (key, value) pairs; covers both
+# the explicit `.iter()` form and the `for k, v in obj` sugar; exercised
+# on both backends.
 
 # 1. Value updates on existing keys are allowed.
 mut a = {mut x: 1, mut y: 2, mut z: 3}
-for k in a.iter() {
+for k, v in a.iter() {
   a[k] = 99
 }
 assert_eq(a.x, 99)
@@ -20,7 +21,7 @@ assert_eq(a.z, 99)
 mut b = {x: 1}
 mut add_raised = false
 try {
-  for k in b.iter() {
+  for k, v in b.iter() {
     b["new_key"] = 2
   }
 } catch e {
@@ -33,7 +34,7 @@ assert_true(add_raised)
 mut c = {x: 1, y: 2}
 mut del_raised = false
 try {
-  for k in c.iter() {
+  for k, v in c.iter() {
     c.remove("y")
   }
 } catch e {
@@ -42,11 +43,11 @@ try {
 }
 assert_true(del_raised)
 
-# 4. The `for k in obj` sugar enforces the same protocol.
+# 4. The `for k, v in obj` sugar enforces the same protocol.
 mut d = {a: 1, b: 2}
 mut sugar_raised = false
 try {
-  for k in d {
+  for k, v in d {
     d["c"] = 3
   }
 } catch e {
@@ -58,8 +59,8 @@ assert_true(sugar_raised)
 # 5. Mutating a *different* Object mid-iter is fine.
 let src = {a: 1, b: 2}
 mut dst = {}
-for k in src.iter() {
-  dst[k] = src[k]
+for k, v in src.iter() {
+  dst[k] = v
 }
 assert_eq(dst.a, 1)
 assert_eq(dst.b, 2)

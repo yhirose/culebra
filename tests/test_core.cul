@@ -960,7 +960,7 @@ test_ufcs = fn () {
   // Object HOF via UFCS
   map_keys_to = fn (o, f) {
     mut r = []
-    for k in o { r.push(f(k)) }
+    for k in o.keys() { r.push(f(k)) }
     r
   }
   ks = {b: 2, a: 1}.map_keys_to(fn (k) { k })
@@ -997,11 +997,15 @@ test_for_in = fn () {
   for x in [1, 2, 3, 4] { sum = sum + x }
   assert_eq(sum, 10)
 
-  // Object iteration yields keys in insertion order
+  // Object iteration yields (key, value) pairs in insertion order
   mut keys = []
-  for k in {b: 2, a: 1, c: 3} { keys.push(k) }
-  assert_eq(keys.size(), 3)
-  assert_true(keys[0] == 'b' && keys[1] == 'a' && keys[2] == 'c')
+  mut vals = []
+  for k, v in {b: 2, a: 1, c: 3} { keys.push(k); vals.push(v) }
+  assert_eq(keys, ['b', 'a', 'c'])
+  assert_eq(vals, [2, 1, 3])
+  // Single-axis views
+  assert_eq({b: 2, a: 1, c: 3}.keys(), ['b', 'a', 'c'])
+  assert_eq({b: 2, a: 1, c: 3}.values().collect(), [2, 1, 3])
 
   // break exits inner loop only
   mut hit = 0

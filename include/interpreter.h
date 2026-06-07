@@ -2152,13 +2152,13 @@ inline Value _index_value_pair(long index, Value v) {
 }
 
 // Single driver for Object iteration: for-in / .iter() (Pairs), .values()
-// (Values), and the legacy key walk (Keys). Keys are snapshotted up front
-// so `next` stays O(1); the value (and thus each pair) is read live at
-// the step, so updating an existing key's value mid-iteration is observed
+// (Values) and for-in / .iter() (Pairs). Keys are snapshotted up front so
+// `next` stays O(1); the value (and thus each pair) is read live at the
+// step, so updating an existing key's value mid-iteration is observed
 // while adding/removing a key bumps mut_count and raises — matching
 // Python dict semantics. Class instances (no key_order) fall back to the
 // property-map walk, String keys only.
-enum class ObjectIterMode { Keys, Values, Pairs };
+enum class ObjectIterMode { Values, Pairs };
 
 inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
   struct State {
@@ -2168,7 +2168,7 @@ inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
     std::vector<Value> keys;
     size_t index = 0;
     size_t version = 0;
-    ObjectIterMode mode = ObjectIterMode::Keys;
+    ObjectIterMode mode = ObjectIterMode::Pairs;
   };
   auto st = std::make_shared<State>();
   st->props = obj.properties;
@@ -2191,9 +2191,6 @@ inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
         if (st->index >= st->keys.size()) return _iter_step_done();
         Value key = st->keys[st->index];
         st->index++;
-        if (st->mode == ObjectIterMode::Keys) {
-          return _iter_step_value(std::move(key));
-        }
         Value val = (key.type == Value::String)
                         ? st->props->at(key.template get<std::string>()).val
                         : st->nsprops->at(key).val;
@@ -2642,15 +2639,16 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
          const auto& obj = callEnv->get("this").to_object();
          return _object_iterator(obj, ObjectIterMode::Values);
        }))},
-      // Iterator protocol: yield keys in insertion order. Keys are
-      // snapshotted up front so `next` stays O(1) per step. Structural
-      // mutation of the underlying Object (add/delete) during iteration
-      // raises — matches Python dict semantics. Value updates on
-      // existing keys are allowed and don't bump the counter.
+      // Iterator protocol: yield `(key, value)` pairs in insertion order
+      // (Ruby-style — `for k, v in obj` and `obj.iter()` are the entries
+      // view; `obj.keys()` / `obj.values()` are the single-axis views).
+      // Keys are snapshotted up front so `next` stays O(1); the value is
+      // read live. Structural mutation (add/delete) during iteration
+      // raises — Python dict semantics. Value updates are allowed.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
          const auto& obj = callEnv->get("this").to_object();
-         return _object_iterator(obj, ObjectIterMode::Keys);
+         return _object_iterator(obj, ObjectIterMode::Pairs);
        }))}};
   return props_;
 }

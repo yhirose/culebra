@@ -6453,12 +6453,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_enumerate_any(
   return culebra_runtime_iter_enumerate(tag, data);
 }
 
-// Object.iter() fast fn. Captures: [obj_cell, keys_array_cell, idx_cell,
-// snapshot_cell]. Snapshot is obj->mut_count at iter-init; a per-step
-// mismatch raises a RuntimeError (Python dict-iter semantics).
-inline void _iter_from_object_fast_fn(JitClosure* cls, JitValue,
-                                      bool* done, int8_t* out_tag,
-                                      int64_t* out_data) {
+
+// `obj.iter()` dispatcher used by JIT — prefers a user-defined `iter`
+// method (so an Object that already exposes the Iterator protocol
+// returns itself / its underlying state) and only falls back to the
+// key iterator from `ObjectValue::builtins()` for plain literals
+// without a user iter. Mirrors interp's `_get_iterator`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_object_iter_dispatch(JitObject* obj);
+
+// Object for-in / .iter() fast fn — yields `(key, value)` tuples. Same
+// captures/guard as the values iterator; the key comes from the snapshot
+// array, the value is read live. The key gets a fresh +1 for the tuple
+// (the snapshot array keeps its own); `object_get_any` returns the value
+// +1 and consumes refcounted keys, so retain once more for it.
+inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
+                                            bool* done, int8_t* out_tag,
+                                            int64_t* out_data) {
   auto obj_cell = cls->captures[0];
   auto arr_cell = cls->captures[1];
   auto idx_cell = cls->captures[2];
@@ -6476,25 +6487,24 @@ inline void _iter_from_object_fast_fn(JitClosure* cls, JitValue,
     *done = true;
     return;
   }
-  auto v = arr->items[idx];
-  culebra_runtime_value_retain(v.tag, v.data);
+  auto key = arr->items[idx];
   idx_cell->value.data = idx + 1;
+  int8_t vt;
+  int64_t vd;
+  culebra_runtime_value_retain(key.tag, key.data);
+  culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0);
+  culebra_runtime_value_retain(key.tag, key.data);
+  auto* pair = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(pair, key.tag, key.data);
+  culebra_runtime_tuple_push(pair, vt, vd);
   *done = false;
-  *out_tag = v.tag;
-  *out_data = v.data;
+  *out_tag = TAG_TUPLE;
+  *out_data = reinterpret_cast<int64_t>(pair);
 }
 
-// `obj.iter()` dispatcher used by JIT — prefers a user-defined `iter`
-// method (so an Object that already exposes the Iterator protocol
-// returns itself / its underlying state) and only falls back to the
-// key iterator from `ObjectValue::builtins()` for plain literals
-// without a user iter. Mirrors interp's `_get_iterator`.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
-culebra_runtime_object_iter_dispatch(JitObject* obj);
-
-// Object.iter(): yield keys in insertion order as Strings. Structural
-// mutation of the underlying Object (add/delete) during iteration
-// raises; value updates on existing keys are allowed.
+// Object.iter(): yield `(key, value)` pairs in insertion order (Ruby-style
+// entries view). Structural mutation (add/delete) during iteration raises;
+// value updates on existing keys are allowed and observed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
     JitObject* obj) {
   auto* keys = culebra_runtime_object_keys(obj);
@@ -6505,7 +6515,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
       TAG_ARRAY, reinterpret_cast<int64_t>(keys));
   auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* snap_cell = culebra_runtime_cell_new(TAG_LONG, obj->mut_count);
-  return _iter_wrap_fast<&_iter_from_object_fast_fn>(
+  return _iter_wrap_fast<&_iter_from_object_pairs_fast_fn>(
       {obj_cell, arr_cell, idx_cell, snap_cell});
 }
 
