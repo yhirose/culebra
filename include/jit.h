@@ -6486,6 +6486,56 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
       {obj_cell, arr_cell, idx_cell, snap_cell});
 }
 
+// Object.values() fast fn — same captures/guard as the key iterator but
+// yields the live value for each snapshotted key, so a mid-iteration value
+// update is observed (matching interp). `object_get_any` returns a +1
+// value and consumes refcounted keys, so retain the key first to keep the
+// snapshot array's reference intact (no-op for String/Long/... keys).
+inline void _iter_from_object_values_fast_fn(JitClosure* cls, JitValue,
+                                             bool* done, int8_t* out_tag,
+                                             int64_t* out_data) {
+  auto obj_cell = cls->captures[0];
+  auto arr_cell = cls->captures[1];
+  auto idx_cell = cls->captures[2];
+  auto snap_cell = cls->captures[3];
+  auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
+  if (obj->mut_count != snap_cell->value.data) {
+    culebra_runtime_throw_error(
+        "RuntimeError", "Object changed size during iteration", 0, 0);
+    *done = true;
+    return;
+  }
+  auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
+  int64_t idx = idx_cell->value.data;
+  if (static_cast<size_t>(idx) >= arr->size) {
+    *done = true;
+    return;
+  }
+  auto key = arr->items[idx];
+  idx_cell->value.data = idx + 1;
+  culebra_runtime_value_retain(key.tag, key.data);
+  culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data, 0,
+                                 0);
+  *done = false;
+}
+
+// Object.values(): lazy iterator over values in insertion order. Snapshots
+// the keys (so `next` is O(1) to advance) and reads each value live, with
+// the same structural-mutation guard as the key iterator.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
+    JitObject* obj) {
+  auto* keys = culebra_runtime_object_keys(obj);
+  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* obj_cell = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* arr_cell = culebra_runtime_cell_new(
+      TAG_ARRAY, reinterpret_cast<int64_t>(keys));
+  auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* snap_cell = culebra_runtime_cell_new(TAG_LONG, obj->mut_count);
+  return _iter_wrap_fast<&_iter_from_object_values_fast_fn>(
+      {obj_cell, arr_cell, idx_cell, snap_cell});
+}
+
 // Dispatch helper: prefer the user `iter` method when present so an
 // Object that already implements Iterator returns the right iterator
 // (range/map/etc. wrapped iterators put `iter` on the instance; class
@@ -7747,6 +7797,7 @@ inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
 inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";
 inline constexpr auto object_keys         = "culebra_runtime_object_keys";
+inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
@@ -19370,6 +19421,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto arr = emit_call(
         module_->getFunction(rt::object_keys), {objPtr});
     return make_array(arr);
+  }
+
+  if (method == "values" && argsAst.nodes.size() == 0) {
+    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "values");
+    auto it = emit_call(
+        module_->getOrInsertFunction(rt::object_values, ptrTy, ptrTy),
+        {objPtr});
+    return make_object(it);
   }
 
   if (method == "has" && argsAst.nodes.size() == 1) {

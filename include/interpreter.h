@@ -2142,6 +2142,63 @@ inline Value _iter_over_vector(std::shared_ptr<std::vector<Value>> vec) {
   });
 }
 
+// Single driver for Object iteration: for-in / .iter() (Pairs), .values()
+// (Values), and the legacy key walk (Keys). Keys are snapshotted up front
+// so `next` stays O(1); the value (and thus each pair) is read live at
+// the step, so updating an existing key's value mid-iteration is observed
+// while adding/removing a key bumps mut_count and raises — matching
+// Python dict semantics. Class instances (no key_order) fall back to the
+// property-map walk, String keys only.
+enum class ObjectIterMode { Keys, Values, Pairs };
+
+inline Value _object_iterator(const ObjectValue& obj, ObjectIterMode mode) {
+  struct State {
+    std::shared_ptr<OrderedSymbolMap> props;
+    std::shared_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
+        nsprops;
+    std::vector<Value> keys;
+    size_t index = 0;
+    size_t version = 0;
+    ObjectIterMode mode = ObjectIterMode::Keys;
+  };
+  auto st = std::make_shared<State>();
+  st->props = obj.properties;
+  st->nsprops = obj.non_string_props;
+  st->version = st->props->mut_count();
+  st->mode = mode;
+  if (obj.key_order && !obj.key_order->empty()) {
+    st->keys.reserve(obj.key_order->size());
+    for (const auto& k : *obj.key_order) st->keys.push_back(k);
+  } else {
+    st->keys.reserve(st->props->size());
+    for (const auto& [k, _] : *st->props) st->keys.emplace_back(std::string(k));
+  }
+  return _make_iterator(
+      [st](std::shared_ptr<Environment>) -> std::optional<Value> {
+        if (st->props->mut_count() != st->version) {
+          throw CulebraError("RuntimeError",
+                             "Object changed size during iteration");
+        }
+        if (st->index >= st->keys.size()) return _iter_step_done();
+        Value key = st->keys[st->index];
+        st->index++;
+        if (st->mode == ObjectIterMode::Keys) {
+          return _iter_step_value(std::move(key));
+        }
+        Value val = (key.type == Value::String)
+                        ? st->props->at(key.template get<std::string>()).val
+                        : st->nsprops->at(key).val;
+        if (st->mode == ObjectIterMode::Values) {
+          return _iter_step_value(std::move(val));
+        }
+        std::vector<Value> pair;
+        pair.reserve(2);
+        pair.push_back(std::move(key));
+        pair.push_back(std::move(val));
+        return _iter_step_value(Value(TupleValue(std::move(pair))));
+      });
+}
+
 // Decode one UTF-8 codepoint at `s + off` into `cp`, advancing `off` by
 // the consumed byte count. Invalid / truncated sequences yield U+FFFD
 // (the Unicode replacement character) and advance by one byte — the
@@ -2567,6 +2624,15 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                              }
                              return Value();
                            }))},
+      // Lazy iterator of values in insertion order — the value-only view
+      // of `iter()` (which yields `(key, value)` pairs). Snapshot + live
+      // value read + structural-mutation guard are shared via
+      // `_object_iterator`.
+      {"values"sv,
+       Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
+         const auto& obj = callEnv->get("this").to_object();
+         return _object_iterator(obj, ObjectIterMode::Values);
+       }))},
       // Iterator protocol: yield keys in insertion order. Keys are
       // snapshotted up front so `next` stays O(1) per step. Structural
       // mutation of the underlying Object (add/delete) during iteration
@@ -2574,40 +2640,8 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       // existing keys are allowed and don't bump the counter.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         struct State {
-           std::shared_ptr<OrderedSymbolMap> props;
-           std::vector<Value> keys;
-           size_t index = 0;
-           size_t version = 0;
-         };
          const auto& obj = callEnv->get("this").to_object();
-         auto st = std::make_shared<State>();
-         st->props = obj.properties;
-         st->version = st->props->mut_count();
-         // Snapshot all keys (String + non-String) in insertion order via
-         // the same `key_order` walk `keys()` uses, so for-in matches
-         // keys() / size(). Fall back to the property-map walk for objects
-         // built by direct emplace (class instances, no key_order).
-         if (obj.key_order && !obj.key_order->empty()) {
-           st->keys.reserve(obj.key_order->size());
-           for (const auto& k : *obj.key_order) st->keys.push_back(k);
-         } else {
-           st->keys.reserve(st->props->size());
-           for (const auto& [k, _] : *st->props) {
-             st->keys.emplace_back(std::string(k));
-           }
-         }
-         return _make_iterator([st](std::shared_ptr<Environment>) {
-           if (st->props->mut_count() != st->version) {
-             throw CulebraError(
-                 "RuntimeError",
-                 "Object changed size during iteration");
-           }
-           if (st->index >= st->keys.size()) return _iter_step_done();
-           auto v = st->keys[st->index];
-           st->index++;
-           return _iter_step_value(std::move(v));
-         });
+         return _object_iterator(obj, ObjectIterMode::Keys);
        }))}};
   return props_;
 }
