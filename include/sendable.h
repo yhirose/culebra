@@ -398,11 +398,36 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
     case Value::Function: {
       const FunctionValue& f = v.get<FunctionValue>();
       // A `fn name(...)` declaration is a multifn dispatcher with a synthetic
-      // body; its first/only method is rebuildable via introspection_target.
-      // (MVP: only the first method is transferred — overloads are dropped.)
+      // body. Ship every overload's body + dispatch signature so the child
+      // rebuilds the full multimethod (mirrors the JIT, sendable_jit.h).
+      if (f.multimethod_for_each_overload) {
+        n.kind = SendNode::K::Closure;
+        // Identity = the shared method table (stable across value copies, and
+        // distinct per dispatcher so recursive back-refs resolve correctly).
+        auto key = std::make_pair(
+            static_cast<const void*>(f.multimethod_table.get()),
+            static_cast<const void*>(nullptr));
+        if (auto it = ctx.closure_ids.find(key); it != ctx.closure_ids.end()) {
+          n.is_backref = true;
+          n.ref_id = it->second;
+          return n;
+        }
+        n.ref_id = ctx.next_id++;
+        ctx.closure_ids.emplace(key, n.ref_id);  // before recursing (recursion)
+        n.mf_name = f.name.empty() ? std::string("__multifn__") : f.name;
+        f.multimethod_for_each_overload(
+            [&](const Value& body, const std::vector<std::string>& ptypes,
+                const std::vector<std::string>& pnames, bool variadic,
+                size_t min_params) {
+              n.mf_param_types.push_back(ptypes);
+              n.mf_param_names.push_back(pnames);
+              n.mf_variadic.push_back(variadic);
+              n.mf_min_params.push_back(min_params);
+              n.elems.push_back(serialize(body, ctx));
+            });
+        return n;
+      }
       const FunctionValue* impl = &f;
-      if (!f.body && f.introspection_target && f.introspection_target->body)
-        impl = f.introspection_target.get();
       if (!impl->body || !impl->params_ast)
         send_error("a native/builtin function is not Sendable");
 
@@ -516,6 +541,21 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
           throw culebra::CulebraError("SendError",
                                       "dangling closure back-reference");
         return it->second;
+      }
+      if (!n.mf_name.empty()) {
+        // `fn name` dispatcher: build the shell and register it *before*
+        // deserializing the method bodies, so an overload that recurses back
+        // into the dispatcher resolves to it; then append each overload.
+        std::shared_ptr<void> table;
+        Value disp = interp.make_multifn_shell(n.mf_name, table);
+        ctx.closures.emplace(n.ref_id, disp);
+        for (size_t i = 0; i < n.elems.size(); i++) {
+          Value body = deserialize(n.elems[i], interp, base, ctx);
+          interp.multifn_add_method(table, std::move(body), n.mf_param_types[i],
+                                    n.mf_param_names[i], n.mf_variadic[i],
+                                    n.mf_min_params[i], disp);
+        }
+        return disp;
       }
       // Build the closure first (so a recursive self-capture resolves to it),
       // then populate the capture environment.

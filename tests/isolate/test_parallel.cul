@@ -65,4 +65,24 @@ try {
   assert_eq(e.kind, "TypeError")
 }
 
+# --- a multimethod `fn name` ships ALL its overloads across the boundary ---
+# (regression: the interp sendable used to transfer only the first method, so a
+# worker that dispatched to a later overload failed with a spurious type error.)
+fn classify(x: Long) { "long:{x}" }
+fn classify(x: String) { "str:{x}" }
+fn classify(x: Bool) { "bool:{x}" }
+assert_eq(Parallel.map([1, "a", true, 2], |v| classify(v)),
+          ["long:1", "str:a", "bool:true", "long:2"])
+
+# a recursive multimethod survives transfer (the body back-references the
+# dispatcher, which must be rebuilt before its method bodies)
+fn fibm(n: Long) { if n < 2 { n } else { fibm(n - 1) + fibm(n - 2) } }
+assert_eq(Parallel.map([10, 11, 12], |k| fibm(k)), [55, 89, 144])
+
+# a method body that captures a top-level free var is rebuilt with its capture
+let bias = 100
+fn shift(x: Long) { x + bias }
+fn shift(x: String) { "s:{x}" }
+assert_eq(Parallel.map([1, "z", 3], |v| shift(v)), [101, "s:z", 103])
+
 puts("test_parallel: all assertions passed")

@@ -577,6 +577,16 @@ struct FunctionValue {
   // eval_multifn_decl where MultiMethod is visible; empty for non-dispatchers.
   std::function<void(const std::function<void(Environment*, long)>&)>
       multimethod_for_each_body_env;
+  // Isolate-boundary hook: enumerates each overload's body Value plus its
+  // dispatch signature so sendable.h can ship every method across a Parallel
+  // / Isolate boundary (the interp serializer has no Interpreter handle, and
+  // MultiMethod is private). Baked in build_multifn_dispatcher; empty for
+  // non-dispatchers. Mirrors the JIT (sendable_jit.h walks its own table).
+  std::function<void(const std::function<void(
+      const Value&, const std::vector<std::string>& /*param_types*/,
+      const std::vector<std::string>& /*param_names*/, bool /*variadic*/,
+      size_t /*min_params*/)>&)>
+      multimethod_for_each_overload;
   // True for the wrapper produced by _wrap_method_with_this around a
   // built-in method (Array/String/Set/...). Built-in methods parse their
   // args positionally and never accept kwargs; the call site uses this to
@@ -4525,6 +4535,38 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                         const std::shared_ptr<Environment>& env) {
     return make_function_value(params_ast, std::move(body), return_type, env);
   }
+
+  // Isolate child: create an empty `fn name` multifn dispatcher and hand back
+  // an opaque handle to its (still empty) method table. The caller
+  // deserializes each overload body — which may back-reference this dispatcher
+  // for recursion, so it must exist first — then appends via multifn_add_method.
+  // Keeps MultiMethod private to the Interpreter (the handle is shared_ptr<void>).
+  Value make_multifn_shell(std::string_view name, std::shared_ptr<void>& table) {
+    auto methods = std::make_shared<std::vector<MultiMethod>>();
+    table = std::static_pointer_cast<void>(methods);
+    return build_multifn_dispatcher(name, methods);
+  }
+
+  // Append one rebuilt overload to a make_multifn_shell table, refreshing the
+  // dispatcher's introspection target when it becomes the first method.
+  void multifn_add_method(const std::shared_ptr<void>& table, Value body,
+                          std::vector<std::string> param_types,
+                          std::vector<std::string> param_names, bool variadic,
+                          size_t min_params, Value& dispatcher) {
+    auto methods = std::static_pointer_cast<std::vector<MultiMethod>>(table);
+    bool first = methods->empty();
+    MultiMethod m;
+    m.param_types = std::move(param_types);
+    m.param_names = std::move(param_names);
+    m.body = std::move(body);
+    m.variadic = variadic;
+    m.min_params = min_params;
+    methods->push_back(std::move(m));
+    if (first && methods->front().body.type == Value::Function)
+      dispatcher.get<FunctionValue>().introspection_target =
+          std::make_shared<FunctionValue>(
+              methods->front().body.get<FunctionValue>());
+  }
   // Invoke a (rebuilt) closure with positional args, binding params and
   // catching `return`. Used by the isolate child to run the spawned body.
   Value call_closure(const Value& fn, const std::shared_ptr<Environment>& env,
@@ -5432,6 +5474,98 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     neutralize_type_slot(fn.return_type, type_params);
   }
 
+  // Build a `fn name` multifn dispatcher Value over `methods` — the synthetic
+  // `**__KWARGS__` thunk plus the introspection / cycle-collector / arity /
+  // overload-serialization baked closures. `methods` is the live shared table;
+  // later same-scope overloads append to it in place and every closure here
+  // reads it lazily. Shared by eval_multifn_decl (a fresh `fn name`) and the
+  // isolate child rebuilding a transferred dispatcher (make_multifn_shell).
+  Value build_multifn_dispatcher(
+      std::string_view name,
+      const std::shared_ptr<std::vector<MultiMethod>>& methods) {
+    std::string name_owned(name);
+    auto self = shared_from_this();
+    auto dispatcher = Value(FunctionValue(
+        {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
+        [self, methods, name_owned](std::shared_ptr<Environment> callEnv) {
+          auto line = callEnv->get("__LINE__").to_long();
+          auto col = callEnv->get("__COLUMN__").to_long();
+          const auto& args = *callEnv->get("__ARGS__").to_array().values;
+          // Keyword names supplied at the call (explicit + `**` splat, both
+          // merged into the dispatcher's `**__KWARGS__`). They let a kwarg
+          // cover a required param the positional args didn't fill.
+          std::vector<std::string_view> kwarg_keys;
+          {
+            const auto& kw = callEnv->get("__KWARGS__");
+            if (kw.type == Value::Object) {
+              for (const auto& k : *kw.get<ObjectValue>().key_order) {
+                if (k.type == Value::String) kwarg_keys.push_back(k.to_string_view());
+              }
+            }
+          }
+          auto pick = self->pick_method(*methods, args, kwarg_keys);
+          if (pick.status == PickResult::NoMatch) {
+            throw CulebraError("DispatchError", std::format(
+                "no matching method for `{}`", name_owned), line, col);
+          }
+          if (pick.status == PickResult::Ambiguous) {
+            throw CulebraError("DispatchError", std::format(
+                "ambiguous dispatch for `{}`", name_owned), line, col);
+          }
+          CallArgs call_args;
+          call_args.positional = args;
+          call_args.positional_locs.assign(
+              args.size(),
+              {static_cast<size_t>(line), static_cast<size_t>(col)});
+          call_args.splats.push_back(callEnv->get("__KWARGS__"));
+          return self->invoke_user_function_with_args(
+              (*methods)[pick.idx].body, callEnv, std::move(call_args),
+              static_cast<size_t>(line), static_cast<size_t>(col));
+        }));
+    auto& fv = dispatcher.get<FunctionValue>();
+    fv.name = name_owned;
+    // Surface the first method for introspection (`fn.params` etc.). Empty at
+    // build time on the rebuild path — refreshed by multifn_add_method.
+    if (!methods->empty() && methods->front().body.type == Value::Function)
+      fv.introspection_target = std::make_shared<FunctionValue>(
+          methods->front().body.get<FunctionValue>());
+    fv.multimethod_table = std::static_pointer_cast<void>(methods);
+    // Expose each overload body's def_env edge to the cycle collector
+    // (see FunctionValue::multimethod_for_each_body_env).
+    fv.multimethod_for_each_body_env =
+        [methods](const std::function<void(Environment*, long)>& emit) {
+          for (auto& m : *methods) {
+            if (m.body.type != Value::Function) continue;
+            auto& bfv = m.body.get<FunctionValue>();
+            if (bfv.def_env)
+              emit(bfv.def_env.get(), bfv.def_env_multiplicity());
+          }
+        };
+    // Expose each overload's body + signature for cross-isolate transfer
+    // (see FunctionValue::multimethod_for_each_overload).
+    fv.multimethod_for_each_overload =
+        [methods](const std::function<void(
+            const Value&, const std::vector<std::string>&,
+            const std::vector<std::string>&, bool, size_t)>& emit) {
+          for (auto& m : *methods)
+            emit(m.body, m.param_types, m.param_names, m.variadic, m.min_params);
+        };
+    // Callback-arity gate: accept if any overload takes `expected` positional
+    // args. Closes over the shared `methods` table so overloads appended after
+    // this decl are reflected without rebuilding the predicate.
+    fv.multimethod_accepts_arity =
+        [methods](long expected) {
+          for (const auto& m : *methods) {
+            long cb_max = m.variadic ? -1 : static_cast<long>(m.param_types.size());
+            if (callback_arity_accepts(static_cast<long>(m.min_params), cb_max,
+                                       expected))
+              return true;
+          }
+          return false;
+        };
+    return dispatcher;
+  }
+
   Value eval_multifn_decl(const peg::Ast& ast,
                           const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
@@ -5551,85 +5685,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // outer decl. Build a new method table + dispatcher and bind it here.
     auto methods = std::make_shared<std::vector<MultiMethod>>();
     methods->push_back(std::move(method));
-
-    // Synthetic `**__KWARGS__` catch-all on the dispatcher so kwargs
-    // pass through to method dispatch (Julia-flavored kwsorter:
-    // multimethod picks on positional types, then the picked
-    // method's signature absorbs kwargs / splats).
-    auto self = shared_from_this();
-    auto first_method_snapshot =
-        std::make_shared<FunctionValue>(fn_val.get<FunctionValue>());
-    auto dispatcher = Value(FunctionValue(
-        {FunctionValue::Parameter::make_kwargs_rest("__KWARGS__")},
-        [self = std::move(self), methods, name_owned](std::shared_ptr<Environment> callEnv) {
-          auto line = callEnv->get("__LINE__").to_long();
-          auto col = callEnv->get("__COLUMN__").to_long();
-          const auto& args = *callEnv->get("__ARGS__").to_array().values;
-          // Keyword names supplied at the call (explicit + `**` splat, both
-          // merged into the dispatcher's `**__KWARGS__`). They let a kwarg
-          // cover a required param the positional args didn't fill.
-          std::vector<std::string_view> kwarg_keys;
-          {
-            const auto& kw = callEnv->get("__KWARGS__");
-            if (kw.type == Value::Object) {
-              for (const auto& k : *kw.get<ObjectValue>().key_order) {
-                if (k.type == Value::String) kwarg_keys.push_back(k.to_string_view());
-              }
-            }
-          }
-          auto pick = self->pick_method(*methods, args, kwarg_keys);
-          if (pick.status == PickResult::NoMatch) {
-            throw CulebraError("DispatchError", std::format(
-                "no matching method for `{}`", name_owned), line, col);
-          }
-          if (pick.status == PickResult::Ambiguous) {
-            throw CulebraError("DispatchError", std::format(
-                "ambiguous dispatch for `{}`", name_owned), line, col);
-          }
-          CallArgs call_args;
-          call_args.positional = args;
-          call_args.positional_locs.assign(
-              args.size(),
-              {static_cast<size_t>(line), static_cast<size_t>(col)});
-          call_args.splats.push_back(callEnv->get("__KWARGS__"));
-          return self->invoke_user_function_with_args(
-              (*methods)[pick.idx].body, callEnv, std::move(call_args),
-              static_cast<size_t>(line), static_cast<size_t>(col));
-        }));
-    // Surface the first method on the dispatcher for introspection.
-    // The dispatcher keeps its synthetic `__KWARGS__` params for the
-    // multifn protocol; eval_property reads `introspection_target`
-    // instead of `params` so callers see the user-facing signature.
-    dispatcher.get<FunctionValue>().name = std::string(name_view);
-    dispatcher.get<FunctionValue>().introspection_target = first_method_snapshot;
-    dispatcher.get<FunctionValue>().multimethod_table =
-        std::static_pointer_cast<void>(methods);
-    // Expose each overload body's def_env edge to the cycle collector
-    // (see FunctionValue::multimethod_for_each_body_env). Closes over the
-    // shared table so overloads appended after this decl are reflected.
-    dispatcher.get<FunctionValue>().multimethod_for_each_body_env =
-        [methods](const std::function<void(Environment*, long)>& emit) {
-          for (auto& m : *methods) {
-            if (m.body.type != Value::Function) continue;
-            auto& bfv = m.body.get<FunctionValue>();
-            if (bfv.def_env)
-              emit(bfv.def_env.get(), bfv.def_env_multiplicity());
-          }
-        };
-    // Callback-arity gate: accept if any overload takes `expected` positional
-    // args. Closes over the shared `methods` table so overloads appended after
-    // this decl are reflected without rebuilding the predicate.
-    dispatcher.get<FunctionValue>().multimethod_accepts_arity =
-        [methods](long expected) {
-          for (const auto& m : *methods) {
-            long cb_max = m.variadic ? -1 : static_cast<long>(m.param_types.size());
-            if (callback_arity_accepts(static_cast<long>(m.min_params), cb_max,
-                                       expected))
-              return true;
-          }
-          return false;
-        };
-    env->initialize(name_view, dispatcher, false);
+    env->initialize(name_view, build_multifn_dispatcher(name_view, methods),
+                    false);
     return Value();
   }
 
