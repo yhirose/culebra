@@ -3403,7 +3403,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
       return;
     }
     culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
-                               mut, val_tag, val_data, 0, 0);
+                               mut, val_tag, val_data, line, col);
     return;
   }
   // A class instance may route a not-yet-stored key to __setindex__ before
@@ -3447,7 +3447,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     _culebra_value_release_impl(val_tag, val_data);
     _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("ImmutableError",
-                                "immutable entry on non-String key");
+                                "immutable entry on non-String key", line, col);
   }
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
   it->second.value.tag = val_tag;
@@ -12064,8 +12064,11 @@ struct JIT {
             {objPtr, extract_tag(keyVal), extract_data(keyVal),
              builder_.getInt1(mut), extract_tag(to_store_obj),
              extract_data(to_store_obj),
-             builder_.getInt64(static_cast<int64_t>(finalPostfix.line)),
-             builder_.getInt64(static_cast<int64_t>(finalPostfix.column))});
+             // Point an ImmutableError at the assignment target's start
+             // (`p` in `p[k] = v`), matching interp — not the subscript.
+             builder_.getInt64(static_cast<int64_t>(ast.nodes[lvaloff]->line)),
+             builder_.getInt64(
+                 static_cast<int64_t>(ast.nodes[lvaloff]->column))});
         // object_set_any consumed to_store_obj's +1; re-retain for the
         // merge so callers see a +1 result.
         emit_value_retain(to_store_obj);

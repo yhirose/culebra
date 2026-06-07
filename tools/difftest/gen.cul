@@ -225,7 +225,13 @@ let assigns = ['let o = {a: 1}; o.a += 5; o.a',
                'let (a, b) = (1, 2); a + b',
                'mut (a, b) = (1, 2); a - b',
                'mut x = nil; x ??= 5; x',
-               'mut x = 3; x ??= 5; x']
+               'mut x = 3; x ??= 5; x',
+               # ImmutableError on a subscript target must carry the same
+               # kind/message/position across backends (String + non-String
+               # keys, plain + compound). The JIT used to drop the position.
+               'mut o = {a: 1}; o["a"] = 9; o.a',
+               'mut o = {a: 1}; o["a"] += 9; o.a',
+               'mut o = {1: "x"}; o[1] = "y"; o[1]']
 for a in assigns {
   case("assign|" + a, a)
 }
