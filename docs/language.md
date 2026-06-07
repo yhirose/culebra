@@ -2909,9 +2909,6 @@ APIs declared with `StringLike` accept either flavor directly.
   separate keys. Call `.to_string()` on the view before using it as a
   key. Cross-flavor `==` and hashing still treat the bytes as equal,
   but storage routing splits them.
-- JIT `s.iter()` yields `Long` codepoints (interp yields `StringView`).
-  For backend-uniform behavior prefer `s.code_points()` (always
-  `Long`) or `for c in s` (native loop, byte-uniform).
 - In long-running JIT programs, calling `.contains()` / `.starts_with()`
   / `.ends_with()` etc. on a `StringView` materializes a cstr copy
   that lives until process exit (existing culebra string-leak model).

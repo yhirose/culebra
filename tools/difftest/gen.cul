@@ -349,4 +349,26 @@ case("scope-iso|same-scope-overload",
 case("scope-iso|nested-reentrant",
      'fn mk(n) { fn h(x) { x * 2 }; h(n) }; [mk(3), mk(4)]')
 
+# --- Dimension 19: string scalar iteration (value AND type) ---------------
+# for-in / .iter() / .graphemes() yield 1-scalar StringViews; .code_points()
+# yields Longs. The JIT used to yield String (for-in/graphemes) or Long
+# (iter) — the type_of cases pin StringView across backends (a value-only
+# case would miss it, since a StringView and a String render identically).
+let strits = [
+  'mut r = []; for c in "café" { r.push(c) }; r',
+  '"café".iter().collect()',
+  '"café".graphemes().collect()',
+  '"café".code_points().collect()',
+  '"e\u{301}".graphemes().collect()',
+  '"e\u{301}".iter().collect()',
+  '"a\xffb".iter().collect()',
+  'mut t = ""; for c in "x" { t = type_of(c) }; t',
+  'type_of("a".iter().collect()[0])',
+  'type_of("a".graphemes().collect()[0])',
+  'type_of("a".code_points().collect()[0])',
+  'mut r = []; for c in "ab" { r.push(c.upper()) }; r']
+for s in strits {
+  case("striter|" + s, s)
+}
+
 print(out.join("\n"))

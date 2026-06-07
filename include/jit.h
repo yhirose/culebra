@@ -6280,6 +6280,51 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
       {buf_cell, off_cell, len_cell});
 }
 
+// Like code_points, but yields each scalar as a 1-scalar StringView into
+// the source buffer — matches interp's `s.iter()` (type StringView, zero
+// copy). Invalid bytes yield as one-byte views (docs §17.1).
+inline void _iter_str_scalars_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                      int8_t* out_tag, int64_t* out_data) {
+  auto buf_cell = cls->captures[0];
+  auto off_cell = cls->captures[1];
+  auto len_cell = cls->captures[2];
+  const char* s = reinterpret_cast<const char*>(buf_cell->value.data);
+  int64_t off = off_cell->value.data;
+  int64_t len = len_cell->value.data;
+  if (off >= len) {
+    *done = true;
+    return;
+  }
+  char32_t cp;
+  size_t bytes;
+  if (!unicode::utf8::decode_codepoint(s + off, len - off, bytes, cp)) {
+    bytes = 1;  // invalid → one-byte view (raw), like the interp
+  }
+  auto* v = _culebra_heap_view(s + off, bytes);
+  off_cell->value.data = off + static_cast<int64_t>(bytes);
+  *done = false;
+  *out_tag = TAG_STRINGVIEW;
+  *out_data = reinterpret_cast<int64_t>(v);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_scalars(
+    const char* s) {
+  auto* buf_cell = culebra_runtime_cell_new(
+      TAG_LONG, reinterpret_cast<int64_t>(s));
+  auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* len_cell = culebra_runtime_cell_new(
+      TAG_LONG, static_cast<int64_t>(_str_len(s)));
+  return _iter_wrap_fast<&_iter_str_scalars_fast_fn>(
+      {buf_cell, off_cell, len_cell});
+}
+
+// `for c in s` yields a StringView over the scalar at [off, off+len) of the
+// source buffer (matches interp). The view borrows `s` (§16 lifetime).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitStringView* culebra_runtime_str_scalar_view(
+    const char* s, int64_t off, int64_t len) {
+  return _culebra_heap_view(s + off, static_cast<uint64_t>(len));
+}
+
 // graphemes: eagerly materialize all cluster boundaries into a JitArray
 // at factory time, then reuse the generic Array walker. This avoids a
 // u32string-shaped leak (no cell tag currently owns `delete` of a
@@ -6304,17 +6349,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
     u32.push_back(cp);
     off += bytes;
   }
+  // Remember each code point's byte span in the ORIGINAL buffer so a
+  // grapheme cluster can be yielded as a zero-copy StringView into `s`
+  // (matches interp — type StringView), not a re-encoded copy.
+  std::vector<std::pair<size_t, size_t>> spans;  // (byte_off, byte_len) per cp
+  spans.reserve(u32.size());
+  for (size_t off = 0, i = 0; i < u32.size(); i++) {
+    size_t bytes;
+    char32_t cp;
+    if (!unicode::utf8::decode_codepoint(s + off, buf_size - off, bytes, cp)) {
+      bytes = 1;
+    }
+    spans.push_back({off, bytes});
+    off += bytes;
+  }
   auto* arr = culebra_runtime_array_new();
   size_t cp_off = 0;
   while (cp_off < u32.size()) {
     size_t gl = unicode::grapheme_length(u32.data() + cp_off,
                                          u32.size() - cp_off);
     if (gl == 0) gl = 1;
-    std::string out;
-    unicode::utf8::encode(u32.data() + cp_off, gl, out);
-    auto* heap = _culebra_heap_str(out);
-    culebra_runtime_array_push(arr, TAG_STRING,
-                               reinterpret_cast<int64_t>(heap));
+    size_t byte_start = spans[cp_off].first;
+    size_t byte_end = spans[cp_off + gl - 1].first + spans[cp_off + gl - 1].second;
+    auto* v = _culebra_heap_view(s + byte_start, byte_end - byte_start);
+    culebra_runtime_array_push(arr, TAG_STRINGVIEW,
+                               reinterpret_cast<int64_t>(v));
     cp_off += gl;
   }
   return _iter_from_array_obj(TAG_ARRAY, reinterpret_cast<int64_t>(arr));
@@ -7801,6 +7860,8 @@ inline constexpr auto enumerate_any        = "culebra_runtime_enumerate_any";
 inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";
+inline constexpr auto str_scalars          = "culebra_runtime_str_scalars";
+inline constexpr auto str_scalar_view      = "culebra_runtime_str_scalar_view";
 inline constexpr auto str_graphemes        = "culebra_runtime_str_graphemes";
 inline constexpr auto array_iter           = "culebra_runtime_array_iter";
 inline constexpr auto object_iter          = "culebra_runtime_object_iter";
@@ -13824,12 +13885,14 @@ struct JIT {
 
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();
-    auto scalarPtr = emit_call(
-        module_->getOrInsertFunction(rt::str_scalar_at, ptrTy, ptrTy,
+    // Yield a 1-scalar StringView into the source buffer (matches interp
+    // and `s.iter()`), not a copied String.
+    auto scalarView = emit_call(
+        module_->getOrInsertFunction(rt::str_scalar_view, ptrTy, ptrTy,
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {strPtr, off, scalarLen}, "for.scalar");
-    emit_for_body_iteration(var, make_string(scalarPtr), body, incBB,
+        {strPtr, off, scalarLen}, "for.sview");
+    emit_for_body_iteration(var, make_stringview(scalarView), body, incBB,
                             endBB);
 
     builder_.SetInsertPoint(incBB);
@@ -19737,13 +19800,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(strBB);
-    // String/StringView.iter() reuses code_points (Long yield) for
-    // now; for-in goes through compile_for_string_loop, so this path
-    // is only hit by explicit .iter() calls. Documented in §17.1.
+    // String/StringView.iter() yields 1-scalar StringViews (matches interp
+    // and the direct for-in loop); `.code_points()` is the Long-yielding
+    // variant. Documented in §17.1.
     auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
                             {t, d});
-    auto strIter = emit_call(module_->getFunction(rt::str_code_points),
-                             {strPtr});
+    auto strIter = emit_call(
+        module_->getOrInsertFunction(rt::str_scalars, ptrTy, ptrTy),
+        {strPtr});
     auto strVal = make_object(strIter);
     auto strEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);

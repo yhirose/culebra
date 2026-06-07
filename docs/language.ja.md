@@ -2738,9 +2738,6 @@ puts(v.to_string())                  # 'world' (materialize した String)
 - Object key: 同じバイトの `StringView` と `String` は別キー扱い。
   key として使う前に `.to_string()` で String 化する。 cross-flavor
   `==` と hash は同 bytes 等価扱いだが、 storage routing は分離。
-- JIT `s.iter()` は `Long` codepoint を yield (interp は StringView)。
-  backend uniform に統一したい場合は `s.code_points()` (常に Long) か
-  `for c in s` (native loop、 byte uniform) を使う。
 - long-running な JIT プログラムでは、 `StringView` に対して
   `.contains()` / `.starts_with()` / `.ends_with()` 等を呼ぶと cstr
   コピーが process 終了まで残る (既存 culebra string-leak モデル)。
