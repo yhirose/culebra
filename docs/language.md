@@ -2875,6 +2875,7 @@ receiver is never mutated.
 | `s.tr(from: StringLike, to: StringLike) -> String` | Per-scalar translation (Ruby `tr`, character-list form — no `a-z` ranges or `^`). Each scalar of `s` found in `from` becomes the scalar at the same position in `to`; a shorter `to` repeats its last scalar, an empty `to` deletes. `s.tr("０１２３４５６７８９", "0123456789")`. |
 | `s.split(sep: StringLike) -> Array<StringView>` | Split on every occurrence of `sep`. Empty `sep` → `[s]`. Elements share a single source. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
+| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence (like Python `str.replace`); chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
 | `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
 | `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
 | `s.ends_with(suffix: StringLike) -> Bool`       | Whether `s` ends with `suffix`.      |

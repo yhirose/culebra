@@ -4377,13 +4377,26 @@ inline constexpr const char* REGEX_MODULE_SOURCE =
     "}; "
     "let Regex = _regex_module()\n";
 
+// `s.replace(pat, repl)` (UFCS over this free function) — replace every
+// occurrence and return a new String, so transforms chain:
+//   text.replace(re'\s+', " ").replace("，", "、")...
+// `pat` String -> literal replace (split/join); `pat` a compiled Regex ->
+// regex replace (so `repl` may be a `$1`/`$<name>` template or a
+// `fn (Match) -> String` callback, via the Regex's own `replace_all`).
+// All-occurrences semantics match Python's `str.replace`.
+inline constexpr const char* STRING_REPLACE_MODULE_SOURCE =
+    "let replace = fn(s, pat, repl) { "
+    "if type_of(pat) == \"String\" { s.split(pat).join(repl) } "
+    "else { pat.replace_all(s, repl) } }\n";
+
 // Transitional concatenation used by the JIT path until it adopts the
 // env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
 // interp path is already preamble-free.
 inline const char* _stdlib_preamble_concat() {
   static const std::string s =
       std::string(TIME_MODULE_SOURCE) + ARGS_MODULE_SOURCE +
-      MATCHERS_MODULE_SOURCE + REGEX_MODULE_SOURCE;
+      MATCHERS_MODULE_SOURCE + REGEX_MODULE_SOURCE +
+      STRING_REPLACE_MODULE_SOURCE;
   return s.c_str();
 }
 inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
@@ -4413,6 +4426,7 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("assert_")) preamble.append(MATCHERS_MODULE_SOURCE);
   if (has("Regex") || has("re'") || has("re\"") || has("re`"))
     preamble.append(REGEX_MODULE_SOURCE);
+  if (has("replace")) preamble.append(STRING_REPLACE_MODULE_SOURCE);
   return preamble;
 }
 
@@ -4478,6 +4492,7 @@ inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
+  env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
   // Matcher family — 10 symbols share one source via initialize_lazy_group.
   // First `get` of any matcher parses + evals the source once; the others
   // are picked up by the non-Nil guard in resolve_from_lazy.

@@ -374,4 +374,22 @@ for s in strits {
   case("striter|" + s, s)
 }
 
+# --- Dimension 20: String.replace (UFCS stdlib helper) --------------------
+# Literal vs regex pattern, template vs callback repl, and chaining — must
+# behave identically across backends (it desugars to split/join or the
+# Regex's replace_all, both already symmetric). Bodies are single-quote raw,
+# so regex literals use the `re"..."` (double-quote) form.
+let reps = [
+  '"a,b,c".replace(",", "、")',
+  '"aaa".replace("a", "bb")',
+  '"no".replace("x", "y")',
+  '"a1b22c333".replace(re"\d+", "#")',
+  '"x@y".replace(re"(\w+)@(\w+)", "$2.$1")',
+  '"x12y3".replace(re"\d+", fn (m) { "[{m.value}]" })',
+  '"10-20".replace(Regex.compile("(?<a>\d+)-(?<b>\d+)"), "$<a>から$<b>")',
+  '"a, b  1".replace(",", "、").replace(re"\s+", " ").replace(re"\d", "N")']
+for r in reps {
+  case("replace|" + r, r)
+}
+
 print(out.join("\n"))

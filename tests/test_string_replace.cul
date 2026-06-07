@@ -1,0 +1,30 @@
+# String.replace (UFCS over the stdlib `replace` helper): replace every
+# occurrence and return a new String, so transforms chain. `pat` String ->
+# literal; `pat` a compiled Regex (incl. `re'...'`) -> regex, with a
+# template or `fn (Match) -> String` repl.
+
+# Literal (all occurrences, like Python str.replace).
+assert_eq("a,b,c".replace(",", "、"), "a、b、c")
+assert_eq("aaa".replace("a", "bb"), "bbbbbb")
+assert_eq("no match".replace("x", "y"), "no match")
+
+# Regex literal.
+assert_eq("a1b22c333".replace(re'\d+', "#"), "a#b#c#")
+
+# Regex template backreferences (positional + named).
+assert_eq("x@y".replace(re'(\w+)@(\w+)', '$2.$1'), "y.x")
+assert_eq("John 3".replace(re'(?<w>\w+) (?<n>\d+)', "$<n>:$<w>"), "3:John")
+
+# Regex with a callback repl.
+assert_eq("x12y3".replace(re'\d+', fn (m) { "[{m.value}]" }), "x[12]y[3]")
+
+# A pre-compiled named Regex works too.
+let R = Regex.compile("(?<a>\d+)-(?<b>\d+)")
+assert_eq("10-20".replace(R, "$<a>から$<b>"), "10から20")
+
+# Chaining — the whole point.
+assert_eq(
+  "a, b  1".replace(",", "、").replace(re'\s+', " ").replace(re'\d', "N"),
+  "a、 b N")
+
+IO.puts("test_string_replace OK")
