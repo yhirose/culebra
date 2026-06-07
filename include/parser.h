@@ -248,7 +248,7 @@ const auto grammar_ = R"(
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
@@ -367,6 +367,24 @@ const auto grammar_ = R"(
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
+
+  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is always
+  # RAW — no escape decoding, no `{...}` interpolation — regardless of which
+  # quote delimits it, so regex metacharacters, `\d`/`\w`, and `{n}`
+  # quantifiers all pass through verbatim (the `re` prefix overrides the
+  # usual interpolation of `"..."`). The closing quote is the only delimiter;
+  # `{}` cannot be a `{expr}` interpolation here because it collides with
+  # quantifiers (build dynamic patterns with `Regex.compile(...)` instead).
+  # Optional trailing flag letters (i/m/s) follow the closing quote. After
+  # parsing, a REGEX_LIT is desugared to `Regex.compile(<body>, <flags>)`
+  # so both backends reuse the existing Regex machinery (see desugar in
+  # parser.h). `re` not followed by a quote falls through to IDENTIFIER, so
+  # `re` stays usable as an ordinary name.
+  REGEX_LIT                <-  're' REGEX_BODY REGEX_FLAGS
+  REGEX_BODY               <-  ['] < (!['] .)* > [']
+                            /  '"' < (!'"' .)* > '"'
+                            /  '`' < (!'`' .)* > '`'
+  REGEX_FLAGS              <-  < [ims]* >
 
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')
@@ -1081,6 +1099,67 @@ inline std::pair<size_t, size_t> call_callee_position(const peg::Ast& call) {
 // modules' string_views aliasing the source stay valid.
 inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble();
 
+// A `re'...'` / `re"..."` / `` re`...` `` literal is desugared, after AST
+// optimization, into an ordinary `Regex.compile(<body>, <flags>)` call so both
+// backends reuse the existing Regex machinery (no new eval/codegen paths). The
+// REGEX_LIT node carries two token children: the raw body (a view into the
+// source, like any STRING) and the flag letters ("" when absent).
+inline std::shared_ptr<peg::Ast> make_regex_compile_call(const peg::Ast& lit) {
+  using Node = peg::Ast;
+  const char* path = lit.path.c_str();
+  size_t ln = lit.line, col = lit.column;
+  const auto& body = *lit.nodes[0];
+  const auto& flags = *lit.nodes[1];
+
+  // Both backends resolve a `Ns.method(args)` call by the *original_tag* of
+  // each child (PRIMARY callee / DOT method / ARGUMENTS list / ARG_ITEM args),
+  // not just by name — the AstOptimizer normally leaves `tag` and
+  // `original_tag` distinct (e.g. a DOT node whose `tag` is IDENTIFIER). The
+  // single-arg `Node(name, token)` / `Node(name, nodes)` constructors set
+  // `original_tag == tag`, which the JIT's namespace resolution rejects. The
+  // copy-with-original_name constructor reproduces the real shape: `tok`/`grp`
+  // build a node whose `tag` comes from `name` and whose `original_tag` comes
+  // from `orig`, exactly as the optimizer emits for a hand-written call.
+  // The copy-with-original_name constructor takes its source by const&, so a
+  // stack temporary is enough — no need to heap-allocate the inner node.
+  auto tok = [&](const char* name, const char* orig, std::string_view t,
+                 size_t l, size_t c) {
+    return std::make_shared<Node>(Node(path, l, c, name, t), orig);
+  };
+  auto grp = [&](const char* name, const char* orig,
+                 std::vector<std::shared_ptr<Node>> kids) {
+    return std::make_shared<Node>(Node(path, ln, col, name, kids), orig);
+  };
+
+  std::vector<std::shared_ptr<Node>> args;
+  args.push_back(
+      tok("STRING", "ARG_ITEM", body.token, body.line, body.column));
+  if (!flags.token.empty()) {
+    args.push_back(
+        tok("STRING", "ARG_ITEM", flags.token, flags.line, flags.column));
+  }
+
+  std::vector<std::shared_ptr<Node>> call;
+  call.push_back(tok("IDENTIFIER", "PRIMARY", std::string_view("Regex"), ln, col));
+  call.push_back(tok("IDENTIFIER", "DOT", std::string_view("compile"), ln, col));
+  call.push_back(grp("ARG_LIST", "ARGUMENTS", std::move(args)));
+  return grp("CALL", "CALL", std::move(call));
+}
+
+// Walk the optimized AST, replacing every REGEX_LIT with its desugared call.
+// The tree is freshly built by the optimizer and owned solely by the caller,
+// so children are rewritten in place.
+inline std::shared_ptr<peg::Ast> desugar_regex_literals(
+    std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  // Match on `tag` (the node's own name): the optimizer may collapse a
+  // single-child EXPRESSION onto the REGEX_LIT, which rewrites `original_tag`
+  // to EXPRESSION while `tag` stays REGEX_LIT.
+  if (node->tag == "REGEX_LIT"_) return make_regex_compile_call(*node);
+  for (auto& child : node->nodes) child = desugar_regex_literals(child);
+  return node;
+}
+
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        const char* expr, size_t len,
                                        std::vector<std::string>& msgs) {
@@ -1111,10 +1190,10 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
                "CTOR_PATTERN",
                "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
-               "TRIPLE_STRING", "SPREAD_ELEM",
+               "TRIPLE_STRING", "REGEX_LIT", "SPREAD_ELEM",
                "IMPORT_STMT", "EXPORT_STMT"});
 
-    return opt.optimize(ast);
+    return desugar_regex_literals(opt.optimize(ast));
   }
 
   return nullptr;

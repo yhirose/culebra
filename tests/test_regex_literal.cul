@@ -1,0 +1,47 @@
+// Conformance: `re"..."` regex literals. A literal desugars (after parsing)
+// to `Regex.compile(<body>, <flags>)`, so it is a compiled Regex value and
+// reuses the whole Regex object API. The body is RAW across all three quote
+// flavors — no escape decoding, no `{...}` interpolation — so `\d`, `\w` and
+// `{n}` quantifiers pass through verbatim. The closing quote is the only
+// delimiter; optional trailing flag letters (i/m/s) follow it.
+
+// --- single-quote body ---
+assert_true(re'\d+'.test("abc 123"))
+assert_false(re'\d+'.test("no digits"))
+
+// --- double-quote body is ALSO raw: the `re` prefix overrides interpolation,
+//     so `{4}` is a quantifier, not a `{expr}` interpolation, and `\d` is not
+//     an escape ---
+assert_true(re"\d+".test("x9"))
+assert_eq(re"\d{4}".find("on 2026-05").value, "2026")
+
+// --- backtick body (handy when a pattern must hold both ' and ") ---
+assert_true(re`\d+`.test("x5"))
+
+// --- trailing flags ---
+assert_true(re"hello"i.test("HELLO world"))
+assert_false(re"hello".test("HELLO world"))
+
+// --- method chaining right after the literal ---
+assert_eq(re'\w+'.find("  hello world").value, "hello")
+assert_eq(re'(\d+)'.find("ab12")[1], "12")
+
+// --- capture groups ---
+let date = re'(\d{4})-(\d{2})-(\d{2})'
+let dm = date.find("on 2026-05-30 today")
+assert_eq(dm.value, "2026-05-30")
+assert_eq(dm.groups[1].value, "2026")
+
+// --- bound to a let, used as a value ---
+let d = re'\d+'
+assert_eq(d.find_all("a1 b22 c333").size(), 3)
+
+// --- find_all / replace_all over a literal ---
+assert_eq(re'\d+'.find_all("a1 b22 c333").size(), 3)
+assert_eq(re'\d+'.replace_all("a1b2c3", "#"), "a#b#c#")
+
+// --- `re` is still an ordinary identifier when no quote follows ---
+let re = 5
+assert_eq(re, 5)
+let result = 7
+assert_eq(result, 7)

@@ -4397,23 +4397,22 @@ inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
 // positives (e.g. `let myTime = 1`) just include an unneeded module; only
 // true negatives skip a module, preserving correctness.
 inline std::string stdlib_preamble_for(std::string_view user_src) {
+  auto has = [&](std::string_view m) {
+    return user_src.find(m) != std::string_view::npos;
+  };
   // Each module is pulled in when its marker appears anywhere in the
   // source; `assert_` pulls the whole matcher family (no other stdlib
-  // symbol starts with it). Adding a module is a single row here.
-  static constexpr struct {
-    std::string_view marker;
-    const char* source;
-  } kModules[] = {
-      {"Time", TIME_MODULE_SOURCE},
-      {"Args", ARGS_MODULE_SOURCE},
-      {"assert_", MATCHERS_MODULE_SOURCE},
-      {"Regex", REGEX_MODULE_SOURCE},
-  };
+  // symbol starts with it). A `re'...'` / `re"..."` / `` re`...` `` regex
+  // literal desugars to `Regex.compile(...)` (see parser.h) but leaves no
+  // `Regex` substring in the source, so its prefixes are extra markers for
+  // the Regex module. Over-approximation is safe — a false positive (e.g.
+  // "there's" matching `re'`) just inlines an unused module.
   std::string preamble;
-  for (const auto& m : kModules) {
-    if (user_src.find(m.marker) != std::string_view::npos)
-      preamble.append(m.source);
-  }
+  if (has("Time")) preamble.append(TIME_MODULE_SOURCE);
+  if (has("Args")) preamble.append(ARGS_MODULE_SOURCE);
+  if (has("assert_")) preamble.append(MATCHERS_MODULE_SOURCE);
+  if (has("Regex") || has("re'") || has("re\"") || has("re`"))
+    preamble.append(REGEX_MODULE_SOURCE);
   return preamble;
 }
 

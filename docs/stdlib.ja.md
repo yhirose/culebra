@@ -1979,6 +1979,11 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 （`Regex.compile('hello', "i")`）か、パターン内にインライン: `(?i)` 大文字小文字
 無視、`(?m)` 複数行、`(?s)` dotall。
 
+定数パターンには [`re"..."` リテラル](language.ja.md#regex-リテラル)が
+`Regex.compile(...)` の短縮形として使えます — `re'\d+'` や `re"hello"i` は
+同じコンパイル済み `Regex` で、本体は常に raw、フラグは閉じクォートの直後。
+実行時に組み立てるパターンは `Regex.compile(...)` を直接使ってください。
+
 パターンと対象文字列はどちらの文字列型（`String` / `StringView`）も受け付ける
 ので、`String.split` / `.slice` が返す `StringView` をそのまま渡せます:
 `Regex.compile('\d+').find_all(line.slice(0, 80))`。

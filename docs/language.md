@@ -698,6 +698,39 @@ the cleanest form for regex patterns that mix apostrophes and braces
 (e.g. a GPT-2 pre-tokenizer: `` `'s| ?\p{L}+|\s+(?!\S)` ``), where neither
 `'...'` (no apostrophes) nor `"..."` (interpolates `{...}`) fits.
 
+### Regex literals
+
+    re'\d+'             # a compiled Regex, same as Regex.compile('\d+')
+    re"\d{4}-\d{2}"     # `re` makes the body raw, so {4} is a quantifier
+    re`["']\w+`         # backtick body: holds both ' and "
+    re"hello"i          # trailing flags (i / m / s)
+
+A `re'...'` / `re"..."` / `` re`...` `` literal evaluates to a compiled
+[`Regex`](stdlib.md#14-regex) value — it is exactly `Regex.compile(<body>,
+<flags>)` and supports the whole Regex object API, so it chains directly:
+
+    re'\w+'.find("  hello world").value   # => "hello"
+    re"hello"i.test("HELLO")              # => true
+
+The body is **raw regardless of the quote** — the `re` prefix turns off
+escape decoding *and* `{...}` interpolation, so `\d`, `\w`, and `{n}`
+quantifiers pass through verbatim and the closing quote is the only
+delimiter. This is why `"..."` works here even though it interpolates
+elsewhere: a regex `{4}` quantifier would otherwise collide with a
+`{expr}` interpolation. For a **dynamic** pattern, build a string and pass
+it to `Regex.compile(...)` (there is no interpolation inside a literal —
+this also avoids regex injection):
+
+    let n = 4
+    Regex.compile('\d{' + n.to_s() + '}')
+
+Optional trailing flag letters (`i` case-insensitive, `m` multi-line, `s`
+dot-matches-newline) follow the closing quote: `re"^b"m`. There is no
+`/.../ ` form: `/` is division, and disambiguating the two needs a
+stateful lexer culebra deliberately avoids. `re` is only a regex prefix
+when a quote immediately follows — otherwise it is an ordinary identifier
+(`let re = 5` is fine).
+
 ### Triple-quoted strings
 
     """multi-line

@@ -184,9 +184,16 @@
   SPREAD_ELEM              <-  '...' _ EXPRESSION
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
-  # The loop variable may be a destructuring pattern: `for (i, x) in
-  # arr.enumerate()`, `for [a, b] in pairs`, `for {k, v} in entries`.
-  FOR                      <-  for _ (TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER) _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
+  # The loop variable may be a destructuring pattern. Bare comma-separated
+  # targets `for k, v in obj` are sugar for a parenthesized tuple pattern
+  # `for (k, v) in obj`: FOR_BINDING emits a TUPLE_PATTERN tag, which the
+  # AST optimizer collapses to the lone child when there is only one
+  # target (so `for x in xs` / `for (a, b) in xs` are unchanged) and keeps
+  # as a real TUPLE_PATTERN node for two-or-more, reusing the existing
+  # tuple-destructure matcher in both backends.
+  FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
+  FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*   { ast_name: TUPLE_PATTERN }
+  FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
@@ -225,7 +232,7 @@
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
@@ -344,6 +351,24 @@
   # brace). Tried before `"` in PRIMARY so `"""` isn't read as `""` + `"`.
   TRIPLE_STRING            <-  '"""' (INTERP_EXPR / TRIPLE_CONTENT)* '"""'
   TRIPLE_CONTENT           <-  ('\\u{' [0-9a-fA-F]* '}' / '\\' . / !('"""' / '{' / '\\') .)+
+
+  # Regex literal: `re'...'` / `re"..."` / `` re`...` ``. The body is always
+  # RAW — no escape decoding, no `{...}` interpolation — regardless of which
+  # quote delimits it, so regex metacharacters, `\d`/`\w`, and `{n}`
+  # quantifiers all pass through verbatim (the `re` prefix overrides the
+  # usual interpolation of `"..."`). The closing quote is the only delimiter;
+  # `{}` cannot be a `{expr}` interpolation here because it collides with
+  # quantifiers (build dynamic patterns with `Regex.compile(...)` instead).
+  # Optional trailing flag letters (i/m/s) follow the closing quote. After
+  # parsing, a REGEX_LIT is desugared to `Regex.compile(<body>, <flags>)`
+  # so both backends reuse the existing Regex machinery (see desugar in
+  # parser.h). `re` not followed by a quote falls through to IDENTIFIER, so
+  # `re` stays usable as an ordinary name.
+  REGEX_LIT                <-  're' REGEX_BODY REGEX_FLAGS
+  REGEX_BODY               <-  ['] < (!['] .)* > [']
+                            /  '"' < (!'"' .)* > '"'
+                            /  '`' < (!'`' .)* > '`'
+  REGEX_FLAGS              <-  < [ims]* >
 
   ~class                   <-  K('class')
   ~debugger                <-  K('debugger')

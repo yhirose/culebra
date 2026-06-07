@@ -2059,6 +2059,11 @@ string `` `...` `` — also raw, but it may hold `'`, `"`, and `{`. Flags are
 either passed to `compile` as a string (`Regex.compile('hello', "i")`) or inline
 in the pattern: `(?i)` case-insensitive, `(?m)` multiline, `(?s)` dotall.
 
+For a constant pattern, the [`re"..."` literal](language.md#regex-literals) is
+shorthand for `Regex.compile(...)` — `re'\d+'` and `re"hello"i` are the same
+compiled `Regex`, with the body always raw and flags trailing the closing
+quote. Use `Regex.compile(...)` directly when the pattern is built at runtime.
+
 The pattern and subject accept either string flavor (`String` or `StringView`),
 so the `StringView` results of `String.split` / `.slice` compose directly:
 `Regex.compile('\d+').find_all(line.slice(0, 80))`.

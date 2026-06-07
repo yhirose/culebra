@@ -27,8 +27,10 @@ trap 'rm -f "$TMP_PEG" "$TMP_KW" "$TMP_MAP_KW" "$TMP_VIM_BLOCK" "$TMP_VIM"' EXIT
 # 1. Extract the embedded grammar block.
 awk '/^const auto grammar_ = R"\(/{flag=1; next} /^\)";/{flag=0; exit} flag{print}' "$PARSER" > "$TMP_PEG"
 
-# 2. Extract all keyword literals from the grammar (skip the wildcard '_').
-grep -oE "'[a-zA-Z_]+'" "$TMP_PEG" | tr -d "'" | grep -v '^_$' | sort -u > "$TMP_KW"
+# 2. Extract all keyword literals from the grammar. Skip the wildcard '_' and
+#    the regex-literal prefix 're' (REGEX_LIT) — the latter is contextual (a
+#    quote must follow) and stays a valid identifier, so it is not a keyword.
+grep -oE "'[a-zA-Z_]+'" "$TMP_PEG" | tr -d "'" | grep -vE '^(_|re)$' | sort -u > "$TMP_KW"
 
 # 3. Warn about K() keywords missing from the map.
 awk -F: '/^cul/{
