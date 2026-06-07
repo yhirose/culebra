@@ -5345,6 +5345,41 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     }
   }
 
+  // Validate required slots are filled *before* rejecting leftover kwargs,
+  // mirroring the interp binder's order: it walks formal params in
+  // declaration order (raising "missing required argument" as it hits an
+  // unfilled required slot) and only treats still-unconsumed kwargs as
+  // "unknown" afterwards. So `f(bad: 1)` on `fn f(x)` is a missing-x
+  // ArityError, not an unknown-bad TypeError. Defaulted slots get
+  // TAG_UNFILLED so the callee prologue takes the default branch. The
+  // `**rest` slot is always satisfied (filled below, even if empty), so
+  // skip it here.
+  for (size_t i = 0; i < arity; i++) {
+    if (filled[i]) continue;
+    if (static_cast<int64_t>(i) == meta->kwargs_rest_idx) continue;
+    bool defaulted =
+        meta->has_default_bits[i / 8] & (1u << (i % 8));
+    if (!defaulted) {
+      auto missing = meta->names[i];
+      for (size_t k = 0; k < arity; k++) {
+        if (filled[k]) _culebra_value_release_impl(slab[k].tag,
+                                                    slab[k].data);
+      }
+      // Leftover kwargs are still owned here (the unknown-keyword check
+      // below has not run yet); release them on this early-exit path.
+      for (auto& [_, v] : merged) {
+        _culebra_value_release_impl(v.tag, v.data);
+      }
+      for (int64_t k = 0; k < n_splat; k++) {
+        _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
+      }
+      throw culebra::CulebraError("ArityError",
+          std::format("missing required argument '{}'", missing),
+          line, col);
+    }
+    slab[i] = {TAG_UNFILLED, 0};
+  }
+
   // Leftover kwargs flow into a `**rest` slot if declared, otherwise
   // they are unknown to this function. The rest slot is always
   // populated (even with an empty Object) so the callee always sees
@@ -5374,28 +5409,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     throw culebra::CulebraError("TypeError",
         std::format("unknown keyword argument '{}'", bad_name),
         line, col);
-  }
-
-  // Validate required slots are filled. Defaulted slots get
-  // TAG_UNFILLED so the callee prologue takes the default branch.
-  for (size_t i = 0; i < arity; i++) {
-    if (filled[i]) continue;
-    bool defaulted =
-        meta->has_default_bits[i / 8] & (1u << (i % 8));
-    if (!defaulted) {
-      auto missing = meta->names[i];
-      for (size_t k = 0; k < arity; k++) {
-        if (filled[k]) _culebra_value_release_impl(slab[k].tag,
-                                                    slab[k].data);
-      }
-      for (int64_t k = 0; k < n_splat; k++) {
-        _culebra_value_release_impl(splat_objs[k].tag, splat_objs[k].data);
-      }
-      throw culebra::CulebraError("ArityError",
-          std::format("missing required argument '{}'", missing),
-          line, col);
-    }
-    slab[i] = {TAG_UNFILLED, 0};
   }
 
   // Extras past the formal arity flow into `__ARGS__`.
@@ -14494,8 +14507,9 @@ struct JIT {
     }
     llvm::Value* body_val = nullptr;
     size_t new_arity = 0;
+    llvm::Constant* new_param_meta = nullptr;
     if (new_ast) {
-      body_val = compile_function(*new_ast);
+      body_val = compile_function(*new_ast, &new_param_meta);
       new_arity = culebra::view_method(*new_ast).params->nodes.size();
     }
 
@@ -14557,6 +14571,20 @@ struct JIT {
 
     auto ctor_fn =
         emit_constructor_fn(class_name, new_ast != nullptr, new_arity);
+
+    // Register the `new` body's param meta under the synthesized ctor
+    // wrapper's fn_ptr. The kwargs resolver (call_with_kwargs) keys meta
+    // by fn_ptr, so `C.new(x: 1)` then binds keyword args into a positional
+    // slab exactly as the interp's constructor binder does, before the
+    // wrapper forwards that slab to the body. Without this, a kwarg ctor
+    // call hit the no-meta branch and raised "does not accept keyword
+    // arguments" — an interp/JIT divergence (the interp supports ctor kwargs).
+    if (new_param_meta) {
+      emit_call(
+          module_->getOrInsertFunction(rt::register_param_meta,
+                                       builder_.getVoidTy(), ptrTy, ptrTy),
+          {ctor_fn, new_param_meta});
+    }
 
     // Captures: meta first, then body if present. (Methods themselves
     // were transferred into the meta object above and don't need to
@@ -14922,7 +14950,8 @@ struct JIT {
     return make_nil();
   }
 
-  llvm::Value* compile_function(const peg::Ast& ast) {
+  llvm::Value* compile_function(const peg::Ast& ast,
+                                llvm::Constant** outParamMeta = nullptr) {
     using namespace peg::udl;
     // FUNCTION: [PARAMETERS, (RETURN_TYPE)?, BLOCK]
     // METHOD:   [IDENTIFIER, PARAMETERS, BLOCK] (no return-type slot).
@@ -14943,7 +14972,7 @@ struct JIT {
       body_ast = fv.body;
     }
     return compile_fn_common(&ast, *params_ast, body_ast, returnType,
-                              declName);
+                              declName, outParamMeta);
   }
 
   // LAMBDA ast: [LAMBDA_PARAMS, BODY]. No declared return type. BODY
@@ -14962,7 +14991,12 @@ struct JIT {
       const peg::Ast& params_ast,
       std::shared_ptr<peg::Ast> body_ast,
       std::string_view returnType,
-      std::string_view declName = {}) {
+      std::string_view declName = {},
+      // When non-null, receives this function's JitParamMeta global so the
+      // caller can register it under a *second* fn_ptr. A class constructor
+      // reuses its `new` body's meta on the synthesized ctor wrapper, which
+      // is what makes `C.new(x: 1)` bind kwargs the same way the interp does.
+      llvm::Constant** outParamMeta = nullptr) {
     using namespace llvm;
     auto ptrTy = PointerType::get(ctx_, 0);
 
@@ -15454,6 +15488,7 @@ struct JIT {
         fn, paramNames, paramDefaults, kwargsRestIdx, firstKwOnlyIdx,
         std::string(declName), std::string(returnType), paramMuts,
         paramTypeNames, paramDeclaredTypeNames, cbMin, cbMax);
+    if (outParamMeta) *outParamMeta = paramMeta;
     return emit_closure_build(fn, info, paramNames.size(), paramMeta);
   }
 
@@ -16368,15 +16403,24 @@ struct JIT {
     // rejecting at compile time; the builtin branch still raises if the
     // receiver turns out to be a real builtin value.
     bool has_kwargs = !arg_list_is_positional_only(argsAst);
-    if (has_kwargs && known_builtin_methods().contains(method)) {
+    // `remove` is in known_builtin_methods; `add` is not (it is special-cased
+    // only in the set-mutate dispatch below). Both must route a kwargs call
+    // through compile_user_method_over_builtin so a user class method binds
+    // keywords (a class `add(a, b)` called `obj.add(a: 1, b: 2)`) while a real
+    // Set receiver raises "built-in method 'add' does not accept keyword
+    // arguments" — the set-mutate fast path treats its one arg as positional
+    // and would silently misbind a keyword.
+    if (has_kwargs && (known_builtin_methods().contains(method) ||
+                       method == "add")) {
       return compile_user_method_over_builtin(method, argsAst, receiver);
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
     // a runtime tag dispatch here so both worlds coexist: Set receiver
     // → set_add_method / set_remove; Object receiver → user property.
+    // Positional-only: a kwargs call was already routed above.
     if ((method == "add" || method == "remove") &&
-        argsAst.nodes.size() == 1) {
+        argsAst.nodes.size() == 1 && !has_kwargs) {
       if (auto* r = compile_set_mutate_dispatch(method, argsAst, receiver)) {
         return r;
       }

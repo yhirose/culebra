@@ -258,4 +258,44 @@ for t in tensors {
   case("tensor|" + t, t)
 }
 
+# --- Dimension 16: keyword-argument binding (constructors + methods) -------
+# The JIT used to (a) reject every keyword arg to a constructor ("function does
+# not accept keyword arguments") and (b) check unknown-keyword before
+# missing-required — both interp/JIT divergences. Sweep ctor + method calls
+# over kwarg shapes (good and bad) so the bound value OR the error
+# kind/message/position stays identical across backends. A fresh class is
+# declared inside each thunk (single-quote raw so the decl braces are literal,
+# not read as `"{...}"` interpolation).
+let kwc_pre = 'class C { new(a, b = 10) { this.s = a + b } m(a, b = 10) { a + b } }; '
+let kw_ctor_calls = ['C.new(1).s', 'C.new(1, 2).s', 'C.new(a: 1).s',
+                     'C.new(a: 1, b: 2).s', 'C.new(b: 2, a: 1).s',
+                     'C.new(1, b: 2).s', 'C.new(1, **{b: 5}).s',
+                     'C.new().s', 'C.new(bad: 1).s', 'C.new(1, bad: 2).s',
+                     'C.new(1, a: 2).s', 'C.new(a: 1, a: 2).s']
+for c in kw_ctor_calls {
+  case("kwbind-ctor|" + c, kwc_pre + c)
+}
+let kw_method_calls = ['C.new(0).m(1)', 'C.new(0).m(1, 2)', 'C.new(0).m(a: 1)',
+                       'C.new(0).m(a: 1, b: 2)', 'C.new(0).m(b: 2, a: 1)',
+                       'C.new(0).m(1, b: 2)', 'C.new(0).m()',
+                       'C.new(0).m(bad: 1)', 'C.new(0).m(1, bad: 2)',
+                       'C.new(0).m(1, a: 2)']
+for c in kw_method_calls {
+  case("kwbind-method|" + c, kwc_pre + c)
+}
+# A method whose name collides with a builtin (`add`, also a Set method) must
+# still bind kwargs to the user method, not the JIT's positional set-mutate
+# fast path (which silently misbound a keyword as a positional arg).
+let kwa_pre = 'class A { new() {} add(a, b = 10) { a + b } }; '
+let kw_add_calls = ['A.new().add(1)', 'A.new().add(a: 1)',
+                    'A.new().add(a: 1, b: 2)', 'A.new().add(1, b: 2)',
+                    'A.new().add(bad: 1)', 'A.new().add()']
+for c in kw_add_calls {
+  case("kwbind-add|" + c, kwa_pre + c)
+}
+# A real Set receiver rejects keywords to its mutating add/remove.
+for c in ['{1, 2}.add(x: 3)', '{1, 2}.remove(x: 1)'] {
+  case("kwbind-setmut|" + c, c)
+}
+
 print(out.join("\n"))
