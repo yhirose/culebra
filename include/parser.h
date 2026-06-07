@@ -200,9 +200,16 @@ const auto grammar_ = R"(
   SPREAD_ELEM              <-  '...' _ EXPRESSION
 
   WHILE                    <-  while _ EXPRESSION _ BLOCK
-  # The loop variable may be a destructuring pattern: `for (i, x) in
-  # arr.enumerate()`, `for [a, b] in pairs`, `for {k, v} in entries`.
-  FOR                      <-  for _ (TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER) _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
+  # The loop variable may be a destructuring pattern. Bare comma-separated
+  # targets `for k, v in obj` are sugar for a parenthesized tuple pattern
+  # `for (k, v) in obj`: FOR_BINDING emits a TUPLE_PATTERN tag, which the
+  # AST optimizer collapses to the lone child when there is only one
+  # target (so `for x in xs` / `for (a, b) in xs` are unchanged) and keeps
+  # as a real TUPLE_PATTERN node for two-or-more, reusing the existing
+  # tuple-destructure matcher in both backends.
+  FOR                      <-  for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK   { no_ast_opt }
+  FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*   { ast_name: TUPLE_PATTERN }
+  FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   IF                       <-  if _ EXPRESSION _ BLOCK (_ else _ if _ EXPRESSION _ BLOCK)* (_ else _ BLOCK)?
 
   MATCH                    <-  match _ EXPRESSION _ '{' _ MATCH_ARMS _ '}'
@@ -1096,8 +1103,13 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                "CLASS_DECL", "METHOD", "DECORATOR",
                "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
                "ENUM_DECL", "VARIANT",
+               // TUPLE_PATTERN is intentionally absent: a real tuple
+               // pattern always has >=2 children (grammar requires
+               // `'(' PATTERN ',' PATTERN ...`), so it is never collapsed
+               // anyway, while FOR_BINDING (which emits a TUPLE_PATTERN
+               // tag) must collapse to its lone child for single targets.
                "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
-               "TUPLE_PATTERN", "CTOR_PATTERN",
+               "CTOR_PATTERN",
                "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
                "TRIPLE_STRING", "SPREAD_ELEM",
                "IMPORT_STMT", "EXPORT_STMT"});
