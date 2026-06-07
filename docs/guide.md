@@ -102,6 +102,7 @@ A Culebra source file uses the `.cul` extension. Run it with the
 echo "puts('hello, culebra!')" > hello.cul
 ./build/culebra hello.cul          # interpreter
 ./build/culebra --jit hello.cul    # JIT (same output)
+./build/culebra --help             # all options and commands
 ```
 
 Comments start with `#` (line) or `/* ... */` (block). Statements may

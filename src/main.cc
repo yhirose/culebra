@@ -69,6 +69,7 @@ struct Options {
   bool print_ast = false;
   bool shell = false;
   bool debug = false;
+  bool help = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
   bool emit_llvm = false;
@@ -186,6 +187,45 @@ struct BuildOptions {
   bool emit_llvm = false;
   int opt_level = 2;
 };
+
+void print_usage(ostream& os) {
+  os << "Usage: culebra [options] [script.cul] [script-args...]\n"
+        "       culebra <command> [command-options]\n"
+        "\n"
+        "Run a culebra program, or start a REPL when no script is given.\n"
+        "Arguments after the script path are passed to it as Sys.argv (the\n"
+        "Python / Node convention — no `--` needed).\n"
+        "\n"
+        "Options:\n"
+        "  --shell            Start the interactive REPL (the default when\n"
+        "                     no script is given)\n"
+        "  --ast              Print the parsed AST instead of running it\n"
+        "  --debug            Print debug diagnostics while running\n"
+#ifdef CULEBRA_JIT_ENABLED
+        "  --jit              Run through the LLVM JIT instead of the\n"
+        "                     tree-walking interpreter (same observable output)\n"
+        "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
+        "  -O<level>          JIT optimization level 0-3 (default 2)\n"
+#endif
+        "  --                 Stop parsing options; the next argument is the\n"
+        "                     script even if it begins with '-'\n"
+        "  -h, --help         Show this help and exit\n"
+        "\n"
+        "Commands:\n"
+        "  build <in.cul> -o <out>   Compile ahead-of-time into a standalone\n"
+        "                            executable (`culebra build --help`)\n"
+        "  test [paths...]           Run tests / doctests (--filter, --doc,\n"
+        "                            --reporter, --bail, --list)\n"
+        "\n"
+        "Examples:\n"
+        "  culebra hello.cul              Run a script (interpreter)\n"
+#ifdef CULEBRA_JIT_ENABLED
+        "  culebra --jit hello.cul        Run the same script through the JIT\n"
+#endif
+        "  culebra                        Start the REPL\n"
+        "  culebra app.cul a b c          Run with Sys.argv == [\"a\",\"b\",\"c\"]\n"
+        "  culebra build app.cul -o app   Build a standalone binary\n";
+}
 
 void print_build_usage(ostream& os) {
   os << "Usage: culebra build <input.cul> -o <output> [options]\n"
@@ -524,6 +564,7 @@ Options parse_command_line(int argc, const char** argv) {
     }
     if (!no_flags) {
       if (arg == "--") { no_flags = true; continue; }
+      if (arg == "-h" || arg == "--help") { options.help = true; continue; }
       if (arg == "--shell") { options.shell = true; continue; }
       if (arg == "--ast") { options.print_ast = true; continue; }
       if (arg == "--debug") { options.debug = true; continue; }
@@ -765,6 +806,11 @@ int main(int argc, const char** argv) {
 
   auto options = parse_command_line(argc, argv);
   startup_profile::mark("parse_command_line");
+
+  if (options.help) {
+    print_usage(cout);
+    return 0;
+  }
 
 #ifdef CULEBRA_JIT_ENABLED
   culebra::install_jit_stdlib();

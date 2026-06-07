@@ -96,6 +96,7 @@ Culebra ソースの拡張子は `.cul`。 `culebra` バイナリで実行:
 echo "puts('hello, culebra!')" > hello.cul
 ./build/culebra hello.cul          # インタプリタ
 ./build/culebra --jit hello.cul    # JIT (出力は同じ)
+./build/culebra --help             # 全オプション・コマンド一覧
 ```
 
 コメントは `#` (行) または `/* ... */` (ブロック)。 文は `;` で
