@@ -91,6 +91,8 @@ Build the interpreter (and JIT, if LLVM 17+ is installed):
 ```bash
 just build              # with JIT
 just build-no-jit       # interpreter only, ~1 MB
+just dev                # fast no-LTO build into build-dev/ (inner loop)
+just test-dev           # quick interp==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embed smoke (parallel; JOBS=1 to serialize)
 ./build/culebra --shell # REPL (add --jit for the JIT REPL)
 ```

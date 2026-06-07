@@ -60,9 +60,22 @@ check-grammar-sync:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
-[doc("Run tests. BACKEND=all|interp|jit|aot|embed (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + AOT (set on the slow macOS CI runner).")]
+[doc("Full gate (LTO build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + AOT (set on the slow macOS CI runner).")]
 [group("test")]
 test BACKEND='all': build
+    @just _run-tests {{BACKEND}}
+
+# Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
+# Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT
+# symmetry sweep + culebra-test self + isolate (BACKEND=fast, the default).
+# Run this after each edit; `just test` is the heavier pre-commit gate.
+[doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|interp|jit|isolate (default: fast).")]
+[group("test")]
+test-dev BACKEND='fast': dev
+    @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
+
+[private]
+_run-tests BACKEND:
     #!/usr/bin/env bash
     set -euo pipefail
     shopt -s nullglob
@@ -85,9 +98,13 @@ test BACKEND='all': build
     if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
     elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
     CULEBRA_TEST_TIMEOUT="${CULEBRA_TEST_TIMEOUT:-300}"
-    cul() { ${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} ./build/culebra "$@"; }
+    # Which culebra to test. Defaults to the full LTO `just build` output;
+    # `test-dev` overrides it to the no-LTO build-dev/ binary for fast inner
+    # loops. AOT/embed phases derive their paths from BIN's build dir.
+    BIN="${BIN:-./build/culebra}"
+    cul() { ${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$BIN" "$@"; }
     export -f cul
-    export TIMEOUT_BIN CULEBRA_TEST_TIMEOUT
+    export BIN TIMEOUT_BIN CULEBRA_TEST_TIMEOUT
 
     # Per-recipe scratch dir for parallel job artifacts (per-file
     # stdout/stderr, .fail markers). Cleaned on exit.
@@ -208,7 +225,7 @@ test BACKEND='all': build
         # --timeout: bound each test so a stalled CI runner (GitHub's scarce
         # macOS VMs occasionally freeze a process) fails fast instead of hanging
         # the job for hours. 300 s is ~8x the slowest legit test (signal_test).
-        (cd build && ctest --output-on-failure --timeout 300)
+        (cd "$(dirname "$BIN")" && ctest --output-on-failure --timeout 300)
     }
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,
@@ -273,7 +290,7 @@ test BACKEND='all': build
         # A batch of 5114 generated cases, not a single invocation, so it gets
         # its own generous wall-clock bound (well above the honest runtime) —
         # only a genuine hang trips it.
-        ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh ./build/culebra
+        ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
 
     # Announce each phase with the running elapsed time, so a slow/stalled CI
@@ -295,12 +312,22 @@ test BACKEND='all': build
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
         phase "done"; echo "test OK"
         ;;
+      # Inner-loop core: the interp==JIT correctness invariant plus the two
+      # cheap symmetric suites. No difftest/AOT/embed, so it runs against the
+      # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
+      # check after a single edit; `all` is the pre-commit gate.
+      fast)
+        phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "culebra-test self"; run_culebra_test_self
+        phase "isolate (interp + jit)"; run_isolate
+        phase "done"; echo "test OK (fast)"
+        ;;
       interp) run_interp; run_isolate ;;
       jit)    run_jit ;;
       aot)    run_aot ;;
       embed)  run_embed ;;
       isolate) run_isolate ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|interp|jit|aot|embed|isolate)" >&2; exit 2 ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|interp|jit|aot|embed|isolate)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs (interp). Both en and ja

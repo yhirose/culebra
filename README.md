@@ -125,6 +125,8 @@ Requires a C++23 compiler and `just`. JIT also needs LLVM 17+.
 ```bash
 just build              # with JIT
 just build-no-jit       # interpreter only, ~1 MB binary
+just dev                # fast no-LTO build into build-dev/ (inner loop)
+just test-dev           # quick interp==JIT check vs build-dev/ (after each edit)
 just test               # all backends + embedding smoke (commit gate)
 
 ./build/culebra --shell                   # REPL  (--jit for JIT REPL)
