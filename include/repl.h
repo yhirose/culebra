@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <linenoise.hpp>
 #include "interpreter.h"
@@ -144,6 +145,15 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   // FunctionValues created during eval need those tokens (parameter
   // names, return types) to outlive the input that produced them.
   //
+  // Must be a `std::deque`, not a `std::vector`: a vector's `push_back`
+  // can reallocate and relocate every existing element, and a small
+  // input (e.g. `fn g(a) { a + 1 }`) lives inline in the `std::string`
+  // via SSO, so relocation moves its bytes to a new address and leaves
+  // a previously-defined function's `string_view` tokens dangling.
+  // `std::deque` never relocates existing elements on `push_back`, so
+  // every retained source — and the SSO bytes inside it — keeps a
+  // stable address for the whole session.
+  //
   // The AST nodes themselves do NOT need a separate retention list:
   // `FunctionValue`'s `eval` lambda captures the body subtree's
   // `shared_ptr<peg::Ast>` by value, which keeps the body and all
@@ -155,7 +165,7 @@ inline int repl(std::shared_ptr<Environment> env, bool print_ast) {
   // accept. A very long-running REPL (>>10K accepted inputs) would
   // accumulate noticeably; an LRU-style eviction is the natural
   // future cleanup.
-  std::vector<std::string> retained_sources_;
+  std::deque<std::string> retained_sources_;
 
   for (;;) {
     bool continuing = !accum.empty();
