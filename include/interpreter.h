@@ -42,6 +42,15 @@ struct ValueEq;
 struct Environment;
 inline void _call_drop_if_present(OrderedSymbolMap* m);
 inline void _destroy_prop_map(OrderedSymbolMap* m);
+// Raised by the cycle collector around its reclaim loop: `drop` must NOT
+// fire on cycle members (finalization order across a cycle is undefined —
+// matches Python's __del__ rule, the documented model, and the JIT sweep
+// which frees swept objects without invoking drop). _call_drop_if_present
+// honors it so interp cycle reclamation stays symmetric with the JIT.
+inline bool& _drop_suppressed() {
+  static thread_local bool v = false;
+  return v;
+}
 // Used by ValueHash / ValueEq's Object case to invoke user-defined
 // `hash()` / `eq()` methods (Hashable + Eq structural conformance).
 // Defined further down once Value / Environment / FunctionValue are
@@ -8367,9 +8376,12 @@ inline void InterpGC::collect() {
     walk_node(p, gc_refs.find(p)->second.is_env, mark);
   }
 
-  // Break cycles by clearing unreachable nodes. The shared_ptr cascade does
-  // the rest, including each freed PropMap's custom deleter (which fires
-  // `drop`). Clearing an Environment drops its bindings + outer chain.
+  // Break cycles by clearing unreachable nodes. The shared_ptr cascade frees
+  // each member's PropMap, but `drop` must NOT fire on cycle members (only
+  // genuine cycle garbage is freed here — anything shared with a reachable
+  // node keeps a positive refcount and is untouched). Suppress drop across
+  // the whole cascade so interp matches the JIT sweep (see _drop_suppressed).
+  _drop_suppressed() = true;
   for (auto& l : live) {
     if (reachable.contains(l.ptr)) continue;
     if (l.is_env) {
@@ -8380,6 +8392,7 @@ inline void InterpGC::collect() {
       static_cast<ValVec*>(l.ptr)->clear();
     }
   }
+  _drop_suppressed() = false;
 
   // Re-arm the next-collect threshold to twice the surviving live set
   // (floored at GC_MIN_THRESHOLD). Without this, a fixed threshold makes
@@ -8417,6 +8430,7 @@ inline void _destroy_prop_map(OrderedSymbolMap* m) {
 
 inline void _call_drop_if_present(OrderedSymbolMap* m) {
   if (!m) return;
+  if (_drop_suppressed()) return;  // cycle member — no finalizer (see decl)
   auto it = m->find("drop");
   if (it == m->end()) return;
   if (it->second.val.type != Value::Function) return;

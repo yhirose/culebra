@@ -2789,9 +2789,10 @@ cycle collector (see above), but `drop` is **not** called on cycle
 members. This matches Python's `__del__` rule for cyclic garbage —
 the order of finalization across cycle members would be
 non-deterministic, so the rule is "no finalizers in cycles." The
-guarantee applies on both backends: the interpreter has no cycle
-collector and leaks cycles (so drops never fire either way), and the
-JIT's cycle collector explicitly skips drop calls. To run cleanup
+guarantee applies on both backends: both reclaim the cycle, but
+neither runs `drop` on its members — the JIT sweep frees swept
+objects without it, and the interpreter's cycle collector suppresses
+`drop` while breaking the cycle. To run cleanup
 on a resource held by a cyclic structure, break the cycle manually
 before the last reference is released (e.g. `a.other = nil`), or use
 `defer` (§15) at the scope that owns the resource.
@@ -3981,11 +3982,12 @@ These do not affect any program-visible behavior, but operators
 embedding Culebra should be aware:
 
 * **Cycle collector tracking scope.** The interpreter's `InterpGC`
-  tracks `Array` (so cycles routed through an array are reclaimed).
-  The JIT's `_GcTracker` additionally tracks `Object`, `Closure`,
-  and `Cell`. Cycles formed purely between `Object`s without
-  passing through an array leak under the interpreter, but neither
-  backend invokes `drop` on cycle members either way.
+  tracks `Array`s and the `Environment`s captured by closures, so
+  cycles routed through either are reclaimed. The JIT's conservative
+  mark-sweep reclaims every cycle shape. Cycles formed purely between
+  `Object`s — passing through neither an array nor a closure — still
+  leak under the interpreter, but neither backend invokes `drop` on
+  cycle members either way.
 * **REPL persistence storage.** The interpreter persists session
   globals in the top-level `Environment` scope. The JIT uses a
   thread-local `JitReplGlobals` dict accessed via

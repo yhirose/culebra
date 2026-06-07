@@ -2620,9 +2620,10 @@ File.open = fn (path) {
 循環メンバーの `drop` は**呼ばれません**。Python の `__del__` の
 循環ガベージに対するルールと同じで、循環メンバー間の finalize 順序
 は非決定的になるため「循環内では finalizer を実行しない」という
-規則になっています。両バックエンドで保証されます: インタプリタには
-サイクルコレクタが無いため循環は leak（drop も呼ばれない）、JIT は
-サイクルコレクタで drop を明示的にスキップします。循環構造に
+規則になっています。両バックエンドで保証されます: どちらも循環を
+回収しますが、循環メンバーの `drop` は呼びません — JIT は sweep で
+drop なしに解放し、インタプリタはサイクルコレクタが循環を切る際に
+`drop` を抑制します。循環構造に
 保持されたリソースの後片付けが必要なら、最後の参照が解放される前に
 循環を手動で切る（`a.other = nil` など）、または所有元のスコープで
 `defer` (§15) を使ってください。
@@ -3746,10 +3747,11 @@ AOT バンドリングと tree-shaking 解析が成り立つ前提になりま�
 価値があります:
 
 * **サイクル GC の tracking 範囲.** インタプリタの `InterpGC` は
-  `Array` のみを追跡（配列を介する循環は回収される）。JIT の
-  `_GcTracker` はさらに `Object` / `Closure` / `Cell` を追跡。
-  配列を経由しない Object→Object 循環はインタプリタでは leak
-  しますが、どちらの backend も循環メンバーの `drop` は呼びません。
+  `Array` と closure が捕捉する `Environment` を追跡（配列・closure
+  を介する循環は回収される）。JIT の保守的 mark-sweep はあらゆる
+  循環形状を回収。配列も closure も経由しない純粋な Object→Object
+  循環はインタプリタでは leak しますが、どちらの backend も循環
+  メンバーの `drop` は呼びません。
 * **REPL の永続化ストレージ.** インタプリタは session globals を
   トップレベル `Environment` スコープに保持。JIT は thread_local
   `JitReplGlobals` 辞書を経由（`culebra_runtime_repl_{get,set}`）。

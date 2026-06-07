@@ -914,10 +914,16 @@ test_drop = fn () {
   }
   assert_true(events.size() == 1 && events[0] == 'cs3')
 
-  // Cyclic references: drop is intentionally NOT fired for cycle
-  // members on either backend. The interp has no cycle collector
-  // (cycles leak), and the JIT's cycle collector skips drop calls
-  // so observable behavior matches Python's __del__ rule.
+  // Cyclic references: drop is intentionally NOT fired for cycle members
+  // on either backend, matching Python's __del__ rule (finalization order
+  // across a cycle is undefined). GC.stat() forces a collect.
+  //   - Cases 2 and 3 route the cycle through a closure Environment, which
+  //     InterpGC tracks, so the interp reclaims them and the suppression
+  //     path runs (resource collected, drop NOT fired) — the real guard.
+  //   - Case 1 is a pure Object<->Object cycle, which the interp does not
+  //     track and thus leaks (drop never fires either way); the JIT reclaims
+  //     it via sweep, also without drop. Same observable on both backends.
+  // 1) Object<->Object cycle.
   events = []
   make_pair = fn () {
     mut a = nil; mut b = nil
@@ -927,9 +933,28 @@ test_drop = fn () {
     b.other = a
     a
   }
-  {
-    let _cyc = make_pair()
+  { let _cyc = make_pair() }
+  GC.stat()
+  assert_eq(events.size(), 0)
+  // 2) Self-referential lambda cycle capturing a drop resource.
+  events = []
+  make_lam = fn () {
+    let res = { id: 'lam', drop: fn () { events.push('lam') } }
+    let g = fn () { res.id }
+    g()
   }
+  { let _l = make_lam() }
+  GC.stat()
+  assert_eq(events.size(), 0)
+  // 3) Nested `fn name` (multimethod) cycle capturing a drop resource.
+  events = []
+  make_nf = fn () {
+    let res = { id: 'nf', drop: fn () { events.push('nf') } }
+    fn use_res() { res.id }
+    use_res()
+  }
+  { let _n = make_nf() }
+  GC.stat()
   assert_eq(events.size(), 0)
 }
 
