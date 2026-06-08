@@ -17227,10 +17227,24 @@ struct JIT {
   // positional form matching the formal parameters, then calls through
   // the regular slab ABI. Trailing-defaulted-only — a middle gap (an
   // unfilled defaulted slot followed by a filled one) is an ArityError.
+  // Emit a runtime (catchable) throw when a call's argument list is malformed
+  // (positional-after-keyword / duplicate keyword), via the shared single
+  // source so every call kind reports the same error + position as the interp.
+  // Returns true if a throw was emitted; callers may continue (the IR after is
+  // dead) like the other emit_throw_error sites.
+  bool emit_arg_list_check(const peg::Ast& argsAst) {
+    if (auto e = culebra::check_arg_list(argsAst)) {
+      emit_throw_error(e->kind.c_str(), e->message, e->line, e->col);
+      return true;
+    }
+    return false;
+  }
+
   llvm::Value* compile_function_call_with_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       const peg::Ast& fnAst, llvm::Value* thisVal = nullptr) {
     using namespace peg::udl;
+    emit_arg_list_check(argsAst);  // shared single source; inline scan stays
 
     // FUNCTION layout: [PARAMETERS, (RETURN_TYPE)?, BLOCK]. Each
     // PARAMETER child: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?,
@@ -17460,6 +17474,7 @@ struct JIT {
       llvm::Value* thisVal,
       const std::vector<llvm::Value*>& positional_prefix = {}) {
     using namespace peg::udl;
+    emit_arg_list_check(argsAst);  // shared single source; inline scan stays
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
 
@@ -17781,6 +17796,9 @@ struct JIT {
     if (calleeNode->tag == "IDENTIFIER"_ && ast.nodes.size() >= 2 &&
         ast.nodes[1]->original_tag == "ARGUMENTS"_) {
       auto name = std::string(calleeNode->token);
+      // A malformed argument list pre-empts the builtin's own (divergent)
+      // kwarg-name check, matching the interp + the generic path.
+      emit_arg_list_check(*ast.nodes[1]);
       start = try_compile_core_global(name, *ast.nodes[1]);
       if (!start && h.compile_global) {
         start = h.compile_global(*this, name, *ast.nodes[1], ast);
@@ -17796,6 +17814,7 @@ struct JIT {
       if (ast.nodes.size() >= 3 &&
           ast.nodes[2]->original_tag == "ARGUMENTS"_ &&
           h.compile_ns_call) {
+        emit_arg_list_check(*ast.nodes[2]);
         start = h.compile_ns_call(*this, ns, prop, *ast.nodes[2], ast);
         if (start) next_idx = 3;
       }
@@ -17807,6 +17826,7 @@ struct JIT {
           ast.nodes[2]->original_tag == "DOT"_ &&
           ast.nodes[3]->original_tag == "ARGUMENTS"_ &&
           h.compile_nested_ns_call) {
+        emit_arg_list_check(*ast.nodes[3]);
         start = h.compile_nested_ns_call(*this, ns, prop, ast.nodes[2]->token,
                                          *ast.nodes[3], ast);
         if (start) next_idx = 4;

@@ -983,6 +983,48 @@ inline bool is_keyword(std::string_view ident) {
   return keywords.contains(ident);
 }
 
+// A malformed call argument list, detected purely from the AST: a positional
+// argument after a keyword/`**` splat (SyntaxError) or a duplicate keyword
+// (TypeError). Single source of these two rules, shared by the interpreter and
+// the JIT so every call kind reports the same catchable error at the same
+// position regardless of callee.
+struct ArgListError {
+  std::string kind;       // "SyntaxError" | "TypeError"
+  std::string message;
+  size_t line;
+  size_t col;
+};
+
+// Scan a call's ARG_LIST (children are KWARG / KWARG_SPLAT / a positional
+// expression). positional-after-keyword (SyntaxError) takes priority over a
+// duplicate keyword (TypeError), matching the interpreter's split_call_args
+// (which throws the former during its linear scan and only then checks dups).
+inline std::optional<ArgListError> check_arg_list(const peg::Ast& args_ast) {
+  using namespace peg::udl;
+  bool saw_named = false;
+  for (const auto& child : args_ast.nodes) {
+    if (child->tag == "KWARG"_ || child->tag == "KWARG_SPLAT"_) {
+      saw_named = true;
+    } else if (saw_named) {
+      return ArgListError{"SyntaxError",
+                          "positional argument follows keyword argument",
+                          child->line, child->column};
+    }
+  }
+  std::set<std::string_view> seen;
+  for (const auto& child : args_ast.nodes) {
+    if (child->tag != "KWARG"_) continue;
+    std::string_view name = child->nodes[0]->token;
+    if (!seen.insert(name).second) {
+      return ArgListError{
+          "TypeError",
+          std::format("duplicate keyword argument '{}'", name), child->line,
+          child->column};
+    }
+  }
+  return std::nullopt;
+}
+
 inline bool is_kw_only_sep(const peg::Ast& node) {
   using namespace peg::udl;
   return node.tag == "KW_ONLY_SEP"_;

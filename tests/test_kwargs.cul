@@ -203,6 +203,23 @@ let e6 = try { err_f(x: 1, 2); nil } catch e { e }
 assert_true(e6.kind == 'SyntaxError' &&
        e6.message.contains('positional argument follows'))
 
+# The argument-list shape errors (positional-after-keyword, duplicate keyword)
+# are the same catchable error for every call kind, not just user functions: a
+# shared validator runs before the callee-specific kwarg handling. These used
+# to diverge — an ns-method reported the JIT's "unknown keyword argument" while
+# the interp saw the shape error, and a constructor reported a dispatch error.
+let e6_ns_pos = try { range(stop: 5, 1); nil } catch e { e }
+assert_true(e6_ns_pos.kind == 'SyntaxError' &&
+       e6_ns_pos.message.contains('positional argument follows'))
+
+let e6_ns_dup = try { range(stop: 5, stop: 6); nil } catch e { e }
+assert_true(e6_ns_dup.kind == 'TypeError' && e6_ns_dup.message.contains('duplicate'))
+
+class KwCtor { new(a, b) { } }
+let e6_ctor_dup = try { KwCtor(a: 1, a: 2); nil } catch e { e }
+assert_true(e6_ctor_dup.kind == 'TypeError' &&
+       e6_ctor_dup.message.contains('duplicate'))
+
 let e7 = try {
   let bad = {1: 'a'}
   err_f(1, **bad)

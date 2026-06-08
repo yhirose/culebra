@@ -6352,6 +6352,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                        const std::shared_ptr<Environment>& env,
                        CallArgs& out) {
     using namespace peg::udl;
+    // Validate the argument-list shape (positional-after-keyword / duplicate
+    // keyword) before evaluating any argument, via the shared single source so
+    // every call kind reports the same catchable error at the same position.
+    // The inline checks below remain as dead defensive paths.
+    if (auto e = culebra::check_arg_list(args_ast)) {
+      throw CulebraError(e->kind, e->message, static_cast<long>(e->line),
+                         static_cast<long>(e->col));
+    }
     bool saw_named = false;
     for (auto& child : args_ast.nodes) {
       // ARG_ITEM is not in the AstOptimizer keep-list, so an item
