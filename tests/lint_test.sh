@@ -139,5 +139,41 @@ expect_accept "return in method"        'class C { m() { return 9 } }'
 expect_accept "return in defer"         'fn f() { defer { return } }'
 expect_accept "return in top defer"     'for i in [1] { defer { return } }'
 
+# Malformed parameter lists: ordering rules that are certain to fail. Hoisted
+# into lint.h so every backend rejects them pre-eval with the same message
+# (the JIT previously accepted `**` not-last, a duplicate `*`, and a trailing
+# bare `*` silently — those were interp/JIT divergences). `$3` is a substring
+# of the expected SyntaxError message.
+expect_param_reject() {
+  printf 'puts("RAN")\n%s\n' "$3" > "$TMP/t.cul"
+  out=$("$CULEBRA" "$TMP/t.cul" 2>&1)
+  if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
+    echo "FAIL param-reject [$1]: $out"; fail=1
+  fi
+}
+expect_param_reject "non-default after default" "non-default parameter 'b' follows a default parameter" 'fn f(a = 1, b) { b }'
+expect_param_reject "args not last"     "'*args' must be the last parameter"        'fn f(*args, b) { b }'
+expect_param_reject "args after sep"    "'*args' cannot follow a '*' separator"     'fn f(a, *, *args) { a }'
+expect_param_reject "kwargs not last"   "'**' catch-all must be the last parameter" 'fn f(**kw, b) { b }'
+expect_param_reject "dup separator"     "duplicate '*' keyword-only separator"      'fn f(a, *, b, *, c) { a }'
+expect_param_reject "dangling separator" "named arguments must follow '*' separator" 'fn f(a, *) { a }'
+# The same rules apply in every param-bearing form (lambda / method / trait).
+expect_param_reject "lambda non-default" "non-default parameter 'b' follows a default parameter" 'let g = |a = 1, b| a'
+expect_param_reject "method kwargs not last" "'**' catch-all must be the last parameter" 'class C { m(**kw, b) { } }'
+expect_param_reject "trait sig dangling sep" "named arguments must follow '*' separator" 'trait T { sig(a, *) }'
+# Dead code still rejected (the win over the interp's eval-time check, which
+# would never run a never-evaluated branch).
+expect_param_reject "dead-code malformed" "'**' catch-all must be the last parameter" 'if false { fn f(**kw, b) { } }'
+
+# Accepted (sound-negative): every well-formed parameter shape must still run.
+expect_accept "plain params"            'fn f(a, b) { }'
+expect_accept "trailing defaults"       'fn f(a, b = 1, c = 2) { }'
+expect_accept "args rest last"          'fn f(a, *args) { }'
+expect_accept "kwargs rest last"        'fn f(a, **kw) { }'
+expect_accept "kw-only after sep"       'fn f(a, *, b) { }'
+expect_accept "kw-only default + plain" 'fn f(a, *, b = 1, c) { }'
+expect_accept "default before sep"      'fn f(a = 1, *, b) { }'
+expect_accept "sep then kwargs"         'fn f(a, *, b, **kw) { }'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

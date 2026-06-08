@@ -173,6 +173,72 @@ class ScopeWalker {
     }
   }
 
+  // Reject a malformed parameter list — ordering rules that are certain to
+  // fail. Faithfully mirrors the interpreter's parameter builder (the state
+  // machine in interpreter.h `build_parameters`), matching its message and
+  // position so every backend rejects the same shapes pre-eval. The JIT
+  // historically checked only a subset (it silently accepted `**kw` not-last,
+  // a duplicate `*`, and a bare trailing `*`); hoisting the full set here
+  // closes those interp/JIT divergences. Stops at the first violation, as the
+  // interp's throwing builder does.
+  void check_param_wellformed(const peg::Ast& params) {
+    bool seen_default = false, kw_only = false, seen_sep = false;
+    bool seen_kwargs_rest = false, seen_args_rest = false;
+    size_t kw_only_count = 0;
+    auto err = [&](std::string msg, size_t line, size_t col) {
+      diags_.push_back(Diagnostic{"SyntaxError", std::move(msg),
+                                  static_cast<long>(line),
+                                  static_cast<long>(col), Severity::Error});
+    };
+    for (const auto& node : params.nodes) {
+      auto pv = culebra::view_parameter(*node);
+      if (seen_kwargs_rest) {
+        return err("'**' catch-all must be the last parameter", node->line,
+                   node->column);
+      }
+      if (seen_args_rest) {
+        return err("'*args' must be the last parameter", node->line,
+                   node->column);
+      }
+      if (pv.is_kw_only_sep) {
+        if (seen_sep) {
+          return err("duplicate '*' keyword-only separator", node->line,
+                     node->column);
+        }
+        seen_sep = true;
+        kw_only = true;
+        seen_default = false;  // keyword-only params may default freely
+        continue;
+      }
+      if (pv.is_args_rest) {
+        if (seen_sep) {
+          return err("'*args' cannot follow a '*' separator", node->line,
+                     node->column);
+        }
+        seen_args_rest = true;
+        continue;
+      }
+      if (pv.is_kwargs_rest) {
+        seen_kwargs_rest = true;
+        continue;
+      }
+      if (pv.pattern) continue;
+      if (pv.default_value) {
+        seen_default = true;
+      } else if (seen_default && !kw_only) {
+        return err(
+            std::format("non-default parameter '{}' follows a default parameter",
+                        pv.name),
+            pv.name_line, pv.name_col);
+      }
+      if (kw_only) kw_only_count++;
+    }
+    if (seen_sep && kw_only_count == 0 && !seen_kwargs_rest) {
+      err("named arguments must follow '*' separator", params.line,
+          params.column);
+    }
+  }
+
   void walk(const peg::Ast& node);
 };
 
@@ -183,6 +249,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
                                         : culebra::view_lambda(node);
       check_dup_params(*fv.params);
+      check_param_wellformed(*fv.params);
       LoopDepthGuard g(loop_depth_, 0);
       FnDepthGuard fg(fn_depth_);
       scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
@@ -259,6 +326,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);   // decorators: outer
       if (i + 1 >= node.nodes.size()) { walk_children(node); return; }
       check_dup_params(*node.nodes[i + 1]);
+      check_param_wellformed(*node.nodes[i + 1]);
       LoopDepthGuard g(loop_depth_, 0);
       FnDepthGuard fg(fn_depth_);
       scoped(*node.nodes.back(),
@@ -298,6 +366,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           continue;
         }
         check_dup_params(*mv.params);
+        check_param_wellformed(*mv.params);
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
@@ -310,6 +379,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
         check_dup_params(*tv.params);
+        check_param_wellformed(*tv.params);
         if (!tv.body) continue;   // signature-only method: nothing to walk
         FnDepthGuard fg(fn_depth_);
         scoped(*tv.body, [&](Scope& s) { collect_idents(*tv.params, s.muts); });
