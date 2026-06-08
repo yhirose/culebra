@@ -3606,6 +3606,11 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
 // kBuiltinFns, where the method tables it walks are in scope).
 inline const NsParamMeta* _ns_meta(const NsMethod* m);
 
+// Per-positional TYPE view for every method (not just kwarg-slab ones). Used by
+// the closure trampoline to type-check each positional at the argument's source
+// position, matching the interp binder. See definition below kBuiltinFns.
+inline const NsParamMeta* _ns_type_meta(const NsMethod* m);
+
 inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
@@ -3927,15 +3932,19 @@ inline JitValue _jit_ns_method_trampoline(
   // (matching the interp's callback wording). Args-rest methods (range/iota)
   // bind positionals into the rest Array, so they keep the dispatch path.
   if (_jit_argpos_n > 0) {
-    const NsParamMeta* pm = _ns_meta(m);
+    // `_ns_type_meta` carries every method's per-positional type (derived from
+    // the canonical params), so all positionals — not just arg0 — are checked
+    // here, matching the interp binder. Args-rest methods (range/iota) bind
+    // positionals into the rest Array, so skip them (the dispatch validates).
+    const NsParamMeta* tm = _ns_type_meta(m);
     for (int64_t i = 0; i < n_args && i < _jit_argpos_n; i++) {
       std::string_view ty, pname;
-      if (pm) {
-        if (pm->args_rest_idx < 0 && i < pm->n_params) {
-          ty = pm->params[i].type;
-          pname = pm->params[i].name;
+      if (tm) {
+        if (tm->args_rest_idx < 0 && i < tm->n_params) {
+          ty = tm->params[i].type;
+          pname = tm->params[i].name;
         }
-      } else if (i == 0 && m->arg0_type) {
+      } else if (i == 0 && m->arg0_type) {  // canonical lookup failed: arg0 only
         ty = m->arg0_type;
         pname = m->arg0_name ? m->arg0_name : "";
       }
@@ -4273,6 +4282,40 @@ struct DerivedSpec {
   std::vector<NsParam> params;  // params.data() backs meta.params
   NsParamMeta meta;
 };
+
+// Build the derived param spec for one method from its canonical interp params,
+// or null if the canonical lookup fails. The per-parameter data (names, types,
+// defaults, *args/**kwargs/kw-only indices, arity bounds) is the SINGLE SOURCE
+// shared by `_ns_meta` (kwarg-slab subset, drives kwarg/arity dispatch) and
+// `_ns_type_meta` (every method, drives the trampoline's positional type
+// checks) — so the two views can never drift from each other or from interp.
+inline std::unique_ptr<DerivedSpec> build_ns_spec(const NsMethod* m) {
+  const auto* cps = _canon_params(m);
+  if (cps == nullptr) return nullptr;  // canonical lookup failed — skip
+  auto sp = std::make_unique<DerivedSpec>();
+  sp->params.reserve(cps->size());
+  int kwargs_rest_idx = -1, first_kw_only_idx = -1, args_rest_idx = -1;
+  for (int i = 0; i < static_cast<int>(cps->size()); i++) {
+    const auto& cp = (*cps)[i];
+    bool has_default = cp.default_expr != nullptr || cp.default_value != nullptr;
+    sp->params.push_back(NsParam{
+        cp.name, has_default, cp.kw_only,
+        has_default ? cp.default_value.get() : nullptr,
+        // Canonical declared type for every param. The compile side / trampoline
+        // emits a runtime type check at the argument's source position for any
+        // positional bound to a typed param, matching the interp binder.
+        cp.type_name});
+    if (cp.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
+    if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
+    if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
+  }
+  auto _ab = culebra::builtin_arity_bounds(*cps);
+  sp->meta = NsParamMeta{sp->params.data(),
+                         static_cast<int>(sp->params.size()),
+                         kwargs_rest_idx, first_kw_only_idx, args_rest_idx,
+                         static_cast<int>(_ab.min), static_cast<int>(_ab.max)};
+  return sp;
+}
 }  // namespace _ns_spec_detail
 
 // Build (once, lock-free reads after) the derived NsParamMeta for every method
@@ -4288,35 +4331,34 @@ inline const NsParamMeta* _ns_meta(const NsMethod* m) {
         std::unordered_map<const NsMethod*, const NsParamMeta*> t;
         auto add = [&](const NsMethod& nm) {
           if (!_ns_method_uses_kwarg_slab(&nm)) return;
-          const auto* cps = _canon_params(&nm);
-          if (cps == nullptr) return;  // canonical lookup failed — skip
-          auto sp = std::make_unique<_ns_spec_detail::DerivedSpec>();
-          sp->params.reserve(cps->size());
-          int kwargs_rest_idx = -1, first_kw_only_idx = -1, args_rest_idx = -1;
-          for (int i = 0; i < static_cast<int>(cps->size()); i++) {
-            const auto& cp = (*cps)[i];
-            bool has_default =
-                cp.default_expr != nullptr || cp.default_value != nullptr;
-            sp->params.push_back(NsParam{
-                cp.name, has_default, cp.kw_only,
-                has_default ? cp.default_value.get() : nullptr,
-                // Canonical declared type for every param. The compile side
-                // emits a runtime type check at the argument's source position
-                // for any positional bound to a typed param (leading required
-                // or a defaulted one passed positionally), matching the interp
-                // binder — see compile_single_positional_kwargs / _kwargs.
-                cp.type_name});
-            if (cp.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
-            if (cp.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
-            if (cp.args_rest && args_rest_idx < 0) args_rest_idx = i;
-          }
-          auto _ab = culebra::builtin_arity_bounds(*cps);
-          sp->meta = NsParamMeta{sp->params.data(),
-                                 static_cast<int>(sp->params.size()),
-                                 kwargs_rest_idx, first_kw_only_idx,
-                                 args_rest_idx,
-                                 static_cast<int>(_ab.min),
-                                 static_cast<int>(_ab.max)};
+          auto sp = _ns_spec_detail::build_ns_spec(&nm);
+          if (!sp) return;
+          t.emplace(&nm, &sp->meta);
+          storage.push_back(std::move(sp));
+        };
+        for (const auto& nm : kNsMethods) add(nm);
+        for (const auto& nm : kBuiltinFns) add(nm);
+        return t;
+      }();
+  auto it = table.find(m);
+  return it == table.end() ? nullptr : it->second;
+}
+
+// Per-positional type view for EVERY method (not gated by _ns_method_uses_
+// kwarg_slab). The closure trampoline consults this to type-check each
+// positional at the argument's source position — exactly like the interp binder
+// — instead of letting a pure-positional adapter coerce a wrong-typed arg (e.g.
+// `FS.rename(a, 5)` silently running rename on ""). Distinct from `_ns_meta`,
+// which gates kwarg/arity DISPATCH; widening this type-only view to all methods
+// cannot change dispatch. Same canonical source (build_ns_spec) → no drift.
+inline const NsParamMeta* _ns_type_meta(const NsMethod* m) {
+  static std::vector<std::unique_ptr<_ns_spec_detail::DerivedSpec>> storage;
+  static const std::unordered_map<const NsMethod*, const NsParamMeta*> table =
+      [&] {
+        std::unordered_map<const NsMethod*, const NsParamMeta*> t;
+        auto add = [&](const NsMethod& nm) {
+          auto sp = _ns_spec_detail::build_ns_spec(&nm);
+          if (!sp) return;
           t.emplace(&nm, &sp->meta);
           storage.push_back(std::move(sp));
         };
@@ -4836,7 +4878,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return jit.emit_value_release(v);                                         \
   };                                                                          \
   auto emit_type_check = [&](llvm::Value* v, std::string_view t,              \
-                             const char* w,                                   \
+                             std::string_view w,                              \
                              const peg::Ast* a = nullptr) {                   \
     return jit.emit_type_check(v, t, w, a);                                   \
   };                                                                          \
@@ -4937,6 +4979,24 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   auto ptrTy = llvm::PointerType::get(ctx_, 0);
   auto line = builder_.getInt64(callAst.line);
   auto col = builder_.getInt64(callAst.column);
+
+  // Emit the canonical positional type check for argument `i` of this ns method:
+  // `parameter '<name>' expects <T>` at the argument's source position, exactly
+  // like the interp binder. Used by the inline fast paths (Math.pow/clamp,
+  // Random.int, …) whose `value_to_long`/`value_to_*` coercions would otherwise
+  // report a positionless `expected <T>, got <X>` at the call site. The name +
+  // type come from the canonical params (via _ns_type_meta), so no hand-authored
+  // names and no drift. No-op for an untyped param or a failed lookup.
+  auto emit_canon_arg_check = [&](int i, llvm::Value* v) {
+    if (const NsMethod* mm = _lookup_ns_method(ns, method)) {
+      if (const NsParamMeta* tm = _ns_type_meta(mm)) {
+        if (i < tm->n_params && !tm->params[i].type.empty()) {
+          std::string ctx = "parameter '" + std::string(tm->params[i].name) + "'";
+          emit_type_check(v, tm->params[i].type, ctx, argsAst.nodes[i].get());
+        }
+      }
+    }
+  };
 
   // Http.<method>(url[, method], ...kwargs): compile the call against the
   // statically-resolved NsMethod so the typed positional(s) (url/method/
@@ -5156,8 +5216,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
 
     if (method == "pow" && argsAst.nodes.size() == 2) {
-      auto base = value_to_long(compile(*argsAst.nodes[0]));
-      auto exp = value_to_long(compile(*argsAst.nodes[1]));
+      auto baseV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, baseV);
+      auto expV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, expV);
+      auto base = value_to_long(baseV);
+      auto exp = value_to_long(expV);
       auto r = emit_call(module_->getFunction(rt::math_pow),
                                    {base, exp, line, col});
       return make_long(r);
@@ -5174,9 +5236,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_long(r);
     }
     if (method == "clamp" && argsAst.nodes.size() == 3) {
-      auto x = value_to_long(compile(*argsAst.nodes[0]));
-      auto lo = value_to_long(compile(*argsAst.nodes[1]));
-      auto hi = value_to_long(compile(*argsAst.nodes[2]));
+      auto xV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, xV);
+      auto loV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, loV);
+      auto hiV = compile(*argsAst.nodes[2]); emit_canon_arg_check(2, hiV);
+      auto x = value_to_long(xV);
+      auto lo = value_to_long(loV);
+      auto hi = value_to_long(hiV);
       auto above_lo = builder_.CreateSelect(builder_.CreateICmpSLT(x, lo),
                                             lo, x);
       auto r = builder_.CreateSelect(builder_.CreateICmpSGT(above_lo, hi),
@@ -5435,8 +5500,10 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_nil();
     }
     if (method == "int" && argsAst.nodes.size() == 2) {
-      auto lo = value_to_long(compile(*argsAst.nodes[0]));
-      auto hi = value_to_long(compile(*argsAst.nodes[1]));
+      auto loV = compile(*argsAst.nodes[0]); emit_canon_arg_check(0, loV);
+      auto hiV = compile(*argsAst.nodes[1]); emit_canon_arg_check(1, hiV);
+      auto lo = value_to_long(loV);
+      auto hi = value_to_long(hiV);
       auto r = emit_call(
           module_->getFunction(rt::random_int), {lo, hi, line, col});
       return make_long(r);

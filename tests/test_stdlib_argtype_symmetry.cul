@@ -1,0 +1,65 @@
+# Conformance: stdlib positional argument type errors are identical across
+# interp / JIT / AOT. See docs/language.md (§ stdlib).
+#
+# A typed positional argument to a stdlib function is rejected with the interp
+# binder's wording — `parameter '<name>' expects <T>` — at the ARGUMENT's source
+# position, on every backend and through every call form (direct, as-value, HOF
+# callback). The JIT used to diverge for pure-positional multi-arg methods: it
+# only carried the type of arg0, so a wrong-typed later argument was silently
+# coerced. For FS.rename / FS.symlink that meant the JIT ran the filesystem op
+# on a coerced empty path (an IOError) instead of rejecting the call.
+#
+# Run: ./build/culebra tests/test_stdlib_argtype_symmetry.cul
+#      ./build/culebra --jit tests/test_stdlib_argtype_symmetry.cul
+
+let err = fn (f) { try { f(); nil } catch e { e } }
+
+# --- Behavioral: pure-positional FS methods reject a non-first bad arg up front
+# (was an IOError under the JIT — it coerced 5 to "" and ran the op).
+let e1 = err(fn () { FS.rename("a", 5) })
+assert_eq(e1.kind, 'TypeError')
+assert_eq(e1.message, "type error: parameter 'dst' expects String")
+
+let e2 = err(fn () { FS.rename(5, "b") })
+assert_eq(e2.message, "type error: parameter 'src' expects String")
+
+let e3 = err(fn () { FS.symlink("a", 5) })
+assert_eq(e3.message, "type error: parameter 'link' expects String")
+
+# --- Inline-fast-path numeric builtins: the named, arg-positioned message
+# (was a positionless `expected Long, got String` at the call site).
+let e4 = err(fn () { Math.pow(2, "x") })
+assert_eq(e4.message, "type error: parameter 'exp' expects Long")
+let e5 = err(fn () { Math.pow("x", 2) })
+assert_eq(e5.message, "type error: parameter 'base' expects Long")
+let e6 = err(fn () { Math.clamp(1, "x", 5) })
+assert_eq(e6.message, "type error: parameter 'lo' expects Long")
+let e7 = err(fn () { Math.clamp(1, 0, "x") })
+assert_eq(e7.message, "type error: parameter 'hi' expects Long")
+let e8 = err(fn () { Random.int(1, "x") })
+assert_eq(e8.message, "type error: parameter 'hi' expects Long")
+let e9 = err(fn () { Random.int("x", 5) })
+assert_eq(e9.message, "type error: parameter 'lo' expects Long")
+# A strict-Long param rejects a Float, matching the interp binder.
+let e10 = err(fn () { Random.int(1.5, 5) })
+assert_eq(e10.message, "type error: parameter 'lo' expects Long")
+
+# --- Same rule through the as-value (closure) path: the bound builtin checks
+# every positional, not just arg0 (the JIT used to skip the check entirely).
+let r = FS.rename
+assert_eq(err(fn () { r("a", 5) }).message, "type error: parameter 'dst' expects String")
+let p = Math.pow
+assert_eq(err(fn () { p(2, "x") }).message, "type error: parameter 'exp' expects Long")
+
+# --- And through a higher-order callback.
+let e11 = err(fn () { [1, 2].map(fn (x) { Math.pow(x, "y") }) })
+assert_eq(e11.message, "type error: parameter 'exp' expects Long")
+
+# --- Valid calls are unaffected.
+assert_eq(Math.pow(2, 10), 1024)
+assert_eq(Math.clamp(5, 0, 3), 3)
+assert_eq(Math.clamp(-1, 0, 3), 0)
+let n = Random.int(3, 9)   # a Long is produced from a valid range
+assert_eq(type_of(n), 'Long')
+
+puts('stdlib argtype symmetry: ok')
