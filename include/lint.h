@@ -813,7 +813,362 @@ inline void analyze_fn_body(const peg::Ast& params_ast,
 
 }  // namespace shadow
 
+// --- Static undefined-variable analyzer (sound subset, pyflakes-style) ---
+//
+// Flags a bare IDENTIFIER *read* of a name bound in no enclosing scope, no
+// module top-level binding, and not a builtin/namespace — the subset that
+// is certain to raise NameError at runtime. Soundness (no false positives)
+// comes from over-approximating the bound set: every scope's bindings are
+// collected first (via the shadow analyzer's `collect_locals` with an empty
+// outer chain, so it never throws and treats every bare assignment as a
+// binding) and only then are its reads checked. A forward reference to a
+// later top-level / sibling binding therefore never false-positives, and a
+// name bound anywhere reachable is treated as defined (so genuine
+// use-before-def, which is execution-order dependent, is deliberately not
+// flagged — it is left to the runtime). Non-variable identifier positions —
+// `.member` / `?.member`, kwarg names, object-literal keys, parameter and
+// pattern bindings, declaration names, type annotations — are excluded
+// structurally. Returns diagnostics; the caller decides whether to surface
+// them or abort.
+namespace undefined {
+
+using NameSet = std::set<std::string, std::less<>>;
+using Chain = std::vector<const NameSet*>;
+
+// Names the runtime binds implicitly, never via a user declaration:
+// `this` (method receiver) / `self` (current function, for recursion), and
+// the reserved dunder names it injects per scope — `__ARGS__` / `__KWARGS__`
+// (the positional / keyword argument collections), `__LINE__` / `__COLUMN__`
+// (the current source position), `__cls__` (a static method's class), and
+// any future `__x__`. Treating the whole `__x__` space as bound is sound:
+// these are reserved internals, never plain variables, and a blanket rule
+// can't drift as new injected dunders are added.
+inline bool always_bound(std::string_view n) {
+  if (n == "this" || n == "self") return true;
+  return n.size() > 4 && n.starts_with("__") && n.ends_with("__");
+}
+
+inline bool resolves(std::string_view name, const Chain& chain,
+                     const NameSet& globals) {
+  if (is_sink(name) || always_bound(name)) return true;
+  if (globals.contains(name)) return true;
+  for (const auto* frame : chain)
+    if (frame->contains(name)) return true;
+  return false;
+}
+
+// Collect every name bound directly within one scope into `out` —
+// over-approximating across nested blocks / control flow that share the
+// runtime function scope, but stopping at nested function / lambda / defer
+// boundaries (each opens its own scope, collected when it is walked). FOR
+// loop variables are block-scoped to the body and bound there by `walk`, so
+// they are not collected here. Over-collection only ever weakens detection,
+// never causes a false positive — the soundness direction we need. (The
+// shadow analyzer's collector is deliberately not reused: it reads a
+// destructure pattern from the wrong child index, which is harmless for
+// shadow over-approximation but would drop `let (a, b) = …` bindings here.)
+inline void collect_scope(const peg::Ast& node, NameSet& out) {
+  using namespace peg::udl;
+  switch (node.tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_:
+    case "DEFER"_:
+      return;  // nested scope — its locals belong to it, not this frame
+    case "ASSIGNMENT"_: {
+      auto av = culebra::view_assignment(node);
+      if (av.lvalcnt == 1 && node.nodes[av.lvaloff]->tag == "IDENTIFIER"_) {
+        std::string_view name = node.nodes[av.lvaloff]->token;
+        if (!is_sink(name)) out.insert(std::string(name));
+      }
+      collect_scope(*av.rhs, out);
+      return;
+    }
+    case "DESTRUCTURE_ASSIGN"_: {
+      // [LET, MUTABLE, pattern, EXPRESSION] — same fixed layout the interp /
+      // JIT / shadow walkers read as nodes[2] / nodes[3].
+      culebra::for_each_pattern_binding(
+          *node.nodes[2], [&](std::string_view n, size_t, size_t) {
+            if (!is_sink(n)) out.insert(std::string(n));
+          });
+      collect_scope(*node.nodes[3], out);
+      return;
+    }
+    case "FOR"_:
+      // Loop var is block-scoped (bound by walk); collect iterable + body.
+      if (node.nodes.size() >= 3) {
+        collect_scope(*node.nodes[1], out);
+        collect_scope(*node.nodes[2], out);
+      } else {
+        for (const auto& c : node.nodes) collect_scope(*c, out);
+      }
+      return;
+    case "TRY"_:
+      // [tryBLOCK, catchID, catchBLOCK] — the catch var binds in the scope.
+      if (node.nodes.size() >= 3) {
+        collect_scope(*node.nodes[0], out);
+        if (node.nodes[1]->is_token && !is_sink(node.nodes[1]->token))
+          out.insert(std::string(node.nodes[1]->token));
+        collect_scope(*node.nodes[2], out);
+      } else {
+        for (const auto& c : node.nodes) collect_scope(*c, out);
+      }
+      return;
+    case "MATCH"_:
+      // Arm patterns bind names visible in the arm; collect them all.
+      if (node.nodes.size() >= 2) {
+        collect_scope(*node.nodes[0], out);
+        for (const auto& arm : node.nodes[1]->nodes) {
+          if (arm->nodes.empty()) continue;
+          culebra::for_each_pattern_binding(
+              *arm->nodes[0], [&](std::string_view n, size_t, size_t) {
+                if (!is_sink(n)) out.insert(std::string(n));
+              });
+          for (size_t k = 1; k < arm->nodes.size(); k++)
+            collect_scope(*arm->nodes[k], out);
+        }
+      } else {
+        for (const auto& c : node.nodes) collect_scope(*c, out);
+      }
+      return;
+    case "MULTIFN_DECL"_:
+    case "CLASS_DECL"_:
+    case "ENUM_DECL"_: {
+      // Binds its declared name (generics stripped) in this scope; the body
+      // is a separate scope, not descended into here.
+      size_t i = culebra::first_non_decorator_index(node);
+      auto name =
+          std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
+      if (!is_sink(name)) out.insert(name);
+      return;
+    }
+    case "TRAIT_DECL"_:
+      return;  // a trait is not a value binding (it lives in the registry)
+    case "IMPORT_STMT"_:
+      if (!node.nodes.empty() && node.nodes[0]->is_token)
+        out.insert(std::string(node.nodes[0]->token));
+      return;
+    default:
+      for (const auto& c : node.nodes) collect_scope(*c, out);
+      return;
+  }
+}
+
+// Build one scope frame: its parameter names plus every name bound in its
+// body (via collect_scope).
+inline void build_frame(const peg::Ast* params, const peg::Ast& body,
+                        NameSet& frame) {
+  if (params) {
+    for (const auto& p : params->nodes) {
+      if (culebra::is_kw_only_sep(*p)) continue;
+      if (culebra::is_pattern_param(*p)) {
+        culebra::for_each_pattern_binding(
+            *p, [&](std::string_view nm, size_t, size_t) {
+              if (!is_sink(nm)) frame.insert(std::string(nm));
+            });
+        continue;
+      }
+      auto loc = culebra::extract_param_name_loc(*p);
+      if (!is_sink(loc.name)) frame.insert(std::string(loc.name));
+    }
+  }
+  collect_scope(body, frame);
+}
+
+void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
+          std::vector<Diagnostic>& diags);
+
+// Analyze a function-like scope: collect its frame, then walk parameter
+// default expressions (evaluated in the function's own scope, with earlier
+// params bound) and the body for reads against the extended chain.
+inline void analyze_fn(const peg::Ast* params, const peg::Ast& body,
+                       Chain& chain, const NameSet& globals,
+                       std::vector<Diagnostic>& diags) {
+  NameSet frame;
+  build_frame(params, body, frame);
+  chain.push_back(&frame);
+  if (params) {
+    for (const auto& p : params->nodes)
+      if (const auto* def = culebra::extract_default_expr(*p))
+        walk(*def, chain, globals, diags);
+  }
+  walk(body, chain, globals, diags);
+  chain.pop_back();
+}
+
+inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
+                 std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  // A `.member` / `?.member` postfix carries the member name as its token
+  // (tag IDENTIFIER, original_tag DOT/SAFE_DOT) — never a variable read.
+  if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_) return;
+
+  switch (node.tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_: {
+      auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
+                                        : culebra::view_lambda(node);
+      analyze_fn(fv.params, *fv.body, chain, globals, diags);
+      return;
+    }
+    case "MULTIFN_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      // Leading decorators (`@packable`, `@derive(Eq, ...)`, `@test`, user
+      // decorators) are not plain variable reads — their callee names live in
+      // a separate space and trait-name arguments aren't values — so the sound
+      // subset skips the decorator subtrees entirely.
+      if (i + 1 >= node.nodes.size()) return;
+      analyze_fn(node.nodes[i + 1].get(), *node.nodes.back(), chain, globals,
+                 diags);
+      return;
+    }
+    case "CLASS_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      // Leading decorators (`@packable`, `@derive(Eq, ...)`, `@test`, user
+      // decorators) are not plain variable reads — their callee names live in
+      // a separate space and trait-name arguments aren't values — so the sound
+      // subset skips the decorator subtrees entirely.
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        auto mv = culebra::view_method(*node.nodes[j]);
+        if (mv.is_field || mv.is_typed_field) {
+          if (mv.value) walk(*mv.value, chain, globals, diags);
+          continue;
+        }
+        analyze_fn(mv.params, **mv.body, chain, globals, diags);
+      }
+      return;
+    }
+    case "TRAIT_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      // Leading decorators (`@packable`, `@derive(Eq, ...)`, `@test`, user
+      // decorators) are not plain variable reads — their callee names live in
+      // a separate space and trait-name arguments aren't values — so the sound
+      // subset skips the decorator subtrees entirely.
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        auto tv = culebra::view_trait_method(*node.nodes[j]);
+        if (tv.body) analyze_fn(tv.params, *tv.body, chain, globals, diags);
+      }
+      return;
+    }
+    case "ENUM_DECL"_:
+      // Variant names + field type tokens only — nothing to read, and the
+      // variant-name identifiers must NOT be treated as reads, so don't
+      // descend (decorators aren't reads either).
+      return;
+    case "DEFER"_:
+      // The deferred block is a nested 0-parameter scope.
+      if (!node.nodes.empty())
+        analyze_fn(nullptr, *node.nodes[0], chain, globals, diags);
+      return;
+    case "FOR"_: {
+      // [binding, iterable, body]: the loop variable is block-scoped to the
+      // body (the shadow collector deliberately omits it), so bind it in a
+      // child frame for the body walk. The iterable is in the enclosing scope.
+      if (node.nodes.size() < 3) {
+        for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
+        return;
+      }
+      walk(*node.nodes[1], chain, globals, diags);
+      NameSet loopvars;
+      const auto& var = *node.nodes[0];
+      if (culebra::is_pattern_param(var)) {
+        culebra::for_each_pattern_binding(
+            var, [&](std::string_view n, size_t, size_t) {
+              if (!is_sink(n)) loopvars.insert(std::string(n));
+            });
+      } else if (var.is_token && !is_sink(var.token)) {
+        loopvars.insert(std::string(var.token));
+      }
+      chain.push_back(&loopvars);
+      walk(*node.nodes[2], chain, globals, diags);
+      chain.pop_back();
+      return;
+    }
+    case "TRY"_: {
+      // [tryBLOCK, catchID, catchBLOCK]: the catch var was collected; skip it.
+      if (node.nodes.size() < 3) {
+        for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
+        return;
+      }
+      walk(*node.nodes[0], chain, globals, diags);
+      walk(*node.nodes[2], chain, globals, diags);
+      return;
+    }
+    case "MATCH"_: {
+      // [subject, ARMS]; each arm = [PATTERN, (GUARD)?, body]. Pattern
+      // bindings were collected; skip the pattern, walk guard + body.
+      if (node.nodes.size() < 2) {
+        for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
+        return;
+      }
+      walk(*node.nodes[0], chain, globals, diags);
+      for (const auto& arm : node.nodes[1]->nodes)
+        for (size_t k = 1; k < arm->nodes.size(); k++)
+          walk(*arm->nodes[k], chain, globals, diags);
+      return;
+    }
+    case "ASSIGNMENT"_: {
+      auto av = culebra::view_assignment(node);
+      // A simple `x` target is a binding/write, not a read. A complex lvalue
+      // (`o[k]` / `o.p`) reads its base object and any index expression, so
+      // walk the chain (the DOT member is skipped by its own guard above).
+      if (!(av.lvalcnt == 1 && node.nodes[av.lvaloff]->tag == "IDENTIFIER"_)) {
+        for (int k = 0; k < av.lvalcnt; k++)
+          walk(*node.nodes[av.lvaloff + k], chain, globals, diags);
+      }
+      walk(*av.rhs, chain, globals, diags);
+      return;
+    }
+    case "DESTRUCTURE_ASSIGN"_:
+      // [LET, MUTABLE, pattern, EXPRESSION]: pattern names were collected;
+      // walk only the RHS.
+      walk(*node.nodes.back(), chain, globals, diags);
+      return;
+    case "KWARG"_:
+      // [name, value]: the kwarg name is not a read — walk only the value.
+      if (node.nodes.size() >= 2) walk(*node.nodes[1], chain, globals, diags);
+      return;
+    case "OBJECT_PROPERTY"_: {
+      // Shorthand `{x}` reads x (key doubles as value); `{k: v}` reads only v.
+      auto pv = culebra::view_object_property(node);
+      walk(pv.is_shorthand ? *pv.key : *pv.value, chain, globals, diags);
+      return;
+    }
+    case "IMPORT_STMT"_:
+      return;  // binds a name from a string path — no variable reads
+    case "IDENTIFIER"_:
+      if (node.is_token && !resolves(node.token, chain, globals)) {
+        diags.push_back(Diagnostic{
+            "NameError", std::format("undefined variable '{}'", node.token),
+            static_cast<long>(node.line), static_cast<long>(node.column),
+            Severity::Error});
+      }
+      return;
+    default:
+      for (const auto& c : node.nodes) walk(*c, chain, globals, diags);
+      return;
+  }
+}
+
+inline void analyze_module(const peg::Ast& ast, const NameSet& globals,
+                           std::vector<Diagnostic>& diags) {
+  NameSet top;
+  collect_scope(ast, top);
+  Chain chain{&top};
+  walk(ast, chain, globals, diags);
+}
+
+}  // namespace undefined
+
 }  // namespace _detail
+
+// Cross-layer provider for the builtin / global names the undefined-var
+// check treats as always defined. lint.h sits below the stdlib layer that
+// owns the global environment, so that layer installs this hook (see
+// `install_undefined_var_lint`); until it does, the undefined-var check is
+// skipped — embedders that never build a stdlib environment simply don't
+// get it. A captureless lambda / free function converts to this pointer.
+inline const std::set<std::string, std::less<>>* (*builtin_names_hook)() =
+    nullptr;
 
 // Run all static lint checks over one module AST before evaluation.
 // Throws the first Error-severity diagnostic as a CulebraError (same shape
@@ -823,6 +1178,12 @@ inline void check_module(const peg::Ast& ast) {
   std::vector<Diagnostic> diags;
   _detail::ScopeWalker walker(diags);
   walker.run(ast);
+  // Undefined-variable check (the sound subset that is certain to raise
+  // NameError) — run only when the builtin-name provider is installed.
+  if (builtin_names_hook) {
+    if (const auto* globals = builtin_names_hook())
+      _detail::undefined::analyze_module(ast, *globals, diags);
+  }
   for (const auto& d : diags) {
     if (d.severity == Severity::Error) {
       throw culebra::CulebraError(d.kind, d.message, d.line, d.col);

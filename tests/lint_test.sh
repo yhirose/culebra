@@ -233,5 +233,57 @@ expect_shadow_accept "nested captures for-var"    'fn f() { for i in [1] { let y
 expect_shadow_accept "toplevel binding shadowable" 'let x = 1
 fn f() { let x = 2; x }'
 
+# --- Undefined variable (sound subset): a name bound in no enclosing scope
+# and not a builtin is certain to raise NameError, so it aborts before eval
+# (like ShadowError, and regardless of whether the code is reachable). A
+# flow-dependent NameError (use-before-def) is NOT flagged — it stays a
+# catchable runtime error. Load-stage check, so it fires on every backend.
+expect_undef_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
+    if [[ "$out" == *RAN* || "$out" != *NameError* ||
+          "$out" != *"undefined variable"* ]]; then
+      echo "FAIL undef-reject [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_undef_accept() {
+  printf '%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
+      echo "FAIL undef-accept [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_undef_reject "top-level read"          'puts(zzz)'
+expect_undef_reject "uncalled fn body read"   'fn f() { puts(zzz) }'
+expect_undef_reject "undefined object value"  'let o = {k: zzz}'
+expect_undef_reject "undefined kwarg value"   'fn f(a) { a }
+f(a: zzz)'
+expect_undef_reject "undefined index base"    'zzz[0] = 1'
+# Accepted (sound-negative — must run on both backends):
+expect_undef_accept "forward-ref fn body"     'fn a() { b() }
+fn b() { 1 }
+a()'
+expect_undef_accept "use-before-def runtime"  'let r = try { x; let x = 1; nil } catch e { nil }'
+expect_undef_accept "destructure binding"     'let (p, q) = (1, 2)
+puts(p + q)'
+expect_undef_accept "for-var read"            'for i in [1, 2] { puts(i) }'
+expect_undef_accept "match arm binding"       'let v = match 1 { n => n }
+puts(v)'
+expect_undef_accept "catch var"               'try { throw "x" } catch e { puts(e) }'
+expect_undef_accept "this in method"          'class C { f() { this } }'
+expect_undef_accept "self recursion"          'fn f(n) { if n > 0 { self(n - 1) } else { 0 } }
+puts(f(3))'
+expect_undef_accept "dunder __ARGS__"         'fn f(*xs) { __ARGS__.size() }
+puts(f(1, 2))'
+expect_undef_accept "ufcs method name"        'let xs = [1]
+puts(xs.size())'
+expect_undef_accept "object shorthand"        'let k = 1
+let o = {k}'
+expect_undef_accept "enum variant names"      'enum Color { Red, Green, Blue }
+puts(Color.Red)'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

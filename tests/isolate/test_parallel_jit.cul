@@ -42,7 +42,7 @@ Parallel.each([1, 2, 3], |x| dbl(x))
 # fail-fast: a failing element raises ParallelError
 try {
   Parallel.map([1, 2, 0, 4], |x| 12 / x)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "ParallelError")
 }
@@ -50,7 +50,7 @@ try {
 # type errors
 try {
   Parallel.map(42, |x| x)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "TypeError")
 }

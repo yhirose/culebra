@@ -110,7 +110,7 @@ assert_eq(hnest.join(), 42)
 mut counter = 0
 try {
   Isolate.spawn(|| counter)   # captures a `mut` variable
-  assert(false)               # unreachable
+  assert_true(false)               # unreachable
 } catch e {
   assert_eq(e.kind, "SendError")
 }
@@ -118,7 +118,7 @@ try {
 try {
   let t = Tensor.zeros([2, 2])
   Isolate.spawn(|| t)         # Tensor is not Sendable
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "SendError")
 }
@@ -127,7 +127,7 @@ try {
 try {
   let hbad = Isolate.spawn(|| 1 / 0)
   hbad.join()
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "ZeroDivisionError")
 }

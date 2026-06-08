@@ -2529,7 +2529,7 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 |---|---|---|
 | `TypeError` | 演算子・比較における型不一致；非 callable の呼出；`: T` 型注釈失敗；`to_long`/`to_float` の非変換可能値；`__str__` が String 以外を返す；`*` splat の非 Array / `**` splat の非 Object；組み込み引数チェックの失敗；同一パラメータへ positional + keyword 重複；duplicate keyword | はい |
 | `ZeroDivisionError` | 整数 `/`, `%`, 負指数の `**` で除算になるケース；浮動小数 `/` または `%` の RHS == 0 | はい |
-| `NameError` | 未定義識別子の読み取り；compound 代入（`x += rhs`）の `x` が未定義；REPL global 検索の miss | はい |
+| `NameError` | 未定義識別子の読み取り；compound 代入（`x += rhs`）の `x` が未定義；REPL global 検索の miss。どのスコープにも無く builtin でもない名前は評価前に検出（コンパイル時エラー参照）；自身の後続宣言より前に読む（use-before-def）場合は runtime エラーのまま | はい¹ |
 | `ImmutableError` | `let`（非 `mut`）束縛への代入；immutable Object プロパティまたは Dict エントリへの代入；コンストラクタ本体内の `this` 再代入 | はい |
 | `KeyError` | Dict の存在しないキー subscript；Object の存在しないキー subscript | はい |
 | `IndexError` | Array / String / Tensor の範囲外 index；Tensor slice 範囲外；Tensor reduction axis 範囲外 | はい |
@@ -2551,17 +2551,28 @@ shutdown パターン）は、`Signal.notify` でチャネルを登録します�
 未 catch のエラーは `Kind: message` 形式で表示し非ゼロ終了します。
 ユーザが `throw expr` で投げた値は `uncaught: {value}` で表示されます。
 
+¹ どのスコープにも無く builtin でもない名前の `NameError` だけは例外で、
+評価前に検出され（コンパイル時エラー参照）catch できません。それ以外の
+`NameError`（特に use-before-def）は runtime エラーで catch 可能です。
+
 ### コンパイル時エラー
 
-`ShadowError` はプログラム読込時、`try` ブロックが走る前に検出
-されるため、ユーザコードでは catch できません。同じ `Kind: message`
-形式で表示し中断します。両バックエンドで実施。詳細は §6 の
-「シャドウ禁止」を参照。
+プログラム読込時、`try` ブロックが走る前に2つの検査が走ります。
+どちらもユーザコードでは catch できず、同じ `Kind: message` 形式で
+中断し、全バックエンドで同一に動作します。
 
-`NameError`（未定義変数）、`ImmutableError`、missing/unknown kwargs
-などのエラーは両バックエンドで意図的に runtime throw となっており、
-`try { ... } catch e { ... }` で観測可能です。
-ルールについては §6 の "Shadow prohibition" を参照。
+* **`ShadowError`** — キャプチャ済み外側名と衝突する束縛。ルールは §6
+  の「シャドウ禁止」を参照。
+* **`NameError`（静的に未定義）** — どの語彙スコープにも束縛が無く、
+  builtin でもない変数参照。runtime で**必ず**失敗するため、静的型を
+  持つ言語の未知名と同様に、それを読む（到達しないかもしれない）経路を
+  待たず評価前に報告します。健全（sound）な検査で、どこにも解決しない
+  名前のみを報告するため、正しいプログラムを誤って拒否しません。
+
+これらの相補的なケースは静的に失敗を証明できないため *runtime*（`try`/
+`catch` で捕捉可能）のままです: **use-before-def**（名前はスコープに
+束縛されるが宣言の実行前に読む — 後続のループ周回で先に束縛されうる）、
+`ImmutableError`、missing / unknown kwargs。
 
 ### Assertion API
 

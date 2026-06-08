@@ -34,14 +34,14 @@ assert_eq(r4.kind, 'ZeroDivisionError')
 let r5 = try { let _ = 1 % 0; nil } catch e { e }
 assert_eq(r5.kind, 'ZeroDivisionError')
 
-# NameError for undefined variables is raised at runtime on both
-# backends, so user code can `try { ... } catch e { e.kind }` it.
-# (ShadowError is still detected at compile time — see the analyzer.)
-let r_nameread = try { undefined_name; nil } catch e { e }
+# A name bound in no scope is a *static* error caught before eval (the
+# sound subset, alongside ShadowError). A flow-dependent NameError — a
+# name read before its own later declaration runs — stays runtime-catchable:
+let r_nameread = try { read_before_decl; let read_before_decl = 1; nil } catch e { e }
 assert_eq(r_nameread.kind, 'NameError')
 
 let r_namewrite = try {
-  fn () { undefined_local = undefined_rhs; nil }()
+  fn () { let z = rhs_before_decl; let rhs_before_decl = 1; z }()
 } catch e { e.kind }
 assert_eq(r_namewrite, 'NameError')
 

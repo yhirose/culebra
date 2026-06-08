@@ -2695,7 +2695,7 @@ AOT builds (unless noted).
 |---|---|---|
 | `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword. | yes |
 | `ZeroDivisionError` | Integer `/`, `%`, `**` with negative exponent collapsing to division; float `/` or `%` with RHS == 0. | yes |
-| `NameError` | Read of undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. | yes |
+| `NameError` | Read of an undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. A name bound in *no* scope (and not a builtin) is caught before evaluation — see Compile-time errors; a name read before its own later declaration runs (use-before-def) stays a runtime error. | yes¹ |
 | `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `this` inside a constructor body. | yes |
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
@@ -2717,16 +2717,31 @@ AOT builds (unless noted).
 Uncaught errors print as `Kind: message` and exit with non-zero
 status. User-thrown values via `throw expr` print as `uncaught: {value}`.
 
+¹ The `NameError` for a name that is bound in *no* enclosing scope and is
+not a builtin is the exception: it is caught before evaluation (see
+Compile-time errors) and so is *not* catchable. Every other `NameError` —
+notably use-before-def — is a runtime error and is catchable.
+
 ### Compile-time errors
 
-`ShadowError` is detected when the program is loaded, before any
-`try` block runs — so user code cannot catch it. It aborts the
-program with the same `Kind: message` format. The check runs in both
-backends; see "Shadow prohibition" in §6 for the rule.
+Two checks run when the program is loaded, before any `try` block runs —
+so user code cannot catch them. Both abort with the same `Kind: message`
+format and run identically on every backend.
 
-`NameError` (undefined variable), `ImmutableError`, missing/unknown
-kwargs and similar errors are deliberately raised at *runtime* on
-both backends so `try { ... } catch e { ... }` can observe them.
+* **`ShadowError`** — a binding that shadows a captured outer name; see
+  "Shadow prohibition" in §6 for the rule.
+* **`NameError` (statically undefined)** — a variable read whose name is
+  bound in *no* lexical scope and is not a builtin. This is *certain* to
+  fail at runtime, so — like an unknown name in a statically-checked
+  language — it is reported before evaluation rather than waiting for the
+  (possibly never-taken) path that reads it. The check is sound: it flags
+  only names that resolve nowhere, so it never rejects a valid program.
+
+The complementary cases stay at *runtime*, catchable by `try`/`catch`,
+because they cannot be proven to fail statically: **use-before-def** (a
+name *is* bound in scope but is read before its declaration executes — the
+binding might run first on a later loop iteration), `ImmutableError`, and
+missing / unknown kwargs.
 
 ### Assertion API
 

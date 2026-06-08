@@ -4562,6 +4562,38 @@ inline std::shared_ptr<Environment> environment(
   return env;
 }
 
+// The single source of every name a fresh program can reference without
+// declaring it: exactly what the global environment binds — eager
+// dictionary entries (core globals, built-in functions, exception types,
+// namespaces) plus the lazily-resolved stdlib modules. The static
+// undefined-variable lint consults this so its notion of "builtin" cannot
+// drift from what the runtime actually provides.
+inline std::set<std::string, std::less<>> builtin_global_names() {
+  auto env = environment();
+  std::set<std::string, std::less<>> names;
+  for (const auto& [name, sym] : env->dictionary) names.insert(name);
+  for (const auto& [name, src] : env->lazy_pending) names.insert(name);
+  // The CLI hoists these two IO members to bare globals before running a
+  // script (`install_cli_aliases` in main.cc), so a program sees them
+  // without declaring them — the lint must treat them as builtins too.
+  names.insert("puts");
+  names.insert("print");
+  return names;
+}
+
+// Install the builtin-name provider for the load-stage undefined-variable
+// lint. lint.h lives below this layer (it can't build the set itself), so
+// the entry point calls this once before loading any module — covering every
+// backend, since all of them load through the shared module loader. The set
+// is built once, lazily, and cached.
+inline void install_undefined_var_lint() {
+  lint::builtin_names_hook = [] {
+    static const std::set<std::string, std::less<>> names =
+        builtin_global_names();
+    return &names;
+  };
+}
+
 }  // namespace culebra
 
 // Isolate / Channel stdlib + the sendable value-transfer layer. Included last

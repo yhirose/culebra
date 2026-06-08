@@ -43,7 +43,7 @@ assert_eq(total, 55)   # 1+4+9+16+25
 # --- fail-fast: a failing element raises ParallelError with the index ---
 try {
   Parallel.map([1, 2, 0, 4], |x| 12 / x)   # element[2] divides by zero
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "ParallelError")
 }
@@ -52,7 +52,7 @@ try {
 mut counter = 0
 try {
   Parallel.map([1, 2], |x| x + counter)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "SendError")
 }
@@ -60,7 +60,7 @@ try {
 # --- type errors ---
 try {
   Parallel.map(42, |x| x)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "TypeError")
 }

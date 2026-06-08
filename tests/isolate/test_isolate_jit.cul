@@ -74,7 +74,7 @@ assert_eq(hnest.join(), 42)
 # a child exception propagates to the parent on join, kind preserved
 try {
   Isolate.spawn(|| 1 / 0).join()
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "ZeroDivisionError")
 }
@@ -84,7 +84,7 @@ try {
 mut counter = 0
 try {
   Isolate.spawn(|| counter)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "SendError")
 }
@@ -96,7 +96,7 @@ assert_eq(Isolate.spawn(|| fixed + 1).join(), 8)
 try {
   let t = Tensor.zeros([2, 2])
   Isolate.spawn(|| t)
-  assert(false)
+  assert_true(false)
 } catch e {
   assert_eq(e.kind, "SendError")
 }
