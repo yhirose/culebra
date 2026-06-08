@@ -3818,6 +3818,13 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
 // Shared by the bare-positional trampoline and the kwarg/splat resolver.
 inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
                                             std::vector<JitValue>& slab) {
+  // The slab lives in a std::vector's heap buffer, which the conservative
+  // collector does not scan (it walks the machine stack + registered globals
+  // only). So its GC values — e.g. range/iota's positionals Array — are
+  // unreachable from any root across the adapter's own allocations; a
+  // GC_STRESS collect would sweep them, and the release() below would then
+  // touch freed memory. Pause collection for the dispatch.
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
   auto release = [&]() {
     for (auto& sv : slab) _culebra_value_release_impl(sv.tag, sv.data);
   };
@@ -3952,6 +3959,10 @@ inline JitValue _jit_ns_method_trampoline(
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
+  // Atomic w.r.t. collection: the capture cell is registered before `cls`
+  // itself is, so a GC_STRESS collect mid-build would find the cell
+  // unreachable (its only ref is the not-yet-registered cls) and sweep it.
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
   auto* cls = new JitClosure();
   cls->refcount = 1;
   cls->fn_ptr = reinterpret_cast<void*>(_jit_ns_method_trampoline);
@@ -4175,6 +4186,10 @@ inline const bool _jit_ns_kwarg_hook_installed = [] {
 }();
 
 inline JitObject* _jit_build_namespace_object(std::string_view ns_name) {
+  // Build with collection paused: the method closures and sub-namespace
+  // objects are registered but not reachable from any root until they are
+  // slotted, so a GC_STRESS collect mid-build would sweep them.
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
   auto* obj = culebra_runtime_object_new();
   // Sub-namespace objects, created lazily and keyed by `sub` (e.g. "html").
   // Reachable from `obj` (a pinned root), so the marker keeps them + their

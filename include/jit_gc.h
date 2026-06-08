@@ -197,6 +197,18 @@ class Heap {
     if (GcHeader* h = objects_.find(p)) h->flags |= kFlagPinned;
   }
 
+  // Pause collection across a multi-object construction whose intermediates
+  // are not yet reachable from any root (e.g. building a namespace object: its
+  // method closures exist registered-but-unrooted until they are slotted). A
+  // collect in that window — common under GC_STRESS — would sweep them.
+  void pause_collect() { ++collect_paused_; }
+  void resume_collect() { --collect_paused_; }
+  struct CollectPause {
+    Heap& h;
+    explicit CollectPause(Heap& heap) : h(heap) { h.pause_collect(); }
+    ~CollectPause() { h.resume_collect(); }
+  };
+
   // De-register an object whose memory the CALLER frees (RC release-to-zero
   // `delete`s the struct, then calls forget). No free/poison here — the
   // memory is not the heap's to reclaim.
@@ -299,7 +311,7 @@ class Heap {
   // amortised cost ~constant while bounding peak RSS.
   static constexpr size_t kMinThreshold = 100000;
   void maybe_collect() {
-    if (!callbacks_wired_) return;
+    if (!callbacks_wired_ || collect_paused_) return;
     if (++alloc_since_collect_ < collect_threshold_) return;
     alloc_since_collect_ = 0;
     collect();
@@ -454,6 +466,7 @@ class Heap {
   SweepFn sweep_fn_ = nullptr;
   size_t live_bytes_ = 0;
   bool callbacks_wired_ = false;
+  int collect_paused_ = 0;
   size_t alloc_since_collect_ = 0;
   size_t collect_threshold_ = stress() ? 1 : kMinThreshold;
 };

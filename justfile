@@ -60,7 +60,7 @@ check-grammar-sync:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (LTO build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + AOT (set on the slow macOS CI runner).")]
+[doc("Full gate (LTO build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner).")]
 [group("test")]
 test BACKEND='all': build
     @just _run-tests {{BACKEND}}
@@ -293,6 +293,39 @@ _run-tests BACKEND:
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
 
+    # Run every test file under the JIT with collect-on-every-allocation
+    # (CULEBRA_GC_STRESS=1) and assert none crash. This is the phase that would
+    # have caught the namespace/HOF dispatch use-after-frees: a transient GC
+    # value held only in a std::vector/map buffer (unscanned by the conservative
+    # collector) is swept mid-construction. A normal run collects far too rarely
+    # to hit the window; only stress mode makes it deterministic. JIT-only — the
+    # interp's shared_ptr values can't be swept out from under a C++ local, so it
+    # has no equivalent window.
+    run_gc_stress() {
+        local d="$job_dir/gcstress"
+        mkdir -p "$d"
+        # Only crash/no-crash matters here (correctness is covered by the
+        # interp-vs-JIT diff), so discard stdout and keep stderr for triage.
+        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+            f="$1"; d="$2"
+            name=$(basename "$f" .cul)
+            if ! CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; then
+                touch "$d/$name.fail"
+            fi
+        ' _ '{}' "$d"
+        local fails=("$d"/*.fail)
+        if (( ${#fails[@]} > 0 )); then
+            echo "test (jit gc-stress) FAIL: ${#fails[@]} file(s) crashed:" >&2
+            for fail in "${fails[@]}"; do
+                name=$(basename "$fail" .fail)
+                echo "--- $name.cul ---" >&2
+                [[ -s "$d/$name.err" ]] && tail -3 "$d/$name.err" >&2
+            done
+            exit 1
+        fi
+        echo "test (jit gc-stress) OK"
+    }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -300,12 +333,14 @@ _run-tests BACKEND:
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
-      # CULEBRA_TEST_SKIP_HEAVY skips the two platform-independent heavy phases
-      # (the 5114-case generated difftest + per-test AOT links). CI sets it on
-      # the slow macOS runner — those run on Linux CI and in local dev.
+      # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
+      # (the 5114-case generated difftest, the JIT gc-stress sweep, and the
+      # per-test AOT links). CI sets it on the slow macOS runner — those run on
+      # Linux CI and in local dev.
       all)
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
         phase "ctest (embedding smokes)"; run_embed
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
