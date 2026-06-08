@@ -230,7 +230,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_random_int(
 
 #define CUL_RANDOM_PAIR(name, Dist)                                     \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_##name(  \
-      int8_t lt, int64_t ld, int8_t rt, int64_t rd) {                   \
+      int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
+      int64_t line, int64_t col) {                                      \
+    /* Reject non-numeric operands with a positioned error (the inline  \
+       fast path passes the call site; the as-value adapter passes 0,0  \
+       and the dispatch backfills) — matching the interp's positioned   \
+       `type error`, which was positionless under the JIT before. */     \
+    if ((lt != TAG_LONG && lt != TAG_FLOAT) ||                          \
+        (rt != TAG_LONG && rt != TAG_FLOAT))                            \
+      throw_type_error_at(line, col);                                   \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
     Dist d(a, b);                                                       \
@@ -2619,11 +2627,11 @@ inline JitValue _ns_random_int(JitValue* a, int64_t) {
 }
 inline JitValue _ns_random_uniform(JitValue* a, int64_t) {
   return culebra_runtime_random_uniform(a[0].tag, a[0].data,
-                                         a[1].tag, a[1].data);
+                                         a[1].tag, a[1].data, 0, 0);
 }
 inline JitValue _ns_random_gauss(JitValue* a, int64_t) {
   return culebra_runtime_random_gauss(a[0].tag, a[0].data,
-                                       a[1].tag, a[1].data);
+                                       a[1].tag, a[1].data, 0, 0);
 }
 inline JitValue _ns_random_shuffle(JitValue* a, int64_t) {
   culebra_runtime_random_shuffle(_ns_adapt::take_array(a[0]));
@@ -2944,8 +2952,9 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
         "SharedBuffer.new: expected 2 arguments (count, Class)");
   }
   if (a[0].tag != TAG_LONG) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.new: count must be an integer");
+    // Match interp's `count.to_long()`, which raises the canonical
+    // `type error: expected Long, got <T>` (position backfilled by dispatch).
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(a[0].tag), 0, 0);
   }
   long count = a[0].data;
   if (count < 0) {
@@ -2987,8 +2996,7 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
   }
   std::string path(_str_sv(reinterpret_cast<const char*>(a[0].data)));
   if (a[1].tag != TAG_LONG) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.file: count must be an integer");
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(a[1].tag), 0, 0);
   }
   long count = a[1].data;
   if (count < 0) {
@@ -3025,8 +3033,7 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
         "SharedBuffer.shared: expected 2 arguments (count, Class)");
   }
   if (a[0].tag != TAG_LONG) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.shared: count must be an integer");
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(a[0].tag), 0, 0);
   }
   long count = a[0].data;
   if (count < 0) {
@@ -4580,10 +4587,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::random_uniform, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
-                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::random_gauss, jit.valueType_,
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
-                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::random_shuffle, jit.builder_.getVoidTy(),
                                ptrTy);
   jit.module_->getOrInsertFunction(rt::random_weighted_choice, jit.valueType_,
@@ -5515,7 +5524,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto r = emit_call(
           module_->getFunction(rt_name),
           {extract_tag(a), extract_data(a),
-           extract_tag(b), extract_data(b)});
+           extract_tag(b), extract_data(b), line, col});
       emit_value_release(a);
       emit_value_release(b);
       return r;
