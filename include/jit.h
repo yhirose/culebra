@@ -4588,8 +4588,9 @@ culebra_runtime_register_trait_super(const char* trait_name,
 
 // Side table mapping a dispatcher closure pointer to its multimethod
 // name, so the shared static thunk can recover which name to dispatch
-// for. Dispatchers live for the lifetime of the program (held by the
-// env binding); leak is bounded by the number of multimethods.
+// for. A dispatcher is kept alive only by its env/module binding (a
+// normal GC root) and owns its bodies via _jit_gc_enumerate_children, so
+// it is reclaimed when its scope dies (entry dropped in _jit_multifn_forget).
 // thread_local: keyed by per-thread dispatcher closure pointers (see
 // _jit_variant_ctor_info note). No cross-thread sharing needed.
 inline std::map<JitClosure*, std::string>&
@@ -4688,6 +4689,59 @@ inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
     out.push_back(reinterpret_cast<void*>(v.data));
 }
 
+// extern "C" to match the definition's linkage (we sit in an extern "C++"
+// island; the thunk itself lives in the surrounding extern "C" block).
+extern "C" JitValue _jit_multifn_dispatcher_thunk(JitClosure*, JitValue,
+                                                  int64_t, JitValue*);
+
+// A `fn name` dispatcher shares the one dispatch thunk; its overloads live in
+// the thread_local `_jit_multimethods()` table, keyed by name. The table is
+// invisible to normal GC tracing, so a dispatcher owns its method bodies via
+// the three hooks below (children → keep alive while reachable; release/sweep
+// → drop the table entry when the dispatcher dies). This replaces pinning
+// every body as a permanent root, so a dead `fn name` is reclaimed like the
+// interpreter's (its dispatcher shared_ptr releasing the table on scope exit).
+inline bool _jit_is_multifn_dispatcher(JitClosure* c) {
+  return c && c->fn_ptr == reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk);
+}
+
+// Push a dispatcher's overload bodies as mark-phase children.
+inline void _jit_multifn_push_bodies(JitClosure* c, std::vector<void*>& out) {
+  auto& names = _jit_multifn_dispatcher_names();
+  auto nit = names.find(c);
+  if (nit == names.end()) return;
+  auto& tbl = _jit_multimethods();
+  auto mit = tbl.find(nit->second);
+  if (mit == tbl.end()) return;
+  for (auto& e : mit->second)
+    if (e.body) out.push_back(e.body);
+}
+
+// Drop a dead dispatcher's table + name entries. `release_bodies` is true on
+// the RC path (refcount hit 0 with no cycle → release each body's table-held
+// +1, drop-suppressed since they are cycle-held garbage) and false on the
+// sweep path (the bodies are reclaimed by their own sweep entries — releasing
+// here would double-free).
+inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
+  auto& names = _jit_multifn_dispatcher_names();
+  auto nit = names.find(c);
+  if (nit == names.end()) return;
+  auto& tbl = _jit_multimethods();
+  if (auto mit = tbl.find(nit->second); mit != tbl.end()) {
+    if (release_bodies) {
+      bool prev = _jit_drop_suppressed();
+      _jit_drop_suppressed() = true;
+      for (auto& e : mit->second)
+        if (e.body)
+          _culebra_value_release_impl(TAG_FUNC,
+                                      reinterpret_cast<int64_t>(e.body));
+      _jit_drop_suppressed() = prev;
+    }
+    tbl.erase(mit);
+  }
+  names.erase(nit);
+}
+
 // Children of a live object, for the mark phase. Pushes raw pointers (the heap
 // re-reads the tag from its registry). Captures (Cells) and `proto` are direct
 // object pointers; all other children are refcounted JitValue payloads.
@@ -4698,6 +4752,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
       auto* c = static_cast<JitClosure*>(obj);
       for (size_t i = 0; i < c->n_captures; i++)
         if (c->captures[i]) out.push_back(c->captures[i]);
+      if (_jit_is_multifn_dispatcher(c)) _jit_multifn_push_bodies(c, out);
       break;
     }
     case GC_TAG_ARRAY:
@@ -4740,11 +4795,10 @@ inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   for (auto& [_, methods] : _jit_trait_default_impls())
     for (auto& [__, cls] : methods)
       if (cls) out.push_back(cls);
-  for (auto& [_, entries] : _jit_multimethods())
-    for (auto& e : entries)
-      if (e.body) out.push_back(e.body);
-  for (auto& [cls, _] : _jit_multifn_dispatcher_names())
-    if (cls) out.push_back(cls);
+  // Multimethod dispatchers and their bodies are NOT pinned here: a dispatcher
+  // is kept alive by its env / module binding (a normal GC root) and owns its
+  // bodies via _jit_gc_enumerate_children, so a `fn name` whose scope dies is
+  // reclaimed (table entry dropped in release/sweep) — symmetric with interp.
   for (auto& v : _culebra_defer_stack()) _gc_push_value(out, v);
   auto& rt = culebra::current_runtime();
   if (rt.thrown_data)
@@ -4758,6 +4812,10 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
   switch (tag) {
     case GC_TAG_FUNC: {
       auto* c = static_cast<JitClosure*>(obj);
+      // A swept dispatcher is cycle garbage; drop its table entry (its bodies
+      // have their own sweep entries, so don't release them here).
+      if (_jit_is_multifn_dispatcher(c))
+        _jit_multifn_forget(c, /*release_bodies=*/false);
       std::free(c->captures);
       delete c;
       break;
@@ -7500,6 +7558,11 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
     case GC_TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(data);
       if (--c->refcount == 0) {
+        // A dispatcher reaching refcount 0 is non-recursive (a recursive one
+        // sits in a dispatcher↔body cycle and is reclaimed by sweep instead),
+        // so releasing its bodies' table-held +1 cannot re-enter this closure.
+        if (_jit_is_multifn_dispatcher(c))
+          _jit_multifn_forget(c, /*release_bodies=*/true);
         for (size_t i = 0; i < c->n_captures; i++) {
           _culebra_cell_release(c->captures[i]);
         }

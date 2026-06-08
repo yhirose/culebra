@@ -1,0 +1,32 @@
+// A nested `fn name` (a multimethod dispatcher + its body) must be reclaimed
+// when its enclosing scope dies — like the interpreter, whose dispatcher
+// shared_ptr releases the method table on scope exit. The JIT used to pin every
+// dispatcher body as a permanent GC root, so each distinct nested-fn decl-site
+// leaked ~4 objects for the life of the program.
+//
+// Measure the live-object delta between two batches of DISTINCT decl-sites,
+// each followed by a deep clean-stack collect. With per-decl-site pinning the
+// second batch adds its objects on top of the first (delta ~ batch size × 4);
+// once reclaimed the delta is ~0. A generous bound tolerates the conservative
+// collector's transient stack retention while still catching a regression
+// (pre-fix delta was 16 for this 4-site batch; fixed is 0).
+
+class Box { new(d) { this.data = d } }
+fn a1() { let b = Box.new(1); fn g1() { b.data }; g1() }
+fn a2() { let b = Box.new(2); fn g2() { b.data }; g2() }
+fn a3() { let b = Box.new(3); fn g3() { b.data }; g3() }
+fn a4() { let b = Box.new(4); fn g4() { b.data }; g4() }
+fn a5() { let b = Box.new(5); fn g5() { b.data }; g5() }
+fn a6() { let b = Box.new(6); fn g6() { b.data }; g6() }
+fn a7() { let b = Box.new(7); fn g7() { b.data }; g7() }
+fn a8() { let b = Box.new(8); fn g8() { b.data }; g8() }
+// Deep recursion before measuring moves the conservative scan off the stale
+// activation frames so a dead dispatcher is actually unreachable.
+fn deep(n) { if n <= 0 { GC.stat().live_objects } else { deep(n - 1) } }
+
+a1(); a2(); a3(); a4()
+let m1 = deep(40)
+a5(); a6(); a7(); a8()
+let m2 = deep(40)
+assert_lt(m2 - m1, 8)
+puts("gc multifn-lifetime: ok")
