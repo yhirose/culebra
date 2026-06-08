@@ -9960,31 +9960,6 @@ struct JIT {
   // The sink-name predicate and the pattern-binding visitor live in
   // interpreter.h as free functions in namespace culebra.
 
-  // Throw if `name` appears in any closure-captured outer scope.
-  // outer[0] is the top-level (main) scope; its entries behave like
-  // globals and may be shadowed freely. outer[1..] are enclosing
-  // function locals whose names would be captured by the current
-  // function and thus must not be shadowed. `_` is the sink and is
-  // exempt from the shadow rule entirely.
-  static void check_shadow_against_captures(
-      const std::string& name,
-      const std::vector<const std::set<std::string>*>& outer,
-      size_t line, size_t column) {
-    if (is_sink_name(name)) return;
-    for (size_t i = 1; i < outer.size(); i++) {
-      if (outer[i]->contains(name)) throw_shadow_error(name, line, column);
-    }
-  }
-
-  void check_pattern_shadow(
-      const peg::Ast& pattern,
-      const std::vector<const std::set<std::string>*>& outer) const {
-    for_each_pattern_binding(
-        pattern, [&](std::string_view name, size_t line, size_t col) {
-          check_shadow_against_captures(std::string(name), outer, line, col);
-        });
-  }
-
   // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
   // not in any outer scope (auto-local). Does not descend into nested
   // functions.
@@ -10002,7 +9977,6 @@ struct JIT {
       // then promoted to cells via `captured_locals`). Same mechanism
       // as TRY's catch binding below.
       for (auto& arm : node.nodes[1]->nodes) {
-        check_pattern_shadow(*arm->nodes[0], outer);
         for_each_pattern_binding(
             *arm->nodes[0],
             [&](std::string_view name, size_t, size_t) {
@@ -10019,7 +9993,6 @@ struct JIT {
       // Same mechanism as MATCH above; without this they look like globals and
       // a capturing closure raises NameError.
       if (node.nodes.size() >= 3) {
-        check_pattern_shadow(*node.nodes[2], outer);
         for_each_pattern_binding(
             *node.nodes[2],
             [&](std::string_view name, size_t, size_t) {
@@ -10036,7 +10009,6 @@ struct JIT {
       // `try ... catch _ { ... }` is the sink form (drop the value).
       auto& id = *node.nodes[1];
       auto name = std::string(id.token);
-      check_shadow_against_captures(name, outer, id.line, id.column);
       if (!is_sink_name(name)) locals.insert(name);
       // fall through to walk the bodies
     }
@@ -10047,17 +10019,8 @@ struct JIT {
       // deliberately don't add it to the enclosing function's flat
       // `locals` set — otherwise functions defined OUTSIDE the for
       // body in the same enclosing function would wrongly see the
-      // binding in their `outer` and treat references to a same-named
-      // identifier as an outer-capture.
-      //
-      // The shadow check still applies: introducing the binding must
-      // not collide with a closure-captured name from an enclosing
-      // function. Subtree-local visibility is re-established in
-      // visit_for_frees' FOR handler so nested closures inside the
-      // body can still capture it correctly.
-      auto& id = *node.nodes[0];
-      auto name = std::string(id.token);
-      check_shadow_against_captures(name, outer, id.line, id.column);
+      // binding in their `outer`. Subtree-local visibility for closures
+      // inside the body is re-established in visit_for_frees' FOR handler.
       collect_fn_locals(*node.nodes[1], locals, outer);
       collect_fn_locals(*node.nodes[2], locals, outer);
       return;
@@ -10072,8 +10035,6 @@ struct JIT {
           bool is_declare = av.is_let || av.is_mut;
 
           if (is_declare) {
-            check_shadow_against_captures(name, outer, ident_node->line,
-                                          ident_node->column);
             if (!is_sink_name(name)) locals.insert(name);
           } else {
             // Bare assignment: local only if not in outer
@@ -10108,7 +10069,6 @@ struct JIT {
       auto& id = *node.nodes[i];
       auto name = std::string(
           culebra::parse_generic_head(id.token).outer);
-      check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
     }
@@ -10123,7 +10083,6 @@ struct JIT {
       }
       auto& id = *node.nodes[i];
       auto name = std::string(culebra::parse_generic_head(id.token).outer);
-      check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
     }
@@ -10148,7 +10107,6 @@ struct JIT {
       auto& id = *node.nodes[i];
       auto name = std::string(
           culebra::parse_generic_head(id.token).outer);
-      check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
     }
@@ -10157,7 +10115,6 @@ struct JIT {
       // `import name from "path"` binds `name` in the enclosing scope.
       auto& id = *node.nodes[0];
       auto name = std::string(id.token);
-      check_shadow_against_captures(name, outer, id.line, id.column);
       locals.insert(name);
       return;
     }
@@ -10549,7 +10506,6 @@ struct JIT {
       // non-existent IDENTIFIER child (flaky OOB read). Mirror the interp
       // analyzer and collect the pattern's bindings.
       if (culebra::is_pattern_param(*p)) {
-        check_pattern_shadow(*p, outer);
         for_each_pattern_binding(
             *p, [&](std::string_view nm, size_t, size_t) {
               my_locals.insert(std::string(nm));
@@ -10558,7 +10514,6 @@ struct JIT {
       }
       auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
       auto name = std::string(name_sv);
-      check_shadow_against_captures(name, outer, line, col);
       my_locals.insert(name);
     }
     collect_fn_locals(body_ast, my_locals, outer);
@@ -10654,6 +10609,10 @@ struct JIT {
   // addresses could be recycled; callers enforce that by constructing a
   // fresh `JIT` per compilation.
   FuncInfo analyze_program(const peg::Ast& programAst) {
+    // Shadow analysis is single-sourced in lint.h (the same check the
+    // interpreter runs). collect_fn_locals/visit_for_frees below only collect
+    // locals + free variables for codegen; they no longer check shadowing.
+    lint::check_shadow(programAst);
     std::vector<const std::set<std::string>*> outer;
     std::set<std::string> my_locals;
     collect_fn_locals(programAst, my_locals, outer);

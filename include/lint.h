@@ -7,8 +7,8 @@
 // home for static checks: rules over the `ScopeWalker` walk (let
 // reassignment, break/continue/return placement, duplicate params,
 // @packable field types) plus the self-contained shadow analyzer
-// (`check_shadow`, moved here from the interp). The JIT still performs
-// the equivalent shadow check inline during compilation (collect_fn_locals).
+// (`check_shadow`, moved here from the interp). The JIT calls `check_shadow`
+// too (from analyze_program), so the rule has a single source.
 
 #include <format>
 #include <set>
@@ -761,6 +761,29 @@ inline void descend_into_nested(const peg::Ast& node, const NameSet& my_locals,
     return;
   }
 
+  if (node.tag == "FOR"_) {
+    // [pattern/var, iterable, BLOCK]. The loop variable is block-scoped to the
+    // body and is captured by closures defined there, so a nested function
+    // inside the body must not shadow it — but code after the loop never sees
+    // it. Descend the body with the loop binding(s) folded into a body-local
+    // copy of the enclosing locals; the iterable is in the enclosing scope.
+    if (node.nodes.size() >= 3) {
+      descend_into_nested(*node.nodes[1], my_locals, outer);
+      NameSet body_locals = my_locals;
+      auto& var = *node.nodes[0];
+      if (culebra::is_pattern_param(var)) {
+        culebra::for_each_pattern_binding(
+            var, [&](std::string_view name, size_t, size_t) {
+              if (!is_sink(name)) body_locals.insert(std::string(name));
+            });
+      } else if (var.is_token && !is_sink(var.token)) {
+        body_locals.insert(std::string(var.token));
+      }
+      descend_into_nested(*node.nodes[2], body_locals, outer);
+      return;
+    }
+  }
+
   for (auto& c : node.nodes) descend_into_nested(*c, my_locals, outer);
 }
 
@@ -812,8 +835,8 @@ inline void check_module(const peg::Ast& ast) {
 // starts empty — top-level names enter the chain only when a nested
 // function pushes them, so the first scope (`outer[0]` from a nested
 // function's perspective) is the top-level / "globals" frame which
-// `shadow::check` skips. Invoked by the interpreter; the JIT performs the
-// equivalent check inline during compilation (collect_fn_locals).
+// `shadow::check` skips. Invoked by both backends: the interpreter before
+// eval and the JIT from analyze_program, so the rule has one source.
 inline void check_shadow(const peg::Ast& ast) {
   _detail::shadow::NameSet top_locals;
   _detail::shadow::OuterChain outer;

@@ -200,5 +200,38 @@ x ??= 7'
 expect_accept "index assign"            'mut o = [1]
 o[0] = 9'
 
+# Shadow: a nested function may not shadow a binding captured from an enclosing
+# function. Single-sourced in lint.h (lint::check_shadow); the JIT now routes
+# through it instead of its own collect_fn_locals pass, so assert BOTH backends
+# reject before eval. For-loop variables are block-scoped to the body and are
+# captured by closures there — shadowing one was previously missed by the interp.
+expect_shadow_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
+    if [[ "$out" == *RAN* || "$out" != *ShadowError* ]]; then
+      echo "FAIL shadow-reject [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_shadow_accept() {
+  printf '%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
+      echo "FAIL shadow-accept [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_shadow_reject "inner param shadows let"   'fn outer() { let x = 1; fn inner(x) { x } }'
+expect_shadow_reject "for-var simple inside loop" 'fn f() { for i in [1] { fn g(i) { i } } }'
+expect_shadow_reject "for-var destructure inside" 'fn f() { for (i, x) in [(1, 2)] { fn g(x) { x } } }'
+expect_shadow_reject "block-let nested fn"        'fn f() { { let b = 1; fn g(b) { b } } }'
+# Accepted (sound-negative): out of scope, or a legitimate capture.
+expect_shadow_accept "for-var after loop"         'fn f() { for i in [1] { }; fn g() { let i = 2 } }'
+expect_shadow_accept "toplevel for-var"           'for i in [1] { fn g(i) { i } }'
+expect_shadow_accept "nested captures for-var"    'fn f() { for i in [1] { let y = i; fn g() { y } } }'
+expect_shadow_accept "toplevel binding shadowable" 'let x = 1
+fn f() { let x = 2; x }'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1
