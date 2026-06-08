@@ -220,6 +220,13 @@ let e6_ctor_dup = try { KwCtor(a: 1, a: 2); nil } catch e { e }
 assert_true(e6_ctor_dup.kind == 'TypeError' &&
        e6_ctor_dup.message.contains('duplicate'))
 
+# A bare global builtin that accepts no keyword arguments reports the same
+# catchable TypeError on both backends (the JIT used to raise an uncatchable
+# compile-time SyntaxError for a well-formed kwarg here).
+let e6_builtin_kw = try { puts(x: 1); nil } catch e { e }
+assert_true(e6_builtin_kw.kind == 'TypeError' &&
+       e6_builtin_kw.message.contains('does not accept keyword'))
+
 let e7 = try {
   let bad = {1: 'a'}
   err_f(1, **bad)

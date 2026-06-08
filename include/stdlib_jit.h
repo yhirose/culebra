@@ -4741,9 +4741,15 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         "puts", "print", "to_long", "to_float", "to_string", "type_of", "hash",
     };
     if (kwarg_rejecting_globals.contains(name)) {
-      throw culebra::CulebraError("SyntaxError",
-          std::format("'{}' does not accept keyword arguments", name),
-          argsAst.line, argsAst.column);
+      // Catchable runtime TypeError matching the interp (interpreter.h
+      // ~6429), not a compile-time SyntaxError — `try { puts(x: 1) }` must
+      // observe the same error on both backends, at the same call-site
+      // position. A duplicate/positional-after-keyword shape is caught earlier
+      // by emit_arg_list_check, so this fires only for a well-formed kwarg.
+      jit.emit_throw_error("TypeError",
+          "function does not accept keyword arguments",
+          callAst.line, callAst.column);
+      return jit.make_nil();  // unreachable after the throw
     }
     return nullptr;
   }
