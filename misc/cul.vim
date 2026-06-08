@@ -16,6 +16,20 @@ syn region  culStringD      start=+"+ skip=+\\\\\|\\"+ end=+"\|$+ contains=culIn
 syn region  culInterp       matchgroup=culInterpDelim
                             \ start=+{+ end=+}+ contained contains=TOP
 
+" Regex literals: re'...' / re"..." / re`...` with trailing [ims] flags.
+" The 're' prefix must sit at a word boundary and be immediately followed by a
+" quote (a bare 're' stays an ordinary identifier). Each region starts at 're'
+" (an earlier column than the bare-quote string regions above) so it wins the
+" overlap and the body highlights as a regex, not a string. The body is raw
+" apart from the dollar-brace interpolation; a backslash-escape (incl. an
+" escaped dollar, which suppresses interpolation) is flagged. culRegexEscape
+" never consumes a quote, so it cannot swallow a closing delimiter.
+syn match   culRegexEscape  +\\[^'"`]+ contained
+syn region  culRegexInterp  matchgroup=culInterpDelim start=+\${+ end=+}+ contained contains=TOP
+syn region  culRegex        matchgroup=culRegexDelim start=+\<re'+ end=+'[ims]*\|$+ contains=culRegexEscape,culRegexInterp
+syn region  culRegex        matchgroup=culRegexDelim start=+\<re"+ end=+"[ims]*\|$+ contains=culRegexEscape,culRegexInterp
+syn region  culRegex        matchgroup=culRegexDelim start=+\<re`+ end=+`[ims]*\|$+ contains=culRegexEscape,culRegexInterp
+
 " Operators (multi-char first so prefixes don't shadow them)
 syn match   culOperator     "&&\|||\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
 syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
@@ -59,6 +73,9 @@ hi def link culDecNumber     Number
 hi def link culStringS       String
 hi def link culStringD       String
 hi def link culInterpDelim   Special
+hi def link culRegex         String
+hi def link culRegexDelim    Special
+hi def link culRegexEscape   SpecialChar
 hi def link culOperator      Operator
 hi def link culFunction      Type
 hi def link culClass         Structure
