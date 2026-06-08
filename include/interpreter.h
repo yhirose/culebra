@@ -7595,13 +7595,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   }
 
   bool is_keyword(std::string_view ident) const {
-    using namespace std::literals;
-    static std::set<std::string_view> keywords = {
-        "nil"sv,    "true"sv,     "false"sv,  "mut"sv,      "debugger"sv,
-        "return"sv, "while"sv,    "for"sv,    "in"sv,       "if"sv,
-        "else"sv,   "fn"sv,       "match"sv,  "throw"sv,    "try"sv,
-        "catch"sv,  "break"sv,    "continue"sv, "defer"sv};
-    return keywords.contains(ident);
+    return culebra::is_keyword(ident);  // single source in parser.h
   }
 
   // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].

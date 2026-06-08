@@ -175,5 +175,30 @@ expect_accept "kw-only default + plain" 'fn f(a, *, b = 1, c) { }'
 expect_accept "default before sep"      'fn f(a = 1, *, b) { }'
 expect_accept "sep then kwargs"         'fn f(a, *, b, **kw) { }'
 
+# Malformed assignments: shapes the interp's eval_assignment rejects before any
+# write. Hoisted into lint.h so every backend rejects them pre-eval (the JIT
+# previously ran a keyword LHS like `if = 1` silently). Reuses the SyntaxError
+# substring helper.
+expect_param_reject "compound declares (let)"  "compound assignment cannot declare a new variable" 'let x += 1'
+expect_param_reject "compound declares (mut)"  "compound assignment cannot declare a new variable" 'mut x += 1'
+expect_param_reject "compound declares (??=)"  "compound assignment cannot declare a new variable" 'let x ??= 1'
+expect_param_reject "??= on index target"      "is only supported on a simple variable target" 'mut o = [1]
+o[0] ??= 9'
+expect_param_reject "??= on property target"   "is only supported on a simple variable target" 'mut o = { a: 1 }
+o.a ??= 9'
+expect_param_reject "keyword LHS (if)"         "left-hand side is invalid variable name" 'if = 1'
+expect_param_reject "keyword LHS (true)"       "left-hand side is invalid variable name" 'true = 1'
+expect_param_reject "keyword LHS (match)"      "left-hand side is invalid variable name" 'match = 1'
+
+# Accepted (sound-negative): well-formed assignments must still run.
+expect_accept "plain reassign"          'mut x = 0
+x = 5'
+expect_accept "compound on mut"         'mut x = 1
+x += 2'
+expect_accept "??= on simple var"       'mut x = nil
+x ??= 7'
+expect_accept "index assign"            'mut o = [1]
+o[0] = 9'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

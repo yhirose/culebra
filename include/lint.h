@@ -438,6 +438,26 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
     }
     case "ASSIGNMENT"_: {
       auto av = culebra::view_assignment(node);
+      // Well-formedness — certain-to-fail shapes the interp's eval_assignment
+      // throws before any write. The JIT mirrored the first two but lacked the
+      // keyword-LHS check (it silently ran `if = 1`); hoisting all three here
+      // makes every backend reject them pre-eval at the ASSIGNMENT node, which
+      // is the position the interp ends up with. First match only, as the
+      // interp's throwing path does.
+      auto syntax = [&](const char* msg) {
+        diags_.push_back(Diagnostic{"SyntaxError", msg,
+                                    static_cast<long>(node.line),
+                                    static_cast<long>(node.column),
+                                    Severity::Error});
+      };
+      if (av.compound && (av.is_let || av.is_mut)) {
+        syntax("compound assignment cannot declare a new variable.");
+      } else if (av.compound && av.op_base == "??" && av.lvalcnt != 1) {
+        syntax("`??=` is only supported on a simple variable target.");
+      } else if (av.lvalcnt == 1 && node.nodes[av.lvaloff]->is_token &&
+                 culebra::is_keyword(node.nodes[av.lvaloff]->token)) {
+        syntax("left-hand side is invalid variable name.");
+      }
       walk(*av.rhs);
       if (av.lvalcnt == 1) {
         const auto& lval = *node.nodes[av.lvaloff];
