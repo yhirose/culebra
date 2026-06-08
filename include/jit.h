@@ -8177,11 +8177,11 @@ struct JIT {
   struct LoopBlocks {
     llvm::BasicBlock* continue_target;
     llvm::BasicBlock* break_target;
-    // For a `for` body that contains defers, the defer-stack mark captured
-    // at the start of each iteration. break/continue run the iteration's
-    // defers back to this mark before branching (matching interp's eval_for,
-    // which runs_deferred on both signals). null when the body has no defer
-    // and for `while` (whose body defers are function-scoped — see docs).
+    // For a `for` / `while` body that contains defers, the defer-stack mark
+    // captured at the start of each iteration. break/continue run the
+    // iteration's defers back to this mark before branching (matching interp's
+    // eval_for / eval_while, which run_deferred on both signals). null when the
+    // body has no defer.
     llvm::Value* defer_mark = nullptr;
   };
   std::vector<LoopBlocks> loop_stack_;
@@ -10462,13 +10462,19 @@ struct JIT {
     }
     if (node.tag == "WHILE"_) {
       // The loop safepoint (emit_safepoint) can throw Interrupted on Ctrl+C, so
-      // the enclosing function needs a personality to unwind through. (FOR sets
-      // has_eh below for its dispose landingpad; WHILE's body is not a scope, so
-      // flag it here.)
+      // the enclosing function needs a personality to unwind through.
       info.has_eh = true;
-      bool any = false;
-      for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
-      return any;
+      // nodes: [condition EXPRESSION, BLOCK]. Like FOR, the body is a
+      // per-iteration scope: a defer in it fires each iteration, not at
+      // function exit. Scan the condition at the enclosing level; absorb the
+      // body's defers into the body node (mark it) so they don't bubble up to
+      // has_fn_defer. Matches compile_while + interp's eval_while.
+      scan_eh_defer(*node.nodes[0], at_fn_top, info);
+      if (node.nodes.size() >= 2 &&
+          scan_eh_defer(*node.nodes.back(), /*at_fn_top=*/false, info)) {
+        scope_has_defer_.insert(&*node.nodes.back());
+      }
+      return false;  // the body absorbs its own defers
     }
     if (node.tag == "FOR"_) {
       // for-in over the iterator protocol (Object iter() path) emits an
@@ -13539,15 +13545,50 @@ struct JIT {
 
     builder_.SetInsertPoint(bodyBB);
     emit_safepoint();  // Ctrl+C breaks even a tight `while true {}`
-    loop_stack_.push_back({condBB, endBB});
+
+    // The body is a fresh scope per iteration (matching compile_for): a
+    // binding introduced inside neither leaks out nor persists across
+    // iterations (so a bare immutable `x = …` re-declares each pass rather
+    // than re-assigning), and a body `defer` fires at each iteration's exit.
+    // pop_scope releases the per-iteration slots and zeros the allocas on the
+    // back-edge, so the next pass starts clean.
+    const auto& body = *ast.nodes[1];
+    push_scope();
+    // A defer in the body fires at the end of each iteration: capture the
+    // defer-stack mark here and run back to it on every exit path — normal
+    // fall-through, break/continue (via loop_stack_), and an in-flight
+    // exception (the cleanup landingpad). Mirrors compile_for's body.
+    bool has_defer = scope_has_defer_.contains(&body);
+    llvm::Value* mark = nullptr;
+    llvm::BasicBlock* cleanupBB = nullptr;
+    llvm::BasicBlock* savedLpad = current_lpad_;
+    if (has_defer) {
+      mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
+                                 "while.body.mark");
+      cleanupBB = llvm::BasicBlock::Create(ctx_, "while.body.cleanup", fn);
+      current_lpad_ = cleanupBB;
+    }
+
+    loop_stack_.push_back({condBB, endBB, mark});
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
     // (else a body ending in a heap expression leaks one object per pass).
-    auto bodyVal = compile(*ast.nodes[1]);
+    auto bodyVal = compile(body);
     loop_stack_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(bodyVal);
+    }
+    pop_scope();
+    current_lpad_ = savedLpad;
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      if (has_defer) {
+        emit_call(module_->getFunction(rt::defer_run_to), {mark});
+      }
       builder_.CreateBr(condBB);
+    }
+
+    if (has_defer) {
+      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "while.body.exc");
     }
 
     builder_.SetInsertPoint(endBB);

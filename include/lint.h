@@ -87,9 +87,9 @@ struct Scope {
 };
 
 // Walks the AST modeling culebra's exact scope boundaries, verified
-// against interpreter.h's `make_scope` sites: LEXICAL_SCOPE, FOR, MATCH
-// arms, TRY/catch bodies, DEFER, and function/lambda/method bodies open a
-// child scope; IF / WHILE share the enclosing one.
+// against interpreter.h's `make_scope` sites: LEXICAL_SCOPE, FOR, WHILE
+// body, MATCH arms, TRY/catch bodies, DEFER, and function/lambda/method
+// bodies open a child scope; IF shares the enclosing one.
 class ScopeWalker {
  public:
   explicit ScopeWalker(std::vector<Diagnostic>& diags) : diags_(diags) {}
@@ -208,14 +208,15 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       return;
     }
     case "WHILE"_: {
-      // [condition, BLOCK]: WHILE shares the enclosing variable scope (no
-      // push), but its body is inside the loop. The condition is evaluated
-      // before the loop is entered, so it stays at the enclosing loop depth
-      // (matches the JIT pushing loop_stack_ only around the body).
+      // [condition, BLOCK]: the condition is evaluated before each iteration
+      // in the enclosing scope; the body is a fresh child scope per iteration
+      // (like FOR — see interpreter.h eval_while / jit.h compile_while). The
+      // condition stays at the enclosing loop depth; the body is inside the
+      // loop.
       if (node.nodes.size() < 2) { walk_children(node); return; }
       walk(*node.nodes[0]);
       LoopDepthGuard g(loop_depth_, loop_depth_ + 1);
-      walk(*node.nodes[1]);
+      scoped(*node.nodes[1], [](Scope&) {});
       return;
     }
     case "FOR"_: {

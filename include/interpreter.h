@@ -4835,12 +4835,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (!cond.to_bool()) {
         break;
       }
+      // Each iteration runs in a fresh scope, matching eval_for: a binding
+      // introduced in the body neither leaks out nor persists across
+      // iterations (so a bare immutable `x = …` re-declares each pass rather
+      // than re-assigning), and a body `defer` fires on every iteration.
+      auto scopeEnv = make_scope(env);
       try {
-        eval(*ast.nodes[1], env);
+        eval(*ast.nodes[1], scopeEnv);
+        run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
+        run_deferred(scopeEnv);
         return Value();
       } catch (const ContinueSignal&) {
+        run_deferred(scopeEnv);
         // fall through to next iteration
+      } catch (...) {
+        run_deferred(scopeEnv);
+        throw;
       }
     }
     return Value();

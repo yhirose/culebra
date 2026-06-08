@@ -1,0 +1,72 @@
+// A `while` loop body is a fresh lexical scope per iteration, matching `for`.
+//
+// Previously the interp shared the enclosing scope for the while body: a bare
+// immutable binding then errored on the 2nd iteration (`cannot reassign 'p'`)
+// while the JIT silently allowed it — an interp/JIT divergence. Now both agree
+// with `for`: each iteration re-enters a fresh scope.
+
+// 1. Bare immutable binding re-created each iteration (no ImmutableError).
+mut i = 0
+mut acc = []
+while i < 3 {
+  p = i * 10            // fresh immutable binding per iteration
+  acc.push(p)
+  i = i + 1
+}
+assert_eq(acc, [0, 10, 20])
+
+// 2. `let` re-declared each iteration.
+mut j = 0
+mut acc2 = []
+while j < 3 {
+  let q = j + 1
+  acc2.push(q)
+  j = j + 1
+}
+assert_eq(acc2, [1, 2, 3])
+
+// 3. A binding first introduced inside the body does NOT leak out (fresh
+//    scope, like `for`). Referencing it after the loop is a NameError.
+mut k = 0
+while k < 1 { leaked = 99; k = k + 1 }
+mut saw_err = false
+try { puts(leaked) } catch e { saw_err = true }
+assert_eq(saw_err, true)
+
+// 4. An outer `mut` accumulator is still reassigned from inside via the scope
+//    chain — the common loop idiom is unaffected by the fresh body scope.
+mut total = 0
+mut m = 0
+while m < 4 { total = total + m; m = m + 1 }
+assert_eq(total, 6)
+
+// 5. `defer` in a while body fires per iteration (not at function exit),
+//    matching `for` — the body scope exits each iteration.
+fn defer_order() {
+  mut out = []
+  mut n = 0
+  while n < 2 {
+    defer { out.push("c") }
+    out.push(n)
+    n = n + 1
+  }
+  out.push("end")
+  out
+}
+assert_eq(defer_order(), [0, "c", 1, "c", "end"])
+
+// 6. break runs the current iteration's defers before leaving the loop.
+fn defer_break() {
+  mut out = []
+  mut n = 0
+  while n < 5 {
+    defer { out.push("cleanup") }
+    if n == 2 { break }
+    out.push(n)
+    n = n + 1
+  }
+  out
+}
+assert_eq(defer_break(), [0, "cleanup", 1, "cleanup", "cleanup"])
+
+IO.puts("test_while_scope OK")

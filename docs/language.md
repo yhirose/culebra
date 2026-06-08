@@ -442,6 +442,12 @@ is not changing.
   are bound there.
 * A block `{ ... }` in statement position (`LEXICAL_SCOPE`) introduces
   a nested lexical scope that ends at `}`.
+* A `for` and a `while` body introduce a **fresh scope per iteration**. A
+  binding introduced in the body neither leaks out of the loop nor persists
+  across iterations (so a bare immutable `x = …` re-declares each pass rather
+  than re-assigning), and a body `defer` fires at the end of every iteration.
+  An `if` body shares the enclosing scope (it does not iterate, so nothing
+  collides).
 * `match` arms introduce a scope that covers the arm's guard and body;
   variable bindings from the pattern are visible there.
 
@@ -1775,7 +1781,8 @@ if no branch is taken (no `else` and the `if` was false).
     while cond { body }
 
 `while` is a statement; its value is `nil`. `break` and `continue`
-work inside the loop body.
+work inside the loop body. The body is a fresh scope per iteration
+(like `for` — see [Scope](#scope)).
 
 ### `for` ... `in`
 
