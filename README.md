@@ -64,6 +64,14 @@ to a runtime that doesn't punish an agent for invoking it every turn.
 - **Ship the result.** `culebra build` turns the script the agent just
   wrote into a binary it can hand back to the user.
 
+### Immutable by default, mutability opt-in
+
+Bindings are immutable by default and need no declaration keyword: a bare
+`x = 1` is a constant, and reassigning it is an error. A variable you
+intend to change is written `mut x = 1`, so `mut` marks exactly the places
+where state moves. The common case stays ceremony-free; the mutable
+exceptions stay visible.
+
 ### Batteries included, in one binary
 
 Common scripting needs — file I/O, CLI argument parsing, structured
@@ -189,6 +197,12 @@ The rationale lives in [`docs/internals.md`](docs/internals.md)
 - **Gradual typing without a compile step.** Annotations are
   runtime-checked at boundaries; the REPL stays at 28 ms. Union /
   Optional / Tuple / Trait / Generic are decided and pre-1.0 required.
+- **Immutable by default, no declaration keyword.** A bare `x = 1`
+  creates an *immutable* binding — reassigning it is an error. Use `mut`
+  for a variable you intend to change (`mut x = 1; x = 2`), so `mut`
+  marks exactly what changes; `let` is an optional, explicit marker for
+  the immutable form. The default binding is both safe and ceremony-free,
+  and mutation is visible where it happens.
 - **UFCS, not pipeline.** `x.f(...)` doubles as the resolution path
   for free functions over user types.
 - **Implicit imports.** No explicit `import` statement — the resolver

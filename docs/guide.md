@@ -153,6 +153,12 @@ reassigns the nearest matching binding; if nothing matches, it creates
 a new binding in the current scope. This is what makes the
 closure-based object pattern work (Ch.8).
 
+> **Heads-up:** Bindings are immutable by default, so a bare `x = 1`
+> followed by `x = 2` in the same scope is an error (`immutable variable
+> 'x'`). Add `mut` when you intend to reassign (`mut x = 1; x = 2`).
+> `let` is optional — it makes the (already immutable) intent explicit and
+> forbids shadowing an outer binding.
+
 ### 2.3 Shadow prohibition
 
 Introducing a new binding (`let`, `mut`, parameter, or `match`
