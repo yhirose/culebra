@@ -1818,7 +1818,12 @@ endpoints present) is iterable; an open-ended range used for slicing
 **Destructuring loop variable.** The `var` may be a pattern, matched
 against each element's shape (a mismatch raises `ValueError`).
 Comma-separated targets without parens are sugar for a tuple pattern:
-`for k, v in xs` means `for (k, v) in xs`.
+`for k, v in xs` means `for (k, v) in xs`. The bracket form `[a, b]` and
+the tuple/bare form `(a, b)` / `a, b` are interchangeable — either matches
+any indexed sequence (`Array` or `Tuple`) of the right length, so the
+pattern's punctuation is style, not a type constraint. This holds for
+assignment destructuring too: `[a, b] = (1, 2)` and `(a, b) = [1, 2]`
+both bind.
 
 ```culebra
 # doctest: skip

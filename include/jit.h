@@ -13155,9 +13155,15 @@ struct JIT {
     auto okBB = llvm::BasicBlock::Create(ctx_, p + ".ok", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, p + ".end", fn);
 
-    auto isExpected =
-        builder_.CreateICmpEQ(extract_tag(subject),
-                              builder_.getInt8(expected_tag));
+    // Unified list/tuple destructuring: a pattern matches any indexed
+    // sequence (Array or Tuple — same JitArray storage, different tag),
+    // regardless of which literal form (`[a, b]` vs bare `a, b`) was
+    // written. `expected_tag` is now only a naming hint.
+    (void)expected_tag;
+    auto subjTag = extract_tag(subject);
+    auto isExpected = builder_.CreateOr(
+        builder_.CreateICmpEQ(subjTag, builder_.getInt8(TAG_ARRAY)),
+        builder_.CreateICmpEQ(subjTag, builder_.getInt8(TAG_TUPLE)));
     auto sizeBB = llvm::BasicBlock::Create(ctx_, p + ".size", fn);
     builder_.CreateCondBr(isExpected, sizeBB, failBB);
     builder_.SetInsertPoint(sizeBB);

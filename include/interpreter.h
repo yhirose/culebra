@@ -5056,8 +5056,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return true;
       }
       case "ARRAY_PATTERN"_: {
-        if (val.type != Value::Array) return false;
-        const auto& items = *val.to_array().values;
+        // Unified destructuring: a pattern matches any indexed sequence —
+        // Array or Tuple share the same `shared_ptr<vector<Value>>` storage,
+        // so `[a, b]` works on a tuple just as bare `a, b` works on a list.
+        const std::vector<Value>* seq =
+            val.type == Value::Array   ? val.to_array().values.get()
+            : val.type == Value::Tuple ? val.get<TupleValue>().elements.get()
+                                       : nullptr;
+        if (!seq) return false;
+        const auto& items = *seq;
         const auto& elems = pattern.nodes;
 
         // Find optional rest position
@@ -5129,8 +5136,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return true;
       }
       case "TUPLE_PATTERN"_: {
-        if (val.type != Value::Tuple) return false;
-        const auto& items = *val.get<TupleValue>().elements;
+        // Same unification as ARRAY_PATTERN: bare `a, b` (which parses to a
+        // TUPLE_PATTERN) matches a list too, not only a tuple.
+        const std::vector<Value>* seq =
+            val.type == Value::Array   ? val.to_array().values.get()
+            : val.type == Value::Tuple ? val.get<TupleValue>().elements.get()
+                                       : nullptr;
+        if (!seq) return false;
+        const auto& items = *seq;
         const auto& elems = pattern.nodes;
         if (items.size() != elems.size()) return false;
         for (size_t i = 0; i < elems.size(); i++) {

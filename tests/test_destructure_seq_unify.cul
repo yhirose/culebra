@@ -1,0 +1,30 @@
+// List/tuple destructuring is unified: any pattern form matches any indexed
+// sequence (Array or Tuple), in for-loops and in assignment alike.
+
+// Bracket pattern binds a tuple value (previously Tuple-only via `(a, b)`).
+[a, b] = (1, 2)
+assert_eq(a, 1)
+assert_eq(b, 2)
+
+// Bare-comma target (parses to a tuple pattern) binds list elements.
+mut out = []
+for x, y in [[10, 20], [30, 40]] {
+  out.push(x + y)
+}
+assert_eq(out, [30, 70])
+
+// Bracket pattern over dict pairs (which are yielded as tuples).
+d = {"k1": 1, "k2": 2}
+mut sum = 0
+for [k, v] in d { sum = sum + v }
+assert_eq(sum, 3)
+
+// Rest pattern collects the tail of a tuple into an Array.
+[h, ...t] = (1, 2, 3, 4)
+assert_eq(h, 1)
+assert_eq(t, [2, 3, 4])
+
+// Assignment destructure of a real list is unchanged.
+[p, q] = [7, 8]
+assert_eq(p, 7)
+assert_eq(q, 8)
