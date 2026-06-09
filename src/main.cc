@@ -337,6 +337,32 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
   }
   if (!validate_build_path("input", opts.input, err)) return false;
   if (!validate_build_path("-o", opts.output, err)) return false;
+  // Guard against clobbering a source file with the build artifact — the
+  // classic `culebra build foo.cul -o foo.cul` slip (e.g. a tab-completion
+  // that fills -o with the script name). '.cul' is the source extension and
+  // never names an executable, so a '.cul' output is always a mistake; and an
+  // output that resolves to the input would overwrite the script outright.
+  std::string out_ext = std::filesystem::path(opts.output).extension().string();
+  for (char& c : out_ext) {
+    if (c >= 'A' && c <= 'Z') c += 'a' - 'A';  // case-insensitive (macOS FS)
+  }
+  if (out_ext == ".cul") {
+    err = "-o: refusing to write build output to a '.cul' path ('" +
+          opts.output +
+          "') — '.cul' is the source extension; this would overwrite a "
+          "script. Use a different output name (e.g. -o " +
+          std::filesystem::path(opts.input).stem().string() + ").";
+    return false;
+  }
+  {
+    std::error_code ec;
+    if (std::filesystem::exists(opts.output, ec) &&
+        std::filesystem::equivalent(opts.input, opts.output, ec) && !ec) {
+      err = "-o: output path is the same file as the input ('" + opts.input +
+            "') — refusing to overwrite the source.";
+      return false;
+    }
+  }
   if (!opts.target.empty() && !validate_build_triple(opts.target, err))
     return false;
   if (!opts.sysroot.empty() &&
