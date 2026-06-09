@@ -3212,6 +3212,17 @@ inline JitClosure* _jit_native_method(
   return c;
 }
 
+// Attach a captureless native method `fn` under name `nm` to a view or
+// iterator object. Shared by every Fixed{Array,Set,Map} view + iterator
+// builder (an immutable, borrowed function slot).
+inline void _jit_view_method(
+    JitObject* o, const char* nm,
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+  o->set_or_append(
+      nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
+      false);
+}
+
 // --- FixedArray view methods + iterator (native, captureless) -----------
 inline long _jit_fa_self_long(JitValue self, const char* key) {
   return _jit_fa_field_long(reinterpret_cast<JitObject*>(self.data), key);
@@ -3297,9 +3308,7 @@ inline JitValue _jit_fa_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
                   JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    it->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
+    _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fa_iter_has_next);
@@ -3318,9 +3327,7 @@ inline JitValue _jit_make_fixed_array_view(long id, long abs_off,
   h->set_or_append("__fa_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
   auto meth = [&](const char* nm,
                   JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    h->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
-        false);
+    _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fa_size);
   meth("capacity", _jit_fa_capacity);
@@ -3459,9 +3466,7 @@ inline JitValue _jit_fs_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
                   JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    it->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
+    _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fs_iter_has_next);
@@ -3479,9 +3484,7 @@ inline JitValue _jit_make_fixed_set_view(long id, long abs_off,
   h->set_or_append("__fs_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
   auto meth = [&](const char* nm,
                   JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    h->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
-        false);
+    _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fs_size);
   meth("capacity", _jit_fs_capacity);
@@ -3656,9 +3659,7 @@ inline JitValue _jit_fm_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
   auto meth = [&](const char* nm,
                   JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    it->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
+    _jit_view_method(it, nm, f);
   };
   meth("iter", _jit_fa_iter_self);
   meth("has_next", _jit_fm_iter_has_next);
@@ -3679,9 +3680,7 @@ inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
   h->set_or_append("__fm_vcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.val_type)}, false);
   auto meth = [&](const char* nm,
                   JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
-    h->set_or_append(
-        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
-        false);
+    _jit_view_method(h, nm, fn);
   };
   meth("size", _jit_fm_size);
   meth("capacity", _jit_fm_capacity);
