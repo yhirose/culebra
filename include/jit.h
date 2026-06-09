@@ -3162,19 +3162,56 @@ inline void _jit_packable_write_field(uint8_t* base,
   }
 }
 
+// A packed view carries an absolute byte offset (`__packedview_byteoff__`, set
+// by a nested @packable field) or a record index (`__packedview_index__`, set
+// by `buf[i]`); and the class whose layout describes it (`__packedview_class__`
+// for a nested view, else the buffer's class). These mirror the interp.
+inline long _jit_packed_view_off(JitObject* view,
+                                 culebra::SharedBufferCore& core) {
+  size_t bo = view->find_slot("__packedview_byteoff__");
+  if (bo != static_cast<size_t>(-1)) return view->slots[bo].value.data;
+  long idx = view->slots[view->find_slot("__packedview_index__")].value.data;
+  return idx * static_cast<long>(core.layout.stride);
+}
+inline std::string _jit_packed_view_class(JitObject* view,
+                                          culebra::SharedBufferCore& core) {
+  size_t cs = view->find_slot("__packedview_class__");
+  if (cs != static_cast<size_t>(-1))
+    return std::string(_culebra_str_view(view->slots[cs].value.tag,
+                                         view->slots[cs].value.data));
+  return core.class_name;
+}
+inline const culebra::PackableLayout& _jit_packed_view_layout(
+    JitObject* view, culebra::SharedBufferCore& core) {
+  size_t cs = view->find_slot("__packedview_class__");
+  if (cs != static_cast<size_t>(-1))
+    if (auto* l = culebra::lookup_packable_layout(_culebra_str_view(
+            view->slots[cs].value.tag, view->slots[cs].value.data)))
+      return *l;
+  return core.layout;
+}
+
 // Resolve a packed view to (core, record base pointer).
 inline std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
 _jit_packed_view_record(JitObject* view) {
   long id = view->slots[view->find_slot("__packedview_id__")].value.data;
-  long idx = view->slots[view->find_slot("__packedview_index__")].value.data;
   auto core = culebra::lookup_shared_buffer(id);
   if (!core) {
     throw culebra::CulebraError("ValueError",
         "packed view references a freed SharedBuffer");
   }
-  uint8_t* base = core->data +
-                  static_cast<size_t>(idx) * core->layout.stride;
-  return {core, base};
+  return {core, core->data + _jit_packed_view_off(view, *core)};
+}
+
+// A nested @packable record view over `core` at absolute byte offset `off`.
+inline JitObject* _jit_make_nested_view(long id, long off, const char* cls) {
+  auto* view = culebra_runtime_object_new();
+  view->is_packed_view = true;
+  culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
+  culebra_runtime_object_set(view, "__packedview_byteoff__", false, TAG_LONG, off, 0, 0);
+  culebra_runtime_object_set(view, "__packedview_class__", false, TAG_STRING,
+                             reinterpret_cast<int64_t>(_intern_str(cls)), 0, 0);
+  return view;
 }
 
 // fwd: defined below (after the byte helpers they need); _jit_packed_view_get
@@ -3188,34 +3225,46 @@ inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
 
 inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                                     int64_t line = 0, int64_t col = 0) {
-  auto [core, base] = _jit_packed_view_record(view);
-  const auto* f = core->layout.find(key);
+  long id = view->slots[view->find_slot("__packedview_id__")].value.data;
+  auto core = culebra::lookup_shared_buffer(id);
+  if (!core)
+    throw culebra::CulebraError("ValueError",
+        "packed view references a freed SharedBuffer", line, col);
+  long off = _jit_packed_view_off(view, *core);
+  const auto& layout = _jit_packed_view_layout(view, *core);
+  const auto* f = layout.find(key);
   if (!f) {
     throw culebra::CulebraError("AttributeError",
-        std::format("@packable {} has no field `{}`", core->class_name, key),
-        line, col);
+        std::format("@packable {} has no field `{}`",
+                    _jit_packed_view_class(view, *core), key), line, col);
   }
-  if (f->is_fixed_array || f->is_fixed_set || f->is_fixed_map) {
-    long id = view->slots[view->find_slot("__packedview_id__")].value.data;
-    long idx = view->slots[view->find_slot("__packedview_index__")].value.data;
-    long abs_off =
-        idx * static_cast<long>(core->layout.stride) + static_cast<long>(f->offset);
-    if (f->is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
-    if (f->is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
-    return _jit_make_fixed_map_view(id, abs_off, *f);
-  }
-  return _jit_packable_read_field(base, *f);
+  long abs_off = off + static_cast<long>(f->offset);
+  if (f->is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
+  if (f->is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
+  if (f->is_fixed_map) return _jit_make_fixed_map_view(id, abs_off, *f);
+  if (f->is_struct)
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(
+                            _jit_make_nested_view(id, abs_off, f->elem_type.c_str()))};
+  return _jit_packable_read_field(core->data + off, *f);
 }
 
 inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
                                  int64_t data, int64_t line, int64_t col) {
-  auto [core, base] = _jit_packed_view_record(view);
-  const auto* f = core->layout.find(key);
+  long id = view->slots[view->find_slot("__packedview_id__")].value.data;
+  auto core = culebra::lookup_shared_buffer(id);
+  if (!core) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("ValueError",
+        "packed view references a freed SharedBuffer", line, col);
+  }
+  long off = _jit_packed_view_off(view, *core);
+  const auto& layout = _jit_packed_view_layout(view, *core);
+  const auto* f = layout.find(key);
   if (!f) {
     _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("AttributeError",
-        std::format("@packable {} has no field `{}`", core->class_name, key),
-        line, col);
+        std::format("@packable {} has no field `{}`",
+                    _jit_packed_view_class(view, *core), key), line, col);
   }
   if (f->is_fixed_array) {
     _culebra_value_release_impl(tag, data);
@@ -3231,7 +3280,40 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
                     "methods", f->is_fixed_set ? "FixedSet" : "FixedMap", key),
         line, col);
   }
-  _jit_packable_write_field(base, *f, tag, data);
+  if (f->is_struct) {
+    // Copy another @packable record of the same class (memcpy its bytes).
+    auto* src = (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
+    bool ok = src && src->is_packed_view;
+    std::string src_cls;
+    std::shared_ptr<culebra::SharedBufferCore> src_core;
+    long src_off = 0;
+    if (ok) {
+      long sid = src->slots[src->find_slot("__packedview_id__")].value.data;
+      src_core = culebra::lookup_shared_buffer(sid);
+      if (src_core) {
+        src_off = _jit_packed_view_off(src, *src_core);
+        src_cls = _jit_packed_view_class(src, *src_core);
+      } else {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      _culebra_value_release_impl(tag, data);
+      throw culebra::CulebraError("TypeError", std::format(
+          "field `{}` expects a `{}` record value", key, f->elem_type), line, col);
+    }
+    if (src_cls != f->elem_type) {
+      _culebra_value_release_impl(tag, data);
+      throw culebra::CulebraError("TypeError", std::format(
+          "field `{}` expects a `{}` record, got `{}`", key, f->elem_type,
+          src_cls), line, col);
+    }
+    std::memcpy(core->data + off + f->offset, src_core->data + src_off,
+                culebra::lookup_packable_layout(f->elem_type)->stride);
+    _culebra_value_release_impl(tag, data);  // consume the source record value
+    return;
+  }
+  _jit_packable_write_field(core->data + off, *f, tag, data);
 }
 
 // --- FixedArray view byte helpers (used by both the [i] index hooks here
@@ -4366,7 +4448,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
   if (_jit_is_packed_view(obj)) {
     auto [core, base] = _jit_packed_view_record(obj);
     (void)base;
-    return core->layout.find(key) != nullptr;
+    return _jit_packed_view_layout(obj, *core).find(key) != nullptr;
   }
   return _find_property(obj, key) != nullptr;
 }

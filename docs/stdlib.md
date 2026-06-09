@@ -2094,6 +2094,29 @@ a non-String raises `TypeError`. The bytes are binary-safe (embedded NULs are
 preserved). Unlike `FixedString<N>` (a variable-length text field with a length
 prefix), `Bytes<N>` is a fixed-size blob.
 
+#### Nested records: a `@packable` class field
+
+A `@packable` class field may be another `@packable` class — its record is
+stored inline, and `outer.inner` yields a view over those bytes, so a nested
+field assignment writes through in place:
+
+```culebra
+# doctest: skip
+@packable class Point { x: Float32  y: Float32 }
+@packable class Line  { id: Int32   start: Point  end: Point }
+
+let lines = SharedBuffer.new(100, Line)
+lines[0].start.x = 1.0        # writes into the inline Point's bytes
+lines[0].start.y = 2.0
+lines[0].start.x             # => 1.0
+lines[0].end = lines[0].start # copy a whole sub-record (memcpy)
+```
+
+The nested class must be declared (and `@packable`) before the class that
+nests it. Assigning a whole sub-record copies the bytes of another record of
+the **same** class (otherwise `TypeError`); to set individual fields, go
+through the view (`outer.inner.field = v`).
+
 ---
 
 ## 13. Matchers

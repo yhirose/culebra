@@ -6392,53 +6392,81 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::move(h));
   }
 
-  std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
-  packed_view_record(const Value& view) {
+  // A packed view addresses a @packable record by buffer id + absolute byte
+  // offset + the class whose layout describes it. `buf[i]` carries an index
+  // (offset = index*stride, class = the buffer's class); a nested @packable
+  // field carries an explicit byte offset + the inner class, so
+  // `outer.inner.x` reaches the inner record's bytes in place.
+  std::pair<std::shared_ptr<culebra::SharedBufferCore>, long>
+  packed_view_loc(const Value& view) {
     const auto& o = view.to_object();
-    long id = o.get("__packedview_id__").to_long();
-    long idx = o.get("__packedview_index__").to_long();
-    auto core = culebra::lookup_shared_buffer(id);
-    if (!core) {
+    auto core =
+        culebra::lookup_shared_buffer(o.get("__packedview_id__").to_long());
+    if (!core)
       throw CulebraError("ValueError",
                          "packed view references a freed SharedBuffer");
-    }
-    uint8_t* base = core->data +
-                    static_cast<size_t>(idx) * core->layout.stride;
-    return {core, base};
+    if (o.has("__packedview_byteoff__"))
+      return {core, o.get("__packedview_byteoff__").to_long()};
+    return {core, o.get("__packedview_index__").to_long() *
+                      static_cast<long>(core->layout.stride)};
+  }
+  static std::string packed_view_class(const Value& view,
+                                       const culebra::SharedBufferCore& core) {
+    const auto& o = view.to_object();
+    return o.has("__packedview_class__")
+               ? o.get("__packedview_class__").get<std::string>()
+               : core.class_name;
+  }
+  static const culebra::PackableLayout& packed_view_layout(
+      const Value& view, const culebra::SharedBufferCore& core) {
+    const auto& o = view.to_object();
+    if (o.has("__packedview_class__"))
+      if (auto* l = culebra::lookup_packable_layout(
+              o.get("__packedview_class__").get<std::string>()))
+        return *l;
+    return core.layout;
+  }
+  static Value make_nested_view(long id, long off, const std::string& cls) {
+    ObjectValue h;
+    h.initialize("__packedview_id__", Value(id), false);
+    h.initialize("__packedview_byteoff__", Value(off), false);
+    h.initialize("__packedview_class__", Value(std::string(cls)), false);
+    return Value(std::move(h));
+  }
+
+  std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
+  packed_view_record(const Value& view) {
+    auto [core, off] = packed_view_loc(view);
+    return {core, core->data + off};
   }
 
   Value packed_view_get(const Value& view, std::string_view name) {
-    auto [core, base] = packed_view_record(view);
-    const auto* f = core->layout.find(name);
+    auto [core, off] = packed_view_loc(view);
+    const auto& layout = packed_view_layout(view, *core);
+    const auto* f = layout.find(name);
     if (!f) {
-      throw CulebraError(
-          "AttributeError",
-          std::format("@packable {} has no field `{}`", core->class_name,
-                      name));
+      throw CulebraError("AttributeError", std::format(
+          "@packable {} has no field `{}`", packed_view_class(view, *core),
+          name));
     }
-    if (f->is_fixed_array || f->is_fixed_set || f->is_fixed_map) {
-      const auto& o = view.to_object();
-      long id = o.get("__packedview_id__").to_long();
-      long abs_off = o.get("__packedview_index__").to_long() *
-                         static_cast<long>(core->layout.stride) +
-                     static_cast<long>(f->offset);
-      if (f->is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
-      if (f->is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
-      return make_fixed_map_view(id, abs_off, *f);
-    }
-    return packable_read_field(base, *f);
+    long id = view.to_object().get("__packedview_id__").to_long();
+    long abs_off = off + static_cast<long>(f->offset);
+    if (f->is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
+    if (f->is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
+    if (f->is_fixed_map) return make_fixed_map_view(id, abs_off, *f);
+    if (f->is_struct) return make_nested_view(id, abs_off, f->elem_type);
+    return packable_read_field(core->data + off, *f);
   }
 
   void packed_view_set(const Value& view, std::string_view name,
                        const Value& val, size_t line, size_t col) {
-    auto [core, base] = packed_view_record(view);
-    const auto* f = core->layout.find(name);
+    auto [core, off] = packed_view_loc(view);
+    const auto& layout = packed_view_layout(view, *core);
+    const auto* f = layout.find(name);
     if (!f) {
-      throw CulebraError(
-          "AttributeError",
-          std::format("@packable {} has no field `{}`", core->class_name,
-                      name),
-          static_cast<long>(line), static_cast<long>(col));
+      throw CulebraError("AttributeError", std::format(
+          "@packable {} has no field `{}`", packed_view_class(view, *core),
+          name), static_cast<long>(line), static_cast<long>(col));
     }
     if (f->is_fixed_array) {
       throw CulebraError(
@@ -6455,7 +6483,26 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                       name),
           static_cast<long>(line), static_cast<long>(col));
     }
-    packable_write_field(base, *f, val);
+    if (f->is_struct) {
+      // Copy another @packable record of the same class (memcpy its bytes);
+      // otherwise mutate the nested record field-by-field through the view.
+      if (!is_packed_view(val)) {
+        throw CulebraError("TypeError", std::format(
+            "field `{}` expects a `{}` record value", name, f->elem_type),
+            static_cast<long>(line), static_cast<long>(col));
+      }
+      auto [src_core, src_off] = packed_view_loc(val);
+      std::string src_cls = packed_view_class(val, *src_core);
+      if (src_cls != f->elem_type) {
+        throw CulebraError("TypeError", std::format(
+            "field `{}` expects a `{}` record, got `{}`", name, f->elem_type,
+            src_cls), static_cast<long>(line), static_cast<long>(col));
+      }
+      std::memcpy(core->data + off + f->offset, src_core->data + src_off,
+                  culebra::lookup_packable_layout(f->elem_type)->stride);
+      return;
+    }
+    packable_write_field(core->data + off, *f, val);
   }
 
   Value eval_class_decl(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {

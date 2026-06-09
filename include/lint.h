@@ -347,23 +347,30 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           culebra::parse_generic_head(node.nodes[i]->token).outer;
       // Method bodies and field initializers are function-boundary contexts.
       LoopDepthGuard g(loop_depth_, 0);
+      std::vector<std::pair<std::string, std::string>> pk_fields;
+      bool pk_ok = true;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         if (mv.is_field || mv.is_typed_field) {
-          if (is_packable && mv.is_typed_field &&
-              !culebra::is_packable_type(mv.type_annotation)) {
-            diags_.push_back(Diagnostic{
-                "SyntaxError",
-                std::format(
-                    "@packable class `{}`: field `{}` has non-packable type "
-                    "`{}` (expected a fixed scalar — Float32/Float64/Int8/"
-                    "Int16/Int32/Int64/Byte/Bool — or FixedArray<scalar, N> / "
-                    "FixedString<N> / FixedSet<scalar, N> / "
-                    "FixedMap<scalar, scalar, N> / Bytes<N> / an optional "
-                    "scalar `T?` / a @packable enum)",
-                    class_name, mv.name, mv.type_annotation),
-                static_cast<long>(mv.name_line),
-                static_cast<long>(mv.name_col), Severity::Error});
+          if (is_packable && mv.is_typed_field) {
+            if (!culebra::is_packable_type(mv.type_annotation)) {
+              diags_.push_back(Diagnostic{
+                  "SyntaxError",
+                  std::format(
+                      "@packable class `{}`: field `{}` has non-packable type "
+                      "`{}` (expected a fixed scalar — Float32/Float64/Int8/"
+                      "Int16/Int32/Int64/Byte/Bool — or FixedArray<scalar, N> / "
+                      "FixedString<N> / FixedSet<scalar, N> / "
+                      "FixedMap<scalar, scalar, N> / Bytes<N> / an optional "
+                      "scalar `T?` / a @packable enum or nested @packable class)",
+                      class_name, mv.name, mv.type_annotation),
+                  static_cast<long>(mv.name_line),
+                  static_cast<long>(mv.name_col), Severity::Error});
+              pk_ok = false;
+            } else {
+              pk_fields.emplace_back(std::string(mv.name),
+                                     std::string(mv.type_annotation));
+            }
           }
           if (mv.value) walk(*mv.value);
           continue;
@@ -372,6 +379,14 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         check_param_wellformed(*mv.params);
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
+      }
+      // Register the @packable class layout pre-eval so a later class that
+      // nests this one (`inner: This`) validates its field type here.
+      if (is_packable && pk_ok) {
+        culebra::register_packable_layout(
+            std::string(class_name),
+            culebra::compute_packable_layout(std::string(class_name),
+                                             pk_fields));
       }
       return;
     }

@@ -186,6 +186,13 @@ parse_packable_enum_spec(std::string_view spec) {
   return variants;
 }
 
+// Stride/align of a registered @packable class (the nested-record case),
+// 0 if `name` is not a registered @packable class. Defined after the layout
+// registry below; forward-declared here so packable_field_info can resolve a
+// nested @packable class field.
+inline size_t packable_class_stride(std::string_view name);
+inline size_t packable_class_align(std::string_view name);
+
 // Layout of a whole field — a scalar, or a `FixedArray<T, N>` (a fixed-
 // capacity inline collection: `[len:i32][T × N]`, no pointers, so it fits a
 // @packable record). size 0 means the type isn't a packable field type.
@@ -199,8 +206,9 @@ struct PackableFieldInfo {
   bool is_optional = false;      // T?: `[present:byte][T]`, nil when present==0
   bool is_enum = false;          // a registered @packable enum: `[tag:i32][payload]`
   bool is_bytes = false;         // Bytes<N>: exactly N raw bytes (no length prefix)
+  bool is_struct = false;        // a nested @packable class (its record, inline)
   std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
-                             // — or, for is_enum, the enum name
+                             // — or, for is_enum/is_struct, the enum/class name
   std::string val_type;      // FixedMap value scalar
   size_t capacity = 0;       // N
   size_t elem_size = 0;      // sizeof(T) / sizeof(K)
@@ -354,6 +362,16 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = el->align;
     return fi;
   }
+  // A registered @packable class used by name -> a nested record, inline.
+  // (forward-declared accessors; the layout registry is defined further down.)
+  if (packable_class_stride(t) != 0) {
+    PackableFieldInfo fi;
+    fi.is_struct = true;
+    fi.elem_type = std::string(t);
+    fi.size = packable_class_stride(t);
+    fi.align = packable_class_align(t);
+    return fi;
+  }
   auto si = packable_type_info(t);
   if (si.size == 0) return {};
   PackableFieldInfo fi;
@@ -410,6 +428,7 @@ struct PackableField {
   bool is_optional = false;
   bool is_enum = false;
   bool is_bytes = false;
+  bool is_struct = false;
   std::string elem_type;
   std::string val_type;
   size_t capacity = 0;
@@ -499,7 +518,8 @@ inline PackableLayout compute_packable_layout(
                       "Int8/Int16/Int32/Int64/Byte/Bool — or "
                       "FixedArray<scalar, N> / FixedString<N> / "
                       "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
-                      "Bytes<N> / an optional scalar `T?` / a @packable enum)",
+                      "Bytes<N> / an optional scalar `T?` / a @packable enum "
+                      "or nested @packable class)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
@@ -515,6 +535,7 @@ inline PackableLayout compute_packable_layout(
     f.is_optional = info.is_optional;
     f.is_enum = info.is_enum;
     f.is_bytes = info.is_bytes;
+    f.is_struct = info.is_struct;
     f.elem_type = info.elem_type;
     f.val_type = info.val_type;
     f.capacity = info.capacity;
@@ -549,6 +570,15 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
   std::lock_guard<std::mutex> lk(packable_layout_mutex());
   auto it = packable_layout_registry().find(name);
   return it == packable_layout_registry().end() ? nullptr : &it->second;
+}
+
+inline size_t packable_class_stride(std::string_view name) {
+  auto* l = lookup_packable_layout(name);
+  return l ? l->stride : 0;
+}
+inline size_t packable_class_align(std::string_view name) {
+  auto* l = lookup_packable_layout(name);
+  return l ? l->align : 1;
 }
 
 // --- with_lock escape hatch: the cross-process lock header ----------------

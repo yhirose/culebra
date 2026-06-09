@@ -2016,6 +2016,28 @@ e[0].digest                       # => 32 バイト（バイナリ安全）
 String 以外は `TypeError`。バイトはバイナリ安全（埋め込み NUL も保持）。`FixedString<N>`
 （長さ prefix 付きの可変長テキスト）と違い、`Bytes<N>` は固定長 blob。
 
+#### ネストレコード: `@packable` クラスのフィールド
+
+`@packable` クラスのフィールドに別の `@packable` クラスを使える — そのレコードが
+インラインで格納され、`outer.inner` がそのバイトへの view を返すので、ネストフィールド
+への代入はその場に書き込まれる:
+
+```culebra
+# doctest: skip
+@packable class Point { x: Float32  y: Float32 }
+@packable class Line  { id: Int32   start: Point  end: Point }
+
+let lines = SharedBuffer.new(100, Line)
+lines[0].start.x = 1.0        # インライン Point のバイトに書く
+lines[0].start.y = 2.0
+lines[0].start.x             # => 1.0
+lines[0].end = lines[0].start # サブレコードまるごとコピー（memcpy）
+```
+
+ネストするクラスは、それを含むクラスより前に（`@packable` で）宣言する必要がある。
+サブレコードまるごとの代入は**同じ**クラスの別レコードのバイトをコピーする（違えば
+`TypeError`）。個別フィールドの設定は view 経由（`outer.inner.field = v`）。
+
 ---
 
 ## 13. Matchers
