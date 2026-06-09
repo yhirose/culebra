@@ -10925,6 +10925,8 @@ struct JIT {
         return compile_if(ast);  // node shape as a bare if/else expression
       case "MATCH"_:
         return compile_match(ast);
+      case "COND"_:
+        return compile_cond(ast);
       case "FUNCTION"_:
         return compile_function(ast);
       case "LAMBDA"_:
@@ -12860,6 +12862,56 @@ struct JIT {
     fn->insert(fn->end(), mergeBB);
     builder_.SetInsertPoint(mergeBB);
     return builder_.CreateLoad(valueType_, resultAlloca, "if.result");
+  }
+
+  // `cond { test => body, ..., _ => default }` — the value-producing
+  // subjectless conditional. Same branch+phi shape as compile_if, but each
+  // arm carries its own test (a `_` WILDCARD test is the unconditional
+  // default; later arms after it are dead and skipped). nil when none match.
+  llvm::Value* compile_cond(const peg::Ast& ast) {
+    using namespace peg::udl;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "cond.merge");
+
+    llvm::IRBuilder<> entryBuilder(&fn->getEntryBlock(),
+                                   fn->getEntryBlock().begin());
+    auto resultAlloca =
+        entryBuilder.CreateAlloca(valueType_, nullptr, "cond.tmp");
+    builder_.CreateStore(make_nil(), resultAlloca);
+
+    for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
+      // A previous WILDCARD already terminated this block; the rest is dead.
+      if (builder_.GetInsertBlock()->getTerminator()) break;
+      const auto& test = *arm->nodes[0];
+      if (test.tag == "WILDCARD"_) {
+        auto val = compile(*arm->nodes[1]);
+        if (!builder_.GetInsertBlock()->getTerminator()) {
+          builder_.CreateStore(val, resultAlloca);
+          builder_.CreateBr(mergeBB);
+        }
+      } else {
+        auto b = value_to_bool(compile(test));
+        auto thenBB = llvm::BasicBlock::Create(ctx_, "cond.then", fn);
+        auto elseBB = llvm::BasicBlock::Create(ctx_, "cond.else", fn);
+        builder_.CreateCondBr(b, thenBB, elseBB);
+
+        builder_.SetInsertPoint(thenBB);
+        auto thenVal = compile(*arm->nodes[1]);
+        if (!builder_.GetInsertBlock()->getTerminator()) {
+          builder_.CreateStore(thenVal, resultAlloca);
+          builder_.CreateBr(mergeBB);
+        }
+        builder_.SetInsertPoint(elseBB);
+      }
+    }
+    // No WILDCARD reached: the trailing else-block falls through with nil.
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(mergeBB);
+    }
+
+    fn->insert(fn->end(), mergeBB);
+    builder_.SetInsertPoint(mergeBB);
+    return builder_.CreateLoad(valueType_, resultAlloca, "cond.result");
   }
 
   // Emit IR that tests whether `subject` matches `pattern`.

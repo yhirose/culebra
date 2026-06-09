@@ -6,7 +6,7 @@
 
 culFunction:    fn
 culClass:       class trait enum
-culConditional: if else match
+culConditional: if else match cond
 culRepeat:      while for in
 culStatement:   return break continue throw try catch defer yield
 culInclude:     import export from

@@ -228,6 +228,13 @@ const auto grammar_ = R"(
   MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ (EXPRESSION / BLOCK)
   GUARD                    <-  if _ EXPRESSION
 
+  # Subjectless multi-way conditional (Elixir `cond` / Kotlin argless `when`):
+  # `cond { test => expr, ..., _ => default }`. The first arm whose test is
+  # truthy yields its body; `_` (WILDCARD) is the always-match default. No
+  # subject, so the grammar never collides with `match EXPRESSION { … }`.
+  COND                     <-  cond _ '{' _ (COND_ARM (_ ',' _ COND_ARM)* _ ','?)? _ '}'
+  COND_ARM                 <-  (WILDCARD / EXPRESSION) _ '=>' _ (EXPRESSION / BLOCK)
+
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
   PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING / RAW_STRING / INTERPOLATED_STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
@@ -256,7 +263,7 @@ const auto grammar_ = R"(
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  PRIMARY                  <-  WHILE / FOR / IF / MATCH / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
+  PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'
   TUPLE                    <-  '(' _ EXPRESSION _ ',' _ EXPRESSION (_ ',' _ EXPRESSION)* _ ','? _ ')'
                             /  '(' _ EXPRESSION _ ',' _ ')'
@@ -414,6 +421,7 @@ const auto grammar_ = R"(
   ~return                  <-  K('return')
   ~yield                   <-  K('yield')
   ~match                   <-  K('match')
+  ~cond                    <-  K('cond')
   ~throw                   <-  K('throw')
   ~try                     <-  K('try')
   ~catch                   <-  K('catch')
@@ -1442,7 +1450,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                // `'(' PATTERN ',' PATTERN ...`), so it is never collapsed
                // anyway, while FOR_BINDING (which emits a TUPLE_PATTERN
                // tag) must collapse to its lone child for single targets.
-               "MATCH_ARMS", "GUARD", "ARRAY_PATTERN", "OBJECT_PATTERN",
+               "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
+               "ARRAY_PATTERN", "OBJECT_PATTERN",
                "CTOR_PATTERN",
                "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
                "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",

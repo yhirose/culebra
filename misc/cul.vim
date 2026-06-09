@@ -45,7 +45,7 @@ syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
 " === BEGIN AUTO-KEYWORDS (from misc/culebra.peg via `just sync-grammar`) ===
 syn keyword culFunction    fn
 syn keyword culClass       class trait enum
-syn keyword culConditional if else match
+syn keyword culConditional if else match cond
 syn keyword culRepeat      while for in
 syn keyword culStatement   return break continue throw try catch defer yield
 syn keyword culInclude     import export from

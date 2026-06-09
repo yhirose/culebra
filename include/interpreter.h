@@ -4697,6 +4697,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                                   : eval(*ast.nodes[2], env);
       case "MATCH"_:
         return eval_match(ast, env);
+      case "COND"_:
+        return eval_cond(ast, env);
       case "FUNCTION"_:
         return eval_function(ast, env);
       case "LAMBDA"_:
@@ -5138,6 +5140,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
     }
     return false;
+  }
+
+  // Subjectless multi-way conditional `cond { test => body, _ => default }`.
+  // Returns the body of the first arm whose test is truthy (a `_` WILDCARD
+  // test always matches); nil when none do. No pattern bindings, so each arm
+  // evaluates in the enclosing env — a BLOCK body self-scopes via eval().
+  Value eval_cond(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+    for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
+      const auto& test = *arm->nodes[0];
+      if (test.tag == "WILDCARD"_ || eval(test, env).to_bool()) {
+        return eval(*arm->nodes[1], env);
+      }
+    }
+    return Value();  // no arm matched → nil
   }
 
   Value eval_match(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {

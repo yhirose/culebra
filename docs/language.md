@@ -208,6 +208,10 @@ Most constructs are expressions that yield a value:
 
 * `if { a } else { b }` yields the taken branch's value.
 * `match x { ... }` yields the matching arm's body value (or `nil`).
+* `cond { test => a, _ => b }` — the subjectless multi-way conditional
+  (Elixir-style): yields the body of the first truthy `test` (`_` is the
+  always-match default), or `nil` if none match. Use it instead of a
+  `match true { _ if … }` guard chain when there is nothing to match on.
 * `while` always yields `nil`.
 * A block `{ ... }` in statement position is a `LEXICAL_SCOPE` and
   yields `nil`; in expression position `{` starts an `OBJECT` literal.
