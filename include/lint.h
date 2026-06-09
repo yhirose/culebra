@@ -357,7 +357,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
                 std::format(
                     "@packable class `{}`: field `{}` has non-packable type "
                     "`{}` (expected a fixed scalar — Float32/Float64/Int8/"
-                    "Int16/Int32/Int64/Byte/Bool — or FixedArray<scalar, N>)",
+                    "Int16/Int32/Int64/Byte/Bool — or FixedArray<scalar, N> / "
+                    "FixedString<N>)",
                     class_name, mv.name, mv.type_annotation),
                 static_cast<long>(mv.name_line),
                 static_cast<long>(mv.name_col), Severity::Error});

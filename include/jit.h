@@ -2981,6 +2981,14 @@ inline bool _jit_is_shared_buffer(JitObject* obj) {
 inline JitValue _jit_packable_read_field(const uint8_t* base,
                                          const culebra::PackableField& f) {
   const uint8_t* p = base + f.offset;
+  if (f.is_fixed_string) {
+    // `[len:i32][byte × N]` -> a String of the first `len` bytes.
+    int32_t len; std::memcpy(&len, p, 4);
+    const char* s = _culebra_heap_str(std::string_view(
+        reinterpret_cast<const char*>(p + f.data_offset),
+        static_cast<size_t>(len)));
+    return {TAG_STRING, reinterpret_cast<int64_t>(s)};
+  }
   if (f.type == "Float32") {
     float v; std::memcpy(&v, p, 4);
     return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(v))};
@@ -3007,6 +3015,23 @@ inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
                                       int8_t tag, int64_t data) {
   uint8_t* p = base + f.offset;
+  if (f.is_fixed_string) {
+    if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError("TypeError", std::format(
+          "FixedString field `{}` expects a String, got {}", f.name,
+          _culebra_tag_name(tag)));
+    }
+    auto sv = _culebra_str_view(tag, data);
+    if (sv.size() > f.capacity) {
+      throw culebra::CulebraError("CapacityError", std::format(
+          "FixedString<{}> overflow: `{}` needs {} bytes", f.capacity, f.name,
+          sv.size()));
+    }
+    int32_t len = static_cast<int32_t>(sv.size());
+    std::memcpy(p, &len, 4);
+    std::memcpy(p + f.data_offset, sv.data(), sv.size());
+    return;
+  }
   auto as_double = [&]() -> double {
     if (tag == TAG_LONG) return static_cast<double>(data);
     if (tag == TAG_FLOAT) return _culebra_float_to_double(data);

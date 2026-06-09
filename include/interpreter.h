@@ -5827,6 +5827,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   static Value packable_read_field(const uint8_t* base,
                                    const culebra::PackableField& f) {
     const uint8_t* p = base + f.offset;
+    if (f.is_fixed_string) {
+      // `[len:i32][byte × N]` -> a String of the first `len` bytes.
+      int32_t len; std::memcpy(&len, p, 4);
+      return Value(std::string(
+          reinterpret_cast<const char*>(p + f.data_offset),
+          static_cast<size_t>(len)));
+    }
     if (f.type == "Float32") {
       float v; std::memcpy(&v, p, 4);
       return Value(static_cast<double>(v));
@@ -5869,6 +5876,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
                                    const culebra::PackableField& f,
                                    const Value& val) {
     uint8_t* p = base + f.offset;
+    if (f.is_fixed_string) {
+      if (val.type != Value::String && val.type != Value::StringView) {
+        throw CulebraError("TypeError", std::format(
+            "FixedString field `{}` expects a String, got {}", f.name,
+            val.type_name()));
+      }
+      auto sv = val.to_string_view();
+      if (sv.size() > f.capacity) {
+        throw CulebraError("CapacityError", std::format(
+            "FixedString<{}> overflow: `{}` needs {} bytes", f.capacity, f.name,
+            sv.size()));
+      }
+      int32_t len = static_cast<int32_t>(sv.size());
+      std::memcpy(p, &len, 4);
+      std::memcpy(p + f.data_offset, sv.data(), sv.size());
+      return;
+    }
     if (f.type == "Float32") {
       float v = static_cast<float>(val.to_double_coerce());
       std::memcpy(p, &v, 4); return;

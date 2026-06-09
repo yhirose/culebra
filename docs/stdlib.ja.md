@@ -1872,6 +1872,32 @@ view は `.size()` / `.capacity()` / `.push(v)` / `.get(i)` / `.set(i, v)` /
 （`record.field = ...`）は `TypeError` — view 経由で変更する。view はレコード
 のバイトをその場で読み書きするので、buffer とともに isolate 間で共有される。
 
+#### テキストフィールド: `FixedString<N>`
+
+`@packable` フィールドには `FixedString<N>` を使える — 最大 `N` バイトの
+UTF-8 文字列を保持する固定容量インライン文字列（`[len][byte × N]`、ポインタ
+なし）。`FixedArray` と違い、**まるごと `String` 値として**読み書きする
+（VARCHAR(N) の手法）:
+
+```culebra
+# doctest: skip
+@packable class Row {
+  id: Int32
+  name: FixedString<16>
+}
+
+let rows = SharedBuffer.new(100, Row)
+rows[0].name = "alice"     # まるごと書き込み（≤ 16 バイト）
+rows[0].name               # => "alice"   （本物の String）
+rows[0].name.upper()       # => "ALICE"   （String の全メソッドが効く）
+rows[1].name               # => ""        （ゼロ値は空文字列）
+```
+
+`N` は**バイト**容量。`N` バイトを超える文字列は `CapacityError`、String 以外
+の代入は `TypeError`。読み出しは格納バイトの新しい `String` コピーを返すので、
+buffer とともに isolate 間で共有される（子 isolate の書き込みが親の読み出しに
+見える）。
+
 ---
 
 ## 13. Matchers

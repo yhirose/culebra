@@ -1946,6 +1946,32 @@ scalar. Assigning the whole field (`record.field = ...`) is a `TypeError` —
 mutate it through the view. The view reads/writes the record's bytes in place,
 so it shares across isolates with the buffer.
 
+#### Text fields: `FixedString<N>`
+
+A `@packable` field may be a `FixedString<N>` — a fixed-**capacity** inline
+UTF-8 string holding up to `N` bytes (`[len][byte × N]`, no pointers). Unlike
+`FixedArray`, it is read and written as a whole `String` value — the VARCHAR(N)
+pattern:
+
+```culebra
+# doctest: skip
+@packable class Row {
+  id: Int32
+  name: FixedString<16>
+}
+
+let rows = SharedBuffer.new(100, Row)
+rows[0].name = "alice"     # whole-value write (≤ 16 bytes)
+rows[0].name               # => "alice"   (a real String)
+rows[0].name.upper()       # => "ALICE"   (all String methods apply)
+rows[1].name               # => ""        (zero value is empty)
+```
+
+`N` is a **byte** capacity. A string of more than `N` bytes raises
+`CapacityError`; assigning a non-String raises `TypeError`. The read returns a
+fresh `String` copy of the stored bytes, so it shares across isolates with the
+buffer (a child isolate's write is visible to the parent's read).
+
 ---
 
 ## 13. Matchers

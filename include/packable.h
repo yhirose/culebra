@@ -71,6 +71,7 @@ struct PackableFieldInfo {
   size_t size = 0;
   size_t align = 1;
   bool is_fixed_array = false;
+  bool is_fixed_string = false;  // FixedString<N>: `[len:i32][byte × N]`
   std::string elem_type;     // FixedArray element scalar type
   size_t capacity = 0;       // N
   size_t elem_size = 0;      // sizeof(T)
@@ -78,6 +79,25 @@ struct PackableFieldInfo {
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
+  // FixedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
+  // string field read/written as a whole String value (a VARCHAR(N)).
+  constexpr std::string_view kFS = "FixedString<";
+  if (t.starts_with(kFS) && t.ends_with(">")) {
+    auto nstr = _packable_trim(t.substr(kFS.size(), t.size() - kFS.size() - 1));
+    long n = 0;
+    auto [ptr, ec] =
+        std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
+    if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
+      return {};
+    PackableFieldInfo fi;
+    fi.is_fixed_string = true;
+    fi.capacity = static_cast<size_t>(n);
+    fi.elem_size = 1;
+    fi.align = 4;                  // the inline len is an i32
+    fi.data_offset = 4;
+    fi.size = fi.data_offset + fi.capacity;  // 4 + N
+    return fi;
+  }
   constexpr std::string_view kFA = "FixedArray<";
   if (t.starts_with(kFA) && t.ends_with(">")) {
     auto inner = t.substr(kFA.size(), t.size() - kFA.size() - 1);  // "T , N"
@@ -104,7 +124,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
   }
   auto si = packable_type_info(t);
   if (si.size == 0) return {};
-  return {si.size, si.align, false, "", 0, 0, 0};
+  return {si.size, si.align, false, false, "", 0, 0, 0};
 }
 
 inline bool is_packable_type(std::string_view t) {
@@ -149,6 +169,7 @@ struct PackableField {
   size_t offset;
   size_t size;
   bool is_fixed_array = false;
+  bool is_fixed_string = false;
   std::string elem_type;
   size_t capacity = 0;
   size_t elem_size = 0;
@@ -185,7 +206,7 @@ inline PackableLayout compute_packable_layout(
           std::format("@packable class `{}`: field `{}` has non-packable "
                       "type `{}` (expected a fixed scalar — Float32/Float64/"
                       "Int8/Int16/Int32/Int64/Byte/Bool — or "
-                      "FixedArray<scalar, N>)",
+                      "FixedArray<scalar, N> / FixedString<N>)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
@@ -195,6 +216,7 @@ inline PackableLayout compute_packable_layout(
     f.offset = off;
     f.size = info.size;
     f.is_fixed_array = info.is_fixed_array;
+    f.is_fixed_string = info.is_fixed_string;
     f.elem_type = info.elem_type;
     f.capacity = info.capacity;
     f.elem_size = info.elem_size;
