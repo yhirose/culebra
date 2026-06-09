@@ -1,0 +1,44 @@
+# Phase 1: an object's `drop` runs at most once — across both backends.
+#
+# Regression: an explicit `r.drop()` followed by scope-exit auto-drop used to
+# double-fire (the drop body ran twice). An explicit drop must suppress the
+# subsequent auto-drop (C#-Dispose / GC.SuppressFinalize semantics).
+#
+# The drop body pushes to a list reached via `this.log` (a shared reference),
+# so the count survives the object and is observable after the drop.
+
+let log = []
+
+class R {
+  new(lg) { this.log = lg }
+  drop() { this.log.push(1) }
+}
+
+# Explicit drop() then scope-exit: auto-drop must be suppressed → exactly once.
+fn explicit_then_auto() {
+  let r = R.new(log)
+  r.drop()
+}
+explicit_then_auto()
+assert_eq(log.size(), 1)
+
+# Auto-drop only (no explicit call) still fires exactly once — no regression.
+fn auto_only() {
+  let r = R.new(log)
+}
+auto_only()
+assert_eq(log.size(), 2)
+
+# A second explicit drop() is also a no-op (at most once, period).
+fn double_explicit() {
+  let r = R.new(log)
+  r.drop()
+  r.drop()
+}
+double_explicit()
+assert_eq(log.size(), 3)
+
+# `drop` is a reserved well-known name, so a no-arg `.drop()` is a uniform
+# no-op yielding nil on a non-droppable value — identical on both backends.
+assert_eq([1, 2].drop(), nil)
+assert_eq({a: 1}.drop(), nil)

@@ -220,6 +220,10 @@ inline const char* _intern_str(std::string_view s);
 struct JitObject {
   int64_t refcount;
   bool has_drop = false;
+  // Set once `drop` has run (explicit `obj.drop()` or the GC backstop), so
+  // neither path re-runs it: drop is an at-most-once operation. Mirrors the
+  // interp's OrderedSymbolMap::dropped. See _culebra_call_drop_if_present.
+  bool dropped = false;
   JitIterFastFn fast_next_fn = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one
@@ -8235,6 +8239,7 @@ inline void _culebra_cell_release(JitCell* c);
 // reference (matches interp's documented warning).
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
+  if (o->dropped) return;  // already ran (explicit or backstop) — at most once
   if (_jit_drop_suppressed()) return;  // cycle-held resource — no finalizer
   // Walks proto so class-sugar instances find their inherited `drop`.
   auto* entry = _find_property(o, "drop");
@@ -8243,6 +8248,8 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   if (v.tag != GC_TAG_FUNC) return;
   auto* cls = reinterpret_cast<JitClosure*>(v.data);
   if (!cls || cls->arity != 0) return;
+
+  o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
   // Pin the object across its own drop so a re-entrant release inside the
   // drop body can't free it mid-call.
@@ -8258,6 +8265,17 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
     std::cerr << "drop: unknown error" << std::endl;
   }
   o->refcount = 0;
+}
+
+// Explicit `obj.drop()` from JIT-compiled code: route through the at-most-once
+// guard so an explicit drop suppresses the later auto-drop (mirrors the interp
+// eval_call path). A no-op (the call site yields nil) on a non-Object or a
+// drop-less receiver. Does not consume the receiver reference — the caller
+// releases it per the method-call ownership convention.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_explicit_drop(
+    int8_t tag, int64_t data) {
+  if (tag == TAG_OBJECT)
+    _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(data));
 }
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
@@ -8609,6 +8627,7 @@ inline constexpr auto object_get_default  = "culebra_runtime_object_get_default"
 inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
+inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
@@ -17193,6 +17212,22 @@ struct JIT {
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
                                    llvm::Value* receiver) {
+    // Explicit `obj.drop()` (no args) routes through the at-most-once guard
+    // (culebra_runtime_explicit_drop → _culebra_call_drop_if_present) so an
+    // explicit drop suppresses the later auto-drop, exactly as the interp's
+    // eval_call path does. `drop` is a reserved well-known name (never a real
+    // builtin method), so this never shadows one. No-op yielding nil on a
+    // non-Object / drop-less receiver; the receiver is released per the
+    // method-call ownership convention. Both call sites (compile_call and
+    // compile_call_with_builtins) funnel through here, so one guard suffices.
+    if (method == "drop" && argsAst.nodes.empty()) {
+      emit_call(module_->getOrInsertFunction(
+                    rt::explicit_drop, builder_.getVoidTy(),
+                    builder_.getInt8Ty(), builder_.getInt64Ty()),
+                {extract_tag(receiver), extract_data(receiver)});
+      emit_value_release(receiver);
+      return make_nil();
+    }
     // Method dispatch: true built-ins (Array/String/...) parse argsAst
     // positionally and can't accept kwargs. But a builtin-named method can
     // also be a closure field on an Object receiver — notably namespace

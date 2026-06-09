@@ -1376,6 +1376,12 @@ struct OrderedSymbolMap {
     }
   };
 
+  // Set once this object's `drop` has run (explicit `obj.drop()` or the
+  // GC backstop), so neither path re-runs it: drop is an at-most-once
+  // operation. Lives on the map (the shared object identity) so every
+  // reference observes the same state. See _call_drop_if_present.
+  bool dropped = false;
+
   bool contains(std::string_view k) const { return index_.contains(k); }
 
   Symbol& at(std::string_view k) {
@@ -7658,6 +7664,23 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               break;
             }
           }
+          // Explicit `obj.drop()` routes through the same at-most-once guard
+          // as the GC backstop, so an explicit drop suppresses the later
+          // auto-drop (and a second explicit/auto call is a no-op). `drop` is
+          // a reserved well-known name (never a builtin method), so a no-arg
+          // `.drop()` is treated uniformly: run the at-most-once guard on an
+          // Object receiver, and is a no-op yielding nil on anything else.
+          // The no-arg shape is the only one intercepted; `x.drop(arg)` falls
+          // through to normal dispatch (and its usual arity error). Placed
+          // after the UFCS block so a free `drop` fn still takes its path.
+          if (next_is_args && name == "drop" &&
+              ast.nodes[i + 1]->nodes.empty()) {
+            if (val.type == Value::Object)
+              _call_drop_if_present(val.to_object().properties.get());
+            val = Value();  // drop yields nil
+            i++;            // consume the ARGUMENTS postfix
+            break;
+          }
           // A bare reference to a value-type built-in method (`let m = x.map`)
           // is not a first-class value — eval_property rejects it when invoked
           // as a value (not immediately called). Passing `!next_is_args` lets
@@ -9085,6 +9108,7 @@ inline void _destroy_prop_map(OrderedSymbolMap* m) {
 
 inline void _call_drop_if_present(OrderedSymbolMap* m) {
   if (!m) return;
+  if (m->dropped) return;  // already ran (explicit or backstop) — at most once
   if (_drop_suppressed()) return;  // cycle member — no finalizer (see decl)
   auto it = m->find("drop");
   if (it == m->end()) return;
@@ -9092,6 +9116,8 @@ inline void _call_drop_if_present(OrderedSymbolMap* m) {
 
   const auto& fn = it->second.val.template get<FunctionValue>();
   if (!fn.params->empty()) return;
+
+  m->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
   ObjectValue this_view(ObjectValue::Synthetic{});
   this_view.properties =
