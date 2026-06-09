@@ -6050,6 +6050,259 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     return Value(std::move(h));
   }
 
+  // --- FixedSet<T,N> view: open-addressed hash set of scalars laid out
+  // `[count:i32][state:byte × N][T × N]` inline in a @packable record. add /
+  // contains / remove / size / capacity / for-in mutate the bytes in place
+  // (shared across isolates with the buffer). Probing + equality are the
+  // shared byte-level `culebra::fixed_probe`, so interp and JIT agree. -----
+  struct FsView {
+    std::shared_ptr<culebra::SharedBufferCore> core;
+    long off, cap, dataoff, esize;
+    std::string etype;
+  };
+  static FsView fs_resolve(const Value& view) {
+    const auto& o = view.to_object();
+    auto core = culebra::lookup_shared_buffer(o.get("__fs_id__").to_long());
+    if (!core) throw CulebraError("ValueError", "SharedBuffer has been dropped");
+    return {core, o.get("__fs_off__").to_long(), o.get("__fs_cap__").to_long(),
+            o.get("__fs_dataoff__").to_long(), o.get("__fs_esize__").to_long(),
+            o.get("__fs_etype__").get<std::string>()};
+  }
+  static long fs_count(const FsView& v) {
+    int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
+  }
+  static void fs_set_count(const FsView& v, long n) {
+    int32_t x = static_cast<int32_t>(n);
+    std::memcpy(v.core->data + v.off, &x, 4);
+  }
+  static uint8_t* fs_states(const FsView& v) { return v.core->data + v.off + 4; }
+  static uint8_t* fs_vals(const FsView& v) {
+    return v.core->data + v.off + v.dataoff;
+  }
+  static culebra::PackableField fs_elem_field(const FsView& v) {
+    culebra::PackableField f; f.type = v.etype; f.offset = 0; return f;
+  }
+  static std::vector<uint8_t> fs_encode(const FsView& v, const Value& val) {
+    std::vector<uint8_t> buf(v.esize, 0);
+    packable_write_field(buf.data(), fs_elem_field(v), val);
+    return buf;
+  }
+  static Value make_fixed_set_view(long id, long abs_off,
+                                   const culebra::PackableField& f) {
+    using namespace std::literals;
+    ObjectValue h;
+    h.initialize("__fs_id__", Value(id), false);
+    h.initialize("__fs_off__", Value(abs_off), false);
+    h.initialize("__fs_cap__", Value(static_cast<long>(f.capacity)), false);
+    h.initialize("__fs_dataoff__", Value(static_cast<long>(f.data_offset)), false);
+    h.initialize("__fs_esize__", Value(static_cast<long>(f.elem_size)), false);
+    h.initialize("__fs_etype__", Value(std::string(f.elem_type)), false);
+    h.initialize("size", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fs_count(fs_resolve(e->get("this"))));
+        }, "Long"sv)), false);
+    h.initialize("capacity", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fs_resolve(e->get("this")).cap);
+        }, "Long"sv)), false);
+    h.initialize("contains", Value(FunctionValue({{"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) {
+          auto v = fs_resolve(e->get("this"));
+          auto key = fs_encode(v, e->get("v"));
+          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+                                           v.esize, v.esize, key.data(), nullptr);
+          return Value(slot >= 0);
+        }, "Bool"sv)), false);
+    h.initialize("add", Value(FunctionValue({{"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) -> Value {
+          auto v = fs_resolve(e->get("this"));
+          auto key = fs_encode(v, e->get("v"));
+          long insert = -1;
+          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+                                           v.esize, v.esize, key.data(), &insert);
+          if (slot >= 0) return Value();  // already present
+          if (insert < 0)
+            throw CulebraError("CapacityError",
+                std::format("FixedSet is full (capacity {})", v.cap));
+          std::memcpy(fs_vals(v) + insert * v.esize, key.data(), v.esize);
+          fs_states(v)[insert] = culebra::kFixedFull;
+          fs_set_count(v, fs_count(v) + 1);
+          return Value();
+        }, "Nil"sv)), false);
+    h.initialize("remove", Value(FunctionValue({{"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) {
+          auto v = fs_resolve(e->get("this"));
+          auto key = fs_encode(v, e->get("v"));
+          long slot = culebra::fixed_probe(fs_states(v), fs_vals(v), v.cap,
+                                           v.esize, v.esize, key.data(), nullptr);
+          if (slot < 0) return Value(false);
+          fs_states(v)[slot] = culebra::kFixedTomb;
+          fs_set_count(v, fs_count(v) - 1);
+          return Value(true);
+        }, "Bool"sv)), false);
+    h.initialize("iter", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          Value self = e->get("this");
+          auto idx = std::make_shared<long>(0);
+          return _make_iterator(
+              [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
+                auto v = fs_resolve(self);
+                while (*idx < v.cap) {
+                  long i = (*idx)++;
+                  if (fs_states(v)[i] == culebra::kFixedFull)
+                    return _iter_step_value(
+                        packable_read_field(fs_vals(v) + i * v.esize,
+                                            fs_elem_field(v)));
+                }
+                return _iter_step_done();
+              });
+        })), false);
+    return Value(std::move(h));
+  }
+
+  // --- FixedMap<K,V,N> view: open-addressed hash map of scalar keys to scalar
+  // values, `[count][state×N][K×N][V×N]`. get / set / contains / remove / keys
+  // / size / capacity / for-in (yields (k, v) tuples). ---------------------
+  struct FmView {
+    std::shared_ptr<culebra::SharedBufferCore> core;
+    long off, cap, koff, voff, ksize, vsize;
+    std::string ktype, vtype;
+  };
+  static FmView fm_resolve(const Value& view) {
+    const auto& o = view.to_object();
+    auto core = culebra::lookup_shared_buffer(o.get("__fm_id__").to_long());
+    if (!core) throw CulebraError("ValueError", "SharedBuffer has been dropped");
+    return {core, o.get("__fm_off__").to_long(), o.get("__fm_cap__").to_long(),
+            o.get("__fm_koff__").to_long(), o.get("__fm_voff__").to_long(),
+            o.get("__fm_ksize__").to_long(), o.get("__fm_vsize__").to_long(),
+            o.get("__fm_ktype__").get<std::string>(),
+            o.get("__fm_vtype__").get<std::string>()};
+  }
+  static long fm_count(const FmView& v) {
+    int32_t n; std::memcpy(&n, v.core->data + v.off, 4); return n;
+  }
+  static void fm_set_count(const FmView& v, long n) {
+    int32_t x = static_cast<int32_t>(n);
+    std::memcpy(v.core->data + v.off, &x, 4);
+  }
+  static uint8_t* fm_states(const FmView& v) { return v.core->data + v.off + 4; }
+  static uint8_t* fm_keys(const FmView& v) { return v.core->data + v.off + v.koff; }
+  static uint8_t* fm_vals(const FmView& v) { return v.core->data + v.off + v.voff; }
+  static culebra::PackableField fm_field(const std::string& t) {
+    culebra::PackableField f; f.type = t; f.offset = 0; return f;
+  }
+  static std::vector<uint8_t> fm_enc(const std::string& t, long sz,
+                                     const Value& val) {
+    std::vector<uint8_t> buf(sz, 0);
+    packable_write_field(buf.data(), fm_field(t), val);
+    return buf;
+  }
+  static Value make_fixed_map_view(long id, long abs_off,
+                                   const culebra::PackableField& f) {
+    using namespace std::literals;
+    ObjectValue h;
+    h.initialize("__fm_id__", Value(id), false);
+    h.initialize("__fm_off__", Value(abs_off), false);
+    h.initialize("__fm_cap__", Value(static_cast<long>(f.capacity)), false);
+    h.initialize("__fm_koff__", Value(static_cast<long>(f.data_offset)), false);
+    h.initialize("__fm_voff__", Value(static_cast<long>(f.val_offset)), false);
+    h.initialize("__fm_ksize__", Value(static_cast<long>(f.elem_size)), false);
+    h.initialize("__fm_vsize__", Value(static_cast<long>(f.val_size)), false);
+    h.initialize("__fm_ktype__", Value(std::string(f.elem_type)), false);
+    h.initialize("__fm_vtype__", Value(std::string(f.val_type)), false);
+    h.initialize("size", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fm_count(fm_resolve(e->get("this"))));
+        }, "Long"sv)), false);
+    h.initialize("capacity", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          return Value(fm_resolve(e->get("this")).cap);
+        }, "Long"sv)), false);
+    h.initialize("contains", Value(FunctionValue({{"k", false, ""sv}},
+        [](std::shared_ptr<Environment> e) {
+          auto v = fm_resolve(e->get("this"));
+          auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
+          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+                                           v.ksize, v.ksize, key.data(), nullptr);
+          return Value(slot >= 0);
+        }, "Bool"sv)), false);
+    h.initialize("get", Value(FunctionValue({{"k", false, ""sv}},
+        [](std::shared_ptr<Environment> e) -> Value {
+          auto v = fm_resolve(e->get("this"));
+          auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
+          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+                                           v.ksize, v.ksize, key.data(), nullptr);
+          if (slot < 0) return Value();  // absent -> nil
+          return packable_read_field(fm_vals(v) + slot * v.vsize,
+                                     fm_field(v.vtype));
+        })), false);
+    h.initialize("set", Value(FunctionValue({{"k", false, ""sv}, {"v", false, ""sv}},
+        [](std::shared_ptr<Environment> e) -> Value {
+          auto v = fm_resolve(e->get("this"));
+          auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
+          long insert = -1;
+          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+                                           v.ksize, v.ksize, key.data(), &insert);
+          if (slot < 0) {
+            if (insert < 0)
+              throw CulebraError("CapacityError",
+                  std::format("FixedMap is full (capacity {})", v.cap));
+            std::memcpy(fm_keys(v) + insert * v.ksize, key.data(), v.ksize);
+            fm_states(v)[insert] = culebra::kFixedFull;
+            fm_set_count(v, fm_count(v) + 1);
+            slot = insert;
+          }
+          packable_write_field(fm_vals(v) + slot * v.vsize, fm_field(v.vtype),
+                               e->get("v"));
+          return Value();
+        }, "Nil"sv)), false);
+    h.initialize("remove", Value(FunctionValue({{"k", false, ""sv}},
+        [](std::shared_ptr<Environment> e) {
+          auto v = fm_resolve(e->get("this"));
+          auto key = fm_enc(v.ktype, v.ksize, e->get("k"));
+          long slot = culebra::fixed_probe(fm_states(v), fm_keys(v), v.cap,
+                                           v.ksize, v.ksize, key.data(), nullptr);
+          if (slot < 0) return Value(false);
+          fm_states(v)[slot] = culebra::kFixedTomb;
+          fm_set_count(v, fm_count(v) - 1);
+          return Value(true);
+        }, "Bool"sv)), false);
+    h.initialize("keys", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          auto v = fm_resolve(e->get("this"));
+          ArrayValue arr;
+          for (long i = 0; i < v.cap; i++)
+            if (fm_states(v)[i] == culebra::kFixedFull)
+              arr.values->push_back(packable_read_field(
+                  fm_keys(v) + i * v.ksize, fm_field(v.ktype)));
+          return Value(std::move(arr));
+        })), false);
+    h.initialize("iter", Value(FunctionValue({},
+        [](std::shared_ptr<Environment> e) {
+          Value self = e->get("this");
+          auto idx = std::make_shared<long>(0);
+          return _make_iterator(
+              [self, idx](std::shared_ptr<Environment>) -> std::optional<Value> {
+                auto v = fm_resolve(self);
+                while (*idx < v.cap) {
+                  long i = (*idx)++;
+                  if (fm_states(v)[i] == culebra::kFixedFull) {
+                    Value k = packable_read_field(fm_keys(v) + i * v.ksize,
+                                                  fm_field(v.ktype));
+                    Value val = packable_read_field(fm_vals(v) + i * v.vsize,
+                                                    fm_field(v.vtype));
+                    TupleValue t;
+                    t.elements->push_back(std::move(k));
+                    t.elements->push_back(std::move(val));
+                    return _iter_step_value(Value(std::move(t)));
+                  }
+                }
+                return _iter_step_done();
+              });
+        })), false);
+    return Value(std::move(h));
+  }
+
   std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
   packed_view_record(const Value& view) {
     const auto& o = view.to_object();
@@ -6074,13 +6327,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           std::format("@packable {} has no field `{}`", core->class_name,
                       name));
     }
-    if (f->is_fixed_array) {
+    if (f->is_fixed_array || f->is_fixed_set || f->is_fixed_map) {
       const auto& o = view.to_object();
+      long id = o.get("__packedview_id__").to_long();
       long abs_off = o.get("__packedview_index__").to_long() *
                          static_cast<long>(core->layout.stride) +
                      static_cast<long>(f->offset);
-      return make_fixed_array_view(o.get("__packedview_id__").to_long(),
-                                   abs_off, *f);
+      if (f->is_fixed_array) return make_fixed_array_view(id, abs_off, *f);
+      if (f->is_fixed_set) return make_fixed_set_view(id, abs_off, *f);
+      return make_fixed_map_view(id, abs_off, *f);
     }
     return packable_read_field(base, *f);
   }
@@ -6101,6 +6356,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           "TypeError",
           std::format("cannot assign to FixedArray field `{}`; mutate it via "
                       ".push(...) / [i] = ...", name),
+          static_cast<long>(line), static_cast<long>(col));
+    }
+    if (f->is_fixed_set || f->is_fixed_map) {
+      throw CulebraError(
+          "TypeError",
+          std::format("cannot assign to {} field `{}`; mutate it through its "
+                      "methods", f->is_fixed_set ? "FixedSet" : "FixedMap",
+                      name),
           static_cast<long>(line), static_cast<long>(col));
     }
     packable_write_field(base, *f, val);

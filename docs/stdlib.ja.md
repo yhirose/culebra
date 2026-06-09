@@ -1898,6 +1898,43 @@ rows[1].name               # => ""        （ゼロ値は空文字列）
 buffer とともに isolate 間で共有される（子 isolate の書き込みが親の読み出しに
 見える）。
 
+#### ハッシュコレクション: `FixedSet<T, N>` / `FixedMap<K, V, N>`
+
+`@packable` フィールドには `FixedSet<T, N>`（最大 `N` 個のスカラ値）や
+`FixedMap<K, V, N>`（最大 `N` 組のスカラ key→value）も使える。どちらも完全
+インライン展開（`[count][states][entries]`、ポインタなし）の open-addressing
+ハッシュテーブルで、view 経由でその場変更する:
+
+```culebra
+# doctest: skip
+@packable class Bag {
+  tags:   FixedSet<Int32, 16>
+  counts: FixedMap<Int32, Int32, 16>
+}
+
+let b = SharedBuffer.new(100, Bag)
+let s = b[0].tags
+s.add(5); s.add(7); s.add(5)   # 重複は no-op
+s.size()                       # => 2   (capacity() => 16)
+s.contains(7)                  # => true
+s.remove(7)                    # => true（無ければ false）
+for x in s { ... }
+
+let m = b[0].counts
+m.set(42, 1)
+m.get(42)                      # => 1   （無ければ nil）
+m.contains(42)                 # => true
+m.set(42, 2)                   # 上書き。size() は不変
+m.remove(42)                   # => true
+m.keys()                       # => [Int32, ...]
+for k, v in m { ... }          # (key, value) タプルを yield
+```
+
+容量超過の `add` / `set` は `CapacityError`。キー/値型は固定スカラに限り、等価は
+スカラのバイト比較（`FixedSet<Float32>` は `0.0` と `-0.0` を別物とみなす）。
+フィールドまるごとの代入は `TypeError` — view 経由で変更する。バイトはレコード内
+にあるので、buffer とともに isolate 間で共有される。
+
 ---
 
 ## 13. Matchers

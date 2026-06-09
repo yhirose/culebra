@@ -1,0 +1,83 @@
+// FixedSet<T,N> and FixedMap<K,V,N>: open-addressed hash collections laid out
+// inline in a @packable record, mutated in place through a view.
+
+@packable
+class Bag {
+  tags: FixedSet<Int32, 8>
+  counts: FixedMap<Int32, Int32, 8>
+}
+
+b = SharedBuffer.new(2, Bag)
+
+// --- FixedSet ---
+s = b[0].tags
+assert_eq(s.size(), 0)
+assert_eq(s.capacity(), 8)
+assert_eq(s.contains(5), false)
+s.add(5)
+s.add(7)
+s.add(5)                 // duplicate: no-op
+assert_eq(s.size(), 2)
+assert_eq(s.contains(5), true)
+assert_eq(s.contains(7), true)
+assert_eq(s.contains(9), false)
+assert_eq(s.remove(5), true)
+assert_eq(s.remove(5), false)   // already gone
+assert_eq(s.contains(5), false)
+assert_eq(s.size(), 1)
+// for-in yields the live members
+s.add(10)
+s.add(20)
+mut total = 0
+for x in s { total = total + x }
+assert_eq(total, 37)           // 7 + 10 + 20
+
+// Capacity: filling past N raises CapacityError.
+s2 = b[1].tags
+mut i = 0
+while i < 8 { s2.add(i * 100); i = i + 1 }
+assert_eq(s2.size(), 8)
+try {
+  s2.add(999)
+  assert_eq("no throw", "should throw")
+} catch e { assert_eq(e.kind, "CapacityError") }
+
+// --- FixedMap ---
+m = b[0].counts
+assert_eq(m.size(), 0)
+assert_eq(m.get(42), nil)       // absent -> nil
+m.set(42, 1)
+m.set(7, 100)
+assert_eq(m.get(42), 1)
+assert_eq(m.get(7), 100)
+assert_eq(m.contains(42), true)
+assert_eq(m.contains(99), false)
+assert_eq(m.size(), 2)
+m.set(42, 2)                    // overwrite existing key
+assert_eq(m.get(42), 2)
+assert_eq(m.size(), 2)          // count unchanged on overwrite
+assert_eq(m.remove(7), true)
+assert_eq(m.remove(7), false)
+assert_eq(m.get(7), nil)
+assert_eq(m.size(), 1)
+// keys() + for-in over (k, v) pairs
+m.set(1, 10)
+m.set(2, 20)
+mut ksum = 0
+mut vsum = 0
+for k, v in m { ksum = ksum + k; vsum = vsum + v }
+assert_eq(ksum, 45)            // 42 + 1 + 2
+assert_eq(vsum, 32)            // 2 + 10 + 20
+assert_eq(m.keys().size(), 3)
+
+// Cross-isolate share: a child writes into the shared hash bytes.
+shared = SharedBuffer.new(1, Bag)
+w = Isolate.spawn(fn() {
+  shared[0].tags.add(111)
+  shared[0].counts.set(5, 55)
+})
+w.join()
+assert_eq(shared[0].tags.contains(111), true)
+assert_eq(shared[0].counts.get(5), 55)
+
+IO.puts("test_fixedmapset OK")

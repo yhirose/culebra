@@ -72,10 +72,15 @@ struct PackableFieldInfo {
   size_t align = 1;
   bool is_fixed_array = false;
   bool is_fixed_string = false;  // FixedString<N>: `[len:i32][byte × N]`
-  std::string elem_type;     // FixedArray element scalar type
+  bool is_fixed_set = false;     // FixedSet<T,N>: `[count][state×N][T×N]`
+  bool is_fixed_map = false;     // FixedMap<K,V,N>: `[count][state×N][K×N][V×N]`
+  std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
+  std::string val_type;      // FixedMap value scalar
   size_t capacity = 0;       // N
-  size_t elem_size = 0;      // sizeof(T)
-  size_t data_offset = 0;    // byte offset of T[0] within the field (after len)
+  size_t elem_size = 0;      // sizeof(T) / sizeof(K)
+  size_t val_size = 0;       // sizeof(V) (FixedMap)
+  size_t data_offset = 0;    // byte offset of the element/key array within field
+  size_t val_offset = 0;     // byte offset of the value array (FixedMap)
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
@@ -96,6 +101,63 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = 4;                  // the inline len is an i32
     fi.data_offset = 4;
     fi.size = fi.data_offset + fi.capacity;  // 4 + N
+    return fi;
+  }
+  // FixedSet<T, N> = `[count:i32][state:byte × N][T × N]`, an open-addressed
+  // hash set of up to N scalar values, mutated in place through a view.
+  constexpr std::string_view kFSet = "FixedSet<";
+  if (t.starts_with(kFSet) && t.ends_with(">")) {
+    auto inner = t.substr(kFSet.size(), t.size() - kFSet.size() - 1);  // "T , N"
+    auto comma = inner.rfind(',');
+    if (comma == std::string_view::npos) return {};
+    auto elem = _packable_trim(inner.substr(0, comma));
+    auto nstr = _packable_trim(inner.substr(comma + 1));
+    auto ei = packable_type_info(elem);
+    if (ei.size == 0) return {};
+    long n = 0;
+    auto [ptr, ec] = std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
+    if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
+      return {};
+    PackableFieldInfo fi;
+    fi.is_fixed_set = true;
+    fi.elem_type = std::string(elem);
+    fi.capacity = static_cast<size_t>(n);
+    fi.elem_size = ei.size;
+    fi.align = std::max<size_t>(4, ei.align);
+    fi.data_offset = packable_align_up(4 + fi.capacity, ei.align);  // values[]
+    fi.size = fi.data_offset + fi.capacity * ei.size;
+    return fi;
+  }
+  // FixedMap<K, V, N> = `[count:i32][state:byte × N][K × N][V × N]`, an
+  // open-addressed hash map of up to N scalar key→value pairs.
+  constexpr std::string_view kFMap = "FixedMap<";
+  if (t.starts_with(kFMap) && t.ends_with(">")) {
+    auto inner = t.substr(kFMap.size(), t.size() - kFMap.size() - 1);
+    auto c1 = inner.find(',');
+    auto c2 = inner.rfind(',');
+    if (c1 == std::string_view::npos || c1 == c2) return {};
+    auto kt = _packable_trim(inner.substr(0, c1));
+    auto vt = _packable_trim(inner.substr(c1 + 1, c2 - c1 - 1));
+    auto nstr = _packable_trim(inner.substr(c2 + 1));
+    auto ki = packable_type_info(kt);
+    auto vi = packable_type_info(vt);
+    if (ki.size == 0 || vi.size == 0) return {};
+    long n = 0;
+    auto [ptr, ec] = std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
+    if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
+      return {};
+    PackableFieldInfo fi;
+    fi.is_fixed_map = true;
+    fi.elem_type = std::string(kt);
+    fi.val_type = std::string(vt);
+    fi.capacity = static_cast<size_t>(n);
+    fi.elem_size = ki.size;
+    fi.val_size = vi.size;
+    fi.align = std::max<size_t>({4, ki.align, vi.align});
+    fi.data_offset = packable_align_up(4 + fi.capacity, ki.align);  // keys[]
+    fi.val_offset =
+        packable_align_up(fi.data_offset + fi.capacity * ki.size, vi.align);
+    fi.size = fi.val_offset + fi.capacity * vi.size;
     return fi;
   }
   constexpr std::string_view kFA = "FixedArray<";
@@ -124,7 +186,10 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
   }
   auto si = packable_type_info(t);
   if (si.size == 0) return {};
-  return {si.size, si.align, false, false, "", 0, 0, 0};
+  PackableFieldInfo fi;
+  fi.size = si.size;
+  fi.align = si.align;
+  return fi;
 }
 
 inline bool is_packable_type(std::string_view t) {
@@ -170,11 +235,64 @@ struct PackableField {
   size_t size;
   bool is_fixed_array = false;
   bool is_fixed_string = false;
+  bool is_fixed_set = false;
+  bool is_fixed_map = false;
   std::string elem_type;
+  std::string val_type;
   size_t capacity = 0;
   size_t elem_size = 0;
-  size_t data_offset = 0;  // offset of T[0] within the field (after len)
+  size_t val_size = 0;
+  size_t data_offset = 0;  // offset of T[0]/K[0] within the field
+  size_t val_offset = 0;   // offset of V[0] within the field (FixedMap)
 };
+
+// FNV-1a over `n` key bytes — the hash for open-addressed Fixed{Set,Map}.
+// Byte-level so interp and JIT share one hash (the keys are fixed scalars,
+// already canonicalized into their field bytes before hashing).
+inline uint64_t fixed_hash_bytes(const uint8_t* key, size_t n) {
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < n; i++) {
+    h ^= key[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+// Slot states for an open-addressed Fixed{Set,Map}.
+enum : uint8_t { kFixedEmpty = 0, kFixedFull = 1, kFixedTomb = 2 };
+
+// Linear-probe for `key` (key_size bytes) among `cap` slots. `keys` is the
+// key array with element stride `stride`. Returns the slot index of an
+// existing equal key, or -1 if absent; `*out_insert` receives the first
+// reusable slot (empty or tombstone) for an insert, or -1 if the table is
+// full. Shared by interp and JIT so probing/equality stay identical.
+inline long fixed_probe(const uint8_t* states, const uint8_t* keys, size_t cap,
+                        size_t key_size, size_t stride, const uint8_t* key,
+                        long* out_insert) {
+  if (out_insert) *out_insert = -1;
+  if (cap == 0) return -1;
+  uint64_t h = fixed_hash_bytes(key, key_size);
+  long insert = -1;
+  for (size_t probe = 0; probe < cap; probe++) {
+    size_t i = (h + probe) % cap;
+    uint8_t st = states[i];
+    if (st == kFixedEmpty) {
+      if (insert < 0) insert = static_cast<long>(i);
+      if (out_insert) *out_insert = insert;
+      return -1;  // an empty slot terminates the probe chain
+    }
+    if (st == kFixedTomb) {
+      if (insert < 0) insert = static_cast<long>(i);
+      continue;
+    }
+    if (std::memcmp(keys + i * stride, key, key_size) == 0) {
+      if (out_insert) *out_insert = static_cast<long>(i);
+      return static_cast<long>(i);
+    }
+  }
+  if (out_insert) *out_insert = insert;
+  return -1;  // table full, key not present
+}
 
 // Full layout of a @packable class: ordered fields + total stride (record
 // size, rounded up to the record alignment) and the record alignment.
@@ -206,7 +324,8 @@ inline PackableLayout compute_packable_layout(
           std::format("@packable class `{}`: field `{}` has non-packable "
                       "type `{}` (expected a fixed scalar — Float32/Float64/"
                       "Int8/Int16/Int32/Int64/Byte/Bool — or "
-                      "FixedArray<scalar, N> / FixedString<N>)",
+                      "FixedArray<scalar, N> / FixedString<N> / "
+                      "FixedSet<scalar, N> / FixedMap<scalar, scalar, N>)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
@@ -217,10 +336,15 @@ inline PackableLayout compute_packable_layout(
     f.size = info.size;
     f.is_fixed_array = info.is_fixed_array;
     f.is_fixed_string = info.is_fixed_string;
+    f.is_fixed_set = info.is_fixed_set;
+    f.is_fixed_map = info.is_fixed_map;
     f.elem_type = info.elem_type;
+    f.val_type = info.val_type;
     f.capacity = info.capacity;
     f.elem_size = info.elem_size;
+    f.val_size = info.val_size;
     f.data_offset = info.data_offset;
+    f.val_offset = info.val_offset;
     layout.fields.push_back(std::move(f));
     off += info.size;
     layout.align = std::max(layout.align, info.align);

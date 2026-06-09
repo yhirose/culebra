@@ -1972,6 +1972,44 @@ rows[1].name               # => ""        (zero value is empty)
 fresh `String` copy of the stored bytes, so it shares across isolates with the
 buffer (a child isolate's write is visible to the parent's read).
 
+#### Hash collections: `FixedSet<T, N>` and `FixedMap<K, V, N>`
+
+A `@packable` field may also be a `FixedSet<T, N>` (up to `N` scalar values) or
+a `FixedMap<K, V, N>` (up to `N` scalar key→value pairs). Both are
+open-addressed hash tables laid out fully inline (`[count][states][entries]`,
+no pointers), mutated in place through a view:
+
+```culebra
+# doctest: skip
+@packable class Bag {
+  tags:   FixedSet<Int32, 16>
+  counts: FixedMap<Int32, Int32, 16>
+}
+
+let b = SharedBuffer.new(100, Bag)
+let s = b[0].tags
+s.add(5); s.add(7); s.add(5)   # the duplicate is a no-op
+s.size()                       # => 2   (capacity() => 16)
+s.contains(7)                  # => true
+s.remove(7)                    # => true (false if absent)
+for x in s { ... }
+
+let m = b[0].counts
+m.set(42, 1)
+m.get(42)                      # => 1   (nil if absent)
+m.contains(42)                 # => true
+m.set(42, 2)                   # overwrite; size() unchanged
+m.remove(42)                   # => true
+m.keys()                       # => [Int32, ...]
+for k, v in m { ... }          # yields (key, value) tuples
+```
+
+`add` / `set` past capacity raise `CapacityError`. Key and value types must be
+fixed scalars; equality is by the scalar's bytes (so `FixedSet<Float32>` treats
+`0.0` and `-0.0` as distinct). Assigning the whole field is a `TypeError` —
+mutate through the view. The bytes live in the record, so the collection shares
+across isolates with the buffer.
+
 ---
 
 ## 13. Matchers

@@ -3075,10 +3075,14 @@ _jit_packed_view_record(JitObject* view) {
   return {core, base};
 }
 
-// fwd: defined below (after the fa byte helpers it needs); _jit_packed_view_get
-// builds a FixedArray view for a FixedArray field.
+// fwd: defined below (after the byte helpers they need); _jit_packed_view_get
+// builds a collection view for a FixedArray/FixedSet/FixedMap field.
 inline JitValue _jit_make_fixed_array_view(long id, long abs_off,
                                            const culebra::PackableField& f);
+inline JitValue _jit_make_fixed_set_view(long id, long abs_off,
+                                         const culebra::PackableField& f);
+inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
+                                         const culebra::PackableField& f);
 
 inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                                     int64_t line = 0, int64_t col = 0) {
@@ -3089,12 +3093,14 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
         std::format("@packable {} has no field `{}`", core->class_name, key),
         line, col);
   }
-  if (f->is_fixed_array) {
+  if (f->is_fixed_array || f->is_fixed_set || f->is_fixed_map) {
     long id = view->slots[view->find_slot("__packedview_id__")].value.data;
     long idx = view->slots[view->find_slot("__packedview_index__")].value.data;
     long abs_off =
         idx * static_cast<long>(core->layout.stride) + static_cast<long>(f->offset);
-    return _jit_make_fixed_array_view(id, abs_off, *f);
+    if (f->is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
+    if (f->is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
+    return _jit_make_fixed_map_view(id, abs_off, *f);
   }
   return _jit_packable_read_field(base, *f);
 }
@@ -3114,6 +3120,13 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
     throw culebra::CulebraError("TypeError",
         std::format("cannot assign to FixedArray field `{}`; mutate it via "
                     ".push(...) / [i] = ...", key),
+        line, col);
+  }
+  if (f->is_fixed_set || f->is_fixed_map) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("TypeError",
+        std::format("cannot assign to {} field `{}`; mutate it through its "
+                    "methods", f->is_fixed_set ? "FixedSet" : "FixedMap", key),
         line, col);
   }
   _jit_packable_write_field(base, *f, tag, data);
@@ -3299,6 +3312,369 @@ inline JitValue _jit_make_fixed_array_view(long id, long abs_off,
   meth("get", _jit_fa_get_m);
   meth("set", _jit_fa_set_m);
   meth("iter", _jit_fa_iter);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// --- FixedSet<T,N> view: open-addressed hash set, byte ops shared with the
+// interp via culebra::fixed_probe. State is read from `self` slots. ---------
+inline std::shared_ptr<culebra::SharedBufferCore> _jit_fs_core(JitObject* v) {
+  long id = v->slots[v->find_slot("__fs_id__")].value.data;
+  auto core = culebra::lookup_shared_buffer(id);
+  if (!core)
+    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
+  return core;
+}
+inline long _jit_fs_long(JitObject* v, const char* k) {
+  return v->slots[v->find_slot(k)].value.data;
+}
+inline uint8_t* _jit_fs_base(JitObject* v) {
+  return _jit_fs_core(v)->data + _jit_fs_long(v, "__fs_off__");
+}
+inline long _jit_fs_count(JitObject* v) {
+  int32_t n; std::memcpy(&n, _jit_fs_base(v), 4); return n;
+}
+inline void _jit_fs_set_count(JitObject* v, long n) {
+  int32_t x = static_cast<int32_t>(n); std::memcpy(_jit_fs_base(v), &x, 4);
+}
+inline uint8_t* _jit_fs_states(JitObject* v) { return _jit_fs_base(v) + 4; }
+inline uint8_t* _jit_fs_vals(JitObject* v) {
+  return _jit_fs_base(v) + _jit_fs_long(v, "__fs_dataoff__");
+}
+inline culebra::PackableField _jit_fs_elem_field(JitObject* v) {
+  culebra::PackableField f;
+  f.type = culebra::packable_scalar_name(
+      static_cast<int>(_jit_fs_long(v, "__fs_ecode__")));
+  f.offset = 0;
+  return f;
+}
+// Encode a scalar arg into key bytes (a fixed scalar is ≤ 8 bytes); a wrong
+// type raises TypeError via _jit_packable_write_field. Returns elem_size.
+inline long _jit_fs_encode(JitObject* v, int8_t tag, int64_t data, uint8_t* out) {
+  std::memset(out, 0, 8);
+  _jit_packable_write_field(out, _jit_fs_elem_field(v), tag, data);
+  return _jit_fs_long(v, "__fs_esize__");
+}
+inline JitValue _jit_fs_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  return {TAG_LONG, _jit_fs_count(reinterpret_cast<JitObject*>(self.data))};
+}
+inline JitValue _jit_fs_capacity(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  _jit_fs_core(v);  // dropped-buffer check
+  return {TAG_LONG, _jit_fs_long(v, "__fs_cap__")};
+}
+inline JitValue _jit_fs_contains(JitClosure*, JitValue self, int64_t n,
+                                 JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  uint8_t key[8];
+  long esize = _jit_fs_encode(v, args[0].tag, args[0].data, key);
+  long cap = _jit_fs_long(v, "__fs_cap__");
+  long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
+                                   esize, esize, key, nullptr);
+  return {TAG_BOOL, slot >= 0 ? 1 : 0};
+}
+inline JitValue _jit_fs_add(JitClosure*, JitValue self, int64_t n,
+                            JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  uint8_t key[8];
+  long esize = _jit_fs_encode(v, args[0].tag, args[0].data, key);
+  long cap = _jit_fs_long(v, "__fs_cap__");
+  long insert = -1;
+  long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
+                                   esize, esize, key, &insert);
+  if (slot >= 0) return {TAG_NIL, 0};
+  if (insert < 0)
+    throw culebra::CulebraError(
+        "CapacityError", std::format("FixedSet is full (capacity {})", cap));
+  std::memcpy(_jit_fs_vals(v) + insert * esize, key, esize);
+  _jit_fs_states(v)[insert] = culebra::kFixedFull;
+  _jit_fs_set_count(v, _jit_fs_count(v) + 1);
+  return {TAG_NIL, 0};
+}
+inline JitValue _jit_fs_remove(JitClosure*, JitValue self, int64_t n,
+                               JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  uint8_t key[8];
+  long esize = _jit_fs_encode(v, args[0].tag, args[0].data, key);
+  long cap = _jit_fs_long(v, "__fs_cap__");
+  long slot = culebra::fixed_probe(_jit_fs_states(v), _jit_fs_vals(v), cap,
+                                   esize, esize, key, nullptr);
+  if (slot < 0) return {TAG_BOOL, 0};
+  _jit_fs_states(v)[slot] = culebra::kFixedTomb;
+  _jit_fs_set_count(v, _jit_fs_count(v) - 1);
+  return {TAG_BOOL, 1};
+}
+inline long _jit_fs_next_full(JitObject* it, long from) {
+  long cap = _jit_fs_long(it, "__fs_cap__");
+  uint8_t* st = _jit_fs_states(it);
+  for (long i = from; i < cap; i++)
+    if (st[i] == culebra::kFixedFull) return i;
+  return cap;
+}
+inline JitValue _jit_fs_iter_has_next(JitClosure*, JitValue self, int64_t,
+                                      JitValue*) {
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  return {TAG_BOOL, _jit_fs_next_full(it, _jit_fs_long(it, "_pos")) <
+                            _jit_fs_long(it, "__fs_cap__") ? 1 : 0};
+}
+inline JitValue _jit_fs_iter_next(JitClosure*, JitValue self, int64_t,
+                                  JitValue*) {
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  long idx = _jit_fs_next_full(it, _jit_fs_long(it, "_pos"));
+  JitValue r = _jit_packable_read_field(
+      _jit_fs_vals(it) + idx * _jit_fs_long(it, "__fs_esize__"),
+      _jit_fs_elem_field(it));
+  it->set_or_append("_pos", JitValue{TAG_LONG, idx + 1}, true);
+  return r;
+}
+inline JitValue _jit_fs_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  auto* it = culebra_runtime_object_new();
+  for (const char* k : {"__fs_id__", "__fs_off__", "__fs_cap__",
+                        "__fs_dataoff__", "__fs_esize__", "__fs_ecode__"})
+    it->set_or_append(k, JitValue{TAG_LONG, _jit_fs_long(v, k)}, false);
+  it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    it->set_or_append(
+        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("iter", _jit_fa_iter_self);
+  meth("has_next", _jit_fs_iter_has_next);
+  meth("next", _jit_fs_iter_next);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+inline JitValue _jit_make_fixed_set_view(long id, long abs_off,
+                                         const culebra::PackableField& f) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__fs_id__", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__fs_off__", JitValue{TAG_LONG, abs_off}, false);
+  h->set_or_append("__fs_cap__", JitValue{TAG_LONG, static_cast<long>(f.capacity)}, false);
+  h->set_or_append("__fs_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.data_offset)}, false);
+  h->set_or_append("__fs_esize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
+  h->set_or_append("__fs_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
+  auto meth = [&](const char* nm,
+                  JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(
+        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
+        false);
+  };
+  meth("size", _jit_fs_size);
+  meth("capacity", _jit_fs_capacity);
+  meth("contains", _jit_fs_contains);
+  meth("add", _jit_fs_add);
+  meth("remove", _jit_fs_remove);
+  meth("iter", _jit_fs_iter);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// --- FixedMap<K,V,N> view: open-addressed hash map, byte ops shared via
+// culebra::fixed_probe. ----------------------------------------------------
+inline long _jit_fm_long(JitObject* v, const char* k) {
+  return v->slots[v->find_slot(k)].value.data;
+}
+inline std::shared_ptr<culebra::SharedBufferCore> _jit_fm_core(JitObject* v) {
+  auto core = culebra::lookup_shared_buffer(_jit_fm_long(v, "__fm_id__"));
+  if (!core)
+    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
+  return core;
+}
+inline uint8_t* _jit_fm_base(JitObject* v) {
+  return _jit_fm_core(v)->data + _jit_fm_long(v, "__fm_off__");
+}
+inline long _jit_fm_count(JitObject* v) {
+  int32_t n; std::memcpy(&n, _jit_fm_base(v), 4); return n;
+}
+inline void _jit_fm_set_count(JitObject* v, long n) {
+  int32_t x = static_cast<int32_t>(n); std::memcpy(_jit_fm_base(v), &x, 4);
+}
+inline uint8_t* _jit_fm_states(JitObject* v) { return _jit_fm_base(v) + 4; }
+inline uint8_t* _jit_fm_keys(JitObject* v) {
+  return _jit_fm_base(v) + _jit_fm_long(v, "__fm_koff__");
+}
+inline uint8_t* _jit_fm_vals(JitObject* v) {
+  return _jit_fm_base(v) + _jit_fm_long(v, "__fm_voff__");
+}
+inline culebra::PackableField _jit_fm_field(JitObject* v, const char* code_key) {
+  culebra::PackableField f;
+  f.type = culebra::packable_scalar_name(
+      static_cast<int>(_jit_fm_long(v, code_key)));
+  f.offset = 0;
+  return f;
+}
+inline long _jit_fm_enc_key(JitObject* v, int8_t tag, int64_t data,
+                            uint8_t* out) {
+  std::memset(out, 0, 8);
+  _jit_packable_write_field(out, _jit_fm_field(v, "__fm_kcode__"), tag, data);
+  return _jit_fm_long(v, "__fm_ksize__");
+}
+inline JitValue _jit_fm_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  return {TAG_LONG, _jit_fm_count(reinterpret_cast<JitObject*>(self.data))};
+}
+inline JitValue _jit_fm_capacity(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  _jit_fm_core(v);
+  return {TAG_LONG, _jit_fm_long(v, "__fm_cap__")};
+}
+inline long _jit_fm_find(JitObject* v, int8_t tag, int64_t data, long* insert) {
+  uint8_t key[8];
+  long ksize = _jit_fm_enc_key(v, tag, data, key);
+  long cap = _jit_fm_long(v, "__fm_cap__");
+  return culebra::fixed_probe(_jit_fm_states(v), _jit_fm_keys(v), cap, ksize,
+                              ksize, key, insert);
+}
+inline JitValue _jit_fm_contains(JitClosure*, JitValue self, int64_t n,
+                                 JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  return {TAG_BOOL, _jit_fm_find(v, args[0].tag, args[0].data, nullptr) >= 0 ? 1 : 0};
+}
+inline JitValue _jit_fm_get(JitClosure*, JitValue self, int64_t n,
+                            JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  long slot = _jit_fm_find(v, args[0].tag, args[0].data, nullptr);
+  if (slot < 0) return {TAG_NIL, 0};
+  return _jit_packable_read_field(
+      _jit_fm_vals(v) + slot * _jit_fm_long(v, "__fm_vsize__"),
+      _jit_fm_field(v, "__fm_vcode__"));
+}
+inline JitValue _jit_fm_set(JitClosure*, JitValue self, int64_t n,
+                            JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  uint8_t key[8];
+  long ksize = _jit_fm_enc_key(v, args[0].tag, args[0].data, key);
+  long cap = _jit_fm_long(v, "__fm_cap__");
+  long insert = -1;
+  long slot = culebra::fixed_probe(_jit_fm_states(v), _jit_fm_keys(v), cap,
+                                   ksize, ksize, key, &insert);
+  if (slot < 0) {
+    if (insert < 0)
+      throw culebra::CulebraError(
+          "CapacityError", std::format("FixedMap is full (capacity {})", cap));
+    std::memcpy(_jit_fm_keys(v) + insert * ksize, key, ksize);
+    _jit_fm_states(v)[insert] = culebra::kFixedFull;
+    _jit_fm_set_count(v, _jit_fm_count(v) + 1);
+    slot = insert;
+  }
+  _jit_packable_write_field(
+      _jit_fm_vals(v) + slot * _jit_fm_long(v, "__fm_vsize__"),
+      _jit_fm_field(v, "__fm_vcode__"), args[1].tag, args[1].data);
+  return {TAG_NIL, 0};
+}
+inline JitValue _jit_fm_remove(JitClosure*, JitValue self, int64_t n,
+                               JitValue* args) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  long slot = _jit_fm_find(v, args[0].tag, args[0].data, nullptr);
+  if (slot < 0) return {TAG_BOOL, 0};
+  _jit_fm_states(v)[slot] = culebra::kFixedTomb;
+  _jit_fm_set_count(v, _jit_fm_count(v) - 1);
+  return {TAG_BOOL, 1};
+}
+inline JitValue _jit_fm_keys_m(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  long cap = _jit_fm_long(v, "__fm_cap__");
+  long ksize = _jit_fm_long(v, "__fm_ksize__");
+  uint8_t* st = _jit_fm_states(v);
+  auto* arr = culebra_runtime_array_new();
+  for (long i = 0; i < cap; i++)
+    if (st[i] == culebra::kFixedFull) {
+      JitValue k = _jit_packable_read_field(_jit_fm_keys(v) + i * ksize,
+                                            _jit_fm_field(v, "__fm_kcode__"));
+      culebra_runtime_array_push(arr, k.tag, k.data);
+    }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
+inline long _jit_fm_next_full(JitObject* it, long from) {
+  long cap = _jit_fm_long(it, "__fm_cap__");
+  uint8_t* st = _jit_fm_states(it);
+  for (long i = from; i < cap; i++)
+    if (st[i] == culebra::kFixedFull) return i;
+  return cap;
+}
+inline JitValue _jit_fm_iter_has_next(JitClosure*, JitValue self, int64_t,
+                                      JitValue*) {
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  return {TAG_BOOL, _jit_fm_next_full(it, _jit_fm_long(it, "_pos")) <
+                            _jit_fm_long(it, "__fm_cap__") ? 1 : 0};
+}
+inline JitValue _jit_fm_iter_next(JitClosure*, JitValue self, int64_t,
+                                  JitValue*) {
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  long idx = _jit_fm_next_full(it, _jit_fm_long(it, "_pos"));
+  JitValue k = _jit_packable_read_field(
+      _jit_fm_keys(it) + idx * _jit_fm_long(it, "__fm_ksize__"),
+      _jit_fm_field(it, "__fm_kcode__"));
+  JitValue val = _jit_packable_read_field(
+      _jit_fm_vals(it) + idx * _jit_fm_long(it, "__fm_vsize__"),
+      _jit_fm_field(it, "__fm_vcode__"));
+  auto* tup = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(tup, k.tag, k.data);
+  culebra_runtime_tuple_push(tup, val.tag, val.data);
+  it->set_or_append("_pos", JitValue{TAG_LONG, idx + 1}, true);
+  return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};
+}
+inline JitValue _jit_fm_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto* v = reinterpret_cast<JitObject*>(self.data);
+  auto* it = culebra_runtime_object_new();
+  for (const char* k : {"__fm_id__", "__fm_off__", "__fm_cap__", "__fm_koff__",
+                        "__fm_voff__", "__fm_ksize__", "__fm_vsize__",
+                        "__fm_kcode__", "__fm_vcode__"})
+    it->set_or_append(k, JitValue{TAG_LONG, _jit_fm_long(v, k)}, false);
+  it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    it->set_or_append(
+        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("iter", _jit_fa_iter_self);
+  meth("has_next", _jit_fm_iter_has_next);
+  meth("next", _jit_fm_iter_next);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+inline JitValue _jit_make_fixed_map_view(long id, long abs_off,
+                                         const culebra::PackableField& f) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__fm_id__", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__fm_off__", JitValue{TAG_LONG, abs_off}, false);
+  h->set_or_append("__fm_cap__", JitValue{TAG_LONG, static_cast<long>(f.capacity)}, false);
+  h->set_or_append("__fm_koff__", JitValue{TAG_LONG, static_cast<long>(f.data_offset)}, false);
+  h->set_or_append("__fm_voff__", JitValue{TAG_LONG, static_cast<long>(f.val_offset)}, false);
+  h->set_or_append("__fm_ksize__", JitValue{TAG_LONG, static_cast<long>(f.elem_size)}, false);
+  h->set_or_append("__fm_vsize__", JitValue{TAG_LONG, static_cast<long>(f.val_size)}, false);
+  h->set_or_append("__fm_kcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.elem_type)}, false);
+  h->set_or_append("__fm_vcode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.val_type)}, false);
+  auto meth = [&](const char* nm,
+                  JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(
+        nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
+        false);
+  };
+  meth("size", _jit_fm_size);
+  meth("capacity", _jit_fm_capacity);
+  meth("contains", _jit_fm_contains);
+  meth("get", _jit_fm_get);
+  meth("set", _jit_fm_set);
+  meth("remove", _jit_fm_remove);
+  meth("keys", _jit_fm_keys_m);
+  meth("iter", _jit_fm_iter);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -16798,11 +17174,30 @@ struct JIT {
     auto setEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
-    // Object: `remove` calls the built-in helper (returns Nil); `add`
-    // routes to the user-defined property `this.add` (no built-in).
+    // Object: `add` routes to the user-defined property `this.add` (no
+    // built-in). `remove` prefers an own `remove` method (e.g. a
+    // FixedSet/FixedMap view) — matching interp's own-method-over-builtin
+    // priority — and otherwise calls the dict's built-in key removal.
     builder_.SetInsertPoint(objBB);
     llvm::Value* objRes = nullptr;
-    if (method == "remove") {
+    if (method == "add") {
+      auto methodVal = compile_property_get(receiver, method);
+      objRes = compile_function_call_raw(methodVal, receiver, {arg});
+    } else {
+      auto methodVal = compile_property_get(receiver, "remove");  // borrowed
+      auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
+                                          builder_.getInt8(TAG_FUNC));
+      auto userBB2 = llvm::BasicBlock::Create(ctx_, "ma.obj.user", fn);
+      auto biBB2 = llvm::BasicBlock::Create(ctx_, "ma.obj.builtin", fn);
+      auto oMergeBB = llvm::BasicBlock::Create(ctx_, "ma.obj.merge", fn);
+      builder_.CreateCondBr(isFunc, userBB2, biBB2);
+
+      builder_.SetInsertPoint(userBB2);
+      auto uRes = compile_function_call_raw(methodVal, receiver, {arg});
+      auto uEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(oMergeBB);
+
+      builder_.SetInsertPoint(biBB2);
       auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
       // object_remove_any consumes the key's +1 (see runtime helper).
       emit_call(
@@ -16812,10 +17207,16 @@ struct JIT {
               builder_.getInt64Ty(), builder_.getInt64Ty()),
           {objPtr, extract_tag(arg), extract_data(arg),
            current_line_val(), current_column_val()});
-      objRes = make_nil();
-    } else {
-      auto methodVal = compile_property_get(receiver, method);
-      objRes = compile_function_call_raw(methodVal, receiver, {arg});
+      emit_value_release(receiver);  // the user path consumes it; match here
+      auto bRes = make_nil();
+      auto bEnd = builder_.GetInsertBlock();
+      builder_.CreateBr(oMergeBB);
+
+      builder_.SetInsertPoint(oMergeBB);
+      auto op = builder_.CreatePHI(valueType_, 2, "ma.obj.res");
+      op->addIncoming(uRes, uEnd);
+      op->addIncoming(bRes, bEnd);
+      objRes = op;
     }
     auto objEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
