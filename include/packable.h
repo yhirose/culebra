@@ -198,6 +198,7 @@ struct PackableFieldInfo {
   bool is_fixed_map = false;     // FixedMap<K,V,N>: `[count][state×N][K×N][V×N]`
   bool is_optional = false;      // T?: `[present:byte][T]`, nil when present==0
   bool is_enum = false;          // a registered @packable enum: `[tag:i32][payload]`
+  bool is_bytes = false;         // Bytes<N>: exactly N raw bytes (no length prefix)
   std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
                              // — or, for is_enum, the enum name
   std::string val_type;      // FixedMap value scalar
@@ -223,6 +224,25 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = si.align;
     fi.data_offset = packable_align_up(1, si.align);  // T after the present byte
     fi.size = fi.data_offset + si.size;
+    return fi;
+  }
+  // Bytes<N> = exactly N raw bytes (no length prefix), read/written as a whole
+  // byte String. For hashes / UUIDs / fixed binary blobs.
+  constexpr std::string_view kBytes = "Bytes<";
+  if (t.starts_with(kBytes) && t.ends_with(">")) {
+    auto nstr = _packable_trim(t.substr(kBytes.size(), t.size() - kBytes.size() - 1));
+    long n = 0;
+    auto [ptr, ec] =
+        std::from_chars(nstr.data(), nstr.data() + nstr.size(), n);
+    if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
+      return {};
+    PackableFieldInfo fi;
+    fi.is_bytes = true;
+    fi.capacity = static_cast<size_t>(n);
+    fi.elem_size = 1;
+    fi.align = 1;
+    fi.data_offset = 0;
+    fi.size = fi.capacity;  // exactly N bytes
     return fi;
   }
   // FixedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
@@ -389,6 +409,7 @@ struct PackableField {
   bool is_fixed_map = false;
   bool is_optional = false;
   bool is_enum = false;
+  bool is_bytes = false;
   std::string elem_type;
   std::string val_type;
   size_t capacity = 0;
@@ -478,7 +499,7 @@ inline PackableLayout compute_packable_layout(
                       "Int8/Int16/Int32/Int64/Byte/Bool — or "
                       "FixedArray<scalar, N> / FixedString<N> / "
                       "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
-                      "an optional scalar `T?`)",
+                      "Bytes<N> / an optional scalar `T?` / a @packable enum)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
@@ -493,6 +514,7 @@ inline PackableLayout compute_packable_layout(
     f.is_fixed_map = info.is_fixed_map;
     f.is_optional = info.is_optional;
     f.is_enum = info.is_enum;
+    f.is_bytes = info.is_bytes;
     f.elem_type = info.elem_type;
     f.val_type = info.val_type;
     f.capacity = info.capacity;

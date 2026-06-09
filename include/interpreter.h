@@ -5834,6 +5834,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           reinterpret_cast<const char*>(p + f.data_offset),
           static_cast<size_t>(len)));
     }
+    if (f.is_bytes) {
+      // Exactly N raw bytes -> a byte String of length N.
+      return Value(std::string(reinterpret_cast<const char*>(p), f.capacity));
+    }
     if (f.is_optional) {
       // `[present:byte][T]` -> nil when absent, else the inner scalar.
       if (*p == 0) return Value();
@@ -5923,6 +5927,21 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       int32_t len = static_cast<int32_t>(sv.size());
       std::memcpy(p, &len, 4);
       std::memcpy(p + f.data_offset, sv.data(), sv.size());
+      return;
+    }
+    if (f.is_bytes) {
+      if (val.type != Value::String && val.type != Value::StringView) {
+        throw CulebraError("TypeError", std::format(
+            "Bytes field `{}` expects a String, got {}", f.name,
+            val.type_name()));
+      }
+      auto sv = val.to_string_view();
+      if (sv.size() != f.capacity) {
+        throw CulebraError("ValueError", std::format(
+            "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.capacity,
+            f.name, f.capacity, sv.size()));
+      }
+      std::memcpy(p, sv.data(), f.capacity);
       return;
     }
     if (f.is_optional) {

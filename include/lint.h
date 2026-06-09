@@ -359,7 +359,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
                     "`{}` (expected a fixed scalar — Float32/Float64/Int8/"
                     "Int16/Int32/Int64/Byte/Bool — or FixedArray<scalar, N> / "
                     "FixedString<N> / FixedSet<scalar, N> / "
-                    "FixedMap<scalar, scalar, N> / an optional scalar `T?`)",
+                    "FixedMap<scalar, scalar, N> / Bytes<N> / an optional "
+                    "scalar `T?` / a @packable enum)",
                     class_name, mv.name, mv.type_annotation),
                 static_cast<long>(mv.name_line),
                 static_cast<long>(mv.name_col), Severity::Error});

@@ -2071,6 +2071,29 @@ enum raises `TypeError`. Reading reconstructs the variant instance from the
 bytes (no enum namespace needed), so a value written by one isolate is
 readable by another through the shared buffer.
 
+#### Raw bytes: `Bytes<N>`
+
+A `@packable` field may be a `Bytes<N>` — exactly `N` raw bytes inline, with no
+length prefix, read and written as a whole byte `String`. For hash digests,
+UUIDs, and other fixed binary blobs.
+
+```culebra
+# doctest: skip
+@packable class Entry {
+  id:     Int32
+  digest: Bytes<32>      # e.g. a SHA-256
+}
+
+let e = SharedBuffer.new(100, Entry)
+e[0].digest = some_32_byte_string
+e[0].digest                       # => the 32 bytes (binary-safe)
+```
+
+The written `String` must be **exactly** `N` bytes (a `ValueError` otherwise);
+a non-String raises `TypeError`. The bytes are binary-safe (embedded NULs are
+preserved). Unlike `FixedString<N>` (a variable-length text field with a length
+prefix), `Bytes<N>` is a fixed-size blob.
+
 ---
 
 ## 13. Matchers

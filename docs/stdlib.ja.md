@@ -1994,6 +1994,28 @@ variant payload は全て固定スカラに限る（非スカラ payload は var
 バイトから variant インスタンスを再構築する（enum namespace 不要）ので、ある isolate が
 書いた値を別の isolate が共有 buffer 越しに読める。
 
+#### 生バイト: `Bytes<N>`
+
+`@packable` フィールドには `Bytes<N>` も使える — 長さ prefix なしの**ちょうど** `N`
+バイトをインライン保持し、まるごと byte `String` として読み書きする。ハッシュ・UUID・
+固定バイナリ blob 用:
+
+```culebra
+# doctest: skip
+@packable class Entry {
+  id:     Int32
+  digest: Bytes<32>      # 例: SHA-256
+}
+
+let e = SharedBuffer.new(100, Entry)
+e[0].digest = some_32_byte_string
+e[0].digest                       # => 32 バイト（バイナリ安全）
+```
+
+書き込む `String` は**ちょうど** `N` バイトでなければならない（違えば `ValueError`）。
+String 以外は `TypeError`。バイトはバイナリ安全（埋め込み NUL も保持）。`FixedString<N>`
+（長さ prefix 付きの可変長テキスト）と違い、`Bytes<N>` は固定長 blob。
+
 ---
 
 ## 13. Matchers

@@ -2989,6 +2989,11 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
         static_cast<size_t>(len)));
     return {TAG_STRING, reinterpret_cast<int64_t>(s)};
   }
+  if (f.is_bytes) {
+    const char* s = _culebra_heap_str(std::string_view(
+        reinterpret_cast<const char*>(p), f.capacity));
+    return {TAG_STRING, reinterpret_cast<int64_t>(s)};
+  }
   if (f.is_optional) {
     if (*p == 0) return {TAG_NIL, 0};
     culebra::PackableField inner;
@@ -3062,6 +3067,21 @@ inline void _jit_packable_write_field(uint8_t* base,
     int32_t len = static_cast<int32_t>(sv.size());
     std::memcpy(p, &len, 4);
     std::memcpy(p + f.data_offset, sv.data(), sv.size());
+    return;
+  }
+  if (f.is_bytes) {
+    if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError("TypeError", std::format(
+          "Bytes field `{}` expects a String, got {}", f.name,
+          _culebra_tag_name(tag)));
+    }
+    auto sv = _culebra_str_view(tag, data);
+    if (sv.size() != f.capacity) {
+      throw culebra::CulebraError("ValueError", std::format(
+          "Bytes<{}> field `{}` expects exactly {} bytes, got {}", f.capacity,
+          f.name, f.capacity, sv.size()));
+    }
+    std::memcpy(p, sv.data(), f.capacity);
     return;
   }
   if (f.is_optional) {

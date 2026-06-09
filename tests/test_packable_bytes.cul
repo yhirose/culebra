@@ -1,0 +1,52 @@
+// Bytes<N>: exactly N raw bytes inline in a @packable record (no length
+// prefix), read/written as a whole byte String. For hashes / UUIDs / blobs.
+
+@packable
+class Entry {
+  id: Int32
+  digest: Bytes<4>
+}
+
+buf = SharedBuffer.new(3, Entry)
+
+// Zero value: N zero bytes.
+assert_eq(buf[0].digest.size(), 4)
+assert_eq(buf[0].digest, "\x00\x00\x00\x00")
+
+// Write + read exactly N bytes (binary-safe, embedded NUL preserved).
+buf[0].id = 1
+buf[0].digest = "\x01\x02\x03\x04"
+assert_eq(buf[0].digest, "\x01\x02\x03\x04")
+assert_eq(buf[0].id, 1)
+
+// Embedded NUL is preserved (Go-style byte string).
+buf[1].digest = "a\x00bc"
+assert_eq(buf[1].digest.size(), 4)
+assert_eq(buf[1].digest, "a\x00bc")
+
+// Records are independent.
+assert_eq(buf[0].digest, "\x01\x02\x03\x04")
+
+// Wrong length raises ValueError (must be exactly N).
+try {
+  buf[2].digest = "xyz"            // 3 bytes
+  assert_eq("no throw", "should throw")
+} catch e { assert_eq(e.kind, "ValueError") }
+try {
+  buf[2].digest = "toolong!"       // 8 bytes
+  assert_eq("no throw", "should throw")
+} catch e { assert_eq(e.kind, "ValueError") }
+
+// Wrong type raises TypeError.
+try {
+  buf[2].digest = 42
+  assert_eq("no throw", "should throw")
+} catch e { assert_eq(e.kind, "TypeError") }
+
+// Cross-isolate share: child writes the blob, parent reads it.
+shared = SharedBuffer.new(1, Entry)
+w = Isolate.spawn(fn() { shared[0].digest = "\xde\xad\xbe\xef" })
+w.join()
+assert_eq(shared[0].digest, "\xde\xad\xbe\xef")
+
+IO.puts("test_packable_bytes OK")
