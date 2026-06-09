@@ -1,0 +1,15 @@
+# Cross-process worker for the Proc.all share: test. Bump the shared counter
+# cell 100 times under with_lock, so N concurrent copies leave the cell at
+# N*100 with no lost increments. Takes no env (Proc.all shares one buffer +
+# kwargs across every child).
+@packable class Cell {
+  v: Int64 = 0
+}
+
+let grid = SharedBuffer.receive("grid", Cell)
+mut k = 0
+while k < 100 {
+  grid.with_lock(fn() { grid[0].v = grid[0].v + 1 })
+  k = k + 1
+}
+grid.drop()

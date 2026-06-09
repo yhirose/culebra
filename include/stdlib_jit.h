@@ -1491,14 +1491,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
 // consumed. Returns an Array of result Objects (allSettled, input order).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_all_impl(
     int8_t commands_tag, int64_t commands_data, int64_t limit, int64_t timeout,
-    bool fail_fast, int64_t retries, int64_t line, int64_t col) {
+    bool fail_fast, int64_t retries, int64_t line, int64_t col,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<int>* inherit_fds = nullptr) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.all", line, col);
   if (limit < 0) limit = 0;
   size_t failed = SIZE_MAX;
   auto outcomes = culebra::proc::run_all(
-      commands, static_cast<size_t>(limit), nullptr, nullptr, nullptr,
-      timeout > 0 ? timeout : 0, fail_fast, &failed, retries > 0 ? retries : 0);
+      commands, static_cast<size_t>(limit), nullptr, env, nullptr,
+      timeout > 0 ? timeout : 0, fail_fast, &failed, retries > 0 ? retries : 0,
+      inherit_fds);
   if (fail_fast && failed != SIZE_MAX) {
     throw culebra::CulebraError("ProcessError",
         std::format("Proc.all: command {} {}", failed,
@@ -1536,25 +1539,51 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_all_kw(
     fail_fast = v->data != 0;
   int64_t retries = 0;
   if (auto v = kw.take_typed("retries", TAG_LONG, "Long")) retries = v->data;
+  std::vector<std::pair<std::string, std::string>> overrides;
+  std::vector<int> share_fds;
+  bool has_share = kw.take_share(overrides, share_fds);
   kw.validate_consumed();
-  return _culebra_proc_all_impl(commands_tag, commands_data, limit, timeout,
-                                fail_fast, retries, line, col);
+  return _culebra_proc_all_impl(
+      commands_tag, commands_data, limit, timeout, fail_fast, retries, line,
+      col, has_share ? &overrides : nullptr,
+      share_fds.empty() ? nullptr : &share_fds);
 }
 
 // Proc.race(commands) — first to finish wins, the rest are killed. `commands`
 // is not consumed. Empty list throws ValueError.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
-    int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue _culebra_proc_race_impl(
+    int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<int>* inherit_fds = nullptr) {
   auto commands = _culebra_proc_parse_commands(commands_tag, commands_data,
                                                "Proc.race", line, col);
   if (commands.empty()) {
     throw culebra::CulebraError("ValueError",
         "Proc.race: empty command list", line, col);
   }
-  auto [winner, oc] = culebra::proc::run_race(commands);
+  auto [winner, oc] =
+      culebra::proc::run_race(commands, 0, nullptr, env, nullptr, inherit_fds);
   (void)winner;
   return {TAG_OBJECT,
           reinterpret_cast<int64_t>(_culebra_proc_outcome_to_object(oc, line, col))};
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race(
+    int8_t commands_tag, int64_t commands_data, int64_t line, int64_t col) {
+  return _culebra_proc_race_impl(commands_tag, commands_data, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
+    int8_t commands_tag, int64_t commands_data,
+    int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
+    int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
+  _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
+                       "Proc.race");
+  std::vector<std::pair<std::string, std::string>> overrides;
+  std::vector<int> share_fds;
+  bool has_share = kw.take_share(overrides, share_fds);
+  kw.validate_consumed();
+  return _culebra_proc_race_impl(commands_tag, commands_data, line, col,
+                                 has_share ? &overrides : nullptr,
+                                 share_fds.empty() ? nullptr : &share_fds);
 }
 
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3597,7 +3626,8 @@ _canon_params(const NsMethod* m) {
 // still derived from the canonical params by `_ns_meta` (the single source).
 inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   std::string_view ns(m->ns ? m->ns : ""), nm(m->name);
-  if (ns == "Proc")     return nm == "run" || nm == "all" || nm == "spawn";
+  if (ns == "Proc")     return nm == "run" || nm == "all" || nm == "spawn" ||
+                                nm == "race";
   if (ns == "FS")       return nm == "remove" || nm == "copy";
   if (ns == "File")     return nm == "open" || nm == "with";
   if (ns == "Parallel") return nm == "map" || nm == "each" ||
@@ -5035,23 +5065,13 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
         jit, argsAst, callAst, "Proc.spawn", rt::proc_spawn_kw,
         _ns_meta(_lookup_ns_method("Proc", "spawn")));
   }
-  // Proc.race(commands) — no kwargs. Handled here (rather than via the generic
-  // kNsMethods trampoline) so `commands` gets the same typed-`Array` message +
-  // argument position as run/all/spawn; the runtime keeps its backstop checks.
-  if (ns == "Proc" && method == "race" && argsAst.nodes.size() == 1) {
-    auto arg = compile(*argsAst.nodes[0]);
-    emit_type_check(arg, "Array", "parameter 'commands'",
-                    argsAst.nodes[0].get());
-    auto line = builder_.getInt64(callAst.line);
-    auto col = builder_.getInt64(callAst.column);
-    auto r = emit_call(
-        module_->getOrInsertFunction(
-            rt::proc_race, jit.valueType_, builder_.getInt8Ty(),
-            builder_.getInt64Ty(), builder_.getInt64Ty(),
-            builder_.getInt64Ty()),
-        {extract_tag(arg), extract_data(arg), line, col});
-    emit_value_release(arg);
-    return r;
+  // Proc.race(commands, share:) — same kwarg-aware path as run/all/spawn, so
+  // `commands` gets the typed-`Array` message + argument position and `share:`
+  // is honored. The runtime keeps its backstop checks.
+  if (ns == "Proc" && method == "race") {
+    return compile_single_positional_kwargs(
+        jit, argsAst, callAst, "Proc.race", rt::proc_race_kw,
+        _ns_meta(_lookup_ns_method("Proc", "race")));
   }
 
   if (ns == "Math") {

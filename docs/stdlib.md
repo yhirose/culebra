@@ -1375,7 +1375,7 @@ child process (which re-attaches each with `SharedBuffer.receive(name, Class)`).
 The child must be a culebra process — typically `[Sys.executable, "worker.cul"]`.
 See [SharedBuffer › Sharing across processes](#sharing-across-processes-zero-copy).
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <cpus>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil) -> Array<Object>`
 
 Runs many commands in parallel and returns their result Objects in input
 order. Each command is its own `Array<String>` (same form as `Proc.run`'s
@@ -1401,6 +1401,11 @@ reported result is the final attempt's. A retry slots back into the `limit`
 pool as it becomes free. When combined with `fail_fast`, a command only counts
 as failed once its retries are exhausted.
 
+**`share: {name: buf}`** hands the same `SharedBuffer.shared(...)` buffers to
+*every* child (each re-attaches with `SharedBuffer.receive`), exactly as
+`Proc.run`'s `share:` does — so a pool of workers can write a shared result
+buffer (use `buf.with_lock` for contended cells).
+
 ```culebra
 # doctest: skip
 let results = Proc.all([
@@ -1413,12 +1418,13 @@ for r in results {
 }
 ```
 
-### `Proc.race(commands: Array<Array<String>>) -> Object`
+### `Proc.race(commands: Array<Array<String>>, share: Object? = nil) -> Object`
 
 Starts every command, returns the result Object of the **first to finish**,
 and sends `SIGKILL` to the rest (then reaps them). Useful for racing
 redundant providers or "first mirror to respond wins". An empty list throws
-`ValueError`.
+`ValueError`. `share: {name: buf}` hands shared buffers to the children, as in
+`Proc.run` / `Proc.all`.
 
 ```culebra
 # doctest: skip

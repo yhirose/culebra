@@ -1320,7 +1320,7 @@ stderr は並行して読み出すので、両方を埋めるコマンドでも�
 プロセスである必要があり、通常は `[Sys.executable, "worker.cul"]`。詳細は
 [SharedBuffer › プロセス間での共有](#プロセス間での共有zero-copy)。
 
-### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0) -> Array<Object>`
+### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil) -> Array<Object>`
 
 複数コマンドを並列実行し、結果 Object を入力順で返します。各コマンドは
 `Array<String>`（`Proc.run` の第1引数と同形）。同時実行数は最大 `limit`（既定 =
@@ -1342,6 +1342,10 @@ throw しません。空リストは `[]` を返します。
 再実行は空きが出た `limit` プールに割り込みます。`fail_fast` と併用した場合、コマンドが
 失敗とみなされるのは retries を使い切った後だけです。
 
+**`share: {name: buf}`** は `SharedBuffer.shared(...)` バッファを**全**子に渡す
+（各子が `SharedBuffer.receive` で再アタッチ）。`Proc.run` の `share:` と同じで、
+ワーカープールが共有結果バッファに書ける（競合するセルは `buf.with_lock`）。
+
 ```culebra
 # doctest: skip
 let results = Proc.all([
@@ -1354,11 +1358,12 @@ for r in results {
 }
 ```
 
-### `Proc.race(commands: Array<Array<String>>) -> Object`
+### `Proc.race(commands: Array<Array<String>>, share: Object? = nil) -> Object`
 
 全コマンドを起動し、**最初に完了した1個**の結果 Object を返し、残りに `SIGKILL`
 を送って reap します。冗長なプロバイダの競争や「最速のミラーが勝ち」に有用。空
-リストは `ValueError` を throw します。
+リストは `ValueError` を throw します。`share: {name: buf}` は `Proc.run`/`Proc.all`
+と同様に共有バッファを子に渡します。
 
 ```culebra
 # doctest: skip

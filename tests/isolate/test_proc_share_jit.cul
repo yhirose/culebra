@@ -88,4 +88,34 @@ try {
 assert_eq(heap_rejected, true)
 h.drop()
 
+# --- Proc.all with share: (contended counter across N children) -----------
+# All children share one anonymous buffer; each bumps cell 0 100x under
+# with_lock, so the total is exact (no lost increments) and ordering-free.
+let count_worker = "tests/isolate/proc_share_worker/count.cul"
+let allg = SharedBuffer.shared(1, Cell)
+mut allcmds = []
+for w in 0..3 { allcmds.push([Sys.executable, count_worker]) }
+let allres = Proc.all(allcmds, share: {grid: allg})
+for r in allres { assert_eq(r.ok, true) }
+assert_eq(allg[0].v, 300)   # 3 children * 100, none lost
+allg.drop()
+
+# --- Proc.race with share: (the winner writes the shared buffer) ----------
+let raceg = SharedBuffer.shared(2, Cell)
+let racer = Proc.race([[Sys.executable, add_worker]], share: {grid: raceg})
+assert_eq(racer.ok, true)
+assert_eq(raceg[0].v, 10)   # add_worker bumped cell 0 by 1*10
+raceg.drop()
+
+# only a .shared() buffer may cross via Proc.all/race too.
+mut all_heap_rejected = false
+let hh = SharedBuffer.new(1, Cell)
+try {
+  Proc.all([[Sys.executable, count_worker]], share: {grid: hh})
+} catch e {
+  all_heap_rejected = (e.kind == "ValueError")
+}
+assert_eq(all_heap_rejected, true)
+hh.drop()
+
 puts("proc share ok")

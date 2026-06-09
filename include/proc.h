@@ -598,7 +598,8 @@ inline std::vector<RunOutcome> run_all(
     long timeout_ms = 0,
     bool fail_fast = false,
     size_t* out_failed = nullptr,
-    long retries = 0) {
+    long retries = 0,
+    const std::vector<int>* inherit_fds = nullptr) {
   size_t n = commands.size();
   std::vector<RunOutcome> results(n);
   if (n == 0) return results;
@@ -635,7 +636,8 @@ inline std::vector<RunOutcome> run_all(
   auto launch = [&](size_t i) {
     const std::string* sp =
         (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
-    _detail::Child c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    _detail::Child c =
+        _detail::spawn_child(commands[i], cwd, env, sp, i, inherit_fds);
     if (c.done) {
       handle_outcome(i, std::move(c.outcome));  // spawn failure: instant attempt
     } else {
@@ -696,7 +698,8 @@ inline std::pair<size_t, RunOutcome> run_race(
     size_t limit = 0,
     const std::string* cwd = nullptr,
     const std::vector<std::pair<std::string, std::string>>* env = nullptr,
-    const std::vector<std::string>* stdins = nullptr) {
+    const std::vector<std::string>* stdins = nullptr,
+    const std::vector<int>* inherit_fds = nullptr) {
   size_t n = commands.size();
   if (n == 0) return {SIZE_MAX, RunOutcome{}};
   if (limit == 0 || limit > n) limit = n;
@@ -711,7 +714,8 @@ inline std::pair<size_t, RunOutcome> run_race(
   for (size_t i = 0; i < limit && winner == SIZE_MAX; i++) {
     const std::string* sp =
         (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
-    _detail::Child c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    _detail::Child c =
+        _detail::spawn_child(commands[i], cwd, env, sp, i, inherit_fds);
     if (c.done) {
       winner = i;
       win_oc = std::move(c.outcome);

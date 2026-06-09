@@ -1997,6 +1997,34 @@ struct ProcLaunchArgs {
   }
 };
 
+// Parse a `share: {name: SharedBuffer.shared}` kwarg into env overrides
+// (one `CULEBRA_SHARE_<name>` entry each) plus the fds the children inherit.
+// Shared by Proc.run/spawn (via proc_parse_launch) and Proc.all/race. A nil
+// share is a no-op; only `SharedBuffer.shared(...)` buffers may cross.
+inline void proc_parse_share(
+    const Value& share_v, std::string_view ctx, long line, long col,
+    std::vector<std::pair<std::string, std::string>>& env_out,
+    std::vector<int>& fds_out) {
+  if (share_v.type == Value::Nil) return;
+  if (share_v.type != Value::Object) {
+    throw CulebraError("TypeError",
+        std::format("{}: share must be an Object of name -> SharedBuffer", ctx),
+        line, col);
+  }
+  for (const auto& [k, sym] : *share_v.to_object().properties) {
+    if (sym.val.type != Value::Object ||
+        !sym.val.to_object().has("__sharedbuffer_id__")) {
+      throw CulebraError("TypeError",
+          std::format("{}: share `{}` must be a SharedBuffer", ctx, k),
+          line, col);
+    }
+    long id = sym.val.to_object().get("__sharedbuffer_id__").to_long();
+    auto [fd, env_val] = culebra::prepare_share_buffer(id, k);
+    env_out.emplace_back(culebra::share_env_key(k), std::move(env_val));
+    fds_out.push_back(fd);
+  }
+}
+
 // Validate and collect the cmd (non-empty Array<String>), cwd (nil/String),
 // env (nil/Object of String) and stdin (String) kwargs. `ctx` tags errors.
 inline ProcLaunchArgs proc_parse_launch(
@@ -2041,26 +2069,8 @@ inline ProcLaunchArgs proc_parse_launch(
   // `share: {name: buf}` — anonymous SharedBuffer.shared(...) buffers the child
   // inherits by fd. Each becomes a CULEBRA_SHARE_<name> env entry the child's
   // SharedBuffer.receive reads, plus an fd the child un-CLOEXECs.
-  const auto& share_v = env->get("share");
-  if (share_v.type != Value::Nil) {
-    if (share_v.type != Value::Object) {
-      throw CulebraError("TypeError",
-          std::format("{}: share must be an Object of name -> SharedBuffer",
-                      ctx), line, col);
-    }
-    for (const auto& [k, sym] : *share_v.to_object().properties) {
-      if (sym.val.type != Value::Object ||
-          !sym.val.to_object().has("__sharedbuffer_id__")) {
-        throw CulebraError("TypeError",
-            std::format("{}: share `{}` must be a SharedBuffer", ctx, k),
-            line, col);
-      }
-      long id = sym.val.to_object().get("__sharedbuffer_id__").to_long();
-      auto [fd, env_val] = culebra::prepare_share_buffer(id, k);
-      la.overrides.emplace_back(culebra::share_env_key(k), std::move(env_val));
-      la.share_fds.push_back(fd);
-    }
-  }
+  proc_parse_share(env->get("share"), ctx, line, col, la.overrides,
+                   la.share_fds);
   return la;
 }
 
@@ -2856,6 +2866,7 @@ inline Value make_proc_namespace() {
               {"timeout", false, "Long"sv, nullptr, kw_default_zero()},
               {"fail_fast", false, "Bool"sv, nullptr, kw_default_false()},
               {"retries", false, "Long"sv, nullptr, kw_default_zero()},
+              {"share", false, ""sv, nullptr, kw_default_nil()},
           },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
@@ -2869,10 +2880,16 @@ inline Value make_proc_namespace() {
             bool fail_fast = env->get("fail_fast").to_bool();
             long retries = env->get("retries").to_long();
             if (retries < 0) retries = 0;
+            std::vector<std::pair<std::string, std::string>> share_env;
+            std::vector<int> share_fds;
+            proc_parse_share(env->get("share"), "Proc.all", line, col,
+                             share_env, share_fds);
             size_t failed = SIZE_MAX;
             auto outcomes = culebra::proc::run_all(
-                commands, static_cast<size_t>(lim), nullptr, nullptr, nullptr,
-                timeout, fail_fast, &failed, retries);
+                commands, static_cast<size_t>(lim), nullptr,
+                share_env.empty() ? nullptr : &share_env, nullptr,
+                timeout, fail_fast, &failed, retries,
+                share_fds.empty() ? nullptr : &share_fds);
             if (fail_fast && failed != SIZE_MAX) {
               throw CulebraError("ProcessError",
                   std::format("Proc.all: command {} {}", failed,
@@ -2895,7 +2912,10 @@ inline Value make_proc_namespace() {
   ns.initialize(
       "race",
       Value(FunctionValue(
-          {{"commands", false, "Array"sv}},
+          {
+              {"commands", false, "Array"sv},
+              {"share", false, ""sv, nullptr, kw_default_nil()},
+          },
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -2906,7 +2926,14 @@ inline Value make_proc_namespace() {
               throw CulebraError("ValueError",
                   "Proc.race: empty command list", line, col);
             }
-            auto [winner, oc] = culebra::proc::run_race(commands);
+            std::vector<std::pair<std::string, std::string>> share_env;
+            std::vector<int> share_fds;
+            proc_parse_share(env->get("share"), "Proc.race", line, col,
+                             share_env, share_fds);
+            auto [winner, oc] = culebra::proc::run_race(
+                commands, 0, nullptr,
+                share_env.empty() ? nullptr : &share_env, nullptr,
+                share_fds.empty() ? nullptr : &share_fds);
             (void)winner;
             return proc_outcome_to_value(std::move(oc));
           },
