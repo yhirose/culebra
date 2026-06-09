@@ -1935,6 +1935,31 @@ for k, v in m { ... }          # (key, value) タプルを yield
 フィールドまるごとの代入は `TypeError` — view 経由で変更する。バイトはレコード内
 にあるので、buffer とともに isolate 間で共有される。
 
+#### Optional フィールド: `T?`
+
+`@packable` フィールドには optional スカラ `T?` も使える — 値または `nil` を持つ
+スロットで、`[present:byte][T]` のレイアウト。まるごと値として読み書きし、present
+バイトが 0 なら `nil`、そうでなければスカラ:
+
+```culebra
+# doctest: skip
+@packable class Node {
+  id:     Int32
+  parent: Int32?      # 疎な「親なし」スロット
+}
+
+let n = SharedBuffer.new(100, Node)
+n[0].parent            # => nil   （ゼロ値）
+n[0].parent = 5
+n[0].parent            # => 5
+n[0].parent = nil      # クリア
+n[0].parent ?? -1      # => -1
+```
+
+`0` は実値で `nil` とは別。packable なのはスカラ optional のみ（`T` は固定スカラ）。
+疎構造（id→optional スロットの配列）が主用途で、tagged payload は packable enum と
+組み合わせる。
+
 ---
 
 ## 13. Matchers

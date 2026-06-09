@@ -74,6 +74,7 @@ struct PackableFieldInfo {
   bool is_fixed_string = false;  // FixedString<N>: `[len:i32][byte × N]`
   bool is_fixed_set = false;     // FixedSet<T,N>: `[count][state×N][T×N]`
   bool is_fixed_map = false;     // FixedMap<K,V,N>: `[count][state×N][K×N][V×N]`
+  bool is_optional = false;      // T?: `[present:byte][T]`, nil when present==0
   std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
   std::string val_type;      // FixedMap value scalar
   size_t capacity = 0;       // N
@@ -84,6 +85,22 @@ struct PackableFieldInfo {
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
+  // Optional scalar `T?` = `[present:byte][T]`; read/written as a whole value
+  // that is `nil` when present==0. Only scalar optionals are packable (a
+  // collection `T?` has no fixed layout).
+  if (t.ends_with("?")) {
+    auto inner = _packable_trim(t.substr(0, t.size() - 1));
+    auto si = packable_type_info(inner);
+    if (si.size == 0) return {};
+    PackableFieldInfo fi;
+    fi.is_optional = true;
+    fi.elem_type = std::string(inner);
+    fi.elem_size = si.size;
+    fi.align = si.align;
+    fi.data_offset = packable_align_up(1, si.align);  // T after the present byte
+    fi.size = fi.data_offset + si.size;
+    return fi;
+  }
   // FixedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
   // string field read/written as a whole String value (a VARCHAR(N)).
   constexpr std::string_view kFS = "FixedString<";
@@ -237,6 +254,7 @@ struct PackableField {
   bool is_fixed_string = false;
   bool is_fixed_set = false;
   bool is_fixed_map = false;
+  bool is_optional = false;
   std::string elem_type;
   std::string val_type;
   size_t capacity = 0;
@@ -325,7 +343,8 @@ inline PackableLayout compute_packable_layout(
                       "type `{}` (expected a fixed scalar — Float32/Float64/"
                       "Int8/Int16/Int32/Int64/Byte/Bool — or "
                       "FixedArray<scalar, N> / FixedString<N> / "
-                      "FixedSet<scalar, N> / FixedMap<scalar, scalar, N>)",
+                      "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
+                      "an optional scalar `T?`)",
                       class_name, name, type));
     }
     off = packable_align_up(off, info.align);
@@ -338,6 +357,7 @@ inline PackableLayout compute_packable_layout(
     f.is_fixed_string = info.is_fixed_string;
     f.is_fixed_set = info.is_fixed_set;
     f.is_fixed_map = info.is_fixed_map;
+    f.is_optional = info.is_optional;
     f.elem_type = info.elem_type;
     f.val_type = info.val_type;
     f.capacity = info.capacity;

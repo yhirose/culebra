@@ -2989,6 +2989,13 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
         static_cast<size_t>(len)));
     return {TAG_STRING, reinterpret_cast<int64_t>(s)};
   }
+  if (f.is_optional) {
+    if (*p == 0) return {TAG_NIL, 0};
+    culebra::PackableField inner;
+    inner.type = f.elem_type;
+    inner.offset = 0;
+    return _jit_packable_read_field(p + f.data_offset, inner);
+  }
   if (f.type == "Float32") {
     float v; std::memcpy(&v, p, 4);
     return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(v))};
@@ -3030,6 +3037,15 @@ inline void _jit_packable_write_field(uint8_t* base,
     int32_t len = static_cast<int32_t>(sv.size());
     std::memcpy(p, &len, 4);
     std::memcpy(p + f.data_offset, sv.data(), sv.size());
+    return;
+  }
+  if (f.is_optional) {
+    if (tag == TAG_NIL) { *p = 0; return; }
+    *p = 1;
+    culebra::PackableField inner;
+    inner.type = f.elem_type;
+    inner.offset = 0;
+    _jit_packable_write_field(p + f.data_offset, inner, tag, data);
     return;
   }
   auto as_double = [&]() -> double {

@@ -1,0 +1,52 @@
+// Optional scalar `T?` on a @packable record: `[present:byte][T]`, read/written
+// as a whole value that is nil when the present flag is clear.
+
+@packable
+class Node {
+  id: Int32
+  parent: Int32?        // optional: a sparse "no parent" slot
+  weight: Float32?
+}
+
+buf = SharedBuffer.new(3, Node)
+
+// Zero value: present flag is 0 -> nil.
+assert_eq(buf[0].parent, nil)
+assert_eq(buf[0].weight, nil)
+
+// Set a value, read it back.
+buf[0].id = 1
+buf[0].parent = 5
+assert_eq(buf[0].parent, 5)
+assert_eq(buf[0].id, 1)
+
+// Clear back to nil.
+buf[0].parent = nil
+assert_eq(buf[0].parent, nil)
+
+// Float optional, and independence across records.
+buf[1].weight = 2.5
+assert_eq(buf[1].weight, 2.5)
+assert_eq(buf[0].weight, nil)
+assert_eq(buf[2].weight, nil)
+
+// Re-setting after clearing works.
+buf[2].parent = 9
+assert_eq(buf[2].parent, 9)
+buf[2].parent = nil
+assert_eq(buf[2].parent, nil)
+buf[2].parent = 0          // 0 is a real value, distinct from nil
+assert_eq(buf[2].parent, 0)
+assert_true(buf[2].parent != nil)
+
+// Optional plays with `??` / `?.`-style defaults like any nil value.
+buf[0].parent = nil
+assert_eq(buf[0].parent ?? -1, -1)
+
+// Cross-isolate share: a child sets an optional in the shared bytes.
+shared = SharedBuffer.new(1, Node)
+w = Isolate.spawn(fn() { shared[0].parent = 42 })
+w.join()
+assert_eq(shared[0].parent, 42)
+
+IO.puts("test_packable_optional OK")

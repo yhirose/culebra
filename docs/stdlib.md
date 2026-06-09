@@ -2010,6 +2010,31 @@ fixed scalars; equality is by the scalar's bytes (so `FixedSet<Float32>` treats
 mutate through the view. The bytes live in the record, so the collection shares
 across isolates with the buffer.
 
+#### Optional fields: `T?`
+
+A `@packable` field may be an optional scalar `T?` — a value-or-`nil` slot laid
+out as `[present:byte][T]`. It is read and written as a whole value: `nil` when
+the present byte is clear, otherwise the scalar.
+
+```culebra
+# doctest: skip
+@packable class Node {
+  id:     Int32
+  parent: Int32?      # a sparse "no parent" slot
+}
+
+let n = SharedBuffer.new(100, Node)
+n[0].parent            # => nil   (zero value)
+n[0].parent = 5
+n[0].parent            # => 5
+n[0].parent = nil      # clear it
+n[0].parent ?? -1      # => -1
+```
+
+`0` is a real value, distinct from `nil`. Only scalar optionals are packable
+(`T` must be a fixed scalar). Sparse structures — an id→optional-slot array —
+are the main use, alongside packable enums for tagged payloads.
+
 ---
 
 ## 13. Matchers

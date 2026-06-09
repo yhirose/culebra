@@ -5834,6 +5834,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           reinterpret_cast<const char*>(p + f.data_offset),
           static_cast<size_t>(len)));
     }
+    if (f.is_optional) {
+      // `[present:byte][T]` -> nil when absent, else the inner scalar.
+      if (*p == 0) return Value();
+      culebra::PackableField inner;
+      inner.type = f.elem_type;
+      inner.offset = 0;
+      return packable_read_field(p + f.data_offset, inner);
+    }
     if (f.type == "Float32") {
       float v; std::memcpy(&v, p, 4);
       return Value(static_cast<double>(v));
@@ -5891,6 +5899,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       int32_t len = static_cast<int32_t>(sv.size());
       std::memcpy(p, &len, 4);
       std::memcpy(p + f.data_offset, sv.data(), sv.size());
+      return;
+    }
+    if (f.is_optional) {
+      // nil clears the present flag; any other value sets it and writes T
+      // (a wrong type raises through the inner write).
+      if (val.type == Value::Nil) { *p = 0; return; }
+      *p = 1;
+      culebra::PackableField inner;
+      inner.type = f.elem_type;
+      inner.offset = 0;
+      packable_write_field(p + f.data_offset, inner, val);
       return;
     }
     if (f.type == "Float32") {
