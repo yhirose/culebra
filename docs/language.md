@@ -144,6 +144,7 @@ and a one-element set respectively.
     &&  ||                      # logical and/or (short-circuit)
     ??                          # nil coalesce (lower precedence than ||)
     ?.  ?[ ]                    # optional chaining / optional index
+    ? :                         # ternary conditional `c ? a : b` (right-assoc)
     !!                          # non-null assertion (postfix)
     ..  ..=                     # range literals (exclusive / inclusive)
     =                           # assignment
@@ -181,7 +182,10 @@ Selected rules:
 
 ### Operator precedence
 
-From lowest to highest:
+From lowest to highest. Below item 1 sit assignment (`=`, lowest), then the
+ternary `c ? a : b` (right-associative — `a ? b : c ? d : e` is
+`a ? b : (c ? d : e)`), then `??`; so `a ?? b ? c : d` is `(a ?? b) ? c : d`
+and `x = c ? a : b` is `x = (c ? a : b)`.
 
 1. `||`
 2. `&&`

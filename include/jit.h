@@ -10921,6 +10921,8 @@ struct JIT {
         return compile_continue(ast);
       case "IF"_:
         return compile_if(ast);
+      case "CONDITIONAL"_:  // ternary `c ? a : b` — same [cond, then, else]
+        return compile_if(ast);  // node shape as a bare if/else expression
       case "MATCH"_:
         return compile_match(ast);
       case "FUNCTION"_:

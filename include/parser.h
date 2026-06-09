@@ -98,10 +98,10 @@ const auto grammar_ = R"(
   DEFER                    <-  defer _ BLOCK
   LEXICAL_SCOPE            <-  BLOCK
 
-  EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / NIL_COALESCE
+  EXPRESSION               <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / CONDITIONAL
   # Bit-or-free EXPRESSION used by parameter defaults (`|x = e|`), where a
   # top-level bit-or `|` would be ambiguous with the lambda close delimiter.
-  ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / ND_NIL_COALESCE
+  ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / ASSIGNMENT / TRY / ND_CONDITIONAL
   TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
@@ -114,6 +114,13 @@ const auto grammar_ = R"(
   # assign (`a ??= b` assigns only when `a` is nil; short-circuits b).
   ASSIGN_OP                <-  < '**=' / '??=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
 
+  # C-style ternary: `c ? a : b`. Right-associative; sits just below
+  # assignment and just above `??` (so `a ?? b ? c : d` is `(a ?? b) ? c : d`).
+  # `??`/`?.`/`?[` are already consumed lower down, so a `?` reaching here is
+  # the ternary; its `:` is consumed within this rule, never colliding with a
+  # kwarg / dict `:`. With no `? :`, the single-child node optimizes to its
+  # NIL_COALESCE operand, so non-ternary code is unaffected.
+  CONDITIONAL              <-  NIL_COALESCE (_ '?' _ EXPRESSION _ ':' _ CONDITIONAL)?
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
@@ -128,6 +135,7 @@ const auto grammar_ = R"(
   # out at BIT_XOR so a bare `|` closes the enclosing `|...|` instead of
   # parsing as bit-or. `{ ast_name }` makes each rung emit its normal tag
   # so the evaluator / JIT need no extra cases.
+  ND_CONDITIONAL           <-  ND_NIL_COALESCE (_ '?' _ ND_EXPRESSION _ ':' _ ND_CONDITIONAL)?  { ast_name: CONDITIONAL }
   ND_NIL_COALESCE          <-  ND_LOGICAL_OR (_ '??' _ ND_LOGICAL_OR)*     { ast_name: NIL_COALESCE }
   ND_LOGICAL_OR            <-  ND_LOGICAL_AND (_ '||' _ ND_LOGICAL_AND)*   { ast_name: LOGICAL_OR }
   ND_LOGICAL_AND           <-  ND_CONDITION (_ '&&' _ ND_CONDITION)*       { ast_name: LOGICAL_AND }

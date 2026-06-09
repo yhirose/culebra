@@ -4692,6 +4692,9 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         return eval_for(ast, env);
       case "IF"_:
         return eval_if(ast, env);
+      case "CONDITIONAL"_:  // C-style ternary `c ? a : b`
+        return eval(*ast.nodes[0], env).to_bool() ? eval(*ast.nodes[1], env)
+                                                  : eval(*ast.nodes[2], env);
       case "MATCH"_:
         return eval_match(ast, env);
       case "FUNCTION"_:
