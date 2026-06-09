@@ -1194,8 +1194,9 @@ struct Symbol {
 };
 
 // Hash + equality for Value as a dictionary key. Numerically-equal
-// Long / Float / Bool fall into the same bucket so `{1: "a", 1.0: "b"}`
-// keeps only the second entry — matches Python's dict semantics.
+// Long / Float / Bool share a hash bucket, but key identity is type-strict
+// (see `ValueEq`): `{1: "a", 1.0: "b"}` keeps BOTH entries — the collision
+// is harmless because `ValueEq` separates them by type.
 // Unhashable inputs (Array / Function / Tensor, Object without `hash()`)
 // throw. User class instances become hashable by defining `fn hash()`
 // (returning Long) and `fn eq(other)` — the structural Hashable+Eq
@@ -1246,23 +1247,45 @@ struct ValueHash {
   }
 };
 
-// Equality for hash-keyed containers. Falls through to `Value::operator==`
-// (numeric coercion + reference equality for heap types), but routes
-// Object-vs-Object through a user-defined `eq(other)` method when both
-// sides expose one — pairing with `ValueHash`'s `hash()` dispatch so a
-// Hashable+Eq user class behaves correctly as an Object/Set/HashMap key.
-// The Object-eq path is implemented in `_invoke_user_eq` (defined later
-// once Environment / FunctionValue are complete).
+// Key identity for hash-keyed containers (Object sidecar, Set). This is
+// Ruby's `eql?`, deliberately STRICTER than the `==` operator: keys of
+// different types are never equal, so `1` and `1.0` (and `true`) are three
+// distinct keys even though `1 == 1.0` is true. Within a type, compare by
+// value and recurse type-strictly through Tuples; String and StringView are
+// one flavor (compared by bytes). Object keys route through a user-defined
+// `eq(other)` when present (Hashable+Eq), pairing with `ValueHash`'s `hash()`
+// dispatch. `_invoke_user_eq` is defined once Environment/FunctionValue are.
 struct ValueEq {
   bool operator()(const Value& a, const Value& b) const {
-    if (a.type == Value::Object && b.type == Value::Object) {
-      const auto& oa = a.to_object();
-      const auto& ob = b.to_object();
-      if (oa.has("eq") && ob.has("eq")) {
-        return _invoke_user_eq(a, b);
-      }
+    bool a_str = a.type == Value::String || a.type == Value::StringView;
+    bool b_str = b.type == Value::String || b.type == Value::StringView;
+    if (a_str || b_str) {
+      return a_str && b_str && a.to_string_view() == b.to_string_view();
     }
-    return a == b;
+    if (a.type != b.type) return false;  // type-strict: no 1 == 1.0 collapse
+    switch (a.type) {
+      case Value::Nil:   return true;
+      case Value::Bool:  return a.get<bool>() == b.get<bool>();
+      case Value::Long:  return a.get<long>() == b.get<long>();
+      case Value::Float: return a.get<double>() == b.get<double>();
+      case Value::Tuple: {
+        const auto& ea = *a.get<TupleValue>().elements;
+        const auto& eb = *b.get<TupleValue>().elements;
+        if (ea.size() != eb.size()) return false;
+        for (size_t i = 0; i < ea.size(); i++) {
+          if (!(*this)(ea[i], eb[i])) return false;
+        }
+        return true;
+      }
+      case Value::Object: {
+        const auto& oa = a.to_object();
+        const auto& ob = b.to_object();
+        if (oa.has("eq") && ob.has("eq")) return _invoke_user_eq(a, b);
+        return a == b;  // same-pointer / structural via operator==
+      }
+      default:
+        return a == b;  // unhashable types never reach here (ValueHash throws)
+    }
   }
 };
 
@@ -1754,25 +1777,27 @@ inline void ObjectValue::initialize(std::string_view name, const Value& val,
 // slot; every other hashable key (Long/Float/Bool/Nil/Tuple) goes to
 // the sidecar.
 inline bool ObjectValue::has(const Value& key) const {
-  if (key.type == Value::String) {
-    return properties->contains(
-        std::string_view(key.template get<std::string>()));
+  // String and StringView are the same key: a StringView (e.g. `s[0..1]`)
+  // normalizes to the String slot so `==`-equal keys share a bucket. Only
+  // StringView pays the branch; the String/sidecar fast paths are unchanged.
+  if (key.type == Value::String || key.type == Value::StringView) {
+    return properties->contains(key.to_string_view());
   }
   if (non_string_props->empty()) return false;  // fast miss
   return non_string_props->contains(key);
 }
 
 inline const Value& ObjectValue::get(const Value& key) const {
-  if (key.type == Value::String) {
-    return properties->at(key.template get<std::string>()).val;
+  if (key.type == Value::String || key.type == Value::StringView) {
+    return properties->at(key.to_string_view()).val;
   }
   return non_string_props->at(key).val;
 }
 
 inline void ObjectValue::initialize(const Value& key, const Value& val,
                                     bool mut) {
-  if (key.type == Value::String) {
-    initialize(std::string_view(key.template get<std::string>()), val, mut);
+  if (key.type == Value::String || key.type == Value::StringView) {
+    initialize(key.to_string_view(), val, mut);
     return;
   }
   auto [it, inserted] =
@@ -1785,8 +1810,8 @@ inline void ObjectValue::initialize(const Value& key, const Value& val,
 }
 
 inline void ObjectValue::assign(const Value& key, const Value& val) {
-  if (key.type == Value::String) {
-    assign(std::string_view(key.template get<std::string>()), val);
+  if (key.type == Value::String || key.type == Value::StringView) {
+    assign(key.to_string_view(), val);
     return;
   }
   auto it = non_string_props->find(key);
@@ -2616,12 +2641,51 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
                                       const auto& key = callEnv->get("key");
                                       return Value(obj.has(key));
                                     }))},
+      // get(key, fallback): read-only. Return the value for `key`, or
+      // `fallback` if absent. Never mutates the dict. `fallback` is an
+      // eager value (cheap literals like 0/""/nil are the common case).
+      {"get"sv, Value(FunctionValue({{"key", false}, {"fallback", false}},
+                                    [](std::shared_ptr<Environment> callEnv) -> Value {
+                                      const auto& obj = callEnv->get("this").to_object();
+                                      const auto& key = callEnv->get("key");
+                                      if (obj.has(key)) return obj.get(key);
+                                      return callEnv->get("fallback");
+                                    }))},
+      // get_or_put(key, init): return the value for `key`; if absent, store
+      // `init` and return it (the same reference — so the accumulator idiom
+      // `d.get_or_put(k, []).push(x)` grows the stored array). `init` is
+      // evaluated lazily when it is a function: `d.get_or_put(k, || [])`
+      // only allocates on a miss. A non-function `init` is used as-is.
+      {"get_or_put"sv, Value(FunctionValue({{"key", false}, {"init", false}},
+                                           [](std::shared_ptr<Environment> callEnv) -> Value {
+                                             // A Value copy shares the same storage
+                                             // shared_ptrs, so initialize() through it
+                                             // propagates (see ObjectValue field notes).
+                                             ObjectValue obj = callEnv->get("this").to_object();
+                                             const auto& key = callEnv->get("key");
+                                             if (obj.has(key)) return obj.get(key);
+                                             const auto& init = callEnv->get("init");
+                                             Value v = init.type == Value::Function
+                                                           ? _invoke_callback(init)
+                                                           : init;
+                                             // Immutable slot, like a normal dict
+                                             // entry (`d[k] = v`); the value can
+                                             // still be mutated in place (.push).
+                                             obj.initialize(key, v, false);
+                                             return obj.get(key);
+                                           }))},
       {"remove"sv,
        Value(FunctionValue({{"key", false}},
                            [](std::shared_ptr<Environment> callEnv) {
                              const auto& val = callEnv->get("this");
                              auto& obj = val.to_object();
-                             const auto& key = callEnv->get("key");
+                             // A StringView key (e.g. `s[0..1]`) normalizes to
+                             // a String so it removes the same slot `obj["k"]`
+                             // would — matching the layer-level key handling.
+                             Value key = callEnv->get("key");
+                             if (key.type == Value::StringView) {
+                               key = Value(std::string(key.to_string_view()));
+                             }
                              // String keys live in `properties`;
                              // Long/Float/Bool/Nil/Tuple keys live in
                              // `non_string_props`. The String-key

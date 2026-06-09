@@ -543,8 +543,11 @@ inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
 }
 extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 
-// Hash/eq for JitValue keys in JitObject's non-String key sidecar.
-// Numerically-equal Long/Float/Bool share a bucket (Python convention).
+// Hash/eq for JitValue keys in JitObject's non-String key sidecar and Set.
+// Key identity is Ruby's `eql?`, STRICTER than the `==` operator: keys of
+// different types are never equal, so `1`, `1.0`, and `true` are three
+// distinct keys even though `1 == 1.0` is true. Hash collisions across types
+// are harmless (eq separates them), so the hash keeps its simple form.
 // Object keys route through user-defined `hash()` / `eq()` when present
 // (Hashable + Eq structural conformance); otherwise reference identity.
 struct JitValueHash {
@@ -592,13 +595,24 @@ struct JitValueHash {
 };
 struct JitValueEq {
   bool operator()(const JitValue& a, const JitValue& b) const {
-    if ((a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW) &&
-        (b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW)) {
-      return _culebra_str_view(a.tag, a.data) ==
-             _culebra_str_view(b.tag, b.data);
+    bool a_str = a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW;
+    bool b_str = b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW;
+    if (a_str || b_str) {
+      return a_str && b_str &&
+             _culebra_str_view(a.tag, a.data) == _culebra_str_view(b.tag, b.data);
     }
-    if (a.tag == b.tag) {
-      if (a.tag == TAG_TUPLE) {
+    if (a.tag != b.tag) return false;  // type-strict: no 1 == 1.0 collapse
+    switch (a.tag) {
+      case TAG_NIL:  return true;
+      case TAG_BOOL: return a.data == b.data;
+      case TAG_LONG: return a.data == b.data;
+      case TAG_FLOAT: {
+        double da, db;
+        std::memcpy(&da, &a.data, sizeof da);
+        std::memcpy(&db, &b.data, sizeof db);
+        return da == db;
+      }
+      case TAG_TUPLE: {
         auto* aa = reinterpret_cast<JitArray*>(a.data);
         auto* bb = reinterpret_cast<JitArray*>(b.data);
         if (aa == bb) return true;
@@ -608,28 +622,15 @@ struct JitValueEq {
         }
         return true;
       }
-      if (a.tag == TAG_OBJECT) {
+      case TAG_OBJECT: {
         if (a.data == b.data) return true;
         auto* oa = reinterpret_cast<JitObject*>(a.data);
         auto* ob = reinterpret_cast<JitObject*>(b.data);
         if (auto e = _jit_object_user_eq(oa, ob)) return *e;
         return false;
       }
-      return a.data == b.data;
     }
-    auto as_double = [](const JitValue& v) -> double {
-      if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-      if (v.tag == TAG_BOOL) return v.data != 0 ? 1.0 : 0.0;
-      if (v.tag == TAG_FLOAT) {
-        double d;
-        std::memcpy(&d, &v.data, sizeof d);
-        return d;
-      }
-      return std::numeric_limits<double>::quiet_NaN();
-    };
-    bool num_a = (a.tag == TAG_LONG || a.tag == TAG_FLOAT || a.tag == TAG_BOOL);
-    bool num_b = (b.tag == TAG_LONG || b.tag == TAG_FLOAT || b.tag == TAG_BOOL);
-    return num_a && num_b && as_double(a) == as_double(b);
+    return false;  // unhashable tags never reach here (JitValueHash throws)
   }
 };
 
@@ -2930,22 +2931,35 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_well_known_prop(
   _culebra_check_well_known_prop(key, tag, data);
 }
 
+// Overwrite an existing String-keyed object slot last-wins. Shared by the
+// three set paths (plain / IC fast / IC slow). is_init (object-literal
+// construction) bypasses the immutable gate and replaces the slot's mut
+// flag, like the interp's `initialize`; otherwise an immutable slot raises
+// ImmutableError. Caller owns the +1 on (tag, data); it's consumed here.
+CULEBRA_RT_INLINE void _jit_overwrite_slot(JitObjectEntry& entry,
+                                           const char* key, int8_t tag,
+                                           int64_t data, bool mut, bool is_init,
+                                           int64_t line, int64_t col) {
+  if (!is_init && !entry.mut) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("ImmutableError", std::format(
+        "immutable property '{}'", key), line, col);
+  }
+  _culebra_value_release_impl(entry.value.tag, entry.value.data);
+  entry.value.tag = tag;
+  entry.value.data = data;
+  if (is_init) entry.mut = mut;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
-    int64_t line, int64_t col) {
+    int64_t line, int64_t col, bool is_init = false) {
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
     obj->append_slot(key, JitValue{tag, data}, mut);
   } else {
-    auto& entry = obj->slots[idx];
-    if (!entry.mut) {
-      _culebra_value_release_impl(tag, data);
-      throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}'", key), line, col);
-    }
-    _culebra_value_release_impl(entry.value.tag, entry.value.data);
-    entry.value.tag = tag;
-    entry.value.data = data;
+    _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
+                        col);
   }
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
@@ -3387,9 +3401,28 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   return true;
 }
 
+// String and StringView are the same dict key (a `==`-equal pair). Normalize
+// a StringView key (e.g. `s[0..1]`) to a borrowed-cstr TAG_STRING so it lands
+// in the same String slot as `obj["k"]`, releasing the view's +1. `owned` must
+// outlive the lookup that follows — it backs the cstr. Other tags are left
+// untouched, so the String/Long/sidecar fast paths pay only one branch.
+CULEBRA_RT_INLINE void _jit_normalize_str_key(int8_t& key_tag, int64_t& key_data,
+                                              std::string& owned) {
+  if (key_tag == TAG_STRINGVIEW) {
+    auto* sv = reinterpret_cast<JitStringView*>(key_data);
+    owned.assign(sv->ptr, sv->len);  // copy bytes before releasing the view
+    _culebra_value_release_impl(key_tag, key_data);
+    key_tag = TAG_STRING;
+    key_data = reinterpret_cast<int64_t>(owned.c_str());
+  }
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
-    int8_t val_tag, int64_t val_data, int64_t line, int64_t col) {
+    int8_t val_tag, int64_t val_data, int64_t line, int64_t col,
+    bool is_init) {
+  std::string _kbuf;
+  _jit_normalize_str_key(key_tag, key_data, _kbuf);
   // `arr[i] = v` on a FixedArray view: write element i into the inline bytes
   // (the index coerces Long/Float like the interp).
   if (obj->is_fixed_array_view) {
@@ -3424,7 +3457,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
       return;
     }
     culebra_runtime_object_set(obj, reinterpret_cast<const char*>(key_data),
-                               mut, val_tag, val_data, line, col);
+                               mut, val_tag, val_data, line, col, is_init);
     return;
   }
   // A class instance may route a not-yet-stored key to __setindex__ before
@@ -3464,7 +3497,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     obj->key_order->push_back(key);
     return;
   }
-  if (!it->second.mut) {
+  // Object-literal construction (`is_init`) overwrites a duplicate key
+  // last-wins like the interp's `initialize`; only a post-construction
+  // `o[k] = v` (is_init=false) honors the slot's immutable flag.
+  if (!is_init && !it->second.mut) {
     _culebra_value_release_impl(val_tag, val_data);
     _culebra_value_release_impl(key_tag, key_data);
     throw culebra::CulebraError("ImmutableError",
@@ -3473,6 +3509,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
   it->second.value.tag = val_tag;
   it->second.value.data = val_data;
+  if (is_init) it->second.mut = mut;
   _culebra_value_release_impl(key_tag, key_data);
 }
 
@@ -3537,6 +3574,8 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  std::string _kbuf;
+  _jit_normalize_str_key(key_tag, key_data, _kbuf);
   // `arr[i]` on a FixedArray view: read element i from the inline bytes.
   if (obj->is_fixed_array_view) {
     long i = (key_tag == TAG_LONG) ? key_data
@@ -3628,17 +3667,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
 // `key` is borrowed only for the immutable-error message; never freed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
-    int64_t data, int64_t line, int64_t col) {
+    int64_t data, int64_t line, int64_t col, bool mut, bool is_init) {
   if (ic->expected_shape == ic->result_shape) {
-    auto& entry = obj->slots[ic->offset];
-    if (!entry.mut) {
-      _culebra_value_release_impl(tag, data);
-      throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}'", key), line, col);
-    }
-    _culebra_value_release_impl(entry.value.tag, entry.value.data);
-    entry.value.tag = tag;
-    entry.value.data = data;
+    _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
+                        line, col);
   } else {
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
@@ -3660,7 +3692,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 // permanent miss for objects that always start out with no shape.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
-    int8_t tag, int64_t data, int64_t line, int64_t col) {
+    int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init) {
   // `view.field = v`: write straight into the shared backing bytes (zero
   // copy). Never populates the IC (the field is not an own slot), so every
   // write reaches this slow path and is intercepted. Matches the interp.
@@ -3686,19 +3718,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
            reinterpret_cast<int64_t>(_intern_str(result->names.back()))});
     }
   } else {
-    auto& entry = obj->slots[idx];
-    if (!entry.mut) {
-      _culebra_value_release_impl(tag, data);
-      throw culebra::CulebraError("ImmutableError", std::format(
-          "immutable property '{}'", key), line, col);
-    }
-    _culebra_value_release_impl(entry.value.tag, entry.value.data);
-    entry.value.tag = tag;
-    entry.value.data = data;
+    _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
+                        col);
     ic->expected_shape = before;
     ic->result_shape = before;
     ic->offset = idx;
-    ic->prop_mut = entry.mut ? 1 : 0;
+    ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
   }
   if (std::string_view(key) == "drop") obj->has_drop = true;
 }
@@ -3880,6 +3905,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
 // a borrowed cstring (non-refcounted) and needs no release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
+  std::string _kbuf;
+  _jit_normalize_str_key(tag, data, _kbuf);
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
     return _find_property(obj, cstr) != nullptr;
@@ -7467,8 +7494,95 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
 // consumed, and the stored map-entry key's +1 (transferred from the
 // original `object_set_any` insert) is also released before erase.
 // `_key_order_erase` drops the key_order entry's +1 separately.
+// dict.get(key, fallback): read-only. Returns the stored value (retained +1)
+// for `key`, else `fallback`. Never mutates the object. Consumes the key's +1
+// and, on a hit, the fallback's +1 — mirroring the interp builtin's ownership.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
+    JitObject* obj, int8_t kt, int64_t kd, int8_t ft, int64_t fd,
+    int64_t line, int64_t col) {
+  (void)line;
+  (void)col;
+  std::string kbuf;
+  _jit_normalize_str_key(kt, kd, kbuf);
+  bool found = false;
+  JitValue stored{TAG_NIL, 0};
+  if (kt == TAG_STRING) {
+    auto idx = obj->find_slot(reinterpret_cast<const char*>(kd));
+    if (idx != static_cast<size_t>(-1)) {
+      stored = obj->slots[idx].value;
+      found = true;
+    }
+  } else if (obj->non_string_props) {
+    auto it = obj->non_string_props->find(JitValue{kt, kd});
+    if (it != obj->non_string_props->end()) {
+      stored = it->second.value;
+      found = true;
+    }
+  }
+  // Release the key once: no-op for a borrowed String/Long, frees a refcounted
+  // (e.g. Tuple) key; a StringView was already released by the normalize above.
+  _culebra_value_release_impl(kt, kd);
+  if (found) {
+    culebra_runtime_value_retain(stored.tag, stored.data);
+    _culebra_value_release_impl(ft, fd);  // fallback unused
+    return stored;
+  }
+  return JitValue{ft, fd};  // transfer the fallback's +1 to the caller
+}
+
+// dict.get_or_put(key, init): return the value for `key`; on a miss, store
+// `init` and return it (sharing storage, so the accumulator idiom
+// `d.get_or_put(k, || []).push(x)` grows the dict's array). `init` is invoked
+// lazily when it is a function — only a miss pays for it.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
+    JitObject* obj, int8_t kt, int64_t kd, int8_t it_tag, int64_t it_data,
+    int64_t line, int64_t col) {
+  std::string kbuf;
+  _jit_normalize_str_key(kt, kd, kbuf);
+  bool found = false;
+  JitValue stored{TAG_NIL, 0};
+  if (kt == TAG_STRING) {
+    auto idx = obj->find_slot(reinterpret_cast<const char*>(kd));
+    if (idx != static_cast<size_t>(-1)) {
+      stored = obj->slots[idx].value;
+      found = true;
+    }
+  } else if (obj->non_string_props) {
+    auto iter = obj->non_string_props->find(JitValue{kt, kd});
+    if (iter != obj->non_string_props->end()) {
+      stored = iter->second.value;
+      found = true;
+    }
+  }
+  if (found) {
+    culebra_runtime_value_retain(stored.tag, stored.data);
+    _culebra_value_release_impl(it_tag, it_data);  // init unused
+    _culebra_value_release_impl(kt, kd);           // release key; no-op for String/Long
+    return stored;
+  }
+  // Miss: evaluate init lazily when it is a function (zero-arg thunk).
+  JitValue v;
+  if (it_tag == TAG_FUNC) {
+    v = culebra_runtime_call_with_kwargs(
+        reinterpret_cast<JitClosure*>(it_data), JitValue{TAG_NIL, 0}, 0,
+        nullptr, 0, nullptr, nullptr, 0, nullptr, line, col);
+    _culebra_value_release_impl(it_tag, it_data);  // release the closure
+  } else {
+    v = JitValue{it_tag, it_data};  // use as-is (already +1)
+  }
+  // Two refs: one consumed by the slot store, one returned to the caller.
+  // Immutable slot, matching a normal dict entry (`d[k] = v`); the value can
+  // still be mutated in place (e.g. `.push`).
+  culebra_runtime_value_retain(v.tag, v.data);
+  culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ false, v.tag, v.data,
+                                 line, col, /*is_init*/ false);
+  return v;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  std::string _kbuf;
+  _jit_normalize_str_key(tag, data, _kbuf);
   if (tag == TAG_STRING) {
     auto* cstr = reinterpret_cast<const char*>(data);
     if (obj->find_slot(cstr) != static_cast<size_t>(-1)) {
@@ -7896,6 +8010,8 @@ inline constexpr auto time_from_parts_nanos = "culebra_runtime_time_from_parts_n
 inline constexpr auto time_add_nanos       = "culebra_runtime_time_add_nanos";
 inline constexpr auto time_start_of_nanos  = "culebra_runtime_time_start_of_nanos";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
+inline constexpr auto object_get_default  = "culebra_runtime_object_get_default";
+inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
@@ -10717,7 +10833,7 @@ struct JIT {
     module_->getOrInsertFunction(
         rt::object_set, builder_.getVoidTy(), ptrTy, ptrTy,
         builder_.getInt1Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
-        builder_.getInt64Ty(), builder_.getInt64Ty());
+        builder_.getInt64Ty(), builder_.getInt64Ty(), builder_.getInt1Ty());
     module_->getOrInsertFunction(rt::object_get,
                                  builder_.getVoidTy(), ptrTy, ptrTy, ptrTy,
                                  ptrTy);
@@ -11258,7 +11374,8 @@ struct JIT {
   // the full work and refills the IC. See `JitPropSetIC` and
   // `culebra_runtime_object_set_fast` / `_set_ic`.
   void emit_object_set(llvm::Value* objPtr, const std::string& name,
-                       bool mut, llvm::Value* tag, llvm::Value* data) {
+                       bool mut, llvm::Value* tag, llvm::Value* data,
+                       bool is_init = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
@@ -11310,18 +11427,22 @@ struct JIT {
     emit_call(
         module_->getOrInsertFunction(rt::object_set_fast,
                                      builder_.getVoidTy(), ptrTy, ptrTy,
-                                     ptrTy, i8Ty, i64Ty, i64Ty, i64Ty),
+                                     ptrTy, i8Ty, i64Ty, i64Ty, i64Ty,
+                                     builder_.getInt1Ty(), builder_.getInt1Ty()),
         {objPtr, keyPtr, icGlobal, tag, data, current_line_val(),
-         current_column_val()});
+         current_column_val(), builder_.getInt1(mut),
+         builder_.getInt1(is_init)});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(slowBB);
     emit_call(
         module_->getOrInsertFunction(
             rt::object_set_ic, builder_.getVoidTy(), ptrTy, ptrTy, ptrTy,
-            builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty),
+            builder_.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty,
+            builder_.getInt1Ty()),
         {objPtr, keyPtr, icGlobal, builder_.getInt1(mut), tag, data,
-         current_line_val(), current_column_val()});
+         current_line_val(), current_column_val(),
+         builder_.getInt1(is_init)});
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
@@ -11393,7 +11514,9 @@ struct JIT {
       auto pv = culebra::view_object_property(*prop);
 
       if (pv.key->tag != "IDENTIFIER"_) {
-        // Non-IDENTIFIER literal key — emit Value-keyed set.
+        // Non-IDENTIFIER literal key — emit Value-keyed set. is_init=true so a
+        // duplicate key overwrites last-wins (like the interp), rather than
+        // tripping the immutable-entry guard meant for `o[k] = v`.
         auto key = compile(*pv.key);
         auto val = compile(*pv.value);
         emit_call(
@@ -11402,10 +11525,11 @@ struct JIT {
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty()),
+                builder_.getInt64Ty(), builder_.getInt1Ty()),
             {objPtr, extract_tag(key), extract_data(key),
              builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val),
-             current_line_val(), current_column_val()});
+             current_line_val(), current_column_val(),
+             builder_.getInt1(true)});
         continue;
       }
 
@@ -11428,7 +11552,7 @@ struct JIT {
         val = compile(*pv.value);
       }
       emit_object_set(objPtr, name, pv.is_mut,
-                      extract_tag(val), extract_data(val));
+                      extract_tag(val), extract_data(val), /*is_init=*/true);
     }
 
     return make_object(objPtr);
@@ -11964,7 +12088,7 @@ struct JIT {
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty()),
+                builder_.getInt64Ty(), builder_.getInt1Ty()),
             {objPtr, extract_tag(keyVal), extract_data(keyVal),
              builder_.getInt1(mut), extract_tag(to_store_obj),
              extract_data(to_store_obj),
@@ -11972,7 +12096,9 @@ struct JIT {
              // (`p` in `p[k] = v`), matching interp — not the subscript.
              builder_.getInt64(static_cast<int64_t>(ast.nodes[lvaloff]->line)),
              builder_.getInt64(
-                 static_cast<int64_t>(ast.nodes[lvaloff]->column))});
+                 static_cast<int64_t>(ast.nodes[lvaloff]->column)),
+             // Post-construction subscript-set honors the immutable flag.
+             builder_.getInt1(false)});
         // object_set_any consumed to_store_obj's +1; re-retain for the
         // merge so callers see a +1 result.
         emit_value_retain(to_store_obj);
@@ -19545,6 +19671,38 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             builder_.getInt8Ty(), builder_.getInt64Ty()),
         {objPtr, extract_tag(key), extract_data(key)});
     return make_bool(r);
+  }
+
+  if (method == "get" && argsAst.nodes.size() == 2) {
+    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get");
+    auto key = compile(*argsAst.nodes[0]);
+    auto fb = compile(*argsAst.nodes[1]);
+    // The runtime fn consumes the key's +1 and (on a hit) the fallback's +1,
+    // returning the stored value (+1) or the fallback. No IR-level release.
+    return emit_call(
+        module_->getOrInsertFunction(
+            rt::object_get_default, valueType_, ptrTy, builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {objPtr, extract_tag(key), extract_data(key), extract_tag(fb),
+         extract_data(fb), current_line_val(), current_column_val()});
+  }
+
+  if (method == "get_or_put" && argsAst.nodes.size() == 2) {
+    auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get_or_put");
+    auto key = compile(*argsAst.nodes[0]);
+    // `init` compiles to a value (a `|| []` thunk stays an unevaluated
+    // closure); the runtime fn invokes it only on a miss.
+    auto init = compile(*argsAst.nodes[1]);
+    return emit_call(
+        module_->getOrInsertFunction(
+            rt::object_get_or_put, valueType_, ptrTy, builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt8Ty(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {objPtr, extract_tag(key), extract_data(key), extract_tag(init),
+         extract_data(init), current_line_val(), current_column_val()});
   }
 
   // Note: `.remove(x)` is routed through compile_set_mutate_dispatch

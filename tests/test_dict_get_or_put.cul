@@ -1,0 +1,41 @@
+// dict.get(key, fallback): read-only lookup with a default.
+d = {"a": 1}
+assert_eq(d.get("a", 0), 1)
+assert_eq(d.get("z", 0), 0)
+assert_eq(d.has("z"), false)   // get never inserts
+
+// get_or_put: a hit returns the existing value; a miss inserts and returns it.
+assert_eq(d.get_or_put("a", 9), 1)   // existing kept, not overwritten
+assert_eq(d.get_or_put("z", 9), 9)   // inserted on miss
+assert_eq(d.get("z", 0), 9)
+
+// Lazy init: the thunk runs only on a miss.
+mut calls = 0
+fn mk() { calls = calls + 1; [] }
+d.get_or_put("a", || mk())     // hit -> thunk not called
+d.get_or_put("new", || mk())   // miss -> thunk called once
+assert_eq(calls, 1)
+
+// Accumulator: the returned value shares storage with the stored one, so
+// push grows the dict's array. Keys here are StringViews (`w[0..1]`).
+groups = {}
+for w in ["apple", "avocado", "banana"] {
+  groups.get_or_put(w[0..1], || []).push(w)
+}
+assert_eq(groups["a"], ["apple", "avocado"])
+assert_eq(groups["b"], ["banana"])
+
+// A non-function init is used as-is (eager value), inserted on a miss.
+counts = {}
+assert_eq(counts.get_or_put("x", 0), 0)
+assert_eq(counts.get_or_put("x", 0), 0)   // now a hit
+
+// String and StringView are the same key across every dict op.
+e = {}
+k = "hello"[0..2]            // StringView "he"
+e[k] = 1                     // subscript-set with a StringView key
+assert_eq(e["he"], 1)        // String-literal read finds it
+assert_eq(e.has("he"), true)
+assert_eq(e.get("he", 0), 1)
+e.remove("hello"[0..2])      // remove via a StringView key
+assert_eq(e.has("he"), false)

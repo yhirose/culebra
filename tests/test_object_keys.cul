@@ -16,6 +16,40 @@ assert_eq(by_bool[true], "y")
 let by_nil = {nil: "n"}
 assert_eq(by_nil[nil], "n")
 
+// Key identity is Ruby's `eql?`: keys of different types are never equal, so
+// `1`, `1.0`, and `true` are three distinct keys. A literal mixing them keeps
+// every key (unlike Python's `1 == True` / `1 == 1.0` key collapse).
+let mixnk = {1: "one", true: "yes", 0: "zero", false: "no"}
+assert_eq(mixnk[1], "one")
+assert_eq(mixnk[true], "yes")
+assert_eq(mixnk[0], "zero")
+assert_eq(mixnk[false], "no")
+assert_eq(mixnk.size(), 4)
+// Long and Float of equal value are STILL distinct keys (type-strict).
+let numk = {2: "L", 2.0: "F", true: "B"}
+assert_eq(numk.size(), 3)
+assert_eq(numk[2], "L")
+assert_eq(numk[2.0], "F")
+assert_eq(numk[true], "B")
+// The `==` operator coerces across numeric types (`1 == 1.0`) but Bool is not
+// numeric, so `1 == true` is false — key identity is strictly finer than `==`
+// only for the Long/Float pair.
+assert_eq(1 == 1.0, true)
+assert_eq(1 == true, false)
+
+// Duplicate keys in a literal overwrite last-wins (the interp's `initialize`
+// semantics — a literal isn't a sequence of immutable `o[k] = v` assignments).
+assert_eq(to_string({1: "x", 1: "y"}), to_string({1: "y"}))
+assert_eq(to_string({1.0: "a", 1.0: "b"}), to_string({1.0: "b"}))
+let dupt = {(1, 2): "a", (1, 2): "b"}
+assert_eq(dupt[(1, 2)], "b")
+assert_eq(dupt.size(), 1)
+// The later occurrence's `mut` wins too; a post-construction write then obeys
+// the (now mutable) slot, while a genuinely immutable slot still rejects it.
+mut mm = {x: 1, mut x: 2}
+mm.x = 7
+assert_eq(mm.x, 7)
+
 // String keys keep working alongside non-String ones — String keys
 // flow through the shape/string_view path; non-String keys live in
 // the lazy sidecar.

@@ -1075,9 +1075,13 @@ Non-String keys live in a sidecar map and are read with `obj[k]`:
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
 
-Numerically-equivalent keys collide following Python's rule:
-`hash(1) == hash(1.0) == hash(true)`, so `{1: 'a', 1.0: 'b'}` keeps
-only one entry (the last write wins).
+Key identity is type-strict — Ruby's `eql?`, deliberately *finer* than
+the `==` operator. Keys of different types are never the same key, so
+`1`, `1.0`, and `true` are three distinct keys even though `1 == 1.0`
+holds for the `==` operator. (Unlike Python, which collapses them into
+one bucket.) A literal that *repeats* a key keeps the last write —
+`{1: 'a', 1: 'b'}` is `{1: 'b'}` — the same last-wins rule a literal
+always uses for a duplicated key, including String keys.
 
 String and non-String keys share a single insertion-order record, so
 `to_string` renders mixed-key Objects with the keys interleaved in
@@ -3125,13 +3129,26 @@ callbacks. The rule is identical under the interpreter, `--jit`, and AOT.
 | `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
 | `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`. Ignores built-in method names. |
+| `o.get(key, fallback) -> value`  | The value for `key`, or `fallback` if absent. Read-only — never inserts. |
+| `o.get_or_put(key, init) -> value` *(mutating)* | The value for `key`; on a miss, store `init` and return it (sharing storage, so `o.get_or_put(k, [] ).push(x)` grows the stored array). When `init` is a function it is called lazily — only a miss pays for it: `o.get_or_put(k, || [])`. |
 | `o.remove(key: String) -> Nil` *(mutating)* | Delete the property named `key` if present. |
+
+A `String` and a byte-equal `StringView` (e.g. `s[0..2]`) are the **same key** — they hit the same slot across every operation above and `o[key] = v`.
 
 ```culebra
 o = {b: 2, a: 1, c: 3}
 puts(o.keys())            # ['b', 'a', 'c']  (insertion order)
 puts(o.values().collect()) # [2, 1, 3]
 puts(o.has('a'))          # true
+puts(o.get('z', 0))       # 0          (absent -> fallback, no insert)
+
+# Group items by their first letter (StringView keys):
+mut groups = {}
+for w in ['apple', 'avocado', 'banana'] {
+  groups.get_or_put(w[0..1], || []).push(w)
+}
+puts(groups)              # {a: ['apple', 'avocado'], b: ['banana']}
+
 mut p = {a: 1, b: 2}
 p.remove('a')
 puts(p)                   # {b: 2}
