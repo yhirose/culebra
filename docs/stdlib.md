@@ -2035,6 +2035,42 @@ n[0].parent ?? -1      # => -1
 (`T` must be a fixed scalar). Sparse structures — an id→optional-slot array —
 are the main use, alongside packable enums for tagged payloads.
 
+#### Tagged unions: `@packable enum`
+
+An `@packable` enum is a fixed tagged union `[tag:i32][payload]`: every
+variant's scalar payload shares one region sized to the largest variant, and
+the tag selects which variant is live. A `@packable` class field may then be
+that enum type. Use it for component kinds, message types, and other
+discriminated payloads in a shared record.
+
+```culebra
+# doctest: skip
+@packable enum Shape {
+  Circle(Float32),
+  Rect(Float32, Float32),
+  Point
+}
+
+@packable class Obj {
+  id:    Int32
+  shape: Shape
+}
+
+let objs = SharedBuffer.new(100, Obj)
+objs[0].shape = Shape.Rect(2.0, 3.0)   # write a variant value
+match objs[0].shape {                  # read it back and match
+  Rect(w, h) => w * h,
+  Circle(r)  => 3.14 * r * r,
+  Point      => 0.0
+}
+```
+
+Every variant payload must be a fixed scalar (a non-scalar payload is a
+`SyntaxError` at the variant). Writing a value that is not an instance of that
+enum raises `TypeError`. Reading reconstructs the variant instance from the
+bytes (no enum namespace needed), so a value written by one isolate is
+readable by another through the shared buffer.
+
 ---
 
 ## 13. Matchers

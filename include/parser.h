@@ -891,11 +891,17 @@ struct VariantView {
   size_t name_line;
   size_t name_col;
   size_t arity;
+  // The payload field type tokens (`VARIANT_FIELD <- < TYPE_REF >`), in order.
+  // Documentation for plain enums; load-bearing for `@packable` enums, which
+  // need each payload type to compute the fixed tagged-union layout.
+  std::vector<std::string_view> field_types;
 };
 inline VariantView view_variant(const peg::Ast& v) {
   const auto& ident = *v.nodes[0];
+  std::vector<std::string_view> types;
+  for (size_t i = 1; i < v.nodes.size(); i++) types.push_back(v.nodes[i]->token);
   return VariantView{ident.token, ident.line, ident.column,
-                     v.nodes.size() - 1};
+                     v.nodes.size() - 1, std::move(types)};
 }
 
 // Stable storage for synthetic positional payload field names

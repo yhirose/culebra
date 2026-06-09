@@ -1960,6 +1960,40 @@ n[0].parent ?? -1      # => -1
 疎構造（id→optional スロットの配列）が主用途で、tagged payload は packable enum と
 組み合わせる。
 
+#### タグ付き共用体: `@packable enum`
+
+`@packable` enum は固定のタグ付き共用体 `[tag:i32][payload]`: 各 variant のスカラ
+payload が最大 variant に合わせた1領域を共有し、tag がどの variant が live かを選ぶ。
+`@packable` クラスのフィールドにその enum 型を使える。component 種別・メッセージ型など、
+共有レコード内の判別付き payload に使う:
+
+```culebra
+# doctest: skip
+@packable enum Shape {
+  Circle(Float32),
+  Rect(Float32, Float32),
+  Point
+}
+
+@packable class Obj {
+  id:    Int32
+  shape: Shape
+}
+
+let objs = SharedBuffer.new(100, Obj)
+objs[0].shape = Shape.Rect(2.0, 3.0)   # variant 値を書く
+match objs[0].shape {                  # 読み戻して match
+  Rect(w, h) => w * h,
+  Circle(r)  => 3.14 * r * r,
+  Point      => 0.0
+}
+```
+
+variant payload は全て固定スカラに限る（非スカラ payload は variant 位置で
+`SyntaxError`）。その enum のインスタンスでない値の書き込みは `TypeError`。読み出しは
+バイトから variant インスタンスを再構築する（enum namespace 不要）ので、ある isolate が
+書いた値を別の isolate が共有 buffer 越しに読める。
+
 ---
 
 ## 13. Matchers

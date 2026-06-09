@@ -2996,6 +2996,31 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
     inner.offset = 0;
     return _jit_packable_read_field(p + f.data_offset, inner);
   }
+  if (f.is_enum) {
+    // `[tag:i32][payload]` -> the tagged variant instance (class/__enum +
+    // positional `_0.._n` fields), matching culebra_runtime_build_variant.
+    const auto* el = culebra::lookup_packable_enum(f.elem_type);
+    int32_t tag; std::memcpy(&tag, p, 4);
+    if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
+      return {TAG_NIL, 0};
+    const auto& var = el->variants[tag];
+    auto* inst = culebra_runtime_object_new();
+    culebra_runtime_object_set(inst, "class", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_intern_str(var.name)), 0, 0);
+    culebra_runtime_object_set(inst, "__enum", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_intern_str(f.elem_type)), 0, 0);
+    const uint8_t* payload = p + el->payload_offset;
+    for (size_t fi = 0; fi < var.fields.size(); fi++) {
+      culebra::PackableField sf;
+      sf.type = var.fields[fi].type;
+      sf.offset = 0;
+      JitValue fv = _jit_packable_read_field(payload + var.fields[fi].offset, sf);
+      auto fn = culebra::positional_field_name(fi);
+      culebra_runtime_object_set(inst, fn.data(), false, fv.tag, fv.data, 0, 0);
+    }
+    for (auto& entry : inst->slots) entry.mut = true;
+    return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+  }
   if (f.type == "Float32") {
     float v; std::memcpy(&v, p, 4);
     return {TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(v))};
@@ -3046,6 +3071,47 @@ inline void _jit_packable_write_field(uint8_t* base,
     inner.type = f.elem_type;
     inner.offset = 0;
     _jit_packable_write_field(p + f.data_offset, inner, tag, data);
+    return;
+  }
+  if (f.is_enum) {
+    const auto* el = culebra::lookup_packable_enum(f.elem_type);
+    JitObject* obj =
+        (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
+    size_t ei = obj ? obj->find_slot("__enum") : static_cast<size_t>(-1);
+    std::string_view en =
+        (ei != static_cast<size_t>(-1))
+            ? _culebra_str_view(obj->slots[ei].value.tag, obj->slots[ei].value.data)
+            : std::string_view{};
+    if (!obj || ei == static_cast<size_t>(-1) || en != f.elem_type) {
+      _culebra_value_release_impl(tag, data);
+      throw culebra::CulebraError("TypeError", std::format(
+          "field `{}` expects a `{}` enum value, got {}", f.name, f.elem_type,
+          _culebra_tag_name(tag)));
+    }
+    size_t ci = obj->find_slot("class");
+    std::string_view variant =
+        _culebra_str_view(obj->slots[ci].value.tag, obj->slots[ci].value.data);
+    int idx = el ? el->index_of(variant) : -1;
+    if (idx < 0) {
+      _culebra_value_release_impl(tag, data);
+      throw culebra::CulebraError("TypeError", std::format(
+          "field `{}`: unknown variant for enum `{}`", f.name, f.elem_type));
+    }
+    int32_t vtag = static_cast<int32_t>(idx);
+    std::memcpy(p, &vtag, 4);
+    uint8_t* payload = p + el->payload_offset;
+    const auto& var = el->variants[idx];
+    for (size_t fi = 0; fi < var.fields.size(); fi++) {
+      culebra::PackableField sf;
+      sf.type = var.fields[fi].type;
+      sf.offset = 0;
+      size_t fs = obj->find_slot(culebra::positional_field_name(fi).data());
+      JitValue fv = (fs != static_cast<size_t>(-1)) ? obj->slots[fs].value
+                                                    : JitValue{TAG_NIL, 0};
+      _jit_packable_write_field(payload + var.fields[fi].offset, sf, fv.tag,
+                                fv.data);
+    }
+    _culebra_value_release_impl(tag, data);  // consume the enum instance
     return;
   }
   auto as_double = [&]() -> double {
@@ -3739,6 +3805,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_packable(
     i = semi + 1;
   }
   culebra::register_packable_layout(name, culebra::compute_packable_layout(name, fields));
+}
+
+// Register a @packable enum's tagged-union layout at runtime (the codegen
+// emits this when the enum declaration executes, so AOT sees it too). The
+// spec is `variant:type,type;variant:;...`. Lint already validated it, so the
+// validate-and-register throw is only a safety net.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_packable_enum(
+    const char* name, const char* spec) {
+  culebra::validate_and_register_packable_enum(
+      name, culebra::parse_packable_enum_spec(spec));
 }
 
 // `[...x]` array spread: append an iterable's elements to `arr` (each
@@ -8454,6 +8530,8 @@ inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
 inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
 inline constexpr auto register_packable   = "culebra_runtime_register_packable";
+inline constexpr auto register_packable_enum =
+    "culebra_runtime_register_packable_enum";
 inline constexpr auto check_well_known_prop =
     "culebra_runtime_check_well_known_prop";
 inline constexpr auto object_size         = "culebra_runtime_object_size";
@@ -14969,7 +15047,34 @@ struct JIT {
     }
     auto enumVal = make_object(enumObj);
 
+    // @packable enum: register the fixed tagged-union layout at runtime (so
+    // AOT sees it), emitting a `variant:type,type;...` spec. Lint already
+    // validated the payloads pre-eval. `@packable` is a layout constraint,
+    // not a callable decorator, so it is skipped in the apply loop below.
+    bool is_packable = false;
+    for (size_t d = 0; d < k; d++)
+      if (culebra::is_packable_decorator(*ast.nodes[d])) is_packable = true;
+    if (is_packable) {
+      std::string spec;
+      for (size_t i = k + 1; i < ast.nodes.size(); i++) {
+        auto vv = culebra::view_variant(*ast.nodes[i]);
+        if (!spec.empty()) spec += ';';
+        spec += std::string(vv.name);
+        spec += ':';
+        for (size_t fi = 0; fi < vv.field_types.size(); fi++) {
+          if (fi) spec += ',';
+          spec += std::string(vv.field_types[fi]);
+        }
+      }
+      emit_call(
+          module_->getOrInsertFunction(rt::register_packable_enum,
+                                       builder_.getVoidTy(), ptrTy, ptrTy),
+          {get_or_create_global_str(enum_name, ".pkenum.name"),
+           get_or_create_global_str(spec, ".pkenum.spec")});
+    }
+
     for (size_t i = k; i > 0; --i) {
+      if (culebra::is_packable_decorator(*ast.nodes[i - 1])) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
       auto decoCallee = compile(dec_expr);
       enumVal = compile_function_call_raw(decoCallee, nullptr, {enumVal});

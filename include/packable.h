@@ -64,6 +64,128 @@ inline std::string_view _packable_trim(std::string_view s) {
   return s;
 }
 
+// --- @packable enum: a fixed tagged union `[tag:i32][payload]` ------------
+// A `@packable` enum lays each variant's scalar payload at offset 0 of a
+// shared payload region (sized to the largest variant); the i32 tag selects
+// which variant's fields are live. One scalar field of a variant:
+struct PackableEnumField {
+  std::string type;     // scalar type name
+  size_t offset;        // byte offset within the payload region
+  size_t size;
+};
+struct PackableEnumVariant {
+  std::string name;
+  std::vector<PackableEnumField> fields;
+};
+struct PackableEnumLayout {
+  std::vector<PackableEnumVariant> variants;
+  size_t payload_offset = 4;   // payload starts after the i32 tag (aligned up)
+  size_t size = 4;             // tag + payload region
+  size_t align = 4;
+  int index_of(std::string_view variant) const {
+    for (size_t i = 0; i < variants.size(); i++)
+      if (variants[i].name == variant) return static_cast<int>(i);
+    return -1;
+  }
+};
+
+// Compute the layout for an ordered list of (variant, [scalar field types]).
+// Returns size 0 if any payload field is non-scalar (the @packable enum
+// constraint). The payload region is sized to the largest variant; each
+// variant lays its fields C-ABI from payload offset 0.
+inline PackableEnumLayout compute_packable_enum_layout(
+    const std::vector<std::pair<std::string,
+                                std::vector<std::string>>>& variants) {
+  PackableEnumLayout layout;
+  size_t payload_size = 0, payload_align = 1;
+  for (const auto& [vname, ftypes] : variants) {
+    PackableEnumVariant v;
+    v.name = vname;
+    size_t off = 0;
+    for (const auto& t : ftypes) {
+      auto si = packable_type_info(t);
+      if (si.size == 0) return {};  // non-scalar payload -> not packable
+      off = packable_align_up(off, si.align);
+      v.fields.push_back({t, off, si.size});
+      off += si.size;
+      payload_align = std::max(payload_align, si.align);
+    }
+    payload_size = std::max(payload_size, off);
+    layout.variants.push_back(std::move(v));
+  }
+  layout.align = std::max<size_t>(4, payload_align);
+  layout.payload_offset = packable_align_up(4, payload_align);
+  layout.size = layout.payload_offset + payload_size;
+  return layout;
+}
+
+inline std::map<std::string, PackableEnumLayout, std::less<>>&
+packable_enum_registry() {
+  static std::map<std::string, PackableEnumLayout, std::less<>> reg;
+  return reg;
+}
+inline std::mutex& packable_enum_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline void register_packable_enum(std::string name, PackableEnumLayout layout) {
+  std::lock_guard<std::mutex> lk(packable_enum_mutex());
+  packable_enum_registry()[std::move(name)] = std::move(layout);
+}
+inline const PackableEnumLayout* lookup_packable_enum(std::string_view name) {
+  std::lock_guard<std::mutex> lk(packable_enum_mutex());
+  auto it = packable_enum_registry().find(name);
+  return it == packable_enum_registry().end() ? nullptr : &it->second;
+}
+
+// Validate + register a @packable enum from already-parsed variants. Throws
+// SyntaxError (the @packable constraint surfacing at declaration time) if any
+// variant payload is non-scalar. Shared by interp (builds the list from the
+// AST) and the JIT runtime hook (parses it from a spec string).
+inline void validate_and_register_packable_enum(
+    const std::string& enum_name,
+    const std::vector<std::pair<std::string, std::vector<std::string>>>&
+        variants) {
+  auto layout = compute_packable_enum_layout(variants);
+  if (layout.size == 0 || (variants.empty())) {
+    throw CulebraError(
+        "SyntaxError",
+        std::format("@packable enum `{}`: every variant payload must be a "
+                    "fixed scalar (Float32/.../Bool)", enum_name));
+  }
+  register_packable_enum(enum_name, std::move(layout));
+}
+
+// Spec = `variant:type,type;variant:;...` (a variant with no payload has an
+// empty type list). The codegen emits this so AOT can register at runtime.
+inline std::vector<std::pair<std::string, std::vector<std::string>>>
+parse_packable_enum_spec(std::string_view spec) {
+  std::vector<std::pair<std::string, std::vector<std::string>>> variants;
+  size_t i = 0;
+  while (i < spec.size()) {
+    size_t semi = spec.find(';', i);
+    if (semi == std::string_view::npos) semi = spec.size();
+    auto seg = spec.substr(i, semi - i);
+    auto colon = seg.find(':');
+    std::string vname(colon == std::string_view::npos ? seg
+                                                      : seg.substr(0, colon));
+    std::vector<std::string> ftypes;
+    if (colon != std::string_view::npos) {
+      auto rest = seg.substr(colon + 1);
+      size_t j = 0;
+      while (j < rest.size()) {
+        size_t comma = rest.find(',', j);
+        if (comma == std::string_view::npos) comma = rest.size();
+        if (comma > j) ftypes.emplace_back(rest.substr(j, comma - j));
+        j = comma + 1;
+      }
+    }
+    variants.emplace_back(std::move(vname), std::move(ftypes));
+    i = semi + 1;
+  }
+  return variants;
+}
+
 // Layout of a whole field — a scalar, or a `FixedArray<T, N>` (a fixed-
 // capacity inline collection: `[len:i32][T × N]`, no pointers, so it fits a
 // @packable record). size 0 means the type isn't a packable field type.
@@ -75,7 +197,9 @@ struct PackableFieldInfo {
   bool is_fixed_set = false;     // FixedSet<T,N>: `[count][state×N][T×N]`
   bool is_fixed_map = false;     // FixedMap<K,V,N>: `[count][state×N][K×N][V×N]`
   bool is_optional = false;      // T?: `[present:byte][T]`, nil when present==0
+  bool is_enum = false;          // a registered @packable enum: `[tag:i32][payload]`
   std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
+                             // — or, for is_enum, the enum name
   std::string val_type;      // FixedMap value scalar
   size_t capacity = 0;       // N
   size_t elem_size = 0;      // sizeof(T) / sizeof(K)
@@ -201,6 +325,15 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.size = fi.data_offset + fi.capacity * ei.size;
     return fi;
   }
+  // A registered @packable enum used by name -> a tagged-union field.
+  if (auto* el = lookup_packable_enum(t)) {
+    PackableFieldInfo fi;
+    fi.is_enum = true;
+    fi.elem_type = std::string(t);
+    fi.size = el->size;
+    fi.align = el->align;
+    return fi;
+  }
   auto si = packable_type_info(t);
   if (si.size == 0) return {};
   PackableFieldInfo fi;
@@ -255,6 +388,7 @@ struct PackableField {
   bool is_fixed_set = false;
   bool is_fixed_map = false;
   bool is_optional = false;
+  bool is_enum = false;
   std::string elem_type;
   std::string val_type;
   size_t capacity = 0;
@@ -358,6 +492,7 @@ inline PackableLayout compute_packable_layout(
     f.is_fixed_set = info.is_fixed_set;
     f.is_fixed_map = info.is_fixed_map;
     f.is_optional = info.is_optional;
+    f.is_enum = info.is_enum;
     f.elem_type = info.elem_type;
     f.val_type = info.val_type;
     f.capacity = info.capacity;

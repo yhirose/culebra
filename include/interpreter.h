@@ -5842,6 +5842,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       inner.offset = 0;
       return packable_read_field(p + f.data_offset, inner);
     }
+    if (f.is_enum) {
+      // `[tag:i32][payload]` -> the tagged variant instance (class/__enum +
+      // positional `_0.._n` payload fields), matching eval_enum_decl's shape.
+      const auto* el = culebra::lookup_packable_enum(f.elem_type);
+      int32_t tag; std::memcpy(&tag, p, 4);
+      if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
+        return Value();
+      const auto& var = el->variants[tag];
+      ObjectValue inst;
+      inst.properties->emplace("class", Symbol{Value(std::string(var.name)), true});
+      inst.properties->emplace("__enum",
+                               Symbol{Value(std::string(f.elem_type)), true});
+      const uint8_t* payload = p + el->payload_offset;
+      for (size_t fi = 0; fi < var.fields.size(); fi++) {
+        culebra::PackableField sf;
+        sf.type = var.fields[fi].type;
+        sf.offset = 0;
+        inst.properties->emplace(
+            std::string(culebra::positional_field_name(fi)),
+            Symbol{packable_read_field(payload + var.fields[fi].offset, sf),
+                   true});
+      }
+      return Value(std::move(inst));
+    }
     if (f.type == "Float32") {
       float v; std::memcpy(&v, p, 4);
       return Value(static_cast<double>(v));
@@ -5910,6 +5934,33 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       inner.type = f.elem_type;
       inner.offset = 0;
       packable_write_field(p + f.data_offset, inner, val);
+      return;
+    }
+    if (f.is_enum) {
+      const auto* el = culebra::lookup_packable_enum(f.elem_type);
+      if (val.type != Value::Object || !val.to_object().has("__enum") ||
+          val.to_object().get("__enum").to_string_view() != f.elem_type) {
+        throw CulebraError("TypeError", std::format(
+            "field `{}` expects a `{}` enum value, got {}", f.name, f.elem_type,
+            val.type_name()));
+      }
+      const auto& obj = val.to_object();
+      int idx = el ? el->index_of(obj.get("class").get<std::string>()) : -1;
+      if (idx < 0) {
+        throw CulebraError("TypeError", std::format(
+            "field `{}`: unknown variant for enum `{}`", f.name, f.elem_type));
+      }
+      int32_t tag = static_cast<int32_t>(idx);
+      std::memcpy(p, &tag, 4);
+      uint8_t* payload = p + el->payload_offset;
+      const auto& var = el->variants[idx];
+      for (size_t fi = 0; fi < var.fields.size(); fi++) {
+        culebra::PackableField sf;
+        sf.type = var.fields[fi].type;
+        sf.offset = 0;
+        packable_write_field(payload + var.fields[fi].offset, sf,
+                             obj.get(culebra::positional_field_name(fi)));
+      }
       return;
     }
     if (f.type == "Float32") {
@@ -6662,8 +6713,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     using namespace peg::udl;
     size_t k = 0;
     std::vector<const peg::Ast*> decorators;
+    bool is_packable = false;
     while (k < ast.nodes.size() && ast.nodes[k]->tag == "DECORATOR"_) {
-      decorators.push_back(ast.nodes[k].get());
+      if (culebra::is_packable_decorator(*ast.nodes[k])) {
+        is_packable = true;
+      } else {
+        decorators.push_back(ast.nodes[k].get());
+      }
       k++;
     }
     // CLASS_HEAD: enum name (Generic params are stripped — documentation).
@@ -6683,9 +6739,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         };
 
     ObjectValue enum_obj;
+    std::vector<std::pair<std::string, std::vector<std::string>>> pk_variants;
     for (size_t i = k + 1; i < ast.nodes.size(); i++) {
       auto vv = culebra::view_variant(*ast.nodes[i]);
       std::string variant(vv.name);
+      if (is_packable) {
+        std::vector<std::string> ftypes;
+        for (auto t : vv.field_types) ftypes.emplace_back(t);
+        pk_variants.emplace_back(variant, std::move(ftypes));
+      }
       if (vv.arity == 0) {
         // Nullary variant: a singleton instance value.
         enum_obj.properties->emplace(
@@ -6715,6 +6777,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           },
           {}, env));
       enum_obj.properties->emplace(variant, Symbol{std::move(ctor), false});
+    }
+
+    // @packable: register the fixed tagged-union layout (throws on a
+    // non-scalar payload — the constraint surfacing at declaration time).
+    if (is_packable) {
+      culebra::validate_and_register_packable_enum(enum_name, pk_variants);
     }
 
     Value enum_val(std::move(enum_obj));

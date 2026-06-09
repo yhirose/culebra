@@ -374,6 +374,49 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       }
       return;
     }
+    case "ENUM_DECL"_: {
+      // A `@packable` enum registers its tagged-union layout here, pre-eval,
+      // so a later `@packable` class field of this enum type validates (the
+      // registry is the single source the field check below consults). A
+      // non-scalar payload is the @packable constraint surfacing at the
+      // variant position.
+      size_t i = culebra::first_non_decorator_index(node);
+      bool is_packable = false;
+      for (size_t d = 0; d < i; d++) {
+        walk(*node.nodes[d]);
+        if (culebra::is_packable_decorator(*node.nodes[d])) is_packable = true;
+      }
+      if (is_packable) {
+        auto enum_name =
+            std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
+        std::vector<std::pair<std::string, std::vector<std::string>>> variants;
+        bool ok = !(i + 1 >= node.nodes.size());
+        for (size_t j = i + 1; j < node.nodes.size(); j++) {
+          auto vv = culebra::view_variant(*node.nodes[j]);
+          std::vector<std::string> ftypes;
+          for (auto t : vv.field_types) {
+            if (culebra::packable_type_info(t).size == 0) {
+              diags_.push_back(Diagnostic{
+                  "SyntaxError",
+                  std::format("@packable enum `{}`: variant `{}` payload type "
+                              "`{}` is not a fixed scalar",
+                              enum_name, vv.name, t),
+                  static_cast<long>(vv.name_line),
+                  static_cast<long>(vv.name_col), Severity::Error});
+              ok = false;
+            }
+            ftypes.emplace_back(t);
+          }
+          variants.emplace_back(std::string(vv.name), std::move(ftypes));
+        }
+        if (ok) {
+          culebra::register_packable_enum(
+              enum_name, culebra::compute_packable_enum_layout(variants));
+        }
+      }
+      walk_children(node);
+      return;
+    }
     case "TRAIT_DECL"_: {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) walk(*node.nodes[d]);

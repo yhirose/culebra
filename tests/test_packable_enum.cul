@@ -1,0 +1,84 @@
+// @packable enum: a fixed tagged union `[tag:i32][payload]` stored inline in a
+// @packable record. Each variant's scalar payload shares a region sized to the
+// largest variant; the tag selects which variant is live.
+
+@packable
+enum Shape {
+  Circle(Float32),
+  Rect(Float32, Float32),
+  Point
+}
+
+@packable
+class Obj {
+  id: Int32
+  shape: Shape
+}
+
+buf = SharedBuffer.new(4, Obj)
+
+// Zero value: tag 0 -> the first variant (Circle) with a zeroed payload.
+match buf[0].shape {
+  Circle(r) => assert_eq(r, 0.0),
+  _ => assert_eq("zero", "should be Circle(0.0)")
+}
+
+// Single-payload variant round-trips.
+buf[0].id = 1
+buf[0].shape = Shape.Circle(1.5)
+match buf[0].shape {
+  Circle(r) => assert_eq(r, 1.5),
+  _ => assert_eq("c", "should be Circle")
+}
+assert_eq(buf[0].id, 1)
+
+// Multi-payload variant round-trips both fields.
+buf[1].shape = Shape.Rect(2.0, 3.0)
+match buf[1].shape {
+  Rect(w, h) => {
+    assert_eq(w, 2.0)
+    assert_eq(h, 3.0)
+  },
+  _ => assert_eq("r", "should be Rect")
+}
+
+// Nullary variant.
+buf[2].shape = Shape.Point
+match buf[2].shape {
+  Point => assert_true(true),
+  _ => assert_eq("p", "should be Point")
+}
+
+// Overwriting one variant with another switches the tag.
+buf[0].shape = Shape.Point
+match buf[0].shape {
+  Point => assert_true(true),
+  _ => assert_eq("switch", "should be Point now")
+}
+
+// Records are independent.
+match buf[1].shape {
+  Rect(w, h) => assert_eq(w, 2.0),
+  _ => assert_eq("indep", "buf[1] should still be Rect")
+}
+
+// Wrong type is a TypeError.
+try {
+  buf[3].shape = 42
+  assert_eq("no throw", "should throw")
+} catch e { assert_eq(e.kind, "TypeError") }
+
+// Cross-isolate share: the parent writes an enum value, a child reads it back
+// from the shared bytes (reading reconstructs the variant from the tag +
+// payload, no enum namespace needed — so it crosses the isolate boundary).
+shared = SharedBuffer.new(1, Obj)
+shared[0].shape = Shape.Rect(7.0, 8.0)
+total = Isolate.spawn(fn() {
+  match shared[0].shape {
+    Rect(a, b) => a + b,
+    _ => -1.0
+  }
+}).join()
+assert_eq(total, 15.0)
+
+IO.puts("test_packable_enum OK")
