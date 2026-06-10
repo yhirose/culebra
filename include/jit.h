@@ -1264,7 +1264,11 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
     case TAG_LONG: return cmp(double(d1), double(d2));
     case TAG_FLOAT:
       return cmp(_culebra_float_to_double(d1), _culebra_float_to_double(d2));
-    case TAG_STRING: {
+    case TAG_STRING:
+    case TAG_STRINGVIEW: {
+      // Same-tag only (the cross-type branch above already threw):
+      // String<String and StringView<StringView both order by bytes,
+      // mirroring the interpreter's ord_compare cases.
       auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
       return cmp(double(c), 0.0);
     }

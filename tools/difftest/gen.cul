@@ -457,4 +457,22 @@ for d in drops {
   case("drop|" + d, d)
 }
 
+# --- Dimension 24: StringView ordering / equality -------------------------
+# String iteration yields StringViews, so `sort_by(|c| c)` over collected
+# characters orders StringView-to-StringView — a seam the JIT once missed
+# (microgpt smoke regression). Same-tag ordering works; String-vs-StringView
+# ordering is a TypeError on both backends; equality is value-based across
+# the two tags.
+let svs = [
+  'mut xs = []; for c in "cba" { xs.push(c) }; xs.sort_by(|c| c); xs',
+  'let v = "xz"[1..2]; let w = "ay"[1..2]; v < w',
+  'let v = "xz"[1..2]; let w = "ay"[1..2]; (v > w, v <= w, v >= w)',
+  'let v = "xz"[1..2]; v < "z"',
+  'let v = "xz"[1..2]; (v == "z", "z" == v, v != "z")',
+  '"ab"[0..1] == "ab"[1..2]',
+  'mut xs = []; for c in "banana" { if !xs.contains(c) { xs.push(c) } }; xs.sort_by(|c| c); xs.join("")']
+for s in svs {
+  case("svord|" + s, s)
+}
+
 print(out.join("\n"))
