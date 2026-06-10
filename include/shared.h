@@ -1237,9 +1237,11 @@ enum RuntimeSlot : size_t {
   kSlotJitOwnedStack,
   // Foreign-instance tables (wrapped C++ objects, see foreign.h): one
   // type-erased registry holding a per-T id table. Owns the C++
-  // instances; destroyed with the Runtime (after the GC slots in the
-  // reverse-order teardown, so releases during GC teardown can still
-  // resolve it).
+  // instances; destroyed with the Runtime — FIRST in the reverse-order
+  // teardown (highest slot), so every foreign instance dies before the
+  // GC slots. A drop firing during later GC teardown resolves a lazily
+  // revived empty registry (the ~Runtime null-after-delete protocol)
+  // and its erase is a safe no-op.
   kSlotForeignTables,
   kRuntimeSlotCount
 };

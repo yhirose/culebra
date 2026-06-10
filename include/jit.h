@@ -8346,9 +8346,11 @@ inline void _culebra_cell_release(JitCell* c);
 // owned `this` slot — plus any retain/release pairs in the body —
 // can't drive refcount back to 0 and re-enter destruction. The frame
 // release subtracts 1, so 2 is the minimum safe baseline. After drop
-// returns we slam the count to 0; if the body resurrected `o` by
-// storing it somewhere, the caller owns the resulting dangling
-// reference (matches interp's documented warning).
+// returns the entry count is restored (see below) — any NET retain or
+// release of `o` the body performed is absorbed by the pin; so on the
+// release-to-zero path a body that resurrected `o` by storing it
+// somewhere leaves the caller a dangling reference (matches interp's
+// documented warning).
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
   if (o->dropped) return;  // already ran (explicit or backstop) — at most once
@@ -8367,7 +8369,13 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   // drop body can't free it mid-call. The pin must absorb not just the
   // frame's `this` release but ANY number of releases the body performs
   // (e.g. `this.me = nil` breaking its own cycle edge), so use a value
-  // no real refcount can reach.
+  // no real refcount can reach. RESTORE the entry count afterwards: on
+  // the release-to-zero path that's the 0 the caller's teardown expects,
+  // but an explicit `obj.drop()` (or a scope-exit / finalize firing)
+  // arrives with live references — parking those at 0 would let the
+  // next retain/release pair around the (legal, ClosedError-raising)
+  // dropped object free it from under its remaining holders.
+  const int64_t entry_rc = o->refcount;
   o->refcount = int64_t{1} << 40;
   JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   try {
@@ -8379,7 +8387,7 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   } catch (...) {
     std::cerr << "drop: unknown error" << std::endl;
   }
-  o->refcount = 0;
+  o->refcount = entry_rc;
 }
 
 // Explicit `obj.drop()` from JIT-compiled code: route through the at-most-once
@@ -8403,18 +8411,6 @@ culebra_runtime_owned_register_drop(JitObject* o) {
   if (o) _jit_owned_bind_drop(o);
 }
 
-// Fire `drop` on a scope-owned object whose refcount is still positive
-// (escaped-nowhere cycle member at scope exit).
-// _culebra_call_drop_if_present is built for the refcount-0 release
-// path — it pins the refcount to 2 during the body and parks it at 0 —
-// so preserve the real count around it: this call consumes none of the
-// object's remaining references.
-inline void _jit_owned_fire_drop(JitObject* o) {
-  int64_t rc = o->refcount;
-  _culebra_call_drop_if_present(o);
-  o->refcount = rc;
-}
-
 // GC backstop finalize (design Â§9 exactly-once backstop, PEP 442
 // style): runs once per collection, before any sweep, over the intact
 // dead set. Pin every dead struct's refcount first — a drop body that
@@ -8434,8 +8430,9 @@ inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
     auto* h = heap.header(p);
     if (!h || h->type_tag != GC_TAG_OBJECT) continue;
     // has_drop / dropped / suppressed gating lives in
-    // _culebra_call_drop_if_present.
-    _jit_owned_fire_drop(reinterpret_cast<JitObject*>(p));
+    // _culebra_call_drop_if_present, which also saves/restores the
+    // entry refcount — the pass consumes none of the dead set's pins.
+    _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(p));
   }
 }
 
@@ -8605,7 +8602,10 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   }
   stack.refresh_top();
   for (size_t i = 0; i < pending.size(); i++) {
-    if (!reachable[cand_ids[i]]) _jit_owned_fire_drop(pending[i].obj);
+    // The chokepoint saves/restores the entry refcount: firing consumes
+    // none of the cycle member's remaining references.
+    if (!reachable[cand_ids[i]])
+      _culebra_call_drop_if_present(pending[i].obj);
   }
   for (auto& p : pending) {
     _culebra_value_release_impl(GC_TAG_OBJECT,

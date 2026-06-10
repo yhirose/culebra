@@ -9,6 +9,8 @@
 // before `JIT::run()`.
 
 #include <compress.h>
+#include <foreign.h>
+#include <foreign_fixture.h>
 #include <jit.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -1901,6 +1903,16 @@ CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
   return cls;
 }
 
+// Slot a handle method onto `h` — shared by every native-handle builder
+// (Proc / File / Foreign).
+CULEBRA_RT_INLINE void _jit_handle_bind_method(
+    JitObject* h, const char* name,
+    JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*), size_t ar) {
+  h->set_or_append(name,
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+          _jit_make_handle_method(f, ar))}, false);
+}
+
 CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
                                                       int err_fd) {
   auto* h = culebra_runtime_object_new();
@@ -1912,15 +1924,10 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
   // A native handle is not Sendable — reject it at the serialize boundary
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  auto fn = [&](const char* name, auto* f, size_t ar) {
-    h->set_or_append(name,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-            _jit_make_handle_method(f, ar))}, false);
-  };
-  fn("wait", _jit_handle_wait, 0);
-  fn("poll", _jit_handle_poll, 0);
-  fn("kill", _jit_handle_kill, 0);
-  fn("drop", _jit_handle_drop, 0);
+  _jit_handle_bind_method(h, "wait", _jit_handle_wait, 0);
+  _jit_handle_bind_method(h, "poll", _jit_handle_poll, 0);
+  _jit_handle_bind_method(h, "kill", _jit_handle_kill, 0);
+  _jit_handle_bind_method(h, "drop", _jit_handle_drop, 0);
   // Bind chokepoint (has_drop + owned-stack registration) — see the
   // File handle note below.
   _jit_owned_bind_drop(h);
@@ -2055,26 +2062,136 @@ CULEBRA_RT_INLINE JitValue _jit_file_chunks(JitClosure*, JitValue self,
   return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
 }
 
+// --- Foreign binding: foreign_fixture::Counter (Phase 3 PoC, JIT) ----------
+// Mirrors the interp binding in stdlib_interp.h (make_counter_handle /
+// make_foreign_namespace): same foreign table, same ClosedError wording
+// through foreign::get_or_throw, same handle shape as the File handle --
+// so the Phase 1/2 drop machinery and the calling convention apply
+// identically. Errors are thrown positionless; the op-pos backfill
+// stamps the call site, like every other handle method.
+
+CULEBRA_RT_INLINE JitValue _culebra_foreign_counter_handle(int64_t id);
+
+CULEBRA_RT_INLINE culebra::foreign_fixture::Counter* _jit_counter_self(
+    JitValue self) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_id");
+  // ClosedError points at the method call site, like the interp's
+  // loc(env) (__LINE__/__COLUMN__ carry the call position).
+  return culebra::foreign::get_or_throw<culebra::foreign_fixture::Counter>(
+      id, "Counter", _jit_call_site_line, _jit_call_site_col);
+}
+
+CULEBRA_RT_INLINE JitValue _jit_counter_value(JitClosure*, JitValue self,
+                                              int64_t, JitValue*) {
+  long v = _jit_counter_self(self)->value();
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_LONG, v};
+}
+CULEBRA_RT_INLINE JitValue _jit_counter_add(JitClosure*, JitValue self,
+                                            int64_t n, JitValue* args) {
+  // Param type-check BEFORE the closed check: the interp binder rejects
+  // when binding the call, before the body's get_or_throw runs — so a
+  // dropped counter with a wrong-typed arg is a TypeError there, not a
+  // ClosedError. Position: the ARGUMENT's when the as-value indirect-call
+  // codegen threaded _jit_argpos_* (like the ns-method trampoline); a
+  // direct method call doesn't thread it and falls back to the call site
+  // (the same residual family as typed user-method params on the JIT).
+  if (n < 1 || args[0].tag != TAG_LONG) {
+    culebra_runtime_value_release(self.tag, self.data);
+    const bool ap = _jit_argpos_n > 0;
+    throw culebra::CulebraError(
+        "TypeError", "type error: parameter 'n' expects Long",
+        ap ? _jit_argpos_line[0] : _jit_call_arg0_line,
+        ap ? _jit_argpos_col[0] : _jit_call_arg0_col);
+  }
+  _jit_counter_self(self)->add(args[0].data);
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_counter_label(JitClosure*, JitValue self,
+                                              int64_t, JitValue*) {
+  std::string out = _jit_counter_self(self)->label();
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
+// The three return-ownership shapes (design 10.3).
+CULEBRA_RT_INLINE JitValue _jit_counter_clone(JitClosure*, JitValue self,
+                                              int64_t, JitValue*) {
+  using culebra::foreign_fixture::Counter;
+  auto* c = _jit_counter_self(self);
+  auto id = culebra::foreign::table<Counter>().adopt(
+      std::make_unique<Counter>(c->clone()));
+  culebra_runtime_value_release(self.tag, self.data);
+  return _culebra_foreign_counter_handle(id);
+}
+CULEBRA_RT_INLINE JitValue _jit_counter_fork(JitClosure*, JitValue self,
+                                             int64_t, JitValue*) {
+  using culebra::foreign_fixture::Counter;
+  auto* c = _jit_counter_self(self);
+  auto id = culebra::foreign::table<Counter>().adopt(c->fork());
+  culebra_runtime_value_release(self.tag, self.data);
+  return _culebra_foreign_counter_handle(id);
+}
+CULEBRA_RT_INLINE JitValue _jit_counter_share(JitClosure*, JitValue self,
+                                              int64_t, JitValue*) {
+  using culebra::foreign_fixture::Counter;
+  auto* c = _jit_counter_self(self);
+  auto id = culebra::foreign::table<Counter>().adopt_shared(c->share());
+  culebra_runtime_value_release(self.tag, self.data);
+  return _culebra_foreign_counter_handle(id);
+}
+// The drop event (design 9): erase the table entry -- ~Counter runs now.
+// Idempotent; exactly-once across explicit/auto/backstop comes from the
+// handle's `dropped` flag (Phase 1).
+CULEBRA_RT_INLINE JitValue _jit_counter_drop(JitClosure*, JitValue self,
+                                             int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release
+  // self (it arrives without a +1, unlike every other handle method).
+  using culebra::foreign_fixture::Counter;
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  culebra::foreign::table<Counter>().erase(_jit_handle_long(h, "_id"));
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_foreign_counter_handle(int64_t id) {
+  // Multi-object construction: the method closures are unrooted until
+  // slotted into `h` (same reasoning as _jit_build_namespace_object) —
+  // a GC_STRESS collect mid-build would sweep them.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__foreign__",
+                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(
+                                            _intern_str("Counter"))},
+                   false);
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  _jit_handle_bind_method(h, "value", _jit_counter_value, 0);
+  _jit_handle_bind_method(h, "add", _jit_counter_add, 1);
+  _jit_handle_bind_method(h, "label", _jit_counter_label, 0);
+  _jit_handle_bind_method(h, "clone", _jit_counter_clone, 0);
+  _jit_handle_bind_method(h, "fork", _jit_counter_fork, 0);
+  _jit_handle_bind_method(h, "share", _jit_counter_share, 0);
+  _jit_handle_bind_method(h, "drop", _jit_counter_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   // A native handle is not Sendable — reject it at the serialize boundary
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  auto fn = [&](const char* name, auto* f, size_t ar) {
-    h->set_or_append(name,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-            _jit_make_handle_method(f, ar))}, false);
-  };
-  fn("read", _jit_file_read, 0);
-  fn("write", _jit_file_write, 1);
-  fn("flush", _jit_file_flush, 0);
-  fn("seek", _jit_file_seek, 1);
-  fn("tell", _jit_file_tell, 0);
-  fn("lines", _jit_file_lines, 0);
-  fn("chunks", _jit_file_chunks, 1);
-  fn("close", _jit_file_close, 0);
-  fn("drop", _jit_file_drop, 0);
+  _jit_handle_bind_method(h, "read", _jit_file_read, 0);
+  _jit_handle_bind_method(h, "write", _jit_file_write, 1);
+  _jit_handle_bind_method(h, "flush", _jit_file_flush, 0);
+  _jit_handle_bind_method(h, "seek", _jit_file_seek, 1);
+  _jit_handle_bind_method(h, "tell", _jit_file_tell, 0);
+  _jit_handle_bind_method(h, "lines", _jit_file_lines, 0);
+  _jit_handle_bind_method(h, "chunks", _jit_file_chunks, 1);
+  _jit_handle_bind_method(h, "close", _jit_file_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_file_drop, 0);
   // Through the bind chokepoint, not a bare `has_drop = true`: the
   // handle must also register on the owned stack, or a cycle-held File
   // would miss its deterministic scope-exit drop (the interp's handle
@@ -2469,6 +2586,17 @@ inline JitValue _ns_fs_write(JitValue* a, int64_t) {
   culebra_runtime_write_file(_ns_adapt::take_str(a[0]),
                               _ns_adapt::take_str(a[1]), 0, 0);
   return _ns_adapt::v_nil();
+}
+
+// __Foreign.Counter (nested namespace, slow-path only).
+inline JitValue _ns_foreign_counter_new(JitValue* a, int64_t) {
+  using culebra::foreign_fixture::Counter;
+  auto id = culebra::foreign::table<Counter>().adopt(
+      std::make_unique<Counter>(a[0].data));
+  return _culebra_foreign_counter_handle(id);
+}
+inline JitValue _ns_foreign_counter_live(JitValue*, int64_t) {
+  return {TAG_LONG, culebra::foreign_fixture::Counter::live()};
 }
 
 // File.open(path, mode="r") -> handle. File.with(path, mode, fn) -> block value.
@@ -3775,6 +3903,10 @@ inline const NsMethod kNsMethods[] = {
   {"Encoding", "decode",   1, &_ns_encoding_hex_decode, "hex",    "String", "s"},
   {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
   {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
+  // Nested `__Foreign.<T>` PoC binding (foreign.h / foreign_fixture.h).
+  {"__Foreign", "new",  1, &_ns_foreign_counter_new, "Counter", "Long", "start"},
+  {"__Foreign", "live", 0, &_ns_foreign_counter_live, "Counter"},
+
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
   {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
 
@@ -6020,7 +6152,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
-      "Signal",  "Encoding", "Compress",  "SharedBuffer",
+      "Signal",  "Encoding", "Compress",  "SharedBuffer", "__Foreign",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

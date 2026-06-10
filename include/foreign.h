@@ -27,11 +27,13 @@
 // Runtime (kSlotForeignTables), so isolates get independent instances
 // and teardown happens with the Runtime.
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <typeindex>
+#include <unordered_map>
 
 #include <shared.h>
 
@@ -72,21 +74,39 @@ class ForeignTable {
     std::unique_ptr<T> owned;
     std::shared_ptr<T> shared;
   };
-  std::map<int64_t, Entry> entries_;
+  std::unordered_map<int64_t, Entry> entries_;
   int64_t next_id_ = 1;
 };
 
 // Type-erased per-Runtime registry: one ForeignTable<T> per wrapped T.
 struct ForeignTables {
   std::map<std::type_index, std::shared_ptr<void>> tables;
+  // Unique per registry instance, so the per-T thread_local memo in
+  // table() can never alias across RuntimeScope swaps, Runtime address
+  // reuse, or the lazy revival of an empty registry during ~Runtime
+  // teardown.
+  const uint64_t gen = next_gen();
+  static uint64_t next_gen() {
+    static std::atomic<uint64_t> g{1};
+    return g.fetch_add(1, std::memory_order_relaxed);
+  }
 };
 
 template <class T>
 inline ForeignTable<T>& table() {
   auto& reg = runtime_substate<ForeignTables>(kSlotForeignTables);
-  auto& slot = reg.tables[std::type_index(typeid(T))];
-  if (!slot) slot = std::make_shared<ForeignTable<T>>();
-  return *static_cast<ForeignTable<T>*>(slot.get());
+  // Every method call resolves its table; memoize the type-index walk
+  // behind the registry's generation stamp (File gets the same effect
+  // from its dedicated RuntimeSlot).
+  static thread_local uint64_t cached_gen = 0;
+  static thread_local ForeignTable<T>* cached = nullptr;
+  if (cached_gen != reg.gen) {
+    auto& slot = reg.tables[std::type_index(typeid(T))];
+    if (!slot) slot = std::make_shared<ForeignTable<T>>();
+    cached = static_cast<ForeignTable<T>*>(slot.get());
+    cached_gen = reg.gen;
+  }
+  return *cached;
 }
 
 // Method-entry guard: the live instance, or the §7 safety error. The

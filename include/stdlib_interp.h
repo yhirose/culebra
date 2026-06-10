@@ -2245,15 +2245,15 @@ inline Value make_file_handle(int64_t id) {
 inline Value make_counter_handle(int64_t id);
 
 // Wrap a returned instance per its §10.3 ownership shape.
-inline Value _counter_wrap_owned(foreign_fixture::Counter v) {
-  auto id = foreign::table<foreign_fixture::Counter>().adopt(
-      std::make_unique<foreign_fixture::Counter>(std::move(v)));
-  return make_counter_handle(id);
-}
 inline Value _counter_wrap_unique(
     std::unique_ptr<foreign_fixture::Counter> p) {
   auto id = foreign::table<foreign_fixture::Counter>().adopt(std::move(p));
   return make_counter_handle(id);
+}
+// By value = the unique shape after one move-in (foreign.h's lowering).
+inline Value _counter_wrap_owned(foreign_fixture::Counter v) {
+  return _counter_wrap_unique(
+      std::make_unique<foreign_fixture::Counter>(std::move(v)));
 }
 inline Value _counter_wrap_shared(
     std::shared_ptr<foreign_fixture::Counter> p) {
@@ -2271,75 +2271,74 @@ inline Value make_counter_handle(int64_t id) {
   // A foreign instance lives in a process-local table — not Sendable.
   h.initialize("__nonsendable__", Value(true), false);
 
-  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
-    return env->get("this").to_object().get("_id").to_long();
+  // The method prototypes capture nothing per-instance (the foreign
+  // table is resolved per call, `this` per invocation), so they are
+  // built once and copied into each handle — initialize() copies into
+  // the property map either way.
+  static const auto hid = [](const std::shared_ptr<Environment>& env) {
+    return static_cast<int64_t>(
+        env->get("this").to_object().get("_id").to_long());
   };
   // The live instance, or ClosedError (§7) — every method's first step.
-  auto self = [hid](const std::shared_ptr<Environment>& env) -> Counter* {
+  static const auto self =
+      [](const std::shared_ptr<Environment>& env) -> Counter* {
     long line = env->get("__LINE__").to_long();
     long col = env->get("__COLUMN__").to_long();
     return foreign::get_or_throw<Counter>(hid(env), "Counter", line, col);
   };
 
-  h.initialize(
-      "value",
-      Value(FunctionValue({},
-                          [self](std::shared_ptr<Environment> env) {
-                            return Value(static_cast<long>(self(env)->value()));
-                          },
-                          "Long"sv)),
-      false);
-  h.initialize(
-      "add",
-      Value(FunctionValue({{"n", false, "Long"sv}},
-                          [self](std::shared_ptr<Environment> env) {
-                            self(env)->add(env->get("n").to_long());
-                            return Value();
-                          })),
-      false);
-  h.initialize(
-      "label",
-      Value(FunctionValue({},
-                          [self](std::shared_ptr<Environment> env) {
-                            return Value(self(env)->label());
-                          },
-                          "String"sv)),
-      false);
+  static const Value m_value(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> env) {
+        return Value(static_cast<long>(self(env)->value()));
+      },
+      "Long"sv));
+  static const Value m_add(FunctionValue(
+      {{"n", false, "Long"sv}}, [](std::shared_ptr<Environment> env) {
+        self(env)->add(env->get("n").to_long());
+        return Value();
+      }));
+  static const Value m_label(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> env) {
+        return Value(self(env)->label());
+      },
+      "String"sv));
   // The three return-ownership shapes (§10.3).
-  h.initialize(
-      "clone",
-      Value(FunctionValue({},
-                          [self](std::shared_ptr<Environment> env) {
-                            return _counter_wrap_owned(self(env)->clone());
-                          },
-                          "Object"sv)),
-      false);
-  h.initialize(
-      "fork",
-      Value(FunctionValue({},
-                          [self](std::shared_ptr<Environment> env) {
-                            return _counter_wrap_unique(self(env)->fork());
-                          },
-                          "Object"sv)),
-      false);
-  h.initialize(
-      "share",
-      Value(FunctionValue({},
-                          [self](std::shared_ptr<Environment> env) {
-                            return _counter_wrap_shared(self(env)->share());
-                          },
-                          "Object"sv)),
-      false);
+  static const Value m_clone(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> env) {
+        return _counter_wrap_owned(self(env)->clone());
+      },
+      "Object"sv));
+  static const Value m_fork(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> env) {
+        return _counter_wrap_unique(self(env)->fork());
+      },
+      "Object"sv));
+  static const Value m_share(FunctionValue(
+      {},
+      [](std::shared_ptr<Environment> env) {
+        return _counter_wrap_shared(self(env)->share());
+      },
+      "Object"sv));
   // The drop event (§9): erase the table entry — ~Counter runs NOW.
   // Idempotent, and the explicit/auto/backstop union stays exactly-once
   // through the Phase 1 `dropped` flag on the handle.
-  h.initialize(
-      "drop",
-      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+  static const Value m_drop(
+      FunctionValue({}, [](std::shared_ptr<Environment> env) {
         foreign::table<Counter>().erase(hid(env));
         return Value();
-      })),
-      false);
+      }));
+
+  h.initialize("value", m_value, false);
+  h.initialize("add", m_add, false);
+  h.initialize("label", m_label, false);
+  h.initialize("clone", m_clone, false);
+  h.initialize("fork", m_fork, false);
+  h.initialize("share", m_share, false);
+  h.initialize("drop", m_drop, false);
   return Value(std::move(h));
 }
 
@@ -2351,10 +2350,8 @@ inline Value make_foreign_namespace() {
       "new",
       Value(FunctionValue({{"start", false, "Long"sv}},
                           [](std::shared_ptr<Environment> env) {
-                            auto id = foreign::table<Counter>().adopt(
-                                std::make_unique<Counter>(
-                                    env->get("start").to_long()));
-                            return make_counter_handle(id);
+                            return _counter_wrap_unique(std::make_unique<Counter>(
+                                env->get("start").to_long()));
                           },
                           "Object"sv)),
       false);

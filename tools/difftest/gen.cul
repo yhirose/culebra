@@ -475,4 +475,26 @@ for s in svs {
   case("svord|" + s, s)
 }
 
+# --- Dimension 25: Foreign binding (__Foreign.Counter PoC) ----------------
+# The hand-bound C++ class: construction, thunk dispatch, the three
+# return-ownership shapes, ClosedError after drop, marshalling errors —
+# message and position must match across backends (the §10.3 check).
+let fns = [
+  '{ let c = __Foreign.Counter.new(5); c.add(2); c.value() }',
+  '{ let c = __Foreign.Counter.new(5); c.label() }',
+  '{ let c = __Foreign.Counter.new(1); let b = c.clone(); b.add(9); (c.value(), b.value()) }',
+  '{ let c = __Foreign.Counter.new(1); c.fork().value() }',
+  '{ let c = __Foreign.Counter.new(1); c.share().value() }',
+  'let n0 = __Foreign.Counter.live(); { let c = __Foreign.Counter.new(1); nil }; __Foreign.Counter.live() - n0',
+  '{ let c = __Foreign.Counter.new(7); c.drop(); c.value() }',
+  '{ let c = __Foreign.Counter.new(7); c.drop(); c.drop(); __Foreign.Counter.live() }',
+  '{ let c = __Foreign.Counter.new(0); c.add("x") }',
+  '{ let c = __Foreign.Counter.new(0); c.drop(); c.add("x") }',
+  '{ let c = __Foreign.Counter.new(0); let g = c.add; g("x") }',
+  '__Foreign.Counter.new("x")',
+  '__Foreign.Counter.new()']
+for f in fns {
+  case("foreign|" + f, f)
+}
+
 print(out.join("\n"))

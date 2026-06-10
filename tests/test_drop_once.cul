@@ -42,3 +42,22 @@ assert_eq(log.size(), 3)
 # no-op yielding nil on a non-droppable value — identical on both backends.
 assert_eq([1, 2].drop(), nil)
 assert_eq({a: 1}.drop(), nil)
+
+# Explicitly-dropped objects remain LIVE objects (dropped, not freed):
+# using one afterwards — reads, writes, further method calls — must be
+# memory-safe. (Regression: the JIT's drop chokepoint used to park the
+# refcount at 0, its release-to-zero-path convention, so the next
+# retain/release pair around the dropped object freed it from under its
+# remaining references.)
+fn use_after_drop() {
+  let r = R.new(log)
+  r.drop()
+  r.extra = 1          # still writable
+  let v = r.extra      # still readable
+  assert_eq(v, 1)
+  r.drop()             # still droppable (no-op)
+  r
+}
+let kept = use_after_drop()   # and it can even escape afterwards
+assert_eq(kept.extra, 1)
+assert_eq(log.size(), 4)      # exactly one drop for this object
