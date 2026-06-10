@@ -1,0 +1,82 @@
+# Phase 3 (design §14.5): a hand-bound C++ class behind the `__Foreign`
+# namespace — Counter from include/foreign_fixture.h. End to end this
+# exercises: construction, method dispatch through the shared thunk
+# table, eager-copy marshalling (Long / String), the three return-value
+# ownership shapes (§10.3), the `closed` safety contract (§7), and the
+# Phase 1/2 drop machinery the handle rides on (deterministic scope-exit
+# drop, cycles included, exactly-once).
+#
+# `__Foreign.Counter.live()` counts constructed-but-undestroyed C++
+# instances: the oracle for when ~Counter actually ran.
+
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Construction, methods, marshalling. ---
+{
+  let c = __Foreign.Counter.new(10)
+  assert_eq(__Foreign.Counter.live(), 1)
+  assert_eq(c.value(), 10)
+  c.add(5)
+  assert_eq(c.value(), 15)
+  assert_eq(c.label(), 'Counter(15)')
+}
+# Scope exit dropped the instance: ~Counter ran (deterministic, §14.3).
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Return-value ownership (§10.3): by value / unique_ptr / shared_ptr.
+{
+  let a = __Foreign.Counter.new(1)
+  let b = a.clone()      # by value -> a NEW owning Foreign
+  b.add(100)
+  assert_eq(a.value(), 1)        # independent instances
+  assert_eq(b.value(), 101)
+  let u = a.fork()       # unique_ptr -> ownership transferred to culebra
+  assert_eq(u.value(), 1)
+  let s = a.share()      # shared_ptr -> the Foreign holds one share
+  assert_eq(s.value(), 1)
+  assert_true(__Foreign.Counter.live() >= 4)
+}
+assert_eq(__Foreign.Counter.live(), 0)   # every shape released its own
+
+# --- Explicit drop: eager close, then `closed` safety (§7), exactly once.
+{
+  let c = __Foreign.Counter.new(7)
+  c.drop()
+  assert_eq(__Foreign.Counter.live(), 0)  # ~Counter ran NOW
+  mut kind = nil
+  try { c.value() } catch e { kind = e.kind }
+  assert_eq(kind, 'ClosedError')          # memory-safe logical error
+  c.drop()                                # second drop: no-op
+  assert_eq(__Foreign.Counter.live(), 0)
+}
+
+# --- Phase 2 integration: a Foreign held in a reference cycle still
+# drops at the owning scope's exit.
+fn cyc() {
+  let c = __Foreign.Counter.new(3)
+  c.me = c
+  nil
+}
+fn run_cyc() { cyc(); nil }
+run_cyc()
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Escape: ownership follows the value out of the creating scope.
+fn make() { __Foreign.Counter.new(42) }
+{
+  let kept = make()
+  assert_eq(__Foreign.Counter.live(), 1)
+  assert_eq(kept.value(), 42)
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Marshalling errors stay symmetric: wrong arg type is a TypeError
+# at the argument, like every builtin (calling-convention single source).
+{
+  let c = __Foreign.Counter.new(0)
+  mut kind = nil
+  try { c.add('x') } catch e { kind = e.kind }
+  assert_eq(kind, 'TypeError')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
