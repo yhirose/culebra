@@ -1921,7 +1921,9 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
   fn("poll", _jit_handle_poll, 0);
   fn("kill", _jit_handle_kill, 0);
   fn("drop", _jit_handle_drop, 0);
-  h->has_drop = true;
+  // Bind chokepoint (has_drop + owned-stack registration) — see the
+  // File handle note below.
+  _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -2073,7 +2075,11 @@ CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   fn("chunks", _jit_file_chunks, 1);
   fn("close", _jit_file_close, 0);
   fn("drop", _jit_file_drop, 0);
-  h->has_drop = true;
+  // Through the bind chokepoint, not a bare `has_drop = true`: the
+  // handle must also register on the owned stack, or a cycle-held File
+  // would miss its deterministic scope-exit drop (the interp's handle
+  // registers via initialize()).
+  _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
