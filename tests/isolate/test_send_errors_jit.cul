@@ -38,4 +38,26 @@ assert_eq(h, "SendError: a native handle is not Sendable")
 let r = caught(fn () { Isolate.spawn(fn () { File.open("README.md", "r") }).join() })
 assert_eq(r, "SendError: a native handle is not Sendable")
 
+# A native (C++-bodied) closure is not Sendable: an iterator's wrapper
+# closures, an ns-method as a value, and a variant constructor all carry
+# state that cannot cross the heap boundary. The JIT used to ship the raw
+# fn_ptr + captures — a captured lazy iterator then hung or crashed the
+# child when it pulled from parent-heap cells.
+let it = [1, 2].iter().map(|x| x)
+let i1 = caught(fn () { Isolate.spawn(fn () { it.collect() }).join() })
+assert_eq(i1, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+
+let nsf = Math.abs
+let i2 = caught(fn () { Isolate.spawn(fn () { nsf(-3) }).join() })
+assert_eq(i2, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+
+enum SendShape { Circle(Long), Dot }
+let ctor = SendShape.Circle
+let i3 = caught(fn () { Isolate.spawn(fn () { ctor(2) }).join() })
+assert_eq(i3, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+
+# User closures and multimethods still cross fine.
+let g = fn (x) { x * 2 }
+assert_eq(Isolate.spawn(fn () { g(21) }).join(), 42)
+
 puts("test_send_errors_jit: all assertions passed")

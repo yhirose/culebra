@@ -140,3 +140,13 @@ assert_eq(rn.message, 'type error: map expects a 1-parameter function')
 let rj = try { [1, 2].map(JSON.stringify); nil } catch e { e }
 assert_eq(rj.kind, 'TypeError')
 assert_eq(rj.message, 'type error: map expects a 1-parameter function')
+
+# --- A destructuring pattern param works on every HOF path -------------------
+# The JIT's inline fusion (literal lambda map/filter/reduce, iter fusion) used
+# to bind the pattern param as an unnamed slot and NameError on the body's
+# first read; it now declines to the runtime helper, whose prologue unpacks.
+let pf = fn ((a, b)) { a + b }
+assert_eq([(1, 2)].map(pf), [3])
+assert_eq([(1, 2)].map(fn ((a, b)) { a + b }), [3])
+assert_eq([(1, 2)].reduce(0, fn (acc, (a, b)) { acc + a + b }), 3)
+assert_eq([(1, 2)].iter().map(fn ((a, b)) { a + b }).collect(), [3])

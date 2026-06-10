@@ -551,4 +551,20 @@ for t in tps {
   case("typos|" + t, t)
 }
 
+# --- Dimension 27: destructuring pattern params as HOF callbacks -----------
+# `fn ((a, b))` through every callback path. The JIT's inline fusion used to
+# bind the pattern as an unnamed slot and NameError on the body's first read.
+let pps = [
+  '[(1, 2)].map(fn ((a, b)) { a + b })',
+  'let f = fn ((a, b)) { a + b }; [(1, 2), (3, 4)].map(f)',
+  '[(1, 2)].filter(fn ((a, b)) { a < b })',
+  '[(1, 2), (3, 4)].reduce(0, fn (acc, (a, b)) { acc + a + b })',
+  '[(1, 2)].iter().map(fn ((a, b)) { a + b }).collect()',
+  '[(1, 2)].for_each(fn ((a, b)) { a + b })',
+  '[(2, 1)].sort_by(fn ((a, b)) { b })',
+  '[{x: 1, y: 2}].map(fn ({x, y}) { x + y })']
+for p in pps {
+  case("patcb|" + p, p)
+}
+
 print(out.join("\n"))

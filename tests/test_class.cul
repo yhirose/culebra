@@ -331,3 +331,23 @@ test_static_methods()
 test_static_multiple()
 
 puts('class-sugar OK')
+
+# --- A throwing static initializer is catchable; execution continues --------
+# The JIT used to emit the class declaration's runtime calls as invokes
+# targeting the ENCLOSING function's landingpad from inside the synthesized
+# constructor fn (emit_constructor_fn saved only the insert point, not the
+# full per-function state) — invalid IR that crashed the optimizer whenever
+# a class was declared inside a `try`.
+fn test_class_decl_throw_catchable() {
+  let r = try {
+    class ThrowingInit {
+      static v = to_long('x')
+      m() { 1 }
+    }
+    'no error'
+  } catch e { e.kind }
+  assert_eq(r, 'TypeError')
+}
+test_class_decl_throw_catchable()
+
+puts('class-sugar throw-catch OK')

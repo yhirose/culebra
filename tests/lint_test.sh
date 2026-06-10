@@ -285,5 +285,36 @@ let o = {k}'
 expect_undef_accept "enum variant names"      'enum Color { Red, Green, Blue }
 puts(Color.Red)'
 
+# Duplicate class members abort before eval on every backend (the interp
+# used to keep the first definition silently; the JIT threw a catchable
+# ImmutableError mid-definition). Static and instance members are separate
+# namespaces, so a static/instance same-name pair stays accepted.
+expect_dup_member_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
+    if [[ "$out" == *RAN* || "$out" != *"duplicate member"* ]]; then
+      echo "FAIL dup-member reject [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_dup_member_accept() {
+  printf '%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    if ! out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1); then
+      echo "FAIL dup-member accept [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+expect_dup_member_reject "method"   'class A { m() { 1 } m() { 2 } }'
+expect_dup_member_reject "arity"    'class A { m() { 1 } m(x) { x } }'
+expect_dup_member_reject "__call__" 'class A { __call__(x) { x } __call__(x) { x + 1 } }'
+expect_dup_member_reject "static"   'class A { static v = 1 static v = 2 }'
+expect_dup_member_accept "static vs instance" 'class A { static m = 1 m() { 2 } }
+puts(A.m + A.new().m())'
+expect_dup_member_accept "two classes" 'class A { m() { 1 } }
+class B { m() { 2 } }
+puts(A.new().m() + B.new().m())'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

@@ -349,8 +349,25 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       LoopDepthGuard g(loop_depth_, 0);
       std::vector<std::pair<std::string, std::string>> pk_fields;
       bool pk_ok = true;
+      // A duplicate member name in one class body is always a mistake —
+      // classes don't overload (the earlier or later definition would be
+      // silently dead), so reject pre-eval on every backend. The interp
+      // used to keep the first silently and the JIT threw a catchable
+      // ImmutableError mid-definition (leaving a half-built class behind
+      // a catch). Static and instance members live in different places
+      // (the class object vs instances), so each tracks its own set.
+      std::set<std::string, std::less<>> seen_static, seen_inst;
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
+        auto& seen = mv.is_static ? seen_static : seen_inst;
+        if (!seen.insert(std::string(mv.name)).second) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              std::format("duplicate member '{}' in class `{}`", mv.name,
+                          class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col), Severity::Error});
+        }
         if (mv.is_field || mv.is_typed_field) {
           if (is_packable && mv.is_typed_field) {
             if (!culebra::is_packable_type(mv.type_annotation)) {

@@ -141,6 +141,13 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         }
         return n;
       }
+      // A native (C++-bodied) closure is not Sendable: it can't be rebuilt
+      // on another Runtime and its captures may hold raw same-heap pointers
+      // (iterator wrappers, ns-method NsMethod*). Matches the interp's
+      // body==nullptr rejection; without this the child dereferences
+      // parent-heap state and hangs or crashes.
+      if (_jit_is_native_fn(c->fn_ptr))
+        sendable::send_error("a native/builtin function is not Sendable");
       // A `mut` capture is not Sendable: the value would silently diverge from
       // the parent's. Reject at the boundary, matching the interp (sendable.h).
       if (auto* nm = _jit_first_mut_capture(c->fn_ptr))

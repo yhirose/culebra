@@ -1893,6 +1893,7 @@ CULEBRA_RT_INLINE JitValue _jit_handle_drop(JitClosure*, JitValue self,
 
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
     JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity) {
+  _jit_register_native_fn(reinterpret_cast<const void*>(fn));
   auto* cls = new JitClosure();
   cls->refcount = 1;
   cls->fn_ptr = reinterpret_cast<void*>(fn);
@@ -4143,6 +4144,8 @@ inline JitValue _jit_ns_method_trampoline(
 }
 
 inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
+  _jit_register_native_fn(
+      reinterpret_cast<const void*>(&_jit_ns_method_trampoline));
   // Atomic w.r.t. collection: the capture cell is registered before `cls`
   // itself is, so a GC_STRESS collect mid-build would find the cell
   // unreachable (its only ref is the not-yet-registered cls) and sweep it.
