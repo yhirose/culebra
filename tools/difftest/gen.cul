@@ -497,4 +497,38 @@ for f in fns {
   case("foreign|" + f, f)
 }
 
+# --- Dimension 26: typed-param error positions -----------------------------
+# Where "parameter '<x>' expects <T>" points: the interp binder reports a
+# POSITIONAL argument at its own expression and a kwarg-/default-filled
+# slot at the call site. The JIT once baked the fn-definition (or call)
+# position; the prologue now resolves it per call via the argpos/call-site
+# thread-locals. One case per call shape that threads positions: direct,
+# kwargs (static + splat), property method, UFCS receiver/arg, add-dispatch,
+# and the parenthesized-receiver builtin rich errors. These are single-line
+# cases, so the probe's e.col is what makes them load-bearing.
+let tps = [
+  'let f = fn (n: Long) { n }; f("x")',
+  'let f = fn (a: Long, b: Long) { a }; f(1, "x")',
+  'let f = fn (n: Long) { n }; f(n: "x")',
+  'let f = fn (a: Long, b: Long) { a }; f("x", b: 2)',
+  'let f = fn (a: Long, b: Long) { a }; f(1, b: "x")',
+  'let f = fn (a: Long, b: Long = "x") { a }; f(1)',
+  'let f = fn (a: Long, b: Long) { a }; f(**{a: 1, b: "x"})',
+  'let o = {m: fn (n: Long) { n }}; o.m("x")',
+  'let o = {m: fn (a: Long, b: Long) { a }}; o.m(1, b: "x")',
+  'let o = {m: fn (a: Long, b: Long) { a }}; o.m("x", b: 2)',
+  'let f = fn (n: Long, m: Long) { n }; "x".f(1)',
+  'let f = fn (n: Long, m: Long) { n }; (1).f("x")',
+  'let f = fn (n: Long, m: Long) { n }; "x".f(m: 1)',
+  'let o = {add: fn (n: Long) { n }}; o.add("x")',
+  '("abc").contains(0)',
+  '("abc").split(0)',
+  '([1, 2]).join(0)',
+  '("abc").slice(0, "x")',
+  '([3, 1]).sort_by()',
+  '([3, 1]).sort_by(1, 2)']
+for t in tps {
+  case("typos|" + t, t)
+}
+
 print(out.join("\n"))

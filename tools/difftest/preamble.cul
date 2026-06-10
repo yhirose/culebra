@@ -10,7 +10,7 @@ fn _p(label, thunk) {
   let r = try { "ok=" + _show(thunk()) }
     catch e {
       "err=" + e.kind + "|" + e.message + "|" +
-        e.line.to_string() + "|" + e.column.to_string()
+        e.line.to_string() + "|" + e.col.to_string()
     }
   print(label + " ::: " + r + "\n")
 }

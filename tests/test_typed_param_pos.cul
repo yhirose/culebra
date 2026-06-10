@@ -1,0 +1,77 @@
+# Typed-parameter error positions (interp/JIT/AOT symmetric — Task #10).
+# The binder contract: a POSITIONAL argument that fails its `: T` check is
+# reported at that argument's own expression; a kwarg-/default-filled slot
+# is reported at the call site. The JIT once baked the fn-definition
+# position into the prologue check; it now resolves the position per call
+# (culebra_runtime_param_pos reading the argpos/call-site thread-locals).
+# Columns are load-bearing in every assert — keep each case on one line.
+
+fn check(label, e, line, col) {
+  assert_eq(e.kind + '|' + to_string(e.line) + '|' + to_string(e.col),
+            'TypeError|' + to_string(line) + '|' + to_string(col), label)
+}
+
+# --- Direct call of a typed lambda: argument position. ---
+let f1 = fn (n: Long) { n }
+let e1 = try { f1('x') } catch e { e }
+check('direct', e1, 16, 19)
+
+# --- Second positional argument: its own position, not arg0's. ---
+let f2 = fn (a: Long, b: Long) { a }
+let e2 = try { f2(1, 'x') } catch e { e }
+check('second-pos', e2, 21, 22)
+
+# --- Kwarg-filled slot: call site. ---
+let e3 = try { f2(1, b: 'x') } catch e { e }
+check('kwarg', e3, 25, 16)
+
+# --- Positional in a mixed static-kwargs call: argument position. ---
+let e4 = try { f2('x', b: 2) } catch e { e }
+check('mixed-pos', e4, 29, 19)
+
+# --- Default-filled slot producing a bad value: call site. ---
+let f3 = fn (a: Long, b: Long = 'x') { a }
+let e5 = try { f3(1) } catch e { e }
+check('default', e5, 34, 16)
+
+# --- Dynamic splat (runtime kwargs path): call site. ---
+let e6 = try { f2(**{a: 1, b: 'x'}) } catch e { e }
+check('splat', e6, 38, 16)
+
+# --- Property method: argument position. ---
+let o1 = { m: fn (n: Long) { n } }
+let e7 = try { o1.m('x') } catch e { e }
+check('method', e7, 43, 21)
+
+# --- Property method with kwargs: positional reports its position. ---
+let o2 = { m: fn (a: Long, b: Long) { a } }
+let e8 = try { o2.m('x', b: 2) } catch e { e }
+check('method-kw-pos', e8, 48, 21)
+
+# --- UFCS: the receiver is positional[0], reported at the DOT name. ---
+let f4 = fn (n: Long, m: Long) { n }
+let e9 = try { 'x'.f4(1) } catch e { e }
+check('ufcs-recv', e9, 53, 20)
+
+# --- UFCS: a later argument reports its own position. ---
+let e10 = try { (1).f4('x') } catch e { e }
+check('ufcs-arg', e10, 57, 24)
+
+# --- `.add` dispatch (Set-vs-Object runtime branch): argument position. ---
+let o3 = { add: fn (n: Long) { n } }
+let e11 = try { o3.add('x') } catch e { e }
+check('add-dispatch', e11, 62, 24)
+
+# --- Builtin StringLike argument: argument position. ---
+let e12 = try { 'abc'.contains(0) } catch e { e }
+check('builtin-sub', e12, 66, 32)
+
+# --- Builtin rich binder error on a parenthesized receiver: chain root. ---
+let e13 = try { ([3, 1]).sort_by(1, 2) } catch e { e }
+check('sortby-rich', e13, 70, 18)
+
+# --- Parenthesized callee: the kwarg fallback points at the callee, not `(`. ---
+let e14 = try { (f1)(n: 'x') } catch e { e }
+check('paren-kwarg', e14, 74, 18)
+
+puts('test_typed_param_pos OK')

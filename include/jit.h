@@ -1954,6 +1954,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
       "type error: {} expects {}", context, expected), line, col);
 }
 
+// Forward declaration — defined with the call-site thread-locals below.
+CULEBRA_RT_KEEP int64_t culebra_runtime_param_pos(int64_t idx,
+                                                  int64_t def_line,
+                                                  int64_t def_col);
+
+// Typed-parameter check for the user-fn prologue: identical hot path to
+// culebra_runtime_type_check, but the report position resolves on the
+// FAILURE path only (interp-binder style: positional arg → its own
+// expression via set_arg_pos, kwarg-/default-filled → the call site via
+// set_call_site, def position as last resort). Keeping the resolution
+// cold leaves the success path at exactly one runtime call per typed
+// param — the pre-existing cost. Only valid while the thread-locals are
+// still the caller's; params at/after the first default snapshot eagerly
+// instead (see the prologue).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check_param(
+    int8_t tag, int64_t data, const char* expected, const char* context,
+    int64_t idx, int64_t def_line, int64_t def_col) {
+  if (expected == nullptr || expected[0] == '\0') return;
+  if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
+  int64_t packed = culebra_runtime_param_pos(idx, def_line, def_col);
+  throw culebra::CulebraError("TypeError", std::format(
+      "type error: {} expects {}", context, expected),
+      packed >> 32, packed & 0xffffffff);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
                                                            int64_t col) {
   throw culebra::CulebraError("ZeroDivisionError", "divide by 0 error",
@@ -4817,7 +4842,10 @@ inline thread_local int64_t _jit_call_arg0_col = 0;
 // set_call_site reset it and the dispatch's body-coercion arg0 check runs
 // instead (matching interp's callback wording). Capped at K; a longer arg list
 // leaves the overflow positions at the call site.
-inline constexpr int _JIT_ARGPOS_MAX = 16;
+// 64 covers any realistic positional arity; args past the cap fall back to
+// the call-site position (a known, deterministic divergence from interp,
+// which has no cap — see the typed-param position notes).
+inline constexpr int _JIT_ARGPOS_MAX = 64;
 inline thread_local int64_t _jit_argpos_line[_JIT_ARGPOS_MAX] = {};
 inline thread_local int64_t _jit_argpos_col[_JIT_ARGPOS_MAX] = {};
 inline thread_local int _jit_argpos_n = 0;
@@ -5739,6 +5767,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_arg_pos(
     _jit_argpos_n = static_cast<int>(i) + 1;
 }
 
+// Per-element invoke for the EAGER higher-order helpers: publish the HOF
+// call site first so the callee prologue's typed-param position snapshot
+// (culebra_runtime_param_pos) never reads a stale position left by the
+// previous element's body — its inner calls overwrite the thread-locals.
+// The lazy combinators get the same per-element refresh from
+// _iter_publish_call_site / their stashed position cells.
+inline JitValue _culebra_invoke1_at(JitClosure* fn, JitValue a,
+                                    int64_t line, int64_t col) {
+  culebra_runtime_set_call_site(line, col);
+  return _culebra_invoke1(fn, a);
+}
+inline JitValue _culebra_invoke2_at(JitClosure* fn, JitValue a, JitValue b,
+                                    int64_t line, int64_t col) {
+  culebra_runtime_set_call_site(line, col);
+  return _culebra_invoke2(fn, a, b);
+}
+
 // Publish the current op's source position for the positionless-error backfill
 // (see `_jit_op_line`). Emitted just before a fallible runtime call; trivial so
 // it inlines to two stores on the cold-relative-to-the-call path.
@@ -5746,6 +5791,43 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
     int64_t line, int64_t col) {
   _jit_op_line = line;
   _jit_op_col = col;
+}
+
+// Resolve the position a typed-parameter error should report for param `idx`,
+// interp-binder style: a positional argument reports at its own expression
+// (set_arg_pos), a kwarg-/default-filled slot at the call site (set_call_site);
+// the baked def position is the last resort for C++-driven entries that never
+// ran set_call_site. Returned packed (line << 32 | col) so the prologue
+// snapshot is one call per typed param. Snapshotted BEFORE defaults bind —
+// a default expression's own calls clobber the thread-locals.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_param_pos(
+    int64_t idx, int64_t def_line, int64_t def_col) {
+  int64_t l = def_line, c = def_col;
+  if (idx >= 0 && idx < _jit_argpos_n) {
+    l = _jit_argpos_line[idx];
+    c = _jit_argpos_col[idx];
+  } else if (_jit_call_site_line) {
+    l = _jit_call_site_line;
+    c = _jit_call_site_col;
+  }
+  return (l << 32) | (c & 0xffffffff);
+}
+
+// Batched form of set_call_site + N× set_arg_pos: one runtime call per
+// call site instead of N+1. `packed` is a compile-time constant array of
+// (line << 32 | col) — every position the codegen publishes is static —
+// so the emitter puts it in rodata. The resulting thread-local state is
+// identical to the per-arg calls, including `_jit_argpos_n`, whose
+// "0 = HOF body-coercion path" meaning downstream readers rely on.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
+    int64_t line, int64_t col, int64_t n, const int64_t* packed) {
+  culebra_runtime_set_call_site(line, col);
+  int64_t k = n < _JIT_ARGPOS_MAX ? n : _JIT_ARGPOS_MAX;
+  for (int64_t i = 0; i < k; i++) {
+    _jit_argpos_line[i] = packed[i] >> 32;
+    _jit_argpos_col[i] = packed[i] & 0xffffffff;
+  }
+  _jit_argpos_n = static_cast<int>(k);
 }
 
 // Record the position of a HOF's callback argument (see _jit_callback_arg_*),
@@ -6499,7 +6581,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    auto r = _culebra_invoke1(fn, v);
+    auto r = _culebra_invoke1_at(fn, v, line, col);
     _culebra_value_release_impl(r.tag, r.data);
   }
 }
@@ -6514,7 +6596,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    acc = _culebra_invoke2(fn, acc, v);
+    acc = _culebra_invoke2_at(fn, acc, v, line, col);
   }
   *out_tag = acc.tag;
   *out_data = acc.data;
@@ -6529,7 +6611,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
     culebra_runtime_value_retain(v.tag, v.data);  // an extra +1 for the call
-    auto r = _culebra_invoke1(fn, v);
+    auto r = _culebra_invoke1_at(fn, v, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
@@ -6550,7 +6632,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    auto r = _culebra_invoke1(fn, v);
+    auto r = _culebra_invoke1_at(fn, v, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) return 1;
@@ -6565,7 +6647,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
   auto* has_next_cls = _iter_has_next_closure({it, id});
   auto* next_cls = _iter_next_closure({it, id});
   while (_iter_pull(has_next_cls, next_cls, {it, id}, v)) {
-    auto r = _culebra_invoke1(fn, v);
+    auto r = _culebra_invoke1_at(fn, v, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (!keep) return 0;
@@ -7658,7 +7740,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     culebra_runtime_array_push(out, r.tag, r.data);
   }
   return out;
@@ -7671,7 +7753,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
@@ -7688,7 +7770,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_for_each(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     _culebra_value_release_impl(r.tag, r.data);
   }
 }
@@ -7701,7 +7783,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
@@ -7721,7 +7803,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_any(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) return 1;
@@ -7735,7 +7817,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_all(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (!keep) return 0;
@@ -7750,7 +7832,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_flat_map(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1(fn, e);
+    JitValue r = _culebra_invoke1_at(fn, e, line, col);
     if (r.tag != TAG_ARRAY) {
       _culebra_value_release_impl(r.tag, r.data);
       throw culebra::CulebraError("TypeError",
@@ -7783,7 +7865,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
     for (size_t i = 0; i < arr->size; i++) {
       auto e = arr->items[i];
       culebra_runtime_value_retain(e.tag, e.data);
-      keyed.emplace_back(_culebra_invoke1(fn, e), i);
+      keyed.emplace_back(_culebra_invoke1_at(fn, e, line, col), i);
     }
     std::stable_sort(keyed.begin(), keyed.end(),
                      [reverse, line, col](const auto& a, const auto& b) {
@@ -7824,7 +7906,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
     for (size_t i = 0; i < arr->size; i++) {
       auto e = arr->items[i];
       culebra_runtime_value_retain(e.tag, e.data);
-      keyed.emplace_back(_culebra_invoke1(fn, e), i);
+      keyed.emplace_back(_culebra_invoke1_at(fn, e, line, col), i);
     }
     std::stable_sort(keyed.begin(), keyed.end(),
                      [reverse, line, col](const auto& a, const auto& b) {
@@ -7859,7 +7941,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
   for (size_t i = 0; i < arr->size; i++) {
     auto e = arr->items[i];
     culebra_runtime_value_retain(e.tag, e.data);
-    acc = _culebra_invoke2(fn, acc, e);
+    acc = _culebra_invoke2_at(fn, acc, e, line, col);
   }
   *out_tag = acc.tag;
   *out_data = acc.data;
@@ -8866,6 +8948,9 @@ inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
 inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
 inline constexpr auto set_arg_pos         = "culebra_runtime_set_arg_pos";
+inline constexpr auto set_call_positions  = "culebra_runtime_set_call_positions";
+inline constexpr auto param_pos           = "culebra_runtime_param_pos";
+inline constexpr auto type_check_param    = "culebra_runtime_type_check_param";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
 inline constexpr auto cell_new            = "culebra_runtime_cell_new";
 inline constexpr auto cell_release        = "culebra_runtime_cell_release";
@@ -10309,6 +10394,32 @@ struct JIT {
   size_t current_line_ = 0;
   size_t current_column_ = 0;
 
+  // Root position of the call chain being compiled — the CALL node's
+  // callee child, interp's call_callee_position. Rich builtin-binder
+  // errors (emit_builtin_arity_check) report here; 0 = no call context
+  // (fall back to current_line_/current_column_). Saved/restored by the
+  // CALL walks so a nested call inside an argument expression doesn't
+  // leak its root into later postfixes of the outer chain.
+  size_t call_root_line_ = 0;
+  size_t call_root_col_ = 0;
+
+  struct CallRootSaver {
+    JIT& j;
+    size_t saved_line, saved_col;
+    CallRootSaver(JIT& jit, const peg::Ast& call_ast)
+        : j(jit), saved_line(jit.call_root_line_),
+          saved_col(jit.call_root_col_) {
+      std::tie(j.call_root_line_, j.call_root_col_) =
+          culebra::call_callee_position(call_ast);
+    }
+    ~CallRootSaver() {
+      j.call_root_line_ = saved_line;
+      j.call_root_col_ = saved_col;
+    }
+    CallRootSaver(const CallRootSaver&) = delete;
+    CallRootSaver& operator=(const CallRootSaver&) = delete;
+  };
+
   // Debug mode flag
   bool debug_enabled_ = false;
 
@@ -10692,6 +10803,20 @@ struct JIT {
     return builder_.getInt64(static_cast<int64_t>(current_column_));
   }
 
+  // Call-site position as the interp binder reports it: the call chain's
+  // root (call_callee_position), which differs from current_line_/col for
+  // a parenthesized callee — peglib's paren collapse leaves the CALL node
+  // at `(` while the callee child points inside. Used by the set_call_site
+  // emissions feeding typed-param / dispatch error positions.
+  llvm::Value* call_root_line_val() {
+    return builder_.getInt64(static_cast<int64_t>(
+        call_root_line_ ? call_root_line_ : current_line_));
+  }
+  llvm::Value* call_root_col_val() {
+    return builder_.getInt64(static_cast<int64_t>(
+        call_root_line_ ? call_root_col_ : current_column_));
+  }
+
   void emit_type_error() {
     emit_call(
         module_->getOrInsertFunction(rt::type_error,
@@ -10870,15 +10995,46 @@ struct JIT {
   void emit_type_check(llvm::Value* val, std::string_view expected_type,
                        std::string_view context,
                        const peg::Ast* arg_ast = nullptr) {
+    auto lineV = arg_ast ? builder_.getInt64(arg_ast->line) : current_line_val();
+    auto colV = arg_ast ? builder_.getInt64(arg_ast->column)
+                        : current_column_val();
+    emit_type_check_at(val, expected_type, context, lineV, colV);
+  }
+
+  // Prologue typed-param check whose report position resolves on the
+  // runtime FAILURE path (culebra_runtime_type_check_param): success cost
+  // is identical to emit_type_check. The baked current position is the
+  // last-resort fallback for entries that never ran set_call_site.
+  void emit_type_check_param(llvm::Value* val, std::string_view expected_type,
+                             std::string_view context, size_t param_idx) {
+    if (expected_type.empty() || expected_type == "Any") return;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
+    auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::type_check_param, builder_.getVoidTy(),
+            builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty()),
+        {extract_tag(val), extract_data(val), expPtr, ctxPtr,
+         builder_.getInt64(static_cast<int64_t>(param_idx)),
+         current_line_val(), current_column_val()});
+  }
+
+  // Core type-check emission with a runtime-computed report position —
+  // the user-fn prologue passes the per-call position snapshot (see
+  // culebra_runtime_param_pos) so a typed-param error points where the
+  // interp binder points, not at the baked def position.
+  void emit_type_check_at(llvm::Value* val, std::string_view expected_type,
+                          std::string_view context, llvm::Value* lineV,
+                          llvm::Value* colV) {
     if (expected_type.empty() || expected_type == "Any") return;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto tag = extract_tag(val);
     auto data = extract_data(val);
     auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
     auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
-    auto lineV = arg_ast ? builder_.getInt64(arg_ast->line) : current_line_val();
-    auto colV = arg_ast ? builder_.getInt64(arg_ast->column)
-                        : current_column_val();
     emit_call(
         module_->getOrInsertFunction(
             rt::type_check, builder_.getVoidTy(),
@@ -16509,6 +16665,38 @@ struct JIT {
       define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
     }
 
+    // Typed-param error positions resolve per call at runtime (interp
+    // parity: a positional argument reports at its own expression, a
+    // kwarg-/default-filled slot at the call site). The common case — no
+    // earlier default — resolves on the type-check's FAILURE path
+    // (culebra_runtime_type_check_param), keeping the success path at the
+    // pre-existing one-call cost. From the first default (or `_` sink,
+    // whose release can run a drop) onward, user code may run inside the
+    // binding loop and clobber the position thread-locals before the
+    // check, so those params snapshot their position eagerly here.
+    size_t eagerPosFrom = paramNames.size();
+    for (size_t i = 0; i < paramNames.size(); i++) {
+      if (paramDefaults[i] || is_sink_name(paramNames[i])) {
+        eagerPosFrom = i;
+        break;
+      }
+    }
+    std::vector<std::pair<llvm::Value*, llvm::Value*>> paramErrPos(
+        paramNames.size(), {nullptr, nullptr});
+    for (size_t i = eagerPosFrom; i < paramNames.size(); i++) {
+      if (paramTypeNames[i].empty()) continue;
+      auto packed = emit_call(
+          module_->getOrInsertFunction(
+              rt::param_pos, builder_.getInt64Ty(), builder_.getInt64Ty(),
+              builder_.getInt64Ty(), builder_.getInt64Ty()),
+          {builder_.getInt64(static_cast<int64_t>(i)), current_line_val(),
+           current_column_val()},
+          paramNames[i] + ".errpos");
+      paramErrPos[i] = {
+          builder_.CreateLShr(packed, builder_.getInt64(32)),
+          builder_.CreateAnd(packed, builder_.getInt64(0xffffffff))};
+    }
+
     // Declared parameters: for non-defaulted params, load from args[i]
     // (the caller transferred each +1 into the slab). For defaulted
     // params, branch on `i < n_args && slab[i].tag != TAG_UNFILLED`:
@@ -16564,8 +16752,16 @@ struct JIT {
         argVal = phi;
       }
       if (!paramTypeNames[i].empty()) {
-        emit_type_check(argVal, paramTypeNames[i],
-                        std::string("parameter '") + name + "'");
+        if (paramErrPos[i].first) {
+          emit_type_check_at(argVal, paramTypeNames[i],
+                             std::string("parameter '") + name + "'",
+                             paramErrPos[i].first, paramErrPos[i].second);
+        } else {
+          // Cold-path position resolution: no user code ran since entry,
+          // so the caller's thread-locals are still live at throw time.
+          emit_type_check_param(argVal, paramTypeNames[i],
+                                std::string("parameter '") + name + "'", i);
+        }
       }
       if (is_sink_name(name)) {
         // `fn(_, _, x)`: drop each `_` arg's +1 transfer instead of
@@ -17061,6 +17257,7 @@ struct JIT {
   llvm::Value* compile_call(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
+    CallRootSaver call_root(*this, ast);
     llvm::Value* callee = compile(*calleeNode);
     auto sn = begin_safe_nav(ast);
 
@@ -17140,7 +17337,8 @@ struct JIT {
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1], callee);
+            callee = compile_method_call(method, *ast.nodes[i + 1], callee,
+                                         &postfix);
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
@@ -17602,7 +17800,8 @@ struct JIT {
   // interp's check_type (the methods declare these args `: StringLike`).
   llvm::Value* coerce_strlike_cstr(llvm::Value* val, const char* bb_prefix,
                                    bool as_receiver = false,
-                                   const char* arg_param = nullptr) {
+                                   const char* arg_param = nullptr,
+                                   const peg::Ast* arg_ast = nullptr) {
     auto tag = extract_tag(val);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto okBB = llvm::BasicBlock::Create(
@@ -17618,9 +17817,10 @@ struct JIT {
       emit_receiver_resolution_error(tag, bb_prefix);
     } else if (arg_param) {
       // We are in the not-StringLike branch, so this always throws the
-      // canonical parameter-type error (StringLike ⊇ String/StringView).
+      // canonical parameter-type error (StringLike ⊇ String/StringView)
+      // at the argument's own position, like the interp binder.
       emit_type_check(val, "StringLike",
-                      std::string("parameter '") + arg_param + "'");
+                      std::string("parameter '") + arg_param + "'", arg_ast);
       builder_.CreateUnreachable();
     } else {
       emit_type_error_typed("String", tag);
@@ -17631,9 +17831,15 @@ struct JIT {
                      {tag, extract_data(val)});
   }
 
+  // `dot_ast`, when non-null, is the DOT postfix node — the position the
+  // interp gives a UFCS receiver argument (eval_ufcs_call's dot_line/col),
+  // threaded down so a typed first param rejecting the receiver reports
+  // symmetrically. Internal callers (iter fusion fallback) pass nothing
+  // and keep the current position.
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
-                                   llvm::Value* receiver) {
+                                   llvm::Value* receiver,
+                                   const peg::Ast* dot_ast = nullptr) {
     // Explicit `obj.drop()` (no args) routes through the at-most-once guard
     // (culebra_runtime_explicit_drop → _culebra_call_drop_if_present) so an
     // explicit drop suppresses the later auto-drop, exactly as the interp's
@@ -17715,7 +17921,8 @@ struct JIT {
     bool is_builtin = known_builtin_methods().contains(method);
     const VarSlot* freeFnSlot = is_builtin ? nullptr : lookup_var(method);
     if (freeFnSlot) {
-      return compile_method_or_ufcs(method, *freeFnSlot, argsAst, receiver);
+      return compile_method_or_ufcs(method, *freeFnSlot, argsAst, receiver,
+                                    dot_ast);
     }
 
     // UFCS into an extension builtin: `x.puts()` → `puts(x)` and so on
@@ -17862,7 +18069,9 @@ struct JIT {
     llvm::Value* objRes = nullptr;
     if (method == "add") {
       auto methodVal = compile_property_get(receiver, method);
-      objRes = compile_function_call_raw(methodVal, receiver, {arg});
+      objRes = compile_function_call_raw(
+          methodVal, receiver, {arg},
+          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()});
     } else {
       auto methodVal = compile_property_get(receiver, "remove");  // borrowed
       auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
@@ -17873,7 +18082,9 @@ struct JIT {
       builder_.CreateCondBr(isFunc, userBB2, biBB2);
 
       builder_.SetInsertPoint(userBB2);
-      auto uRes = compile_function_call_raw(methodVal, receiver, {arg});
+      auto uRes = compile_function_call_raw(
+          methodVal, receiver, {arg},
+          llvm::ArrayRef<const peg::Ast*>{argsAst.nodes[0].get()});
       auto uEnd = builder_.GetInsertBlock();
       builder_.CreateBr(oMergeBB);
 
@@ -18029,8 +18240,11 @@ struct JIT {
         for (auto k : kw_names) if (k == nm) return true;
         return false;
       };
-      // Rich errors point at the call root (interp's call_line/col).
-      size_t rl = current_line_, rc = current_column_;
+      // Rich errors point at the call chain's root (interp's
+      // call_callee_position) — NOT current_line_/col, which for a
+      // parenthesized receiver is the `(` rather than the callee.
+      size_t rl = call_root_line_ ? call_root_line_ : current_line_;
+      size_t rc = call_root_line_ ? call_root_col_ : current_column_;
       if (!b.variadic && n_pos > b.max)
         return Err{"TypeError",
             std::format("takes {} positional argument{} but {} given", b.max,
@@ -18196,7 +18410,8 @@ struct JIT {
   llvm::Value* compile_method_or_ufcs(const std::string& method,
                                       const VarSlot& freeFnSlot,
                                       const peg::Ast& argsAst,
-                                      llvm::Value* receiver) {
+                                      llvm::Value* receiver,
+                                      const peg::Ast* dot_ast = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
 
@@ -18240,7 +18455,7 @@ struct JIT {
       emit_value_retain(receiver);
       auto freeFn = load_slot(freeFnSlot, method);
       auto ufcsRes = compile_function_call_runtime_kwargs(
-          argsAst, freeFn, /*thisVal=*/nullptr, {receiver});
+          argsAst, freeFn, /*thisVal=*/nullptr, {receiver}, dot_ast);
       auto ufcsEndBB = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
 
@@ -18253,10 +18468,8 @@ struct JIT {
     }
 
     std::vector<llvm::Value*> userArgs;
-    userArgs.reserve(argsAst.nodes.size());
-    for (auto& argNode : argsAst.nodes) {
-      userArgs.push_back(compile(*argNode));
-    }
+    std::vector<const peg::Ast*> argAsts;
+    compile_positional_args(argsAst, userArgs, argAsts);
 
     auto tag = extract_tag(receiver);
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
@@ -18278,7 +18491,7 @@ struct JIT {
     builder_.SetInsertPoint(methodBB);
     auto methodVal = compile_property_get(receiver, method);
     auto methodRes =
-        compile_function_call_raw(methodVal, receiver, userArgs);
+        compile_function_call_raw(methodVal, receiver, userArgs, argAsts);
     auto methodEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -18288,7 +18501,14 @@ struct JIT {
     ufcsArgs.reserve(userArgs.size() + 1);
     ufcsArgs.push_back(receiver);
     for (auto* a : userArgs) ufcsArgs.push_back(a);
-    auto ufcsRes = compile_function_call_raw(freeFn, nullptr, ufcsArgs);
+    // The receiver is positional[0]; its report position is the DOT node
+    // (interp's eval_ufcs_call passes dot_line/col for positional_locs[0]).
+    std::vector<const peg::Ast*> ufcsArgAsts;
+    ufcsArgAsts.reserve(argAsts.size() + 1);
+    ufcsArgAsts.push_back(dot_ast);
+    for (auto* a : argAsts) ufcsArgAsts.push_back(a);
+    auto ufcsRes =
+        compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
     auto ufcsEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -18297,6 +18517,75 @@ struct JIT {
     phi->addIncoming(methodRes, methodEndBB);
     phi->addIncoming(ufcsRes, ufcsEndBB);
     return phi;
+  }
+
+  // Publish the call-site + per-argument positions the callee reads at
+  // runtime (set_call_site / set_arg_pos thread-locals): the multifn
+  // dispatcher's DispatchError, _jit_ns_method_trampoline, and the user-fn
+  // prologue's typed-param snapshot (culebra_runtime_param_pos) all resolve
+  // their report position from these. Must be emitted after every argument
+  // expression has compiled — an argument's own inner calls clobber the
+  // thread-locals — and immediately before the dispatch.
+  //
+  // The call site is root-aware (interp reports at the callee, not at a
+  // wrapping paren). set_call_site resets the per-arg count to 0; a HOF
+  // callback reaches its per-element call with it still 0 (the
+  // body-coercion path). A null entry (kwarg-/default-filled slot, UFCS
+  // receiver without a DOT node) records the call site — the interp
+  // binder's fallback — rather than being skipped, so a later non-null
+  // index can never leave a stale position visible at a smaller index.
+  // Indices past _JIT_ARGPOS_MAX stay unrecorded (call-site fallback).
+  void emit_call_position_publish(llvm::ArrayRef<const peg::Ast*> arg_asts) {
+    if (arg_asts.empty()) {
+      emit_call(module_->getFunction(rt::set_call_site),
+                {call_root_line_val(), call_root_col_val()});
+      return;
+    }
+    // Every published position is a compile-time constant, so batch the
+    // whole publish into ONE runtime call with a rodata array of packed
+    // (line << 32 | col) entries — a kwargs-heavy tight loop pays one
+    // out-of-line call instead of N+1.
+    size_t root_l = call_root_line_ ? call_root_line_ : current_line_;
+    size_t root_c = call_root_line_ ? call_root_col_ : current_column_;
+    size_t n = std::min(arg_asts.size(),
+                        static_cast<size_t>(_JIT_ARGPOS_MAX));
+    std::vector<llvm::Constant*> packed;
+    packed.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+      int64_t l = arg_asts[i] ? static_cast<int64_t>(arg_asts[i]->line)
+                              : static_cast<int64_t>(root_l);
+      int64_t c = arg_asts[i] ? static_cast<int64_t>(arg_asts[i]->column)
+                              : static_cast<int64_t>(root_c);
+      packed.push_back(builder_.getInt64((l << 32) | (c & 0xffffffff)));
+    }
+    auto arrTy = llvm::ArrayType::get(builder_.getInt64Ty(), n);
+    auto* posGlobal = new llvm::GlobalVariable(
+        *module_, arrTy, /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(arrTy, packed), ".argpos");
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    emit_call(
+        module_->getOrInsertFunction(
+            rt::set_call_positions, builder_.getVoidTy(),
+            builder_.getInt64Ty(), builder_.getInt64Ty(),
+            builder_.getInt64Ty(), ptrTy),
+        {builder_.getInt64(static_cast<int64_t>(root_l)),
+         builder_.getInt64(static_cast<int64_t>(root_c)),
+         builder_.getInt64(static_cast<int64_t>(n)), posGlobal});
+  }
+
+  // Compile a positional ARG_LIST keeping each value's source node in
+  // lock-step — the index correspondence is what makes set_arg_pos point
+  // at the right argument.
+  void compile_positional_args(const peg::Ast& argsAst,
+                               std::vector<llvm::Value*>& vals,
+                               std::vector<const peg::Ast*>& asts) {
+    vals.reserve(argsAst.nodes.size());
+    asts.reserve(argsAst.nodes.size());
+    for (auto& argNode : argsAst.nodes) {
+      vals.push_back(compile(*argNode));
+      asts.push_back(argNode.get());
+    }
   }
 
   // Raw call emission: caller has already compiled the user args.
@@ -18312,6 +18601,17 @@ struct JIT {
   // than allowed. Only the user-facing direct-call path enables it;
   // internal callers (static kwargs resolver, iter protocol, method
   // dispatch) drive pre-resolved slabs where the check would misfire.
+  // Convenience overload for the common "default flags, but thread the
+  // arg positions" call shape.
+  llvm::Value* compile_function_call_raw(
+      llvm::Value* callee, llvm::Value* thisVal,
+      llvm::ArrayRef<llvm::Value*> userArgs,
+      llvm::ArrayRef<const peg::Ast*> arg_asts) {
+    return compile_function_call_raw(callee, thisVal, userArgs,
+                                     /*check_kw_only=*/false,
+                                     /*allow_call_overload=*/true, arg_asts);
+  }
+
   llvm::Value* compile_function_call_raw(
       llvm::Value* callee, llvm::Value* thisVal,
       llvm::ArrayRef<llvm::Value*> userArgs,
@@ -18403,24 +18703,7 @@ struct JIT {
       }
     }
 
-    // Record the call-site position for the multifn dispatcher thunk,
-    // which is invoked through this fixed closure ABI and so can't receive
-    // line/col directly. Only read on its (cold) DispatchError path; the
-    // store is two i64 writes to thread-locals.
-    emit_call(module_->getFunction(rt::set_call_site),
-              {current_line_val(), current_column_val()});
-    // Thread each argument's source position so an ns-method-as-value's
-    // wrong-typed argument is rejected at that argument's position with the
-    // interp binder's wording (read in _jit_ns_method_trampoline). set_call_site
-    // above reset the count to 0; a HOF callback reaches its per-element call
-    // with it still 0 (the body-coercion path). Capped at _JIT_ARGPOS_MAX.
-    for (size_t i = 0; i < arg_asts.size() && i < _JIT_ARGPOS_MAX; i++) {
-      if (!arg_asts[i]) continue;
-      emit_call(module_->getFunction(rt::set_arg_pos),
-                {builder_.getInt64(static_cast<int64_t>(i)),
-                 builder_.getInt64(arg_asts[i]->line),
-                 builder_.getInt64(arg_asts[i]->column)});
-    }
+    emit_call_position_publish(arg_asts);
 
     auto calleeType = llvm::FunctionType::get(
         valueType_, {ptrTy, valueType_, builder_.getInt64Ty(), ptrTy},
@@ -18656,10 +18939,12 @@ struct JIT {
     }
 
     std::vector<llvm::Value*> userArgs;
+    std::vector<const peg::Ast*> argAsts;
     userArgs.reserve(params.size() +
                      (positional.size() > params.size()
                           ? positional.size() - params.size()
                           : 0));
+    argAsts.reserve(userArgs.capacity());
     // Trim trailing TAG_UNFILLED slots — the callee prologue's
     // existing `n_args > i` check handles them via the default path
     // without needing the sentinel.
@@ -18676,17 +18961,25 @@ struct JIT {
         v = builder_.CreateInsertValue(
             v, builder_.getInt64(0), {1});
         userArgs.push_back(v);
+        argAsts.push_back(nullptr);
       } else if (sources[i] == Source::KwargsRest) {
         userArgs.push_back(emit_kwargs_rest_object(kwargs, argsAst));
+        argAsts.push_back(nullptr);
       } else {
         userArgs.push_back(compile(*resolved[i]));
+        // Only a POSITIONAL argument reports a typed-param error at its
+        // own expression; a kwarg-filled slot reports at the call site
+        // (null → set_arg_pos records the call site), interp-binder style.
+        argAsts.push_back(sources[i] == Source::Positional ? resolved[i]
+                                                           : nullptr);
       }
     }
     // Extras (past the formal arity) flow through to __ARGS__.
     for (size_t i = params.size(); i < positional.size(); i++) {
       userArgs.push_back(compile(*positional[i]));
+      argAsts.push_back(positional[i]);
     }
-    return compile_function_call_raw(callee, thisVal, userArgs);
+    return compile_function_call_raw(callee, thisVal, userArgs, argAsts);
   }
 
   llvm::Value* compile_function_call(const peg::Ast& argsAst,
@@ -18698,12 +18991,7 @@ struct JIT {
     }
     std::vector<llvm::Value*> userArgs;
     std::vector<const peg::Ast*> argAsts;
-    userArgs.reserve(argsAst.nodes.size());
-    argAsts.reserve(argsAst.nodes.size());
-    for (auto& argNode : argsAst.nodes) {
-      userArgs.push_back(compile(*argNode));
-      argAsts.push_back(argNode.get());
-    }
+    compile_positional_args(argsAst, userArgs, argAsts);
     return compile_function_call_raw(
         callee, thisVal, userArgs,
         /*check_kw_only=*/any_kw_only_in_program_,
@@ -18719,11 +19007,14 @@ struct JIT {
   // `positional_prefix` lets UFCS prepend the receiver as positional
   // arg #0 — the prefix values are already-compiled +1 Values; they
   // join the ARG_LIST's positional entries (which are compiled here)
-  // ahead of any kwarg or splat.
+  // ahead of any kwarg or splat. `prefix_ast` is the prefix value's
+  // report position (the DOT node for a UFCS receiver); null falls back
+  // to the call site.
   llvm::Value* compile_function_call_runtime_kwargs(
       const peg::Ast& argsAst, llvm::Value* callee,
       llvm::Value* thisVal,
-      const std::vector<llvm::Value*>& positional_prefix = {}) {
+      const std::vector<llvm::Value*>& positional_prefix = {},
+      const peg::Ast* prefix_ast = nullptr) {
     using namespace peg::udl;
     emit_arg_list_check(argsAst);  // shared single source; inline scan stays
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -18874,6 +19165,19 @@ struct JIT {
     thisVV->addIncoming(thisNormal, okEnd);
     thisVV->addIncoming(callee, ovEnd);
 
+    // Positional slab index == param index in the kwargs helper (it passes
+    // the resolved slab straight to fn_ptr), so the argpos indices line up
+    // with the prologue's snapshot; kwarg-/splat-filled slots fall back to
+    // the call site, interp-binder style.
+    std::vector<const peg::Ast*> posAsts(posVals.size(), nullptr);
+    for (size_t i = 0; i < posAsts.size(); i++) {
+      if (i < positional_prefix.size()) {
+        posAsts[i] = prefix_ast;
+      } else if (i - positional_prefix.size() < positional.size()) {
+        posAsts[i] = positional[i - positional_prefix.size()];
+      }
+    }
+    emit_call_position_publish(posAsts);
     auto result = emit_call(
         module_->getOrInsertFunction(
             rt::call_with_kwargs, valueType_, ptrTy, valueType_,
@@ -19028,6 +19332,7 @@ struct JIT {
   llvm::Value* compile_call_with_builtins(const peg::Ast& ast) {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
+    CallRootSaver call_root(*this, ast);
 
     // A user binding that shadows a builtin name wins, exactly as interp's
     // scope lookup does (`let Math = {...}; Math.abs(x)` calls the local, not
@@ -19122,7 +19427,8 @@ struct JIT {
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1], callee);
+            callee = compile_method_call(method, *ast.nodes[i + 1], callee,
+                                         &postfix);
             i++;
           } else {
             auto name = std::string(postfix.token);
@@ -20480,8 +20786,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(argBB);
     auto startVal = compile(*argsAst.nodes[0]);
     auto endVal = compile(*argsAst.nodes[1]);
-    emit_type_check(startVal, "Long", "parameter 'start'");
-    emit_type_check(endVal, "Long", "parameter 'end'");
+    emit_type_check(startVal, "Long", "parameter 'start'",
+                    argsAst.nodes[0].get());
+    emit_type_check(endVal, "Long", "parameter 'end'",
+                    argsAst.nodes[1].get());
     auto start = extract_data(startVal);
     auto end = extract_data(endVal);
 
@@ -20531,7 +20839,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "join" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
     auto sep = compile(*argsAst.nodes[0]);
-    emit_type_check(sep, "String", "parameter 'sep'");
+    emit_type_check(sep, "String", "parameter 'sep'",
+                    argsAst.nodes[0].get());
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
     auto s = emit_call(
         module_->getFunction(rt::array_join), {arrPtr, sepPtr});
@@ -20580,7 +20889,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
                             {tag, extract_data(receiver)});
     auto sub = compile(*argsAst.nodes[0]);
-    auto subPtr = coerce_strlike_cstr(sub, "ct.sub", false, "sub");
+    auto subPtr = coerce_strlike_cstr(sub, "ct.sub", false, "sub",
+                                    argsAst.nodes[0].get());
     auto strFound = emit_call(
         module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
@@ -20673,9 +20983,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "tr" && argsAst.nodes.size() == 2) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     auto from = compile(*argsAst.nodes[0]);
-    auto fromPtr = coerce_strlike_cstr(from, "tr.from", false, "from");
+    auto fromPtr = coerce_strlike_cstr(from, "tr.from", false, "from",
+                                        argsAst.nodes[0].get());
     auto to = compile(*argsAst.nodes[1]);
-    auto toPtr = coerce_strlike_cstr(to, "tr.to", false, "to");
+    auto toPtr = coerce_strlike_cstr(to, "tr.to", false, "to",
+                                      argsAst.nodes[1].get());
     auto s = emit_call(
         module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
     emit_value_release(from);
@@ -20693,7 +21005,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       charsPtr = emit_str_literal("");
     } else {
       chars = compile(*argsAst.nodes[0]);
-      charsPtr = coerce_strlike_cstr(chars, "tr.chars", false, "chars");
+      charsPtr = coerce_strlike_cstr(chars, "tr.chars", false, "chars",
+                                       argsAst.nodes[0].get());
     }
     auto* fn = module_->getFunction(
         method == "trim_start" ? rt::str_trim_start : rt::str_trim_end);
@@ -20705,7 +21018,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "split" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
     auto sep = compile(*argsAst.nodes[0]);
-    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep", false, "sep");
+    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep", false, "sep",
+                                    argsAst.nodes[0].get());
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
@@ -20718,7 +21032,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "split_iter" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "spli", true);
     auto sep = compile(*argsAst.nodes[0]);
-    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep", false, "sep");
+    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep", false, "sep",
+                                    argsAst.nodes[0].get());
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
     emit_value_release(sep);
@@ -20729,7 +21044,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sw", true);
     auto p = compile(*argsAst.nodes[0]);
-    auto pPtr = coerce_strlike_cstr(p, "sw.pre", false, "prefix");
+    auto pPtr = coerce_strlike_cstr(p, "sw.pre", false, "prefix",
+                                  argsAst.nodes[0].get());
     auto r = emit_call(
         module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
@@ -20740,7 +21056,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "ew", true);
     auto p = compile(*argsAst.nodes[0]);
-    auto pPtr = coerce_strlike_cstr(p, "ew.suf", false, "suffix");
+    auto pPtr = coerce_strlike_cstr(p, "ew.suf", false, "suffix",
+                                  argsAst.nodes[0].get());
     auto r = emit_call(
         module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
