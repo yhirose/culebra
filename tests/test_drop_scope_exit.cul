@@ -11,11 +11,12 @@
 # not the resource. A discard at the top level (a scope that never exits)
 # is the documented narrow-GC-backstop case instead.
 #
-# Known conservative residuals (resources survive to the GC backstop, never
-# dropped early): scopes captured by a local closure (a closure capture IS
-# an escape, design §8), and throw-path unwinding on the JIT (slots leak to
-# the collector — pre-existing shape, matched by keeping throws out of the
-# symmetric corpus).
+# Known conservative residuals (resources survive past scope exit, to be
+# finalized by the GC backstop — tests/test_drop_backstop.cul): scopes
+# captured by a local closure (a closure capture IS an escape, design §8),
+# and throw-path unwinding on the JIT (slots leak to the collector —
+# pre-existing shape, matched by keeping throws out of the symmetric
+# corpus).
 #
 # Observable via a shared `log` reached through `this.log`: the drop body
 # pushes to it, so the count survives the object and is checkable after

@@ -916,13 +916,13 @@ test_drop = fn () {
 
   // Cyclic references under deterministic drop (Phase 2): a cycle whose
   // members are owned by a scope drops at that scope's exit, in reverse
-  // creation order. Cycles held through a CLOSURE survive to the GC
-  // backstop instead (cases 2-4): a local fn captures its whole defining
-  // scope, which may outlive the exit — both backends conservatively
-  // park those (resource collected without drop), matching Python's
-  // __del__-in-cycle caution. GC.stat() forces a collect.
-  // 1) Object<->Object cycle: returned from make_pair, discarded by the
-  //    block — the block's exit owns and drops both members.
+  // creation order. Cycles held through a CLOSURE fire later, at the GC
+  // backstop (a local fn captures its whole defining scope, which may
+  // outlive the exit) — that collection-timed behavior needs the
+  // stack-hygiene patterns of tests/test_drop_backstop.cul, which owns
+  // its coverage; here we pin only the deterministic scope-exit case.
+  // Object<->Object cycle: returned from make_pair, discarded by the
+  // block — the block's exit owns and drops both members.
   events = []
   make_pair = fn () {
     mut a = nil; mut b = nil
@@ -936,41 +936,6 @@ test_drop = fn () {
   assert_eq(events.size(), 2)
   assert_eq(events[0], 'cyc-b')   // reverse creation order
   assert_eq(events[1], 'cyc-a')
-  // 2) Self-referential lambda cycle capturing a drop resource.
-  events = []
-  make_lam = fn () {
-    let res = { id: 'lam', drop: fn () { events.push('lam') } }
-    let g = fn () { res.id }
-    g()
-  }
-  { let _l = make_lam() }
-  GC.stat()
-  assert_eq(events.size(), 0)
-  // 3) Nested `fn name` (multimethod) cycle capturing a drop resource.
-  events = []
-  make_nf = fn () {
-    let res = { id: 'nf', drop: fn () { events.push('nf') } }
-    fn use_res() { res.id }
-    use_res()
-  }
-  { let _n = make_nf() }
-  GC.stat()
-  assert_eq(events.size(), 0)
-  // 4) Same nested `fn name` re-declared per call, each capturing a fresh
-  // drop resource. The JIT replaces (and releases) the prior body on each
-  // re-declaration; that displaced body is cycle-held garbage, so its
-  // `drop` must be suppressed too — otherwise the JIT would fire drop on
-  // every-but-the-last while the interp (treating each as a cycle) fires
-  // none. Neither should fire.
-  events = []
-  make_each = fn (tag) {
-    let res = { id: tag, drop: fn () { events.push(tag) } }
-    fn use_res() { res.id }
-    use_res()
-  }
-  make_each('a'); make_each('b'); make_each('c')
-  GC.stat()
-  assert_eq(events.size(), 0)
 }
 
 // JIT-safe subset of UFCS tests. Broader coverage including the

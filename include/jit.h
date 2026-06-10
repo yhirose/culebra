@@ -449,12 +449,14 @@ inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 inline void _culebra_cell_release(JitCell* c);
 inline void _culebra_call_drop_if_present(JitObject* o);
-// Raised while releasing a replaced multimethod body so the cascade does not
-// fire `drop` on what it captured. A nested `fn name` that captures a local
-// is a self-referential closure (a cycle at the language level, even though
-// the JIT pins it as an acyclic root), and cycle-held resources never run
-// `drop` — matching the interp cycle collector and the single-declaration
-// case where the pinned body is swept without drop. See _culebra_call_drop.
+// Raised only around `__culebra_main`'s top-level scope release at
+// program exit (set via culebra_runtime_set_drop_suppressed below):
+// top-level bindings leak without `drop`, matching the interpreter's
+// never-torn-down global Environment. Everywhere else drop fires —
+// refcount-0 cascades are precise, scope exits resolve their owned
+// regions, and the GC's finalize pass backstops orphans exactly once
+// (the `dropped` flag dedupes all of them). _culebra_call_drop_if_present
+// honors the flag.
 inline bool& _jit_drop_suppressed() {
   static thread_local bool v = false;
   return v;
@@ -673,12 +675,15 @@ void _jit_gc_enumerate_roots(std::vector<void*>& out);
 void _jit_gc_sweep_object(void* obj, uint8_t type_tag);
 }
 
+inline void _jit_gc_finalize_dead(const std::vector<void*>& dead);
+
 inline culebra::gc::Heap& _gc_heap() {
   auto& h = culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
   if (!h.callbacks_wired()) {
     h.set_children_fn(&_jit_gc_enumerate_children);
     h.set_extra_roots_fn(&_jit_gc_enumerate_roots);
     h.set_sweep_fn(&_jit_gc_sweep_object);
+    h.set_finalize_fn(&_jit_gc_finalize_dead);
     h.mark_callbacks_wired();  // arms threshold/stress collects (must be last)
   }
   return h;
@@ -5445,7 +5450,7 @@ inline void _jit_multifn_push_bodies(JitClosure* c, std::vector<void*>& out) {
 
 // Drop a dead dispatcher's table + name entries. `release_bodies` is true on
 // the RC path (refcount hit 0 with no cycle → release each body's table-held
-// +1, drop-suppressed since they are cycle-held garbage) and false on the
+// +1; the cascade is precise, so pending `drop`s fire) and false on the
 // sweep path (the bodies are reclaimed by their own sweep entries — releasing
 // here would double-free).
 inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
@@ -5453,19 +5458,21 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
   auto nit = names.find(c);
   if (nit == names.end()) return;
   auto& tbl = _jit_multimethods();
+  // Detach the table + name entries FIRST, then release: the natural
+  // refcount-0 cascade fires pending `drop`s (user code) that may
+  // re-declare this very name — it must find a clean table and a fresh
+  // dispatcher, not the dying one. (Cycle-held remains park for the GC
+  // backstop's finalize pass.)
+  std::vector<JitMultiMethodEntry> doomed;
   if (auto mit = tbl.find(nit->second); mit != tbl.end()) {
-    if (release_bodies) {
-      bool prev = _jit_drop_suppressed();
-      _jit_drop_suppressed() = true;
-      for (auto& e : mit->second)
-        if (e.body)
-          _culebra_value_release_impl(TAG_FUNC,
-                                      reinterpret_cast<int64_t>(e.body));
-      _jit_drop_suppressed() = prev;
-    }
+    if (release_bodies) doomed = std::move(mit->second);
     tbl.erase(mit);
   }
   names.erase(nit);
+  for (auto& e : doomed)
+    if (e.body)
+      _culebra_value_release_impl(TAG_FUNC,
+                                  reinterpret_cast<int64_t>(e.body));
 }
 
 // Children of a live object, for the mark phase. Pushes raw pointers (the heap
@@ -5781,16 +5788,15 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   bool replaced = false;
   for (auto& existing : methods) {
     if (existing.param_types == method.param_types) {
-      // The displaced body is cycle-held garbage (its captured locals form a
-      // self-referential closure); reclaim it without firing `drop`, matching
-      // the interp cycle collector and the single-declaration sweep path.
-      bool prev = _jit_drop_suppressed();
-      _jit_drop_suppressed() = true;
-      _culebra_value_release_impl(
-          TAG_FUNC, reinterpret_cast<int64_t>(existing.body));
-      _jit_drop_suppressed() = prev;
+      // Install the new entry BEFORE releasing the displaced body's
+      // table +1: the cascade fires pending `drop`s (user code) that
+      // may dispatch this very name, so the table must not hold the
+      // freed body. Cycle-held remains park for the GC backstop.
+      JitClosure* displaced = existing.body;
       existing = std::move(method);
       replaced = true;
+      _culebra_value_release_impl(TAG_FUNC,
+                                  reinterpret_cast<int64_t>(displaced));
       break;
     }
   }
@@ -8354,8 +8360,11 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
   // Pin the object across its own drop so a re-entrant release inside the
-  // drop body can't free it mid-call.
-  o->refcount = 2;
+  // drop body can't free it mid-call. The pin must absorb not just the
+  // frame's `this` release but ANY number of releases the body performs
+  // (e.g. `this.me = nil` breaking its own cycle edge), so use a value
+  // no real refcount can reach.
+  o->refcount = int64_t{1} << 40;
   JitValue this_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   try {
     auto r = reinterpret_cast<JitFn>(cls->fn_ptr)(cls, this_val, 0,
@@ -8400,6 +8409,30 @@ inline void _jit_owned_fire_drop(JitObject* o) {
   int64_t rc = o->refcount;
   _culebra_call_drop_if_present(o);
   o->refcount = rc;
+}
+
+// GC backstop finalize (design Â§9 exactly-once backstop, PEP 442
+// style): runs once per collection, before any sweep, over the intact
+// dead set. Pin every dead struct's refcount first — a drop body that
+// breaks its own cycle would otherwise free a sibling ahead of its
+// finalize/sweep — then fire each pending `drop`. The pins need no
+// undo: sweep reclaims unmarked objects regardless of refcount, and
+// the `dropped` flag keeps the union with every other drop path
+// exactly-once. Finalization order within one collection is
+// unspecified (matches PEP 442). Suppressed-drop windows (top-level
+// exit, multifn body replacement) are honored inside
+// _culebra_call_drop_if_present.
+inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
+  // All refcounted heap types share the i64 refcount first field.
+  for (void* p : dead) (*reinterpret_cast<int64_t*>(p))++;
+  auto& heap = _gc_heap();
+  for (void* p : dead) {
+    auto* h = heap.header(p);
+    if (!h || h->type_tag != GC_TAG_OBJECT) continue;
+    // has_drop / dropped / suppressed gating lives in
+    // _culebra_call_drop_if_present.
+    _jit_owned_fire_drop(reinterpret_cast<JitObject*>(p));
+  }
 }
 
 // Resolve the owned-stack region registered above `mark` (the scope's

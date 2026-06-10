@@ -2886,14 +2886,19 @@ member first, on both backends:
 
 The owning scope is wherever the cycle last escaped to: a cycle that
 rides out of a function as its return value drops at the *caller's*
-scope exit once discarded. Two cases remain conservative — the cycle
-collector reclaims their memory but `drop` does not run: a cycle held
-through a **closure** (a closure captures its defining scope, which
-counts as an escape that may outlive it), and cyclic garbage discarded
-directly at the **top level** (a scope that never exits). For those,
-break the cycle manually before the last reference is released
-(e.g. `a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at
-the scope that owns the resource.
+scope exit once discarded. Two cases miss the deterministic scope-exit
+window: a cycle held through a **closure** (a closure captures its
+defining scope, which counts as an escape that may outlive it), and
+cyclic garbage discarded directly at the **top level** (a scope that
+never exits). Those fire at the **GC backstop** instead: a collection
+finalizes every orphaned resource exactly once — before reclaiming
+memory, while the structure is still intact — in the spirit of
+Python's PEP 442. Backstop timing is collection-driven (force one with
+`GC.stat()`), and finalization order within one collection is
+unspecified. When cleanup must happen at a known point, break the
+cycle manually before the last reference is released (e.g.
+`a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at the
+scope that owns the resource.
 
 **Binding-scope caveat**: `drop` fires reliably when the object is
 held in a **block-scoped** binding whose `drop` function was produced
@@ -2919,10 +2924,11 @@ top-level scope release to match. For script-wide resources, prefer
 `defer` (§15) or explicit cleanup.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
-interpreter — at scope exit, cycle members included, but never on
-closure-held cycles or top-level bindings (as above). The well-known
-property contract (`drop`/`iter`/`next` must be a 0-arg `Function`) is
-enforced at assignment time on both backends.
+interpreter — at scope exit, cycle members included, with closure-held
+cycles and top-level orphans deferred to the GC backstop (as above;
+top-level *bindings* still leak un-dropped at program exit). The
+well-known property contract (`drop`/`iter`/`next` must be a 0-arg
+`Function`) is enforced at assignment time on both backends.
 
 ---
 
@@ -4055,7 +4061,8 @@ AOT builds:
   whether triggered by scope exit, property overwrite, or array
   rebind. Cascade order — parent before child — is the same.
   Scope-owned cycle members drop at their scope's exit on both
-  backends (closure-held and top-level cycles excluded, see §16).
+  backends; closure-held and top-level cycles fire at the GC backstop
+  (collection-timed, order unspecified — see §16).
 * **Error reporting.** Every `kind` listed in §15 fires under the
   same trigger condition on both backends; `e.message`, `e.line`,
   and `e.col` are populated identically. Uncaught errors print as

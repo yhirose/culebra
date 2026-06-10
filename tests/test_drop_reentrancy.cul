@@ -1,0 +1,105 @@
+# Drop bodies are user code that runs inside delicate runtime windows —
+# the GC's finalize pass, a multimethod table mutation, its own cycle
+# teardown. Each case here crashed or hung one backend before its guard
+# existed (see the Phase 2-4 commit): re-entrant collect deferral,
+# detach-before-release in the multifn replace/forget paths, and the
+# saturating self-pin in _culebra_call_drop_if_present. Observations are
+# count-based: WHEN a drop fires differs by design between the backends'
+# reclaim mechanisms (replace-time vs backstop), but each fires exactly
+# once and nothing may crash.
+
+mut events = []
+
+fn churn(n) {
+  mut acc = []
+  mut i = 0
+  while i < n {
+    acc.push('x' + i.to_string())
+    i = i + 1
+  }
+  acc.size()
+}
+# Adaptive: collect until the expected number of drops landed (or a
+# generous cap — a genuinely missing drop still fails the assert that
+# follows). A fixed iteration count flakes: a stale word can survive
+# several collections.
+fn gc_settle(want) {
+  mut i = 0
+  while i < 20 && events.size() < want {
+    churn(8)
+    GC.stat()
+    i = i + 1
+  }
+}
+
+# --- 1) A drop body fired by the finalize pass calls GC.stat() itself:
+# the re-entrant collect must defer, not corrupt the in-flight dead set.
+make_lam = fn () {
+  let res = { id: 'lam', drop: fn () { GC.stat(); events.push('lam') } }
+  let g = fn () { res.id }
+  g()
+}
+fn run_lam() { { let _l = make_lam() }; nil }
+run_lam()
+gc_settle(1)
+assert_eq(events.size(), 1)
+
+# --- 2) A drop body breaking its OWN cycle edge releases through itself:
+# the in-drop pin must absorb any number of self-releases.
+events = []
+make_self = fn () {
+  let cyc = { id: 'c', mut me: nil, drop: fn () { this.me = nil; events.push('d') } }
+  cyc.me = cyc
+  let g = fn () { cyc.id }
+  g()
+}
+fn run_self() { { let _x = make_self() }; nil }
+run_self()
+gc_settle(1)
+assert_eq(events.size(), 1)
+
+# --- 3) A displaced multimethod body's drop dispatches the very name
+# being replaced: the table must already hold the replacement, never the
+# freed body. Firing points differ (the JIT fires displaced drops at the
+# re-declaration, the interp parks them for the backstop), so only the
+# settled total is asserted.
+events = []
+fn make_replace(tag) {
+  mut use_res = nil
+  let res = { id: tag, drop: fn () { events.push(use_res()) } }
+  fn helper() { res.id }
+  use_res = helper
+  nil
+}
+make_replace('a')
+make_replace('b')
+make_replace('c')
+gc_settle(3)
+# Same one-chain tolerance as test_drop_backstop.cul's multi-orphan case:
+# conservative false retention can keep one chain alive for the whole run.
+# Count only — each push calls use_res(), which dispatches to the CURRENT
+# body, so the pushed ids legitimately repeat; the point of this case is
+# that the dispatch never reaches a freed body.
+assert_true(events.size() >= 2 && events.size() <= 3)
+
+# --- 4) A drop fired from a dying dispatcher's body-release re-declares
+# the same `fn` site: it must find a clean table and a fresh dispatcher,
+# not the dying one.
+events = []
+mut depth = 0
+fn make_forget() {
+  mut h = nil
+  {
+    let res = { id: 'r', drop: fn () {
+      events.push('drop')
+      if depth < 1 { depth = depth + 1; make_forget() }
+    } }
+    fn helper() { res.id }
+    h = helper
+  }
+  h = nil
+  nil
+}
+make_forget()
+gc_settle(2)
+assert_eq(events.size(), 2)   # outer drop + one recursive make's drop

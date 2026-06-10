@@ -275,6 +275,17 @@ class Heap {
   using SweepFn = void (*)(void* obj, uint8_t type_tag);
   void set_sweep_fn(SweepFn f) { sweep_fn_ = f; }
 
+  // Pre-sweep finalize hook (PEP 442 style): called once per collection
+  // with every unmarked object still intact, BEFORE any sweep. The JIT
+  // runtime fires pending `drop`s here — the exactly-once GC backstop
+  // for resources whose owner was orphaned in a cycle. The hook runs
+  // user code; collection is paused around it (re-entrant collects are
+  // deferred) and the runtime pins the dead set's refcounts so a drop
+  // body releasing references inside it cannot free a sibling ahead of
+  // its sweep.
+  using FinalizeFn = void (*)(const std::vector<void*>& dead);
+  void set_finalize_fn(FinalizeFn f) { finalize_fn_ = f; }
+
   // Full conservative mark-sweep. Returns objects reclaimed. MUST be
   // called directly on the mutator thread (scan walks this thread's stack
   // for roots). Non-moving.
@@ -322,6 +333,7 @@ class Heap {
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
+    if (collect_paused_) return 0;  // defer re-entrant/paused collects
     objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
 
     std::vector<void*> work;
@@ -360,6 +372,14 @@ class Heap {
     objects_.for_each([&](void* k, GcHeader& h) {
       if (!h.mark) dead.push_back(k);
     });
+    // Finalize before any sweep: every dead object is still intact, so a
+    // drop body can safely touch its (equally dead) neighbours. The hook
+    // runs user code — pause threshold collects, and note that new
+    // objects it allocates are not in `dead` and so survive this sweep.
+    if (finalize_fn_ && !dead.empty()) {
+      CollectPause pause(*this);
+      finalize_fn_(dead);
+    }
     for (void* p : dead) {
       if (sweep_fn_) {
         GcHeader* h = objects_.find(p);
@@ -464,6 +484,7 @@ class Heap {
   ChildrenFn children_fn_ = nullptr;
   RootFn extra_roots_fn_ = nullptr;
   SweepFn sweep_fn_ = nullptr;
+  FinalizeFn finalize_fn_ = nullptr;
   size_t live_bytes_ = 0;
   bool callbacks_wired_ = false;
   int collect_paused_ = 0;

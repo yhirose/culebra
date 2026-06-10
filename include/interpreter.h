@@ -42,11 +42,14 @@ struct ValueEq;
 struct Environment;
 inline void _call_drop_if_present(OrderedSymbolMap* m);
 inline void _destroy_prop_map(OrderedSymbolMap* m);
-// Raised by the cycle collector around its reclaim loop: `drop` must NOT
-// fire on cycle members (finalization order across a cycle is undefined —
-// matches Python's __del__ rule, the documented model, and the JIT sweep
-// which frees swept objects without invoking drop). _call_drop_if_present
-// honors it so interp cycle reclamation stays symmetric with the JIT.
+// Raised by the cycle collector around its clear cascade only. Pending
+// drops have already fired by then — the backstop finalize pass
+// (_owned_gc_backstop, PEP 442 style) runs BEFORE the clear, while the
+// garbage structure is intact — so a cascade-time fire could only be a
+// re-fire (the `dropped` flag also guards that) or a body running
+// against half-cleared envs. _call_drop_if_present honors the flag;
+// the JIT sweep is drop-free for the same reason (its finalize pass
+// runs pre-sweep, see _jit_gc_finalize_dead).
 inline bool& _drop_suppressed() {
   static thread_local bool v = false;
   return v;
@@ -1600,19 +1603,11 @@ inline OwnedStack& owned_stack() {
   return runtime_substate<OwnedStack>(kSlotInterpOwnedStack);
 }
 
-inline bool _owned_debug() {
-  static const bool v = std::getenv("CULEBRA_OWNED_DEBUG") != nullptr;
-  return v;
-}
-
 inline void _owned_register(const ObjectValue& obj) {
   auto* m = obj.properties.get();
   if (!m || m->owned_registered) return;
   m->owned_registered = true;
   auto& st = owned_stack();
-  if (_owned_debug())
-    fprintf(stderr, "[owned] register %p (id=%llu)\n", (void*)m,
-            (unsigned long long)st.next_id);
   st.entries.push_back({obj.properties, obj.non_string_props, obj.key_order,
                         st.next_id++});
   st.maybe_prune();
@@ -1885,14 +1880,24 @@ inline constexpr char kOwnedFire = 4;     // object-cycled (desc id, last)
 // so they pin instead of dying. (That also means the exiting env can
 // only appear as an interior node when crediting is already off — the
 // two never double-count.)
-inline void _owned_resolve_ambiguous(const Environment& env,
-                                     const std::vector<OwnedPending>& pending,
-                                     bool credit_bindings,
-                                     std::vector<char>& drop_it) {
+//
+// GC-backstop mode (`env == nullptr`, used by _owned_gc_backstop): no
+// exiting scope — no binding credit, no exiting-env credit — but
+// `garbage` carries the nodes (environments and array backings)
+// InterpGC's mark phase has PROVEN unreachable: those are exempt from
+// every pin (uc and force-pin alike), so a resource held only through
+// a dead closure's env or a dead container resolves as the orphan it
+// is.
+inline void _owned_resolve_ambiguous(
+    const Environment* env, const std::vector<OwnedPending>& pending,
+    bool credit_bindings,
+    const std::unordered_set<const void*>* garbage,
+    std::vector<char>& drop_it) {
   struct Node {
     long use_count = 0;
     long explained = 0;          // subgraph edges + bindings + our locks
     bool force_pin = false;      // self-captured env (see above)
+    bool force_explained = false;  // proven-garbage env: never pins
     bool is_env = false;         // Environment node (see cycle split below)
     std::vector<size_t> out;     // forward edges (per occurrence; dups fine)
   };
@@ -1909,6 +1914,12 @@ inline void _owned_resolve_ambiguous(const Environment& env,
   // interior env's): their death corresponds to a JIT slot release, not
   // a container cascade — see the verdict split below.
   std::unordered_set<const void*> binding_held;
+  // Proven-garbage nodes (InterpGC's mark: unreachable envs AND array
+  // backings). Their use_counts are inflated by collect's own analysis
+  // locks and mean nothing — they never pin.
+  auto is_garbage = [&](const void* p) {
+    return garbage && garbage->contains(p);
+  };
 
   // Discover-or-find a node for a shared container. `inserted` tells the
   // caller it must expand the container's children exactly once.
@@ -1916,7 +1927,9 @@ inline void _owned_resolve_ambiguous(const Environment& env,
     auto [it, fresh] = index.try_emplace(p, nodes.size());
     inserted = fresh;
     if (fresh) {
-      nodes.push_back({use_count, 0, false, false, {}});
+      // force_explained is a pure function of the pointer, so decide it
+      // here once — no discovery site can forget the garbage check.
+      nodes.push_back({use_count, 0, false, is_garbage(p), false, {}});
       if (nodes.size() > kNodeBudget) overflow = true;
     }
     return it->second;
@@ -2024,7 +2037,7 @@ inline void _owned_resolve_ambiguous(const Environment& env,
           // resolves at ITS exit, not one scope late. Crediting less
           // only pins (safe); crediting more could drop early — keep
           // the single-frame-ref invariant when touching eval lambdas.
-          if (fresh && e.get() == &env) nodes[id].explained++;
+          if (fresh && e.get() == env) nodes[id].explained++;
           edge(from, id);
           if (fresh && !overflow) {
             // Expand the env: its bindings are the closure's reachable
@@ -2035,9 +2048,11 @@ inline void _owned_resolve_ambiguous(const Environment& env,
               for (const auto& [_, sym] : ep->dictionary) {
                 if (sym.val.type == Value::Function &&
                     sym.val.template get<FunctionValue>().def_env.get() ==
-                        ep) {
+                        ep &&
+                    !nodes[id].force_explained) {
                   // A local fn capturing its own defining scope: the
-                  // closure may outlive the scope — pin the env.
+                  // closure may outlive the scope — pin the env (unless
+                  // the mark phase already proved the whole env dead).
                   nodes[id].force_pin = true;
                 }
                 wv(sym.val, id, wv);
@@ -2046,6 +2061,7 @@ inline void _owned_resolve_ambiguous(const Environment& env,
               size_t oid = add_node(
                   ep->outer.get(),
                   static_cast<long>(ep->outer.use_count()), ofresh);
+              nodes[oid].is_env = true;
               nodes[id].out.push_back(oid);
               nodes[oid].explained++;
               // The outer chain is not expanded further here; a fresh
@@ -2071,8 +2087,9 @@ inline void _owned_resolve_ambiguous(const Environment& env,
               // it — the local-fn self-capture pin, whether or not the
               // env was already discovered through another edge.
               // Symmetric with the JIT, whose dispatcher cycles park
-              // for the backstop.
-              nodes[id].force_pin = true;
+              // for the backstop. Exempt once the mark phase proved
+              // the env garbage (force_explained, set by add_node).
+              if (!nodes[id].force_explained) nodes[id].force_pin = true;
             });
           }
           if (fv.introspection_target && fv.introspection_target->def_env) {
@@ -2113,25 +2130,13 @@ inline void _owned_resolve_ambiguous(const Environment& env,
   // The exiting scope's bindings die with it: everything they hold —
   // transitively through containers — is explained. (Skipped for a
   // closure-captured env, whose bindings may live on.)
-  if (credit_bindings) {
-    for (const auto& [_, sym] : env.dictionary) {
+  if (credit_bindings && env) {
+    for (const auto& [_, sym] : env->dictionary) {
       walk_value(sym.val, npos, walk_value);
     }
   }
 
   if (overflow) return;  // budget blown: every candidate survives
-
-  if (_owned_debug()) {
-    std::vector<const void*> ptrs(nodes.size(), nullptr);
-    for (const auto& [p, i] : index) ptrs[i] = p;
-    for (size_t i = 0; i < nodes.size(); i++)
-      fprintf(stderr,
-              "[owned]   node %zu %p uc=%ld explained=%ld env=%d pin=%d "
-              "(exiting=%d)\n",
-              i, ptrs[i], nodes[i].use_count, nodes[i].explained,
-              (int)nodes[i].is_env, (int)nodes[i].force_pin,
-              (int)(ptrs[i] == (const void*)&env));
-  }
 
   // Nodes with unexplained references (or a conservative force-pin)
   // are pinned from outside; anything they can reach (within the
@@ -2139,6 +2144,7 @@ inline void _owned_resolve_ambiguous(const Environment& env,
   std::vector<char> reachable(nodes.size(), 0);
   std::vector<size_t> q;
   for (size_t i = 0; i < nodes.size(); i++) {
+    if (nodes[i].force_explained) continue;  // proven garbage: never a root
     if (nodes[i].use_count > nodes[i].explained || nodes[i].force_pin) {
       reachable[i] = 1;
       q.push_back(i);
@@ -2256,10 +2262,6 @@ inline void _owned_process_scope_exit(
     pending.push_back({std::move(e), std::move(sp)});
   }
   if (pending.empty()) return;
-  if (_owned_debug())
-    fprintf(stderr, "[owned] scope-exit env=%p env_uc=%ld fn_frame=%d\n",
-            (void*)env.get(), (long)env.use_count(),
-            (int)env->is_function_frame);
 
   const bool credit_bindings = !env->gc_tracked;
   std::vector<char> drop_it(pending.size(), kOwnedSurvive);
@@ -2279,7 +2281,8 @@ inline void _owned_process_scope_exit(
     }
   }
   if (any_ambiguous) {
-    _owned_resolve_ambiguous(*env, pending, credit_bindings, drop_it);
+    _owned_resolve_ambiguous(env.get(), pending, credit_bindings,
+                             /*garbage_envs=*/nullptr, drop_it);
   }
 
   // Survivors return first, in original (creation) order, inherited by
@@ -2293,12 +2296,6 @@ inline void _owned_process_scope_exit(
   for (size_t i = pending.size(); i-- > 0;) {
     if (drop_it[i] == kOwnedSurvive) st.push_back(pending[i].entry);
   }
-  if (_owned_debug()) {
-    for (size_t i = 0; i < pending.size(); i++)
-      fprintf(stderr, "[owned] verdict=%d %p uc=%ld (mark=%llu)\n",
-              (int)drop_it[i], (void*)pending[i].sp.get(),
-              pending[i].sp.use_count(), (unsigned long long)mark);
-  }
   for (size_t i = pending.size(); i-- > 0;) {  // pending is newest-first
     if (drop_it[i] == kOwnedCascade)
       _call_drop_if_present(pending[i].sp.get());
@@ -2309,6 +2306,39 @@ inline void _owned_process_scope_exit(
   }
   for (size_t i = 0; i < pending.size(); i++) {
     if (drop_it[i] == kOwnedFire) _call_drop_if_present(pending[i].sp.get());
+  }
+}
+
+// GC backstop finalize (design §9 exactly-once backstop, PEP 442
+// style): called by InterpGC::collect after its mark phase, BEFORE the
+// suppressed clear cascade — the whole garbage structure is still
+// intact, so drop bodies resolve their captures normally. Scans every
+// live owned-stack entry (without popping: live scopes' regions stay
+// theirs — their resources are pinned by live envs and survive the
+// analysis) and fires the drop of each candidate whose holders are all
+// explainable within its own subgraph plus the environments the mark
+// phase PROVED unreachable. The `dropped` flag dedupes against the
+// clear cascade and any later scope exit. Finalization order within
+// one collection is unspecified (PEP 442); runs user code — the
+// collector's running_ guard defers any re-entrant collect.
+inline void _owned_gc_backstop(
+    const std::unordered_set<const void*>& garbage) {
+  auto& st = owned_stack().entries;
+  std::vector<OwnedPending> pending;
+  for (auto& e : st) {
+    auto sp = e.map.lock();
+    if (!sp || sp->dropped) continue;
+    pending.push_back({e, std::move(sp)});
+  }
+  if (pending.empty()) return;
+  std::vector<char> drop_it(pending.size(), kOwnedSurvive);
+  _owned_resolve_ambiguous(nullptr, pending, /*credit_bindings=*/false,
+                           &garbage, drop_it);
+  // No scope is exiting here, so every dying verdict means the same
+  // thing: an orphan only this pass can finalize.
+  for (size_t i = 0; i < pending.size(); i++) {
+    if (drop_it[i] != kOwnedSurvive)
+      _call_drop_if_present(pending[i].sp.get());
   }
 }
 
@@ -9672,11 +9702,25 @@ inline void InterpGC::collect() {
     walk_node(p, gc_refs.find(p)->second.is_env, mark);
   }
 
-  // Break cycles by clearing unreachable nodes. The shared_ptr cascade frees
-  // each member's PropMap, but `drop` must NOT fire on cycle members (only
-  // genuine cycle garbage is freed here — anything shared with a reachable
-  // node keeps a positive refcount and is untouched). Suppress drop across
-  // the whole cascade so interp matches the JIT sweep (see _drop_suppressed).
+  // GC backstop finalize (PEP 442 style, design §9): before breaking
+  // anything, fire the pending `drop` of every owned resource that the
+  // unreachable set orphaned — the structure is still intact, so drop
+  // bodies see their captures. The clear cascade below then reclaims
+  // memory without re-firing (the `dropped` flag). Mirrors the JIT's
+  // _jit_gc_finalize_dead (whose dead set comes from its own mark).
+  if (!owned_stack().entries.empty()) {
+    std::unordered_set<const void*> garbage;
+    for (auto& l : live) {
+      if (!reachable.contains(l.ptr)) garbage.insert(l.ptr);
+    }
+    _owned_gc_backstop(garbage);
+  }
+
+  // Break cycles by clearing unreachable nodes. The shared_ptr cascade
+  // frees each member's PropMap; drop does not fire DURING the cascade
+  // (a member's drop already ran above if it was due — a cascade-time
+  // body would see cleared envs). Suppress across the whole cascade so
+  // interp matches the JIT sweep (see _drop_suppressed).
   _drop_suppressed() = true;
   for (auto& l : live) {
     if (reachable.contains(l.ptr)) continue;

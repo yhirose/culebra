@@ -1,0 +1,137 @@
+# Phase 2-4: the GC backstop fires `drop` exactly once on resources whose
+# owner was orphaned — the narrow residue deterministic scope-exit drop
+# cannot reach (design §9 / §14.3 "option 2 backstop", PEP 442 style).
+#
+# Two orphan shapes: a cycle held through a CLOSURE (a closure captures its
+# defining scope, an escape that may outlive it — so scope exit
+# conservatively leaves it alone), and cyclic garbage discarded directly at
+# the TOP LEVEL (a scope that never exits). Both must fire at the next
+# collection, on both backends. Finalization order across one collection is
+# unspecified (PEP 442), so observations are count/membership based.
+
+mut events = []
+
+# The JIT's conservative collector may retain an orphan across collections
+# while a stale callee-saved register / stack word still looks like a
+# pointer to it (jit_gc.h: completeness is best-effort). Two pieces of
+# hygiene keep the observations deterministic on both backends: interleave
+# real, register-churning work with a few collections (gc_settle), and run
+# each case's mutating part inside a helper fn — its spills then live in a
+# dead frame region below the collector's stack scan, instead of in the
+# top-level frame that stays scanned forever. The interp (precise) fires
+# on the first pass either way.
+fn churn(n) {
+  mut acc = []
+  mut i = 0
+  while i < n {
+    acc.push('x' + i.to_string())
+    i = i + 1
+  }
+  acc.size()
+}
+# Adaptive: collect until the expected number of drops landed (or a
+# generous cap — a genuinely missing drop still fails the assert that
+# follows). A fixed iteration count flakes: a stale word can survive
+# several collections.
+fn gc_settle(want) {
+  mut i = 0
+  while i < 20 && events.size() < want {
+    churn(8)
+    GC.stat()
+    i = i + 1
+  }
+}
+
+# --- 1) Closure-held cycle: `g` captures the scope that binds `res`. ---
+make_lam = fn () {
+  let res = { id: 'lam', drop: fn () { events.push('lam') } }
+  let g = fn () { res.id }
+  g()
+}
+fn run_lam() { { let _l = make_lam() }; nil }
+run_lam()
+gc_settle(1)
+assert_eq(events.size(), 1)
+assert_eq(events[0], 'lam')
+
+# --- 2) Nested `fn name` (multimethod) capturing a resource. ---
+events = []
+make_nf = fn () {
+  let res = { id: 'nf', drop: fn () { events.push('nf') } }
+  fn use_res() { res.id }
+  use_res()
+}
+fn run_nf() { { let _n = make_nf() }; nil }
+run_nf()
+gc_settle(1)
+assert_eq(events.size(), 1)
+assert_eq(events[0], 'nf')
+
+# --- 3) Exactly-once: further collections must not re-fire. ---
+gc_settle(2)
+assert_eq(events.size(), 1)
+
+# --- 4) Several orphans in one collection: all fire, order unspecified. ---
+events = []
+make_each = fn (tag) {
+  let res = { id: tag, drop: fn () { events.push(tag) } }
+  fn use_res() { res.id }
+  use_res()
+}
+fn run_each() { make_each('a'); make_each('b'); make_each('c'); nil }
+run_each()
+gc_settle(3)
+# Tolerance: with three watched chains, a per-run stale-word collision can
+# conservatively retain ONE of them past every collection (false retention
+# is probabilistic per run, so retrying collects cannot dislodge it).
+# Exactly-once stays a hard guarantee: no tag may appear twice.
+assert_true(events.size() >= 2 && events.size() <= 3)
+let seen = events.sorted_by(|x| x)
+mut prev = ''
+for t in seen {
+  assert_true(t != prev)                       # no double-fire
+  assert_true(t == 'a' || t == 'b' || t == 'c')
+  prev = t
+}
+
+# --- 5) Top-level discarded object cycle (no enclosing scope ever exits).
+# The bindings themselves are top-level; only the literal construction is
+# wrapped so its temps don't pin the cycle from the immortal main frame.
+events = []
+mut a = nil
+mut b = nil
+fn build_pair() {
+  a = { drop: fn () { events.push('ta') } }
+  b = { drop: fn () { events.push('tb') } }
+  a.other = b
+  b.other = a
+  nil
+}
+build_pair()
+a = nil
+b = nil
+gc_settle(2)
+assert_eq(events.size(), 2)
+let seen2 = events.sorted_by(|x| x)
+assert_eq(seen2[0], 'ta')
+assert_eq(seen2[1], 'tb')
+
+# --- 6) A LIVE resource must never be touched by the backstop, even when
+# its holder sits next to garbage in the same collection.
+events = []
+let keeper = { drop: fn () { events.push('live') } }
+fn run_cyc() {
+  {
+    let cyc = { drop: fn () { events.push('dead') }, keep: keeper }
+    cyc.me = cyc
+  }
+  nil
+}
+run_cyc()
+gc_settle(1)
+assert_eq(events.size(), 1)     # only the cycle member fired
+assert_eq(events[0], 'dead')
+keeper.drop()                   # still alive and explicitly droppable
+assert_eq(events.size(), 2)
+gc_settle(3)
+assert_eq(events.size(), 2)     # no re-fire
