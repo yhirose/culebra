@@ -3445,6 +3445,24 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
   const auto& params = *f.params;
   size_t regulars = regular_param_count(params);
   size_t pos = 0;
+  // Typed params are enforced like any other call (the JIT's compiled
+  // prologue checks them on every entry, callbacks included). Position is
+  // left 0 for the eval wrapper to backfill from the HOF call site — the
+  // JIT reports the same place (per-element set_call_site, argpos count 0).
+  // Typed params are enforced for USER closures only (`body != nullptr`):
+  // a native/stdlib callback (`[5].map(FS.read)`) keeps its body-coercion
+  // wording ("expected String, got Long") — the canonical contract for
+  // ns-methods as callbacks; the JIT adapter reports the same way (see
+  // test_ns_kwargs). check_type's message, with the format materialized
+  // only on failure — this runs per element per param in every HOF loop.
+  bool enforce_types = f.body != nullptr;
+  auto typed_check = [&](const FunctionValue::Parameter& p, const Value& v) {
+    if (!enforce_types || p.type_name.empty() || type_matches(v, p.type_name))
+      return;
+    throw CulebraError("TypeError",
+                       std::format("type error: parameter '{}' expects {}",
+                                   p.name, p.type_name));
+  };
   for (size_t i = 0; i < params.size(); i++) {
     const auto& p = params[i];
     if (p.kwargs_rest) {
@@ -3455,14 +3473,19 @@ inline void bind_callback_params(Environment& frame, const FunctionValue& f,
     if (p.kw_only) {
       // A callback receives positional args only, so a kw-only param always
       // takes its default (expression or literal), same as the full binder.
-      if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr))
+      if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr)) {
+        typed_check(p, *dv);
         frame.initialize(p.name, *dv, p.mut);
+      }
       continue;
     }
     if (pos < args.size()) {
-      frame.initialize(p.name, args.begin()[pos], p.mut);
+      const Value& v = args.begin()[pos];
+      typed_check(p, v);
+      frame.initialize(p.name, v, p.mut);
       pos++;
     } else if (auto dv = resolve_param_default(f, i, frame, f.eval_default_expr)) {
+      typed_check(p, *dv);
       frame.initialize(p.name, *dv, p.mut);
     }
   }
@@ -3528,6 +3551,14 @@ inline FunctionValue as_callback(const Value& cb) {
         return pf.eval(ce);
       });
       bound.name = pf.name;
+      // Propagate the user-closure marker: the callback binder enforces
+      // typed params only for user closures (body != nullptr), and a
+      // user-defined `__call__` must keep its checks through the wrapper
+      // (the JIT calls the method's compiled prologue directly). The
+      // wrapper never escapes the HOF call, so sendable never sees it —
+      // and params_ast stays null so an escapee would still be rejected
+      // as not Sendable rather than rebuilt without its `this`.
+      bound.body = pf.body;
       return bound;
     }
   }

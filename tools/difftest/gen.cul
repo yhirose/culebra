@@ -526,7 +526,27 @@ let tps = [
   '([1, 2]).join(0)',
   '("abc").slice(0, "x")',
   '([3, 1]).sort_by()',
-  '([3, 1]).sort_by(1, 2)']
+  '([3, 1]).sort_by(1, 2)',
+  'let cb = fn (v: Long) { v }; [1, "x"].for_each(cb)',
+  '[1, "x"].map(fn (v: Long) { v })',
+  '[1, "x"].filter(fn (v: Long) { true })',
+  '[1, "x"].reduce(0, fn (a: Long, v: Long) { a + v })',
+  '[1, "x"].sort_by(fn (v: Long) { v })',
+  'let cb = fn (v: Long) { v }; [1, "x"].iter().map(cb).collect()',
+  '[1, "x"].iter().map(fn (v: Long) { v }).collect()',
+  '[1, "x"].iter().filter(fn (v: Long) { true }).collect()',
+  '[1, "x"].iter().take_while(fn (v: Long) { true }).collect()',
+  '[1, "x"].iter().for_each(fn (v: Long) { v })',
+  '[1, "x"].iter().any(fn (v: Long) { false })',
+  '[1, "x"].iter().reduce(0, fn (a: Long, v: Long) { a })',
+  'range(2).map(fn (v: String) { v }).collect()',
+  'range(2).for_each(fn (v: String) { v })',
+  'range(2).reduce("", fn (a: String, v: String) { a })',
+  '([1, "x"]).map(fn (v: Long) { v })',
+  '[1].map(fn (v, *, w: Long = "x") { v })',
+  '[1, "x"].map(fn (*xs) { xs })',
+  '[5].map(FS.read).collect()',
+  'class Dbl { __call__(v: Long) { v * 2 } }; [1, "x"].map(Dbl.new())']
 for t in tps {
   case("typos|" + t, t)
 }

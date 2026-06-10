@@ -10128,21 +10128,32 @@ struct JIT {
   // hand-written `while` loop on the JIT path.
   bool is_inlinable_lambda(const peg::Ast& ast, size_t expected_arity) const;
 
+  // Typed-param enforcement for an inlined callback param: the inlined
+  // body must reject a wrong-typed element exactly like the runtime
+  // helper path, whose compiled prologue checks every entry. Reports at
+  // the current (HOF call) position — the helper path lands there too
+  // (the helper's line/col args feed the per-element set_call_site), as
+  // does the interp's eval-wrapper backfill.
+  void emit_inlined_param_check(const culebra::ParameterView& pv,
+                                llvm::Value* val) {
+    if (pv.type_annotation.empty()) return;
+    emit_type_check(val, pv.type_annotation,
+                    std::string("parameter '") + std::string(pv.name) + "'");
+  }
+
   template <class PerIter>
   void emit_unary_lambda_body(const peg::Ast& lambda_ast,
                               llvm::Value* elem, PerIter&& per_iter) {
     const auto& info = func_info_.at(&lambda_ast);
-    // PARAMETER layout: [MUTABLE, IDENTIFIER, (TYPE_ANNOTATION)?, (DEFAULT)?].
     // Honor `|mut x|` so the inlined HOF body matches compile_fn_common's
     // paramMuts handling and interp's per-param mut flag.
-    auto param_name =
-        std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
-    bool param_mut =
-        lambda_ast.nodes[0]->nodes[0]->nodes[0]->token == "mut";
+    auto pv = culebra::view_parameter(*lambda_ast.nodes[0]->nodes[0]);
+    auto param_name = std::string(pv.name);
+    emit_inlined_param_check(pv, elem);
     push_scope();
     bool captured = info.captured_locals.contains(param_name);
     define_var(param_name,
-               make_var_slot(captured, param_name, elem, param_mut));
+               make_var_slot(captured, param_name, elem, pv.is_mut));
     auto result = compile(*lambda_ast.nodes[1]);
     per_iter(elem, result);
     pop_scope();
@@ -10154,21 +10165,19 @@ struct JIT {
                                 llvm::Value* val_val,
                                 StoreResult&& store_result) {
     const auto& info = func_info_.at(&lambda_ast);
-    auto acc_name =
-        std::string(lambda_ast.nodes[0]->nodes[0]->nodes[1]->token);
-    bool acc_mut =
-        lambda_ast.nodes[0]->nodes[0]->nodes[0]->token == "mut";
-    auto val_name =
-        std::string(lambda_ast.nodes[0]->nodes[1]->nodes[1]->token);
-    bool val_mut =
-        lambda_ast.nodes[0]->nodes[1]->nodes[0]->token == "mut";
+    auto acc_pv = culebra::view_parameter(*lambda_ast.nodes[0]->nodes[0]);
+    auto val_pv = culebra::view_parameter(*lambda_ast.nodes[0]->nodes[1]);
+    auto acc_name = std::string(acc_pv.name);
+    auto val_name = std::string(val_pv.name);
+    emit_inlined_param_check(acc_pv, acc_val);
+    emit_inlined_param_check(val_pv, val_val);
     push_scope();
     bool acc_captured = info.captured_locals.contains(acc_name);
     define_var(acc_name,
-               make_var_slot(acc_captured, acc_name, acc_val, acc_mut));
+               make_var_slot(acc_captured, acc_name, acc_val, acc_pv.is_mut));
     bool val_captured = info.captured_locals.contains(val_name);
     define_var(val_name,
-               make_var_slot(val_captured, val_name, val_val, val_mut));
+               make_var_slot(val_captured, val_name, val_val, val_pv.is_mut));
     auto result = compile(*lambda_ast.nodes[1]);
     store_result(result);
     pop_scope();

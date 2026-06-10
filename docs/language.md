@@ -3144,6 +3144,14 @@ puts([1, 2, 3].reduce(0, fn (a, *xs) { a + xs.size() }))  # => 3
 This is why `range` / `iota` (variadic builtins) can be passed directly as
 callbacks. The rule is identical under the interpreter, `--jit`, and AOT.
 
+**Callback parameter types.** A type annotation on a callback parameter is
+enforced on every invocation, exactly like a direct call — the first
+wrong-typed element raises a `TypeError`:
+
+```culebra
+[1, 'x'].map(fn (v: Long) { v * 2 })   # !! parameter 'v' expects Long
+```
+
 ### 17.3 Object methods
 
 | Signature                        | Description                                |

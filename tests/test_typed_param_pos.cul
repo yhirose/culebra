@@ -74,4 +74,23 @@ check('sortby-rich', e13, 70, 18)
 let e14 = try { (f1)(n: 'x') } catch e { e }
 check('paren-kwarg', e14, 74, 18)
 
+# --- Builtin HOF callbacks: a typed param rejects a wrong-typed element on
+# every invocation path (Task #11) — eager helper (variable callback),
+# inlined literal lambda, lazy combinator, iterator terminal — reporting at
+# the HOF call. The interp binder and both JIT paths (compiled prologue /
+# inlined body) enforce the same check.
+let cb1 = fn (v: Long) { v }
+let e15 = try { [1, 'x'].for_each(cb1) } catch e { e }
+check('hof-eager', e15, 83, 17)
+let e16 = try { [1, 'x'].map(fn (v: Long) { v }) } catch e { e }
+check('hof-inline', e16, 85, 17)
+let e17 = try { [1, 'x'].reduce(0, fn (a: Long, v: Long) { a + v }) } catch e { e }
+check('hof-inline-reduce', e17, 87, 17)
+let e18 = try { [1, 'x'].iter().map(cb1).collect() } catch e { e }
+check('hof-lazy', e18, 89, 17)
+let e19 = try { [1, 'x'].iter().any(fn (v: Long) { false }) } catch e { e }
+check('hof-terminal', e19, 91, 17)
+let e20 = try { range(2).map(fn (v: String) { v }).collect() } catch e { e }
+check('hof-range-inline', e20, 93, 17)
+
 puts('test_typed_param_pos OK')
