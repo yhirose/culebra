@@ -2687,12 +2687,17 @@ File.open = fn (path) {
 ものから順に drop されます:
 
 ```culebra
+let log = []
+make_thing = fn (id) {
+  { id: id, drop: fn () { log.push(id) } }
+}
 {
-  let a = make_thing()
-  let b = make_thing()
+  let a = make_thing('a')
+  let b = make_thing('b')
   a.other = b
   b.other = a
-}   # 循環していても、ここで両方 drop（b が先）
+}                # 循環していても、ブロック離脱でここで両方 drop
+puts(log)        # => ['b', 'a']
 ```
 
 所有スコープは「循環が最後に escape した先」です: 関数の戻り値として

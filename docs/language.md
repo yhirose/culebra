@@ -2876,12 +2876,17 @@ outside when it exits — is dropped **at that scope's exit**, newest
 member first, on both backends:
 
 ```culebra
+let log = []
+make_thing = fn (id) {
+  { id: id, drop: fn () { log.push(id) } }
+}
 {
-  let a = make_thing()
-  let b = make_thing()
+  let a = make_thing('a')
+  let b = make_thing('b')
   a.other = b
   b.other = a
-}   # both drop here (b first), despite the cycle
+}                # both drop at the block's exit, despite the cycle
+puts(log)        # => ['b', 'a']
 ```
 
 The owning scope is wherever the cycle last escaped to: a cycle that
