@@ -15,6 +15,8 @@
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
 #include <compress.h>
+#include <foreign.h>
+#include <foreign_fixture.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -2229,6 +2231,147 @@ inline Value make_file_handle(int64_t id) {
   return Value(std::move(h));
 }
 
+// --- Foreign binding: foreign_fixture::Counter (Phase 3 PoC) ---------------
+//
+// The hand-written shape Phase 4's codegen will emit for a wrapped C++
+// class: a per-instance handle whose methods are thunks over the
+// foreign table (eager-copy marshalling, calling-convention-checked
+// params), `drop` erasing the table entry (so the §9 split and the
+// whole Phase 1/2 scope-exit machinery apply), and a `__Foreign.<T>`
+// namespace object carrying the constructor and statics. The fixture
+// itself lives in include/foreign_fixture.h; tests/test_foreign.cul is
+// the end-to-end spec.
+
+inline Value make_counter_handle(int64_t id);
+
+// Wrap a returned instance per its §10.3 ownership shape.
+inline Value _counter_wrap_owned(foreign_fixture::Counter v) {
+  auto id = foreign::table<foreign_fixture::Counter>().adopt(
+      std::make_unique<foreign_fixture::Counter>(std::move(v)));
+  return make_counter_handle(id);
+}
+inline Value _counter_wrap_unique(
+    std::unique_ptr<foreign_fixture::Counter> p) {
+  auto id = foreign::table<foreign_fixture::Counter>().adopt(std::move(p));
+  return make_counter_handle(id);
+}
+inline Value _counter_wrap_shared(
+    std::shared_ptr<foreign_fixture::Counter> p) {
+  auto id =
+      foreign::table<foreign_fixture::Counter>().adopt_shared(std::move(p));
+  return make_counter_handle(id);
+}
+
+inline Value make_counter_handle(int64_t id) {
+  using namespace std::literals;
+  using foreign_fixture::Counter;
+  ObjectValue h;
+  h.initialize("__foreign__", Value(std::string("Counter")), false);
+  h.initialize("_id", Value(static_cast<long>(id)), false);
+  // A foreign instance lives in a process-local table — not Sendable.
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto hid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+  // The live instance, or ClosedError (§7) — every method's first step.
+  auto self = [hid](const std::shared_ptr<Environment>& env) -> Counter* {
+    long line = env->get("__LINE__").to_long();
+    long col = env->get("__COLUMN__").to_long();
+    return foreign::get_or_throw<Counter>(hid(env), "Counter", line, col);
+  };
+
+  h.initialize(
+      "value",
+      Value(FunctionValue({},
+                          [self](std::shared_ptr<Environment> env) {
+                            return Value(static_cast<long>(self(env)->value()));
+                          },
+                          "Long"sv)),
+      false);
+  h.initialize(
+      "add",
+      Value(FunctionValue({{"n", false, "Long"sv}},
+                          [self](std::shared_ptr<Environment> env) {
+                            self(env)->add(env->get("n").to_long());
+                            return Value();
+                          })),
+      false);
+  h.initialize(
+      "label",
+      Value(FunctionValue({},
+                          [self](std::shared_ptr<Environment> env) {
+                            return Value(self(env)->label());
+                          },
+                          "String"sv)),
+      false);
+  // The three return-ownership shapes (§10.3).
+  h.initialize(
+      "clone",
+      Value(FunctionValue({},
+                          [self](std::shared_ptr<Environment> env) {
+                            return _counter_wrap_owned(self(env)->clone());
+                          },
+                          "Object"sv)),
+      false);
+  h.initialize(
+      "fork",
+      Value(FunctionValue({},
+                          [self](std::shared_ptr<Environment> env) {
+                            return _counter_wrap_unique(self(env)->fork());
+                          },
+                          "Object"sv)),
+      false);
+  h.initialize(
+      "share",
+      Value(FunctionValue({},
+                          [self](std::shared_ptr<Environment> env) {
+                            return _counter_wrap_shared(self(env)->share());
+                          },
+                          "Object"sv)),
+      false);
+  // The drop event (§9): erase the table entry — ~Counter runs NOW.
+  // Idempotent, and the explicit/auto/backstop union stays exactly-once
+  // through the Phase 1 `dropped` flag on the handle.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [hid](std::shared_ptr<Environment> env) {
+        foreign::table<Counter>().erase(hid(env));
+        return Value();
+      })),
+      false);
+  return Value(std::move(h));
+}
+
+inline Value make_foreign_namespace() {
+  using namespace std::literals;
+  using foreign_fixture::Counter;
+  ObjectValue counter;
+  counter.initialize(
+      "new",
+      Value(FunctionValue({{"start", false, "Long"sv}},
+                          [](std::shared_ptr<Environment> env) {
+                            auto id = foreign::table<Counter>().adopt(
+                                std::make_unique<Counter>(
+                                    env->get("start").to_long()));
+                            return make_counter_handle(id);
+                          },
+                          "Object"sv)),
+      false);
+  counter.initialize(
+      "live",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment>) {
+                            return Value(Counter::live());
+                          },
+                          "Long"sv)),
+      false);
+
+  ObjectValue ns;
+  ns.initialize("Counter", Value(std::move(counter)), false);
+  return Value(std::move(ns));
+}
+
 inline Value make_file_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -3923,6 +4066,7 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
   env.initialize("File", make_file_namespace(), false);
+  env.initialize("__Foreign", make_foreign_namespace(), false);
   env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
