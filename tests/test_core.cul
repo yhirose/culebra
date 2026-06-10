@@ -914,16 +914,15 @@ test_drop = fn () {
   }
   assert_true(events.size() == 1 && events[0] == 'cs3')
 
-  // Cyclic references: drop is intentionally NOT fired for cycle members
-  // on either backend, matching Python's __del__ rule (finalization order
-  // across a cycle is undefined). GC.stat() forces a collect.
-  //   - Cases 2 and 3 route the cycle through a closure Environment, which
-  //     InterpGC tracks, so the interp reclaims them and the suppression
-  //     path runs (resource collected, drop NOT fired) — the real guard.
-  //   - Case 1 is a pure Object<->Object cycle, which the interp does not
-  //     track and thus leaks (drop never fires either way); the JIT reclaims
-  //     it via sweep, also without drop. Same observable on both backends.
-  // 1) Object<->Object cycle.
+  // Cyclic references under deterministic drop (Phase 2): a cycle whose
+  // members are owned by a scope drops at that scope's exit, in reverse
+  // creation order. Cycles held through a CLOSURE survive to the GC
+  // backstop instead (cases 2-4): a local fn captures its whole defining
+  // scope, which may outlive the exit — both backends conservatively
+  // park those (resource collected without drop), matching Python's
+  // __del__-in-cycle caution. GC.stat() forces a collect.
+  // 1) Object<->Object cycle: returned from make_pair, discarded by the
+  //    block — the block's exit owns and drops both members.
   events = []
   make_pair = fn () {
     mut a = nil; mut b = nil
@@ -934,8 +933,9 @@ test_drop = fn () {
     a
   }
   { let _cyc = make_pair() }
-  GC.stat()
-  assert_eq(events.size(), 0)
+  assert_eq(events.size(), 2)
+  assert_eq(events[0], 'cyc-b')   // reverse creation order
+  assert_eq(events[1], 'cyc-a')
   // 2) Self-referential lambda cycle capturing a drop resource.
   events = []
   make_lam = fn () {

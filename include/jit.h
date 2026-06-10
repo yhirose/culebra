@@ -271,6 +271,11 @@ struct JitObject {
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
   bool is_match = false;
+  // Index into the owned-resource stack (deterministic drop, design
+  // §14.3), -1 when unregistered. Set when `drop` is bound; the
+  // release/sweep paths tombstone the entry through it. Trailing field —
+  // codegen only GEPs earlier members.
+  int64_t owned_idx = -1;
 
   // --- Shape-based property access helpers ---
 
@@ -679,6 +684,97 @@ inline culebra::gc::Heap& _gc_heap() {
   return h;
 }
 
+// --- Deterministic drop: the owned-resource stack (design §14.3) ---
+//
+// JIT mirror of the interp's owned_stack (interpreter.h). Drop-having
+// objects are registered the moment `drop` is bound (instance
+// construction / property write); codegen emits a scope-exit call —
+// after the scope's slot release — that resolves the entries above the
+// scope's mark: tombstoned or already-dropped entries are discarded,
+// the rest are escaped or cyclic and a localized trial deletion
+// decides (see culebra_runtime_owned_scope_exit). Entries are
+// non-owning raw pointers; the ordinary refcount-0 release stays the
+// primary drop path and tombstones its entry through `owned_idx`.
+// Marks are monotonic registration ids, so pruning never invalidates a
+// live scope's mark.
+struct JitOwnedStack {
+  struct Entry {
+    JitObject* obj;  // null = tombstone (object died via release/sweep)
+    uint64_t id;
+  };
+  // The two hot fields sit first at fixed offsets: compiled code reads
+  // them directly through the pointer culebra_runtime_owned_hot()
+  // returns, so scope entry (load next_id) and the empty-region exit
+  // check (top_stamp <= mark) cost no runtime call. See push_scope /
+  // emit_owned_scope_exit in the JIT class.
+  uint64_t next_id = 0;
+  uint64_t top_stamp = 0;  // entries.back().id + 1, or 0 when empty
+  std::vector<Entry> entries;
+
+  void refresh_top() {
+    top_stamp = entries.empty() ? 0 : entries.back().id + 1;
+  }
+
+  // Tombstones accumulate in regions that never exit (the top level
+  // inherits every survivor); prune periodically. Re-indexing keeps
+  // every live object's owned_idx back-pointer accurate.
+  void maybe_prune() {
+    if ((next_id & 1023) != 0) return;
+    std::erase_if(entries, [](const Entry& e) { return e.obj == nullptr; });
+    for (size_t i = 0; i < entries.size(); i++)
+      entries[i].obj->owned_idx = static_cast<int64_t>(i);
+    refresh_top();
+  }
+};
+static_assert(offsetof(JitOwnedStack, next_id) == 0 &&
+                  offsetof(JitOwnedStack, top_stamp) == 8,
+              "compiled code GEPs these two fields directly");
+
+inline JitOwnedStack& _jit_owned_stack() {
+  return culebra::runtime_substate<JitOwnedStack>(
+      culebra::kSlotJitOwnedStack);
+}
+
+inline void _jit_owned_register(JitObject* o) {
+  if (!o || o->owned_idx >= 0) return;
+  auto& st = _jit_owned_stack();
+  o->owned_idx = static_cast<int64_t>(st.entries.size());
+  st.entries.push_back({o, st.next_id++});
+  st.refresh_top();
+  st.maybe_prune();
+}
+
+// Stable per-Runtime address of the owned stack's hot fields (the
+// substate object is heap-allocated once and never moves). Compiled
+// functions fetch it once in their prologue.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
+culebra_runtime_owned_hot() {
+  return reinterpret_cast<int64_t>(&_jit_owned_stack());
+}
+
+// Tombstone (release/sweep death, explicit de-registration). Safe on
+// any object: a never-registered one has owned_idx == -1.
+inline void _jit_owned_unregister(JitObject* o) {
+  if (!o || o->owned_idx < 0) return;
+  auto& st = _jit_owned_stack();
+  if (static_cast<size_t>(o->owned_idx) < st.entries.size())
+    st.entries[o->owned_idx].obj = nullptr;
+  o->owned_idx = -1;
+}
+
+// Bind/unbind-`drop` chokepoints: every path that makes an object
+// drop-having (or stops it being one) must come through these, so the
+// invariant "drop-having ⇔ registered" can't drift as entry points are
+// added.
+inline void _jit_owned_bind_drop(JitObject* o) {
+  o->has_drop = true;
+  _jit_owned_register(o);
+}
+inline void _jit_owned_unbind_drop(JitObject* o) {
+  o->has_drop = false;
+  _jit_owned_unregister(o);
+}
+
 // Register a `new`d object with the collector. The object owns its own memory
 // (refcount + RC release-to-zero `delete`); registration only records it in
 // the heap's address→metadata registry (metadata external, so offset 0 stays
@@ -690,8 +786,10 @@ inline void _gc_register(T* obj, int8_t tag) {
 }
 // De-register `obj` from the registry just before the release path `delete`s
 // it (the conservative heap owns no memory — RC's `delete` frees it).
+// Doubles as the owned-stack tombstone chokepoint for objects.
 inline void _gc_note_free(void* obj, int8_t tag) {
-  (void)tag;
+  if (tag == GC_TAG_OBJECT)
+    _jit_owned_unregister(static_cast<JitObject*>(obj));
   _gc_heap().forget(obj);
 }
 
@@ -2965,7 +3063,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col);
   }
-  if (std::string_view(key) == "drop") obj->has_drop = true;
+  if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
 
 // --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----
@@ -4323,7 +4421,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     ic->offset = idx;
     ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
   }
-  if (std::string_view(key) == "drop") obj->has_drop = true;
+  if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
 
 // Build a structured Error Object for a C++ exception that has reached
@@ -4530,9 +4628,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
                                method_vals[i].tag, method_vals[i].data, 0,
                                0);
   }
-  // The meta isn't an instance; undo the `has_drop` side-effect that
-  // `culebra_runtime_object_set` set when binding the "drop" method.
-  meta->has_drop = false;
+  // The meta isn't an instance; undo the `has_drop` side-effect (and the
+  // owned-stack registration) that `culebra_runtime_object_set` applied
+  // when binding the "drop" method.
+  _jit_owned_unbind_drop(meta);
   return meta;
 }
 
@@ -4563,8 +4662,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   // any of its instances. The matching release runs in the JitObject
   // destructor (release_impl GC_TAG_OBJECT path).
   if (class_meta) class_meta->refcount++;
-  // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
-  if (class_meta && _find_property(class_meta, "drop")) inst->has_drop = true;
+  // Mirror inherited `drop` so the destructor's `has_drop` gate fires,
+  // and register the instance on the owned stack (deterministic drop).
+  if (class_meta && _find_property(class_meta, "drop"))
+    _jit_owned_bind_drop(inst);
 
   // `class_name` is a process-lifetime LLVM module global; TAG_STRING
   // values are borrowed (no refcount), so we can stash it directly
@@ -5454,6 +5555,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
     }
     case GC_TAG_OBJECT: {
       auto* o = static_cast<JitObject*>(obj);
+      _jit_owned_unregister(o);  // owned-stack tombstone (sweep path)
       delete o->key_order;
       delete o->non_string_props;
       delete o;
@@ -8064,7 +8166,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
   _culebra_value_release_impl(obj->slots[idx].value.tag,
                               obj->slots[idx].value.data);
   obj->erase(key);
-  if (std::string_view(key) == "drop") obj->has_drop = false;
+  if (std::string_view(key) == "drop") _jit_owned_unbind_drop(obj);
 }
 
 // Drop a key from `key_order` if present. Matches by JitValueEq so
@@ -8276,6 +8378,202 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_explicit_drop(
     int8_t tag, int64_t data) {
   if (tag == TAG_OBJECT)
     _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(data));
+}
+
+// --- Deterministic drop: scope-exit resolution (design §14.3) ---
+
+// Codegen helper behind the compile-time-known `obj.drop = ...` IC fast
+// path: set the gate and register on the owned stack — the same effect
+// the slow-path runtime setter has.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_owned_register_drop(JitObject* o) {
+  if (o) _jit_owned_bind_drop(o);
+}
+
+// Fire `drop` on a scope-owned object whose refcount is still positive
+// (escaped-nowhere cycle member at scope exit).
+// _culebra_call_drop_if_present is built for the refcount-0 release
+// path — it pins the refcount to 2 during the body and parks it at 0 —
+// so preserve the real count around it: this call consumes none of the
+// object's remaining references.
+inline void _jit_owned_fire_drop(JitObject* o) {
+  int64_t rc = o->refcount;
+  _culebra_call_drop_if_present(o);
+  o->refcount = rc;
+}
+
+// Resolve the owned-stack region registered above `mark` (the scope's
+// entry snapshot of next_id, loaded inline). Codegen reaches here only
+// when the inline top_stamp check saw a non-empty region, and only
+// AFTER the scope's slot release, so anything held only by the
+// scope's bindings is already gone (its entry tombstoned by the
+// ordinary refcount-0 release — that path stays the primary one and
+// keeps its timing). What remains is escaped or cyclic; a localized
+// trial deletion (Bacon-Rajan style, mirroring the interp's
+// _owned_resolve_ambiguous without the binding credit) decides:
+// unreachable from outside the subgraph → drop (newest first — reverse
+// creation order, cycle members included); reachable → survives,
+// pushed back in original order for the parent scope's region to
+// inherit. Closures are deliberately not walked (symmetric with the
+// interp: their references pin conservatively); the cycle's memory is
+// left to the backstop collector, which never re-runs a `dropped` body.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_owned_scope_exit(int64_t mark_arg) {
+  const uint64_t mark = static_cast<uint64_t>(mark_arg);
+  auto& stack = _jit_owned_stack();
+  auto& st = stack.entries;
+  // Common case: nothing registered under this scope. (Compiled code
+  // already checked top_stamp <= mark inline; other callers land here.)
+  if (st.empty() || st.back().id < mark) return;
+
+  std::vector<JitOwnedStack::Entry> pending;  // newest first
+  while (!st.empty() && st.back().id >= mark) {
+    auto e = st.back();
+    st.pop_back();
+    if (!e.obj) continue;          // tombstone: died via release/sweep
+    e.obj->owned_idx = -1;         // detached while pending
+    if (e.obj->dropped) continue;  // explicit drop already ran
+    // Analysis pin (mirrors the interp's OwnedPending::sp lock): an
+    // earlier candidate's drop body may break the cycle that keeps a
+    // later one alive — without the pin its memory would be freed
+    // before we fire (or skip) it. Credited via the seed's explained++.
+    e.obj->refcount++;
+    pending.push_back(e);
+  }
+  stack.refresh_top();
+  if (pending.empty()) return;
+
+  // Localized trial deletion over the candidates' subgraph. Containers
+  // (Object/Array/Tuple/Set) become nodes; every reference occurrence
+  // from within the subgraph is "explained". A node with references
+  // beyond that is pinned from outside; whatever a pinned node reaches
+  // is externally reachable. No user code runs during the analysis, so
+  // the refcounts it reads are stable.
+  struct Node {
+    int64_t use_count = 0;
+    long explained = 0;
+    std::vector<size_t> out;
+  };
+  std::vector<Node> nodes;
+  std::unordered_map<const void*, size_t> index;
+  auto add_node = [&](const void* p, int64_t use_count, bool& fresh) {
+    auto [it, inserted] = index.try_emplace(p, nodes.size());
+    fresh = inserted;
+    if (inserted) nodes.push_back({use_count, 0, {}});
+    return it->second;
+  };
+  constexpr size_t npos = static_cast<size_t>(-1);
+  auto walk_value = [&](const JitValue& v, size_t from, auto&& self) -> void {
+    switch (v.tag) {
+      case TAG_OBJECT:
+      case TAG_ARRAY:
+      case TAG_TUPLE:
+      case TAG_SET:
+        break;
+      default:
+        return;  // primitives / Function (conservatively opaque) / Tensor
+    }
+    if (!v.data) return;
+    auto* p = reinterpret_cast<void*>(v.data);
+    bool fresh;
+    // All refcounted heap types share the i64 refcount first field.
+    size_t id = add_node(p, *reinterpret_cast<int64_t*>(p), fresh);
+    nodes[id].explained++;
+    if (from != npos) nodes[from].out.push_back(id);
+    if (!fresh) return;
+    switch (v.tag) {
+      case TAG_OBJECT: {
+        auto* o = reinterpret_cast<JitObject*>(p);
+        for (auto& entry : o->slots) self(entry.value, id, self);
+        if (o->key_order && o->non_string_props) {
+          for (const auto& k : *o->key_order) {
+            self(k, id, self);
+            if (k.tag == TAG_STRING) continue;
+            auto it = o->non_string_props->find(k);
+            if (it != o->non_string_props->end()) {
+              // A refcounted key holds two refs: key_order's (walked
+              // above) and the map's stored alias — explain both.
+              self(it->first, id, self);
+              self(it->second.value, id, self);
+            }
+          }
+        }
+        // The proto edge keeps the class meta pinned (its class binding
+        // is outside the subgraph), and the meta's methods are closures
+        // (not walked) — so following it is safe and keeps the counts
+        // exact for instance-only cycles.
+        if (o->proto)
+          self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, id,
+               self);
+        break;
+      }
+      case TAG_ARRAY:
+      case TAG_TUPLE: {
+        auto* a = reinterpret_cast<JitArray*>(p);
+        for (size_t i = 0; i < a->size; i++) self(a->items[i], id, self);
+        break;
+      }
+      case TAG_SET: {
+        auto* s = reinterpret_cast<JitSet*>(p);
+        for (auto& m : s->members) self(m, id, self);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  // Seed: each candidate. The generic walk's explained++ accounts for
+  // exactly one reference — our analysis pin above.
+  std::vector<size_t> cand_ids(pending.size());
+  for (size_t i = 0; i < pending.size(); i++) {
+    walk_value(
+        JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(pending[i].obj)}, npos,
+        walk_value);
+    cand_ids[i] = index.find(pending[i].obj)->second;
+  }
+
+  std::vector<char> reachable(nodes.size(), 0);
+  std::vector<size_t> q;
+  for (size_t i = 0; i < nodes.size(); i++) {
+    if (nodes[i].use_count > nodes[i].explained) {
+      reachable[i] = 1;
+      q.push_back(i);
+    }
+  }
+  while (!q.empty()) {
+    size_t i = q.back();
+    q.pop_back();
+    for (size_t t : nodes[i].out) {
+      if (!reachable[t]) {
+        reachable[t] = 1;
+        q.push_back(t);
+      }
+    }
+  }
+
+  // Survivors return first, in original (creation) order, inherited by
+  // the parent scope's region — BEFORE any drop fires: a drop body may
+  // register new (higher-id) entries, and appending older survivor ids
+  // after those would break the stack's id ordering. Then drops fire
+  // newest-first on the pre-drop snapshot decisions, and finally the
+  // analysis pins come off (the at-most-once `dropped` flag makes any
+  // resulting refcount-0 re-entry into drop a no-op).
+  for (size_t i = pending.size(); i-- > 0;) {
+    if (reachable[cand_ids[i]]) {
+      pending[i].obj->owned_idx =
+          static_cast<int64_t>(stack.entries.size());
+      stack.entries.push_back(pending[i]);
+    }
+  }
+  stack.refresh_top();
+  for (size_t i = 0; i < pending.size(); i++) {
+    if (!reachable[cand_ids[i]]) _jit_owned_fire_drop(pending[i].obj);
+  }
+  for (auto& p : pending) {
+    _culebra_value_release_impl(GC_TAG_OBJECT,
+                                reinterpret_cast<int64_t>(p.obj));
+  }
 }
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
@@ -8628,6 +8926,9 @@ inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
+inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
+inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
+inline constexpr auto owned_register_drop = "culebra_runtime_owned_register_drop";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
 inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
@@ -8830,6 +9131,11 @@ struct JIT {
     using Slots = std::map<std::string, VarSlot>;
     Slots slots;
     std::vector<Slots::iterator> order;
+    // Owned-stack watermark captured at scope entry (an SSA i64 loaded
+    // straight off the owned stack's hot fields — scope entry dominates
+    // every in-scope exit, so no alloca is needed). Consumed by the
+    // inline empty-region check at scope exit. See push_scope.
+    llvm::Value* owned_mark = nullptr;
     // `let f = fn (...) {...}` records the FUNCTION AST here so a
     // later `f(x, y: 2)` can resolve kwargs against `f`'s parameter
     // list at compile time. Only same-scope direct bindings populate
@@ -8861,6 +9167,7 @@ struct JIT {
     std::string_view return_type;
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
+    llvm::Value* owned_hot;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -8870,13 +9177,15 @@ struct JIT {
           closure_arg(std::exchange(j.current_closure_arg_, nullptr)),
           return_type(std::exchange(j.current_return_type_, {})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
-          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)) {}
+          fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
+          owned_hot(std::exchange(j.current_owned_hot_, nullptr)) {}
 
     void restore() {
       if (!jit) return;
       // Caller is expected to pop every scope it pushed; anything left
       // behind signals a push/pop imbalance that would silently leak.
       assert(jit->scopes_.empty() && "unbalanced push_scope/pop_scope");
+      jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
       jit->current_lpad_ = lpad;
       jit->current_return_type_ = return_type;
@@ -9168,6 +9477,7 @@ struct JIT {
     }
 
     jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
     jit.pop_scope();
     jit.current_info_ = nullptr;
 
@@ -9281,6 +9591,7 @@ struct JIT {
             mod->getFunction(rt::defer_run_to), {depMark});
       }
       jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
       jit.pop_scope();
       jit.current_info_ = nullptr;
     }
@@ -9309,6 +9620,7 @@ struct JIT {
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
     jit.pop_scope();
     jit.current_info_ = nullptr;
 
@@ -9398,6 +9710,7 @@ struct JIT {
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
     jit.pop_scope();
     jit.current_info_ = nullptr;
     verifyFunction(*mainFn);
@@ -9554,6 +9867,7 @@ struct JIT {
             mod->getFunction(rt::defer_run_to), {depMark});
       }
       jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
       jit.pop_scope();
       jit.current_info_ = nullptr;
     }
@@ -9580,6 +9894,7 @@ struct JIT {
       builder.CreateRetVoid();
     }
     jit.current_fn_defer_mark_ = nullptr;
+    jit.current_owned_hot_ = nullptr;
     jit.pop_scope();
     jit.current_info_ = nullptr;
     verifyFunction(*mainFn);
@@ -9968,6 +10283,10 @@ struct JIT {
   // lowers `defer_run_to(this mark)` before emitting `ret` so the
   // function's own defers run regardless of where the return sits.
   llvm::Value* current_fn_defer_mark_ = nullptr;
+  // Per-LLVM-function cache of culebra_runtime_owned_hot()'s result
+  // (see owned_hot_ptr). Reset wherever current_fn_defer_mark_ is —
+  // an SSA value must never leak into a different function.
+  llvm::Value* current_owned_hot_ = nullptr;
 
   // Counter for generating unique function names. Process-wide so names
   // stay unique across separate JIT instances that share an `LLJIT` —
@@ -9999,7 +10318,60 @@ struct JIT {
 
   // --- Scope management ---
 
-  void push_scope() { scopes_.emplace_back(); }
+  // Stable address of the owned stack's hot fields, fetched once per
+  // function invocation (lazily, at the function's first push_scope —
+  // which dominates every later scope). Lets scope entry/exit read
+  // next_id / top_stamp with plain loads instead of runtime calls:
+  // tight loop bodies (whose per-iteration scope is almost always an
+  // empty region) pay ~3 inline instructions, not two calls.
+  llvm::Value* owned_hot_ptr() {
+    if (!current_owned_hot_) {
+      current_owned_hot_ = emit_call(
+          module_->getOrInsertFunction(rt::owned_hot, builder_.getInt64Ty()),
+          {}, "owned.hot");
+    }
+    return current_owned_hot_;
+  }
+
+  void push_scope() {
+    scopes_.emplace_back();
+    // Capture the owned-stack watermark at scope entry (deterministic
+    // drop, design §14.3). Object creation is a runtime event, so
+    // every scope carries a mark: a plain load of the hot next_id.
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto hot = builder_.CreateIntToPtr(owned_hot_ptr(), ptrTy, "owned.hot.p");
+    scopes_.back().owned_mark =
+        builder_.CreateLoad(i64Ty, hot, "owned.mark");  // next_id @ offset 0
+  }
+
+  // Inline empty-region fast path: only when an entry with id >= mark
+  // exists (top_stamp > mark) does the slow-path resolution call run.
+  void emit_owned_scope_exit(llvm::Value* mark) {
+    if (!mark) return;
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i8Ty = builder_.getInt8Ty();
+    auto hot = builder_.CreateIntToPtr(owned_hot_ptr(), ptrTy, "owned.hot.p");
+    auto stampP = builder_.CreateConstInBoundsGEP1_64(
+        i8Ty, hot, offsetof(JitOwnedStack, top_stamp), "owned.stamp.p");
+    auto stamp = builder_.CreateLoad(i64Ty, stampP, "owned.stamp");
+    auto need = builder_.CreateICmpUGT(stamp, mark, "owned.nonempty");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "owned.exit", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "owned.cont", fn);
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(need, slowBB, contBB,
+                          mdb.createBranchWeights(1, 1u << 20));
+    builder_.SetInsertPoint(slowBB);
+    emit_call(module_->getOrInsertFunction(rt::owned_scope_exit,
+                                           builder_.getVoidTy(), i64Ty),
+              {mark});
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+      builder_.CreateBr(contBB);
+    }
+    builder_.SetInsertPoint(contBB);
+  }
 
   // Emit IR to release every owned binding in `scope` and zero the
   // underlying allocas so a subsequent re-entry (loop iteration,
@@ -10045,6 +10417,13 @@ struct JIT {
       release_scope_slots(*it);
     }
     if (suppress_drop) emit_set_drop_suppressed(0);
+    // Resolve every open scope's owned region at once (the outermost
+    // mark covers them all). Skipped at `__culebra_main`'s suppressed
+    // exit: top-level resources leak without drop, matching the
+    // interp's never-torn-down global Environment.
+    if (!suppress_drop && !scopes_.empty()) {
+      emit_owned_scope_exit(scopes_.front().owned_mark);
+    }
   }
 
   void emit_set_drop_suppressed(int8_t v) {
@@ -10055,6 +10434,10 @@ struct JIT {
   void pop_scope() {
     if (!builder_.GetInsertBlock()->getTerminator()) {
       release_scope_slots(scopes_.back());
+      // After the slot release, so non-escaped resources die through
+      // the ordinary refcount-0 path first (tombstoning their entries);
+      // the inline check resolves only the escaped/cyclic remainder.
+      emit_owned_scope_exit(scopes_.back().owned_mark);
     }
     scopes_.pop_back();
   }
@@ -12063,15 +12446,17 @@ struct JIT {
 
     builder_.SetInsertPoint(mergeBB);
     // `obj->has_drop` is consulted by the destructor to decide whether
-    // to look up `drop` and call it. The runtime helpers used to set
-    // this field; with the IC split we know `name` at compile time, so
-    // emit the store directly and only when needed. After the merge so
-    // it doesn't fire if the slow path threw an immutable-property
-    // error (the throw skips merge via the landingpad).
+    // to look up `drop` and call it; binding `drop` also registers the
+    // object on the owned stack (deterministic drop). With the IC split
+    // `name` is known at compile time, so emit the combined runtime
+    // call only when needed. After the merge so it doesn't fire if the
+    // slow path threw an immutable-property error (the throw skips
+    // merge via the landingpad).
     if (name == "drop") {
-      auto hasDropPtr = builder_.CreateConstInBoundsGEP1_64(
-          i8Ty, objPtr, offsetof(JitObject, has_drop), "set.has_drop.p");
-      builder_.CreateStore(builder_.getInt8(1), hasDropPtr);
+      emit_call(module_->getOrInsertFunction(rt::owned_register_drop,
+                                             builder_.getVoidTy(),
+                                             llvm::PointerType::get(ctx_, 0)),
+                {objPtr});
     }
   }
 

@@ -431,4 +431,30 @@ for r in interps {
   case("regex_interp|" + r, r)
 }
 
+# --- Dimension 23: deterministic drop (scope-exit / cycles / escape) ------
+# Phase 2 owned-stack semantics: a drop-having object created under a
+# scope drops at that scope's exit (reverse creation order, cycle members
+# included); escape into an outer container defers to the owner's scope;
+# explicit drop is exactly-once. Drops are observed through a shared log
+# array mutated by the drop bodies — the final log must match across
+# backends in both content and order.
+let drops = [
+  'mut g = []; { let r = {drop: fn () { g.push(1) }} }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }} }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a }; g',
+  'mut g = []; { mut x = {drop: fn () { g.push(1) }}; x.me = x; x = nil }; g',
+  'mut g = []; let xs = []; { let f = {drop: fn () { g.push(1) }}; xs.push(f) }; g.size()',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.drop(); a.drop() }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = a }; g',
+  'mut g = []; { let t = [{drop: fn () { g.push(1) }}, {drop: fn () { g.push(2) }}] }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.list = [a] }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; a.me = a; a.drop() }; g',
+  'mut g = []; { let a = {mut p: nil, drop: fn () { g.push(1) }}; let b = {mut p: nil, drop: fn () { this.p = nil; g.push(2) }}; a.p = b; b.p = a }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let k = {hash: fn () { 42 }, eq: fn () { true }, back: a}; a[k] = 1 }; g',
+  'mut g = []; { let a = {drop: fn () { g.push(1) }}; let b = {drop: fn () { g.push(2) }}; a.p = b; b.p = a }; let n = g.size(); n']
+for d in drops {
+  case("drop|" + d, d)
+}
+
 print(out.join("\n"))

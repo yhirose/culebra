@@ -1,0 +1,107 @@
+# Phase 2: deterministic drop at scope exit, including cyclic-scope-owned
+# resources. A drop-having resource created under a scope is dropped when
+# the scope that owns it exits — even when a reference cycle keeps its
+# refcount above zero (the case the refcount-0-only model leaked: cycle
+# members were never finalized, so the resource stayed open forever).
+#
+# A function's implicit return value legitimately escapes its frame: the
+# caller might use it. So a cycle returned (even accidentally, as the last
+# statement's value) resolves at the CALLER's scope exit, once discarded —
+# which is why the cyclic cases run inside a wrapper whose return value is
+# not the resource. A discard at the top level (a scope that never exits)
+# is the documented narrow-GC-backstop case instead.
+#
+# Known conservative residuals (resources survive to the GC backstop, never
+# dropped early): scopes captured by a local closure (a closure capture IS
+# an escape, design §8), and throw-path unwinding on the JIT (slots leak to
+# the collector — pre-existing shape, matched by keeping throws out of the
+# symmetric corpus).
+#
+# Observable via a shared `log` reached through `this.log`: the drop body
+# pushes to it, so the count survives the object and is checkable after
+# the owning scope has exited.
+
+let log = []
+
+class R {
+  new(lg) { this.log = lg }
+  drop() { this.log.push(1) }
+}
+
+# --- Baseline: non-cyclic owned resources drop at scope exit (worked via
+# refcount-0 before Phase 2; locks in no regression). `b` rides out as the
+# implicit return value and drops when the top-level statement discards it.
+fn non_cyclic() {
+  let a = R.new(log)
+  let b = R.new(log)
+}
+non_cyclic()
+assert_eq(log.size(), 2)
+
+# --- The fix: a reference cycle among scope-owned resources. `a` and `b`
+# point at each other, so neither refcount reaches zero. The wrapper's
+# last statement is nil so the cycle does not escape as a return value;
+# both members drop at the wrapper's exit.
+fn cyclic() {
+  let a = R.new(log)
+  let b = R.new(log)
+  a.peer = b
+  b.peer = a
+}
+fn run_cyclic() {
+  cyclic()
+  nil
+}
+run_cyclic()
+assert_eq(log.size(), 4)   # +2: both cycle members dropped
+
+# --- Self-cycle: the same resolution for an object that points at itself.
+fn self_cycle() {
+  let a = R.new(log)
+  a.me = a
+}
+fn run_self_cycle() {
+  self_cycle()
+  nil
+}
+run_self_cycle()
+assert_eq(log.size(), 5)
+
+# --- A cycle that became garbage mid-scope (`g = nil` rebind): creation
+# registered it under this scope, so the scope's exit still catches it.
+fn rebind_cycle() {
+  let mut g = R.new(log)
+  g.me = g
+  g = nil
+  nil
+}
+rebind_cycle()
+assert_eq(log.size(), 6)
+
+# --- Escape must NOT drop early (design §6's example): pushing into an
+# outer-scope container moves ownership out; the resource drops when the
+# container's scope exits, not when the inner scope does.
+fn escape_check() {
+  let files = []
+  {
+    let f = R.new(log)
+    files.push(f)
+    f.touched = true         # still usable after the push (borrow)
+  }
+  assert_eq(log.size(), 6)   # not dropped at the inner block's exit
+  files[0].touched           # still open here
+  nil
+}
+escape_check()
+assert_eq(log.size(), 7)     # dropped when files' scope exited
+
+# --- Exactly-once: an explicit drop inside the scope suppresses the
+# scope-exit auto-drop, cycles included (Phase 1's `dropped` flag).
+fn explicit_in_cycle() {
+  let a = R.new(log)
+  a.me = a
+  a.drop()
+  nil
+}
+explicit_in_cycle()
+assert_eq(log.size(), 8)     # exactly one push, not two

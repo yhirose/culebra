@@ -1230,6 +1230,11 @@ enum RuntimeSlot : size_t {
   kSlotJitNamespaceTable,
   kSlotTestRegistry,
   kSlotFileTable,
+  // Per-scope owned-resource stacks for deterministic drop (one per
+  // backend; see interpreter.h / jit.h "owned stack"). Entries are
+  // non-owning, so destruction order relative to the GC slots is moot.
+  kSlotInterpOwnedStack,
+  kSlotJitOwnedStack,
   kRuntimeSlotCount
 };
 

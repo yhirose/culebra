@@ -2870,18 +2870,30 @@ single parent's properties is **not specified** (currently follows
 **Exceptions**: an exception thrown from `drop` is logged to stderr
 and swallowed so that the rest of the cleanup cascade proceeds.
 
-**Cycles**: cyclic references among `Object`s are reclaimed by the
-cycle collector (see above), but `drop` is **not** called on cycle
-members. This matches Python's `__del__` rule for cyclic garbage —
-the order of finalization across cycle members would be
-non-deterministic, so the rule is "no finalizers in cycles." The
-guarantee applies on both backends: both reclaim the cycle, but
-neither runs `drop` on its members — the JIT sweep frees swept
-objects without it, and the interpreter's cycle collector suppresses
-`drop` while breaking the cycle. To run cleanup
-on a resource held by a cyclic structure, break the cycle manually
-before the last reference is released (e.g. `a.other = nil`), or use
-`defer` (§15) at the scope that owns the resource.
+**Cycles**: a reference cycle does not block `drop`. A cycle whose
+members are owned by a scope — created under it and unreachable from
+outside when it exits — is dropped **at that scope's exit**, newest
+member first, on both backends:
+
+```culebra
+{
+  let a = make_thing()
+  let b = make_thing()
+  a.other = b
+  b.other = a
+}   # both drop here (b first), despite the cycle
+```
+
+The owning scope is wherever the cycle last escaped to: a cycle that
+rides out of a function as its return value drops at the *caller's*
+scope exit once discarded. Two cases remain conservative — the cycle
+collector reclaims their memory but `drop` does not run: a cycle held
+through a **closure** (a closure captures its defining scope, which
+counts as an escape that may outlive it), and cyclic garbage discarded
+directly at the **top level** (a scope that never exits). For those,
+break the cycle manually before the last reference is released
+(e.g. `a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at
+the scope that owns the resource.
 
 **Binding-scope caveat**: `drop` fires reliably when the object is
 held in a **block-scoped** binding whose `drop` function was produced
@@ -2907,10 +2919,10 @@ top-level scope release to match. For script-wide resources, prefer
 `defer` (§15) or explicit cleanup.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
-interpreter — at scope exit, but never on cycle members or top-level
-bindings (as above). The well-known property contract (`drop`/`iter`/
-`next` must be a 0-arg `Function`) is enforced at assignment time on
-both backends.
+interpreter — at scope exit, cycle members included, but never on
+closure-held cycles or top-level bindings (as above). The well-known
+property contract (`drop`/`iter`/`next` must be a 0-arg `Function`) is
+enforced at assignment time on both backends.
 
 ---
 
@@ -4041,8 +4053,9 @@ AOT builds:
   the Itanium personality; observable propagation is identical.
 * **Auto-drop (§16).** Fires on every refcount-to-zero transition,
   whether triggered by scope exit, property overwrite, or array
-  rebind. Cascade order — parent before child — is the same. Drop
-  is **not** invoked on cycle members on either backend (see §16).
+  rebind. Cascade order — parent before child — is the same.
+  Scope-owned cycle members drop at their scope's exit on both
+  backends (closure-held and top-level cycles excluded, see §16).
 * **Error reporting.** Every `kind` listed in §15 fires under the
   same trigger condition on both backends; `e.message`, `e.line`,
   and `e.col` are populated identically. Uncaught errors print as
@@ -4088,8 +4101,9 @@ embedding Culebra should be aware:
   cycles routed through either are reclaimed. The JIT's conservative
   mark-sweep reclaims every cycle shape. Cycles formed purely between
   `Object`s — passing through neither an array nor a closure — still
-  leak under the interpreter, but neither backend invokes `drop` on
-  cycle members either way.
+  leak their *memory* under the interpreter; their `drop` still fires
+  at the owning scope's exit on both backends (§16), so the leak is
+  bytes, not resources.
 * **REPL persistence storage.** The interpreter persists session
   globals in the top-level `Environment` scope. The JIT uses a
   thread-local `JitReplGlobals` dict accessed via

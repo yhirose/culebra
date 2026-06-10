@@ -1381,6 +1381,9 @@ struct OrderedSymbolMap {
   // operation. Lives on the map (the shared object identity) so every
   // reference observes the same state. See _call_drop_if_present.
   bool dropped = false;
+  // Set once this map has been pushed onto the owned stack (the moment
+  // `drop` got bound). Dedupes re-registration on repeated writes.
+  bool owned_registered = false;
 
   bool contains(std::string_view k) const { return index_.contains(k); }
 
@@ -1543,6 +1546,77 @@ inline ObjectValue::ObjectValue() {
   key_order = std::make_shared<std::vector<Value>>();
 }
 
+// --- Deterministic drop: the owned-resource stack (design §14.3) ---
+//
+// Drop-having objects are registered here the moment `drop` is bound
+// (class instantiation / object literal / later property write). Every
+// Environment snapshots the stack size at construction (its mark); when
+// a scope exits (run_deferred's tail), the entries above its mark are
+// resolved:
+//   - destroyed (weak expired) or already dropped     -> discard
+//   - refcount explained by this scope's own bindings -> drop now
+//     (the common case: no traversal)
+//   - otherwise — escaped or cyclic — localized trial deletion decides:
+//     unreachable from outside its own subgraph -> drop (cycle members
+//     included); externally reachable -> survives, compacted down into
+//     the parent scope's region. The compaction is what hands an object
+//     created inside a callee's frame (notably `Cls.new()`'s) to the
+//     caller's scope.
+// Entries are non-owning, so the ordinary refcount-0 path keeps firing
+// drop at its usual time; the stack only adds the scope-exit firings,
+// and the `dropped` flag (Phase 1) keeps the union exactly-once.
+struct OwnedEntry {
+  std::weak_ptr<OrderedSymbolMap> map;
+  // The candidate's sidecars, needed to walk its non-String-keyed edges
+  // (an OrderedSymbolMap alone cannot reach them). They have exactly the
+  // same holders as the prop map, so whenever `map` locks, these lock.
+  std::weak_ptr<std::unordered_map<Value, Symbol, ValueHash, ValueEq>>
+      non_string_props;
+  std::weak_ptr<std::vector<Value>> key_order;
+  // Monotonic registration id. Scope marks are ids, not indices, so
+  // pruning expired entries (below) never invalidates a live scope's
+  // mark. Entries stay id-ordered: registration appends increasing ids,
+  // and scope-exit survivors are re-pushed in their original order.
+  uint64_t id;
+};
+
+struct OwnedStack {
+  std::vector<OwnedEntry> entries;
+  uint64_t next_id = 0;
+
+  // Entries whose object died naturally (weak expired) accumulate in
+  // regions that never exit — chiefly the top level, which inherits
+  // every survivor. Prune them periodically; id-based marks make the
+  // compaction safe at any time.
+  void maybe_prune() {
+    if ((next_id & 1023) != 0) return;
+    std::erase_if(entries, [](const OwnedEntry& e) {
+      return e.map.expired();
+    });
+  }
+};
+
+inline OwnedStack& owned_stack() {
+  return runtime_substate<OwnedStack>(kSlotInterpOwnedStack);
+}
+
+inline bool _owned_debug() {
+  static const bool v = std::getenv("CULEBRA_OWNED_DEBUG") != nullptr;
+  return v;
+}
+
+inline void _owned_register(const ObjectValue& obj) {
+  auto* m = obj.properties.get();
+  if (!m || m->owned_registered) return;
+  m->owned_registered = true;
+  auto& st = owned_stack();
+  if (_owned_debug())
+    fprintf(stderr, "[owned] register %p (id=%llu)\n", (void*)m,
+            (unsigned long long)st.next_id);
+  st.entries.push_back({obj.properties, obj.non_string_props, obj.key_order,
+                        st.next_id++});
+  st.maybe_prune();
+}
 
 inline std::ostream& operator<<(std::ostream& os, const Value& val) {
   return val.out(os);
@@ -1580,7 +1654,8 @@ inline const std::shared_ptr<Value>& kw_default_empty_str() {
 
 struct Environment : std::enable_shared_from_this<Environment> {
   Environment(std::shared_ptr<Environment> parent = nullptr)
-      : level(parent ? parent->level + 1 : 0) {}
+      : level(parent ? parent->level + 1 : 0),
+        owned_mark(owned_stack().next_id) {}
 
   void append_outer(std::shared_ptr<Environment> outer) {
     if (this->outer) {
@@ -1683,6 +1758,10 @@ struct Environment : std::enable_shared_from_this<Environment> {
   }
 
   size_t level;
+  // Owned-stack watermark (a registration id, not an index) at scope
+  // entry: entries registered while this scope was live carry ids at or
+  // above it and are resolved when it exits (_owned_process_scope_exit).
+  uint64_t owned_mark;
   std::shared_ptr<Environment> outer;
   // Owned-string keys so REPL bindings survive after each input's
   // AST is destroyed. Heterogeneous lookup (`std::less<>`) lets
@@ -1717,6 +1796,520 @@ inline std::shared_ptr<Environment> make_scope(
   auto env = std::make_shared<Environment>();
   env->append_outer(std::move(outer));
   return env;
+}
+
+// --- Scope-exit resolution for the owned stack (design §14.3) ---
+
+// How many of `env`'s direct bindings hold exactly this object. Drives
+// the scope-exit fast path: when the candidate's whole refcount is its
+// own scope's bindings (+ the caller's lock), nothing outside the dying
+// scope can reach it. Object bindings only — an under-count just routes
+// the entry to the precise (trial-deletion) path, never the wrong way.
+//
+// Validity caveat (both here and in the unified analysis): a scope's
+// bindings can be credited as dying only when nothing keeps the env
+// alive past its exit. A closure defined in the scope captures the
+// WHOLE env (def_env) and may escape — `env->gc_tracked` records
+// exactly that (set when the env becomes some closure's def_env), so a
+// tracked env forfeits the credit and its resources resolve
+// conservatively (survive; the closure's death releases them, the GC
+// backstop covers closure-held cycles). This also matches §8: a
+// closure capture IS an escape.
+inline long _owned_scope_binding_refs(const Environment& env,
+                                      const OrderedSymbolMap* m) {
+  long n = 0;
+  for (const auto& [_, sym] : env.dictionary) {
+    if (sym.val.type == Value::Object &&
+        sym.val.to_object().properties.get() == m) {
+      n++;
+    }
+  }
+  return n;
+}
+
+// A region entry locked for analysis: the lock (+1, credited below)
+// keeps the candidate stable while decisions are made.
+struct OwnedPending {
+  OwnedEntry entry;
+  std::shared_ptr<OrderedSymbolMap> sp;
+};
+
+// Per-candidate scope-exit verdicts (see _owned_process_scope_exit).
+// A dying candidate free of any cycle is left to the real refcount
+// cascade (kOwnedLeave): the cascade's nested DFS order — parent drop,
+// then children, in slot order — is exactly the JIT's. Candidates a
+// cycle among the dying nodes makes uncollectable-by-refcount are fired
+// here, replaying the JIT's order: container cascades forward, slot
+// releases reverse-declaration, then the owned-exit pass for
+// object-level cycles, newest first.
+inline constexpr char kOwnedSurvive = 0;  // escaped: parent region inherits
+inline constexpr char kOwnedLeave = 1;    // acyclic: real cascade reclaims it
+inline constexpr char kOwnedCascade = 2;  // env-cycled, container-held (asc)
+inline constexpr char kOwnedRelease = 3;  // env-cycled, binding-held (desc)
+inline constexpr char kOwnedFire = 4;     // object-cycled (desc id, last)
+
+// Scope-wide trial deletion (Bacon-Rajan style) for the entries the
+// fast path could not resolve. One pass per exiting scope:
+//
+//   roots    = the scope's bindings (walked TRANSITIVELY through
+//              containers — a resource stored in a local array dies
+//              with the array) + every pending candidate.
+//   explained= references the subgraph's own edges, the dying bindings,
+//              and our analysis locks account for.
+//   pinned   = any node with references beyond that (a parent scope's
+//              binding, an in-flight return value, a closure capture).
+//
+// External reachability propagates forward from the pinned set; a
+// candidate nothing pinned can reach is unreachable once this scope is
+// gone — it is dropped (cycle members included).
+//
+// Closures and Environments are walked with InterpGC::collect's exact
+// edge model (per-occurrence def_env multiplicity, once-per-table
+// multimethod body envs), so an env-held cycle through a resource's own
+// drop closure — the interp's whole-env capture makes every `{drop:
+// ||...}` literal one — still resolves. Two conservative pins keep the
+// outcome symmetric with the JIT and safe:
+//   - an env whose dictionary binds a function that captures that same
+//     env (a local fn / lambda) is force-pinned: the closure may
+//     outlive the scope and re-enter any binding (mirrors the JIT,
+//     where such a self-capture cycle parks the group for the
+//     backstop);
+//   - the global env (and anything not walked: Tensors, expansion past
+//     the node budget) stays unexplained, which can only pin.
+// Single-threaded and runs no user code, so the use_counts it reads
+// are stable for its duration.
+//
+// Sets drop_it[i] for each pending candidate that is unreachable.
+// `credit_bindings` is false for a closure-captured env (gc_tracked,
+// see _owned_scope_binding_refs): its bindings may outlive the exit,
+// so they pin instead of dying. (That also means the exiting env can
+// only appear as an interior node when crediting is already off — the
+// two never double-count.)
+inline void _owned_resolve_ambiguous(const Environment& env,
+                                     const std::vector<OwnedPending>& pending,
+                                     bool credit_bindings,
+                                     std::vector<char>& drop_it) {
+  struct Node {
+    long use_count = 0;
+    long explained = 0;          // subgraph edges + bindings + our locks
+    bool force_pin = false;      // self-captured env (see above)
+    bool is_env = false;         // Environment node (see cycle split below)
+    std::vector<size_t> out;     // forward edges (per occurrence; dups fine)
+  };
+  std::vector<Node> nodes;
+  std::unordered_map<const void*, size_t> index;
+  // Runaway guard: resource graphs are small; if discovery exceeds the
+  // budget, bail out and let every candidate survive (safe direction).
+  constexpr size_t kNodeBudget = 4096;
+  bool overflow = false;
+  // Multimethod tables already accounted (explained once per table —
+  // the table, not each dispatcher copy, holds the bodies' env refs).
+  std::unordered_set<const void*> mm_seen;
+  // Prop maps held directly by a binding (the exiting scope's or a dead
+  // interior env's): their death corresponds to a JIT slot release, not
+  // a container cascade — see the verdict split below.
+  std::unordered_set<const void*> binding_held;
+
+  // Discover-or-find a node for a shared container. `inserted` tells the
+  // caller it must expand the container's children exactly once.
+  auto add_node = [&](const void* p, long use_count, bool& inserted) {
+    auto [it, fresh] = index.try_emplace(p, nodes.size());
+    inserted = fresh;
+    if (fresh) {
+      nodes.push_back({use_count, 0, false, false, {}});
+      if (nodes.size() > kNodeBudget) overflow = true;
+    }
+    return it->second;
+  };
+
+  // Walk a Value occurrence held by node `from`: emit edges to the
+  // container node(s) it keeps alive and recurse into new ones. `from`
+  // == npos marks a dying root (a scope binding): the occurrence is
+  // explained but contributes no reachability edge.
+  constexpr size_t npos = static_cast<size_t>(-1);
+  auto edge = [&](size_t from, size_t to) {
+    nodes[to].explained++;
+    if (from != npos) nodes[from].out.push_back(to);
+  };
+  auto walk_object_contents = [&](size_t id, const ObjectValue& obj,
+                                  auto&& walk_value) -> void {
+    for (const auto& [_, sym] : *obj.properties)
+      walk_value(sym.val, id, walk_value);
+    if (obj.non_string_props) {
+      for (const auto& [k, sym] : *obj.non_string_props) {
+        walk_value(k, id, walk_value);
+        walk_value(sym.val, id, walk_value);
+      }
+    }
+    if (obj.key_order) {
+      for (const auto& k : *obj.key_order) walk_value(k, id, walk_value);
+    }
+  };
+  auto walk_value = [&](const Value& v, size_t from, auto&& self) -> void {
+    switch (v.type) {
+      case Value::Object: {
+        const auto& obj = v.to_object();
+        bool fresh;
+        size_t id = add_node(obj.properties.get(),
+                             obj.properties.use_count(), fresh);
+        // Held by a binding: the exiting scope's (from == npos) or a
+        // discovered env's dictionary.
+        if (from == npos || nodes[from].is_env)
+          binding_held.insert(obj.properties.get());
+        edge(from, id);
+        if (fresh) walk_object_contents(id, obj, self);
+        break;
+      }
+      case Value::Array: {
+        // An Array Value occurrence keeps two containers alive: the
+        // element vector and the (ObjectValue base) prop map. Model both
+        // as nodes so either being pinned propagates correctly.
+        const auto& arr = v.to_array();
+        bool fresh;
+        size_t vid =
+            add_node(arr.values.get(), arr.values.use_count(), fresh);
+        edge(from, vid);
+        if (fresh) {
+          for (const auto& e : *arr.values) self(e, vid, self);
+        }
+        size_t pid = add_node(arr.properties.get(),
+                              arr.properties.use_count(), fresh);
+        edge(from, pid);
+        if (fresh) walk_object_contents(pid, arr, self);
+        break;
+      }
+      case Value::Tuple: {
+        const auto& els = v.get<TupleValue>().elements;
+        bool fresh;
+        size_t id = add_node(els.get(), els.use_count(), fresh);
+        edge(from, id);
+        if (fresh) {
+          for (const auto& e : *els) self(e, id, self);
+        }
+        break;
+      }
+      case Value::Set: {
+        const auto& mem = v.get<SetValue>().members;
+        bool fresh;
+        size_t id = add_node(mem.get(), mem.use_count(), fresh);
+        edge(from, id);
+        if (fresh) {
+          for (const auto& e : *mem) self(e, id, self);
+        }
+        break;
+      }
+      case Value::Function: {
+        // Mirror InterpGC::collect's edge model. Every Value copy of a
+        // FunctionValue holds its own def_env ref (multiplicity 2 when
+        // `eval` also captures it); a dispatcher's overload bodies hold
+        // their env through the shared multimethod table — explained
+        // once per table, but out-edges on every occurrence (a missed
+        // out-edge could under-pin; a missed explained ref only pins).
+        const auto& fv = v.template get<FunctionValue>();
+        auto env_edge = [&](const std::shared_ptr<Environment>& e, long mult,
+                            auto&& wv) -> void {
+          if (!e) return;
+          bool fresh;
+          size_t id = add_node(e.get(),
+                               static_cast<long>(e.use_count()), fresh);
+          nodes[id].is_env = true;
+          nodes[id].explained += mult - 1;  // edge() below adds 1
+          // The exiting env itself is also held by exactly one
+          // interpreter C++ frame reference while run_deferred runs:
+          // the eval caller's local shared_ptr. (The eval/constructor
+          // body lambdas take callEnv by const& — FunctionValue::eval's
+          // signature — precisely so no second frame copy exists.)
+          // Credit that one known, dying reference so a scope whose
+          // only other holders are its own literals' drop closures
+          // resolves at ITS exit, not one scope late. Crediting less
+          // only pins (safe); crediting more could drop early — keep
+          // the single-frame-ref invariant when touching eval lambdas.
+          if (fresh && e.get() == &env) nodes[id].explained++;
+          edge(from, id);
+          if (fresh && !overflow) {
+            // Expand the env: its bindings are the closure's reachable
+            // world. The global env (outer == null) is never expanded —
+            // unexplained is safe, and its dictionary is the stdlib.
+            const auto* ep = e.get();
+            if (ep->outer) {
+              for (const auto& [_, sym] : ep->dictionary) {
+                if (sym.val.type == Value::Function &&
+                    sym.val.template get<FunctionValue>().def_env.get() ==
+                        ep) {
+                  // A local fn capturing its own defining scope: the
+                  // closure may outlive the scope — pin the env.
+                  nodes[id].force_pin = true;
+                }
+                wv(sym.val, id, wv);
+              }
+              bool ofresh;
+              size_t oid = add_node(
+                  ep->outer.get(),
+                  static_cast<long>(ep->outer.use_count()), ofresh);
+              nodes[id].out.push_back(oid);
+              nodes[oid].explained++;
+              // The outer chain is not expanded further here; a fresh
+              // outer env node stays unexplained (pins — safe). Interior
+              // envs that matter are reached via their own closures.
+            }
+          }
+        };
+        env_edge(fv.def_env, fv.def_env_multiplicity(), self);
+        if (fv.multimethod_table) {
+          bool table_fresh = mm_seen.insert(fv.multimethod_table.get()).second;
+          if (fv.multimethod_for_each_body_env) {
+            fv.multimethod_for_each_body_env([&](Environment* e, long mult) {
+              if (!e) return;
+              // weak_from_this: read the owner count without a +1.
+              long uc = static_cast<long>(e->weak_from_this().use_count());
+              bool fresh;
+              size_t id = add_node(e, uc, fresh);
+              nodes[id].is_env = true;
+              nodes[id].explained += (table_fresh ? mult : 0);
+              if (from != npos) nodes[from].out.push_back(id);
+              // A body's env hosts a `fn name` whose closure captures
+              // it — the local-fn self-capture pin, whether or not the
+              // env was already discovered through another edge.
+              // Symmetric with the JIT, whose dispatcher cycles park
+              // for the backstop.
+              nodes[id].force_pin = true;
+            });
+          }
+          if (fv.introspection_target && fv.introspection_target->def_env) {
+            env_edge(fv.introspection_target->def_env,
+                     table_fresh
+                         ? fv.introspection_target->def_env_multiplicity()
+                         : 0,
+                     self);
+          }
+        }
+        break;
+      }
+      default:
+        break;  // primitives / Tensor (conservatively opaque)
+    }
+  };
+
+  // Seed the candidates. Each carries one extra explained ref — our
+  // analysis lock. Contents are reconstructed from the entry's sidecar
+  // weak_ptrs (same holders as the prop map, so they lock here).
+  std::vector<size_t> cand_ids(pending.size());
+  for (size_t i = 0; i < pending.size(); i++) {
+    const auto& p = pending[i];
+    bool fresh;
+    size_t id = add_node(p.sp.get(), p.sp.use_count(), fresh);
+    cand_ids[i] = id;
+    nodes[id].explained++;  // our lock
+    if (fresh) {
+      ObjectValue view{ObjectValue::Synthetic{}};
+      view.properties = std::shared_ptr<OrderedSymbolMap>(
+          p.sp.get(), [](OrderedSymbolMap*) {});
+      view.non_string_props = p.entry.non_string_props.lock();
+      view.key_order = p.entry.key_order.lock();
+      walk_object_contents(id, view, walk_value);
+    }
+  }
+
+  // The exiting scope's bindings die with it: everything they hold —
+  // transitively through containers — is explained. (Skipped for a
+  // closure-captured env, whose bindings may live on.)
+  if (credit_bindings) {
+    for (const auto& [_, sym] : env.dictionary) {
+      walk_value(sym.val, npos, walk_value);
+    }
+  }
+
+  if (overflow) return;  // budget blown: every candidate survives
+
+  if (_owned_debug()) {
+    std::vector<const void*> ptrs(nodes.size(), nullptr);
+    for (const auto& [p, i] : index) ptrs[i] = p;
+    for (size_t i = 0; i < nodes.size(); i++)
+      fprintf(stderr,
+              "[owned]   node %zu %p uc=%ld explained=%ld env=%d pin=%d "
+              "(exiting=%d)\n",
+              i, ptrs[i], nodes[i].use_count, nodes[i].explained,
+              (int)nodes[i].is_env, (int)nodes[i].force_pin,
+              (int)(ptrs[i] == (const void*)&env));
+  }
+
+  // Nodes with unexplained references (or a conservative force-pin)
+  // are pinned from outside; anything they can reach (within the
+  // subgraph) is externally reachable.
+  std::vector<char> reachable(nodes.size(), 0);
+  std::vector<size_t> q;
+  for (size_t i = 0; i < nodes.size(); i++) {
+    if (nodes[i].use_count > nodes[i].explained || nodes[i].force_pin) {
+      reachable[i] = 1;
+      q.push_back(i);
+    }
+  }
+  while (!q.empty()) {
+    size_t i = q.back();
+    q.pop_back();
+    for (size_t t : nodes[i].out) {
+      if (!reachable[t]) {
+        reachable[t] = 1;
+        q.push_back(t);
+      }
+    }
+  }
+
+  // Every unreachable candidate dies at this exit — the verdict decides
+  // WHO fires the drop, which is what keeps the order symmetric with
+  // the JIT (whose region resolves AFTER its slot release):
+  //   - No cycle among the dying nodes → the real refcount cascade
+  //     reclaims it the moment the scope's bindings die, in the same
+  //     nested order as the JIT's release (kOwnedLeave).
+  //   - A cycle that exists only through Environment nodes (the
+  //     whole-env capture of any literal's drop closure) blocks the
+  //     interp's cascade where the JIT has none — fire here, replaying
+  //     the cascade's order (kOwnedCascade / kOwnedRelease).
+  //   - An object-level cycle (self-reach avoiding env nodes) survives
+  //     the JIT's cascade too and is fired by its owned-exit pass —
+  //     ours likewise (kOwnedFire).
+  // Taint spreads forward from cycles through every edge: whatever an
+  // immortal-by-refcount cycle holds can only be freed here.
+  auto find_cycles = [&](bool through_envs) {
+    std::vector<char> cyc(nodes.size(), 0);
+    // Epoch-stamped visit marks: one shared buffer instead of an O(n)
+    // allocation per DFS origin.
+    std::vector<uint32_t> seen(nodes.size(), 0);
+    std::vector<size_t> stack;
+    for (size_t u = 0; u < nodes.size(); u++) {
+      if (reachable[u]) continue;
+      if (!through_envs && nodes[u].is_env) continue;
+      const uint32_t epoch = static_cast<uint32_t>(u) + 1;
+      stack.assign(nodes[u].out.begin(), nodes[u].out.end());
+      while (!stack.empty()) {
+        size_t i = stack.back();
+        stack.pop_back();
+        if (i == u) {
+          cyc[u] = 1;
+          break;
+        }
+        if (reachable[i] || seen[i] == epoch) continue;
+        if (!through_envs && nodes[i].is_env) continue;
+        seen[i] = epoch;
+        stack.insert(stack.end(), nodes[i].out.begin(), nodes[i].out.end());
+      }
+    }
+    // Forward closure within the unreachable set (every edge kind).
+    std::vector<char> taint = cyc;
+    std::vector<size_t> tq;
+    for (size_t i = 0; i < nodes.size(); i++) {
+      if (cyc[i]) tq.push_back(i);
+    }
+    while (!tq.empty()) {
+      size_t i = tq.back();
+      tq.pop_back();
+      for (size_t t : nodes[i].out) {
+        if (!reachable[t] && !taint[t]) {
+          taint[t] = 1;
+          tq.push_back(t);
+        }
+      }
+    }
+    return taint;
+  };
+  std::vector<char> taint_any = find_cycles(/*through_envs=*/true);
+  std::vector<char> taint_obj = find_cycles(/*through_envs=*/false);
+
+  for (size_t i = 0; i < pending.size(); i++) {
+    if (drop_it[i] != kOwnedSurvive) continue;
+    size_t id = cand_ids[i];
+    if (reachable[id]) continue;                      // escaped: survives
+    if (taint_obj[id]) {
+      drop_it[i] = kOwnedFire;
+    } else if (!taint_any[id]) {
+      drop_it[i] = kOwnedLeave;
+    } else {
+      drop_it[i] = binding_held.contains(pending[i].sp.get()) ? kOwnedRelease
+                                                              : kOwnedCascade;
+    }
+  }
+}
+
+// Resolve every owned-stack entry registered above `env`'s mark. Called
+// from run_deferred on every scope exit (after the scope's defers, so a
+// defer body may still use the resources). All decisions are made on a
+// pre-drop snapshot of the graph; drops then fire newest-first (reverse
+// creation order — across plain locals and cycle members alike,
+// matching the JIT's reverse-declaration slot release). Survivors
+// (externally reachable) are pushed back in their original order: the
+// parent scope's region inherits them.
+inline void _owned_process_scope_exit(
+    const std::shared_ptr<Environment>& env) {
+  auto& st = owned_stack().entries;
+  const uint64_t mark = env->owned_mark;
+  // Common case: nothing registered under this scope.
+  if (st.empty() || st.back().id < mark) return;
+
+  // Pop this scope's region, newest first. Locks keep each candidate
+  // stable for the analysis (+1, credited there).
+  std::vector<OwnedPending> pending;
+  while (!st.empty() && st.back().id >= mark) {
+    OwnedEntry e = std::move(st.back());
+    st.pop_back();
+    auto sp = e.map.lock();
+    if (!sp || sp->dropped) continue;  // died naturally / already dropped
+    pending.push_back({std::move(e), std::move(sp)});
+  }
+  if (pending.empty()) return;
+  if (_owned_debug())
+    fprintf(stderr, "[owned] scope-exit env=%p env_uc=%ld fn_frame=%d\n",
+            (void*)env.get(), (long)env.use_count(),
+            (int)env->is_function_frame);
+
+  const bool credit_bindings = !env->gc_tracked;
+  std::vector<char> drop_it(pending.size(), kOwnedSurvive);
+  bool any_ambiguous = false;
+  for (size_t i = 0; i < pending.size(); i++) {
+    // Fast path: every reference is this scope's own dying bindings
+    // plus our lock — unreachable once the scope is gone, and firing in
+    // the desc-id release group matches the JIT's reverse-declaration
+    // slot release. No traversal.
+    long scope_refs =
+        credit_bindings ? _owned_scope_binding_refs(*env, pending[i].sp.get())
+                        : 0;
+    if (pending[i].sp.use_count() == scope_refs + 1) {
+      drop_it[i] = kOwnedRelease;
+    } else {
+      any_ambiguous = true;
+    }
+  }
+  if (any_ambiguous) {
+    _owned_resolve_ambiguous(*env, pending, credit_bindings, drop_it);
+  }
+
+  // Survivors return first, in original (creation) order, inherited by
+  // the parent scope's region — BEFORE any drop fires: a drop body may
+  // register new (higher-id) entries, and appending older survivor ids
+  // after those would break the stack's id ordering. Then drops fire on
+  // the pre-drop snapshot decisions in the JIT-equivalent order: the
+  // cascade-like group ascending id (creation order — what the JIT's
+  // slot-release cascade produces), then the cycle group newest-first
+  // (what the JIT's own owned-exit pass produces).
+  for (size_t i = pending.size(); i-- > 0;) {
+    if (drop_it[i] == kOwnedSurvive) st.push_back(pending[i].entry);
+  }
+  if (_owned_debug()) {
+    for (size_t i = 0; i < pending.size(); i++)
+      fprintf(stderr, "[owned] verdict=%d %p uc=%ld (mark=%llu)\n",
+              (int)drop_it[i], (void*)pending[i].sp.get(),
+              pending[i].sp.use_count(), (unsigned long long)mark);
+  }
+  for (size_t i = pending.size(); i-- > 0;) {  // pending is newest-first
+    if (drop_it[i] == kOwnedCascade)
+      _call_drop_if_present(pending[i].sp.get());
+  }
+  for (size_t i = 0; i < pending.size(); i++) {
+    if (drop_it[i] == kOwnedRelease)
+      _call_drop_if_present(pending[i].sp.get());
+  }
+  for (size_t i = 0; i < pending.size(); i++) {
+    if (drop_it[i] == kOwnedFire) _call_drop_if_present(pending[i].sp.get());
+  }
 }
 
 typedef std::function<void(const peg::Ast& ast, Environment& env,
@@ -1764,6 +2357,7 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
                        std::format("immutable property '{}'", name));
   }
   _check_drop_contract(name, val);
+  if (name == "drop") _owned_register(*this);
   sym.val = val;
   return;
 }
@@ -1771,6 +2365,7 @@ inline void ObjectValue::assign(std::string_view name, const Value& val) {
 inline void ObjectValue::initialize(std::string_view name, const Value& val,
                                     bool mut) {
   _check_drop_contract(name, val);
+  if (name == "drop") _owned_register(*this);
   bool new_key = !properties->contains(name);
   (*properties)[name] = Symbol{val, mut};
   if (new_key) {
@@ -5377,8 +5972,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto self = shared_from_this();
     FunctionValue fv(
         params,
+        // const&: this lambda's frame must hold no extra callEnv ref —
+        // the owned-stack resolver credits the exiting env with exactly
+        // one C++ frame reference, the caller's local (see
+        // _owned_resolve_ambiguous's exiting-env credit).
         [self = std::move(self), body, env,
-         destructures](std::shared_ptr<Environment> callEnv) {
+         destructures](const std::shared_ptr<Environment>& callEnv) {
           callEnv->append_outer(env);
           for (auto& [name, pat] : destructures) {
             if (!self->try_pattern(*pat, callEnv->get(name), callEnv,
@@ -6609,7 +7208,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       inject_derived_methods(method_template, class_name, derive_traits);
     }
 
-    auto build_instance = [class_name, method_template, field_template]() {
+    // Instances of a drop-having class register on the owned stack at
+    // construction (the method loop below bypasses `initialize`, so the
+    // registration chokepoint there doesn't see them).
+    bool has_drop_method = std::any_of(
+        method_template.begin(), method_template.end(),
+        [](const auto& m) { return m.first == "drop"; });
+
+    auto build_instance = [class_name, method_template, field_template,
+                           has_drop_method]() {
       ObjectValue instance;
       instance.properties->emplace(
           "class", Symbol{Value(std::string(class_name)), false});
@@ -6620,6 +7227,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       for (const auto& [name, val] : field_template) {
         instance.properties->emplace(name, Symbol{val, true});
       }
+      if (has_drop_method) _owned_register(instance);
       return instance;
     };
 
@@ -6650,8 +7258,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       auto self = shared_from_this();
       constructor = Value(FunctionValue(
           ctor_params,
+          // const&: no extra callEnv ref from this frame (see
+          // make_function_value's eval lambda for why).
           [self = std::move(self), body, env, build_instance, promote_all_mut](
-              std::shared_ptr<Environment> callEnv) {
+              const std::shared_ptr<Environment>& callEnv) {
             callEnv->append_outer(env);
             // `this` is immutable inside the constructor body — match
             // Java / Crystal / Ruby and the JIT backend. Attempts to
@@ -8642,12 +9252,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // Run deferred callables registered in `env` in LIFO order. If one
   // throws, it propagates; remaining defers for that scope are abandoned
   // (matches Swift; Go would run all, but we keep it simple).
+  //
+  // Every scope-exit path funnels through here, so the owned-stack
+  // resolution (deterministic drop, design §14.3) piggybacks on the
+  // tail: defers run first — they may still use the scope's resources —
+  // then the resources created under this scope are dropped/inherited.
+  // A throwing defer skips the resolution; the entries stay on the
+  // stack and the parent scope's exit picks them up.
   void run_deferred(const std::shared_ptr<Environment>& env) {
     while (!env->deferred.empty()) {
       auto fn = std::move(env->deferred.back());
       env->deferred.pop_back();
       fn();
     }
+    _owned_process_scope_exit(env);
   }
 
   // TRY = [BLOCK, IDENTIFIER, BLOCK]  (try-body, catch-binding, catch-body)
