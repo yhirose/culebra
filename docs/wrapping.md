@@ -68,6 +68,7 @@ optimized binary (slower build).
 ## 3. Use — on every backend
 
 ```culebra
+# doctest: skip
 let v = Geo.Vec2.new(3.0, 4.0)
 puts(v.len())          # => 5
 v.scale(2.0)

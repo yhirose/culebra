@@ -66,6 +66,7 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 ## 3. 使う — 全 backend で
 
 ```culebra
+# doctest: skip
 let v = Geo.Vec2.new(3.0, 4.0)
 puts(v.len())          # => 5
 v.scale(2.0)
