@@ -16,13 +16,13 @@ inline const bool _foreign_counter_wrapped = [] {
   using foreign_fixture::Counter;
   wrap<Counter>("__Foreign", "Counter")
       .ctor<long>({"start"})
-      .method("value", &Counter::value)
-      .method("add", &Counter::add, {"n"})
-      .method("label", &Counter::label)
-      .method("clone", &Counter::clone)
-      .method("fork", &Counter::fork)
-      .method("share", &Counter::share)
-      .static_method("live", &Counter::live);
+      .method<&Counter::value>("value")
+      .method<&Counter::add>("add", {"n"})
+      .method<&Counter::label>("label")
+      .method<&Counter::clone>("clone")
+      .method<&Counter::fork>("fork")
+      .method<&Counter::share>("share")
+      .static_method<&Counter::live>("live");
   return true;
 }();
 

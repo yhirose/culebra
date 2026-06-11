@@ -3542,6 +3542,39 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_native_fn(
   _jit_register_native_fn(fn_ptr);
 }
 
+// Handle plumbing shared by every native-handle builder (Proc / File /
+// Foreign / wrap.h-generated handles): a typed slot read, the
+// captureless method-closure constructor, and the bind helper. Live
+// here (not stdlib_jit.h) so wrap.h's generated thunks can use them.
+CULEBRA_RT_INLINE int64_t _jit_handle_long(JitObject* h, const char* key) {
+  size_t i = h->find_slot(key);
+  return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
+}
+
+CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity) {
+  _jit_register_native_fn(reinterpret_cast<const void*>(fn));
+  auto* cls = new JitClosure();
+  cls->refcount = 1;
+  cls->fn_ptr = reinterpret_cast<void*>(fn);
+  cls->n_captures = 0;
+  cls->captures = nullptr;
+  cls->arity = arity;
+  _gc_register(cls, GC_TAG_FUNC);
+  return cls;
+}
+
+// Slot a handle method onto `h` — shared by every native-handle builder
+// (Proc / File / Foreign).
+CULEBRA_RT_INLINE void _jit_handle_bind_method(
+    JitObject* h, const char* name,
+    JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*), size_t ar) {
+  h->set_or_append(name,
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
+          _jit_make_handle_method(f, ar))}, false);
+}
+
+
 // A captureless native method closure (reads its state from `self`). Generic
 // JIT-object helper — channel/isolate/SharedBuffer handles use it too. Lives
 // here (not sendable_jit.h) so the FixedArray view, ODR-used from this file,

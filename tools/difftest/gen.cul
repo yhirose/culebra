@@ -491,6 +491,7 @@ let fns = [
   '{ let c = __Foreign.Counter.new(0); c.add("x") }',
   '{ let c = __Foreign.Counter.new(0); c.drop(); c.add("x") }',
   '{ let c = __Foreign.Counter.new(0); let g = c.add; g("x") }',
+  '{ let c = __Foreign.Counter.new(0); c.add() }',
   '__Foreign.Counter.new("x")',
   '__Foreign.Counter.new()']
 for f in fns {

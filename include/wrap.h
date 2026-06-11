@@ -12,9 +12,9 @@
 //   inline const bool _mylib_counter_wrapped = [] {
 //     culebra::wrap<mylib::Counter>("__Foreign", "Counter")
 //         .ctor<long>({"start"})
-//         .method("value", &mylib::Counter::value)
-//         .method("add", &mylib::Counter::add, {"n"})
-//         .static_method("live", &mylib::Counter::live);
+//         .method<&mylib::Counter::value>("value")
+//         .method<&mylib::Counter::add>("add", {"n"})
+//         .static_method<&mylib::Counter::live>("live");
 //     return true;
 //   }();
 //
@@ -27,14 +27,23 @@
 // holds one share, primitives go through cpp_to_value. U must itself be
 // wrapped (its class_info carries the display name the handle shows).
 //
-// Phase 4 sub-phasing: this header covers the interp artifacts (P4-1);
-// the JIT thunk generation + NsMethod registry rows land in P4-2, and
-// the `culebra wrap` build pipeline in P4-3.
+// Phase 4 sub-phasing: P4-1 = the interp artifacts, P4-2 = the JIT
+// thunks + NsMethod registry rows (below, CULEBRA_JIT_ENABLED), P4-3 =
+// the `culebra wrap` build pipeline.
 
 #include <foreign.h>
 #include <interpreter.h>
+#ifdef CULEBRA_JIT_ENABLED
+// wrap.h can be reached before culebra.h pulls jit.h (repl.h includes
+// stdlib_interp.h first), so include it here — after interpreter.h,
+// preserving the interpreter-before-jit order jit.h's inline bodies
+// rely on.
+#include <jit.h>
+#endif
 
 #include <cassert>
+#include <cstring>
+#include <format>
 #include <functional>
 #include <memory>
 #include <string>
@@ -222,7 +231,261 @@ inline Value make_static_proto(Fn fn, std::vector<std::string> names) {
                              std::move(eval), return_annotation<R>()));
 }
 
+#ifdef CULEBRA_JIT_ENABLED
+
+// --- JIT artifacts (P4-2) ---------------------------------------------------
+//
+// The same declaration instantiates the JIT side: per-method handle
+// thunks (plain functions — the member-fn pointer is a NON-TYPE template
+// argument, so each method gets its own static thunk, exactly the
+// hand-written Phase 3 shape), ns adapters for the kNsMethods-style
+// dispatch, and a row registry stdlib_jit.h merges with its static
+// table. Type checks and error positions follow the Phase 3 thunk
+// conventions: param type-check BEFORE the closed check (interp binder
+// order), TypeError at the argument's threaded position (argpos /
+// call_arg0 fallback), ClosedError at the call site.
+
+// Annotation check through the JIT's canonical matcher — the SAME
+// predicate the kNsMethods trampoline applies to ctor/static params
+// (and the interp's type_matches mirror), so a String param rejects a
+// StringView slice identically on every path.
+template <class A>
+inline bool jit_arg_matches(const JitValue& v) {
+  return _culebra_value_matches_type(
+      v.tag, v.data, _detail::type_annotation_for<std::decay_t<A>>());
+}
+
+template <class A>
+inline std::decay_t<A> jit_arg_get(const JitValue& v) {
+  using D = std::decay_t<A>;
+  if constexpr (std::is_same_v<D, long> || std::is_same_v<D, int>) {
+    return static_cast<D>(v.data);
+  } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
+    double d;
+    std::memcpy(&d, &v.data, sizeof(double));
+    return static_cast<D>(d);
+  } else if constexpr (std::is_same_v<D, bool>) {
+    return v.data != 0;
+  } else {
+    return D(_culebra_str_view(v.tag, v.data));
+  }
+}
+
+// Per-(T, method) param names for the thunk's error wording. Filled by
+// the binder at static-init; constinit for the same ordering reason as
+// class_info.
+template <class T, auto Mf>
+struct jit_method_info {
+  static constinit inline std::vector<std::string> param_names;
+};
+
+// Per-T handle method table consumed by the handle builder.
+template <class T>
+struct jit_class_info {
+  struct Method {
+    std::string name;
+    JitValue (*thunk)(JitClosure*, JitValue, int64_t, JitValue*);
+    size_t arity;
+  };
+  static constinit inline std::vector<Method> methods;
+};
+
+// The live instance, or ClosedError at the method call site (the
+// interp's loc(env), carried by set_call_site).
+template <class T>
+inline T* jit_handle_self(JitValue self) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  return foreign::get_or_throw<T>(_jit_handle_long(h, "_id"),
+                                  class_info<T>::name, _jit_call_site_line,
+                                  _jit_call_site_col);
+}
+
+template <class T>
+JitValue jit_make_handle(int64_t id);
+
+// Return lowering — the JitValue mirror of lower_return.
+template <class R>
+inline JitValue jit_lower_return(R r) {
+  using D = std::decay_t<R>;
+  if constexpr (is_unique_ptr<D>::value) {
+    using U = typename D::element_type;
+    auto id = foreign::table<U>().adopt(std::move(r));
+    return jit_make_handle<U>(id);
+  } else if constexpr (is_shared_ptr<D>::value) {
+    using U = typename D::element_type;
+    auto id = foreign::table<U>().adopt_shared(std::move(r));
+    return jit_make_handle<U>(id);
+  } else if constexpr (std::is_same_v<D, long> || std::is_same_v<D, int>) {
+    return {TAG_LONG, static_cast<int64_t>(r)};
+  } else if constexpr (std::is_same_v<D, double> || std::is_same_v<D, float>) {
+    double d = static_cast<double>(r);
+    int64_t bits;
+    std::memcpy(&bits, &d, sizeof(double));
+    return {TAG_FLOAT, bits};
+  } else if constexpr (std::is_same_v<D, bool>) {
+    return {TAG_BOOL, r ? 1 : 0};
+  } else if constexpr (std::is_same_v<D, std::string> ||
+                       std::is_same_v<D, std::string_view> ||
+                       std::is_same_v<D, const char*>) {
+    return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(r))};
+  } else {
+    static_assert(!std::is_same_v<D, Value>,
+                  "wrap.h: a culebra::Value return has no JitValue lowering");
+    static_assert(!std::is_reference_v<R>,
+                  "wrap.h: a method returning T& / const T& of a wrapped "
+                  "class has no ownership shape — return T, unique_ptr<T>, "
+                  "or shared_ptr<T> (borrowing lands in Phase 5)");
+    auto id = foreign::table<D>().adopt(std::make_unique<D>(std::move(r)));
+    return jit_make_handle<D>(id);
+  }
+}
+
+// The drop event — runs from the destructor's drop protocol, which
+// passes self WITHOUT a +1: must not release it (Phase 3 convention).
+template <class T>
+JitValue jit_drop_thunk(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  foreign::table<T>().erase(_jit_handle_long(h, "_id"));
+  return {TAG_NIL, 0};
+}
+
+template <class T>
+JitValue jit_make_handle(int64_t id) {
+  // Multi-object construction: the method closures are unrooted until
+  // slotted into `h`, so a GC_STRESS collect mid-build would sweep them.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__foreign__",
+                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
+                                            class_info<T>::name))},
+                   false);
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  for (const auto& m : jit_class_info<T>::methods) {
+    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity);
+  }
+  _jit_handle_bind_method(h, "drop", &jit_drop_thunk<T>, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// One handle method thunk per (T, member fn). Self arrives +1,
+// released after the body runs (an early release on a temp receiver
+// would fire its drop and erase the table entry under our feet). The
+// binder-throw paths release; the ClosedError / body-throw paths leak
+// the +1 to the GC backstop — the hand-written Phase 3 behavior.
+template <class T, auto Mf, class R, class... Args>
+JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
+                          JitValue* args) {
+  // Param checks BEFORE the closed check, in the interp binder's order:
+  // a missing required argument is an ArityError at the call site, a
+  // wrong-typed one a TypeError at the argument's threaded position.
+  size_t bad = sizeof...(Args);
+  bool missing = false;
+  {
+    size_t i = 0;
+    auto check_one = [&](bool present, bool ok) {
+      if (bad == sizeof...(Args)) {
+        if (!present) {
+          bad = i;
+          missing = true;
+        } else if (!ok) {
+          bad = i;
+        }
+      }
+      ++i;
+    };
+    (check_one(static_cast<int64_t>(i) < n,
+               static_cast<int64_t>(i) < n && jit_arg_matches<Args>(args[i])),
+     ...);
+  }
+  if (bad < sizeof...(Args)) {
+    culebra_runtime_value_release(self.tag, self.data);
+    const auto& names = jit_method_info<T, Mf>::param_names;
+    if (missing) {
+      throw culebra::CulebraError(
+          "ArityError",
+          std::format("missing required argument '{}'", names[bad]),
+          _jit_call_site_line, _jit_call_site_col);
+    }
+    static constexpr std::string_view kAnnos[] = {
+        _detail::type_annotation_for<Args>()...};
+    const bool ap = static_cast<int>(bad) < _jit_argpos_n;
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("type error: parameter '{}' expects {}", names[bad],
+                    kAnnos[bad]),
+        ap ? _jit_argpos_line[bad]
+           : (bad == 0 ? _jit_call_arg0_line : _jit_call_site_line),
+        ap ? _jit_argpos_col[bad]
+           : (bad == 0 ? _jit_call_arg0_col : _jit_call_site_col));
+  }
+  T* obj = jit_handle_self<T>(self);
+  auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
+    if constexpr (std::is_void_v<R>) {
+      (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+      culebra_runtime_value_release(self.tag, self.data);
+      return {TAG_NIL, 0};
+    } else {
+      auto&& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+      culebra_runtime_value_release(self.tag, self.data);
+      return jit_lower_return<R>(std::forward<decltype(r)>(r));
+    }
+  };
+  return invoke(std::index_sequence_for<Args...>{});
+}
+
+// ns adapters: reached through the kNsMethods trampoline, which has
+// already arity- and type-checked every positional against the
+// CANONICAL interp params (the calling-convention single source), so
+// these convert and call.
+template <class T, class... Args>
+JitValue jit_ctor_adapter(JitValue* a, int64_t) {
+  auto invoke = [&]<size_t... I>(std::index_sequence<I...>) {
+    return foreign::table<T>().adopt(
+        std::make_unique<T>(jit_arg_get<Args>(a[I])...));
+  };
+  return jit_make_handle<T>(invoke(std::index_sequence_for<Args...>{}));
+}
+
+template <auto Fn, class R, class... Args>
+JitValue jit_static_adapter(JitValue* a, int64_t) {
+  auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
+    if constexpr (std::is_void_v<R>) {
+      Fn(jit_arg_get<Args>(a[I])...);
+      return {TAG_NIL, 0};
+    } else {
+      return jit_lower_return<R>(Fn(jit_arg_get<Args>(a[I])...));
+    }
+  };
+  return invoke(std::index_sequence_for<Args...>{});
+}
+
+#endif  // CULEBRA_JIT_ENABLED
+
 }  // namespace wrap_detail
+
+#ifdef CULEBRA_JIT_ENABLED
+// One kNsMethods-shaped row per ctor/static of a wrapped class.
+// stdlib_jit.h materializes NsMethod rows from these (lazily, after
+// static-init froze the registry, so the c_str pointers are stable) and
+// merges them into every table consumer. The class name rides in `sub`:
+// `Ns.Class.method` is a nested namespace, slow-path only — the same
+// shape as Encoding.html.
+struct WrappedNsRow {
+  std::string ns;
+  std::string name;
+  std::string sub;
+  std::string arg0_type;  // empty = none
+  std::string arg0_name;
+  int8_t arity;
+  JitValue (*adapter)(JitValue*, int64_t);
+};
+inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
+  static std::vector<WrappedNsRow> v;
+  return v;
+}
+#endif  // CULEBRA_JIT_ENABLED
 
 // Process-wide registry of wrapped classes, populated at static-init
 // time by the wrap<T>() declarations and consumed by the stdlib setup
@@ -260,37 +523,32 @@ class ClassBinder {
     statics_.emplace_back(
         "new", wrap_detail::make_static_proto<decltype(make),
                                               std::unique_ptr<T>, Args...>(
-                   make, std::move(names)));
+                   make, names));
+#ifdef CULEBRA_JIT_ENABLED
+    push_ns_row<Args...>("new", &wrap_detail::jit_ctor_adapter<T, Args...>,
+                         std::move(names));
+#endif
     return *this;
   }
 
-  template <class R, class... Args>
-  ClassBinder& method(std::string name, R (T::*mf)(Args...),
-                      std::vector<std::string> names = {}) {
-    wrap_detail::class_info<T>::methods.emplace_back(
-        std::move(name), wrap_detail::make_method_proto<T, decltype(mf), R,
-                                                        Args...>(
-                             mf, std::move(names)));
-    return *this;
-  }
-  template <class R, class... Args>
-  ClassBinder& method(std::string name, R (T::*mf)(Args...) const,
-                      std::vector<std::string> names = {}) {
-    wrap_detail::class_info<T>::methods.emplace_back(
-        std::move(name), wrap_detail::make_method_proto<T, decltype(mf), R,
-                                                        Args...>(
-                             mf, std::move(names)));
-    return *this;
+  // The member fn is a NON-TYPE template argument so the JIT side gets a
+  // distinct static thunk per method (the closure ABI needs a plain
+  // function pointer). The interp proto uses the same constant at runtime.
+  template <auto Mf>
+  ClassBinder& method(std::string name, std::vector<std::string> names = {}) {
+    using traits = _detail::fn_traits<decltype(Mf)>;
+    return method_impl<Mf, typename traits::ret>(
+        std::move(name), std::move(names),
+        static_cast<typename traits::args*>(nullptr));
   }
 
-  template <class R, class... Args>
-  ClassBinder& static_method(std::string name, R (*fn)(Args...),
+  template <auto Fn>
+  ClassBinder& static_method(std::string name,
                              std::vector<std::string> names = {}) {
-    statics_.emplace_back(
-        std::move(name),
-        wrap_detail::make_static_proto<decltype(fn), R, Args...>(
-            fn, std::move(names)));
-    return *this;
+    using traits = _detail::fn_traits<decltype(Fn)>;
+    return static_impl<Fn, typename traits::ret>(
+        std::move(name), std::move(names),
+        static_cast<typename traits::args*>(nullptr));
   }
 
   ~ClassBinder() {
@@ -307,6 +565,58 @@ class ClassBinder {
   ClassBinder& operator=(const ClassBinder&) = delete;
 
  private:
+  template <auto Mf, class R, class... Args>
+  ClassBinder& method_impl(std::string name, std::vector<std::string> names,
+                           std::tuple<Args...>*) {
+    wrap_detail::class_info<T>::methods.emplace_back(
+        name, wrap_detail::make_method_proto<T, decltype(Mf), R, Args...>(
+                  Mf, names));
+#ifdef CULEBRA_JIT_ENABLED
+    auto pinned = wrap_detail::pin_param_names(std::move(names),
+                                               sizeof...(Args));
+    wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    wrap_detail::jit_class_info<T>::methods.push_back(
+        {std::move(name),
+         &wrap_detail::jit_method_thunk<T, Mf, R, Args...>,
+         sizeof...(Args)});
+#endif
+    return *this;
+  }
+
+  template <auto Fn, class R, class... Args>
+  ClassBinder& static_impl(std::string name, std::vector<std::string> names,
+                           std::tuple<Args...>*) {
+    statics_.emplace_back(
+        name, wrap_detail::make_static_proto<decltype(Fn), R, Args...>(
+                  Fn, names));
+#ifdef CULEBRA_JIT_ENABLED
+    push_ns_row<Args...>(std::move(name),
+                         &wrap_detail::jit_static_adapter<Fn, R, Args...>,
+                         std::move(names));
+#endif
+    return *this;
+  }
+
+#ifdef CULEBRA_JIT_ENABLED
+  template <class... Args>
+  void push_ns_row(std::string method_name,
+                   JitValue (*adapter)(JitValue*, int64_t),
+                   std::vector<std::string> names) {
+    auto pinned =
+        wrap_detail::pin_param_names(std::move(names), sizeof...(Args));
+    std::string arg0_type, arg0_name;
+    if constexpr (sizeof...(Args) > 0) {
+      using A0 = std::tuple_element_t<0, std::tuple<Args...>>;
+      arg0_type = std::string(_detail::type_annotation_for<A0>());
+      arg0_name = (*pinned)[0];
+    }
+    wrapped_ns_rows().push_back(
+        {ns_, std::move(method_name), name_, std::move(arg0_type),
+         std::move(arg0_name), static_cast<int8_t>(sizeof...(Args)),
+         adapter});
+  }
+#endif
+
   std::string ns_;
   std::string name_;
   std::vector<std::pair<std::string, Value>> statics_;
