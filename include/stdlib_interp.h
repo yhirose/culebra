@@ -16,7 +16,7 @@
 
 #include <compress.h>
 #include <foreign.h>
-#include <foreign_fixture.h>
+#include <foreign_binding.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -2231,144 +2231,6 @@ inline Value make_file_handle(int64_t id) {
   return Value(std::move(h));
 }
 
-// --- Foreign binding: foreign_fixture::Counter (Phase 3 PoC) ---------------
-//
-// The hand-written shape Phase 4's codegen will emit for a wrapped C++
-// class: a per-instance handle whose methods are thunks over the
-// foreign table (eager-copy marshalling, calling-convention-checked
-// params), `drop` erasing the table entry (so the §9 split and the
-// whole Phase 1/2 scope-exit machinery apply), and a `__Foreign.<T>`
-// namespace object carrying the constructor and statics. The fixture
-// itself lives in include/foreign_fixture.h; tests/test_foreign.cul is
-// the end-to-end spec.
-
-inline Value make_counter_handle(int64_t id);
-
-// Wrap a returned instance per its §10.3 ownership shape.
-inline Value _counter_wrap_unique(
-    std::unique_ptr<foreign_fixture::Counter> p) {
-  auto id = foreign::table<foreign_fixture::Counter>().adopt(std::move(p));
-  return make_counter_handle(id);
-}
-// By value = the unique shape after one move-in (foreign.h's lowering).
-inline Value _counter_wrap_owned(foreign_fixture::Counter v) {
-  return _counter_wrap_unique(
-      std::make_unique<foreign_fixture::Counter>(std::move(v)));
-}
-inline Value _counter_wrap_shared(
-    std::shared_ptr<foreign_fixture::Counter> p) {
-  auto id =
-      foreign::table<foreign_fixture::Counter>().adopt_shared(std::move(p));
-  return make_counter_handle(id);
-}
-
-inline Value make_counter_handle(int64_t id) {
-  using namespace std::literals;
-  using foreign_fixture::Counter;
-  ObjectValue h;
-  h.initialize("__foreign__", Value(std::string("Counter")), false);
-  h.initialize("_id", Value(static_cast<long>(id)), false);
-  // A foreign instance lives in a process-local table — not Sendable.
-  h.initialize("__nonsendable__", Value(true), false);
-
-  // The method prototypes capture nothing per-instance (the foreign
-  // table is resolved per call, `this` per invocation), so they are
-  // built once and copied into each handle — initialize() copies into
-  // the property map either way.
-  static const auto hid = [](const std::shared_ptr<Environment>& env) {
-    return static_cast<int64_t>(
-        env->get("this").to_object().get("_id").to_long());
-  };
-  // The live instance, or ClosedError (§7) — every method's first step.
-  static const auto self =
-      [](const std::shared_ptr<Environment>& env) -> Counter* {
-    long line = env->get("__LINE__").to_long();
-    long col = env->get("__COLUMN__").to_long();
-    return foreign::get_or_throw<Counter>(hid(env), "Counter", line, col);
-  };
-
-  static const Value m_value(FunctionValue(
-      {},
-      [](std::shared_ptr<Environment> env) {
-        return Value(static_cast<long>(self(env)->value()));
-      },
-      "Long"sv));
-  static const Value m_add(FunctionValue(
-      {{"n", false, "Long"sv}}, [](std::shared_ptr<Environment> env) {
-        self(env)->add(env->get("n").to_long());
-        return Value();
-      }));
-  static const Value m_label(FunctionValue(
-      {},
-      [](std::shared_ptr<Environment> env) {
-        return Value(self(env)->label());
-      },
-      "String"sv));
-  // The three return-ownership shapes (§10.3).
-  static const Value m_clone(FunctionValue(
-      {},
-      [](std::shared_ptr<Environment> env) {
-        return _counter_wrap_owned(self(env)->clone());
-      },
-      "Object"sv));
-  static const Value m_fork(FunctionValue(
-      {},
-      [](std::shared_ptr<Environment> env) {
-        return _counter_wrap_unique(self(env)->fork());
-      },
-      "Object"sv));
-  static const Value m_share(FunctionValue(
-      {},
-      [](std::shared_ptr<Environment> env) {
-        return _counter_wrap_shared(self(env)->share());
-      },
-      "Object"sv));
-  // The drop event (§9): erase the table entry — ~Counter runs NOW.
-  // Idempotent, and the explicit/auto/backstop union stays exactly-once
-  // through the Phase 1 `dropped` flag on the handle.
-  static const Value m_drop(
-      FunctionValue({}, [](std::shared_ptr<Environment> env) {
-        foreign::table<Counter>().erase(hid(env));
-        return Value();
-      }));
-
-  h.initialize("value", m_value, false);
-  h.initialize("add", m_add, false);
-  h.initialize("label", m_label, false);
-  h.initialize("clone", m_clone, false);
-  h.initialize("fork", m_fork, false);
-  h.initialize("share", m_share, false);
-  h.initialize("drop", m_drop, false);
-  return Value(std::move(h));
-}
-
-inline Value make_foreign_namespace() {
-  using namespace std::literals;
-  using foreign_fixture::Counter;
-  ObjectValue counter;
-  counter.initialize(
-      "new",
-      Value(FunctionValue({{"start", false, "Long"sv}},
-                          [](std::shared_ptr<Environment> env) {
-                            return _counter_wrap_unique(std::make_unique<Counter>(
-                                env->get("start").to_long()));
-                          },
-                          "Object"sv)),
-      false);
-  counter.initialize(
-      "live",
-      Value(FunctionValue({},
-                          [](std::shared_ptr<Environment>) {
-                            return Value(Counter::live());
-                          },
-                          "Long"sv)),
-      false);
-
-  ObjectValue ns;
-  ns.initialize("Counter", Value(std::move(counter)), false);
-  return Value(std::move(ns));
-}
-
 inline Value make_file_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -4063,7 +3925,19 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
   env.initialize("File", make_file_namespace(), false);
-  env.initialize("__Foreign", make_foreign_namespace(), false);
+  // Wrapped C++ classes (wrap.h declarations, e.g. foreign_binding.h's
+  // `__Foreign.Counter`): one namespace object per declared ns, holding
+  // one class object (ctor + statics) per class. Registered at
+  // static-init time, so the registry is complete before setup runs.
+  {
+    std::map<std::string, ObjectValue> wrapped_ns;
+    for (const auto& wc : wrapped_classes()) {
+      wrapped_ns[wc.ns].initialize(wc.name, wc.build_class_object(), false);
+    }
+    for (auto& [ns, obj] : wrapped_ns) {
+      env.initialize(ns, Value(std::move(obj)), false);
+    }
+  }
   env.initialize("_Time", make_time_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
