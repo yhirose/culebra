@@ -286,6 +286,15 @@ _run-tests BACKEND:
     # diff interp vs JIT byte-for-byte (tools/difftest). Complements the
     # per-file run_diff_interp_jit above with systematic seam coverage.
     # run.sh exits non-zero on any divergence, which aborts `test`.
+    # `culebra wrap` end-to-end: extended binary from the examples/wrap
+    # declaration, interp==jit==AOT on the wrapped class. Rebuilds the
+    # tree into ~/.cache/culebra-wrap (ccache-incremental when available)
+    # — the toolchain-sensitive Phase 4 lane, exercised on both CI OSes
+    # unless SKIP_HEAVY (the slow macOS runner skips it like the other
+    # heavy phases).
+    run_wrap_test() {
+      ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tests/wrap_test.sh "$BIN" || exit 1
+    }
     run_difftest() {
         # A batch of 5114 generated cases, not a single invocation, so it gets
         # its own generous wall-clock bound (well above the honest runtime) —
@@ -345,6 +354,7 @@ _run-tests BACKEND:
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
         phase "done"; echo "test OK"
         ;;
       # Inner-loop core: the interp==JIT correctness invariant plus the two

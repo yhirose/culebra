@@ -1,0 +1,17 @@
+# Exercises the wrapped Geo.Vec2 end to end: construction, methods,
+# mutation, the by-value owning return, statics, deterministic drop +
+# ClosedError. Run under interp / --jit / AOT — output must match.
+let v = Geo.Vec2.new(3.0, 4.0)
+puts(v.len())
+v.scale(2.0)
+puts(v.show())
+let u = v.unit()
+puts(u.len())
+puts(Geo.Vec2.dims())
+{
+  let tmp = Geo.Vec2.new(1.0, 0.0)
+  puts(tmp.show())
+}
+v.drop()
+puts(try { v.len() } catch e { e.kind + ': ' + e.message })
+puts(u.show())

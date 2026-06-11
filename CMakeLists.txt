@@ -216,6 +216,25 @@ if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
+# Out-of-tree binding declarations (`culebra wrap` drives these): each
+# TU is a wrap.h declaration whose static initializer registers a
+# wrapped C++ class. The TUs compile into the main binary (the linker
+# always loads explicit objects, so the registrars run), and — in the
+# JIT/AOT configuration below — into a `culebra_rt_wrap` archive that is
+# embedded and force-loaded into every `culebra build` output, so AOT
+# binaries register the same classes.
+set(CULEBRA_WRAP_SOURCES "" CACHE STRING
+  "Semicolon-separated wrap.h declaration TUs to compile in")
+set(CULEBRA_WRAP_LINK "" CACHE STRING
+  "Extra link flags for the wrapped libraries (e.g. -lmylib)")
+if(CULEBRA_WRAP_SOURCES)
+  target_sources(culebra PRIVATE ${CULEBRA_WRAP_SOURCES})
+  if(CULEBRA_WRAP_LINK)
+    separate_arguments(_wrap_link_args NATIVE_COMMAND "${CULEBRA_WRAP_LINK}")
+    target_link_options(culebra PRIVATE ${_wrap_link_args})
+  endif()
+endif()
+
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(culebra ${llvm_libs})
   # ORC JIT looks up culebra_runtime_* symbols in the host process at
@@ -224,6 +243,11 @@ if(CULEBRA_ENABLE_JIT)
   # we link with -rdynamic. ENABLE_EXPORTS adds the right flag per
   # platform (no-op on macOS).
   set_target_properties(culebra PROPERTIES ENABLE_EXPORTS ON)
+
+  # `culebra wrap` rebuilds this tree with CULEBRA_WRAP_SOURCES; the
+  # baked source path is the default when CULEBRA_HOME is unset.
+  target_compile_definitions(culebra PRIVATE
+    CULEBRA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
   if(CULEBRA_DEV_NO_RT)
   # Fast inner-loop build: don't compile or embed the runtime archives.
@@ -325,19 +349,41 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_compress_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_compress${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_embed_files
+    "${_rt_archive}"
+    "${_rt_tensor_archive}"
+    "${_rt_http_archive}"
+    "${_rt_compress_archive}")
+  set(_rt_embed_deps culebra_rt culebra_rt_tensor culebra_rt_http
+    culebra_rt_compress)
+  if(CULEBRA_WRAP_SOURCES)
+    # Wrap declarations for AOT outputs. The TUs hold static registrars
+    # that nothing references by name, so `culebra build` force-loads
+    # this archive whenever it is present among the embedded assets.
+    add_library(culebra_rt_wrap STATIC ${CULEBRA_WRAP_SOURCES})
+    target_compile_features(culebra_rt_wrap PRIVATE cxx_std_23)
+    target_compile_definitions(culebra_rt_wrap PRIVATE
+      LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1)
+    target_compile_options(culebra_rt_wrap PRIVATE
+      -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_wrap${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_wrap)
+    # The wrapped library's own link flags must reach AOT outputs too;
+    # `culebra build` appends this verbatim (CULEBRA_BLAS_LINK pattern).
+    target_compile_definitions(culebra PRIVATE
+      CULEBRA_WRAP_LINK_FLAGS="${CULEBRA_WRAP_LINK}")
+  else()
+    target_compile_definitions(culebra PRIVATE CULEBRA_WRAP_LINK_FLAGS="")
+  endif()
   cpp_embedlib_add(culebra_rt_assets
-    FILES
-      "${_rt_archive}"
-      "${_rt_tensor_archive}"
-      "${_rt_http_archive}"
-      "${_rt_compress_archive}"
+    FILES ${_rt_embed_files}
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
     NAMESPACE CulebraRT)
   # cpp-embedlib's per-file DEPENDS is a file-level dependency. Force
   # the asset library to wait for the real archive targets too, so the
   # .a files actually exist when the embed step runs.
-  add_dependencies(culebra_rt_assets culebra_rt culebra_rt_tensor
-    culebra_rt_http culebra_rt_compress)
+  add_dependencies(culebra_rt_assets ${_rt_embed_deps})
   target_link_libraries(culebra culebra_rt_assets)
   endif()
 endif()

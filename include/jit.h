@@ -1664,11 +1664,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_arity_error(
       got, declared), line, col);
 }
 
-// Forward-declared (defined with the other call-site thread-locals below) so
-// the arity-missing helper can report at the call site rather than the callee's
-// baked def position.
-extern thread_local int64_t _jit_call_site_line;
-extern thread_local int64_t _jit_call_site_col;
+// Call-site position thread-locals (the rest of the family lives with
+// set_call_site below). Defined here — not forward-declared extern —
+// because a non-inline declaration of an inline variable is an ODR trap:
+// with a second jit.h TU in the binary (a wrap.h declaration), each TU
+// emitted its own non-odr TLS wrapper and the link failed duplicate.
+inline thread_local int64_t _jit_call_site_line = 0;
+inline thread_local int64_t _jit_call_site_col = 0;
 
 // Name-aware arity error: callee passes its declared parameter name
 // table (a const char* array, NUL-terminated entries) and the runtime
@@ -4888,8 +4890,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 // position here just before an indirect closure call; the thunk reads it on
 // the (cold) DispatchError path. Only read after a store on the same call,
 // so the single i64-pair store per call is the only cost on the hot path.
-inline thread_local int64_t _jit_call_site_line = 0;
-inline thread_local int64_t _jit_call_site_col = 0;
+// (_jit_call_site_line/col are defined earlier, next to arity_missing.)
 
 // Source position of a higher-order call's callback ARGUMENT, stored by the
 // JIT right before a HOF runtime call (after the argument is evaluated). A

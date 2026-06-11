@@ -3,6 +3,9 @@
 #include <stdlib_interp.h>
 #include <test_runner.h>
 #ifdef CULEBRA_JIT_ENABLED
+#ifndef CULEBRA_WRAP_LINK_FLAGS
+#define CULEBRA_WRAP_LINK_FLAGS ""
+#endif
 #include <runtime/aot_scan.h>
 #include <stdlib_jit.h>
 #include "culebra_rt_assets.h"
@@ -10,6 +13,7 @@
 #include "llvm/TargetParser/Triple.h"
 #endif
 #include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -537,6 +541,21 @@ int run_build(const BuildOptions& opts) {
       (uses_compress && host_build)
           ? force_load_feature("libculebra_rt_compress.a")
           : "";
+  // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
+  // registrars nothing references by name, so the archive member must be
+  // force-loaded whenever this binary embeds one. materialize_archive
+  // returns empty when the asset doesn't exist (a stock binary) — skip.
+  std::string wrap_lib;
+  if (host_build) {
+    std::string err;
+    auto path = materialize_archive("libculebra_rt_wrap.a", err);
+    if (!path.empty()) {
+      auto q = std::format("'{}'", path.string());
+      wrap_lib = target_is_macho
+          ? std::format("-Wl,-force_load,{}", q)
+          : std::format("-Wl,--whole-archive {} -Wl,--no-whole-archive", q);
+    }
+  }
   if (feature_failed) return 1;
 
   std::string blas = uses_tensor ? CULEBRA_BLAS_LINK : "";
@@ -572,10 +591,11 @@ int run_build(const BuildOptions& opts) {
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
-  std::string cmd = std::format("{}{} {} {} {} {} {} {} {} {} {} {} {} -o {}",
-                                cc, extra, shq(obj), shq(lib), tensor_lib,
-                                http_lib, compress_lib, dead_strip, no_pie,
-                                libcxx, blas, ssl, zlib, shq(opts.output));
+  std::string cmd = std::format(
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, wrap_lib,
+      dead_strip, no_pie, libcxx, blas, ssl, zlib, CULEBRA_WRAP_LINK_FLAGS,
+      shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
@@ -585,6 +605,150 @@ int run_build(const BuildOptions& opts) {
   }
 
   if (!verbose) std::filesystem::remove(obj);
+  return 0;
+}
+
+// `culebra wrap decl.cpp [decl2.cpp ...] [-o out] [--link "<flags>"] [--lto]`
+// — build an EXTENDED culebra binary with the wrap.h declarations compiled
+// in (design §10.1 P3 / §14.3 Phase 4). The "codegen" already happened in
+// the C++ templates; this subcommand is pure build orchestration: it
+// rebuilds the culebra source tree with CULEBRA_WRAP_SOURCES into a cache
+// dir and copies out the product. Requires a source checkout — the path
+// baked at build time (CULEBRA_SOURCE_DIR), overridable with $CULEBRA_HOME.
+// ccache (if configured via the usual env) makes the rebuild incremental:
+// effectively compile-the-declaration + relink.
+struct WrapOptions {
+  vector<string> sources;
+  string output = "culebra-wrapped";
+  string link_flags;
+  bool lto = false;
+};
+
+void print_wrap_usage(ostream& os) {
+  os << "Usage: culebra wrap <decl.cpp> [decl2.cpp ...] [options]\n"
+        "  -o <path>        output binary (default: ./culebra-wrapped)\n"
+        "  --link <flags>   extra link flags for the wrapped library\n"
+        "  --lto            build the extended binary with LTO (slower)\n"
+        "  CULEBRA_HOME     source checkout to build against (default:\n"
+        "                   the path this binary was built from)\n";
+}
+
+int run_wrap(int argc, const char** argv) {
+  WrapOptions opts;
+  for (int i = 2; i < argc; i++) {
+    string a = argv[i];
+    if (a == "-o" && i + 1 < argc) {
+      opts.output = argv[++i];
+    } else if (a == "--link" && i + 1 < argc) {
+      opts.link_flags = argv[++i];
+    } else if (a == "--lto") {
+      opts.lto = true;
+    } else if (a == "-h" || a == "--help") {
+      print_wrap_usage(cout);
+      return 0;
+    } else if (!a.empty() && a[0] == '-') {
+      std::println(stderr, "culebra wrap: unknown option '{}'", a);
+      print_wrap_usage(cerr);
+      return 1;
+    } else {
+      std::error_code ec;
+      auto abs = std::filesystem::absolute(a, ec);
+      if (ec || !std::filesystem::exists(abs)) {
+        std::println(stderr, "culebra wrap: can't open '{}'", a);
+        return 1;
+      }
+      if (abs.string().find('\'') != string::npos) {
+        std::println(stderr,
+            "culebra wrap: path must not contain a single quote: '{}'", a);
+        return 1;
+      }
+      opts.sources.push_back(abs.string());
+    }
+  }
+  if (opts.sources.empty()) {
+    print_wrap_usage(cerr);
+    return 1;
+  }
+  if (opts.link_flags.find('\'') != string::npos) {
+    std::println(stderr, "culebra wrap: --link must not contain a single quote");
+    return 1;
+  }
+
+  // The source tree to rebuild. $CULEBRA_HOME wins; the baked path is the
+  // checkout this binary came from (a dev install).
+  string src_dir;
+  if (const char* home = std::getenv("CULEBRA_HOME"); home && *home) {
+    src_dir = home;
+  } else {
+#ifdef CULEBRA_SOURCE_DIR
+    src_dir = CULEBRA_SOURCE_DIR;
+#endif
+  }
+  if (src_dir.empty() ||
+      !std::filesystem::exists(
+          std::filesystem::path(src_dir) / "CMakeLists.txt")) {
+    std::println(stderr,
+        "culebra wrap: no culebra source tree at '{}' — set CULEBRA_HOME "
+        "to a checkout (https://github.com/yhirose/culebra)", src_dir);
+    return 1;
+  }
+
+  // One cache dir per (sources, link, lto) configuration so switching
+  // declarations doesn't thrash a shared build tree.
+  string fingerprint;
+  for (const auto& s : opts.sources) fingerprint += s + ";";
+  fingerprint += opts.link_flags + (opts.lto ? "|lto" : "");
+  auto cache_root =
+      std::filesystem::path(std::getenv("HOME") ? std::getenv("HOME") : "/tmp")
+      / ".cache" / "culebra-wrap";
+  auto build_dir =
+      cache_root / std::format("{:016x}", std::hash<string>{}(fingerprint));
+  std::error_code ec;
+  std::filesystem::create_directories(build_dir, ec);
+
+  string wrap_sources;
+  for (const auto& s : opts.sources) {
+    if (!wrap_sources.empty()) wrap_sources += ";";
+    wrap_sources += s;
+  }
+
+  auto shq = [](std::string_view v) { return std::format("'{}'", v); };
+  bool verbose = std::getenv("CULEBRA_VERBOSE") != nullptr;
+  auto configure = std::format(
+      "cmake -S {} -B {} -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON "
+      "-DCULEBRA_LTO={} -DCULEBRA_WRAP_SOURCES={} -DCULEBRA_WRAP_LINK={}{}",
+      shq(src_dir), shq(build_dir.string()), opts.lto ? "ON" : "OFF",
+      shq(wrap_sources), shq(opts.link_flags),
+      verbose ? "" : " > /dev/null");
+  if (verbose) std::println(stderr, "culebra wrap: configure: {}", configure);
+  if (std::system(configure.c_str()) != 0) {
+    std::println(stderr, "culebra wrap: cmake configure failed");
+    return 1;
+  }
+  auto build = std::format("cmake --build {} --target culebra -j{}{}",
+                           shq(build_dir.string()),
+                           std::thread::hardware_concurrency(),
+                           verbose ? "" : " > /dev/null");
+  if (verbose) std::println(stderr, "culebra wrap: build: {}", build);
+  if (std::system(build.c_str()) != 0) {
+    std::println(stderr, "culebra wrap: build failed (re-run with "
+                         "CULEBRA_VERBOSE=1 for the full log)");
+    return 1;
+  }
+
+  auto product = build_dir / "culebra";
+  std::filesystem::copy_file(product, opts.output,
+      std::filesystem::copy_options::overwrite_existing, ec);
+  if (ec) {
+    std::println(stderr, "culebra wrap: can't write '{}': {}", opts.output,
+                 ec.message());
+    return 1;
+  }
+  std::filesystem::permissions(opts.output,
+      std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec |
+          std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::add, ec);
+  std::println(stderr, "culebra wrap: wrote {}", opts.output);
   return 0;
 }
 #endif
@@ -841,6 +1005,9 @@ int main(int argc, const char** argv) {
     return run_test(argc, argv);
   }
 #ifdef CULEBRA_JIT_ENABLED
+  if (argc >= 2 && string(argv[1]) == "wrap") {
+    return run_wrap(argc, argv);
+  }
   if (argc >= 2 && string(argv[1]) == "build") {
     culebra::install_jit_stdlib();
     BuildOptions bopts;
