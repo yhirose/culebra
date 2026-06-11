@@ -29,11 +29,13 @@ namespace culebra {
 
 struct JitSerCtx {
   std::map<const void*, int> closure_ids;  // JitClosure* -> ref id (recursion)
+  std::map<const void*, int> proto_ids;    // class meta JitObject* -> ref id
   int next_id = 0;
   std::set<const void*> visiting;          // container cycle guard
 };
 struct JitDeCtx {
   std::map<int, JitValue> closures;        // ref id -> rebuilt closure
+  std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
 };
 
 inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
@@ -107,6 +109,36 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           n.entries.emplace_back(std::move(key),
                                  jit_serialize(o->slots[i].value, ctx));
           n.entry_mut.push_back(o->slots[i].mut);
+        }
+      }
+      // Class instance: ship the proto (the per-class meta holding the
+      // method closures) as elems[0], so a method call works on the other
+      // side — the interp gets the same effect from methods being own
+      // props. Many instances share one meta, so it is memoized (same id
+      // space as closures; the pointers never collide) and a repeat ships
+      // as a backref. A meta whose methods reach a native closure (derived
+      // eq/show thunks, a method capturing the class object and thus its
+      // ctor) rejects exactly like the interp's body==nullptr check.
+      if (o->proto) {
+        // Carry the instance's own drop gate rather than re-deriving it
+        // from the meta on the other side: a nested instance can relink
+        // while its meta is still mid-fill (the memo registers before the
+        // entries land), so probing the meta there would depend on the
+        // class's member declaration order.
+        n.b = o->has_drop;
+        if (auto it = ctx.proto_ids.find(o->proto);
+            it != ctx.proto_ids.end()) {
+          sendable::SendNode ref;
+          ref.kind = K::Object;
+          ref.is_backref = true;
+          ref.ref_id = it->second;
+          n.elems.push_back(std::move(ref));
+        } else {
+          int proto_ref = ctx.next_id++;
+          ctx.proto_ids.emplace(o->proto, proto_ref);
+          n.elems.push_back(jit_serialize(
+              {TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, ctx));
+          n.elems.back().ref_id = proto_ref;
         }
       }
       // Non-string keys are rare here; defer (most data objects are string-keyed).
@@ -209,11 +241,38 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       return {TAG_SET, reinterpret_cast<int64_t>(s)};
     }
     case K::Object: {
+      // A backref to a class meta already rebuilt in this message. The
+      // caller (the instance's proto link below) takes its own retain.
+      if (n.is_backref)
+        return {TAG_OBJECT,
+                reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
       auto* o = culebra_runtime_object_new();
+      // Register a shared class meta BEFORE filling entries so a backref
+      // inside its own subtree (a method capturing another instance of
+      // the same class) resolves — mirrors the closure memo above.
+      if (n.ref_id >= 0) ctx.protos.emplace(n.ref_id, o);
       for (size_t k = 0; k < n.entries.size(); k++) {
         JitValue val = jit_deserialize(n.entries[k].second, ctx);
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         o->set_or_append(n.entries[k].first.s, val, mut);
+      }
+      // Class instance: relink the proto (elems[0] = the rebuilt class
+      // meta), mirroring build_class_instance — the proto pointer holds
+      // one retain (released by the JitObject destructor), and an
+      // inherited `drop` is mirrored so the destructor gate and the
+      // owned stack see it.
+      if (!n.elems.empty()) {
+        JitValue proto = jit_deserialize(n.elems[0], ctx);
+        auto* meta = reinterpret_cast<JitObject*>(proto.data);
+        o->proto = meta;
+        meta->refcount++;
+        // n.b carries the sender instance's has_drop gate — don't probe
+        // the meta here, it may still be mid-fill for a nested instance.
+        if (n.b) _jit_owned_bind_drop(o);
+        // Drop the +1 jit_deserialize handed back when this was the
+        // meta's first (full) rebuild; a backref arrives borrowed.
+        if (!n.elems[0].is_backref)
+          _culebra_value_release_impl(proto.tag, proto.data);
       }
       // A bare packed view (rare — usually the buffer crosses, not a view)
       // arrives as a generic Object; restore its O(1) discriminator, which is

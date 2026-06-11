@@ -61,3 +61,55 @@ let g = fn (x) { x * 2 }
 assert_eq(Isolate.spawn(fn () { g(21) }).join(), 42)
 
 puts("test_send_errors_jit: all assertions passed")
+
+# --- Class instances cross with their methods --------------------------------
+# The JIT serializer used to drop the proto (the per-class meta holding the
+# method closures): a sent instance kept its data fields but `p.get()`
+# resolved to the dict builtin (ArityError) and other methods vanished.
+# The proto now ships with the instance (memoized per message, so many
+# instances share one rebuilt meta), mirroring interp instances whose
+# methods are own props.
+class SendP {
+  new(x) { this.x = x }
+  get() { this.x }
+  add(d) { this.x + d }
+}
+let sp = SendP.new(7)
+assert_eq(Isolate.spawn(fn () { sp.get() }).join(), 7)
+assert_eq(Isolate.spawn(fn () { sp.add(3) }).join(), 10)
+let sps = [SendP.new(1), SendP.new(2)]
+assert_eq(Isolate.spawn(fn () { sps.map(|p| p.get()) }).join(), [1, 2])
+let (stx, srx) = Channel.new(1)
+stx.send(SendP.new(5))
+assert_eq(srx.recv().get(), 5)
+
+# A class object (its ctor is native on the interp side) and a `C.new`
+# value reject on both backends — and so does a @derive class instance,
+# whose meta carries native derived thunks.
+let kls = caught(fn () { Isolate.spawn(fn () { SendP.new(1) }).join() })
+assert_eq(kls, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+let mk = SendP.new
+let mkr = caught(fn () { Isolate.spawn(fn () { mk(1) }).join() })
+assert_eq(mkr, "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+
+puts("test_send_errors_jit: instance-send assertions passed")
+
+# --- A nested instance inside a mid-fill meta keeps its drop gate ------------
+# A method closure can capture a container holding instances of its own
+# class; those relink while the meta's entries are still landing. The drop
+# gate ships with each instance (sender-side has_drop), so it can't depend
+# on the class's member declaration order (`drop` declared after `peek`).
+class DropOrder {
+  peek() { drop_registry }
+  drop() { puts('dropped ' + to_string(this.x)) }
+  new(x) { this.x = x }
+}
+let drop_registry = [DropOrder.new(1)]
+let dc = DropOrder.new(2)
+let child_dropped = Isolate.spawn(fn () {
+  dc.peek()[0].drop()   # prints "dropped 1" from the child on BOTH backends
+  'sent-drop-ran'
+}).join()
+assert_eq(child_dropped, 'sent-drop-ran')
+
+puts("test_send_errors_jit: drop-gate assertions passed")

@@ -3532,6 +3532,16 @@ inline bool _jit_is_native_fn(const void* fn_ptr) {
   return _jit_native_fns().contains(fn_ptr);
 }
 
+// Emitted-code entry point: a class declaration registers its synthesized
+// constructor here at runtime (the compiled address only exists then). The
+// ctor is native on the interp side (body == nullptr), so neither backend
+// can ship it — registering makes capturing a class object or `C.new`
+// reject with the interp's exact message.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_native_fn(
+    void* fn_ptr) {
+  _jit_register_native_fn(fn_ptr);
+}
+
 // A captureless native method closure (reads its state from `self`). Generic
 // JIT-object helper — channel/isolate/SharedBuffer handles use it too. Lives
 // here (not sendable_jit.h) so the FixedArray view, ODR-used from this file,
@@ -8990,6 +9000,7 @@ inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";
 inline constexpr auto set_arg_pos         = "culebra_runtime_set_arg_pos";
 inline constexpr auto set_call_positions  = "culebra_runtime_set_call_positions";
+inline constexpr auto register_native_fn  = "culebra_runtime_register_native_fn";
 inline constexpr auto param_pos           = "culebra_runtime_param_pos";
 inline constexpr auto type_check_param    = "culebra_runtime_type_check_param";
 // Trailing underscore on `throw_` dodges C++ keyword collision.
@@ -16052,6 +16063,16 @@ struct JIT {
 
     auto ctor_fn =
         emit_constructor_fn(class_name, new_ast != nullptr, new_arity);
+
+    // The synthesized ctor is native on the interp side (body == nullptr,
+    // not rebuildable), so neither backend ships it: register the compiled
+    // thunk so a captured class object / `C.new` value rejects at the
+    // serialize boundary with the interp's message. Runtime call — the
+    // ctor's address only exists once the declaration runs (and AOT runs
+    // in a separate process from compilation).
+    emit_call(module_->getOrInsertFunction(rt::register_native_fn,
+                                           builder_.getVoidTy(), ptrTy),
+              {ctor_fn});
 
     // Register the `new` body's param meta under the synthesized ctor
     // wrapper's fn_ptr. The kwargs resolver (call_with_kwargs) keys meta
