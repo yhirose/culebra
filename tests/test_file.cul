@@ -125,5 +125,31 @@ assert_eq(back, payload)
 assert_eq(back.size(), 11)   // 'a' + 3×3 (CJK) + 'b'
 FS.remove(bin)
 
+// --- argument validation (interp/JIT symmetric) ---
+// Missing required argument is an ArityError; a wrong-typed argument is
+// a TypeError — positional, keyword, and the untyped-param body checks
+// (read's n, seek's whence) alike. The JIT used to silently degrade
+// these to the no-arg/default behavior.
+let vf = FS.join(tmp_root, "culebra_file_check.txt")
+File.with(vf, "w", fn (f) { f.write("0123456789") })
+let kind_of = fn (body) { try { body(); "no-err" } catch e { e.kind } }
+File.with(vf, "r", fn (f) {
+  assert_eq(kind_of(fn () { f.read("x") }), "TypeError")
+  assert_eq(kind_of(fn () { f.read(n: "x") }), "TypeError")
+  assert_eq(kind_of(fn () { f.seek() }), "ArityError")
+  assert_eq(kind_of(fn () { f.seek("x") }), "TypeError")
+  assert_eq(kind_of(fn () { f.seek(0, 5) }), "TypeError")
+  assert_eq(kind_of(fn () { f.chunks() }), "ArityError")
+  assert_eq(kind_of(fn () { f.chunks("x") }), "TypeError")
+  // the handle survives a failed check and still works
+  f.seek(offset: 3)
+  assert_eq(f.read(n: 2), "34")
+})
+File.with(vf, "w", fn (f) {
+  assert_eq(kind_of(fn () { f.write() }), "ArityError")
+  assert_eq(kind_of(fn () { f.write(123) }), "TypeError")
+})
+FS.remove(vf)
+
 FS.remove(p)
 IO.puts("test_file OK")

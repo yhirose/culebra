@@ -610,4 +610,27 @@ for h in hkw {
   case("handlekw|" + h, h)
 }
 
+# --- Dimension 30: File handle argument validation --------------------------
+# The hand-written File thunks check arguments in binder order like the
+# interp: missing required -> ArityError at the call site, wrong-typed
+# param -> TypeError at the argument position, untyped-param body check
+# ("expected X, got Y") at the call site. The JIT used to silently
+# degrade all of these to the no-arg/default behavior.
+let fck = [
+  '{ let f = File.open("README.md", "r"); f.read("x") }',
+  '{ let f = File.open("README.md", "r"); f.read(n: "x") }',
+  '{ let f = File.open("README.md", "r"); f.read(true) }',
+  '{ let f = File.open("README.md", "r"); f.read(nil).size() > 0 }',
+  '{ let f = File.open("/dev/null", "w"); f.write(123) }',
+  '{ let f = File.open("/dev/null", "w"); f.write("abcd"[1..3]) }',
+  '{ let f = File.open("/dev/null", "w"); f.write() }',
+  '{ let f = File.open("README.md", "r"); f.seek("x") }',
+  '{ let f = File.open("README.md", "r"); f.seek() }',
+  '{ let f = File.open("README.md", "r"); f.seek(0, 5) }',
+  '{ let f = File.open("README.md", "r"); f.chunks("x") }',
+  '{ let f = File.open("README.md", "r"); f.chunks() }']
+for c in fck {
+  case("filecheck|" + c, c)
+}
+
 print(out.join("\n"))

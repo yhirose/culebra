@@ -1914,13 +1914,56 @@ CULEBRA_RT_INLINE JitValue _culebra_proc_build_handle(long pid, int out_fd,
 // method ABI as the Proc handle: self arrives +1 and is released here,
 // except drop (called from the destructor's drop protocol, which manages
 // refcount itself — see _jit_handle_drop).
+
+// Binder-order argument checks, the same convention as wrap.h's
+// jit_check_args (interp parity): a missing required argument is an
+// ArityError at the call site, a wrong-typed one a TypeError at the
+// argument's threaded position. A TAG_UNFILLED slot (defaulted kwarg the
+// resolver left empty) counts as absent, never wrong-typed.
+CULEBRA_RT_INLINE bool _jit_file_arg_present(int64_t n, JitValue* args,
+                                             size_t i) {
+  return static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED;
+}
+[[noreturn]] CULEBRA_RT_INLINE void _jit_file_missing_arg(JitValue self,
+                                                          const char* pname) {
+  culebra_runtime_value_release(self.tag, self.data);
+  throw culebra::CulebraError(
+      "ArityError", std::format("missing required argument '{}'", pname),
+      _jit_call_site_line, _jit_call_site_col);
+}
+[[noreturn]] CULEBRA_RT_INLINE void _jit_file_param_type_error(
+    JitValue self, const char* pname, const char* expected, size_t i) {
+  culebra_runtime_value_release(self.tag, self.data);
+  const bool ap = static_cast<int>(i) < _jit_argpos_n;
+  throw culebra::CulebraError(
+      "TypeError",
+      std::format("type error: parameter '{}' expects {}", pname, expected),
+      ap ? _jit_argpos_line[i]
+         : (i == 0 ? _jit_call_arg0_line : _jit_call_site_line),
+      ap ? _jit_argpos_col[i]
+         : (i == 0 ? _jit_call_arg0_col : _jit_call_site_col));
+}
+// Untyped-param body check ("expected X, got Y" at the call site), the
+// shape the interp's to_long()/to_string() conversions produce.
+[[noreturn]] CULEBRA_RT_INLINE void _jit_file_body_type_error(
+    JitValue self, const char* expected, int8_t got_tag) {
+  culebra_runtime_value_release(self.tag, self.data);
+  culebra_runtime_type_error_typed(_jit_call_site_line, _jit_call_site_col,
+                                   expected, got_tag);
+}
+
 CULEBRA_RT_INLINE JitValue _jit_file_read(JitClosure*, JitValue self,
                                           int64_t n, JitValue* args) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_id");
-  std::string out = (n >= 1 && args[0].tag == TAG_LONG)
-      ? culebra::_file_read_n(id, args[0].data, 0, 0)
-      : culebra::_file_read_all(id, 0, 0);
+  // `n` is untyped with default nil (nil → rest of file), so a non-Long
+  // is the interp's to_long() body error, not a param error.
+  const bool has_n = _jit_file_arg_present(n, args, 0) &&
+                     args[0].tag != TAG_NIL;
+  if (has_n && args[0].tag != TAG_LONG)
+    _jit_file_body_type_error(self, "Long", args[0].tag);
+  std::string out = has_n ? culebra::_file_read_n(id, args[0].data, 0, 0)
+                          : culebra::_file_read_all(id, 0, 0);
   culebra_runtime_value_release(self.tag, self.data);
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
@@ -1928,10 +1971,13 @@ CULEBRA_RT_INLINE JitValue _jit_file_write(JitClosure*, JitValue self,
                                            int64_t n, JitValue* args) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_id");
-  if (n >= 1 && (args[0].tag == TAG_STRING || args[0].tag == TAG_STRINGVIEW)) {
-    auto sv = _culebra_str_view(args[0].tag, args[0].data);
-    culebra::_file_write(id, sv, 0, 0);
-  }
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  // A `String` param rejects a StringView slice on every path (wrap.h's
+  // jit_check_args predicate; interp type_matches) — same here.
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "data", "String", 0);
+  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  culebra::_file_write(id, sv, 0, 0);
   culebra_runtime_value_release(self.tag, self.data);
   return {TAG_NIL, 0};
 }
@@ -1946,9 +1992,17 @@ CULEBRA_RT_INLINE JitValue _jit_file_seek(JitClosure*, JitValue self,
                                           int64_t n, JitValue* args) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_id");
-  long off = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 0;
+  if (!_jit_file_arg_present(n, args, 0))
+    _jit_file_missing_arg(self, "offset");
+  if (args[0].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "offset", "Long", 0);
+  long off = args[0].data;
+  // `whence` is untyped with default "set" — a non-String is the interp's
+  // to_string() body error.
   std::string_view whence = "set";
-  if (n >= 2 && (args[1].tag == TAG_STRING || args[1].tag == TAG_STRINGVIEW)) {
+  if (_jit_file_arg_present(n, args, 1)) {
+    if (args[1].tag != TAG_STRING && args[1].tag != TAG_STRINGVIEW)
+      _jit_file_body_type_error(self, "String", args[1].tag);
     whence = _culebra_str_view(args[1].tag, args[1].data);
   }
   culebra::_file_seek(id, off, whence, 0, 0);
@@ -2030,8 +2084,10 @@ CULEBRA_RT_INLINE JitValue _jit_file_lines(JitClosure*, JitValue self,
 }
 CULEBRA_RT_INLINE JitValue _jit_file_chunks(JitClosure*, JitValue self,
                                             int64_t n, JitValue* args) {
-  int64_t sz = (n >= 1 && args[0].tag == TAG_LONG) ? args[0].data : 0;
-  auto* it = _file_iter_build(self, /*chunks=*/true, sz);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
+  if (args[0].tag != TAG_LONG)
+    _jit_file_param_type_error(self, "n", "Long", 0);
+  auto* it = _file_iter_build(self, /*chunks=*/true, args[0].data);
   culebra_runtime_value_release(self.tag, self.data);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
 }
