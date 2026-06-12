@@ -11,6 +11,10 @@
 #include <stdlib_jit.h>
 #endif
 
+// Unity-TU entry (smoke_suite.cc): the named namespace keeps
+// this file's internals from colliding with the other smokes.
+namespace mi_smoke_ns {
+
 namespace {
 
 // Script A maintains its own counter; Script B does too. Each is seeded
@@ -37,7 +41,7 @@ std::shared_ptr<peg::Ast> parse_or_die(const char* code) {
 
 }  // namespace
 
-int main() {
+int run() {
   culebra::Runtime rt_a, rt_b;
 
   std::shared_ptr<culebra::Environment> env_a, env_b;
@@ -173,3 +177,5 @@ int main() {
   std::cout << (ok ? "OK\n" : "FAIL\n");
   return ok ? 0 : 1;
 }
+
+}  // namespace mi_smoke_ns

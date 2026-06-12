@@ -25,6 +25,10 @@
 #include <stdlib_jit.h>
 #endif
 
+// Unity-TU entry (smoke_suite.cc): the named namespace keeps
+// this file's internals from colliding with the other smokes.
+namespace signal_smoke_ns {
+
 namespace {
 
 int failures = 0;
@@ -57,7 +61,7 @@ const char* kCatchLoop =
 
 }  // namespace
 
-int main() {
+int run() {
 #ifdef CULEBRA_JIT_ENABLED
   culebra::install_jit_stdlib();
 #endif
@@ -154,3 +158,5 @@ int main() {
   if (failures == 0) std::cout << "signal_smoke OK\n";
   return failures ? 1 : 0;
 }
+
+}  // namespace signal_smoke_ns

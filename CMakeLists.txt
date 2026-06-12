@@ -444,34 +444,37 @@ endif()
 # step with the headers.
 enable_testing()
 
-function(culebra_add_smoke_exe name)
-  add_executable(${name} tests/embedding/${name}.cc)
-  target_compile_features(${name} PRIVATE cxx_std_23)
-  if(CULEBRA_ENABLE_TENSOR)
-    if(APPLE)
-      target_link_libraries(${name} "-framework Accelerate")
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-      target_link_libraries(${name} ${BLAS_LIBRARIES})
-    endif()
+# One UNITY executable for all five smokes (tests/embedding/smoke_suite.cc
+# #includes each smoke .cc). Every smoke TU pulls in the interpreter +
+# JIT header stack whose codegen costs minutes on the 3-core macOS CI
+# runner; as five separate executables the smokes were ~28 of the ~33 CI
+# build minutes whenever a core header changed — the unity TU emits that
+# once. ctest still runs each smoke as its own PROCESS (argv selects it),
+# so signal handlers / thread_locals / GC state stay isolated per test.
+add_executable(smoke_suite tests/embedding/smoke_suite.cc)
+target_compile_features(smoke_suite PRIVATE cxx_std_23)
+if(CULEBRA_ENABLE_TENSOR)
+  if(APPLE)
+    target_link_libraries(smoke_suite "-framework Accelerate")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(smoke_suite ${BLAS_LIBRARIES})
   endif()
-  if(CULEBRA_ENABLE_JIT)
-    target_link_libraries(${name} ${llvm_libs})
-    set_target_properties(${name} PROPERTIES ENABLE_EXPORTS ON)
-  endif()
-  if(CULEBRA_ENABLE_HTTP)
-    target_link_libraries(${name} ${_ssl_libs})
-  endif()
-  # The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
-  # zlib directly, so every smoke exe needs libz.
-  target_link_libraries(${name} ZLIB::ZLIB)
-  add_test(NAME ${name} COMMAND ${name})
-endfunction()
-
-culebra_add_smoke_exe(mt_smoke)
-culebra_add_smoke_exe(mi_smoke)
-culebra_add_smoke_exe(define_smoke)
-culebra_add_smoke_exe(signal_smoke)
-culebra_add_smoke_exe(utf8_invalid_smoke)
+endif()
+if(CULEBRA_ENABLE_JIT)
+  target_link_libraries(smoke_suite ${llvm_libs})
+  # The in-process JIT (mt/mi/signal) resolves the `used`-pinned runtime
+  # helpers from the host binary via ORC — keep them exported.
+  set_target_properties(smoke_suite PROPERTIES ENABLE_EXPORTS ON)
+endif()
+if(CULEBRA_ENABLE_HTTP)
+  target_link_libraries(smoke_suite ${_ssl_libs})
+endif()
+# The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
+# zlib directly, so the suite needs libz.
+target_link_libraries(smoke_suite ZLIB::ZLIB)
+foreach(smoke mt mi define signal utf8_invalid)
+  add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
+endforeach()
 
 # regexlib is a standalone header-only library (destined for cpp-regexlib); its
 # test depends only on regexlib.h + cpp-unicodelib, so it needs no JIT/LLVM
