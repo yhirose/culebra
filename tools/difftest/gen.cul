@@ -633,4 +633,29 @@ for c in fck {
   case("filecheck|" + c, c)
 }
 
+# --- Dimension 31: recursive / forward-ref fn in nested scopes ---------------
+# A captured name declared inside a nested statement list (block, if /
+# while / for body, match arm, try / catch body) needs its cell before
+# the closure that captures it is built. The JIT used to fail the whole
+# compile with "cannot find free var" (interp was fine).
+let nrec = [
+  '{ fn h(n) { n > 0 ? h(n - 1) : 11 }; h(2) }',
+  '{ let rec = fn (n) { n > 0 ? rec(n - 1) : 12 }; rec(2) }',
+  '{ let a = fn () { b() }; let b = fn () { 13 }; a() }',
+  'if true { fn h(n) { n > 0 ? h(n - 1) : 14 }; h(2) } else { nil }',
+  '{ mut i = 0; mut r = 0; while i < 1 { fn h(n) { n > 0 ? h(n - 1) : 15 }; r = h(2); i = i + 1 }; r }',
+  '{ mut r = 0; for i in [1] { fn h(n) { n > 0 ? h(n - 1) : 16 }; r = h(2) }; r }',
+  'match 1 { Long => { fn h(n) { n > 0 ? h(n - 1) : 17 }; h(2) }, _ => nil }',
+  'try { fn h(n) { n > 0 ? h(n - 1) : 18 }; h(2) } catch e { e.kind }',
+  'try { throw "x" } catch e { fn h(n) { n > 0 ? h(n - 1) : 19 }; h(2) }',
+  '{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }',
+  'if false { fn h(n) { n }; nil } else { nil }; h(2)',
+  'if true { fn h(n) { n > 0 ? h(n - 1) : 21 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 22 }; h(2) }',
+  'if false { fn h(n) { n > 0 ? h(n - 1) : 23 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 24 }; h(2) }',
+  'fn h() { 25 }; { fn h() { 26 }; h() }',
+  '{ fn h() { 27 }; nil }; fn h() { 28 }; h()']
+for c in nrec {
+  case("nestedfn|" + c, c)
+}
+
 print(out.join("\n"))

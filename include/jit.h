@@ -9419,6 +9419,13 @@ struct JIT {
     // pre-allocated cells default to false and get updated when the
     // eventual `let mut` lands.
     bool mut = false;
+    // True for a forward-ref pre-allocated cell whose cell_new runs
+    // lazily (guarded) at each statement-list entry instead of
+    // unconditionally: an if branch shares the enclosing scope, so a
+    // pre-allocation there may never execute — readers must treat a
+    // still-null cell as "declaration never ran" (NameError, interp
+    // parity), and writers/captures materialize it first.
+    bool lazy = false;
   };
 
   // Analysis result for a function (including top-level __culebra_main).
@@ -10862,9 +10869,27 @@ struct JIT {
     auto pre = [&](std::string_view name_sv, bool is_mut) {
       std::string name(name_sv);
       if (!captured.contains(name)) return;
-      if (slots.find(name) != slots.end()) return;
-      auto nil_val = make_nil();
-      auto slot = make_cell_slot(name, nil_val, is_mut);
+      if (auto it = slots.find(name); it != slots.end()) {
+        // Already pre-allocated (e.g. by a sibling if-branch sharing
+        // this scope): re-emit the materialization guard here so
+        // whichever branch actually runs creates the cell.
+        emit_lazy_cell_materialize(it->second);
+        return;
+      }
+      // Lazy: the alloca is entry-block null-init; the cell itself is
+      // created by the guard below, which runs only when this statement
+      // list does (an if branch shares the enclosing scope, so this
+      // point may be conditional).
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      auto fn = builder_.GetInsertBlock()->getParent();
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto cellSlotAlloca = entryB.CreateAlloca(ptrTy, nullptr, name);
+      entryB.CreateStore(llvm::ConstantPointerNull::get(ptrTy),
+                         cellSlotAlloca);
+      VarSlot slot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
+      slot.lazy = true;
+      emit_lazy_cell_materialize(slot);
       define_var(name, slot);
     };
     struct DeclInfo { std::string_view name; bool is_mut; };
@@ -10882,8 +10907,9 @@ struct JIT {
         return {culebra::parse_generic_head(node.nodes[i]->token).outer,
                 false};
       }
-      if (node.tag == "ASSIGNMENT"_ && !node.nodes.empty() &&
-          node.nodes[0]->token == "let") {
+      if (node.tag == "ASSIGNMENT"_ && node.nodes.size() >= 2 &&
+          (node.nodes[0]->token == "let" ||
+           node.nodes[1]->token == "mut")) {  // `mut x = ...` declares too
         // ASSIGNMENT [LET, MUTABLE, lval-chain..., ASSIGN_OP, EXPRESSION].
         // Only single-name lvalues (lvalcnt == 1) get a name here.
         auto total = static_cast<int>(node.nodes.size());
@@ -10910,8 +10936,18 @@ struct JIT {
       auto d = extract_decl(node);
       if (!d.name.empty()) pre(d.name, d.is_mut);
     };
-    if (statements_ast.tag == "STATEMENTS"_) {
-      for (auto& node : statements_ast.nodes) handle(*node);
+    if (statements_ast.tag == "STATEMENTS"_ ||
+        statements_ast.tag == "LEXICAL_SCOPE"_) {
+      for (auto& node : statements_ast.nodes) {
+        // A `{ ... }` block nests its statement list one level down
+        // (LEXICAL_SCOPE → STATEMENTS → decls); a single-statement
+        // block collapses the STATEMENTS wrapper (AstOptimizer).
+        if (node->tag == "STATEMENTS"_) {
+          for (auto& inner : node->nodes) handle(*inner);
+        } else {
+          handle(*node);
+        }
+      }
     } else {
       // Single-statement body (e.g. lambda body is an EXPRESSION).
       handle(statements_ast);
@@ -10929,8 +10965,11 @@ struct JIT {
     return builder_.CreateLoad(valueType_, valPtr, name);
   }
 
-  // Load a value from a slot with retain (+1 for caller).
+  // Load a value from a slot with retain (+1 for caller). A lazy
+  // forward-ref cell that was never materialized (declaration's branch
+  // never ran) reads as the interp's NameError, not a null deref.
   llvm::Value* load_slot(const VarSlot& slot, const std::string& name) {
+    emit_lazy_cell_read_guard(slot, name);
     auto val = load_slot_raw(slot, name);
     emit_value_retain(val);
     return val;
@@ -10951,6 +10990,7 @@ struct JIT {
   // Store with RC semantics: releases previous slot contents (after replacing).
   // Caller's `val` ownership is absorbed into the slot.
   void store_slot(const VarSlot& slot, llvm::Value* val) {
+    emit_lazy_cell_materialize(slot);
     auto old = load_slot_raw(slot, "old");
     store_slot_raw(slot, val);
     emit_value_release(old);
@@ -11276,6 +11316,52 @@ struct JIT {
   llvm::Value* cell_ptr_of(const VarSlot& slot) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     return builder_.CreateLoad(ptrTy, slot.alloca, "cellp");
+  }
+
+  // Materialize a lazy forward-ref cell if its statement list hasn't
+  // run yet (cell pointer still null): allocate a nil-valued cell so a
+  // writer / closure capture has a real cell to land in. Idempotent.
+  void emit_lazy_cell_materialize(const VarSlot& slot) {
+    if (slot.kind != VarSlot::Cell || !slot.lazy) return;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto cur = builder_.CreateLoad(ptrTy, slot.alloca, "lazy.cellp");
+    auto isNull = builder_.CreateICmpEQ(
+        cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto matBB = llvm::BasicBlock::Create(ctx_, "lazy.mat", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.cont", fn);
+    builder_.CreateCondBr(isNull, matBB, contBB);
+    builder_.SetInsertPoint(matBB);
+    auto cellPtr = emit_call(
+        module_->getOrInsertFunction(rt::cell_new, ptrTy,
+                                     builder_.getInt8Ty(),
+                                     builder_.getInt64Ty()),
+        {builder_.getInt8(TAG_NIL), builder_.getInt64(0)}, "lazy.cell");
+    builder_.CreateStore(cellPtr, slot.alloca);
+    builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(contBB);
+  }
+
+  // Read guard for a lazy cell: a still-null cell means the declaring
+  // statement list never executed — the name is unbound, exactly the
+  // interp's runtime NameError (catchable), not a null deref.
+  void emit_lazy_cell_read_guard(const VarSlot& slot,
+                                 const std::string& name) {
+    if (slot.kind != VarSlot::Cell || !slot.lazy) return;
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto cur = builder_.CreateLoad(ptrTy, slot.alloca, "lazy.cellp");
+    auto isNull = builder_.CreateICmpEQ(
+        cur, llvm::ConstantPointerNull::get(ptrTy), "lazy.isnull");
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto throwBB = llvm::BasicBlock::Create(ctx_, "lazy.unbound", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "lazy.bound", fn);
+    builder_.CreateCondBr(isNull, throwBB, contBB);
+    builder_.SetInsertPoint(throwBB);
+    emit_throw_error("NameError",
+                     std::format("undefined variable '{}'", name),
+                     current_line_, current_column_);
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(contBB);
   }
 
   // --- Value helpers ---
@@ -12598,6 +12684,13 @@ struct JIT {
     if (ast.nodes.empty()) {
       return make_nil();
     }
+    // Forward-ref / self-recursion support for captured names declared
+    // by this statement list (if/while/for bodies, match arms, try and
+    // catch bodies all compile through here): the cell must exist in
+    // the current scope before any closure that captures it is built.
+    // Idempotent — the function-body entry point already pre-allocates
+    // its own list, and pre() skips existing slots.
+    pre_allocate_forward_refs(ast);
     llvm::Value* val = nullptr;
     for (auto& node : ast.nodes) {
       if (builder_.GetInsertBlock()->getTerminator()) break;
@@ -13130,7 +13223,13 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {tag, data}, "cell");
     builder_.CreateStore(cellPtr, cellSlotAlloca);
-    return VarSlot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
+    VarSlot slot{VarSlot::Cell, cellSlotAlloca, /*owned=*/true, is_mut};
+    // The declaration point may sit in a conditionally-executed
+    // position that shares the enclosing scope (an if branch): a read
+    // of the never-executed binding must be the interp's NameError,
+    // not a null-cell deref — load_slot's lazy guard handles it.
+    slot.lazy = true;
+    return slot;
   }
 
   VarSlot make_stack_slot(const std::string& name, llvm::Value* initValue,
@@ -15676,6 +15775,11 @@ struct JIT {
     }
 
     push_scope();
+    // Forward-ref / self-recursion support inside the block: captured
+    // names declared by this block's own statements need their cell
+    // before any closure that captures them is built (the function-body
+    // entry does the same — see pre_allocate_forward_refs).
+    pre_allocate_forward_refs(ast);
     llvm::Value* val = make_nil();
     for (auto& node : ast.nodes) {
       if (builder_.GetInsertBlock()->getTerminator()) break;
@@ -16567,16 +16671,17 @@ struct JIT {
 
     auto dispatcherVal = make_func(dispatcherPtr);
 
-    // Bind the dispatcher in the surrounding scope. First decl per name
-    // creates a cell slot; subsequent decls overwrite (the runtime
-    // returns the same cached dispatcher pointer, so this is a +1
-    // refresh on the same object).
-    auto* existing = lookup_var(name);
-    if (!existing) {
+    // Bind the dispatcher in the CURRENT scope only (the registry key
+    // is already per-scope — multifn_scope_key): the first decl per
+    // scope creates a cell slot, a same-scope overload re-decl
+    // overwrites it (+1 refresh of the same cached dispatcher). An
+    // outer-scope same-named `fn` must be shadowed, not overwritten —
+    // the interp binds into the declaring env.
+    if (!scopes_.empty() && scopes_.back().slots.contains(name)) {
+      store_slot(scopes_.back().slots.at(name), dispatcherVal);
+    } else {
       auto slot = make_cell_slot(name, dispatcherVal);
       define_var(name, slot);
-    } else {
-      store_slot(*existing, dispatcherVal);
     }
 
     return make_nil();
@@ -17379,6 +17484,9 @@ struct JIT {
               std::format("free var '{}' is not a cell", fv));
         }
         info.free_var_mut[i] = slot->mut;
+        // A capture of a lazy forward-ref cell materializes it (nil
+        // value) so the closure holds a real cell, never null.
+        emit_lazy_cell_materialize(*slot);
         auto cellPtr = cell_ptr_of(*slot);
         auto dstSlot = builder_.CreateInBoundsGEP(
             ptrTy, capturesArr, {builder_.getInt64(i)});
