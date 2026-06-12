@@ -94,9 +94,35 @@ produces standalone AOT binaries that carry the binding.
 | `std::shared_ptr<T>` | instance holding one share |
 
 A method returning `T&` / `const T&` of a wrapped class is a
-**compile-time error** — references have no ownership shape yet
-(borrowing is a later phase). Containers (`std::vector`/`std::map`) and
-callbacks are also not yet marshalled.
+**compile-time error** under `.method` — references are not an
+ownership shape. Declare it `.borrowed_method` instead:
+
+```cpp
+.borrowed_method<&Box::inner>("inner")     // Counter& inner()
+```
+
+The result is a **borrowing handle**: it does not own (dropping it is a
+no-op), it keeps its parent alive while it exists, and every access is
+validated — the parent explicitly dropped, or mutated by a non-const
+method since the borrow was taken (each wrapped instance carries a
+generation counter, bumped automatically by non-const dispatch), raises
+`ClosedError` instead of touching freed or reallocated memory:
+
+```culebra
+let b = __Foreign.Box.new(3)
+let c = b.inner()
+b.reset(9)             # non-const -> generation bump
+c.value()              # !! ClosedError
+```
+
+A non-const method that provably never invalidates borrows can opt out:
+`.method<&T::touch>("touch", {}, culebra::wrap_policy::preserves_borrows)`.
+Misdeclaring const-ness or this flag is an author-contract violation
+(the sol2/pybind11 deal) — the failure mode is a spurious or missed
+stale error, never memory-unsafety on the culebra side.
+
+Containers (`std::vector`/`std::map`) and callbacks are not yet
+marshalled.
 
 See `examples/wrap/` for the complete working demo this page is based
 on, and `tests/wrap_test.sh` for the end-to-end pipeline check.

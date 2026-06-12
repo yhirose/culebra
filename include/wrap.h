@@ -86,11 +86,35 @@ inline int64_t handle_id(const std::shared_ptr<Environment>& env) {
       env->get("this").to_object().get("_id").to_long());
 }
 
-// The live instance, or ClosedError (§7) — every method's first step.
+// Generation of a handle, or -1 when it is no longer valid (§10.4).
+// Owning handles read their table entry through the type-erased
+// _state_fn; a borrowing handle (`_bid`) resolves through the borrow
+// table — both indirections, so a forged slot is a table miss, never a
+// dereferenced raw pointer.
+inline int64_t handle_gen(const ObjectValue& h) {
+  if (h.has("_state_fn")) {
+    return foreign::owner_gen_via(h.get("_state_fn").to_long(),
+                                  h.get("_id").to_long());
+  }
+  if (h.has("_bid")) return foreign::borrow_gen(h.get("_bid").to_long());
+  return -1;
+}
+
+// The live instance, or ClosedError (§7) — every method's first step. A
+// borrowing handle resolves its raw pointer from the borrow table only
+// after the parent chain validates; the pointer is never read from a
+// script-writable slot.
 template <class T>
 inline T* handle_self(const std::shared_ptr<Environment>& env) {
   long line = env->get("__LINE__").to_long();
   long col = env->get("__COLUMN__").to_long();
+  const auto& h = env->get("this").to_object();
+  if (h.has("_bid")) {
+    int64_t bid = h.get("_bid").to_long();
+    if (!foreign::borrow_valid(bid))
+      foreign::throw_borrow_invalid(class_info<T>::name, line, col);
+    return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
+  }
   return foreign::get_or_throw<T>(handle_id<T>(env), class_info<T>::name,
                                   line, col);
 }
@@ -103,6 +127,9 @@ Value make_foreign_handle(int64_t id) {
   ObjectValue h;
   h.initialize("__foreign__", Value(std::string(class_info<T>::name)), false);
   h.initialize("_id", Value(static_cast<long>(id)), false);
+  // Type-erased closed+gen read for the borrow validation chain.
+  h.initialize("_state_fn",
+               Value(static_cast<long>(foreign::state_fn_id<T>())), false);
   // A foreign instance lives in a process-local table — not Sendable.
   h.initialize("__nonsendable__", Value(true), false);
   for (const auto& [name, proto] : class_info<T>::methods) {
@@ -115,6 +142,67 @@ Value make_foreign_handle(int64_t id) {
       }));
   h.initialize("drop", drop_proto, false);
   return Value(std::move(h));
+}
+
+// The borrow id of a parent handle (owning or borrowing): owning
+// parents have no borrow id, so they pass -1 and an owning parent_state.
+inline void parent_link(const ObjectValue& parent, int64_t* state,
+                        int64_t* owner_id, int64_t* bid) {
+  if (parent.has("_bid")) {
+    *state = -1;
+    *owner_id = 0;
+    *bid = parent.get("_bid").to_long();
+  } else {
+    *state = parent.get("_state_fn").to_long();
+    *owner_id = parent.get("_id").to_long();
+    *bid = -1;
+  }
+}
+
+// A borrowing handle (§10.4): the raw pointer + parent link live in the
+// borrow table (forgery-safe — the handle holds only the opaque id).
+// `__parent__` is an ordinary GC reference keeping the whole chain
+// alive. The handle owns nothing, but it DOES carry an internal `drop`
+// (erase the borrow id) and registers on the owned stack, so its table
+// entry is reclaimed deterministically when the handle dies — and an
+// explicit `.drop()` closes this borrow (without touching the parent's
+// resource).
+template <class T2>
+inline Value make_borrow_handle(T2* p, const Value& parent, int64_t pgen) {
+  int64_t state = -1, owner_id = 0, parent_bid = -1;
+  parent_link(parent.to_object(), &state, &owner_id, &parent_bid);
+  int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
+
+  ObjectValue h;
+  h.initialize("__foreign__", Value(std::string(class_info<T2>::name)),
+               false);
+  h.initialize("_bid", Value(static_cast<long>(bid)), false);
+  h.initialize("__parent__", parent, false);
+  h.initialize("__nonsendable__", Value(true), false);
+  for (const auto& [name, proto] : class_info<T2>::methods) {
+    h.initialize(name, proto, false);
+  }
+  static const Value borrow_drop(
+      FunctionValue({}, [](std::shared_ptr<Environment> env) {
+        foreign::borrow_erase(env->get("this").to_object().get("_bid").to_long());
+        return Value();
+      }));
+  h.initialize("drop", borrow_drop, false);
+  return Value(std::move(h));
+}
+
+// Non-const method dispatch bumps the instance's generation (§10.4),
+// staling its outstanding borrows: the foreign table entry for an
+// owning handle, the borrow table entry for a borrow (a mutation
+// through a borrow stales its children, not its siblings).
+template <class T>
+inline void bump_handle_gen(const std::shared_ptr<Environment>& env) {
+  const auto& h = env->get("this").to_object();
+  if (h.has("_bid")) {
+    foreign::borrow_bump(h.get("_bid").to_long());
+  } else {
+    foreign::table<T>().bump_gen(handle_id<T>(env));
+  }
 }
 
 // Return-value lowering (§10.3). `R` decayed: handles for wrapped
@@ -188,12 +276,17 @@ inline std::vector<FunctionValue::Parameter> typed_params(
 }
 
 // One method prototype: resolve self (ClosedError when dropped),
-// convert each declared param, call, lower the return.
+// convert each declared param, call, lower the return. `bump` (a
+// non-const method without preserves_borrows) increments the
+// generation BEFORE the call, so a borrow the call itself returns
+// snapshots the post-bump value.
 template <class T, class Mf, class R, class... Args>
-inline Value make_method_proto(Mf mf, std::vector<std::string> names) {
+inline Value make_method_proto(Mf mf, std::vector<std::string> names,
+                               bool bump = false) {
   auto storage = pin_param_names(std::move(names), sizeof...(Args));
-  auto eval = [storage, mf](std::shared_ptr<Environment> env) -> Value {
+  auto eval = [storage, mf, bump](std::shared_ptr<Environment> env) -> Value {
     T* self = handle_self<T>(env);
+    if (bump) bump_handle_gen<T>(env);
     auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
       if constexpr (std::is_void_v<R>) {
         (self->*mf)(_detail::ValueAs<Args>::convert(
@@ -208,6 +301,29 @@ inline Value make_method_proto(Mf mf, std::vector<std::string> names) {
   };
   return Value(FunctionValue(typed_params<Args...>(*storage),
                              std::move(eval), return_annotation<R>()));
+}
+
+// A borrowed-return method (§10.4): the reference points INTO self, so
+// the result is a borrowing handle snapshotting the parent's current
+// generation. Taking a borrow never bumps — the declaration already
+// states the method returns a view, and multiple live borrows are the
+// point.
+template <class T, class Mf, class T2, class... Args>
+inline Value make_borrowed_proto(Mf mf, std::vector<std::string> names) {
+  auto storage = pin_param_names(std::move(names), sizeof...(Args));
+  auto eval = [storage, mf](std::shared_ptr<Environment> env) -> Value {
+    T* self = handle_self<T>(env);
+    const Value parent = env->get("this");
+    int64_t pgen = handle_gen(parent.to_object());
+    auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> Value {
+      auto& r = (self->*mf)(_detail::ValueAs<Args>::convert(
+          env->get(std::string_view((*storage)[I])))...);
+      return make_borrow_handle<T2>(const_cast<T2*>(&r), parent, pgen);
+    };
+    return invoke(std::index_sequence_for<Args...>{});
+  };
+  return Value(FunctionValue(typed_params<Args...>(*storage),
+                             std::move(eval), "Object"));
 }
 
 // A free / static function entry (no self).
@@ -290,14 +406,47 @@ struct jit_class_info {
   static constinit inline std::vector<Method> methods;
 };
 
-// The live instance, or ClosedError at the method call site (the
-// interp's loc(env), carried by set_call_site).
+// JitObject mirror of handle_gen: generation, or -1 when invalid. Both
+// owning (_state_fn + table) and borrowing (_bid + borrow table) read
+// through an indirection — a forged slot misses, never derefs.
+inline int64_t jit_handle_gen(JitObject* h) {
+  constexpr size_t npos = static_cast<size_t>(-1);
+  if (h->find_slot("_state_fn") != npos) {
+    return foreign::owner_gen_via(_jit_handle_long(h, "_state_fn"),
+                                  _jit_handle_long(h, "_id"));
+  }
+  if (h->find_slot("_bid") != npos)
+    return foreign::borrow_gen(_jit_handle_long(h, "_bid"));
+  return -1;
+}
+
+// The live instance, or ClosedError at the method call site. A borrowing
+// handle resolves its raw pointer from the borrow table only after the
+// parent chain validates.
 template <class T>
 inline T* jit_handle_self(JitValue self) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
+  if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
+    int64_t bid = _jit_handle_long(h, "_bid");
+    if (!foreign::borrow_valid(bid))
+      foreign::throw_borrow_invalid(class_info<T>::name,
+                                    _jit_call_site_line, _jit_call_site_col);
+    return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
+  }
   return foreign::get_or_throw<T>(_jit_handle_long(h, "_id"),
                                   class_info<T>::name, _jit_call_site_line,
                                   _jit_call_site_col);
+}
+
+// Non-const dispatch bump — the JitValue mirror of bump_handle_gen.
+template <class T>
+inline void jit_bump_handle_gen(JitValue self) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
+    foreign::borrow_bump(_jit_handle_long(h, "_bid"));
+  } else {
+    foreign::table<T>().bump_gen(_jit_handle_long(h, "_id"));
+  }
 }
 
 template <class T>
@@ -360,6 +509,8 @@ JitValue jit_make_handle(int64_t id) {
                                             class_info<T>::name))},
                    false);
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("_state_fn",
+                   JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   for (const auto& m : jit_class_info<T>::methods) {
     _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity);
@@ -369,17 +520,67 @@ JitValue jit_make_handle(int64_t id) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// One handle method thunk per (T, member fn). Self arrives +1,
-// released after the body runs (an early release on a temp receiver
-// would fire its drop and erase the table entry under our feet). The
-// binder-throw paths release; the ClosedError / body-throw paths leak
-// the +1 to the GC backstop — the hand-written Phase 3 behavior.
-template <class T, auto Mf, class R, class... Args>
-JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
-                          JitValue* args) {
-  // Param checks BEFORE the closed check, in the interp binder's order:
-  // a missing required argument is an ArityError at the call site, a
-  // wrong-typed one a TypeError at the argument's threaded position.
+// The borrow id of a JIT parent handle; -1 owner_id / state for a
+// borrowing parent (chained borrow).
+inline void jit_parent_link(JitObject* parent, int64_t* state,
+                           int64_t* owner_id, int64_t* bid) {
+  if (parent->find_slot("_bid") != static_cast<size_t>(-1)) {
+    *state = -1;
+    *owner_id = 0;
+    *bid = _jit_handle_long(parent, "_bid");
+  } else {
+    *state = _jit_handle_long(parent, "_state_fn");
+    *owner_id = _jit_handle_long(parent, "_id");
+    *bid = -1;
+  }
+}
+
+// Internal drop for a borrow handle: erase its borrow-table id. Like
+// every drop thunk it must NOT release self (the destructor protocol
+// passes self without a +1). Does not touch the parent's resource.
+template <class T2>
+JitValue jit_borrow_drop_thunk(JitClosure*, JitValue self, int64_t,
+                               JitValue*) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  foreign::borrow_erase(_jit_handle_long(h, "_bid"));
+  return {TAG_NIL, 0};
+}
+
+// Borrowing handle, JIT side — same shape as the interp's: opaque _bid
+// (raw ptr + parent link in the borrow table), __parent__ for liveness,
+// an internal drop that erases the id, registered on the owned stack so
+// the table entry is reclaimed deterministically.
+template <class T2>
+JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto* pobj = reinterpret_cast<JitObject*>(parent.data);
+  int64_t state = -1, owner_id = 0, parent_bid = -1;
+  jit_parent_link(pobj, &state, &owner_id, &parent_bid);
+  int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
+
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__foreign__",
+                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
+                                            class_info<T2>::name))},
+                   false);
+  h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
+  culebra_runtime_value_retain(parent.tag, parent.data);
+  h->set_or_append("__parent__", parent, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  for (const auto& m : jit_class_info<T2>::methods) {
+    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity);
+  }
+  _jit_handle_bind_method(h, "drop", &jit_borrow_drop_thunk<T2>, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Binder-order param checks shared by the method and borrowed thunks:
+// a missing required argument is an ArityError at the call site, a
+// wrong-typed one a TypeError at the argument's threaded position —
+// both released `self` first.
+template <class T, auto Mf, class... Args>
+inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
   size_t bad = sizeof...(Args);
   bool missing = false;
   {
@@ -420,7 +621,21 @@ JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
         ap ? _jit_argpos_col[bad]
            : (bad == 0 ? _jit_call_arg0_col : _jit_call_site_col));
   }
+}
+
+// One handle method thunk per (T, member fn). Self arrives +1,
+// released after the body runs (an early release on a temp receiver
+// would fire its drop and erase the table entry under our feet). The
+// binder-throw paths release; the ClosedError / body-throw paths leak
+// the +1 to the GC backstop — the hand-written Phase 3 behavior.
+// `Bump` (a non-const method without preserves_borrows) increments the
+// generation after validation, BEFORE the call.
+template <class T, auto Mf, class R, bool Bump, class... Args>
+JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
+                          JitValue* args) {
+  jit_check_args<T, Mf, Args...>(self, n, args);
   T* obj = jit_handle_self<T>(self);
+  if constexpr (Bump) jit_bump_handle_gen<T>(self);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     if constexpr (std::is_void_v<R>) {
       (obj->*Mf)(jit_arg_get<Args>(args[I])...);
@@ -431,6 +646,25 @@ JitValue jit_method_thunk(JitClosure*, JitValue self, int64_t n,
       culebra_runtime_value_release(self.tag, self.data);
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
+  };
+  return invoke(std::index_sequence_for<Args...>{});
+}
+
+// A borrowed-return method thunk (§10.4): the parent's generation is
+// snapshotted after validation, and the result is a borrowing handle.
+// Taking a borrow never bumps.
+template <class T, auto Mf, class T2, class... Args>
+JitValue jit_borrowed_thunk(JitClosure*, JitValue self, int64_t n,
+                            JitValue* args) {
+  jit_check_args<T, Mf, Args...>(self, n, args);
+  T* obj = jit_handle_self<T>(self);
+  int64_t pgen = jit_handle_gen(reinterpret_cast<JitObject*>(self.data));
+  auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
+    auto& r = (obj->*Mf)(jit_arg_get<Args>(args[I])...);
+    JitValue out =
+        jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
+    culebra_runtime_value_release(self.tag, self.data);
+    return out;
   };
   return invoke(std::index_sequence_for<Args...>{});
 }
@@ -487,6 +721,22 @@ inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
 }
 #endif  // CULEBRA_JIT_ENABLED
 
+// Per-method dispatch policy (§10.4). `standard` derives the generation
+// bump from C++ const-ness (non-const = bump); `preserves_borrows` is
+// the author's opt-out for non-const methods that don't invalidate
+// outstanding borrows. Misdeclaring const-ness or this flag is a
+// declaration-contract violation (sol2/pybind11-style author
+// responsibility) — the failure mode is a stale-borrow error or a
+// missed one, never UB on the culebra side.
+enum class wrap_policy { standard, preserves_borrows };
+
+namespace wrap_detail {
+template <class M>
+struct is_const_member : std::false_type {};
+template <class R, class C, class... A>
+struct is_const_member<R (C::*)(A...) const> : std::true_type {};
+}  // namespace wrap_detail
+
 // Process-wide registry of wrapped classes, populated at static-init
 // time by the wrap<T>() declarations and consumed by the stdlib setup
 // (one namespace object per distinct `ns`, holding one class object —
@@ -534,12 +784,35 @@ class ClassBinder {
   // The member fn is a NON-TYPE template argument so the JIT side gets a
   // distinct static thunk per method (the closure ABI needs a plain
   // function pointer). The interp proto uses the same constant at runtime.
+  // A non-const method bumps the instance's generation (staling its
+  // borrows) unless declared wrap_policy::preserves_borrows.
   template <auto Mf>
-  ClassBinder& method(std::string name, std::vector<std::string> names = {}) {
+  ClassBinder& method(std::string name, std::vector<std::string> names = {},
+                      wrap_policy policy = wrap_policy::standard) {
     using traits = _detail::fn_traits<decltype(Mf)>;
     return method_impl<Mf, typename traits::ret>(
-        std::move(name), std::move(names),
+        std::move(name), std::move(names), policy,
         static_cast<typename traits::args*>(nullptr));
+  }
+
+  // A method returning a reference INTO self (`T2&` / `const T2&` of a
+  // wrapped class): the result is a borrowing handle validated against
+  // this instance's closed flag and generation on every access (§10.4).
+  // Taking a borrow never bumps the generation.
+  template <auto Mf>
+  ClassBinder& borrowed_method(std::string name,
+                               std::vector<std::string> names = {}) {
+    using traits = _detail::fn_traits<decltype(Mf)>;
+    using R = typename traits::ret;
+    static_assert(std::is_lvalue_reference_v<R>,
+                  "wrap.h: borrowed_method needs a method returning T2& / "
+                  "const T2& of a wrapped class");
+    using T2 = std::remove_cv_t<std::remove_reference_t<R>>;
+    static_assert(std::is_class_v<T2>,
+                  "wrap.h: borrowed_method's referent must be a wrapped "
+                  "class");
+    return borrowed_impl<Mf, T2>(std::move(name), std::move(names),
+                                 static_cast<typename traits::args*>(nullptr));
   }
 
   template <auto Fn>
@@ -567,17 +840,40 @@ class ClassBinder {
  private:
   template <auto Mf, class R, class... Args>
   ClassBinder& method_impl(std::string name, std::vector<std::string> names,
-                           std::tuple<Args...>*) {
+                           wrap_policy policy, std::tuple<Args...>*) {
+    const bool bump =
+        !wrap_detail::is_const_member<decltype(Mf)>::value &&
+        policy != wrap_policy::preserves_borrows;
     wrap_detail::class_info<T>::methods.emplace_back(
         name, wrap_detail::make_method_proto<T, decltype(Mf), R, Args...>(
-                  Mf, names));
+                  Mf, names, bump));
 #ifdef CULEBRA_JIT_ENABLED
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
     wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
-         &wrap_detail::jit_method_thunk<T, Mf, R, Args...>,
+         bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
+              : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
+         sizeof...(Args)});
+#endif
+    return *this;
+  }
+
+  template <auto Mf, class T2, class... Args>
+  ClassBinder& borrowed_impl(std::string name, std::vector<std::string> names,
+                             std::tuple<Args...>*) {
+    wrap_detail::class_info<T>::methods.emplace_back(
+        name,
+        wrap_detail::make_borrowed_proto<T, decltype(Mf), T2, Args...>(
+            Mf, names));
+#ifdef CULEBRA_JIT_ENABLED
+    auto pinned = wrap_detail::pin_param_names(std::move(names),
+                                               sizeof...(Args));
+    wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    wrap_detail::jit_class_info<T>::methods.push_back(
+        {std::move(name),
+         &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
          sizeof...(Args)});
 #endif
     return *this;

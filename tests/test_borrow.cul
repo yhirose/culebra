@@ -1,0 +1,122 @@
+# Phase 5 (design §10.4): borrowing handles. `box.inner()` returns a
+# reference INTO the Box — a non-owning handle validated on every access
+# against the parent's closed flag and generation counter. The single
+# user-visible failure is ClosedError (§7), for both "parent dropped"
+# and "parent mutated since the borrow was taken".
+
+fn closed_msg(thunk) {
+  try { thunk(); 'NO ERROR' } catch e { "{e.kind}: {e.message}" }
+}
+
+# --- A borrow reads and writes THROUGH to the parent's member. -------------
+{
+  let b = __Foreign.Box.new(5)
+  let c = b.inner()
+  assert_eq(c.value(), 5)
+  c.add(3)
+  assert_eq(c.value(), 8)
+  assert_eq(b.peek(), 8)             # the mutation landed in the Box
+  assert_eq(b.inner().value(), 8)    # a fresh borrow sees it too
+}
+
+# --- Dropping a borrow closes the BORROW, not the owned object. -------------
+# `.drop()` means "close this handle". A borrow owns nothing, so it
+# doesn't run ~Counter — the Box's member stays live — but the borrow
+# handle itself becomes closed (its raw-pointer bookkeeping is released).
+{
+  let live0 = __Foreign.Counter.live()
+  let b = __Foreign.Box.new(1)
+  let c = b.inner()
+  c.drop()
+  assert_eq(__Foreign.Counter.live(), live0 + 1)  # ~Counter did NOT run
+  assert_eq(b.inner().value(), 1)                 # the Box is untouched
+  assert_eq(closed_msg(fn () { c.value() }),       # but this borrow is closed
+            'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+}
+
+# --- Parent dropped → every borrow is ClosedError. --------------------------
+{
+  let b = __Foreign.Box.new(7)
+  let c = b.inner()
+  b.drop()
+  assert_eq(closed_msg(fn () { c.value() }),
+            'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+}
+
+# --- An escaped borrow keeps its owner alive (escape-based ownership §6):
+# the borrow's parent reference makes the Box reachable, so scope exit
+# does NOT drop it — the borrow stays valid, and the Box's drop falls to
+# the GC backstop once the borrow itself dies. ClosedError is for
+# explicit drops and generation staleness, not for this.
+{
+  mut c = nil
+  {
+    let b = __Foreign.Box.new(2)
+    c = b.inner()
+    assert_eq(c.value(), 2)
+  }                                    # b escaped via the borrow — no drop
+  assert_eq(c.value(), 2)
+}
+
+# --- Non-const parent method → generation bump → stale borrow. --------------
+{
+  let b = __Foreign.Box.new(3)
+  let c = b.inner()
+  assert_eq(c.value(), 3)
+  b.reset(9)                           # non-const: gen++
+  assert_eq(closed_msg(fn () { c.value() }),
+            'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+  assert_eq(b.inner().value(), 9)      # a fresh borrow sees the new state
+}
+
+# --- const methods and preserves_borrows do NOT invalidate. ------------------
+{
+  let b = __Foreign.Box.new(4)
+  let c = b.inner()
+  assert_eq(b.peek(), 4)               # const — no bump
+  b.touch()                            # non-const but preserves_borrows
+  assert_eq(c.value(), 4)              # borrow still live
+}
+
+# --- const borrow (read_inner) validates the same way. -----------------------
+{
+  let b = __Foreign.Box.new(6)
+  let r = b.read_inner()
+  assert_eq(r.value(), 6)
+  b.reset(1)
+  assert_eq(closed_msg(fn () { r.value() }),
+            'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+}
+
+# --- Mutating THROUGH a borrow does not invalidate its siblings. -------------
+{
+  let b = __Foreign.Box.new(10)
+  let c1 = b.inner()
+  let c2 = b.inner()
+  c1.add(5)                            # non-const on the BORROWED Counter
+  assert_eq(c2.value(), 15)            # sibling still valid (parent gen untouched)
+}
+
+# --- A borrow is not Sendable (it carries a borrow id). ----------------------
+{
+  let b = __Foreign.Box.new(1)
+  let c = b.inner()
+  let r = try { Isolate.spawn(fn () { c.value() }).join() } catch e { e.kind }
+  assert_eq(r, 'SendError')
+}
+
+# --- Forging a borrow's internal slots is memory-safe (no raw pointer is
+# read from a script-writable slot — the borrow id resolves through the
+# borrow table, so a bogus id is a clean miss, never a deref). The JIT
+# rebinds `this` to the forged object and gets ClosedError; the interp's
+# stolen method stays bound to its origin and returns the real value.
+# Either way: no crash, no UB.
+{
+  let b = __Foreign.Box.new(5)
+  let m = b.inner().value
+  let forged = { _bid: 999999, __parent__: b, value: m }
+  let r = try { "ok=" + to_string(forged.value()) } catch e { e.kind }
+  assert_true(r == 'ClosedError' || r == 'ok=5')
+}
+
+puts('test_borrow OK')

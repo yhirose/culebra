@@ -1243,6 +1243,13 @@ enum RuntimeSlot : size_t {
   // revived empty registry (the ~Runtime null-after-delete protocol)
   // and its erase is a safe no-op.
   kSlotForeignTables,
+  // Borrow registry (§10.4): opaque-id → (raw ptr + parent link). A
+  // borrowing handle stores only the opaque id, so its raw pointer is
+  // never a script-writable slot — the same forgery-safety owning
+  // handles get from kSlotForeignTables. Holds no instances (the parent
+  // owns them), so teardown order relative to the foreign tables doesn't
+  // matter; placed just below them.
+  kSlotBorrowTable,
   kRuntimeSlotCount
 };
 

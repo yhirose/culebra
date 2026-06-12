@@ -26,4 +26,20 @@ inline const bool _foreign_counter_wrapped = [] {
   return true;
 }();
 
+// Phase 5: borrowing (§10.4). `inner` / `read_inner` return references
+// INTO the Box — borrowing handles checked against the parent's closed
+// flag and generation. `reset` is non-const (generation bump: existing
+// borrows go stale); `touch` is non-const but declared harmless.
+inline const bool _foreign_box_wrapped = [] {
+  using foreign_fixture::Box;
+  wrap<Box>("__Foreign", "Box")
+      .ctor<long>({"start"})
+      .method<&Box::peek>("peek")
+      .method<&Box::reset>("reset", {"v"})
+      .method<&Box::touch>("touch", {}, wrap_policy::preserves_borrows)
+      .borrowed_method<&Box::inner>("inner")
+      .borrowed_method<&Box::read_inner>("read_inner");
+  return true;
+}();
+
 }  // namespace culebra

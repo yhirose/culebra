@@ -34,6 +34,7 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
+#include <vector>
 
 #include <shared.h>
 
@@ -64,6 +65,19 @@ class ForeignTable {
                             : it->second.shared.get();
   }
 
+  // Generation counter (§10.4): non-const method dispatch bumps it;
+  // borrows snapshot it at creation and go stale on mismatch. -1 means
+  // the entry is closed — a snapshot is never negative, so one compare
+  // covers both "parent dropped" and "parent mutated".
+  int64_t gen_of(int64_t id) {
+    auto it = entries_.find(id);
+    return it == entries_.end() ? -1 : it->second.gen;
+  }
+  void bump_gen(int64_t id) {
+    auto it = entries_.find(id);
+    if (it != entries_.end()) it->second.gen++;
+  }
+
   // The drop event: destroy (or release) the instance. Idempotent.
   void erase(int64_t id) { entries_.erase(id); }
 
@@ -73,6 +87,7 @@ class ForeignTable {
   struct Entry {
     std::unique_ptr<T> owned;
     std::shared_ptr<T> shared;
+    int64_t gen = 0;
   };
   std::unordered_map<int64_t, Entry> entries_;
   int64_t next_id_ = 1;
@@ -122,5 +137,115 @@ inline T* get_or_throw(int64_t id, std::string_view type_name, long line,
   }
   return p;
 }
+
+// Type-erased per-T state read for the borrow validation chain (§10.4):
+// the current generation, or -1 when the entry is closed.
+template <class T>
+inline int64_t entry_state(int64_t id) {
+  return table<T>().gen_of(id);
+}
+
+// Registry of the entry_state<T> functions, indexed by a small id. An
+// owning handle carries the INDEX (not the raw pointer) so a borrow can
+// read its parent's generation without knowing the parent's C++ type —
+// and a forged index is a bounds miss, never a called pointer. (Storing
+// the raw function pointer in a script-writable slot would let a forged
+// value be called: the function-pointer twin of the _ptr hole.)
+inline std::vector<int64_t (*)(int64_t)>& state_fns() {
+  static std::vector<int64_t (*)(int64_t)> v;
+  return v;
+}
+template <class T>
+inline int64_t state_fn_id() {
+  static const int64_t id = [] {
+    state_fns().push_back(&entry_state<T>);
+    return static_cast<int64_t>(state_fns().size() - 1);
+  }();
+  return id;
+}
+inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
+  auto& v = state_fns();
+  if (state_id < 0 || static_cast<size_t>(state_id) >= v.size()) return -1;
+  return v[state_id](owner_id);
+}
+
+// The single user-visible borrow failure (§7: closed, one check): both
+// "parent dropped" and "parent mutated since the borrow" land here, on
+// both backends, byte-identically.
+[[noreturn]] inline void throw_borrow_invalid(std::string_view type_name,
+                                              long line, long col) {
+  throw CulebraError(
+      "ClosedError",
+      std::string(type_name) +
+          " borrow is no longer valid (its owner was dropped or mutated)",
+      line, col);
+}
+
+// Borrow registry (§10.4). A borrowing handle stores only an opaque id;
+// the raw pointer and the parent link live HERE, in C++ memory a script
+// can't forge — so validation and dereference never trust a
+// script-writable slot, the same invariant owning handles get from the
+// per-T foreign table. An entry is erased when its handle is reclaimed
+// (the handle's internal drop), so the table tracks live borrows only.
+struct BorrowEntry {
+  void* ptr;
+  // Exactly one parent link resolves the parent's current generation:
+  // an owning parent through its state-fn id + table id, or a borrowing
+  // parent (chained borrow) through its own id.
+  int64_t parent_state_id;  // -1 ⇒ parent is itself a borrow
+  int64_t parent_owner_id;
+  int64_t parent_bid;       // valid when parent_state_id < 0
+  int64_t pgen;             // parent's generation snapshotted at creation
+  int64_t gen = 0;          // this borrow's own generation (stales children)
+};
+struct BorrowTable {
+  std::unordered_map<int64_t, BorrowEntry> entries;
+  int64_t next_id = 1;
+};
+inline BorrowTable& borrow_table() {
+  return runtime_substate<BorrowTable>(kSlotBorrowTable);
+}
+
+inline int64_t borrow_gen(int64_t bid);  // fwd (recursion through chains)
+
+// True iff the borrow `bid` is still valid: its entry exists and its
+// parent is still valid AND unmutated since the snapshot. A snapshot is
+// never negative, so the one compare covers a dropped parent too.
+inline bool borrow_valid(int64_t bid) {
+  auto& t = borrow_table();
+  auto it = t.entries.find(bid);
+  if (it == t.entries.end()) return false;
+  const auto& e = it->second;
+  int64_t parent_gen =
+      e.parent_state_id >= 0 ? owner_gen_via(e.parent_state_id, e.parent_owner_id)
+                             : borrow_gen(e.parent_bid);
+  return parent_gen >= 0 && parent_gen == e.pgen;
+}
+inline int64_t borrow_gen(int64_t bid) {
+  auto& t = borrow_table();
+  auto it = t.entries.find(bid);
+  if (it == t.entries.end() || !borrow_valid(bid)) return -1;
+  return it->second.gen;
+}
+inline int64_t borrow_adopt(void* ptr, int64_t parent_state_id,
+                            int64_t parent_owner_id, int64_t parent_bid,
+                            int64_t pgen) {
+  auto& t = borrow_table();
+  int64_t bid = t.next_id++;
+  t.entries.emplace(bid, BorrowEntry{ptr, parent_state_id, parent_owner_id,
+                                     parent_bid, pgen, 0});
+  return bid;
+}
+inline void* borrow_ptr(int64_t bid) {
+  auto& t = borrow_table();
+  auto it = t.entries.find(bid);
+  return it == t.entries.end() ? nullptr : it->second.ptr;
+}
+inline void borrow_bump(int64_t bid) {
+  auto& t = borrow_table();
+  auto it = t.entries.find(bid);
+  if (it != t.entries.end()) it->second.gen++;
+}
+inline void borrow_erase(int64_t bid) { borrow_table().entries.erase(bid); }
 
 }  // namespace culebra::foreign

@@ -568,4 +568,29 @@ for p in pps {
   case("patcb|" + p, p)
 }
 
+# --- Dimension 28: borrowing handles (§10.4) -------------------------------
+# `Box.inner()` returns a borrowing handle: parent closed/generation
+# checks on every access (ClosedError, byte-identical), reads/writes
+# through to the parent, escape keeps the parent alive, non-const bumps
+# stale outstanding borrows, preserves_borrows doesn't.
+let brs = [
+  '{ let b = __Foreign.Box.new(5); b.inner().value() }',
+  '{ let b = __Foreign.Box.new(5); let c = b.inner(); c.add(3); (c.value(), b.peek()) }',
+  '{ let b = __Foreign.Box.new(7); let c = b.inner(); b.drop(); c.value() }',
+  '{ let b = __Foreign.Box.new(3); let c = b.inner(); b.reset(9); c.value() }',
+  '{ let b = __Foreign.Box.new(3); let c = b.inner(); b.reset(9); b.inner().value() }',
+  '{ let b = __Foreign.Box.new(4); let c = b.inner(); b.touch(); c.value() }',
+  '{ let b = __Foreign.Box.new(4); let c = b.inner(); b.peek(); c.value() }',
+  '{ let b = __Foreign.Box.new(6); let r = b.read_inner(); b.reset(1); r.value() }',
+  '{ let b = __Foreign.Box.new(10); let c1 = b.inner(); let c2 = b.inner(); c1.add(5); c2.value() }',
+  '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.drop(); c.value() }',
+  '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.add("x") }',
+  'mut c = nil; { let b = __Foreign.Box.new(2); c = b.inner() }; c.value()',
+  '{ let b = __Foreign.Box.new(8); let c = b.inner(); c.label() }',
+  '{ let b = __Foreign.Box.new(8); b.inner().clone().value() }',
+  '{ let b = __Foreign.Box.new(1); let c = b.inner(); c.drop(); c.value() }']
+for r in brs {
+  case("borrow|" + r, r)
+}
+
 print(out.join("\n"))

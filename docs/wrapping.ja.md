@@ -91,9 +91,34 @@ scope 終端の確定 drop（循環込み）、冪等な明示 `drop()`、use-af
 | 値返しの `T`・`std::unique_ptr<T>` | ラップ済み `T` の所有インスタンス |
 | `std::shared_ptr<T>` | share を 1 つ保持するインスタンス |
 
-ラップ済みクラスの `T&` / `const T&` 返しは**コンパイルエラー**です —
-参照には所有形状がまだありません（borrowing は後のフェーズ）。コンテナ
-（`std::vector`/`std::map`）とコールバックも未対応です。
+ラップ済みクラスの `T&` / `const T&` 返しは `.method` では**コンパイル
+エラー**です — 参照は所有形状ではありません。`.borrowed_method` で
+宣言してください:
+
+```cpp
+.borrowed_method<&Box::inner>("inner")     // Counter& inner()
+```
+
+結果は**借用ハンドル**です: 所有しない（drop は no-op）、存在する間は
+親を生かし、アクセスごとに検証されます — 親が明示 drop された、または
+借用取得後に非 const メソッドで変更された（各インスタンスは generation
+カウンタを持ち、非 const dispatch が自動で bump）場合、解放/再配置済み
+メモリに触れる代わりに `ClosedError` になります:
+
+```culebra
+let b = __Foreign.Box.new(3)
+let c = b.inner()
+b.reset(9)             # 非 const -> generation bump
+c.value()              # !! ClosedError
+```
+
+借用を無効化しないことが確実な非 const メソッドは opt-out できます:
+`.method<&T::touch>("touch", {}, culebra::wrap_policy::preserves_borrows)`。
+const 性やこのフラグの誤宣言は著者の契約違反（sol2/pybind11 と同じ
+建付け）ですが、その場合も「stale エラーの過剰/欠落」であって culebra
+側のメモリ非安全には絶対になりません。
+
+コンテナ（`std::vector`/`std::map`）とコールバックは未対応です。
 
 動く完全版は `examples/wrap/`、パイプラインの end-to-end 検証は
 `tests/wrap_test.sh` を参照してください。

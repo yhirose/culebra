@@ -46,4 +46,24 @@ class Counter {
   static inline thread_local long live_ = 0;
 };
 
+// Phase 5 fixture: a class whose methods BORROW (§10.4) — `inner()`
+// returns a reference into self, so the wrap layer must produce a
+// borrowing handle (parent `closed` + generation checks) rather than an
+// owning copy. `reset` is the non-const mutation that bumps the
+// generation; `peek` is const (borrows survive it); `touch` is
+// non-const but declared preserves_borrows at the binding.
+class Box {
+ public:
+  explicit Box(long start) : inner_(start) {}
+
+  Counter& inner() { return inner_; }
+  const Counter& read_inner() const { return inner_; }
+  long peek() const { return inner_.value(); }
+  void reset(long v) { inner_ = Counter(v); }
+  void touch() {}  // non-const, but harmless — preserves_borrows
+
+ private:
+  Counter inner_;
+};
+
 }  // namespace culebra::foreign_fixture
