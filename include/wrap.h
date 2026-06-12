@@ -395,13 +395,16 @@ struct jit_method_info {
   static constinit inline std::vector<std::string> param_names;
 };
 
-// Per-T handle method table consumed by the handle builder.
+// Per-T handle method table consumed by the handle builder. `meta`
+// carries the param names so the method binds keyword arguments like
+// the interp (null for the auto-bound `drop`).
 template <class T>
 struct jit_class_info {
   struct Method {
     std::string name;
     JitValue (*thunk)(JitClosure*, JitValue, int64_t, JitValue*);
     size_t arity;
+    const JitParamMeta* meta;
   };
   static constinit inline std::vector<Method> methods;
 };
@@ -513,7 +516,7 @@ JitValue jit_make_handle(int64_t id) {
                    JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   for (const auto& m : jit_class_info<T>::methods) {
-    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity);
+    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity, m.meta);
   }
   _jit_handle_bind_method(h, "drop", &jit_drop_thunk<T>, 0);
   _jit_owned_bind_drop(h);
@@ -568,7 +571,7 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   h->set_or_append("__parent__", parent, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   for (const auto& m : jit_class_info<T2>::methods) {
-    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity);
+    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity, m.meta);
   }
   _jit_handle_bind_method(h, "drop", &jit_borrow_drop_thunk<T2>, 0);
   _jit_owned_bind_drop(h);
@@ -851,11 +854,16 @@ class ClassBinder {
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
     wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    const JitParamMeta* meta =
+        sizeof...(Args) == 0
+            ? nullptr
+            : _jit_make_handle_meta(*pinned,
+                                    std::vector<bool>(sizeof...(Args), false));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
          bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
               : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
-         sizeof...(Args)});
+         sizeof...(Args), meta});
 #endif
     return *this;
   }
@@ -871,10 +879,15 @@ class ClassBinder {
     auto pinned = wrap_detail::pin_param_names(std::move(names),
                                                sizeof...(Args));
     wrap_detail::jit_method_info<T, Mf>::param_names = *pinned;
+    const JitParamMeta* meta =
+        sizeof...(Args) == 0
+            ? nullptr
+            : _jit_make_handle_meta(*pinned,
+                                    std::vector<bool>(sizeof...(Args), false));
     wrap_detail::jit_class_info<T>::methods.push_back(
         {std::move(name),
          &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
-         sizeof...(Args)});
+         sizeof...(Args), meta});
 #endif
     return *this;
   }

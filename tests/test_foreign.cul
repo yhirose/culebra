@@ -80,3 +80,18 @@ assert_eq(__Foreign.Counter.live(), 0)
   c.drop()
 }
 assert_eq(__Foreign.Counter.live(), 0)
+
+# --- Keyword arguments bind by param name, like any FunctionValue (the
+# generated JIT handle method carries param metadata so it matches interp).
+{
+  let c = __Foreign.Counter.new(5)
+  c.add(n: 3)
+  assert_eq(c.value(), 8)
+  mut kind = nil
+  try { c.add(bad: 3) } catch e { kind = e.kind }   # unknown kw -> missing 'n'
+  assert_eq(kind, 'ArityError')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
+puts('test_foreign OK')

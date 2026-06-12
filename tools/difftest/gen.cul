@@ -593,4 +593,21 @@ for r in brs {
   case("borrow|" + r, r)
 }
 
+# --- Dimension 29: handle-method keyword arguments -------------------------
+# A native-handle method binds keyword arguments by its param name like
+# the interp's FunctionValue (the JIT used to reject all kwargs on handle
+# methods — no param meta on the captureless thunk). Foreign/Box are
+# generated; File is hand-written; both go through the same chokepoint.
+let hkw = [
+  '{ let c = __Foreign.Counter.new(5); c.add(n: 3); c.value() }',
+  '{ let c = __Foreign.Counter.new(5); c.add(bad: 3) }',
+  '{ let b = __Foreign.Box.new(5); b.reset(v: 9); b.peek() }',
+  '{ let f = File.open("README.md", "r"); f.read(n: 4).size() }',
+  '{ let f = File.open("README.md", "r"); f.read(size: 4) }',
+  '{ let f = File.open("README.md", "r"); f.seek(offset: 10); f.tell() }',
+  '{ let f = File.open("README.md", "r"); f.seek(offset: 4, whence: "set"); f.tell() }']
+for h in hkw {
+  case("handlekw|" + h, h)
+}
+
 print(out.join("\n"))

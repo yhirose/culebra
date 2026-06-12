@@ -3553,8 +3553,18 @@ CULEBRA_RT_INLINE int64_t _jit_handle_long(JitObject* h, const char* key) {
   return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
 }
 
+// Native-handle method param metadata (kwargs binding) — built by
+// _jit_make_handle_meta (defined after JitParamMeta below) and passed
+// straight to the bind chokepoint, so no process-global relay is needed.
+struct JitParamMeta;
+inline const JitParamMeta* _jit_make_handle_meta(
+    std::vector<std::string> names, std::vector<bool> has_default);
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_param_meta(
+    void* fn_ptr, const JitParamMeta* meta);
+
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity) {
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity,
+    const JitParamMeta* meta = nullptr) {
   _jit_register_native_fn(reinterpret_cast<const void*>(fn));
   auto* cls = new JitClosure();
   cls->refcount = 1;
@@ -3562,18 +3572,27 @@ CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
   cls->n_captures = 0;
   cls->captures = nullptr;
   cls->arity = arity;
+  // Seed this thread's param-meta table so the kwargs resolver can bind
+  // by name. The table is thread_local and register is idempotent (same
+  // fn_ptr → same meta), so concurrent isolates building the same handle
+  // each seed their own table with no shared mutable state.
+  if (meta)
+    culebra_runtime_register_param_meta(reinterpret_cast<void*>(fn), meta);
   _gc_register(cls, GC_TAG_FUNC);
   return cls;
 }
 
 // Slot a handle method onto `h` — shared by every native-handle builder
-// (Proc / File / Foreign).
+// (Proc / File / Foreign). `meta` (non-null) registers the method's
+// param names so it accepts keyword arguments like the interp; the
+// drop / no-param methods pass nullptr.
 CULEBRA_RT_INLINE void _jit_handle_bind_method(
     JitObject* h, const char* name,
-    JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*), size_t ar) {
+    JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*), size_t ar,
+    const JitParamMeta* meta = nullptr) {
   h->set_or_append(name,
       JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-          _jit_make_handle_method(f, ar))}, false);
+          _jit_make_handle_method(f, ar, meta))}, false);
 }
 
 
@@ -5239,6 +5258,56 @@ struct JitParamMeta {
 // Adding a field requires updating both — the assert catches drift.
 static_assert(sizeof(JitParamMeta) == 12 * sizeof(int64_t),
               "JitParamMeta C++ / LLVM layout drift");
+
+// Build (once) a stable JitParamMeta from a handle method's param names
+// and per-param has-default flags. Only the fields the kwargs resolver
+// reads are meaningful (names / has_default_bits / n_params /
+// kwargs_rest_idx / first_kw_only_idx / cb_min / cb_max); the rest get
+// benign defaults — the handle method's own thunk does the type check
+// and the body, not the resolver. No `*`/`**rest` (handle methods have
+// fixed positional params + optional trailing defaults).
+inline const JitParamMeta* _jit_make_handle_meta(
+    std::vector<std::string> names, std::vector<bool> has_default) {
+  struct Stable {
+    std::vector<std::string> names;
+    std::vector<const char*> name_ptrs;
+    std::vector<const char*> empties;
+    std::vector<uint8_t> def_bits, mut_bits;
+    JitParamMeta meta;
+  };
+  static std::vector<std::unique_ptr<Stable>> storage;
+  auto s = std::make_unique<Stable>();
+  s->names = std::move(names);
+  size_t n = s->names.size();
+  s->name_ptrs.reserve(n);
+  for (auto& nm : s->names) s->name_ptrs.push_back(nm.c_str());
+  s->empties.assign(n, "");
+  s->def_bits.assign((n + 7) / 8, 0);
+  s->mut_bits.assign((n + 7) / 8, 0);
+  int64_t cb_min = static_cast<int64_t>(n);
+  for (size_t i = 0; i < n; i++) {
+    if (i < has_default.size() && has_default[i]) {
+      s->def_bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
+      if (static_cast<int64_t>(i) < cb_min) cb_min = static_cast<int64_t>(i);
+    }
+  }
+  s->meta = JitParamMeta{s->name_ptrs.data(),
+                         s->def_bits.data(),
+                         n,
+                         /*kwargs_rest_idx=*/-1,
+                         /*first_kw_only_idx=*/-1,
+                         /*fn_name=*/"",
+                         /*return_type=*/"",
+                         s->mut_bits.data(),
+                         /*type_names=*/s->empties.data(),
+                         /*declared_type_names=*/s->empties.data(),
+                         cb_min,
+                         static_cast<int64_t>(n)};
+  const JitParamMeta* ret = &s->meta;
+  storage.push_back(std::move(s));
+  return ret;
+}
+
 
 // thread_local: keyed by per-thread JIT-compiled fn pointers (see the
 // note on _jit_variant_ctor_info). No cross-thread sharing needed.

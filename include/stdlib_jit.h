@@ -1587,9 +1587,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
 }
 
 #if defined(CULEBRA_HTTP_ENABLED)
-// Defined later; the response object's `json` method needs it before its def.
+// Defined in jit.h (forward-declared there too); HTTP's `json` method
+// needs it before this point.
 CULEBRA_RT_INLINE JitClosure* _jit_make_handle_method(
-    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity);
+    JitValue (*fn)(JitClosure*, JitValue, int64_t, JitValue*), size_t arity,
+    const JitParamMeta* meta);
 
 // `r.json()` — parse the response body as JSON. Method ABI: self arrives +1
 // (release before returning), mirroring the proc/file handle methods.
@@ -2040,13 +2042,26 @@ CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   // A native handle is not Sendable — reject it at the serialize boundary
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  _jit_handle_bind_method(h, "read", _jit_file_read, 0);
-  _jit_handle_bind_method(h, "write", _jit_file_write, 1);
+  // Param metadata so the named-param methods bind keyword arguments by
+  // name like the interp's File handle (`f.read(n: 4)`, `f.seek(offset:
+  // 10)`). The hand-written thunks already tolerate an omitted defaulted
+  // param (a TAG_UNFILLED arg falls to the thunk's own default), so a
+  // partial kwargs call (`seek(offset: 10)`) works. Built once.
+  static const JitParamMeta* read_meta =
+      _jit_make_handle_meta({"n"}, {true});
+  static const JitParamMeta* write_meta =
+      _jit_make_handle_meta({"data"}, {false});
+  static const JitParamMeta* seek_meta =
+      _jit_make_handle_meta({"offset", "whence"}, {false, true});
+  static const JitParamMeta* chunks_meta =
+      _jit_make_handle_meta({"n"}, {false});
+  _jit_handle_bind_method(h, "read", _jit_file_read, 0, read_meta);
+  _jit_handle_bind_method(h, "write", _jit_file_write, 1, write_meta);
   _jit_handle_bind_method(h, "flush", _jit_file_flush, 0);
-  _jit_handle_bind_method(h, "seek", _jit_file_seek, 1);
+  _jit_handle_bind_method(h, "seek", _jit_file_seek, 1, seek_meta);
   _jit_handle_bind_method(h, "tell", _jit_file_tell, 0);
   _jit_handle_bind_method(h, "lines", _jit_file_lines, 0);
-  _jit_handle_bind_method(h, "chunks", _jit_file_chunks, 1);
+  _jit_handle_bind_method(h, "chunks", _jit_file_chunks, 1, chunks_meta);
   _jit_handle_bind_method(h, "close", _jit_file_close, 0);
   _jit_handle_bind_method(h, "drop", _jit_file_drop, 0);
   // Through the bind chokepoint, not a bare `has_drop = true`: the
