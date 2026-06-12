@@ -2891,17 +2891,22 @@ puts(log)        # => ['b', 'a']
 
 The owning scope is wherever the cycle last escaped to: a cycle that
 rides out of a function as its return value drops at the *caller's*
-scope exit once discarded. Two cases miss the deterministic scope-exit
-window: a cycle held through a **closure** (a closure captures its
-defining scope, which counts as an escape that may outlive it), and
-cyclic garbage discarded directly at the **top level** (a scope that
-never exits). Those fire at the **GC backstop** instead: a collection
-finalizes every orphaned resource exactly once — before reclaiming
-memory, while the structure is still intact — in the spirit of
-Python's PEP 442. Backstop timing is collection-driven (force one with
-`GC.stat()`), and finalization order within one collection is
-unspecified. When cleanup must happen at a known point, break the
-cycle manually before the last reference is released (e.g.
+scope exit once discarded. A resource captured by a sibling
+**closure**, or cycled through its own closure slot, also drops at the
+owning scope's exit under the JIT and AOT; under the interpreter,
+whole-env capture defers those shapes to its next **collection**
+instead — the same drops, one collection later. Two shapes miss the
+deterministic window on every backend: a closure-only cycle that holds
+the resource without the resource referencing it back (e.g. a
+recursive local `fn` capturing it), and cyclic garbage discarded
+directly at the **top level** (a scope that never exits). Those fire
+at the **GC backstop**:
+a collection finalizes every orphaned resource exactly once — before
+reclaiming memory, while the structure is still intact — in the
+spirit of Python's PEP 442. Backstop timing is collection-driven
+(force one with `GC.stat()`), and finalization order within one
+collection is unspecified. When cleanup must happen at a known point,
+break the cycle manually before the last reference is released (e.g.
 `a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at the
 scope that owns the resource.
 
@@ -2929,11 +2934,13 @@ top-level scope release to match. For script-wide resources, prefer
 `defer` (§15) or explicit cleanup.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
-interpreter — at scope exit, cycle members included, with closure-held
-cycles and top-level orphans deferred to the GC backstop (as above;
-top-level *bindings* still leak un-dropped at program exit). The
-well-known property contract (`drop`/`iter`/`next` must be a 0-arg
-`Function`) is enforced at assignment time on both backends.
+interpreter — at scope exit, cycle members included. Closure-held
+shapes also resolve at scope exit under the JIT (the interpreter
+defers those to its next collection; backstop-only shapes as above);
+top-level orphans go to the GC backstop on both, and top-level
+*bindings* still leak un-dropped at program exit. The well-known property contract
+(`drop`/`iter`/`next` must be a 0-arg `Function`) is enforced at
+assignment time on both backends.
 
 ---
 

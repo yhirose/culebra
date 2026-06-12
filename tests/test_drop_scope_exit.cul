@@ -12,11 +12,12 @@
 # is the documented narrow-GC-backstop case instead.
 #
 # Known conservative residuals (resources survive past scope exit, to be
-# finalized by the GC backstop — tests/test_drop_backstop.cul): scopes
-# captured by a local closure (a closure capture IS an escape, design §8),
-# and throw-path unwinding on the JIT (slots leak to the collector —
-# pre-existing shape, matched by keeping throws out of the symmetric
-# corpus).
+# finalized later — tests/test_drop_backstop.cul): on the INTERP, scopes
+# captured by a local closure (whole-env capture force-pins the env; the
+# next precise collection fires them — the JIT walks closure captures
+# per-cell and resolves the same shapes at scope exit), and throw-path
+# unwinding on the JIT (slots leak to the collector — pre-existing
+# shape, matched by keeping throws out of the symmetric corpus).
 #
 # Observable via a shared `log` reached through `this.log`: the drop body
 # pushes to it, so the count survives the object and is checkable after

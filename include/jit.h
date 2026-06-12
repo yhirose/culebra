@@ -6018,6 +6018,30 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
         param_names && param_names[i] ? param_names[i] : "");
   }
 
+  // Resolve the dispatcher FIRST (find-or-create, +1 handed to the
+  // caller), before the displaced body's release below: that release
+  // can cascade into the previous declaration's whole capture chain and
+  // kill this very dispatcher mid-install — its forget would then erase
+  // the table entry the new body was just installed into (a re-declared
+  // `fn` would dispatch into a void). The caller's +1 pins the
+  // dispatcher across the cascade, so forget can only run once no newer
+  // registration owns the name.
+  JitClosure* dispatcher = nullptr;
+  for (auto& [cls_ptr, n] : _jit_multifn_dispatcher_names()) {
+    if (n == name) {
+      cls_ptr->refcount++;  // hand a +1 back to the caller
+      dispatcher = cls_ptr;
+      break;
+    }
+  }
+  if (!dispatcher) {
+    // closure_new returns +1; the caller becomes the owner.
+    dispatcher = culebra_runtime_closure_new(
+        reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
+        /*n_captures=*/0, /*arity=*/n_param_types);
+    _jit_multifn_dispatcher_names()[dispatcher] = name;
+  }
+
   auto& tbl = _jit_multimethods();
   auto& methods = tbl[name];
   bool replaced = false;
@@ -6036,19 +6060,6 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
     }
   }
   if (!replaced) methods.push_back(std::move(method));
-
-  // Find or create the dispatcher closure for this name.
-  for (auto& [cls_ptr, n] : _jit_multifn_dispatcher_names()) {
-    if (n == name) {
-      cls_ptr->refcount++;  // hand a +1 back to the caller
-      return cls_ptr;
-    }
-  }
-  auto* dispatcher = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
-      /*n_captures=*/0, /*arity=*/n_param_types);
-  _jit_multifn_dispatcher_names()[dispatcher] = name;
-  // closure_new returns +1; caller becomes the owner. Don't bump again.
   return dispatcher;
 }
 
@@ -8684,9 +8695,13 @@ inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
 // unreachable from outside the subgraph → drop (newest first — reverse
 // creation order, cycle members included); reachable → survives,
 // pushed back in original order for the parent scope's region to
-// inherit. Closures are deliberately not walked (symmetric with the
-// interp: their references pin conservatively); the cycle's memory is
-// left to the backstop collector, which never re-runs a `dropped` body.
+// inherit. Closures are walked precisely (captures → cells → values,
+// dispatcher → table-held bodies), so a cycle through a resource's own
+// closure slot resolves here too; the cycle's memory is still left to
+// the backstop collector, which never re-runs a `dropped` body. (The
+// interp force-pins a self-captured env instead — whole-env capture
+// can't be walked per-variable — so these shapes fire one collect
+// later there; the drop count stays symmetric, the timing is not.)
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   const uint64_t mark = static_cast<uint64_t>(mark_arg);
@@ -8733,15 +8748,25 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
     return it->second;
   };
   constexpr size_t npos = static_cast<size_t>(-1);
+  // Runaway guard (mirrors the interp's kNodeBudget): resource graphs
+  // are small; if discovery exceeds the budget, bail out and let every
+  // candidate survive (safe direction — the backstop covers them).
+  constexpr size_t kNodeBudget = 4096;
+  bool overflow = false;
   auto walk_value = [&](const JitValue& v, size_t from, auto&& self) -> void {
+    if (overflow || nodes.size() > kNodeBudget) {
+      overflow = true;
+      return;
+    }
     switch (v.tag) {
       case TAG_OBJECT:
       case TAG_ARRAY:
       case TAG_TUPLE:
       case TAG_SET:
+      case TAG_FUNC:
         break;
       default:
-        return;  // primitives / Function (conservatively opaque) / Tensor
+        return;  // primitives / Tensor (no script references inside)
     }
     if (!v.data) return;
     auto* p = reinterpret_cast<void*>(v.data);
@@ -8769,9 +8794,9 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
           }
         }
         // The proto edge keeps the class meta pinned (its class binding
-        // is outside the subgraph), and the meta's methods are closures
-        // (not walked) — so following it is safe and keeps the counts
-        // exact for instance-only cycles.
+        // is outside the subgraph, so the meta stays externally
+        // reachable and everything it owns survives with it) — following
+        // it keeps the counts exact for instance-only cycles.
         if (o->proto)
           self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto)}, id,
                self);
@@ -8786,6 +8811,33 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
       case TAG_SET: {
         auto* s = reinterpret_cast<JitSet*>(p);
         for (auto& m : s->members) self(m, id, self);
+        break;
+      }
+      case TAG_FUNC: {
+        // A closure holds one ref per capture cell; the cell holds one
+        // ref to its value. Walking both makes a self-capture cycle
+        // (`res.me = fn () { res.id }`: res → closure → cell → res)
+        // fully explained, so it drops at scope exit instead of parking
+        // for the backstop. Cells share the i64-refcount-first layout.
+        auto* c = reinterpret_cast<JitClosure*>(p);
+        for (size_t i = 0; i < c->n_captures; i++) {
+          auto* cell = c->captures[i];
+          if (!cell) continue;
+          bool cell_fresh;
+          size_t cid = add_node(cell, cell->refcount, cell_fresh);
+          nodes[cid].explained++;
+          nodes[id].out.push_back(cid);
+          if (cell_fresh) self(cell->value, cid, self);
+        }
+        // A multifn dispatcher owns its overload bodies through the
+        // thread-local table (+1 each, invisible to slot walks) — the
+        // same edges the mark phase uses.
+        if (_jit_is_multifn_dispatcher(c)) {
+          std::vector<void*> bodies;
+          _jit_multifn_push_bodies(c, bodies);
+          for (void* b : bodies)
+            self(JitValue{TAG_FUNC, reinterpret_cast<int64_t>(b)}, id, self);
+        }
         break;
       }
       default:
@@ -8806,7 +8858,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   std::vector<char> reachable(nodes.size(), 0);
   std::vector<size_t> q;
   for (size_t i = 0; i < nodes.size(); i++) {
-    if (nodes[i].use_count > nodes[i].explained) {
+    if (overflow || nodes[i].use_count > nodes[i].explained) {
       reachable[i] = 1;
       q.push_back(i);
     }
@@ -13325,9 +13377,14 @@ struct JIT {
           emit_value_swap_owned(lval, receiver);
           break;
         }
-        case "ARGUMENTS"_:
+        case "ARGUMENTS"_: {
+          // Borrowed-callee dispatch; release the owned temp after (see
+          // the compile_call ARGUMENTS note).
+          auto calleeTemp = lval;
           lval = compile_function_call(postfix, lval);
+          emit_value_release(calleeTemp);
           break;
+        }
         default:
           throw std::runtime_error(
               "complex lvalue path not supported in JIT");
@@ -17474,12 +17531,20 @@ struct JIT {
           }
           bool need_kwarg_path =
               !arg_list_is_positional_only(postfix) || fn_has_kw_marker;
+          // The dispatch borrows the callee (compile_function_call_raw's
+          // convention); this postfix owns the +1 temp and releases it
+          // after. Without the release every call site leaked one callee
+          // ref, so a local closure that had ever been called could not
+          // die by refcount — its captures (and any drop-having resource
+          // in them) waited for the GC backstop instead of scope exit.
+          auto calleeTemp = callee;
           if (fnAst && !has_dynamic_splat && need_kwarg_path) {
             callee = compile_function_call_with_kwargs(
                 postfix, callee, *fnAst);
           } else {
             callee = compile_function_call(postfix, callee);
           }
+          emit_value_release(calleeTemp);
           break;
         }
         case "INDEX"_: {
@@ -18634,6 +18699,9 @@ struct JIT {
       auto freeFn = load_slot(freeFnSlot, method);
       auto ufcsRes = compile_function_call_runtime_kwargs(
           argsAst, freeFn, /*thisVal=*/nullptr, {receiver}, dot_ast);
+      // Borrowed-callee dispatch; this branch owns the slot load's +1
+      // (the method branch's property view is borrowed — don't touch it).
+      emit_value_release(freeFn);
       auto ufcsEndBB = builder_.GetInsertBlock();
       builder_.CreateBr(mergeBB);
 
@@ -18687,6 +18755,8 @@ struct JIT {
     for (auto* a : argAsts) ufcsArgAsts.push_back(a);
     auto ufcsRes =
         compile_function_call_raw(freeFn, nullptr, ufcsArgs, ufcsArgAsts);
+    // Borrowed-callee dispatch; release the slot load's +1 (see above).
+    emit_value_release(freeFn);
     auto ufcsEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -19369,8 +19439,8 @@ struct JIT {
          splatSlab, current_line_val(), current_column_val()});
     // The callee ref follows `compile_function_call_raw`'s convention:
     // it is borrowed for the duration of the dispatch, not released
-    // here. Outer compile_call leaks one ref per call as a pre-existing
-    // limitation independent of kwargs.
+    // here — the outer postfix (compile_call's ARGUMENTS case) owns the
+    // +1 temp and releases it after the dispatch returns.
     return result;
   }
 
@@ -19579,9 +19649,14 @@ struct JIT {
     for (auto i = next_idx; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
       switch (postfix.original_tag) {
-        case "ARGUMENTS"_:
+        case "ARGUMENTS"_: {
+          // Borrowed-callee dispatch; release the owned temp after (see
+          // the compile_call ARGUMENTS note).
+          auto calleeTemp = callee;
           callee = compile_function_call(postfix, callee);
+          emit_value_release(calleeTemp);
           break;
+        }
         case "INDEX"_: {
           callee = emit_index_step(postfix, callee);
           break;
