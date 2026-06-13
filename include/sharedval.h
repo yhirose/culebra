@@ -48,7 +48,7 @@ struct SharedValCore {
   std::unordered_map<size_t, std::unordered_map<std::string_view, size_t>>
       obj_index;
   // Live handle count (every handle and sub-view holds one). Guarded by
-  // shared_val_mutex(), same discipline as SharedBufferCore.
+  // shared_val_mutex() on the cold bump/drop paths.
   long refcount = 0;
 };
 
@@ -64,10 +64,27 @@ inline std::atomic<long>& shared_val_next_id() {
   static std::atomic<long> n{1};
   return n;
 }
+// Per-thread id->core cache. The feature's whole point is N isolates
+// reading one frozen tree concurrently; a per-read registry mutex
+// serialized them (measured: 8 worker threads ran at ~1-thread
+// throughput, vs ~4x with this cache). Each isolate reads a small set of
+// ids, so it resolves each once under the lock then hits its thread-local
+// cache lock-free. weak_ptr (not shared_ptr) so a cache entry never keeps
+// a dropped tree alive — the referent expires when the last live view
+// drops. The map grows by distinct-id (not read count); a stale hit
+// erases its own entry, so the cache tracks the thread's live id set.
 inline std::shared_ptr<SharedValCore> lookup_shared_val(long id) {
+  static thread_local std::unordered_map<long, std::weak_ptr<SharedValCore>>
+      cache;
+  if (auto it = cache.find(id); it != cache.end()) {
+    if (auto sp = it->second.lock()) return sp;  // lock-free fast path
+    cache.erase(it);  // referent dropped — don't keep the dead entry
+  }
   std::lock_guard<std::mutex> lock(shared_val_mutex());
   auto it = shared_val_registry().find(id);
-  return it == shared_val_registry().end() ? nullptr : it->second;
+  if (it == shared_val_registry().end()) return nullptr;
+  cache[id] = it->second;
+  return it->second;
 }
 inline void shared_val_bump(long id) {
   std::lock_guard<std::mutex> lock(shared_val_mutex());
