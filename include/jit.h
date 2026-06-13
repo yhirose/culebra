@@ -267,6 +267,7 @@ struct JitObject {
   // Trailing fields; codegen only GEPs earlier members via offsetof.
   bool is_packed_view = false;
   bool is_shared_buffer = false;
+  bool is_shared_val = false;
   bool is_fixed_array_view = false;
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
@@ -3092,6 +3093,13 @@ CULEBRA_RT_INLINE void _jit_overwrite_slot(JitObjectEntry& entry,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init = false) {
+  // Shared.new views are immutable (handle construction writes its own
+  // marker/method slots via set_or_append, not through here).
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("ImmutableError",
+                                "Shared values are immutable", line, col);
+  }
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) {
     obj->append_slot(key, JitValue{tag, data}, mut);
@@ -3113,6 +3121,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
 inline bool _jit_is_packed_view(JitObject* obj) { return obj->is_packed_view; }
 inline bool _jit_is_shared_buffer(JitObject* obj) {
   return obj->is_shared_buffer;
+}
+
+inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
+// Shared.new view readers — defined in sendable_jit.h (same TU via the
+// stdlib include; that header sits in namespace culebra with C++
+// linkage), declared here for the object get/index interceptions.
+extern "C++" {
+namespace culebra {
+CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
+                                                const char* name,
+                                                int64_t line, int64_t col);
+CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
+                                                 int8_t key_tag,
+                                                 int64_t key_data,
+                                                 int64_t line, int64_t col);
+}  // namespace culebra
 }
 
 // Decode field `f` from a record's raw bytes into a primitive JitValue.
@@ -4270,6 +4294,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
         "cannot assign to a SharedBuffer element directly; "
         "set fields via buf[i].field = value", line, col);
   }
+  // Shared.new views are immutable — index writes included.
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(val_tag, val_data);
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    throw culebra::CulebraError("ImmutableError",
+                                "Shared values are immutable", line, col);
+  }
   if (key_tag == TAG_STRING) {
     // Subscript overloading is a class-instance feature (proto != null); a
     // class instance may define `__setindex__` for keys that aren't one of
@@ -4427,6 +4458,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     *out_data = reinterpret_cast<int64_t>(view);
     return;
   }
+  // Shared.new view: `view[key]` reads the frozen tree (Object key
+  // lookup / Array-Tuple positional). Consumes a refcounted key per
+  // this helper's contract; the result is +1.
+  if (_jit_is_shared_val(obj)) {
+    JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data, line, col);
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+    *out_tag = r.tag;
+    *out_data = r.data;
+    return;
+  }
   // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
   // positional, String/StringView -> named). A miss is nil. Record fields
   // (`m.value`, spans) stay on dot access. Borrowed cstring keys (TAG_STRING)
@@ -4526,6 +4567,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
   if (_jit_is_packed_view(obj)) {
     _jit_packed_view_set(obj, key, tag, data, line, col);
     return;
+  }
+  // Shared.new views are immutable — every write surface throws. A
+  // data-field name never becomes an own slot, so writes always reach
+  // this slow path (the IC stays cold, like the packed view above).
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError("ImmutableError",
+                                "Shared values are immutable", line, col);
   }
   auto* before = obj->shape;
   auto idx = obj->find_slot(key);
@@ -4652,6 +4701,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
   }
   if (auto* proto_entry = obj->proto ? _find_property(obj->proto, key) : nullptr) {
     _write_value_out(proto_entry, out_tag, out_data);
+    return;
+  }
+  // Shared.new view: own slots (markers + reader methods) resolved
+  // above; anything else reads the frozen tree (nil on miss, like a
+  // plain Object). The returned value is FRESH (+1): a string is a heap
+  // string (leak-bounded by design like every JIT string), a container
+  // is a sub-view object whose extra ref the GC backstop's exactly-once
+  // drop releases — acceptable for the borrowed-read contract here.
+  if (_jit_is_shared_val(obj)) {
+    auto v = culebra::_jit_shared_val_prop(obj, key, line, col);
+    *out_tag = v.tag;
+    *out_data = v.data;
     return;
   }
   // Trait default-method fallback (T4 part 2). Walk registered
@@ -8416,8 +8477,36 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
   return r;
 }
 
+// True if a TAG_OBJECT receiver is a Shared.new view (the O(1) flag).
+// Lets compile_user_method_over_builtin route every builtin-named method
+// on a view to the interp's "read the field, then fail to call it" path
+// instead of running the builtin.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_shared_val(
+    int64_t data) {
+  return reinterpret_cast<JitObject*>(data)->is_shared_val ? 1 : 0;
+}
+
+// A Shared.new view exposes only its own reader methods. A dict builtin
+// (`get`/`remove`/`get_or_put`) compiled against the view must behave
+// like the interp: the name reads from the frozen tree (functions can't
+// be in a tree, so the result is data or nil) and calling that fails —
+// reproduce that exact TypeError instead of running the builtin (which
+// would otherwise read or even MUTATE the handle's marker slots).
+[[noreturn]] inline void _jit_shared_val_builtin_reject(JitObject* obj,
+                                                        const char* name,
+                                                        int64_t line,
+                                                        int64_t col) {
+  JitValue v = culebra::_jit_shared_val_prop(obj, name, line, col);
+  const char* got = _culebra_tag_name(v.tag);
+  _culebra_value_release_impl(v.tag, v.data);
+  throw culebra::CulebraError(
+      "TypeError", std::format("type error: expected Function, got {}", got),
+      line, col);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
     JitObject* obj, const char* key) {
+  if (obj->is_shared_val) _jit_shared_val_builtin_reject(obj, "remove", 0, 0);
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) return;
   _culebra_value_release_impl(obj->slots[idx].value.tag,
@@ -8457,6 +8546,11 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
     JitObject* obj, int8_t kt, int64_t kd, int8_t ft, int64_t fd,
     int64_t line, int64_t col) {
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(ft, fd);
+    if (kt != TAG_STRING) _culebra_value_release_impl(kt, kd);
+    _jit_shared_val_builtin_reject(obj, "get", line, col);
+  }
   (void)line;
   (void)col;
   std::string kbuf;
@@ -8494,6 +8588,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     JitObject* obj, int8_t kt, int64_t kd, int8_t it_tag, int64_t it_data,
     int64_t line, int64_t col) {
+  if (obj->is_shared_val) {
+    _culebra_value_release_impl(it_tag, it_data);
+    if (kt != TAG_STRING) _culebra_value_release_impl(kt, kd);
+    _jit_shared_val_builtin_reject(obj, "get_or_put", line, col);
+  }
   std::string kbuf;
   _jit_normalize_str_key(kt, kd, kbuf);
   bool found = false;
@@ -8538,6 +8637,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (obj->is_shared_val) {
+    if (tag != TAG_STRING) _culebra_value_release_impl(tag, data);
+    _jit_shared_val_builtin_reject(obj, "remove", line, col);
+  }
   std::string _kbuf;
   _jit_normalize_str_key(tag, data, _kbuf);
   if (tag == TAG_STRING) {
@@ -9266,6 +9369,7 @@ inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
+inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
 inline constexpr auto object_remove_any   = "culebra_runtime_object_remove_any";
 inline constexpr auto build_class_instance
     = "culebra_runtime_build_class_instance";
@@ -12398,6 +12502,8 @@ struct JIT {
     module_->getOrInsertFunction(rt::object_keys, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::object_remove,
                                  builder_.getVoidTy(), ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::is_shared_val, builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
     // Higher-order array helpers (§17.2): (arr, fn_tag, fn_data, line, col).
     module_->getOrInsertFunction(rt::array_map, ptrTy, ptrTy,
                                  builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -18705,7 +18811,17 @@ struct JIT {
     auto methodVal = compile_property_get(receiver, method);  // borrowed; nil if absent
     auto isFunc = builder_.CreateICmpEQ(extract_tag(methodVal),
                                         builder_.getInt8(TAG_FUNC), "umb.is.func");
-    builder_.CreateCondBr(isFunc, userBB, builtinBB);
+    // A Shared.new view has no builtin methods — `view.get(...)` reads the
+    // frozen tree (data or nil) and then calls it, exactly like the interp.
+    // Route it to userBB unconditionally: an own reader method is a Function
+    // (called normally); any other name read a non-Function from the tree
+    // and calling it raises the interp's "expected Function, got <T>".
+    auto isView = builder_.CreateICmpNE(
+        emit_call(module_->getFunction(rt::is_shared_val),
+                  {extract_data(receiver)}, "umb.is.view"),
+        builder_.getInt8(0));
+    auto toUser = builder_.CreateOr(isFunc, isView, "umb.to.user");
+    builder_.CreateCondBr(toUser, userBB, builtinBB);
 
     // userBB: the user-defined function shadows the builtin. Use the same
     // path as compile_method_call's final fallback (14505) — it compiles the

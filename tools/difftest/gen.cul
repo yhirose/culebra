@@ -658,4 +658,46 @@ for c in nrec {
   case("nestedfn|" + c, c)
 }
 
+# --- Dimension 32: Shared.new (immutable shared values, C4) -----------------
+# Freeze + view reads + immutability + rejections must match across
+# backends. Drop releases a registry ref (no user-visible side effect),
+# so scope-exit timing differences cannot leak into the output.
+let shv = [
+  '{ let s = Shared.new({ a: 1, b: 2.5, c: "x", d: true, e: nil }); to_string(s.a) + to_string(s.b) + s.c + to_string(s.d) + to_string(s.e) }',
+  '{ let s = Shared.new({ xs: [10, 20, 30] }); s.xs[1] + s.xs[-1] + s.xs.size() }',
+  '{ let s = Shared.new({ v: { k: 7 } }); s.v["k"] + s["v"]["k"] }',
+  '{ let s = Shared.new({ p: (1, "t") }); to_string(s.p[0]) + s.p[1] }',
+  '{ let s = Shared.new({ m: { x: 1, y: 2 } }); s.m.keys().sorted_by(|k| k) }',
+  '{ let s = Shared.new({ m: { x: 1, y: 2 } }); mut t = 0; for k, v in s.m { t = t + v }; t }',
+  '{ let s = Shared.new([3, 4]); mut t = 0; for e in s { t = t + e }; t }',
+  '{ let s = Shared.new({ m: { x: 1 } }); let c = s.m.copy(); c["xx"] = 9; to_string(c["xx"]) + to_string(s.m.has("xx")) }',
+  '{ let s = Shared.new({ a: 1 }); s.a = 2 }',
+  '{ let s = Shared.new([1]); s[0] = 2 }',
+  '{ let s = Shared.new({ a: 1 }); s["a"] = 2 }',
+  'Shared.new({ f: fn () { 1 } })',
+  'Shared.new(5.iter)',
+  '{ let s = Shared.new({ k: 1 }); s.drop(); s.k }',
+  '{ let s = Shared.new({ k: 1 }); s.drop(); s.drop(); "twice-ok" }',
+  '{ let s = Shared.new({ m: { z: 5 } }); let v = s.m; s.drop(); v.z }',
+  '{ let s = Shared.new({ missing: 1 }); to_string(s.nothere) }',
+  '{ let s = Shared.new({ a: 1 }); s["nope"] }',
+  '{ let s = Shared.new([1, 2]); s[9] }',
+  '{ let d = Shared.new({ n: 6 }); let w = Isolate.spawn(fn () { d.n * 7 }); w.join() }',
+  '{ let d = Shared.new({ xs: [1, 2, 3] }); Parallel.map([0, 1, 2], fn (i) { d.xs[i] * 10 }) }',
+  '{ let s = Shared.new({ xs: [1, 2] }); s.xs[1.5] }',
+  '{ let s = Shared.new({ a: 1 }); s.get("a") }',
+  '{ let s = Shared.new({ a: 1 }); s.get("a", 0) }',
+  '{ let s = Shared.new({ a: 1 }); s.remove("a") }',
+  '{ let s = Shared.new({ a: 1 }); s.remove("__sharedval_id__"); to_string(s.a) }',
+  '{ let s = Shared.new({ a: 1 }); s.get_or_put("z", 9) }',
+  '{ let s = Shared.new({ 1: "one", true: "yes", k: "z" }); to_string(s[1]) + to_string(s[true]) + s["k"] + to_string(s.size()) }',
+  '{ let s = Shared.new({ 1: 10, 2: 20 }); mut t = 0; for k, v in s { t = t + v }; t }',
+  '{ let s = Shared.new({ a: 1 }); let it = s.iter(); to_string(it.has_next()) }',
+  '{ let s = Shared.new({ m: { z: 5 } }); let v = s.m; s.drop(); v.z }',
+  '{ let fake = { __sharedval_id__: 9, __sharedval_node__: 0 }; to_string(fake.x) + to_string(fake["__sharedval_id__"]) }',
+  '{ let v = Shared.new({ a: 1 }); to_string(try { Shared.new({ inner: v }) } catch e { e.kind }) + to_string(v.a) }']
+for c in shv {
+  case("sharedval|" + c, c)
+}
+
 print(out.join("\n"))

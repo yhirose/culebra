@@ -1,0 +1,111 @@
+# Shared.new — variable-length IMMUTABLE data shared by reference across
+# isolates (C4; the read-only lane next to SharedBuffer's fixed-layout
+# read+write lane and the channel's copy lane). The value is frozen once
+# (the Sendable serializer is the freeze), lives outside the GC, and
+# every isolate reads the same tree through a view handle: leaves
+# materialize on access, containers come back as sub-views, nothing is
+# copied per worker.
+
+# --- leaves materialize on access ---
+let cfg = Shared.new({ lr: 0.5, steps: 100, name: 'adam', on: true, pad: nil })
+assert_eq(cfg.lr, 0.5)
+assert_eq(cfg.steps, 100)
+assert_eq(cfg.name, 'adam')
+assert_eq(cfg.on, true)
+assert_eq(cfg.pad, nil)
+assert_eq(cfg['lr'], 0.5)          # index and property reads are the same view
+
+# --- containers come back as sub-views (still shared, no copy) ---
+let model = Shared.new({
+  dims: [4, 8, 2],
+  vocab: { hello: 1, world: 2 },
+  pair: (3, 'x'),
+})
+assert_eq(model.dims[1], 8)
+assert_eq(model.dims.size(), 3)
+let v = model.vocab
+assert_eq(v['hello'], 1)
+assert_eq(v.size(), 2)
+assert_eq(v.has('world'), true)
+assert_eq(v.has('nope'), false)
+assert_eq(model.pair[1], 'x')
+
+# --- keys / values / iteration mirror the local collection protocols ---
+assert_eq(model.vocab.keys().sorted_by(|k| k), ['hello', 'world'])
+mut total = 0
+for k, n in model.vocab { total = total + n }
+assert_eq(total, 3)
+mut dsum = 0
+for d in model.dims { dsum = dsum + d }
+assert_eq(dsum, 14)
+
+# --- copy() = deep materialization into the local heap (escape hatch) ---
+let local = model.vocab.copy()
+local['new'] = 9                  # the copy is an ordinary mutable Object
+assert_eq(local['new'], 9)
+assert_eq(model.vocab.has('new'), false)   # the shared tree is untouched
+
+# --- immutability: every write surface throws, the tree never changes ---
+mut kind = nil
+try { cfg.lr = 1.0 } catch e { kind = e.kind }
+assert_eq(kind, 'ImmutableError')
+kind = nil
+try { model.dims[0] = 99 } catch e { kind = e.kind }
+assert_eq(kind, 'ImmutableError')
+kind = nil
+try { model.vocab['hello'] = 0 } catch e { kind = e.kind }
+assert_eq(kind, 'ImmutableError')
+assert_eq(cfg.lr, 0.5)
+assert_eq(model.dims[0], 4)
+
+# --- data only: a value carrying a Function is rejected at freeze ---
+kind = nil
+try { Shared.new({ f: fn () { 1 } }) } catch e { kind = e.kind }
+assert_eq(kind, 'SendError')
+
+# --- the existing Sendable rejections carry over (cycle) ---
+let cyc = [1]
+cyc.push(cyc)
+kind = nil
+try { Shared.new(cyc) } catch e { kind = e.kind }
+assert_eq(kind, 'SendError')
+cyc.pop()
+
+# --- drop: explicit, idempotent; reads after drop fail cleanly ---
+let dying = Shared.new({ k: 1 })
+assert_eq(dying.k, 1)
+dying.drop()
+dying.drop()                       # second drop is a no-op
+kind = nil
+try { dying.k } catch e { kind = e.kind }
+assert_eq(kind, 'ClosedError')
+
+# --- cross-isolate: the same tree is READ by workers, not copied ---
+let dict = Shared.new({ hello: 1, world: 2, big: [10, 20, 30] })
+let w = Isolate.spawn(fn () {
+  dict['hello'] + dict.big[2]      # closure capture ships the reference
+})
+assert_eq(w.join(), 31)
+
+# a sub-view crosses too
+let big = dict.big
+let w2 = Isolate.spawn(fn () { big[0] + big.size() })
+assert_eq(w2.join(), 13)
+
+# Parallel workers all read the same shared value
+let squares = Parallel.map([0, 1, 2], fn (i) { dict.big[i] * dict.big[i] })
+assert_eq(squares, [100, 400, 900])
+
+# through a channel
+let (tx, rx) = Channel.new(1)
+tx.send(dict)
+let got = rx.recv()
+assert_eq(got['world'], 2)
+
+# --- the handle survives as long as any isolate still holds it ---
+let keep = Shared.new({ n: 7 })
+let w3 = Isolate.spawn(fn () { keep.n })
+assert_eq(w3.join(), 7)
+assert_eq(keep.n, 7)
+
+IO.puts('test_shared OK')

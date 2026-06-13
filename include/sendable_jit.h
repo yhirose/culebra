@@ -81,7 +81,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         long id = o->slots[o->find_slot("__channel_id__")].value.data;
         int role = static_cast<int>(
             o->slots[o->find_slot("__channel_role__")].value.data);
-        chan_bump(id, role, +1);
+        if (!sendable::sharedval_freezing()) chan_bump(id, role, +1);
         n.kind = K::Channel;
         n.i = id;
         n.b = (role == 1);
@@ -91,9 +91,27 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // id and bump the in-flight ref (released after the node is consumed).
       if (o->is_shared_buffer) {
         long id = o->slots[o->find_slot("__sharedbuffer_id__")].value.data;
-        culebra::shared_buffer_bump(id, +1);
+        if (!sendable::sharedval_freezing()) culebra::shared_buffer_bump(id, +1);
         n.kind = K::SharedBuffer;
         n.i = id;
+        return n;
+      }
+      // Shared.new view: ship the frozen tree by (id, node) reference.
+      // Bump for the in-flight window (released by the consumer's
+      // release_inflight_channels; the receiver handle takes its own ref
+      // at rebuild). Mirrors the interp's sharedval extract hook.
+      if (o->is_shared_val) {
+        size_t di = o->find_slot("_dropped");
+        if (di != static_cast<size_t>(-1) && o->slots[di].value.data) {
+          throw culebra::CulebraError("ClosedError",
+                                      "Shared value has been dropped");
+        }
+        long svid = o->slots[o->find_slot("__sharedval_id__")].value.data;
+        if (!sendable::sharedval_freezing()) culebra::shared_val_bump(svid);
+        n.kind = K::SharedVal;
+        n.i = svid;
+        n.ref_id = static_cast<int>(
+            o->slots[o->find_slot("__sharedval_node__")].value.data);
         return n;
       }
       if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
@@ -141,7 +159,18 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           n.elems.back().ref_id = proto_ref;
         }
       }
-      // Non-string keys are rare here; defer (most data objects are string-keyed).
+      // Non-string keys: ship them after the string keys, matching the
+      // interp serializer's order (string props, then non_string_props),
+      // so the two backends produce identical SendNode entry lists (the
+      // freeze indexer and the cross-isolate Object transfer both rely on
+      // this). The key itself serializes as a value node.
+      if (o->non_string_props) {
+        for (const auto& [k, ent] : *o->non_string_props) {
+          n.entries.emplace_back(jit_serialize(k, ctx),
+                                 jit_serialize(ent.value, ctx));
+          n.entry_mut.push_back(ent.mut);
+        }
+      }
       ctx.visiting.erase(o);
       return n;
     }
@@ -206,6 +235,7 @@ inline JitValue jit_float(double d) {
 
 inline JitValue _jit_make_channel_endpoint(long id, int role);  // fwd
 inline JitValue _jit_make_shared_buffer_handle(long id, long count);  // fwd
+inline JitValue _jit_make_shared_val_view(long id, long node);       // fwd
 
 inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
@@ -254,7 +284,15 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       for (size_t k = 0; k < n.entries.size(); k++) {
         JitValue val = jit_deserialize(n.entries[k].second, ctx);
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
-        o->set_or_append(n.entries[k].first.s, val, mut);
+        if (n.entries[k].first.kind == sendable::SendNode::K::Str) {
+          o->set_or_append(n.entries[k].first.s, val, mut);
+        } else {
+          // Non-string key: rebuild the key value and store via the
+          // value-key path (consumes both +1s).
+          JitValue key = jit_deserialize(n.entries[k].first, ctx);
+          culebra_runtime_object_set_any(o, key.tag, key.data, mut, val.tag,
+                                         val.data, 0, 0, /*is_init=*/true);
+        }
       }
       // Class instance: relink the proto (elems[0] = the rebuilt class
       // meta), mirroring build_class_instance — the proto pointer holds
@@ -321,6 +359,12 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       auto core = culebra::lookup_shared_buffer(n.i);
       return _jit_make_shared_buffer_handle(
           n.i, core ? static_cast<long>(core->count) : 0);
+    }
+    case K::SharedVal: {
+      // The receiver handle takes its own ref; the in-flight +1 from the
+      // sender's extract is released by release_inflight_channels.
+      culebra::shared_val_bump(n.i);
+      return _jit_make_shared_val_view(n.i, n.ref_id);
     }
   }
   return {TAG_NIL, 0};
@@ -755,6 +799,365 @@ inline JitValue _jit_shared_buffer_with_lock(JitClosure*, JitValue self,
   }
   culebra::SharedBufferLockGuard guard(std::move(core));
   return _culebra_invoke0(reinterpret_cast<JitClosure*>(args[0].data));
+}
+
+
+// ===========================================================================
+// Shared.new views (concurrency C4). The frozen SendNode tree lives in
+// culebra::shared_val_registry(); a view is a plain JitObject carrying
+// (id, node-index) markers + the O(1) `is_shared_val` flag + the reader
+// methods. Data reads are intercepted in the object get/index runtime
+// helpers (jit.h), mirroring the interp's eval_property /
+// eval_array_reference hooks.
+// ===========================================================================
+
+inline std::pair<std::shared_ptr<culebra::SharedValCore>,
+                 const sendable::SendNode*>
+_jit_shared_val_node_of(JitObject* view, int64_t line = 0, int64_t col = 0) {
+  // Position: the get/index interceptions pass the access position; the
+  // handle methods leave 0 and fall back to the published call site
+  // (the handle-method ClosedError convention).
+  if (line == 0) {
+    line = _jit_call_site_line;
+    col = _jit_call_site_col;
+  }
+  size_t di = view->find_slot("_dropped");
+  if (di != static_cast<size_t>(-1) && view->slots[di].value.data) {
+    throw culebra::CulebraError("ClosedError",
+                                "Shared value has been dropped", line, col);
+  }
+  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  auto core = culebra::lookup_shared_val(id);
+  if (!core) {
+    throw culebra::CulebraError("ClosedError",
+                                "Shared value has been dropped", line, col);
+  }
+  long node = view->slots[view->find_slot("__sharedval_node__")].value.data;
+  if (node < 0 || node >= static_cast<long>(core->nodes.size())) {
+    throw culebra::CulebraError("ValueError", "corrupt Shared view",
+                                line, col);
+  }
+  const auto* n = core->nodes[static_cast<size_t>(node)];
+  return {std::move(core), n};
+}
+
+// One node, one JitValue (+1): a leaf materializes (strings are heap
+// strings, leak-bounded by design), a container mints a sub-view (+1 on
+// the registry, released by that view's drop).
+inline JitValue _jit_shared_val_read(long id,
+                                     const culebra::SharedValCore& core,
+                                     const sendable::SendNode& n) {
+  using K = sendable::SendNode::K;
+  switch (n.kind) {
+    case K::Nil:   return {TAG_NIL, 0};
+    case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
+    case K::Long:  return {TAG_LONG, n.i};
+    case K::Float: return {TAG_FLOAT, _culebra_double_to_bits(n.d)};
+    case K::Str:
+      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s))};
+    case K::Array:
+    case K::Object:
+    case K::Set:
+    case K::Tuple: {
+      culebra::shared_val_bump(id);
+      return _jit_make_shared_val_view(
+          id, static_cast<long>(core.ids.at(&n)));
+    }
+    default:
+      throw culebra::CulebraError("ValueError", "corrupt Shared view");
+  }
+}
+
+// `view.name` data read on an own-slot miss — Object-node field, nil on
+// miss (mirroring a plain Object). Declared in jit.h for the get_ic hook.
+CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
+                                                const char* name,
+                                                int64_t line, int64_t col) {
+  auto [core, n] = _jit_shared_val_node_of(view, line, col);
+  using K = sendable::SendNode::K;
+  if (n->kind != K::Object) return {TAG_NIL, 0};
+  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  size_t node_id = core->ids.at(n);
+  auto idx_it = core->obj_index.find(node_id);
+  if (idx_it != core->obj_index.end()) {
+    auto e = idx_it->second.find(std::string_view(name));
+    if (e != idx_it->second.end()) {
+      return _jit_shared_val_read(id, *core, n->entries[e->second].second);
+    }
+  }
+  return {TAG_NIL, 0};
+}
+
+inline bool _jit_shared_val_key_eq(const sendable::SendNode& k, int8_t tag,
+                                   int64_t data) {
+  using K = sendable::SendNode::K;
+  switch (k.kind) {
+    case K::Str:
+      return (tag == TAG_STRING || tag == TAG_STRINGVIEW) &&
+             _culebra_str_view(tag, data) == k.s;
+    case K::Long: return tag == TAG_LONG && data == k.i;
+    case K::Bool: return tag == TAG_BOOL && (data != 0) == k.b;
+    case K::Float:
+      return tag == TAG_FLOAT && _culebra_float_to_double(data) == k.d;
+    default: return false;
+  }
+}
+
+// `view[key]` — Object key lookup (KeyError on miss) or Array/Tuple
+// positional read (IndexError). Key is BORROWED here (the caller
+// consumes it per the object_get_any contract).
+CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
+                                                 int8_t key_tag,
+                                                 int64_t key_data,
+                                                 int64_t line, int64_t col) {
+  auto [core, n] = _jit_shared_val_node_of(view, line, col);
+  using K = sendable::SendNode::K;
+  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  switch (n->kind) {
+    case K::Object: {
+      if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
+        size_t node_id = core->ids.at(n);
+        auto idx_it = core->obj_index.find(node_id);
+        if (idx_it != core->obj_index.end()) {
+          auto e = idx_it->second.find(_culebra_str_view(key_tag, key_data));
+          if (e != idx_it->second.end()) {
+            return _jit_shared_val_read(id, *core,
+                                        n->entries[e->second].second);
+          }
+        }
+        throw culebra::CulebraError("KeyError", "key not present", line, col);
+      }
+      for (const auto& [k, v] : n->entries) {
+        if (_jit_shared_val_key_eq(k, key_tag, key_data)) {
+          return _jit_shared_val_read(id, *core, v);
+        }
+      }
+      throw culebra::CulebraError("KeyError", "key not present", line, col);
+    }
+    case K::Array:
+    case K::Tuple: {
+      long len = static_cast<long>(n->elems.size());
+      if (key_tag != TAG_LONG) {
+        // The interp's key.to_long(): no Float truncation, canonical
+        // "expected Long, got <T>".
+        culebra_runtime_type_error_typed(line, col, "Long", key_tag);
+      }
+      long idx = key_data;
+      if (idx < 0) idx += len;
+      if (idx < 0 || idx >= len) {
+        throw culebra::CulebraError("IndexError", "index out of range",
+                                    line, col);
+      }
+      return _jit_shared_val_read(id, *core,
+                                  n->elems[static_cast<size_t>(idx)]);
+    }
+    default:
+      throw culebra::CulebraError("TypeError",
+                                  "this Shared value is not indexable",
+                                  line, col);
+  }
+}
+
+// --- reader methods (handle ABI: self arrives +1, released here) ---
+
+inline JitValue _jit_sv_size(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto [core, n] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  using K = sendable::SendNode::K;
+  long sz = n->kind == K::Object ? static_cast<long>(n->entries.size())
+                                 : static_cast<long>(n->elems.size());
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_LONG, sz};
+}
+
+inline JitValue _jit_sv_has(JitClosure*, JitValue self, int64_t n_args,
+                            JitValue* args) {
+  JitMethodSelf _s{self};
+  auto [core, n] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  using K = sendable::SendNode::K;
+  if (n->kind != K::Object) {
+    throw culebra::CulebraError("TypeError",
+                                "has() requires an Object Shared view");
+  }
+  if (n_args < 1) {
+    throw culebra::CulebraError("ArityError",
+                                "missing required argument 'key'");
+  }
+  for (const auto& [k, v] : n->entries) {
+    if (_jit_shared_val_key_eq(k, args[0].tag, args[0].data)) {
+      _culebra_value_release_impl(args[0].tag, args[0].data);
+      return {TAG_BOOL, 1};
+    }
+  }
+  _culebra_value_release_impl(args[0].tag, args[0].data);
+  return {TAG_BOOL, 0};
+}
+
+// Deep materialization of one node into the local heap — shared by
+// keys()/copy()/iteration keys. Data-only by construction (freeze
+// rejected closures/handles), so a plain DeCtx round-trip is exact.
+inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
+  JitDeCtx dc;
+  return jit_deserialize(n, dc);
+}
+
+inline JitValue _jit_sv_keys(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto [core, n] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  using K = sendable::SendNode::K;
+  if (n->kind != K::Object) {
+    throw culebra::CulebraError("TypeError",
+                                "keys() requires an Object Shared view");
+  }
+  auto* arr = culebra_runtime_array_new();
+  for (const auto& [k, v] : n->entries) {
+    JitValue kv = _jit_sv_materialize(k);
+    culebra_runtime_array_push(arr, kv.tag, kv.data);
+    _culebra_value_release_impl(kv.tag, kv.data);
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
+
+inline JitValue _jit_sv_values(JitClosure*, JitValue self, int64_t,
+                               JitValue*) {
+  JitMethodSelf _s{self};
+  auto* view = reinterpret_cast<JitObject*>(self.data);
+  auto [core, n] = _jit_shared_val_node_of(view);
+  using K = sendable::SendNode::K;
+  if (n->kind != K::Object) {
+    throw culebra::CulebraError("TypeError",
+                                "values() requires an Object Shared view");
+  }
+  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  auto* arr = culebra_runtime_array_new();
+  for (const auto& [k, v] : n->entries) {
+    JitValue vv = _jit_shared_val_read(id, *core, v);
+    culebra_runtime_array_push(arr, vv.tag, vv.data);
+    _culebra_value_release_impl(vv.tag, vv.data);
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
+
+inline JitValue _jit_sv_copy(JitClosure*, JitValue self, int64_t, JitValue*) {
+  JitMethodSelf _s{self};
+  auto [core, n] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  return _jit_sv_materialize(*n);
+}
+
+inline JitValue _jit_sv_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
+  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
+    culebra::shared_val_drop(_jit_self_long(self, "__sharedval_id__"));
+  return {TAG_NIL, 0};
+}
+
+// for-in protocol: the JIT's object iter dispatch prefers a user `iter`
+// own slot, so binding one here covers `for ... in view` with no core
+// changes. Object nodes yield (key, value) pairs, Array/Tuple/Set nodes
+// yield elements — mirroring the local collection protocols. The tree is
+// immutable, so a plain cursor is a correct snapshot.
+inline JitValue _jit_sv_iter_has_next(JitClosure*, JitValue self, int64_t,
+                                      JitValue*) {
+  auto [core, n] = _jit_shared_val_node_of(
+      reinterpret_cast<JitObject*>(self.data));
+  using K = sendable::SendNode::K;
+  long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
+                                    : static_cast<long>(n->elems.size());
+  long idx = _jit_self_long(self, "_idx");
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_BOOL, idx < total ? 1 : 0};
+}
+
+inline JitValue _jit_sv_iter_next(JitClosure*, JitValue self, int64_t,
+                                  JitValue*) {
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  auto [core, n] = _jit_shared_val_node_of(it);
+  using K = sendable::SendNode::K;
+  long id = it->slots[it->find_slot("__sharedval_id__")].value.data;
+  long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
+                                    : static_cast<long>(n->elems.size());
+  long idx = _jit_self_long(self, "_idx");
+  if (idx >= total) return {TAG_NIL, 0};
+  it->set_or_append("_idx", JitValue{TAG_LONG, idx + 1}, true);
+  if (n->kind == K::Object) {
+    const auto& [k, v] = n->entries[static_cast<size_t>(idx)];
+    JitValue kv = _jit_sv_materialize(k);
+    JitValue vv = _jit_shared_val_read(id, *core, v);
+    auto* pair = culebra_runtime_tuple_new();
+    culebra_runtime_tuple_push(pair, kv.tag, kv.data);
+    culebra_runtime_tuple_push(pair, vv.tag, vv.data);
+    _culebra_value_release_impl(kv.tag, kv.data);
+    _culebra_value_release_impl(vv.tag, vv.data);
+    return {TAG_TUPLE, reinterpret_cast<int64_t>(pair)};
+  }
+  return _jit_shared_val_read(id, *core,
+                              n->elems[static_cast<size_t>(idx)]);
+}
+
+inline JitValue _jit_sv_iter_self(JitClosure*, JitValue self, int64_t,
+                                  JitValue*) {
+  culebra_runtime_value_retain(self.tag, self.data);
+  return self;
+}
+
+inline JitValue _jit_sv_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
+  auto* view = reinterpret_cast<JitObject*>(self.data);
+  // Validate first: a dropped handle must not mint a live iterator.
+  (void)_jit_shared_val_node_of(view);
+  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  long node = view->slots[view->find_slot("__sharedval_node__")].value.data;
+  // The iterator is a PLAIN object (NOT a view): it carries the id/node
+  // for has_next/next's node accessor plus a cursor, but `is_shared_val`
+  // stays false so introspection (.keys()/.size()) sees an ordinary
+  // iterator object rather than routing into the frozen tree — the
+  // interp's iterator is likewise a plain `{has_next, next}` object. Its
+  // registry ref (bumped here) is released by its own drop on scope exit
+  // (has_drop), keeping the tree alive for the iteration like the interp
+  // captures the shared_ptr.
+  culebra::shared_val_bump(id);
+  auto* it = culebra_runtime_object_new();
+  it->set_or_append("__sharedval_id__", JitValue{TAG_LONG, id}, false);
+  it->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
+  it->set_or_append("_idx", JitValue{TAG_LONG, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    it->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("iter", _jit_sv_iter_self);
+  meth("has_next", _jit_sv_iter_has_next);
+  meth("next", _jit_sv_iter_next);
+  meth("drop", _jit_sv_drop);
+  it->has_drop = true;
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+
+inline JitValue _jit_make_shared_val_view(long id, long node) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__sharedval_id__", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
+  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
+  auto meth = [&](const char* nm,
+                  JitValue (*f)(JitClosure*, JitValue, int64_t, JitValue*)) {
+    h->set_or_append(nm,
+        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
+        false);
+  };
+  meth("size", _jit_sv_size);
+  meth("has", _jit_sv_has);
+  meth("keys", _jit_sv_keys);
+  meth("values", _jit_sv_values);
+  meth("copy", _jit_sv_copy);
+  meth("iter", _jit_sv_iter);
+  meth("drop", _jit_sv_drop);
+  h->is_shared_val = true;
+  h->has_drop = true;
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
 // Build a JIT SharedBuffer handle: markers + O(1) discriminator flag + a

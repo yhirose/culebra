@@ -36,6 +36,7 @@
 
 #include "packable.h"  // SharedBufferCore lifecycle (shared_buffer_drop)
 #include "sendable.h"
+#include "sharedval.h"
 
 namespace culebra {
 
@@ -377,6 +378,8 @@ inline void release_inflight_channels(const sendable::SendNode& n) {
   // A SharedBuffer node holds the same kind of in-flight ref (bumped at
   // extract); release it once the node has been consumed.
   if (n.kind == K::SharedBuffer) { culebra::shared_buffer_drop(n.i); return; }
+  // A Shared.new view node likewise (extract bumped the frozen tree).
+  if (n.kind == K::SharedVal) { culebra::shared_val_drop(n.i); return; }
   for (const auto& e : n.elems) release_inflight_channels(e);
   for (const auto& e : n.entries) {
     release_inflight_channels(e.first);
@@ -424,8 +427,18 @@ inline void chan_drop(long id, int role) {
   }
   core->cv.notify_all();
   if (reclaim) {
-    std::lock_guard<std::mutex> lk(channel_registry_mutex());
-    channel_registry().erase(id);
+    {
+      std::lock_guard<std::mutex> lk(channel_registry_mutex());
+      channel_registry().erase(id);
+    }
+    // Drain undelivered nodes: a value that crossed by reference (a
+    // channel endpoint, SharedBuffer, or Shared view) was bumped at
+    // extract for the in-flight window, and a never-received node would
+    // otherwise leak that ref (and its registry entry) forever. tx/rx are
+    // both zero here, so no concurrent send/recv touches the queue; the
+    // local `core` keeps it alive while we release.
+    for (auto& node : core->q) release_inflight_channels(node);
+    core->q.clear();
   }
 }
 
@@ -811,7 +824,8 @@ inline Value make_shared_buffer_handle(long id, long count) {
 inline bool _install_shared_buffer_hooks() {
   sendable::sharedbuffer_extract_hook() = [](const Value& v) -> long {
     long id = v.to_object().get("__sharedbuffer_id__").to_long();
-    culebra::shared_buffer_bump(id, +1);  // in-flight ref, released after rebuild
+    if (!sendable::sharedval_freezing())
+      culebra::shared_buffer_bump(id, +1);  // in-flight ref (skip during freeze)
     return id;
   };
   sendable::sharedbuffer_rebuild_hook() = [](long id) -> Value {
@@ -835,7 +849,8 @@ inline bool _install_channel_hooks() {
     // serialize and rebuild (so a sender dropping its endpoint right after
     // spawn can't auto-close before the child rebuilds). Released exactly once
     // by release_inflight_channels after the node is consumed.
-    chan_bump(id, role, +1);
+    if (!sendable::sharedval_freezing())
+      chan_bump(id, role, +1);  // skip during a Shared.new freeze
     return {id, role};
   };
   sendable::channel_rebuild_hook() =

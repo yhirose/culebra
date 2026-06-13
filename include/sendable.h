@@ -40,7 +40,7 @@ namespace culebra::sendable {
 // ---------------------------------------------------------------------------
 struct SendNode {
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel, SharedBuffer };
+                 Closure, Channel, SharedBuffer, SharedVal };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
@@ -282,6 +282,23 @@ struct SerCtx {
   throw culebra::CulebraError("SendError", what);
 }
 
+// True while Shared.new is freezing a value (serialize-as-freeze). The
+// extract hooks consult it to SKIP the in-flight refcount bump: a freeze
+// is synchronous (no cross-thread in-flight window to protect) and Shared
+// rejects every handle anyway, so the bump would only ever need undoing
+// — and undoing it on the serialize-throws path (a cycle past an already
+// extracted handle) is exactly the leak this avoids. Set by a RAII guard
+// in make_shared_namespace / _ns_shared_new.
+inline bool& sharedval_freezing() {
+  static thread_local bool f = false;
+  return f;
+}
+struct FreezeGuard {
+  bool prev;
+  FreezeGuard() : prev(sharedval_freezing()) { sharedval_freezing() = true; }
+  ~FreezeGuard() { sharedval_freezing() = prev; }
+};
+
 // Channel endpoints are the one Sendable native handle (a shared, GC-external
 // channel, referenced — not copied). Since isolates are threads in one process,
 // an endpoint is identified by a process-wide registry id + role (0 = tx,
@@ -315,6 +332,22 @@ inline std::function<long(const Value&)>& sharedbuffer_extract_hook() {
 }
 inline std::function<Value(long)>& sharedbuffer_rebuild_hook() {
   static std::function<Value(long)> f;
+  return f;
+}
+
+// Shared.new views are the third shared-reference exception: the frozen
+// tree crosses by registry id + node index (a sub-view is just a deeper
+// node). Same extract-bumps / rebuild-transfers contract as above.
+struct SharedValRef {
+  long id = 0;
+  long node = 0;
+};
+inline std::function<SharedValRef(const Value&)>& sharedval_extract_hook() {
+  static std::function<SharedValRef(const Value&)> f;
+  return f;
+}
+inline std::function<Value(const SharedValRef&)>& sharedval_rebuild_hook() {
+  static std::function<Value(const SharedValRef&)> f;
   return f;
 }
 
@@ -367,6 +400,14 @@ inline SendNode serialize(const Value& v, SerCtx& ctx) {
       if (obj.has("__sharedbuffer_id__")) {
         n.kind = SendNode::K::SharedBuffer;
         n.i = sharedbuffer_extract_hook()(v);
+        return n;
+      }
+      // Shared.new view: ship the frozen tree by (id, node) reference.
+      if (obj.is_shared_val) {
+        auto ref = sharedval_extract_hook()(v);
+        n.kind = SendNode::K::SharedVal;
+        n.i = ref.id;
+        n.ref_id = static_cast<int>(ref.node);
         return n;
       }
       if (obj.has("__nonsendable__"))
@@ -501,6 +542,8 @@ inline Value deserialize(const SendNode& n, Interpreter& interp,
       return channel_rebuild_hook()(ChannelRef{n.i, n.b ? 1 : 0});
     case K::SharedBuffer:
       return sharedbuffer_rebuild_hook()(n.i);
+    case K::SharedVal:
+      return sharedval_rebuild_hook()(SharedValRef{n.i, n.ref_id});
     case K::Array: {
       ArrayValue av;
       av.values->reserve(n.elems.size());

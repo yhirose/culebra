@@ -3,6 +3,16 @@
 #include <generator_transform.h>
 #include <module_loader.h>
 #include <packable.h>
+
+// Shared.new view readers (concurrency C4) — defined in sharedval.h,
+// which every TU includes later via isolate.h; declared here so the
+// eval interceptions below can call them.
+namespace culebra {
+struct Value;
+Value shared_val_get_prop(const Value& view, std::string_view name);
+Value shared_val_get_index(const Value& view, const Value& key);
+Value shared_val_make_iter(const Value& view);
+}  // namespace culebra
 #include <parser.h>
 #include <shared.h>
 #include <tensor.h>
@@ -673,6 +683,10 @@ struct ObjectValue {
   // property/sidecar lookup. A plain marker, invisible to str()/iteration —
   // mirrors the JIT's JitObject::is_match flag for byte-for-byte symmetry.
   bool is_match = false;
+  // Shared.new view (sharedval.h): set at handle construction, so view
+  // detection never sniffs marker prop names — a hand-built object with
+  // the same props is just an ordinary Object (forgery-inert).
+  bool is_shared_val = false;
 };
 
 struct ArrayValue : public ObjectValue {
@@ -6686,6 +6700,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // buffer id + element index — `buf[i]`. Field reads/writes hit the
   // shared backing bytes directly (zero copy): two views of the same
   // element observe each other's writes.
+  // Shared.new views (concurrency C4): data reads on a frozen shared
+  // tree. Implementations live in sharedval.h (same-TU later include).
+  static bool is_shared_val_view(const Value& v) {
+    return v.type == Value::Object && v.to_object().is_shared_val;
+  }
+
   static bool is_packed_view(const Value& v) {
     return v.type == Value::Object &&
            v.to_object().has("__packedview_id__");
@@ -7944,6 +7964,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       view.initialize("__packedview_index__", Value(idx), false);
       return Value(std::move(view));
     }
+    // Shared.new view: read the frozen tree (Object key lookup or
+    // Array/Tuple positional read; sub-containers come back as views).
+    if (is_shared_val_view(val)) {
+      return shared_val_get_index(val, key);
+    }
     // Object[k]: look up the Value-keyed sidecar. A class instance may
     // define `__index__(key)` to handle subscripts the sidecar misses
     // (e.g. an integer index into a wrapped collection).
@@ -8132,6 +8157,15 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (o.has("__sharedbuffer_id__") &&
           (name == "size" || name == "count" || name == "len")) {
         return o.get("__sharedbuffer_count__");
+      }
+      // Shared.new view: the handle's own props (reader methods +
+      // markers) take the generic Object path below (which binds `this`
+      // for method calls); anything else reads the frozen tree (an
+      // Object node field, nil on miss — mirroring a plain Object). A
+      // data field shadowed by a method name stays reachable via
+      // `view[key]`.
+      if (o.is_shared_val && !o.has_own(name)) {
+        return shared_val_get_prop(val, name);
       }
     }
 
@@ -8988,6 +9022,12 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
             fa_set(lval, i, rval);
             return rval;
           }
+          // Shared.new views are immutable — every write surface throws
+          // (position backfilled by the eval wrapper, like the DOT case).
+          if (is_shared_val_view(lval)) {
+            throw CulebraError("ImmutableError",
+                               "Shared values are immutable");
+          }
           // Whole-element assignment `buf[i] = ...` isn't supported — a
           // packed record has no Value form; write fields individually.
           if (is_shared_buffer(lval)) {
@@ -9056,6 +9096,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           return rval;
         }
         case "DOT"_: {
+          // Shared.new views are immutable — every write surface throws.
+          // No explicit position: the eval wrapper backfills the
+          // statement position, matching the plain immutable-prop error.
+          if (is_shared_val_view(lval)) {
+            throw CulebraError("ImmutableError",
+                               "Shared values are immutable");
+          }
           // `buf[i].field = v` / `view.field = v`: write straight into the
           // shared backing bytes (zero copy).
           if (is_packed_view(lval)) {

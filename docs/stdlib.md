@@ -2123,6 +2123,48 @@ nests it. Assigning a whole sub-record copies the bytes of another record of
 the **same** class (otherwise `TypeError`); to set individual fields, go
 through the view (`outer.inner.field = v`).
 
+### Shared — immutable values shared by reference
+
+`Shared.new(value)` freezes an ordinary value — any nesting of objects,
+arrays, tuples, sets, and scalars — and hands back a **read-only view**
+that every isolate can use without copying. It is the lane for
+variable-length read-only data (a tokenizer dictionary, a parsed config,
+a search index): the channel lane would copy it per task and
+`SharedBuffer` requires a fixed layout. One frozen tree, any number of
+readers:
+
+```culebra
+# doctest: skip
+let dict = Shared.new(JSON.parse(FS.read("vocab.json")))
+
+let workers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
+  dict["hello"]          # all isolates read the SAME frozen tree
+}))
+```
+
+Reads look like ordinary collection access — `view.field`, `view[key]`,
+`view[i]`, `view.size()`, `view.has(k)`, `view.keys()` / `view.values()`,
+and `for ... in view` (an Object view yields `(key, value)` pairs, an
+Array/Tuple/Set view yields elements). A scalar field materializes into
+the reader's heap; a container field comes back as another shared view
+(still no copy). `view.copy()` deep-materializes back into ordinary
+mutable values when you need a local scratch copy.
+
+The freeze is the same walk that ships values to isolates, so anything
+Sendable freezes — with two extra rejections: **functions** (`Shared`
+values are data only) and **native handles** (channels, buffers, other
+`Shared` views) raise `SendError`. Every write surface raises
+`ImmutableError`; updates are copy-on-write by construction (build a new
+value, `Shared.new` it again, hand out the new view). `view.drop()`
+releases the reference (idempotent); the tree itself is freed when the
+last view anywhere drops, and reads after that raise `ClosedError`.
+
+| | lane | sharing | copy per reader |
+|---|---|---|---|
+| fixed-layout records | `SharedBuffer` | read **+ write** | none |
+| variable-length, read-only | `Shared` | read | none |
+| anything, mutable | channel | copy | yes |
+
 ---
 
 ## 13. Matchers

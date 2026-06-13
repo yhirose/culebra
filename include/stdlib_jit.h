@@ -3026,6 +3026,33 @@ inline JitValue _ns_signal_reset(JitValue*, int64_t) {
 // `count` @packable records and return a buffer handle. Slow-path only (no
 // compile_ns_call fast path); the adapter builds everything directly. See
 // [[project_packable_c3]].
+// Shared.new(value): freeze through the Sendable serializer (jit side)
+// and hand back the root view. Slow-path only, like the other isolate-
+// family namespaces. Rejections release the in-flight refs the
+// serializer took before throwing.
+inline JitValue _ns_shared_new(JitValue* a, int64_t n) {
+  if (n != 1) {
+    throw culebra::CulebraError("ArityError",
+        "Shared.new: expected 1 argument (value)");
+  }
+  JitSerCtx ctx;
+  sendable::SendNode root;
+  try {
+    // Freeze mode: skip the in-flight bumps (see make_shared_namespace).
+    sendable::FreezeGuard _fz;
+    root = jit_serialize(a[0], ctx);
+  } catch (const culebra::CulebraError& e) {
+    throw culebra::CulebraError(e.kind,
+        std::format("Shared.new: {}", e.what()), e.line, e.col);
+  }
+  if (auto* why = culebra::_shared_val_reject_reason(root)) {
+    throw culebra::CulebraError("SendError",
+        std::format("Shared.new: {}", why));
+  }
+  long id = culebra::freeze_shared_val(std::move(root));
+  return _jit_make_shared_val_view(id, 0);
+}
+
 inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
   if (n != 2) {
     throw culebra::CulebraError("ArityError",
@@ -3823,6 +3850,7 @@ inline const NsMethod kNsMethods[] = {
   {"Signal",  "notify", 1, &_ns_signal_notify},
   {"Signal",  "reset",  0, &_ns_signal_reset},
   {"SharedBuffer", "new", 2, &_ns_sharedbuffer_new},
+  {"Shared", "new", 1, &_ns_shared_new},
   {"SharedBuffer", "file", 3, &_ns_sharedbuffer_file},
   {"SharedBuffer", "shared", 2, &_ns_sharedbuffer_shared},
   {"SharedBuffer", "receive", 2, &_ns_sharedbuffer_receive},
@@ -6110,7 +6138,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
-      "Signal",  "Encoding", "Compress",  "SharedBuffer",
+      "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

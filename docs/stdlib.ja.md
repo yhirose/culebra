@@ -2043,6 +2043,45 @@ lines[0].end = lines[0].start # サブレコードまるごとコピー（memcpy
 サブレコードまるごとの代入は**同じ**クラスの別レコードのバイトをコピーする（違えば
 `TypeError`）。個別フィールドの設定は view 経由（`outer.inner.field = v`）。
 
+### Shared — 参照共有する immutable 値
+
+`Shared.new(value)` は普通の値（オブジェクト・配列・タプル・セット・スカラの
+任意のネスト）を**凍結**し、すべての isolate がコピーなしで使える
+**読み取り専用 view** を返す。可変長の読み取り専用データ
+（トークナイザ辞書、パース済み設定、検索インデックス）のためのレーン:
+channel レーンはタスクごとにコピーし、`SharedBuffer` は固定レイアウトを
+要求する。凍結ツリーは 1 つ、読み手は何個でも:
+
+```culebra
+# doctest: skip
+let dict = Shared.new(JSON.parse(FS.read("vocab.json")))
+
+let workers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
+  dict["hello"]          # 全 isolate が同じ凍結ツリーを読む
+}))
+```
+
+読みは普通のコレクションアクセスと同じ — `view.field`・`view[key]`・
+`view[i]`・`view.size()`・`view.has(k)`・`view.keys()` / `view.values()`・
+`for ... in view`（Object view は `(key, value)` ペア、Array/Tuple/Set
+view は要素を返す）。スカラフィールドは読み手の heap に材料化され、
+コンテナフィールドは別の共有 view として返る（コピーなし）。ローカルの
+作業コピーが要る時は `view.copy()` で普通の可変値へ深い材料化をする。
+
+凍結は isolate へ値を送るのと同じ walk なので、Sendable なものは凍結
+できる — 追加の拒否が 2 つ: **関数**（`Shared` の値はデータのみ）と
+**native ハンドル**（channel・buffer・別の `Shared` view）は `SendError`。
+すべての書き込みは `ImmutableError`。更新は構造上 copy-on-write
+（新しい値を作って再度 `Shared.new` し、新 view を配る）。`view.drop()`
+は参照を解放（冪等）。ツリー本体はどこかの最後の view が drop した時に
+解放され、以降の読みは `ClosedError`。
+
+| | レーン | 共有 | 読み手ごとのコピー |
+|---|---|---|---|
+| 固定レイアウトレコード | `SharedBuffer` | read **+ write** | なし |
+| 可変長・読み取り専用 | `Shared` | read | なし |
+| 任意・可変 | channel | コピー | あり |
+
 ---
 
 ## 13. Matchers
