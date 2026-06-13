@@ -811,8 +811,14 @@ inline JitValue _jit_shared_buffer_with_lock(JitClosure*, JitValue self,
 // eval_array_reference hooks.
 // ===========================================================================
 
-inline std::pair<std::shared_ptr<culebra::SharedValCore>,
-                 const sendable::SendNode*>
+struct JitResolvedNode {
+  std::shared_ptr<culebra::SharedValCore> core;
+  const sendable::SendNode* node;
+  long id;
+  size_t idx;  // node table index (== obj_index key for an Object node)
+};
+
+inline JitResolvedNode
 _jit_shared_val_node_of(JitObject* view, int64_t line = 0, int64_t col = 0) {
   // Position: the get/index interceptions pass the access position; the
   // handle methods leave 0 and fall back to the published call site
@@ -838,7 +844,7 @@ _jit_shared_val_node_of(JitObject* view, int64_t line = 0, int64_t col = 0) {
                                 line, col);
   }
   const auto* n = core->nodes[static_cast<size_t>(node)];
-  return {std::move(core), n};
+  return {std::move(core), n, id, static_cast<size_t>(node)};
 }
 
 // One node, one JitValue (+1): a leaf materializes (strings are heap
@@ -873,11 +879,9 @@ inline JitValue _jit_shared_val_read(long id,
 CULEBRA_RT_INLINE JitValue _jit_shared_val_prop(JitObject* view,
                                                 const char* name,
                                                 int64_t line, int64_t col) {
-  auto [core, n] = _jit_shared_val_node_of(view, line, col);
+  auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
   using K = sendable::SendNode::K;
   if (n->kind != K::Object) return {TAG_NIL, 0};
-  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
-  size_t node_id = core->ids.at(n);
   auto idx_it = core->obj_index.find(node_id);
   if (idx_it != core->obj_index.end()) {
     auto e = idx_it->second.find(std::string_view(name));
@@ -910,13 +914,11 @@ CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
                                                  int8_t key_tag,
                                                  int64_t key_data,
                                                  int64_t line, int64_t col) {
-  auto [core, n] = _jit_shared_val_node_of(view, line, col);
+  auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
   using K = sendable::SendNode::K;
-  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
   switch (n->kind) {
     case K::Object: {
       if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-        size_t node_id = core->ids.at(n);
         auto idx_it = core->obj_index.find(node_id);
         if (idx_it != core->obj_index.end()) {
           auto e = idx_it->second.find(_culebra_str_view(key_tag, key_data));
@@ -959,9 +961,19 @@ CULEBRA_RT_INLINE JitValue _jit_shared_val_index(JitObject* view,
 }
 
 // --- reader methods (handle ABI: self arrives +1, released here) ---
+// Throw for an Object-only reader (has/keys/values) on a non-Object node.
+inline void _jit_sv_require_object(const sendable::SendNode* n,
+                                   const char* m) {
+  if (n->kind != sendable::SendNode::K::Object) {
+    throw culebra::CulebraError("TypeError",
+        std::string(m) + "() requires an Object Shared view");
+  }
+}
+
+
 
 inline JitValue _jit_sv_size(JitClosure*, JitValue self, int64_t, JitValue*) {
-  auto [core, n] = _jit_shared_val_node_of(
+  auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   using K = sendable::SendNode::K;
   long sz = n->kind == K::Object ? static_cast<long>(n->entries.size())
@@ -973,13 +985,10 @@ inline JitValue _jit_sv_size(JitClosure*, JitValue self, int64_t, JitValue*) {
 inline JitValue _jit_sv_has(JitClosure*, JitValue self, int64_t n_args,
                             JitValue* args) {
   JitMethodSelf _s{self};
-  auto [core, n] = _jit_shared_val_node_of(
+  auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   using K = sendable::SendNode::K;
-  if (n->kind != K::Object) {
-    throw culebra::CulebraError("TypeError",
-                                "has() requires an Object Shared view");
-  }
+  _jit_sv_require_object(n, "has");
   if (n_args < 1) {
     throw culebra::CulebraError("ArityError",
                                 "missing required argument 'key'");
@@ -1004,13 +1013,10 @@ inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
 
 inline JitValue _jit_sv_keys(JitClosure*, JitValue self, int64_t, JitValue*) {
   JitMethodSelf _s{self};
-  auto [core, n] = _jit_shared_val_node_of(
+  auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   using K = sendable::SendNode::K;
-  if (n->kind != K::Object) {
-    throw culebra::CulebraError("TypeError",
-                                "keys() requires an Object Shared view");
-  }
+  _jit_sv_require_object(n, "keys");
   auto* arr = culebra_runtime_array_new();
   for (const auto& [k, v] : n->entries) {
     JitValue kv = _jit_sv_materialize(k);
@@ -1024,13 +1030,9 @@ inline JitValue _jit_sv_values(JitClosure*, JitValue self, int64_t,
                                JitValue*) {
   JitMethodSelf _s{self};
   auto* view = reinterpret_cast<JitObject*>(self.data);
-  auto [core, n] = _jit_shared_val_node_of(view);
+  auto [core, n, id, idx] = _jit_shared_val_node_of(view);
   using K = sendable::SendNode::K;
-  if (n->kind != K::Object) {
-    throw culebra::CulebraError("TypeError",
-                                "values() requires an Object Shared view");
-  }
-  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
+  _jit_sv_require_object(n, "values");
   auto* arr = culebra_runtime_array_new();
   for (const auto& [k, v] : n->entries) {
     JitValue vv = _jit_shared_val_read(id, *core, v);
@@ -1042,7 +1044,7 @@ inline JitValue _jit_sv_values(JitClosure*, JitValue self, int64_t,
 
 inline JitValue _jit_sv_copy(JitClosure*, JitValue self, int64_t, JitValue*) {
   JitMethodSelf _s{self};
-  auto [core, n] = _jit_shared_val_node_of(
+  auto [core, n, id, idx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
   return _jit_sv_materialize(*n);
 }
@@ -1060,8 +1062,9 @@ inline JitValue _jit_sv_drop(JitClosure*, JitValue self, int64_t, JitValue*) {
 // immutable, so a plain cursor is a correct snapshot.
 inline JitValue _jit_sv_iter_has_next(JitClosure*, JitValue self, int64_t,
                                       JitValue*) {
-  auto [core, n] = _jit_shared_val_node_of(
+  auto [core, n, id, nidx] = _jit_shared_val_node_of(
       reinterpret_cast<JitObject*>(self.data));
+  (void)nidx;
   using K = sendable::SendNode::K;
   long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                     : static_cast<long>(n->elems.size());
@@ -1074,9 +1077,9 @@ inline JitValue _jit_sv_iter_next(JitClosure*, JitValue self, int64_t,
                                   JitValue*) {
   JitMethodSelf _s{self};
   auto* it = reinterpret_cast<JitObject*>(self.data);
-  auto [core, n] = _jit_shared_val_node_of(it);
+  auto [core, n, id, nidx] = _jit_shared_val_node_of(it);
+  (void)nidx;
   using K = sendable::SendNode::K;
-  long id = it->slots[it->find_slot("__sharedval_id__")].value.data;
   long total = n->kind == K::Object ? static_cast<long>(n->entries.size())
                                     : static_cast<long>(n->elems.size());
   long idx = _jit_self_long(self, "_idx");
@@ -1105,10 +1108,10 @@ inline JitValue _jit_sv_iter_self(JitClosure*, JitValue self, int64_t,
 
 inline JitValue _jit_sv_iter(JitClosure*, JitValue self, int64_t, JitValue*) {
   auto* view = reinterpret_cast<JitObject*>(self.data);
-  // Validate first: a dropped handle must not mint a live iterator.
-  (void)_jit_shared_val_node_of(view);
-  long id = view->slots[view->find_slot("__sharedval_id__")].value.data;
-  long node = view->slots[view->find_slot("__sharedval_node__")].value.data;
+  // Validate first (a dropped handle must not mint a live iterator) and
+  // reuse the resolved id/node index.
+  auto [core, n, id, idx] = _jit_shared_val_node_of(view);
+  long node = static_cast<long>(idx);
   // The iterator is a PLAIN object (NOT a view): it carries the id/node
   // for has_next/next's node accessor plus a cursor, but `is_shared_val`
   // stays false so introspection (.keys()/.size()) sees an ordinary

@@ -155,8 +155,14 @@ inline long freeze_shared_val(SendNode&& root) {
 
 inline Value make_shared_val_view(long id, long node_idx);
 
-inline std::pair<std::shared_ptr<SharedValCore>, const SendNode*>
-_shared_val_node_of(const Value& view) {
+struct ResolvedNode {
+  std::shared_ptr<SharedValCore> core;
+  const SendNode* node;
+  long id;
+  size_t idx;  // node table index (== obj_index key for an Object node)
+};
+
+inline ResolvedNode _shared_val_node_of(const Value& view) {
   const auto& o = view.to_object();
   if (o.has("_dropped") && o.get("_dropped").to_bool()) {
     throw CulebraError("ClosedError", "Shared value has been dropped");
@@ -170,7 +176,11 @@ _shared_val_node_of(const Value& view) {
   if (node < 0 || node >= static_cast<long>(core->nodes.size())) {
     throw CulebraError("ValueError", "corrupt Shared view");
   }
-  return {std::move(core), core->nodes[static_cast<size_t>(node)]};
+  // Resolve the node pointer BEFORE moving `core` — aggregate init runs
+  // member-by-member in order, so reading core->nodes after move-init
+  // would deref a moved-from pointer.
+  const SendNode* n = core->nodes[static_cast<size_t>(node)];
+  return {std::move(core), n, id, static_cast<size_t>(node)};
 }
 
 // One node, one Value: a leaf materializes into the local heap (strings
@@ -260,13 +270,20 @@ inline bool _shared_val_key_eq(const SendNode& k, const Value& key) {
   }
 }
 
+// Throw the interp's TypeError for an Object-only reader on a non-Object
+// node (has / keys / values), single-sourced.
+inline void _shared_val_require_object(const SendNode* n, const char* m) {
+  if (n->kind != SendNode::K::Object) {
+    throw CulebraError("TypeError",
+        std::string(m) + "() requires an Object Shared view");
+  }
+}
+
 // `view.name` — Object-node field read. A miss reads as nil, mirroring a
 // plain Object's missing property.
 inline Value shared_val_get_prop(const Value& view, std::string_view name) {
-  auto [core, n] = _shared_val_node_of(view);
-  long id = view.to_object().get("__sharedval_id__").to_long();
+  auto [core, n, id, node_id] = _shared_val_node_of(view);
   if (n->kind != SendNode::K::Object) return Value();
-  size_t node_id = core->ids.at(n);
   auto idx_it = core->obj_index.find(node_id);
   if (idx_it != core->obj_index.end()) {
     auto e = idx_it->second.find(name);
@@ -280,12 +297,10 @@ inline Value shared_val_get_prop(const Value& view, std::string_view name) {
 // `view[key]` — Object key lookup (KeyError on miss, like a local dict)
 // or Array/Tuple positional read (IndexError out of range).
 inline Value shared_val_get_index(const Value& view, const Value& key) {
-  auto [core, n] = _shared_val_node_of(view);
-  long id = view.to_object().get("__sharedval_id__").to_long();
+  auto [core, n, id, node_id] = _shared_val_node_of(view);
   switch (n->kind) {
     case SendNode::K::Object: {
       if (key.type == Value::String || key.type == Value::StringView) {
-        size_t node_id = core->ids.at(n);
         auto idx_it = core->obj_index.find(node_id);
         if (idx_it != core->obj_index.end()) {
           auto e = idx_it->second.find(key.to_string_view());
@@ -323,9 +338,8 @@ inline Value shared_val_get_index(const Value& view, const Value& key) {
 // immutable, so a plain cursor is a correct snapshot.
 inline Value shared_val_make_iter(const Value& view) {
   using namespace std::literals;
-  auto [core_sp, n] = _shared_val_node_of(view);
-  long id = view.to_object().get("__sharedval_id__").to_long();
-  auto core = core_sp;  // keep the tree alive for the iterator's lifetime
+  auto [core, n, id, node_id] = _shared_val_node_of(view);
+  (void)node_id;  // core (shared_ptr) keeps the tree alive for the iterator
   auto cursor = std::make_shared<size_t>(0);
   const SendNode* node = n;
   size_t total = node->kind == SendNode::K::Object ? node->entries.size()
@@ -363,7 +377,7 @@ inline Value make_shared_val_view(long id, long node_idx) {
   };
   h.initialize("size",
       Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
-        auto [core, n] = self_node(env);
+        auto [core, n, id, idx] = self_node(env);
         long s = n->kind == SendNode::K::Object
                      ? static_cast<long>(n->entries.size())
                      : static_cast<long>(n->elems.size());
@@ -372,11 +386,8 @@ inline Value make_shared_val_view(long id, long node_idx) {
   h.initialize("has",
       Value(FunctionValue({{"key", false, ""sv}},
           [self_node](std::shared_ptr<Environment> env) {
-        auto [core, n] = self_node(env);
-        if (n->kind != SendNode::K::Object) {
-          throw CulebraError("TypeError",
-                             "has() requires an Object Shared view");
-        }
+        auto [core, n, id, idx] = self_node(env);
+        _shared_val_require_object(n, "has");
         auto key = env->get("key");
         for (const auto& [k, v] : n->entries) {
           if (_shared_val_key_eq(k, key)) return Value(true);
@@ -385,11 +396,8 @@ inline Value make_shared_val_view(long id, long node_idx) {
       }, "Bool"sv)), false);
   h.initialize("keys",
       Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
-        auto [core, n] = self_node(env);
-        if (n->kind != SendNode::K::Object) {
-          throw CulebraError("TypeError",
-                             "keys() requires an Object Shared view");
-        }
+        auto [core, n, id, idx] = self_node(env);
+        _shared_val_require_object(n, "keys");
         ArrayValue arr;
         for (const auto& [k, v] : n->entries) {
           arr.values->push_back(_shared_val_materialize(k));
@@ -397,12 +405,9 @@ inline Value make_shared_val_view(long id, long node_idx) {
         return Value(std::move(arr));
       }, "Array"sv)), false);
   h.initialize("values",
-      Value(FunctionValue({}, [self_node, id](std::shared_ptr<Environment> env) {
-        auto [core, n] = self_node(env);
-        if (n->kind != SendNode::K::Object) {
-          throw CulebraError("TypeError",
-                             "values() requires an Object Shared view");
-        }
+      Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
+        auto [core, n, id, idx] = self_node(env);
+        _shared_val_require_object(n, "values");
         ArrayValue arr;
         for (const auto& [k, v] : n->entries) {
           arr.values->push_back(_shared_val_read(id, *core, v));
@@ -411,7 +416,7 @@ inline Value make_shared_val_view(long id, long node_idx) {
       }, "Array"sv)), false);
   h.initialize("copy",
       Value(FunctionValue({}, [self_node](std::shared_ptr<Environment> env) {
-        auto [core, n] = self_node(env);
+        auto [core, n, id, idx] = self_node(env);
         return _shared_val_materialize(*n);
       }, ""sv)), false);
   h.initialize("iter",
