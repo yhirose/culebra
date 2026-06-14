@@ -50,8 +50,9 @@ Conventions used below:
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
 17. [`Compress`](#17-compress) — gzip (de)compression for data and files
-18. [Design notes](#18-design-notes)
-19. [Not included (yet)](#19-not-included-yet)
+18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
+19. [Design notes](#19-design-notes)
+20. [Not included (yet)](#20-not-included-yet)
 
 **Where to find what**
 
@@ -74,6 +75,7 @@ Conventions used below:
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -2684,7 +2686,39 @@ HTTP responses are decompressed transparently by the `Http` client (it sends
 
 ---
 
-## 18. Design notes
+## 18. `Hash`
+
+Message digests and HMAC, self-hosted (no OpenSSL dependency) and identical on
+every backend. Each function returns the **lowercase hex** digest. Inputs are
+binary-safe (embedded NUL bytes are part of the message, not a terminator).
+
+| Function | Result |
+| --- | --- |
+| `Hash.sha256(data: String) -> String` | 64-char hex SHA-256 digest |
+| `Hash.sha1(data: String) -> String` | 40-char hex SHA-1 digest |
+| `Hash.sha512(data: String) -> String` | 128-char hex SHA-512 digest |
+| `Hash.md5(data: String) -> String` | 32-char hex MD5 digest |
+| `Hash.hmac_sha256(key: String, data: String) -> String` | 64-char hex HMAC-SHA-256 |
+| `Hash.hmac_sha1(key: String, data: String) -> String` | 40-char hex HMAC-SHA-1 |
+| `Hash.hmac_sha512(key: String, data: String) -> String` | 128-char hex HMAC-SHA-512 |
+
+```culebra
+puts(Hash.sha256("abc"))
+# => 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+puts(Hash.md5("abc"))
+# => '900150983cd24fb0d6963f7d28e17f72'
+puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
+# => '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843'
+```
+
+For a raw (non-hex) digest, decode the hex with `Encoding.hex.decode`; to
+re-encode in another form, pair it with `Encoding.base64`. MD5 and SHA-1 are
+provided for compatibility with existing systems (checksums, legacy APIs) — use
+SHA-256 or SHA-512 for new security-sensitive work.
+
+---
+
+## 19. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -2738,7 +2772,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 19. Not included (yet)
+## 20. Not included (yet)
 
 ### Trigonometry
 

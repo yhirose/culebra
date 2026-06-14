@@ -17,6 +17,7 @@
 #include <compress.h>
 #include <foreign.h>
 #include <foreign_binding.h>
+#include <hash.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3462,6 +3463,47 @@ inline Value make_compress_namespace() {
   return Value(std::move(ns));
 }
 
+// `Hash`: message digests + HMAC, returning the lowercase hex digest. The
+// crypto is self-hosted in hash.h and shared with the JIT slow-path adapters,
+// so all three backends produce identical digests. Flat namespace, no kwargs.
+inline Value make_hash_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  // digest(name): one String -> hex String.
+  auto digest = [&](const char* name, std::string (*fn)(std::string_view)) {
+    ns.initialize(
+        name,
+        Value(FunctionValue({{"data", false, "String"sv}},
+                            [fn](std::shared_ptr<Environment> env) -> Value {
+                              return Value(fn(env->get("data").to_string_view()));
+                            },
+                            "String"sv)),
+        false);
+  };
+  digest("sha256", culebra::hashing::sha256);
+  digest("sha1", culebra::hashing::sha1);
+  digest("sha512", culebra::hashing::sha512);
+  digest("md5", culebra::hashing::md5);
+  // hmac(name): (key, msg) Strings -> hex String.
+  auto hmac = [&](const char* name,
+                  std::string (*fn)(std::string_view, std::string_view)) {
+    ns.initialize(
+        name,
+        Value(FunctionValue({{"key", false, "String"sv},
+                             {"data", false, "String"sv}},
+                            [fn](std::shared_ptr<Environment> env) -> Value {
+                              return Value(fn(env->get("key").to_string_view(),
+                                              env->get("data").to_string_view()));
+                            },
+                            "String"sv)),
+        false);
+  };
+  hmac("hmac_sha256", culebra::hashing::hmac_sha256);
+  hmac("hmac_sha1", culebra::hashing::hmac_sha1);
+  hmac("hmac_sha512", culebra::hashing::hmac_sha512);
+  return Value(std::move(ns));
+}
+
 // `Encoding`: text codec namespace. Grouped into sub-namespaces by scheme
 // (`Encoding.html` / `base64` / `hex` / `url`). The codec logic is shared
 // with the JIT slow-path adapters via shared.h.
@@ -3947,6 +3989,7 @@ inline void setup_built_in_functions(
   env.initialize("JSON", make_json_namespace(), false);
   env.initialize("Encoding", make_encoding_namespace(), false);
   env.initialize("Compress", make_compress_namespace(), false);
+  env.initialize("Hash", make_hash_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
 #if defined(CULEBRA_HTTP_ENABLED)

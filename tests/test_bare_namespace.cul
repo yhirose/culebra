@@ -70,6 +70,15 @@ assert_eq(enc.html.escape("<x>"), "&lt;x&gt;")
 let eh = Encoding.html       // bind the sub-namespace directly
 assert_eq(eh.unescape("&#65;&#x42;"), "AB")
 
+// --- Hash (bound namespace + bound method, slow-path resolve) ---
+let h = Hash
+assert_eq(h.sha256("abc"),
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+assert_eq(h.md5("abc"), "900150983cd24fb0d6963f7d28e17f72")
+let hm = Hash.hmac_sha256
+assert_eq(hm("Jefe", "what do ya want for nothing?"),
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+
 // --- Tensor ---
 let t = Tensor
 let z = t.zeros(2, 3)

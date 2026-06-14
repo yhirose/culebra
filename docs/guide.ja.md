@@ -1123,11 +1123,12 @@ puts(m.text)                  # planned: => 42
 
 ### 14.6 `Hash` + `Encoding`
 
-> **Status: 一部実装済み。** `Encoding.base64` / `Encoding.hex` /
-> `Encoding.url` / `Encoding.html`（`.encode`/`.decode`）と `Compress.gzip`
-> / `Compress.gunzip` は利用可能（stdlib §16–17 参照）。 JSON は top-level の
-> `JSON` ネームスペース（`JSON.parse` / `JSON.stringify`）— `Encoding.json`
-> は無い。 **Planned (Tier 1):** `Hash.sha256(bytes)` / `Hash.md5`。
+> **Status: 実装済み。** `Hash.sha256` / `sha1` / `sha512` / `md5` と
+> `Hash.hmac_sha256` / `hmac_sha1` / `hmac_sha512` は hex ダイジェストを返す
+> （stdlib §18 参照）。 `Encoding.base64` / `Encoding.hex` / `Encoding.url` /
+> `Encoding.html`（`.encode`/`.decode`）と `Compress.gzip` / `Compress.gunzip`
+> も利用可能（stdlib §16–17 参照）。 JSON は top-level の `JSON` ネームスペース
+> （`JSON.parse` / `JSON.stringify`）— `Encoding.json` は無い。
 
 ### 14.7 `HTTP`
 

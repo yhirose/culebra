@@ -48,8 +48,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
 17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
-18. [設計上の注記](#18-設計上の注記)
-19. [未収録（将来検討）](#19-未収録将来検討)
+18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
+19. [設計上の注記](#19-設計上の注記)
+20. [未収録（将来検討）](#20-未収録将来検討)
 
 **目的別索引**
 
@@ -72,6 +73,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / url のエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
@@ -2581,7 +2583,39 @@ HTTP レスポンスは `Http` クライアントが透過的に展開します�
 
 ---
 
-## 18. 設計上の注記
+## 18. `Hash`
+
+メッセージダイジェストと HMAC。自前実装（OpenSSL 非依存）で全バックエンド一致。
+各関数は**小文字 hex** のダイジェストを返します。入力はバイナリセーフ（埋め込み
+NUL も終端でなくメッセージの一部）。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Hash.sha256(data: String) -> String` | 64 文字 hex の SHA-256 ダイジェスト |
+| `Hash.sha1(data: String) -> String` | 40 文字 hex の SHA-1 ダイジェスト |
+| `Hash.sha512(data: String) -> String` | 128 文字 hex の SHA-512 ダイジェスト |
+| `Hash.md5(data: String) -> String` | 32 文字 hex の MD5 ダイジェスト |
+| `Hash.hmac_sha256(key: String, data: String) -> String` | 64 文字 hex の HMAC-SHA-256 |
+| `Hash.hmac_sha1(key: String, data: String) -> String` | 40 文字 hex の HMAC-SHA-1 |
+| `Hash.hmac_sha512(key: String, data: String) -> String` | 128 文字 hex の HMAC-SHA-512 |
+
+```culebra
+puts(Hash.sha256("abc"))
+# => 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+puts(Hash.md5("abc"))
+# => '900150983cd24fb0d6963f7d28e17f72'
+puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
+# => '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843'
+```
+
+生（hex でない）ダイジェストが必要なら `Encoding.hex.decode` で復号、別形式に
+したいなら `Encoding.base64` と組み合わせます。MD5 と SHA-1 は既存システム
+（チェックサム、レガシー API）との互換のために提供しています — 新規の
+セキュリティ用途には SHA-256 / SHA-512 を使ってください。
+
+---
+
+## 19. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -2635,7 +2669,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 19. 未収録（将来検討）
+## 20. 未収録（将来検討）
 
 ### 三角関数
 

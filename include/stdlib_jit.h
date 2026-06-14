@@ -9,6 +9,7 @@
 // before `JIT::run()`.
 
 #include <compress.h>
+#include <hash.h>
 #include <jit.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3348,6 +3349,39 @@ inline JitValue _ns_compress_gunzip(JitValue* a, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(r.data));
 }
 
+// Hash.{sha256,sha1,sha512,md5} + Hash.hmac_*: self-hosted digests via hash.h,
+// returning the lowercase hex digest. require_sv keeps the input binary-safe
+// and raises the binder's canonical `parameter '<name>' expects String` for a
+// non-String argument (matching interp). Slow-path only.
+inline JitValue _ns_hash_sha256(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(
+      culebra::hashing::sha256(_ns_adapt::require_sv(a[0], "data"))));
+}
+inline JitValue _ns_hash_sha1(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(
+      culebra::hashing::sha1(_ns_adapt::require_sv(a[0], "data"))));
+}
+inline JitValue _ns_hash_sha512(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(
+      culebra::hashing::sha512(_ns_adapt::require_sv(a[0], "data"))));
+}
+inline JitValue _ns_hash_md5(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(
+      culebra::hashing::md5(_ns_adapt::require_sv(a[0], "data"))));
+}
+inline JitValue _ns_hash_hmac_sha256(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(culebra::hashing::hmac_sha256(
+      _ns_adapt::require_sv(a[0], "key"), _ns_adapt::require_sv(a[1], "data"))));
+}
+inline JitValue _ns_hash_hmac_sha1(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(culebra::hashing::hmac_sha1(
+      _ns_adapt::require_sv(a[0], "key"), _ns_adapt::require_sv(a[1], "data"))));
+}
+inline JitValue _ns_hash_hmac_sha512(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(culebra::hashing::hmac_sha512(
+      _ns_adapt::require_sv(a[0], "key"), _ns_adapt::require_sv(a[1], "data"))));
+}
+
 // Tensor
 inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
@@ -3875,6 +3909,14 @@ inline const NsMethod kNsMethods[] = {
 
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
   {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
+
+  {"Hash", "sha256",      1, &_ns_hash_sha256, nullptr, "String", "data"},
+  {"Hash", "sha1",        1, &_ns_hash_sha1,   nullptr, "String", "data"},
+  {"Hash", "sha512",      1, &_ns_hash_sha512, nullptr, "String", "data"},
+  {"Hash", "md5",         1, &_ns_hash_md5,    nullptr, "String", "data"},
+  {"Hash", "hmac_sha256", 2, &_ns_hash_hmac_sha256, nullptr, "String", "key"},
+  {"Hash", "hmac_sha1",   2, &_ns_hash_hmac_sha1,   nullptr, "String", "key"},
+  {"Hash", "hmac_sha512", 2, &_ns_hash_hmac_sha512, nullptr, "String", "key"},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
@@ -6139,6 +6181,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
+      "Hash",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

@@ -1148,12 +1148,12 @@ puts(m.text)                  # planned: => 42
 
 ### 14.6 `Hash` + `Encoding`
 
-> **Status: Partly implemented.** `Encoding.base64`, `Encoding.hex`,
-> `Encoding.url`, `Encoding.html` (`.encode`/`.decode`) and `Compress.gzip`
-> / `Compress.gunzip` are available (see stdlib §16–17). JSON is the
-> top-level `JSON` namespace (`JSON.parse` / `JSON.stringify`) — there is
-> no `Encoding.json`. **Planned (Tier 1):** `Hash.sha256(bytes)`,
-> `Hash.md5`.
+> **Status: Implemented.** `Hash.sha256` / `sha1` / `sha512` / `md5` and
+> `Hash.hmac_sha256` / `hmac_sha1` / `hmac_sha512` return the hex digest
+> (see stdlib §18). `Encoding.base64`, `Encoding.hex`, `Encoding.url`,
+> `Encoding.html` (`.encode`/`.decode`) and `Compress.gzip` / `Compress.gunzip`
+> are available too (see stdlib §16–17). JSON is the top-level `JSON`
+> namespace (`JSON.parse` / `JSON.stringify`) — there is no `Encoding.json`.
 
 ### 14.7 `HTTP`
 
