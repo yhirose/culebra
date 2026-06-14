@@ -33,4 +33,22 @@ let g_lam = R.new("top-lam")
 let keep = || g_lam.name        // top-level closure capturing a binding
 
 assert_eq(drop_count, 1)        // still 1: no top-level drop ran before exit
+
+// Orphan cycle surviving to program exit: a nested-fn self-capture cycle
+// built inside a function that returns, leaving it unreachable garbage with
+// no enclosing scope to exit. Both backends PARK such cycles (the interp
+// force-pins the self-captured env; the JIT parks the dispatcher cycle for
+// the backstop), so neither fires `drop` mid-program. At exit the JIT used
+// to finalize it via its mandatory teardown collect while the interp has no
+// teardown collect at all — a `DROP:orphan` line on the JIT/AOT only. The
+// teardown collect now suppresses drop (program exit is the same point §16
+// leaks top-level bindings), so neither backend drops it: symmetric.
+fn make_orphan() {
+  let r = R.new("orphan")
+  fn hold() { r }               // nested fn captures r; r holds the dispatcher
+  r.h = hold
+}
+make_orphan()
+assert_eq(drop_count, 1)        // orphan never fires (parked, then exit-suppressed)
+
 puts("toplevel-drop test: OK")

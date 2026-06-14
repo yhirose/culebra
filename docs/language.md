@@ -2905,7 +2905,10 @@ a collection finalizes every orphaned resource exactly once — before
 reclaiming memory, while the structure is still intact — in the
 spirit of Python's PEP 442. Backstop timing is collection-driven
 (force one with `GC.stat()`), and finalization order within one
-collection is unspecified. When cleanup must happen at a known point,
+collection is unspecified. The collection at **program exit** is the
+exception: like top-level bindings (below), an orphan that survives to
+exit is *not* finalized — its memory is reclaimed but `drop` does not
+run, on every backend. When cleanup must happen at a known point,
 break the cycle manually before the last reference is released (e.g.
 `a.other = nil`), use an explicit `.drop()`, or `defer` (§15) at the
 scope that owns the resource.

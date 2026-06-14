@@ -20224,9 +20224,22 @@ struct JIT {
     // the throw-rethrow branch too (the catch below converts the
     // CulebraException to std::runtime_error, which unwinds before any plain
     // trailing statement would run).
+    //
+    // Drops are SUPPRESSED across this teardown collect: program exit is the
+    // same point §16 leaks top-level bindings without firing `drop`, and an
+    // orphan cycle surviving to exit is morally a top-level leftover (the
+    // interp has no teardown collect, so it never finalizes these either —
+    // cleanup is `with`/`defer`/explicit, not exit-time). Suppressing here
+    // keeps the two backends symmetric at exit. The collect still SWEEPS, so
+    // the residue's memory is reclaimed before module teardown (only the
+    // finalize pass is skipped) — the dangling-native-code segfault above
+    // cannot occur because no drop fires.
     struct CollectGuard {
       ~CollectGuard() {
+        bool saved = _jit_drop_suppressed();
+        _jit_drop_suppressed() = true;
         _gc_heap().collect();  // reclaim leaked residue before module teardown
+        _jit_drop_suppressed() = saved;
       }
     } collect_guard;
     try {
