@@ -221,6 +221,8 @@ void print_usage(ostream& os) {
         "                            executable (`culebra build --help`)\n"
         "  test [paths...]           Run tests / doctests (--filter, --doc,\n"
         "                            --reporter, --bail, --list)\n"
+        "  lint <file.cul>...        Report static problems (errors + warnings\n"
+        "                            like unused variables) without running\n"
         "\n"
         "Examples:\n"
         "  culebra hello.cul              Run a script (interpreter)\n"
@@ -992,6 +994,58 @@ int run_test(int argc, const char** argv) {
   return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
 }
 
+// `culebra lint <file.cul>...` — parse each file and report static
+// diagnostics (the load-stage errors plus advisory warnings like unused
+// locals) without evaluating. Each file is linted on its own (imports bind
+// their namespace name, so single-file analysis is sound). Exit code: 0 when
+// clean, 1 when only warnings were found, 2 when any error (or a parse /
+// read failure) occurred — so CI can gate on it.
+int run_lint(int argc, const char** argv) {
+  vector<string> files;
+  for (int i = 2; i < argc; i++) {
+    string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      std::println("Usage: culebra lint <file.cul>...");
+      return 0;
+    }
+    files.push_back(arg);
+  }
+  if (files.empty()) {
+    std::println(stderr, "culebra lint: no input files");
+    return 2;
+  }
+
+  int errors = 0, warnings = 0;
+  bool had_failure = false;
+  for (const auto& path : files) {
+    vector<char> buff;
+    if (!read_file(path.c_str(), buff)) {
+      std::println(stderr, "culebra lint: can't open '{}'", path);
+      had_failure = true;
+      continue;
+    }
+    vector<string> parse_msgs;
+    auto ast = culebra::parse(path, buff.data(), buff.size(), parse_msgs);
+    if (!ast) {
+      for (const auto& m : parse_msgs) std::print(stderr, "{}", m);
+      had_failure = true;
+      continue;
+    }
+    for (const auto& d : culebra::lint::collect_module(*ast)) {
+      const char* sev =
+          d.severity == culebra::lint::Severity::Error ? "error" : "warning";
+      std::println("{}:{}:{}: {}: {}", path, d.line, d.col, sev, d.message);
+      if (d.severity == culebra::lint::Severity::Error)
+        errors++;
+      else
+        warnings++;
+    }
+  }
+
+  if (errors > 0 || had_failure) return 2;
+  return warnings > 0 ? 1 : 0;
+}
+
 int main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
@@ -1003,6 +1057,9 @@ int main(int argc, const char** argv) {
 
   if (argc >= 2 && string(argv[1]) == "test") {
     return run_test(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "lint") {
+    return run_lint(argc, argv);
   }
 #ifdef CULEBRA_JIT_ENABLED
   if (argc >= 2 && string(argv[1]) == "wrap") {

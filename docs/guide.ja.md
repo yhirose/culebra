@@ -41,8 +41,9 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
   15. [Tensor プリミティブ](#15-tensor-プリミティブ)
 - **第 IV 部 — 検証とデプロイ**
   16. [テスト (`culebra test`)](#16-テスト-culebra-test)
-  17. [AOT バイナリビルド](#17-aot-バイナリビルド)
-  18. [埋め込み概観](#18-埋め込み概観)
+  17. [リント (`culebra lint`)](#17-リント-culebra-lint)
+  18. [AOT バイナリビルド](#18-aot-バイナリビルド)
+  19. [埋め込み概観](#19-埋め込み概観)
 
 0. 設計哲学
 -----------
@@ -1428,7 +1429,38 @@ global なので `culebra test` を介さずに 3 backend で同じファイル�
 - **並列実行** — 現状逐次。 JIT/AOT が入った時の parallel default は
   optional
 
-17. AOT バイナリビルド
+17. リント (`culebra lint`)
+---------------------------
+
+`culebra lint <file.cul>...` はプログラムを**実行せずに**静的な問題を
+報告し、CI でゲートできるよう非ゼロ終了する (0 = クリーン、1 = 警告のみ、
+2 = エラー)。全 backend が load 段で走らせている静的解析を再利用する
+(報告されるエラーは実行時に abort するものと厳密に同じ) 上に、助言的な
+警告を追加する。
+
+```bash
+culebra lint app.cul
+# app.cul:12:7: warning: unused variable 'tmp'
+# app.cul:20:3: error: undefined variable 'reuslt'
+```
+
+現状の報告対象:
+
+- **エラー** — 健全で必ず失敗する集合: ループ外の `break`/`continue`、
+  関数外の `return`、不正なパラメータ/代入形、重複パラメータ/メンバ、
+  shadowing、どこにも束縛されない名前の読み (未定義変数の sound subset)。
+  これらは元々あらゆる実行を abort させる。`lint` は最初の1件で止まらず
+  まとめて表示するだけ。
+- **警告** — 現状は**未使用ローカル変数**: 関数内の `let`/`mut` 束縛で
+  一度も読まれないもの。先頭アンダースコア (`_x`、または素の sink `_`)
+  は意図的な未使用の印で、決して報告しない。パラメータとトップレベル
+  束縛は報告しない (未使用パラメータは設計上よくあり、トップレベル名は
+  export される可能性がある)。
+
+予定: 未使用 import、到達不能コード、エディタ/LSP 連携用の
+`--format json`、インライン `# lint: ignore` 抑制。
+
+18. AOT バイナリビルド
 ----------------------
 
 `culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
@@ -1462,7 +1494,7 @@ otool -L ./out                            # Accelerate も LLVM も無し
 タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ no-BLAS
 archive に差し替わるので、数 MB が数百 KB になる。
 
-18. 埋め込み概観
+19. 埋め込み概観
 ----------------
 
 Culebra は header-friendly な C++23 ライブラリ。 最小埋め込み例:

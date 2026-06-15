@@ -43,8 +43,9 @@ Contents
   15. [Tensor primitive](#15-tensor-primitive)
 - **Part IV — Verification and deployment**
   16. [Testing (`culebra test`)](#16-testing-culebra-test)
-  17. [AOT binary build](#17-aot-binary-build)
-  18. [Embedding overview](#18-embedding-overview)
+  17. [Linting (`culebra lint`)](#17-linting-culebra-lint)
+  18. [AOT binary build](#18-aot-binary-build)
+  19. [Embedding overview](#19-embedding-overview)
 
 0. Design philosophy
 --------------------
@@ -1456,7 +1457,40 @@ without going through `culebra test`.
 - **Parallel execution** — sequential today; parallel default is
   optional once the JIT/AOT backends are wired in.
 
-17. AOT binary build
+17. Linting (`culebra lint`)
+----------------------------
+
+`culebra lint <file.cul>...` reports static problems **without running**
+the program, and exits non-zero so CI can gate on it (0 = clean, 1 =
+warnings only, 2 = errors). It reuses the same load-stage static analysis
+every backend already runs (so the errors it reports are exactly the ones
+that would abort a run) and adds advisory warnings on top.
+
+```bash
+culebra lint app.cul
+# app.cul:12:7: warning: unused variable 'tmp'
+# app.cul:20:3: error: undefined variable 'reuslt'
+```
+
+What it reports today:
+
+- **Errors** — the sound, certain-to-fail set: `break` / `continue` /
+  `return` out of place, malformed parameter or assignment forms,
+  duplicate parameters or class members, shadowing, and reads of a name
+  bound nowhere (the undefined-variable subset). These already abort any
+  run; `lint` just surfaces them all at once instead of stopping at the
+  first.
+- **Warnings** — currently **unused local variables**: a `let` / `mut`
+  binding inside a function that is never read. A leading underscore
+  (`_x`, or the bare sink `_`) marks a binding as intentionally unused
+  and is never flagged. Parameters and top-level bindings are not flagged
+  (unused parameters are common by design, and top-level names may be
+  exported).
+
+Planned: unused imports, unreachable code, a `--format json` mode for
+editor / LSP integration, and inline `# lint: ignore` suppression.
+
+18. AOT binary build
 --------------------
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
@@ -1491,7 +1525,7 @@ drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-BLAS archive. The result is
 a few hundred KB instead of a few MB.
 
-18. Embedding overview
+19. Embedding overview
 ----------------------
 
 Culebra is a header-friendly C++23 library. Minimal embed:

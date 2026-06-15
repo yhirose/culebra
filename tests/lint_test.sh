@@ -316,5 +316,44 @@ expect_dup_member_accept "two classes" 'class A { m() { 1 } }
 class B { m() { 2 } }
 puts(A.new().m() + B.new().m())'
 
+# --- `culebra lint` CLI: advisory warnings (unused locals) in report mode ---
+# `culebra lint <file>` prints diagnostics without running and sets exit code
+# 0 (clean) / 1 (warnings only) / 2 (errors). A warning case must name the
+# unused variable and exit 1; a sound-negative must be clean (exit 0).
+expect_lint_warns() {  # $1=label $2=source $3=substring that must appear
+  printf '%s\n' "$2" > "$TMP/l.cul"
+  out=$("$CULEBRA" lint "$TMP/l.cul" 2>&1); rc=$?
+  if [[ $rc -ne 1 || "$out" != *"$3"* ]]; then
+    echo "FAIL lint-warn [$1]: rc=$rc out=$out"; fail=1
+  fi
+}
+expect_lint_clean() {  # $1=label $2=source
+  printf '%s\n' "$2" > "$TMP/l.cul"
+  out=$("$CULEBRA" lint "$TMP/l.cul" 2>&1); rc=$?
+  if [[ $rc -ne 0 || -n "$out" ]]; then
+    echo "FAIL lint-clean [$1]: rc=$rc out=$out"; fail=1
+  fi
+}
+expect_lint_error() {  # $1=label $2=source
+  printf '%s\n' "$2" > "$TMP/l.cul"
+  out=$("$CULEBRA" lint "$TMP/l.cul" 2>&1); rc=$?
+  if [[ $rc -ne 2 ]]; then
+    echo "FAIL lint-error [$1]: rc=$rc out=$out"; fail=1
+  fi
+}
+
+expect_lint_warns "unused let" 'fn f() { let a = 1; 2 }'        "unused variable 'a'"
+expect_lint_warns "unused mut" 'fn f() { mut a = 1; a = 2; 3 }' "unused variable 'a'"
+# Sound-negatives — must NOT warn:
+expect_lint_clean "read let"        'fn f() { let a = 1; a + 1 }'
+expect_lint_clean "closure capture" 'fn f() { let a = 1; || a + 1 }'
+expect_lint_clean "compound is use" 'fn f() { mut a = 0; a += 1; a }'
+expect_lint_clean "sink"            'fn f() { let _ = 1; 2 }'
+expect_lint_clean "unused param"    'fn f(x) { 1 }'   # params not flagged (MVP)
+expect_lint_clean "unused toplevel" 'let g = 1'       # top-level not flagged (MVP)
+# Errors propagate through the same CLI with exit 2:
+expect_lint_error "undefined var"      'fn f() { nope }'
+expect_lint_error "break outside loop" 'fn f() { break }'
+
 if [[ $fail -eq 0 ]]; then echo "lint_test OK"; exit 0; fi
 exit 1

@@ -10,6 +10,7 @@
 // (`check_shadow`, moved here from the interp). The JIT calls `check_shadow`
 // too (from analyze_program), so the rule has a single source.
 
+#include <algorithm>
 #include <format>
 #include <set>
 #include <string>
@@ -1237,6 +1238,188 @@ inline void analyze_module(const peg::Ast& ast, const NameSet& globals,
 
 }  // namespace undefined
 
+// --- Static unused-local analyzer (advisory, Warning severity) ---
+//
+// The dual of the undefined check: undefined flags a read with no binding;
+// unused flags a `let`/`mut` binding with no read. MVP scope = local bindings
+// inside a function-like body. Parameters and module top-level bindings are
+// deliberately NOT flagged — unused params are common and intentional
+// (callback arity, interface conformance) and top-level names may be exported.
+//
+// Soundness (no false positives) comes from over-approximating *uses*: a
+// binding counts as used if its name appears in any read position anywhere in
+// the enclosing function body — including nested closures, which capture it.
+// Over-counting reads only ever suppresses a warning (the safe direction);
+// the only reads we must never miss are genuine ones, so compound-assignment
+// targets (`x += 1` reads x) and shorthand `{x}` are counted explicitly.
+namespace unused {
+
+using NameSet = std::set<std::string, std::less<>>;
+
+struct Decl {
+  std::string name;
+  long line;
+  long col;
+};
+
+// A leading underscore marks a binding as intentionally unused (the sink `_`
+// and the `_name` convention shared by Rust / Python / Go and already used in
+// the culebra corpus for drop-on-discard / side-effect-only bindings). Such
+// names are never flagged.
+inline bool ignored_unused(std::string_view name) {
+  return name.starts_with("_");
+}
+
+// Every variable READ in a subtree, recursing through nested closures (they
+// capture outer locals). Excludes the positions that are writes or non-reads:
+// a plain `x = …` target (a write), a destructure pattern, a `.member` /
+// `?.member` name, a kwarg name, and a non-shorthand object key. A compound
+// `x += …` target IS a read. Declaration heads and parameter names are left
+// in (counting them as reads is harmless — it only suppresses warnings).
+inline void collect_reads(const peg::Ast& node, NameSet& reads) {
+  using namespace peg::udl;
+  if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_) return;
+  switch (node.tag) {
+    case "IDENTIFIER"_:
+      if (node.is_token && !is_sink(node.token))
+        reads.insert(std::string(node.token));
+      return;
+    case "ASSIGNMENT"_: {
+      auto av = culebra::view_assignment(node);
+      bool simple_ident = av.lvalcnt == 1 &&
+                          node.nodes[av.lvaloff]->tag == "IDENTIFIER"_;
+      if (simple_ident) {
+        // A plain write is not a read; a compound assignment reads first.
+        if (av.compound) {
+          const auto& t = *node.nodes[av.lvaloff];
+          if (t.is_token && !is_sink(t.token))
+            reads.insert(std::string(t.token));
+        }
+      } else {
+        for (int k = 0; k < av.lvalcnt; k++)
+          collect_reads(*node.nodes[av.lvaloff + k], reads);
+      }
+      collect_reads(*av.rhs, reads);
+      return;
+    }
+    case "DESTRUCTURE_ASSIGN"_:
+      collect_reads(*node.nodes.back(), reads);  // pattern = write; walk RHS
+      return;
+    case "KWARG"_:
+      if (node.nodes.size() >= 2) collect_reads(*node.nodes[1], reads);
+      return;
+    case "OBJECT_PROPERTY"_: {
+      auto pv = culebra::view_object_property(node);
+      collect_reads(pv.is_shorthand ? *pv.key : *pv.value, reads);
+      return;
+    }
+    default:
+      for (const auto& c : node.nodes) collect_reads(*c, reads);
+  }
+}
+
+// The `let`/`mut` simple-identifier bindings declared directly in one
+// function scope (descending through blocks / loops / if / try / match that
+// share the scope, but stopping at nested function-like boundaries — each is
+// its own scope, checked when it is walked). Compound assignments cannot
+// declare (lint rejects `let x += 1` earlier), so a declaration is always a
+// plain `let`/`mut`.
+inline void collect_local_decls(const peg::Ast& node, std::vector<Decl>& out) {
+  using namespace peg::udl;
+  switch (node.tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_:
+    case "DEFER"_:
+    case "MULTIFN_DECL"_:
+    case "CLASS_DECL"_:
+    case "TRAIT_DECL"_:
+    case "ENUM_DECL"_:
+      return;  // separate scope
+    case "ASSIGNMENT"_: {
+      auto av = culebra::view_assignment(node);
+      if ((av.is_let || av.is_mut) && !av.compound && av.lvalcnt == 1) {
+        const auto& t = *node.nodes[av.lvaloff];
+        if (t.tag == "IDENTIFIER"_ && t.is_token && !ignored_unused(t.token))
+          out.push_back({std::string(t.token), static_cast<long>(t.line),
+                         static_cast<long>(t.column)});
+      }
+      collect_local_decls(*av.rhs, out);
+      return;
+    }
+    default:
+      for (const auto& c : node.nodes) collect_local_decls(*c, out);
+  }
+}
+
+// Flag this function body's local `let`/`mut` bindings that are never read in
+// the body (reads include nested closures). Appends Warning diagnostics.
+inline void check_scope_body(const peg::Ast& body,
+                             std::vector<Diagnostic>& diags) {
+  std::vector<Decl> decls;
+  collect_local_decls(body, decls);
+  if (decls.empty()) return;
+  NameSet reads;
+  collect_reads(body, reads);
+  for (const auto& d : decls) {
+    if (!reads.contains(d.name)) {
+      diags.push_back(Diagnostic{
+          "UnusedVariable", std::format("unused variable '{}'", d.name),
+          d.line, d.col, Severity::Warning});
+    }
+  }
+}
+
+// Walk the whole AST, checking each function-like body's local bindings. The
+// module top level is intentionally not checked (its names may be exported).
+inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  switch (node.tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_: {
+      auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
+                                        : culebra::view_lambda(node);
+      check_scope_body(*fv.body, diags);
+      break;
+    }
+    case "MULTIFN_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      if (i + 1 < node.nodes.size())
+        check_scope_body(*node.nodes.back(), diags);
+      break;
+    }
+    case "CLASS_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        auto mv = culebra::view_method(*node.nodes[j]);
+        if (!mv.is_field && !mv.is_typed_field && mv.body)
+          check_scope_body(**mv.body, diags);
+      }
+      break;
+    }
+    case "TRAIT_DECL"_: {
+      size_t i = culebra::first_non_decorator_index(node);
+      for (size_t j = i + 1; j < node.nodes.size(); j++) {
+        auto tv = culebra::view_trait_method(*node.nodes[j]);
+        if (tv.body) check_scope_body(*tv.body, diags);
+      }
+      break;
+    }
+    case "DEFER"_:
+      if (!node.nodes.empty()) check_scope_body(*node.nodes[0], diags);
+      break;
+    default:
+      break;
+  }
+  for (const auto& c : node.nodes) analyze_walk(*c, diags);
+}
+
+inline void analyze_module(const peg::Ast& ast,
+                           std::vector<Diagnostic>& diags) {
+  analyze_walk(ast, diags);
+}
+
+}  // namespace unused
+
 }  // namespace _detail
 
 // Cross-layer provider for the builtin / global names the undefined-var
@@ -1248,12 +1431,13 @@ inline void analyze_module(const peg::Ast& ast, const NameSet& globals,
 inline const std::set<std::string, std::less<>>* (*builtin_names_hook)() =
     nullptr;
 
-// Run all static lint checks over one module AST before evaluation.
-// Throws the first Error-severity diagnostic as a CulebraError (same shape
-// the runtime would raise), so the module loader surfaces it uniformly to
-// every backend. Warnings are advisory (collected, not thrown).
-inline void check_module(const peg::Ast& ast) {
-  std::vector<Diagnostic> diags;
+// The Error-severity static analyses, shared by the enforce path
+// (`check_module`, run on every load) and the report path (`collect_module`,
+// the `culebra lint` CLI). These are the checks the runtime is certain to
+// raise: malformed control flow / declarations (ScopeWalker) and the sound
+// undefined-variable subset. Appends to `diags`.
+inline void run_error_checks(const peg::Ast& ast,
+                             std::vector<Diagnostic>& diags) {
   _detail::ScopeWalker walker(diags);
   walker.run(ast);
   // Undefined-variable check (the sound subset that is certain to raise
@@ -1262,11 +1446,37 @@ inline void check_module(const peg::Ast& ast) {
     if (const auto* globals = builtin_names_hook())
       _detail::undefined::analyze_module(ast, *globals, diags);
   }
+}
+
+// Run the load-stage static lint checks over one module AST before evaluation.
+// Throws the first Error-severity diagnostic as a CulebraError (same shape
+// the runtime would raise), so the module loader surfaces it uniformly to
+// every backend. Advisory warnings (e.g. unused locals) are NOT run here —
+// they would be discarded, and the load path stays free of their cost; the
+// `culebra lint` CLI runs the full set via `collect_module`.
+inline void check_module(const peg::Ast& ast) {
+  std::vector<Diagnostic> diags;
+  run_error_checks(ast, diags);
   for (const auto& d : diags) {
     if (d.severity == Severity::Error) {
       throw culebra::CulebraError(d.kind, d.message, d.line, d.col);
     }
   }
+}
+
+// Report mode for the `culebra lint` CLI / future LSP diagnostics: run every
+// static analysis (the Error-severity load checks plus advisory Warnings like
+// unused locals) and RETURN all diagnostics without throwing, so the caller
+// can print them all. Diagnostics are sorted by source position.
+inline std::vector<Diagnostic> collect_module(const peg::Ast& ast) {
+  std::vector<Diagnostic> diags;
+  run_error_checks(ast, diags);
+  _detail::unused::analyze_module(ast, diags);
+  std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
+                                           const Diagnostic& b) {
+    return a.line != b.line ? a.line < b.line : a.col < b.col;
+  });
+  return diags;
 }
 
 // Static shadow check over an entire script AST before evaluation begins.
