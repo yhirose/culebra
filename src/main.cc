@@ -125,18 +125,24 @@ static std::string asset_fingerprint() {
   return cached;
 }
 
-static std::filesystem::path culebra_cache_dir() {
-  // Explicit override wins — useful for CI, sandboxes that can't
-  // write under $HOME, or hermetic test runs that want a clean
-  // cache per invocation.
-  if (const char* c = std::getenv("CULEBRA_CACHE"); c && *c) return c;
+// `$HOME/.cache/<name>`, falling back to `$TMPDIR` then `/tmp` when HOME is
+// unset or empty (sandboxes that can't write under $HOME). Single source for
+// both on-disk cache roots so their fallback behavior can't drift.
+static std::filesystem::path home_cache_root(const char* name) {
   const char* home = std::getenv("HOME");
   if (!home || !*home) {
     const char* tmp = std::getenv("TMPDIR");
     home = (tmp && *tmp) ? tmp : "/tmp";
   }
-  return std::filesystem::path(home) / ".cache" / "culebra"
-       / asset_fingerprint();
+  return std::filesystem::path(home) / ".cache" / name;
+}
+
+static std::filesystem::path culebra_cache_dir() {
+  // Explicit override wins — useful for CI, sandboxes that can't
+  // write under $HOME, or hermetic test runs that want a clean
+  // cache per invocation.
+  if (const char* c = std::getenv("CULEBRA_CACHE"); c && *c) return c;
+  return home_cache_root("culebra") / asset_fingerprint();
 }
 
 // Bound a content-addressed cache directory so it never grows without limit.
@@ -756,9 +762,7 @@ int run_wrap(int argc, const char** argv) {
   string fingerprint;
   for (const auto& s : opts.sources) fingerprint += s + ";";
   fingerprint += opts.link_flags + (opts.lto ? "|lto" : "");
-  auto cache_root =
-      std::filesystem::path(std::getenv("HOME") ? std::getenv("HOME") : "/tmp")
-      / ".cache" / "culebra-wrap";
+  auto cache_root = home_cache_root("culebra-wrap");
   auto build_dir =
       cache_root / std::format("{:016x}", std::hash<string>{}(fingerprint));
   // Drop old build trees before adding another — each is a full CMake build
