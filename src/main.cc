@@ -12,7 +12,9 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
+#include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <thread>
 #include <cstdint>
 #include <cstdio>
@@ -137,13 +139,49 @@ static std::filesystem::path culebra_cache_dir() {
        / asset_fingerprint();
 }
 
+// Bound a content-addressed cache directory so it never grows without limit.
+// Both our caches key a subdirectory on a fingerprint that changes whenever
+// its inputs do — the embedded runtime archives for `culebra build`, the
+// (sources, link, lto) tuple for `culebra wrap` — so each new input leaves a
+// stale subdirectory behind that nothing ever revisits. Users never see these
+// dirs, so they can silently grow to gigabytes. Given the live subdirectory
+// `current`, keep the most-recently-used few siblings (by mtime) and delete
+// the rest; `current` is always retained even if it sorts old. Everything
+// removed regenerates on demand, so over-pruning only costs one rebuild.
+static void prune_stale_cache_dirs(const std::filesystem::path& current) {
+  constexpr std::size_t keep = 4;  // live dir + a few recent ones
+  std::error_code ec;
+  auto root = current.parent_path();
+  std::vector<std::pair<std::filesystem::file_time_type,
+                        std::filesystem::path>> dirs;
+  for (std::filesystem::directory_iterator it(root, ec), end; it != end;
+       it.increment(ec)) {
+    if (ec) return;
+    if (!it->is_directory(ec)) continue;
+    auto t = std::filesystem::last_write_time(it->path(), ec);
+    if (ec) continue;
+    dirs.emplace_back(t, it->path());
+  }
+  if (dirs.size() <= keep) return;
+  std::sort(dirs.begin(), dirs.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (std::size_t i = keep; i < dirs.size(); ++i) {
+    if (dirs[i].second == current) continue;  // never delete the live one
+    std::filesystem::remove_all(dirs[i].second, ec);
+  }
+}
+
 // Materialize one embedded runtime archive (by file name) to the on-disk
 // cache and return its path. The linker needs a real file, so the driver
 // writes the archive once per (culebra binary × machine) and reuses it on
 // subsequent invocations.
 static std::filesystem::path materialize_archive(
     const std::string& name, std::string& err) {
-  auto cache = culebra_cache_dir() / name;
+  auto dir = culebra_cache_dir();
+  // Garbage-collect old fingerprints once, before the first archive lands.
+  static std::once_flag pruned;
+  std::call_once(pruned, prune_stale_cache_dirs, dir);
+  auto cache = dir / name;
   if (std::filesystem::exists(cache)) return cache;
 
   auto it = CulebraRT::FS.find(name);
@@ -723,6 +761,9 @@ int run_wrap(int argc, const char** argv) {
       / ".cache" / "culebra-wrap";
   auto build_dir =
       cache_root / std::format("{:016x}", std::hash<string>{}(fingerprint));
+  // Drop old build trees before adding another — each is a full CMake build
+  // dir, so the wrap cache bloats even faster than the runtime-archive one.
+  prune_stale_cache_dirs(build_dir);
   std::error_code ec;
   std::filesystem::create_directories(build_dir, ec);
 
