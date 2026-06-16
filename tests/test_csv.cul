@@ -1,0 +1,58 @@
+// CSV namespace: parse / stringify (RFC 4180-ish). The logic is shared
+// between the interp and the JIT slow-path adapters via csv.h, so this also
+// exercises bare-resolve + as-value dispatch on the JIT/AOT slow path.
+
+// --- basic parse: rows of String fields ---
+let rows = CSV.parse("a,b,c\n1,2,3")
+assert_eq(rows.size(), 2)
+assert_eq(rows[0], ["a", "b", "c"])
+assert_eq(rows[1], ["1", "2", "3"])
+
+// --- round trip ---
+assert_eq(CSV.stringify(CSV.parse("a,b,c\n1,2,3")), "a,b,c\n1,2,3")
+
+// --- quoting: comma / quote / newline inside a field ---
+let q = CSV.parse("\"a,b\",\"he said \"\"hi\"\"\",\"x\ny\"")
+assert_eq(q[0][0], "a,b")
+assert_eq(q[0][1], "he said \"hi\"")
+assert_eq(q[0][2], "x\ny")
+// re-serialize quotes the same fields back
+assert_eq(CSV.stringify(q), "\"a,b\",\"he said \"\"hi\"\"\",\"x\ny\"")
+
+// --- empty fields and empty input ---
+assert_eq(CSV.parse("a,,c")[0], ["a", "", "c"])
+assert_eq(CSV.parse("").size(), 0)
+// trailing newline does not add an empty final row
+assert_eq(CSV.parse("a\n").size(), 1)
+
+// --- CRLF line endings ---
+let cr = CSV.parse("a,b\r\nc,d")
+assert_eq(cr.size(), 2)
+assert_eq(cr[1], ["c", "d"])
+
+// --- stringify coerces non-string scalars via to_string ---
+assert_eq(CSV.stringify([[1, 2], [3, 4]]), "1,2\n3,4")
+assert_eq(CSV.stringify([["x", true, 1.5]]), "x,true,1.5")
+// a field needing quotes is quoted
+assert_eq(CSV.stringify([["a,b", "c"]]), "\"a,b\",c")
+
+// --- binary-safe: embedded NUL is an ordinary field byte (parse + stringify) ---
+let b = CSV.parse("a\x00b,c")
+assert_eq(b[0][0].size(), 3)
+assert_eq(CSV.stringify([["a\x00b", "c"]]), "a\x00b,c")
+assert_eq(CSV.stringify([["a\x00b", "c"]]).size(), 5)
+
+// --- errors: non-String to parse, non-Array to stringify, non-Array row ---
+assert_throws("TypeError", fn () { CSV.parse(42) })
+assert_throws("TypeError", fn () { CSV.stringify("nope") })
+assert_throws("TypeError", fn () { CSV.stringify([1, 2]) })
+
+// --- first-class value + higher-order (slow-path conformance) ---
+let p = CSV.parse
+assert_eq(p("x,y")[0], ["x", "y"])
+let docs = ["a,b", "c,d"]
+let parsed = docs.map(CSV.parse)
+assert_eq(parsed[0][0], ["a", "b"])
+assert_eq(parsed[1][0], ["c", "d"])
+
+puts("csv tests passed")

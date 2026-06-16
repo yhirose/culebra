@@ -51,8 +51,9 @@ Conventions used below:
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
 17. [`Compress`](#17-compress) — gzip (de)compression for data and files
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
-19. [Design notes](#19-design-notes)
-20. [Not included (yet)](#20-not-included-yet)
+19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
+20. [Design notes](#20-design-notes)
+21. [Not included (yet)](#21-not-included-yet)
 
 **Where to find what**
 
@@ -77,6 +78,7 @@ Conventions used below:
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
+| Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -2740,7 +2742,38 @@ SHA-256 or SHA-512 for new security-sensitive work.
 
 ---
 
-## 19. Design notes
+## 19. `CSV`
+
+Parse and render comma-separated values (RFC 4180-ish), shared byte-for-byte
+across backends. Fields are separated by commas and records by newlines; a
+field containing a comma, double quote, or newline is wrapped in double
+quotes, and an embedded quote is doubled (`""`).
+
+| Function | Result |
+| --- | --- |
+| `CSV.parse(text: String) -> Array<Array<String>>` | rows of String fields |
+| `CSV.stringify(rows: Array) -> String` | CSV text; each row must be an Array, each field rendered like `to_string` |
+
+`parse` is lenient (no errors): every field comes back as a `String` (numbers
+are not inferred), an empty input yields no rows, and a trailing newline does
+not add an empty final row. Both LF and CRLF end a record. `stringify` renders
+each field with the same conversion as `to_string`, so scalars like numbers
+and `Bool` serialize naturally; `stringify(parse(text))` round-trips
+well-formed input.
+
+```culebra
+let rows = CSV.parse("name,age\nalice,30\nbob,25")
+puts(rows[1])                                         # => ['alice', '30']
+puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+```
+
+To convert numeric columns, map over the parsed fields with `to_long` /
+`to_float`. A header row, if present, is just `rows[0]` — there is no separate
+header mode.
+
+---
+
+## 20. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -2794,7 +2827,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 20. Not included (yet)
+## 21. Not included (yet)
 
 ### Date, time
 

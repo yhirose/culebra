@@ -49,8 +49,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
 17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
-19. [設計上の注記](#19-設計上の注記)
-20. [未収録（将来検討）](#20-未収録将来検討)
+19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
+20. [設計上の注記](#20-設計上の注記)
+21. [未収録（将来検討）](#21-未収録将来検討)
 
 **目的別索引**
 
@@ -75,6 +76,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | base64 / hex / url のエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
+| CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
@@ -2637,7 +2639,34 @@ puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 
 ---
 
-## 19. 設計上の注記
+## 19. `CSV`
+
+カンマ区切り値（RFC 4180 流）の parse / 生成。全 backend で byte 一致。
+フィールドはカンマ、レコードは改行で区切られ、カンマ・ダブルクォート・改行を
+含むフィールドはダブルクォートで囲み、内部のクォートは `""` に二重化する。
+
+| 関数 | 結果 |
+| --- | --- |
+| `CSV.parse(text: String) -> Array<Array<String>>` | String フィールドの行 |
+| `CSV.stringify(rows: Array) -> String` | CSV テキスト。各行は Array、各フィールドは `to_string` 同様にレンダリング |
+
+`parse` は寛容（エラーなし）: 全フィールドは `String` で返り（数値推論はしない）、
+空入力は 0 行、末尾改行は空行を足さない。LF と CRLF の両方がレコード区切り。
+`stringify` は各フィールドを `to_string` と同じ変換でレンダリングするので数値や
+`Bool` も自然に出力され、`stringify(parse(text))` は整形式入力を round-trip する。
+
+```culebra
+let rows = CSV.parse("name,age\nalice,30\nbob,25")
+puts(rows[1])                                         # => ['alice', '30']
+puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+```
+
+数値列は parse 後に `to_long` / `to_float` で map して変換する。ヘッダ行があれば
+単に `rows[0]` で、専用のヘッダモードは無い。
+
+---
+
+## 20. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -2691,7 +2720,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 20. 未収録（将来検討）
+## 21. 未収録（将来検討）
 
 ### 日時
 

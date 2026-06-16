@@ -9,6 +9,7 @@
 // before `JIT::run()`.
 
 #include <compress.h>
+#include <csv.h>
 #include <hash.h>
 #include <jit.h>
 #include <proc.h>
@@ -3422,6 +3423,48 @@ inline JitValue _ns_hash_hmac_sha512(JitValue* a, int64_t) {
       _ns_adapt::require_sv(a[0], "key"), _ns_adapt::require_sv(a[1], "data"))));
 }
 
+// CSV.{parse,stringify}: shared RFC-4180-ish logic via csv.h. parse returns
+// Array<Array<String>>; stringify takes an Array of Array rows and renders
+// each field via value_to_display (the to_string conversion, symmetric with
+// interp). require_sv keeps parse binary-safe. Slow-path only.
+inline JitValue _ns_csv_parse(JitValue* a, int64_t) {
+  auto rows = culebra::csv::parse(_ns_adapt::require_sv(a[0], "text"));
+  auto* outer = culebra_runtime_array_new();
+  for (auto& row : rows) {
+    auto* inner = culebra_runtime_array_new();
+    for (auto& f : row)
+      culebra_runtime_array_push(inner, TAG_STRING,
+                                 reinterpret_cast<int64_t>(_culebra_heap_str(f)));
+    culebra_runtime_array_push(outer, TAG_ARRAY,
+                               reinterpret_cast<int64_t>(inner));
+  }
+  return _ns_adapt::v_array(outer);
+}
+inline JitValue _ns_csv_stringify(JitValue* a, int64_t) {
+  // a[0] is Array (the binder enforces the declared type at the arg position).
+  auto* rows = reinterpret_cast<JitArray*>(a[0].data);
+  std::vector<std::vector<std::string>> grid;
+  for (size_t i = 0; i < rows->size; i++) {
+    const JitValue& rv = rows->items[i];
+    if (rv.tag != TAG_ARRAY) culebra::throw_type_error_at(0, 0);
+    auto* r = reinterpret_cast<JitArray*>(rv.data);
+    std::vector<std::string> out;
+    for (size_t j = 0; j < r->size; j++) {
+      const JitValue& fv = r->items[j];
+      // A String field keeps its exact bytes (length-aware, NUL-safe — matching
+      // interp's str_display); value_to_display returns a C string that would
+      // truncate at an embedded NUL. Non-string scalars display NUL-free.
+      if (fv.tag == TAG_STRING || fv.tag == TAG_STRINGVIEW)
+        out.emplace_back(_culebra_str_view(fv.tag, fv.data));
+      else
+        out.emplace_back(culebra_runtime_value_to_display(fv.tag, fv.data));
+    }
+    grid.push_back(std::move(out));
+  }
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::csv::stringify(grid)));
+}
+
 // Tensor
 inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
@@ -3964,6 +4007,9 @@ inline const NsMethod kNsMethods[] = {
   {"Hash", "hmac_sha256", 2, &_ns_hash_hmac_sha256, nullptr, "String", "key"},
   {"Hash", "hmac_sha1",   2, &_ns_hash_hmac_sha1,   nullptr, "String", "key"},
   {"Hash", "hmac_sha512", 2, &_ns_hash_hmac_sha512, nullptr, "String", "key"},
+
+  {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
+  {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
@@ -6251,7 +6297,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",
+      "Hash",    "CSV",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

@@ -15,6 +15,7 @@
 // `culebra::environment(argv)` or `culebra::setup_built_in_functions(env)`.
 
 #include <compress.h>
+#include <csv.h>
 #include <foreign.h>
 #include <foreign_binding.h>
 #include <hash.h>
@@ -3487,6 +3488,53 @@ inline Value make_compress_namespace() {
   return Value(std::move(ns));
 }
 
+// `CSV`: parse / stringify RFC 4180-ish CSV. The parse/serialize logic is
+// shared with the JIT slow-path adapters via csv.h. `parse` returns rows of
+// String fields; `stringify` takes an Array of rows (each an Array) and
+// renders each field via the same conversion as `to_string` (so numbers and
+// other scalars serialize naturally), quoting where needed.
+inline Value make_csv_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "parse",
+      Value(FunctionValue({{"text", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            auto rows = culebra::csv::parse(
+                                env->get("text").to_string_view());
+                            ArrayValue out;
+                            for (auto& row : rows) {
+                              ArrayValue r;
+                              for (auto& f : row)
+                                r.values->push_back(Value(std::move(f)));
+                              out.values->push_back(Value(std::move(r)));
+                            }
+                            return Value(std::move(out));
+                          },
+                          "Array"sv)),
+      false);
+  ns.initialize(
+      "stringify",
+      Value(FunctionValue({{"rows", false, "Array"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            const auto& rows = env->get("rows").to_array();
+                            std::vector<std::vector<std::string>> grid;
+                            for (const auto& rv : *rows.values) {
+                              if (rv.type != Value::Array) throw_type_error_at(line, col);
+                              std::vector<std::string> r;
+                              for (const auto& f : *rv.to_array().values)
+                                r.push_back(str_display_with_special(f));
+                              grid.push_back(std::move(r));
+                            }
+                            return Value(culebra::csv::stringify(grid));
+                          },
+                          "String"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // `Hash`: message digests + HMAC, returning the lowercase hex digest. The
 // crypto is self-hosted in hash.h and shared with the JIT slow-path adapters,
 // so all three backends produce identical digests. Flat namespace, no kwargs.
@@ -4014,6 +4062,7 @@ inline void setup_built_in_functions(
   env.initialize("Encoding", make_encoding_namespace(), false);
   env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("Hash", make_hash_namespace(), false);
+  env.initialize("CSV", make_csv_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
 #if defined(CULEBRA_HTTP_ENABLED)
