@@ -25,6 +25,24 @@
 
 using namespace std;
 
+// --- Link anchor: force out-of-line emission of the Shared.new view readers.
+// interpreter.h forward-declares shared_val_get_prop / _get_index / _make_iter
+// (non-inline) and calls them from eval_property; their inline definitions
+// live in sharedval.h, reached here via stdlib_interp.h -> isolate.h. A
+// `culebra wrap` extension TU sees only the forward declarations (wrap.h is
+// included before `environment()` exists, so it cannot pull isolate.h), so its
+// out-of-line eval_property copy leaves an undefined reference on linkers that
+// don't fold it (Linux/mold). Taking their addresses in this TU — which DOES
+// have the definitions and is always in the driver/wrap link — forces a weak
+// out-of-line copy the wrap link resolves against.
+namespace culebra {
+[[gnu::used]] void* const _shared_val_reader_anchor[] = {
+    reinterpret_cast<void*>(&shared_val_get_prop),
+    reinterpret_cast<void*>(&shared_val_get_index),
+    reinterpret_cast<void*>(&shared_val_make_iter),
+};
+}  // namespace culebra
+
 // Startup profiler — gated by CULEBRA_PROFILE_STARTUP=1. Prints each
 // phase mark to stderr immediately. See [[project-startup-overhead]].
 namespace startup_profile {
