@@ -60,6 +60,7 @@ Conventions used below:
 |---|---|
 | Constants (π, e, inf, nan) | [§1 Math constants](#math-pi) |
 | Scalar arithmetic (abs, min, max, log, exp, sqrt, floor, ceil, round) | [§1 Math](#1-math) |
+| Trigonometry (sin, cos, tan, asin, acos, atan, atan2; radians) | [§1 Math](#1-math) |
 | Print to stdout | `IO.puts` (with newline + quoting) / `IO.print` (raw) |
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
@@ -96,8 +97,9 @@ and `Float` interact.
 Sub-groups in this section: **constants** (`Math.pi`, `Math.e`,
 `Math.inf`, `Math.nan`) — **scalar ops** (`abs`, `min`, `max`,
 `log`, `exp`, `sqrt`, `floor`, `ceil`, `round`, `pow`, `sign`,
-`clamp`). Integer-sequence factories `range` / `iota` are
-language-core globals — see [§18](language.md#18-core-built-in-functions).
+`clamp`) — **trigonometry** (`sin`, `cos`, `tan`, `asin`, `acos`,
+`atan`, `atan2`, in radians). Integer-sequence factories `range` / `iota`
+are language-core globals — see [§18](language.md#18-core-built-in-functions).
 
 ### Constants
 
@@ -165,6 +167,26 @@ the result is mathematically an integer.
 ### `Math.sqrt(x: Long|Float) -> Float`
 
 Principal square root. `Math.sqrt(-1.0)` is `nan`.
+
+### `Math.sin(x) -> Float`, `Math.cos(x) -> Float`, `Math.tan(x) -> Float`
+
+Trigonometric functions; `x` is in **radians** (`Long` or `Float`).
+
+```culebra
+puts(Math.sin(Math.pi / 2))   # => 1.0
+puts(Math.cos(0))             # => 1.0
+```
+
+### `Math.asin(x) -> Float`, `Math.acos(x) -> Float`, `Math.atan(x) -> Float`, `Math.atan2(y, x) -> Float`
+
+Inverse trigonometric functions, returning radians. `asin` / `acos`
+expect `x` in `[-1, 1]` (else `nan`). `Math.atan2(y, x)` is the
+quadrant-aware arctangent of `y / x`.
+
+```culebra
+puts(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
+# (that is pi/4)
+```
 
 ### `Math.floor(x: Long|Float) -> Long`, `Math.ceil(x: Long|Float) -> Long`, `Math.round(x: Long|Float) -> Long`
 
@@ -2773,13 +2795,6 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 ---
 
 ## 20. Not included (yet)
-
-### Trigonometry
-
-`Math.sin` / `Math.cos` / `Math.tan` / `Math.atan2` are not yet
-exposed. Random drawing and the core transcendentals (`log`, `exp`,
-`sqrt`) are available; trig entries can be added when a concrete use
-case lands.
 
 ### Date, time
 

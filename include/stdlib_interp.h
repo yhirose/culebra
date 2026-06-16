@@ -192,6 +192,30 @@ inline Value make_math_namespace() {
   ns.initialize("log",   float_to_float([](double x) { return std::log(x); }), false);
   ns.initialize("exp",   float_to_float([](double x) { return std::exp(x); }), false);
   ns.initialize("sqrt",  float_to_float([](double x) { return std::sqrt(x); }), false);
+  ns.initialize("sin",   float_to_float([](double x) { return std::sin(x); }), false);
+  ns.initialize("cos",   float_to_float([](double x) { return std::cos(x); }), false);
+  ns.initialize("tan",   float_to_float([](double x) { return std::tan(x); }), false);
+  ns.initialize("asin",  float_to_float([](double x) { return std::asin(x); }), false);
+  ns.initialize("acos",  float_to_float([](double x) { return std::acos(x); }), false);
+  ns.initialize("atan",  float_to_float([](double x) { return std::atan(x); }), false);
+  // atan2(y, x): two numeric args -> Float (radians), shared shape with the
+  // JIT's culebra_runtime_math_atan2.
+  ns.initialize(
+      "atan2",
+      Value(FunctionValue(
+          {{"y", false}, {"x", false}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& y = env->get("y");
+            const auto& x = env->get("x");
+            if (!y.is_numeric() || !x.is_numeric()) {
+              auto line = env->get("__LINE__").to_long();
+              auto col = env->get("__COLUMN__").to_long();
+              throw_type_error_at(line, col);
+            }
+            return Value(std::atan2(y.to_double_coerce(), x.to_double_coerce()));
+          },
+          "Float"sv)),
+      false);
   ns.initialize("floor", float_to_long ([](double x) { return std::floor(x); }), false);
   ns.initialize("ceil",  float_to_long ([](double x) { return std::ceil(x); }), false);
   // std::rint honors the current IEEE 754 rounding mode, which defaults to

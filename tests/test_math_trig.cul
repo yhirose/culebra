@@ -1,0 +1,49 @@
+// Math trigonometry: sin / cos / tan / asin / acos / atan / atan2.
+// Self-hosted via std::*; interp and JIT/AOT share the same runtime so the
+// results match. All return Float (radians); Long input coerces to Float.
+
+let tol = 0.000000001
+let pi = Math.pi
+
+// --- basic values ---
+assert_close(Math.sin(0.0), 0.0, tol)
+assert_close(Math.cos(0.0), 1.0, tol)
+assert_close(Math.tan(0.0), 0.0, tol)
+assert_close(Math.sin(pi / 2), 1.0, tol)
+assert_close(Math.cos(pi), -1.0, tol)
+assert_close(Math.sin(pi), 0.0, tol)
+
+// --- inverse ---
+assert_close(Math.asin(1.0), pi / 2, tol)
+assert_close(Math.acos(1.0), 0.0, tol)
+assert_close(Math.acos(0.0), pi / 2, tol)
+assert_close(Math.atan(1.0), pi / 4, tol)
+
+// --- atan2(y, x) (two args, quadrant-aware) ---
+assert_close(Math.atan2(1.0, 1.0), pi / 4, tol)
+assert_close(Math.atan2(1.0, 0.0), pi / 2, tol)
+assert_close(Math.atan2(0.0, -1.0), pi, tol)
+
+// --- Long input coerces to Float ---
+assert_close(Math.sin(0), 0.0, tol)
+assert_close(Math.cos(0), 1.0, tol)
+assert_close(Math.atan2(0, 1), 0.0, tol)
+
+// --- round trip: asin(sin(x)) == x for x in (-pi/2, pi/2) ---
+assert_close(Math.asin(Math.sin(0.5)), 0.5, tol)
+assert_close(Math.atan(Math.tan(0.3)), 0.3, tol)
+
+// --- type error on non-numeric argument (both backends) ---
+assert_throws("TypeError", fn () { Math.sin("x") })
+assert_throws("TypeError", fn () { Math.atan2(1.0, "x") })
+assert_throws("TypeError", fn () { Math.atan2("y", 1.0) })
+
+// --- first-class value + higher-order (slow-path conformance) ---
+let f = Math.cos
+assert_close(f(0.0), 1.0, tol)
+let angles = [0.0, pi / 2, pi]
+let sines = angles.map(Math.sin)
+assert_close(sines[0], 0.0, tol)
+assert_close(sines[1], 1.0, tol)
+
+puts("math trig tests passed")

@@ -58,6 +58,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 |---|---|
 | 定数（π、e、inf、nan） | [§1 Math 定数](#math-pi) |
 | スカラー演算（abs / min / max / log / exp / sqrt / floor / ceil / round） | [§1 Math](#1-math) |
+| 三角関数（sin / cos / tan / asin / acos / atan / atan2、ラジアン） | [§1 Math](#1-math) |
 | 標準出力 | `IO.puts`（改行 + クォート付き） / `IO.print`（生） |
 | ファイル全体を読む | `FS.read`（失敗時 throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
@@ -93,8 +94,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
 `Math.inf`、`Math.nan`） — **スカラー演算**（`abs`、`min`、`max`、
 `log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
-`clamp`）。整数列ファクトリ `range` / `iota` は言語コアグローバルで、
-[言語仕様 §18](language.ja.md#18-コア組み込み関数) を参照。
+`clamp`） — **三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
+`atan`、`atan2`、ラジアン）。整数列ファクトリ `range` / `iota` は
+言語コアグローバルで、[言語仕様 §18](language.ja.md#18-コア組み込み関数) を参照。
 
 ### 定数
 
@@ -159,6 +161,26 @@ puts(Math.max(1.5, 2, 0.5))     # 2.0
 ### `Math.sqrt(x: Long|Float) -> Float`
 
 主平方根。`Math.sqrt(-1.0)` は `nan`。
+
+### `Math.sin(x) -> Float`、`Math.cos(x) -> Float`、`Math.tan(x) -> Float`
+
+三角関数。`x` は**ラジアン**（`Long` または `Float`）。
+
+```culebra
+puts(Math.sin(Math.pi / 2))   # => 1.0
+puts(Math.cos(0))             # => 1.0
+```
+
+### `Math.asin(x) -> Float`、`Math.acos(x) -> Float`、`Math.atan(x) -> Float`、`Math.atan2(y, x) -> Float`
+
+逆三角関数。戻り値はラジアン。`asin` / `acos` は `x` が `[-1, 1]`
+範囲（外は `nan`）。`Math.atan2(y, x)` は `y / x` の象限を考慮した
+逆正接。
+
+```culebra
+puts(Math.atan2(1.0, 1.0))    # => 0.7853981633974483
+# (= pi/4)
+```
 
 ### `Math.floor(x: Long|Float) -> Long`、`Math.ceil(...) -> Long`、`Math.round(...) -> Long`
 
@@ -2670,12 +2692,6 @@ run_with(IO, "via parameter")
 ---
 
 ## 20. 未収録（将来検討）
-
-### 三角関数
-
-`Math.sin` / `cos` / `tan` / `atan2` は未実装です。乱数生成と主要な
-超越関数（`log`, `exp`, `sqrt`）は揃っているので、三角関数は具体的
-なユースケースが出てきた時点で追加します。
 
 ### 日時
 

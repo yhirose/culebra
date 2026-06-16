@@ -148,7 +148,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_pow(
 CUL_MATH_F2F(log,  std::log(x))
 CUL_MATH_F2F(exp,  std::exp(x))
 CUL_MATH_F2F(sqrt, std::sqrt(x))
+CUL_MATH_F2F(sin,  std::sin(x))
+CUL_MATH_F2F(cos,  std::cos(x))
+CUL_MATH_F2F(tan,  std::tan(x))
+CUL_MATH_F2F(asin, std::asin(x))
+CUL_MATH_F2F(acos, std::acos(x))
+CUL_MATH_F2F(atan, std::atan(x))
 #undef CUL_MATH_F2F
+
+// atan2(y, x): two numeric args -> Float (radians). Mirrors the F2F family
+// but binary; either Long or Float coerces to double.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_atan2(
+    int8_t yt, int64_t yd, int8_t xt, int64_t xd, int64_t line, int64_t col) {
+  if ((yt != TAG_LONG && yt != TAG_FLOAT) ||
+      (xt != TAG_LONG && xt != TAG_FLOAT))
+    throw_type_error_at(line, col);
+  double y = _culebra_coerce_num(yt, yd);
+  double x = _culebra_coerce_num(xt, xd);
+  return {TAG_FLOAT, _culebra_double_to_bits(std::atan2(y, x))};
+}
 
 // Long input is identity (not coerced through Float, which would lose
 // precision on values past 2^53).
@@ -2568,6 +2586,28 @@ inline JitValue _ns_math_exp(JitValue* a, int64_t) {
 inline JitValue _ns_math_sqrt(JitValue* a, int64_t) {
   return culebra_runtime_math_sqrt(a[0].tag, a[0].data, 0, 0);
 }
+inline JitValue _ns_math_sin(JitValue* a, int64_t) {
+  return culebra_runtime_math_sin(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_cos(JitValue* a, int64_t) {
+  return culebra_runtime_math_cos(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_tan(JitValue* a, int64_t) {
+  return culebra_runtime_math_tan(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_asin(JitValue* a, int64_t) {
+  return culebra_runtime_math_asin(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_acos(JitValue* a, int64_t) {
+  return culebra_runtime_math_acos(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_atan(JitValue* a, int64_t) {
+  return culebra_runtime_math_atan(a[0].tag, a[0].data, 0, 0);
+}
+inline JitValue _ns_math_atan2(JitValue* a, int64_t) {
+  return culebra_runtime_math_atan2(a[0].tag, a[0].data, a[1].tag, a[1].data, 0,
+                                    0);
+}
 inline JitValue _ns_math_floor(JitValue* a, int64_t) {
   return culebra_runtime_math_floor(a[0].tag, a[0].data, 0, 0);
 }
@@ -3799,6 +3839,13 @@ inline const NsMethod kNsMethods[] = {
   {"Math",   "log",       1, &_ns_math_log},
   {"Math",   "exp",       1, &_ns_math_exp},
   {"Math",   "sqrt",      1, &_ns_math_sqrt},
+  {"Math",   "sin",       1, &_ns_math_sin},
+  {"Math",   "cos",       1, &_ns_math_cos},
+  {"Math",   "tan",       1, &_ns_math_tan},
+  {"Math",   "asin",      1, &_ns_math_asin},
+  {"Math",   "acos",      1, &_ns_math_acos},
+  {"Math",   "atan",      1, &_ns_math_atan},
+  {"Math",   "atan2",     2, &_ns_math_atan2},
   {"Math",   "floor",     1, &_ns_math_floor},
   {"Math",   "ceil",      1, &_ns_math_ceil},
   {"Math",   "round",     1, &_ns_math_round},
@@ -4756,6 +4803,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   // Float-domain Math: (tag, data, line, col) -> JitValue. Register
   // the full family in one pass since they share the same signature.
   for (auto name : {rt::math_log, rt::math_exp, rt::math_sqrt,
+                    rt::math_sin, rt::math_cos, rt::math_tan,
+                    rt::math_asin, rt::math_acos, rt::math_atan,
                     rt::math_floor, rt::math_ceil, rt::math_round,
                     rt::math_abs}) {
     jit.module_->getOrInsertFunction(name, jit.valueType_,
@@ -4763,6 +4812,11 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                  jit.builder_.getInt64Ty(),
                                  jit.builder_.getInt64Ty());
   }
+  // atan2(y, x): two (tag, data) pairs + line + col -> JitValue.
+  jit.module_->getOrInsertFunction(rt::math_atan2, jit.valueType_,
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());
   // Variadic min/max: (args_ptr, n, line, col) -> JitValue.
   for (auto name : {rt::math_min, rt::math_max}) {
     jit.module_->getOrInsertFunction(name, jit.valueType_, ptrTy,
@@ -5311,6 +5365,22 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "log")   { if (auto v = math_unary_runtime(rt::math_log))   return v; }
     if (method == "exp")   { if (auto v = math_unary_runtime(rt::math_exp))   return v; }
     if (method == "sqrt")  { if (auto v = math_unary_runtime(rt::math_sqrt))  return v; }
+    if (method == "sin")   { if (auto v = math_unary_runtime(rt::math_sin))   return v; }
+    if (method == "cos")   { if (auto v = math_unary_runtime(rt::math_cos))   return v; }
+    if (method == "tan")   { if (auto v = math_unary_runtime(rt::math_tan))   return v; }
+    if (method == "asin")  { if (auto v = math_unary_runtime(rt::math_asin))  return v; }
+    if (method == "acos")  { if (auto v = math_unary_runtime(rt::math_acos))  return v; }
+    if (method == "atan")  { if (auto v = math_unary_runtime(rt::math_atan))  return v; }
+    if (method == "atan2" && argsAst.nodes.size() == 2) {
+      auto y = compile(*argsAst.nodes[0]);
+      auto x = compile(*argsAst.nodes[1]);
+      auto r = emit_call(module_->getFunction(rt::math_atan2),
+                         {extract_tag(y), extract_data(y), extract_tag(x),
+                          extract_data(x), line, col});
+      emit_value_release(y);
+      emit_value_release(x);
+      return r;
+    }
 
     // min/max: compile every arg, stash them in a stack array of
     // JitValue, and call the variadic helper with (&args[0], n).
