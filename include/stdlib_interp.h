@@ -19,6 +19,7 @@
 #include <foreign.h>
 #include <foreign_binding.h>
 #include <hash.h>
+#include <uuid.h>
 #include <interpreter.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3488,6 +3489,27 @@ inline Value make_compress_namespace() {
   return Value(std::move(ns));
 }
 
+// `UUID`: generate canonical UUIDs. v4 = random, v7 = time-ordered (Unix-ms
+// prefix). Entropy from the shared PRNG (csv-style value-neutral core in
+// uuid.h shared with the JIT slow-path adapters).
+inline Value make_uuid_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize("v4",
+                Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+                                      return Value(culebra::uuid::v4());
+                                    },
+                                    "String"sv)),
+                false);
+  ns.initialize("v7",
+                Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+                                      return Value(culebra::uuid::v7());
+                                    },
+                                    "String"sv)),
+                false);
+  return Value(std::move(ns));
+}
+
 // `CSV`: parse / stringify RFC 4180-ish CSV. The parse/serialize logic is
 // shared with the JIT slow-path adapters via csv.h. `parse` returns rows of
 // String fields; `stringify` takes an Array of rows (each an Array) and
@@ -4063,6 +4085,7 @@ inline void setup_built_in_functions(
   env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("Hash", make_hash_namespace(), false);
   env.initialize("CSV", make_csv_namespace(), false);
+  env.initialize("UUID", make_uuid_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);
 #if defined(CULEBRA_HTTP_ENABLED)

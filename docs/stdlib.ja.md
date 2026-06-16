@@ -50,8 +50,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
 19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
-20. [設計上の注記](#20-設計上の注記)
-21. [未収録（将来検討）](#21-未収録将来検討)
+20. [`UUID`](#20-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
+21. [設計上の注記](#21-設計上の注記)
+22. [未収録（将来検討）](#22-未収録将来検討)
 
 **目的別索引**
 
@@ -77,6 +78,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
+| UUID の生成 | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
@@ -2666,7 +2668,28 @@ puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
 
 ---
 
-## 20. 設計上の注記
+## 20. `UUID`
+
+正準の小文字 UUID（`8-4-4-4-12` ハイフン形式）を生成。2 種類:
+
+| 関数 | 結果 |
+| --- | --- |
+| `UUID.v4() -> String` | ランダム UUID（122 ランダムビット） |
+| `UUID.v7() -> String` | 時刻順 UUID — 48-bit Unix-ミリ秒プレフィックス + ランダム。作成時刻でソートできる（DB キー向き） |
+
+エントロピーは `Random.*` が使う共有 PRNG 由来なので `Random.seed` で再現可能、
+かつ**暗号学的に安全ではない**（識別子向けで、トークンや秘密には不可）。v7 は
+ミリ秒単位の順序で、同一ミリ秒内に生成された 2 値は相互に順序づけられない
+（monotonic counter は持たない）。
+
+```culebra
+puts(UUID.v4().size())          # => 36
+puts(UUID.v4() != UUID.v4())    # => true
+```
+
+---
+
+## 21. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -2720,7 +2743,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 21. 未収録（将来検討）
+## 22. 未収録（将来検討）
 
 ### 日時
 

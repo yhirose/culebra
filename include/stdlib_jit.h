@@ -11,6 +11,7 @@
 #include <compress.h>
 #include <csv.h>
 #include <hash.h>
+#include <uuid.h>
 #include <jit.h>
 #include <proc.h>
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -3465,6 +3466,14 @@ inline JitValue _ns_csv_stringify(JitValue* a, int64_t) {
       _culebra_heap_str(culebra::csv::stringify(grid)));
 }
 
+// UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
+inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
+}
+inline JitValue _ns_uuid_v7(JitValue*, int64_t) {
+  return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v7()));
+}
+
 // Tensor
 inline JitValue _ns_tensor_zeros(JitValue* a, int64_t n) {
   return _ns_adapt::v_tensor(culebra_runtime_tensor_zeros(a, n, 0, 0));
@@ -4010,6 +4019,9 @@ inline const NsMethod kNsMethods[] = {
 
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+
+  {"UUID", "v4", 0, &_ns_uuid_v4},
+  {"UUID", "v7", 0, &_ns_uuid_v7},
 
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
@@ -6297,7 +6309,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",
+      "Hash",    "CSV",       "UUID",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

@@ -52,8 +52,9 @@ Conventions used below:
 17. [`Compress`](#17-compress) — gzip (de)compression for data and files
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
-20. [Design notes](#20-design-notes)
-21. [Not included (yet)](#21-not-included-yet)
+20. [`UUID`](#20-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
+21. [Design notes](#21-design-notes)
+22. [Not included (yet)](#22-not-included-yet)
 
 **Where to find what**
 
@@ -79,6 +80,7 @@ Conventions used below:
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
+| Generate a UUID | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | String / Array / Object methods | [language spec §17](language.md) |
@@ -2773,7 +2775,30 @@ header mode.
 
 ---
 
-## 20. Design notes
+## 20. `UUID`
+
+Generate canonical lowercase UUIDs (the `8-4-4-4-12` hyphenated form). Two
+variants:
+
+| Function | Result |
+| --- | --- |
+| `UUID.v4() -> String` | random UUID (122 random bits) |
+| `UUID.v7() -> String` | time-ordered UUID — a 48-bit Unix-millisecond prefix then random, so values sort by creation time (good as database keys) |
+
+Entropy comes from the shared PRNG that `Random.*` uses, so UUIDs are
+reproducible under `Random.seed` and are **not** cryptographically secure —
+fine for identifiers, not for tokens or secrets. v7 orders by millisecond;
+two values created within the same millisecond are not ordered relative to
+each other (there is no monotonic counter).
+
+```culebra
+puts(UUID.v4().size())          # => 36
+puts(UUID.v4() != UUID.v4())    # => true
+```
+
+---
+
+## 21. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -2827,7 +2852,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 21. Not included (yet)
+## 22. Not included (yet)
 
 ### Date, time
 

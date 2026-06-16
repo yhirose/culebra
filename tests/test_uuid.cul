@@ -1,0 +1,45 @@
+// UUID namespace: v4 (random) and v7 (time-ordered). The generation logic is
+// shared between the interp and the JIT slow-path adapters via uuid.h. UUIDs
+// are random, so this asserts the canonical FORMAT and uniqueness rather than
+// exact values (and never prints a UUID, so interp/JIT output stays identical).
+
+let hex = "0123456789abcdef"
+
+// Canonical shape: 36 chars, hyphens at 8-13-18-23, lowercase hex elsewhere.
+let at = fn (s, i) { s[i..i + 1] }      // single char (strings index by slice)
+let check_shape = fn (u, version_char) {
+  assert_eq(u.size(), 36)
+  for i in [8, 13, 18, 23] { assert_eq(at(u, i), "-") }   // hyphen positions
+  assert_eq(at(u, 14), version_char)    // version nibble
+  let var = at(u, 19)                   // variant: 8/9/a/b
+  assert_true(var == "8" || var == "9" || var == "a" || var == "b")
+  for i in 0..36 {
+    if i != 8 && i != 13 && i != 18 && i != 23 {
+      assert_true(hex.contains(at(u, i)))   // lowercase hex digit
+    }
+  }
+}
+
+check_shape(UUID.v4(), "4")
+check_shape(UUID.v7(), "7")
+
+// --- uniqueness: distinct calls produce distinct values ---
+assert_true(UUID.v4() != UUID.v4())
+assert_true(UUID.v7() != UUID.v7())
+
+// --- v7 sorts by creation time: the timestamp prefix (high bits of the
+// 48-bit Unix-ms field, the first 8 hex chars) is monotonically non-decreasing.
+// (The random tail is NOT ordered within a millisecond — v7 has no monotonic
+// counter here — so compare only the timestamp prefix, not the whole value.)
+let a = UUID.v7()
+let b = UUID.v7()
+assert_true(a[0..8] <= b[0..8])
+
+// --- first-class value + higher-order (slow-path conformance) ---
+let gen = UUID.v4
+assert_eq(gen().size(), 36)
+let batch = [1, 2, 3].map(fn (_) { UUID.v4() })
+assert_eq(batch.size(), 3)
+assert_true(batch[0] != batch[1])
+
+puts("uuid tests passed")
