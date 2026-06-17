@@ -42,6 +42,19 @@ assert_eq(b[0][0].size(), 3)
 assert_eq(CSV.stringify([["a\x00b", "c"]]), "a\x00b,c")
 assert_eq(CSV.stringify([["a\x00b", "c"]]).size(), 5)
 
+// --- custom delimiter (TSV) via the `delimiter:` option (kwarg or positional) ---
+let tsv = CSV.parse("a\tb\tc\n1\t2\t3", delimiter: "\t")
+assert_eq(tsv[0], ["a", "b", "c"])
+assert_eq(tsv[1], ["1", "2", "3"])
+assert_eq(CSV.stringify([["a", "b"], ["c", "d"]], delimiter: "\t"), "a\tb\nc\td")
+// positional form works too (delimiter is not keyword-only)
+assert_eq(CSV.parse("x;y", ";")[0], ["x", "y"])
+// a field containing the chosen delimiter gets quoted; comma is plain in TSV
+assert_eq(CSV.stringify([["a\tb", "c,d"]], delimiter: "\t"), "\"a\tb\"\tc,d")
+// round trip with a custom delimiter
+assert_eq(CSV.parse(CSV.stringify([["p", "q"]], delimiter: ";"), delimiter: ";")[0],
+          ["p", "q"])
+
 // --- errors: non-String to parse, non-Array to stringify, non-Array row ---
 assert_throws("TypeError", fn () { CSV.parse(42) })
 assert_throws("TypeError", fn () { CSV.stringify("nope") })
@@ -50,8 +63,10 @@ assert_throws("TypeError", fn () { CSV.stringify([1, 2]) })
 // --- first-class value + higher-order (slow-path conformance) ---
 let p = CSV.parse
 assert_eq(p("x,y")[0], ["x", "y"])
+// (CSV.parse now has an optional `delimiter` param, so wrap it for map —
+// the callback-arity check wants an exact 1-parameter function.)
 let docs = ["a,b", "c,d"]
-let parsed = docs.map(CSV.parse)
+let parsed = docs.map(fn (d) { CSV.parse(d) })
 assert_eq(parsed[0][0], ["a", "b"])
 assert_eq(parsed[1][0], ["c", "d"])
 

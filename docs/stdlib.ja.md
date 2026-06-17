@@ -2649,8 +2649,11 @@ puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 
 | 関数 | 結果 |
 | --- | --- |
-| `CSV.parse(text: String) -> Array<Array<String>>` | String フィールドの行 |
-| `CSV.stringify(rows: Array) -> String` | CSV テキスト。各行は Array、各フィールドは `to_string` 同様にレンダリング |
+| `CSV.parse(text: String, delimiter: String = ",") -> Array<Array<String>>` | String フィールドの行 |
+| `CSV.stringify(rows: Array, delimiter: String = ",") -> String` | CSV テキスト。各行は Array、各フィールドは `to_string` 同様にレンダリング |
+
+`delimiter:` オプション（1 バイト。先頭バイトを使用）でフィールド区切りを選べる
+— TSV なら `"\t"`。位置引数でもキーワードでも渡せる。
 
 `parse` は寛容（エラーなし）: 全フィールドは `String` で返り（数値推論はしない）、
 空入力は 0 行、末尾改行は空行を足さない。LF と CRLF の両方がレコード区切り。
@@ -2661,6 +2664,7 @@ puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
 puts(rows[1])                                         # => ['alice', '30']
 puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
 数値列は parse 後に `to_long` / `to_float` で map して変換する。ヘッダ行があれば

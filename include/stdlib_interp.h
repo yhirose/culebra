@@ -3510,20 +3510,38 @@ inline Value make_uuid_namespace() {
   return Value(std::move(ns));
 }
 
+// Default `delimiter:` for CSV (comma). A `","` String default the JIT mirrors
+// through _jit_default_from_value (the calling-convention single source).
+inline const std::shared_ptr<Value>& kw_default_comma() {
+  static const auto v = std::make_shared<Value>(Value(std::string(",")));
+  return v;
+}
+
+// First byte of a `delimiter:` String, or ',' when empty — CSV delimiters are
+// a single byte. Shared shape with the JIT adapter's extraction.
+inline char csv_delim_char(const Value& v) {
+  auto s = v.to_string_view();
+  return s.empty() ? ',' : s[0];
+}
+
 // `CSV`: parse / stringify RFC 4180-ish CSV. The parse/serialize logic is
 // shared with the JIT slow-path adapters via csv.h. `parse` returns rows of
 // String fields; `stringify` takes an Array of rows (each an Array) and
 // renders each field via the same conversion as `to_string` (so numbers and
-// other scalars serialize naturally), quoting where needed.
+// other scalars serialize naturally), quoting where needed. The `delimiter:`
+// option (default `,`) selects the field separator (e.g. `"\t"` for TSV).
 inline Value make_csv_namespace() {
   using namespace std::literals;
   ObjectValue ns;
   ns.initialize(
       "parse",
-      Value(FunctionValue({{"text", false, "String"sv}},
+      Value(FunctionValue({{"text", false, "String"sv},
+                           {"delimiter", false, "String"sv, nullptr,
+                            kw_default_comma()}},
                           [](std::shared_ptr<Environment> env) -> Value {
                             auto rows = culebra::csv::parse(
-                                env->get("text").to_string_view());
+                                env->get("text").to_string_view(),
+                                csv_delim_char(env->get("delimiter")));
                             ArrayValue out;
                             for (auto& row : rows) {
                               ArrayValue r;
@@ -3537,7 +3555,9 @@ inline Value make_csv_namespace() {
       false);
   ns.initialize(
       "stringify",
-      Value(FunctionValue({{"rows", false, "Array"sv}},
+      Value(FunctionValue({{"rows", false, "Array"sv},
+                           {"delimiter", false, "String"sv, nullptr,
+                            kw_default_comma()}},
                           [](std::shared_ptr<Environment> env) -> Value {
                             long line = env->get("__LINE__").to_long();
                             long col = env->get("__COLUMN__").to_long();
@@ -3550,7 +3570,8 @@ inline Value make_csv_namespace() {
                                 r.push_back(str_display_with_special(f));
                               grid.push_back(std::move(r));
                             }
-                            return Value(culebra::csv::stringify(grid));
+                            return Value(culebra::csv::stringify(
+                                grid, csv_delim_char(env->get("delimiter"))));
                           },
                           "String"sv)),
       false);

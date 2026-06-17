@@ -3428,8 +3428,16 @@ inline JitValue _ns_hash_hmac_sha512(JitValue* a, int64_t) {
 // Array<Array<String>>; stringify takes an Array of Array rows and renders
 // each field via value_to_display (the to_string conversion, symmetric with
 // interp). require_sv keeps parse binary-safe. Slow-path only.
-inline JitValue _ns_csv_parse(JitValue* a, int64_t) {
-  auto rows = culebra::csv::parse(_ns_adapt::require_sv(a[0], "text"));
+// `delimiter:` is the optional second slot the kwarg-slab binder fills (after
+// the required positional), defaulting to ',' — matching interp's csv_delim_char.
+inline char _csv_delim(JitValue* a, int64_t n) {
+  if (n < 2) return ',';
+  auto sv = _ns_adapt::require_sv(a[1], "delimiter");
+  return sv.empty() ? ',' : sv[0];
+}
+inline JitValue _ns_csv_parse(JitValue* a, int64_t n) {
+  auto rows =
+      culebra::csv::parse(_ns_adapt::require_sv(a[0], "text"), _csv_delim(a, n));
   auto* outer = culebra_runtime_array_new();
   for (auto& row : rows) {
     auto* inner = culebra_runtime_array_new();
@@ -3441,7 +3449,7 @@ inline JitValue _ns_csv_parse(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_array(outer);
 }
-inline JitValue _ns_csv_stringify(JitValue* a, int64_t) {
+inline JitValue _ns_csv_stringify(JitValue* a, int64_t n) {
   // a[0] is Array (the binder enforces the declared type at the arg position).
   auto* rows = reinterpret_cast<JitArray*>(a[0].data);
   std::vector<std::vector<std::string>> grid;
@@ -3463,7 +3471,7 @@ inline JitValue _ns_csv_stringify(JitValue* a, int64_t) {
     grid.push_back(std::move(out));
   }
   return _ns_adapt::v_string(
-      _culebra_heap_str(culebra::csv::stringify(grid)));
+      _culebra_heap_str(culebra::csv::stringify(grid, _csv_delim(a, n))));
 }
 
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
@@ -3838,6 +3846,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
                                 nm == "map_settled" || nm == "race";
   if (ns == "Http")     return true;  // all Http methods take kwargs
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
+  if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
   return false;
 }

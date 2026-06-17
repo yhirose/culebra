@@ -2753,8 +2753,11 @@ quotes, and an embedded quote is doubled (`""`).
 
 | Function | Result |
 | --- | --- |
-| `CSV.parse(text: String) -> Array<Array<String>>` | rows of String fields |
-| `CSV.stringify(rows: Array) -> String` | CSV text; each row must be an Array, each field rendered like `to_string` |
+| `CSV.parse(text: String, delimiter: String = ",") -> Array<Array<String>>` | rows of String fields |
+| `CSV.stringify(rows: Array, delimiter: String = ",") -> String` | CSV text; each row must be an Array, each field rendered like `to_string` |
+
+The `delimiter:` option (a single byte; first byte used) selects the field
+separator — pass `"\t"` for TSV. It may be given positionally or by keyword.
 
 `parse` is lenient (no errors): every field comes back as a `String` (numbers
 are not inferred), an empty input yields no rows, and a trailing newline does
@@ -2767,6 +2770,7 @@ well-formed input.
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
 puts(rows[1])                                         # => ['alice', '30']
 puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
+puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
 To convert numeric columns, map over the parsed fields with `to_long` /

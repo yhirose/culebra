@@ -21,7 +21,8 @@ namespace culebra::csv {
 // trailing newline does not add an empty final row. A field is quoted with `"`
 // and an embedded `"` is written `""`; a quote that opens a field switches to
 // quoted mode where commas and newlines are literal.
-inline std::vector<std::vector<std::string>> parse(std::string_view s) {
+inline std::vector<std::vector<std::string>> parse(std::string_view s,
+                                                  char delim = ',') {
   std::vector<std::vector<std::string>> rows;
   std::vector<std::string> row;
   std::string field;
@@ -49,7 +50,7 @@ inline std::vector<std::vector<std::string>> parse(std::string_view s) {
       in_quotes = true;
       pending = true;
       i++;
-    } else if (c == ',') {
+    } else if (c == delim) {
       row.push_back(std::move(field));
       field.clear();
       pending = true;
@@ -76,12 +77,12 @@ inline std::vector<std::vector<std::string>> parse(std::string_view s) {
   return rows;
 }
 
-// Quote one field if it contains a comma, double quote, CR or LF (doubling any
-// embedded quote); otherwise return it unchanged.
-inline std::string quote_field(std::string_view f) {
+// Quote one field if it contains the delimiter, a double quote, CR or LF
+// (doubling any embedded quote); otherwise return it unchanged.
+inline std::string quote_field(std::string_view f, char delim = ',') {
   bool needs = false;
   for (char c : f) {
-    if (c == ',' || c == '"' || c == '\n' || c == '\r') {
+    if (c == delim || c == '"' || c == '\n' || c == '\r') {
       needs = true;
       break;
     }
@@ -98,17 +99,18 @@ inline std::string quote_field(std::string_view f) {
   return out;
 }
 
-// Serialize rows into CSV text: each field quoted as needed, comma-joined,
-// records separated by `\n` (no trailing newline, so parse round-trips).
-inline std::string stringify(
-    const std::vector<std::vector<std::string>>& rows) {
+// Serialize rows into CSV text: each field quoted as needed, joined by the
+// delimiter, records separated by `\n` (no trailing newline, so parse
+// round-trips).
+inline std::string stringify(const std::vector<std::vector<std::string>>& rows,
+                             char delim = ',') {
   std::string out;
   for (size_t r = 0; r < rows.size(); r++) {
     if (r) out += '\n';
     const auto& row = rows[r];
     for (size_t c = 0; c < row.size(); c++) {
-      if (c) out += ',';
-      out += quote_field(row[c]);
+      if (c) out += delim;
+      out += quote_field(row[c], delim);
     }
   }
   return out;
