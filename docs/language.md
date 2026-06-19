@@ -1289,6 +1289,18 @@ Example:
     b = Vec.new(3, 4)
     c = (a + b) * 2           # Vec(8, 12)
 
+**Trait-method fallback.** When a class does not define the explicit
+`__eq__` / `__lt__` dunders, the comparison operators fall back to the
+`Eq` and `Comparable` trait methods: `==` / `!=` route through
+`eq(other)`, and `<` / `<=` / `>` / `>=` derive from `cmp(other)` (the
+canonical `Comparable` method). This is what makes a `@derive(Eq,
+Comparable)` (or hand-written `eq` / `cmp`) class usable with operators
+directly — `a == b` and `a < b` work without writing `__eq__` / `__lt__`.
+Precedence is **explicit dunder > trait method > default** (structural
+equality for `==`; a `type error` for ordering an `Object` with neither).
+Routing `==` through `eq` also keeps the operator consistent with the
+key equality used by `Object` / `Set` lookups.
+
 **Subscripting.** A class instance can define `__index__(key)` and
 `__setindex__(key, value)` so `obj[k]` and `obj[k] = v` delegate to it —
 a user collection wrapper then subscripts like a built-in. These fire

@@ -552,6 +552,7 @@ inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
 extern "C" {
 inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
+inline bool _extract_bool_and_release(JitValue v);
 }
 extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 
@@ -2049,9 +2050,10 @@ inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   auto r = _culebra_invoke_method1(
       cls, {TAG_OBJECT, reinterpret_cast<int64_t>(a)},
       {TAG_OBJECT, reinterpret_cast<int64_t>(b)});
-  bool result = (r.tag == TAG_BOOL && r.data != 0);
-  _culebra_value_release_impl(r.tag, r.data);
-  return result;
+  // Coerce the return via `to_bool` semantics (Bool/Long/Float), matching
+  // the interpreter's `_invoke_user_eq` so a non-Bool `eq` agrees across
+  // backends (and, like interp, throws on a non-coercible return).
+  return _extract_bool_and_release(r);
 }
 
 // Look up a Function-typed property on a JitObject by name.
@@ -2248,7 +2250,26 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal(
     return _extract_bool_and_release(*r);
   if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__"))
     return _extract_bool_and_release(*r);
+  // Eq-trait fallback: route through a user/derived `eq(other)` so the
+  // operator agrees with key equality (JitValueEq dispatches `eq` too).
+  if (t1 == TAG_OBJECT && t2 == TAG_OBJECT) {
+    if (auto e = _jit_object_user_eq(reinterpret_cast<JitObject*>(d1),
+                                     reinterpret_cast<JitObject*>(d2)))
+      return *e;
+  }
   return _culebra_value_equal(t1, d1, t2, d2);
+}
+
+// Comparable-trait fallback: derive ordering from a user/derived
+// `cmp(other)` when no `__lt__`/`__le__` dunder is present. Mirrors the
+// interpreter's `try_cmp` in compare_values.
+inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
+                                          int8_t t2, int64_t d2) {
+  if (auto r = _try_special_binop(t1, d1, t2, d2, "cmp")) {
+    if (r->tag == TAG_LONG) return r->data;
+    _culebra_value_release_impl(r->tag, r->data);
+  }
+  return std::nullopt;
 }
 
 // Try `lhs.__le__(rhs)`, falling back to `__lt__` || `__eq__` to match
@@ -2277,18 +2298,22 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 CUL_DEF_ORD_OP(less, <,
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return _extract_bool_and_release(*r);
+  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c < 0;
 )
 CUL_DEF_ORD_OP(leq, <=,
   if (auto r = _special_le(t1, d1, t2, d2)) return *r;
+  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c <= 0;
 )
 // a > b ≡ !(a <= b)
 CUL_DEF_ORD_OP(greater, >,
   if (auto r = _special_le(t1, d1, t2, d2)) return !*r;
+  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c > 0;
 )
 // a >= b ≡ !(a < b)
 CUL_DEF_ORD_OP(geq, >=,
   if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
     return !_extract_bool_and_release(*r);
+  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c >= 0;
 )
 #undef CUL_DEF_ORD_OP
 

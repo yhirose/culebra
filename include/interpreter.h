@@ -8493,24 +8493,49 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       if (auto r = try_special_binop(rhs, lhs, "__eq__", env)) return r;
       return std::nullopt;
     };
+    // Eq-trait fallback: when no explicit `__eq__` dunder, route `==`/`!=`
+    // through a user/derived `eq(other)` so the operator agrees with the
+    // key equality used by Object/Set (ValueEq also dispatches `eq`).
+    auto try_eq_method = [&]() -> std::optional<bool> {
+      if (lhs.type == Value::Object && rhs.type == Value::Object &&
+          lhs.to_object().has("eq") && rhs.to_object().has("eq")) {
+        return _invoke_user_eq(lhs, rhs);
+      }
+      return std::nullopt;
+    };
+    // Comparable-trait fallback: when no `__lt__`/`__le__` dunder, derive
+    // ordering from a user/derived `cmp(other)` (the canonical Comparable
+    // method; the trait-default lt/le/gt/ge are not stored on instances).
+    auto try_cmp = [&]() -> std::optional<long> {
+      if (auto r = try_special_binop(lhs, rhs, "cmp", env)) {
+        if (r->type == Value::Long) return r->template get<long>();
+      }
+      return std::nullopt;
+    };
     if (lhs.type == Value::Object || rhs.type == Value::Object) {
       if (ope == "==") {
         if (auto r = try_eq()) return Value(bool_val(*r));
+        if (auto e = try_eq_method()) return Value(*e);
       } else if (ope == "!=") {
         if (auto r = try_eq()) return Value(!bool_val(*r));
+        if (auto e = try_eq_method()) return Value(!*e);
       }
     }
     if (lhs.type == Value::Object) {
       if (ope == "<") {
         if (auto r = try_special_binop(lhs, rhs, "__lt__", env))
           return Value(bool_val(*r));
+        if (auto c = try_cmp()) return Value(*c < 0);
       } else if (ope == "<=") {
         if (auto r = le_as_bool()) return Value(*r);
+        if (auto c = try_cmp()) return Value(*c <= 0);
       } else if (ope == ">") {
         if (auto r = le_as_bool()) return Value(!*r);
+        if (auto c = try_cmp()) return Value(*c > 0);
       } else if (ope == ">=") {
         if (auto r = try_special_binop(lhs, rhs, "__lt__", env))
           return Value(!bool_val(*r));
+        if (auto c = try_cmp()) return Value(*c >= 0);
       }
     }
 
