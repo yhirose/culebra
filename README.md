@@ -179,6 +179,8 @@ Documentation
   / [日本語](docs/stdlib.ja.md)
 * Embedding from C++: [`docs/embedding.md`](docs/embedding.md)
   / [日本語](docs/embedding.ja.md)
+* Wrapping C++ libraries (`culebra wrap`): [`docs/wrapping.md`](docs/wrapping.md)
+  / [日本語](docs/wrapping.ja.md)
 * Standalone binary build: [`docs/binary_build.md`](docs/binary_build.md)
   / [日本語](docs/binary_build.ja.md)
 * Implementation internals (en only): [`docs/internals.md`](docs/internals.md)

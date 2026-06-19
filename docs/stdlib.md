@@ -39,12 +39,12 @@ Conventions used below:
 4. [`File`](#4-file) — stateful handle for streaming read/write/seek
 5. [`Time`](#5-time) — `Instant` / `Duration` classes, ISO 8601, calendar arithmetic, nanosecond precision
 6. [`Random`](#6-random) — seedable PRNG (uniform, gauss, shuffle, weighted_choice)
-7. [`Sys`](#7-sys) — argv, exit, env, executable
+7. [`Sys`](#7-sys) — argv, exit, env, executable; `GC` heap introspection lives here too
 8. [`Tensor`](#8-tensor) — N-dimensional numeric tensor with a BLAS-backed lazy graph
 9. [`JSON`](#9-json) — stringify / parse round-trip
 10. [`Args`](#10-args) — declarative CLI argument parser (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — run external commands synchronously, capture stdout/stderr/exit
-12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary; `Channel`, `Parallel`, and `SharedBuffer` (zero-copy shared fixed-layout data) live here too
+12. [`Isolate`](#12-isolate) — run a closure on another thread (own heap), copy values across the boundary; `Channel`, `Parallel`, `Signal` (route Ctrl+C to a channel), `SharedBuffer` (zero-copy shared fixed-layout data), and `Shared` (immutable values shared by reference) live here too
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request)
@@ -83,6 +83,9 @@ Conventions used below:
 | Generate a UUID | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
+| Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
+| Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
+| Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, heap_bytes}` |
 | String / Array / Object methods | [language spec §17](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §18](language.md) |
 | Conversion (`to_long`, `to_float`, `to_string`, `type_of`) | [language spec §18](language.md) |
@@ -941,6 +944,33 @@ to that standalone binary.)
 # doctest: skip
 puts(Sys.executable)           # '/usr/local/bin/culebra'
 ```
+
+### `GC` — heap introspection
+
+`GC.stat()` runs a full collection and returns an `Object` describing the
+live heap right after it:
+
+| key | type | meaning |
+|---|---|---|
+| `live_objects` | `Long` | number of reachable heap objects |
+| `heap_bytes` | `Long` | bytes those objects occupy |
+
+Because it collects first, the numbers report *reachable* state, not cycle
+residue still awaiting sweep. The call itself allocates the result `Object`,
+so back-to-back readings differ by a small constant — measure a delta around
+the code under test rather than an absolute count.
+
+```culebra
+# doctest: skip
+let base = GC.stat().live_objects
+build_some_structure()
+puts(GC.stat().live_objects - base)   # objects retained by the structure
+```
+
+This is the foundation for leak-regression tests (see
+`tests/test_gc_no_leak.cul`): assert that a delta stays bounded across many
+iterations. Memory is otherwise managed automatically — see the language
+spec for the memory model and deterministic `drop`.
 
 ---
 
@@ -2858,14 +2888,16 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ## 22. Not included (yet)
 
-### Date, time
+### Heavier data structures
 
-Deferred. Scripts that need these today can call out through
-`FS.read` / `FS.write` with a helper process.
+No `Queue`, `Deque`, or priority-heap type. `Set` and `Tuple` are
+language built-ins (see [`docs/language.md`](language.md)); reach for
+`Array` and `Object` for everything else.
 
-### Collections beyond `Array`/`Object`
+### Networking / OS extras
 
-No `Set`, `Queue`, `Tuple`, etc. Use `Array` and `Object` for now.
+No raw TCP/UDP sockets, DNS resolver, SQLite, or file watcher. Shell
+out through [§11 Proc](#11-proc) when you need them.
 
 ---
 

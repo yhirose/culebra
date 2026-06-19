@@ -37,12 +37,12 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 4. [`File`](#4-file) — ストリーミング読み書き/seek の状態付きハンドル
 5. [`Time`](#5-time) — `Instant` / `Duration` クラス、ISO 8601、カレンダー算術、ナノ秒精度
 6. [`Random`](#6-random) — シード可能な PRNG（uniform / gauss / shuffle / weighted_choice）
-7. [`Sys`](#7-sys) — argv / exit / env
+7. [`Sys`](#7-sys) — argv / exit / env / executable。`GC` ヒープ情報の取得も同節
 8. [`Tensor`](#8-tensor) — N 次元数値テンソル、BLAS 対応 lazy graph
 9. [`JSON`](#9-json) — stringify / parse の相互変換
 10. [`Args`](#10-args) — 宣言的な CLI 引数パーサ (positional / option / subcommand / `--help`)
 11. [`Proc`](#11-proc) — 外部コマンドを同期実行し stdout/stderr/終了コードを取得
-12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー。`Channel` / `Parallel` / `SharedBuffer`（zero-copy 共有する固定レイアウトデータ）も同節
+12. [`Isolate`](#12-isolate) — クロージャを別スレッド（独立ヒープ）で実行、値は境界でコピー。`Channel` / `Parallel` / `Signal`（Ctrl+C をチャネルへ振り向け）/ `SharedBuffer`（zero-copy 共有する固定レイアウトデータ）/ `Shared`（参照共有する immutable 値）も同節
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` 一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme 単位の正規表現
 15. [`Http`](#15-http) — 同期 HTTP/HTTPS クライアント（get/post/put/delete/head/request）
@@ -81,6 +81,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | UUID の生成 | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
+| 可変長の read-only データをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
+| Ctrl+C / SIGINT を綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
+| ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, heap_bytes}` |
 | 行列・テンソル演算（BLAS 対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Object のメソッド | [言語仕様 §17](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §18](language.ja.md) |
@@ -908,6 +911,32 @@ puts(Sys.env('NOT_A_VAR'))     # ''
 # doctest: skip
 puts(Sys.executable)           # '/usr/local/bin/culebra'
 ```
+
+### `GC` — ヒープ情報の取得
+
+`GC.stat()` はフルコレクションを実行し、その直後の生きたヒープを表す
+`Object` を返す:
+
+| キー | 型 | 意味 |
+|---|---|---|
+| `live_objects` | `Long` | 到達可能なヒープオブジェクト数 |
+| `heap_bytes` | `Long` | それらが占めるバイト数 |
+
+先にコレクションを走らせるので、数値は sweep 待ちの循環残渣ではなく
+*到達可能な* 状態を表す。呼び出し自体が結果 `Object` を確保するため、
+連続して読むと小さな定数分だけ差が出る — 絶対値ではなく対象コード前後の
+差分（delta）を測ること。
+
+```culebra
+# doctest: skip
+let base = GC.stat().live_objects
+build_some_structure()
+puts(GC.stat().live_objects - base)   # 構造が保持しているオブジェクト数
+```
+
+これはリーク回帰テストの土台になる（`tests/test_gc_no_leak.cul` 参照）:
+多数の反復をまたいで delta が有界に留まることを assert する。メモリは
+それ以外は自動管理 — メモリモデルと確定的 `drop` は言語仕様を参照。
 
 ---
 
@@ -2749,15 +2778,16 @@ run_with(IO, "via parameter")
 
 ## 22. 未収録（将来検討）
 
-### 日時
+### 重量級データ構造
 
-将来対応。必要なら `FS.read` / `FS.write` 経由でヘルパープロセスを
-呼ぶ形で代用できます。
+`Queue` / `Deque` / 優先度ヒープはありません。`Set` と `Tuple` は
+言語組込みです（[`docs/language.ja.md`](language.ja.md) 参照）。それ以外は
+`Array` と `Object` で代用してください。
 
-### `Array`/`Object` 以外のコレクション
+### ネットワーク / OS 拡張
 
-`Set`, `Queue`, `Tuple` などはありません。当面は `Array` と
-`Object` で代用してください。
+生 TCP/UDP ソケット・DNS リゾルバ・SQLite・ファイル監視はありません。
+必要なら [§11 Proc](#11-proc) でサブプロセスに委譲してください。
 
 ---
 
