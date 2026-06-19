@@ -725,6 +725,9 @@ let optr = [
   'class B { new(a) { this.a = a } cmp(other) { "x" } }; B.new(1) < B.new(2)',
   # eq return is coerced via to_bool (Long/Float truthy), matching interp
   'class E { new(n) { this.n = n } eq(other) { this.n } }; to_string(E.new(5) == E.new(9)) + to_string(E.new(0) == E.new(9))',
+  # non-coercible eq return throws with the operator position on both backends
+  'class E { new(a) { this.a = a } eq(other) { "x" } }; E.new(1) == E.new(2)',
+  'class E { new(a) { this.a = a } __eq__(other) { "x" } }; E.new(1) == E.new(2)',
   # operator equality and key equality agree (no divergence)
   '@derive(Eq, Hash) class P { new(a) { this.a = a } }; mut bag = {}; mut bag[P.new(7)] = "v"; bag[P.new(7)] + to_string(P.new(7) == P.new(7))']
 for c in optr {

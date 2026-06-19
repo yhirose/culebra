@@ -14387,6 +14387,10 @@ struct JIT {
       builder_.CreateBr(mergeBB);
 
       builder_.SetInsertPoint(slowBB);
+      // `==`/`!=` may invoke a user `__eq__`/`eq` whose bool-coercion throws
+      // a positionless error; publish the operator position so the exception
+      // boundary backfills it (the ordering ops carry line/col explicitly).
+      emit_set_op_pos();
       auto slowEq = emit_call(
           module_->getOrInsertFunction(rt::value_equal,
                                        builder_.getInt1Ty(),
