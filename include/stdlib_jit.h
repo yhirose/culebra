@@ -603,6 +603,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_term_raw_off() {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_term_flush() {
   culebra::_term_detail::flush();
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_term_resized() {
+  return culebra::_term_detail::take_resize();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
     double timeout) {
   return _culebra_heap_str(culebra::_term_detail::read_key(timeout));
@@ -5016,6 +5019,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::term_raw_on, jit.builder_.getVoidTy());
   jit.module_->getOrInsertFunction(rt::term_raw_off, jit.builder_.getVoidTy());
   jit.module_->getOrInsertFunction(rt::term_flush, jit.builder_.getVoidTy());
+  jit.module_->getOrInsertFunction(rt::term_resized, jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::term_read_key, ptrTy,
                                    jit.builder_.getDoubleTy());
   }
@@ -5874,6 +5878,8 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_call(module_->getFunction(rt::term_flush), {});
       return make_nil();
     }
+    if (method == "resized" && a.empty())
+      return make_bool(emit_call(module_->getFunction(rt::term_resized), {}));
     if (method == "read_key" && a.size() == 1) {
       auto t = compile(*a[0]);
       emit_type_check(t, "Float", "parameter 'timeout'", a[0].get());

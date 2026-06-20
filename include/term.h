@@ -11,6 +11,7 @@
 // Underscore-prefixed `_Term` marks these as the wrapper's ABI, not a stable
 // surface for direct use.
 
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <poll.h>
@@ -33,12 +34,32 @@ inline bool& _raw_active() {
   return b;
 }
 
+// Set by the SIGWINCH handler when the terminal is resized; consumed by
+// `take_resize`. The render loop polls this to know it must re-query the
+// size and repaint. (Only SIGWINCH is touched — separate from culebra's
+// cooperative SIGINT handling.)
+inline volatile std::sig_atomic_t& _winch_flag() {
+  static volatile std::sig_atomic_t f = 0;
+  return f;
+}
+inline void _winch_handler(int) { _winch_flag() = 1; }
+
+// True (once) if a resize happened since the last call. Clears the flag.
+inline bool take_resize() {
+  if (_winch_flag()) {
+    _winch_flag() = 0;
+    return true;
+  }
+  return false;
+}
+
 // Restore cooked mode. Registered with atexit on first raw_on so an abnormal
 // exit (uncaught error, signal that bypasses culebra's scope unwinding) does
 // not leave the user's terminal wedged in raw mode.
 inline void raw_off() {
   if (!_raw_active()) return;
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &_saved_termios());
+  std::signal(SIGWINCH, SIG_DFL);
   _raw_active() = false;
 }
 
@@ -61,7 +82,15 @@ inline void raw_on() {
   raw.c_oflag &= ~(OPOST);
   raw.c_cc[VMIN] = 0;
   raw.c_cc[VTIME] = 0;
-  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0) _raw_active() = true;
+  if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return;
+  _raw_active() = true;
+  // Watch for terminal resizes. No SA_RESTART, so a SIGWINCH interrupts a
+  // blocking poll in read_key and the loop notices the resize promptly.
+  struct sigaction sa;
+  sa.sa_handler = _winch_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGWINCH, &sa, nullptr);
 }
 
 // Terminal width / height in character cells, querying the controlling

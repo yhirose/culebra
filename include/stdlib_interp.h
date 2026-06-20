@@ -1446,6 +1446,15 @@ inline Value make_term_primitives_namespace() {
           })),
       false);
 
+  // _Term.resized() -> Bool (true once after a SIGWINCH terminal resize)
+  ns.initialize("resized",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(_term_detail::take_resize());
+          },
+          "Bool"sv)),
+      false);
+
   // _Term.read_key(timeout: Float) -> String (raw bytes; "" on timeout)
   ns.initialize("read_key",
       Value(FunctionValue({{"timeout", false, "Float"sv}},
@@ -4281,7 +4290,7 @@ let _term_module = fn () {
     put(x, y, s) { this._buf = this._buf + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" + s; this }
     write(s) { this._buf = this._buf + s; this }
     flush() { IO.print(this._buf); _Term.flush(); this._buf = ""; this }
-    poll(timeout) { _term_key(_Term.read_key(timeout)) }
+    poll(timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } }
   }
   {
     cols: fn () { _Term.cols() },
@@ -4300,7 +4309,8 @@ let _term_module = fn () {
     underline: fn (s) { "\x1b[4m" + s + "\x1b[24m" },
     reverse: fn (s) { "\x1b[7m" + s + "\x1b[27m" },
     key: fn (raw) { _term_key(raw) },
-    poll: fn (timeout) { _term_key(_Term.read_key(timeout)) },
+    resized: fn () { _Term.resized() },
+    poll: fn (timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } },
     app: fn (body) {
       _Term.raw_on()
       IO.print("\x1b[?1049h\x1b[?25l")

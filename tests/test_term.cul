@@ -57,4 +57,8 @@ assert_eq(s.put(0, 0, "a").write("b")._buf, "\x1b[2J\x1b[H\x1b[1;1Hab")
 assert_eq(s.cols(), 80)
 assert_eq(s.rows(), 24)
 
+// No resize pending under the test runner (SIGWINCH never fired).
+assert_eq(Term.resized(), false)
+assert_eq(s.poll(0.0), "")        // no input, no resize
+
 puts("test_term ok")
