@@ -57,7 +57,6 @@ let Y = build_one_hot(y, N_OUT)        # [N, 10]
 puts("[culebra-tensor-train] loaded train={n} test={Xt.shape()[0]} in {t_load}s")
 
 let lr = ETA / to_float(BATCH)
-let inv_batch = 1.0 / to_float(BATCH)
 
 let run_epoch = fn (W1, b1, W2, b2) {
   mut s = 0
@@ -73,9 +72,9 @@ let run_epoch = fn (W1, b1, W2, b2) {
     Tensor.eval(d2, d1)
 
     W2 -= d2.dot(a1.transpose()) * lr
-    b2 -= d2.sum(1).reshape([N_OUT, 1]) * lr * inv_batch
+    b2 -= d2.sum(1).reshape([N_OUT, 1]) * lr
     W1 -= d1.dot(xb.transpose()) * lr
-    b1 -= d1.sum(1).reshape([N_HID, 1]) * lr * inv_batch
+    b1 -= d1.sum(1).reshape([N_HID, 1]) * lr
 
     Tensor.eval(W1, b1, W2, b2)
     s = s + BATCH
