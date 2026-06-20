@@ -1446,6 +1446,16 @@ inline Value make_term_primitives_namespace() {
           })),
       false);
 
+  // _Term.width(s: String) -> Long (display columns; wide/emoji = 2)
+  ns.initialize("width",
+      Value(FunctionValue({{"s", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            return Value(static_cast<long>(
+                _term_detail::width(env->get("s").to_string())));
+          },
+          "Long"sv)),
+      false);
+
   // _Term.resized() -> Bool (true once after a SIGWINCH terminal resize)
   ns.initialize("resized",
       Value(FunctionValue({},
@@ -4309,6 +4319,7 @@ let _term_module = fn () {
     underline: fn (s) { "\x1b[4m" + s + "\x1b[24m" },
     reverse: fn (s) { "\x1b[7m" + s + "\x1b[27m" },
     key: fn (raw) { _term_key(raw) },
+    width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },
     poll: fn (timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } },
     app: fn (body) {

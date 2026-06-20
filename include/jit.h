@@ -9390,6 +9390,7 @@ inline constexpr auto term_raw_on          = "culebra_runtime_term_raw_on";
 inline constexpr auto term_raw_off         = "culebra_runtime_term_raw_off";
 inline constexpr auto term_flush           = "culebra_runtime_term_flush";
 inline constexpr auto term_resized         = "culebra_runtime_term_resized";
+inline constexpr auto term_width           = "culebra_runtime_term_width";
 inline constexpr auto term_read_key        = "culebra_runtime_term_read_key";
 inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_default  = "culebra_runtime_object_get_default";

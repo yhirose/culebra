@@ -61,4 +61,14 @@ assert_eq(s.rows(), 24)
 assert_eq(Term.resized(), false)
 assert_eq(s.poll(0.0), "")        // no input, no resize
 
+// --- display width (wcwidth): ASCII = 1, CJK / emoji = 2, combining = 0 ---
+assert_eq(Term.width("a"), 1)
+assert_eq(Term.width("abc"), 3)
+assert_eq(Term.width(""), 0)
+assert_eq(Term.width("あ"), 2)        // hiragana (wide)
+assert_eq(Term.width("中文"), 4)       // CJK (2 + 2)
+assert_eq(Term.width("🐸"), 2)        // emoji (wide)
+assert_eq(Term.width("a🐸b"), 4)      // 1 + 2 + 1
+assert_eq(Term.width("e\u{0301}"), 1) // e + combining acute = 1
+
 puts("test_term ok")
