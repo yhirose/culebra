@@ -20,6 +20,9 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <unicodelib.h>
+#include <unicodelib_encodings.h>
+
 namespace culebra {
 namespace _term_detail {
 
@@ -161,62 +164,18 @@ inline int color_level() {
 // lacks a trailing newline; a TUI builds a whole frame then flushes once.
 inline void flush() { std::cout.flush(); }
 
-// Display width (terminal columns) of one Unicode scalar: 0 for control /
-// combining / zero-width, 2 for wide (CJK, fullwidth, most emoji), else 1.
-// A compact self-contained table — enough for laying out CJK text and emoji
-// without a full Unicode database.
-inline int scalar_width(char32_t cp) {
-  if (cp == 0) return 0;
-  if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;            // control
-  if ((cp >= 0x0300 && cp <= 0x036f) ||                          // combining
-      (cp >= 0x200b && cp <= 0x200f) || cp == 0xfeff ||          // zero-width
-      (cp >= 0xfe00 && cp <= 0xfe0f))                            // var selectors
-    return 0;
-  if ((cp >= 0x1100 && cp <= 0x115f) ||   // Hangul Jamo
-      (cp >= 0x2e80 && cp <= 0x303e) ||   // CJK radicals .. Kangxi
-      (cp >= 0x3041 && cp <= 0x33ff) ||   // Hiragana .. CJK symbols
-      (cp >= 0x3400 && cp <= 0x4dbf) ||   // CJK Ext A
-      (cp >= 0x4e00 && cp <= 0x9fff) ||   // CJK Unified
-      (cp >= 0xa000 && cp <= 0xa4cf) ||   // Yi
-      (cp >= 0xac00 && cp <= 0xd7a3) ||   // Hangul syllables
-      (cp >= 0xf900 && cp <= 0xfaff) ||   // CJK compatibility
-      (cp >= 0xfe10 && cp <= 0xfe19) ||   // vertical forms
-      (cp >= 0xfe30 && cp <= 0xfe6f) ||   // CJK compatibility forms
-      (cp >= 0xff00 && cp <= 0xff60) ||   // fullwidth forms
-      (cp >= 0xffe0 && cp <= 0xffe6) ||   // fullwidth signs
-      (cp >= 0x1f300 && cp <= 0x1faff) || // emoji / pictographs / symbols
-      (cp >= 0x20000 && cp <= 0x3fffd))   // CJK Ext B+
-    return 2;
-  return 1;
-}
-
-// Display width of a UTF-8 string = sum of its scalars' widths. Malformed
-// bytes count as width 1 so the function never under-counts a frame.
+// Display width (terminal columns) of a UTF-8 string, measured per extended
+// grapheme cluster — so an emoji ZWJ sequence, a flag, a keycap, or a
+// base+variation-selector pair counts as one cell group rather than the sum
+// of its scalars. Delegates to cpp-unicodelib (UAX #11 + UTS #51), which
+// tracks the Unicode version the vendored library is pinned to; width thus
+// stays consistent with the grapheme / category / case-folding the rest of
+// culebra already sources from there. Ambiguous-width characters count as 1
+// (the modern non-East-Asian terminal convention).
 inline int width(const std::string& s) {
-  int w = 0;
-  size_t i = 0;
-  while (i < s.size()) {
-    unsigned char c = static_cast<unsigned char>(s[i]);
-    size_t n = c < 0x80 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4;
-    char32_t cp;
-    if (n == 1) {
-      cp = c;
-    } else if (i + n > s.size()) {
-      w += 1;
-      i += 1;
-      continue;
-    } else if (n == 2) {
-      cp = ((c & 0x1f) << 6) | (s[i + 1] & 0x3f);
-    } else if (n == 3) {
-      cp = ((c & 0x0f) << 12) | ((s[i + 1] & 0x3f) << 6) | (s[i + 2] & 0x3f);
-    } else {
-      cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3f) << 12) |
-           ((s[i + 2] & 0x3f) << 6) | (s[i + 3] & 0x3f);
-    }
-    w += scalar_width(cp);
-    i += n;
-  }
-  return w;
+  std::u32string u32;
+  unicode::utf8::decode(s.data(), s.size(), u32);
+  return unicode::width(u32.data(), u32.size());
 }
 
 }  // namespace _term_detail
