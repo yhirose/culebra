@@ -60,10 +60,15 @@ JIT, n_samples=0:
 
 | implementation         |  total wall |  ms/step |
 |------------------------|------------:|---------:|
-| Culebra Tensor (`--jit`) |    ~1.6 s |   ~3.5 ms |
+| Culebra Tensor (`--jit`) |    ~4.5 s |   ~2.8 ms |
 | Culebra scalar (`--jit`) |     6.21 s |    ~52 ms |
 
-The Tensor port is **~15× faster per step** than the scalar version.
+The Tensor wall is now JIT-compile-warmup-dominated: ~4.2 s compiling
+the module up front, then only ~0.28 s in the 100-step train loop
+(2.8 ms/step). Compare per-step rate, not total wall — at this size
+warmup swamps the loop, so total-wall is mostly a compile-time figure.
+
+The Tensor port is **~18× faster per step** than the scalar version.
 The scalar microgpt builds thousands of `Value` objects per training
 step (one per scalar arithmetic op); the Tensor port builds a few
 hundred `TNode`s per step (one per layer-level op + per-head slice

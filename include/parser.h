@@ -470,6 +470,7 @@ inline peg::parser& get_parser() {
     }
 
     parser.enable_ast();
+    parser.enable_packrat_parsing();
   }
 
   return parser;
