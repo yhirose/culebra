@@ -9711,10 +9711,14 @@ struct JIT {
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
   // All JIT-generated call sites (runtime functions, user functions,
   // closures) go through this so user `throw` propagates uniformly.
+  // A nounwind callee can never unwind, so it needs no landing-pad edge
+  // even inside a try — emit it as a plain `call`.
   llvm::CallBase* emit_call(llvm::FunctionCallee callee,
                             llvm::ArrayRef<llvm::Value*> args,
                             const llvm::Twine& name = "") {
-    if (current_lpad_) {
+    auto* f = llvm::dyn_cast<llvm::Function>(callee.getCallee());
+    bool may_throw = !f || !f->doesNotThrow();
+    if (current_lpad_ && may_throw) {
       auto fn = builder_.GetInsertBlock()->getParent();
       auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
       auto inv = builder_.CreateInvoke(callee, contBB, current_lpad_, args,
@@ -9759,18 +9763,13 @@ struct JIT {
   }
 
   // Indirect-call overload (function pointer + explicit FunctionType).
+  // Delegates to the FunctionCallee path: an indirect callee has no
+  // Function* to query, so dyn_cast there fails and it always takes the
+  // unwinding path inside a try — the behaviour this overload had directly.
   llvm::CallBase* emit_call(llvm::FunctionType* fty, llvm::Value* fnPtr,
                             llvm::ArrayRef<llvm::Value*> args,
                             const llvm::Twine& name = "") {
-    if (current_lpad_) {
-      auto fn = builder_.GetInsertBlock()->getParent();
-      auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
-      auto inv = builder_.CreateInvoke(fty, fnPtr, contBB, current_lpad_, args,
-                                       name);
-      builder_.SetInsertPoint(contBB);
-      return inv;
-    }
-    return builder_.CreateCall(fty, fnPtr, args, name);
+    return emit_call(llvm::FunctionCallee(fty, fnPtr), args, name);
   }
 
   // Re-raise the currently-handled exception (inside a catch-all
@@ -12640,6 +12639,14 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
+
+    // RC primitives never raise a culebra exception, so mark them nounwind:
+    // emit_call then drops the invoke/landing-pad edge at every RC site.
+    for (auto name : {rt::value_retain, rt::value_release, rt::cell_retain,
+                      rt::cell_release}) {
+      if (auto* f = module_->getFunction(name)) f->setDoesNotThrow();
+    }
+
     auto& h = current_hooks();
     if (h.declare_runtime) h.declare_runtime(*this);
   }
