@@ -346,6 +346,26 @@ The GC itself is written with RAII, never hand acquire/release:
   their existing handle: the JIT `JitTensor` struct is GC-managed, its `impl`
   shared_ptr is released by `~JitTensor` at sweep. No moving, so raw pointers
   handed to C++ stay valid.
+  - **Rooting: the precise collector is precise only if every live value is
+    reachable from a registered root.** `InterpGC` does **not** scan the C++
+    stack, so two classes of live-but-stack-only values must be rooted
+    explicitly or they get swept mid-program (a use-after-free surfacing as a
+    spurious `NameError` for a captured variable):
+    1. **Active env chains.** Collection only runs at **statement
+       boundaries** (`bump()` sets a `pending_` flag; `collect()` actually
+       fires from the STATEMENT dispatch and from `invoke_user_function`'s
+       entry). At that safe point the live envs are the current statement's
+       `env` plus every caller's `env` still on the C++ call stack. Each call
+       pushes its caller env onto `frame_roots_` (RAII `FrameRootGuard`), and
+       `collect()` seeds the mark set by walking the full `outer` chain of the
+       current env and every `frame_roots_` entry. Without this, a value bound
+       directly in an *untracked* scope env (e.g. `mut loss` in a `while` body
+       that defines no closure of its own) is unreachable from any tracked node
+       and its captured def_envs are swept.
+    2. **In-flight C++-stack temporaries.** Deferring the actual collect off
+       `bump()` to the next statement safe point also fixes the freshly-built
+       self-capturing closure held only as a C++ return value in transit — at a
+       statement boundary it has already been stored into a rooted env.
 - **Isolates / threads** (concurrency roadmap): each thread registers
   its stack base; collection is stop-the-world across the isolate's
   threads at safepoints (allocation points + loop back-edges). Per-isolate

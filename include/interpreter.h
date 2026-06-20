@@ -412,17 +412,39 @@ struct InterpGC {
   // Defined out-of-line below, where Environment is a complete type.
   void track_env(const std::shared_ptr<Environment>& e);
 
-  void collect();
+  // `current` + frame_roots_ seed the mark phase, so values reachable only
+  // through an untracked scope env (no closure's def_env, e.g. a `while` body
+  // holding `mut loss`) are not wrongly swept. See collect().
+  void collect(Environment* current = nullptr);
+
+  // Root the caller's env for a call's duration, so a collect fired inside the
+  // callee still sees the dynamic caller chain (lexical outer chains miss it).
+  void push_frame_root(Environment* e) { frame_roots_.push_back(e); }
+  void pop_frame_root() { frame_roots_.pop_back(); }
+
+  // Service a pending collect only at a GC safe point (statement boundary),
+  // where every live Value is anchored in a root. Mid-expression a freshly
+  // built cyclic object can sit only as an in-flight C++-stack temporary the
+  // collector can't scan, so collecting there would wrongly sweep it.
+  void collect_if_pending(Environment* current) {
+    if (pending_ && !running_) {
+      pending_ = false;
+      collect(current);
+    }
+  }
 
  private:
+  std::vector<Environment*> frame_roots_;
+
   std::vector<Entry> entries_;
   size_t alloc_counter_ = 0;
   static constexpr size_t GC_MIN_THRESHOLD = 10000;
   size_t threshold_ = GC_MIN_THRESHOLD;  // adaptive; see collect().
   bool running_ = false;
+  bool pending_ = false;  // a collect is due; serviced at the next safe point.
 
-  // CULEBRA_GC_STRESS=1 collects on every tracked allocation, surfacing any
-  // over-collection (a live node wrongly broken) immediately under the suite.
+  // CULEBRA_GC_STRESS=1 marks a collect pending on every tracked allocation,
+  // surfacing any over-collection (a live node wrongly broken) under the suite.
   static bool stress() {
     static const bool s = std::getenv("CULEBRA_GC_STRESS") != nullptr;
     return s;
@@ -431,12 +453,12 @@ struct InterpGC {
   void bump() {
     if (running_) return;
     if (stress()) {
-      collect();
+      pending_ = true;
       return;
     }
     if (++alloc_counter_ >= threshold_) {
       alloc_counter_ = 0;
-      collect();
+      pending_ = true;
     }
   }
 };
@@ -1806,6 +1828,16 @@ inline std::shared_ptr<Environment> make_scope(
   env->append_outer(std::move(outer));
   return env;
 }
+
+// RAII: roots the caller's env on the cycle collector for the duration of a
+// call, so a collect fired inside the callee keeps the caller's scope chain
+// reachable (see InterpGC::push_frame_root).
+struct FrameRootGuard {
+  explicit FrameRootGuard(Environment* e) { interp_gc().push_frame_root(e); }
+  ~FrameRootGuard() { interp_gc().pop_frame_root(); }
+  FrameRootGuard(const FrameRootGuard&) = delete;
+  FrameRootGuard& operator=(const FrameRootGuard&) = delete;
+};
 
 // --- Scope-exit resolution for the owned stack (design §14.3) ---
 
@@ -5417,6 +5449,10 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     if (ast.original_tag == "STATEMENT"_) {
       check_interrupt();
+      // GC safe point: at a statement boundary all live Values are anchored in
+      // a tracked root, so any collect deferred from mid-expression (where an
+      // in-flight cyclic temporary could be wrongly swept) runs safely here.
+      interp_gc().collect_if_pending(env.get());
       if (debugger_) {
         auto force_to_break = ast.tag == "DEBUGGER"_;
         debugger_(ast, *env, force_to_break);
@@ -7634,6 +7670,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       CallArgs args, size_t call_line, size_t call_column) {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
+    // Root the caller's env for the call's duration (GC safe-point reachability).
+    FrameRootGuard guard(env.get());
 
     // Native built-in functions (namespace methods / bare globals, body ==
     // nullptr) that declare a fixed positional signature reject the wrong
@@ -9671,7 +9709,7 @@ inline void InterpGC::track_env(const std::shared_ptr<Environment>& e) {
   push_entry(std::shared_ptr<void>(e, e.get()), /*is_env=*/true);
 }
 
-inline void InterpGC::collect() {
+inline void InterpGC::collect(Environment* current) {
   if (running_) return;
   running_ = true;
   using ValVec = std::vector<Value>;
@@ -9799,6 +9837,21 @@ inline void InterpGC::collect() {
   auto mark = [&](void* c, long) {
     if (reachable.insert(c).second && gc_refs.contains(c)) q.push(c);
   };
+
+  // Seed from the live stack roots: the safe-point env plus every active
+  // call-frame env. An untracked scope env (binds a value but is no closure's
+  // def_env, e.g. microgpt's `mut loss`) is not a root, so walk each root's
+  // WHOLE outer chain by hand — `mark` only queues tracked nodes, so an
+  // untracked mid-chain link would otherwise stop the BFS early.
+  auto seed_chain = [&](Environment* e) {
+    for (; e; e = e->outer.get()) {
+      reachable.insert(e);
+      walk_node(e, /*is_env=*/true, mark);
+    }
+  };
+  seed_chain(current);
+  for (Environment* fr : frame_roots_) seed_chain(fr);
+
   while (!q.empty()) {
     void* p = q.front();
     q.pop();
