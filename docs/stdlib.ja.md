@@ -2740,13 +2740,21 @@ puts(UUID.v4() != UUID.v4())    # => true
 | `Term.fg(s, n) -> String` | 256 色前景（`n` は 0–255） |
 | `Term.bg(s, n) -> String` | 256 色背景 |
 | `Term.rgb(s, r, g, b) -> String` | 24bit トゥルーカラー前景 |
+| `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | 名前付き 16 色前景 |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | 文字属性 |
+
+色は端末の**ケイパビリティレベル**（`0` なし / `1` 16 / `2` 256 / `3`
+トゥルーカラー）に適応します。レベルは `isatty`・`NO_COLOR`（あれば無効）・
+`FORCE_COLOR`・`COLORTERM`・`TERM` から検出。レベルを超える色は
+ダウンサンプル（トゥルーカラー → 最近傍 256 → 最近傍 16）され、レベル 0 では
+何も出さない（パイプ / `NO_COLOR` 時はプレーン）。`Term.level()` で取得、
+`Term.set_level(n)` で上書きできます。
 
 ```culebra
 puts(Term.bold(Term.fg("alert", 196)))   # 太字・明るい赤の "alert"
 ```
 
-### エスケープとサイズ
+### エスケープ・サイズ・幅
 
 | 関数 | 結果 |
 | --- | --- |
@@ -2755,37 +2763,44 @@ puts(Term.bold(Term.fg("alert", 196)))   # 太字・明るい赤の "alert"
 | `Term.hide()` / `Term.show()` | カーソルの非表示 / 表示 |
 | `Term.cols()` / `Term.rows() -> Long` | 端末サイズ（tty でなければ 80×24） |
 | `Term.size() -> (Long, Long)` | `(cols, rows)` |
+| `Term.width(s) -> Long` | 表示幅（全角 / 絵文字 = 2、結合 = 0） |
 | `Term.flush()` | バッファ済み出力をフラッシュ |
 
 ### キー入力
 
 `Term.key(raw) -> String` は生バイト列を名前に正規化します:
 `"Up"`・`"Down"`・`"Left"`・`"Right"`・`"Enter"`・`"Esc"`・`"Backspace"`、
-または文字そのもの（例 `"q"`・`" "`）。`""` は入力なしを表します。
+または文字そのもの（例 `"q"`・`" "`）。`""` は入力なし。
+`Term.resized() -> Bool` は端末リサイズ（SIGWINCH）後に一度 true を返し、
+`Screen.poll` はリサイズを `"Resize"` キーとして返します。
 
 ### `Term.app` と `Screen`
 
 `Term.app(fn (screen) { ... })` は raw モードと代替画面に入り、カーソルを
-隠し、**終了時に端末を復帰**します（正常終了・例外・Ctrl+C いずれも）—
-`defer` による保証です。コールバックは `Screen` を受け取ります:
+隠し、リサイズを監視し、**終了時に端末を復帰**します（正常終了・例外・
+Ctrl+C いずれも）— `defer` による保証です。コールバックは `Screen` を
+受け取ります:
 
 | メソッド | 効果 |
 | --- | --- |
 | `screen.size()` / `cols()` / `rows()` | 端末の寸法 |
-| `screen.clear()` | フレームバッファをクリア画面にリセット |
-| `screen.put(x, y, s)` | `(x, y)` に `s` を描画（バッファへ） |
-| `screen.write(s)` | バッファに `s` を追記 |
-| `screen.flush()` | バッファしたフレームを出力しバッファを空に |
-| `screen.poll(timeout) -> String` | 最大 `timeout` 秒キー入力を待ち、その名前（無ければ `""`）を返す |
+| `screen.clear()` | バックバッファを空フレーム（現在サイズ）にリセット |
+| `screen.set(x, y, glyph)` | 1 グラフェムをバックバッファに置く |
+| `screen.put(x, y, s)` | `s` のグラフェムを連続セルに配置 |
+| `screen.render() -> String` | 前フレームから画面を更新する最小エスケープ（フロントバッファも前進） |
+| `screen.flush()` | `render()` を出力してフラッシュ |
+| `screen.poll(timeout) -> String` | 最大 `timeout` 秒キー入力（または `"Resize"`）を待ち名前を返す（無ければ `""`） |
 
-`Screen` はフレーム全体をメモリにバッファし `flush` で一括出力するので
-ちらつきません。`clear` + `put` でフレームを組み立て `flush`、入力は `poll`
-（フレームごとのウェイトも兼ねる）で読みます。
+`Screen` はセルのダブルバッファです。`flush` は前フレームから**変化した
+セルだけ**を出力するので、ライブ UI がちらつかず最小出力で更新されます
+（全角グリフは 2 セル、リサイズは全再描画）。`clear` + `set` / `put` で
+フレームを組み立て `flush`、入力は `poll`（フレームごとのウェイトも兼ねる）
+で読みます。セルはプレーンなグリフを保持します（セル単位の色は未対応）。
 
 ```culebra
 Term.app(fn (s) {
   s.clear()
-  s.put(2, 1, Term.fg("hello", 46))
+  s.put(2, 1, "hello")
   s.flush()
   s.poll(2.0)            # 最大 2 秒キー入力を待つ
 })

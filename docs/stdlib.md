@@ -2851,13 +2851,21 @@ so calls nest:
 | `Term.fg(s, n) -> String` | 256-colour foreground (`n` is 0–255) |
 | `Term.bg(s, n) -> String` | 256-colour background |
 | `Term.rgb(s, r, g, b) -> String` | 24-bit truecolour foreground |
+| `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | named 16-colour foreground |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | text attributes |
+
+Colours adapt to the terminal's **capability level** — `0` none, `1` 16,
+`2` 256, `3` truecolour — detected from `isatty`, `NO_COLOR` (present ⇒ off),
+`FORCE_COLOR`, `COLORTERM`, and `TERM`. A colour beyond the level is
+downsampled (truecolour → nearest 256 → nearest 16), and at level 0 nothing
+is emitted, so piped or `NO_COLOR` output stays plain. `Term.level()` reads
+the level and `Term.set_level(n)` overrides it.
 
 ```culebra
 puts(Term.bold(Term.fg("alert", 196)))   # bold bright-red "alert"
 ```
 
-### Escapes and size
+### Escapes, size, and width
 
 | Function | Result |
 | --- | --- |
@@ -2866,6 +2874,7 @@ puts(Term.bold(Term.fg("alert", 196)))   # bold bright-red "alert"
 | `Term.hide()` / `Term.show()` | hide / show the cursor |
 | `Term.cols()` / `Term.rows() -> Long` | terminal size in cells (80×24 off a tty) |
 | `Term.size() -> (Long, Long)` | `(cols, rows)` |
+| `Term.width(s) -> Long` | display width in columns (wide / emoji = 2, combining = 0) |
 | `Term.flush()` | flush buffered output |
 
 ### Key input
@@ -2873,30 +2882,37 @@ puts(Term.bold(Term.fg("alert", 196)))   # bold bright-red "alert"
 `Term.key(raw) -> String` normalizes a raw byte sequence to a name:
 `"Up"`, `"Down"`, `"Left"`, `"Right"`, `"Enter"`, `"Esc"`, `"Backspace"`, or
 the literal character (e.g. `"q"`, `" "`); `""` means no input.
+`Term.resized() -> Bool` is true once after the terminal is resized
+(SIGWINCH), and `Screen.poll` surfaces a pending resize as the `"Resize"` key.
 
 ### `Term.app` and `Screen`
 
 `Term.app(fn (screen) { ... })` enters raw mode and the alternate screen,
-hides the cursor, and **restores the terminal on exit** — normal return, an
-exception, or Ctrl+C — via `defer`. The callback receives a `Screen`:
+hides the cursor, watches for resizes, and **restores the terminal on exit**
+— normal return, an exception, or Ctrl+C — via `defer`. The callback
+receives a `Screen`:
 
 | Method | Effect |
 | --- | --- |
 | `screen.size()` / `cols()` / `rows()` | terminal dimensions |
-| `screen.clear()` | reset the frame buffer to a cleared screen |
-| `screen.put(x, y, s)` | draw `s` at `(x, y)` into the frame buffer |
-| `screen.write(s)` | append `s` to the frame buffer |
-| `screen.flush()` | write the buffered frame and clear the buffer |
-| `screen.poll(timeout) -> String` | wait up to `timeout` seconds for a key, returning its name (or `""`) |
+| `screen.clear()` | reset the back buffer to a blank frame (current size) |
+| `screen.set(x, y, glyph)` | place one grapheme into the back buffer |
+| `screen.put(x, y, s)` | lay the graphemes of `s` into successive cells |
+| `screen.render() -> String` | minimal escapes to update the screen from the last frame (and advance the front buffer) |
+| `screen.flush()` | print `render()` and flush |
+| `screen.poll(timeout) -> String` | wait up to `timeout` seconds for a key (or `"Resize"`), returning its name (or `""`) |
 
-A `Screen` buffers a whole frame in memory and writes it in one `flush`, so
-updates do not flicker. Build a frame with `clear` + `put`, then `flush`;
-read input with `poll` (which doubles as the per-frame delay).
+A `Screen` is a double-buffered grid of cells. `flush` emits **only the cells
+that changed** since the last frame, so live UIs update without flicker and
+with minimal output; wide glyphs occupy two cells and a resize forces a full
+repaint. Build a frame with `clear` + `set` / `put`, then `flush`; read input
+with `poll` (which doubles as the per-frame delay). Cells hold plain glyphs
+(per-cell colour is not yet supported).
 
 ```culebra
 Term.app(fn (s) {
   s.clear()
-  s.put(2, 1, Term.fg("hello", 46))
+  s.put(2, 1, "hello")
   s.flush()
   s.poll(2.0)            # wait up to 2s for a keypress
 })
