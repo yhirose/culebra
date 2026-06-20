@@ -13835,22 +13835,36 @@ struct JIT {
     }
   }
 
-  // `a..b` / `a..=b`: lazy integer iterator (same runtime object as
-  // Math.range). Inclusive form bumps the end by one at compile time.
-  // A RANGE node carries `[start?] OP [end?]` — either endpoint may be
-  // omitted (open-ended). The operator child is at index 0 when there is
-  // no start, else index 1. Builds a `{class:"Range",...}` value (the bare
-  // `..` form is handled by the RANGE_OPERATOR case in compile()).
-  llvm::Value* compile_range(const peg::Ast& ast) {
+  // Structural decode of a RANGE node (`[start?] OP [end?]`): the operator
+  // child sits at index 0 when there is no start, else index 1; either
+  // endpoint may be omitted (open-ended). Returns the endpoint AST nodes
+  // (null when open) without compiling them, so callers control evaluation
+  // order. Single source for the RANGE layout shared by compile_range and
+  // compile_for's counted fast path.
+  struct RangeLayout {
+    const peg::Ast* start;  // null if open-started
+    const peg::Ast* end;    // null if open-ended
+    bool inclusive;
+  };
+  RangeLayout decode_range_layout(const peg::Ast& ast) {
     using namespace peg::udl;
     size_t op_idx = (ast.nodes[0]->tag == "RANGE_OPERATOR"_) ? 0 : 1;
-    bool has_start = op_idx == 1;
-    bool has_end = op_idx + 1 < ast.nodes.size();
-    llvm::Value* startV =
-        has_start ? value_to_long(compile(*ast.nodes[0])) : nullptr;
-    llvm::Value* endV =
-        has_end ? value_to_long(compile(*ast.nodes[op_idx + 1])) : nullptr;
-    return emit_make_range(startV, endV, ast.nodes[op_idx]->token == "..=");
+    return {
+        op_idx == 1 ? ast.nodes[0].get() : nullptr,
+        op_idx + 1 < ast.nodes.size() ? ast.nodes[op_idx + 1].get() : nullptr,
+        ast.nodes[op_idx]->token == "..=",
+    };
+  }
+
+  // `a..b` / `a..=b`: lazy integer iterator (same runtime object as
+  // Math.range). Inclusive form bumps the end by one at compile time.
+  // Builds a `{class:"Range",...}` value (the bare `..` form is handled by
+  // the RANGE_OPERATOR case in compile()).
+  llvm::Value* compile_range(const peg::Ast& ast) {
+    auto lay = decode_range_layout(ast);
+    llvm::Value* startV = lay.start ? value_to_long(compile(*lay.start)) : nullptr;
+    llvm::Value* endV = lay.end ? value_to_long(compile(*lay.end)) : nullptr;
+    return emit_make_range(startV, endV, lay.inclusive);
   }
 
   // Build a range value via culebra_runtime_make_range. A null start/end
@@ -15445,12 +15459,35 @@ struct JIT {
   }
 
   llvm::Value* compile_for(const peg::Ast& ast) {
+    using namespace peg::udl;
     auto& id = *ast.nodes[0];  // loop variable: IDENTIFIER or a pattern
     auto& iter_expr = *ast.nodes[1];
     auto& body = *ast.nodes[2];
 
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
+
+    // Fast path: `for <ident> in <a>..<b>` (or `..=`) — a bounded literal
+    // range bound to a plain identifier compiles to a direct Long counter
+    // loop. The generic path below would build a `{class:"Range",...}`
+    // object and a heap iterator, then allocate a `{done,value}` step
+    // object per iteration — pure garbage that churns the cycle GC every
+    // pass (the dominant cost in tight numeric loops). The counter loop
+    // yields the identical Long sequence with the identical endpoint
+    // coercion (value_to_long, as in compile_range), so behaviour, errors,
+    // and check timing stay symmetric with the interpreter. Open-ended
+    // ranges and pattern loop variables keep the generic path.
+    if (id.tag == "IDENTIFIER"_ && iter_expr.tag == "RANGE"_) {
+      auto lay = decode_range_layout(iter_expr);
+      if (lay.start && lay.end) {
+        auto startV = value_to_long(compile(*lay.start));
+        auto endV = value_to_long(compile(*lay.end));
+        auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
+        compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB);
+        builder_.SetInsertPoint(endBB);
+        return make_nil();
+      }
+    }
 
     auto iterable = compile(iter_expr);
     auto tag = extract_tag(iterable);
@@ -15662,6 +15699,48 @@ struct JIT {
     emit_value_retain(elemVal);
     emit_for_body_with_owned_binding(var, elemVal, body, continue_bb,
                                      break_bb);
+  }
+
+  // Direct Long counter loop for `for v in start..end` (see compile_for's
+  // fast path). `startV`/`endV` are i64 values dominating this point;
+  // `inclusive` picks `<=` over `<` (testing the bound directly rather than
+  // bumping it, so `..=` to INT64_MAX can't overflow). Allocates nothing on
+  // the heap — the sole alloca is the loop counter. Yields math_range's
+  // `[start, end)` / `[start, end]` sequence, identical to range_iter.
+  void compile_for_counted_range(llvm::Value* startV, llvm::Value* endV,
+                                 bool inclusive, const peg::Ast& var,
+                                 const peg::Ast& body,
+                                 llvm::BasicBlock* endBB) {
+    auto i64Ty = builder_.getInt64Ty();
+    auto fn = builder_.GetInsertBlock()->getParent();
+
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto idxAlloca = entryB.CreateAlloca(i64Ty, nullptr, "for.r.idx");
+    builder_.CreateStore(startV, idxAlloca);
+
+    auto condBB = llvm::BasicBlock::Create(ctx_, "for.r.cond", fn);
+    auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.r.body", fn);
+    auto incBB = llvm::BasicBlock::Create(ctx_, "for.r.inc", fn);
+
+    builder_.CreateBr(condBB);
+
+    builder_.SetInsertPoint(condBB);
+    auto idx = builder_.CreateLoad(i64Ty, idxAlloca, "for.r.i");
+    auto cond = inclusive ? builder_.CreateICmpSLE(idx, endV)
+                          : builder_.CreateICmpSLT(idx, endV);
+    builder_.CreateCondBr(cond, bodyBB, endBB);
+
+    builder_.SetInsertPoint(bodyBB);
+    emit_safepoint();
+    emit_for_body_iteration(var, make_value(builder_.getInt8(TAG_LONG), idx),
+                            body, incBB, endBB);
+
+    builder_.SetInsertPoint(incBB);
+    auto next = builder_.CreateAdd(
+        builder_.CreateLoad(i64Ty, idxAlloca), builder_.getInt64(1));
+    builder_.CreateStore(next, idxAlloca);
+    builder_.CreateBr(condBB);
   }
 
   void compile_for_array_loop(llvm::Value* arrPtr,
