@@ -4300,6 +4300,10 @@ let _term_module = fn () {
     if raw == "\x7f" { return "Backspace" }
     raw
   }
+  # A pending resize wins over keyboard input (so the loop repaints first).
+  let _poll = fn (timeout) {
+    if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) }
+  }
   # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
   # and overridable via Term.set_level. Colours downsample to this level.
   mut _level = _Term.color_level()
@@ -4335,10 +4339,18 @@ let _term_module = fn () {
     clear() {
       let w = _Term.cols()
       let h = _Term.rows()
+      let n = w * h
       this._w = w
       this._h = h
-      this._back = []
-      for _ in 0..w * h { this._back.push(" ") }
+      # Reuse the buffer on the common path (size unchanged); only reallocate
+      # when the terminal was resized.
+      if this._back.size() == n {
+        mut i = 0
+        while i < n { this._back[i] = " "; i = i + 1 }
+      } else {
+        this._back = []
+        for _ in 0..n { this._back.push(" ") }
+      }
       this
     }
     set(x, y, g) {
@@ -4353,10 +4365,11 @@ let _term_module = fn () {
     put(x, y, s) {
       mut cx = x
       for g in s.graphemes() {
-        let gs = to_string(g)
-        this.set(cx, y, gs)
-        let gw = _Term.width(gs)
-        cx = cx + (if gw < 1 { 1 } else { gw })
+        this.set(cx, y, to_string(g))
+        # set() marks the next cell "" for a wide glyph; reuse that instead of
+        # measuring the width again.
+        let wide = cx + 1 < this._w && this._back[cx + 1] == ""
+        cx = cx + (if wide { 2 } else { 1 })
       }
       this
     }
@@ -4386,10 +4399,10 @@ let _term_module = fn () {
               if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
               out = out + back
               this._front[idx] = back
-              let gw = _Term.width(back)
-              cx = x + (if gw < 1 { 1 } else { gw })
+              # A wide glyph is the one whose continuation cell set() blanked.
+              let wide = x + 1 < this._w && this._back[idx + 1] == ""
               cy = y
-              if gw == 2 && x + 1 < this._w { this._front[idx + 1] = "" }
+              if wide { cx = x + 2; this._front[idx + 1] = "" } else { cx = x + 1 }
             }
           }
           x = x + 1
@@ -4399,7 +4412,7 @@ let _term_module = fn () {
       out
     }
     flush() { IO.print(this.render()); _Term.flush(); this }
-    poll(timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } }
+    poll(timeout) { _poll(timeout) }
   }
   {
     cols: fn () { _Term.cols() },
@@ -4440,7 +4453,7 @@ let _term_module = fn () {
     key: fn (raw) { _term_key(raw) },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },
-    poll: fn (timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } },
+    poll: fn (timeout) { _poll(timeout) },
     app: fn (body) {
       _Term.raw_on()
       IO.print("\x1b[?1049h\x1b[?25l")
