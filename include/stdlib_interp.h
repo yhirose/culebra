@@ -4323,15 +4323,82 @@ let _term_module = fn () {
   let _bg16 = fn (s, i) { "\x1b[" + to_string(if i < 8 { 40 + i } else { 100 + i - 8 }) + "m" + s + "\x1b[49m" }
   let _named = fn (s, i) { if _level == 0 { s } else { _fg16(s, i) } }
   let _attr = fn (s, on, off) { if _level == 0 { s } else { "\x1b[" + on + "m" + s + "\x1b[" + off + "m" } }
+  # A double-buffered grid of single-grapheme cells. clear()/set()/put() build
+  # the back buffer; flush() emits only the cells that differ from the last
+  # frame (cursor-move + glyph), so updates do not flicker. Cells hold plain
+  # glyphs (wide glyphs occupy two cells); per-cell colour is future work.
   class Screen {
-    new() { this._buf = "" }
+    new() { this._w = 0; this._h = 0; this._back = []; this._front = [] }
     cols() { _Term.cols() }
     rows() { _Term.rows() }
     size() { (_Term.cols(), _Term.rows()) }
-    clear() { this._buf = "\x1b[2J\x1b[H"; this }
-    put(x, y, s) { this._buf = this._buf + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" + s; this }
-    write(s) { this._buf = this._buf + s; this }
-    flush() { IO.print(this._buf); _Term.flush(); this._buf = ""; this }
+    clear() {
+      let w = _Term.cols()
+      let h = _Term.rows()
+      this._w = w
+      this._h = h
+      this._back = []
+      for _ in 0..w * h { this._back.push(" ") }
+      this
+    }
+    set(x, y, g) {
+      let gs = to_string(g)   # graphemes()/slices yield StringView
+      if x >= 0 && x < this._w && y >= 0 && y < this._h {
+        let idx = y * this._w + x
+        this._back[idx] = gs
+        if _Term.width(gs) == 2 && x + 1 < this._w { this._back[idx + 1] = "" }
+      }
+      this
+    }
+    put(x, y, s) {
+      mut cx = x
+      for g in s.graphemes() {
+        let gs = to_string(g)
+        this.set(cx, y, gs)
+        let gw = _Term.width(gs)
+        cx = cx + (if gw < 1 { 1 } else { gw })
+      }
+      this
+    }
+    # Minimal escape string to turn the displayed frame into the built one;
+    # updates the front buffer. Empty when nothing changed. Returned (not
+    # printed) so it is testable; flush() prints it.
+    render() {
+      let n = this._w * this._h
+      mut out = ""
+      if this._front.size() != n {
+        this._front = []
+        for _ in 0..n { this._front.push("\x00") }   # force a full repaint
+        out = "\x1b[2J"                               # wipe stale content
+      }
+      mut cy = -1
+      mut cx = -1
+      mut y = 0
+      while y < this._h {
+        mut x = 0
+        while x < this._w {
+          let idx = y * this._w + x
+          let back = this._back[idx]
+          if back == "" {
+            this._front[idx] = ""
+          } else {
+            if back != this._front[idx] {
+              if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
+              out = out + back
+              this._front[idx] = back
+              let gw = _Term.width(back)
+              cx = x + (if gw < 1 { 1 } else { gw })
+              cy = y
+              if gw == 2 && x + 1 < this._w { this._front[idx + 1] = "" }
+            }
+          }
+          x = x + 1
+        }
+        y = y + 1
+      }
+      out
+    }
+    flush() { IO.print(this.render()); _Term.flush(); this }
     poll(timeout) { if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) } }
   }
   {

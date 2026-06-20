@@ -61,18 +61,27 @@ let sz = Term.size()
 assert_eq(sz[0], 80)
 assert_eq(sz[1], 24)
 
-// --- Screen buffers a frame; clear resets, put appends positioned text ---
+// --- Screen: double-buffered cell grid with diff rendering ---
 let s = Term.Screen.new()
 s.clear()
-s.put(2, 1, "X")          // row 2, col 3
-assert_eq(s._buf, "\x1b[2J\x1b[H\x1b[2;3HX")
-s.write("!")
-assert_eq(s._buf, "\x1b[2J\x1b[H\x1b[2;3HX!")
-// clear() discards the unflushed buffer
-s.clear()
-assert_eq(s._buf, "\x1b[2J\x1b[H")
-// chaining: put / write / clear return the screen
-assert_eq(s.put(0, 0, "a").write("b")._buf, "\x1b[2J\x1b[H\x1b[1;1Hab")
+s.put(2, 1, "X")
+s.render()                          // first render = full repaint (discard)
+// changing one cell emits only that cell's move + glyph
+s.put(2, 1, "Y")
+assert_eq(s.render(), "\x1b[2;3HY")  // row 2, col 3
+// an unchanged frame emits nothing
+s.put(2, 1, "Y")
+assert_eq(s.render(), "")
+// put lays successive graphemes into adjacent cells
+s.put(0, 0, "ab")
+assert_eq(s.render(), "\x1b[1;1Hab")
+// a wide glyph occupies two cells
+s.put(5, 3, "🐸")
+assert_eq(s.render(), "\x1b[4;6H🐸")
+// overwriting both cells of the frog with spaces clears it
+s.put(5, 3, " ")
+s.set(6, 3, " ")
+assert_eq(s.render(), "\x1b[4;6H  ")
 
 // Screen.size mirrors the namespace size
 assert_eq(s.cols(), 80)

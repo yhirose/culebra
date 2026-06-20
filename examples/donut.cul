@@ -18,14 +18,15 @@ let max_frames = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
 mut a = 0.0   # rotation about one axis
 mut b = 0.0   # rotation about the other
 
-IO.print(Term.hide() + Term.clear())
+# A Screen diffs frames so only the cells that change are redrawn.
+let s = Term.Screen.new()
+IO.print(Term.hide())
 
 mut frame_no = 0
 while max_frames < 0 || frame_no < max_frames {
-  # Fresh output + depth buffers each frame.
-  mut out = []
+  s.clear()
   mut depth = []
-  for _ in 0..SZ { out.push(" "); depth.push(0.0) }
+  for _ in 0..SZ { depth.push(0.0) }
 
   mut j = 0.0
   while j < 6.28 {
@@ -49,22 +50,14 @@ while max_frames < 0 || frame_no < max_frames {
       if y > 0 && y < H && x > 0 && x < W && inv > depth[o] {
         depth[o] = inv
         let ci = if lum > 0 { lum } else { 0 }
-        out[o] = chars[ci..ci + 1]
+        s.set(x, y, chars[ci..ci + 1])
       }
       i = i + 0.02
     }
     j = j + 0.07
   }
 
-  # Compose the whole frame in one string, then write + flush once.
-  mut frame = Term.move(0, 0)
-  for k in 0..SZ {
-    frame = frame + out[k]
-    if (k + 1) % W == 0 { frame = frame + "\r\n" }
-  }
-  IO.print(frame)
-  Term.flush()
-
+  s.flush()                 # redraws only the cells that changed
   Time.sleep(0.03)
   a = a + 0.07
   b = b + 0.03
