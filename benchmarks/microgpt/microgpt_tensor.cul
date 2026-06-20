@@ -190,7 +190,7 @@ let ts_rmsnorm = fn (x) {
 
 # ReLU. Forward: max(0, x). Backward: pass-through where x > 0.
 let ts_relu = fn (x) {
-  let y_data = Tensor.relu(x.data)
+  let y_data = x.data.relu()
   Tensor.eval(y_data)
   let out = TNode.new(y_data, [x])
   out.set_backward(fn() {
@@ -221,7 +221,7 @@ let ts_linear = fn (w, x) { ts_dot(w, x) }
 let ts_softmax_ce_loss = fn (logits, target, n_for_avg) {
   let V = logits.data.shape()[0]
   # Forward: stable softmax then -log(p[target]).
-  let probs_t = Tensor.softmax(logits.data.reshape([V]))
+  let probs_t = logits.data.reshape([V]).softmax()
   Tensor.eval(probs_t)
   let p_arr = probs_t.to_array()
   let p_target = to_float(p_arr[target])
@@ -308,7 +308,7 @@ let ts_single_head_attention = fn (q, k_list, v_list, scale) {
     logits_arr.push([dp])
   }
   let logits_t = Tensor.from(logits_arr)
-  let weights_t = Tensor.softmax(logits_t.reshape([n_t]))
+  let weights_t = logits_t.reshape([n_t]).softmax()
   Tensor.eval(weights_t)
   let w_arr = weights_t.to_array()
 
@@ -543,7 +543,7 @@ if n_samples > 0 {
       # Apply temperature, softmax, and convert to a Float Array for
       # Random.weighted_choice. logits_node.data is [V, 1].
       let scaled = logits_node.data * (1.0 / temperature)
-      let probs = Tensor.softmax(scaled.reshape([vocab_size]))
+      let probs = scaled.reshape([vocab_size]).softmax()
       Tensor.eval(probs)
       let weights = probs.to_array()
       token_id = Random.weighted_choice(pop, weights)
