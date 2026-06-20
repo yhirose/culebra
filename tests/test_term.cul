@@ -1,0 +1,60 @@
+// Term: ANSI escape + colour builders, key-name parsing, Screen frame
+// buffering, and size fallback. The interactive raw-mode render loop needs
+// a real tty, so it is exercised by examples/froggy.cul rather than here.
+
+// --- escape builders (pure strings) ---
+assert_eq(Term.clear(), "\x1b[2J\x1b[H")
+assert_eq(Term.move(0, 0), "\x1b[1;1H")
+assert_eq(Term.move(4, 2), "\x1b[3;5H")     // row = y+1, col = x+1
+assert_eq(Term.hide(), "\x1b[?25l")
+assert_eq(Term.show(), "\x1b[?25h")
+
+// --- 256-colour / truecolour / attributes ---
+assert_eq(Term.fg("x", 196), "\x1b[38;5;196mx\x1b[39m")
+assert_eq(Term.bg("x", 21), "\x1b[48;5;21mx\x1b[49m")
+assert_eq(Term.rgb("x", 255, 128, 0), "\x1b[38;2;255;128;0mx\x1b[39m")
+assert_eq(Term.bold("x"), "\x1b[1mx\x1b[22m")
+assert_eq(Term.dim("x"), "\x1b[2mx\x1b[22m")
+assert_eq(Term.underline("x"), "\x1b[4mx\x1b[24m")
+assert_eq(Term.reverse("x"), "\x1b[7mx\x1b[27m")
+// colours nest (each wraps with its own reset)
+assert_eq(Term.bold(Term.fg("hi", 2)), "\x1b[1m\x1b[38;5;2mhi\x1b[39m\x1b[22m")
+
+// --- key parsing: raw bytes -> normalized names ---
+assert_eq(Term.key(""), "")
+assert_eq(Term.key("\x1b[A"), "Up")
+assert_eq(Term.key("\x1b[B"), "Down")
+assert_eq(Term.key("\x1b[C"), "Right")
+assert_eq(Term.key("\x1b[D"), "Left")
+assert_eq(Term.key("\x1b"), "Esc")
+assert_eq(Term.key("\r"), "Enter")
+assert_eq(Term.key("\n"), "Enter")
+assert_eq(Term.key("\x7f"), "Backspace")
+assert_eq(Term.key("q"), "q")
+assert_eq(Term.key(" "), " ")
+
+// --- size fallback (no tty under the test runner) ---
+assert_eq(Term.cols(), 80)
+assert_eq(Term.rows(), 24)
+let sz = Term.size()
+assert_eq(sz[0], 80)
+assert_eq(sz[1], 24)
+
+// --- Screen buffers a frame; clear resets, put appends positioned text ---
+let s = Term.Screen.new()
+s.clear()
+s.put(2, 1, "X")          // row 2, col 3
+assert_eq(s._buf, "\x1b[2J\x1b[H\x1b[2;3HX")
+s.write("!")
+assert_eq(s._buf, "\x1b[2J\x1b[H\x1b[2;3HX!")
+// clear() discards the unflushed buffer
+s.clear()
+assert_eq(s._buf, "\x1b[2J\x1b[H")
+// chaining: put / write / clear return the screen
+assert_eq(s.put(0, 0, "a").write("b")._buf, "\x1b[2J\x1b[H\x1b[1;1Hab")
+
+// Screen.size mirrors the namespace size
+assert_eq(s.cols(), 80)
+assert_eq(s.rows(), 24)
+
+puts("test_term ok")

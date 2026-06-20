@@ -51,8 +51,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
 19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
 20. [`UUID`](#20-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
-21. [設計上の注記](#21-設計上の注記)
-22. [未収録（将来検討）](#22-未収録将来検討)
+21. [`Term`](#21-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー入力
+22. [設計上の注記](#22-設計上の注記)
+23. [未収録（将来検討）](#23-未収録将来検討)
 
 **目的別索引**
 
@@ -2722,7 +2723,80 @@ puts(UUID.v4() != UUID.v4())    # => true
 
 ---
 
-## 21. 設計上の注記
+## 21. `Term`
+
+テキスト UI（TUI）を作るための端末制御 — 色・カーソル位置・代替画面・
+端末サイズ・非ブロッキングなキー入力。色とエスケープのヘルパーは文字列を
+返す純関数なので合成・テストが容易で、状態を持つ部分（raw モード・描画
+ループ）は終了時に端末を必ず復帰するようラップされています。
+
+### 色と属性
+
+各関数は引数を対応する ANSI コード（＋リセット）で包んで返すので、入れ子に
+できます:
+
+| 関数 | 結果 |
+| --- | --- |
+| `Term.fg(s, n) -> String` | 256 色前景（`n` は 0–255） |
+| `Term.bg(s, n) -> String` | 256 色背景 |
+| `Term.rgb(s, r, g, b) -> String` | 24bit トゥルーカラー前景 |
+| `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | 文字属性 |
+
+```culebra
+puts(Term.bold(Term.fg("alert", 196)))   # 太字・明るい赤の "alert"
+```
+
+### エスケープとサイズ
+
+| 関数 | 結果 |
+| --- | --- |
+| `Term.clear() -> String` | 画面クリア＋カーソルを原点へ |
+| `Term.move(x, y) -> String` | カーソルを列 `x`・行 `y` へ（0 始まり） |
+| `Term.hide()` / `Term.show()` | カーソルの非表示 / 表示 |
+| `Term.cols()` / `Term.rows() -> Long` | 端末サイズ（tty でなければ 80×24） |
+| `Term.size() -> (Long, Long)` | `(cols, rows)` |
+| `Term.flush()` | バッファ済み出力をフラッシュ |
+
+### キー入力
+
+`Term.key(raw) -> String` は生バイト列を名前に正規化します:
+`"Up"`・`"Down"`・`"Left"`・`"Right"`・`"Enter"`・`"Esc"`・`"Backspace"`、
+または文字そのもの（例 `"q"`・`" "`）。`""` は入力なしを表します。
+
+### `Term.app` と `Screen`
+
+`Term.app(fn (screen) { ... })` は raw モードと代替画面に入り、カーソルを
+隠し、**終了時に端末を復帰**します（正常終了・例外・Ctrl+C いずれも）—
+`defer` による保証です。コールバックは `Screen` を受け取ります:
+
+| メソッド | 効果 |
+| --- | --- |
+| `screen.size()` / `cols()` / `rows()` | 端末の寸法 |
+| `screen.clear()` | フレームバッファをクリア画面にリセット |
+| `screen.put(x, y, s)` | `(x, y)` に `s` を描画（バッファへ） |
+| `screen.write(s)` | バッファに `s` を追記 |
+| `screen.flush()` | バッファしたフレームを出力しバッファを空に |
+| `screen.poll(timeout) -> String` | 最大 `timeout` 秒キー入力を待ち、その名前（無ければ `""`）を返す |
+
+`Screen` はフレーム全体をメモリにバッファし `flush` で一括出力するので
+ちらつきません。`clear` + `put` でフレームを組み立て `flush`、入力は `poll`
+（フレームごとのウェイトも兼ねる）で読みます。
+
+```culebra
+Term.app(fn (s) {
+  s.clear()
+  s.put(2, 1, Term.fg("hello", 46))
+  s.flush()
+  s.poll(2.0)            # 最大 2 秒キー入力を待つ
+})
+```
+
+完全なプログラムは `examples/donut.cul`（入力なしの描画ループ）と
+`examples/froggy.cul`（キー操作のゲーム）を参照。
+
+---
+
+## 22. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -2776,7 +2850,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 22. 未収録（将来検討）
+## 23. 未収録（将来検討）
 
 ### 重量級データ構造
 

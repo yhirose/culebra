@@ -1,0 +1,309 @@
+# Hungry Froggy 🐸 — a port of froggy.py (Python + curses) to culebra + Term.
+#
+# A tiny arcade game: steer the frog with the arrow keys (or h/j/k/l) to eat
+# wandering fruit 🍓 and desserts 🍦 while dodging the eagle 🦅 and snake 🐍.
+# Eating a dessert grants a bonus; getting caught drains energy. Clear the
+# board or run out the clock.
+#
+# Exercises the full Term stack: Term.app (raw mode + alternate screen +
+# guaranteed restore via defer), Screen frame buffering, emoji output, and
+# non-blocking key polling. The food/enemies wander with 1-D gradient noise
+# implemented below (Python's froggy uses the `noise` library).
+#
+# Run it:  culebra examples/froggy.cul          (play; q to quit)
+#          culebra examples/froggy.cul 60 < /dev/null   (auto-demo, 60 ticks)
+
+let ROWS = 16
+let COLS = 16
+
+# Optional tick budget so the demo terminates under a smoke test.
+let MAX_TICKS = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+# When stdin is not a tty there is nobody to press keys: auto-start and let
+# the world animate on its own until the tick budget runs out.
+let INTERACTIVE = IO.stdin_is_terminal()
+
+# --- 1-D gradient noise (stand-in for Python's noise.pnoise1) --------------
+fn clampi(v, lo, hi) { if v < lo { lo } else { if v > hi { hi } else { v } } }
+
+fn build_perm(seed) {
+  mut p = []
+  for i in 0..256 { p.push(i) }
+  mut st = seed
+  mut i = 255
+  while i > 0 {
+    st = (st * 1103515245 + 12345) % 2147483648
+    let j = st % (i + 1)
+    let tmp = p[i]
+    p[i] = p[j]
+    p[j] = tmp
+    i = i - 1
+  }
+  p
+}
+fn fade(t) { t * t * t * (t * (t * 6.0 - 15.0) + 10.0) }
+fn lerp(a, b, t) { a + t * (b - a) }
+fn grad(h, x) { if h % 2 == 0 { x } else { -x } }
+fn pnoise1(perm, x) {
+  let fl = to_float(to_long(x))          # floor (x is always >= 0 here)
+  let xi = to_long(x) % 256
+  let xf = x - fl
+  let u = fade(xf)
+  let a = perm[xi]
+  let b = perm[(xi + 1) % 256]
+  lerp(grad(a, xf), grad(b, xf - 1.0), u)
+}
+let PERM = build_perm(to_long(Time.now().unix()) % 2000000000)
+fn noise_pos(base, a) {
+  let x = to_long((pnoise1(PERM, base * a) + 1.0) / 2.0 * to_float(ROWS))
+  let y = to_long((pnoise1(PERM, (base + 10000.0) * a) + 1.0) / 2.0 * to_float(COLS))
+  (clampi(x, 0, ROWS - 1), clampi(y, 0, COLS - 1))
+}
+
+# --- centred placement: the ROWSxCOLS board sits in the middle of the term -
+# Each board cell is two terminal columns wide (emoji are double-width), so
+# the horizontal coordinate is doubled — mirroring froggy.py's `* 2`.
+fn offsets(s) {
+  let cols = (s.cols() - 1) / 2
+  let offx = (cols - COLS) / 2
+  let offy = (s.rows() - ROWS) / 2
+  (offx, offy)
+}
+fn output(s, off, y, x, str) { s.put((x + off[0]) * 2, y + off[1], str) }
+
+# --- entities --------------------------------------------------------------
+class Frog {
+  new() {
+    this.x = COLS / 2 - 1
+    this.y = ROWS / 2 - 1
+    this.bonus = 0
+    this.energy = -1
+  }
+  draw(s, off) {
+    if this.energy > 0 {
+      output(s, off, this.y, this.x, "😱")
+      this.energy = this.energy - 1
+    } else {
+      if this.bonus > 0 {
+        output(s, off, this.y, this.x, "👀")
+        this.bonus = this.bonus - 1
+      } else {
+        output(s, off, this.y, this.x, "🐸")
+      }
+    }
+  }
+  move(dx, dy) {
+    this.x = clampi(this.x + dx, 0, COLS - 1)
+    this.y = clampi(this.y + dy, 0, ROWS - 1)
+  }
+  move_by_key(key) {
+    mut dx = 0
+    mut dy = 0
+    if key == "Left" || key == "h" { dx = -1 }
+    if key == "Right" || key == "l" { dx = 1 }
+    if key == "Up" || key == "k" { dy = -1 }
+    if key == "Down" || key == "j" { dy = 1 }
+    this.move(dx, dy)
+  }
+  eat() {
+    if this.energy == -1 {
+      if this.bonus == 0 { this.bonus = 50 }
+    } else {
+      this.bonus = 0
+      this.energy = -1
+    }
+  }
+  eaten() { if this.energy == -1 { this.energy = 50 } }
+  alive() { this.energy != 0 }
+}
+
+class Food {
+  new(foods, speed, score) {
+    this.foods = foods
+    this.speed = speed
+    this.score = score
+    this.food_index = 0
+    # `this` is immutable inside a constructor, so settle base/position in
+    # locals (away from the board centre) and assign each field once.
+    mut base = to_float(to_long(Time.now().unix()) % 1000 * 10000)
+    mut p = noise_pos(base, speed)
+    mut tries = 0
+    while ((Math.abs(to_float(p[0]) - to_float(ROWS) / 2.0) < 4.0
+         || Math.abs(to_float(p[1]) - to_float(COLS) / 2.0) < 4.0)
+        && tries < 300) {
+      base = base + 1.0
+      p = noise_pos(base, speed)
+      tries = tries + 1
+    }
+    this.base = base
+    this.x = p[0]
+    this.y = p[1]
+  }
+  draw(s, off) { output(s, off, this.y, this.x, this.foods[this.food_index]) }
+  move(s) {
+    let p = this.next_pos()
+    this.x = p[0]
+    this.y = p[1]
+    this.base = this.base + 1.0
+  }
+  eaten() {
+    if this.food_index < this.foods.size() {
+      this.food_index = this.food_index + 1
+      this.base = this.base + 100000.0
+    }
+  }
+  remaining() { this.foods.size() - this.food_index }
+  next_pos() { noise_pos(this.base, this.speed) }
+}
+
+class Enemy {
+  new(emoji, speed) {
+    this.emoji = emoji
+    this.speed = speed
+    mut base = to_float(to_long(Time.now().unix()) % 1000)
+    mut p = noise_pos(base, speed)
+    mut tries = 0
+    while ((Math.abs(to_float(p[0]) - to_float(ROWS) / 2.0) < 6.0
+         || Math.abs(to_float(p[1]) - to_float(COLS) / 2.0) < 6.0)
+        && tries < 300) {
+      base = base + 1.0
+      p = noise_pos(base, speed)
+      tries = tries + 1
+    }
+    this.base = base
+    this.x = p[0]
+    this.y = p[1]
+  }
+  draw(s, off) { output(s, off, this.y, this.x, this.emoji) }
+  move(s) {
+    let p = this.next_pos()
+    this.x = p[0]
+    this.y = p[1]
+    this.base = this.base + 1.0
+  }
+  next_pos() { noise_pos(this.base, this.speed) }
+}
+
+# --- collisions / scoring --------------------------------------------------
+fn check(frog, foods, enemies, score) {
+  mut s = score
+  for food in foods {
+    if food.remaining() > 0 && frog.x == food.x && frog.y == food.y {
+      if frog.bonus > 0 { s = s + food.score * 2 } else { s = s + food.score }
+      frog.eat()
+      food.eaten()
+    }
+  }
+  for enemy in enemies {
+    if frog.x == enemy.x && frog.y == enemy.y { frog.eaten() }
+  }
+  s
+}
+
+# --- rendering -------------------------------------------------------------
+fn draw_status(s, off, score, time) {
+  output(s, off, 1, 1, "SCORE: " + to_string(score))
+  output(s, off, 1, COLS - 5, "TIME: " + to_string(time))
+}
+fn draw_food_count(s, off, fruit, dessert) {
+  let count = fruit.remaining() + dessert.remaining()
+  output(s, off, ROWS - 1, COLS - 5, "FOOD: " + to_string(count))
+}
+
+fn draw_screen(s, frog, fruit, dessert, eagle, snake, score, time) {
+  s.clear()
+  let off = offsets(s)
+  draw_status(s, off, score, time)
+  draw_food_count(s, off, fruit, dessert)
+  if frog.energy > 0 {
+    output(s, off, ROWS - 1, 1, "ENERGY: " + to_string(frog.energy))
+  } else {
+    if frog.bonus > 0 { output(s, off, ROWS - 1, 1, "BONUS: " + to_string(frog.bonus)) }
+  }
+  frog.draw(s, off)
+  for food in [fruit, dessert] {
+    if food.remaining() > 0 { food.draw(s, off) }
+  }
+  for enemy in [eagle, snake] { enemy.draw(s, off) }
+  s.flush()
+}
+
+fn draw_opening(s, time) {
+  s.clear()
+  let off = offsets(s)
+  draw_status(s, off, 0, time)
+  output(s, off, ROWS / 2 - 1, COLS / 2 - 4, "🐸 Hungry Froggy 🍓")
+  output(s, off, ROWS - 2, COLS / 2 - 5, "Hit Space to start")
+  s.flush()
+}
+
+fn draw_game_over(s, score, time, frog, fruit, dessert) {
+  s.clear()
+  let off = offsets(s)
+  draw_status(s, off, score, time)
+  draw_food_count(s, off, fruit, dessert)
+  if frog.alive() {
+    if time > 0 {
+      output(s, off, 6, COLS / 2 - 5, "🎉 Congratulations 🎊")
+    } else {
+      output(s, off, 6, COLS / 2 - 2, "TIME UP ⏱")
+    }
+  } else {
+    output(s, off, 6, COLS / 2 - 3, "GAME OVER 😱")
+  }
+  output(s, off, 10, COLS / 2 - 3, "Hit Space")
+  s.flush()
+}
+
+# Block until one of `chars` is pressed; auto-return the first when there is
+# no tty (demo mode).
+fn wait_key(s, chars) {
+  if !INTERACTIVE { return chars[0] }
+  while true {
+    let k = s.poll(0.1)
+    for c in chars {
+      if k == c { return c }
+    }
+  }
+}
+
+# A single round. Returns true to play again, false to quit.
+fn run(s) {
+  mut time = 99
+  draw_opening(s, time)
+  if wait_key(s, [" ", "q"]) == "q" { return false }
+
+  mut score = 0
+  mut tic = 0
+  let frog = Frog.new()
+  let fruit = Food.new("🍓🍌🍎🍑🍇🍉🍐🍊🍋🍒🍍🥝🍏🍅🥑🥕🥔🍆🍠🌽".graphemes().collect(), 0.01, 1)
+  let dessert = Food.new("🍦🍩🍧🧁🍨🍪🍫🍰🍮🍭🍿🥛🍷🍶🍹🍼🍵".graphemes().collect(), 0.02, 2)
+  let eagle = Enemy.new("🦅", 0.03)
+  let snake = Enemy.new("🐍", 0.02)
+
+  while (time > 0 && frog.alive()
+      && (fruit.remaining() > 0 || dessert.remaining() > 0)
+      && (MAX_TICKS < 0 || tic < MAX_TICKS)) {
+    let key = s.poll(0.1)
+    if key == "q" { time = 0; break }
+    frog.move_by_key(key)
+    fruit.move(s)
+    dessert.move(s)
+    eagle.move(s)
+    snake.move(s)
+    score = check(frog, [fruit, dessert], [eagle, snake], score)
+    draw_screen(s, frog, fruit, dessert, eagle, snake, score, time)
+    if tic % 10 == 0 { time = time - 1 }
+    tic = tic + 1
+  }
+
+  if frog.alive() { score = score + time }
+  if !INTERACTIVE { return false }
+  Time.sleep(1.2)
+  draw_game_over(s, score, time, frog, fruit, dessert)
+  wait_key(s, [" ", "q"]) != "q"
+}
+
+Term.app(fn (s) {
+  mut again = true
+  while again { again = run(s) }
+})

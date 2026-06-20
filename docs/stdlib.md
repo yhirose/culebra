@@ -53,8 +53,9 @@ Conventions used below:
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
 20. [`UUID`](#20-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
-21. [Design notes](#21-design-notes)
-22. [Not included (yet)](#22-not-included-yet)
+21. [`Term`](#21-term) — terminal colour, cursor control, size, and key input for TUIs
+22. [Design notes](#22-design-notes)
+23. [Not included (yet)](#23-not-included-yet)
 
 **Where to find what**
 
@@ -2832,7 +2833,81 @@ puts(UUID.v4() != UUID.v4())    # => true
 
 ---
 
-## 21. Design notes
+## 21. `Term`
+
+Terminal control for building text UIs — colour, cursor positioning, the
+alternate screen, terminal size, and non-blocking key input. The colour and
+escape helpers are pure functions that return strings, so they compose and
+are easy to test; the stateful pieces (raw mode, the render loop) are wrapped
+so the terminal is always restored on exit.
+
+### Colour and attributes
+
+Each returns its argument wrapped in the matching ANSI codes (and a reset),
+so calls nest:
+
+| Function | Result |
+| --- | --- |
+| `Term.fg(s, n) -> String` | 256-colour foreground (`n` is 0–255) |
+| `Term.bg(s, n) -> String` | 256-colour background |
+| `Term.rgb(s, r, g, b) -> String` | 24-bit truecolour foreground |
+| `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | text attributes |
+
+```culebra
+puts(Term.bold(Term.fg("alert", 196)))   # bold bright-red "alert"
+```
+
+### Escapes and size
+
+| Function | Result |
+| --- | --- |
+| `Term.clear() -> String` | clear screen + home the cursor |
+| `Term.move(x, y) -> String` | cursor to column `x`, row `y` (0-based) |
+| `Term.hide()` / `Term.show()` | hide / show the cursor |
+| `Term.cols()` / `Term.rows() -> Long` | terminal size in cells (80×24 off a tty) |
+| `Term.size() -> (Long, Long)` | `(cols, rows)` |
+| `Term.flush()` | flush buffered output |
+
+### Key input
+
+`Term.key(raw) -> String` normalizes a raw byte sequence to a name:
+`"Up"`, `"Down"`, `"Left"`, `"Right"`, `"Enter"`, `"Esc"`, `"Backspace"`, or
+the literal character (e.g. `"q"`, `" "`); `""` means no input.
+
+### `Term.app` and `Screen`
+
+`Term.app(fn (screen) { ... })` enters raw mode and the alternate screen,
+hides the cursor, and **restores the terminal on exit** — normal return, an
+exception, or Ctrl+C — via `defer`. The callback receives a `Screen`:
+
+| Method | Effect |
+| --- | --- |
+| `screen.size()` / `cols()` / `rows()` | terminal dimensions |
+| `screen.clear()` | reset the frame buffer to a cleared screen |
+| `screen.put(x, y, s)` | draw `s` at `(x, y)` into the frame buffer |
+| `screen.write(s)` | append `s` to the frame buffer |
+| `screen.flush()` | write the buffered frame and clear the buffer |
+| `screen.poll(timeout) -> String` | wait up to `timeout` seconds for a key, returning its name (or `""`) |
+
+A `Screen` buffers a whole frame in memory and writes it in one `flush`, so
+updates do not flicker. Build a frame with `clear` + `put`, then `flush`;
+read input with `poll` (which doubles as the per-frame delay).
+
+```culebra
+Term.app(fn (s) {
+  s.clear()
+  s.put(2, 1, Term.fg("hello", 46))
+  s.flush()
+  s.poll(2.0)            # wait up to 2s for a keypress
+})
+```
+
+See `examples/donut.cul` (a no-input render loop) and `examples/froggy.cul`
+(a full keyboard-driven game) for complete programs.
+
+---
+
+## 22. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -2886,7 +2961,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 22. Not included (yet)
+## 23. Not included (yet)
 
 ### Heavier data structures
 

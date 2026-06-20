@@ -1,0 +1,74 @@
+# Spinning ASCII donut — a port of Andy Sloane's classic donut.c
+# (https://www.a1k0n.net/2011/07/20/donut-math.html). Renders a rotating
+# torus by projecting points and shading them by surface luminance.
+#
+# The simplest TUI: no input, no colour — just cursor-home + redraw + sleep.
+# Run it:  culebra examples/donut.cul          (spins until Ctrl+C)
+#          culebra examples/donut.cul 200       (renders 200 frames)
+
+let chars = ".,-~:;=!*#$@"
+let W = 80
+let H = 22
+let SZ = W * H
+
+# Optional frame count (so the example terminates under a smoke test);
+# absent => spin forever.
+let max_frames = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+
+mut a = 0.0   # rotation about one axis
+mut b = 0.0   # rotation about the other
+
+IO.print(Term.hide() + Term.clear())
+
+mut frame_no = 0
+while max_frames < 0 || frame_no < max_frames {
+  # Fresh output + depth buffers each frame.
+  mut out = []
+  mut depth = []
+  for _ in 0..SZ { out.push(" "); depth.push(0.0) }
+
+  mut j = 0.0
+  while j < 6.28 {
+    mut i = 0.0
+    while i < 6.28 {
+      let c = Math.sin(i)
+      let d = Math.cos(j)
+      let e = Math.sin(a)
+      let f = Math.sin(j)
+      let g = Math.cos(a)
+      let h = d + 2.0
+      let inv = 1.0 / (c * h * e + f * g + 5.0)   # one-over-z
+      let l = Math.cos(i)
+      let m = Math.cos(b)
+      let n = Math.sin(b)
+      let t = c * h * g - f * e
+      let x = to_long(40.0 + 30.0 * inv * (l * h * m - t * n))
+      let y = to_long(12.0 + 15.0 * inv * (l * h * n + t * m))
+      let o = x + W * y
+      let lum = to_long(8.0 * ((f * e - c * d * g) * m - c * d * e - f * g - l * d * n))
+      if y > 0 && y < H && x > 0 && x < W && inv > depth[o] {
+        depth[o] = inv
+        let ci = if lum > 0 { lum } else { 0 }
+        out[o] = chars[ci..ci + 1]
+      }
+      i = i + 0.02
+    }
+    j = j + 0.07
+  }
+
+  # Compose the whole frame in one string, then write + flush once.
+  mut frame = Term.move(0, 0)
+  for k in 0..SZ {
+    frame = frame + out[k]
+    if (k + 1) % W == 0 { frame = frame + "\r\n" }
+  }
+  IO.print(frame)
+  Term.flush()
+
+  Time.sleep(0.03)
+  a = a + 0.07
+  b = b + 0.03
+  frame_no = frame_no + 1
+}
+
+IO.print(Term.show())

@@ -14,6 +14,7 @@
 #include <uuid.h>
 #include <jit.h>
 #include <proc.h>
+#include <term.h>
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <http.h>
 #endif
@@ -583,6 +584,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_time_sleep(double secs) {
   if (secs > 0) {
     std::this_thread::sleep_for(std::chrono::duration<double>(secs));
   }
+}
+
+// --- _Term primitives ---
+// Terminal-control thin wrappers (logic in term.h, shared with interp).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_term_cols() {
+  return culebra::_term_detail::cols();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_term_rows() {
+  return culebra::_term_detail::rows();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_term_raw_on() {
+  culebra::_term_detail::raw_on();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_term_raw_off() {
+  culebra::_term_detail::raw_off();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_term_flush() {
+  culebra::_term_detail::flush();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
+    double timeout) {
+  return _culebra_heap_str(culebra::_term_detail::read_key(timeout));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
@@ -4757,7 +4780,7 @@ inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
 // canonical interp params by _ns_meta), so there is nothing else to verify.
 inline void _check_ns_drift_once() {
   static const bool checked = []() {
-    static const std::set<std::string_view> kInternalNs = {"_Time"};
+    static const std::set<std::string_view> kInternalNs = {"_Time", "_Term"};
     const auto& env = _canonical_env();
     for (const auto& [key, sym] : env.dictionary) {
       if (sym.val.type != culebra::Value::Object) continue;
@@ -4987,6 +5010,14 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                    i64, i64, i64, i64, i64, i64, i64, i64);
   jit.module_->getOrInsertFunction(rt::time_start_of_nanos, i64,
                                    i64, ptrTy, i64, i64, i64);
+  // _Term (terminal-control primitives).
+  jit.module_->getOrInsertFunction(rt::term_cols, i64);
+  jit.module_->getOrInsertFunction(rt::term_rows, i64);
+  jit.module_->getOrInsertFunction(rt::term_raw_on, jit.builder_.getVoidTy());
+  jit.module_->getOrInsertFunction(rt::term_raw_off, jit.builder_.getVoidTy());
+  jit.module_->getOrInsertFunction(rt::term_flush, jit.builder_.getVoidTy());
+  jit.module_->getOrInsertFunction(rt::term_read_key, ptrTy,
+                                   jit.builder_.getDoubleTy());
   }
 
   // Tensor: zeros/ones/randn use the variadic (args_ptr, n, line, col)
@@ -5825,6 +5856,34 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
   }
 
+  if (ns == "_Term") {
+    auto& a = argsAst.nodes;
+    if (method == "cols" && a.empty())
+      return make_long(emit_call(module_->getFunction(rt::term_cols), {}));
+    if (method == "rows" && a.empty())
+      return make_long(emit_call(module_->getFunction(rt::term_rows), {}));
+    if (method == "raw_on" && a.empty()) {
+      emit_call(module_->getFunction(rt::term_raw_on), {});
+      return make_nil();
+    }
+    if (method == "raw_off" && a.empty()) {
+      emit_call(module_->getFunction(rt::term_raw_off), {});
+      return make_nil();
+    }
+    if (method == "flush" && a.empty()) {
+      emit_call(module_->getFunction(rt::term_flush), {});
+      return make_nil();
+    }
+    if (method == "read_key" && a.size() == 1) {
+      auto t = compile(*a[0]);
+      emit_type_check(t, "Float", "parameter 'timeout'", a[0].get());
+      auto d = jit.coerce_to_double(t);
+      auto s = emit_call(module_->getFunction(rt::term_read_key), {d});
+      emit_value_release(t);
+      return make_string(s);
+    }
+  }
+
   if (ns == "Random") {
     if (method == "seed" && argsAst.nodes.size() == 1) {
       auto n = value_to_long(compile(*argsAst.nodes[0]));
@@ -6318,7 +6377,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",       "UUID",
+      "Hash",    "CSV",       "UUID",      "_Term",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

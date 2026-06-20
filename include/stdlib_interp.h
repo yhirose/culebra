@@ -26,6 +26,7 @@
 #include <http.h>
 #endif
 #include <regexlib.h>
+#include <term.h>
 
 #include <algorithm>
 #include <cctype>
@@ -1390,6 +1391,69 @@ inline Value make_time_primitives_namespace() {
             return Value(static_cast<long>(_time_detail::from_tm_nanos(tm, 0, utc)));
           },
           "Long"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+
+// `_Term`: thin terminal-control primitives (raw mode / size / timed key
+// read). The user-facing `Term` module (colours, `Screen`, `Key`, the
+// `app` render-loop wrapper — `TERM_MODULE_SOURCE` below) is culebra source
+// layered on top. Underscore-prefixed: the wrapper's ABI, not stable API.
+// All positional-only so the JIT fast path stays simple.
+inline Value make_term_primitives_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  // _Term.cols() / _Term.rows() -> Long (terminal cells; 80x24 off a tty)
+  ns.initialize("cols",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_term_detail::cols()));
+          },
+          "Long"sv)),
+      false);
+  ns.initialize("rows",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_term_detail::rows()));
+          },
+          "Long"sv)),
+      false);
+
+  // _Term.raw_on() / _Term.raw_off() -> Nil (termios; no-op off a tty)
+  ns.initialize("raw_on",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _term_detail::raw_on();
+            return Value();
+          })),
+      false);
+  ns.initialize("raw_off",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _term_detail::raw_off();
+            return Value();
+          })),
+      false);
+
+  // _Term.flush() -> Nil (flush buffered stdout — surface a built frame)
+  ns.initialize("flush",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            _term_detail::flush();
+            return Value();
+          })),
+      false);
+
+  // _Term.read_key(timeout: Float) -> String (raw bytes; "" on timeout)
+  ns.initialize("read_key",
+      Value(FunctionValue({{"timeout", false, "Float"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto t = env->get("timeout").to_double_coerce();
+            return Value(_term_detail::read_key(t));
+          },
+          "String"sv)),
       false);
 
   return Value(std::move(ns));
@@ -4097,6 +4161,7 @@ inline void setup_built_in_functions(
     }
   }
   env.initialize("_Time", make_time_primitives_namespace(), false);
+  env.initialize("_Term", make_term_primitives_namespace(), false);
   env.initialize("Random", make_random_namespace(), false);
   env.initialize("Sys", make_sys_namespace(argv), false);
   env.initialize("GC", make_gc_namespace(), false);
@@ -4184,6 +4249,74 @@ inline constexpr const char* TIME_MODULE_SOURCE =
     "} "
     "}; "
     "let Time = _time_module()\n";
+
+// `Term` — terminal-control / TUI primitives layered on the `_Term`
+// native helpers (raw mode / size / key read / flush). Provides ANSI
+// colour + escape builders (pure strings), a buffered `Screen` for
+// flicker-free frames, normalized key names, and `Term.app` — a render
+// loop wrapper that enters raw mode + the alternate screen and restores
+// the terminal on scope exit (normal return, exception, or Ctrl+C) via
+// `defer`. Written as culebra source so it is automatically symmetric
+// across interp / JIT / AOT. A C++ raw string so culebra's `\x1b`
+// escapes pass through verbatim.
+inline constexpr const char* TERM_MODULE_SOURCE = R"culebra(
+let _term_module = fn () {
+  let _term_key = fn (raw) {
+    if raw == "" { return "" }
+    if raw == "\x1b[A" { return "Up" }
+    if raw == "\x1b[B" { return "Down" }
+    if raw == "\x1b[C" { return "Right" }
+    if raw == "\x1b[D" { return "Left" }
+    if raw == "\x1b" { return "Esc" }
+    if raw == "\r" || raw == "\n" { return "Enter" }
+    if raw == "\x7f" { return "Backspace" }
+    raw
+  }
+  class Screen {
+    new() { this._buf = "" }
+    cols() { _Term.cols() }
+    rows() { _Term.rows() }
+    size() { (_Term.cols(), _Term.rows()) }
+    clear() { this._buf = "\x1b[2J\x1b[H"; this }
+    put(x, y, s) { this._buf = this._buf + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" + s; this }
+    write(s) { this._buf = this._buf + s; this }
+    flush() { IO.print(this._buf); _Term.flush(); this._buf = ""; this }
+    poll(timeout) { _term_key(_Term.read_key(timeout)) }
+  }
+  {
+    cols: fn () { _Term.cols() },
+    rows: fn () { _Term.rows() },
+    size: fn () { (_Term.cols(), _Term.rows()) },
+    clear: fn () { "\x1b[2J\x1b[H" },
+    move: fn (x, y) { "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" },
+    hide: fn () { "\x1b[?25l" },
+    show: fn () { "\x1b[?25h" },
+    flush: fn () { _Term.flush() },
+    fg: fn (s, n) { "\x1b[38;5;" + to_string(n) + "m" + s + "\x1b[39m" },
+    bg: fn (s, n) { "\x1b[48;5;" + to_string(n) + "m" + s + "\x1b[49m" },
+    rgb: fn (s, r, g, b) { "\x1b[38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + s + "\x1b[39m" },
+    bold: fn (s) { "\x1b[1m" + s + "\x1b[22m" },
+    dim: fn (s) { "\x1b[2m" + s + "\x1b[22m" },
+    underline: fn (s) { "\x1b[4m" + s + "\x1b[24m" },
+    reverse: fn (s) { "\x1b[7m" + s + "\x1b[27m" },
+    key: fn (raw) { _term_key(raw) },
+    poll: fn (timeout) { _term_key(_Term.read_key(timeout)) },
+    app: fn (body) {
+      _Term.raw_on()
+      IO.print("\x1b[?1049h\x1b[?25l")
+      _Term.flush()
+      defer {
+        IO.print("\x1b[?25h\x1b[?1049l\x1b[0m")
+        _Term.flush()
+        _Term.raw_off()
+      }
+      body(Screen.new())
+    },
+    Screen: Screen,
+  }
+}
+let Term = _term_module()
+)culebra";
 
 // `Args` — declarative CLI argument parser. Spec is a culebra
 // Object listing positionals + options + subcommands; `Args.parse`
@@ -4641,6 +4774,7 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   // "there's" matching `re'`) just inlines an unused module.
   std::string preamble;
   if (has("Time")) preamble.append(TIME_MODULE_SOURCE);
+  if (has("Term")) preamble.append(TERM_MODULE_SOURCE);
   if (has("Args")) preamble.append(ARGS_MODULE_SOURCE);
   if (has("assert_")) preamble.append(MATCHERS_MODULE_SOURCE);
   if (has("Regex") || has("re'") || has("re\"") || has("re`"))
@@ -4709,6 +4843,7 @@ inline void splice_stdlib_preamble(std::vector<LoadedModule>& modules,
 // motivated this.
 inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Time", TIME_MODULE_SOURCE);
+  env.initialize_lazy("Term", TERM_MODULE_SOURCE);
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
