@@ -9,7 +9,9 @@ assert_eq(Term.move(4, 2), "\x1b[3;5H")     // row = y+1, col = x+1
 assert_eq(Term.hide(), "\x1b[?25l")
 assert_eq(Term.show(), "\x1b[?25h")
 
-// --- 256-colour / truecolour / attributes ---
+// --- 256-colour / truecolour / attributes (force full capability) ---
+Term.set_level(3)
+assert_eq(Term.level(), 3)
 assert_eq(Term.fg("x", 196), "\x1b[38;5;196mx\x1b[39m")
 assert_eq(Term.bg("x", 21), "\x1b[48;5;21mx\x1b[49m")
 assert_eq(Term.rgb("x", 255, 128, 0), "\x1b[38;2;255;128;0mx\x1b[39m")
@@ -17,8 +19,27 @@ assert_eq(Term.bold("x"), "\x1b[1mx\x1b[22m")
 assert_eq(Term.dim("x"), "\x1b[2mx\x1b[22m")
 assert_eq(Term.underline("x"), "\x1b[4mx\x1b[24m")
 assert_eq(Term.reverse("x"), "\x1b[7mx\x1b[27m")
+assert_eq(Term.red("x"), "\x1b[31mx\x1b[39m")
+assert_eq(Term.cyan("x"), "\x1b[36mx\x1b[39m")
 // colours nest (each wraps with its own reset)
 assert_eq(Term.bold(Term.fg("hi", 2)), "\x1b[1m\x1b[38;5;2mhi\x1b[39m\x1b[22m")
+
+// --- capability downsampling ---
+// level 2: truecolour rgb -> nearest 256-colour cube index (208 for #ff8000)
+Term.set_level(2)
+assert_eq(Term.rgb("x", 255, 128, 0), "\x1b[38;5;208mx\x1b[39m")
+// level 1: everything collapses to the 16-colour palette
+Term.set_level(1)
+assert_eq(Term.red("x"), "\x1b[31mx\x1b[39m")
+assert_eq(Term.fg("x", 196), "\x1b[91mx\x1b[39m")     // 256 #196 -> bright red
+assert_eq(Term.bold("x"), "\x1b[1mx\x1b[22m")
+// level 0 (NO_COLOR / non-tty): all styling stripped
+Term.set_level(0)
+assert_eq(Term.fg("x", 196), "x")
+assert_eq(Term.rgb("x", 255, 128, 0), "x")
+assert_eq(Term.bold("x"), "x")
+assert_eq(Term.red("x"), "x")
+Term.set_level(3)   // restore for any later use
 
 // --- key parsing: raw bytes -> normalized names ---
 assert_eq(Term.key(""), "")

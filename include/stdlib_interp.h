@@ -1446,6 +1446,15 @@ inline Value make_term_primitives_namespace() {
           })),
       false);
 
+  // _Term.color_level() -> Long (0 none / 1 16 / 2 256 / 3 truecolor)
+  ns.initialize("color_level",
+      Value(FunctionValue({},
+          [](std::shared_ptr<Environment>) {
+            return Value(static_cast<long>(_term_detail::color_level()));
+          },
+          "Long"sv)),
+      false);
+
   // _Term.width(s: String) -> Long (display columns; wide/emoji = 2)
   ns.initialize("width",
       Value(FunctionValue({{"s", false, "String"sv}},
@@ -4291,6 +4300,29 @@ let _term_module = fn () {
     if raw == "\x7f" { return "Backspace" }
     raw
   }
+  # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
+  # and overridable via Term.set_level. Colours downsample to this level.
+  mut _level = _Term.color_level()
+  let _rgb256 = fn (r, g, b) {
+    if r == g && g == b {
+      if r < 8 { 16 } else { if r > 248 { 231 } else { 232 + (r - 8) * 24 / 247 } }
+    } else { 16 + 36 * (r * 5 / 255) + 6 * (g * 5 / 255) + (b * 5 / 255) }
+  }
+  let _rgb16 = fn (r, g, b) {
+    let bright = if r > 170 || g > 170 || b > 170 { 8 } else { 0 }
+    bright + (if r > 110 { 1 } else { 0 }) + (if g > 110 { 2 } else { 0 }) + (if b > 110 { 4 } else { 0 })
+  }
+  let _idx_rgb = fn (n) {
+    if n < 232 {
+      let i = n - 16
+      let conv = fn (c) { if c == 0 { 0 } else { 55 + c * 40 } }
+      (conv(i / 36), conv((i % 36) / 6), conv(i % 6))
+    } else { let g = 8 + (n - 232) * 10; (g, g, g) }
+  }
+  let _fg16 = fn (s, i) { "\x1b[" + to_string(if i < 8 { 30 + i } else { 90 + i - 8 }) + "m" + s + "\x1b[39m" }
+  let _bg16 = fn (s, i) { "\x1b[" + to_string(if i < 8 { 40 + i } else { 100 + i - 8 }) + "m" + s + "\x1b[49m" }
+  let _named = fn (s, i) { if _level == 0 { s } else { _fg16(s, i) } }
+  let _attr = fn (s, on, off) { if _level == 0 { s } else { "\x1b[" + on + "m" + s + "\x1b[" + off + "m" } }
   class Screen {
     new() { this._buf = "" }
     cols() { _Term.cols() }
@@ -4311,13 +4343,33 @@ let _term_module = fn () {
     hide: fn () { "\x1b[?25l" },
     show: fn () { "\x1b[?25h" },
     flush: fn () { _Term.flush() },
-    fg: fn (s, n) { "\x1b[38;5;" + to_string(n) + "m" + s + "\x1b[39m" },
-    bg: fn (s, n) { "\x1b[48;5;" + to_string(n) + "m" + s + "\x1b[49m" },
-    rgb: fn (s, r, g, b) { "\x1b[38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + s + "\x1b[39m" },
-    bold: fn (s) { "\x1b[1m" + s + "\x1b[22m" },
-    dim: fn (s) { "\x1b[2m" + s + "\x1b[22m" },
-    underline: fn (s) { "\x1b[4m" + s + "\x1b[24m" },
-    reverse: fn (s) { "\x1b[7m" + s + "\x1b[27m" },
+    fg: fn (s, n) {
+      if _level >= 2 { "\x1b[38;5;" + to_string(n) + "m" + s + "\x1b[39m" }
+      else { if _level == 1 { if n < 16 { _fg16(s, n) } else { let c = _idx_rgb(n); _fg16(s, _rgb16(c[0], c[1], c[2])) } } else { s } }
+    },
+    bg: fn (s, n) {
+      if _level >= 2 { "\x1b[48;5;" + to_string(n) + "m" + s + "\x1b[49m" }
+      else { if _level == 1 { if n < 16 { _bg16(s, n) } else { let c = _idx_rgb(n); _bg16(s, _rgb16(c[0], c[1], c[2])) } } else { s } }
+    },
+    rgb: fn (s, r, g, b) {
+      if _level >= 3 { "\x1b[38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + s + "\x1b[39m" }
+      else { if _level == 2 { "\x1b[38;5;" + to_string(_rgb256(r, g, b)) + "m" + s + "\x1b[39m" }
+      else { if _level == 1 { _fg16(s, _rgb16(r, g, b)) } else { s } } }
+    },
+    bold: fn (s) { _attr(s, "1", "22") },
+    dim: fn (s) { _attr(s, "2", "22") },
+    underline: fn (s) { _attr(s, "4", "24") },
+    reverse: fn (s) { _attr(s, "7", "27") },
+    black: fn (s) { _named(s, 0) },
+    red: fn (s) { _named(s, 1) },
+    green: fn (s) { _named(s, 2) },
+    yellow: fn (s) { _named(s, 3) },
+    blue: fn (s) { _named(s, 4) },
+    magenta: fn (s) { _named(s, 5) },
+    cyan: fn (s) { _named(s, 6) },
+    white: fn (s) { _named(s, 7) },
+    level: fn () { _level },
+    set_level: fn (n) { _level = n },
     key: fn (raw) { _term_key(raw) },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },

@@ -133,6 +133,29 @@ inline std::string read_key(double timeout_secs) {
   return out;
 }
 
+// Detected colour capability: 0 = none, 1 = 16 colours, 2 = 256, 3 = 24-bit
+// truecolour. Honours the `NO_COLOR` convention (present => off), `FORCE_COLOR`
+// (overrides the tty check), and `COLORTERM` / `TERM`. The culebra layer
+// downsamples colours to this level (and may override it).
+inline int color_level() {
+  if (std::getenv("NO_COLOR")) return 0;
+  const char* fc = std::getenv("FORCE_COLOR");
+  bool forced = fc && std::string(fc) != "0";
+  if (!forced && !isatty(STDOUT_FILENO)) return 0;
+  auto env = [](const char* k) {
+    const char* v = std::getenv(k);
+    return std::string(v ? v : "");
+  };
+  std::string ct = env("COLORTERM");
+  if (ct.find("truecolor") != std::string::npos ||
+      ct.find("24bit") != std::string::npos)
+    return 3;
+  std::string t = env("TERM");
+  if (t.find("256color") != std::string::npos) return 2;
+  if (t == "dumb") return 0;
+  return 1;
+}
+
 // Flush buffered output. Both backends write through std::cout, which is
 // block-buffered when stdout is not a tty and may not surface a frame that
 // lacks a trailing newline; a TUI builds a whole frame then flushes once.

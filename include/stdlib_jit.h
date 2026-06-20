@@ -610,6 +610,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_term_width(
     const char* s) {
   return culebra::_term_detail::width(s ? s : "");
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_term_color_level() {
+  return culebra::_term_detail::color_level();
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_term_read_key(
     double timeout) {
   return _culebra_heap_str(culebra::_term_detail::read_key(timeout));
@@ -5025,6 +5028,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::term_flush, jit.builder_.getVoidTy());
   jit.module_->getOrInsertFunction(rt::term_resized, jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::term_width, i64, ptrTy);
+  jit.module_->getOrInsertFunction(rt::term_color_level, i64);
   jit.module_->getOrInsertFunction(rt::term_read_key, ptrTy,
                                    jit.builder_.getDoubleTy());
   }
@@ -5893,6 +5897,8 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       emit_value_release(str);
       return make_long(w);
     }
+    if (method == "color_level" && a.empty())
+      return make_long(emit_call(module_->getFunction(rt::term_color_level), {}));
     if (method == "read_key" && a.size() == 1) {
       auto t = compile(*a[0]);
       emit_type_check(t, "Float", "parameter 'timeout'", a[0].get());
