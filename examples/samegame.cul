@@ -1,0 +1,238 @@
+# Same Game (さめがめ) — a Term TUI showcase for per-cell colour and the
+# unified input-event model (mouse + keyboard).
+#
+# Click a group of two or more connected same-coloured tiles to clear it;
+# the tiles above fall down and empty columns collapse to the left. A bigger
+# group scores more — (n - 2)^2 points. Clear the whole board for a bonus.
+# Game over when no group of two remains.
+#
+# Run it:  culebra examples/samegame.cul          (play; click or arrows+space, q quits)
+#          culebra examples/samegame.cul 40 < /dev/null   (auto-demo, up to 40 moves)
+
+let ROWS = 9
+let COLS = 14
+let NCOLORS = 5
+let COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
+
+let MAX_MOVES = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+let INTERACTIVE = IO.stdin_is_terminal()
+
+fn clampi(v, lo, hi) { if v < lo { lo } else { if v > hi { hi } else { v } } }
+
+fn new_board() {
+  Random.seed(to_long(Time.now().unix()))
+  mut b = []
+  for _ in 0..ROWS {
+    mut row = []
+    for _ in 0..COLS { row.push(Random.int(1, NCOLORS + 1)) }   # 1..NCOLORS
+    b.push(row)
+  }
+  b
+}
+
+# All cells orthogonally connected to (r,c) sharing its colour.
+fn group_at(b, r, c) {
+  let color = b[r][c]
+  mut out = []
+  if color == 0 { return out }
+  mut seen = {}
+  mut stack = [(r, c)]
+  while stack.size() > 0 {
+    let p = stack.pop()
+    let pr = p[0]
+    let pc = p[1]
+    if (pr >= 0 && pr < ROWS && pc >= 0 && pc < COLS) {
+      let key = to_string(pr) + "," + to_string(pc)
+      if !seen.has(key) {
+        mut seen[key] = true
+        if b[pr][pc] == color {
+          out.push((pr, pc))
+          stack.push((pr - 1, pc))
+          stack.push((pr + 1, pc))
+          stack.push((pr, pc - 1))
+          stack.push((pr, pc + 1))
+        }
+      }
+    }
+  }
+  out
+}
+
+fn remove_cells(b, cells) {
+  for cell in cells { b[cell[0]][cell[1]] = 0 }
+}
+
+# Tiles fall to the bottom of each column.
+fn gravity(b) {
+  mut c = 0
+  while c < COLS {
+    mut col = []
+    mut r = ROWS - 1
+    while r >= 0 { if b[r][c] != 0 { col.push(b[r][c]) }; r = r - 1 }
+    mut r2 = ROWS - 1
+    mut i = 0
+    while r2 >= 0 {
+      b[r2][c] = if i < col.size() { let v = col[i]; i = i + 1; v } else { 0 }
+      r2 = r2 - 1
+    }
+    c = c + 1
+  }
+}
+
+# Empty columns are removed; the rest shift left.
+fn collapse(b) {
+  mut write = 0
+  mut c = 0
+  while c < COLS {
+    if b[ROWS - 1][c] != 0 {
+      if write != c {
+        mut r = 0
+        while r < ROWS { b[r][write] = b[r][c]; r = r + 1 }
+      }
+      write = write + 1
+    }
+    c = c + 1
+  }
+  while write < COLS {
+    mut r = 0
+    while r < ROWS { b[r][write] = 0; r = r + 1 }
+    write = write + 1
+  }
+}
+
+fn has_moves(b) {
+  mut r = 0
+  while r < ROWS {
+    mut c = 0
+    while c < COLS {
+      let v = b[r][c]
+      if v != 0 {
+        if (c + 1 < COLS && b[r][c + 1] == v) { return true }
+        if (r + 1 < ROWS && b[r + 1][c] == v) { return true }
+      }
+      c = c + 1
+    }
+    r = r + 1
+  }
+  false
+}
+
+fn count_tiles(b) {
+  mut n = 0
+  for row in b { for v in row { if v != 0 { n = n + 1 } } }
+  n
+}
+
+# First cell whose group is removable (used by the auto-demo).
+fn find_move(b) {
+  mut r = 0
+  while r < ROWS {
+    mut c = 0
+    while c < COLS {
+      if (b[r][c] != 0 && group_at(b, r, c).size() >= 2) { return (r, c) }
+      c = c + 1
+    }
+    r = r + 1
+  }
+  (-1, -1)
+}
+
+fn offsets(s) { ((s.cols() - COLS * 2) / 2, (s.rows() - ROWS) / 2) }
+
+fn draw(s, b, cur_r, cur_c, score, msg) {
+  s.clear()
+  let off = offsets(s)
+  let ox = off[0]
+  let oy = off[1]
+  s.put(ox, oy - 2, "Same Game   Score: " + to_string(score) + "   " + msg)
+  mut r = 0
+  while r < ROWS {
+    mut c = 0
+    while c < COLS {
+      let v = b[r][c]
+      let px = ox + c * 2
+      let py = oy + r
+      let cur = (INTERACTIVE && r == cur_r && c == cur_c)
+      if v == 0 {
+        if cur { s.put(px, py, "()") } else { s.put(px, py, "  ") }
+      } else {
+        if cur { s.put(px, py, "()", Term.style(fg: 15, bg: COLORS[v])) }
+        else { s.put(px, py, "  ", Term.style(bg: COLORS[v])) }
+      }
+      c = c + 1
+    }
+    r = r + 1
+  }
+  s.put(ox, oy + ROWS + 1, "click a group of 2+   ·   arrows + space   ·   q to quit")
+  s.flush()
+}
+
+fn try_remove(b, r, c) {
+  let cells = group_at(b, r, c)
+  if cells.size() < 2 { return -1 }
+  remove_cells(b, cells)
+  gravity(b)
+  collapse(b)
+  cells.size()
+}
+
+Term.app(fn (s) {
+  mut board = new_board()
+  mut score = 0
+  mut cur_r = 0
+  mut cur_c = 0
+  mut moves = 0
+  mut msg = ""
+  draw(s, board, cur_r, cur_c, score, msg)
+
+  while true {
+    if !has_moves(board) {
+      let left = count_tiles(board)
+      if left == 0 { score = score + 1000; msg = "CLEARED!  bonus +1000" }
+      else { msg = "no moves — game over (" + to_string(left) + " left)" }
+      draw(s, board, cur_r, cur_c, score, msg)
+      if !INTERACTIVE { return }
+      while true { let e = s.poll(0.1); if e != nil && e.kind == "key" { return } }
+    }
+    if (MAX_MOVES >= 0 && moves >= MAX_MOVES) { return }
+
+    mut sr = -1
+    mut sc = -1
+    if INTERACTIVE {
+      let ev = s.poll(0.1)
+      if ev != nil {
+        if ev.kind == "key" {
+          if ev.key == "q" { return }
+          if ev.key == "left"  { cur_c = clampi(cur_c - 1, 0, COLS - 1) }
+          if ev.key == "right" { cur_c = clampi(cur_c + 1, 0, COLS - 1) }
+          if ev.key == "up"    { cur_r = clampi(cur_r - 1, 0, ROWS - 1) }
+          if ev.key == "down"  { cur_r = clampi(cur_r + 1, 0, ROWS - 1) }
+          if (ev.key == " " || ev.key == "enter") { sr = cur_r; sc = cur_c }
+          draw(s, board, cur_r, cur_c, score, msg)
+        } else {
+          if (ev.kind == "mouse" && ev.event == "press" && ev.button == "left") {
+            let off = offsets(s)
+            let gc = (ev.x - off[0]) / 2
+            let gr = ev.y - off[1]
+            if (gr >= 0 && gr < ROWS && gc >= 0 && gc < COLS) { sr = gr; sc = gc }
+          }
+        }
+      }
+    } else {
+      let m = find_move(board)
+      sr = m[0]
+      sc = m[1]
+      Time.sleep(0.04)
+    }
+
+    if sr >= 0 {
+      let n = try_remove(board, sr, sc)
+      if n >= 2 {
+        score = score + (n - 2) * (n - 2)
+        moves = moves + 1
+        msg = "cleared " + to_string(n)
+        draw(s, board, cur_r, cur_c, score, msg)
+      }
+    }
+  }
+})
