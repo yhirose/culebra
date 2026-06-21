@@ -4788,6 +4788,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_prop_get(
   }
 }
 
+// Cold path for JIT truthiness. The JIT inlines only the monomorphic Bool
+// fast path (data != 0); Long/Float/error funnel here, so the strict to_bool
+// semantics live in one place instead of a 5-block switch at every condition
+// site. Nil and other tags raise (mirrors interpreter.h to_bool); NaN is
+// truthy (d != 0.0 is true for NaN, matching Python's bool(float('nan'))).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool(
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  switch (tag) {
+    case TAG_LONG:
+      return data != 0;
+    case TAG_FLOAT: {
+      double d;
+      std::memcpy(&d, &data, sizeof(d));
+      return d != 0.0;
+    }
+    default:
+      culebra_runtime_type_error_typed(line, col, "Bool, Long, or Float", tag);
+  }
+  return false;  // unreachable: type_error_typed throws
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
   // A packed view's "properties" are its @packable fields (not real
@@ -9427,6 +9448,7 @@ inline constexpr auto object_get_default  = "culebra_runtime_object_get_default"
 inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto prop_get            = "culebra_runtime_prop_get";
+inline constexpr auto to_bool             = "culebra_runtime_to_bool";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
@@ -11617,56 +11639,42 @@ struct JIT {
     return builder_.CreateExtractValue(v, {1}, "data");
   }
 
-  // value_to_bool: returns i1
+  // value_to_bool: returns i1. Bool is the monomorphic hot case (comparisons,
+  // `&&`/`||`, loop guards) so it is inlined; Long/Float/error funnel through
+  // culebra_runtime_to_bool, which keeps the strict-truthiness semantics (Nil
+  // and other tags raise the same TypeError as the interpreter) in one place.
   llvm::Value* value_to_bool(llvm::Value* v) {
     auto tag = extract_tag(v);
     auto data = extract_data(v);
 
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto boolBB = llvm::BasicBlock::Create(ctx_, "tobool.bool", fn);
-    auto longBB = llvm::BasicBlock::Create(ctx_, "tobool.long", fn);
-    auto floatBB = llvm::BasicBlock::Create(ctx_, "tobool.float", fn);
-    auto errorBB = llvm::BasicBlock::Create(ctx_, "tobool.error", fn);
+    auto fastBB = llvm::BasicBlock::Create(ctx_, "tobool.fast", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "tobool.slow", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "tobool.merge", fn);
 
-    // Nil is NOT falsy: the interpreter's strict to_bool() accepts only
-    // Bool/Long/Float and raises on Nil (nil flows through `?.`/`??`, never
-    // truthiness). Leaving Nil out of the switch sends it to errorBB, so
-    // `!nil` / `if nil` raise the same TypeError on both backends.
-    auto sw = builder_.CreateSwitch(tag, errorBB, 3);
-    sw->addCase(builder_.getInt8(TAG_BOOL), boolBB);
-    sw->addCase(builder_.getInt8(TAG_LONG), longBB);
-    sw->addCase(builder_.getInt8(TAG_FLOAT), floatBB);
+    auto isBool = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_BOOL));
+    builder_.CreateCondBr(isBool, fastBB, slowBB);
 
-    builder_.SetInsertPoint(boolBB);
-    auto boolVal =
-        builder_.CreateICmpNE(data, builder_.getInt64(0), "bool.nz");
+    builder_.SetInsertPoint(fastBB);
+    auto fastVal = builder_.CreateICmpNE(data, builder_.getInt64(0), "bool.nz");
     builder_.CreateBr(mergeBB);
 
-    builder_.SetInsertPoint(longBB);
-    auto longVal =
-        builder_.CreateICmpNE(data, builder_.getInt64(0), "long.nz");
+    builder_.SetInsertPoint(slowBB);
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto slowVal = emit_call(
+        module_->getOrInsertFunction(rt::to_bool, builder_.getInt1Ty(), i8Ty,
+                                     i64Ty, i64Ty, i64Ty),
+        {tag, data, current_line_val(), current_column_val()});
+    // emit_call may have split the block (invoke continuation); the phi's
+    // incoming edge is whatever block now holds the branch.
+    auto slowPred = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
-
-    // Float: 0.0 and -0.0 are false; NaN is true (Python's
-    // bool(float('nan'))). FCmpUNE("unordered not-equal") returns
-    // true when either operand is NaN *or* d != 0 — exactly the
-    // NaN-is-truthy rule.
-    builder_.SetInsertPoint(floatBB);
-    auto asD = builder_.CreateBitCast(data, builder_.getDoubleTy(), "f.bits");
-    auto zeroD = llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0);
-    auto floatVal = builder_.CreateFCmpUNE(asD, zeroD, "float.nz");
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(errorBB);
-    emit_type_error_typed("Bool, Long, or Float", tag);
-    builder_.CreateUnreachable();
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 3, "tobool");
-    phi->addIncoming(boolVal, boolBB);
-    phi->addIncoming(longVal, longBB);
-    phi->addIncoming(floatVal, floatBB);
+    auto phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "tobool");
+    phi->addIncoming(fastVal, fastBB);
+    phi->addIncoming(slowVal, slowPred);
     return phi;
   }
 
