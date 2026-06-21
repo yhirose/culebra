@@ -9924,9 +9924,26 @@ struct JIT {
 
   // Build a fresh, ready-to-use LLJIT instance with the host's process
   // symbols available. Used by one-shot `exec` (script mode).
-  static std::unique_ptr<llvm::orc::LLJIT> create_jit_instance() {
+  //
+  // `fast_codegen` decouples the *backend* opt level (instruction selection
+  // + register allocation) from the IR opt level. Profiling microgpt shows
+  // JIT warmup is dominated by the backend, not the IR passes: dropping the
+  // backend to FastISel + fast regalloc roughly halves warmup. The machine
+  // code is worse, so this trades steady-state throughput for startup
+  // latency — a clear win when the hot compute lives in the C++/BLAS runtime
+  // (Tensor) rather than in JIT-emitted arithmetic (scalar). It is also the
+  // natural foundation for future tiered compilation (start at FastISel,
+  // promote hot functions to the optimizing backend in the background).
+  static std::unique_ptr<llvm::orc::LLJIT> create_jit_instance(
+      bool fast_codegen = false) {
     using namespace llvm;
-    auto jit = cantFail(orc::LLJITBuilder().create());
+    orc::LLJITBuilder lb;
+    if (fast_codegen) {
+      auto jtmb = cantFail(orc::JITTargetMachineBuilder::detectHost());
+      jtmb.setCodeGenOptLevel(CodeGenOptLevel::None);
+      lb.setJITTargetMachineBuilder(std::move(jtmb));
+    }
+    auto jit = cantFail(lb.create());
     auto& jd = jit->getMainJITDylib();
     auto gen = cantFail(
         orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
@@ -10035,7 +10052,8 @@ struct JIT {
   // `culebra_runtime_module_get`.
   static inline void run_modules(
       const std::vector<LoadedModule>& orig_modules,
-      bool emit_llvm = false, bool debug = false, int opt_level = 2) {
+      bool emit_llvm = false, bool debug = false, int opt_level = 2,
+      bool fast_codegen = false) {
     using namespace llvm;
     if (orig_modules.empty()) return;
 
@@ -10161,7 +10179,7 @@ struct JIT {
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
-      exec(std::move(ctx), std::move(mod));
+      exec(std::move(ctx), std::move(mod), fast_codegen);
     }
   }
 
@@ -20345,9 +20363,10 @@ struct JIT {
   // --- Execution ---
 
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
-                   std::unique_ptr<llvm::Module> mod) {
+                   std::unique_ptr<llvm::Module> mod,
+                   bool fast_codegen = false) {
     using namespace llvm;
-    auto jit = create_jit_instance();
+    auto jit = create_jit_instance(fast_codegen);
     orc::ThreadSafeContext tsctx(std::move(ctx));
     cantFail(jit->addIRModule(
         orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));

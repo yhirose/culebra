@@ -96,6 +96,7 @@ struct Options {
   bool help = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
+  bool jit_fast = false;  // FastISel backend: faster warmup, slower steady state
   bool emit_llvm = false;
   int opt_level = 2;
 #endif
@@ -271,6 +272,9 @@ void print_usage(ostream& os) {
         "  --jit              Run a script through the LLVM JIT instead of the\n"
         "                     tree-walking interpreter (same observable output).\n"
         "                     The REPL always uses the interpreter.\n"
+        "  --jit-fast         Like --jit but with FastISel codegen: roughly\n"
+        "                     halves JIT warmup at the cost of slower steady-\n"
+        "                     state code. Best for short or BLAS-bound runs.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif
@@ -844,6 +848,11 @@ Options parse_command_line(int argc, const char** argv) {
       if (arg == "--debug") { options.debug = true; continue; }
 #ifdef CULEBRA_JIT_ENABLED
       if (arg == "--jit") { options.jit = true; continue; }
+      if (arg == "--jit-fast") {
+        options.jit = true;
+        options.jit_fast = true;
+        continue;
+      }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
       if (arg.starts_with("-O")) {
         options.opt_level = std::stoi(arg.substr(2));
@@ -924,7 +933,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     if (options.jit) {
       culebra::_culebra_sys_argv_holder() = options.script_argv;
       culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
-                                 options.opt_level);
+                                 options.opt_level, options.jit_fast);
       continue;
     }
 #endif

@@ -68,6 +68,14 @@ the module up front, then only ~0.28 s in the 100-step train loop
 (2.8 ms/step). Compare per-step rate, not total wall — at this size
 warmup swamps the loop, so total-wall is mostly a compile-time figure.
 
+Most of that warmup is the LLVM backend (instruction selection +
+register allocation), not the IR passes. `--jit-fast` runs the backend
+with FastISel, roughly halving warmup; because the Tensor port's hot
+compute is in BLAS rather than JIT-emitted code, per-step is unchanged
+(loss stays bit-identical). It is the opposite trade for the scalar
+port — there all arithmetic is JIT'd, so `--jit-fast` slows per-step —
+which is why it is opt-in rather than the default.
+
 The Tensor port is **~18× faster per step** than the scalar version.
 The scalar microgpt builds thousands of `Value` objects per training
 step (one per scalar arithmetic op); the Tensor port builds a few
