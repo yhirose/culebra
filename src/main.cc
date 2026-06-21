@@ -96,7 +96,10 @@ struct Options {
   bool help = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
-  bool jit_fast = false;  // FastISel backend: faster warmup, slower steady state
+  // [experimental] FastISel backend: faster warmup, slower steady state.
+  // Not interp-symmetric yet — miscompiles for-in over iterator objects
+  // (reachable undef-data Values it materializes as garbage). Opt-in only.
+  bool jit_fast = false;
   bool emit_llvm = false;
   int opt_level = 2;
 #endif
@@ -272,9 +275,11 @@ void print_usage(ostream& os) {
         "  --jit              Run a script through the LLVM JIT instead of the\n"
         "                     tree-walking interpreter (same observable output).\n"
         "                     The REPL always uses the interpreter.\n"
-        "  --jit-fast         Like --jit but with FastISel codegen: roughly\n"
-        "                     halves JIT warmup at the cost of slower steady-\n"
-        "                     state code. Best for short or BLAS-bound runs.\n"
+        "  --jit-fast         [experimental] Like --jit but with FastISel\n"
+        "                     codegen: roughly halves JIT warmup at the cost of\n"
+        "                     slower steady-state code. Known to miscompile\n"
+        "                     for-in over iterator objects; not yet symmetric\n"
+        "                     with the interpreter. Use only for BLAS-bound runs.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif

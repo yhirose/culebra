@@ -71,10 +71,16 @@ warmup swamps the loop, so total-wall is mostly a compile-time figure.
 Most of that warmup is the LLVM backend (instruction selection +
 register allocation), not the IR passes. `--jit-fast` runs the backend
 with FastISel, roughly halving warmup; because the Tensor port's hot
-compute is in BLAS rather than JIT-emitted code, per-step is unchanged
-(loss stays bit-identical). It is the opposite trade for the scalar
-port — there all arithmetic is JIT'd, so `--jit-fast` slows per-step —
-which is why it is opt-in rather than the default.
+compute is in BLAS rather than JIT-emitted code, per-step is unchanged.
+It is the opposite trade for the scalar port — there all arithmetic is
+JIT'd, so `--jit-fast` slows per-step.
+
+`--jit-fast` is **experimental** and not yet interp-symmetric: it
+miscompiles `for-in` over iterator objects (FastISel materializes a
+reachable `undef`-data Value as garbage). Use it only for BLAS-bound
+runs that avoid that pattern. The cheaper, byte-identical way to cut
+warmup is the on-disk object cache (`CULEBRA_JIT_CACHE=auto`), which
+reloads the optimized O2 code with no per-step penalty.
 
 The Tensor port is **~18× faster per step** than the scalar version.
 The scalar microgpt builds thousands of `Value` objects per training
