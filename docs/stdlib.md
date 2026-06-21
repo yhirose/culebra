@@ -2881,22 +2881,42 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 | `Term.width(s) -> Long` | display width in columns (wide / emoji = 2, combining = 0) |
 | `Term.flush()` | flush buffered output |
 
-### Key and mouse input
+### Input events
 
-`Term.key(raw) -> String` normalizes a raw byte sequence to a name:
-`"Up"`, `"Down"`, `"Left"`, `"Right"`, `"Enter"`, `"Esc"`, `"Backspace"`, or
-the literal character (e.g. `"q"`, `" "`); `""` means no input.
-`Term.resized() -> Bool` is true once after the terminal is resized
-(SIGWINCH), and `Screen.poll` surfaces a pending resize as the `"Resize"` key.
+Input is a single event model: `Screen.poll(timeout)` (and `Term.parse(raw)`)
+returns one event **Object**, or `nil` for no input. A `kind` field
+discriminates; modifiers are booleans.
+
+| `kind` | Fields |
+| --- | --- |
+| `"key"` | `key`, `ctrl`, `shift`, `alt` |
+| `"mouse"` | `event`, `button`, `x`, `y`, `ctrl`, `shift`, `alt` |
+| `"resize"` | `cols`, `rows` |
+
+For a **key**, `key` is a printable character (`"q"`, `" "`) or a name:
+`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`, `"escape"`, `"tab"`,
+`"backspace"`, `"insert"`, `"delete"`, `"home"`, `"end"`, `"pageup"`,
+`"pagedown"`, `"f1"`…`"f12"`. Modifiers are reported in `ctrl` / `shift` /
+`alt` (e.g. Ctrl+Right → `{key: "right", ctrl: true}`, Ctrl+C →
+`{key: "c", ctrl: true}`, Alt+x → `{key: "x", alt: true}`).
+
+For a **mouse** event (see below), `event` is `"press"` / `"release"` /
+`"drag"` / `"scroll"`; `button` is `"left"` / `"middle"` / `"right"` /
+`"wheel_up"` / `"wheel_down"`; `x` / `y` are 0-based cells.
+
+`Term.resized() -> Bool` is the lower-level resize flag (true once after a
+SIGWINCH); `poll` turns it into a `"resize"` event.
 
 Mouse reporting is opt-in: enable it with `Term.app(..., mouse: true)` (or
-print `Term.mouse_on()` / `Term.mouse_off()`). When enabled, `Screen.poll`
-returns a **mouse Object** instead of a string for mouse activity:
-`{kind: "mouse", event, button, x, y, shift, alt, ctrl}` — `event` is
-`"press"` / `"release"` / `"drag"` / `"scroll"`; `button` is `"left"` /
-`"middle"` / `"right"` / `"wheel_up"` / `"wheel_down"`; `x` / `y` are 0-based
-cells. Test with `type_of(ev) == "Object"`. (`Term.mouse(raw)` parses one
-report directly.)
+print `Term.mouse_on()` / `Term.mouse_off()` yourself).
+
+```culebra
+let ev = screen.poll(0.1)
+if ev != nil {
+  if ev.kind == "key" && ev.key == "q" { ... }
+  else if ev.kind == "mouse" && ev.event == "press" { ... ev.x, ev.y ... }
+}
+```
 
 ### `Term.app` and `Screen`
 
@@ -2914,7 +2934,7 @@ receives a `Screen`:
 | `screen.put(x, y, s, style = "")` | lay the graphemes of `s` into successive cells, all in `style` |
 | `screen.render() -> String` | minimal escapes to update the screen from the last frame (and advance the front buffer) |
 | `screen.flush()` | print `render()` and flush |
-| `screen.poll(timeout) -> String` | wait up to `timeout` seconds for a key (or `"Resize"`), returning its name (or `""`) |
+| `screen.poll(timeout) -> Object?` | wait up to `timeout` seconds for an input event (key / mouse / resize), or `nil` |
 
 A `Screen` is a double-buffered grid of cells, each holding a glyph and an
 optional style. `flush` emits **only the cells that changed** since the last

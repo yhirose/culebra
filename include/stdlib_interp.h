@@ -4289,25 +4289,28 @@ inline constexpr const char* TIME_MODULE_SOURCE =
 // escapes pass through verbatim.
 inline constexpr const char* TERM_MODULE_SOURCE = R"culebra(
 let _term_module = fn () {
-  let _term_key = fn (raw) {
-    if raw == "" { return "" }
-    if raw == "\x1b[A" { return "Up" }
-    if raw == "\x1b[B" { return "Down" }
-    if raw == "\x1b[C" { return "Right" }
-    if raw == "\x1b[D" { return "Left" }
-    if raw == "\x1b" { return "Esc" }
-    if raw == "\r" || raw == "\n" { return "Enter" }
-    if raw == "\x7f" { return "Backspace" }
-    raw
-  }
-  # Parse an SGR mouse report "\x1b[<b;x;yM" (press / motion) or "...m"
-  # (release) into an Object {kind, event, button, x, y, shift, alt, ctrl}
-  # with 0-based coordinates. Returns the raw string if it does not parse.
+  # Input is a single event model: poll() returns one of these Objects (or
+  # nil for no input). `kind` discriminates; modifiers are booleans.
+  #   { kind: "key",    key, ctrl, shift, alt }      # key = name or character
+  #   { kind: "mouse",  event, button, x, y, ctrl, shift, alt }
+  #   { kind: "resize", cols, rows }
+  let _evkey = fn (name, ctrl, shift, alt) { { kind: "key", key: name, ctrl: ctrl, shift: shift, alt: alt } }
+  # An xterm modifier number: (m - 1) is a bitmask 1=shift 2=alt 4=ctrl.
+  let _mods = fn (m) { let k = m - 1; ((k & 1) != 0, (k & 2) != 0, (k & 4) != 0) }
+  let _csi_keys = { "A": "up", "B": "down", "C": "right", "D": "left",
+                    "H": "home", "F": "end", "P": "f1", "Q": "f2", "R": "f3", "S": "f4" }
+  let _tilde_keys = { "1": "home", "2": "insert", "3": "delete", "4": "end",
+                      "5": "pageup", "6": "pagedown", "11": "f1", "12": "f2",
+                      "13": "f3", "14": "f4", "15": "f5", "17": "f6", "18": "f7",
+                      "19": "f8", "20": "f9", "21": "f10", "23": "f11", "24": "f12" }
+  let _ctrl_letters = "abcdefghijklmnopqrstuvwxyz"
+
+  # Parse an SGR mouse report "\x1b[<b;x;yM/m" into a mouse Object (0-based).
   let _parse_mouse = fn (raw) {
     let n = raw.size()
     let last = raw[n - 1..n]
     let parts = raw[3..n - 1].split(";")   # drop "\x1b[<" and the final M/m
-    if parts.size() != 3 { return raw }
+    if parts.size() != 3 { return nil }
     let b = to_long(parts[0])
     let x = to_long(parts[1]) - 1
     let y = to_long(parts[2]) - 1
@@ -4324,12 +4327,51 @@ let _term_module = fn () {
     { kind: "mouse", event: event, button: button, x: x, y: y,
       shift: (b & 4) != 0, alt: (b & 8) != 0, ctrl: (b & 16) != 0 }
   }
-  # A pending resize wins; an SGR mouse report ("\x1b[<…") becomes a mouse
-  # Object; everything else is a normalized key name (String).
+
+  # Parse one raw report into an event Object, or nil.
+  let _parse_event = fn (raw) {
+    let n = raw.size()
+    if n == 0 { return nil }
+    if n >= 3 && raw[0..3] == "\x1b[<" { return _parse_mouse(raw) }
+    if raw[0..1] == "\x1b" {
+      if n == 1 { return _evkey("escape", false, false, false) }
+      let second = raw[1..2]
+      if second == "[" || second == "O" {
+        let body = raw[2..n]                            # after "\x1b[" / "\x1bO"
+        let bn = body.size()
+        let final = body[bn - 1..bn]
+        mut shift = false
+        mut alt = false
+        mut ctrl = false
+        mut numpart = body[0..bn - 1]                   # params before final
+        if numpart.size() > 0 {
+          let ps = numpart.split(";")
+          numpart = ps[0]
+          if ps.size() == 2 { let m = _mods(to_long(ps[1])); shift = m[0]; alt = m[1]; ctrl = m[2] }
+        }
+        let name = if final == "~" { _tilde_keys.get(numpart, "") } else { _csi_keys.get(final, "") }
+        if name != "" { return _evkey(name, ctrl, shift, alt) }
+        return nil                                       # unrecognized sequence
+      }
+      if n == 2 { return _evkey(raw[1..2], false, false, true) }   # ESC+char = alt+char
+      return nil
+    }
+    if n == 1 {
+      if raw == "\r" || raw == "\n" { return _evkey("enter", false, false, false) }
+      if raw == "\t" { return _evkey("tab", false, false, false) }
+      if raw == "\x7f" || raw == "\x08" { return _evkey("backspace", false, false, false) }
+      let cp = raw.code_points().collect()[0]
+      if cp >= 1 && cp <= 26 { return _evkey(_ctrl_letters[cp - 1..cp], true, false, false) }   # ctrl+letter
+      return _evkey(raw, false, false, false)            # printable
+    }
+    _evkey(raw, false, false, false)                     # multi-byte character
+  }
+
+  # A pending resize wins; otherwise parse one input report. Returns nil for
+  # no input.
   let _poll = fn (timeout) {
-    if _Term.resized() { return "Resize" }
-    let raw = _Term.read_key(timeout)
-    if raw.size() >= 3 && raw[0..3] == "\x1b[<" { _parse_mouse(raw) } else { _term_key(raw) }
+    if _Term.resized() { return { kind: "resize", cols: _Term.cols(), rows: _Term.rows() } }
+    _parse_event(_Term.read_key(timeout))
   }
   # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
   # and overridable via Term.set_level. Colours downsample to this level.
@@ -4523,8 +4565,7 @@ let _term_module = fn () {
     white: fn (s) { _named(s, 7) },
     level: fn () { _level },
     set_level: fn (n) { _level = n },
-    key: fn (raw) { _term_key(raw) },
-    mouse: fn (raw) { _parse_mouse(raw) },
+    parse: fn (raw) { _parse_event(raw) },           # raw report -> Event | nil
     mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },    # button + drag, SGR coords
     mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
     width: fn (s) { _Term.width(s) },

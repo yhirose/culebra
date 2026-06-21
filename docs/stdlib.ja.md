@@ -2770,22 +2770,42 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 | `Term.width(s) -> Long` | 表示幅（全角 / 絵文字 = 2、結合 = 0） |
 | `Term.flush()` | バッファ済み出力をフラッシュ |
 
-### キー・マウス入力
+### 入力イベント
 
-`Term.key(raw) -> String` は生バイト列を名前に正規化します:
-`"Up"`・`"Down"`・`"Left"`・`"Right"`・`"Enter"`・`"Esc"`・`"Backspace"`、
-または文字そのもの（例 `"q"`・`" "`）。`""` は入力なし。
-`Term.resized() -> Bool` は端末リサイズ（SIGWINCH）後に一度 true を返し、
-`Screen.poll` はリサイズを `"Resize"` キーとして返します。
+入力は単一のイベントモデル: `Screen.poll(timeout)`（と `Term.parse(raw)`）は
+1 つのイベント **Object**、または入力なしで `nil` を返します。`kind` で種別を
+判別し、修飾子は bool です。
+
+| `kind` | フィールド |
+| --- | --- |
+| `"key"` | `key`・`ctrl`・`shift`・`alt` |
+| `"mouse"` | `event`・`button`・`x`・`y`・`ctrl`・`shift`・`alt` |
+| `"resize"` | `cols`・`rows` |
+
+**キー**の `key` は印字可能文字（`"q"`・`" "`）か名前:
+`"up"` / `"down"` / `"left"` / `"right"`・`"enter"`・`"escape"`・`"tab"`・
+`"backspace"`・`"insert"`・`"delete"`・`"home"`・`"end"`・`"pageup"`・
+`"pagedown"`・`"f1"`…`"f12"`。修飾子は `ctrl` / `shift` / `alt`
+（例 Ctrl+Right → `{key: "right", ctrl: true}`、Ctrl+C →
+`{key: "c", ctrl: true}`、Alt+x → `{key: "x", alt: true}`）。
+
+**マウス**は `event` が `"press"` / `"release"` / `"drag"` / `"scroll"`、
+`button` が `"left"` / `"middle"` / `"right"` / `"wheel_up"` / `"wheel_down"`、
+`x` / `y` は 0 始まりのセル。
+
+`Term.resized() -> Bool` は低レベルのリサイズフラグ（SIGWINCH 後一度 true）、
+`poll` はそれを `"resize"` イベントにします。
 
 マウスはオプトイン: `Term.app(..., mouse: true)`（または `Term.mouse_on()` /
-`Term.mouse_off()` を print）で有効化。有効時、`Screen.poll` はマウス操作で
-文字列でなく**マウス Object** を返します:
-`{kind: "mouse", event, button, x, y, shift, alt, ctrl}` — `event` は
-`"press"` / `"release"` / `"drag"` / `"scroll"`、`button` は `"left"` /
-`"middle"` / `"right"` / `"wheel_up"` / `"wheel_down"`、`x` / `y` は 0 始まり
-のセル。`type_of(ev) == "Object"` で判定。（`Term.mouse(raw)` は 1 報告を
-直接パース。）
+`Term.mouse_off()` を自分で print）で有効化。
+
+```culebra
+let ev = screen.poll(0.1)
+if ev != nil {
+  if ev.kind == "key" && ev.key == "q" { ... }
+  else if ev.kind == "mouse" && ev.event == "press" { ... ev.x, ev.y ... }
+}
+```
 
 ### `Term.app` と `Screen`
 
@@ -2803,7 +2823,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 | `screen.put(x, y, s, style = "")` | `s` のグラフェムを `style` で連続セルに配置 |
 | `screen.render() -> String` | 前フレームから画面を更新する最小エスケープ（フロントバッファも前進） |
 | `screen.flush()` | `render()` を出力してフラッシュ |
-| `screen.poll(timeout) -> String` | 最大 `timeout` 秒キー入力（または `"Resize"`）を待ち名前を返す（無ければ `""`） |
+| `screen.poll(timeout) -> Object?` | 最大 `timeout` 秒、入力イベント（キー / マウス / リサイズ）を待つ。無ければ `nil` |
 
 `Screen` はセル（グリフ + 任意のスタイル）のダブルバッファです。`flush` は
 前フレームから**変化したセルだけ**を、スタイル間の最小 SGR 遷移付きで出力

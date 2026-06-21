@@ -98,10 +98,10 @@ class Frog {
   move_by_key(key) {
     mut dx = 0
     mut dy = 0
-    if key == "Left" || key == "h" { dx = -1 }
-    if key == "Right" || key == "l" { dx = 1 }
-    if key == "Up" || key == "k" { dy = -1 }
-    if key == "Down" || key == "j" { dy = 1 }
+    if key == "left" || key == "h" { dx = -1 }
+    if key == "right" || key == "l" { dx = 1 }
+    if key == "up" || key == "k" { dy = -1 }
+    if key == "down" || key == "j" { dy = 1 }
     this.move(dx, dy)
   }
   eat() {
@@ -259,9 +259,11 @@ fn draw_game_over(s, score, time, frog, fruit, dessert) {
 fn wait_key(s, chars) {
   if !INTERACTIVE { return chars[0] }
   while true {
-    let k = s.poll(0.1)
-    for c in chars {
-      if k == c { return c }
+    let ev = s.poll(0.1)
+    if ev != nil && ev.kind == "key" {
+      for c in chars {
+        if ev.key == c { return c }
+      }
     }
   }
 }
@@ -283,7 +285,8 @@ fn run(s) {
   while (time > 0 && frog.alive()
       && (fruit.remaining() > 0 || dessert.remaining() > 0)
       && (MAX_TICKS < 0 || tic < MAX_TICKS)) {
-    let key = s.poll(0.1)
+    let ev = s.poll(0.1)
+    let key = if ev != nil && ev.kind == "key" { ev.key } else { "" }
     if key == "q" { time = 0; break }
     frog.move_by_key(key)
     fruit.move(s)
