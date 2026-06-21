@@ -105,4 +105,33 @@ assert_eq(Term.width("e\u{0301}"), 1) // e + combining acute = 1
 assert_eq(Term.width("👨‍👩‍👧"), 2)      // family (ZWJ) = one cluster
 assert_eq(Term.width("🇯🇵"), 2)        // flag (regional indicators)
 
+// --- Term.style: SGR parameter string for a cell (downsampled to level) ---
+Term.set_level(3)
+assert_eq(Term.style(), "")                            // no attrs/colour
+assert_eq(Term.style(fg: 196), "38;5;196")             // 256 fg
+assert_eq(Term.style(bg: 0), "48;5;0")                 // 256 bg
+assert_eq(Term.style(fg: 196, bold: true), "1;38;5;196")
+assert_eq(Term.style(fg: 2, bg: 4), "38;5;2;48;5;4")
+assert_eq(Term.style(fg: (255, 128, 0)), "38;2;255;128;0")   // truecolour fg
+assert_eq(Term.style(bold: true, underline: true), "1;4")
+Term.set_level(0)
+assert_eq(Term.style(fg: 196, bold: true), "")         // stripped at level 0
+Term.set_level(3)
+
+// --- per-cell colour: render emits minimal SGR transitions, ends at default ---
+let cc = Term.Screen.new()
+cc.clear()
+cc.put(2, 1, "A", Term.style(fg: 2))
+cc.render()                          // first render = full repaint (discard)
+// change the glyph, same style: move + reset + style + glyph + trailing reset
+cc.put(2, 1, "B", Term.style(fg: 2))
+assert_eq(cc.render(), "\x1b[2;3H\x1b[0m\x1b[38;5;2mB\x1b[0m")
+// unchanged frame -> nothing
+cc.put(2, 1, "B", Term.style(fg: 2))
+assert_eq(cc.render(), "")
+// drop the colour (default style): the previous frame left the terminal at
+// default, so no SGR is needed — just the glyph
+cc.put(2, 1, "B")
+assert_eq(cc.render(), "\x1b[2;3HB")
+
 puts("test_term ok")

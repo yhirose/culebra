@@ -4323,16 +4323,58 @@ let _term_module = fn () {
       (conv(i / 36), conv((i % 36) / 6), conv(i % 6))
     } else { let g = 8 + (n - 232) * 10; (g, g, g) }
   }
-  let _fg16 = fn (s, i) { "\x1b[" + to_string(if i < 8 { 30 + i } else { 90 + i - 8 }) + "m" + s + "\x1b[39m" }
-  let _bg16 = fn (s, i) { "\x1b[" + to_string(if i < 8 { 40 + i } else { 100 + i - 8 }) + "m" + s + "\x1b[49m" }
-  let _named = fn (s, i) { if _level == 0 { s } else { _fg16(s, i) } }
+  # SGR parameter fragments (no escape wrapper), already downsampled to the
+  # active level — "" means "no colour at this level". `Term.style` joins
+  # these with attributes; the wrapping helpers below add `\x1b[..m`/reset.
+  let _16fg = fn (i) { to_string(if i < 8 { 30 + i } else { 90 + i - 8 }) }
+  let _16bg = fn (i) { to_string(if i < 8 { 40 + i } else { 100 + i - 8 }) }
+  let _fg_params = fn (n) {
+    if _level >= 2 { "38;5;" + to_string(n) }
+    else { if _level == 1 { if n < 16 { _16fg(n) } else { let c = _idx_rgb(n); _16fg(_rgb16(c[0], c[1], c[2])) } } else { "" } }
+  }
+  let _bg_params = fn (n) {
+    if _level >= 2 { "48;5;" + to_string(n) }
+    else { if _level == 1 { if n < 16 { _16bg(n) } else { let c = _idx_rgb(n); _16bg(_rgb16(c[0], c[1], c[2])) } } else { "" } }
+  }
+  let _rgbfg_params = fn (r, g, b) {
+    if _level >= 3 { "38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
+    else { if _level == 2 { "38;5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16fg(_rgb16(r, g, b)) } else { "" } } }
+  }
+  let _rgbbg_params = fn (r, g, b) {
+    if _level >= 3 { "48;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) }
+    else { if _level == 2 { "48;5;" + to_string(_rgb256(r, g, b)) } else { if _level == 1 { _16bg(_rgb16(r, g, b)) } else { "" } } }
+  }
+  # Wrap text in `\x1b[<params>m ... \x1b[<reset>m` (passthrough when empty).
+  let _wrap = fn (s, params, reset) { if params == "" { s } else { "\x1b[" + params + "m" + s + "\x1b[" + reset + "m" } }
+  let _named = fn (s, i) { if _level == 0 { s } else { _wrap(s, _16fg(i), "39") } }
   let _attr = fn (s, on, off) { if _level == 0 { s } else { "\x1b[" + on + "m" + s + "\x1b[" + off + "m" } }
-  # A double-buffered grid of single-grapheme cells. clear()/set()/put() build
-  # the back buffer; flush() emits only the cells that differ from the last
-  # frame (cursor-move + glyph), so updates do not flicker. Cells hold plain
-  # glyphs (wide glyphs occupy two cells); per-cell colour is future work.
+  # Build an SGR parameter string for a cell style. fg/bg take a 256-colour
+  # index (Long) or an (r,g,b) tuple; attrs are booleans. "" at level 0.
+  let _style = fn (fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) {
+    if _level == 0 { return "" }
+    mut parts = []
+    if bold { parts.push("1") }
+    if dim { parts.push("2") }
+    if underline { parts.push("4") }
+    if reverse { parts.push("7") }
+    if fg != nil {
+      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" { _rgbfg_params(fg[0], fg[1], fg[2]) } else { _fg_params(fg) }
+      if p != "" { parts.push(p) }
+    }
+    if bg != nil {
+      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" { _rgbbg_params(bg[0], bg[1], bg[2]) } else { _bg_params(bg) }
+      if p != "" { parts.push(p) }
+    }
+    parts.join(";")
+  }
+  # A double-buffered grid of cells (glyph + optional SGR style). clear()/
+  # set()/put() build the back buffer; flush() emits only the cells that
+  # differ from the last frame (cursor-move + minimal SGR transition + glyph),
+  # so updates do not flicker. Styles come from `Term.style(...)`; wide glyphs
+  # occupy two cells. Glyph and style are kept in parallel arrays so reuse
+  # stays alloc-free (see clear()).
   class Screen {
-    new() { this._w = 0; this._h = 0; this._back = []; this._front = [] }
+    new() { this._w = 0; this._h = 0; this._back = []; this._front = []; this._bstyle = []; this._fstyle = [] }
     cols() { _Term.cols() }
     rows() { _Term.rows() }
     size() { (_Term.cols(), _Term.rows()) }
@@ -4342,30 +4384,32 @@ let _term_module = fn () {
       let n = w * h
       this._w = w
       this._h = h
-      # Reuse the buffer on the common path (size unchanged); only reallocate
+      # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
       if this._back.size() == n {
         mut i = 0
-        while i < n { this._back[i] = " "; i = i + 1 }
+        while i < n { this._back[i] = " "; this._bstyle[i] = ""; i = i + 1 }
       } else {
         this._back = []
-        for _ in 0..n { this._back.push(" ") }
+        this._bstyle = []
+        for _ in 0..n { this._back.push(" "); this._bstyle.push("") }
       }
       this
     }
-    set(x, y, g) {
+    set(x, y, g, style = "") {
       let gs = to_string(g)   # graphemes()/slices yield StringView
       if x >= 0 && x < this._w && y >= 0 && y < this._h {
         let idx = y * this._w + x
         this._back[idx] = gs
-        if _Term.width(gs) == 2 && x + 1 < this._w { this._back[idx + 1] = "" }
+        this._bstyle[idx] = style
+        if _Term.width(gs) == 2 && x + 1 < this._w { this._back[idx + 1] = ""; this._bstyle[idx + 1] = style }
       }
       this
     }
-    put(x, y, s) {
+    put(x, y, s, style = "") {
       mut cx = x
       for g in s.graphemes() {
-        this.set(cx, y, to_string(g))
+        this.set(cx, y, to_string(g), style)
         # set() marks the next cell "" for a wide glyph; reuse that instead of
         # measuring the width again.
         let wide = cx + 1 < this._w && this._back[cx + 1] == ""
@@ -4381,11 +4425,13 @@ let _term_module = fn () {
       mut out = ""
       if this._front.size() != n {
         this._front = []
-        for _ in 0..n { this._front.push("\x00") }   # force a full repaint
-        out = "\x1b[2J"                               # wipe stale content
+        this._fstyle = []
+        for _ in 0..n { this._front.push("\x00"); this._fstyle.push("") }   # force a full repaint
+        out = "\x1b[2J"                                                     # wipe stale content
       }
       mut cy = -1
       mut cx = -1
+      mut pen = ""   # SGR currently applied at the terminal ("" = default)
       mut y = 0
       while y < this._h {
         mut x = 0
@@ -4394,21 +4440,30 @@ let _term_module = fn () {
           let back = this._back[idx]
           if back == "" {
             this._front[idx] = ""
+            this._fstyle[idx] = this._bstyle[idx]
           } else {
-            if back != this._front[idx] {
+            let st = this._bstyle[idx]
+            if back != this._front[idx] || st != this._fstyle[idx] {
               if cy != y || cx != x { out = out + "\x1b[" + to_string(y + 1) + ";" + to_string(x + 1) + "H" }
+              if st != pen {
+                out = out + "\x1b[0m"
+                if st != "" { out = out + "\x1b[" + st + "m" }
+                pen = st
+              }
               out = out + back
               this._front[idx] = back
+              this._fstyle[idx] = st
               # A wide glyph is the one whose continuation cell set() blanked.
               let wide = x + 1 < this._w && this._back[idx + 1] == ""
               cy = y
-              if wide { cx = x + 2; this._front[idx + 1] = "" } else { cx = x + 1 }
+              if wide { cx = x + 2; this._front[idx + 1] = ""; this._fstyle[idx + 1] = st } else { cx = x + 1 }
             }
           }
           x = x + 1
         }
         y = y + 1
       }
+      if pen != "" { out = out + "\x1b[0m" }   # leave the terminal at default
       out
     }
     flush() { IO.print(this.render()); _Term.flush(); this }
@@ -4423,19 +4478,10 @@ let _term_module = fn () {
     hide: fn () { "\x1b[?25l" },
     show: fn () { "\x1b[?25h" },
     flush: fn () { _Term.flush() },
-    fg: fn (s, n) {
-      if _level >= 2 { "\x1b[38;5;" + to_string(n) + "m" + s + "\x1b[39m" }
-      else { if _level == 1 { if n < 16 { _fg16(s, n) } else { let c = _idx_rgb(n); _fg16(s, _rgb16(c[0], c[1], c[2])) } } else { s } }
-    },
-    bg: fn (s, n) {
-      if _level >= 2 { "\x1b[48;5;" + to_string(n) + "m" + s + "\x1b[49m" }
-      else { if _level == 1 { if n < 16 { _bg16(s, n) } else { let c = _idx_rgb(n); _bg16(s, _rgb16(c[0], c[1], c[2])) } } else { s } }
-    },
-    rgb: fn (s, r, g, b) {
-      if _level >= 3 { "\x1b[38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + s + "\x1b[39m" }
-      else { if _level == 2 { "\x1b[38;5;" + to_string(_rgb256(r, g, b)) + "m" + s + "\x1b[39m" }
-      else { if _level == 1 { _fg16(s, _rgb16(r, g, b)) } else { s } } }
-    },
+    fg: fn (s, n) { _wrap(s, _fg_params(n), "39") },
+    bg: fn (s, n) { _wrap(s, _bg_params(n), "49") },
+    rgb: fn (s, r, g, b) { _wrap(s, _rgbfg_params(r, g, b), "39") },
+    style: _style,
     bold: fn (s) { _attr(s, "1", "22") },
     dim: fn (s) { _attr(s, "2", "22") },
     underline: fn (s) { _attr(s, "4", "24") },
@@ -4456,7 +4502,7 @@ let _term_module = fn () {
     poll: fn (timeout) { _poll(timeout) },
     app: fn (body) {
       _Term.raw_on()
-      IO.print("\x1b[?1049h\x1b[?25l")
+      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m")
       _Term.flush()
       defer {
         IO.print("\x1b[?25h\x1b[?1049l\x1b[0m")

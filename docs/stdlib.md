@@ -2853,16 +2853,20 @@ so calls nest:
 | `Term.rgb(s, r, g, b) -> String` | 24-bit truecolour foreground |
 | `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | named 16-colour foreground |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | text attributes |
+| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | an SGR parameter string for a `Screen` cell; `fg`/`bg` take a 256-colour index or an `(r,g,b)` tuple |
 
 Colours adapt to the terminal's **capability level** — `0` none, `1` 16,
 `2` 256, `3` truecolour — detected from `isatty`, `NO_COLOR` (present ⇒ off),
 `FORCE_COLOR`, `COLORTERM`, and `TERM`. A colour beyond the level is
 downsampled (truecolour → nearest 256 → nearest 16), and at level 0 nothing
 is emitted, so piped or `NO_COLOR` output stays plain. `Term.level()` reads
-the level and `Term.set_level(n)` overrides it.
+the level and `Term.set_level(n)` overrides it. The `fg`/`bg`/`rgb`/`bold`/…
+helpers wrap a string for direct printing; `Term.style(...)` produces the
+style passed to `screen.set` / `screen.put` for coloured cells.
 
 ```culebra
-puts(Term.bold(Term.fg("alert", 196)))   # bold bright-red "alert"
+puts(Term.bold(Term.fg("alert", 196)))      # bold bright-red "alert" (printed)
+let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 ```
 
 ### Escapes, size, and width
@@ -2896,18 +2900,19 @@ receives a `Screen`:
 | --- | --- |
 | `screen.size()` / `cols()` / `rows()` | terminal dimensions |
 | `screen.clear()` | reset the back buffer to a blank frame (current size) |
-| `screen.set(x, y, glyph)` | place one grapheme into the back buffer |
-| `screen.put(x, y, s)` | lay the graphemes of `s` into successive cells |
+| `screen.set(x, y, glyph, style = "")` | place one grapheme (with an optional `Term.style`) into the back buffer |
+| `screen.put(x, y, s, style = "")` | lay the graphemes of `s` into successive cells, all in `style` |
 | `screen.render() -> String` | minimal escapes to update the screen from the last frame (and advance the front buffer) |
 | `screen.flush()` | print `render()` and flush |
 | `screen.poll(timeout) -> String` | wait up to `timeout` seconds for a key (or `"Resize"`), returning its name (or `""`) |
 
-A `Screen` is a double-buffered grid of cells. `flush` emits **only the cells
-that changed** since the last frame, so live UIs update without flicker and
-with minimal output; wide glyphs occupy two cells and a resize forces a full
-repaint. Build a frame with `clear` + `set` / `put`, then `flush`; read input
-with `poll` (which doubles as the per-frame delay). Cells hold plain glyphs
-(per-cell colour is not yet supported).
+A `Screen` is a double-buffered grid of cells, each holding a glyph and an
+optional style. `flush` emits **only the cells that changed** since the last
+frame, with the minimal SGR transitions between styles, so live UIs update
+without flicker and with minimal output; wide glyphs occupy two cells and a
+resize forces a full repaint. Build a frame with `clear` + `set` / `put`
+(passing a `Term.style(...)` for colour), then `flush`; read input with `poll`
+(which doubles as the per-frame delay).
 
 ```culebra
 Term.app(fn (s) {

@@ -2742,16 +2742,20 @@ puts(UUID.v4() != UUID.v4())    # => true
 | `Term.rgb(s, r, g, b) -> String` | 24bit トゥルーカラー前景 |
 | `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | 名前付き 16 色前景 |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | 文字属性 |
+| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | `Screen` セル用の SGR パラメータ文字列。`fg`/`bg` は 256 色インデックスか `(r,g,b)` タプル |
 
 色は端末の**ケイパビリティレベル**（`0` なし / `1` 16 / `2` 256 / `3`
 トゥルーカラー）に適応します。レベルは `isatty`・`NO_COLOR`（あれば無効）・
 `FORCE_COLOR`・`COLORTERM`・`TERM` から検出。レベルを超える色は
 ダウンサンプル（トゥルーカラー → 最近傍 256 → 最近傍 16）され、レベル 0 では
 何も出さない（パイプ / `NO_COLOR` 時はプレーン）。`Term.level()` で取得、
-`Term.set_level(n)` で上書きできます。
+`Term.set_level(n)` で上書きできます。`fg`/`bg`/`rgb`/`bold`/… は直接表示用に
+文字列を包み、`Term.style(...)` は色付きセル用に `screen.set` / `screen.put`
+へ渡すスタイルを返します。
 
 ```culebra
-puts(Term.bold(Term.fg("alert", 196)))   # 太字・明るい赤の "alert"
+puts(Term.bold(Term.fg("alert", 196)))          # 太字・明るい赤の "alert"（表示用）
+let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 ```
 
 ### エスケープ・サイズ・幅
@@ -2785,17 +2789,18 @@ Ctrl+C いずれも）— `defer` による保証です。コールバックは 
 | --- | --- |
 | `screen.size()` / `cols()` / `rows()` | 端末の寸法 |
 | `screen.clear()` | バックバッファを空フレーム（現在サイズ）にリセット |
-| `screen.set(x, y, glyph)` | 1 グラフェムをバックバッファに置く |
-| `screen.put(x, y, s)` | `s` のグラフェムを連続セルに配置 |
+| `screen.set(x, y, glyph, style = "")` | 1 グラフェムを（任意の `Term.style` 付きで）バックバッファに置く |
+| `screen.put(x, y, s, style = "")` | `s` のグラフェムを `style` で連続セルに配置 |
 | `screen.render() -> String` | 前フレームから画面を更新する最小エスケープ（フロントバッファも前進） |
 | `screen.flush()` | `render()` を出力してフラッシュ |
 | `screen.poll(timeout) -> String` | 最大 `timeout` 秒キー入力（または `"Resize"`）を待ち名前を返す（無ければ `""`） |
 
-`Screen` はセルのダブルバッファです。`flush` は前フレームから**変化した
-セルだけ**を出力するので、ライブ UI がちらつかず最小出力で更新されます
-（全角グリフは 2 セル、リサイズは全再描画）。`clear` + `set` / `put` で
-フレームを組み立て `flush`、入力は `poll`（フレームごとのウェイトも兼ねる）
-で読みます。セルはプレーンなグリフを保持します（セル単位の色は未対応）。
+`Screen` はセル（グリフ + 任意のスタイル）のダブルバッファです。`flush` は
+前フレームから**変化したセルだけ**を、スタイル間の最小 SGR 遷移付きで出力
+するので、ライブ UI がちらつかず最小出力で更新されます（全角グリフは 2
+セル、リサイズは全再描画）。`clear` + `set` / `put`（色は `Term.style(...)`
+を渡す）でフレームを組み立て `flush`、入力は `poll`（フレームごとのウェイト
+も兼ねる）で読みます。
 
 ```culebra
 Term.app(fn (s) {
