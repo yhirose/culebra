@@ -4759,6 +4759,35 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
   *out_data = 0;
 }
 
+// Consolidated cold path for a JIT property read `recv.key`. The JIT
+// inlines only the monomorphic object fast path (shape hit -> direct slot
+// read); every other case funnels here, so the receiver-tag semantics live
+// in one place instead of being re-emitted as IR at every read site:
+//   - Object -> object_get_ic (IC miss: real lookup + IC refresh)
+//   - container-ish receiver -> missing member reads as Nil (mirrors the
+//     interpreter's permissive member read; a `.foo()` on that Nil then
+//     fails with the usual "expected Function, got Nil")
+//   - scalar -> TypeError, same wording as interpreter.h to_object.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_prop_get(
+    int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  if (recv_tag == TAG_OBJECT) {
+    culebra_runtime_object_get_ic(reinterpret_cast<JitObject*>(recv_data), key,
+                                  ic, out_tag, out_data, line, col);
+    return;
+  }
+  switch (recv_tag) {
+    case TAG_FUNC: case TAG_STRING: case TAG_ARRAY: case TAG_TUPLE:
+    case TAG_SET: case TAG_STRINGVIEW: case TAG_TENSOR:
+      *out_tag = TAG_NIL;
+      *out_data = 0;
+      return;
+    default:
+      culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor",
+                                       recv_tag);
+  }
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
                                                              const char* key) {
   // A packed view's "properties" are its @packable fields (not real
@@ -9397,6 +9426,7 @@ inline constexpr auto object_get          = "culebra_runtime_object_get";
 inline constexpr auto object_get_default  = "culebra_runtime_object_get_default";
 inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
+inline constexpr auto prop_get            = "culebra_runtime_prop_get";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
@@ -18008,53 +18038,23 @@ struct JIT {
       builder_.SetInsertPoint(notFnBB);
     }
 
-    // Tag dispatch. TAG_OBJECT resolves through the inline cache below.
-    // String/StringView/Array/Set/Tuple/Function mirror the interpreter's
-    // permissive member read: a missing member reads as Nil rather than
-    // trapping (a `.foo()` call on that Nil then fails with the usual
-    // "expected Function, got Nil"). Scalars (Long/Float/Bool/Nil) keep the
-    // hard TypeError. The for-in iterator protocol only feeds TAG_OBJECT
-    // receivers to this helper, so its lookups are unaffected.
-    auto isObj =
-        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT), "is.obj");
-    auto okBB = llvm::BasicBlock::Create(ctx_, "prop.ok", fn);
-    auto permBB = llvm::BasicBlock::Create(ctx_, "prop.perm", fn);
-    auto nilBB = llvm::BasicBlock::Create(ctx_, "prop.nil", fn);
-    auto errBB = llvm::BasicBlock::Create(ctx_, "prop.err", fn);
-    auto propOrNilBB = llvm::BasicBlock::Create(ctx_, "prop.or_nil", fn);
-    builder_.CreateCondBr(isObj, okBB, permBB);
-
-    builder_.SetInsertPoint(permBB);
-    llvm::Value* isPerm = builder_.getFalse();
-    for (auto t : {TAG_FUNC, TAG_STRING, TAG_ARRAY, TAG_TUPLE, TAG_SET,
-                   TAG_STRINGVIEW, TAG_TENSOR}) {
-      isPerm = builder_.CreateOr(
-          isPerm, builder_.CreateICmpEQ(tag, builder_.getInt8(t)));
-    }
-    builder_.CreateCondBr(isPerm, nilBB, errBB);
-
-    // Scalars (Long/Float/Bool/Nil) can't carry members. Match the
-    // interpreter's wording (interpreter.h to_object) byte-for-byte.
-    builder_.SetInsertPoint(errBB);
-    emit_type_error_typed("Object, Array, or Tensor", tag);
-    builder_.CreateUnreachable();
-
-    builder_.SetInsertPoint(nilBB);
-    auto nilResult = llvm::ConstantAggregateZero::get(valueType_);
-    builder_.CreateBr(propOrNilBB);
-    auto nilEnd = builder_.GetInsertBlock();
-
-    builder_.SetInsertPoint(okBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
+    // Tag dispatch. Only the monomorphic object fast path (shape hit ->
+    // direct slot read) is inlined; every cold case — IC miss, the
+    // permissive "container reads a missing member as Nil" rule, and the
+    // scalar TypeError — funnels through culebra_runtime_prop_get, so those
+    // semantics live in one runtime function instead of being re-emitted as
+    // IR at every read site. Keeping only the fast path inline also halves
+    // the per-site block count, which is what SROA's dominance-frontier walk
+    // scales with. The for-in iterator protocol only feeds TAG_OBJECT
+    // receivers here, so its lookups stay on the fast path.
+    auto recvData = extract_data(receiver);
     auto keyPtr = builder_.CreateGlobalString(name, ".key");
 
-    // Initialise expected_shape to a non-null sentinel `(void*)1` so
-    // the very first call always misses to slow path. Real Shape*
-    // pointers are heap-allocated and 8-byte aligned, never == 1, so
-    // the sentinel cannot collide with a legitimate shape (in
-    // particular, it does NOT match the `shape == nullptr` state of a
-    // freshly-allocated Object — which the prior nullptr initialiser
-    // would have spuriously fast-pathed into an OOB slots[0] read).
+    // Per-site monomorphic inline cache `{Shape*, slot_offset}`. The shape
+    // is seeded to the non-null sentinel `(void*)1` so the first read always
+    // misses to the slow path: real Shape* are heap-allocated (8-byte
+    // aligned, never == 1) and a freshly-allocated Object has shape == null,
+    // so the sentinel can never spuriously fast-path into an OOB slots[0].
     auto icTy = llvm::StructType::get(ctx_, {ptrTy, i64Ty});
     auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
         llvm::ConstantInt::get(i64Ty, 1), ptrTy);
@@ -18065,10 +18065,19 @@ struct JIT {
         llvm::GlobalValue::PrivateLinkage, icInit,
         ".prop.ic." + std::to_string(prop_ic_counter_++));
 
+    auto objBB = llvm::BasicBlock::Create(ctx_, "prop.obj", fn);
     auto fastBB = llvm::BasicBlock::Create(ctx_, "prop.fast", fn);
     auto slowBB = llvm::BasicBlock::Create(ctx_, "prop.slow", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "prop.merge", fn);
 
+    // Non-object receivers skip straight to the cold path.
+    auto isObj =
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT), "is.obj");
+    builder_.CreateCondBr(isObj, objBB, slowBB);
+
+    // Object: take the fast path only when its shape matches the cache.
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(recvData, ptrTy);
     auto shapeFieldPtr = builder_.CreateConstInBoundsGEP1_64(
         i8Ty, objPtr, offsetof(JitObject, shape), "shape.fieldp");
     auto objShape = builder_.CreateLoad(ptrTy, shapeFieldPtr, "obj.shape");
@@ -18101,19 +18110,18 @@ struct JIT {
     builder_.CreateBr(mergeBB);
     auto fastEnd = builder_.GetInsertBlock();
 
+    // Cold path: non-object, IC miss, or scalar error — one runtime call.
     builder_.SetInsertPoint(slowBB);
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                              fn->getEntryBlock().begin());
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "get.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "get.data");
     emit_call(
-        module_->getOrInsertFunction(rt::object_get_ic,
-                                     builder_.getVoidTy(), ptrTy, ptrTy,
-                                     ptrTy, ptrTy, ptrTy,
-                                     builder_.getInt64Ty(),
-                                     builder_.getInt64Ty()),
-        {objPtr, keyPtr, icGlobal, outTag, outData, current_line_val(),
-         current_column_val()});
+        module_->getOrInsertFunction(rt::prop_get, builder_.getVoidTy(),
+                                     i8Ty, i64Ty, ptrTy, ptrTy, ptrTy, ptrTy,
+                                     i64Ty, i64Ty),
+        {tag, recvData, keyPtr, icGlobal, outTag, outData,
+         current_line_val(), current_column_val()});
     auto slowTag = builder_.CreateLoad(i8Ty, outTag, "slow.tag");
     auto slowData = builder_.CreateLoad(i64Ty, outData, "slow.data");
     builder_.CreateBr(mergeBB);
@@ -18128,15 +18136,6 @@ struct JIT {
     dataPhi->addIncoming(slowData, slowEnd);
 
     llvm::Value* result = make_value(tagPhi, dataPhi);
-
-    // Join the Object inline-cache result with the permissive-Nil path.
-    auto objResultEnd = builder_.GetInsertBlock();
-    builder_.CreateBr(propOrNilBB);
-    builder_.SetInsertPoint(propOrNilBB);
-    auto propPhi = builder_.CreatePHI(valueType_, 2, "prop.val");
-    propPhi->addIncoming(result, objResultEnd);
-    propPhi->addIncoming(nilResult, nilEnd);
-    result = propPhi;
 
     // Merge with the function-introspection branch when active.
     if (fn_mode) {
