@@ -51,7 +51,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
 19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
 20. [`UUID`](#20-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
-21. [`Term`](#21-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー入力
+21. [`Term`](#21-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
 22. [設計上の注記](#22-設計上の注記)
 23. [未収録（将来検討）](#23-未収録将来検討)
 
@@ -2770,7 +2770,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 | `Term.width(s) -> Long` | 表示幅（全角 / 絵文字 = 2、結合 = 0） |
 | `Term.flush()` | バッファ済み出力をフラッシュ |
 
-### キー入力
+### キー・マウス入力
 
 `Term.key(raw) -> String` は生バイト列を名前に正規化します:
 `"Up"`・`"Down"`・`"Left"`・`"Right"`・`"Enter"`・`"Esc"`・`"Backspace"`、
@@ -2778,11 +2778,21 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 `Term.resized() -> Bool` は端末リサイズ（SIGWINCH）後に一度 true を返し、
 `Screen.poll` はリサイズを `"Resize"` キーとして返します。
 
+マウスはオプトイン: `Term.app(..., mouse: true)`（または `Term.mouse_on()` /
+`Term.mouse_off()` を print）で有効化。有効時、`Screen.poll` はマウス操作で
+文字列でなく**マウス Object** を返します:
+`{kind: "mouse", event, button, x, y, shift, alt, ctrl}` — `event` は
+`"press"` / `"release"` / `"drag"` / `"scroll"`、`button` は `"left"` /
+`"middle"` / `"right"` / `"wheel_up"` / `"wheel_down"`、`x` / `y` は 0 始まり
+のセル。`type_of(ev) == "Object"` で判定。（`Term.mouse(raw)` は 1 報告を
+直接パース。）
+
 ### `Term.app` と `Screen`
 
-`Term.app(fn (screen) { ... })` は raw モードと代替画面に入り、カーソルを
-隠し、リサイズを監視し、**終了時に端末を復帰**します（正常終了・例外・
-Ctrl+C いずれも）— `defer` による保証です。コールバックは `Screen` を
+`Term.app(fn (screen) { ... }, mouse: false)` は raw モードと代替画面に入り、
+カーソルを隠し、リサイズを監視し（`mouse: true` でマウス報告も有効化）、
+**終了時に端末を復帰**します（正常終了・例外・Ctrl+C いずれも）—
+`defer` による保証です。コールバックは `Screen` を
 受け取ります:
 
 | メソッド | 効果 |

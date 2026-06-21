@@ -4300,9 +4300,36 @@ let _term_module = fn () {
     if raw == "\x7f" { return "Backspace" }
     raw
   }
-  # A pending resize wins over keyboard input (so the loop repaints first).
+  # Parse an SGR mouse report "\x1b[<b;x;yM" (press / motion) or "...m"
+  # (release) into an Object {kind, event, button, x, y, shift, alt, ctrl}
+  # with 0-based coordinates. Returns the raw string if it does not parse.
+  let _parse_mouse = fn (raw) {
+    let n = raw.size()
+    let last = raw[n - 1..n]
+    let parts = raw[3..n - 1].split(";")   # drop "\x1b[<" and the final M/m
+    if parts.size() != 3 { return raw }
+    let b = to_long(parts[0])
+    let x = to_long(parts[1]) - 1
+    let y = to_long(parts[2]) - 1
+    mut button = "none"
+    mut event = if last == "M" { "press" } else { "release" }
+    if (b & 64) != 0 {
+      button = if (b & 1) == 0 { "wheel_up" } else { "wheel_down" }
+      event = "scroll"
+    } else {
+      let low = b & 3
+      button = if low == 0 { "left" } else { if low == 1 { "middle" } else { if low == 2 { "right" } else { "none" } } }
+      if (b & 32) != 0 { event = "drag" }
+    }
+    { kind: "mouse", event: event, button: button, x: x, y: y,
+      shift: (b & 4) != 0, alt: (b & 8) != 0, ctrl: (b & 16) != 0 }
+  }
+  # A pending resize wins; an SGR mouse report ("\x1b[<…") becomes a mouse
+  # Object; everything else is a normalized key name (String).
   let _poll = fn (timeout) {
-    if _Term.resized() { "Resize" } else { _term_key(_Term.read_key(timeout)) }
+    if _Term.resized() { return "Resize" }
+    let raw = _Term.read_key(timeout)
+    if raw.size() >= 3 && raw[0..3] == "\x1b[<" { _parse_mouse(raw) } else { _term_key(raw) }
   }
   # Colour capability (0 none / 1 16 / 2 256 / 3 truecolour), auto-detected
   # and overridable via Term.set_level. Colours downsample to this level.
@@ -4497,15 +4524,18 @@ let _term_module = fn () {
     level: fn () { _level },
     set_level: fn (n) { _level = n },
     key: fn (raw) { _term_key(raw) },
+    mouse: fn (raw) { _parse_mouse(raw) },
+    mouse_on: fn () { "\x1b[?1002h\x1b[?1006h" },    # button + drag, SGR coords
+    mouse_off: fn () { "\x1b[?1002l\x1b[?1006l" },
     width: fn (s) { _Term.width(s) },
     resized: fn () { _Term.resized() },
     poll: fn (timeout) { _poll(timeout) },
-    app: fn (body) {
+    app: fn (body, mouse = false) {
       _Term.raw_on()
-      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m")
+      IO.print("\x1b[?1049h\x1b[?25l\x1b[0m" + (if mouse { "\x1b[?1002h\x1b[?1006h" } else { "" }))
       _Term.flush()
       defer {
-        IO.print("\x1b[?25h\x1b[?1049l\x1b[0m")
+        IO.print((if mouse { "\x1b[?1002l\x1b[?1006l" } else { "" }) + "\x1b[?25h\x1b[?1049l\x1b[0m")
         _Term.flush()
         _Term.raw_off()
       }

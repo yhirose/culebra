@@ -53,7 +53,7 @@ Conventions used below:
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
 20. [`UUID`](#20-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
-21. [`Term`](#21-term) — terminal colour, cursor control, size, and key input for TUIs
+21. [`Term`](#21-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
 22. [Design notes](#22-design-notes)
 23. [Not included (yet)](#23-not-included-yet)
 
@@ -2881,7 +2881,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # for a Screen cell
 | `Term.width(s) -> Long` | display width in columns (wide / emoji = 2, combining = 0) |
 | `Term.flush()` | flush buffered output |
 
-### Key input
+### Key and mouse input
 
 `Term.key(raw) -> String` normalizes a raw byte sequence to a name:
 `"Up"`, `"Down"`, `"Left"`, `"Right"`, `"Enter"`, `"Esc"`, `"Backspace"`, or
@@ -2889,10 +2889,20 @@ the literal character (e.g. `"q"`, `" "`); `""` means no input.
 `Term.resized() -> Bool` is true once after the terminal is resized
 (SIGWINCH), and `Screen.poll` surfaces a pending resize as the `"Resize"` key.
 
+Mouse reporting is opt-in: enable it with `Term.app(..., mouse: true)` (or
+print `Term.mouse_on()` / `Term.mouse_off()`). When enabled, `Screen.poll`
+returns a **mouse Object** instead of a string for mouse activity:
+`{kind: "mouse", event, button, x, y, shift, alt, ctrl}` — `event` is
+`"press"` / `"release"` / `"drag"` / `"scroll"`; `button` is `"left"` /
+`"middle"` / `"right"` / `"wheel_up"` / `"wheel_down"`; `x` / `y` are 0-based
+cells. Test with `type_of(ev) == "Object"`. (`Term.mouse(raw)` parses one
+report directly.)
+
 ### `Term.app` and `Screen`
 
-`Term.app(fn (screen) { ... })` enters raw mode and the alternate screen,
-hides the cursor, watches for resizes, and **restores the terminal on exit**
+`Term.app(fn (screen) { ... }, mouse: false)` enters raw mode and the
+alternate screen, hides the cursor, watches for resizes (and enables mouse
+reporting when `mouse: true`), and **restores the terminal on exit**
 — normal return, an exception, or Ctrl+C — via `defer`. The callback
 receives a `Screen`:
 

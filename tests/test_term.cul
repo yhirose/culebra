@@ -134,4 +134,30 @@ assert_eq(cc.render(), "")
 cc.put(2, 1, "B")
 assert_eq(cc.render(), "\x1b[2;3HB")
 
+// --- mouse: SGR report -> event object (0-based coordinates) ---
+let m1 = Term.mouse("\x1b[<0;15;8M")     // left press at col 15, row 8 (1-based)
+assert_eq(m1.kind, "mouse")
+assert_eq(m1.event, "press")
+assert_eq(m1.button, "left")
+assert_eq(m1.x, 14)                      // 0-based
+assert_eq(m1.y, 7)
+assert_eq(m1.shift, false)
+let m2 = Term.mouse("\x1b[<2;3;4m")      // right release ('m')
+assert_eq(m2.button, "right")
+assert_eq(m2.event, "release")
+let m3 = Term.mouse("\x1b[<64;1;1M")     // wheel up
+assert_eq(m3.button, "wheel_up")
+assert_eq(m3.event, "scroll")
+assert_eq(Term.mouse("\x1b[<65;1;1M").button, "wheel_down")
+let m5 = Term.mouse("\x1b[<32;5;6M")     // motion bit set -> drag
+assert_eq(m5.event, "drag")
+assert_eq(m5.button, "left")
+assert_eq(Term.mouse("\x1b[<4;1;1M").shift, true)    // shift modifier (bit 2)
+assert_eq(Term.mouse("\x1b[<16;1;1M").ctrl, true)    // ctrl modifier (bit 4)
+// mouse-enable / disable escapes
+assert_eq(Term.mouse_on(), "\x1b[?1002h\x1b[?1006h")
+assert_eq(Term.mouse_off(), "\x1b[?1002l\x1b[?1006l")
+// keys still come back as plain strings
+assert_eq(type_of(Term.key("q")), "String")
+
 puts("test_term ok")
