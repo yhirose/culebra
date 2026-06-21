@@ -13,6 +13,8 @@
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
+#include "llvm/ExecutionEngine/ObjectCache.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/IRBuilder.h"
@@ -21,9 +23,12 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
 
@@ -4694,25 +4699,21 @@ inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls();
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
-    JitObject* obj, const char* key, JitPropIC* ic, int8_t* out_tag,
-    int64_t* out_data, int64_t line, int64_t col) {
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
+    JitObject* obj, const char* key, JitPropIC* ic, int64_t line,
+    int64_t col) {
   // @packable handles: a packed view's `.field` reads the backing bytes
   // (zero copy); a buffer's `.size`/`.count`/`.len` reports its length.
   // Returns a primitive — no retain needed. (Always reaches the slow path:
   // these names are never own slots, so the IC stays cold.)
   if (_jit_is_packed_view(obj)) {
-    auto v = _jit_packed_view_get(obj, key, line, col);
-    *out_tag = v.tag;
-    *out_data = v.data;
-    return;
+    return _jit_packed_view_get(obj, key, line, col);
   }
   if (_jit_is_shared_buffer(obj)) {
     std::string_view k(key);
     if (k == "size" || k == "count" || k == "len") {
-      *out_tag = TAG_LONG;
-      *out_data = obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data;
-      return;
+      return {TAG_LONG,
+              obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data};
     }
   }
   if (obj->shape) {
@@ -4720,13 +4721,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
     if (idx != static_cast<size_t>(-1)) {
       ic->shape = obj->shape;
       ic->offset = idx;
-      _write_value_out(&obj->slots[idx], out_tag, out_data);
-      return;
+      return obj->slots[idx].value;
     }
   }
   if (auto* proto_entry = obj->proto ? _find_property(obj->proto, key) : nullptr) {
-    _write_value_out(proto_entry, out_tag, out_data);
-    return;
+    return proto_entry->value;
   }
   // Shared.new view: own slots (markers + reader methods) resolved
   // above; anything else reads the frozen tree (nil on miss, like a
@@ -4735,10 +4734,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
   // is a sub-view object whose extra ref the GC backstop's exactly-once
   // drop releases — acceptable for the borrowed-read contract here.
   if (_jit_is_shared_val(obj)) {
-    auto v = culebra::_jit_shared_val_prop(obj, key, line, col);
-    *out_tag = v.tag;
-    *out_data = v.data;
-    return;
+    return culebra::_jit_shared_val_prop(obj, key, line, col);
   }
   // Trait default-method fallback (T4 part 2). Walk registered
   // defaults; for each candidate trait that owns `key`, check whether
@@ -4750,13 +4746,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
     if (_culebra_type_matches_single(TAG_OBJECT,
                                       reinterpret_cast<int64_t>(obj),
                                       trait_name)) {
-      *out_tag = TAG_FUNC;
-      *out_data = reinterpret_cast<int64_t>(m_it->second);
-      return;
+      return {TAG_FUNC, reinterpret_cast<int64_t>(m_it->second)};
     }
   }
-  *out_tag = TAG_NIL;
-  *out_data = 0;
+  return {TAG_NIL, 0};
 }
 
 // Consolidated cold path for a JIT property read `recv.key`. The JIT
@@ -4768,24 +4761,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_ic(
 //     interpreter's permissive member read; a `.foo()` on that Nil then
 //     fails with the usual "expected Function, got Nil")
 //   - scalar -> TypeError, same wording as interpreter.h to_object.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_prop_get(
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
     int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
-    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+    int64_t line, int64_t col) {
   if (recv_tag == TAG_OBJECT) {
-    culebra_runtime_object_get_ic(reinterpret_cast<JitObject*>(recv_data), key,
-                                  ic, out_tag, out_data, line, col);
-    return;
+    return culebra_runtime_object_get_ic(
+        reinterpret_cast<JitObject*>(recv_data), key, ic, line, col);
   }
   switch (recv_tag) {
     case TAG_FUNC: case TAG_STRING: case TAG_ARRAY: case TAG_TUPLE:
     case TAG_SET: case TAG_STRINGVIEW: case TAG_TENSOR:
-      *out_tag = TAG_NIL;
-      *out_data = 0;
-      return;
+      return {TAG_NIL, 0};
     default:
       culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor",
                                        recv_tag);
   }
+  return {TAG_NIL, 0};  // unreachable: type_error_typed throws
 }
 
 // Cold path for JIT truthiness. The JIT inlines only the monomorphic Bool
@@ -9922,6 +9913,137 @@ struct JIT {
     return false;
   }
 
+  // On-disk cache for compiled native objects. It answers the "warmup
+  // without trading steady-state" question: the backend codegen output
+  // (.o) is stored under a content key (build salt + flags + source), so a
+  // later run of the same program skips instruction-selection + register-
+  // allocation — the dominant warmup cost — and loads byte-identical O2
+  // code. Per-step throughput is unaffected (no FastISel involved). Only
+  // modules named with kCacheKeyTag participate; a plainly-named module
+  // bypasses the cache so it can never collide on a shared object slot.
+  static constexpr const char* kCacheKeyTag = "culebra#";
+
+  class FileObjectCache : public llvm::ObjectCache {
+   public:
+    explicit FileObjectCache(std::string dir) : dir_(std::move(dir)) {
+      std::error_code ec;
+      std::filesystem::create_directories(dir_, ec);
+      if (const char* mb = std::getenv("CULEBRA_JIT_CACHE_MAX_MB"))
+        max_bytes_ = std::strtoull(mb, nullptr, 10) * 1024 * 1024;
+    }
+    void notifyObjectCompiled(const llvm::Module* m,
+                              llvm::MemoryBufferRef obj) override {
+      auto p = path_for(m);
+      if (p.empty()) return;
+      std::ofstream out(p, std::ios::binary);
+      out.write(obj.getBufferStart(),
+                static_cast<std::streamsize>(obj.getBufferSize()));
+      out.close();
+      evict_if_over_cap();
+    }
+    std::unique_ptr<llvm::MemoryBuffer> getObject(
+        const llvm::Module* m) override {
+      auto p = path_for(m);
+      if (p.empty()) return nullptr;
+      auto buf = llvm::MemoryBuffer::getFile(p, /*IsText=*/false);
+      if (!buf) return nullptr;
+      return llvm::MemoryBuffer::getMemBufferCopy(
+          (*buf)->getBuffer(), (*buf)->getBufferIdentifier());
+    }
+
+   private:
+    // Only a content-keyed module (kCacheKeyTag prefix, stamped by
+    // jit_module_name) is cacheable; anything else gets an empty path and
+    // bypasses the cache. The key already encodes source + build salt, so
+    // resolving it here costs nothing — no IR reprint.
+    std::string path_for(const llvm::Module* m) const {
+      llvm::StringRef id = m->getModuleIdentifier();
+      if (!id.starts_with(kCacheKeyTag)) return {};
+      return dir_ + "/" + id.str() + ".o";
+    }
+    // Keep the cache under a soft byte cap by evicting least-recently-used
+    // objects. Runs only after a miss writes a new object, so the directory
+    // walk is amortized against a full backend compile.
+    void evict_if_over_cap() {
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      std::vector<std::pair<fs::file_time_type, fs::path>> entries;
+      uintmax_t total = 0;
+      for (auto& e : fs::directory_iterator(dir_, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        total += e.file_size(ec);
+        entries.push_back({e.last_write_time(ec), e.path()});
+      }
+      if (total <= max_bytes_) return;
+      std::sort(entries.begin(), entries.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+      for (auto& [mtime, path] : entries) {
+        if (total <= max_bytes_) break;
+        auto sz = fs::file_size(path, ec);
+        if (fs::remove(path, ec)) total -= sz;
+      }
+    }
+    std::string dir_;
+    uintmax_t max_bytes_ = 512ull * 1024 * 1024;  // 512 MB; CULEBRA_JIT_CACHE_MAX_MB
+  };
+
+  // Resolve the JIT object-cache directory, or nullopt when disabled.
+  // CULEBRA_JIT_CACHE: unset / "off" / "0" / "" -> disabled;
+  // "1" / "on" / "auto" -> the OS cache dir (~/Library/Caches/culebra/jit,
+  // $XDG_CACHE_HOME/culebra/jit, ...); any other value -> that path.
+  static std::optional<std::string> jit_cache_dir() {
+    const char* env = std::getenv("CULEBRA_JIT_CACHE");
+    if (!env) return std::nullopt;
+    std::string_view v(env);
+    if (v.empty() || v == "off" || v == "0") return std::nullopt;
+    if (v == "1" || v == "on" || v == "auto") {
+      llvm::SmallString<128> dir;
+      if (!llvm::sys::path::cache_directory(dir)) return std::nullopt;
+      llvm::sys::path::append(dir, "culebra", "jit");
+      return std::string(dir.str());
+    }
+    return std::string(env);
+  }
+
+  // A salt uniquely identifying this binary's codegen ABI, computed once.
+  // The executable's path + size + mtime invalidate the cache on any
+  // rebuild — even an incremental one that left __DATE__/__TIME__ unchanged
+  // — and the LLVM version + host triple guard a toolchain or target swap.
+  // Cheap: a single stat, no binary read.
+  static const std::string& jit_cache_salt() {
+    static const std::string salt = [] {
+      std::string s = LLVM_VERSION_STRING;
+      s += '|';
+      s += llvm::sys::getDefaultTargetTriple();
+      std::string exe = llvm::sys::fs::getMainExecutable(
+          nullptr, reinterpret_cast<void*>(&create_jit_instance));
+      llvm::sys::fs::file_status st;
+      if (!exe.empty() && !llvm::sys::fs::status(exe, st)) {
+        s += '|' + exe + '|' + std::to_string(st.getSize()) + '|' +
+             std::to_string(llvm::sys::toTimeT(st.getLastModificationTime()));
+      }
+      return s;
+    }();
+    return salt;
+  }
+
+  // Module name for a JIT run. With the cache on, encode a content key
+  // (build salt + codegen flags + every module's source) under kCacheKeyTag
+  // so a later run of the same program finds its prior backend object;
+  // otherwise the plain name (which the cache ignores). Single source for
+  // both the single- and multi-module entry points.
+  static std::string jit_module_name(const std::vector<LoadedModule>& modules,
+                                     bool fast_codegen, int opt_level) {
+    if (!jit_cache_dir()) return "culebra";
+    std::string acc = jit_cache_salt();
+    acc += fast_codegen ? "|fast|O" : "|O";
+    acc += std::to_string(opt_level);
+    for (const auto& m : modules)
+      if (m.source) acc += '|' + *m.source;
+    return std::string(kCacheKeyTag) +
+           std::to_string(llvm::xxh3_64bits(acc));
+  }
+
   // Build a fresh, ready-to-use LLJIT instance with the host's process
   // symbols available. Used by one-shot `exec` (script mode).
   //
@@ -9938,7 +10060,23 @@ struct JIT {
       bool fast_codegen = false) {
     using namespace llvm;
     orc::LLJITBuilder lb;
-    if (fast_codegen) {
+    // Route compilation through a custom compiler when an object cache is
+    // requested, so backend output can be reused across runs. The opt
+    // level is applied here too (instead of the separate JTMB path) to
+    // keep a single place that configures codegen.
+    auto cache_dir = jit_cache_dir();
+    if (cache_dir) {
+      static FileObjectCache cache{*cache_dir};
+      lb.setCompileFunctionCreator(
+          [fast_codegen](orc::JITTargetMachineBuilder jtmb)
+              -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
+            if (fast_codegen) jtmb.setCodeGenOptLevel(CodeGenOptLevel::None);
+            auto tm = jtmb.createTargetMachine();
+            if (!tm) return tm.takeError();
+            return std::make_unique<orc::TMOwningSimpleCompiler>(
+                std::move(*tm), &cache);
+          });
+    } else if (fast_codegen) {
       auto jtmb = cantFail(orc::JITTargetMachineBuilder::detectHost());
       jtmb.setCodeGenOptLevel(CodeGenOptLevel::None);
       lb.setJITTargetMachineBuilder(std::move(jtmb));
@@ -10075,7 +10213,10 @@ struct JIT {
 
     ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
-    auto mod = std::make_unique<Module>("culebra", *ctx);
+    // With the object cache on, name the module by a content key so
+    // FileObjectCache can find a prior backend object (see jit_module_name).
+    auto mod =
+        std::make_unique<Module>(jit_module_name(modules, fast_codegen, opt_level), *ctx);
     {
       llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
       std::string err;
@@ -18137,19 +18278,19 @@ struct JIT {
     auto fastEnd = builder_.GetInsertBlock();
 
     // Cold path: non-object, IC miss, or scalar error — one runtime call.
+    // Returns the value in registers (no out-param allocas: those would
+    // escape to the call and survive SROA, dominating the backend's
+    // alloca count in property-heavy code).
     builder_.SetInsertPoint(slowBB);
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "get.tag");
-    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "get.data");
-    emit_call(
-        module_->getOrInsertFunction(rt::prop_get, builder_.getVoidTy(),
-                                     i8Ty, i64Ty, ptrTy, ptrTy, ptrTy, ptrTy,
+    auto slowResult = emit_call(
+        module_->getOrInsertFunction(rt::prop_get, valueType_,
+                                     i8Ty, i64Ty, ptrTy, ptrTy,
                                      i64Ty, i64Ty),
-        {tag, recvData, keyPtr, icGlobal, outTag, outData,
-         current_line_val(), current_column_val()});
-    auto slowTag = builder_.CreateLoad(i8Ty, outTag, "slow.tag");
-    auto slowData = builder_.CreateLoad(i64Ty, outData, "slow.data");
+        {tag, recvData, keyPtr, icGlobal,
+         current_line_val(), current_column_val()},
+        "prop.slow");
+    auto slowTag = extract_tag(slowResult);
+    auto slowData = extract_data(slowResult);
     builder_.CreateBr(mergeBB);
     auto slowEnd = builder_.GetInsertBlock();
 
