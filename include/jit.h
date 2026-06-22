@@ -4,6 +4,7 @@
 
 // Conservative backstop collector (docs/jit_gc_design.md).
 #include <jit_gc.h>
+#include <jit_slab.h>
 #include <module_loader.h>
 #include <packable.h>
 #include <parser.h>
@@ -52,6 +53,7 @@
 #include <queue>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -145,6 +147,18 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 
 }  // namespace culebra
 
+// Per-Runtime slab allocator backing the hot JIT structs (see jit_slab.h).
+// Lives in the kSlotJitSlab substate — placed BELOW kSlotJitGc in the slot
+// enum so reverse-order Runtime teardown frees it LAST, after every
+// higher-slot table dtor (module/namespace/test) has released its pinned
+// JitObject/JitClosure back through operator delete. Mirrors _gc_heap();
+// defined here, before the struct definitions, so each struct's operator
+// new/delete body can see it.
+inline culebra::SlabAllocator& _slab() {
+  return culebra::runtime_substate<culebra::SlabAllocator>(
+      culebra::kSlotJitSlab);
+}
+
 // ---------------------------------------------------------------------------
 // Runtime types and functions callable from JIT'd code
 //
@@ -181,7 +195,15 @@ struct JitArray {
   // Reserved unused trailing i64. Left in place to avoid perturbing the
   // established `JitArray` IR struct layout that codegen accesses by GEP index.
   int64_t gc_slot = -1;
+
+  // Route allocation through the per-Runtime slab (jit_slab.h). Member
+  // operators keep every `new JitArray()` / `delete a` call site unchanged
+  // and add no field (refcount stays at offset 0). Sized delete only, so the
+  // sized form is always selected and the slab knows the size class.
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitArray) <= 48 && !std::is_polymorphic_v<JitArray>);
 
 // Refcounted Tensor handle for the JIT runtime. `impl` is a shared_ptr
 // so a graph node's `inputs` (also shared_ptr<TensorImpl>) and the JIT
@@ -192,7 +214,11 @@ struct JitTensor {
   int64_t refcount;
   int64_t gc_slot = -1;
   culebra::TensorPtr impl;
+
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitTensor) <= 32 && !std::is_polymorphic_v<JitTensor>);
 
 }  // extern "C"
 
@@ -368,7 +394,11 @@ struct JitObject {
     slots = std::move(new_slots);
     ++mut_count;
   }
+
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 
 // Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT
 // module global per property-get site; the slow path (object_get_ic)
@@ -404,7 +434,11 @@ struct JitCell {
   int64_t refcount;
   JitValue value;
   int64_t gc_slot = -1;  // see JitArray::gc_slot
+
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitCell) <= 32 && !std::is_polymorphic_v<JitCell>);
 
 struct JitClosure {
   int64_t refcount;
@@ -413,7 +447,11 @@ struct JitClosure {
   JitCell** captures;
   size_t arity;  // number of user-visible params (excluding __cls__, this)
   int64_t gc_slot = -1;  // see JitArray::gc_slot
+
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
 // range of arg counts, e.g. range/iota/Math.min). Higher-order callback
@@ -666,7 +704,11 @@ struct JitSet {
   std::vector<JitValue> members;
   JitSetIndex* index = nullptr;
   int64_t gc_slot = -1;
+
+  static void* operator new(size_t n) { return _slab().alloc(n); }
+  static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
+static_assert(sizeof(JitSet) <= 48 && !std::is_polymorphic_v<JitSet>);
 
 
 // Conservative backstop collector (docs/jit_gc_design.md). Lives in the

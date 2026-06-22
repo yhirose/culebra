@@ -1220,6 +1220,12 @@ inline double parse_double_strict(std::string_view s, long line, long col) {
 // can't be direct members.
 enum RuntimeSlot : size_t {
   kSlotInterpGc = 0,
+  // Backs the hot JIT structs/buffers (jit_slab.h). MUST stay below kSlotJitGc
+  // and below every JitValue-holding table slot: ~Runtime destroys substates
+  // in reverse slot order, and those table dtors (module/namespace/test) free
+  // pinned structs through the slab's operator delete during teardown, so the
+  // slab must outlive them. See the static_assert below the enum.
+  kSlotJitSlab,
   kSlotJitGc,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
@@ -1252,6 +1258,17 @@ enum RuntimeSlot : size_t {
   kSlotBorrowTable,
   kRuntimeSlotCount
 };
+
+// The slab must be destroyed last among the JIT slots (reverse-order
+// teardown), so any table dtor that frees a pinned struct through operator
+// delete still resolves a live allocator. A future slot reorder that violates
+// this fails to compile rather than corrupting memory at teardown.
+static_assert(kSlotJitSlab < kSlotJitGc &&
+                  kSlotJitSlab < kSlotJitModuleTable &&
+                  kSlotJitSlab < kSlotJitNamespaceTable &&
+                  kSlotJitSlab < kSlotTestRegistry,
+              "kSlotJitSlab must outlive the GC heap and all struct-holding "
+              "table substates during reverse-order Runtime teardown");
 
 struct Runtime {
   std::mt19937_64 random_engine{std::random_device{}()};

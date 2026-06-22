@@ -101,7 +101,22 @@ hundred `TNode`s per step (one per layer-level op + per-head slice
 the per-step `Value` object lifecycle.)
 
 Further wins now need structural changes:
-- **Bump allocator** for short-lived `Value`s — skip nanov2 entirely.
+- **Slab allocator** (struct fast path, done) — the hot runtime structs
+  (`JitObject` / `JitArray` / `JitCell` / `JitClosure` / ...) now come
+  from a per-Runtime non-moving size-class slab (`jit_slab.h`) via member
+  `operator new`/`delete`, ~7% faster per step on this bench. Routing the
+  variable-length buffers through the same slab is a *dead end*, confirmed
+  by measurement: the growth-prone `JitArray` items / closure captures
+  thrash a single-cursor bump slab, and even the fixed-size `JitObject`
+  slot buffer (`reserve(8)`, ~192 B, no growth — the "ideal" case) routed
+  via a stateless STL allocator ran ~9% *slower*. The slab cuts malloc
+  *calls* yet loses, so the bottleneck is locality, not call count: a
+  coarse size-class bump slab spreads the constantly-read slot data across
+  a large working set, where system malloc (macOS nanov2 magazines) keeps
+  hot blocks dense. The only remaining angle on slot churn is **inline
+  storage** (first N slots inside the struct — attacks locality, the
+  opposite axis), but that is a codegen-sensitive layout change; NaN-boxing
+  may shrink the churn enough to make it moot.
 - **NaN-boxing** — collapse `Value` to an unboxed double.
 - **Matrix formulation** — drop per-step Object count by orders of
   magnitude (Phase 5.4).
