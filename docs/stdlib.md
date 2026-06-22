@@ -2911,6 +2911,7 @@ Mouse reporting is opt-in: enable it with `Term.app(..., mouse: true)` (or
 print `Term.mouse_on()` / `Term.mouse_off()` yourself).
 
 ```culebra
+# doctest: skip
 let ev = screen.poll(0.1)
 if ev != nil {
   if ev.kind == "key" && ev.key == "q" { ... }

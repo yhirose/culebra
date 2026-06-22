@@ -2800,6 +2800,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)   # Screen セル用
 `Term.mouse_off()` を自分で print）で有効化。
 
 ```culebra
+# doctest: skip
 let ev = screen.poll(0.1)
 if ev != nil {
   if ev.kind == "key" && ev.key == "q" { ... }
