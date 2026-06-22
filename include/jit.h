@@ -14070,10 +14070,19 @@ struct JIT {
           to_store = emit_arith_step(cur, rval, base_op, /*inplace=*/true);
           emit_value_release(rval);
         }
+        // Retain the result ref *before* the set: `object_set` consumes one
+        // reference to `to_store`. For a normal slot that consume is a
+        // transfer (the value lives on in the slot), but the @packable
+        // packed-view path *releases* it — the enum/record value is copied
+        // into the backing bytes and has no slot owner. Retaining after the
+        // call would then touch freed memory, and the statement-level
+        // release would double free. Retaining first balances both paths:
+        // the set consumes the original ref, this retained ref is the
+        // expression result.
+        emit_value_retain(to_store);
         emit_object_set(objPtr, name, mut, extract_tag(to_store),
                         extract_data(to_store));
         emit_value_release(lval);  // release the lvalue's ref
-        emit_value_retain(to_store);
         return to_store;
       }
       default:
