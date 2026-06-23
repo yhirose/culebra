@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #ifdef CULEBRA_TENSOR_ENABLED
@@ -75,6 +76,12 @@ enum class Op {
   Dot,
   Sigmoid, Relu, Softmax,
   LinearSigmoid,
+  // Zero-copy views. These carry a non-Const op tag *and* a `base`
+  // pointer: forward is short-circuited by is_evaluated() (base !=
+  // nullptr), but the op tag lets autograd's reverse pass route the
+  // gradient through the right view VJP. `inputs` is set to {base} so
+  // the autograd graph is walked uniformly through `inputs`.
+  Transpose, Reshape, Slice,
 };
 
 struct TensorShape {
@@ -133,6 +140,16 @@ struct TensorImpl {
   // Op-specific scalar parameter. Currently used by reduction ops to
   // carry the axis index. Add more if a future op needs more state.
   int64_t op_param = 0;
+
+  // --- Autograd ---
+  // `grad` accumulates dL/dthis during backward(). It is always a
+  // materialized Const tensor (own buffer, no graph) so it can never
+  // form a cycle with the forward graph. nullptr until the first
+  // accumulation. `requires_grad` is true for leaves the user marked
+  // and propagates forward (a node requires grad iff any input does),
+  // so backward() only allocates / accumulates grad where it matters.
+  std::shared_ptr<TensorImpl> grad;
+  bool requires_grad = false;
 
   // Materialized ctor: shape + dtype + zero-initialized buffer.
   TensorImpl(TensorShape s, Dtype d)
@@ -203,6 +220,19 @@ struct TensorImpl {
 };
 
 using TensorPtr = std::shared_ptr<TensorImpl>;
+
+// Propagate requires_grad forward: a node requires grad iff any of its
+// inputs do. Op constructors call this on the node they return so the
+// flag flows from leaves (marked by the user) up through the graph.
+inline const TensorPtr& tensor_propagate_grad(const TensorPtr& out) {
+  for (auto& in : out->inputs) {
+    if (in && in->requires_grad) {
+      out->requires_grad = true;
+      break;
+    }
+  }
+  return out;
+}
 
 inline TensorPtr tensor_zeros(TensorShape s, Dtype d) {
   return std::make_shared<TensorImpl>(std::move(s), d);
@@ -344,9 +374,9 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
   }
   auto shape = tensor_broadcast_shape(a->shape, b->shape);
   auto dtype = a->dtype;
-  return std::make_shared<TensorImpl>(
+  return tensor_propagate_grad(std::make_shared<TensorImpl>(
       op, std::move(shape), dtype,
-      std::vector<TensorPtr>{std::move(a), std::move(b)});
+      std::vector<TensorPtr>{std::move(a), std::move(b)}));
 }
 
 // Rank-0 Tensor holding a single scalar — used to lift scalar Float
@@ -574,7 +604,7 @@ inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
       op, TensorShape(std::move(out_dims)), dtype,
       std::vector<TensorPtr>{std::move(a)});
   t->op_param = axis;
-  return t;
+  return tensor_propagate_grad(t);
 }
 
 // Iterate over output positions and accumulate along the reduction
@@ -740,9 +770,12 @@ inline TensorPtr tensor_transpose(TensorPtr t) {
   tensor_eval_node(*t);
   std::vector<int64_t> new_dims(t->shape.dims.rbegin(), t->shape.dims.rend());
   std::vector<int64_t> new_strides(t->strides.rbegin(), t->strides.rend());
-  return std::make_shared<TensorImpl>(
+  auto out = std::make_shared<TensorImpl>(
       TensorImpl::View{}, t, TensorShape(std::move(new_dims)),
       std::move(new_strides), 0);
+  out->op = Op::Transpose;
+  out->inputs = {out->base};
+  return tensor_propagate_grad(out);
 }
 
 // Slice along axis 0 (rows): [start, end). Matches Array's .slice()
@@ -759,9 +792,13 @@ inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
   new_dims[0] = end - start;
   auto new_strides = t->strides;
   size_t new_offset = static_cast<size_t>(start * t->strides[0]);
-  return std::make_shared<TensorImpl>(
+  auto out = std::make_shared<TensorImpl>(
       TensorImpl::View{}, t, TensorShape(std::move(new_dims)),
       std::move(new_strides), new_offset);
+  out->op = Op::Slice;
+  out->op_param = start;  // backward scatters g into rows [start, start+len)
+  out->inputs = {out->base};
+  return tensor_propagate_grad(out);
 }
 
 // Build a lazy matrix multiply A @ B. A is [M, K], B is [K, N], the
@@ -782,9 +819,9 @@ inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
   // Read dtype before std::move(a) — see tensor_reduce_axis for the
   // gcc argument-evaluation-order rationale.
   auto dtype = a->dtype;
-  return std::make_shared<TensorImpl>(
+  return tensor_propagate_grad(std::make_shared<TensorImpl>(
       Op::Dot, TensorShape(std::move(out_dims)), dtype,
-      std::vector<TensorPtr>{std::move(a), std::move(b)});
+      std::vector<TensorPtr>{std::move(a), std::move(b)}));
 }
 
 // True if `t` is a rank-2 transpose view of a contiguous rank-2
@@ -828,9 +865,9 @@ inline _BlasInput<T> _tensor_blas_input(const TensorImpl& t) {
 inline TensorPtr tensor_unary(Op op, TensorPtr a) {
   auto shape = a->shape;
   auto dtype = a->dtype;
-  return std::make_shared<TensorImpl>(
+  return tensor_propagate_grad(std::make_shared<TensorImpl>(
       op, std::move(shape), dtype,
-      std::vector<TensorPtr>{std::move(a)});
+      std::vector<TensorPtr>{std::move(a)}));
 }
 
 template <typename T, Op op>
@@ -938,9 +975,9 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
   // Read dtype before std::move(W) — see tensor_reduce_axis for the
   // gcc argument-evaluation-order rationale.
   auto dtype = W->dtype;
-  return std::make_shared<TensorImpl>(
+  return tensor_propagate_grad(std::make_shared<TensorImpl>(
       Op::LinearSigmoid, TensorShape(std::move(out_dims)), dtype,
-      std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)});
+      std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)}));
 }
 
 template <typename T>
@@ -1013,8 +1050,11 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
                        "Tensor: reshape requires a contiguous input.");
   }
   auto new_strides = tensor_contiguous_strides(new_shape);
-  return std::make_shared<TensorImpl>(
+  auto out = std::make_shared<TensorImpl>(
       TensorImpl::View{}, t, std::move(new_shape), std::move(new_strides), 0);
+  out->op = Op::Reshape;
+  out->inputs = {out->base};
+  return tensor_propagate_grad(out);
 }
 
 // Topological evaluation: depth-first walk of inputs, allocate a
@@ -1065,9 +1105,303 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
       _tensor_run_linear_sigmoid(t);
       break;
     case Op::Const:
-      break;  // unreachable: Const is_evaluated() above
+    case Op::Transpose:
+    case Op::Reshape:
+    case Op::Slice:
+      break;  // unreachable: views / Const are is_evaluated() above
   }
 #endif  // CULEBRA_RT_TENSOR_EVAL_WEAK
+}
+
+// ===================== Autograd (reverse mode) =====================
+//
+// The forward graph already recorded in `inputs`/`op` (with `base`
+// mirrored into `inputs` for views) doubles as the autograd tape:
+// tensor_eval_node leaves it intact and materializes every node's
+// `buf`, so each VJP reads the forward values it needs straight from
+// the inputs' (and the node's own) buffers. backward() walks the graph
+// in reverse-topological order and routes the upstream gradient through
+// each op's vector-Jacobian product, accumulating into `grad` — always
+// a materialized Const (eager in-place add), so it can never form a
+// cycle with the forward graph. All of this is pure C++ on TensorImpl;
+// the interp / JIT wrappers are thin, so both backends stay symmetric.
+
+// Sum `g` down to `target`, inverting a numpy broadcast (extra leading
+// dims and dims where target is 1 are summed away). `g` must already be
+// contiguous — the gradient tensors backward builds always are.
+template <typename T>
+inline void _tensor_unbroadcast_typed(const TensorImpl& g, TensorImpl& out) {
+  const T* gp = g.data_as<T>();
+  T* op = out.data_as<T>();
+  size_t g_rank = g.shape.dims.size();
+  size_t out_rank = out.shape.dims.size();
+  size_t leading = g_rank - out_rank;
+  size_t total = g.shape.num_elements();
+  for (size_t i = 0; i < total; i++) {
+    size_t rem = i;
+    size_t out_idx = 0;
+    for (size_t d = g_rank; d-- > 0;) {
+      int64_t coord = static_cast<int64_t>(rem % g.shape.dims[d]);
+      rem /= g.shape.dims[d];
+      if (d >= leading) {
+        size_t od = d - leading;
+        int64_t c = (out.shape.dims[od] == 1) ? 0 : coord;
+        out_idx += static_cast<size_t>(c) * static_cast<size_t>(out.strides[od]);
+      }
+    }
+    op[out_idx] += gp[i];
+  }
+}
+
+inline TensorPtr _tensor_unbroadcast(TensorPtr g, const TensorShape& target) {
+  tensor_eval_node(*g);
+  if (g->shape == target) return g;
+  auto out = std::make_shared<TensorImpl>(target, g->dtype);  // zero-filled
+  if (g->dtype == Dtype::F32) _tensor_unbroadcast_typed<float>(*g, *out);
+  else                        _tensor_unbroadcast_typed<double>(*g, *out);
+  return out;
+}
+
+// Accumulate `contrib` into node->grad, reducing it back to node's
+// shape first. No-op when the node does not track grad. node->grad is
+// always a materialized Const so the in-place add path always applies.
+inline void _tensor_grad_add(const TensorPtr& node, TensorPtr contrib) {
+  if (!node->requires_grad) return;
+  contrib = _tensor_unbroadcast(std::move(contrib), node->shape);
+  if (!node->grad) {
+    node->grad = tensor_clone(contrib);
+  } else {
+    tensor_inplace_binop(*node->grad, Op::Add, contrib);
+  }
+}
+
+// da = g * (x > 0), elementwise. Built directly (there is no Tensor
+// comparison op) into a fresh contiguous buffer.
+template <typename T>
+inline void _tensor_relu_backward_typed(const TensorImpl& g,
+                                        const TensorImpl& x, TensorImpl& out) {
+  const T* gp = g.data_as<T>();
+  const T* xp = x.data_as<T>();
+  T* op = out.data_as<T>();
+  size_t n = out.shape.num_elements();
+  for (size_t i = 0; i < n; i++) op[i] = xp[i] > T(0) ? gp[i] : T(0);
+}
+
+inline TensorPtr _tensor_relu_backward(const TensorPtr& g, const TensorPtr& x) {
+  tensor_eval_node(*g);
+  tensor_eval_node(*x);
+  auto out = std::make_shared<TensorImpl>(x->shape, x->dtype);
+  if (x->dtype == Dtype::F32) _tensor_relu_backward_typed<float>(*g, *x, *out);
+  else                        _tensor_relu_backward_typed<double>(*g, *x, *out);
+  return out;
+}
+
+// Scatter `g` (the gradient of a row-slice) into rows [start, start+len)
+// of a zero tensor shaped like the slice's source. Slices are along
+// axis 0 of a contiguous source, so the destination rows form one
+// contiguous block.
+template <typename T>
+inline void _tensor_scatter_rows_typed(TensorImpl& dst, const TensorImpl& g,
+                                       int64_t start) {
+  size_t row_block = static_cast<size_t>(dst.strides[0]);  // elems per row
+  size_t off = static_cast<size_t>(start) * row_block;
+  const T* gp = g.data_as<T>();
+  T* dp = dst.data_as<T>();
+  size_t n = g.shape.num_elements();
+  for (size_t i = 0; i < n; i++) dp[off + i] = gp[i];
+}
+
+inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
+                                        const TensorShape& src_shape,
+                                        Dtype dt, int64_t start) {
+  tensor_eval_node(*g);
+  auto out = std::make_shared<TensorImpl>(src_shape, dt);  // zero-filled
+  if (dt == Dtype::F32) _tensor_scatter_rows_typed<float>(*out, *g, start);
+  else                  _tensor_scatter_rows_typed<double>(*out, *g, start);
+  return out;
+}
+
+// Reverse-topological DFS over the autograd graph (shared subgraphs —
+// reused params, residuals — are visited once by pointer identity).
+inline void _tensor_build_topo(const TensorPtr& n,
+                               std::vector<TensorPtr>& topo,
+                               std::unordered_set<TensorImpl*>& visited) {
+  if (!visited.insert(n.get()).second) return;
+  for (auto& in : n->inputs) {
+    if (in) _tensor_build_topo(in, topo, visited);
+  }
+  topo.push_back(n);
+}
+
+// Route node->grad through one op's VJP into its inputs' grads.
+// Local gradient of a sigmoid output y: dy/dx = y * (1 - y). Shared by the
+// standalone Sigmoid and the fused LinearSigmoid VJP.
+inline TensorPtr _tensor_sigmoid_grad(const TensorPtr& y, Dtype dt) {
+  return tensor_binop(Op::Mul, y,
+                      tensor_binop(Op::Sub, tensor_scalar(1.0, dt), y));
+}
+
+inline void _tensor_vjp(const TensorPtr& n) {
+  const TensorPtr& g = n->grad;
+  Dtype dt = n->dtype;
+  auto neg = [&](TensorPtr t) {
+    return tensor_binop(Op::Mul, std::move(t), tensor_scalar(-1.0, dt));
+  };
+  switch (n->op) {
+    case Op::Const:
+      break;  // leaf — just accumulates, user reads via .grad()
+    case Op::Add:
+      _tensor_grad_add(n->inputs[0], g);
+      _tensor_grad_add(n->inputs[1], g);
+      break;
+    case Op::Sub:
+      _tensor_grad_add(n->inputs[0], g);
+      _tensor_grad_add(n->inputs[1], neg(g));
+      break;
+    case Op::Mul:
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, g, n->inputs[1]));
+      _tensor_grad_add(n->inputs[1], tensor_binop(Op::Mul, g, n->inputs[0]));
+      break;
+    case Op::Div: {
+      const auto& a = n->inputs[0];
+      const auto& b = n->inputs[1];
+      _tensor_grad_add(a, tensor_binop(Op::Div, g, b));
+      // db = -g * a / (b*b)
+      auto bb = tensor_binop(Op::Mul, b, b);
+      auto num = tensor_binop(Op::Mul, g, a);
+      _tensor_grad_add(b, neg(tensor_binop(Op::Div, num, bb)));
+      break;
+    }
+    case Op::Pow: {
+      const auto& a = n->inputs[0];
+      const auto& b = n->inputs[1];
+      // da = g * b * a^(b-1)
+      auto exp_m1 = tensor_binop(Op::Sub, b, tensor_scalar(1.0, dt));
+      auto a_pow = tensor_binop(Op::Pow, a, exp_m1);
+      _tensor_grad_add(a, tensor_binop(Op::Mul, tensor_binop(Op::Mul, g, b),
+                                       a_pow));
+      if (b->requires_grad) {
+        throw CulebraError("ValueError",
+            "Tensor.backward: grad w.r.t. a Pow exponent is unsupported.");
+      }
+      break;
+    }
+    case Op::Dot:
+      // z = a @ b : da = g @ b^T, db = a^T @ g
+      _tensor_grad_add(n->inputs[0],
+                       tensor_dot(g, tensor_transpose(n->inputs[1])));
+      _tensor_grad_add(n->inputs[1],
+                       tensor_dot(tensor_transpose(n->inputs[0]), g));
+      break;
+    case Op::Sum:
+    case Op::Mean: {
+      const auto& a = n->inputs[0];
+      int64_t axis = n->op_param;
+      // Re-insert the reduced axis (size 1) then broadcast g back.
+      auto kd = a->shape.dims;
+      kd[axis] = 1;
+      auto g_kd = tensor_reshape(g, TensorShape(kd));
+      TensorPtr contrib =
+          tensor_binop(Op::Add, tensor_zeros(a->shape, dt), g_kd);
+      if (n->op == Op::Mean) {
+        contrib = tensor_binop(
+            Op::Mul, contrib,
+            tensor_scalar(1.0 / static_cast<double>(a->shape.dims[axis]), dt));
+      }
+      _tensor_grad_add(a, contrib);
+      break;
+    }
+    case Op::Relu:
+      _tensor_grad_add(n->inputs[0], _tensor_relu_backward(g, n->inputs[0]));
+      break;
+    case Op::Sigmoid: {
+      // y = sigmoid(x); dx = g * y * (1 - y). y is this node's value.
+      auto ym = _tensor_sigmoid_grad(n, dt);
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, g, ym));
+      break;
+    }
+    case Op::Softmax: {
+      // y = softmax(x) over last axis; dx = y * (g - sum_axis(g*y)).
+      const TensorPtr& y = n;
+      int64_t last = static_cast<int64_t>(y->shape.dims.size()) - 1;
+      auto gy = tensor_binop(Op::Mul, g, y);
+      auto s = tensor_reduce_axis(Op::Sum, gy, last);
+      auto kd = y->shape.dims;
+      kd[last] = 1;
+      auto s_kd = tensor_reshape(s, TensorShape(kd));
+      auto diff = tensor_binop(Op::Sub, g, s_kd);
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, y, diff));
+      break;
+    }
+    case Op::LinearSigmoid: {
+      // y = sigmoid(W@x + b); dpre = g * y*(1-y)
+      const auto& W = n->inputs[0];
+      const auto& x = n->inputs[1];
+      const auto& b = n->inputs[2];
+      auto ym = _tensor_sigmoid_grad(n, dt);
+      auto dpre = tensor_binop(Op::Mul, g, ym);
+      _tensor_grad_add(W, tensor_dot(dpre, tensor_transpose(x)));
+      _tensor_grad_add(x, tensor_dot(tensor_transpose(W), dpre));
+      _tensor_grad_add(b, dpre);  // un-broadcast sums columns back to b
+      break;
+    }
+    case Op::Transpose:
+      _tensor_grad_add(n->inputs[0], tensor_transpose(g));
+      break;
+    case Op::Reshape:
+      _tensor_grad_add(n->inputs[0],
+                       tensor_reshape(g, n->inputs[0]->shape));
+      break;
+    case Op::Slice:
+      _tensor_grad_add(
+          n->inputs[0],
+          _tensor_slice_backward(g, n->inputs[0]->shape, dt, n->op_param));
+      break;
+    case Op::Max:
+    case Op::Argmax:
+      throw CulebraError("ValueError",
+          "Tensor.backward: Max / Argmax are not differentiable.");
+  }
+}
+
+// backward(): seed dL/droot = 1 and propagate through the whole graph.
+inline void tensor_backward(const TensorPtr& root) {
+  tensor_eval_node(*root);
+  std::vector<TensorPtr> topo;
+  std::unordered_set<TensorImpl*> visited;
+  _tensor_build_topo(root, topo, visited);
+  root->grad = tensor_ones(root->shape, root->dtype);
+  for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
+    const TensorPtr& n = *it;
+    if (!n->requires_grad || !n->grad) continue;
+    _tensor_vjp(n);
+  }
+}
+
+// Read the gradient as a tensor — zeros (matching shape) if backward
+// has not populated it yet, so `.grad()` is always a usable tensor.
+inline TensorPtr tensor_grad(const TensorPtr& t) {
+  if (t->grad) return t->grad;
+  return tensor_zeros(t->shape, t->dtype);
+}
+
+// Clear the accumulated gradient. backward() reallocates lazily, so a
+// null grad reads back as zeros until the next backward.
+inline void tensor_zero_grad(const TensorPtr& t) { t->grad = nullptr; }
+
+// Mark a leaf as requiring grad and return it (chainable). Forward op
+// constructors propagate the flag to every dependent node.
+inline const TensorPtr& tensor_requires_grad(const TensorPtr& t,
+                                             bool on = true) {
+  t->requires_grad = on;
+  return t;
+}
+
+// Detach: a materialized copy with no graph and no grad tracking.
+inline TensorPtr tensor_detach(const TensorPtr& t) {
+  auto out = tensor_clone(t);
+  out->requires_grad = false;
+  return out;
 }
 
 // "Tensor 3x4 f32" — used by interp and (in M1.1) JIT puts/str paths.

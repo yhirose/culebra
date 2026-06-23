@@ -5070,6 +5070,12 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_linear_sigmoid, ptrTy,
                                ptrTy, ptrTy, ptrTy);
+  // Autograd: all take a JitTensor* and return a JitTensor*.
+  jit.module_->getOrInsertFunction(rt::tensor_requires_grad, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_grad, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_backward, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_zero_grad, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_detach, ptrTy, ptrTy);
 
   // Iterator terminal methods.
   auto i64 = jit.builder_.getInt64Ty();

@@ -2979,6 +2979,38 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));
 }
 
+// --- Autograd. Methods that conceptually return the receiver (mark /
+// backward / clear) mutate the shared TensorImpl and hand back a fresh
+// +1 JitTensor over the *same* impl, so refcounting stays uniform with
+// every other tensor runtime entry (no aliasing of the receiver). ---
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_requires_grad(
+    JitTensor* t) {
+  culebra::tensor_requires_grad(t->impl);
+  return _culebra_jit_tensor_register(t->impl);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_grad(
+    JitTensor* t) {
+  return _culebra_jit_tensor_register(culebra::tensor_grad(t->impl));
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_backward(
+    JitTensor* t) {
+  culebra::tensor_backward(t->impl);
+  return _culebra_jit_tensor_register(t->impl);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_zero_grad(
+    JitTensor* t) {
+  culebra::tensor_zero_grad(t->impl);
+  return _culebra_jit_tensor_register(t->impl);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_detach(
+    JitTensor* t) {
+  return _culebra_jit_tensor_register(culebra::tensor_detach(t->impl));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_slice(
     JitTensor* t, int64_t start, int64_t end) {
   return _culebra_jit_tensor_register(
@@ -4853,6 +4885,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
     return _jit_packed_view_layout(obj, *core).find(key) != nullptr;
   }
   return _find_property(obj, key) != nullptr;
+}
+
+// True iff `tag/data` is an Object carrying an OWN slot named `key` (proto /
+// class methods excluded). Lets a user field that shadows a built-in method
+// name (e.g. an autograd `grad` field set to nil) stay a first-class field,
+// matching interp's `obj.has_own` precedence in eval_property — without it the
+// bare-reference reject misreads a nil-valued own field as a method handle.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_own_field(
+    int8_t tag, int64_t data, const char* key) {
+  if (tag != TAG_OBJECT) return false;
+  return reinterpret_cast<JitObject*>(data)->has_own(key);
 }
 
 // `obj(args)` overload resolution: returns the class instance's
@@ -9325,6 +9368,11 @@ inline constexpr auto tensor_dot          = "culebra_runtime_tensor_dot";
 inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
 inline constexpr auto tensor_linear_sigmoid = "culebra_runtime_tensor_linear_sigmoid";
+inline constexpr auto tensor_requires_grad = "culebra_runtime_tensor_requires_grad";
+inline constexpr auto tensor_grad         = "culebra_runtime_tensor_grad";
+inline constexpr auto tensor_backward     = "culebra_runtime_tensor_backward";
+inline constexpr auto tensor_zero_grad    = "culebra_runtime_tensor_zero_grad";
+inline constexpr auto tensor_detach       = "culebra_runtime_tensor_detach";
 inline constexpr auto array_slice         = "culebra_runtime_array_slice";
 inline constexpr auto slice               = "culebra_runtime_slice";
 inline constexpr auto make_range          = "culebra_runtime_make_range";
@@ -9488,6 +9536,8 @@ inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto owned_register_drop = "culebra_runtime_owned_register_drop";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto object_has_own_field
+    = "culebra_runtime_object_has_own_field";
 inline constexpr auto object_class_matches
     = "culebra_runtime_object_class_matches";
 inline constexpr auto object_has_value    = "culebra_runtime_object_has_value";
@@ -11522,23 +11572,48 @@ struct JIT {
         {namePtr, builder_.getInt64(line), builder_.getInt64(col)});
   }
 
+  // Compute "receiver has an own slot `name`" as an i1, while the receiver
+  // value is still live (before any swap/release at the call site). A cheap
+  // compile-time short-circuit: only built-in method names can ever trigger
+  // the reject, so for any other property this is a constant false and emits
+  // no runtime call. See emit_reject_bare_builtin_method for why this matters.
+  llvm::Value* emit_has_own_field(llvm::Value* receiver,
+                                   const std::string& name) {
+    if (!culebra::is_builtin_method_name(name)) return builder_.getFalse();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto keyPtr = get_or_create_global_str(name, ".hof.key");
+    return emit_call(
+        module_->getOrInsertFunction(
+            rt::object_has_own_field, builder_.getInt1Ty(),
+            builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy),
+        {extract_tag(receiver), extract_data(receiver), keyPtr},
+        "has.own.field");
+  }
+
   // Reject a bare reference to a value-type built-in method (`let m = x.map`):
   // it is dispatched inline with no closure to hand back, so it's not a
   // first-class value on either backend. `propResult` is the property-get
   // result — Nil for such a method (and for an Object lacking an own property
-  // of this name); a user-defined own property resolves to a non-Nil value and
-  // stays first-class, so only the Nil case throws. No-op when `name` isn't a
-  // built-in method name.
+  // of this name); a user-defined own property resolves to a non-Nil value (or,
+  // when nil-valued, is caught by `hasOwnField`) and stays first-class, so only
+  // the absent case throws. No-op when `name` isn't a built-in method name.
   void emit_reject_bare_builtin_method(llvm::Value* propResult,
+                                       llvm::Value* hasOwnField,
                                        const std::string& name,
                                        const peg::Ast& postfix) {
     if (!culebra::is_builtin_method_name(name)) return;
     auto fn = builder_.GetInsertBlock()->getParent();
     auto isNil = builder_.CreateICmpEQ(extract_tag(propResult),
                                        builder_.getInt8(TAG_NIL));
+    // A user Object with an own property of this name — even nil-valued — is a
+    // first-class field, not a built-in method handle (interp returns it via
+    // `obj.has` precedence). Reject only a genuinely absent property: Nil
+    // result AND no own slot (non-Object receivers never have own slots).
+    auto reject = builder_.CreateAnd(
+        isNil, builder_.CreateNot(hasOwnField), "bm.reject");
     auto throwBB = llvm::BasicBlock::Create(ctx_, "bm.throw", fn);
     auto contBB = llvm::BasicBlock::Create(ctx_, "bm.cont", fn);
-    builder_.CreateCondBr(isNil, throwBB, contBB);
+    builder_.CreateCondBr(reject, throwBB, contBB);
     builder_.SetInsertPoint(throwBB);
     emit_throw_error("TypeError",
                      "built-in method '" + name +
@@ -18180,6 +18255,8 @@ struct JIT {
             auto name = std::string(postfix.token);
             auto receiver = callee;
             callee = compile_property_get(receiver, name);
+            // Capture own-slot presence before the receiver is released below.
+            auto hasOwn = emit_has_own_field(receiver, name);
             // Function introspection (.name / .params / .return_type)
             // returns a fresh +1 owned value rather than a borrowed
             // Object IC slot view, so swap_owned would double-retain it
@@ -18189,7 +18266,7 @@ struct JIT {
             } else {
               emit_value_swap_owned(callee, receiver);
             }
-            emit_reject_bare_builtin_method(callee, name, postfix);
+            emit_reject_bare_builtin_method(callee, hasOwn, name, postfix);
           }
           break;
         }
@@ -20259,6 +20336,8 @@ struct JIT {
             auto name = std::string(postfix.token);
             auto receiver = callee;
             callee = compile_property_get(receiver, name);
+            // Capture own-slot presence before the receiver is released below.
+            auto hasOwn = emit_has_own_field(receiver, name);
             // Function introspection (.name / .params / .return_type)
             // returns a fresh +1 owned value rather than a borrowed
             // Object IC slot view, so swap_owned would double-retain it
@@ -20268,7 +20347,7 @@ struct JIT {
             } else {
               emit_value_swap_owned(callee, receiver);
             }
-            emit_reject_bare_builtin_method(callee, name, postfix);
+            emit_reject_bare_builtin_method(callee, hasOwn, name, postfix);
           }
           break;
         }
@@ -21300,6 +21379,21 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "clone");
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_clone), {tPtr}, "tcl");
+    return make_tensor(resultPtr);
+  }
+  // Autograd methods — all no-arg, all return a Tensor (the receiver for
+  // mark / backward / clear; a fresh tensor for grad / detach). Logic
+  // lives in tensor.h, so these mirror the interp builtins exactly.
+  if ((method == "requires_grad" || method == "grad" ||
+       method == "backward" || method == "zero_grad" ||
+       method == "detach") && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, method.c_str());
+    const char* rtName = method == "requires_grad" ? rt::tensor_requires_grad
+                       : method == "grad"          ? rt::tensor_grad
+                       : method == "backward"      ? rt::tensor_backward
+                       : method == "zero_grad"     ? rt::tensor_zero_grad
+                                                   : rt::tensor_detach;
+    auto resultPtr = emit_call(module_->getFunction(rtName), {tPtr}, "tag");
     return make_tensor(resultPtr);
   }
   // Activations as instance methods: `t.relu()` / `.sigmoid()` /

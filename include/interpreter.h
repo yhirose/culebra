@@ -4268,6 +4268,56 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                         return Value(TensorValue(tensor_clone(self)));
                       },
                       "Tensor"sv))},
+      // --- Autograd ---
+      // `requires_grad()` marks a leaf and returns it (chainable);
+      // `grad()` reads the accumulated gradient (zeros until backward);
+      // `backward()` runs reverse-mode autodiff from this tensor and
+      // returns it; `zero_grad()` clears it; `detach()` copies without
+      // graph or grad tracking. All logic lives in tensor.h, so the JIT
+      // wrappers below mirror these exactly.
+      {"requires_grad"sv, Value(FunctionValue(
+                              {},
+                              [](std::shared_ptr<Environment> callEnv) {
+                                const auto& self =
+                                    callEnv->get("this").to_tensor().impl;
+                                tensor_requires_grad(self);
+                                return Value(TensorValue(self));
+                              },
+                              "Tensor"sv))},
+      {"grad"sv, Value(FunctionValue(
+                     {},
+                     [](std::shared_ptr<Environment> callEnv) {
+                       const auto& self =
+                           callEnv->get("this").to_tensor().impl;
+                       return Value(TensorValue(tensor_grad(self)));
+                     },
+                     "Tensor"sv))},
+      {"backward"sv, Value(FunctionValue(
+                         {},
+                         [](std::shared_ptr<Environment> callEnv) {
+                           const auto& self =
+                               callEnv->get("this").to_tensor().impl;
+                           tensor_backward(self);
+                           return Value(TensorValue(self));
+                         },
+                         "Tensor"sv))},
+      {"zero_grad"sv, Value(FunctionValue(
+                          {},
+                          [](std::shared_ptr<Environment> callEnv) {
+                            const auto& self =
+                                callEnv->get("this").to_tensor().impl;
+                            tensor_zero_grad(self);
+                            return Value(TensorValue(self));
+                          },
+                          "Tensor"sv))},
+      {"detach"sv, Value(FunctionValue(
+                       {},
+                       [](std::shared_ptr<Environment> callEnv) {
+                         const auto& self =
+                             callEnv->get("this").to_tensor().impl;
+                         return Value(TensorValue(tensor_detach(self)));
+                       },
+                       "Tensor"sv))},
       // Activations as instance methods: `t.relu()` / `.sigmoid()` /
       // `.softmax()`. A user class may still define its own `relu` etc.;
       // method lookup gives the class method priority (the JIT does the
