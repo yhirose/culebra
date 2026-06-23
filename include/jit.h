@@ -11880,7 +11880,12 @@ struct JIT {
 
   // `data` must already be i64; callers zext/bitcast/ptrtoint as needed.
   llvm::Value* make_value(uint8_t tag, llvm::Value* data) {
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
+    // Base on a defined zero, not undef: SimplifyCFG can split the two
+    // inserts across a branch so the tag-only intermediate ({tag, undef})
+    // flows into an aggregate phi. SDAG materializes that undef harmlessly,
+    // but FastISel turns it into garbage (a bogus tag -> "got ?"). A zero
+    // base makes every intermediate {tag, 0} — defined on all backends.
+    llvm::Value* val = llvm::ConstantAggregateZero::get(valueType_);
     // tag occupies the full i64 field (zero-extended); see JitValue.
     val = builder_.CreateInsertValue(val, builder_.getInt64(tag), {0});
     val = builder_.CreateInsertValue(val, data, {1});
@@ -11945,7 +11950,9 @@ struct JIT {
   // i64 field, so no construction site can forget it (and reopen the
   // native-call tag bug — see JitValue). `data` must already be i64.
   llvm::Value* make_value(llvm::Value* tag, llvm::Value* data) {
-    llvm::Value* val = llvm::UndefValue::get(valueType_);
+    // Zero base, not undef — see the uint8_t overload above (FastISel
+    // garbages a {tag, undef} intermediate that SimplifyCFG sinks into a phi).
+    llvm::Value* val = llvm::ConstantAggregateZero::get(valueType_);
     val = builder_.CreateInsertValue(val, i64tag(tag), {0});
     val = builder_.CreateInsertValue(val, data, {1});
     return val;
@@ -15927,12 +15934,12 @@ struct JIT {
         module_->getOrInsertFunction(rt::range_iter, ptrTy, builder_.getInt64Ty(),
                                      builder_.getInt64Ty(), builder_.getInt64Ty()),
         {data, current_line_val(), current_column_val()});
-    llvm::Value* rangeIterVal = llvm::UndefValue::get(valueType_);
-    rangeIterVal = builder_.CreateInsertValue(
-        rangeIterVal, builder_.getInt8(TAG_OBJECT), {0});
-    rangeIterVal = builder_.CreateInsertValue(
-        rangeIterVal, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()),
-        {1});
+    // Build via make_value so the tag fills the whole i64 field. The old
+    // hand-rolled insert put an i8 tag in the i64 slot, leaving the upper
+    // 56 bits undef -> FastISel read a garbage tag and "got ?". Same for
+    // the keys/proto values below.
+    llvm::Value* rangeIterVal = make_value(
+        TAG_OBJECT, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()));
     compile_for_protocol_loop(rangeIterVal, id, body, endBB);
 
     builder_.SetInsertPoint(notRangeBB);
@@ -15948,19 +15955,12 @@ struct JIT {
     // `for k in obj` sugar. Reuses the protocol loop below.
     auto objIter = emit_call(module_->getFunction(rt::object_iter),
                              {objPtr});
-    llvm::Value* keysIterVal = llvm::UndefValue::get(valueType_);
-    keysIterVal = builder_.CreateInsertValue(
-        keysIterVal, builder_.getInt8(TAG_OBJECT), {0});
-    keysIterVal = builder_.CreateInsertValue(
-        keysIterVal, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()),
-        {1});
+    llvm::Value* keysIterVal = make_value(
+        TAG_OBJECT, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()));
     compile_for_protocol_loop(keysIterVal, id, body, endBB);
 
     builder_.SetInsertPoint(protoBB);
-    llvm::Value* objVal = llvm::UndefValue::get(valueType_);
-    objVal = builder_.CreateInsertValue(objVal, builder_.getInt8(TAG_OBJECT),
-                                        {0});
-    objVal = builder_.CreateInsertValue(objVal, data, {1});
+    llvm::Value* objVal = make_value(TAG_OBJECT, data);
     compile_for_protocol_loop(objVal, id, body, endBB);
 
     builder_.SetInsertPoint(stringBB);
