@@ -58,6 +58,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "view",       "split_iter",  "shape",      "pow",        "transpose",
       "reshape",    "mean",        "argmax",     "to_array",   "dot",
       "linear_sigmoid", "clone",   "relu",       "sigmoid",    "softmax",
+      "log",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",
       "detach"};

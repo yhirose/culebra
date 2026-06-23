@@ -4349,6 +4349,14 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                               TensorValue(tensor_unary(Op::Softmax, self)));
                         },
                         "Tensor"sv))},
+      {"log"sv, Value(FunctionValue(
+                    {},
+                    [](std::shared_ptr<Environment> callEnv) {
+                      const auto& self =
+                          callEnv->get("this").to_tensor().impl;
+                      return Value(TensorValue(tensor_log(self)));
+                    },
+                    "Tensor"sv))},
       {"slice"sv, Value(FunctionValue(
                        {{"start", false, "Long"sv},
                         {"end", false, "Long"sv}},

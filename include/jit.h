@@ -2939,6 +2939,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from(
   return _culebra_jit_tensor_register(std::move(impl));
 }
 
+// Tensor.concat([a, b, ...]) — stacks tensors along axis 0 (rows).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_concat(
+    JitArray* a, int64_t line, int64_t col) {
+  std::vector<culebra::TensorPtr> parts;
+  parts.reserve(a->size);
+  for (size_t i = 0; i < a->size; i++) {
+    if (a->items[i].tag != TAG_TENSOR) culebra::throw_type_error_at(line, col);
+    parts.push_back(reinterpret_cast<JitTensor*>(a->items[i].data)->impl);
+  }
+  return _culebra_jit_tensor_register(culebra::tensor_concat(std::move(parts)));
+}
+
 // .shape() — returns a fresh JitArray of Long.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_shape(
     JitTensor* t) {
@@ -9354,6 +9366,7 @@ inline constexpr auto tensor_zeros        = "culebra_runtime_tensor_zeros";
 inline constexpr auto tensor_ones         = "culebra_runtime_tensor_ones";
 inline constexpr auto tensor_randn        = "culebra_runtime_tensor_randn";
 inline constexpr auto tensor_from         = "culebra_runtime_tensor_from";
+inline constexpr auto tensor_concat       = "culebra_runtime_tensor_concat";
 inline constexpr auto tensor_shape        = "culebra_runtime_tensor_shape";
 inline constexpr auto tensor_binop        = "culebra_runtime_tensor_binop";
 inline constexpr auto tensor_eval_one     = "culebra_runtime_tensor_eval_one";
@@ -21398,11 +21411,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   // Activations as instance methods: `t.relu()` / `.sigmoid()` /
   // `.softmax()`. Each is a no-arg unary over the receiver Tensor.
-  if ((method == "relu" || method == "sigmoid" || method == "softmax") &&
+  if ((method == "relu" || method == "sigmoid" || method == "softmax" ||
+       method == "log") &&
       argsAst.nodes.size() == 0) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, method.c_str());
     int op_id = method == "relu"    ? static_cast<int>(culebra::Op::Relu)
               : method == "sigmoid" ? static_cast<int>(culebra::Op::Sigmoid)
+              : method == "log"     ? static_cast<int>(culebra::Op::Log)
                                     : static_cast<int>(culebra::Op::Softmax);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_unary),

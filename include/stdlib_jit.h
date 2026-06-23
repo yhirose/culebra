@@ -3529,6 +3529,10 @@ inline JitValue _ns_tensor_from(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from(_ns_adapt::take_array(a[0]), 0, 0));
 }
+inline JitValue _ns_tensor_concat(JitValue* a, int64_t) {
+  return _ns_adapt::v_tensor(
+      culebra_runtime_tensor_concat(_ns_adapt::take_array(a[0]), 0, 0));
+}
 inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
@@ -4069,6 +4073,7 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "ones",     -1, &_ns_tensor_ones},
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
+  {"Tensor", "concat",    1, &_ns_tensor_concat, nullptr, "Array", "parts"},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
 };
@@ -5043,6 +5048,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                  jit.builder_.getInt64Ty());
   }
   jit.module_->getOrInsertFunction(rt::tensor_from, ptrTy, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::tensor_concat, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_shape, ptrTy, ptrTy);
@@ -6050,6 +6058,15 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});
+      emit_value_release(arg);
+      return make_tensor(t);
+    }
+    if (method == "concat" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "Array", "parameter 'parts'", argsAst.nodes[0].get());
+      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto t = emit_call(
+          module_->getFunction(rt::tensor_concat), {ap, line, col});
       emit_value_release(arg);
       return make_tensor(t);
     }

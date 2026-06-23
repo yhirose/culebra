@@ -74,8 +74,12 @@ enum class Op {
   // elementwise (Softmax operates on the last axis). LinearSigmoid
   // is the fused (W @ x + b) → sigmoid kernel for MLP forward.
   Dot,
-  Sigmoid, Relu, Softmax,
+  Sigmoid, Relu, Softmax, Log,
   LinearSigmoid,
+  // Row concatenation (axis 0): stacks inputs vertically into one
+  // materialized buffer. inputs = the parts; VJP slices the upstream
+  // grad back into each part's row range.
+  Concat,
   // Zero-copy views. These carry a non-Const op tag *and* a `base`
   // pointer: forward is short-circuited by is_evaluated() (base !=
   // nullptr), but the op tag lets autograd's reverse pass route the
@@ -740,7 +744,9 @@ inline void _tensor_clone_typed(const TensorImpl& src, TensorImpl& dst) {
   }
   const auto& dims = src.shape.dims;
   const auto& str = src.strides;
-  if (dims.size() == 1) {
+  if (dims.empty()) {
+    dp[0] = sp[0];  // rank-0 scalar (offset already folded into data_as)
+  } else if (dims.size() == 1) {
     auto s0 = str[0];
     for (int64_t i = 0; i < dims[0]; i++) dp[i] = sp[i * s0];
   } else if (dims.size() == 2) {
@@ -870,6 +876,10 @@ inline TensorPtr tensor_unary(Op op, TensorPtr a) {
       std::vector<TensorPtr>{std::move(a)}));
 }
 
+inline TensorPtr tensor_log(TensorPtr a) {
+  return tensor_unary(Op::Log, std::move(a));
+}
+
 template <typename T, Op op>
 inline void _tensor_run_unary_typed(TensorImpl& out) {
   const auto& in = *out.inputs[0];
@@ -880,6 +890,8 @@ inline void _tensor_run_unary_typed(TensorImpl& out) {
       return T{1} / (T{1} + std::exp(-x));
     } else if constexpr (op == Op::Relu) {
       return x > T{0} ? x : T{0};
+    } else if constexpr (op == Op::Log) {
+      return std::log(x);
     } else {
       return T{};
     }
@@ -945,6 +957,7 @@ inline void _tensor_run_unary_for_dtype(TensorImpl& t) {
   switch (t.op) {
     case Op::Sigmoid: _tensor_run_unary_typed<T, Op::Sigmoid>(t); break;
     case Op::Relu:    _tensor_run_unary_typed<T, Op::Relu>(t); break;
+    case Op::Log:     _tensor_run_unary_typed<T, Op::Log>(t); break;
     case Op::Softmax: _tensor_run_softmax_typed<T>(t); break;
     default:
       throw std::logic_error("tensor: non-unary op in unary dispatch");
@@ -1057,6 +1070,71 @@ inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
   return tensor_propagate_grad(out);
 }
 
+// Row concat forward. Axis 0 is outermost, so each part's row-major
+// element sequence maps to one contiguous output chunk; we read each
+// part in logical row-major order (honoring view strides) and append.
+template <typename T>
+inline void _tensor_run_concat_typed(TensorImpl& out) {
+  T* o = out.data_as<T>();
+  size_t w = 0;
+  for (const auto& inp : out.inputs) {
+    const auto& p = *inp;
+    size_t total = p.shape.num_elements();
+    const T* d = p.data_as<T>();
+    if (p.is_contiguous()) {
+      for (size_t i = 0; i < total; i++) o[w++] = d[i];
+      continue;
+    }
+    size_t rank = p.shape.dims.size();
+    for (size_t i = 0; i < total; i++) {
+      size_t rem = i;
+      int64_t off = 0;
+      for (size_t dim = rank; dim-- > 0;) {
+        auto m = static_cast<int64_t>(rem % p.shape.dims[dim]);
+        rem /= p.shape.dims[dim];
+        off += m * p.strides[dim];
+      }
+      o[w++] = d[off];
+    }
+  }
+}
+
+inline void _tensor_run_concat(TensorImpl& t) {
+  if (t.dtype == Dtype::F32) _tensor_run_concat_typed<float>(t);
+  else                       _tensor_run_concat_typed<double>(t);
+}
+
+// Stack tensors along axis 0 (rows). All parts must share dtype and all
+// dims past axis 0; the output's row count is the sum of the parts'.
+inline TensorPtr tensor_concat(std::vector<TensorPtr> parts) {
+  if (parts.empty()) {
+    throw CulebraError("ValueError", "Tensor.concat: empty list.");
+  }
+  const auto& d0 = parts[0]->shape.dims;
+  Dtype dt = parts[0]->dtype;
+  int64_t total_rows = 0;
+  for (const auto& p : parts) {
+    if (p->dtype != dt) {
+      throw CulebraError("ValueError", "Tensor.concat: dtype mismatch.");
+    }
+    const auto& pd = p->shape.dims;
+    if (pd.size() != d0.size() || pd.empty()) {
+      throw CulebraError("ValueError", "Tensor.concat: rank mismatch.");
+    }
+    for (size_t i = 1; i < pd.size(); i++) {
+      if (pd[i] != d0[i]) {
+        throw CulebraError("ValueError",
+                           "Tensor.concat: non-axis dims must match.");
+      }
+    }
+    total_rows += pd[0];
+  }
+  std::vector<int64_t> out_dims(d0.begin(), d0.end());
+  out_dims[0] = total_rows;
+  return tensor_propagate_grad(std::make_shared<TensorImpl>(
+      Op::Concat, TensorShape(out_dims), dt, std::move(parts)));
+}
+
 // Topological evaluation: depth-first walk of inputs, allocate a
 // contiguous buf for each unevaluated node, run kernel.
 // is_evaluated() short-circuits shared subgraphs so each node runs
@@ -1098,11 +1176,15 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
       break;
     case Op::Sigmoid:
     case Op::Relu:
+    case Op::Log:
     case Op::Softmax:
       _tensor_run_unary(t);
       break;
     case Op::LinearSigmoid:
       _tensor_run_linear_sigmoid(t);
+      break;
+    case Op::Concat:
+      _tensor_run_concat(t);
       break;
     case Op::Const:
     case Op::Transpose:
@@ -1314,6 +1396,10 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Relu:
       _tensor_grad_add(n->inputs[0], _tensor_relu_backward(g, n->inputs[0]));
       break;
+    case Op::Log:
+      // y = log(x); dx = g / x.
+      _tensor_grad_add(n->inputs[0], tensor_binop(Op::Div, g, n->inputs[0]));
+      break;
     case Op::Sigmoid: {
       // y = sigmoid(x); dx = g * y * (1 - y). y is this node's value.
       auto ym = _tensor_sigmoid_grad(n, dt);
@@ -1357,6 +1443,17 @@ inline void _tensor_vjp(const TensorPtr& n) {
           n->inputs[0],
           _tensor_slice_backward(g, n->inputs[0]->shape, dt, n->op_param));
       break;
+    case Op::Concat: {
+      // Each part owns a contiguous row range of the output; route that
+      // slice of the upstream grad straight back to it.
+      int64_t off = 0;
+      for (const auto& part : n->inputs) {
+        int64_t rows = part->shape.dims[0];
+        _tensor_grad_add(part, tensor_slice(g, off, off + rows));
+        off += rows;
+      }
+      break;
+    }
     case Op::Max:
     case Op::Argmax:
       throw CulebraError("ValueError",

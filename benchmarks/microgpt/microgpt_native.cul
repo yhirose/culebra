@@ -1,0 +1,290 @@
+# Native-autograd port of microgpt.
+#
+# Same transformer as microgpt_tensor.cul, but the autograd lives in
+# the C++ Tensor primitive (tensor.h) instead of a script-level TNode
+# wrapper. Every forward op records the reverse-mode graph natively;
+# `loss.backward()` walks it in C++. This eliminates the per-op TNode
+# allocation, the backward-closure churn, and the to_array() round
+# trips that dominated the TNode version's runtime.
+#
+# Parameters are bare leaf Tensors with requires_grad, held in tiny
+# mutable boxes ({ t: <tensor> }) so Adam can swap a box's tensor each
+# step while the forward keeps reading the same box by name.
+#
+# Usage: ./build/culebra --jit benchmarks/microgpt/microgpt_native.cul [num_steps]
+
+Random.seed(42)
+
+# --- Data + tokenizer (unchanged from microgpt.cul) ---
+
+let data_path = 'benchmarks/microgpt/names.txt'
+if !FS.exists(data_path) {
+  puts("error: {data_path} missing. Run `just fetch-names` first.")
+  Sys.exit(1)
+}
+
+mut docs = []
+for line in FS.read(data_path).split("\n") {
+  let s = line.trim()
+  if s.size() > 0 { docs.push(s) }
+}
+Random.shuffle(docs)
+puts("num docs: {docs.size()}")
+
+mut uchars = []
+for d in docs { for c in d { if !uchars.contains(c) { uchars.push(c) } } }
+uchars.sort_by(|c| c)
+let BOS = uchars.size()
+let vocab_size = uchars.size() + 1
+puts("vocab size: {vocab_size}")
+
+# --- Hyperparameters ---
+
+let n_layer = 1
+let n_embd = 16
+let block_size = 16
+let n_head = 4
+let head_dim = n_embd / n_head
+let attn_scale = 1.0 / (to_float(head_dim) ** 0.5)
+let std_init = 0.08
+
+# === Native Tensor ops ===
+#
+# No TNode: the forward expressions below build the autograd graph in
+# C++ directly. Helpers are thin — they only encode shape conventions
+# (activations are column vectors [D, 1]).
+
+# Embedding lookup: read row `idx` from a [N, D] param, return it as a
+# column vector [D, 1]. slice + transpose are differentiable, so the
+# gradient scatters back into the right row of the table automatically.
+let embed = fn (table, idx) {
+  table.t.slice(idx, idx + 1).transpose()
+}
+
+# rmsnorm of a column vector x [D, 1]: y = x * (mean(x*x) + eps)^-0.5.
+# Fully native — the autograd derivative falls out of the elementwise
+# graph (no hand-written backward).
+let rmsnorm = fn (x) {
+  let d = to_float(x.shape()[0])
+  let eps = 1.0e-5
+  let ms = (x * x).sum(0) * (1.0 / d)   # [1]
+  let scale = (ms + eps).pow(-0.5)      # [1]
+  x * scale                              # [D, 1] broadcast
+}
+
+# Single-head attention over the cached keys/values for one head.
+# q_h is [hd, 1]; k_rows / v_rows are lists of [1, hd] row vectors.
+# K, V are [n_t, hd]; weights = softmax(K@q_h * scale); out = V^T @ w.
+let head_attention = fn (q_h, k_rows, v_rows, scale) {
+  let n_t = k_rows.size()
+  let kmat = Tensor.concat(k_rows)            # [n_t, hd]
+  let vmat = Tensor.concat(v_rows)            # [n_t, hd]
+  let logits = kmat.dot(q_h) * scale          # [n_t, 1]
+  let weights = logits.reshape([n_t]).softmax().reshape([n_t, 1])
+  vmat.transpose().dot(weights)               # [hd, 1]
+}
+
+# Softmax + cross-entropy for one position: -log(softmax(logits)[target]),
+# averaged by n. logits is [V, 1]; native autograd recovers the usual
+# dL/dlogits = (p - onehot)/n through softmax + log.
+let ce_loss = fn (logits, target, n) {
+  let v = logits.shape()[0]
+  let probs = logits.reshape([v]).softmax()   # [V]
+  mut oh = []
+  for i in 0..v { oh.push(if i == target { 1.0 } else { 0.0 }) }
+  let onehot = Tensor.from(oh)                 # [V], constant (no grad)
+  let ce = (onehot * probs.log()).sum(0)       # rank-0
+  (ce * (-1.0 / to_float(n))).reshape([1])     # [1]
+}
+
+# === Parameter init ===
+#
+# Each weight is a leaf Tensor with requires_grad, wrapped in a mutable
+# box (a one-field class — object-literal fields are immutable) so Adam
+# can replace box.t each step while the forward keeps reading box.t by
+# name. Tensor.randn(out, in) is N(0,1); scale by std_init to match the
+# scalar version's distribution.
+
+class Param {
+  new(t) { this.t = t }
+}
+
+let make_param = fn (out_dim, in_dim) {
+  let t = Tensor.randn(out_dim, in_dim) * std_init
+  Tensor.eval(t)
+  Param.new(t.detach().requires_grad())
+}
+
+let wte = make_param(vocab_size, n_embd)
+let wpe = make_param(block_size, n_embd)
+let lm_head = make_param(vocab_size, n_embd)
+
+mut layers = []
+for _ in 0..n_layer {
+  layers.push({
+    attn_wq: make_param(n_embd, n_embd),
+    attn_wk: make_param(n_embd, n_embd),
+    attn_wv: make_param(n_embd, n_embd),
+    attn_wo: make_param(n_embd, n_embd),
+    mlp_fc1: make_param(4 * n_embd, n_embd),
+    mlp_fc2: make_param(n_embd, 4 * n_embd)
+  })
+}
+
+mut params = [wte, wpe, lm_head]
+for layer in layers {
+  params.push(layer.attn_wq); params.push(layer.attn_wk)
+  params.push(layer.attn_wv); params.push(layer.attn_wo)
+  params.push(layer.mlp_fc1); params.push(layer.mlp_fc2)
+}
+puts("num params: {params.size()} weight matrices")
+
+# === Forward ===
+#
+# keys[li] / values[li] accumulate the per-position k / v projections
+# ([n_embd, 1] tensors) so attention is causal over the cache.
+
+let gpt_forward = fn (token_id, pos_id, keys, values) {
+  let tok_emb = embed(wte, token_id)
+  let pos_emb = embed(wpe, pos_id)
+  mut x = rmsnorm(tok_emb + pos_emb)
+
+  for li in 0..n_layer {
+    let x_residual1 = x
+    x = rmsnorm(x)
+    let layer = layers[li]
+
+    let q = layer.attn_wq.t.dot(x)
+    let k = layer.attn_wk.t.dot(x)
+    let v = layer.attn_wv.t.dot(x)
+    keys[li].push(k)
+    values[li].push(v)
+
+    mut head_outs = []
+    for h in 0..n_head {
+      let hs = h * head_dim
+      let q_h = q.slice(hs, hs + head_dim)
+      mut k_rows = []
+      mut v_rows = []
+      for t in 0..keys[li].size() {
+        k_rows.push(keys[li][t].slice(hs, hs + head_dim).transpose())
+        v_rows.push(values[li][t].slice(hs, hs + head_dim).transpose())
+      }
+      head_outs.push(head_attention(q_h, k_rows, v_rows, attn_scale))
+    }
+    let x_attn = Tensor.concat(head_outs)
+    x = layer.attn_wo.t.dot(x_attn) + x_residual1
+
+    let x_residual2 = x
+    x = rmsnorm(x)
+    let h1 = layer.mlp_fc1.t.dot(x).relu()
+    x = layer.mlp_fc2.t.dot(h1) + x_residual2
+  }
+
+  lm_head.t.dot(x)
+}
+
+# === Adam optimizer ===
+
+let lr_base = 0.01
+let beta1 = 0.85
+let beta2 = 0.99
+let eps_adam = 1.0e-8
+
+mut m_buf = []
+mut v_buf = []
+for p in params {
+  m_buf.push(Tensor.zeros(p.t.shape()))
+  v_buf.push(Tensor.zeros(p.t.shape()))
+}
+
+let adam_step = fn (step, num_steps) {
+  let lr_t = lr_base * (1.0 - to_float(step) / to_float(num_steps))
+  let bc1 = 1.0 - beta1 ** to_float(step + 1)
+  let bc2 = 1.0 - beta2 ** to_float(step + 1)
+  for i in 0..params.size() {
+    let p = params[i]
+    let g = p.t.grad()
+    m_buf[i] = (m_buf[i] * beta1 + g * (1.0 - beta1)).detach()
+    v_buf[i] = (v_buf[i] * beta2 + g * g * (1.0 - beta2)).detach()
+    Tensor.eval(m_buf[i], v_buf[i])
+    let m_hat = m_buf[i] * (1.0 / bc1)
+    let v_hat_pow = (v_buf[i] * (1.0 / bc2)).pow(0.5)
+    let denom = v_hat_pow + eps_adam
+    let new_t = (p.t - (m_hat / denom) * lr_t).detach()
+    Tensor.eval(new_t)
+    p.t = new_t.requires_grad()
+  }
+}
+
+# === Training loop ===
+
+let num_steps = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { 50 }
+mut final_loss = 0.0
+
+let train_t0 = Sys.time()
+mut step = 0
+while step < num_steps {
+  let doc = docs[step % docs.size()]
+  mut tokens = [BOS]
+  for c in doc { tokens.push(uchars.index_of(c)) }
+  tokens.push(BOS)
+  let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
+
+  for p in params { p.t.zero_grad() }
+
+  mut keys = []
+  mut values = []
+  for _ in 0..n_layer { keys.push([]); values.push([]) }
+
+  mut loss = nil
+  for pos_id in 0..n {
+    let logits = gpt_forward(tokens[pos_id], pos_id, keys, values)
+    let l = ce_loss(logits, tokens[pos_id + 1], n)
+    loss = if loss == nil { l } else { loss + l }
+  }
+
+  loss.backward()
+  adam_step(step, num_steps)
+
+  let l_val = to_float(loss.to_array()[0])
+  if (step + 1) % 5 == 0 || step == 0 {
+    puts("step {step+1} / {num_steps} | loss {l_val}")
+  }
+  final_loss = l_val
+  step = step + 1
+}
+
+let train_time = Sys.time() - train_t0
+puts("final loss: {final_loss} (train {train_time}s, {1000.0 * train_time / to_float(num_steps)} ms/step)")
+
+# === Inference: sample new names ===
+
+let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
+let temperature = 0.5
+
+if n_samples > 0 {
+  puts('--- inference (new, hallucinated names) ---')
+  let pop = range(vocab_size).collect()
+
+  mut sample_idx = 0
+  while sample_idx < n_samples {
+    mut keys2 = []
+    mut values2 = []
+    for _ in 0..n_layer { keys2.push([]); values2.push([]) }
+    mut token_id = BOS
+    mut sample = []
+    for pos_id in 0..block_size {
+      let logits_node = gpt_forward(token_id, pos_id, keys2, values2)
+      let scaled = logits_node * (1.0 / temperature)
+      let probs = scaled.reshape([vocab_size]).softmax()
+      Tensor.eval(probs)
+      let weights = probs.to_array()
+      token_id = Random.weighted_choice(pop, weights)
+      if token_id == BOS { break }
+      sample.push(uchars[token_id])
+    }
+    puts("sample {sample_idx+1}: {sample.join('')}")
+    sample_idx = sample_idx + 1
+  }
+}

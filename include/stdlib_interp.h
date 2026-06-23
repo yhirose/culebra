@@ -1763,6 +1763,28 @@ inline Value make_tensor_namespace() {
           "Tensor"sv)),
       false);
 
+  // Tensor.concat([a, b, ...]) stacks tensors along axis 0 (rows).
+  ns.initialize(
+      "concat",
+      Value(FunctionValue(
+          {{"parts", false, "Array"sv}},
+          [](std::shared_ptr<Environment> env) {
+            auto line = env->get("__LINE__").to_long();
+            auto col = env->get("__COLUMN__").to_long();
+            const auto& arr = *env->get("parts").to_array().values;
+            std::vector<TensorPtr> parts;
+            parts.reserve(arr.size());
+            for (const auto& v : arr) {
+              // Match the JIT runtime's generic message (throw_type_error_at)
+              // for a non-Tensor element, same as Tensor.from.
+              if (v.type != Value::Tensor) throw_type_error_at(line, col);
+              parts.push_back(v.to_tensor().impl);
+            }
+            return Value(TensorValue(tensor_concat(std::move(parts))));
+          },
+          "Tensor"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 
