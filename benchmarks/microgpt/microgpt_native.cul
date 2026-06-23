@@ -94,7 +94,7 @@ let ce_loss = fn (logits, target, n) {
   for i in 0..v { oh.push(if i == target { 1.0 } else { 0.0 }) }
   let onehot = Tensor.from(oh)                 # [V], constant (no grad)
   let ce = (onehot * probs.log()).sum(0)       # rank-0
-  (ce * (-1.0 / to_float(n))).reshape([1])     # [1]
+  ce * (-1.0 / to_float(n))                    # rank-0 scalar loss
 }
 
 # === Parameter init ===
@@ -247,7 +247,7 @@ while step < num_steps {
   loss.backward()
   adam_step(step, num_steps)
 
-  let l_val = to_float(loss.to_array()[0])
+  let l_val = loss.item()
   if (step + 1) % 5 == 0 || step == 0 {
     puts("step {step+1} / {num_steps} | loss {l_val}")
   }

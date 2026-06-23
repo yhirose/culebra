@@ -4469,6 +4469,26 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                                 "to_array: rank > 2 not supported.");
                           },
                           "Array"sv))},
+      // .item(): scalar exit point. Forces eval and returns the lone
+      // element as a Float; throws unless the tensor holds exactly one
+      // element (any rank). Complements to_array, which is for shapes.
+      {"item"sv, Value(FunctionValue(
+                     {},
+                     [](std::shared_ptr<Environment> callEnv) {
+                       const auto& self =
+                           callEnv->get("this").to_tensor().impl;
+                       tensor_eval_node(*self);
+                       if (self->shape.num_elements() != 1) {
+                         throw CulebraError("ValueError",
+                             "Tensor.item: tensor does not hold exactly "
+                             "one element.");
+                       }
+                       double v = self->dtype == Dtype::F32
+                           ? static_cast<double>(self->data_as<float>()[0])
+                           : self->data_as<double>()[0];
+                       return Value(v);
+                     },
+                     "Float"sv))},
   };
   return props_;
 }

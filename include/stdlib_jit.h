@@ -5072,6 +5072,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_reduce_all, jit.valueType_,
                                ptrTy, jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_to_array, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_item, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_from_csv, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_unary, ptrTy, ptrTy,

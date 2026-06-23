@@ -1096,6 +1096,11 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.max() / .max(axis)` | Float / Tensor | likewise |
 | `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
 | `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |
+| `.item() -> Float` | eager | extract the lone element as a Float; throws unless the tensor holds exactly one element (any rank) |
+
+`.item()` is the scalar exit point, complementing `.to_array()` (which is for
+shaped data): use it to read a loss or any single-element result without
+reshaping. `loss.item()` replaces `to_float(loss.to_array()[0])`.
 
 ### Autograd (reverse-mode)
 

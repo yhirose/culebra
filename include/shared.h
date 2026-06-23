@@ -61,7 +61,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "log",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",
-      "detach"};
+      "detach",     "item"};
   return kNames;
 }
 inline bool is_builtin_method_name(std::string_view name) {

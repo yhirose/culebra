@@ -301,7 +301,11 @@ let tensors = ['Tensor.zeros(2, 3).shape()',
                  'let b = Tensor.from([[3.0, 4.0]]).requires_grad(); ' +
                  'let c = Tensor.concat([a, b]); ' +
                  'let w = Tensor.from([[10.0, 20.0], [30.0, 40.0]]); ' +
-                 'let l = (c * w).sum(0).sum(0); l.backward(); a.grad().to_array()']
+                 'let l = (c * w).sum(0).sum(0); l.backward(); a.grad().to_array()',
+               'Tensor.from([3.0, 5.0]).sum(0).item()',
+               'Tensor.from([[2.0]]).item()',
+               'let g = Tensor.from([1.0, 2.0, 3.0]); (g * g).sum(0).item()',
+               'Tensor.from([1.0, 2.0]).item()']
 for t in tensors {
   case("tensor|" + t, t)
 }

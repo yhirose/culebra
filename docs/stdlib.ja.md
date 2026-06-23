@@ -1059,6 +1059,11 @@ let l = p.log()            # 自然対数、elementwise
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスを Float で格納 |
 | `.to_array() -> Array` | eager | Culebra Array へ変換（暗黙 eval） |
+| `.item() -> Float` | eager | 唯一の要素を Float として取り出す。要素数が 1 でない（任意 rank）場合は例外 |
+
+`.item()` はスカラーの取り出し口で、`.to_array()`（形状を持つデータ用）と対をなす。
+loss など単一要素の結果を reshape せず読むのに使う。`loss.item()` は
+`to_float(loss.to_array()[0])` の置き換え。
 
 ### 自動微分（reverse-mode）
 

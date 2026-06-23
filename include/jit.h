@@ -3069,6 +3069,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
       "Tensor.to_array: rank > 2 not supported.");
 }
 
+// Scalar exit point: forces eval and returns the lone element as a
+// Float Value. Throws unless the tensor holds exactly one element.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_item(
+    JitTensor* t) {
+  culebra::tensor_eval_node(*t->impl);
+  const auto& impl = *t->impl;
+  if (impl.shape.num_elements() != 1) {
+    throw culebra::CulebraError("ValueError",
+        "Tensor.item: tensor does not hold exactly one element.");
+  }
+  double v = (impl.dtype == culebra::Dtype::F32)
+      ? static_cast<double>(impl.data_as<float>()[0])
+      : impl.data_as<double>()[0];
+  return {TAG_FLOAT, _culebra_double_to_bits(v)};
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from_csv(
     const char* path) {
   return _culebra_jit_tensor_register(
@@ -9377,6 +9393,7 @@ inline constexpr auto tensor_reshape      = "culebra_runtime_tensor_reshape";
 inline constexpr auto tensor_reduce_axis  = "culebra_runtime_tensor_reduce_axis";
 inline constexpr auto tensor_reduce_all   = "culebra_runtime_tensor_reduce_all";
 inline constexpr auto tensor_to_array     = "culebra_runtime_tensor_to_array";
+inline constexpr auto tensor_item         = "culebra_runtime_tensor_item";
 inline constexpr auto tensor_dot          = "culebra_runtime_tensor_dot";
 inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";
@@ -21491,6 +21508,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
         {tPtr, builder_.getInt64(static_cast<int>(culebra::Op::Mean))},
         "trall");
     return v;
+  }
+  if (method == "item" && argsAst.nodes.size() == 0) {
+    auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "item");
+    emit_set_op_pos();  // tensor_item raises positionless on multi-element
+    return emit_call(module_->getFunction(rt::tensor_item), {tPtr}, "titem");
   }
   if (method == "to_array" && argsAst.nodes.size() == 0) {
     auto tenBB = llvm::BasicBlock::Create(ctx_, "ta.ten", fn);
