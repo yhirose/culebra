@@ -3085,6 +3085,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_item(
   return {TAG_FLOAT, _culebra_double_to_bits(v)};
 }
 
+// Runs `fn` with autograd graph-building suppressed, returning whatever
+// fn returns. The RAII guard restores the depth even if fn throws, so a
+// propagated CulebraError leaves the no-grad nesting balanced.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_no_grad(
+    JitClosure* fn) {
+  culebra::TensorNoGradGuard guard;
+  return _culebra_invoke0(fn);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from_csv(
     const char* path) {
   return _culebra_jit_tensor_register(
@@ -9394,6 +9403,7 @@ inline constexpr auto tensor_reduce_axis  = "culebra_runtime_tensor_reduce_axis"
 inline constexpr auto tensor_reduce_all   = "culebra_runtime_tensor_reduce_all";
 inline constexpr auto tensor_to_array     = "culebra_runtime_tensor_to_array";
 inline constexpr auto tensor_item         = "culebra_runtime_tensor_item";
+inline constexpr auto tensor_no_grad      = "culebra_runtime_tensor_no_grad";
 inline constexpr auto tensor_dot          = "culebra_runtime_tensor_dot";
 inline constexpr auto tensor_from_csv     = "culebra_runtime_tensor_from_csv";
 inline constexpr auto tensor_unary        = "culebra_runtime_tensor_unary";

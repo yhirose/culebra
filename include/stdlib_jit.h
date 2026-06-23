@@ -3537,6 +3537,21 @@ inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
 }
+inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
+  // The "Function" gate also admits a structural callable (a __call__
+  // object), but the closure-invoke ABI only handles real closures.
+  // interp's _invoke_callback rejects a non-closure via to_function();
+  // mirror that exact wording (call-site position is filled by the
+  // dispatch wrapper) instead of reinterpret_cast'ing into a crash.
+  if (a[0].tag != TAG_FUNC) {
+    throw culebra::CulebraError(
+        "TypeError",
+        std::format("type error: expected Function, got {}",
+                    culebra_runtime_type_of(a[0].tag)));
+  }
+  return culebra_runtime_tensor_no_grad(
+      reinterpret_cast<JitClosure*>(a[0].data));
+}
 // Activations relu/sigmoid/softmax are Tensor instance methods
 // (`t.relu()`), dispatched in compile_builtin_method — not namespace
 // functions.
@@ -4075,6 +4090,7 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
   {"Tensor", "concat",    1, &_ns_tensor_concat, nullptr, "Array", "parts"},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
+  {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
 };
 
@@ -5073,6 +5089,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                ptrTy, jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_to_array, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_item, jit.valueType_, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_no_grad, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_from_csv, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_unary, ptrTy, ptrTy,

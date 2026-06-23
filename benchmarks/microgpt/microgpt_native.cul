@@ -275,9 +275,12 @@ if n_samples > 0 {
     mut token_id = BOS
     mut sample = []
     for pos_id in 0..block_size {
-      let logits_node = gpt_forward(token_id, pos_id, keys2, values2)
-      let scaled = logits_node * (1.0 / temperature)
-      let probs = scaled.reshape([vocab_size]).softmax()
+      # Sampling never backprops, so suppress graph building entirely.
+      let probs = Tensor.no_grad(fn () {
+        let logits_node = gpt_forward(token_id, pos_id, keys2, values2)
+        let scaled = logits_node * (1.0 / temperature)
+        scaled.reshape([vocab_size]).softmax()
+      })
       Tensor.eval(probs)
       let weights = probs.to_array()
       token_id = Random.weighted_choice(pop, weights)

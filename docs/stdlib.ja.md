@@ -1109,6 +1109,15 @@ Adam）で、すべてこれらのメソッドだけで構築されています�
 `Tensor.eval` を伴います。`.grad()` は他と同じ Tensor を返すので、
 `.to_array()` の前に `Tensor.eval` で materialize してください。
 
+`Tensor.no_grad(fn) -> Any` は勾配追跡を抑制して `fn` を実行します。
+内部の演算は autograd グラフを作らず（テープも `requires_grad` 伝播も
+発生しない）、`fn` の戻り値をそのまま返します。推論など、逆伝播しない
+forward に使います。
+
+```culebra
+let logits = Tensor.no_grad(fn () { model_forward(x) })
+```
+
 ### 演算子オーバーロード
 
 `+ - * /` はブロードキャスト elementwise（numpy / silarray 規則）。

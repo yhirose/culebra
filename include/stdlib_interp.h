@@ -1785,6 +1785,21 @@ inline Value make_tensor_namespace() {
           "Tensor"sv)),
       false);
 
+  // Tensor.no_grad(fn): run `fn` with autograd tracking suppressed, so
+  // ops inside build no grad graph (inference). Returns fn's result. The
+  // RAII guard restores tracking even if fn throws.
+  ns.initialize(
+      "no_grad",
+      Value(FunctionValue(
+          {{"fn", false, "Function"sv}},
+          [](std::shared_ptr<Environment> env) {
+            const auto& fn = env->get("fn");
+            TensorNoGradGuard guard;
+            return _invoke_callback(fn);
+          },
+          "Any"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 

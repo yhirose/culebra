@@ -1145,6 +1145,15 @@ cross-entropy, Adam) built entirely on these methods.
 `Tensor.eval` of the loss. `.grad()` returns a Tensor like any other —
 materialize it with `Tensor.eval` before `.to_array()`.
 
+`Tensor.no_grad(fn) -> Any` runs `fn` with grad tracking suppressed:
+ops inside build no autograd graph (so no tape and no `requires_grad`
+flow), and the call returns whatever `fn` returns. Use it for inference
+or any forward you will not backprop through.
+
+```culebra
+let logits = Tensor.no_grad(fn () { model_forward(x) })
+```
+
 ### Operator overloading
 
 `+ - * /` are broadcasting elementwise (numpy / silarray rules).

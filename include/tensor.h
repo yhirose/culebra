@@ -225,10 +225,27 @@ struct TensorImpl {
 
 using TensorPtr = std::shared_ptr<TensorImpl>;
 
+// No-grad scope: while the depth is > 0, ops do not propagate
+// requires_grad to their outputs, so no autograd graph is tracked. Used
+// for inference (Tensor.no_grad). Nesting is counted so guards compose;
+// the guard is RAII so it restores the depth even if the body throws.
+inline int& tensor_no_grad_depth() {
+  thread_local int depth = 0;
+  return depth;
+}
+struct TensorNoGradGuard {
+  TensorNoGradGuard() { tensor_no_grad_depth()++; }
+  ~TensorNoGradGuard() { tensor_no_grad_depth()--; }
+  TensorNoGradGuard(const TensorNoGradGuard&) = delete;
+  TensorNoGradGuard& operator=(const TensorNoGradGuard&) = delete;
+};
+
 // Propagate requires_grad forward: a node requires grad iff any of its
 // inputs do. Op constructors call this on the node they return so the
 // flag flows from leaves (marked by the user) up through the graph.
+// Suppressed inside a no-grad scope.
 inline const TensorPtr& tensor_propagate_grad(const TensorPtr& out) {
+  if (tensor_no_grad_depth() > 0) return out;
   for (auto& in : out->inputs) {
     if (in && in->requires_grad) {
       out->requires_grad = true;
