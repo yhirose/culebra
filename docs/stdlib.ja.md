@@ -983,6 +983,19 @@ let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
 let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 ```
 
+#### `Tensor.concat(parts: Array) -> Tensor`
+
+Tensor を軸 0（行）方向に積み重ね、1 つの materialized Tensor に
+します。すべての part は dtype が一致し、軸 0 より後ろの次元も一致
+している必要があります。結果の行数は各 part の行数の合計です。
+微分可能 — 勾配は各 part の行範囲に切り分けて戻されます。
+
+```culebra
+let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
+let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
+let c = Tensor.concat([a, b])                  # [3, 2]
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 CSV ファイルを直接 contiguous な Tensor に読み込みます。常に
@@ -1024,6 +1037,7 @@ Tensor のインスタンスメソッドです。ユーザのクラスが独自�
 let h = z.sigmoid()        # 1/(1+exp(-z)) elementwise
 let r = x.relu()           # max(0, x)
 let p = logits.softmax()   # 最終軸で online stable
+let l = p.log()            # 自然対数、elementwise
 ```
 
 ### Tensor のメソッド
@@ -1045,6 +1059,50 @@ let p = logits.softmax()   # 最終軸で online stable
 | `.max() / .max(axis)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスを Float で格納 |
 | `.to_array() -> Array` | eager | Culebra Array へ変換（暗黙 eval） |
+
+### 自動微分（reverse-mode）
+
+Tensor プリミティブはネイティブな reverse-mode 自動微分エンジンを
+持ちます。各 lazy op が記録する forward グラフがそのまま tape を
+兼ね、`.backward()` が C++ 側でそれを辿ります。スクリプト側の
+ラッパは不要 — 値を計算する op 自身が vector-Jacobian product を
+知っています。
+
+| メソッド | 戻り値 | 説明 |
+|---|---|---|
+| `.requires_grad() -> Tensor` | self | 葉に勾配累積を要求。チェーン可 |
+| `.backward() -> Nil` | — | `dL/dself = 1` を起点に全葉へ伝播 |
+| `.grad() -> Tensor` | Tensor | 累積勾配（`backward` 前は zeros） |
+| `.zero_grad() -> Nil` | — | 次ステップ前に勾配をクリア |
+| `.detach() -> Tensor` | Tensor | グラフも勾配も持たない materialized コピー |
+
+`requires_grad` は forward に伝播します — 勾配追跡する入力を持つ op
+の出力も勾配を追跡します。微分可能な op は `+ - * /`、`.pow()`（底に
+ついて）、`.dot()`、軸 `.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
+`.softmax()`、`.log()`、`.transpose()`、`.reshape()`、`.slice()`、
+`Tensor.concat()`。勾配は自動で un-broadcast されるので、バッチ越しに
+加えた bias は元の形状に和を取って戻ります。
+
+```culebra
+let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
+let x = Tensor.from([[1.0], [1.0]]).requires_grad()
+let y = w.dot(x)              # [2, 1]
+let loss = (y * y).sum(0).sum(0)
+loss.backward()
+Tensor.eval(w.grad(), x.grad())
+let gw = w.grad().to_array()  # dL/dw
+```
+
+典型的な学習ステップは、勾配をゼロ化 → forward → `.backward()` →
+optimizer 更新のため `.grad()` を読む → 新しい重みを `.detach()` して
+次ステップをクリーンな葉から始める、という流れです。
+`benchmarks/microgpt/microgpt_native.cul` の transformer が完全な実例
+（embedding、KV キャッシュ付き attention、RMSNorm、MLP、交差エントロピー、
+Adam）で、すべてこれらのメソッドだけで構築されています。
+
+`.backward()` は forward バッファから勾配を読むため loss の
+`Tensor.eval` を伴います。`.grad()` は他と同じ Tensor を返すので、
+`.to_array()` の前に `Tensor.eval` で materialize してください。
 
 ### 演算子オーバーロード
 

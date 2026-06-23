@@ -1018,6 +1018,19 @@ let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
 let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 ```
 
+#### `Tensor.concat(parts: Array) -> Tensor`
+
+Stacks tensors along axis 0 (rows) into one materialized Tensor. Every
+part must share the same dtype and the same dims past axis 0; the
+result's row count is the sum of the parts'. Differentiable — the
+gradient slices back into each part's row range.
+
+```culebra
+let a = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
+let b = Tensor.from([[5.0, 6.0]])              # [1, 2]
+let c = Tensor.concat([a, b])                  # [3, 2]
+```
+
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 Reads a CSV file directly into a contiguous Tensor. Always returns
@@ -1061,6 +1074,7 @@ clash.
 let h = z.sigmoid()        # 1/(1+exp(-z)) elementwise
 let r = x.relu()           # max(0, x)
 let p = logits.softmax()   # over the last axis, online-stable
+let l = p.log()            # natural log, elementwise
 ```
 
 ### Tensor methods
@@ -1082,6 +1096,49 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.max() / .max(axis)` | Float / Tensor | likewise |
 | `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
 | `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |
+
+### Autograd (reverse-mode)
+
+The Tensor primitive carries a native reverse-mode autodiff engine: the
+forward graph every lazy op already records doubles as the tape, and
+`.backward()` walks it in C++. No script-level wrapper is needed — the
+same op that computes a value also knows its vector-Jacobian product.
+
+| Method | Returns | Description |
+|---|---|---|
+| `.requires_grad() -> Tensor` | self | mark a leaf to accumulate grad; chainable |
+| `.backward() -> Nil` | — | seed `dL/dself = 1` and propagate to every leaf |
+| `.grad() -> Tensor` | Tensor | the accumulated gradient (zeros until `backward`) |
+| `.zero_grad() -> Nil` | — | clear the gradient before the next step |
+| `.detach() -> Tensor` | Tensor | a materialized copy with no graph and no grad |
+
+`requires_grad` propagates forward: any op with a grad-tracking input
+produces a grad-tracking output. Differentiable ops include `+ - * /`,
+`.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
+`.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.transpose()`,
+`.reshape()`, `.slice()`, and `Tensor.concat()`. Gradients un-broadcast
+automatically, so a bias added across a batch sums back to its shape.
+
+```culebra
+let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
+let x = Tensor.from([[1.0], [1.0]]).requires_grad()
+let y = w.dot(x)              # [2, 1]
+let loss = (y * y).sum(0).sum(0)
+loss.backward()
+Tensor.eval(w.grad(), x.grad())
+let gw = w.grad().to_array()  # dL/dw
+```
+
+A typical training step zeroes grads, runs the forward, calls
+`.backward()`, reads `.grad()` for the optimizer update, then `.detach()`
+on the new weights to start the next step from a clean leaf. The
+`benchmarks/microgpt/microgpt_native.cul` transformer is a full worked
+example (embeddings, attention with a KV cache, RMSNorm, MLP,
+cross-entropy, Adam) built entirely on these methods.
+
+`.backward()` reads gradients from the forward buffers, so it implies a
+`Tensor.eval` of the loss. `.grad()` returns a Tensor like any other —
+materialize it with `Tensor.eval` before `.to_array()`.
 
 ### Operator overloading
 
