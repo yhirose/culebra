@@ -1115,6 +1115,7 @@ Adam）で、すべてこれらのメソッドだけで構築されています�
 forward に使います。
 
 ```culebra
+# doctest: skip
 let logits = Tensor.no_grad(fn () { model_forward(x) })
 ```
 

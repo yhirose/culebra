@@ -1151,6 +1151,7 @@ flow), and the call returns whatever `fn` returns. Use it for inference
 or any forward you will not backprop through.
 
 ```culebra
+# doctest: skip
 let logits = Tensor.no_grad(fn () { model_forward(x) })
 ```
 
