@@ -6,8 +6,9 @@
 # group scores more — (n - 2)^2 points. Clear the whole board for a bonus.
 # Game over when no group of two remains.
 #
-# Run it:  culebra examples/samegame.cul          (play; click or arrows+space, q quits)
-#          culebra examples/samegame.cul 40 < /dev/null   (auto-demo, up to 40 moves)
+# Run it:  culebra examples/samegame.cul             (play; click or arrows+space, q quits)
+#          culebra examples/samegame.cul 40 </dev/null    (auto-demo, up to 40 moves)
+#          culebra examples/samegame.cul 40 7 </dev/null  (auto-demo, board seeded with 7)
 
 let ROWS = 9
 let COLS = 14
@@ -15,12 +16,15 @@ let NCOLORS = 5
 let COLORS = [0, 196, 46, 39, 226, 201]   # 256-colour per tile value 1..5
 
 let MAX_MOVES = if Sys.argv.size() > 0 { to_long(Sys.argv[0]) } else { -1 }
+# Optional second arg seeds the board for a reproducible demo (and lets the
+# interp / JIT / AOT backends be diffed byte-for-byte); -1 = seed from the clock.
+let SEED = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { -1 }
 let INTERACTIVE = IO.stdin_is_terminal()
 
 fn clampi(v, lo, hi) { if v < lo { lo } else { if v > hi { hi } else { v } } }
 
 fn new_board() {
-  Random.seed(to_long(Time.now().unix()))
+  Random.seed(if SEED >= 0 { SEED } else { to_long(Time.now().unix()) })
   mut b = []
   for _ in 0..ROWS {
     mut row = []
