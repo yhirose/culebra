@@ -187,6 +187,31 @@ _run-tests BACKEND:
         echo "test (interp vs jit) OK"
     }
 
+    # Guard the non-default JIT codegen backends (--jit -O0 = SDAG at O0,
+    # --jit-fast = FastISel) against the malformed-Value class of bug that
+    # O2 silently legalizes but those paths abort or miscompile on (see
+    # tests/test_forin_codegen.cul). Behavior must equal interp on every
+    # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
+    run_codegen_backends() {
+        local fail=0
+        for f in tests/test_forin_codegen.cul; do
+            local ref; ref=$(cul "$f") || { echo "interp failed: $f" >&2; fail=1; continue; }
+            for flags in "--jit -O0" "--jit-fast"; do
+                local got
+                if ! got=$(cul $flags "$f" 2>&1); then
+                    echo "FAIL ($flags aborted): $f" >&2; fail=1; continue
+                fi
+                if [[ "$got" != "$ref" ]]; then
+                    echo "FAIL ($flags != interp): $f" >&2
+                    diff <(printf "%s" "$ref") <(printf "%s" "$got") >&2 || true
+                    fail=1
+                fi
+            done
+        done
+        [[ "$fail" == 0 ]] || { echo "test (codegen backends) FAIL" >&2; exit 1; }
+        echo "test (codegen backends: -O0, fast) OK"
+    }
+
     run_aot() {
         local out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
         rm -rf "$out_dir" && mkdir -p "$out_dir"
@@ -348,6 +373,7 @@ _run-tests BACKEND:
       # Linux CI and in local dev.
       all)
         phase "interp/jit symmetry (real test files)"; run_diff_interp_jit
+        phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
         phase "ctest (embedding smokes)"; run_embed
