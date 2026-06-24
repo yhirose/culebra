@@ -52,10 +52,11 @@ Conventions used below:
 17. [`Compress`](#17-compress) — gzip (de)compression for data and files
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
-20. [`UUID`](#20-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
-21. [`Term`](#21-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
-22. [Design notes](#22-design-notes)
-23. [Not included (yet)](#23-not-included-yet)
+20. [`Env`](#20-env) — parse / load dotenv-style `.env` files
+21. [`UUID`](#21-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
+22. [`Term`](#22-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
+23. [Design notes](#23-design-notes)
+24. [Not included (yet)](#24-not-included-yet)
 
 **Where to find what**
 
@@ -81,7 +82,8 @@ Conventions used below:
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
-| Generate a UUID | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
+| Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
+| Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
@@ -2926,7 +2928,53 @@ header mode.
 
 ---
 
-## 20. `UUID`
+## 20. `Env`
+
+Parse and load dotenv-style `.env` configuration, shared byte-for-byte across
+backends.
+
+| Function | Result |
+| --- | --- |
+| `Env.parse(text: String) -> Object` | parse dotenv text into an `Object` of `String` values (no side effects) |
+| `Env.load(path: String = ".env", override: Bool = false) -> Object` | read a file, parse it, set each entry into the process environment, and return the parsed `Object` |
+
+Each entry is one line, `KEY=VALUE`:
+
+- blank lines and lines whose first non-space character is `#` are ignored;
+- a leading `export ` is stripped (so shell-style `.env` files load as-is);
+- the key is trimmed; a line without `=` or with an empty key is skipped;
+- a double-quoted value (`"..."`) honours `\n`, `\t`, `\r`, `\\`, and `\"`
+  escapes; a single-quoted value (`'...'`) is raw; an unquoted value is
+  trimmed and an inline ` # comment` (a `#` preceded by whitespace) is removed,
+  while a `#` not preceded by whitespace stays literal;
+- a duplicate key keeps its first position with the last value winning.
+
+Parsing is lenient (malformed lines are skipped). Multi-line values are not
+supported. `Env.load` raises `IOError` if the file cannot be opened. By default
+it does **not** overwrite a variable already set in the environment (the real
+environment wins); pass `override: true` to replace existing values. Loaded
+variables are visible via `Sys.env` and inherited by children spawned afterward
+(e.g. `Proc.run`).
+
+```culebra
+let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
+puts(cfg["PORT"])                 # => '8080'
+puts(cfg["NAME"])                 # => 'my app'
+puts(cfg["DEBUG"])                # => 'true'
+```
+
+```culebra
+# doctest: skip
+Env.load(".env")                  # set vars from ./.env (if present)
+puts(Sys.env("PORT"))
+```
+
+To use values as numbers or booleans, convert at the use site with `to_long` /
+`to_float` (every value is a `String`).
+
+---
+
+## 21. `UUID`
 
 Generate canonical lowercase UUIDs (the `8-4-4-4-12` hyphenated form). Two
 variants:
@@ -2949,7 +2997,7 @@ puts(UUID.v4() != UUID.v4())    # => true
 
 ---
 
-## 21. `Term`
+## 22. `Term`
 
 Terminal control for building text UIs — colour, cursor positioning, the
 alternate screen, terminal size, and non-blocking key input. The colour and
@@ -3075,7 +3123,7 @@ See `examples/donut.cul` (a no-input render loop) and `examples/froggy.cul`
 
 ---
 
-## 22. Design notes
+## 23. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3129,7 +3177,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 23. Not included (yet)
+## 24. Not included (yet)
 
 ### Heavier data structures
 

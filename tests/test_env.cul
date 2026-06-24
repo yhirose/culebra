@@ -1,0 +1,65 @@
+// Conformance: stdlib §Env. dotenv-style `.env` parsing + loading.
+// Runs on interp, JIT, and AOT via `just test`; identical stdout.
+
+// --- Env.parse: pure, returns an Object of String values ---
+// One interpreted string; `\n` separates entries, `\"` is a literal quote,
+// and `\\n` inside ESCAPED is a literal backslash-n that the dotenv
+// double-quote rule turns into a newline.
+let text = "# a comment\nNAME=culebra\nPORT=8080\nQUOTED=\"hello world\"\nSINGLE='raw value'\nESCAPED=\"line1\\nline2\"\nEMPTY=\n  SPACED = trimmed  \nexport EXPORTED=yes\nINLINE=val # trailing comment\nHASHVAL=a#b\nDUP=first\nDUP=last"
+let cfg = Env.parse(text)
+assert_eq(cfg["NAME"], "culebra")
+assert_eq(cfg["PORT"], "8080")
+assert_eq(cfg["QUOTED"], "hello world")
+assert_eq(cfg["SINGLE"], "raw value")
+assert_eq(cfg["ESCAPED"], "line1\nline2")     // \n escape applied
+assert_eq(cfg["EMPTY"], "")
+assert_eq(cfg["SPACED"], "trimmed")           // key + unquoted value trimmed
+assert_eq(cfg["EXPORTED"], "yes")             // `export ` prefix stripped
+assert_eq(cfg["INLINE"], "val")               // inline ` # comment` stripped
+assert_eq(cfg["HASHVAL"], "a#b")              // `#` without leading space kept
+assert_eq(cfg["DUP"], "last")                 // duplicate key: last wins
+
+// Empty / comment-only input yields an empty Object.
+assert_eq(Env.parse("").keys().size(), 0)
+assert_eq(Env.parse("# just a comment\n\n").keys().size(), 0)
+
+// --- Env.load: read a file, set the process env, return the parsed Object ---
+let tmpdir_env = Sys.env("TMPDIR")
+let tmp_root = if tmpdir_env != "" { tmpdir_env } else { "/tmp" }
+let envfile = FS.join(tmp_root, "culebra_env_test.env")
+
+FS.write(envfile, "FOO=bar\nBAZ=qux\n")
+let loaded = Env.load(envfile)
+assert_eq(loaded["FOO"], "bar")
+assert_eq(loaded["BAZ"], "qux")
+// load() pushed the entries into the process environment.
+assert_eq(Sys.env("FOO"), "bar")
+assert_eq(Sys.env("BAZ"), "qux")
+
+// override: by default an existing env var is NOT overwritten.
+Sys.set_env("FOO", "original")
+FS.write(envfile, "FOO=fromfile\n")
+Env.load(envfile)
+assert_eq(Sys.env("FOO"), "original")
+// override: true overwrites.
+Env.load(envfile, override: true)
+assert_eq(Sys.env("FOO"), "fromfile")
+
+FS.remove(envfile)
+
+// --- Error path: missing file throws IOError ---
+let err = try { Env.load("/definitely/not/a/real/file.env"); "no-error" } catch e { e.kind }
+assert_eq(err, "IOError")
+
+// `override:` must be Bool — a non-Bool raises TypeError (checked before the
+// file is opened), identically on every backend.
+let terr = try { Env.load("/any.env", override: 1); "no-error" } catch e { e.kind }
+assert_eq(terr, "TypeError")
+
+// --- Bare-resolve (slow path): namespace as a first-class value ---
+let m = Env
+let c2 = m.parse("X=1\nY=2")
+assert_eq(c2["X"], "1")
+assert_eq(c2["Y"], "2")
+
+IO.puts("test_env OK")

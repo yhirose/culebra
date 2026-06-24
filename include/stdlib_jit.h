@@ -10,6 +10,7 @@
 
 #include <compress.h>
 #include <csv.h>
+#include <env.h>
 #include <hash.h>
 #include <uuid.h>
 #include <jit.h>
@@ -3544,6 +3545,40 @@ inline JitValue _ns_csv_stringify(JitValue* a, int64_t n) {
       _culebra_heap_str(culebra::csv::stringify(grid, _csv_delim(a, n))));
 }
 
+// Env.{parse,load}: dotenv parsing via env.h (shared with interp). Both return
+// an Object of String values; `load` also reads a file and sets each entry into
+// the process environment (overwriting only when `override: true`).
+inline JitObject* _env_build_object(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  auto* o = culebra_runtime_object_new();
+  for (const auto& [k, v] : pairs)
+    culebra_runtime_object_set(o, k.c_str(), /*mut=*/false, TAG_STRING,
+                               reinterpret_cast<int64_t>(_culebra_heap_str(v)),
+                               0, 0);
+  return o;
+}
+inline JitValue _ns_env_parse(JitValue* a, int64_t) {
+  auto pairs = culebra::env::parse(_ns_adapt::require_sv(a[0], "text"));
+  return _ns_adapt::v_object(_env_build_object(pairs));
+}
+inline JitValue _ns_env_load(JitValue* a, int64_t n) {
+  // Kwarg slab: a[0]=path (".env" default), a[1]=override (false default).
+  // require_bool enforces the declared Bool type so a non-Bool `override:`
+  // raises the same TypeError as the interp binder (not a silent coerce).
+  std::string path = n > 0 ? _ns_adapt::take_str(a[0]) : ".env";
+  bool overwrite = n > 1 && _ns_adapt::require_bool(a[1], "override");
+  std::ifstream ifs(path, std::ios::binary);
+  if (!ifs)
+    throw culebra::CulebraError(
+        "IOError", std::format("Env.load: cannot open '{}'", path), 0, 0);
+  std::string content((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+  auto pairs = culebra::env::parse(content);
+  for (const auto& [k, v] : pairs)
+    ::setenv(k.c_str(), v.c_str(), overwrite ? 1 : 0);
+  return _ns_adapt::v_object(_env_build_object(pairs));
+}
+
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
 inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
@@ -3945,6 +3980,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Http")     return true;  // all Http methods take kwargs
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
+  if (ns == "Env")      return nm == "load";  // path/override defaults
   if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
   return false;
 }
@@ -4129,6 +4165,9 @@ inline const NsMethod kNsMethods[] = {
 
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+
+  {"Env", "parse", 1, &_ns_env_parse, nullptr, "String", "text"},
+  {"Env", "load",  0, &_ns_env_load,  nullptr, "String", "path"},
 
   {"UUID", "v4", 0, &_ns_uuid_v4},
   {"UUID", "v7", 0, &_ns_uuid_v7},
@@ -6527,7 +6566,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",       "UUID",      "_Term",
+      "Hash",    "CSV",       "Env",       "UUID",      "_Term",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

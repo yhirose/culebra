@@ -16,6 +16,7 @@
 
 #include <compress.h>
 #include <csv.h>
+#include <env.h>
 #include <foreign.h>
 #include <foreign_binding.h>
 #include <hash.h>
@@ -3780,6 +3781,65 @@ inline Value make_csv_namespace() {
   return Value(std::move(ns));
 }
 
+// Default `path:` for Env.load (".env"). A String default the JIT mirrors
+// through _jit_default_from_value (the calling-convention single source).
+inline const std::shared_ptr<Value>& kw_default_dotenv() {
+  static const auto v = std::make_shared<Value>(Value(std::string(".env")));
+  return v;
+}
+
+// Build an Object from parsed dotenv pairs (immutable fields, like JSON.parse).
+inline Value _env_pairs_to_object(
+    const std::vector<std::pair<std::string, std::string>>& pairs) {
+  ObjectValue o;
+  for (const auto& [k, v] : pairs)
+    o.initialize(std::string_view(k), Value(std::string(v)), false);
+  return Value(std::move(o));
+}
+
+// `Env`: dotenv-style `.env` parsing + loading. The parse logic is shared with
+// the JIT slow-path adapters via env.h. `parse` is pure; `load` reads a file,
+// sets each entry into the process environment (overwriting only when
+// `override: true`), then returns the parsed Object. Both return an Object of
+// String values keyed by name.
+inline Value make_env_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "parse",
+      Value(FunctionValue({{"text", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            return _env_pairs_to_object(culebra::env::parse(
+                                env->get("text").to_string_view()));
+                          },
+                          "Object"sv)),
+      false);
+  ns.initialize(
+      "load",
+      Value(FunctionValue(
+          {{"path", false, "String"sv, nullptr, kw_default_dotenv()},
+           {"override", false, "Bool"sv, nullptr, kw_default_false()}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& path = env->get("path").to_string();
+            bool overwrite = env->get("override").to_bool();
+            std::ifstream ifs(path, std::ios::binary);
+            if (!ifs)
+              _io_throw(std::format("Env.load: cannot open '{}'", path),
+                        line, col);
+            std::string content((std::istreambuf_iterator<char>(ifs)),
+                                std::istreambuf_iterator<char>());
+            auto pairs = culebra::env::parse(content);
+            for (const auto& [k, v] : pairs)
+              ::setenv(k.c_str(), v.c_str(), overwrite ? 1 : 0);
+            return _env_pairs_to_object(pairs);
+          },
+          "Object"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // `Hash`: message digests + HMAC, returning the lowercase hex digest. The
 // crypto is self-hosted in hash.h and shared with the JIT slow-path adapters,
 // so all three backends produce identical digests. Flat namespace, no kwargs.
@@ -4319,6 +4379,7 @@ inline void setup_built_in_functions(
   env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("Hash", make_hash_namespace(), false);
   env.initialize("CSV", make_csv_namespace(), false);
+  env.initialize("Env", make_env_namespace(), false);
   env.initialize("UUID", make_uuid_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);
   env.initialize("Proc", make_proc_namespace(), false);

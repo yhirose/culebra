@@ -50,10 +50,11 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 17. [`Compress`](#17-compress) — データ・ファイルの gzip 圧縮/展開
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 ダイジェストと HMAC（hex 出力）
 19. [`CSV`](#19-csv) — RFC 4180 流の CSV を parse / stringify
-20. [`UUID`](#20-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
-21. [`Term`](#21-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
-22. [設計上の注記](#22-設計上の注記)
-23. [未収録（将来検討）](#23-未収録将来検討)
+20. [`Env`](#20-env) — dotenv 形式の `.env` を parse / load
+21. [`UUID`](#21-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
+22. [`Term`](#22-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
+23. [設計上の注記](#23-設計上の注記)
+24. [未収録（将来検討）](#24-未収録将来検討)
 
 **目的別索引**
 
@@ -79,7 +80,8 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
-| UUID の生成 | [§20 UUID](#20-uuid) — `UUID.v4()` / `UUID.v7()` |
+| `.env` 設定ファイルの読込 | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
+| UUID の生成 | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 可変長の read-only データをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
@@ -2817,7 +2819,49 @@ puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 
 ---
 
-## 20. `UUID`
+## 20. `Env`
+
+dotenv 形式の `.env` 設定を parse / load する。3 backend でバイト一致。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Env.parse(text: String) -> Object` | dotenv テキストを `String` 値の `Object` に parse（副作用なし） |
+| `Env.load(path: String = ".env", override: Bool = false) -> Object` | ファイルを読み、parse し、各エントリをプロセス環境に設定し、parse した `Object` を返す |
+
+各エントリは 1 行 `KEY=VALUE`:
+
+- 空行と、先頭の非空白文字が `#` の行は無視;
+- 先頭の `export ` は除去（シェル流の `.env` をそのまま読める）;
+- キーは trim され、`=` の無い行やキーが空の行は skip;
+- ダブルクォート値（`"..."`）は `\n`・`\t`・`\r`・`\\`・`\"` のエスケープを解釈、
+  シングルクォート値（`'...'`）は raw、無クォート値は trim され、インラインの
+  ` # コメント`（空白に続く `#`）は除去（空白を伴わない `#` はリテラル）;
+- 重複キーは最初の位置を保ち、最後の値が勝つ。
+
+parse は寛容（不正な行は skip）。複数行の値は非対応。`Env.load` はファイルを開けない
+場合 `IOError` を送出。デフォルトでは既に環境にある変数を上書きしない（実環境が優先）。
+`override: true` で既存値を置き換える。読み込んだ変数は `Sys.env` から見え、以降に
+起動する子プロセス（例: `Proc.run`）に継承される。
+
+```culebra
+let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
+puts(cfg["PORT"])                 # => '8080'
+puts(cfg["NAME"])                 # => 'my app'
+puts(cfg["DEBUG"])                # => 'true'
+```
+
+```culebra
+# doctest: skip
+Env.load(".env")                  # ./.env があれば変数を設定
+puts(Sys.env("PORT"))
+```
+
+値を数値や真偽値として使うには、利用箇所で `to_long` / `to_float` で変換する
+（全ての値は `String`）。
+
+---
+
+## 21. `UUID`
 
 正準の小文字 UUID（`8-4-4-4-12` ハイフン形式）を生成。2 種類:
 
@@ -2838,7 +2882,7 @@ puts(UUID.v4() != UUID.v4())    # => true
 
 ---
 
-## 21. `Term`
+## 22. `Term`
 
 テキスト UI（TUI）を作るための端末制御 — 色・カーソル位置・代替画面・
 端末サイズ・非ブロッキングなキー入力。色とエスケープのヘルパーは文字列を
@@ -2962,7 +3006,7 @@ Term.app(fn (s) {
 
 ---
 
-## 22. 設計上の注記
+## 23. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3016,7 +3060,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 23. 未収録（将来検討）
+## 24. 未収録（将来検討）
 
 ### 重量級データ構造
 
