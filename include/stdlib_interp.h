@@ -3504,13 +3504,15 @@ inline Value make_json_namespace() {
 //===--------------------------------------------------------------------===//
 
 // A capture group -> { value, start, end }, or nil if it did not participate.
-inline Value regex_group_value(const regexlib::Capture& c) {
-  using namespace std::literals;
-  if (!c.matched) return Value();
+// `offset` shifts the byte spans to absolute positions (find_from searches a
+// suffix and reports relative offsets); the new engine's match views are
+// immutable, so the shift is applied here at build time rather than by mutating.
+inline Value regex_group_value(const reg::Match& c, size_t offset = 0) {
+  if (!c.matched()) return Value();
   ObjectValue g;
-  g.initialize("value", Value(std::string(c.str)), false);
-  g.initialize("start", Value(static_cast<long>(c.begin)), false);
-  g.initialize("end", Value(static_cast<long>(c.end)), false);
+  g.initialize("value", Value(std::string(c.str())), false);
+  g.initialize("start", Value(static_cast<long>(c.begin() + offset)), false);
+  g.initialize("end", Value(static_cast<long>(c.end() + offset)), false);
   return Value(std::move(g));
 }
 
@@ -3518,27 +3520,35 @@ inline Value regex_group_value(const regexlib::Capture& c) {
 // Subscripts access captures directly: `m[i]` -> positional group value,
 // `m["name"]` -> named group value (nil when absent / unmatched). The dot
 // fields stay for spans (`m.groups[i].start`) and the whole match (`m.value`).
-inline Value regex_match_value(const regexlib::MatchResult& m) {
-  using namespace std::literals;
+// Templated over the match-like type: `reg::MatchResult` (owning, from
+// search/match) and `reg::Match` (a borrowed view, yielded by find_all) share
+// the same accessor surface. `named` is the Regex's name->index map (the result
+// itself does not expose name enumeration); `offset` is the absolute shift.
+template <typename MatchT>
+inline Value regex_match_value(const MatchT& m,
+                               const std::unordered_map<std::string, int>& named,
+                               size_t offset = 0) {
   ObjectValue mo;
   mo.is_match = true;
-  mo.initialize("value", Value(std::string(m.str)), false);
-  mo.initialize("start", Value(static_cast<long>(m.begin)), false);
-  mo.initialize("end", Value(static_cast<long>(m.end)), false);
-  ArrayValue groups;
-  for (const auto& g : m.groups) groups.values->push_back(regex_group_value(g));
+  mo.initialize("value", Value(std::string(m.str())), false);
+  mo.initialize("start", Value(static_cast<long>(m.begin() + offset)), false);
+  mo.initialize("end", Value(static_cast<long>(m.end() + offset)), false);
+  ArrayValue groups;  // groups[0] is the whole match, then capture groups 1..n
+  for (size_t i = 0; i <= m.group_count(); i++)
+    groups.values->push_back(regex_group_value(m.group(i), offset));
   mo.initialize("groups", Value(std::move(groups)), false);
   // named: { name -> Group } (data only, so it survives the JIT value model too)
-  ObjectValue named;
-  for (const auto& kv : m.named)
-    named.initialize(kv.first, regex_group_value(m.group(kv.second)), false);
-  mo.initialize("named", Value(std::move(named)), false);
+  ObjectValue named_obj;
+  for (const auto& kv : named)
+    named_obj.initialize(kv.first, regex_group_value(m.group(kv.second), offset),
+                         false);
+  mo.initialize("named", Value(std::move(named_obj)), false);
   return Value(std::move(mo));
 }
 
 // Convert a match-time RegexError (e.g. step-budget exceeded) into a
 // CulebraError carrying the call site.
-inline void regex_rethrow(const regexlib::RegexError& e,
+inline void regex_rethrow(const reg::RegexError& e,
                           const std::shared_ptr<Environment>& env) {
   throw CulebraError("RegexError", std::string(e.what()),
                      env->get("__LINE__").to_long(),
@@ -3549,17 +3559,17 @@ inline void regex_rethrow(const regexlib::RegexError& e,
 // are stateless — the pattern string is the identity — so a small thread-local
 // cache gives reuse without a handle. Flags are written inline ((?i)/(?m)/(?s))
 // in the pattern, so the cache key is just the pattern.
-inline std::shared_ptr<regexlib::Regex> regex_compile_cached(
+inline std::shared_ptr<reg::Regex> regex_compile_cached(
     const std::string& pattern, long line, long col) {
   static thread_local std::unordered_map<std::string,
-                                          std::shared_ptr<regexlib::Regex>>
+                                          std::shared_ptr<reg::Regex>>
       cache;
   auto it = cache.find(pattern);
   if (it != cache.end()) return it->second;
-  std::shared_ptr<regexlib::Regex> re;
+  std::shared_ptr<reg::Regex> re;
   try {
-    re = std::make_shared<regexlib::Regex>(pattern);
-  } catch (const regexlib::RegexError& e) {
+    re = std::make_shared<reg::Regex>(pattern);
+  } catch (const reg::RegexError& e) {
     throw CulebraError("RegexError", std::format("Regex: {}", e.what()), line,
                        col);
   }
@@ -3568,7 +3578,7 @@ inline std::shared_ptr<regexlib::Regex> regex_compile_cached(
   return re;
 }
 
-inline std::shared_ptr<regexlib::Regex> regex_from_env(
+inline std::shared_ptr<reg::Regex> regex_from_env(
     const std::shared_ptr<Environment>& env) {
   return regex_compile_cached(std::string(env->get("pattern").to_string()),
                               env->get("__LINE__").to_long(),
@@ -3895,7 +3905,7 @@ inline Value make_regex_primitives_namespace() {
                       std::string s{env->get("s").to_string()};
                       try {
                         return Value(re->test(s));
-                      } catch (const regexlib::RegexError& e) {
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                         return Value();
                       }
@@ -3910,8 +3920,9 @@ inline Value make_regex_primitives_namespace() {
           std::string s{env->get("s").to_string()};
           try {
             auto m = anchored ? re->match(s) : re->search(s);
-            return m.matched ? regex_match_value(m) : Value();
-          } catch (const regexlib::RegexError& e) {
+            return m.matched() ? regex_match_value(m, re->named_groups())
+                               : Value();
+          } catch (const reg::RegexError& e) {
             regex_rethrow(e, env);
             return Value();
           }
@@ -3945,25 +3956,31 @@ inline Value make_regex_primitives_namespace() {
             std::string_view suffix = std::string_view(s).substr(pos);
             try {
               auto m = re->search(suffix);
-              if (!m.matched) return miss(static_cast<long>(s.size()) + 1);
+              if (!m.matched()) return miss(static_cast<long>(s.size()) + 1);
               long next;
-              if (m.end > m.begin) {
-                next = pos + static_cast<long>(m.end);
+              if (m.end() > m.begin()) {
+                next = pos + static_cast<long>(m.end());
               } else {
-                auto seg = regexlib::detail::segment(suffix);
-                size_t gi = static_cast<size_t>(m.end_grapheme) + 1;
-                size_t nb = gi < seg.byte_begin.size() ? seg.byte_begin[gi]
-                                                       : suffix.size() + 1;
+                // Empty match: resume one grapheme past it so the generator
+                // always advances. byte_begin lists the grapheme boundaries
+                // (sorted, sentinel == suffix.size()); the first one strictly
+                // after m.end() is the next grapheme start.
+                auto seg = reg::detail::segment(suffix);
+                auto it = std::upper_bound(seg.byte_begin.begin(),
+                                           seg.byte_begin.end(), m.end());
+                size_t nb =
+                    it != seg.byte_begin.end() ? *it : suffix.size() + 1;
                 next = pos + static_cast<long>(nb);
               }
-              m.begin += pos;
-              m.end += pos;
-              for (auto& g : m.groups)
-                if (g.matched) { g.begin += pos; g.end += pos; }
-              out.initialize("m", regex_match_value(m), false);
+              // The match offsets are relative to `suffix`; shift to absolute by
+              // pos (the engine's result is immutable, so shift at build time).
+              out.initialize("m",
+                             regex_match_value(m, re->named_groups(),
+                                               static_cast<size_t>(pos)),
+                             false);
               out.initialize("nxt", Value(next), false);
               return Value(std::move(out));
-            } catch (const regexlib::RegexError& e) {
+            } catch (const reg::RegexError& e) {
               regex_rethrow(e, env);
               return Value();
             }
@@ -3978,9 +3995,10 @@ inline Value make_regex_primitives_namespace() {
                       std::string s{env->get("s").to_string()};
                       ArrayValue av;
                       try {
-                        for (auto& m : re->find_all(s))
-                          av.values->push_back(regex_match_value(m));
-                      } catch (const regexlib::RegexError& e) {
+                        for (auto m : re->find_all(s))
+                          av.values->push_back(
+                              regex_match_value(m, re->named_groups()));
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                       }
                       return Value(std::move(av));
@@ -3998,9 +4016,9 @@ inline Value make_regex_primitives_namespace() {
                       std::string s{env->get("s").to_string()};
                       ArrayValue av;
                       try {
-                        for (auto& m : re->find_all(s))
-                          av.values->push_back(Value(std::string(m.str)));
-                      } catch (const regexlib::RegexError& e) {
+                        for (auto m : re->find_all(s))
+                          av.values->push_back(Value(std::string(m.str())));
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                       }
                       return Value(std::move(av));
@@ -4019,11 +4037,13 @@ inline Value make_regex_primitives_namespace() {
                       std::string s{env->get("s").to_string()};
                       ArrayValue av;
                       try {
-                        for (auto& m : re->find_all(s)) {
-                          av.values->push_back(Value(static_cast<long>(m.begin)));
-                          av.values->push_back(Value(static_cast<long>(m.end)));
+                        for (auto m : re->find_all(s)) {
+                          av.values->push_back(
+                              Value(static_cast<long>(m.begin())));
+                          av.values->push_back(
+                              Value(static_cast<long>(m.end())));
                         }
-                      } catch (const regexlib::RegexError& e) {
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                       }
                       return Value(std::move(av));
@@ -4039,7 +4059,7 @@ inline Value make_regex_primitives_namespace() {
                       std::string s{env->get("s").to_string()};
                       try {
                         return Value(static_cast<long>(re->find_all(s).size()));
-                      } catch (const regexlib::RegexError& e) {
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                         return Value();
                       }
@@ -4058,7 +4078,7 @@ inline Value make_regex_primitives_namespace() {
                       std::string repl{env->get("repl").to_string()};
                       try {
                         return Value(re->replace_all(s, repl));
-                      } catch (const regexlib::RegexError& e) {
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                         return Value();
                       }
@@ -4076,13 +4096,13 @@ inline Value make_regex_primitives_namespace() {
                       ArrayValue av;
                       try {
                         size_t cursor = 0;
-                        for (auto& m : re->find_all(s)) {
+                        for (auto m : re->find_all(s)) {
                           av.values->push_back(
-                              Value(s.substr(cursor, m.begin - cursor)));
-                          cursor = m.end;
+                              Value(s.substr(cursor, m.begin() - cursor)));
+                          cursor = m.end();
                         }
                         av.values->push_back(Value(s.substr(cursor)));
-                      } catch (const regexlib::RegexError& e) {
+                      } catch (const reg::RegexError& e) {
                         regex_rethrow(e, env);
                       }
                       return Value(std::move(av));

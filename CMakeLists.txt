@@ -58,6 +58,7 @@ include_directories(./include)
 include_directories(./vendor/cpp-peglib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
+include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-httplib)
 
 # zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when
@@ -476,13 +477,6 @@ foreach(smoke mt mi define signal utf8_invalid)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
 
-# regexlib is a standalone header-only library (destined for cpp-regexlib); its
-# test depends only on regexlib.h + cpp-unicodelib, so it needs no JIT/LLVM
-# link. Built alongside `culebra` to stay in step with the header.
-add_executable(regexlib_test test/regexlib_test.cc)
-target_compile_features(regexlib_test PRIVATE cxx_std_17)
-add_test(NAME regexlib_test COMMAND regexlib_test)
-
 # http.h core test: in-process loopback cpp-httplib server exercises the
 # value-neutral client core (GET/POST/DELETE/404 + transport-error + URL
 # validation). Needs OpenSSL (httplib.h pulls it in under HTTP builds) but the
@@ -493,19 +487,6 @@ if(CULEBRA_ENABLE_HTTP)
   target_link_libraries(http_test ${_ssl_libs})
   add_test(NAME http_test COMMAND http_test)
 endif()
-
-# Deterministic regression fuzzer: gates on oracle-free robustness invariants
-# (no crash/hang, self-consistent match spans, find_all/search agreement) and
-# prints an informational std::regex differential. Run under ASan/UBSan in CI.
-add_executable(regexlib_fuzz test/regexlib_fuzz.cc)
-target_compile_features(regexlib_fuzz PRIVATE cxx_std_17)
-add_test(NAME regexlib_fuzz COMMAND regexlib_fuzz)
-
-# Portable semantic-regression corpus: cases adjudicated once against Python's
-# `re` and baked into test/regexlib_corpus_data.h (no runtime oracle needed).
-add_executable(regexlib_corpus test/regexlib_corpus.cc)
-target_compile_features(regexlib_corpus PRIVATE cxx_std_17)
-add_test(NAME regexlib_corpus COMMAND regexlib_corpus)
 
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no

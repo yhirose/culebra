@@ -3572,19 +3572,19 @@ inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
 // subject, ...); flags are inline ((?i)/(?m)/(?s)). A Match is a data object
 // { value, start, end, groups:[Group|nil], named:{name:Group} }; no-match nil.
 //===------------------------------------------------------------------------//
-inline std::shared_ptr<regexlib::Regex> _jit_regex_compile(std::string_view pat) {
+inline std::shared_ptr<reg::Regex> _jit_regex_compile(std::string_view pat) {
   // Stateless cache keyed by pattern (own thread-local; see the /simplify note
   // about sharing with stdlib_interp's regex_compile_cached).
   static thread_local std::unordered_map<std::string,
-                                         std::shared_ptr<regexlib::Regex>>
+                                         std::shared_ptr<reg::Regex>>
       cache;
   std::string p(pat);
   auto it = cache.find(p);
   if (it != cache.end()) return it->second;
-  std::shared_ptr<regexlib::Regex> re;
+  std::shared_ptr<reg::Regex> re;
   try {
-    re = std::make_shared<regexlib::Regex>(p);
-  } catch (const regexlib::RegexError& e) {
+    re = std::make_shared<reg::Regex>(p);
+  } catch (const reg::RegexError& e) {
     throw culebra::CulebraError("RegexError",
                                 std::format("Regex: {}", e.what()), 0, 0);
   }
@@ -3593,44 +3593,52 @@ inline std::shared_ptr<regexlib::Regex> _jit_regex_compile(std::string_view pat)
   return re;
 }
 
-inline JitValue _jit_regex_group(const regexlib::Capture& c) {
-  if (!c.matched) return _ns_adapt::v_nil();
+// `offset` shifts byte spans to absolute positions (find_from searches a suffix);
+// the engine's match views are immutable, so the shift is applied at build time.
+inline JitValue _jit_regex_group(const reg::Match& c, size_t offset = 0) {
+  if (!c.matched()) return _ns_adapt::v_nil();
   auto* g = culebra_runtime_object_new();
-  culebra_runtime_object_set(g, "value", false, TAG_STRING,
-                             reinterpret_cast<int64_t>(_culebra_heap_str(c.str)),
-                             0, 0);
+  culebra_runtime_object_set(
+      g, "value", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(c.str())), 0, 0);
   culebra_runtime_object_set(g, "start", false, TAG_LONG,
-                             static_cast<int64_t>(c.begin), 0, 0);
+                             static_cast<int64_t>(c.begin() + offset), 0, 0);
   culebra_runtime_object_set(g, "end", false, TAG_LONG,
-                             static_cast<int64_t>(c.end), 0, 0);
+                             static_cast<int64_t>(c.end() + offset), 0, 0);
   return _ns_adapt::v_object(g);
 }
 
-inline JitValue _jit_regex_match(const regexlib::MatchResult& m) {
+// Templated over match-like type (`reg::MatchResult` owning / `reg::Match` view)
+// so search/match and find_all share one builder. `named` is the Regex's
+// name->index map; `offset` the absolute shift. Mirrors stdlib_interp's twin.
+template <typename MatchT>
+inline JitValue _jit_regex_match(
+    const MatchT& m, const std::unordered_map<std::string, int>& named,
+    size_t offset = 0) {
   auto* o = culebra_runtime_object_new();
   o->is_match = true;  // route `m[i]` / `m["name"]` to capture groups
-  culebra_runtime_object_set(o, "value", false, TAG_STRING,
-                             reinterpret_cast<int64_t>(_culebra_heap_str(m.str)),
-                             0, 0);
+  culebra_runtime_object_set(
+      o, "value", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(m.str())), 0, 0);
   culebra_runtime_object_set(o, "start", false, TAG_LONG,
-                             static_cast<int64_t>(m.begin), 0, 0);
+                             static_cast<int64_t>(m.begin() + offset), 0, 0);
   culebra_runtime_object_set(o, "end", false, TAG_LONG,
-                             static_cast<int64_t>(m.end), 0, 0);
-  auto* groups = culebra_runtime_array_new();
-  for (const auto& g : m.groups) {
-    auto gv = _jit_regex_group(g);
+                             static_cast<int64_t>(m.end() + offset), 0, 0);
+  auto* groups = culebra_runtime_array_new();  // [0]=whole match, then 1..n
+  for (size_t i = 0; i <= m.group_count(); i++) {
+    auto gv = _jit_regex_group(m.group(i), offset);
     culebra_runtime_array_push(groups, gv.tag, gv.data);
   }
   culebra_runtime_object_set(o, "groups", false, TAG_ARRAY,
                              reinterpret_cast<int64_t>(groups), 0, 0);
-  auto* named = culebra_runtime_object_new();
-  for (const auto& kv : m.named) {
-    auto gv = _jit_regex_group(m.group(kv.second));
-    culebra_runtime_object_set(named, kv.first.c_str(), false, gv.tag, gv.data,
+  auto* named_o = culebra_runtime_object_new();
+  for (const auto& kv : named) {
+    auto gv = _jit_regex_group(m.group(kv.second), offset);
+    culebra_runtime_object_set(named_o, kv.first.c_str(), false, gv.tag, gv.data,
                                0, 0);
   }
   culebra_runtime_object_set(o, "named", false, TAG_OBJECT,
-                             reinterpret_cast<int64_t>(named), 0, 0);
+                             reinterpret_cast<int64_t>(named_o), 0, 0);
   return _ns_adapt::v_object(o);
 }
 
@@ -3645,18 +3653,20 @@ inline JitValue _ns_regex_test(JitValue* a, int64_t) {
 inline JitValue _ns_regex_find(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto m = re->search(_ns_adapt::require_sv(a[1], "s", "StringLike"));
-  return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
+  return m.matched() ? _jit_regex_match(m, re->named_groups())
+                     : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_match(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto m = re->match(_ns_adapt::require_sv(a[1], "s", "StringLike"));
-  return m.matched ? _jit_regex_match(m) : _ns_adapt::v_nil();
+  return m.matched() ? _jit_regex_match(m, re->named_groups())
+                     : _ns_adapt::v_nil();
 }
 inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
-    auto mv = _jit_regex_match(m);
+  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
+    auto mv = _jit_regex_match(m, re->named_groups());
     culebra_runtime_array_push(arr, mv.tag, mv.data);
   }
   return _ns_adapt::v_array(arr);
@@ -3666,9 +3676,9 @@ inline JitValue _ns_regex_find_all(JitValue* a, int64_t) {
 inline JitValue _ns_regex_find_all_str(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
+  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
     culebra_runtime_array_push(
-        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(m.str)));
+        arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(m.str())));
   }
   return _ns_adapt::v_array(arr);
 }
@@ -3683,9 +3693,9 @@ inline JitValue _ns_regex_count(JitValue* a, int64_t) {
 inline JitValue _ns_regex_find_all_index(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   auto* arr = culebra_runtime_array_new();
-  for (auto& m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
-    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin));
-    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end));
+  for (auto m : re->find_all(_ns_adapt::require_sv(a[1], "s", "StringLike"))) {
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.begin()));
+    culebra_runtime_array_push(arr, TAG_LONG, static_cast<int64_t>(m.end()));
   }
   return _ns_adapt::v_array(arr);
 }
@@ -3713,22 +3723,21 @@ inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
     return miss(static_cast<long>(s.size()) + 1);
   std::string_view suffix = std::string_view(s).substr(pos);
   auto m = re->search(suffix);
-  if (!m.matched) return miss(static_cast<long>(s.size()) + 1);
+  if (!m.matched()) return miss(static_cast<long>(s.size()) + 1);
   long next;
-  if (m.end > m.begin) {
-    next = pos + static_cast<long>(m.end);
+  if (m.end() > m.begin()) {
+    next = pos + static_cast<long>(m.end());
   } else {
-    auto seg = regexlib::detail::segment(suffix);
-    size_t gi = static_cast<size_t>(m.end_grapheme) + 1;
-    size_t nb =
-        gi < seg.byte_begin.size() ? seg.byte_begin[gi] : suffix.size() + 1;
+    // Empty match: resume one grapheme past it (byte_begin lists the sorted
+    // grapheme boundaries with a sentinel == suffix.size()).
+    auto seg = reg::detail::segment(suffix);
+    auto it = std::upper_bound(seg.byte_begin.begin(), seg.byte_begin.end(),
+                               m.end());
+    size_t nb = it != seg.byte_begin.end() ? *it : suffix.size() + 1;
     next = pos + static_cast<long>(nb);
   }
-  m.begin += pos;
-  m.end += pos;
-  for (auto& g : m.groups)
-    if (g.matched) { g.begin += pos; g.end += pos; }
-  auto mv = _jit_regex_match(m);
+  // Offsets are relative to `suffix`; shift to absolute by pos at build time.
+  auto mv = _jit_regex_match(m, re->named_groups(), static_cast<size_t>(pos));
   culebra_runtime_object_set(out, "m", false, mv.tag, mv.data, 0, 0);
   culebra_runtime_object_set(out, "nxt", false, TAG_LONG,
                              static_cast<int64_t>(next), 0, 0);
@@ -3739,11 +3748,11 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   auto* arr = culebra_runtime_array_new();
   size_t cursor = 0;
-  for (auto& m : re->find_all(s)) {
-    auto piece = s.substr(cursor, m.begin - cursor);
+  for (auto m : re->find_all(s)) {
+    auto piece = s.substr(cursor, m.begin() - cursor);
     culebra_runtime_array_push(
         arr, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(piece)));
-    cursor = m.end;
+    cursor = m.end();
   }
   auto last = s.substr(cursor);
   culebra_runtime_array_push(

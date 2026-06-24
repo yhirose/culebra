@@ -2390,7 +2390,8 @@ agree without any matcher-specific drift logic.
 
 ## 14. `Regex`
 
-Linear-time, grapheme-aware regular expressions (engine: `include/regexlib.h`).
+Linear-time, grapheme-aware regular expressions (engine: vendored
+[cpp-regexlib](https://github.com/yhirose/cpp-regexlib)).
 Patterns match by Unicode **extended grapheme cluster**, not code point — `.`
 consumes one user-perceived character (so `/./` matches `🇯🇵` as a single
 element). Matching runs in **linear time** (Thompson NFA / Pike VM with a lazy
@@ -2511,7 +2512,8 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)` (literal matc
 The supported syntax (literal / `.` / character classes / `* + ? {n,m}` greedy
 and lazy / `|` / capturing and named groups / `\d \w \s \b` / lookahead /
 variable-length lookbehind / `\p{…}` Unicode properties) and the full matching
-model and resource limits are documented in `docs/regexlib.md`.
+model and resource limits are documented in the vendored engine,
+[cpp-regexlib](https://github.com/yhirose/cpp-regexlib) (`vendor/cpp-regexlib`).
 
 ---
 

@@ -2302,7 +2302,7 @@ backend が既に実装している演算子 dispatch そのもので、 matcher
 
 ## 14. `Regex`
 
-線形時間・grapheme 単位の正規表現（エンジン: `include/regexlib.h`）。パターンは
+線形時間・grapheme 単位の正規表現（エンジン: vendor 化した [cpp-regexlib](https://github.com/yhirose/cpp-regexlib)）。パターンは
 Unicode の **extended grapheme cluster** 単位でマッチし、コードポイント単位では
 ありません — `.` は1つのユーザー知覚文字を消費します（`/./` が `🇯🇵` に1要素として
 マッチ）。マッチは**線形時間**（Thompson NFA / Pike VM + lazy DFA fast path）で、
@@ -2412,8 +2412,9 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 
 対応構文（literal / `.` / 文字クラス / `* + ? {n,m}` greedy・lazy / `|` /
 キャプチャ・名前付きグループ / `\d \w \s \b` / lookahead / 可変長 lookbehind /
-`\p{…}` Unicode プロパティ）とマッチモデル・資源上限は `docs/regexlib.md`（および
-`docs/regexlib.ja.md`）に記載しています。
+`\p{…}` Unicode プロパティ）とマッチモデル・資源上限は、vendor 化したエンジン
+[cpp-regexlib](https://github.com/yhirose/cpp-regexlib)（`vendor/cpp-regexlib`）に
+記載しています。
 
 ---
 

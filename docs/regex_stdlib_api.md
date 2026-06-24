@@ -1,8 +1,10 @@
 # Regex stdlib API — design (culebra integration)
 
-> **Status: Draft (2026-05-30).** Public API for exposing `include/regexlib.h`
-> as a culebra stdlib namespace. Engine internals: see `docs/regexlib.md` and
-> `docs/regex_dfa_design.md`. This doc is the language-level contract.
+> **Status: Draft (2026-05-30).** Public API for exposing the vendored
+> [cpp-regexlib](https://github.com/yhirose/cpp-regexlib) engine
+> (`vendor/cpp-regexlib`) as a culebra stdlib namespace. Engine internals and
+> the matching model live in that repository's own docs. This doc is the
+> language-level contract.
 
 ## API shape
 

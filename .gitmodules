@@ -13,3 +13,6 @@
 [submodule "vendor/cpp-httplib"]
 	path = vendor/cpp-httplib
 	url = https://github.com/yhirose/cpp-httplib
+[submodule "vendor/cpp-regexlib"]
+	path = vendor/cpp-regexlib
+	url = https://github.com/yhirose/cpp-regexlib
