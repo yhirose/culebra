@@ -80,6 +80,12 @@ assert_eq(FS.exists(dir), false)
 let err = try { FS.size(bogus); "no-error" } catch e { e.kind }
 assert_eq(err, "IOError")
 
+// read/write of an unopenable path: kind + message identical across backends.
+let rerr = try { FS.read(bogus); "no-error" } catch e { e.kind + ": " + e.message }
+assert_eq(rerr, "IOError: FS.read: cannot open '" + bogus + "'")
+let werr = try { FS.write("/no/such/dir/x.txt", "x"); "no-error" } catch e { e.kind + ": " + e.message }
+assert_eq(werr, "IOError: FS.write: cannot open '/no/such/dir/x.txt'")
+
 // --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
 // Pure path helpers (no I/O).
 assert_eq(FS.normpath("a/./b/../c"), "a/c")

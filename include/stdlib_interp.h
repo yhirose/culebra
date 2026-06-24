@@ -525,8 +525,9 @@ inline Value make_fs_namespace() {
                             const auto& p = env->get("path").to_string();
                             std::ifstream ifs(p, std::ios::binary);
                             if (!ifs) {
-                              throw_io(std::format("FS.read('{}')", p),
-                                       line, col);
+                              throw_io(
+                                  std::format("FS.read: cannot open '{}'", p),
+                                  line, col);
                             }
                             std::string s(
                                 (std::istreambuf_iterator<char>(ifs)),
@@ -547,7 +548,7 @@ inline Value make_fs_namespace() {
             const auto& c = env->get("content").to_string();
             std::ofstream ofs(p, std::ios::binary);
             if (!ofs) {
-              throw_io(std::format("FS.write('{}')", p), line, col);
+              throw_io(std::format("FS.write: cannot open '{}'", p), line, col);
             }
             ofs.write(c.data(), c.size());
             return Value();
