@@ -36,6 +36,38 @@ build-no-jit:
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
     cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
 
+# Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
+# The conservative stack scanner (scan_range, jit_gc.h) is exempted from
+# ASan via no_sanitize("address"); without that, every JIT GC collect
+# aborts with a stack-buffer-underflow. GC_STRESS=1 forces a collect on
+# every allocation, so the feature files below hammer scan_range. Any
+# sanitizer diagnostic fails the recipe.
+[group("test")]
+asan:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+    mkdir -p build-asan
+    ( cd build-asan && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
+        -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON \
+        -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+        -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" .. > /dev/null \
+      && make -j"$NCPU" culebra )
+    bin=build-asan/culebra
+    fail=0
+    for f in tests/test_forin_codegen.cul tests/test_value_equality.cul \
+             tests/test_generator_complex.cul; do
+        out=$(ASAN_OPTIONS=detect_leaks=0 CULEBRA_GC_STRESS=1 "$bin" --jit "$f" 2>&1) \
+            || { echo "asan: run failed: $f" >&2; fail=1; }
+        if grep -qiE "ERROR: AddressSanitizer|runtime error:|-buffer-|use-after" <<<"$out"; then
+            echo "asan: sanitizer diagnostic in $f:" >&2
+            grep -iE "ERROR|runtime error|buffer|use-after" <<<"$out" | head -5 >&2
+            fail=1
+        fi
+    done
+    [[ "$fail" == 0 ]] || { echo "asan FAIL" >&2; exit 1; }
+    echo "asan OK (JIT GC paths clean under ASan+UBSan)"
+
 # Clean build directories
 [group("build")]
 clean:

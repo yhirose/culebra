@@ -428,7 +428,14 @@ class Heap {
 
  private:
   // Scan [lo, hi) word-aligned, reporting any word that is a live object.
+  //
+  // The conservative read of every stack word is deliberately out of
+  // bounds w.r.t. any single object: it walks across frames, padding, and
+  // ASan's poisoned redzones. Exempt the function from AddressSanitizer
+  // (the standard Boehm/Ruby trick) so that intentional scan doesn't trip
+  // a stack-buffer-underflow; without it ASan aborts every JIT GC collect.
   template <class Cb>
+  __attribute__((no_sanitize("address")))
   void scan_range(void* lo, void* hi, Cb&& cb) {
     auto a = reinterpret_cast<uintptr_t>(lo);
     auto b = reinterpret_cast<uintptr_t>(hi);
