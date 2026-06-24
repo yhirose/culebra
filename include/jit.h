@@ -3348,9 +3348,24 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
   return {TAG_NIL, 0};
 }
 
+// Releases one ref of `(tag, data)` when it goes out of scope. The single
+// chokepoint for the "a @packable store consumes exactly one ref" contract:
+// the owning setter declares one of these and every exit path (normal,
+// validation throw, or write throw) consumes the value exactly once.
+struct JitConsumeOnExit {
+  int8_t tag;
+  int64_t data;
+  JitConsumeOnExit(int8_t t, int64_t d) : tag(t), data(d) {}
+  ~JitConsumeOnExit() { _culebra_value_release_impl(tag, data); }
+  JitConsumeOnExit(const JitConsumeOnExit&) = delete;
+  JitConsumeOnExit& operator=(const JitConsumeOnExit&) = delete;
+};
+
 // Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion
-// mirrors the interp (Long<->Float implicit). The caller owns release of a
-// non-primitive value on the error path.
+// mirrors the interp (Long<->Float implicit). Pure borrow-and-write: it
+// never releases `(tag, data)` — both the storing callers (which consume
+// via JitConsumeOnExit) and the key-encoding callers (FixedSet/Map probe,
+// which must NOT consume) rely on that.
 inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
                                       int8_t tag, int64_t data) {
@@ -3406,7 +3421,6 @@ inline void _jit_packable_write_field(uint8_t* base,
             ? _culebra_str_view(obj->slots[ei].value.tag, obj->slots[ei].value.data)
             : std::string_view{};
     if (!obj || ei == static_cast<size_t>(-1) || en != f.elem_type) {
-      _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}` expects a `{}` enum value, got {}", f.name, f.elem_type,
           _culebra_tag_name(tag)));
@@ -3416,7 +3430,6 @@ inline void _jit_packable_write_field(uint8_t* base,
         _culebra_str_view(obj->slots[ci].value.tag, obj->slots[ci].value.data);
     int idx = el ? el->index_of(variant) : -1;
     if (idx < 0) {
-      _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}`: unknown variant for enum `{}`", f.name, f.elem_type));
     }
@@ -3434,7 +3447,6 @@ inline void _jit_packable_write_field(uint8_t* base,
       _jit_packable_write_field(payload + var.fields[fi].offset, sf, fv.tag,
                                 fv.data);
     }
-    _culebra_value_release_impl(tag, data);  // consume the enum instance
     return;
   }
   auto as_double = [&]() -> double {
@@ -3553,10 +3565,13 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
 
 inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
                                  int64_t data, int64_t line, int64_t col) {
+  // A store consumes exactly one ref of the assigned value, on every exit
+  // path (validation throw, struct memcpy, or the terminal field write).
+  // One guard replaces the per-path releases and makes the contract uniform.
+  JitConsumeOnExit _consume{tag, data};
   long id = view->slots[view->find_slot("__packedview_id__")].value.data;
   auto core = culebra::lookup_shared_buffer(id);
   if (!core) {
-    _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("ValueError",
         "packed view references a freed SharedBuffer", line, col);
   }
@@ -3564,20 +3579,17 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   const auto& layout = _jit_packed_view_layout(view, *core);
   const auto* f = layout.find(key);
   if (!f) {
-    _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("AttributeError",
         std::format("@packable {} has no field `{}`",
                     _jit_packed_view_class(view, *core), key), line, col);
   }
   if (f->is_fixed_array) {
-    _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("TypeError",
         std::format("cannot assign to FixedArray field `{}`; mutate it via "
                     ".push(...) / [i] = ...", key),
         line, col);
   }
   if (f->is_fixed_set || f->is_fixed_map) {
-    _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("TypeError",
         std::format("cannot assign to {} field `{}`; mutate it through its "
                     "methods", f->is_fixed_set ? "FixedSet" : "FixedMap", key),
@@ -3601,22 +3613,20 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
       }
     }
     if (!ok) {
-      _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}` expects a `{}` record value", key, f->elem_type), line, col);
     }
     if (src_cls != f->elem_type) {
-      _culebra_value_release_impl(tag, data);
       throw culebra::CulebraError("TypeError", std::format(
           "field `{}` expects a `{}` record, got `{}`", key, f->elem_type,
           src_cls), line, col);
     }
     std::memcpy(core->data + off + f->offset, src_core->data + src_off,
                 culebra::lookup_packable_layout(f->elem_type)->stride);
-    _culebra_value_release_impl(tag, data);  // consume the source record value
-    return;
+    return;  // _consume releases the source record value
   }
   _jit_packable_write_field(core->data + off, *f, tag, data);
+  // _consume releases the assigned value (the write only borrowed it).
 }
 
 // --- FixedArray view byte helpers (used by both the [i] index hooks here
