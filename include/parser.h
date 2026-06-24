@@ -293,13 +293,19 @@ const auto grammar_ = R"(
 
   # TYPE_NAME = single type, optionally Generic, with an optional
   # trailing `?` (the `T?` = `T | Nil` Optional sugar). TYPE_REF wraps
-  # Union alternation around it so `Array<Long | Float>` and the outer
-  # `Long | Float` use one shared definition. Captured verbatim into
-  # the surrounding TYPE_ANNOTATION / RETURN_TYPE token — whitespace and
-  # the `?` sugar are canonicalized later by canonicalize_type_annotation.
+  # Union alternation around a TYPE_ATOM so `Array<Long | Float>` and the
+  # outer `Long | Float` use one shared definition. A TYPE_ATOM is either a
+  # plain TYPE_NAME or a function type `fn(P, ...) -> R` (FN_TYPE); the
+  # return is a single TYPE_ATOM (a top-level `|` after `->` belongs to the
+  # surrounding Union, so `fn(A) -> B | C` parses as `(fn(A) -> B) | C`).
+  # Captured verbatim into the surrounding TYPE_ANNOTATION / RETURN_TYPE
+  # token — whitespace and the `?` sugar are canonicalized later by
+  # canonicalize_type_annotation.
+  FN_TYPE                  <-  fn _sp_ '(' _sp_ ( TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* )? _sp_ ')' _sp_ '->' _sp_ TYPE_ATOM
+  TYPE_ATOM                <-  FN_TYPE / TYPE_NAME
   TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_ARG ( _sp_ ',' _sp_ TYPE_ARG )* _sp_ '>' )? '?'?
   TYPE_ARG                 <-  TYPE_REF / [0-9]+
-  TYPE_REF                 <-  TYPE_NAME ( _sp_ '|' _sp_ TYPE_NAME )*
+  TYPE_REF                 <-  TYPE_ATOM ( _sp_ '|' _sp_ TYPE_ATOM )*
   TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >
   RETURN_TYPE              <-  '->' _ < TYPE_REF >
 

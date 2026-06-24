@@ -151,6 +151,17 @@ inline int multifn_specificity(std::string_view param_type,
     }
     return best;
   }
+  // Function type `fn(...) -> R`: ranks like `Function` (structural
+  // callable). A closure arg (label "Function") is an exact-ish match (6);
+  // a non-primitive arg (callable class instance / bare Object) scores at
+  // the Object-catch tier (2) and the value-aware post-pick check confirms
+  // `__call__`. Checked before `?` so an `fn(A) -> B?` param isn't read as
+  // optional. Mirrors the `Function` param branch below.
+  if (is_fn_type(param_type)) {
+    if (arg_type == "Function") return 6;
+    if (!is_primitive_type_label(arg_type)) return 2;
+    return -1;
+  }
   // `T?` Optional sugar = `T | Nil`: score like a two-alt Union. A Nil
   // arg matches at the Union tier; a non-nil arg scores its base type,
   // downgraded (concrete-in-Union -> 4) so a bare `T` param outranks it.
@@ -2549,6 +2560,24 @@ inline bool type_matches(const Value& val, std::string_view name) {
       if (!type_matches(val, part)) return false;
     }
     return true;
+  }
+  // Function type `fn(...) -> R`: structural callable match. Params and
+  // return are documentation in the MVP (mirrors Generic element types),
+  // so any callable — a closure or a class instance with `__call__` —
+  // satisfies it. Checked before the `?` sugar so `fn(A) -> B?` (optional
+  // return) isn't misread as an optional function.
+  if (is_fn_type(name)) {
+    if (val.type == Value::Function) return true;
+    if (val.type == Value::Object) {
+      if (class_tag(val)) {
+        auto it = val.to_object().properties->find("__call__");
+        if (it != val.to_object().properties->end() &&
+            it->second.val.type == Value::Function) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   // `T?` Optional sugar = `T | Nil`: a trailing `?` accepts Nil, else
   // checks the base type. Unions split above, so this sees one name.

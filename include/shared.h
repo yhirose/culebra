@@ -761,6 +761,17 @@ inline std::string str_tr(std::string_view s, std::string_view from,
   return out;
 }
 
+// Advance the bracket-nesting `depth` for one character. `<...>` Generic
+// args and `(...)` function-type params both nest, so a separator (`|`,
+// `+`, `,`) is only top-level when depth is 0 — that's how `fn(A | B) -> C`
+// and `Array<Long, fn(A, B) -> C>` keep their inner punctuation private.
+// Unbalanced closers clamp at 0. Shared by every type-string split/scan
+// below so the nesting rule has one definition.
+inline void track_type_bracket_depth(char c, int& depth) {
+  if (c == '<' || c == '(') depth++;
+  else if (c == '>' || c == ')') { if (depth > 0) depth--; }
+}
+
 // True iff `name` has a `|` at the outermost bracket depth (i.e. a
 // top-level Union alt separator). `Array<Long | Float>` returns
 // false — the `|` lives inside `<...>`. Callers gate the Union
@@ -769,9 +780,8 @@ inline std::string str_tr(std::string_view s, std::string_view from,
 inline bool has_toplevel_pipe(std::string_view name) {
   int depth = 0;
   for (char c : name) {
-    if (c == '<') depth++;
-    else if (c == '>') { if (depth > 0) depth--; }
-    else if (c == '|' && depth == 0) return true;
+    track_type_bracket_depth(c, depth);
+    if (c == '|' && depth == 0) return true;
   }
   return false;
 }
@@ -802,9 +812,8 @@ inline std::vector<std::string_view> split_union_types(
   int depth = 0;
   for (size_t i = 0; i < name.size(); i++) {
     char c = name[i];
-    if (c == '<') depth++;
-    else if (c == '>') { if (depth > 0) depth--; }
-    else if (c == '|' && depth == 0) {
+    track_type_bracket_depth(c, depth);
+    if (c == '|' && depth == 0) {
       auto cand = trim_ascii(name.substr(start, i - start));
       if (!cand.empty()) out.push_back(cand);
       start = i + 1;
@@ -823,9 +832,8 @@ inline std::vector<std::string_view> split_union_types(
 inline bool has_toplevel_plus(std::string_view name) {
   int depth = 0;
   for (char c : name) {
-    if (c == '<') depth++;
-    else if (c == '>') { if (depth > 0) depth--; }
-    else if (c == '+' && depth == 0) return true;
+    track_type_bracket_depth(c, depth);
+    if (c == '+' && depth == 0) return true;
   }
   return false;
 }
@@ -843,9 +851,8 @@ inline std::vector<std::string_view> split_intersection_types(
   int depth = 0;
   for (size_t i = 0; i < name.size(); i++) {
     char c = name[i];
-    if (c == '<') depth++;
-    else if (c == '>') { if (depth > 0) depth--; }
-    else if (c == '+' && depth == 0) {
+    track_type_bracket_depth(c, depth);
+    if (c == '+' && depth == 0) {
       auto cand = trim_ascii(name.substr(start, i - start));
       if (!cand.empty()) out.push_back(cand);
       start = i + 1;
@@ -866,9 +873,8 @@ inline std::vector<std::string_view> split_generic_args(
   int depth = 0;
   for (size_t i = 0; i < args.size(); i++) {
     char c = args[i];
-    if (c == '<') depth++;
-    else if (c == '>') { if (depth > 0) depth--; }
-    else if (c == ',' && depth == 0) {
+    track_type_bracket_depth(c, depth);
+    if (c == ',' && depth == 0) {
       auto cand = trim_ascii(args.substr(start, i - start));
       if (!cand.empty()) out.push_back(cand);
       start = i + 1;
@@ -1030,6 +1036,68 @@ inline std::string lower_type_params(
   return out;
 }
 
+// A function type `fn(P1, P2) -> R` split into its parameter list and
+// return type (all views aliasing `name`). Returns nullopt when `name`
+// is not a function type, so callers can fall through to the plain-type
+// path. The return is restricted to a single TYPE_ATOM by the grammar:
+// if the text after `->` carries a top-level `|`, that pipe belongs to a
+// surrounding Union (`fn(A) -> B | C` = `(fn(A) -> B) | C`), so this is
+// NOT treated as one function type and we return nullopt — letting the
+// Union split handle it. Mirrors the grammar's FN_TYPE / TYPE_ATOM.
+//
+// LIFETIME: params/ret alias bytes inside `name`; keep `name` alive and
+// do not pass a temporary.
+struct FnTypeParts {
+  std::vector<std::string_view> params;
+  std::string_view ret;
+};
+// `want_params == false` skips building the parameter list (the only
+// allocation) — `is_fn_type` only needs the structural yes/no, and that
+// is fully decided before the param split. The grammar logic stays in
+// one place so the rejection rules can't drift between the two callers.
+inline std::optional<FnTypeParts> parse_fn_type(std::string_view name,
+                                                bool want_params = true) {
+  auto t = trim_ascii(name);
+  // Must start with the `fn` keyword followed by `(`. Type names start
+  // with `[A-Z]`, so a lowercase `fn(` is unambiguously a function type.
+  if (t.size() < 3 || t.substr(0, 2) != "fn") return std::nullopt;
+  size_t i = 2;
+  auto is_sp = [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+  };
+  while (i < t.size() && is_sp(t[i])) i++;
+  if (i >= t.size() || t[i] != '(') return std::nullopt;
+  // Find the `)` matching this opening paren (paren depth only; generic
+  // `<...>` never contributes an unbalanced paren).
+  int depth = 0;
+  size_t close = std::string_view::npos;
+  for (size_t j = i; j < t.size(); j++) {
+    if (t[j] == '(') depth++;
+    else if (t[j] == ')') { if (--depth == 0) { close = j; break; } }
+  }
+  if (close == std::string_view::npos) return std::nullopt;
+  // Expect `->` after the param list.
+  size_t k = close + 1;
+  while (k < t.size() && is_sp(t[k])) k++;
+  if (k + 1 >= t.size() || t[k] != '-' || t[k + 1] != '>') return std::nullopt;
+  auto ret = trim_ascii(t.substr(k + 2));
+  if (ret.empty()) return std::nullopt;
+  // A top-level `|` in the return means the pipe is the outer Union's, not
+  // part of this function type — defer to the Union split.
+  if (has_toplevel_pipe(ret)) return std::nullopt;
+  FnTypeParts parts;
+  parts.ret = ret;
+  if (want_params) {
+    auto inner = trim_ascii(t.substr(i + 1, close - i - 1));
+    if (!inner.empty()) parts.params = split_generic_args(inner);
+  }
+  return parts;
+}
+
+inline bool is_fn_type(std::string_view name) {
+  return parse_fn_type(name, /*want_params=*/false).has_value();
+}
+
 // Canonical form for a (possibly Union, possibly Generic) type
 // annotation, used in fn.params introspection and multifn
 // redeclaration matching so whitespace variants of the same
@@ -1062,6 +1130,32 @@ inline std::string canonicalize_type_annotation(std::string_view name) {
       seen.push_back(canon);
       if (!out.empty()) out += " | ";
       out += canon;
+    }
+    return out;
+  }
+
+  // Function type `fn(P, ...) -> R`. Checked before the `?` sugar so a
+  // `fn(A) -> B?` (optional *return*) keeps its `?` on the return atom
+  // rather than being read as an optional function. Params canonicalize
+  // normally (their `?`/Unions are grouped by the parens); the return
+  // preserves a trailing `?` instead of expanding to `| Nil`, because a
+  // top-level `| Nil` in the canonical string would later re-parse as the
+  // outer Union `(fn(A) -> B) | Nil` — a different type.
+  if (auto fn = parse_fn_type(trimmed)) {
+    std::string out = "fn(";
+    bool first = true;
+    for (auto p : fn->params) {
+      if (!first) out += ", ";
+      out += canonicalize_type_annotation(p);
+      first = false;
+    }
+    out += ") -> ";
+    auto ret = fn->ret;
+    if (!ret.empty() && ret.back() == '?') {
+      auto base = canonicalize_type_annotation(ret.substr(0, ret.size() - 1));
+      out += (base.empty() || base == "Nil") ? "Nil" : base + "?";
+    } else {
+      out += canonicalize_type_annotation(ret);
     }
     return out;
   }

@@ -2070,6 +2070,49 @@ Introspection canonicalizes it to the Union form: `fn.params[0].type`
 of `x: Long?` reads `"Long | Nil"`. Pair with the null-safe operators
 below (`?.`, `?[]`, `!!`, `??`, `??=`) for ergonomic nil handling.
 
+### Function types (`fn(T) -> U`)
+
+The bare `Function` type accepts any callable. To document a
+higher-order parameter's *shape* — what it takes and returns — write a
+function type: `fn(T1, T2) -> R`.
+
+    fn apply(f: fn(Long) -> Long, x: Long) -> Long { f(x) }
+    apply(|n| n * 2, 21)        # → 42
+
+    fn make_adder(n: Long) -> fn(Long) -> Long { |x| x + n }
+    let add5 = make_adder(5)
+    add5(37)                    # → 42
+
+The parameter list may be empty (`fn() -> String`), hold several types
+(`fn(Long, Long) -> Long`), or nest (`fn(fn(Long) -> Long) -> Long`).
+A callable class instance (one with a `__call__` method) satisfies a
+function type just like a closure does:
+
+    class Doubler { new() {} __call__(n) { n * 2 } }
+    apply(Doubler.new(), 21)    # → 42
+
+Like Generic element types, the parameter and return types are
+**documentation in the MVP** — the runtime checks only that the value
+is callable, not its arity or the types it actually accepts. A
+non-callable is rejected:
+
+    apply(99, 21)               # !! type error: ... expects fn(Long) -> Long
+
+The return is a single type, so a top-level `|` after `->` belongs to
+the surrounding Union: `fn(A) -> B | C` parses as `(fn(A) -> B) | C` (a
+Union of *a function returning B* and *C*). An optional **return** uses
+`?` on the return type — `fn(A) -> B?` is a function whose result is
+`B | Nil`; the function itself is still required:
+
+    fn run(f: fn(Long) -> Long?) -> Long { f(0) ?? -1 }
+    run(|n| nil)                # → -1
+    run(nil)                    # !! type error (a function is required)
+
+Multimethod dispatch ([§19](#19-multimethods)) treats a function-type
+parameter like `Function`: a closure or `__call__` instance routes to
+the `fn(...) -> ...` overload, while a concrete type (`Long`) routes to
+its own overload.
+
 ### Generic types
 
 A type name may carry type parameters in angle brackets:

@@ -1874,6 +1874,22 @@ inline const char* _culebra_tag_name(int8_t tag) {
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
+  // Function type `fn(...) -> R`: structural callable match, mirroring
+  // interp's type_matches. Params/return are documentation in the MVP, so
+  // a closure (TAG_FUNC) or a class instance with an own/proto `__call__`
+  // satisfies it. Checked before the `?` sugar so `fn(A) -> B?` (optional
+  // return) isn't misread as an optional function.
+  if (culebra::is_fn_type(expected)) {
+    if (tag == TAG_FUNC) return true;
+    if (tag == TAG_OBJECT) {
+      auto* obj = reinterpret_cast<JitObject*>(data);
+      if (obj->proto) {
+        auto* e = _find_property(obj, "__call__");
+        if (e && e->value.tag == TAG_FUNC) return true;
+      }
+    }
+    return false;
+  }
   // Composite bound (`A + B`) — all-of: conform to every part.
   // Mirrors interp's type_matches.
   if (culebra::has_toplevel_plus(expected)) {

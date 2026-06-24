@@ -1945,6 +1945,48 @@ specific 扱い: `fn pick(x: Long)` と `fn pick(x: Long | Float)` を
 `"Long | Nil"`。 上記の null 安全演算子（`?.`, `?[]`, `!!`, `??`,
 `??=`）と組み合わせて使います。
 
+### 関数型 (`fn(T) -> U`)
+
+素の `Function` 型は任意の callable を受理します。高階引数の
+*形* — 何を取り何を返すか — を記述するには関数型 `fn(T1, T2) -> R`
+を書きます。
+
+    fn apply(f: fn(Long) -> Long, x: Long) -> Long { f(x) }
+    apply(|n| n * 2, 21)        # → 42
+
+    fn make_adder(n: Long) -> fn(Long) -> Long { |x| x + n }
+    let add5 = make_adder(5)
+    add5(37)                    # → 42
+
+引数リストは空 (`fn() -> String`)、複数型 (`fn(Long, Long) -> Long`)、
+ネスト (`fn(fn(Long) -> Long) -> Long`) も可。 callable なクラス
+インスタンス（`__call__` メソッドを持つもの）も、クロージャと同様に
+関数型を満たします。
+
+    class Doubler { new() {} __call__(n) { n * 2 } }
+    apply(Doubler.new(), 21)    # → 42
+
+Generic の要素型と同じく、引数型・戻り型は **MVP では documentation** —
+ランタイムは値が callable かどうかだけを検査し、引数の数や実際に
+受け取る型は検査しません。 非 callable は拒否されます。
+
+    apply(99, 21)               # !! type error: ... expects fn(Long) -> Long
+
+戻り型は単一の型なので、`->` の後の top-level な `|` は外側の Union に
+属します: `fn(A) -> B | C` は `(fn(A) -> B) | C`（*B を返す関数* と *C*
+の Union）と解釈されます。 オプショナルな **戻り値** は戻り型に `?` を
+付けます — `fn(A) -> B?` は結果が `B | Nil` の関数で、関数自体は依然
+必須です。
+
+    fn run(f: fn(Long) -> Long?) -> Long { f(0) ?? -1 }
+    run(|n| nil)                # → -1
+    run(nil)                    # !! type error（関数が必須）
+
+多重ディスパッチ ([§19](#19-multimethods)) は関数型引数を `Function`
+と同様に扱います: クロージャや `__call__` インスタンスは
+`fn(...) -> ...` overload に、具体型 (`Long`) は自身の overload に
+ルートされます。
+
 ### Generic 型
 
 型名に角括弧で型パラメータを付けられます: `Array<Long>`,

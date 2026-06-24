@@ -786,4 +786,27 @@ for c in optr {
   case("optr|" + c, c)
 }
 
+# --- Dimension 34: function type annotations `fn(T) -> U` ------------------
+# Structural callable match (params/return are documentation in the MVP):
+# a closure or a `__call__` instance satisfies an `fn(...) -> R` param; a
+# non-callable is a TypeError (kind/message/position must agree). Covers the
+# optional-return `fn(A) -> B?` (function still required, nil rejected), a
+# Union with a function alternative, and multifn dispatch fn-vs-concrete.
+let fnty = [
+  'fn ap(f: fn(Long) -> Long, x: Long) -> Long { f(x) }; ap(|n| n * 2, 21)',
+  'fn cb(f: fn(Long, Long) -> Long, a, b) -> Long { f(a, b) }; cb(|a, b| a + b, 10, 32)',
+  'fn ci(f: fn() -> String) -> String { f() }; ci(|| "hi")',
+  'fn nf(f: fn(Long) -> Long) -> Long { f(1) }; nf(99)',
+  'class D { new() {} __call__(n) { n * 2 } }; fn ap(f: fn(Long) -> Long, x) { f(x) }; ap(D.new(), 21)',
+  'fn mk(n: Long) -> fn(Long) -> Long { |x| x + n }; let a = mk(5); a(37)',
+  'fn ro(f: fn(Long) -> Long?) -> Long { let r = f(0); r ?? -1 }; ro(nil)',
+  'fn ro(f: fn(Long) -> Long?) -> Long { let r = f(0); r ?? -1 }; ro(|n| nil)',
+  'fn ro(f: fn(Long) -> Long?) -> Long { let r = f(0); r ?? -1 }; ro(|n| n + 42)',
+  'fn fx(v: fn(Long) -> Long | Long) -> Long { match v { x: Long => x, _ => v(0) } }; to_string(fx(7)) + to_string(fx(|n| n + 100))',
+  'fn ds(x: Long) -> String { "long" }; fn ds(f: fn(Long) -> Long) -> String { "fn" }; ds(5) + ds(|n| n)',
+  'fn ds(x: Long) -> String { "long" }; fn ds(f: fn(Long) -> Long) -> String { "fn" }; class I { new() {} __call__(n) { n } }; ds(I.new())']
+for c in fnty {
+  case("fnty|" + c, c)
+}
+
 print(out.join("\n"))
