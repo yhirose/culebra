@@ -2463,6 +2463,14 @@ Regex.find('x', "y")?.value ?? "none"            // => "none" (composes with ?. 
 | `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — split `s` on matches |
 
+**Choosing a bulk API.** `find_all` builds a full `Match` object (text, spans,
+`groups`, `named`) per match; on match-dense input that object construction —
+not the matching — dominates, costing tens of times more than the engine's raw
+scan. When you do not need per-match captures, reach for the lean variant:
+`count` when you only need the number, `find_all_index` for byte spans,
+`find_all_str` for the matched texts, or `find_iter` when you stop early.
+Keep `find_all` for when you actually consume `groups` / `named` per match.
+
 A `Match` is a data object (and `nil` means no match):
 
 | Field | Meaning |

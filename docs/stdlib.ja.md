@@ -2365,6 +2365,14 @@ catastrophic backtracking が原理的に起きないため backreference はあ
 | `re.replace_all(s, repl)` | `String` — `repl` はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String` |
 | `re.split(s)` | `[String]` — マッチで `s` を分割 |
 
+**bulk API の選び方。** `find_all` はマッチごとに完全な `Match`
+オブジェクト（テキスト・span・`groups`・`named`）を構築する。match-dense
+な入力では、マッチングそのものより**このオブジェクト構築が支配的**になり、
+エンジンの生スキャンの数十倍のコストになる。マッチごとの capture が不要なら
+lean な変種を使う: 個数だけなら `count`、byte span なら `find_all_index`、
+マッチ文字列なら `find_all_str`、途中で止めるなら `find_iter`。
+`groups`/`named` をマッチごとに実際に使うときだけ `find_all` を使う。
+
 `Match` はデータオブジェクト（`nil` はマッチなし）:
 
 | フィールド | 意味 |
