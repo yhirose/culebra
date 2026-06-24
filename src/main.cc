@@ -257,6 +257,7 @@ struct BuildOptions {
   string sysroot;    // forwarded to `cc` as `--sysroot=`
   string rt_lib;     // override runtime archive path (for cross-compile)
   bool emit_llvm = false;
+  bool keep_symbols = false;  // skip link-time symbol strip (for debugging)
   int opt_level = 2;
 };
 
@@ -318,6 +319,8 @@ void print_build_usage(ostream& os) {
         "  -O<level>          Optimization level (0-3, default 2)\n"
         "  --emit-llvm        Also write the program's LLVM IR alongside\n"
         "                     the output (for debugging)\n"
+        "  --keep-symbols     Keep local symbols in the output (default:\n"
+        "                     stripped, ~30% smaller). Use for debugging.\n"
         "  --target=<triple>  Cross-compile for the given LLVM target\n"
         "                     triple (e.g. x86_64-unknown-linux-gnu).\n"
         "                     Default: host triple.\n"
@@ -383,6 +386,8 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       opts.output = argv[++i];
     } else if (arg == "--emit-llvm") {
       opts.emit_llvm = true;
+    } else if (arg == "--keep-symbols") {
+      opts.keep_symbols = true;
     } else if (arg.starts_with("--target=")) {
       opts.target = arg.substr(9);
     } else if (arg.starts_with("--sysroot=")) {
@@ -582,6 +587,14 @@ int run_build(const BuildOptions& opts) {
   const char* dead_strip = target_is_macho ? "-Wl,-dead_strip"
                                            : "-Wl,--gc-sections";
 
+  // Discard local symbols at link time (~30% smaller binary: the embedded
+  // runtime archive carries thousands of local symbols — GCC_except_table*,
+  // string/template instantiations — useless in a distributed executable).
+  // `-Wl,-x` ("discard all local symbols") is understood by ld64, GNU ld and
+  // lld alike, and keeps the global/dynamic symbols the loader needs, so the
+  // binary still runs. --keep-symbols opts out for debugging.
+  const char* strip_syms = opts.keep_symbols ? "" : "-Wl,-x";
+
   // A feature object's strong choke (tensor_eval_node / http_request)
   // overrides the core archive's weak stub only if it is actually pulled
   // into the link. A plain `-l`/archive append won't do it — the weak def
@@ -667,10 +680,10 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, wrap_lib,
-      dead_strip, no_pie, libcxx, blas, ssl, zlib, CULEBRA_WRAP_LINK_FLAGS,
-      shq(opts.output));
+      dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
+      CULEBRA_WRAP_LINK_FLAGS, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

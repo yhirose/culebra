@@ -22,6 +22,7 @@ culebra build path/to/program.cul -o ./program
 | `-o <path>` | 出力実行ファイルのパス（必須） |
 | `-O<level>` | 最適化レベル 0–3（デフォルト 2） |
 | `--emit-llvm` | プログラムの LLVM IR も書き出す（デバッグ用） |
+| `--keep-symbols` | 出力にローカルシンボルを残す。既定ではリンク時に破棄し（`-Wl,-x`）、約 30% 小さくなる。デバッグ時に使用 |
 | `--target=<triple>` | 指定 LLVM triple 向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc` の `--sysroot=` にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compile では必須） |
@@ -91,6 +92,16 @@ $ otool -L /tmp/microgpt_tensor
         /System/Library/Frameworks/Accelerate.framework/.../Accelerate
         /usr/lib/libSystem.B.dylib
 ```
+
+## シンボルの除去
+
+埋め込みランタイムアーカイブには、配布実行ファイルでは無用な
+ローカルシンボル（`GCC_except_table*`、テンプレートや文字列の
+実体化など）が数千個含まれる。リンクは既定でこれらを破棄し
+（`-Wl,-x` — ld64・GNU ld・lld のいずれも解釈する）、ローダが必要
+とするグローバル／動的シンボルは保持したままバイナリを約 30% 縮める
+（例: Term/IO プログラムが ~7.6 MB → ~5.3 MB）。デバッグ用に残したい
+場合は `--keep-symbols` を渡す。
 
 ## クロスコンパイル
 

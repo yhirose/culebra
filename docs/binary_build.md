@@ -22,6 +22,7 @@ The default invocation targets the host platform.
 | `-o <path>` | Output executable path (required). |
 | `-O<level>` | Optimization level 0–3 (default 2). |
 | `--emit-llvm` | Also write the program's LLVM IR (for debugging). |
+| `--keep-symbols` | Keep local symbols in the output. By default the link discards them (`-Wl,-x`), which is ~30% smaller. Use for debugging. |
 | `--target=<triple>` | Cross-compile for the given LLVM triple. |
 | `--sysroot=<path>` | Forwarded to `cc` as `--sysroot=`. |
 | `--rt-lib=<path>` | Override the runtime archive path (required for cross-compile). |
@@ -90,6 +91,16 @@ $ otool -L /tmp/microgpt_tensor
         /System/Library/Frameworks/Accelerate.framework/.../Accelerate
         /usr/lib/libSystem.B.dylib
 ```
+
+## Symbol stripping
+
+The embedded runtime archive carries thousands of local symbols
+(`GCC_except_table*`, template and string instantiations) that are
+useless in a distributed executable. The link discards them by default
+(`-Wl,-x` — understood by ld64, GNU ld and lld alike), which keeps the
+global/dynamic symbols the loader needs while shrinking the binary by
+~30% (e.g. a Term/IO program drops from ~7.6 MB to ~5.3 MB). Pass
+`--keep-symbols` to retain them for debugging.
 
 ## Cross-compilation
 
