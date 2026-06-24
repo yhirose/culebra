@@ -630,7 +630,7 @@ inline Value make_fs_namespace() {
           })),
       false);
 
-  // `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime}.
+  // `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode}.
   // mtime is seconds since the Unix epoch (Long). IOError on missing path.
   ns.initialize(
       "stat",
@@ -664,9 +664,37 @@ inline Value make_fs_namespace() {
                            false);
             obj.initialize("is_symlink", Value(is_link), false);
             obj.initialize("mtime", Value(mtime), false);
+            obj.initialize(
+                "mode",
+                Value(static_cast<long>(fst.permissions() &
+                                        std::filesystem::perms::mask)),
+                false);
             return Value(std::move(obj));
           },
           "Object"sv)),
+      false);
+
+  // `FS.chmod(path, mode)` — set permission bits, e.g. `0o755`. `mode` is
+  // masked to the low 12 bits (rwx + setuid/setgid/sticky). IOError if the
+  // path is missing or the permissions can't be changed.
+  ns.initialize(
+      "chmod",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}, {"mode", false, "Long"sv}},
+          [throw_io](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            long mode = env->get("mode").to_long();
+            std::error_code ec;
+            std::filesystem::permissions(
+                std::filesystem::path(p),
+                static_cast<std::filesystem::perms>(
+                    mode & static_cast<long>(std::filesystem::perms::mask)),
+                std::filesystem::perm_options::replace, ec);
+            if (ec) throw_io(std::format("FS.chmod('{}')", p), line, col, ec);
+            return Value();
+          })),
       false);
 
   // `FS.rename(src, dst)` — atomic within a filesystem. IOError otherwise.

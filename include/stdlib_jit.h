@@ -425,7 +425,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove_all(
   }
 }
 
-// `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime}.
+// `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode}.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
@@ -453,7 +453,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
   culebra_runtime_object_set(o, "is_symlink", false, TAG_BOOL,
                              is_link ? 1 : 0, line, col);
   culebra_runtime_object_set(o, "mtime", false, TAG_LONG, mtime, line, col);
+  int64_t mode = static_cast<int64_t>(
+      fst.permissions() & std::filesystem::perms::mask);
+  culebra_runtime_object_set(o, "mode", false, TAG_LONG, mode, line, col);
   return o;
+}
+
+// `FS.chmod(path, mode)` — set permission bits, e.g. 0o755. `mode` is masked
+// to the low 12 bits (rwx + setuid/setgid/sticky).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_chmod(
+    const char* path, int64_t mode, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::permissions(
+      path ? path : "",
+      static_cast<std::filesystem::perms>(
+          mode & static_cast<int64_t>(std::filesystem::perms::mask)),
+      std::filesystem::perm_options::replace, ec);
+  if (ec) _fs_throw_io(
+      std::format("FS.chmod('{}')", path ? path : ""), line, col, ec);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_rename(
@@ -2754,6 +2771,11 @@ inline JitValue _ns_fs_rename(JitValue* a, int64_t) {
                             _ns_adapt::take_str(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
+inline JitValue _ns_fs_chmod(JitValue* a, int64_t) {
+  culebra_runtime_fs_chmod(_ns_adapt::take_str(a[0]),
+                           _ns_adapt::take_long(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
 // copy(src, dst, recursive=false): slab full-arity via NsParamMeta.
 inline JitValue _ns_fs_copy(JitValue* a, int64_t n) {
   JitValue rec = n > 2 ? a[2] : JitValue{TAG_BOOL, 0};
@@ -4065,6 +4087,7 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "mkdir",     1, &_ns_fs_mkdir},
   {"FS",     "remove",    1, &_ns_fs_remove},
   {"FS",     "stat",      1, &_ns_fs_stat},
+  {"FS",     "chmod",     2, &_ns_fs_chmod},
   {"FS",     "rename",    2, &_ns_fs_rename},
   {"FS",     "copy",      2, &_ns_fs_copy},
   {"FS",     "normpath",  1, &_ns_fs_normpath},

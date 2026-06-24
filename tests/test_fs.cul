@@ -107,6 +107,18 @@ assert_eq(stf.is_symlink, false)
 let std = FS.stat(xdir)
 assert_true(std.is_dir)
 
+// chmod sets permission bits; stat.mode reads them back (round-trip).
+let cf = FS.join(xdir, "f.txt")
+FS.chmod(cf, 0o644)
+assert_eq(FS.stat(cf).mode, 0o644)
+FS.chmod(cf, 0o600)
+assert_eq(FS.stat(cf).mode, 0o600)
+FS.chmod(cf, 0o755)
+assert_eq(FS.stat(cf).mode, 0o755)
+// chmod on a missing path throws IOError; a non-Long mode is a TypeError.
+assert_eq(try { FS.chmod(bogus, 0o644); "ok" } catch e { e.kind }, "IOError")
+assert_eq(try { FS.chmod(cf, "644"); "ok" } catch e { e.kind }, "TypeError")
+
 // walk: every path under xdir (sub/, f.txt, sub/g.txt) = 3 entries.
 assert_eq(FS.walk(xdir).size(), 3)
 

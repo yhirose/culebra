@@ -69,7 +69,7 @@ Conventions used below:
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
-| Stat / walk / glob / copy / rename / symlink | [§3 FS](#3-fs) |
+| Stat / walk / glob / copy / rename / symlink / chmod | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
@@ -478,14 +478,29 @@ Rename / move `src` to `dst` (atomic within one filesystem). Throws
 Copy a file, overwriting `dst` if it exists. With `recursive: true`
 copies a directory tree. Throws `IOError` on failure.
 
+#### `FS.chmod(path: String, mode: Long) -> Nil`
+
+Set the permission bits of `path` to `mode` — an integer, usually written
+as an octal literal (`0o755`, `0o644`). `mode` is masked to the low 12 bits
+(`rwx` for owner/group/other plus setuid/setgid/sticky) and replaces the
+existing bits. Read the current bits back with `FS.stat(path).mode`. Throws
+`IOError` if the path is missing or the permissions can't be changed.
+
+```culebra
+# doctest: skip
+FS.chmod('deploy.sh', 0o755)       # make executable
+puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
+```
+
 ### Stat / metadata
 
 #### `FS.stat(path: String) -> Object`
 
-Return `{size, is_dir, is_file, is_symlink, mtime}` for `path`. `size`
+Return `{size, is_dir, is_file, is_symlink, mtime, mode}` for `path`. `size`
 is bytes (0 for non-regular files); `mtime` is seconds since the Unix
-epoch; `is_symlink` reflects the link itself while the other fields
-follow it. Throws `IOError` if the path doesn't exist.
+epoch; `mode` is the permission bits as an integer (compare with octal, e.g.
+`st.mode == 0o644`); `is_symlink` reflects the link itself while the other
+fields follow it. Throws `IOError` if the path doesn't exist.
 
 ```culebra
 # doctest: skip

@@ -67,7 +67,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | ファイル全体を読む | `FS.read`（失敗時 throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
-| stat / walk / glob / copy / rename / symlink | [§3 FS](#3-fs) |
+| stat / walk / glob / copy / rename / symlink / chmod | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
@@ -461,12 +461,27 @@ FS.remove('/tmp/build', recursive: true)
 ファイルをコピー（`dst` 既存なら上書き）。`recursive: true` で
 ディレクトリツリーをコピー。失敗時 `IOError`。
 
+#### `FS.chmod(path: String, mode: Long) -> Nil`
+
+`path` の権限ビットを `mode`（整数、通常は 8 進リテラル `0o755`/`0o644`）に
+設定する。`mode` は下位 12 ビット（所有者/グループ/その他の `rwx` +
+setuid/setgid/sticky）にマスクされ、既存ビットを置き換える。現在のビットは
+`FS.stat(path).mode` で読める。存在しない、または権限変更に失敗すると
+`IOError`。
+
+```culebra
+# doctest: skip
+FS.chmod('deploy.sh', 0o755)       # 実行可能にする
+puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
+```
+
 ### stat / メタデータ
 
 #### `FS.stat(path: String) -> Object`
 
-`{size, is_dir, is_file, is_symlink, mtime}` を返す。`size` はバイト
-（非通常ファイルは 0）、`mtime` は Unix epoch 秒、`is_symlink` は
+`{size, is_dir, is_file, is_symlink, mtime, mode}` を返す。`size` はバイト
+（非通常ファイルは 0）、`mtime` は Unix epoch 秒、`mode` は権限ビットの整数
+（8 進と比較: `st.mode == 0o644`）、`is_symlink` は
 リンク自体を、他フィールドはリンク先を見ます。存在しなければ
 `IOError`。
 
