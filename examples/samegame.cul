@@ -239,4 +239,4 @@ Term.app(fn (s) {
       }
     }
   }
-})
+}, mouse: INTERACTIVE)   # enable mouse reporting (interactive only) so clicks reach s.poll()
