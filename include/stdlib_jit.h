@@ -761,6 +761,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_sys_time() {
   return std::chrono::duration<double>(now - t0).count();
 }
 
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_sys_getcwd(
+    int64_t line, int64_t col) {
+  std::error_code ec;
+  auto p = std::filesystem::current_path(ec);
+  if (ec) _fs_throw_io("Sys.getcwd", line, col, ec);
+  return _culebra_heap_str(p.string());
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_chdir(
+    const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  std::filesystem::current_path(std::filesystem::path(path ? path : ""), ec);
+  if (ec) _fs_throw_io(
+      std::format("Sys.chdir('{}')", path ? path : ""), line, col, ec);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
+    const char* name, const char* value, int64_t line, int64_t col) {
+  if (::setenv(name ? name : "", value ? value : "", 1) != 0) {
+    std::error_code ec(errno, std::generic_category());
+    _fs_throw_io(std::format("Sys.set_env('{}')", name ? name : ""),
+                 line, col, ec);
+  }
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
   auto& argv = culebra::_culebra_sys_argv_holder();
   auto* r = culebra_runtime_array_new();
@@ -2809,6 +2834,18 @@ inline JitValue _ns_sys_env(JitValue* a, int64_t) {
 inline JitValue _ns_sys_time(JitValue*, int64_t) {
   return _ns_adapt::v_float(culebra_runtime_sys_time());
 }
+inline JitValue _ns_sys_getcwd(JitValue*, int64_t) {
+  return _ns_adapt::v_string(culebra_runtime_sys_getcwd(0, 0));
+}
+inline JitValue _ns_sys_chdir(JitValue* a, int64_t) {
+  culebra_runtime_sys_chdir(_ns_adapt::take_str(a[0]), 0, 0);
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_sys_set_env(JitValue* a, int64_t) {
+  culebra_runtime_sys_set_env(_ns_adapt::take_str(a[0]),
+                              _ns_adapt::take_str(a[1]), 0, 0);
+  return _ns_adapt::v_nil();
+}
 
 // GC.stat() — heap introspection. Returns an Object with `live_objects`
 // (net live refcounted heap objects = births − frees, deterministic) and
@@ -4014,9 +4051,12 @@ inline const NsMethod kNsMethods[] = {
   {"Random", "shuffle",         1, &_ns_random_shuffle, nullptr, "Array", "a"},
   {"Random", "weighted_choice", 2, &_ns_random_weighted_choice},
 
-  {"Sys",    "exit", 1, &_ns_sys_exit},
-  {"Sys",    "env",  1, &_ns_sys_env, nullptr, "String", "name"},
-  {"Sys",    "time", 0, &_ns_sys_time},
+  {"Sys",    "exit",    1, &_ns_sys_exit},
+  {"Sys",    "env",     1, &_ns_sys_env, nullptr, "String", "name"},
+  {"Sys",    "time",    0, &_ns_sys_time},
+  {"Sys",    "getcwd",  0, &_ns_sys_getcwd},
+  {"Sys",    "chdir",   1, &_ns_sys_chdir, nullptr, "String", "path"},
+  {"Sys",    "set_env", 2, &_ns_sys_set_env, nullptr, "String", "name"},
 
   {"GC",     "stat", 0, &_ns_gc_stat},
 
@@ -4959,6 +4999,15 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::sys_env, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::sys_argv, ptrTy);
   jit.module_->getOrInsertFunction(rt::sys_time, jit.builder_.getDoubleTy());
+  jit.module_->getOrInsertFunction(rt::sys_getcwd, ptrTy,
+                               jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::sys_chdir, jit.builder_.getVoidTy(),
+                               ptrTy, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
+  jit.module_->getOrInsertFunction(rt::sys_set_env, jit.builder_.getVoidTy(),
+                               ptrTy, ptrTy, jit.builder_.getInt64Ty(),
+                               jit.builder_.getInt64Ty());
   // Random
   jit.module_->getOrInsertFunction(rt::random_seed, jit.builder_.getVoidTy(),
                                jit.builder_.getInt64Ty());
@@ -6040,6 +6089,32 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "time" && argsAst.nodes.size() == 0) {
       auto t = emit_call(module_->getFunction(rt::sys_time), {});
       return make_float(t);
+    }
+    if (method == "getcwd" && argsAst.nodes.size() == 0) {
+      auto s = emit_call(module_->getFunction(rt::sys_getcwd), {line, col});
+      return make_string(s);
+    }
+    if (method == "chdir" && argsAst.nodes.size() == 1) {
+      auto arg = compile(*argsAst.nodes[0]);
+      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      emit_call(module_->getFunction(rt::sys_chdir), {p, line, col});
+      emit_value_release(arg);
+      return make_nil();
+    }
+    if (method == "set_env" && argsAst.nodes.size() == 2) {
+      auto nameV = compile(*argsAst.nodes[0]);
+      emit_type_check(nameV, "String", "parameter 'name'",
+                      argsAst.nodes[0].get());
+      auto valV = compile(*argsAst.nodes[1]);
+      emit_type_check(valV, "String", "parameter 'value'",
+                      argsAst.nodes[1].get());
+      auto np = builder_.CreateIntToPtr(extract_data(nameV), ptrTy);
+      auto vp = builder_.CreateIntToPtr(extract_data(valV), ptrTy);
+      emit_call(module_->getFunction(rt::sys_set_env), {np, vp, line, col});
+      emit_value_release(nameV);
+      emit_value_release(valV);
+      return make_nil();
     }
   }
 

@@ -443,15 +443,23 @@ inline long _fs_mtime_secs(const std::filesystem::path& p) {
           sys.time_since_epoch()).count());
 }
 
+// Raise an IOError as `<what>: <ec.message()>.` (or just `<what>` when no
+// error_code). The interp twin of the JIT's `_fs_throw_io` — shared by the FS
+// and Sys namespaces so a failed syscall reports identically on both backends.
+[[noreturn]] inline void _io_throw(const std::string& what, long line, long col,
+                                   const std::error_code& ec = {}) {
+  auto msg = ec ? std::format("{}: {}.", what, ec.message())
+                : std::string(what);
+  throw CulebraError("IOError", std::move(msg), line, col);
+}
+
 inline Value make_fs_namespace() {
   using namespace std::literals;
   ObjectValue ns;
 
   auto throw_io = [](const std::string& what, long line, long col,
                      const std::error_code& ec = {}) {
-    auto msg = ec ? std::format("{}: {}.", what, ec.message())
-                  : std::string(what);
-    throw CulebraError("IOError", std::move(msg), line, col);
+    _io_throw(what, line, col, ec);
   };
 
   // `FS.join(parts...)` — varargs path concat. Empty arg list -> "". Declared
@@ -1837,6 +1845,61 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
                             return Value(std::string(v ? v : ""));
                           },
                           "String"sv)),
+      false);
+
+  // Current working directory. IOError on failure (e.g. the cwd was
+  // removed out from under the process).
+  ns.initialize(
+      "getcwd",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment> env) {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            std::error_code ec;
+                            auto p = std::filesystem::current_path(ec);
+                            if (ec) _io_throw("Sys.getcwd", line, col, ec);
+                            return Value(p.string());
+                          },
+                          "String"sv)),
+      false);
+
+  // Change the process working directory. IOError if the path is missing or
+  // not a directory.
+  ns.initialize(
+      "chdir",
+      Value(FunctionValue({{"path", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            const auto& p = env->get("path").to_string();
+                            std::error_code ec;
+                            std::filesystem::current_path(
+                                std::filesystem::path(p), ec);
+                            if (ec) {
+                              _io_throw(std::format("Sys.chdir('{}')", p),
+                                        line, col, ec);
+                            }
+                            return Value();
+                          })),
+      false);
+
+  // Set an environment variable (overwrites). Visible to this process and to
+  // children spawned afterwards (e.g. Proc.run). IOError on failure.
+  ns.initialize(
+      "set_env",
+      Value(FunctionValue(
+          {{"name", false, "String"sv}, {"value", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& name = env->get("name").to_string();
+            const auto& value = env->get("value").to_string();
+            if (::setenv(name.c_str(), value.c_str(), 1) != 0) {
+              _io_throw(std::format("Sys.set_env('{}')", name), line, col,
+                        std::error_code(errno, std::generic_category()));
+            }
+            return Value();
+          })),
       false);
 
   // Monotonic seconds since first call. Anchor at process startup so

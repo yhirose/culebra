@@ -71,7 +71,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
 | CLI 引数解析 | [§10 Args](#10-args) |
-| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.executable` |
+| プロセス情報 | `Sys.argv`、`Sys.exit`、`Sys.env`、`Sys.set_env`、`Sys.getcwd`、`Sys.chdir`、`Sys.executable` |
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS API を呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTML エンティティの escape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
@@ -899,6 +899,39 @@ if error_occurred { Sys.exit(1) }
 ```culebra
 puts(Sys.env('HOME'))          # '/Users/alice'
 puts(Sys.env('NOT_A_VAR'))     # ''
+```
+
+### `Sys.set_env(name: String, value: String) -> Nil`
+
+環境変数 `name` を `value` に設定します（既存の値は上書き）。変更はこのプロセス
+（`Sys.env` 経由）と、以降に起動する子プロセス（例: `Proc.run`）から見えます。
+失敗時（不正な変数名など）は `IOError` を送出します。
+
+```culebra
+Sys.set_env('CULEBRA_MODE', 'fast')
+puts(Sys.env('CULEBRA_MODE'))  # 'fast'
+```
+
+### `Sys.getcwd() -> String`
+
+現在の作業ディレクトリの絶対パスを返します。パス中のシンボリックリンクは
+解決されます。ディレクトリを特定できない場合（プロセスの足元でディレクトリが
+削除された等）は `IOError` を送出します。
+
+```culebra
+# doctest: skip
+puts(Sys.getcwd())             # '/Users/alice/project'
+```
+
+### `Sys.chdir(path: String) -> Nil`
+
+プロセスの作業ディレクトリを `path` に変更します。パスが存在しない、または
+ディレクトリでない場合は `IOError` を送出します。
+
+```culebra
+# doctest: skip
+Sys.chdir('/tmp')
+puts(Sys.getcwd())             # '/tmp'（または解決後のパス）
 ```
 
 ### `Sys.executable -> String`

@@ -73,7 +73,7 @@ Conventions used below:
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
 | CLI argument parsing | [§10 Args](#10-args) |
-| Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.executable` |
+| Process info | `Sys.argv`, `Sys.exit`, `Sys.env`, `Sys.set_env`, `Sys.getcwd`, `Sys.chdir`, `Sys.executable` |
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
@@ -932,6 +932,40 @@ variable from one set to the empty string.
 ```culebra
 puts(Sys.env('HOME'))          # '/Users/alice'
 puts(Sys.env('NOT_A_VAR'))     # ''
+```
+
+### `Sys.set_env(name: String, value: String) -> Nil`
+
+Set the environment variable `name` to `value`, overwriting any existing
+value. The change is visible to this process (via `Sys.env`) and to child
+processes spawned afterwards (e.g. `Proc.run`). Raises `IOError` on failure
+(for example, an invalid variable name).
+
+```culebra
+Sys.set_env('CULEBRA_MODE', 'fast')
+puts(Sys.env('CULEBRA_MODE'))  # 'fast'
+```
+
+### `Sys.getcwd() -> String`
+
+Return the absolute path of the current working directory. Symlinks in the
+path are resolved. Raises `IOError` if the directory cannot be determined
+(for example, it was removed out from under the process).
+
+```culebra
+# doctest: skip
+puts(Sys.getcwd())             # '/Users/alice/project'
+```
+
+### `Sys.chdir(path: String) -> Nil`
+
+Change the process working directory to `path`. Raises `IOError` if the path
+does not exist or is not a directory.
+
+```culebra
+# doctest: skip
+Sys.chdir('/tmp')
+puts(Sys.getcwd())             # '/tmp' (or its resolved path)
 ```
 
 ### `Sys.executable -> String`
