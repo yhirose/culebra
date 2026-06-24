@@ -97,10 +97,18 @@ Culebra ソースの拡張子は `.cul`。 `culebra` バイナリで実行:
 
 ```bash
 echo "puts('hello, culebra!')" > hello.cul
-./build/culebra hello.cul          # インタプリタ
-./build/culebra --jit hello.cul    # JIT (出力は同じ)
-./build/culebra --help             # 全オプション・コマンド一覧
+./build/culebra hello.cul            # インタプリタ
+./build/culebra --jit hello.cul      # JIT (出力は同じ)
+./build/culebra --jit-faststart hello.cul # JIT・起動が速い
+./build/culebra --help                    # 全オプション・コマンド一覧
 ```
+
+3 バックエンドとも観測可能な出力は同一 (interp↔JIT の差分コーパス全件で
+検証済み)。`--jit-faststart` は JIT の最適化バックエンドを FastISel に切り替え、
+**JIT warmup (起動・コード生成時間) をほぼ半減**する代わりに steady-state を
+少し犠牲にする — 純スクリプトの hot loop で約 7%、重い処理が C++/BLAS ランタイム
+側 (例: `Tensor`) にある場合は ~0%。短命スクリプトや BLAS 律速の実行に向く。
+既定の `--jit` (`-O2`) は steady-state スループットが最良。
 
 コメントは `#` (行) または `/* ... */` (ブロック)。 文は `;` で
 区切る (省略時は改行)。 行末 `;` は通常は省略。

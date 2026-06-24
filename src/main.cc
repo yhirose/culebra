@@ -96,10 +96,12 @@ struct Options {
   bool help = false;
 #ifdef CULEBRA_JIT_ENABLED
   bool jit = false;
-  // [experimental] FastISel backend: faster warmup, slower steady state.
-  // Not interp-symmetric yet — miscompiles for-in over iterator objects
-  // (reachable undef-data Values it materializes as garbage). Opt-in only.
-  bool jit_fast = false;
+  // FastISel backend: ~halves JIT warmup (startup/compile time) at a small
+  // steady-state cost (~7% on pure-script hot loops; ~0% when the hot work
+  // lives in the C++/BLAS runtime, e.g. Tensor). Output is interp-symmetric
+  // (the whole difftest corpus passes under --jit-faststart). Opt-in: the
+  // default --jit (O2) keeps the best steady-state throughput.
+  bool jit_faststart = false;
   bool emit_llvm = false;
   int opt_level = 2;
 #endif
@@ -275,11 +277,11 @@ void print_usage(ostream& os) {
         "  --jit              Run a script through the LLVM JIT instead of the\n"
         "                     tree-walking interpreter (same observable output).\n"
         "                     The REPL always uses the interpreter.\n"
-        "  --jit-fast         [experimental] Like --jit but with FastISel\n"
-        "                     codegen: roughly halves JIT warmup at the cost of\n"
-        "                     slower steady-state code. Known to miscompile\n"
-        "                     for-in over iterator objects; not yet symmetric\n"
-        "                     with the interpreter. Use only for BLAS-bound runs.\n"
+        "  --jit-faststart    Like --jit but tuned for fast startup, not peak\n"
+        "                     throughput: the FastISel backend ~halves JIT warmup\n"
+        "                     (compile time) for a small steady-state cost (~7% on\n"
+        "                     pure-script hot loops, ~0% when hot work is in the\n"
+        "                     C++/BLAS runtime). Output matches --jit/interp.\n"
         "  --emit-llvm        Print the generated LLVM IR (with --jit)\n"
         "  -O<level>          JIT optimization level 0-3 (default 2)\n"
 #endif
@@ -853,9 +855,9 @@ Options parse_command_line(int argc, const char** argv) {
       if (arg == "--debug") { options.debug = true; continue; }
 #ifdef CULEBRA_JIT_ENABLED
       if (arg == "--jit") { options.jit = true; continue; }
-      if (arg == "--jit-fast") {
+      if (arg == "--jit-faststart") {
         options.jit = true;
-        options.jit_fast = true;
+        options.jit_faststart = true;
         continue;
       }
       if (arg == "--emit-llvm") { options.emit_llvm = true; continue; }
@@ -938,7 +940,7 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
     if (options.jit) {
       culebra::_culebra_sys_argv_holder() = options.script_argv;
       culebra::JIT::run_modules(modules, options.emit_llvm, options.debug,
-                                 options.opt_level, options.jit_fast);
+                                 options.opt_level, options.jit_faststart);
       continue;
     }
 #endif

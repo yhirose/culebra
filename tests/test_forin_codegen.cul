@@ -6,7 +6,7 @@
 # ("Do not know how to promote this operator's operand"), and FastISel
 # read the undefined upper bits as a garbage tag ("got ?"). O2 hid both.
 # This file exercises every for-in form so the gate can diff interp vs
-# --jit / --jit -O0 / --jit-fast and catch a reintroduction on any
+# --jit / --jit -O0 / --jit-faststart and catch a reintroduction on any
 # codegen backend.
 
 # Array element loop.

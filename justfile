@@ -188,7 +188,7 @@ _run-tests BACKEND:
     }
 
     # Guard the non-default JIT codegen backends (--jit -O0 = SDAG at O0,
-    # --jit-fast = FastISel) against the malformed-Value class of bug that
+    # --jit-faststart = FastISel) against the malformed-Value class of bug that
     # O2 silently legalizes but those paths abort or miscompile on (see
     # tests/test_forin_codegen.cul). Behavior must equal interp on every
     # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
@@ -196,7 +196,7 @@ _run-tests BACKEND:
         local fail=0
         for f in tests/test_forin_codegen.cul; do
             local ref; ref=$(cul "$f") || { echo "interp failed: $f" >&2; fail=1; continue; }
-            for flags in "--jit -O0" "--jit-fast"; do
+            for flags in "--jit -O0" "--jit-faststart"; do
                 local got
                 if ! got=$(cul $flags "$f" 2>&1); then
                     echo "FAIL ($flags aborted): $f" >&2; fail=1; continue
