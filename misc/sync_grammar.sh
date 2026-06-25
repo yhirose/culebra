@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync misc/culebra.peg and the AUTO-KEYWORDS block in misc/cul.vim from
+# Sync misc/culebra.peg and the AUTO-KEYWORDS block in misc/vim/cul.vim from
 # include/parser.h. Run `misc/sync_grammar.sh` to overwrite both files;
 # `misc/sync_grammar.sh --check` exits non-zero if either is stale.
 
@@ -14,7 +14,7 @@ fi
 
 PARSER=include/parser.h
 PEG=misc/culebra.peg
-VIM=misc/cul.vim
+VIM=misc/vim/cul.vim
 MAP=misc/keyword-map.txt
 
 TMP_PEG=$(mktemp)

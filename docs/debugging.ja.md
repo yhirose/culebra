@@ -43,41 +43,20 @@ culebra dap        # stdin/stdout で DAP を話す
 ## VSCode
 
 VSCode は `culebra` デバッグタイプを登録する小さな拡張が必要です（登録のみで、ロジックは
-全て `culebra dap` 側＝同じアダプタが全エディタで動く）。公開は不要。
+全て `culebra dap` 側＝同じアダプタが全エディタで動く）。公開は不要。リポジトリに雛形と
+インストーラを `misc/vscode/` に同梱しています。
 
-1. フォルダ `~/.vscode/extensions/culebra-debug/` を作る。
-2. その中に `package.json`（`culebra` が `PATH` に無ければ `program` を絶対パスに）:
+1. 拡張をインストール:
 
-   ```jsonc
-   {
-     "name": "culebra-debug",
-     "publisher": "local",
-     "version": "0.0.1",
-     "engines": { "vscode": "^1.70.0" },
-     "contributes": {
-       "languages": [{ "id": "culebra", "extensions": [".cul"] }],
-       "debuggers": [{
-         "type": "culebra",
-         "label": "Culebra",
-         "languages": ["culebra"],
-         "program": "culebra",
-         "args": ["dap"],
-         "configurationAttributes": {
-           "launch": {
-             "required": ["program"],
-             "properties": {
-               "program": { "type": "string", "default": "${file}" },
-               "cwd": { "type": "string", "default": "${workspaceFolder}" },
-               "stopOnEntry": { "type": "boolean", "default": false }
-             }
-           }
-         }
-       }]
-     }
-   }
+   ```sh
+   misc/vscode/install.sh
    ```
-3. VSCode を再読み込み（コマンドパレット → **Developer: Reload Window**）。
-4. プロジェクトに `.vscode/launch.json`:
+
+   `misc/vscode/package.json` を `~/.vscode/extensions/culebra-debug/` にコピーし、
+   `culebra` が `PATH` 上にあればその絶対パスを埋め込みます。（手作業でやるなら、その
+   フォルダを自分でコピー。`culebra` が `PATH` に無ければ `program` を絶対パスに編集。）
+2. VSCode を再読み込み（コマンドパレット → **Developer: Reload Window**）。
+3. プロジェクトに `.vscode/launch.json`:
 
    ```jsonc
    {
@@ -92,7 +71,7 @@ VSCode は `culebra` デバッグタイプを登録する小さな拡張が必�
      }]
    }
    ```
-5. `.cul` を開き、ガター（行番号の左）をクリックでブレークポイント → <kbd>F5</kbd>。
+4. `.cul` を開き、ガター（行番号の左）をクリックでブレークポイント → <kbd>F5</kbd>。
 
 > **拡張自体を作り込む場合**は、`~/.vscode/extensions` にコピーする代わりに、拡張フォルダを
 > VSCode で開き `extensionHost` の launch 構成で <kbd>F5</kbd> を押すと、拡張がロードされた
@@ -146,7 +125,7 @@ vim.filetype.add({ extension = { cul = "culebra" } })
 ```
 
 ブレークポイントは `<F9>`、開始は `<F5>`（vimspector のデフォルト）。
-シンタックスハイライト（任意）: `misc/install-vim-syntax.sh` を実行。
+シンタックスハイライト（任意）: `misc/vim/install-vim-syntax.sh` を実行。
 
 ## Zed
 

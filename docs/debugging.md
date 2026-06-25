@@ -46,42 +46,21 @@ Not yet supported (use breakpoints + inspection): editing variables
 
 VSCode needs a tiny extension to register the `culebra` debug type (it's pure
 registration — all the logic lives in `culebra dap`, so the same adapter then
-works in every editor). Publishing isn't required.
+works in every editor). Publishing isn't required: the repo ships a template
+under `misc/vscode/` with an installer.
 
-1. Create the folder `~/.vscode/extensions/culebra-debug/`.
-2. Put this `package.json` in it (use an absolute path for `program` if
-   `culebra` isn't on `PATH`):
+1. Install the extension:
 
-   ```jsonc
-   {
-     "name": "culebra-debug",
-     "publisher": "local",
-     "version": "0.0.1",
-     "engines": { "vscode": "^1.70.0" },
-     "contributes": {
-       "languages": [{ "id": "culebra", "extensions": [".cul"] }],
-       "debuggers": [{
-         "type": "culebra",
-         "label": "Culebra",
-         "languages": ["culebra"],
-         "program": "culebra",
-         "args": ["dap"],
-         "configurationAttributes": {
-           "launch": {
-             "required": ["program"],
-             "properties": {
-               "program": { "type": "string", "default": "${file}" },
-               "cwd": { "type": "string", "default": "${workspaceFolder}" },
-               "stopOnEntry": { "type": "boolean", "default": false }
-             }
-           }
-         }
-       }]
-     }
-   }
+   ```sh
+   misc/vscode/install.sh
    ```
-3. Reload VSCode (Command Palette → **Developer: Reload Window**).
-4. In your project, add `.vscode/launch.json`:
+
+   This copies `misc/vscode/package.json` into
+   `~/.vscode/extensions/culebra-debug/` and, if `culebra` is on your `PATH`,
+   bakes in its absolute path. (To do it by hand instead, copy that folder
+   yourself; edit `program` to an absolute path if `culebra` isn't on `PATH`.)
+2. Reload VSCode (Command Palette → **Developer: Reload Window**).
+3. In your project, add `.vscode/launch.json`:
 
    ```jsonc
    {
@@ -96,7 +75,7 @@ works in every editor). Publishing isn't required.
      }]
    }
    ```
-5. Open a `.cul` file, click in the gutter to set a breakpoint, and press
+4. Open a `.cul` file, click in the gutter to set a breakpoint, and press
    <kbd>F5</kbd>.
 
 > **Iterating on the extension itself?** Instead of copying it into
@@ -153,7 +132,7 @@ and add `.vimspector.json` to the project root:
 ```
 
 Set a breakpoint with `<F9>` and start with `<F5>` (vimspector defaults).
-Optional syntax highlighting: run `misc/install-vim-syntax.sh`.
+Optional syntax highlighting: run `misc/vim/install-vim-syntax.sh`.
 
 ## Zed
 

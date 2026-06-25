@@ -1,0 +1,55 @@
+{
+  "name": "culebra-debug",
+  "displayName": "Culebra Debug",
+  "description": "Debug Culebra (.cul) programs via the culebra dap adapter.",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.70.0" },
+  "categories": ["Debuggers"],
+  "contributes": {
+    "languages": [
+      { "id": "culebra", "extensions": [".cul"], "aliases": ["Culebra"] }
+    ],
+    "debuggers": [
+      {
+        "type": "culebra",
+        "label": "Culebra",
+        "languages": ["culebra"],
+        "program": "culebra",
+        "args": ["dap"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .cul file to debug.",
+                "default": "${file}"
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Pause at the first statement.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "culebra",
+            "request": "launch",
+            "name": "Debug current file",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false
+          }
+        ]
+      }
+    ]
+  }
+}
