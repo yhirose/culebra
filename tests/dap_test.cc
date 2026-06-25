@@ -84,7 +84,9 @@ int main(int argc, char** argv) {
     FILE* f = std::fopen(path.c_str(), "w");
     if (!f) fail("cannot write temp program");
     // Breakpoint goes on line 3 (`let total`); x/y are bound there, total isn't.
-    std::fputs("let x = 10\nlet y = 20\nlet total = x + y\nIO.puts(total)\n", f);
+    // `x` is mutable so setVariable can change it; `y` stays `let` (immutable).
+    std::fputs("let mut x = 10\nlet y = 20\nlet total = x + y\nIO.puts(total)\n",
+               f);
     std::fclose(f);
   }
 
@@ -137,15 +139,36 @@ int main(int argc, char** argv) {
   must_contain("\"value\":\"10\"");
   must_contain("\"name\":\"y\"");
 
-  send("{\"seq\":8,\"type\":\"request\",\"command\":\"continue\","
+  // evaluate: an expression in the frame's scope.
+  send("{\"seq\":8,\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"x + y\",\"frameId\":1,"
+       "\"context\":\"watch\"}}");
+  read_until("\"command\":\"evaluate\"");
+  must_contain("\"result\":\"30\"");
+
+  // setVariable: change the mutable x to 99 (affects the live program).
+  send("{\"seq\":9,\"type\":\"request\",\"command\":\"setVariable\","
+       "\"arguments\":{\"variablesReference\":1,\"name\":\"x\","
+       "\"value\":\"99\"}}");
+  read_until("\"command\":\"setVariable\"");
+  must_contain("\"value\":\"99\"");
+
+  // setVariable on the immutable `let y` is rejected (success=false).
+  send("{\"seq\":10,\"type\":\"request\",\"command\":\"setVariable\","
+       "\"arguments\":{\"variablesReference\":1,\"name\":\"y\","
+       "\"value\":\"5\"}}");
+  read_until("ImmutableError");
+  must_contain("\"success\":false");
+
+  send("{\"seq\":11,\"type\":\"request\",\"command\":\"continue\","
        "\"arguments\":{\"threadId\":1}}");
   read_until("\"event\":\"terminated\"");
-  // The program's stdout (puts(30)) is forwarded as an output event, ahead of
-  // terminated.
+  // total = x + y was computed after the edit, so the program prints 119
+  // (99 + 20), confirming setVariable changed live execution.
   must_contain("\"event\":\"output\"");
-  must_contain("30");
+  must_contain("119");
 
-  send("{\"seq\":9,\"type\":\"request\",\"command\":\"disconnect\"}");
+  send("{\"seq\":12,\"type\":\"request\",\"command\":\"disconnect\"}");
   ::close(to_child);
 
   int status = 0;

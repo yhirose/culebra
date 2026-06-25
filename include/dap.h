@@ -125,20 +125,21 @@ class DapServer {
       off += n;
     }
   }
-  void respond(const Value& req, Value body, bool success = true) {
-    send(Obj()
-             .set("type", S("response"))
-             .set("seq", L(seq_++))
-             .set("request_seq", at(req, "seq").type == Value::Long
-                                     ? L(at(req, "seq").to_long())
-                                     : L(0))
-             .set("success", Bv(success))
-             .set("command", S(std::string(at(req, "command").type ==
-                                                   Value::String
-                                               ? at(req, "command").to_string()
-                                               : "")))
-             .set("body", std::move(body))
-             .v());
+  void respond(const Value& req, Value body, bool success = true,
+               const std::string& message = "") {
+    Obj r;
+    r.set("type", S("response"))
+        .set("seq", L(seq_++))
+        .set("request_seq", at(req, "seq").type == Value::Long
+                                ? L(at(req, "seq").to_long())
+                                : L(0))
+        .set("success", Bv(success))
+        .set("command", S(std::string(at(req, "command").type == Value::String
+                                          ? at(req, "command").to_string()
+                                          : "")));
+    if (!message.empty()) r.set("message", S(message));  // shown on failures
+    r.set("body", std::move(body));
+    send(r.v());
   }
   void event(const char* name, Value body) {
     send(Obj()
@@ -158,6 +159,8 @@ class DapServer {
     if (cmd == "initialize") {
       respond(req, Obj()
                        .set("supportsConfigurationDoneRequest", Bv(true))
+                       .set("supportsSetVariable", Bv(true))
+                       .set("supportsEvaluateForHovers", Bv(true))
                        .v());
       event("initialized", Obj().v());
     } else if (cmd == "launch") {
@@ -195,6 +198,10 @@ class DapServer {
                        .v());
     } else if (cmd == "variables") {
       respond(req, Obj().set("variables", collect_variables()).v());
+    } else if (cmd == "evaluate") {
+      do_evaluate(req);
+    } else if (cmd == "setVariable") {
+      do_set_variable(req);
     } else if (cmd == "continue") {
       request_resume(Step::RUN);
       respond(req, Obj().set("allThreadsContinued", Bv(true)).v());
@@ -346,6 +353,96 @@ class DapServer {
                          .v());
     }
     return arr(std::move(vars));
+  }
+
+  // Evaluate an expression string in the paused frame's environment. Runs on a
+  // fresh Interpreter sharing the singleton GC heap — the paused debuggee's
+  // frame roots are still on interp_gc()'s frame-root stack, so a collection
+  // here won't sweep its live values. Uses the bare `eval` (not `interpret`,
+  // which would flush the frame's pending defers). The debuggee thread is
+  // parked in cv_.wait, so reading its env from this thread is safe.
+  bool eval_in_frame(const std::string& expr, Value& out, std::string& err) {
+    std::shared_ptr<Environment> frame;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (!paused_ || !cur_env_) { err = "not paused"; return false; }
+      frame = cur_env_->shared_from_this();
+    }
+    std::vector<std::string> msgs;
+    auto ast = parse_with_transforms("(dap)", expr.data(), expr.size(), msgs);
+    if (!ast) { err = msgs.empty() ? "parse error" : msgs.front(); return false; }
+    try {
+      out = std::make_shared<Interpreter>()->eval(*ast, frame);
+      return true;
+    } catch (const CulebraError& e) {
+      err = std::string(e.kind) + ": " + e.what();
+    } catch (const std::exception& e) {
+      err = e.what();
+    }
+    return false;
+  }
+
+  void do_evaluate(const Value& req) {
+    const Value& a = at(req, "arguments");
+    std::string expr = at(a, "expression").type == Value::String
+                           ? std::string(at(a, "expression").to_string())
+                           : "";
+    Value v;
+    std::string err;
+    if (eval_in_frame(expr, v, err)) {
+      respond(req, Obj()
+                       .set("result", S(v.str()))
+                       .set("type", S(v.type_name()))
+                       .set("variablesReference", L(0))
+                       .v());
+    } else {
+      respond(req, Obj().set("result", S(err)).set("variablesReference", L(0)).v(),
+              /*success=*/false, err);
+    }
+  }
+
+  void do_set_variable(const Value& req) {
+    const Value& a = at(req, "arguments");
+    std::string name = at(a, "name").type == Value::String
+                           ? std::string(at(a, "name").to_string())
+                           : "";
+    std::string valexpr = at(a, "value").type == Value::String
+                              ? std::string(at(a, "value").to_string())
+                              : "";
+    Value v;
+    std::string err;
+    if (!eval_in_frame(valexpr, v, err)) {
+      respond(req, Obj().v(), /*success=*/false, err);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (!paused_ || !cur_env_) {
+        respond(req, Obj().v(), false, "not paused");
+        return;
+      }
+      // assign() walks the outer chain and asserts the name exists — that
+      // assert is compiled out in release, so an unknown name (a non-conformant
+      // client) would deref a null root. Guard with the same chained lookup.
+      if (!cur_env_->has(name)) {
+        respond(req, Obj().v(), false, "no variable '" + name + "' in scope");
+        return;
+      }
+      try {
+        cur_env_->assign(name, v);  // honours immutability (throws if `let`-bound)
+      } catch (const CulebraError& e) {
+        respond(req, Obj().v(), false, std::string(e.kind) + ": " + e.what());
+        return;
+      } catch (const std::exception& e) {
+        respond(req, Obj().v(), false, e.what());
+        return;
+      }
+    }
+    respond(req, Obj()
+                     .set("value", S(v.str()))
+                     .set("type", S(v.type_name()))
+                     .set("variablesReference", L(0))
+                     .v());
   }
 
   // ---- debuggee lifecycle ----------------------------------------------

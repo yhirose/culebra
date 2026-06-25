@@ -37,10 +37,13 @@ Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 - **Stepping**: continue, step over (`next`), step in, step out; stop on entry
 - **Call stack** (current frame) with source location
 - **Variables**: in-scope locals at the stop point
+- **Watch / evaluate**: evaluate an expression in the stopped frame (watch
+  panel, hover, debug console) — e.g. `x + y`, `arr[0]`, a function call
+- **Set variable**: edit a `mut` variable's value (an immutable `let` binding
+  is rejected); the change takes effect in the running program
 - **Program output** in the debug console
 
-Not yet supported (use breakpoints + inspection): editing variables
-(`setVariable`), watch/`evaluate` expressions, and conditional breakpoints.
+Not yet supported: conditional breakpoints and a multi-frame named call stack.
 
 ## VSCode
 
