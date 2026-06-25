@@ -519,3 +519,10 @@ add_test(NAME jit_error_pos_test
 add_test(NAME signal_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/signal_test.sh
                  $<TARGET_FILE:culebra>)
+
+# IO.stdin() reader handle — .lines() / .read() / .read(n) over a real pipe,
+# across interp / JIT / AOT (a .cul sweep test can't feed stdin or use
+# Sys.executable as an interpreter under AOT).
+add_test(NAME io_stdin_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdin_test.sh
+                 $<TARGET_FILE:culebra>)

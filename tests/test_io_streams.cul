@@ -1,18 +1,19 @@
-// IO standard-stream additions: eputs / eprint (write to stderr) and
-// read_all (read stdin to EOF). The stderr writes go to fd 2, so they don't
-// affect this file's stdout (which the test harness compares). read_all is
-// verified out-of-band with piped input — calling it here would block on an
-// interactive stdin, so it's guarded behind stdin_is_terminal.
+// IO standard-stream additions: eputs / eprint (write to stderr) and the
+// IO.stdin() reader handle. The stderr writes go to fd 2, so they don't
+// affect this file's stdout (which the test harness compares). The stdin
+// handle is exercised with real piped input in test_io_stdin.cul — slurping
+// it here would block on an interactive stdin, so it's guarded behind
+// stdin_is_terminal.
 
 IO.eputs("eputs → stderr (quoted)")
 IO.eprint("eprint → stderr (raw)\n")
 
-// Exercise read_all only when stdin is a pipe/file (never an interactive
-// terminal, which would block waiting for EOF). Returns a String either way.
+// Exercise IO.stdin().read() only when stdin is a pipe/file (never an
+// interactive terminal, which would block waiting for EOF). Returns a String.
 if IO.stdin_is_terminal() {
   IO.puts("test_io_streams OK")
 } else {
-  let s = IO.read_all()
+  let s = IO.stdin().read()
   assert_eq(type_of(s), "String")
   IO.puts("test_io_streams OK")
 }

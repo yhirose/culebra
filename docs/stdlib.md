@@ -293,15 +293,31 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `IO.read_all() -> String`
+### `IO.stdin() -> reader`
 
-Read all of standard input to EOF. The portable replacement for
-`FS.read("/dev/stdin")` (which is POSIX-only — `/dev/stdin` doesn't exist on
-Windows). Empty string on immediate EOF.
+Return a read-only handle over standard input, sharing the same reader shape
+as a `File` handle (so source-generic code works over either):
+
+| Method | Result |
+| --- | --- |
+| `.read()` | the rest of standard input to EOF (the portable replacement for `FS.read("/dev/stdin")`, which is POSIX-only); empty string on immediate EOF |
+| `.read(n: Long)` | up to `n` bytes (fewer only at EOF) |
+| `.lines()` | a lazy iterator over input lines, trailing newline stripped, stopping at EOF |
+
+`.lines()` streams in constant memory — the idiom for Unix filters over large
+or unbounded input (`tail -f \| script`). Reads are blocking and interruptible
+(a single Ctrl+C breaks the wait). Standard input is single-consumer; the
+methods share one underlying buffer, so `.read(n)` then `.lines()` continues
+where the byte read left off.
 
 ```culebra
 # doctest: skip
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.read_all() }
+# Filter: uppercase lines containing "error".
+for line in IO.stdin().lines() {
+    if line.contains("error") { IO.puts(line.upper()) }
+}
+
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
 ```
 
 ### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`

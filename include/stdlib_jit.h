@@ -2230,6 +2230,51 @@ CULEBRA_RT_INLINE JitValue _culebra_file_build_handle(int64_t id) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// --- IO.stdin() handle: a read-only reader over standard input, sharing the
+// File reader shape (.lines() / .read(n=nil)). No fd/close — stdin isn't
+// seekable or closeable, so it carries no resource and needs no drop. ------
+
+// Per-step fast-fn for the .lines() iterator: yield each line (newline
+// stripped) until EOF.
+inline void _stdin_lines_fast_fn(JitClosure*, JitValue, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  std::string out;
+  if (!culebra::read_stdin_line_interruptible(out)) { *done = true; return; }
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
+}
+CULEBRA_RT_INLINE JitValue _jit_stdin_lines(JitClosure*, JitValue self, int64_t,
+                                            JitValue*) {
+  // The iterator reads the thread-local stdin buffer, not the handle, so no
+  // keep-alive capture is needed — just consume the method ABI's +1 on self.
+  auto* it = _iter_wrap_fast<&_stdin_lines_fast_fn>({});
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+// read(n=nil): nil → rest of stdin, Long → up to n bytes. A non-Long n is the
+// interp's to_long() body error (mirrors _jit_file_read).
+CULEBRA_RT_INLINE JitValue _jit_stdin_read(JitClosure*, JitValue self,
+                                           int64_t n, JitValue* args) {
+  const bool has_n = _jit_file_arg_present(n, args, 0) &&
+                     args[0].tag != TAG_NIL;
+  if (has_n && args[0].tag != TAG_LONG)
+    _jit_file_body_type_error(self, "Long", args[0].tag);
+  std::string out = has_n ? culebra::read_stdin_n_interruptible(
+                                static_cast<size_t>(args[0].data))
+                          : culebra::read_stdin_all_interruptible();
+  culebra_runtime_value_release(self.tag, self.data);  // method ABI: self is +1
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
+CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* read_meta = _jit_make_handle_meta({"n"}, {true});
+  _jit_handle_bind_method(h, "read", _jit_stdin_read, 0, read_meta);
+  _jit_handle_bind_method(h, "lines", _jit_stdin_lines, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
@@ -2523,8 +2568,8 @@ inline JitValue _ns_io_print(JitValue* a, int64_t) {
 inline JitValue _ns_io_input(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_input());
 }
-inline JitValue _ns_io_read_all(JitValue*, int64_t) {
-  return _ns_adapt::v_string(culebra_runtime_read_all());
+inline JitValue _ns_io_stdin(JitValue*, int64_t) {
+  return _culebra_stdin_build_handle();
 }
 inline JitValue _ns_io_eputs(JitValue* a, int64_t) {
   culebra_runtime_eputs(a[0].tag, a[0].data);
@@ -4085,7 +4130,7 @@ inline const NsMethod kNsMethods[] = {
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "input",     0, &_ns_io_input},
-  {"IO",     "read_all",  0, &_ns_io_read_all},
+  {"IO",     "stdin",     0, &_ns_io_stdin},
   {"IO",     "eputs",     1, &_ns_io_eputs},
   {"IO",     "eprint",    1, &_ns_io_eprint},
   {"IO",     "stdin_is_terminal",  0, &_ns_io_stdin_is_terminal},

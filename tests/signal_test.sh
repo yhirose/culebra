@@ -60,17 +60,18 @@ check() {
 UNCAUGHT_OUT='DEFER|interrupted|'
 CAUGHT_OUT='DEFER|CAUGHT Interrupted 0:0|CONT|'
 
-# A program blocked in IO.read_all is interruptible by a single Ctrl+C, not
-# just the force-killing second press (read_all polls the flag while waiting).
+# A program blocked in IO.stdin().read() is interruptible by a single Ctrl+C,
+# not just the force-killing second press (the read polls the flag while
+# waiting).
 cat > "$TMP/stdin.cul" <<'EOF'
 defer { IO.eprint("DEFER\n") }
-let s = IO.read_all()
+let s = IO.stdin().read()
 IO.eprint("GOT {s.size()}\n")
 EOF
 
 # check_stdin <desc> -- <command...>
 # Runs the command with a stdin that stays open but never delivers data (so it
-# blocks in read_all), then sends SIGINT. Expects an uncaught Interrupted: the
+# blocks in the read), then sends SIGINT. Expects an uncaught Interrupted: the
 # defer runs and it exits 130 — *without* reading any input ("GOT" never prints).
 check_stdin() {
   local desc="$1"; shift
@@ -116,7 +117,7 @@ EOF
 
 cat > "$TMP/http.cul" <<'EOF'
 defer { IO.eprint("DEFER\n") }
-let port = IO.read_all().trim()
+let port = IO.stdin().read().trim()
 let resp = Http.get("http://127.0.0.1:{port}/", timeout: 60000)
 IO.eprint("GOT {resp.status}\n")
 EOF

@@ -2500,7 +2500,7 @@ kill するのではなく、Python の `KeyboardInterrupt` と同じモデル�
 
 * 実行中の計算は次のループ反復または文の境界で停止し `Interrupted`
   を throw します。tight なループ（`while true {}` でも）も中断可能で、
-  `IO.read_all` / `IO.input`（stdin 待ち）、ブロッキングな `Http`
+  `IO.stdin().read()` / `IO.input`（stdin 待ち）、ブロッキングな `Http`
   リクエスト（接続・応答待ち・本体転送）、ブロッキングな `Proc.run` /
   `Proc.all` / `Proc.race`（子プロセスは kill される）も同様に、1 回の
   押下で待機を中断できます（強制終了の 2 回目を待つ必要はありません）。

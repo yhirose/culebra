@@ -237,6 +237,48 @@ inline Value make_math_namespace() {
   return Value(std::move(ns));
 }
 
+// `IO.stdin()` -> a read-only handle over standard input, sharing the File
+// reader shape: `.lines()` (lazy, newline-stripped) and `.read(n=nil)` (nil =
+// rest of input, Long = up to n bytes). No close/seek (stdin isn't seekable),
+// so source-generic code that only reads works over both File and stdin.
+inline Value make_stdin_handle() {
+  using namespace std::literals;
+  ObjectValue h;
+  // Native methods aren't Sendable; reject at the isolate boundary like File.
+  h.initialize("__nonsendable__", Value(true), false);
+
+  h.initialize(
+      "read",
+      Value(FunctionValue({{"n", false, ""sv, nullptr, kw_default_nil()}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            const auto& n = env->get("n");
+                            if (n.type == Value::Nil)
+                              return Value(read_stdin_all_interruptible());
+                            return Value(read_stdin_n_interruptible(
+                                static_cast<size_t>(n.to_long())));
+                          },
+                          "String"sv)),
+      false);
+
+  h.initialize(
+      "lines",
+      Value(FunctionValue({},
+                          [](std::shared_ptr<Environment>) {
+                            return _make_iterator(
+                                [](std::shared_ptr<Environment>)
+                                    -> std::optional<Value> {
+                                  std::string out;
+                                  if (!read_stdin_line_interruptible(out))
+                                    return _iter_step_done();
+                                  return _iter_step_value(Value(std::move(out)));
+                                });
+                          },
+                          "Object"sv)),
+      false);
+
+  return Value(std::move(h));
+}
+
 inline Value make_io_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -277,18 +319,18 @@ inline Value make_io_namespace() {
                           "String"sv)),
       false);
 
-  // Read all of standard input to EOF (the portable replacement for
-  // `FS.read("/dev/stdin")`, which is POSIX-only). Empty on immediate EOF.
+  // `IO.stdin()` — a read-only handle over standard input. Use `.read()` for
+  // the whole stream (the portable replacement for `FS.read("/dev/stdin")`),
+  // `.read(n)` for n bytes, or `.lines()` to stream line by line. No
+  // stdio_mutex: a blocking, interruptible stdin read held under it would
+  // stall every isolate's output, and stdin is single-consumer.
   ns.initialize(
-      "read_all",
+      "stdin",
       Value(FunctionValue({},
                           [](std::shared_ptr<Environment>) {
-                            // No stdio_mutex: holding it across a blocking,
-                            // interruptible stdin read would stall every
-                            // isolate's output, and stdin is single-consumer.
-                            return Value(read_stdin_all_interruptible());
+                            return make_stdin_handle();
                           },
-                          "String"sv)),
+                          "Object"sv)),
       false);
 
   // Write to standard error — the twin of print / puts (no stderr writer

@@ -1548,8 +1548,8 @@ inline void throw_if_interrupted() {
 // waiting for stdin couldn't be stopped by a single Ctrl+C (only the second,
 // force-killing press). These read the raw fd in a `poll` loop that wakes every
 // ~200ms to honor the interrupt flag, throwing Interrupted if it fires — so a
-// single Ctrl+C breaks a stdin wait too. `IO.read_all` / `IO.input` (both
-// backends) route through here. A thread-local buffer holds bytes read past a
+// single Ctrl+C breaks a stdin wait too. `IO.stdin()` (read / lines) / `IO.input`
+// (both backends) route through here. A thread-local buffer holds bytes read past a
 // line so the next read sees them. POSIX only; Windows keeps the blocking
 // `std::cin`/stdio path (not a current build target).
 
@@ -1599,6 +1599,30 @@ inline std::string read_stdin_all_interruptible() {
   while (_stdin_fill()) {
     out += _stdin_leftover();
     _stdin_leftover().clear();
+  }
+  return out;
+#endif
+}
+
+// Read up to `n` bytes from stdin, interruptibly. Returns fewer than `n` only
+// at EOF (an empty string means immediate EOF). Shares the leftover buffer
+// with the line reader, so the two interleave correctly.
+inline std::string read_stdin_n_interruptible(size_t n) {
+#if defined(_WIN32)
+  std::string out;
+  out.reserve(n);
+  int c;
+  while (out.size() < n && (c = std::fgetc(stdin)) != EOF)
+    out.push_back(static_cast<char>(c));
+  return out;
+#else
+  std::string out;
+  auto& buf = _stdin_leftover();
+  while (out.size() < n) {
+    if (buf.empty() && !_stdin_fill()) break;  // EOF
+    size_t take = std::min(n - out.size(), buf.size());
+    out.append(buf, 0, take);
+    buf.erase(0, take);
   }
   return out;
 #endif

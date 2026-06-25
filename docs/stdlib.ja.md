@@ -285,14 +285,30 @@ name = IO.input()
 puts("Hello, {name}")
 ```
 
-### `IO.read_all() -> String`
+### `IO.stdin() -> reader`
 
-標準入力を EOF まで全て読み取ります。`FS.read("/dev/stdin")`（POSIX 専用＝
-Windows に `/dev/stdin` は無い）の移植可能な代替。即 EOF なら空文字列。
+標準入力に対する読み取り専用ハンドルを返します。`File` ハンドルと同じ reader
+インターフェース（だからソース非依存のコードが両方で動く）:
+
+| メソッド | 結果 |
+| --- | --- |
+| `.read()` | 標準入力を EOF まで全て（`FS.read("/dev/stdin")` の移植可能な代替。POSIX 専用ではない）。即 EOF なら空文字列 |
+| `.read(n: Long)` | 最大 `n` バイト（EOF 時のみ少なく返る） |
+| `.lines()` | 入力行の遅延 iterator。末尾改行を除去し、EOF で停止 |
+
+`.lines()` は定数メモリでストリーミングする = 巨大・無限入力（`tail -f \| script`）に対する
+Unix フィルタのイディオム。読み取りはブロッキングかつ割り込み可能（Ctrl+C 1 回で待機解除）。
+標準入力は単一消費者で、各メソッドは内部バッファを共有するので `.read(n)` の後の `.lines()`
+はバイト読みの続きから続行します。
 
 ```culebra
 # doctest: skip
-let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.read_all() }
+# フィルタ: "error" を含む行を大文字化
+for line in IO.stdin().lines() {
+    if line.contains("error") { IO.puts(line.upper()) }
+}
+
+let src = if IO.stdin_is_terminal() { read_clipboard() } else { IO.stdin().read() }
 ```
 
 ### `IO.eputs(x: Any) -> Nil` / `IO.eprint(x: Any) -> Nil`
