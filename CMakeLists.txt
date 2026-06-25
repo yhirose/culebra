@@ -526,3 +526,10 @@ add_test(NAME signal_test
 add_test(NAME io_stdin_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdin_test.sh
                  $<TARGET_FILE:culebra>)
+
+# Log records on stderr — content (levels, fields, filtering, child binding)
+# across interp / JIT / AOT (logs never reach stdout, so the .cul sweep can't
+# verify them).
+add_test(NAME log_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/log_test.sh
+                 $<TARGET_FILE:culebra>)

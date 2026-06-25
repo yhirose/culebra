@@ -1,0 +1,32 @@
+// Conformance: stdlib §Log. Leveled, structured logging to stderr.
+// Log output goes to stderr; the test harness compares stdout, so this asserts
+// the observable behaviors (every level + child loggers don't crash on any
+// backend, set_level/set_format reject bad input) and prints OK. The stderr
+// content itself is byte-checked across backends in log_test.sh.
+
+// All levels + structured fields (output lands on stderr).
+Log.debug("d")
+Log.info("i", {a: 1})
+Log.warn("w", {b: 2})
+Log.error("e", {err: "x"})
+
+// Child logger: returns a logger carrying bound fields; nests.
+let rlog = Log.with({request_id: "r1"})
+rlog.info("child")
+rlog.with({sub: "s"}).warn("grandchild")
+
+// Format + level setters accept their valid values.
+Log.set_format("json")
+Log.set_format("text")
+Log.set_level("debug")
+Log.set_level("warn")
+Log.set_level("info")
+
+// Invalid level / format raise (a thrown String, catchable). Identical on
+// every backend.
+let e1 = try { Log.set_level("bogus"); "no-error" } catch e { e }
+assert_true(e1.contains("unknown level 'bogus'"))
+let e2 = try { Log.set_format("xml"); "no-error" } catch e { e }
+assert_true(e2.contains("unknown format 'xml'"))
+
+IO.puts("test_log OK")

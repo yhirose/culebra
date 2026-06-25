@@ -5363,6 +5363,18 @@ inline constexpr const char* STRING_REPLACE_MODULE_SOURCE =
     "if type_of(pat) == \"String\" { s.split(pat).join(repl) } "
     "else { pat.replace_all(s, repl) } }\n";
 
+// `Log` — leveled, structured logging to stderr, built on `_Time` (timestamp),
+// `IO.eprint` (sink), `JSON.stringify` (json format), and `Sys.env`. Levels
+// debug<info<warn<error; the threshold ($LOG_LEVEL or set_level, default info)
+// filters. `Log.{level}(msg, fields={})` emits `msg` plus the structured
+// fields; `Log.with(fields)` returns a child logger that binds those fields
+// into every record (request-scoped context). Format ($LOG_FORMAT or
+// set_format, default "text", or "json" for JSON Lines); the text level is
+// colored when stderr is a tty. Single-line so JIT/AOT preamble prepending
+// shifts user-code error lines by only one, matching the other modules.
+inline constexpr const char* LOG_MODULE_SOURCE =
+    "let _log_module = fn () { let _levels = {debug: 0, info: 1, warn: 2, error: 3}; let mut _threshold = _levels.get(Sys.env(\"LOG_LEVEL\"), 1); let mut _format = if Sys.env(\"LOG_FORMAT\") == \"json\" { \"json\" } else { \"text\" }; let _colors = {debug: \"\\x1b[2m\", info: \"\\x1b[32m\", warn: \"\\x1b[33m\", error: \"\\x1b[31m\"}; let _emit = fn (name, num, msg, bound, fields) { if num >= _threshold { let _all = {...bound, ...fields}; let ts = _Time.iso_nanos(_Time.now_nanos(), true); if _format == \"json\" { IO.eprint(JSON.stringify({..._all, time: ts, level: name, msg: msg}) + \"\\n\"); } else { let mut lvl = name; if IO.stderr_is_terminal() { lvl = _colors.get(name, \"\") + name + \"\\x1b[0m\"; }; let mut line = ts + \" \" + lvl + \" \" + msg; for k, v in _all { line = line + \" \" + k + \"=\" + to_string(v); }; IO.eprint(line + \"\\n\"); }; } }; let _methods = fn (bound) { {debug: fn (msg, fields = {}) { _emit(\"debug\", 0, msg, bound, fields) }, info: fn (msg, fields = {}) { _emit(\"info\", 1, msg, bound, fields) }, warn: fn (msg, fields = {}) { _emit(\"warn\", 2, msg, bound, fields) }, error: fn (msg, fields = {}) { _emit(\"error\", 3, msg, bound, fields) }, with: fn (more) { _methods({...bound, ...more}) }} }; let _set_level = fn (l) { let n = _levels.get(l, -1); if n < 0 { throw \"Log.set_level: unknown level '\" + l + \"'\" }; _threshold = n; }; let _set_format = fn (f) { if f != \"text\" { if f != \"json\" { throw \"Log.set_format: unknown format '\" + f + \"'\" } }; _format = f; }; {..._methods({}), set_level: _set_level, set_format: _set_format} }; let Log = _log_module()\n";
+
 // Transitional concatenation used by the JIT path until it adopts the
 // env's lazy bindings (Phase 3 of [[project-startup-overhead]]). The
 // interp path is already preamble-free.
@@ -5402,6 +5414,7 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Regex") || has("re'") || has("re\"") || has("re`"))
     preamble.append(REGEX_MODULE_SOURCE);
   if (has("replace")) preamble.append(STRING_REPLACE_MODULE_SOURCE);
+  if (has("Log")) preamble.append(LOG_MODULE_SOURCE);
   return preamble;
 }
 
@@ -5469,6 +5482,7 @@ inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Args", ARGS_MODULE_SOURCE);
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
+  env.initialize_lazy("Log", LOG_MODULE_SOURCE);
   // Matcher family — 10 symbols share one source via initialize_lazy_group.
   // First `get` of any matcher parses + evals the source once; the others
   // are picked up by the non-Nil guard in resolve_from_lazy.

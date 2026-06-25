@@ -53,8 +53,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 20. [`Env`](#20-env) — dotenv 形式の `.env` を parse / load
 21. [`UUID`](#21-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
 22. [`Term`](#22-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
-23. [設計上の注記](#23-設計上の注記)
-24. [未収録（将来検討）](#24-未収録将来検討)
+23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
+24. [設計上の注記](#24-設計上の注記)
+25. [未収録（将来検討）](#25-未収録将来検討)
 
 **目的別索引**
 
@@ -82,6 +83,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | `.env` 設定ファイルの読込 | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | UUID の生成 | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
+| レベル付き / 構造化ログ | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
 | 別スレッドで処理を実行（CPU 並列） | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | 可変長の read-only データをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
@@ -3052,7 +3054,59 @@ Term.app(fn (s) {
 
 ---
 
-## 23. 設計上の注記
+## 23. `Log`
+
+**標準エラー出力**へのレベル付き構造化ログ（プログラムの stdout データを汚さない
+＝`myscript | jq` のようなパイプを壊さない）。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Log.debug(msg: String, fields: Object = {})` | `debug` でログ |
+| `Log.info(msg, fields = {})` | `info` でログ |
+| `Log.warn(msg, fields = {})` | `warn` でログ |
+| `Log.error(msg, fields = {})` | `error` でログ |
+| `Log.with(fields: Object) -> logger` | `fields` を全レコードに束縛する child logger |
+| `Log.set_level(level: String) -> Nil` | しきい値を設定（`"debug" < "info" < "warn" < "error"`） |
+| `Log.set_format(format: String) -> Nil` | `"text"`（既定）または `"json"` |
+
+各呼び出しはメッセージと省略可能な構造化フィールド `Object` を取る。しきい値以上の
+レコードだけが出力される（既定 `info` なので `debug` は落ちる）。しきい値とフォーマットは
+`LOG_LEVEL` / `LOG_FORMAT` 環境変数を既定値とし、`set_level` / `set_format` で上書き可能
+（不明なレベル・フォーマットは raise）。タイムスタンプ（ISO 8601 UTC）は常に付与。
+
+`text` は人間可読（stderr が端末なら level に色が付く）:
+
+```
+2026-06-24T21:30:01Z info request done method=GET status=200 ms=12.4
+```
+
+`json` は1行1オブジェクト（JSON Lines — `jq` やログシッパーへ）:
+
+```json
+{"time":"2026-06-24T21:30:01Z","level":"info","msg":"request done","method":"GET","status":200,"ms":12.4}
+```
+
+`Log.with(fields)` は **child logger** を返し、`fields` を全行に乗せる
+（リクエスト/ジョブ単位の文脈を毎回でなく一度だけ束縛）。child は親のレベル/フォーマットを
+共有し、ネスト可能。予約キー `time`・`level`・`msg` は同名フィールドより常に優先される。
+
+```culebra
+# doctest: skip
+Log.info("server started")
+Log.set_level("debug")
+Log.debug("cache miss", {key: "user:42"})
+
+let log = Log.with({request_id: id})   # 文脈を一度束縛
+log.info("received")                    # ...以後の全行に付与
+log.error("upstream failed", {status: 502})
+```
+
+値は text では `to_string`、json では JSON namespace で直列化される。致命的状況は
+`error` でログして `Sys.exit(1)` する（専用の `fatal` レベルは無い）。
+
+---
+
+## 24. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3106,7 +3160,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 24. 未収録（将来検討）
+## 25. 未収録（将来検討）
 
 ### 重量級データ構造
 

@@ -55,8 +55,9 @@ Conventions used below:
 20. [`Env`](#20-env) — parse / load dotenv-style `.env` files
 21. [`UUID`](#21-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
 22. [`Term`](#22-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
-23. [Design notes](#23-design-notes)
-24. [Not included (yet)](#24-not-included-yet)
+23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
+24. [Design notes](#24-design-notes)
+25. [Not included (yet)](#25-not-included-yet)
 
 **Where to find what**
 
@@ -84,6 +85,7 @@ Conventions used below:
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
+| Leveled / structured logging | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
 | Run work on another thread (CPU parallelism) | [§12 Isolate](#12-isolate) — `Isolate.spawn(\|\| fib(40))` |
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, Vec2)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
@@ -3170,7 +3172,62 @@ See `examples/donut.cul` (a no-input render loop) and `examples/froggy.cul`
 
 ---
 
-## 23. Design notes
+## 23. `Log`
+
+Leveled, structured logging to **standard error** (so it never pollutes the
+program's stdout data, which a pipe like `myscript | jq` consumes).
+
+| Function | Result |
+| --- | --- |
+| `Log.debug(msg: String, fields: Object = {})` | log at `debug` |
+| `Log.info(msg, fields = {})` | log at `info` |
+| `Log.warn(msg, fields = {})` | log at `warn` |
+| `Log.error(msg, fields = {})` | log at `error` |
+| `Log.with(fields: Object) -> logger` | a child logger that binds `fields` into every record |
+| `Log.set_level(level: String) -> Nil` | set the threshold (`"debug" < "info" < "warn" < "error"`) |
+| `Log.set_format(format: String) -> Nil` | `"text"` (default) or `"json"` |
+
+Each call takes a message and an optional `Object` of structured fields. Only
+records at or above the threshold are emitted (default `info`, so `debug` is
+dropped). The threshold and format default from the `LOG_LEVEL` / `LOG_FORMAT`
+environment variables and can be overridden with `set_level` / `set_format`; an
+unknown level or format raises. A timestamp (ISO 8601 UTC) is always included.
+
+`text` is human-readable (the level is colored when stderr is a terminal):
+
+```
+2026-06-24T21:30:01Z info request done method=GET status=200 ms=12.4
+```
+
+`json` emits one object per line (JSON Lines — pipe to `jq` or a log shipper):
+
+```json
+{"time":"2026-06-24T21:30:01Z","level":"info","msg":"request done","method":"GET","status":200,"ms":12.4}
+```
+
+`Log.with(fields)` returns a **child logger** that carries `fields` on every
+line, so request- or job-scoped context is bound once instead of repeated.
+Children share the global level/format and can nest. The reserved keys `time`,
+`level`, and `msg` always win over a field of the same name.
+
+```culebra
+# doctest: skip
+Log.info("server started")
+Log.set_level("debug")
+Log.debug("cache miss", {key: "user:42"})
+
+let log = Log.with({request_id: id})   # bind context once
+log.info("received")                    # ...carried on every line
+log.error("upstream failed", {status: 502})
+```
+
+Values are rendered with `to_string` in text mode and serialized via the JSON
+namespace in json mode. For a fatal condition, log at `error` then
+`Sys.exit(1)` — there is no separate `fatal` level.
+
+---
+
+## 24. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3224,7 +3281,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 24. Not included (yet)
+## 25. Not included (yet)
 
 ### Heavier data structures
 
