@@ -350,24 +350,75 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       LoopDepthGuard g(loop_depth_, 0);
       std::vector<std::pair<std::string, std::string>> pk_fields;
       bool pk_ok = true;
-      // A duplicate member name in one class body is always a mistake —
-      // classes don't overload (the earlier or later definition would be
-      // silently dead), so reject pre-eval on every backend. The interp
-      // used to keep the first silently and the JIT threw a catchable
-      // ImmutableError mid-definition (leaving a half-built class behind
-      // a catch). Static and instance members live in different places
-      // (the class object vs instances), so each tracks its own set.
-      std::set<std::string, std::less<>> seen_static, seen_inst;
+      // Member-name rules in a class body. Instance methods MAY overload —
+      // same name, distinct positional-param-type signatures merge into one
+      // method-multidispatch dispatcher at eval/compile time. Everything else
+      // stays an error (the later definition would be silently dead): a
+      // duplicate field, a field/method name clash, any duplicate static
+      // member (statics don't overload yet), or two instance methods with an
+      // identical signature (unreachable / ambiguous dispatch). Static and
+      // instance members live in different places (the class object vs
+      // instances), so each tracks its own set.
+      auto method_signature = [](const peg::Ast& params) {
+        // Mirror the runtime's MultiMethod extraction: only regular
+        // positional params (before any `*` kw-only separator, excluding
+        // `**rest`) score; `*args` makes it variadic. Canonicalize types so
+        // `Long|Float` and `Long | Float` compare equal.
+        std::string sig;
+        bool kw_region = false;
+        for (const auto& pn : params.nodes) {
+          auto pv = culebra::view_parameter(*pn);
+          if (pv.is_kw_only_sep) { kw_region = true; continue; }
+          if (pv.is_kwargs_rest || kw_region) continue;
+          if (pv.is_args_rest) { sig += "*,"; continue; }
+          sig += culebra::canonicalize_type_annotation(pv.type_annotation);
+          sig += ',';
+        }
+        return sig;
+      };
+      auto dup_member = [&](const culebra::MethodView& mv) {
+        diags_.push_back(Diagnostic{
+            "SyntaxError",
+            std::format("duplicate member '{}' in class `{}`", mv.name,
+                        class_name),
+            static_cast<long>(mv.name_line),
+            static_cast<long>(mv.name_col), Severity::Error});
+      };
+      std::set<std::string, std::less<>> seen_static, inst_fields, seen_special;
+      std::map<std::string, std::set<std::string>, std::less<>> inst_methods;
+      // Constructors and operator/dunder methods (`__call__`, `__add__`, …)
+      // dispatch through dedicated paths, not the method dispatcher, so they
+      // don't overload yet — any duplicate is an error.
+      auto is_dunder = [](std::string_view n) {
+        return n.size() >= 4 && n.substr(0, 2) == "__" &&
+               n.substr(n.size() - 2) == "__";
+      };
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
-        auto& seen = mv.is_static ? seen_static : seen_inst;
-        if (!seen.insert(std::string(mv.name)).second) {
-          diags_.push_back(Diagnostic{
-              "SyntaxError",
-              std::format("duplicate member '{}' in class `{}`", mv.name,
-                          class_name),
-              static_cast<long>(mv.name_line),
-              static_cast<long>(mv.name_col), Severity::Error});
+        bool is_field_member = mv.is_field || mv.is_typed_field;
+        if (mv.is_static) {
+          if (!seen_static.insert(std::string(mv.name)).second) dup_member(mv);
+        } else if (is_field_member) {
+          if (!inst_fields.insert(std::string(mv.name)).second ||
+              inst_methods.count(mv.name)) {
+            dup_member(mv);
+          }
+        } else if (mv.name == "new" || is_dunder(mv.name)) {
+          if (!seen_special.insert(std::string(mv.name)).second) dup_member(mv);
+        } else {  // instance method — overloads allowed, identical sig rejected
+          if (inst_fields.count(mv.name)) {
+            dup_member(mv);
+          } else if (!inst_methods[std::string(mv.name)]
+                          .insert(method_signature(*mv.params))
+                          .second) {
+            diags_.push_back(Diagnostic{
+                "SyntaxError",
+                std::format("duplicate method '{}' with identical signature "
+                            "in class `{}`",
+                            mv.name, class_name),
+                static_cast<long>(mv.name_line),
+                static_cast<long>(mv.name_col), Severity::Error});
+          }
         }
         if (mv.is_field || mv.is_typed_field) {
           if (is_packable && mv.is_typed_field) {

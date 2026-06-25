@@ -809,4 +809,25 @@ for c in fnty {
   case("fnty|" + c, c)
 }
 
+# --- Dimension 35: method multidispatch (class instance methods) ----------
+# A class may declare same-named instance methods with distinct positional
+# param-type signatures; `obj.m(args)` dispatches on the explicit arg types
+# with `this` fixed by the lookup. Covers type/arity dispatch, `this` read in
+# the picked overload (positional + kwarg call), default-param overloads,
+# class-instance-typed dispatch, and the no-match DispatchError (kind +
+# position must agree across backends). Single-method classes stay bare.
+let mmd = [
+  'class C { new(){} go(x: Long){"l"} go(x: String){"s"} }; C.new().go(1) + C.new().go("a")',
+  'class C { new(){} go(x: Long){"one"} go(x: Long, y: Long){"two"} }; C.new().go(1) + C.new().go(1, 2)',
+  'class B { new(n){this.n=n} add(x: Long){this.n+x} add(x: String){x.size()+this.n} }; to_string(B.new(10).add(5)) + to_string(B.new(10).add("abc"))',
+  'class D { new(){} f(x: Long, y: Long = 100){x+y} f(x: String){x.size()} }; to_string(D.new().f(1)) + to_string(D.new().f(1,2)) + to_string(D.new().f("qq"))',
+  'class S { new(){this.b=1000} h(x: Long, scale: Long = 2){this.b+x*scale} h(x: String){x.size()} }; to_string(S.new().h(5)) + to_string(S.new().h(5, scale: 10)) + to_string(S.new().h("hey"))',
+  'class A { new(n){this.n=n} }; class Z { new(){} f(a: A){"a"} f(x: Long){"n"} }; Z.new().f(A.new("c")) + Z.new().f(7)',
+  'class Z { new(){} f(x: Long){"n"} f(x: String){"s"} }; Z.new().f(1.5)',
+  'class S { new(){} only(x){x*2} }; to_string(S.new().only(21))',
+  'class T { new(){} __call__(n){n*2} }; class P { new(){} run(f: Function, x: Long){f(x)} run(x: Long){x} }; to_string(P.new().run(T.new(), 21)) + to_string(P.new().run(9))']
+for c in mmd {
+  case("mmd|" + c, c)
+}
+
 print(out.join("\n"))

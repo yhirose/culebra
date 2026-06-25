@@ -2673,9 +2673,20 @@ inline bool type_matches(const Value& val, std::string_view name) {
           if (sym.val.type != Value::Function) continue;
           const auto& fn = sym.val.template get<FunctionValue>();
           size_t arity = 0;
-          for (const auto& p : *fn.params) {
-            if (p.kw_only || p.kwargs_rest) continue;
-            arity++;
+          if (fn.multimethod_for_each_overload) {
+            // An overloaded method is a dispatcher whose own params are just
+            // `**__KWARGS__` (arity 0); report the widest overload so trait
+            // conformance sees the real arities (mirrors the JIT walk).
+            fn.multimethod_for_each_overload(
+                [&](const Value&, const std::vector<std::string>& pt,
+                    const std::vector<std::string>&, bool, size_t) {
+                  arity = std::max(arity, pt.size());
+                });
+          } else {
+            for (const auto& p : *fn.params) {
+              if (p.kw_only || p.kwargs_rest) continue;
+              arity++;
+            }
           }
           class_methods.emplace(std::string(k), arity);
         }
@@ -6406,12 +6417,39 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     neutralize_type_slot(fn.return_type, type_params);
   }
 
+  // Extract a MultiMethod (param types/names, variadic, min_params) from a
+  // user-function Value. Only regular positionally-bindable params drive
+  // dispatch — `*args` flips variadic, kw-only/`**rest` are sorted into the
+  // picked body by the kwsorter. Shared by eval_multifn_decl (free-fn
+  // overloads) and eval_class_decl (instance-method overloads) so both score
+  // identically.
+  MultiMethod make_multimethod_from_body(Value fn_val) {
+    MultiMethod m;
+    for (const auto& p : *fn_val.to_function().params) {
+      if (p.args_rest) { m.variadic = true; continue; }
+      if (p.kw_only || p.kwargs_rest) continue;
+      m.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
+      m.param_names.emplace_back(p.name);
+      if (p.default_expr == nullptr && p.default_value == nullptr)
+        m.min_params++;
+    }
+    m.body = std::move(fn_val);
+    return m;
+  }
+
   // Build a `fn name` multifn dispatcher Value over `methods` — the synthetic
   // `**__KWARGS__` thunk plus the introspection / cycle-collector / arity /
   // overload-serialization baked closures. `methods` is the live shared table;
   // later same-scope overloads append to it in place and every closure here
   // reads it lazily. Shared by eval_multifn_decl (a fresh `fn name`) and the
   // isolate child rebuilding a transferred dispatcher (make_multifn_shell).
+  // When invoked as a class instance method, the property-access wrapper
+  // (_wrap_method_with_this) puts the receiver `this` on the dispatcher's own
+  // callEnv; the picked overload then sees it (class instance-method overloads
+  // dispatch on the explicit args only, with `this` fixed by the lookup). A
+  // free-function dispatcher's callEnv has no own `this`, so nothing is bound.
+  // Keying off the binding rather than a flag means a method dispatcher
+  // rebuilt after isolate transfer (where no flag survives) still binds `this`.
   Value build_multifn_dispatcher(
       std::string_view name,
       const std::shared_ptr<std::vector<MultiMethod>>& methods) {
@@ -6450,8 +6488,17 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
               args.size(),
               {static_cast<size_t>(line), static_cast<size_t>(col)});
           call_args.splats.push_back(callEnv->get("__KWARGS__"));
+          // A method call binds the receiver into the picked overload via the
+          // same _wrap_method_with_this path a single method uses, so the body
+          // sees `this` alongside its params (def_env chains in too). Detected
+          // by an own `this` on callEnv — present iff invoked as a method.
+          Value body = (*methods)[pick.idx].body;
+          if (callEnv->has_own("this")) {
+            body = _wrap_method_with_this(
+                body, callEnv->get("this"), /*is_builtin=*/false);
+          }
           return self->invoke_user_function_with_args(
-              (*methods)[pick.idx].body, callEnv, std::move(call_args),
+              body, callEnv, std::move(call_args),
               static_cast<size_t>(line), static_cast<size_t>(col));
         }));
     auto& fv = dispatcher.get<FunctionValue>();
@@ -6555,22 +6602,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       return Value();
     }
 
-    MultiMethod method;
-    method.body = fn_val;
-    // Only regular positionally-bindable params participate in
-    // multifn type dispatch — kw-only and `**rest` are sorted into
-    // the picked method via the kwsorter side of the dispatcher.
-    for (const auto& p : *fn_val.to_function().params) {
-      if (p.args_rest) { method.variadic = true; continue; }
-      if (p.kw_only || p.kwargs_rest) continue;
-      // Canonicalize so `Long|Float` and `Long | Float` dedup to one entry.
-      method.param_types.emplace_back(canonicalize_type_annotation(p.type_name));
-      method.param_names.emplace_back(p.name);
-      // A param without a default is required; the rest may be omitted (filled
-      // by their default) or supplied by keyword.
-      if (p.default_expr == nullptr && p.default_value == nullptr)
-        method.min_params++;
-    }
+    MultiMethod method = make_multimethod_from_body(fn_val);
 
     // Accumulate onto an existing dispatcher only when one is bound in THIS
     // scope frame (has_own, not the lexical chain). That keeps same-scope
@@ -7430,6 +7462,30 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // win) before the instance template is frozen into build_instance.
     if (!derive_traits.empty()) {
       inject_derived_methods(method_template, class_name, derive_traits);
+    }
+
+    // Group same-named instance methods into one method-multidispatch
+    // dispatcher (Julia-style: scored on the explicit arg types, with `this`
+    // fixed by the property lookup). A name defined once stays a bare
+    // Function — zero overhead and byte-identical to the pre-overload path.
+    {
+      std::vector<std::pair<std::string_view, Value>> grouped;
+      for (size_t a = 0; a < method_template.size(); a++) {
+        auto name = method_template[a].first;
+        if (std::any_of(grouped.begin(), grouped.end(),
+                        [&](const auto& g) { return g.first == name; }))
+          continue;  // this name's (possibly merged) entry already emitted
+        auto methods = std::make_shared<std::vector<MultiMethod>>();
+        for (size_t b = a; b < method_template.size(); b++)
+          if (method_template[b].first == name)
+            methods->push_back(
+                make_multimethod_from_body(method_template[b].second));
+        if (methods->size() == 1)
+          grouped.push_back({name, method_template[a].second});
+        else
+          grouped.push_back({name, build_multifn_dispatcher(name, methods)});
+      }
+      method_template = std::move(grouped);
     }
 
     // Instances of a drop-having class register on the owned stack at

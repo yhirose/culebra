@@ -306,15 +306,38 @@ expect_dup_member_accept() {
     fi
   done
 }
-expect_dup_member_reject "method"   'class A { m() { 1 } m() { 2 } }'
-expect_dup_member_reject "arity"    'class A { m() { 1 } m(x) { x } }'
-expect_dup_member_reject "__call__" 'class A { __call__(x) { x } __call__(x) { x + 1 } }'
-expect_dup_member_reject "static"   'class A { static v = 1 static v = 2 }'
+# Constructors, operator/dunder methods, and statics don't overload — a
+# duplicate is a "duplicate member" error. A field clashing with a method
+# name is too.
+expect_dup_member_reject "__call__"     'class A { __call__(x) { x } __call__(x) { x + 1 } }'
+expect_dup_member_reject "dup new"      'class A { new(){} new(x){} }'
+expect_dup_member_reject "static"       'class A { static v = 1 static v = 2 }'
+expect_dup_member_reject "field/method" 'class A { foo(x){1} foo: Long = 0 }'
+
+# Two instance methods with an IDENTICAL positional-type signature are
+# unreachable / ambiguous — rejected with a distinct message.
+identical_sig_reject() {
+  printf 'puts("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  for be in "" "--jit"; do
+    out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
+    if [[ "$out" == *RAN* || "$out" != *"identical signature"* ]]; then
+      echo "FAIL identical-sig reject [$1${be:+ jit}]: $out"; fail=1
+    fi
+  done
+}
+identical_sig_reject "same arity, no types" 'class A { m() { 1 } m() { 2 } }'
+identical_sig_reject "same types"           'class A { m(x: Long) { 1 } m(y: Long) { 2 } }'
+
 expect_dup_member_accept "static vs instance" 'class A { static m = 1 m() { 2 } }
 puts(A.m + A.new().m())'
 expect_dup_member_accept "two classes" 'class A { m() { 1 } }
 class B { m() { 2 } }
 puts(A.new().m() + B.new().m())'
+# Instance-method multidispatch: same name, distinct positional-type sigs.
+expect_dup_member_accept "method overload" 'class A { new(){} m(x: Long) { "l" } m(x: String) { "s" } }
+puts(A.new().m(1) + A.new().m("a"))'
+expect_dup_member_accept "arity overload" 'class A { new(){} m() { 1 } m(x) { x } }
+puts(A.new().m() + A.new().m(41))'
 
 # --- `culebra lint` CLI: advisory warnings (unused locals) in report mode ---
 # `culebra lint <file>` prints diagnostics without running and sets exit code

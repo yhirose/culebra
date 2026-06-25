@@ -3782,6 +3782,40 @@ Each method's own kw-only defaults, `**rest` catch-all, and parameter
 names are independent — only the positional signature participates in
 dispatch.
 
+### Method multidispatch (instance methods)
+
+A class may declare several instance methods with the **same name but
+different positional-param-type signatures**. They merge into one
+dispatcher; `obj.method(args)` then picks the overload on the runtime
+types of the explicit arguments. The receiver is fixed by the property
+lookup — only the arguments are scored — and `this` is bound into the
+picked overload:
+
+```culebra
+class Calc {
+  new() {}
+  go(x: Long)          { "long: {x}" }
+  go(x: String)        { "string: {x}" }
+  go(x: Long, y: Long) { "sum: {x + y}" }
+}
+let c = Calc.new()
+c.go(1)      # → "long: 1"
+c.go("a")    # → "string: a"
+c.go(2, 3)   # → "sum: 5"
+```
+
+The same scoring, default-param, `*args`, kwarg, and `**rest` rules as
+free-function multimethods apply (a keyword argument flows into the
+picked overload). A call with no matching overload raises a catchable
+`DispatchError`, exactly like a free-function multimethod.
+
+A class declaring a name **once** keeps a plain method (no dispatcher,
+no overhead). The following stay compile-time errors: two methods with
+an identical signature, a field and a method sharing a name, a
+duplicate field, and a duplicate static member. Constructors (`new`),
+static methods, and operator/dunder methods (`__call__`, `__add__`, …)
+do not overload yet.
+
 ---
 
 ## 20. Decorators

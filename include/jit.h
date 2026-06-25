@@ -1373,6 +1373,12 @@ inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
   }
 }
 
+// Trait-conformance arity for a method slot: the widest overload if `cls`
+// is a multimethod dispatcher, else its own arity. Defined after the
+// multimethod registry below; declared here (outside the extern "C" block)
+// for the conformance walk, which needs it before that definition.
+inline size_t _jit_dispatcher_max_arity(JitClosure* cls);
+
 // Four ordering predicates share `_culebra_value_ord`'s Nil/cross-type
 // scaffolding; the public extern "C" trampolines below are the only
 // callers. A single `cmp` comparator parameterises the leaf compare.
@@ -1974,8 +1980,11 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
         if (slot.value.tag != TAG_FUNC) continue;
         auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
         // JitClosure::arity counts user-visible params (excluding __cls__
-        // and `this`), matching the interp side's positional count.
-        class_methods.emplace(o->shape->names[i], cls->arity);
+        // and `this`); for an overloaded method (a dispatcher) report the
+        // widest overload so conformance sees the real arities (mirrors the
+        // interp walk). Helper is defined after the multimethod registry.
+        class_methods.emplace(o->shape->names[i],
+                              _jit_dispatcher_max_arity(cls));
       }
     };
     // Methods live on the class meta (proto), data fields on the
@@ -5892,6 +5901,23 @@ inline bool _jit_is_multifn_dispatcher(JitClosure* c) {
   return c && c->fn_ptr == reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk);
 }
 
+// Forward-declared above for the trait-conformance walk: a dispatcher's own
+// arity is just one overload's, so report the widest overload's positional
+// count (mirrors the interp multimethod_for_each_overload walk).
+inline size_t _jit_dispatcher_max_arity(JitClosure* cls) {
+  size_t arity = cls ? cls->arity : 0;
+  if (_jit_is_multifn_dispatcher(cls)) {
+    auto& names = _jit_multifn_dispatcher_names();
+    if (auto nit = names.find(cls); nit != names.end()) {
+      auto& tbl = _jit_multimethods();
+      if (auto mit = tbl.find(nit->second); mit != tbl.end())
+        for (const auto& e : mit->second)
+          arity = std::max(arity, e.param_types.size());
+    }
+  }
+  return arity;
+}
+
 // Push a dispatcher's overload bodies as mark-phase children.
 inline void _jit_multifn_push_bodies(JitClosure* c, std::vector<void*>& out) {
   auto& names = _jit_multifn_dispatcher_names();
@@ -6151,13 +6177,16 @@ inline MultifnPick _jit_multifn_resolve(
 // resolved through `_jit_multifn_dispatcher_names()` to recover the
 // multimethod name, then dispatched via `_jit_multifn_resolve`.
 inline JitValue _jit_multifn_dispatcher_thunk(JitClosure* cls,
-                                              JitValue /*this_val*/,
+                                              JitValue this_val,
                                               int64_t n_args,
                                               JitValue* args) {
   auto picked = _jit_multifn_resolve(cls, args, n_args,
                                      _jit_call_site_line, _jit_call_site_col);
+  // Forward `this_val` to the picked body. For a free-function dispatcher the
+  // call site passes nil and the body ignores it; for a class method-overload
+  // dispatcher it carries the receiver, so the picked overload sees `this`.
   return reinterpret_cast<JitFn>(picked.body->fn_ptr)(
-      picked.body, {TAG_NIL, 0}, n_args, args);
+      picked.body, this_val, n_args, args);
 }
 
 // Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
@@ -16878,6 +16907,57 @@ struct JIT {
     for (auto* m : method_asts) {
       method_vals.push_back(compile_function(*m));
     }
+
+    // Group same-named instance-method overloads into one multimethod
+    // dispatcher (method multidispatch). A name defined once keeps its bare
+    // closure (unchanged — zero overhead). For >=2 overloads, register each
+    // compiled body into the multimethod table under a per-class key and
+    // store the shared dispatcher closure once. Done before the @derive
+    // append; a derived method whose name a user overloads is already skipped
+    // (user_defined check above). Mirrors interp's eval_class_decl grouping.
+    {
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      // One unique suffix per class declaration so two same-named classes in
+      // different scopes don't share a global multimethod table (the key is
+      // `method\x1fClass#uid`; _jit_multifn_display strips at the first \x1f
+      // so DispatchError still shows the bare method name). Re-running this
+      // same compiled decl reuses the baked-in uid, so replacement still works.
+      auto class_uid = multifn_uid_counter_++;
+      std::vector<std::string> grouped_names;
+      std::vector<llvm::Value*> grouped_vals;
+      for (size_t a = 0; a < method_names.size(); a++) {
+        if (std::find(grouped_names.begin(), grouped_names.end(),
+                      method_names[a]) != grouped_names.end())
+          continue;  // this name's (possibly merged) entry already emitted
+        std::vector<size_t> idxs;
+        for (size_t b = a; b < method_names.size(); b++)
+          if (method_names[b] == method_names[a]) idxs.push_back(b);
+        if (idxs.size() == 1) {
+          grouped_names.push_back(method_names[a]);
+          grouped_vals.push_back(method_vals[a]);
+        } else {
+          // Key as `method\x1fClass#uid` — the per-decl uid keeps two
+          // same-named classes in different scopes on separate tables.
+          std::string regKey = method_names[a];
+          regKey.push_back('\x1f');
+          regKey += class_name;
+          regKey.push_back('#');
+          regKey += std::to_string(class_uid);
+          llvm::Value* disp = nullptr;
+          for (size_t bi : idxs) {
+            auto bodyPtr =
+                builder_.CreateIntToPtr(extract_data(method_vals[bi]), ptrTy);
+            disp = emit_multifn_register(
+                regKey, bodyPtr, *culebra::view_method(*method_asts[bi]).params,
+                class_type_params_);
+          }
+          grouped_names.push_back(method_names[a]);
+          grouped_vals.push_back(disp);
+        }
+      }
+      method_names = std::move(grouped_names);
+      method_vals = std::move(grouped_vals);
+    }
     // Append @derive methods: captureless closures over shared runtime
     // thunks (mirrors the variant-ctor pattern). They land in the class
     // meta alongside user methods, so dispatch + Set/Object key lookup
@@ -17172,6 +17252,77 @@ struct JIT {
   // on the first decl per name and cached afterward) which we bind to
   // `name` in the surrounding scope. See _jit_multifn_dispatcher_thunk
   // for the dispatch logic. JIT counterpart of eval_multifn_decl.
+  // Register one overload body into the multimethod table under `regKey`
+  // (a `name\x1f<uid-or-class>` key whose suffix _jit_multifn_display strips
+  // for diagnostics) and return the shared dispatcher closure Value. Extracts
+  // the dispatch param-type/name arrays from `params_ast`, lowering bare
+  // Generic type-params via `type_params`. Shared by compile_multifn_decl
+  // (free fns) and compile_class_decl (instance-method overloads).
+  llvm::Value* emit_multifn_register(
+      const std::string& regKey, llvm::Value* bodyClosurePtr,
+      const peg::Ast& params_ast,
+      const std::vector<std::string_view>& type_params) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    // Only regular params (before any `*` kw-only separator, excluding
+    // `**rest`) participate in dispatch; `*args` flips variadic.
+    std::vector<llvm::Constant*> typePtrs;
+    std::vector<llvm::Constant*> namePtrs;  // parallel param names (coverage)
+    typePtrs.reserve(params_ast.nodes.size());
+    namePtrs.reserve(params_ast.nodes.size());
+    bool mf_variadic = false;
+    int64_t mf_min_arity = 0;  // regular params without a default (required)
+    for (auto& p : params_ast.nodes) {
+      if (culebra::is_kw_only_sep(*p)) break;
+      if (culebra::is_args_rest(*p)) { mf_variadic = true; continue; }
+      if (culebra::is_kwargs_rest(*p)) continue;
+      if (culebra::extract_default_expr(*p) == nullptr) mf_min_arity++;
+      auto nm = culebra::view_parameter(*p).name;
+      namePtrs.push_back(nm.empty()
+                             ? llvm::ConstantPointerNull::get(ptrTy)
+                             : get_or_create_global_str(std::string(nm), ".pn"));
+      auto t = extract_type_annotation(*p, 2);
+      if (t.empty()) {
+        typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
+      } else if (type_params.empty()) {
+        typePtrs.push_back(get_or_create_global_str(t, ".pt"));
+      } else {
+        // Lower bare `T` / `Array<T>` to "Any" / bound trait so the
+        // dispatch key matches on the bound (or accepts anything for an
+        // unbounded T). Mirrors interp's method.param_types.
+        typePtrs.push_back(get_or_create_global_str(
+            culebra::lower_type_params(t, type_params), ".pt"));
+      }
+    }
+    auto n_param_types = static_cast<int64_t>(typePtrs.size());
+
+    auto build_str_array = [&](const std::vector<llvm::Constant*>& ptrs,
+                               const char* tag) -> llvm::Value* {
+      if (ptrs.empty()) return llvm::ConstantPointerNull::get(ptrTy);
+      auto arrayTy = llvm::ArrayType::get(ptrTy, ptrs.size());
+      auto initializer = llvm::ConstantArray::get(arrayTy, ptrs);
+      auto gv = new llvm::GlobalVariable(
+          *module_, arrayTy, /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, initializer, tag);
+      return builder_.CreateBitCast(gv, ptrTy);
+    };
+    llvm::Value* paramTypesPtr = build_str_array(typePtrs, ".paramtypes");
+    llvm::Value* paramNamesPtr = build_str_array(namePtrs, ".paramnames");
+
+    auto namePtr = get_or_create_global_str(regKey, ".mname");
+    auto dispatcherPtr = emit_call(
+        module_->getOrInsertFunction(rt::multifn_register_and_install,
+                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,
+                                     i64Ty, ptrTy),
+        {namePtr, bodyClosurePtr, paramTypesPtr,
+         builder_.getInt64(n_param_types),
+         builder_.getInt64(mf_variadic ? 1 : 0),
+         builder_.getInt64(mf_min_arity),
+         paramNamesPtr},
+        "multifn.disp");
+    return make_func(dispatcherPtr);
+  }
+
   llvm::Value* compile_multifn_decl(const peg::Ast& ast) {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
@@ -17237,68 +17388,11 @@ struct JIT {
     auto bodyClosurePtr =
         builder_.CreateIntToPtr(extract_data(bodyVal), ptrTy);
 
-    // Collect param-type annotations as a global array of C strings.
-    // Only regular params participate in multifn type dispatch —
-    // kw-only and `**rest` params are not part of the dispatch key.
-    std::vector<llvm::Constant*> typePtrs;
-    std::vector<llvm::Constant*> namePtrs;  // parallel param names (coverage)
-    typePtrs.reserve(params_ast->nodes.size());
-    namePtrs.reserve(params_ast->nodes.size());
-    bool mf_variadic = false;
-    int64_t mf_min_arity = 0;  // regular params without a default (required)
-    for (auto& p : params_ast->nodes) {
-      if (culebra::is_kw_only_sep(*p)) break;
-      if (culebra::is_args_rest(*p)) { mf_variadic = true; continue; }
-      if (culebra::is_kwargs_rest(*p)) continue;
-      if (culebra::extract_default_expr(*p) == nullptr) mf_min_arity++;
-      auto nm = culebra::view_parameter(*p).name;
-      namePtrs.push_back(nm.empty()
-                             ? llvm::ConstantPointerNull::get(ptrTy)
-                             : get_or_create_global_str(std::string(nm), ".pn"));
-      auto t = extract_type_annotation(*p, 2);
-      if (t.empty()) {
-        typePtrs.push_back(llvm::ConstantPointerNull::get(ptrTy));
-      } else if (mf_type_params.empty()) {
-        typePtrs.push_back(get_or_create_global_str(t, ".pt"));
-      } else {
-        // Lower bare `T` / `Array<T>` to "Any" / bound trait so the
-        // dispatch key matches on the bound (or accepts anything for an
-        // unbounded T). Mirrors interp's method.param_types.
-        typePtrs.push_back(get_or_create_global_str(
-            culebra::lower_type_params(t, mf_type_params), ".pt"));
-      }
-    }
-    auto n_param_types = static_cast<int64_t>(typePtrs.size());
-
-    auto build_str_array = [&](const std::vector<llvm::Constant*>& ptrs,
-                               const char* tag) -> llvm::Value* {
-      if (ptrs.empty()) return llvm::ConstantPointerNull::get(ptrTy);
-      auto arrayTy = llvm::ArrayType::get(ptrTy, ptrs.size());
-      auto initializer = llvm::ConstantArray::get(arrayTy, ptrs);
-      auto gv = new llvm::GlobalVariable(
-          *module_, arrayTy, /*isConstant=*/true,
-          llvm::GlobalValue::PrivateLinkage, initializer, tag);
-      return builder_.CreateBitCast(gv, ptrTy);
-    };
-    llvm::Value* paramTypesPtr = build_str_array(typePtrs, ".paramtypes");
-    llvm::Value* paramNamesPtr = build_str_array(namePtrs, ".paramnames");
-
     // Key the registry per lexical scope so a same-named `fn` in an
     // unrelated scope gets its own dispatcher + method table (interp
     // parity — see Scope::multifn_keys).
-    auto namePtr = get_or_create_global_str(multifn_scope_key(name), ".mname");
-    auto dispatcherPtr = emit_call(
-        module_->getOrInsertFunction(rt::multifn_register_and_install,
-                                     ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty,
-                                     i64Ty, ptrTy),
-        {namePtr, bodyClosurePtr, paramTypesPtr,
-         builder_.getInt64(n_param_types),
-         builder_.getInt64(mf_variadic ? 1 : 0),
-         builder_.getInt64(mf_min_arity),
-         paramNamesPtr},
-        "multifn.disp");
-
-    auto dispatcherVal = make_func(dispatcherPtr);
+    auto dispatcherVal = emit_multifn_register(
+        multifn_scope_key(name), bodyClosurePtr, *params_ast, mf_type_params);
 
     // Bind the dispatcher in the CURRENT scope only (the registry key
     // is already per-scope — multifn_scope_key): the first decl per
