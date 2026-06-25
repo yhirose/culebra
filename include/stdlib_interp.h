@@ -45,7 +45,10 @@
 #include <string>
 #include <system_error>
 #include <thread>
-#include <unistd.h>  // isatty (IO.*_is_terminal)
+#include <unistd.h>  // isatty (IO.*_is_terminal), chown (FS.chown)
+#include <grp.h>     // getgrnam_r (FS.chown group-name resolution)
+#include <pwd.h>     // getpwnam_r (FS.chown user-name resolution)
+#include <sys/stat.h>  // ::stat for st_uid/st_gid (FS.stat owner fields)
 #include <vector>
 
 namespace culebra {
@@ -454,6 +457,53 @@ inline long _fs_mtime_secs(const std::filesystem::path& p) {
   throw CulebraError("IOError", std::move(msg), line, col);
 }
 
+// --- FS ownership helpers (shared by interp + JIT/AOT so the three backends
+// resolve names and report errors identically) ----------------------------
+
+// Read st_uid / st_gid of `p` (following symlinks, like the other stat fields).
+// Returns false if the path can't be stat'd.
+inline bool _fs_owner(const std::filesystem::path& p, long& uid, long& gid) {
+  struct ::stat st;
+  if (::stat(p.c_str(), &st) != 0) return false;
+  uid = static_cast<long>(st.st_uid);
+  gid = static_cast<long>(st.st_gid);
+  return true;
+}
+
+// Resolve a user name to a uid (thread-safe getpwnam_r), or -1 if unknown.
+inline long _fs_uid_from_name(const std::string& name) {
+  struct ::passwd pw;
+  struct ::passwd* result = nullptr;
+  std::vector<char> buf(1024);
+  while (::getpwnam_r(name.c_str(), &pw, buf.data(), buf.size(), &result) ==
+         ERANGE) {
+    buf.resize(buf.size() * 2);
+  }
+  return result ? static_cast<long>(result->pw_uid) : -1;
+}
+
+// Resolve a group name to a gid (thread-safe getgrnam_r), or -1 if unknown.
+inline long _fs_gid_from_name(const std::string& name) {
+  struct ::group gr;
+  struct ::group* result = nullptr;
+  std::vector<char> buf(1024);
+  while (::getgrnam_r(name.c_str(), &gr, buf.data(), buf.size(), &result) ==
+         ERANGE) {
+    buf.resize(buf.size() * 2);
+  }
+  return result ? static_cast<long>(result->gr_gid) : -1;
+}
+
+// POSIX chown with uid/gid == -1 meaning "leave unchanged". Throws IOError.
+inline void _fs_do_chown(const std::filesystem::path& p, long uid, long gid,
+                         long line, long col) {
+  if (::chown(p.c_str(), static_cast<uid_t>(uid),
+              static_cast<gid_t>(gid)) != 0) {
+    _io_throw(std::format("FS.chown('{}')", p.string()), line, col,
+              std::error_code(errno, std::generic_category()));
+  }
+}
+
 inline Value make_fs_namespace() {
   using namespace std::literals;
   ObjectValue ns;
@@ -630,8 +680,9 @@ inline Value make_fs_namespace() {
           })),
       false);
 
-  // `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode}.
-  // mtime is seconds since the Unix epoch (Long). IOError on missing path.
+  // `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode,
+  // uid, gid}. mtime is seconds since the Unix epoch (Long). IOError on
+  // missing path.
   ns.initialize(
       "stat",
       Value(FunctionValue(
@@ -669,6 +720,10 @@ inline Value make_fs_namespace() {
                 Value(static_cast<long>(fst.permissions() &
                                         std::filesystem::perms::mask)),
                 false);
+            long uid = -1, gid = -1;
+            _fs_owner(p, uid, gid);
+            obj.initialize("uid", Value(uid), false);
+            obj.initialize("gid", Value(gid), false);
             return Value(std::move(obj));
           },
           "Object"sv)),
@@ -693,6 +748,51 @@ inline Value make_fs_namespace() {
                     mode & static_cast<long>(std::filesystem::perms::mask)),
                 std::filesystem::perm_options::replace, ec);
             if (ec) throw_io(std::format("FS.chmod('{}')", p), line, col, ec);
+            return Value();
+          })),
+      false);
+
+  // `FS.chown(path, owner=nil, group=nil)` — change ownership. `owner`/`group`
+  // each accept a name (String), a numeric id (Long), or nil (leave that one
+  // unchanged). IOError on a missing path, unknown name, or permission failure
+  // (changing the owner usually requires root).
+  ns.initialize(
+      "chown",
+      Value(FunctionValue(
+          {{"path", false, "String"sv},
+           {"owner", false, ""sv, nullptr, kw_default_nil()},
+           {"group", false, ""sv, nullptr, kw_default_nil()}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            const auto& p = env->get("path").to_string();
+            auto resolve = [&](const Value& v, const char* param,
+                               bool is_user) -> long {
+              if (v.type == Value::Nil) return -1;
+              if (v.type == Value::Long) return v.get<long>();
+              if (v.is_stringlike()) {  // String or StringView (e.g. a slice)
+                const auto name = v.to_string();
+                long id = is_user ? _fs_uid_from_name(name)
+                                  : _fs_gid_from_name(name);
+                if (id < 0) {
+                  throw CulebraError(
+                      "IOError",
+                      std::format("FS.chown: unknown {} '{}'",
+                                  is_user ? "user" : "group", name),
+                      line, col);
+                }
+                return id;
+              }
+              throw CulebraError(
+                  "TypeError",
+                  std::format("type error: parameter '{}' expects "
+                              "String, Long, or Nil",
+                              param),
+                  line, col);
+            };
+            long uid = resolve(env->get("owner"), "owner", true);
+            long gid = resolve(env->get("group"), "group", false);
+            _fs_do_chown(std::filesystem::path(p), uid, gid, line, col);
             return Value();
           })),
       false);

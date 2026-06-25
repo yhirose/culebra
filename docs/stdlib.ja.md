@@ -67,7 +67,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | ファイル全体を読む | `FS.read`（失敗時 throw） |
 | ファイルをストリーム（行 / チャンク / seek） | [§4 File](#4-file) — `File.open` / `File.with` |
 | パス操作（join / basename / dirname / stem / extension） | [§3 FS](#3-fs) |
-| stat / walk / glob / copy / rename / symlink / chmod | [§3 FS](#3-fs) |
+| stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
 | `Instant` / `Duration` クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.weighted_choice` |
@@ -475,13 +475,28 @@ FS.chmod('deploy.sh', 0o755)       # 実行可能にする
 puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
 ```
 
+#### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
+
+`path` の所有者・グループを変更する。`owner`/`group` はそれぞれ名前（`String`）・
+数値 id（`Long`）・`nil`（その項目は変更しない）を受ける。現在の id は
+`FS.stat(path).uid` / `.gid` で読める。所有者の変更は通常 root が必要、グループは
+所属グループへなら一般ユーザでも可。存在しないパス・不明な名前・権限失敗で
+`IOError`、String/Long/Nil 以外の引数は `TypeError`。
+
+```culebra
+# doctest: skip
+FS.chown('app.log', group: 'staff')      # グループだけ名前で設定、所有者は維持
+FS.chown('data', 'deploy', 'deploy')     # 両方を名前で（root）
+```
+
 ### stat / メタデータ
 
 #### `FS.stat(path: String) -> Object`
 
-`{size, is_dir, is_file, is_symlink, mtime, mode}` を返す。`size` はバイト
-（非通常ファイルは 0）、`mtime` は Unix epoch 秒、`mode` は権限ビットの整数
-（8 進と比較: `st.mode == 0o644`）、`is_symlink` は
+`{size, is_dir, is_file, is_symlink, mtime, mode, uid, gid}` を返す。`size` は
+バイト（非通常ファイルは 0）、`mtime` は Unix epoch 秒、`mode` は権限ビットの整数
+（8 進と比較: `st.mode == 0o644`）、`uid`/`gid` は所有者・グループ id、
+`is_symlink` は
 リンク自体を、他フィールドはリンク先を見ます。存在しなければ
 `IOError`。
 

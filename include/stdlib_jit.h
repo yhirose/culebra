@@ -425,7 +425,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_fs_remove_all(
   }
 }
 
-// `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode}.
+// `FS.stat(path)` -> Object{size, is_dir, is_file, is_symlink, mtime, mode,
+// uid, gid}.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
@@ -456,6 +457,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_fs_stat(
   int64_t mode = static_cast<int64_t>(
       fst.permissions() & std::filesystem::perms::mask);
   culebra_runtime_object_set(o, "mode", false, TAG_LONG, mode, line, col);
+  long uid = -1, gid = -1;
+  culebra::_fs_owner(path ? path : "", uid, gid);
+  culebra_runtime_object_set(o, "uid", false, TAG_LONG, uid, line, col);
+  culebra_runtime_object_set(o, "gid", false, TAG_LONG, gid, line, col);
   return o;
 }
 
@@ -2776,6 +2781,40 @@ inline JitValue _ns_fs_chmod(JitValue* a, int64_t) {
                            _ns_adapt::take_long(a[1]), 0, 0);
   return _ns_adapt::v_nil();
 }
+// FS.chown owner/group slot -> id (-1 = unchanged). nil/Long/String(name);
+// any other type is a TypeError, an unknown name an IOError — wording matches
+// the interp resolver. Positions are 0/0 (the trampoline backfills the call
+// site).
+inline long _fs_chown_id(JitValue v, const char* param, bool is_user) {
+  if (v.tag == TAG_NIL) return -1;
+  if (v.tag == TAG_LONG) return v.data;
+  if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
+    std::string name(_culebra_str_view(v.tag, v.data));
+    long id = is_user ? culebra::_fs_uid_from_name(name)
+                      : culebra::_fs_gid_from_name(name);
+    if (id < 0) {
+      culebra::throw_runtime_error_at(
+          "IOError",
+          std::format("FS.chown: unknown {} '{}'",
+                      is_user ? "user" : "group", name),
+          0, 0);
+    }
+    return id;
+  }
+  culebra::throw_runtime_error_at(
+      "TypeError",
+      std::format("type error: parameter '{}' expects String, Long, or Nil",
+                  param),
+      0, 0);
+  return -1;  // unreachable
+}
+// chown(path, owner=nil, group=nil): slab full-arity via NsParamMeta.
+inline JitValue _ns_fs_chown(JitValue* a, int64_t n) {
+  long uid = _fs_chown_id(n > 1 ? a[1] : JitValue{TAG_NIL, 0}, "owner", true);
+  long gid = _fs_chown_id(n > 2 ? a[2] : JitValue{TAG_NIL, 0}, "group", false);
+  culebra::_fs_do_chown(_ns_adapt::take_str(a[0]), uid, gid, 0, 0);
+  return _ns_adapt::v_nil();
+}
 // copy(src, dst, recursive=false): slab full-arity via NsParamMeta.
 inline JitValue _ns_fs_copy(JitValue* a, int64_t n) {
   JitValue rec = n > 2 ? a[2] : JitValue{TAG_BOOL, 0};
@@ -3995,7 +4034,8 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   std::string_view ns(m->ns ? m->ns : ""), nm(m->name);
   if (ns == "Proc")     return nm == "run" || nm == "all" || nm == "spawn" ||
                                 nm == "race";
-  if (ns == "FS")       return nm == "remove" || nm == "copy";
+  if (ns == "FS")       return nm == "remove" || nm == "copy" ||
+                               nm == "chown";
   if (ns == "File")     return nm == "open" || nm == "with";
   if (ns == "Parallel") return nm == "map" || nm == "each" ||
                                 nm == "map_settled" || nm == "race";
@@ -4088,6 +4128,7 @@ inline const NsMethod kNsMethods[] = {
   {"FS",     "remove",    1, &_ns_fs_remove},
   {"FS",     "stat",      1, &_ns_fs_stat},
   {"FS",     "chmod",     2, &_ns_fs_chmod},
+  {"FS",     "chown",     1, &_ns_fs_chown},
   {"FS",     "rename",    2, &_ns_fs_rename},
   {"FS",     "copy",      2, &_ns_fs_copy},
   {"FS",     "normpath",  1, &_ns_fs_normpath},

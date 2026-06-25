@@ -69,7 +69,7 @@ Conventions used below:
 | Read a whole file | `FS.read` (throws on failure) |
 | Stream a file (lines / chunks / seek) | [§4 File](#4-file) — `File.open` / `File.with` |
 | Path manipulation (join, basename, dirname, stem, extension) | [§3 FS](#3-fs) |
-| Stat / walk / glob / copy / rename / symlink / chmod | [§3 FS](#3-fs) |
+| Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.weighted_choice` |
@@ -492,15 +492,31 @@ FS.chmod('deploy.sh', 0o755)       # make executable
 puts(FS.stat('deploy.sh').mode)    # 493  (0o755)
 ```
 
+#### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
+
+Change the owner and/or group of `path`. `owner` and `group` each accept a
+name (`String`), a numeric id (`Long`), or `nil` to leave that one unchanged.
+Read the current ids back with `FS.stat(path).uid` / `.gid`. Changing the
+owner usually requires root; changing the group works for a group you belong
+to. Throws `IOError` on a missing path, an unknown user/group name, or a
+permission failure; a non-String/Long/Nil argument is a `TypeError`.
+
+```culebra
+# doctest: skip
+FS.chown('app.log', group: 'staff')      # set group by name, keep owner
+FS.chown('data', 'deploy', 'deploy')     # set both by name (root)
+```
+
 ### Stat / metadata
 
 #### `FS.stat(path: String) -> Object`
 
-Return `{size, is_dir, is_file, is_symlink, mtime, mode}` for `path`. `size`
-is bytes (0 for non-regular files); `mtime` is seconds since the Unix
-epoch; `mode` is the permission bits as an integer (compare with octal, e.g.
-`st.mode == 0o644`); `is_symlink` reflects the link itself while the other
-fields follow it. Throws `IOError` if the path doesn't exist.
+Return `{size, is_dir, is_file, is_symlink, mtime, mode, uid, gid}` for
+`path`. `size` is bytes (0 for non-regular files); `mtime` is seconds since
+the Unix epoch; `mode` is the permission bits as an integer (compare with
+octal, e.g. `st.mode == 0o644`); `uid` / `gid` are the owner and group ids;
+`is_symlink` reflects the link itself while the other fields follow it. Throws
+`IOError` if the path doesn't exist.
 
 ```culebra
 # doctest: skip
