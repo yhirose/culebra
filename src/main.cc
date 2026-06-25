@@ -1,4 +1,5 @@
 #include <culebra.h>
+#include <dap.h>
 #include <doctest_runner.h>
 #include <stdlib_interp.h>
 #include <test_runner.h>
@@ -1152,6 +1153,12 @@ int main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "lint") {
     return run_lint(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "dap") {
+    // Debug Adapter Protocol server over stdio (interp-backed). The program to
+    // debug + its args arrive in the `launch` request, not on the command line.
+    culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{});
+    return server.run();
   }
 #ifdef CULEBRA_JIT_ENABLED
   if (argc >= 2 && string(argv[1]) == "wrap") {

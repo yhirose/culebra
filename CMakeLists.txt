@@ -477,6 +477,12 @@ foreach(smoke mt mi define signal utf8_invalid)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
 
+# Headless DAP adapter test — drives `culebra dap` over a pipe with a scripted
+# debug session. Standalone (no culebra linkage); spawns the binary at runtime.
+add_executable(dap_test tests/dap_test.cc)
+target_compile_features(dap_test PRIVATE cxx_std_23)
+add_test(NAME dap_test COMMAND dap_test $<TARGET_FILE:culebra>)
+
 # http.h core test: in-process loopback cpp-httplib server exercises the
 # value-neutral client core (GET/POST/DELETE/404 + transport-error + URL
 # validation). Needs OpenSSL (httplib.h pulls it in under HTTP builds) but the
