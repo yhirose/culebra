@@ -181,6 +181,8 @@ Documentation
   / [日本語](docs/embedding.ja.md)
 * Wrapping C++ libraries (`culebra wrap`): [`docs/wrapping.md`](docs/wrapping.md)
   / [日本語](docs/wrapping.ja.md)
+* Debugging in VSCode / Vim / Zed (`culebra dap`): [`docs/debugging.md`](docs/debugging.md)
+  / [日本語](docs/debugging.ja.md)
 * Standalone binary build: [`docs/binary_build.md`](docs/binary_build.md)
   / [日本語](docs/binary_build.ja.md)
 * Implementation internals (en only): [`docs/internals.md`](docs/internals.md)

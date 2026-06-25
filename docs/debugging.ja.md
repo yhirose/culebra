@@ -9,15 +9,22 @@ Culebra は [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-p
 culebra dap        # stdin/stdout で DAP を話す
 ```
 
-手で実行することは稀で、通常はエディタが起動します（下記）。
+手で実行することは稀で、通常はエディタが起動します（下記のエディタ別セットアップ参照）。
+
+## 前提
+
+- **`culebra` を実行できること** — `PATH` を通すか、下記の各設定で絶対パスを指定。
+  （動作確認: `echo | culebra dap` が DAP 入力待ちでハングすれば OK、`Ctrl+C` で抜ける。
+  エラーになる場合はまずパスを直す。）
+- **デバッグはインタプリタで動く** — `--jit` を付けない。アダプタはプログラムを
+  インタプリタモードで実行する。JIT/AOT は機械語にコンパイルされソースレベルデバッグ
+  できない。
 
 ## 仕組み
 
 アダプタはプログラムを**インタプリタ**で実行し、その statement 単位のフックで
 ブレークポイント・`debugger` 文・ステップ時に一時停止します。その間 DAP ループが
-エディタの要求に応答し、再開します。デバッグはインタプリタベースなので、スクリプトは
-素の `culebra`（`--jit` ではなく）で実行してください。JIT/AOT は機械語にコンパイルされ
-ソースレベルデバッグできません。
+エディタの要求に応答し、再開します。
 
 プログラムの `stdout`/`stderr` はエディタのデバッグコンソールに `output` イベントとして
 転送されるので、プロトコルと混ざりません。
@@ -35,39 +42,67 @@ culebra dap        # stdin/stdout で DAP を話す
 
 ## VSCode
 
-`culebra` デバッグタイプを登録しアダプタを指す小さな拡張を追加します（拡張は登録のみ
-で、ロジックは全て `culebra dap` 側＝同じアダプタが全エディタで動く）。`package.json`:
+VSCode は `culebra` デバッグタイプを登録する小さな拡張が必要です（登録のみで、ロジックは
+全て `culebra dap` 側＝同じアダプタが全エディタで動く）。公開は不要。
 
-```jsonc
-"contributes": {
-  "debuggers": [{
-    "type": "culebra",
-    "label": "Culebra",
-    "program": "culebra",
-    "args": ["dap"]
-  }]
-}
-```
+1. フォルダ `~/.vscode/extensions/culebra-debug/` を作る。
+2. その中に `package.json`（`culebra` が `PATH` に無ければ `program` を絶対パスに）:
 
-プロジェクトの `.vscode/launch.json`:
+   ```jsonc
+   {
+     "name": "culebra-debug",
+     "publisher": "local",
+     "version": "0.0.1",
+     "engines": { "vscode": "^1.70.0" },
+     "contributes": {
+       "languages": [{ "id": "culebra", "extensions": [".cul"] }],
+       "debuggers": [{
+         "type": "culebra",
+         "label": "Culebra",
+         "languages": ["culebra"],
+         "program": "culebra",
+         "args": ["dap"],
+         "configurationAttributes": {
+           "launch": {
+             "required": ["program"],
+             "properties": {
+               "program": { "type": "string", "default": "${file}" },
+               "cwd": { "type": "string", "default": "${workspaceFolder}" },
+               "stopOnEntry": { "type": "boolean", "default": false }
+             }
+           }
+         }
+       }]
+     }
+   }
+   ```
+3. VSCode を再読み込み（コマンドパレット → **Developer: Reload Window**）。
+4. プロジェクトに `.vscode/launch.json`:
 
-```jsonc
-{
-  "version": "0.2.0",
-  "configurations": [{
-    "type": "culebra",
-    "request": "launch",
-    "name": "Debug current file",
-    "program": "${file}",
-    "cwd": "${workspaceFolder}",
-    "stopOnEntry": false
-  }]
-}
-```
+   ```jsonc
+   {
+     "version": "0.2.0",
+     "configurations": [{
+       "type": "culebra",
+       "request": "launch",
+       "name": "Debug current file",
+       "program": "${file}",
+       "cwd": "${workspaceFolder}",
+       "stopOnEntry": false
+     }]
+   }
+   ```
+5. `.cul` を開き、ガター（行番号の左）をクリックでブレークポイント → <kbd>F5</kbd>。
 
-<kbd>F5</kbd> で開いているファイルをデバッグ。
+> **拡張自体を作り込む場合**は、`~/.vscode/extensions` にコピーする代わりに、拡張フォルダを
+> VSCode で開き `extensionHost` の launch 構成で <kbd>F5</kbd> を押すと、拡張がロードされた
+> 別ウィンドウ（*Extension Development Host*）が開き、そこで `.cul` をデバッグできます。
+> 変更のたびに入れ直す必要が無くなります。単に*使いたいだけ*なら上の
+> `~/.vscode/extensions` への配置の方が簡単です。
 
 ## Neovim (nvim-dap)
+
+拡張は不要 — [nvim-dap](https://github.com/mfussenegger/nvim-dap) を設定するだけ:
 
 ```lua
 local dap = require("dap")
@@ -82,14 +117,18 @@ dap.configurations.culebra = {
     stopOnEntry = false,
   },
 }
+-- 上の設定を効かせるため `.cul` の filetype を `culebra` に:
+vim.filetype.add({ extension = { cul = "culebra" } })
 ```
 
-`.cul` の filetype を `culebra` に設定（autocommand 等）すると
-`dap.configurations.culebra` が適用されます。
+ブレークポイントは `:lua require('dap').toggle_breakpoint()`、開始は
+`:lua require('dap').continue()`。変数/スタックパネルが欲しければ
+[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) を追加。
 
 ## Vim (vimspector)
 
-プロジェクトルートの `.vimspector.json`:
+拡張は不要 — [vimspector](https://github.com/puremourning/vimspector) を導入し、
+プロジェクトルートに `.vimspector.json`:
 
 ```json
 {
@@ -106,11 +145,31 @@ dap.configurations.culebra = {
 }
 ```
 
+ブレークポイントは `<F9>`、開始は `<F5>`（vimspector のデフォルト）。
+シンタックスハイライト（任意）: `misc/install-vim-syntax.sh` を実行。
+
 ## Zed
 
-Zed のデバッガ（内蔵 DAP クライアント）はデバッグ設定でカスタムアダプタを取れます。
-`culebra dap` を指し、`program` にデバッグ対象ファイルを与えた `launch` 要求を設定します。
-（Zed のデバッガは VSCode/nvim-dap より新しく、設定スキーマは今後変わる可能性あり。）
+Zed は DAP クライアントを内蔵しています。デバッグ設定で `culebra dap` を起動し、
+`program` にデバッグ対象ファイルを与えた `launch` 構成を指定します:
+
+```jsonc
+[
+  {
+    "label": "Debug file",
+    "adapter": "culebra",
+    "request": "launch",
+    "command": "culebra",
+    "args": ["dap"],
+    "program": "$ZED_FILE",
+    "stopOnEntry": false
+  }
+]
+```
+
+> Zed のデバッガは VSCode/nvim-dap より新しく、設定スキーマは流動的です。上記のキーは
+> バージョンで異なる可能性があります。本質はどこでも同じ: `culebra dap` を起動・
+> `request: launch`・`program` にファイルを指定。
 
 ## 補足
 
@@ -118,4 +177,5 @@ Zed のデバッガ（内蔵 DAP クライアント）はデバッグ設定で�
   要求の `program` フィールドで渡します。
 - ブレークポイントは正準（シンボリックリンク解決済み）パスで照合するので、シンボリック
   リンク下のファイルに置いたブレークポイントも有効です。
-- ソース中の `debugger` 文はブレークポイントに関係なく停止します（一時的な停止に便利）。
+- ソース中の `debugger` 文はブレークポイントに関係なく停止します（設定不要の一時停止に
+  便利）。

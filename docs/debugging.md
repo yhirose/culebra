@@ -9,15 +9,24 @@ Emacs (dap-mode), Helix, and others. One adapter serves every editor.
 culebra dap        # speak DAP over stdin/stdout
 ```
 
-You rarely run this by hand; your editor launches it (see below).
+You rarely run this by hand; your editor launches it (see the per-editor setup
+below).
+
+## Prerequisites
+
+- **`culebra` must be runnable** — either on your `PATH` or referenced by an
+  absolute path in the editor config below. (Quick check: `echo | culebra dap`
+  should hang waiting for DAP input; `Ctrl+C` to quit. If it errors, fix the
+  path first.)
+- **Debugging runs in the interpreter** — don't pass `--jit`. The adapter runs
+  your program in interpreter mode; the JIT/AOT backends compile to machine code
+  and aren't source-debuggable.
 
 ## How it works
 
 The adapter runs your program in the **interpreter** and uses its per-statement
 hook to pause on a breakpoint, a `debugger` statement, or a step, while the DAP
-loop answers the editor's requests and resumes execution. Because debugging is
-interpreter-backed, run scripts with plain `culebra` (not `--jit`); the JIT/AOT
-backends compile to machine code and aren't source-debuggable.
+loop answers the editor's requests and resumes execution.
 
 Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 `output` events, so it never collides with the protocol.
@@ -35,41 +44,71 @@ Not yet supported (use breakpoints + inspection): editing variables
 
 ## VSCode
 
-Add a small extension that registers the `culebra` debug type and points it at
-the adapter (the extension is pure registration — all logic lives in
-`culebra dap`, so the same adapter works in every editor). Its `package.json`
-contributes:
+VSCode needs a tiny extension to register the `culebra` debug type (it's pure
+registration — all the logic lives in `culebra dap`, so the same adapter then
+works in every editor). Publishing isn't required.
 
-```jsonc
-"contributes": {
-  "debuggers": [{
-    "type": "culebra",
-    "label": "Culebra",
-    "program": "culebra",
-    "args": ["dap"]
-  }]
-}
-```
+1. Create the folder `~/.vscode/extensions/culebra-debug/`.
+2. Put this `package.json` in it (use an absolute path for `program` if
+   `culebra` isn't on `PATH`):
 
-Then a project `.vscode/launch.json`:
+   ```jsonc
+   {
+     "name": "culebra-debug",
+     "publisher": "local",
+     "version": "0.0.1",
+     "engines": { "vscode": "^1.70.0" },
+     "contributes": {
+       "languages": [{ "id": "culebra", "extensions": [".cul"] }],
+       "debuggers": [{
+         "type": "culebra",
+         "label": "Culebra",
+         "languages": ["culebra"],
+         "program": "culebra",
+         "args": ["dap"],
+         "configurationAttributes": {
+           "launch": {
+             "required": ["program"],
+             "properties": {
+               "program": { "type": "string", "default": "${file}" },
+               "cwd": { "type": "string", "default": "${workspaceFolder}" },
+               "stopOnEntry": { "type": "boolean", "default": false }
+             }
+           }
+         }
+       }]
+     }
+   }
+   ```
+3. Reload VSCode (Command Palette → **Developer: Reload Window**).
+4. In your project, add `.vscode/launch.json`:
 
-```jsonc
-{
-  "version": "0.2.0",
-  "configurations": [{
-    "type": "culebra",
-    "request": "launch",
-    "name": "Debug current file",
-    "program": "${file}",
-    "cwd": "${workspaceFolder}",
-    "stopOnEntry": false
-  }]
-}
-```
+   ```jsonc
+   {
+     "version": "0.2.0",
+     "configurations": [{
+       "type": "culebra",
+       "request": "launch",
+       "name": "Debug current file",
+       "program": "${file}",
+       "cwd": "${workspaceFolder}",
+       "stopOnEntry": false
+     }]
+   }
+   ```
+5. Open a `.cul` file, click in the gutter to set a breakpoint, and press
+   <kbd>F5</kbd>.
 
-Press <kbd>F5</kbd> to debug the open file.
+> **Iterating on the extension itself?** Instead of copying it into
+> `~/.vscode/extensions`, open the extension folder in VSCode and press
+> <kbd>F5</kbd> with an `extensionHost` launch config — that opens a separate
+> *Extension Development Host* window with the extension loaded, where you debug
+> your `.cul` project. This avoids reinstalling on every change; for just
+> *using* the debugger, the `~/.vscode/extensions` install above is simpler.
 
 ## Neovim (nvim-dap)
+
+No extension needed — just configure [nvim-dap](https://github.com/mfussenegger/nvim-dap):
 
 ```lua
 local dap = require("dap")
@@ -84,14 +123,19 @@ dap.configurations.culebra = {
     stopOnEntry = false,
   },
 }
+-- `.cul` files must have filetype `culebra` for the config above to apply:
+vim.filetype.add({ extension = { cul = "culebra" } })
 ```
 
-Set the filetype for `.cul` files to `culebra` (e.g. via an autocommand) so
-`dap.configurations.culebra` applies.
+Toggle a breakpoint with `:lua require('dap').toggle_breakpoint()` and start
+with `:lua require('dap').continue()`. Add
+[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) for a variables/stack
+panel.
 
 ## Vim (vimspector)
 
-`.vimspector.json` in the project root:
+No extension needed — install [vimspector](https://github.com/puremourning/vimspector)
+and add `.vimspector.json` to the project root:
 
 ```json
 {
@@ -108,12 +152,32 @@ Set the filetype for `.cul` files to `culebra` (e.g. via an autocommand) so
 }
 ```
 
+Set a breakpoint with `<F9>` and start with `<F5>` (vimspector defaults).
+Optional syntax highlighting: run `misc/install-vim-syntax.sh`.
+
 ## Zed
 
-Zed's debugger (built-in DAP client) takes a custom adapter in its debug
-configuration; point it at `culebra dap` with a `launch` request whose
-`program` is the file to debug. (Zed's debugger is newer than VSCode/nvim-dap,
-so the exact config schema may evolve.)
+Zed has a built-in DAP client. Point its debug configuration at `culebra dap`
+with a `launch` request whose `program` is the file to debug:
+
+```jsonc
+[
+  {
+    "label": "Debug file",
+    "adapter": "culebra",
+    "request": "launch",
+    "command": "culebra",
+    "args": ["dap"],
+    "program": "$ZED_FILE",
+    "stopOnEntry": false
+  }
+]
+```
+
+> Zed's debugger is newer than VSCode/nvim-dap and its config schema is still
+> evolving — the keys above may differ in your version. The essentials are the
+> same everywhere: launch `culebra dap`, `request: launch`, and a `program`
+> pointing at the file.
 
 ## Notes
 
@@ -122,4 +186,4 @@ so the exact config schema may evolve.)
 - Breakpoints are matched by canonical (symlink-resolved) path, so a breakpoint
   set on a file under a symlinked directory still binds.
 - A `debugger` statement in source forces a stop regardless of breakpoints —
-  handy for a one-off pause.
+  handy for a one-off pause without configuring anything.
