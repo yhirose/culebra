@@ -432,6 +432,42 @@ struct InterpGC {
   // callee still sees the dynamic caller chain (lexical outer chains miss it).
   void push_frame_root(Environment* e) { frame_roots_.push_back(e); }
   void pop_frame_root() { frame_roots_.pop_back(); }
+  // ---- DAP call-stack tracking (debugger only) --------------------------
+  // A parallel, off-by-default record of the active user calls, so the DAP
+  // server can present a named multi-frame stack with per-frame variables. Each
+  // entry is one call: the callee's name, the call site (file:line + AST node),
+  // and both the caller's env (the scope that made the call) and the callee's
+  // env (the function frame, set once it exists). Pushed/popped at the single
+  // call chokepoint, but ONLY while a debugger is attached (dap_tracking_), so a
+  // normal run pays nothing beyond a bool test. Internal delegations (e.g. a
+  // multifn dispatcher calling the picked overload) pass a null call_ast; the
+  // DAP server collapses such synthetic frames into the user-visible call.
+  struct DapFrame {
+    std::string name;          // callee's declared name ("<anonymous>" if none)
+    long line;                 // call-site line (in the caller)
+    std::string path;          // call-site source path (empty = use cur path)
+    const peg::Ast* call_ast;  // call expression node (null = internal call)
+    Environment* caller_env;   // scope that made the call
+    Environment* callee_env;   // the call's function frame (null until created)
+  };
+  bool dap_tracking() const { return dap_tracking_; }
+  void dap_set_tracking(bool on) {
+    dap_tracking_ = on;
+    dap_frames_.clear();
+  }
+  void dap_push_frame(std::string name, long line, std::string path,
+                      const peg::Ast* call_ast, Environment* caller_env) {
+    dap_frames_.push_back({std::move(name), line, std::move(path), call_ast,
+                           caller_env, nullptr});
+  }
+  // Record the function frame for the most recent push, once it is created.
+  void dap_set_callee(Environment* callee_env) {
+    if (!dap_frames_.empty()) dap_frames_.back().callee_env = callee_env;
+  }
+  void dap_pop_frame() {
+    if (!dap_frames_.empty()) dap_frames_.pop_back();
+  }
+  const std::vector<DapFrame>& dap_frames() const { return dap_frames_; }
 
   // Service a pending collect only at a GC safe point (statement boundary),
   // where every live Value is anchored in a root. Mid-expression a freshly
@@ -446,6 +482,8 @@ struct InterpGC {
 
  private:
   std::vector<Environment*> frame_roots_;
+  std::vector<DapFrame> dap_frames_;
+  bool dap_tracking_ = false;
 
   std::vector<Entry> entries_;
   size_t alloc_counter_ = 0;
@@ -1848,6 +1886,31 @@ struct FrameRootGuard {
   ~FrameRootGuard() { interp_gc().pop_frame_root(); }
   FrameRootGuard(const FrameRootGuard&) = delete;
   FrameRootGuard& operator=(const FrameRootGuard&) = delete;
+};
+
+// RAII twin of FrameRootGuard for the debugger's named call stack. A no-op
+// (just a bool test) unless a debugger is attached, so it adds nothing to a
+// normal run. When active, it records the callee + call site on push and pops
+// in lock-step; set_callee() fills in the function frame once it is created.
+struct DapFrameGuard {
+  bool active;
+  DapFrameGuard(Environment* caller_env, long call_line,
+                std::string_view call_path, const peg::Ast* call_ast,
+                std::string_view name)
+      : active(interp_gc().dap_tracking()) {
+    if (active)
+      interp_gc().dap_push_frame(
+          name.empty() ? std::string("<anonymous>") : std::string(name),
+          call_line, std::string(call_path), call_ast, caller_env);
+  }
+  void set_callee(Environment* e) {
+    if (active) interp_gc().dap_set_callee(e);
+  }
+  ~DapFrameGuard() {
+    if (active) interp_gc().dap_pop_frame();
+  }
+  DapFrameGuard(const DapFrameGuard&) = delete;
+  DapFrameGuard& operator=(const DapFrameGuard&) = delete;
 };
 
 // --- Scope-exit resolution for the owned stack (design §14.3) ---
@@ -5562,19 +5625,38 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     }
   }
 
+  // A statement boundary: a GC safe point (every live Value is anchored in a
+  // tracked root, so a collect deferred from mid-expression — where an in-flight
+  // cyclic temporary could be wrongly swept — runs safely here) and the point
+  // where the debugger's per-statement hook fires. Normally reached only from
+  // _eval_dispatch for STATEMENT-tagged nodes; the loop / if evaluators also
+  // call it for a single-statement block body, whose lone STATEMENT wrapper the
+  // AstOptimizer collapses away (so a breakpoint there would otherwise never
+  // fire). See eval_for / eval_while / eval_if.
+  void statement_boundary(const peg::Ast& ast,
+                          const std::shared_ptr<Environment>& env) {
+    using namespace peg::udl;
+    check_interrupt();
+    interp_gc().collect_if_pending(env.get());
+    if (debugger_) {
+      auto force_to_break = ast.tag == "DEBUGGER"_;
+      debugger_(ast, *env, force_to_break);
+    }
+  }
+
+  // True when `body` is a single-statement block body that collapsed past its
+  // STATEMENT wrapper (so _eval_dispatch won't fire the statement hook for it).
+  // A multi-statement body keeps a STATEMENTS node, whose children each fire.
+  static bool is_collapsed_single_statement(const peg::Ast& body) {
+    using namespace peg::udl;
+    return body.tag != "STATEMENTS"_ && body.original_tag != "STATEMENT"_;
+  }
+
   Value _eval_dispatch(const peg::Ast& ast, const std::shared_ptr<Environment>& env) {
     using namespace peg::udl;
 
     if (ast.original_tag == "STATEMENT"_) {
-      check_interrupt();
-      // GC safe point: at a statement boundary all live Values are anchored in
-      // a tracked root, so any collect deferred from mid-expression (where an
-      // in-flight cyclic temporary could be wrongly swept) runs safely here.
-      interp_gc().collect_if_pending(env.get());
-      if (debugger_) {
-        auto force_to_break = ast.tag == "DEBUGGER"_;
-        debugger_(ast, *env, force_to_break);
-      }
+      statement_boundary(ast, env);
     }
 
     switch (ast.tag) {
@@ -5740,6 +5822,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       // than re-assigning), and a body `defer` fires on every iteration.
       auto scopeEnv = make_scope(env);
       try {
+        if (debugger_ && is_collapsed_single_statement(*ast.nodes[1]))
+          statement_boundary(*ast.nodes[1], scopeEnv);  // breakpoint on 1 stmt
         eval(*ast.nodes[1], scopeEnv);
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
@@ -5810,6 +5894,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
       }
       try {
         check_interrupt();  // inside the try so an interrupt still disposes
+        if (debugger_ && is_collapsed_single_statement(body))
+          statement_boundary(body, scopeEnv);  // breakpoint on a 1-stmt body
         eval(body, scopeEnv);
         run_deferred(scopeEnv);
       } catch (const BreakSignal&) {
@@ -5833,10 +5919,14 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
 
     for (auto i = 0u; i < nodes.size(); i += 2) {
       if (i + 1 == nodes.size()) {
+        if (debugger_ && is_collapsed_single_statement(*nodes[i]))
+          statement_boundary(*nodes[i], env);  // breakpoint on a 1-stmt else
         return eval(*nodes[i], env);
       } else {
         auto cond = eval(*nodes[i], env);
         if (cond.to_bool()) {
+          if (debugger_ && is_collapsed_single_statement(*nodes[i + 1]))
+            statement_boundary(*nodes[i + 1], env);  // 1-stmt then-body
           return eval(*nodes[i + 1], env);
         }
       }
@@ -7830,11 +7920,16 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
   // parameters and populates a fresh function frame.
   Value invoke_user_function_with_args(
       const Value& fn_val, const std::shared_ptr<Environment>& env,
-      CallArgs args, size_t call_line, size_t call_column) {
+      CallArgs args, size_t call_line, size_t call_column,
+      std::string_view call_path = {}, const peg::Ast* call_ast = nullptr) {
     const auto& f = fn_val.to_function();
     const auto& params = *f.params;
     // Root the caller's env for the call's duration (GC safe-point reachability).
     FrameRootGuard guard(env.get());
+    // Record this call on the debugger's parallel frame stack (only while a
+    // debugger is attached). The callee env is filled in once callEnv exists.
+    DapFrameGuard dap_frame(env.get(), static_cast<long>(call_line), call_path,
+                            call_ast, f.name);
 
     // Native built-in functions (namespace methods / bare globals, body ==
     // nullptr) that declare a fixed positional signature reject the wrong
@@ -7928,6 +8023,7 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     auto callEnv = std::make_shared<Environment>(env);
     callEnv->is_function_frame = true;
     callEnv->initialize("self", fn_val, false);
+    dap_frame.set_callee(callEnv.get());  // debugger: this call's function frame
 
     // C. Walk formal params in declaration order; consume positional
     //    first, then merged map, then default. The `**rest` catch-all
@@ -8085,10 +8181,11 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     // call `obj(x: 1)` binds against __call__'s parameters like any method.
     if (auto bound = resolve_class_method(val, "__call__")) {
       return invoke_user_function_with_args(*bound, env, std::move(args),
-                                            call_line, call_column);
+                                            call_line, call_column, ast.path,
+                                            &ast);
     }
-    return invoke_user_function_with_args(val, env, std::move(args),
-                                          call_line, call_column);
+    return invoke_user_function_with_args(val, env, std::move(args), call_line,
+                                          call_column, ast.path, &ast);
   }
 
   // UFCS (D / Nim style): call `fn_val` as if `receiver` were its first
@@ -8104,7 +8201,8 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
     args.positional_locs.emplace_back(dot_line, dot_column);
     split_call_args(args_ast, env, args);
     return invoke_user_function_with_args(fn_val, env, std::move(args),
-                                          args_ast.line, args_ast.column);
+                                          args_ast.line, args_ast.column,
+                                          args_ast.path, &args_ast);
   }
 
   // `m[key]` on a Regex match: key is a Long (positional group, negative

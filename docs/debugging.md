@@ -33,17 +33,19 @@ Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 
 ### Supported
 
-- **Line breakpoints** and the `debugger` statement
+- **Line breakpoints**, **conditional breakpoints** (break only when an
+  expression is truthy, e.g. `i == 3`), and the `debugger` statement
 - **Stepping**: continue, step over (`next`), step in, step out; stop on entry
-- **Call stack** (current frame) with source location
-- **Variables**: in-scope locals at the stop point
-- **Watch / evaluate**: evaluate an expression in the stopped frame (watch
+- **Call stack**: a named multi-frame stack (`inner` ← `outer` ← `main`), each
+  frame with its source location
+- **Variables**: in-scope locals of the selected frame — pick a frame in the
+  call stack to inspect its own locals
+- **Watch / evaluate**: evaluate an expression in the selected frame (watch
   panel, hover, debug console) — e.g. `x + y`, `arr[0]`, a function call
-- **Set variable**: edit a `mut` variable's value (an immutable `let` binding
-  is rejected); the change takes effect in the running program
+- **Set variable**: edit a `mut` variable's value in the selected frame (an
+  immutable `let` binding is rejected); the change takes effect in the running
+  program
 - **Program output** in the debug console
-
-Not yet supported: conditional breakpoints and a multi-frame named call stack.
 
 ## VSCode
 

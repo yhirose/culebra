@@ -11,9 +11,10 @@
 // stdout/stderr is captured (fd redirect) and forwarded as `output` events so
 // it never corrupts the DAP stream.
 //
-// MVP scope (read-only inspection): breakpoints, single top stack frame,
-// variables (current scope chain), stepping, continue. Deferred: setVariable,
-// evaluate/watch, conditional breakpoints, multi-frame named stack.
+// Supported: line + conditional breakpoints, a named multi-frame call stack
+// (with per-frame variables, evaluate, and setVariable), stepping, continue,
+// and watch / hover / debug-console evaluation. interp only — the tree-walker
+// exposes the AST + Environment a source-level debugger needs.
 
 #include <climits>
 #include <cstdlib>
@@ -161,6 +162,7 @@ class DapServer {
                        .set("supportsConfigurationDoneRequest", Bv(true))
                        .set("supportsSetVariable", Bv(true))
                        .set("supportsEvaluateForHovers", Bv(true))
+                       .set("supportsConditionalBreakpoints", Bv(true))
                        .v());
       event("initialized", Obj().v());
     } else if (cmd == "launch") {
@@ -188,16 +190,20 @@ class DapServer {
     } else if (cmd == "stackTrace") {
       do_stack_trace(req);
     } else if (cmd == "scopes") {
+      // variablesReference == the frame id, so `variables` reads the locals of
+      // whichever frame the client selected in the call stack.
+      long frame_id = frame_id_arg(at(req, "arguments"));
       respond(req, Obj()
                        .set("scopes",
                             arr({Obj()
                                      .set("name", S("Locals"))
-                                     .set("variablesReference", L(1))
+                                     .set("variablesReference", L(frame_id))
                                      .set("expensive", Bv(false))
                                      .v()}))
                        .v());
     } else if (cmd == "variables") {
-      respond(req, Obj().set("variables", collect_variables()).v());
+      long var_ref = frame_id_arg(at(req, "arguments"), "variablesReference");
+      respond(req, Obj().set("variables", collect_variables(var_ref)).v());
     } else if (cmd == "evaluate") {
       do_evaluate(req);
     } else if (cmd == "setVariable") {
@@ -245,14 +251,17 @@ class DapServer {
     std::string path = at(at(a, "source"), "path").type == Value::String
                            ? std::string(at(at(a, "source"), "path").to_string())
                            : "";
-    std::set<long> lines;
+    std::map<long, std::string> lines;
     std::vector<Value> verified;
     const Value& bpArr = at(a, "breakpoints");
     if (bpArr.type == Value::Array) {
       for (const auto& bp : *bpArr.to_array().values) {
         long line = at(bp, "line").type == Value::Long ? at(bp, "line").to_long()
                                                        : 0;
-        lines.insert(line);
+        std::string cond = at(bp, "condition").type == Value::String
+                               ? std::string(at(bp, "condition").to_string())
+                               : "";
+        lines[line] = std::move(cond);
         verified.push_back(
             Obj().set("verified", Bv(true)).set("line", L(line)).v());
       }
@@ -267,46 +276,109 @@ class DapServer {
     respond(req, Obj().set("breakpoints", arr(std::move(verified))).v());
   }
 
-  void do_stack_trace(const Value& req) {
-    std::lock_guard<std::mutex> lk(mu_);
-    std::vector<Value> frames;
-    if (paused_ && cur_ast_) {
-      std::string name = frame_name(*cur_ast_);
-      std::string base = cur_path_;
-      auto slash = base.find_last_of('/');
-      if (slash != std::string::npos) base = base.substr(slash + 1);
-      frames.push_back(
-          Obj()
-              .set("id", L(1))
-              .set("name", S(std::move(name)))
-              .set("line", L(cur_line_))
-              .set("column", L(1))
-              .set("source", Obj()
-                                 .set("name", S(std::move(base)))
-                                 .set("path", S(cur_path_))
-                                 .v())
-              .v());
-    }
-    long total = static_cast<long>(frames.size());
-    respond(req, Obj()
-                     .set("stackFrames", arr(std::move(frames)))
-                     .set("totalFrames", L(total))
-                     .v());
+  // One reconstructed call-stack frame: its name, current execution point
+  // (file:line), the env to read its variables from, and the AST node whose
+  // enclosing function bounds the in-scope identifiers.
+  struct UiFrame {
+    std::string name;
+    long line;
+    std::string path;
+    Environment* env;
+    const peg::Ast* ast;
+  };
+
+  // The debuggee thread's GC substate (holds dap_frames_). Null until the
+  // debuggee starts. Safe to read from the DAP thread only while paused.
+  InterpGC* debuggee_gc() const {
+    if (!debuggee_rt_) return nullptr;
+    return static_cast<InterpGC*>(debuggee_rt_->substate[kSlotInterpGc]);
   }
 
-  static std::string frame_name(const peg::Ast& ast) {
-    using namespace peg::udl;
-    auto node = ast.parent.lock();
-    while (node) {
-      if (node->tag == "FUNCTION"_) {
-        // A named `fn name(...)` carries its IDENTIFIER as a child token.
-        for (const auto& c : node->nodes)
-          if (c->tag == "IDENTIFIER"_) return std::string(c->token);
-        return "<anonymous>";
-      }
-      node = node->parent.lock();
+  // Reconstruct the call stack (top frame first) from the debuggee's
+  // dap_frames(). Internal delegations (a multifn dispatcher calling the picked
+  // overload, marked by a null call_ast) are collapsed into the user-visible
+  // call so the stack reads as written. Must be called under mu_ while paused.
+  std::vector<UiFrame> build_frames_locked() {
+    std::vector<UiFrame> out;
+    if (!paused_ || !cur_ast_ || !cur_env_) return out;
+    InterpGC* gc = debuggee_gc();
+    if (!gc) {
+      out.push_back({"main", cur_line_, cur_path_, cur_env_, cur_ast_});
+      return out;
     }
-    return "main";
+    // Group raw call entries (bottom -> top) into user frames, folding each
+    // internal delegation's function frame into the real call it implements.
+    struct UF {
+      std::string name;
+      long line;
+      std::string path;
+      const peg::Ast* call_ast;
+      Environment* exec;    // the function frame actually executing
+      Environment* caller;  // the scope that made the call
+    };
+    std::vector<UF> ufs;
+    for (const auto& e : gc->dap_frames()) {
+      if (e.call_ast != nullptr || ufs.empty()) {
+        ufs.push_back({e.name, e.line, e.path, e.call_ast, e.callee_env,
+                       e.caller_env});
+      } else if (e.callee_env) {
+        ufs.back().exec = e.callee_env;  // dispatcher -> picked overload
+      }
+    }
+    long m = static_cast<long>(ufs.size());
+    // Top: the current execution point in the innermost function.
+    out.push_back({m ? ufs[m - 1].name : std::string("main"), cur_line_,
+                   cur_path_, cur_env_, cur_ast_});
+    // Each lower frame executes at the call site of the frame just above it.
+    for (long i = m - 1; i >= 1; i--) {
+      out.push_back({ufs[i - 1].name, ufs[i].line,
+                     ufs[i].path.empty() ? cur_path_ : ufs[i].path,
+                     ufs[i - 1].exec, ufs[i].call_ast});
+    }
+    if (m >= 1) {
+      out.push_back({"main", ufs[0].line,
+                     ufs[0].path.empty() ? cur_path_ : ufs[0].path,
+                     ufs[0].caller, ufs[0].call_ast});
+    }
+    return out;
+  }
+
+  // Resolve a 1-based DAP frame id to its env + scope AST (under mu_).
+  bool frame_target_locked(long frame_id, Environment*& env,
+                           const peg::Ast*& ast) {
+    auto frames = build_frames_locked();
+    if (frame_id < 1 || static_cast<size_t>(frame_id) > frames.size())
+      return false;
+    env = frames[frame_id - 1].env;
+    ast = frames[frame_id - 1].ast;
+    return true;
+  }
+
+  void do_stack_trace(const Value& req) {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto frames = build_frames_locked();
+    std::vector<Value> out;
+    long id = 1;
+    for (auto& fr : frames) {
+      std::string base = fr.path;
+      auto slash = base.find_last_of('/');
+      if (slash != std::string::npos) base = base.substr(slash + 1);
+      out.push_back(Obj()
+                        .set("id", L(id++))
+                        .set("name", S(std::move(fr.name)))
+                        .set("line", L(fr.line))
+                        .set("column", L(1))
+                        .set("source", Obj()
+                                           .set("name", S(std::move(base)))
+                                           .set("path", S(fr.path))
+                                           .v())
+                        .v());
+    }
+    long total = static_cast<long>(out.size());
+    respond(req, Obj()
+                     .set("stackFrames", arr(std::move(out)))
+                     .set("totalFrames", L(total))
+                     .v());
   }
 
   // Identifiers referenced in `node`, not descending into nested functions
@@ -334,16 +406,26 @@ class DapServer {
     return root ? root.get() : node;
   }
 
-  Value collect_variables() {
+  // Variables in scope at a given frame. `var_ref` is the DAP
+  // variablesReference, which we set equal to the 1-based frame id (see
+  // `scopes`), so a client inspecting a selected frame gets that frame's locals.
+  Value collect_variables(long var_ref) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (!paused_ || !cur_env_ || !cur_ast_) return arr({});
+    Environment* env = nullptr;
+    const peg::Ast* ast = nullptr;
+    if (!frame_target_locked(var_ref, env, ast) || !env || !ast) return arr({});
+    // Builtin globals (IO, the exception types, namespaces, ...) are in scope
+    // everywhere; listing them as "locals" is just noise, so skip them.
+    static const std::set<std::string, std::less<>> builtins =
+        builtin_global_names();
     std::set<std::string> names;
-    enum_idents(*scope_node(*cur_ast_), names);
+    enum_idents(*scope_node(*ast), names);
     std::vector<Value> vars;
     for (const auto& n : names) {
       if (n.empty() || n[0] == '_') continue;       // injected (__LINE__ etc.)
-      if (!cur_env_->has(n)) continue;               // not yet bound / unknown
-      const Value& val = cur_env_->get(n);
+      if (builtins.count(n)) continue;               // builtin global, not local
+      if (!env->has(n)) continue;                    // not yet bound / unknown
+      const Value& val = env->get(n);
       if (val.type == Value::Function) continue;     // hide fns / builtins
       vars.push_back(Obj()
                          .set("name", S(n))
@@ -355,19 +437,16 @@ class DapServer {
     return arr(std::move(vars));
   }
 
-  // Evaluate an expression string in the paused frame's environment. Runs on a
-  // fresh Interpreter sharing the singleton GC heap — the paused debuggee's
-  // frame roots are still on interp_gc()'s frame-root stack, so a collection
-  // here won't sweep its live values. Uses the bare `eval` (not `interpret`,
-  // which would flush the frame's pending defers). The debuggee thread is
-  // parked in cv_.wait, so reading its env from this thread is safe.
-  bool eval_in_frame(const std::string& expr, Value& out, std::string& err) {
-    std::shared_ptr<Environment> frame;
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      if (!paused_ || !cur_env_) { err = "not paused"; return false; }
-      frame = cur_env_->shared_from_this();
-    }
+  // Parse and evaluate an expression string against `frame` on a fresh
+  // Interpreter. The debuggee is parked, so reading its env is race-free, and
+  // the frame's values stay alive through the env's own refcounted references
+  // regardless of which thread's GC the eval allocates on. Uses the bare `eval`
+  // (not `interpret`, which would flush the frame's pending defers). The fresh
+  // Interpreter carries no debugger, so evaluating a call won't re-enter the
+  // hook.
+  bool eval_in_env(const std::shared_ptr<Environment>& frame,
+                   const std::string& expr, Value& out, std::string& err) {
+    if (!frame) { err = "no frame"; return false; }
     std::vector<std::string> msgs;
     auto ast = parse_with_transforms("(dap)", expr.data(), expr.size(), msgs);
     if (!ast) { err = msgs.empty() ? "parse error" : msgs.front(); return false; }
@@ -382,14 +461,38 @@ class DapServer {
     return false;
   }
 
+  // The env of the requested frame (default: top), as a shared_ptr safe to use
+  // after releasing mu_. The debuggee thread is parked, so this read is safe.
+  std::shared_ptr<Environment> resolve_frame(long frame_id, std::string& err) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!paused_) { err = "not paused"; return nullptr; }
+    Environment* env = nullptr;
+    const peg::Ast* ast = nullptr;
+    if (!frame_target_locked(frame_id, env, ast) || !env) {
+      err = "no such frame";
+      return nullptr;
+    }
+    return env->shared_from_this();
+  }
+
+  // A frame id arg (`frameId`, or `variablesReference` which we set equal to the
+  // frame id) clamped to a 1-based frame index; 0 / absent / negative means the
+  // top frame.
+  static long frame_id_arg(const Value& a, const char* key = "frameId") {
+    const Value& f = at(a, key);
+    long id = f.type == Value::Long ? f.to_long() : 0;
+    return id >= 1 ? id : 1;
+  }
+
   void do_evaluate(const Value& req) {
     const Value& a = at(req, "arguments");
     std::string expr = at(a, "expression").type == Value::String
                            ? std::string(at(a, "expression").to_string())
                            : "";
-    Value v;
     std::string err;
-    if (eval_in_frame(expr, v, err)) {
+    auto frame = resolve_frame(frame_id_arg(a), err);
+    Value v;
+    if (frame && eval_in_env(frame, expr, v, err)) {
       respond(req, Obj()
                        .set("result", S(v.str()))
                        .set("type", S(v.type_name()))
@@ -409,40 +512,56 @@ class DapServer {
     std::string valexpr = at(a, "value").type == Value::String
                               ? std::string(at(a, "value").to_string())
                               : "";
-    Value v;
+    // variablesReference is the frame id (see `scopes`), so a set targets the
+    // variable in the selected frame's scope, not always the top frame.
+    long frame_id = frame_id_arg(a, "variablesReference");
     std::string err;
-    if (!eval_in_frame(valexpr, v, err)) {
+    auto frame = resolve_frame(frame_id, err);
+    Value v;
+    if (!frame || !eval_in_env(frame, valexpr, v, err)) {
       respond(req, Obj().v(), /*success=*/false, err);
       return;
     }
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      if (!paused_ || !cur_env_) {
-        respond(req, Obj().v(), false, "not paused");
-        return;
-      }
-      // assign() walks the outer chain and asserts the name exists — that
-      // assert is compiled out in release, so an unknown name (a non-conformant
-      // client) would deref a null root. Guard with the same chained lookup.
-      if (!cur_env_->has(name)) {
-        respond(req, Obj().v(), false, "no variable '" + name + "' in scope");
-        return;
-      }
-      try {
-        cur_env_->assign(name, v);  // honours immutability (throws if `let`-bound)
-      } catch (const CulebraError& e) {
-        respond(req, Obj().v(), false, std::string(e.kind) + ": " + e.what());
-        return;
-      } catch (const std::exception& e) {
-        respond(req, Obj().v(), false, e.what());
-        return;
-      }
+    // assign() walks the outer chain and asserts the name exists — that assert
+    // is compiled out in release, so an unknown name (a non-conformant client)
+    // would deref a null root. Guard with the same chained lookup first.
+    if (!frame->has(name)) {
+      respond(req, Obj().v(), false, "no variable '" + name + "' in scope");
+      return;
+    }
+    try {
+      frame->assign(name, v);  // honours immutability (throws if `let`-bound)
+    } catch (const CulebraError& e) {
+      respond(req, Obj().v(), false, std::string(e.kind) + ": " + e.what());
+      return;
+    } catch (const std::exception& e) {
+      respond(req, Obj().v(), false, e.what());
+      return;
     }
     respond(req, Obj()
                      .set("value", S(v.str()))
                      .set("type", S(v.type_name()))
                      .set("variablesReference", L(0))
                      .v());
+  }
+
+  // Evaluate a breakpoint condition against the live frame (we are on the
+  // debuggee thread at a statement safe point). Stop when it is truthy; also
+  // stop — and report once — when it can't be evaluated or isn't boolean, so a
+  // bad condition surfaces instead of silently disabling the breakpoint.
+  bool eval_breakpoint_condition(const std::string& cond, Environment& env) {
+    Value v;
+    std::string err;
+    if (!eval_in_env(env.shared_from_this(), cond, v, err)) {
+      emit_stderr("breakpoint condition error: " + err + "\n");
+      return true;
+    }
+    try {
+      return v.to_bool();
+    } catch (const std::exception&) {
+      emit_stderr("breakpoint condition is not a boolean: " + cond + "\n");
+      return true;
+    }
   }
 
   // ---- debuggee lifecycle ----------------------------------------------
@@ -484,6 +603,15 @@ class DapServer {
     Debugger dbg = [this](const peg::Ast& a, Environment& e, bool f) {
       on_statement(a, e, f);
     };
+    // The interpreter's runtime substate (incl. the GC + dap_frames_) is
+    // thread-local, so the DAP thread can't reach it through interp_gc(). Record
+    // this thread's Runtime so frame queries can read the debuggee's instance
+    // while it's parked.
+    debuggee_rt_ = &current_runtime();
+    // Track the named call stack for the duration of the run. Enabled here (the
+    // env is built, so any preamble calls during setup stayed untracked) and
+    // cleared in finish(); a normal `culebra <file>` run never sets this.
+    interp_gc().dap_set_tracking(true);
     Value val;
     int code = 0;
     try {
@@ -497,6 +625,7 @@ class DapServer {
     } catch (...) {
       code = 1;
     }
+    interp_gc().dap_set_tracking(false);
     finish(code);
   }
 
@@ -517,9 +646,21 @@ class DapServer {
       reason = "entry";
     }
     if (!hit && bp_count_.load(std::memory_order_relaxed) != 0) {
-      std::lock_guard<std::mutex> lk(bp_mu_);
-      auto it = bps_.find(canon(path));
-      if (it != bps_.end() && it->second.count(line)) hit = true;
+      bool matched = false;
+      std::string cond;
+      {
+        std::lock_guard<std::mutex> lk(bp_mu_);
+        auto it = bps_.find(canon(path));
+        if (it != bps_.end()) {
+          auto lit = it->second.find(line);
+          if (lit != it->second.end()) {
+            matched = true;
+            cond = lit->second;
+          }
+        }
+      }
+      // Evaluate any condition outside bp_mu_ (it runs the interpreter).
+      if (matched) hit = cond.empty() || eval_breakpoint_condition(cond, env);
     }
     if (!hit) {
       // Snapshot the step intent under mu_: request_resume writes it from the
@@ -647,6 +788,7 @@ class DapServer {
   std::mutex write_mu_;
 
   std::thread debuggee_;
+  Runtime* debuggee_rt_ = nullptr;  // the debuggee thread's runtime substate
   std::mutex mu_;
   std::condition_variable cv_;
   bool paused_ = false;
@@ -658,7 +800,10 @@ class DapServer {
   long cur_line_ = 0;
   bool entered_ = false;
 
-  std::map<std::string, std::set<long>> bps_;
+  // path -> (line -> condition). An empty condition means an unconditional
+  // breakpoint; a non-empty one is an expression evaluated in the stopped
+  // frame's scope, and the line only stops when it is truthy.
+  std::map<std::string, std::map<long, std::string>> bps_;
   std::map<std::string, std::string> canon_cache_;
   std::mutex bp_mu_;
   // Total breakpoint count, readable without bp_mu_ so the per-statement hook
