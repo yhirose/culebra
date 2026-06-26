@@ -1,0 +1,12 @@
+{
+  "name": "tree-sitter-culebra",
+  "version": "0.0.1",
+  "description": "Minimal Tree-sitter grammar for Culebra (lexical highlighting, used by the Zed extension)",
+  "main": "bindings/node",
+  "tree-sitter": [
+    {
+      "scope": "source.culebra",
+      "file-types": ["cul"]
+    }
+  ]
+}

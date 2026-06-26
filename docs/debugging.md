@@ -124,18 +124,30 @@ For syntax highlighting, run `misc/vim/install-vim-syntax.sh`.
 
 ## Zed
 
-Zed has a built-in DAP client (no extension needed for debugging). Set it up
-with:
+Zed has a built-in DAP client (no extension needed for debugging). Set up
+debugging with:
 
 ```sh
 misc/zed/install.sh            # writes .zed/debug.json for the current project
 misc/zed/install.sh --global   # or the user-level ~/.config/zed/debug.json
 ```
 
-This points a `launch` scenario at `culebra dap` (the `culebra` path is baked
-in when on `PATH`). Then open a `.cul` file, set a breakpoint, and start the
-"Debug current Culebra file" scenario from the debug panel. The generated
-config is:
+For syntax highlighting, Zed needs a Tree-sitter grammar (it can't use the
+VSCode TextMate grammar), so it ships as a small dev extension:
+
+```sh
+misc/zed/install-syntax.sh
+```
+
+This generates a Zed extension (pinned to the in-repo Tree-sitter grammar at
+`misc/zed/tree-sitter-culebra`) and prints the directory to load. Install it
+with the **`zed: install dev extension`** command, selecting that directory.
+Re-run the script after pulling grammar changes to bump the pinned commit.
+
+The debug setup points a `launch` scenario at `culebra dap` (the `culebra` path
+is baked in when on `PATH`). Then open a `.cul` file, set a breakpoint, and
+start the "Debug current Culebra file" scenario from the debug panel. The
+generated config is:
 
 ```jsonc
 [
@@ -154,8 +166,8 @@ config is:
 > Zed's debugger is newer than VSCode's and its config schema is still
 > evolving — the keys above may differ in your version. The essentials are the
 > same everywhere: launch `culebra dap`, `request: launch`, and a `program`
-> pointing at the file. Syntax highlighting in Zed needs a separate tree-sitter
-> extension (not provided here); debugging works without it.
+> pointing at the file. Syntax highlighting comes from the dev extension above;
+> debugging works with or without it.
 
 ## Notes
 

@@ -1,0 +1,13 @@
+name = "Culebra"
+grammar = "culebra"
+path_suffixes = ["cul"]
+line_comments = ["// ", "# "]
+block_comment = ["/* ", " */"]
+
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = true },
+  { start = "(", end = ")", close = true, newline = true },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string", "comment"] },
+]
