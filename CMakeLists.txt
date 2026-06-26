@@ -60,6 +60,29 @@ include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-httplib)
+include_directories(./vendor/sqlite)
+
+# SQLite amalgamation (vendor/sqlite/sqlite3.c, public domain) for the builtin
+# SQLite namespace. Compiled once into an OBJECT library and reused by both the
+# `culebra` driver (in-process interp/JIT run SQLite directly) and the gated
+# culebra_rt_sqlite feature archive (AOT). Like cpp-httplib's OpenSSL choke,
+# the heavy dependency is partitioned: a non-SQLite AOT binary force-loads
+# neither this object nor the strong wrappers (see sqlite.h / aot_uses_sqlite).
+# Warnings are silenced (-w) since the amalgamation is third-party generated
+# code; -ffunction-sections lets the AOT link dead-strip unused SQLite code.
+add_library(culebra_sqlite3 OBJECT ./vendor/sqlite/sqlite3.c)
+target_compile_options(culebra_sqlite3 PRIVATE -w -ffunction-sections -fdata-sections)
+target_compile_definitions(culebra_sqlite3 PRIVATE
+  SQLITE_THREADSAFE=1
+  SQLITE_DQS=0
+  SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_DEFAULT_FOREIGN_KEYS=1
+  SQLITE_OMIT_DEPRECATED
+  SQLITE_OMIT_SHARED_CACHE
+  SQLITE_LIKE_DOESNT_MATCH_BLOBS
+  SQLITE_DEFAULT_MEMSTATUS=0
+  SQLITE_ENABLE_FTS5
+  SQLITE_ENABLE_RTREE)
 
 # zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when
 # Http is enabled, cpp-httplib's transparent response gzip. Found unconditionally
@@ -293,7 +316,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_DEFINE_RUNTIME=1
     CULEBRA_RT_TENSOR_EVAL_WEAK=1
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
-    CULEBRA_RT_COMPRESS_WEAK=1)
+    CULEBRA_RT_COMPRESS_WEAK=1
+    CULEBRA_RT_SQLITE_WEAK=1)
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -330,6 +354,18 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   target_compile_options(culebra_rt_compress PRIVATE
     -ffunction-sections -fdata-sections)
 
+  # SQLite feature object: the strong real culebra::sqlite::* wrappers (the lone
+  # sqlite3 anchor) plus the amalgamation object itself, so force-loading this
+  # one archive into an AOT binary is fully self-contained. Force-loaded only
+  # when the AST scan reports SQLite use, mirroring the tensor/http/compress
+  # objects, so a non-SQLite binary references no sqlite3 symbol.
+  add_library(culebra_rt_sqlite STATIC ./src/runtime/culebra_rt_sqlite.cc
+    $<TARGET_OBJECTS:culebra_sqlite3>)
+  target_compile_features(culebra_rt_sqlite PRIVATE cxx_std_23)
+  target_compile_definitions(culebra_rt_sqlite PRIVATE CULEBRA_RT_SQLITE_STRONG=1)
+  target_compile_options(culebra_rt_sqlite PRIVATE
+    -ffunction-sections -fdata-sections)
+
   # Embed the runtime archives into the `culebra` driver via
   # cpp-embedlib. `culebra build` materializes the core archive (+ the
   # tensor / http feature objects when needed) to
@@ -350,13 +386,16 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_http${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_compress_archive
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_compress${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  set(_rt_sqlite_archive
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_sqlite${CMAKE_STATIC_LIBRARY_SUFFIX}")
   set(_rt_embed_files
     "${_rt_archive}"
     "${_rt_tensor_archive}"
     "${_rt_http_archive}"
-    "${_rt_compress_archive}")
+    "${_rt_compress_archive}"
+    "${_rt_sqlite_archive}")
   set(_rt_embed_deps culebra_rt culebra_rt_tensor culebra_rt_http
-    culebra_rt_compress)
+    culebra_rt_compress culebra_rt_sqlite)
   if(CULEBRA_WRAP_SOURCES)
     # Wrap declarations for AOT outputs. The TUs hold static registrars
     # that nothing references by name, so `culebra build` force-loads
@@ -439,6 +478,23 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_ZLIB_LINK="${_zlib_link}")
 endif()
 
+# SQLite amalgamation linked into the `culebra` driver so the in-process interp
+# and JIT run SQLite directly (the embedded culebra_rt_sqlite archive serves AOT
+# outputs only). The amalgamation is self-contained on macOS; on Linux it pulls
+# pthread/dl/m. `culebra build` appends CULEBRA_SQLITE_LINK only when the program
+# references SQLite (see aot_uses_sqlite) — a non-SQLite AOT binary omits it.
+target_link_libraries(culebra culebra_sqlite3)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Threads REQUIRED)
+  target_link_libraries(culebra Threads::Threads ${CMAKE_DL_LIBS})
+  set(_sqlite_link "-lpthread -ldl -lm")
+else()
+  set(_sqlite_link "")
+endif()
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
+endif()
+
 # Embedding smoke tests. mt_smoke exercises thread_local isolation
 # (parser, GC, exception state); mi_smoke exercises RuntimeScope and
 # per-Runtime hooks. Build them alongside `culebra` so they stay in
@@ -473,6 +529,11 @@ endif()
 # The embedding TUs include stdlib_interp.h -> compress.h inline, which calls
 # zlib directly, so the suite needs libz.
 target_link_libraries(smoke_suite ZLIB::ZLIB)
+# stdlib_interp.h -> sqlite.h inline wrappers call sqlite3_* directly.
+target_link_libraries(smoke_suite culebra_sqlite3)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(smoke_suite Threads::Threads ${CMAKE_DL_LIBS})
+endif()
 foreach(smoke mt mi define signal utf8_invalid)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
@@ -493,6 +554,18 @@ if(CULEBRA_ENABLE_HTTP)
   target_link_libraries(http_test ${_ssl_libs})
   add_test(NAME http_test COMMAND http_test)
 endif()
+
+# sqlite.h core test: drives the value-neutral cursor API (open / prepare /
+# bind / step / column / type-mapping / errors) against an in-memory database,
+# fully deterministic and offline. Links the amalgamation directly (the test TU
+# includes sqlite.h with inline bodies).
+add_executable(sqlite_test test/sqlite_test.cc)
+target_compile_features(sqlite_test PRIVATE cxx_std_23)
+target_link_libraries(sqlite_test culebra_sqlite3)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(sqlite_test Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+add_test(NAME sqlite_test COMMAND sqlite_test)
 
 # GC unit tests — the standalone collector (include/jit_gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
