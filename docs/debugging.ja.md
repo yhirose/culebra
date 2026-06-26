@@ -125,28 +125,26 @@ gadget のインストール（`:VimspectorInstall`）は不要 — 上記 `comm
 
 ## Zed
 
-Zed は DAP クライアントを内蔵（デバッグに拡張不要）。デバッグは次でセットアップ:
+Zed はシンタックスハイライト（tree-sitter 文法）にもデバッグ（デバッグアダプタは
+**拡張による登録が必須**＝`debug.json` から任意の DAP コマンドを直接指せない）にも
+拡張が必要です。両方を1つの dev extension で提供します:
 
 ```sh
-misc/zed/install.sh            # このプロジェクトの .zed/debug.json を書く
-misc/zed/install.sh --global   # またはユーザ全体の ~/.config/zed/debug.json
+misc/zed/install.sh
 ```
 
-シンタックスハイライトは Zed では tree-sitter 文法が必須（VSCode の TextMate 文法は
-使えない）なので、小さな dev extension として提供します:
+これで拡張（リポジトリ内 tree-sitter 文法 `misc/zed/tree-sitter-culebra` ＋ `culebra`
+デバッグアダプタを `culebra dap` に登録する小さな Rust シム）を生成し、このプロジェクトの
+`.zed/debug.json` を書き出します。Zed への導入（初回のみ）:
 
-```sh
-misc/zed/install-syntax.sh
-```
+1. コマンドパレット → **`zed: install dev extension`** → スクリプトが表示した
+   ディレクトリ（既定 `~/.local/share/culebra-zed-extension`）を選択。Zed が Rust シムを
+   WASM にビルドするため、新しめの Zed が必要です。
+2. 文法/アダプタを更新したら `misc/zed/install.sh` を再実行して同ディレクトリを選び直す
+   （ピン留めコミットが更新されます）。
 
-リポジトリ内の tree-sitter 文法（`misc/zed/tree-sitter-culebra`）にピン留めした Zed
-拡張を生成し、読み込むディレクトリを表示します。コマンドパレットの
-**`zed: install dev extension`** でそのディレクトリを選んで導入してください。文法を
-更新したら再実行してピン留めコミットを更新します。
-
-デバッグ設定は `launch` シナリオが `culebra dap` を指します（`culebra` が `PATH` 上なら
-絶対パスを埋め込み）。`.cul` を開いてブレークポイントを置き、デバッグパネルから
-"Debug current Culebra file" を開始してください。生成される設定:
+その後 `.cul` を開く（ハイライトされる）→ ブレークポイントを置き、デバッグパネルから
+**"Debug current Culebra file"** を実行。生成される `.zed/debug.json`:
 
 ```jsonc
 [
@@ -154,18 +152,16 @@ misc/zed/install-syntax.sh
     "label": "Debug current Culebra file",
     "adapter": "culebra",
     "request": "launch",
-    "command": "culebra",
-    "args": ["dap"],
     "program": "$ZED_FILE",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "stopOnEntry": false
   }
 ]
 ```
 
-> Zed のデバッガは VSCode より新しく、設定スキーマは流動的です。上記のキーは
-> バージョンで異なる可能性があります。本質はどこでも同じ: `culebra dap` を起動・
-> `request: launch`・`program` にファイルを指定。シンタックスハイライトは上の dev
-> extension が提供し、デバッグは有無どちらでも動きます。
+> Zed のデバッガ／拡張 API は VSCode より新しく流動的なので、キーやビルド手順がバージョンで
+> 異なることがあります。dev extension がビルドできない／アダプタが起動しない場合は、Zed の
+> バージョンと `misc/zed/Cargo.toml` の `zed_extension_api` バージョンの対応を確認してください。
 
 ## 補足
 

@@ -1,57 +1,78 @@
 #!/bin/sh
-# Set up Culebra debugging for Zed.
+# Set up Culebra for Zed: syntax highlighting AND debugging.
 #
-# Zed has a built-in DAP client, so no extension is needed — it just needs a
-# debug scenario pointing at `culebra dap`. Scenarios live in a project's
-# .zed/debug.json (default), or pass --global to write the user-level
-# ~/.config/zed/debug.json instead.
+# Neither can be pure config in Zed: highlighting needs a Tree-sitter grammar,
+# and a debug adapter must be registered by an extension (a small WASM shim that
+# tells Zed to launch `culebra dap`). So both ship as one dev extension. This
+# script generates that extension, points you at it to install, and writes the
+# project's debug scenarios to .zed/debug.json.
 #
-# The culebra path is baked in when it's on PATH. An existing debug.json is
-# backed up to debug.json.bak rather than merged, so re-check it if you already
-# had scenarios.
-#
-# Note: this sets up *debugging* only. Syntax highlighting in Zed needs a
-# tree-sitter language extension, which is separate from the TextMate grammar
-# used by VSCode and is not provided here.
-#
-# Usage: install.sh [--global]
+# Usage: install.sh [extension-output-dir]
 
 set -eu
 
-GLOBAL=0
-[ "${1:-}" = "--global" ] && GLOBAL=1
+SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO=$(git -C "$SRC_DIR" rev-parse --show-toplevel)
+REV=$(git -C "$REPO" rev-parse HEAD)
+EXT=${1:-"${XDG_DATA_HOME:-$HOME/.local/share}/culebra-zed-extension"}
 
-CULEBRA=$(command -v culebra 2>/dev/null || echo culebra)
-
-if [ "$GLOBAL" -eq 1 ]; then
-  DEST_DIR="$HOME/.config/zed"
-  WHERE="user-level ($DEST_DIR)"
-else
-  DEST_DIR="$PWD/.zed"
-  WHERE="this project ($DEST_DIR)"
-fi
-DEST="$DEST_DIR/debug.json"
-
-mkdir -p "$DEST_DIR"
-if [ -f "$DEST" ]; then
-  cp "$DEST" "$DEST.bak"
-  echo "note: existing $DEST backed up to $DEST.bak — merge your old scenarios back if needed."
+# The grammar is fetched from the repo by commit, so it must be committed.
+if ! git -C "$REPO" cat-file -e "$REV:misc/zed/tree-sitter-culebra/src/parser.c" 2>/dev/null; then
+  echo "error: the grammar (misc/zed/tree-sitter-culebra/src/parser.c) is not committed at HEAD." >&2
+  echo "Commit it first — Zed fetches the grammar from the repo by commit." >&2
+  exit 1
 fi
 
-cat > "$DEST" <<JSON
+# 1. Generate the dev extension (grammar via git, language config + Rust adapter
+#    shim copied in; Zed compiles the Rust to WASM on install).
+rm -rf "$EXT"
+mkdir -p "$EXT/languages" "$EXT/src"
+cp -R "$SRC_DIR/languages/." "$EXT/languages/"
+cp "$SRC_DIR/Cargo.toml" "$EXT/Cargo.toml"
+cp "$SRC_DIR/src/culebra.rs" "$EXT/src/culebra.rs"
+cat > "$EXT/extension.toml" <<TOML
+id = "culebra"
+name = "Culebra"
+version = "0.0.1"
+schema_version = 1
+description = "Syntax highlighting and debugging for the Culebra language."
+
+[grammars.culebra]
+repository = "file://$REPO"
+rev = "$REV"
+path = "misc/zed/tree-sitter-culebra"
+
+[debug_adapters.culebra]
+TOML
+
+# 2. Write the project's debug scenarios. The adapter binary is supplied by the
+#    extension above, so the scenario only names the adapter + the program.
+DBG_DIR="$PWD/.zed"
+mkdir -p "$DBG_DIR"
+if [ -f "$DBG_DIR/debug.json" ]; then
+  cp "$DBG_DIR/debug.json" "$DBG_DIR/debug.json.bak"
+  echo "note: existing $DBG_DIR/debug.json backed up to debug.json.bak — merge if needed."
+fi
+cat > "$DBG_DIR/debug.json" <<'JSON'
 [
   {
     "label": "Debug current Culebra file",
     "adapter": "culebra",
     "request": "launch",
-    "command": "$CULEBRA",
-    "args": ["dap"],
-    "program": "\$ZED_FILE",
+    "program": "$ZED_FILE",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "stopOnEntry": false
   }
 ]
 JSON
 
-echo "installed Zed debug config into $WHERE (adapter: $CULEBRA dap)"
-echo "  -> open a .cul file, set a breakpoint, and start \"Debug current Culebra file\""
-echo "     from the debug panel (or run the 'debugger: start' action)."
+echo "wrote Zed extension to:   $EXT  (grammar @ ${REV})"
+echo "wrote debug scenarios to: $DBG_DIR/debug.json"
+echo
+echo "Install the extension in Zed (one time):"
+echo "  1. Command palette -> 'zed: install dev extension' -> select: $EXT"
+echo "     (Zed compiles the Rust adapter shim to WASM; needs a recent Zed.)"
+echo "  2. Re-run this script and re-select the directory after grammar/adapter changes."
+echo
+echo "Then: open a .cul file -> syntax highlights; set a breakpoint and run"
+echo "      'Debug current Culebra file' from the debug panel."
