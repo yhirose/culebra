@@ -44,8 +44,9 @@ Contents
 - **Part IV — Verification and deployment**
   16. [Testing (`culebra test`)](#16-testing-culebra-test)
   17. [Linting (`culebra lint`)](#17-linting-culebra-lint)
-  18. [AOT binary build](#18-aot-binary-build)
-  19. [Embedding overview](#19-embedding-overview)
+  18. [Formatting (`culebra fmt`)](#18-formatting-culebra-fmt)
+  19. [AOT binary build](#19-aot-binary-build)
+  20. [Embedding overview](#20-embedding-overview)
 
 0. Design philosophy
 --------------------
@@ -1499,7 +1500,35 @@ What it reports today:
 Planned: unused imports, unreachable code, a `--format json` mode for
 editor / LSP integration, and inline `# lint: ignore` suppression.
 
-18. AOT binary build
+18. Formatting (`culebra fmt`)
+------------------------------
+
+`culebra fmt [files...]` reformats source to one canonical style:
+normalized operator spacing, two-space indentation, brace blocks laid out
+multi-line, and argument lists / collection literals wrapped when they
+exceed the line width. It is opinionated and zero-config (no style flags),
+in the spirit of `gofmt`.
+
+```bash
+culebra fmt app.cul          # write the formatted source to stdout
+culebra fmt -w app.cul       # rewrite the file in place
+culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI gate)
+culebra fmt -l src/*.cul     # list the files that would change
+cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
+```
+
+How it works: the source is parsed, re-printed from the syntax tree, and
+then **re-parsed and compared** against the original — if formatting would
+change the program's meaning, `fmt` refuses and leaves the file untouched
+rather than risk corrupting it. Formatting is idempotent: running it twice
+yields the same result as running it once.
+
+Comments are not yet preserved: a file that contains any comment is left
+**byte-for-byte unchanged** (rather than silently dropping the comments).
+Comment-preserving formatting is the next milestone, along with blank-line
+normalization inside blocks and alignment polish.
+
+19. AOT binary build
 --------------------
 
 `culebra build` compiles a `.cul` source ahead-of-time into a
@@ -1513,7 +1542,7 @@ also drop the Accelerate / BLAS framework dependency.
 otool -L ./out                            # no Accelerate, no LLVM
 ```
 
-### 17.1 Cross-compile
+### 19.1 Cross-compile
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1534,7 +1563,7 @@ drop unreferenced runtime helpers (~200 of them) and, when no
 `Tensor` reference is found, swap in a no-BLAS archive. The result is
 a few hundred KB instead of a few MB.
 
-19. Embedding overview
+20. Embedding overview
 ----------------------
 
 Culebra is a header-friendly C++23 library. Minimal embed:

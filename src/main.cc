@@ -1,6 +1,7 @@
 #include <culebra.h>
 #include <dap.h>
 #include <doctest_runner.h>
+#include <formatter.h>
 #include <stdlib_interp.h>
 #include <test_runner.h>
 #ifdef CULEBRA_JIT_ENABLED
@@ -298,6 +299,8 @@ void print_usage(ostream& os) {
         "                            --reporter, --bail, --list)\n"
         "  lint <file.cul>...        Report static problems (errors + warnings\n"
         "                            like unused variables) without running\n"
+        "  fmt [files...]            Reformat source to canonical style\n"
+        "                            (-w write, -l list, --check; `culebra fmt --help`)\n"
         "\n"
         "Examples:\n"
         "  culebra hello.cul              Run a script (interpreter)\n"
@@ -1185,6 +1188,101 @@ int run_lint(int argc, const char** argv) {
   return warnings > 0 ? 1 : 0;
 }
 
+// `culebra fmt [files...]` — reformat Culebra source to the canonical style.
+// Default: write the formatted result to stdout. `-w`/`--write` rewrites files
+// in place. `-l`/`--list` prints the names of files that would change (and
+// exits 1). `--check` is like `-l` but prints nothing. With no files (or `-`)
+// it formats stdin to stdout (for editor format-on-save). Exit code: 0 clean,
+// 1 when `-l`/`--check` found changes, 2 on parse / read / safety failure.
+int run_fmt(int argc, const char** argv) {
+  bool write = false, list = false, check = false;
+  vector<string> files;
+  for (int i = 2; i < argc; i++) {
+    string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      std::println("Usage: culebra fmt [-w|--write] [-l|--list] [--check] "
+                   "[files...]\n"
+                   "  (no flags)  write formatted source to stdout\n"
+                   "  -w, --write  rewrite each file in place\n"
+                   "  -l, --list   list files that would change (exit 1)\n"
+                   "  --check      exit 1 if any file would change (no output)\n"
+                   "  -            read from stdin, write to stdout");
+      return 0;
+    }
+    if (arg == "-w" || arg == "--write") { write = true; continue; }
+    if (arg == "-l" || arg == "--list") { list = true; continue; }
+    if (arg == "--check") { check = true; continue; }
+    files.push_back(arg);
+  }
+
+  auto report = [](const string& path, const culebra::fmt::FormatResult& r) {
+    if (r.status == culebra::fmt::FormatStatus::ParseError) {
+      std::print(stderr, "{}", r.message);
+    } else if (r.status == culebra::fmt::FormatStatus::Refused) {
+      std::println(stderr, "{}: {}", path, r.message);
+    }
+  };
+
+  // Test-only: CULEBRA_FMT_FORCE=1 drops comments and formats anyway, so the
+  // harness can exercise the printer + safety net across comment-bearing source
+  // before Phase 1 (comment preservation) exists. Never use for real edits.
+  const bool force = std::getenv("CULEBRA_FMT_FORCE") != nullptr;
+  auto fmt = [&](const std::string& p, std::string_view s) {
+    return culebra::fmt::format_source(p, s, /*width=*/80, /*drop_comments=*/force);
+  };
+
+  // stdin -> stdout when no file arguments (or the lone `-`).
+  bool use_stdin = files.empty();
+  for (auto& f : files) if (f == "-") use_stdin = true;
+  if (use_stdin) {
+    std::string src((std::istreambuf_iterator<char>(cin)),
+                    std::istreambuf_iterator<char>());
+    auto r = fmt("<stdin>", src);
+    report("<stdin>", r);
+    if (r.status == culebra::fmt::FormatStatus::ParseError ||
+        r.status == culebra::fmt::FormatStatus::Refused)
+      return 2;
+    bool changed = r.status == culebra::fmt::FormatStatus::Ok;
+    if (check) return changed ? 1 : 0;
+    if (list) { if (changed) std::println("<stdin>"); return changed ? 1 : 0; }
+    std::print("{}", r.output);
+    return 0;
+  }
+
+  int rc = 0;
+  bool any_changed = false;
+  for (const auto& path : files) {
+    vector<char> buff;
+    if (!read_file(path.c_str(), buff)) {
+      std::println(stderr, "culebra fmt: can't open '{}'", path);
+      rc = 2;
+      continue;
+    }
+    std::string src(buff.begin(), buff.end());
+    auto r = fmt(path, src);
+    report(path, r);
+    if (r.status == culebra::fmt::FormatStatus::ParseError ||
+        r.status == culebra::fmt::FormatStatus::Refused) {
+      rc = 2;
+      continue;
+    }
+    bool changed = r.status == culebra::fmt::FormatStatus::Ok;
+    if (changed) any_changed = true;
+    if (check) continue;
+    if (list) { if (changed) std::println("{}", path); continue; }
+    if (write) {
+      if (changed) {
+        ofstream ofs(path, ios::out | ios::binary | ios::trunc);
+        ofs << r.output;
+      }
+    } else {
+      std::print("{}", r.output);
+    }
+  }
+  if ((check || list) && any_changed && rc == 0) return 1;
+  return rc;
+}
+
 int main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
@@ -1199,6 +1297,9 @@ int main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "lint") {
     return run_lint(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "fmt") {
+    return run_fmt(argc, argv);
   }
   if (argc >= 2 && string(argv[1]) == "dap") {
     // Debug Adapter Protocol server over stdio (interp-backed). The program to

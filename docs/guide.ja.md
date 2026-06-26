@@ -42,8 +42,9 @@ API リファレンスは [`stdlib.ja.md`](stdlib.ja.md)、 実装の内部詳�
 - **第 IV 部 — 検証とデプロイ**
   16. [テスト (`culebra test`)](#16-テスト-culebra-test)
   17. [リント (`culebra lint`)](#17-リント-culebra-lint)
-  18. [AOT バイナリビルド](#18-aot-バイナリビルド)
-  19. [埋め込み概観](#19-埋め込み概観)
+  18. [フォーマット (`culebra fmt`)](#18-フォーマット-culebra-fmt)
+  19. [AOT バイナリビルド](#19-aot-バイナリビルド)
+  20. [埋め込み概観](#20-埋め込み概観)
 
 0. 設計哲学
 -----------
@@ -1468,7 +1469,32 @@ culebra lint app.cul
 予定: 未使用 import、到達不能コード、エディタ/LSP 連携用の
 `--format json`、インライン `# lint: ignore` 抑制。
 
-18. AOT バイナリビルド
+18. フォーマット (`culebra fmt`)
+--------------------------------
+
+`culebra fmt [files...]` はソースを唯一の正準スタイルに整形する: 演算子
+周りの空白正規化、2スペースインデント、ブレースブロックの複数行化、行幅を
+超えた引数リスト/コレクションリテラルの折り返し。`gofmt` と同じく opinionated
+かつ zero-config (スタイル設定フラグ無し)。
+
+```bash
+culebra fmt app.cul          # 整形結果を stdout に出力
+culebra fmt -w app.cul       # ファイルをその場で書き換え
+culebra fmt --check app.cul  # 未整形なら exit 1 (CI ゲート)
+culebra fmt -l src/*.cul     # 変更が必要なファイル名を列挙
+cat app.cul | culebra fmt -  # stdin -> stdout (エディタの保存時整形)
+```
+
+仕組み: ソースを構文木にパースして再出力し、その結果を**再パースして元と
+照合**する。整形がプログラムの意味を変えてしまう場合は整形を拒否し、
+ファイルを書き換えずに残す (コード破壊を絶対に避ける)。整形は冪等で、
+2回かけても1回と同じ結果になる。
+
+コメントはまだ保持できない: コメントを含むファイルは (黙って消すのではなく)
+**1バイトも変更せず**そのまま残す。コメント保持の整形が次のマイルストーンで、
+ブロック内空行の正規化やアラインメントの磨き込みも続く。
+
+19. AOT バイナリビルド
 ----------------------
 
 `culebra build` は `.cul` ソースを ahead-of-time で自己完結バイナ
@@ -1482,7 +1508,7 @@ Accelerate / BLAS フレームワーク依存も外せる。
 otool -L ./out                            # Accelerate も LLVM も無し
 ```
 
-### 17.1 クロスコンパイル
+### 19.1 クロスコンパイル
 
 ```bash
 ./build/culebra build my-program.cul \
@@ -1502,7 +1528,7 @@ otool -L ./out                            # Accelerate も LLVM も無し
 タイムヘルパ (~200 個) を落とせる。 `Tensor` 参照が無ければ no-BLAS
 archive に差し替わるので、数 MB が数百 KB になる。
 
-19. 埋め込み概観
+20. 埋め込み概観
 ----------------
 
 Culebra は header-friendly な C++23 ライブラリ。 最小埋め込み例:

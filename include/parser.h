@@ -1436,6 +1436,37 @@ inline std::shared_ptr<peg::Ast> desugar_regex_literals(
   return node;
 }
 
+// Rules the AstOptimizer must NOT collapse onto a single child — the shared
+// single source of truth for every consumer of the optimized AST (interp /
+// JIT / lint / fmt). Adding a structural node to the grammar usually means
+// adding its name here too.
+inline const std::vector<std::string>& ast_optimizer_keep_rules() {
+  static const std::vector<std::string> rules = {
+      "PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
+      "OBJECT_PROPERTY", "TUPLE", "SET",
+      "ARRAY", "RETURN",
+      "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER", "FOR",
+      "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
+      "DEFAULT_VALUE",
+      "ARG_LIST", "KWARG", "KWARG_SPLAT",
+      "CLASS_DECL", "METHOD", "DECORATOR",
+      "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
+      "ENUM_DECL", "VARIANT",
+      // TUPLE_PATTERN is intentionally absent: a real tuple
+      // pattern always has >=2 children (grammar requires
+      // `'(' PATTERN ',' PATTERN ...`), so it is never collapsed
+      // anyway, while FOR_BINDING (which emits a TUPLE_PATTERN
+      // tag) must collapse to its lone child for single targets.
+      "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
+      "ARRAY_PATTERN", "OBJECT_PATTERN",
+      "CTOR_PATTERN",
+      "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
+      "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
+      "SPREAD_ELEM",
+      "IMPORT_STMT", "EXPORT_STMT"};
+  return rules;
+}
+
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        const char* expr, size_t len,
                                        std::vector<std::string>& msgs) {
@@ -1447,31 +1478,30 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 
   std::shared_ptr<peg::Ast> ast;
   if (parser.parse_n(expr, len, ast, path.c_str())) {
-    auto opt = peg::AstOptimizer(
-        true, {"PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
-               "OBJECT_PROPERTY", "TUPLE", "SET",
-               "ARRAY", "RETURN",
-               "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER", "FOR",
-               "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
-               "DEFAULT_VALUE",
-               "ARG_LIST", "KWARG", "KWARG_SPLAT",
-               "CLASS_DECL", "METHOD", "DECORATOR",
-               "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
-               "ENUM_DECL", "VARIANT",
-               // TUPLE_PATTERN is intentionally absent: a real tuple
-               // pattern always has >=2 children (grammar requires
-               // `'(' PATTERN ',' PATTERN ...`), so it is never collapsed
-               // anyway, while FOR_BINDING (which emits a TUPLE_PATTERN
-               // tag) must collapse to its lone child for single targets.
-               "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
-               "ARRAY_PATTERN", "OBJECT_PATTERN",
-               "CTOR_PATTERN",
-               "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",
-               "TRIPLE_STRING", "REGEX_LIT", "REGEX_BODY", "REGEX_INTERP",
-               "SPREAD_ELEM",
-               "IMPORT_STMT", "EXPORT_STMT"});
-
+    auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
     return desugar_regex_literals(opt.optimize(ast));
+  }
+
+  return nullptr;
+}
+
+// Like parse(), but keeps REGEX_LIT nodes intact (no desugaring to a
+// `Regex.compile(...)` call) so the source formatter can re-emit `re"..."`
+// literals verbatim. Used only by `culebra fmt`; never feed this AST to a
+// backend, which expects the desugared form.
+inline std::shared_ptr<peg::Ast> parse_for_format(
+    const std::string& path, const char* expr, size_t len,
+    std::vector<std::string>& msgs) {
+  auto& parser = get_parser();
+
+  parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
+    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
+  });
+
+  std::shared_ptr<peg::Ast> ast;
+  if (parser.parse_n(expr, len, ast, path.c_str())) {
+    auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
+    return opt.optimize(ast);
   }
 
   return nullptr;
