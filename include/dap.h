@@ -572,6 +572,13 @@ class DapServer {
   }
 
   void debuggee_main() {
+    // The debuggee's stdout is a pipe (our capture), so it is block-buffered:
+    // unflushed output (e.g. `print`, which has no trailing newline) would only
+    // reach the debug console at exit, looking like nothing prints until the
+    // program ends. Stream it live by flushing std::cout after every write.
+    // (Debug-only — a normal `culebra <file>` run keeps the buffered stdout.)
+    std::cout << std::unitbuf;
+
     std::ifstream ifs(program_, std::ios::binary);
     std::string src((std::istreambuf_iterator<char>(ifs)),
                     std::istreambuf_iterator<char>());
