@@ -55,8 +55,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 22. [`Term`](#22-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
 23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
-25. [設計上の注記](#25-設計上の注記)
-26. [未収録（将来検討）](#26-未収録将来検討)
+25. [`SQLite`](#25-sqlite) — 組み込み SQL データベース（query / execute / プリペアド文 / トランザクション）
+26. [設計上の注記](#26-設計上の注記)
+27. [未収録（将来検討）](#27-未収録将来検討)
 
 **目的別索引**
 
@@ -3180,7 +3181,96 @@ puts(TOML.stringify({a: 1, b: {c: 2}}))
 
 ---
 
-## 25. 設計上の注記
+## 25. `SQLite`
+
+[SQLite](https://sqlite.org) による組み込み SQL データベース（amalgamation を
+vendor 同梱・コンパイル済みで、システムライブラリ不要）。`SQLite.open` は
+ステートフルな **Database** ハンドルを返す。高レベルの `execute` / `query` /
+`transaction` が日常的な CRUD を、`prepare` が返す再利用可能な **Statement**
+ハンドルがホットループを担う。どちらのハンドルもスコープを抜けると確定的に
+クローズされるので、明示的な `close` / `finalize` は任意。
+
+| 関数 | 結果 |
+| --- | --- |
+| `SQLite.open(path: String) -> Database` | DB を開く（無ければ作成）。`":memory:"` でインメモリ |
+| `SQLite.version() -> String` | リンクされた SQLite ライブラリのバージョン（例 `"3.53.2"`） |
+
+### Database
+
+| メソッド | 結果 |
+| --- | --- |
+| `db.execute(sql: String, params = nil) -> Long` | 文を 1 つ実行。影響行数を返す |
+| `db.query(sql: String, params = nil) -> Array<Object>` | クエリを実行。各行は列名をキーとする `Object` |
+| `db.prepare(sql: String) -> Statement` | 再利用可能な文をコンパイル |
+| `db.transaction(fn: Function) -> Any` | `BEGIN` → `fn` 実行 → `COMMIT`。throw されると `ROLLBACK` して再送出 |
+| `db.close()` | 接続を閉じる（スコープ離脱時にも自動実行） |
+
+### Statement
+
+| メソッド | 結果 |
+| --- | --- |
+| `stmt.run(params = nil) -> Long` | 実行（INSERT/UPDATE/DELETE）。影響行数を返す |
+| `stmt.query(params = nil) -> Array<Object>` | クエリを実行し行を収集 |
+| `stmt.finalize()` | 文を解放（スコープ離脱時にも自動実行） |
+
+### パラメータ
+
+`params` は SQL のプレースホルダを束縛する。**Array** は位置プレースホルダ
+`?` を左から順に、**Object** は名前付きプレースホルダ `:name`（`@name` /
+`$name` も可）をキーで束縛する：
+
+```culebra
+db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
+db.query("SELECT * FROM users WHERE id = :id", {id: 1})
+```
+
+### 型マッピング
+
+値は読み出し時は列の実行時型で、書き込み時は culebra 値の型で対応づけられる：
+
+| SQLite | Culebra |
+| --- | --- |
+| INTEGER | `Long` |
+| REAL | `Float` |
+| TEXT | `String` |
+| BLOB | `String`（生バイト列） |
+| NULL | `nil` |
+
+書き込み側では `Bool` は `0` / `1` として束縛される。それ以外の型（`Array`・
+`Object`・関数など）の束縛は `TypeError`。SQL エラーや制約違反は SQLite 自身の
+メッセージを載せた `SQLiteError` を送出する：
+
+```culebra
+let db = SQLite.open(":memory:")
+db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
+db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
+
+let rows = db.query("SELECT * FROM users")
+puts(rows[0]["name"])      # Alice
+
+# 再利用可能なプリペアド文
+let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
+for u in [[2, "Bob"], [3, "Carol"]] { ins.run(u) }
+ins.finalize()
+
+# all-or-nothing
+db.transaction(fn () {
+  db.execute("UPDATE users SET name = 'Bob!' WHERE id = 2")
+})
+
+let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
+puts(r.kind)               # SQLiteError
+
+db.close()
+```
+
+Database / Statement ハンドルは生成したスレッド（isolate）に紐づく。`Sendable`
+ではなく、`Isolate` / `Channel` 境界を越えて渡せない。トランザクションはネスト
+できない（必要なら `SAVEPOINT` を直接使う）。
+
+---
+
+## 26. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3234,7 +3324,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 26. 未収録（将来検討）
+## 27. 未収録（将来検討）
 
 ### 重量級データ構造
 

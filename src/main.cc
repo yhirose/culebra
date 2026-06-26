@@ -523,6 +523,15 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
+  // SQLite reachability force-loads libculebra_rt_sqlite.a (the strong sqlite3
+  // wrappers + the bundled amalgamation object) and appends the SQLite link
+  // deps, mirroring the tensor/http/compress axes.
+  auto any_uses_sqlite = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_sqlite(*m.ast)) return true;
+    }
+    return false;
+  };
   // Wrap reachability force-loads the wrap archive and appends the wrapped
   // library's link flags only when the program names one of the namespaces
   // the embedded `culebra wrap` declarations registered — same usage axis as
@@ -566,6 +575,7 @@ int run_build(const BuildOptions& opts) {
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
   bool uses_compress = cross ? false : any_uses_compress();
+  bool uses_sqlite = cross ? false : any_uses_sqlite();
   bool uses_wrap = cross ? false : any_uses_wrap();
 
   // The core archive is feature-axis-free: both heavy deps (cblas via
@@ -650,6 +660,10 @@ int run_build(const BuildOptions& opts) {
       (uses_compress && host_build)
           ? force_load_feature("libculebra_rt_compress.a")
           : "";
+  std::string sqlite_lib =
+      (uses_sqlite && host_build)
+          ? force_load_feature("libculebra_rt_sqlite.a")
+          : "";
   // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
   // registrars nothing references by name, so the archive member must be
   // force-loaded for the binding to register — but only when the program
@@ -684,6 +698,10 @@ int run_build(const BuildOptions& opts) {
   // linker dedupes). The strong gzip/gunzip are force-loaded via compress_lib
   // above, which is what references the symbols this flag resolves.
   std::string zlib = uses_compress ? CULEBRA_ZLIB_LINK : "";
+  // SQLite's own link deps (pthread/dl/m on Linux; none on macOS). The strong
+  // sqlite3 wrappers + amalgamation are force-loaded via sqlite_lib above; this
+  // resolves the amalgamation's platform deps. "" when SQLite is unused.
+  std::string sqlite_link = uses_sqlite ? CULEBRA_SQLITE_LINK : "";
   // The wrapped library's own link flags (`culebra wrap --link`, baked at
   // wrap time) ride the same usage axis as wrap_lib above: appended only when
   // the program names a wrapped namespace, so an unused wrapped library adds
@@ -709,10 +727,10 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
-      shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, wrap_lib,
-      dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
-      wrap_link_flags, shq(opts.output));
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
+      wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
+      sqlite_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

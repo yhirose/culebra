@@ -55,6 +55,21 @@ inline bool aot_uses_compress(const peg::Ast& node) {
   return false;
 }
 
+// Does the program reference the `SQLite` namespace? Drives the force-load of
+// libculebra_rt_sqlite.a (the strong sqlite3 wrappers + the bundled amalgamation
+// object that override the base archive's weak stubs) and appends the SQLite
+// link deps — only when true, the same usage-gating as tensor/http/compress. The
+// base archive's weak SQLite stubs reference no sqlite3 symbol, so a non-SQLite
+// program links no sqlite3 at all. Same conservative bare-identifier match.
+inline bool aot_uses_sqlite(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_ && node.token == "SQLite") return true;
+  for (const auto& child : node.nodes) {
+    if (aot_uses_sqlite(*child)) return true;
+  }
+  return false;
+}
+
 // Does the program reference any of `names`? Gates the `culebra wrap`
 // archive + its wrapped-library link flags, mirroring the tensor/http/
 // compress axes — but the namespace set is dynamic (whatever the embedded

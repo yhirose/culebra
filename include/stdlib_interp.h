@@ -20,6 +20,7 @@
 #include <foreign.h>
 #include <foreign_binding.h>
 #include <hash.h>
+#include <sqlite.h>
 #include <toml.h>
 #include <uuid.h>
 #include <interpreter.h>
@@ -2685,6 +2686,393 @@ inline Value make_file_namespace() {
   return Value(std::move(ns));
 }
 
+// ===========================================================================
+// SQLite — embedded SQL database over the value-neutral cursor core (sqlite.h).
+// `SQLite.open(path)` returns a Database handle; db.execute/query/transaction
+// run high-level SQL; db.prepare returns a reusable Statement handle. Handles
+// are __nonsendable__ (the sqlite3*/sqlite3_stmt* live in a thread-local table)
+// and close deterministically on scope exit via the `drop` backstop.
+// ===========================================================================
+
+[[noreturn]] inline void _sqlite_throw(const std::string& msg, long line,
+                                       long col) {
+  throw CulebraError("SQLiteError", std::format("SQLite: {}", msg), line, col);
+}
+
+// culebra value -> neutral BindVal. Long/Bool -> Integer, Float -> Float,
+// String -> Text, nil -> Null; anything else is a TypeError.
+inline culebra::sqlite::BindVal _sqlite_to_bind(const Value& v, long line,
+                                                long col) {
+  using CT = culebra::sqlite::ColType;
+  culebra::sqlite::BindVal b;
+  switch (v.type) {
+    case Value::Nil:
+      b.type = CT::Null;
+      break;
+    case Value::Bool:
+      b.type = CT::Integer;
+      b.i = v.to_bool() ? 1 : 0;
+      break;
+    case Value::Long:
+      b.type = CT::Integer;
+      b.i = v.to_long();
+      break;
+    case Value::Float:
+      b.type = CT::Float;
+      b.d = v.to_double_coerce();
+      break;
+    case Value::String:
+    case Value::StringView:
+      b.type = CT::Text;
+      b.text = v.to_string_view();
+      break;
+    default:
+      throw CulebraError(
+          "TypeError",
+          std::format("SQLite: cannot bind a {} value", v.type_name()), line,
+          col);
+  }
+  return b;
+}
+
+// neutral Cell -> culebra value (runtime column-type mapping).
+inline Value _sqlite_cell_to_value(const culebra::sqlite::Cell& c) {
+  using CT = culebra::sqlite::ColType;
+  switch (c.type) {
+    case CT::Integer:
+      return Value(static_cast<long>(c.i));
+    case CT::Float:
+      return Value(c.d);
+    case CT::Text:
+    case CT::Blob:
+      return Value(std::string(c.text));
+    case CT::Null:
+    default:
+      return Value();
+  }
+}
+
+// Bind `params` onto a prepared statement: an Array binds positionally (1-based
+// `?`), an Object binds by name (`:key`/`@key`/`$key`), nil binds nothing.
+inline void _sqlite_bind_params(int64_t stmt_id, const Value& params, long line,
+                                long col) {
+  std::string err;
+  if (params.type == Value::Nil) return;
+  if (params.type == Value::Array) {
+    const auto& arr = *params.to_array().values;
+    for (size_t i = 0; i < arr.size(); ++i) {
+      auto b = _sqlite_to_bind(arr[i], line, col);
+      if (!culebra::sqlite::bind(stmt_id, static_cast<int>(i) + 1, b, &err))
+        _sqlite_throw(err, line, col);
+    }
+    return;
+  }
+  if (params.type == Value::Object) {
+    const auto& obj = params.to_object();
+    for (const Value& key : *obj.key_order) {
+      if (key.type != Value::String && key.type != Value::StringView) {
+        throw CulebraError("TypeError",
+                           "SQLite: named parameter keys must be Strings", line,
+                           col);
+      }
+      std::string name(key.to_string_view());
+      int pi = culebra::sqlite::bind_index(stmt_id, ":" + name);
+      if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "@" + name);
+      if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "$" + name);
+      if (pi == 0)
+        _sqlite_throw(std::format("no such named parameter ':{}'", name), line,
+                      col);
+      auto b = _sqlite_to_bind(obj.get(key), line, col);
+      if (!culebra::sqlite::bind(stmt_id, pi, b, &err))
+        _sqlite_throw(err, line, col);
+    }
+    return;
+  }
+  throw CulebraError(
+      "TypeError",
+      std::format("SQLite: params must be an Array or Object, got {}",
+                  params.type_name()),
+      line, col);
+}
+
+// Drives a prepared statement to completion, collecting each row as an Object
+// keyed by column name. Throws SQLiteError on a step failure.
+inline Value _sqlite_collect_rows(int64_t stmt_id, long line, long col) {
+  ArrayValue rows;
+  int ncol = culebra::sqlite::column_count(stmt_id);
+  std::vector<std::string> names(ncol);
+  for (int i = 0; i < ncol; ++i) names[i] = culebra::sqlite::column_name(stmt_id, i);
+  std::string err;
+  for (;;) {
+    int rc = culebra::sqlite::step(stmt_id, &err);
+    if (rc < 0) _sqlite_throw(err, line, col);
+    if (rc == 0) break;
+    ObjectValue row;
+    for (int i = 0; i < ncol; ++i)
+      row.initialize(names[i], _sqlite_cell_to_value(culebra::sqlite::column(stmt_id, i)),
+                     false);
+    rows.values->push_back(Value(std::move(row)));
+  }
+  return Value(std::move(rows));
+}
+
+// Drains a prepared statement, ignoring any rows (for execute()).
+inline void _sqlite_drain(int64_t stmt_id, long line, long col) {
+  std::string err;
+  for (;;) {
+    int rc = culebra::sqlite::step(stmt_id, &err);
+    if (rc < 0) _sqlite_throw(err, line, col);
+    if (rc == 0) break;
+  }
+}
+
+// execute(db, sql, params) -> rows affected. Prepares a transient statement.
+inline Value _sqlite_execute(int64_t db_id, const std::string& sql,
+                             const Value& params, long line, long col) {
+  std::string err;
+  int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
+  if (st < 0) _sqlite_throw(err, line, col);
+  try {
+    _sqlite_bind_params(st, params, line, col);
+    _sqlite_drain(st, line, col);
+  } catch (...) {
+    culebra::sqlite::finalize(st);
+    throw;
+  }
+  culebra::sqlite::finalize(st);
+  return Value(static_cast<long>(culebra::sqlite::changes(db_id)));
+}
+
+// query(db, sql, params) -> [Object]. Prepares a transient statement.
+inline Value _sqlite_query(int64_t db_id, const std::string& sql,
+                           const Value& params, long line, long col) {
+  std::string err;
+  int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
+  if (st < 0) _sqlite_throw(err, line, col);
+  Value rows;
+  try {
+    _sqlite_bind_params(st, params, line, col);
+    rows = _sqlite_collect_rows(st, line, col);
+  } catch (...) {
+    culebra::sqlite::finalize(st);
+    throw;
+  }
+  culebra::sqlite::finalize(st);
+  return rows;
+}
+
+// Build a Statement handle: `_id` into the stmt table, `__parent__` holding the
+// owning Database handle so the connection outlives the statement (the GC keeps
+// the parent reachable). `finalize`/`drop` release the statement.
+inline Value make_sqlite_stmt_handle(int64_t stmt_id, const Value& db_handle) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<long>(stmt_id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+  // Keep the owning Database alive while this Statement exists.
+  h.initialize("__parent__", db_handle, false);
+
+  auto sid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+  auto dbid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("__parent__").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+  auto params_param =
+      FunctionValue::Parameter{"params", false, ""sv, nullptr, kw_default_nil()};
+
+  // run(params=nil) -> rows affected (INSERT/UPDATE/DELETE).
+  h.initialize(
+      "run",
+      Value(FunctionValue(
+          {params_param},
+          [sid, dbid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            int64_t st = sid(env);
+            culebra::sqlite::reset(st);
+            _sqlite_bind_params(st, env->get("params"), line, col);
+            _sqlite_drain(st, line, col);
+            return Value(static_cast<long>(culebra::sqlite::changes(dbid(env))));
+          },
+          "Long"sv)),
+      false);
+
+  // query(params=nil) -> [Object].
+  h.initialize(
+      "query",
+      Value(FunctionValue(
+          {params_param},
+          [sid, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            int64_t st = sid(env);
+            culebra::sqlite::reset(st);
+            _sqlite_bind_params(st, env->get("params"), line, col);
+            return _sqlite_collect_rows(st, line, col);
+          },
+          "Array"sv)),
+      false);
+
+  h.initialize(
+      "finalize",
+      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
+        culebra::sqlite::finalize(sid(env));
+        return Value();
+      })),
+      false);
+
+  // GC backstop: finalize a statement that was never explicitly finalized.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
+        culebra::sqlite::finalize(sid(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
+// Build a Database handle: `_id` into the connection table plus the
+// execute/query/transaction/prepare/close method set. `close`/`drop` both close
+// the connection (idempotent; sqlite3_close_v2 defers if statements are live).
+inline Value make_sqlite_db_handle(int64_t db_id) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<long>(db_id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto did = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+  auto loc = [](const std::shared_ptr<Environment>& env, long& line, long& col) {
+    line = env->get("__LINE__").to_long();
+    col = env->get("__COLUMN__").to_long();
+  };
+  auto sql_param = FunctionValue::Parameter{"sql", false, "String"sv};
+  auto params_param =
+      FunctionValue::Parameter{"params", false, ""sv, nullptr, kw_default_nil()};
+
+  // execute(sql, params=nil) -> rows affected.
+  h.initialize(
+      "execute",
+      Value(FunctionValue(
+          {sql_param, params_param},
+          [did, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            return _sqlite_execute(did(env), env->get("sql").to_string(),
+                                   env->get("params"), line, col);
+          },
+          "Long"sv)),
+      false);
+
+  // query(sql, params=nil) -> [Object].
+  h.initialize(
+      "query",
+      Value(FunctionValue(
+          {sql_param, params_param},
+          [did, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            return _sqlite_query(did(env), env->get("sql").to_string(),
+                                 env->get("params"), line, col);
+          },
+          "Array"sv)),
+      false);
+
+  // prepare(sql) -> Statement (reusable). Holds this Database as its parent.
+  h.initialize(
+      "prepare",
+      Value(FunctionValue(
+          {sql_param},
+          [did, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            std::string err;
+            int64_t st =
+                culebra::sqlite::prepare(did(env), env->get("sql").to_string(), &err);
+            if (st < 0) _sqlite_throw(err, line, col);
+            return make_sqlite_stmt_handle(st, env->get("this"));
+          },
+          "Object"sv)),
+      false);
+
+  // transaction(fn) -> fn's value. BEGIN, run fn, COMMIT; ROLLBACK + rethrow on
+  // any throw. Does not nest (SQLite has no nested BEGIN; use SAVEPOINT).
+  h.initialize(
+      "transaction",
+      Value(FunctionValue(
+          {{"fn", false, "Function"sv}},
+          [did, loc](std::shared_ptr<Environment> env) -> Value {
+            long line, col; loc(env, line, col);
+            int64_t db = did(env);
+            Value fn = env->get("fn");
+            _sqlite_execute(db, "BEGIN", Value(), line, col);
+            auto interp = std::make_shared<Interpreter>();
+            try {
+              Value result = interp->call_closure(fn, env, {});
+              _sqlite_execute(db, "COMMIT", Value(), line, col);
+              return result;
+            } catch (...) {
+              _sqlite_execute(db, "ROLLBACK", Value(), line, col);
+              throw;
+            }
+          })),
+      false);
+
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [did](std::shared_ptr<Environment> env) {
+        culebra::sqlite::close_db(did(env));
+        return Value();
+      })),
+      false);
+
+  // GC backstop: close a connection that was never explicitly closed.
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [did](std::shared_ptr<Environment> env) {
+        culebra::sqlite::close_db(did(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
+inline Value make_sqlite_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+
+  // open(path) -> Database. ":memory:" for an in-memory database.
+  ns.initialize(
+      "open",
+      Value(FunctionValue(
+          {{"path", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::string err;
+            int64_t id =
+                culebra::sqlite::open_db(env->get("path").to_string(), &err);
+            if (id < 0) _sqlite_throw(err, line, col);
+            return make_sqlite_db_handle(id);
+          },
+          "Object"sv)),
+      false);
+
+  // version() -> the linked SQLite library version (e.g. "3.53.2").
+  ns.initialize(
+      "version",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+        return Value(std::string(culebra::sqlite::libversion()));
+      }, "String"sv)),
+      false);
+
+  return Value(std::move(ns));
+}
+
 // Build the Proc.spawn live handle: data fields `_pid/_out/_err/_done/_result`
 // plus `wait`/`poll`/`kill`/`drop` methods. The result is cached on first
 // wait/poll so the methods are idempotent; `drop` (called on GC) best-effort
@@ -4692,6 +5080,7 @@ inline void setup_built_in_functions(
   env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("Hash", make_hash_namespace(), false);
   env.initialize("CSV", make_csv_namespace(), false);
+  env.initialize("SQLite", make_sqlite_namespace(), false);
   env.initialize("TOML", make_toml_namespace(), false);
   env.initialize("Env", make_env_namespace(), false);
   env.initialize("UUID", make_uuid_namespace(), false);

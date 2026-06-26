@@ -57,8 +57,9 @@ Conventions used below:
 22. [`Term`](#22-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
-25. [Design notes](#25-design-notes)
-26. [Not included (yet)](#26-not-included-yet)
+25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
+26. [Design notes](#26-design-notes)
+27. [Not included (yet)](#27-not-included-yet)
 
 **Where to find what**
 
@@ -85,6 +86,7 @@ Conventions used below:
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
+| Query an embedded SQL database | [§25 SQLite](#25-sqlite) — `SQLite.open(path)` → `db.query(sql, params)` / `db.execute(...)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Leveled / structured logging | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
@@ -3305,7 +3307,97 @@ puts(TOML.stringify({a: 1, b: {c: 2}}))
 
 ---
 
-## 25. Design notes
+## 25. `SQLite`
+
+Embedded SQL database backed by [SQLite](https://sqlite.org) (the amalgamation
+is vendored and compiled in — no system library is required). `SQLite.open`
+returns a stateful **Database** handle; the high-level `execute` / `query` /
+`transaction` methods cover everyday CRUD, and `prepare` returns a reusable
+**Statement** handle for hot loops. Both handles close deterministically when
+they leave scope, so an explicit `close` / `finalize` is optional.
+
+| Function | Result |
+| --- | --- |
+| `SQLite.open(path: String) -> Database` | open (or create) a database; `":memory:"` for an in-memory one |
+| `SQLite.version() -> String` | the linked SQLite library version, e.g. `"3.53.2"` |
+
+### Database
+
+| Method | Result |
+| --- | --- |
+| `db.execute(sql: String, params = nil) -> Long` | run one statement; returns rows affected |
+| `db.query(sql: String, params = nil) -> Array<Object>` | run a query; each row is an `Object` keyed by column name |
+| `db.prepare(sql: String) -> Statement` | compile a reusable statement |
+| `db.transaction(fn: Function) -> Any` | `BEGIN`, run `fn`, `COMMIT`; any throw triggers `ROLLBACK` and re-raises |
+| `db.close()` | close the connection (also runs automatically on scope exit) |
+
+### Statement
+
+| Method | Result |
+| --- | --- |
+| `stmt.run(params = nil) -> Long` | execute (INSERT/UPDATE/DELETE); returns rows affected |
+| `stmt.query(params = nil) -> Array<Object>` | execute a query and collect the rows |
+| `stmt.finalize()` | release the statement (also runs automatically on scope exit) |
+
+### Parameters
+
+`params` binds placeholders in the SQL. An **Array** binds positional `?`
+placeholders left to right; an **Object** binds named `:name` (or `@name` /
+`$name`) placeholders by key:
+
+```culebra
+db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
+db.query("SELECT * FROM users WHERE id = :id", {id: 1})
+```
+
+### Type mapping
+
+Values are mapped by the column's runtime type (reads) or the culebra value's
+type (writes):
+
+| SQLite | Culebra |
+| --- | --- |
+| INTEGER | `Long` |
+| REAL | `Float` |
+| TEXT | `String` |
+| BLOB | `String` (raw bytes) |
+| NULL | `nil` |
+
+On the write side a `Bool` binds as `0` / `1`; binding any other type (an
+`Array`, `Object`, function, …) raises `TypeError`. SQL or constraint errors
+raise `SQLiteError` carrying SQLite's own message:
+
+```culebra
+let db = SQLite.open(":memory:")
+db.execute("CREATE TABLE users (id INTEGER, name TEXT)")
+db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
+
+let rows = db.query("SELECT * FROM users")
+puts(rows[0]["name"])      # Alice
+
+# a reusable prepared statement
+let ins = db.prepare("INSERT INTO users VALUES (?, ?)")
+for u in [[2, "Bob"], [3, "Carol"]] { ins.run(u) }
+ins.finalize()
+
+# all-or-nothing
+db.transaction(fn () {
+  db.execute("UPDATE users SET name = 'Bob!' WHERE id = 2")
+})
+
+let r = try { db.query("SELECT * FROM missing"); nil } catch e { e }
+puts(r.kind)               # SQLiteError
+
+db.close()
+```
+
+A Database / Statement handle is tied to the thread (isolate) that created it —
+it is not `Sendable` and cannot be passed across an `Isolate` / `Channel`
+boundary. Transactions do not nest (use `SAVEPOINT` directly if you need that).
+
+---
+
+## 26. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3359,7 +3451,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 26. Not included (yet)
+## 27. Not included (yet)
 
 ### Heavier data structures
 
@@ -3369,7 +3461,7 @@ language built-ins (see [`docs/language.md`](language.md)); reach for
 
 ### Networking / OS extras
 
-No raw TCP/UDP sockets, DNS resolver, SQLite, or file watcher. Shell
+No raw TCP/UDP sockets, DNS resolver, or file watcher. Shell
 out through [§11 Proc](#11-proc) when you need them.
 
 ---

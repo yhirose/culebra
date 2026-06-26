@@ -1,0 +1,96 @@
+// SQLite namespace: embedded SQL over the value-neutral cursor core (sqlite.h),
+// shared by the interp and the JIT/AOT handle thunks. Running under tests/*.cul
+// checks interp/JIT/AOT agree byte-for-byte. Everything uses an in-memory
+// database, so the test is deterministic and offline.
+
+// --- open + version ---
+let db = SQLite.open(":memory:")
+assert_true(SQLite.version().size() > 0)
+
+// --- DDL + DML return rows affected ---
+assert_eq(db.execute("CREATE TABLE users (id INTEGER, name TEXT, score REAL, bio TEXT)"), 0)
+assert_eq(db.execute("INSERT INTO users VALUES (1, 'Alice', 9.5, 'hi')"), 1)
+
+// --- positional ? binding + runtime type mapping (Long / Float / Text / Nil) ---
+assert_eq(db.execute("INSERT INTO users VALUES (?, ?, ?, ?)", [2, "Bob", 7.25, nil]), 1)
+let rows = db.query("SELECT * FROM users ORDER BY id")
+assert_eq(rows.size(), 2)
+assert_eq(rows[0]["id"], 1)
+assert_eq(rows[0]["name"], "Alice")
+assert_eq(rows[0]["score"], 9.5)
+assert_eq(rows[0]["bio"], "hi")
+assert_eq(rows[1]["id"], 2)
+assert_eq(rows[1]["bio"], nil)
+
+// --- named :name binding ---
+let bob = db.query("SELECT name FROM users WHERE id = :id", {id: 2})
+assert_eq(bob.size(), 1)
+assert_eq(bob[0]["name"], "Bob")
+
+// --- prepared statement: run (write) + reuse via reset ---
+let ins = db.prepare("INSERT INTO users VALUES (?, ?, ?, ?)")
+assert_eq(ins.run([3, "Carol", 8.0, nil]), 1)
+assert_eq(ins.run([4, "Dave", 6.5, nil]), 1)
+ins.finalize()
+assert_eq(db.query("SELECT count(*) AS c FROM users")[0]["c"], 4)
+
+// --- prepared statement: query reuse ---
+let sel = db.prepare("SELECT name FROM users WHERE id = ?")
+assert_eq(sel.query([1])[0]["name"], "Alice")
+assert_eq(sel.query([4])[0]["name"], "Dave")
+sel.finalize()
+
+// --- transaction: commit ---
+db.transaction(fn () {
+  db.execute("UPDATE users SET score = 10.0 WHERE id = 1")
+})
+assert_eq(db.query("SELECT score FROM users WHERE id = 1")[0]["score"], 10.0)
+
+// --- transaction: rollback on throw (the UPDATE is undone) ---
+let mut threw = false
+try {
+  db.transaction(fn () {
+    db.execute("UPDATE users SET name = 'X' WHERE id = 1")
+    throw "boom"
+  })
+} catch e {
+  threw = true
+}
+assert_true(threw)
+assert_eq(db.query("SELECT name FROM users WHERE id = 1")[0]["name"], "Alice")
+
+// --- error: invalid SQL raises SQLiteError carrying sqlite's message ---
+let mut kind = ""
+let mut msg = ""
+try {
+  db.query("SELECT * FROM no_such_table")
+} catch e {
+  kind = e.kind
+  msg = e.message
+}
+assert_eq(kind, "SQLiteError")
+assert_true(msg.contains("no_such_table"))
+
+// --- error: binding an unsupported value type is a TypeError ---
+let mut tkind = ""
+try {
+  db.execute("INSERT INTO users VALUES (?, ?, ?, ?)", [[1, 2], "x", 1.0, nil])
+} catch e {
+  tkind = e.kind
+}
+assert_eq(tkind, "TypeError")
+
+// --- error: a non-String named-parameter key is a TypeError (both backends) ---
+let mut nkind = ""
+try {
+  db.query("SELECT * FROM users WHERE id = :id", {1: 2})
+} catch e {
+  nkind = e.kind
+}
+assert_eq(nkind, "TypeError")
+
+// --- empty result set is an empty array ---
+assert_eq(db.query("SELECT * FROM users WHERE id = 999").size(), 0)
+
+db.close()
+puts("sqlite ok")

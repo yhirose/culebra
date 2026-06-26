@@ -2305,6 +2305,353 @@ CULEBRA_RT_INLINE JitValue _culebra_stdin_build_handle() {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// ===========================================================================
+// SQLite — JIT/AOT mirror of the interp Database/Statement handles (see
+// stdlib_interp.h). The value-neutral cursor core (sqlite.h) is shared; only
+// the value marshalling differs (JitValue/JitObject/JitArray here, Value/
+// ObjectValue there). Kept byte-for-byte symmetric with the interp; the debug
+// drift check (_check_ns_drift_once) catches a forgotten JIT registration.
+// ===========================================================================
+
+[[noreturn]] CULEBRA_RT_INLINE void _jit_sqlite_throw(const std::string& msg,
+                                                      int64_t line, int64_t col) {
+  throw culebra::CulebraError("SQLiteError", std::format("SQLite: {}", msg),
+                              line, col);
+}
+
+// culebra JitValue -> neutral BindVal (mirrors interp _sqlite_to_bind).
+inline culebra::sqlite::BindVal _jit_sqlite_to_bind(JitValue v, int64_t line,
+                                                    int64_t col) {
+  using CT = culebra::sqlite::ColType;
+  culebra::sqlite::BindVal b;
+  switch (v.tag) {
+    case TAG_NIL:
+      b.type = CT::Null;
+      break;
+    case TAG_BOOL:
+      b.type = CT::Integer;
+      b.i = v.data ? 1 : 0;
+      break;
+    case TAG_LONG:
+      b.type = CT::Integer;
+      b.i = v.data;
+      break;
+    case TAG_FLOAT:
+      b.type = CT::Float;
+      b.d = _culebra_float_to_double(v.data);
+      break;
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      b.type = CT::Text;
+      b.text = _culebra_str_view(v.tag, v.data);
+      break;
+    default:
+      throw culebra::CulebraError(
+          "TypeError",
+          std::format("SQLite: cannot bind a {} value", _culebra_tag_name(v.tag)),
+          line, col);
+  }
+  return b;
+}
+
+// neutral Cell -> JitValue (runtime column-type mapping; mirrors interp).
+inline JitValue _jit_sqlite_cell_to_value(const culebra::sqlite::Cell& c) {
+  using CT = culebra::sqlite::ColType;
+  switch (c.type) {
+    case CT::Integer:
+      return {TAG_LONG, c.i};
+    case CT::Float:
+      return culebra::jit_float(c.d);
+    case CT::Text:
+    case CT::Blob:
+      return {TAG_STRING,
+              reinterpret_cast<int64_t>(_culebra_heap_str(std::string(c.text)))};
+    case CT::Null:
+    default:
+      return {TAG_NIL, 0};
+  }
+}
+
+// Bind `params`: Array -> positional, Object -> named, nil -> none.
+inline void _jit_sqlite_bind_params(int64_t stmt_id, JitValue params,
+                                    int64_t line, int64_t col) {
+  std::string err;
+  if (params.tag == TAG_NIL) return;
+  if (params.tag == TAG_ARRAY) {
+    auto* arr = reinterpret_cast<JitArray*>(params.data);
+    for (size_t i = 0; i < arr->size; i++) {
+      auto b = _jit_sqlite_to_bind(arr->items[i], line, col);
+      if (!culebra::sqlite::bind(stmt_id, static_cast<int>(i) + 1, b, &err))
+        _jit_sqlite_throw(err, line, col);
+    }
+    return;
+  }
+  if (params.tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(params.data);
+    // A non-String key lives in the sidecar, not shape->names — reject it to
+    // mirror the interp (which iterates every key and throws on a non-String).
+    if (obj->non_string_props && !obj->non_string_props->empty()) {
+      throw culebra::CulebraError(
+          "TypeError", "SQLite: named parameter keys must be Strings", line, col);
+    }
+    if (obj->shape) {
+      for (size_t k = 0; k < obj->shape->names.size(); k++) {
+        const std::string& name = obj->shape->names[k];
+        int pi = culebra::sqlite::bind_index(stmt_id, ":" + name);
+        if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "@" + name);
+        if (pi == 0) pi = culebra::sqlite::bind_index(stmt_id, "$" + name);
+        if (pi == 0)
+          _jit_sqlite_throw(std::format("no such named parameter ':{}'", name),
+                            line, col);
+        auto b = _jit_sqlite_to_bind(obj->slots[k].value, line, col);
+        if (!culebra::sqlite::bind(stmt_id, pi, b, &err))
+          _jit_sqlite_throw(err, line, col);
+      }
+    }
+    return;
+  }
+  throw culebra::CulebraError(
+      "TypeError",
+      std::format("SQLite: params must be an Array or Object, got {}",
+                  _culebra_tag_name(params.tag)),
+      line, col);
+}
+
+// Drive a statement to completion, collecting rows as Objects keyed by column.
+inline JitValue _jit_sqlite_collect_rows(int64_t stmt_id, int64_t line,
+                                         int64_t col) {
+  auto* arr = culebra_runtime_array_new();
+  int ncol = culebra::sqlite::column_count(stmt_id);
+  std::vector<std::string> names(ncol);
+  for (int i = 0; i < ncol; i++)
+    names[i] = culebra::sqlite::column_name(stmt_id, i);
+  std::string err;
+  for (;;) {
+    int rc = culebra::sqlite::step(stmt_id, &err);
+    if (rc < 0) _jit_sqlite_throw(err, line, col);
+    if (rc == 0) break;
+    auto* row = culebra_runtime_object_new();
+    for (int i = 0; i < ncol; i++) {
+      JitValue v = _jit_sqlite_cell_to_value(culebra::sqlite::column(stmt_id, i));
+      culebra_runtime_object_set(row, names[i].c_str(), false, v.tag, v.data,
+                                 line, col);
+    }
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(row));
+  }
+  return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+}
+
+inline void _jit_sqlite_drain(int64_t stmt_id, int64_t line, int64_t col) {
+  std::string err;
+  for (;;) {
+    int rc = culebra::sqlite::step(stmt_id, &err);
+    if (rc < 0) _jit_sqlite_throw(err, line, col);
+    if (rc == 0) break;
+  }
+}
+
+// execute(db, sql, params) -> rows affected (transient statement).
+inline JitValue _jit_sqlite_execute(int64_t db_id, const std::string& sql,
+                                    JitValue params, int64_t line, int64_t col) {
+  std::string err;
+  int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
+  if (st < 0) _jit_sqlite_throw(err, line, col);
+  try {
+    _jit_sqlite_bind_params(st, params, line, col);
+    _jit_sqlite_drain(st, line, col);
+  } catch (...) {
+    culebra::sqlite::finalize(st);
+    throw;
+  }
+  culebra::sqlite::finalize(st);
+  return {TAG_LONG, culebra::sqlite::changes(db_id)};
+}
+
+// query(db, sql, params) -> [Object] (transient statement).
+inline JitValue _jit_sqlite_query(int64_t db_id, const std::string& sql,
+                                  JitValue params, int64_t line, int64_t col) {
+  std::string err;
+  int64_t st = culebra::sqlite::prepare(db_id, sql, &err);
+  if (st < 0) _jit_sqlite_throw(err, line, col);
+  JitValue rows;
+  try {
+    _jit_sqlite_bind_params(st, params, line, col);
+    rows = _jit_sqlite_collect_rows(st, line, col);
+  } catch (...) {
+    culebra::sqlite::finalize(st);
+    throw;
+  }
+  culebra::sqlite::finalize(st);
+  return rows;
+}
+
+// --- Statement handle methods (self arrives +1; released before return, except
+// drop which runs from the destructor protocol). ---------------------------
+
+CULEBRA_RT_INLINE int64_t _jit_sqlite_stmt_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+// The owning Database id via the __parent__ slot.
+CULEBRA_RT_INLINE int64_t _jit_sqlite_stmt_db_id(JitValue self) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  size_t pi = h->find_slot("__parent__");
+  if (pi == static_cast<size_t>(-1)) return -1;
+  auto* parent = reinterpret_cast<JitObject*>(h->slots[pi].value.data);
+  return _jit_handle_long(parent, "_id");
+}
+
+CULEBRA_RT_INLINE JitValue _jit_sqlite_stmt_run(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  int64_t st = _jit_sqlite_stmt_id(self);
+  int64_t db = _jit_sqlite_stmt_db_id(self);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};  // method ABI: self is +1
+  JitValue params = _jit_file_arg_present(n, args, 0) ? args[0] : JitValue{TAG_NIL, 0};
+  culebra::sqlite::reset(st);
+  _jit_sqlite_bind_params(st, params, _jit_call_site_line, _jit_call_site_col);
+  _jit_sqlite_drain(st, _jit_call_site_line, _jit_call_site_col);
+  return JitValue{TAG_LONG, culebra::sqlite::changes(db)};
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_stmt_query(JitClosure*, JitValue self,
+                                                  int64_t n, JitValue* args) {
+  int64_t st = _jit_sqlite_stmt_id(self);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};  // method ABI: self is +1
+  JitValue params = _jit_file_arg_present(n, args, 0) ? args[0] : JitValue{TAG_NIL, 0};
+  culebra::sqlite::reset(st);
+  _jit_sqlite_bind_params(st, params, _jit_call_site_line, _jit_call_site_col);
+  return _jit_sqlite_collect_rows(st, _jit_call_site_line, _jit_call_site_col);
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_stmt_finalize(JitClosure*, JitValue self,
+                                                     int64_t, JitValue*) {
+  culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_stmt_drop(JitClosure*, JitValue self,
+                                                 int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_stmt_handle(int64_t stmt_id,
+                                                             JitValue db_handle) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, stmt_id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  // Keep the owning Database alive while this Statement exists (mirrors the
+  // interp handle's __parent__). Retain: the slot now co-owns the db handle.
+  culebra_runtime_value_retain(db_handle.tag, db_handle.data);
+  h->set_or_append("__parent__", db_handle, false);
+  static const JitParamMeta* params_meta =
+      _jit_make_handle_meta({"params"}, {true});
+  _jit_handle_bind_method(h, "run", _jit_sqlite_stmt_run, 0, params_meta);
+  _jit_handle_bind_method(h, "query", _jit_sqlite_stmt_query, 0, params_meta);
+  _jit_handle_bind_method(h, "finalize", _jit_sqlite_stmt_finalize, 0);
+  _jit_handle_bind_method(h, "drop", _jit_sqlite_stmt_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// --- Database handle methods ------------------------------------------------
+
+CULEBRA_RT_INLINE int64_t _jit_sqlite_db_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+
+// Reads the required `sql` String arg (arity-checks + type-checks, releasing
+// self on error like the File thunks), returning it by value.
+CULEBRA_RT_INLINE std::string _jit_sqlite_take_sql(JitValue self, int64_t n,
+                                                   JitValue* args) {
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "sql");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "sql", "String", 0);
+  return std::string(_culebra_str_view(args[0].tag, args[0].data));
+}
+
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_execute(JitClosure*, JitValue self,
+                                                  int64_t n, JitValue* args) {
+  int64_t db = _jit_sqlite_db_id(self);
+  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  JitValue params = _jit_file_arg_present(n, args, 1) ? args[1] : JitValue{TAG_NIL, 0};
+  return _jit_sqlite_execute(db, sql, params, _jit_call_site_line,
+                             _jit_call_site_col);
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_query(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  int64_t db = _jit_sqlite_db_id(self);
+  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  JitValue params = _jit_file_arg_present(n, args, 1) ? args[1] : JitValue{TAG_NIL, 0};
+  return _jit_sqlite_query(db, sql, params, _jit_call_site_line,
+                           _jit_call_site_col);
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_prepare(JitClosure*, JitValue self,
+                                                  int64_t n, JitValue* args) {
+  int64_t db = _jit_sqlite_db_id(self);
+  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  int64_t st = culebra::sqlite::prepare(db, sql, &err);
+  if (st < 0) _jit_sqlite_throw(err, _jit_call_site_line, _jit_call_site_col);
+  // build_stmt_handle retains self into the Statement's __parent__; the guard
+  // still releases this method's +1.
+  return _culebra_sqlite_build_stmt_handle(st, self);
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_transaction(JitClosure*, JitValue self,
+                                                      int64_t n, JitValue* args) {
+  int64_t db = _jit_sqlite_db_id(self);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "fn");
+  if (args[0].tag != TAG_FUNC)
+    _jit_file_param_type_error(self, "fn", "Function", 0);
+  auto* fn = reinterpret_cast<JitClosure*>(args[0].data);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  _jit_sqlite_execute(db, "BEGIN", JitValue{TAG_NIL, 0}, _jit_call_site_line,
+                      _jit_call_site_col);
+  try {
+    JitValue result = _culebra_invoke0(fn);
+    _jit_sqlite_execute(db, "COMMIT", JitValue{TAG_NIL, 0}, _jit_call_site_line,
+                        _jit_call_site_col);
+    return result;
+  } catch (...) {
+    _jit_sqlite_execute(db, "ROLLBACK", JitValue{TAG_NIL, 0},
+                        _jit_call_site_line, _jit_call_site_col);
+    throw;
+  }
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_close(JitClosure*, JitValue self,
+                                                int64_t, JitValue*) {
+  culebra::sqlite::close_db(_jit_sqlite_db_id(self));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_sqlite_db_drop(JitClosure*, JitValue self,
+                                               int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::sqlite::close_db(_jit_sqlite_db_id(self));
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, db_id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* exec_meta =
+      _jit_make_handle_meta({"sql", "params"}, {false, true});
+  static const JitParamMeta* sql_meta =
+      _jit_make_handle_meta({"sql"}, {false});
+  static const JitParamMeta* fn_meta = _jit_make_handle_meta({"fn"}, {false});
+  _jit_handle_bind_method(h, "execute", _jit_sqlite_db_execute, 1, exec_meta);
+  _jit_handle_bind_method(h, "query", _jit_sqlite_db_query, 1, exec_meta);
+  _jit_handle_bind_method(h, "prepare", _jit_sqlite_db_prepare, 1, sql_meta);
+  _jit_handle_bind_method(h, "transaction", _jit_sqlite_db_transaction, 1,
+                          fn_meta);
+  _jit_handle_bind_method(h, "close", _jit_sqlite_db_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_sqlite_db_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // Spawn core: parse argv, spawn detached, return a live handle (or throw).
 CULEBRA_RT_INLINE JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
@@ -2729,6 +3076,19 @@ inline JitValue _ns_file_with(JitValue* a, int64_t n) {
   culebra::_file_close(id);
   culebra_runtime_value_release(handle.tag, handle.data);
   return result;
+}
+
+// SQLite.open(path) -> Database handle. SQLite.version() -> library version.
+inline JitValue _ns_sqlite_open(JitValue* a, int64_t) {
+  std::string path = _ns_adapt::take_str(a[0]);
+  std::string err;
+  int64_t id = culebra::sqlite::open_db(path, &err);
+  if (id < 0) _jit_sqlite_throw(err, 0, 0);
+  return _culebra_sqlite_build_db_handle(id);
+}
+inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(
+                          std::string(culebra::sqlite::libversion())))};
 }
 
 // Math
@@ -4412,6 +4772,8 @@ inline const NsMethod kNsMethods[] = {
 
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+  {"SQLite", "open",    1, &_ns_sqlite_open,    nullptr, "String", "path"},
+  {"SQLite", "version", 0, &_ns_sqlite_version},
   {"TOML", "parse",     1, &_ns_toml_parse,     nullptr, "String", "text"},
   {"TOML", "stringify", 1, &_ns_toml_stringify, nullptr, "Object", "v"},
 
@@ -6817,7 +7179,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",
-      "_Term",
+      "_Term",   "SQLite",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif
