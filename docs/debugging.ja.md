@@ -90,12 +90,31 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
 
 ## Neovim (nvim-dap)
 
-拡張は不要 — [nvim-dap](https://github.com/mfussenegger/nvim-dap) を設定するだけ:
+拡張は不要。最短の手順:
+
+```sh
+misc/vim/install.sh
+```
+
+これでシンタックスハイライト（filetype `cul`）を入れ、nvim-dap 設定を
+`~/.config/nvim/lua/culebra_dap.lua` に書き出します（`culebra` が `PATH` 上なら
+絶対パスを埋め込み）。`init.lua` に1行追加して有効化:
+
+```lua
+require("culebra_dap")
+```
+
+ブレークポイントは `:lua require('dap').toggle_breakpoint()`、開始は
+`:lua require('dap').continue()`。変数/スタックパネルが欲しければ
+[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) を追加。
+
+手書きする場合の同等設定:
 
 ```lua
 local dap = require("dap")
 dap.adapters.culebra = { type = "executable", command = "culebra", args = { "dap" } }
-dap.configurations.culebra = {
+-- syntax 導入が *.cul に設定する `cul` filetype をキーにする:
+dap.configurations.cul = {
   {
     type = "culebra",
     request = "launch",
@@ -105,18 +124,13 @@ dap.configurations.culebra = {
     stopOnEntry = false,
   },
 }
--- 上の設定を効かせるため `.cul` の filetype を `culebra` に:
-vim.filetype.add({ extension = { cul = "culebra" } })
 ```
-
-ブレークポイントは `:lua require('dap').toggle_breakpoint()`、開始は
-`:lua require('dap').continue()`。変数/スタックパネルが欲しければ
-[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) を追加。
 
 ## Vim (vimspector)
 
 拡張は不要 — [vimspector](https://github.com/puremourning/vimspector) を導入し、
-プロジェクトルートに `.vimspector.json`:
+プロジェクトルートに `.vimspector.json`（vimspector はプロジェクト単位）。
+`misc/vim/install.sh` が `culebra` のパス入りでこのスニペットを出力します:
 
 ```json
 {
@@ -134,17 +148,25 @@ vim.filetype.add({ extension = { cul = "culebra" } })
 ```
 
 ブレークポイントは `<F9>`、開始は `<F5>`（vimspector のデフォルト）。
-シンタックスハイライト（任意）: `misc/vim/install-vim-syntax.sh` を実行。
+シンタックスハイライトのみなら `misc/vim/install-vim-syntax.sh` で十分です。
 
 ## Zed
 
-Zed は DAP クライアントを内蔵しています。デバッグ設定で `culebra dap` を起動し、
-`program` にデバッグ対象ファイルを与えた `launch` 構成を指定します:
+Zed は DAP クライアントを内蔵（デバッグに拡張不要）。次でセットアップ:
+
+```sh
+misc/zed/install.sh            # このプロジェクトの .zed/debug.json を書く
+misc/zed/install.sh --global   # またはユーザ全体の ~/.config/zed/debug.json
+```
+
+`launch` シナリオが `culebra dap` を指します（`culebra` が `PATH` 上なら絶対パス
+を埋め込み）。`.cul` を開いてブレークポイントを置き、デバッグパネルから
+"Debug current Culebra file" を開始してください。生成される設定:
 
 ```jsonc
 [
   {
-    "label": "Debug file",
+    "label": "Debug current Culebra file",
     "adapter": "culebra",
     "request": "launch",
     "command": "culebra",
@@ -157,7 +179,8 @@ Zed は DAP クライアントを内蔵しています。デバッグ設定で `
 
 > Zed のデバッガは VSCode/nvim-dap より新しく、設定スキーマは流動的です。上記のキーは
 > バージョンで異なる可能性があります。本質はどこでも同じ: `culebra dap` を起動・
-> `request: launch`・`program` にファイルを指定。
+> `request: launch`・`program` にファイルを指定。Zed のシンタックスハイライトは別途
+> tree-sitter 拡張が必要（ここでは未提供）で、デバッグはそれ無しで動きます。
 
 ## 補足
 
