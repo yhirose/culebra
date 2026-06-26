@@ -47,7 +47,8 @@ for the common case.
 
 ### Batteries included, in one binary
 
-File I/O, CLI argument parsing, structured data, time, math, and
+File I/O, CLI argument parsing, structured data (JSON — with optional
+JSONC comments and trailing commas — CSV, TOML), time, math, and
 randomness ship in the single binary — no package manager, no lockfile.
 Text processing, networking, and crypto/encoding are next, same policy.
 
