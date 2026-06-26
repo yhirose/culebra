@@ -68,10 +68,11 @@ asan:
     [[ "$fail" == 0 ]] || { echo "asan FAIL" >&2; exit 1; }
     echo "asan OK (JIT GC paths clean under ASan+UBSan)"
 
-# Clean build directories
+# Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
     rm -rf build build-dev build-asan
+    rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
 [group("build")]
