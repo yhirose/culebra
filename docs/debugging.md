@@ -131,7 +131,7 @@ Then set a breakpoint with `<F9>` and start with `<F5>` (the `HUMAN` mappings;
 No gadget install (`:VimspectorInstall`) is needed — the adapter is launched
 straight from the `command` above over stdio. Vim must be a `+python3` build.
 
-For syntax highlighting, run `misc/vim/install-vim-syntax.sh`.
+For syntax highlighting, run `misc/vim/install.sh`.
 
 ## Zed
 

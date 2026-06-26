@@ -121,7 +121,7 @@ let g:vimspector_enable_mappings = 'HUMAN'
 gadget のインストール（`:VimspectorInstall`）は不要 — 上記 `command` を stdio で
 直接起動します。Vim は `+python3` ビルドが必要です。
 
-シンタックスハイライトは `misc/vim/install-vim-syntax.sh` を実行してください。
+シンタックスハイライトは `misc/vim/install.sh` を実行してください。
 
 ## Zed
 
