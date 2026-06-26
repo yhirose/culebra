@@ -523,6 +523,25 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
+  // Wrap reachability force-loads the wrap archive and appends the wrapped
+  // library's link flags only when the program names one of the namespaces
+  // the embedded `culebra wrap` declarations registered — same usage axis as
+  // tensor/http, so a binary built by a wrap-extended driver links none of the
+  // wrapped library unless the script actually uses it (mirrors Http/OpenSSL).
+  // The namespace set is the driver's own registry (empty for a stock binary).
+  std::vector<std::string> wrap_namespaces;
+  for (const auto& wc : culebra::wrapped_classes()) {
+    if (std::find(wrap_namespaces.begin(), wrap_namespaces.end(), wc.ns) ==
+        wrap_namespaces.end())
+      wrap_namespaces.push_back(wc.ns);
+  }
+  auto any_uses_wrap = [&]() {
+    if (wrap_namespaces.empty()) return false;
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_any_name(*m.ast, wrap_namespaces)) return true;
+    }
+    return false;
+  };
 
   // Reject early: cross-compile + Tensor would need a target-specific
   // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
@@ -547,6 +566,7 @@ int run_build(const BuildOptions& opts) {
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
   bool uses_compress = cross ? false : any_uses_compress();
+  bool uses_wrap = cross ? false : any_uses_wrap();
 
   // The core archive is feature-axis-free: both heavy deps (cblas via
   // tensor_eval_node, OpenSSL/zlib via http_request) are weak stubs here,
@@ -632,10 +652,13 @@ int run_build(const BuildOptions& opts) {
           : "";
   // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
   // registrars nothing references by name, so the archive member must be
-  // force-loaded whenever this binary embeds one. materialize_archive
-  // returns empty when the asset doesn't exist (a stock binary) — skip.
+  // force-loaded for the binding to register — but only when the program
+  // actually names a wrapped namespace, so a script that uses none links
+  // none of the wrapped library (the Http/OpenSSL gating, applied to wrap).
+  // materialize_archive returns empty when the asset doesn't exist (a stock
+  // binary) — skip.
   std::string wrap_lib;
-  if (host_build) {
+  if (host_build && uses_wrap) {
     std::string err;
     auto path = materialize_archive("libculebra_rt_wrap.a", err);
     if (!path.empty()) {
@@ -661,6 +684,11 @@ int run_build(const BuildOptions& opts) {
   // linker dedupes). The strong gzip/gunzip are force-loaded via compress_lib
   // above, which is what references the symbols this flag resolves.
   std::string zlib = uses_compress ? CULEBRA_ZLIB_LINK : "";
+  // The wrapped library's own link flags (`culebra wrap --link`, baked at
+  // wrap time) ride the same usage axis as wrap_lib above: appended only when
+  // the program names a wrapped namespace, so an unused wrapped library adds
+  // nothing to the binary. "" for a stock driver.
+  std::string wrap_link_flags = uses_wrap ? CULEBRA_WRAP_LINK_FLAGS : "";
   std::string libcxx = target_is_macho ? "-lc++" : "-lstdc++ -lm";
   // LLVM's TargetMachine emits a non-PIC object by default. Modern
   // Linux distros (Ubuntu, Fedora) configure their `cc` to link as a
@@ -684,7 +712,7 @@ int run_build(const BuildOptions& opts) {
       "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, wrap_lib,
       dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
-      CULEBRA_WRAP_LINK_FLAGS, shq(opts.output));
+      wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());

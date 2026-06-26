@@ -12,6 +12,9 @@
 
 #include <parser.h>
 
+#include <string>
+#include <vector>
+
 namespace culebra {
 
 inline bool aot_uses_tensor(const peg::Ast& node) {
@@ -48,6 +51,28 @@ inline bool aot_uses_compress(const peg::Ast& node) {
   if (node.tag == "IDENTIFIER"_ && node.token == "Compress") return true;
   for (const auto& child : node.nodes) {
     if (aot_uses_compress(*child)) return true;
+  }
+  return false;
+}
+
+// Does the program reference any of `names`? Gates the `culebra wrap`
+// archive + its wrapped-library link flags, mirroring the tensor/http/
+// compress axes — but the namespace set is dynamic (whatever the embedded
+// `culebra wrap` declarations registered), so the names come from the
+// runtime registry rather than a hardcoded literal. Same conservative
+// bare-identifier match: a false positive only links a wrapped library a
+// program never calls; a false negative would leave the namespace
+// unregistered. `names` is small (one per wrapped namespace), so the
+// linear scan per identifier is fine.
+inline bool aot_uses_any_name(const peg::Ast& node,
+                              const std::vector<std::string>& names) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_) {
+    for (const auto& n : names)
+      if (node.token == n) return true;
+  }
+  for (const auto& child : node.nodes) {
+    if (aot_uses_any_name(*child, names)) return true;
   }
   return false;
 }

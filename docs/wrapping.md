@@ -82,6 +82,14 @@ deterministic drop (cycles included), an idempotent explicit `drop()`,
 and `ClosedError` on use-after-drop. `ext-culebra build script.cul`
 produces standalone AOT binaries that carry the binding.
 
+The binding and the wrapped library (`--link`) are pulled into an AOT
+binary only when the script names a wrapped namespace — a program built by
+`ext-culebra` that uses none of the wrapped classes links none of the
+wrapped library, same as a stock `culebra build`. The check is a
+conservative identifier match (`Geo` etc.), so it can over-link but never
+under-link. This mirrors how `culebra build` links OpenSSL only for
+programs that use `Http`.
+
 ## Marshalling
 
 | C++ | Culebra |

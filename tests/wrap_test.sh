@@ -66,4 +66,27 @@ if ! diff "$OUT/jit.txt" "$OUT/aot.txt"; then
   exit 1
 fi
 
+# Usage-gated link: a program that names NO wrapped namespace must not pull
+# the wrap archive (or the wrapped library's link flags) into its AOT binary
+# — the Http/OpenSSL gating, applied to wrap. The binding still works when
+# used (asserted above); here we prove the unused case costs nothing. A
+# no-wrap binary must build, run, and be strictly smaller than the wrap-using
+# one (it omits the registrar object the latter force-loads).
+printf 'print("plain\\n")\n' > "$OUT/plain.cul"
+if ! "$EXT" build "$OUT/plain.cul" -o "$OUT/plain-bin"; then
+  echo "wrap_test FAIL: ext-culebra build of a no-wrap program failed" >&2
+  exit 1
+fi
+if ! "$OUT/plain-bin" > "$OUT/plain.txt" 2>&1 || [ "$(cat "$OUT/plain.txt")" != "plain" ]; then
+  echo "wrap_test FAIL: no-wrap AOT binary did not run correctly:" >&2
+  cat "$OUT/plain.txt" >&2
+  exit 1
+fi
+sz_wrap=$(wc -c < "$OUT/demo-bin")
+sz_plain=$(wc -c < "$OUT/plain-bin")
+if [ "$sz_plain" -ge "$sz_wrap" ]; then
+  echo "wrap_test FAIL: no-wrap binary ($sz_plain B) not smaller than wrap binary ($sz_wrap B) — wrap archive linked despite no use" >&2
+  exit 1
+fi
+
 echo "wrap_test OK"
