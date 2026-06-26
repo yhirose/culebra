@@ -5,6 +5,97 @@
     "fields": {}
   },
   {
+    "type": "brace_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "brace_block",
+          "named": true
+        },
+        {
+          "type": "call",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_class",
+          "named": true
+        },
+        {
+          "type": "kw_conditional",
+          "named": true
+        },
+        {
+          "type": "kw_debugger",
+          "named": true
+        },
+        {
+          "type": "kw_function",
+          "named": true
+        },
+        {
+          "type": "kw_include",
+          "named": true
+        },
+        {
+          "type": "kw_repeat",
+          "named": true
+        },
+        {
+          "type": "kw_statement",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "regex",
+          "named": true
+        },
+        {
+          "type": "self",
+          "named": true
+        },
+        {
+          "type": "storage",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "call",
     "named": true,
     "fields": {
@@ -22,6 +113,97 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "interpolation",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "brace_block",
+          "named": true
+        },
+        {
+          "type": "call",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "kw_class",
+          "named": true
+        },
+        {
+          "type": "kw_conditional",
+          "named": true
+        },
+        {
+          "type": "kw_debugger",
+          "named": true
+        },
+        {
+          "type": "kw_function",
+          "named": true
+        },
+        {
+          "type": "kw_include",
+          "named": true
+        },
+        {
+          "type": "kw_repeat",
+          "named": true
+        },
+        {
+          "type": "kw_statement",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "punctuation",
+          "named": true
+        },
+        {
+          "type": "regex",
+          "named": true
+        },
+        {
+          "type": "self",
+          "named": true
+        },
+        {
+          "type": "storage",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "type",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -70,6 +252,10 @@
       "types": [
         {
           "type": "boolean",
+          "named": true
+        },
+        {
+          "type": "brace_block",
           "named": true
         },
         {
@@ -153,6 +339,72 @@
     "fields": {}
   },
   {
+    "type": "string",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "escape",
+          "named": true
+        },
+        {
+          "type": "interpolation",
+          "named": true
+        },
+        {
+          "type": "raw_content",
+          "named": true
+        },
+        {
+          "type": "string_content",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "triple_string",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "escape",
+          "named": true
+        },
+        {
+          "type": "interpolation",
+          "named": true
+        },
+        {
+          "type": "triple_content",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "\"",
+    "named": false
+  },
+  {
+    "type": "\"\"\"",
+    "named": false
+  },
+  {
+    "type": "'",
+    "named": false
+  },
+  {
     "type": "(",
     "named": false
   },
@@ -220,6 +472,10 @@
   {
     "type": "enum",
     "named": false
+  },
+  {
+    "type": "escape",
+    "named": true
   },
   {
     "type": "export",
@@ -291,6 +547,10 @@
     "named": true
   },
   {
+    "type": "raw_content",
+    "named": true
+  },
+  {
     "type": "regex",
     "named": true
   },
@@ -307,7 +567,7 @@
     "named": false
   },
   {
-    "type": "string",
+    "type": "string_content",
     "named": true
   },
   {
@@ -321,6 +581,10 @@
   {
     "type": "trait",
     "named": false
+  },
+  {
+    "type": "triple_content",
+    "named": true
   },
   {
     "type": "true",
