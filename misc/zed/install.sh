@@ -39,10 +39,14 @@ fi
 # 1. Generate the dev extension (grammar via git, language config + Rust adapter
 #    shim copied in; Zed compiles the Rust to WASM on install).
 rm -rf "$EXT"
-mkdir -p "$EXT/languages" "$EXT/src"
+mkdir -p "$EXT/languages" "$EXT/src" "$EXT/debug_adapter_schemas"
 cp -R "$SRC_DIR/languages/." "$EXT/languages/"
 cp "$SRC_DIR/Cargo.toml" "$EXT/Cargo.toml"
 cp "$SRC_DIR/src/culebra.rs" "$EXT/src/culebra.rs"
+# Zed reads a JSON Schema for the adapter's launch config from this default path
+# (debug_adapter_schemas/<adapter>.json); without it the adapter fails to load.
+cp "$SRC_DIR/debug_adapter_schemas/culebra.json" \
+  "$EXT/debug_adapter_schemas/culebra.json"
 cat > "$EXT/extension.toml" <<TOML
 id = "culebra"
 name = "Culebra"

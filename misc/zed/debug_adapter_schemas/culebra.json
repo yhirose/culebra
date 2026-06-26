@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch"],
+      "description": "The request type — the culebra debugger only supports \"launch\".",
+      "default": "launch"
+    },
+    "program": {
+      "type": "string",
+      "description": "The .cul file to debug.",
+      "default": "$ZED_FILE"
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory for the debugged program.",
+      "default": "$ZED_WORKTREE_ROOT"
+    },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Command-line arguments passed to the program."
+    },
+    "stopOnEntry": {
+      "type": "boolean",
+      "description": "Pause at the first statement.",
+      "default": false
+    }
+  },
+  "required": ["program"]
+}
