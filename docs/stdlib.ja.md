@@ -54,8 +54,9 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 21. [`UUID`](#21-uuid) — v4（ランダム）/ v7（時刻順）UUID 生成
 22. [`Term`](#22-term) — TUI 向けの端末の色・カーソル制御・サイズ・キー/マウス入力
 23. [`Log`](#23-log) — stderr へのレベル付き構造化ログ（text / JSON、child logger）
-24. [設計上の注記](#24-設計上の注記)
-25. [未収録（将来検討）](#25-未収録将来検討)
+24. [`TOML`](#24-toml) — TOML 設定を parse / stringify
+25. [設計上の注記](#25-設計上の注記)
+26. [未収録（将来検討）](#26-未収録将来検討)
 
 **目的別索引**
 
@@ -81,6 +82,7 @@ CLI（`src/main.cc`）はこれに加え、`puts` と `print` を
 | データ・ファイルの gzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSV のパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
+| TOML のパース / 生成 | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
 | `.env` 設定ファイルの読込 | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | UUID の生成 | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | レベル付き / 構造化ログ | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
@@ -3106,7 +3108,69 @@ log.error("upstream failed", {status: 502})
 
 ---
 
-## 24. 設計上の注記
+## 24. `TOML`
+
+[TOML](https://toml.io) 設定の parse / 生成。文法と直列化は値中立コアに置かれ、
+インタプリタ・JIT・AOT がバイト単位で一致する。
+
+| 関数 | 結果 |
+| --- | --- |
+| `TOML.parse(text: String) -> Object` | 文書を入れ子 `Object` として返す |
+| `TOML.stringify(v: Object, sort_keys: Bool = false) -> String` | TOML テキスト。サブテーブルは `[section]` 見出しに展開 |
+
+`parse` は TOML v1.0 の範囲を受け付ける: bare / quoted / dotted キー、
+`[table]` / `[[array.of.tables]]` 見出し、4 種の文字列形式（basic・literal と
+それぞれの複数行 `"""` / `'''`）、整数（10 進 / `0x` / `0o` / `0b`、`_` 区切り可）、
+浮動小数（`inf` / `nan` を含む）、真偽値、配列、インラインテーブル。値の対応:
+
+| TOML | Culebra |
+| --- | --- |
+| table / インラインテーブル | `Object`（挿入順を保持） |
+| 配列 | `Array` |
+| テーブル配列 `[[x]]` | `Array<Object>` |
+| 文字列（4 形式いずれも） | `String` |
+| 整数 | `Long` |
+| 浮動小数 | `Float` |
+| 真偽値 | `Bool` |
+| 日時 / 日付 / 時刻 | `String`（生のまま保持 — 専用の日時型は無い） |
+
+日時は専用型ではなく生テキストとして返るため、往復すると通常の文字列として
+再クォートされる。不正な入力は `ValueError` を投げ、`e.line` / `e.col`
+（いずれも 1 始まり）が問題の文字を指す:
+
+```culebra
+let r = try { TOML.parse("x = "); nil } catch e { e }
+puts(r.message)            # TOML.parse: expected value
+puts("{r.line}:{r.col}")   # 1:5
+```
+
+`stringify` は `Object`（TOML 文書は常にテーブル）を取り、まずスカラ / 配列 /
+インライン値を出力し、続いてサブテーブルを `[section]` 見出しへ、テーブル配列を
+`[[…]]` ブロックへ展開する。これにより bare キーが必ず該当見出しより前に来る。
+浮動小数は常に小数点を持つので float として読み戻せる。`sort_keys: true` は
+キーをアルファベット順に走査し決定的出力にする。関数・テンソル・非 String キーを
+持つ Object は直列化できず、`stringify` は `TypeError` を投げる。
+
+```culebra
+let cfg = TOML.parse("""
+title = "demo"
+ports = [80, 443]
+
+[server]
+host = "localhost"
+""")
+puts(cfg.title)            # demo
+puts(cfg.server.host)      # localhost
+puts(TOML.stringify({a: 1, b: {c: 2}}))
+# a = 1
+#
+# [b]
+# c = 2
+```
+
+---
+
+## 25. 設計上の注記
 
 ### 名前空間ファースト、グローバルは CLI のエイリアス
 
@@ -3160,7 +3224,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 25. 未収録（将来検討）
+## 26. 未収録（将来検討）
 
 ### 重量級データ構造
 

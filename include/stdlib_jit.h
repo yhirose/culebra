@@ -12,6 +12,7 @@
 #include <csv.h>
 #include <env.h>
 #include <hash.h>
+#include <toml.h>
 #include <uuid.h>
 #include <jit.h>
 #include <proc.h>
@@ -3651,6 +3652,111 @@ inline JitValue _ns_csv_stringify(JitValue* a, int64_t n) {
       _culebra_heap_str(culebra::csv::stringify(grid, _csv_delim(a, n))));
 }
 
+// TOML.{parse,stringify}: shared grammar/serialization via toml.h. parse
+// returns the Object/Array/scalar tree (date-times as raw Strings); stringify
+// takes an Object and renders it with `[section]` expansion. Mirrors the
+// interp converters so the backends agree byte-for-byte. Slow-path only;
+// `sort_keys:` is the optional second slot the kwarg-slab binder fills.
+
+// Build a JitValue tree from a neutral toml::Node (each heap object is +1
+// owned by the caller, handed to the user binding).
+inline JitValue _toml_node_to_jit(const culebra::toml::Node& n) {
+  using K = culebra::toml::Kind;
+  switch (n.kind) {
+    case K::String:
+      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s))};
+    case K::Int:   return {TAG_LONG, n.i};
+    case K::Float: return {TAG_FLOAT, _culebra_double_to_bits(n.f)};
+    case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
+    case K::Array: {
+      auto* arr = culebra_runtime_array_new();
+      for (const auto& e : n.elems) {
+        auto v = _toml_node_to_jit(e);
+        culebra_runtime_array_push(arr, v.tag, v.data);
+      }
+      return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+    }
+    case K::Table: {
+      auto* obj = culebra_runtime_object_new();
+      for (const auto& kv : n.items) {
+        auto v = _toml_node_to_jit(kv.second);
+        culebra_runtime_object_set(obj, kv.first.c_str(), false, v.tag, v.data,
+                                   0, 0);
+      }
+      return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+    }
+  }
+  return {TAG_NIL, 0};
+}
+
+// Convert a JitValue into a neutral toml::Node for serialization. Objects
+// become tables (non-String keys rejected, like JSON); Array/Tuple/Set become
+// arrays; scalars map across; everything else is a TypeError.
+inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
+                                             int64_t line, int64_t col) {
+  using N = culebra::toml::Node;
+  switch (tag) {
+    case TAG_BOOL:  return N::boolean(data != 0);
+    case TAG_LONG:  return N::integer(data);
+    case TAG_FLOAT: return N::floating(_culebra_float_to_double(data));
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      return N::string(std::string(_culebra_str_view(tag, data)));
+    case TAG_ARRAY:
+    case TAG_TUPLE: {
+      auto* arr = reinterpret_cast<JitArray*>(data);
+      N a = N::array();
+      for (size_t i = 0; i < arr->size; i++)
+        a.elems.push_back(_jit_to_toml_node(arr->items[i].tag,
+                                            arr->items[i].data, line, col));
+      return a;
+    }
+    case TAG_SET: {
+      auto* set = reinterpret_cast<JitSet*>(data);
+      N a = N::array();
+      for (const auto& m : set->members)
+        a.elems.push_back(_jit_to_toml_node(m.tag, m.data, line, col));
+      return a;
+    }
+    case TAG_OBJECT: {
+      auto* obj = reinterpret_cast<JitObject*>(data);
+      if (obj->non_string_props && !obj->non_string_props->empty()) {
+        throw culebra::CulebraError("TypeError",
+            "TOML.stringify: Object has non-String keys", line, col);
+      }
+      N t = N::table();
+      if (obj->shape) {
+        for (size_t i = 0; i < obj->shape->names.size(); i++)
+          t.set(std::string(obj->shape->names[i]),
+                _jit_to_toml_node(obj->slots[i].value.tag,
+                                  obj->slots[i].value.data, line, col));
+      }
+      return t;
+    }
+  }
+  throw culebra::CulebraError("TypeError", std::format(
+      "TOML.stringify: cannot serialize {}", _culebra_tag_name(tag)), line, col);
+}
+
+inline JitValue _ns_toml_parse(JitValue* a, int64_t /*n*/) {
+  try {
+    auto root = culebra::toml::parse(_ns_adapt::require_sv(a[0], "text"));
+    return _toml_node_to_jit(root);
+  } catch (const culebra::toml::ParseError& e) {
+    throw culebra::CulebraError("ValueError",
+        std::format("TOML.parse: {}", e.message), e.line, e.col);
+  }
+}
+
+inline JitValue _ns_toml_stringify(JitValue* a, int64_t n) {
+  // a[0] is Object (the binder enforces the declared type at the arg position).
+  // a[1] is the `sort_keys` Bool slot, default false when the slab left it off.
+  bool sort_keys = (n >= 2) && (a[1].data != 0);
+  auto root = _jit_to_toml_node(a[0].tag, a[0].data, 0, 0);
+  return _ns_adapt::v_string(
+      _culebra_heap_str(culebra::toml::stringify(root, sort_keys)));
+}
+
 // Env.{parse,load}: dotenv parsing via env.h (shared with interp). Both return
 // an Object of String values; `load` also reads a file and sets each entry into
 // the process environment (overwriting only when `override: true`).
@@ -4087,6 +4193,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Http")     return true;  // all Http methods take kwargs
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
+  if (ns == "TOML")     return nm == "stringify";  // sort_keys default
   if (ns == "Env")      return nm == "load";  // path/override defaults
   if (ns.empty())       return nm == "range" || nm == "iota";  // bare globals
   return false;
@@ -4274,6 +4381,8 @@ inline const NsMethod kNsMethods[] = {
 
   {"CSV", "parse",     1, &_ns_csv_parse,     nullptr, "String", "text"},
   {"CSV", "stringify", 1, &_ns_csv_stringify, nullptr, "Array",  "rows"},
+  {"TOML", "parse",     1, &_ns_toml_parse,     nullptr, "String", "text"},
+  {"TOML", "stringify", 1, &_ns_toml_stringify, nullptr, "Object", "v"},
 
   {"Env", "parse", 1, &_ns_env_parse, nullptr, "String", "text"},
   {"Env", "load",  0, &_ns_env_load,  nullptr, "String", "path"},
@@ -6675,7 +6784,8 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",       "Env",       "UUID",      "_Term",
+      "Hash",    "CSV",       "TOML",      "Env",       "UUID",
+      "_Term",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

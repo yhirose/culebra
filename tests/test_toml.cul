@@ -1,0 +1,125 @@
+// TOML namespace: parse / stringify. The grammar and serialization are shared
+// between the interp and the JIT slow-path adapters via toml.h, so this also
+// exercises bare-resolve + as-value dispatch on the JIT/AOT slow path. Running
+// under tests/*.cul checks interp/JIT/AOT agree byte-for-byte.
+
+// --- scalars: Long / Float / Bool / String ---
+let s = TOML.parse("a = 1\nb = 3.14\nc = true\nd = \"hi\"\ne = -7")
+assert_eq(s.a, 1)
+assert_eq(s.b, 3.14)
+assert_eq(s.c, true)
+assert_eq(s.d, "hi")
+assert_eq(s.e, -7)
+
+// --- integer bases + underscores ---
+let n = TOML.parse("hex = 0xFF\noct = 0o17\nbin = 0b1010\nbig = 1_000_000")
+assert_eq(n.hex, 255)
+assert_eq(n.oct, 15)
+assert_eq(n.bin, 10)
+assert_eq(n.big, 1000000)
+
+// --- float specials + exponent ---
+let f = TOML.parse("a = 2.0\nb = 1e3\nc = inf\nd = -inf")
+assert_eq(f.a, 2.0)
+assert_eq(f.b, 1000.0)
+assert_true(f.c > 1e308)   // inf
+assert_true(f.d < -1e308)  // -inf
+
+// --- strings: basic escapes, literal (no escapes), multiline ---
+// TOML literal strings ('...') keep bytes raw (no escapes); the culebra
+// source here has `\\` (one backslash) so the TOML literal is `C:\path`.
+let str = TOML.parse("basic = \"a\\tb\\nc\"\nlit = 'C:\\path'\nuni = \"\\u00e9\"")
+assert_eq(str.basic, "a\tb\nc")
+assert_eq(str.lit, "C:\\path")
+assert_eq(str.uni, "é")
+let ml = TOML.parse("x = \"\"\"\nline1\nline2\"\"\"")
+assert_eq(ml.x, "line1\nline2")
+
+// --- arrays, nested arrays, inline tables ---
+// (`\{` escapes a literal brace in interpolated strings — the TOML source
+// here contains an inline table.)
+let arr = TOML.parse("nums = [1, 2, 3]\nnested = [[1, 2], [3, 4]]\npt = \{ x = 1, y = 2 }")
+assert_eq(arr.nums, [1, 2, 3])
+assert_eq(arr.nested[1], [3, 4])
+assert_eq(arr.pt.x, 1)
+assert_eq(arr.pt.y, 2)
+
+// --- multiline arrays with trailing comma + comments ---
+let mla = TOML.parse("xs = [\n  1, # one\n  2,\n]")
+assert_eq(mla.xs, [1, 2])
+
+// --- [table] headers, dotted keys, nested sections ---
+let t = TOML.parse("[server]\nhost = \"localhost\"\nport = 8080\n\n[server.tls]\non = true\n\n[db]\na.b.c = 99")
+assert_eq(t.server.host, "localhost")
+assert_eq(t.server.port, 8080)
+assert_eq(t.server.tls.on, true)
+assert_eq(t.db.a.b.c, 99)
+
+// --- [[array of tables]] ---
+let aot = TOML.parse("[[fruit]]\nname = \"apple\"\n\n[[fruit]]\nname = \"banana\"")
+assert_eq(aot.fruit.size(), 2)
+assert_eq(aot.fruit[0].name, "apple")
+assert_eq(aot.fruit[1].name, "banana")
+
+// --- date-times round-trip as raw Strings (no Instant type) ---
+let dt = TOML.parse("date = 1979-05-27\ndtz = 1979-05-27T07:32:00Z\nspc = 1979-05-27 07:32:00\ntm = 07:32:00")
+assert_eq(dt.date, "1979-05-27")
+assert_eq(dt.dtz, "1979-05-27T07:32:00Z")
+assert_eq(dt.spc, "1979-05-27 07:32:00")
+assert_eq(dt.tm, "07:32:00")
+
+// --- comments are ignored ---
+let cm = TOML.parse("# a comment\nx = 1 # trailing\n# another\ny = 2")
+assert_eq(cm.x, 1)
+assert_eq(cm.y, 2)
+
+// --- stringify: scalars + section expansion ---
+assert_eq(TOML.stringify({a: 1, b: "x"}), "a = 1\nb = \"x\"\n")
+assert_eq(TOML.stringify({s: {host: "h", port: 80}}),
+          "\n[s]\nhost = \"h\"\nport = 80\n")
+// floats always carry a decimal point so they round-trip as floats
+assert_eq(TOML.stringify({r: 2.0}), "r = 2.0\n")
+// arrays render inline; bools / strings as TOML literals
+assert_eq(TOML.stringify({xs: [1, 2, 3], ok: true}), "xs = [1, 2, 3]\nok = true\n")
+
+// --- sort_keys gives deterministic output ---
+assert_eq(TOML.stringify({b: 2, a: 1, c: 3}, sort_keys: true), "a = 1\nb = 2\nc = 3\n")
+// positional form works too
+assert_eq(TOML.stringify({b: 2, a: 1}, true), "a = 1\nb = 2\n")
+
+// --- round trips ---
+let doc = "title = \"demo\"\ncount = 42\n\n[server]\nhost = \"localhost\"\nport = 8080\n"
+assert_eq(TOML.stringify(TOML.parse(doc)).contains("title = \"demo\""), true)
+let rt = TOML.parse(TOML.stringify(TOML.parse(doc)))
+assert_eq(rt.title, "demo")
+assert_eq(rt.count, 42)
+assert_eq(rt.server.port, 8080)
+
+// --- key quoting on output for non-bare keys ---
+assert_eq(TOML.stringify({"a b": 1}), "\"a b\" = 1\n")
+
+// --- errors: ValueError with line / col on malformed input ---
+let e1 = try { TOML.parse("x = "); nil } catch e { e }
+assert_eq(e1.kind, "ValueError")
+assert_true(e1.message.contains("TOML.parse"))
+assert_eq(e1.line, 1)
+assert_eq(e1.col, 5)
+
+let e2 = try { TOML.parse("ok = 1\nbad = \"unterminated"); nil } catch e { e }
+assert_eq(e2.kind, "ValueError")
+assert_eq(e2.line, 2)
+
+let e3 = try { TOML.parse("[t]\nx 1"); nil } catch e { e }
+assert_eq(e3.kind, "ValueError")
+assert_true(e3.message.contains("expected '='"))
+
+// --- type errors: parse wants a String, stringify wants a serializable Object ---
+assert_throws("TypeError", fn () { TOML.parse(42) })
+assert_throws("TypeError", fn () { TOML.stringify("nope") })
+assert_throws("TypeError", fn () { TOML.stringify({f: fn () { 1 }}) })
+
+// --- first-class value (slow-path conformance) ---
+let p = TOML.parse
+assert_eq(p("k = 9").k, 9)
+
+puts("toml tests passed")

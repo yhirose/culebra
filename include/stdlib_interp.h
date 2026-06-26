@@ -20,6 +20,7 @@
 #include <foreign.h>
 #include <foreign_binding.h>
 #include <hash.h>
+#include <toml.h>
 #include <uuid.h>
 #include <interpreter.h>
 #include <proc.h>
@@ -3952,6 +3953,116 @@ inline Value make_csv_namespace() {
   return Value(std::move(ns));
 }
 
+// Convert a neutral toml::Node tree into a culebra Value. Tables become
+// Objects (insertion order preserved), arrays become Arrays, and scalars map
+// to Long/Float/Bool/String. Date-times arrive as raw Strings (decision: no
+// Instant type), so they round-trip as ordinary strings.
+inline Value toml_node_to_value(const culebra::toml::Node& n) {
+  using K = culebra::toml::Kind;
+  switch (n.kind) {
+    case K::String: return Value(std::string(n.s));
+    case K::Int:    return Value(static_cast<long>(n.i));
+    case K::Float:  return Value(n.f);
+    case K::Bool:   return Value(n.b);
+    case K::Array: {
+      ArrayValue arr;
+      for (const auto& e : n.elems)
+        arr.values->push_back(toml_node_to_value(e));
+      return Value(std::move(arr));
+    }
+    case K::Table: {
+      ObjectValue obj;
+      for (const auto& kv : n.items)
+        obj.initialize(std::string_view(kv.first), toml_node_to_value(kv.second),
+                       false);
+      return Value(std::move(obj));
+    }
+  }
+  return Value();
+}
+
+// Convert a culebra Value into a neutral toml::Node for serialization. Objects
+// become tables (non-String keys rejected, mirroring JSON), Array/Tuple/Set
+// become arrays, scalars map across; everything else is a TypeError.
+inline culebra::toml::Node value_to_toml_node(const Value& v, long line,
+                                              long col) {
+  using N = culebra::toml::Node;
+  switch (v.type) {
+    case Value::Bool:   return N::boolean(v.get<bool>());
+    case Value::Long:   return N::integer(v.get<long>());
+    case Value::Float:  return N::floating(v.get<double>());
+    case Value::String: return N::string(v.get<std::string>());
+    case Value::Array:
+    case Value::Tuple:
+    case Value::Set: {
+      const std::vector<Value>* xs = nullptr;
+      if (v.type == Value::Array) xs = v.to_array().values.get();
+      else if (v.type == Value::Tuple) xs = v.template get<TupleValue>().elements.get();
+      else xs = v.template get<SetValue>().members.get();
+      N arr = N::array();
+      for (const auto& e : *xs) arr.elems.push_back(value_to_toml_node(e, line, col));
+      return arr;
+    }
+    case Value::Object: {
+      const auto& obj = v.to_object();
+      if (obj.non_string_props && !obj.non_string_props->empty()) {
+        throw CulebraError("TypeError",
+            "TOML.stringify: Object has non-String keys", line, col);
+      }
+      N tbl = N::table();
+      for (const auto& [k, sym] : *obj.properties)
+        tbl.set(std::string(k), value_to_toml_node(sym.val, line, col));
+      return tbl;
+    }
+    default:
+      throw CulebraError("TypeError", std::format(
+          "TOML.stringify: cannot serialize {}", v.type_name()), line, col);
+  }
+}
+
+// `TOML`: parse / stringify TOML text. The grammar and serialization live in
+// the value-neutral toml.h core, shared with the JIT runtime helpers so the
+// three backends agree byte-for-byte. `parse` returns an Object; `stringify`
+// takes an Object (TOML documents are tables) and renders it, expanding
+// sub-tables into `[section]` headers. Date-times round-trip as Strings.
+inline Value make_toml_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "parse",
+      Value(FunctionValue({{"text", false, "String"sv}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            try {
+                              auto root = culebra::toml::parse(
+                                  env->get("text").to_string_view());
+                              return toml_node_to_value(root);
+                            } catch (const culebra::toml::ParseError& e) {
+                              throw CulebraError("ValueError",
+                                  std::format("TOML.parse: {}", e.message),
+                                  e.line, e.col);
+                            }
+                          },
+                          "Object"sv)),
+      false);
+  ns.initialize(
+      "stringify",
+      Value(FunctionValue({{"v", false, "Object"sv},
+                           {"sort_keys", false, "Bool"sv, nullptr,
+                            kw_default_false()}},
+                          [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
+                            bool sort_keys = env->get("sort_keys").to_bool();
+                            auto root = value_to_toml_node(env->get("v"), line,
+                                                           col);
+                            return Value(culebra::toml::stringify(root,
+                                                                 sort_keys));
+                          },
+                          "String"sv)),
+      false);
+  return Value(std::move(ns));
+}
+
 // Default `path:` for Env.load (".env"). A String default the JIT mirrors
 // through _jit_default_from_value (the calling-convention single source).
 inline const std::shared_ptr<Value>& kw_default_dotenv() {
@@ -4550,6 +4661,7 @@ inline void setup_built_in_functions(
   env.initialize("Compress", make_compress_namespace(), false);
   env.initialize("Hash", make_hash_namespace(), false);
   env.initialize("CSV", make_csv_namespace(), false);
+  env.initialize("TOML", make_toml_namespace(), false);
   env.initialize("Env", make_env_namespace(), false);
   env.initialize("UUID", make_uuid_namespace(), false);
   env.initialize("_Regex", make_regex_primitives_namespace(), false);

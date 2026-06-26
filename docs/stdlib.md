@@ -56,8 +56,9 @@ Conventions used below:
 21. [`UUID`](#21-uuid) — generate v4 (random) and v7 (time-ordered) UUIDs
 22. [`Term`](#22-term) — terminal colour, cursor control, size, and key/mouse input for TUIs
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
-24. [Design notes](#24-design-notes)
-25. [Not included (yet)](#25-not-included-yet)
+24. [`TOML`](#24-toml) — parse / stringify TOML configuration
+25. [Design notes](#25-design-notes)
+26. [Not included (yet)](#26-not-included-yet)
 
 **Where to find what**
 
@@ -83,6 +84,7 @@ Conventions used below:
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
+| Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Leveled / structured logging | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
@@ -3227,7 +3229,73 @@ namespace in json mode. For a fatal condition, log at `error` then
 
 ---
 
-## 24. Design notes
+## 24. `TOML`
+
+Parse and render [TOML](https://toml.io) configuration, shared byte-for-byte
+across backends. The grammar and serialization live in a value-neutral core,
+so the interpreter, JIT, and AOT agree exactly.
+
+| Function | Result |
+| --- | --- |
+| `TOML.parse(text: String) -> Object` | the document as a nested `Object` |
+| `TOML.stringify(v: Object, sort_keys: Bool = false) -> String` | TOML text; sub-tables become `[section]` headers |
+
+`parse` accepts the TOML v1.0 surface: bare / quoted / dotted keys,
+`[table]` and `[[array.of.tables]]` headers, the four string forms (basic,
+literal, and their multiline `"""` / `'''` variants), integers
+(decimal / `0x` / `0o` / `0b`, with `_` separators), floats (including
+`inf` / `nan`), booleans, arrays, and inline tables. Values map as:
+
+| TOML | Culebra |
+| --- | --- |
+| table / inline table | `Object` (insertion order preserved) |
+| array | `Array` |
+| array of tables `[[x]]` | `Array<Object>` |
+| string (any of the four forms) | `String` |
+| integer | `Long` |
+| float | `Float` |
+| boolean | `Bool` |
+| date-time / date / time | `String` (kept raw — there is no date type) |
+
+Date-times come back as their raw text rather than a dedicated type, so a
+round trip re-quotes them as ordinary strings. Malformed input raises a
+`ValueError` whose `e.line` / `e.col` (both 1-based) point at the offending
+character:
+
+```culebra
+let r = try { TOML.parse("x = "); nil } catch e { e }
+puts(r.message)            # TOML.parse: expected value
+puts("{r.line}:{r.col}")   # 1:5
+```
+
+`stringify` takes an `Object` (a TOML document is always a table) and renders
+each scalar / array / inline value first, then expands sub-tables into
+`[section]` headers and table arrays into `[[…]]` blocks, so every bare key
+precedes the header that would otherwise capture it. Floats always carry a
+decimal point so they parse back as floats. `sort_keys: true` walks keys
+alphabetically for deterministic output. Functions, tensors, and Objects with
+non-String keys are not serializable — `stringify` throws `TypeError`.
+
+```culebra
+let cfg = TOML.parse("""
+title = "demo"
+ports = [80, 443]
+
+[server]
+host = "localhost"
+""")
+puts(cfg.title)            # demo
+puts(cfg.server.host)      # localhost
+puts(TOML.stringify({a: 1, b: {c: 2}}))
+# a = 1
+#
+# [b]
+# c = 2
+```
+
+---
+
+## 25. Design notes
 
 ### Namespace-first, CLI-aliased globals
 
@@ -3281,7 +3349,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 25. Not included (yet)
+## 26. Not included (yet)
 
 ### Heavier data structures
 
