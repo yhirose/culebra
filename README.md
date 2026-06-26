@@ -50,7 +50,8 @@ for the common case.
 File I/O, CLI argument parsing, structured data (JSON — with optional
 JSONC comments and trailing commas — CSV, TOML), time, math, and
 randomness ship in the single binary — no package manager, no lockfile.
-Text processing, networking, and crypto/encoding are next, same policy.
+Text processing (regex), an HTTP client, and hashing / encoding /
+compression ship too, same policy.
 
 ### Built-in Tensor
 
