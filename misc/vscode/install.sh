@@ -1,43 +1,43 @@
 #!/bin/sh
-# Install the Culebra VSCode extension into ~/.vscode/extensions.
-# Provides syntax highlighting for .cul files and registers the `culebra`
-# debug type so you can debug them with F5 (the adapter itself is
+# Install the Culebra VSCode extension. It provides syntax highlighting for
+# .cul files and registers the `culebra` debug type (the adapter itself is
 # `culebra dap`, shipped in the culebra binary).
+#
+# This packages the extension as a .vsix and installs it with
+# `code --install-extension` — the method VS Code documents. (Copying the
+# folder into ~/.vscode/extensions is NOT supported and is often not detected.)
 
 set -eu
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
-SRC="$SRC_DIR/package.json"
-DEST="$HOME/.vscode/extensions/culebra-debug"
 
-if [ ! -f "$SRC" ]; then
-  echo "error: $SRC not found" >&2
+# Pick the editor CLI: VS Code, or a compatible fork if that's what's installed.
+CLI=""
+for c in code code-insiders cursor codium; do
+  if command -v "$c" >/dev/null 2>&1; then CLI=$c; break; fi
+done
+if [ -z "$CLI" ]; then
+  echo "error: no editor CLI found (looked for: code, code-insiders, cursor, codium)." >&2
+  echo "In VSCode, run Command Palette -> 'Shell Command: Install code command in PATH', then retry." >&2
+  echo "Or build the package yourself and install it from the Extensions view:" >&2
+  echo "  $SRC_DIR/build-vsix.sh    # prints the .vsix path" >&2
+  echo "  Extensions view -> ... menu -> Install from VSIX..." >&2
   exit 1
 fi
 
-mkdir -p "$DEST/syntaxes"
-cp "$SRC" "$DEST/package.json"
-cp "$SRC_DIR/language-configuration.json" "$DEST/language-configuration.json"
-cp "$SRC_DIR/syntaxes/culebra.tmLanguage.json" \
-  "$DEST/syntaxes/culebra.tmLanguage.json"
+# A stray copy from the old (unsupported) folder-drop installer shadows the
+# packaged one by id — remove it so only the .vsix install remains.
+rm -rf "$HOME/.vscode/extensions/culebra-debug"
 
-# VSCode launches the adapter by the `program` field, which defaults to plain
-# "culebra" (resolved on PATH). If culebra is on PATH, bake in its absolute
-# path so it works even when VSCode is launched without your shell's PATH.
-CULEBRA=$(command -v culebra 2>/dev/null || true)
-if [ -n "$CULEBRA" ]; then
-  # BSD/macOS and GNU sed both accept -i with an explicit backup suffix.
-  sed -i.bak "s|\"program\": \"culebra\"|\"program\": \"$CULEBRA\"|" \
-    "$DEST/package.json"
-  rm -f "$DEST/package.json.bak"
-  echo "installed into $DEST (adapter: $CULEBRA dap)"
-else
-  echo "installed into $DEST"
-  echo "note: 'culebra' is not on PATH — edit $DEST/package.json and set"
-  echo "      \"program\" to the absolute path of your culebra binary."
-fi
+VSIX=$("$SRC_DIR/build-vsix.sh")
+"$CLI" --install-extension "$VSIX"
+rm -f "$VSIX"
 
 echo
-echo "Next:"
-echo "  1. Reload VSCode (Command Palette -> Developer: Reload Window)."
-echo "  2. Add a .vscode/launch.json (see docs/debugging.md) and press F5."
+echo "installed via $CLI. Next:"
+echo "  1. Fully quit the editor (Cmd+Q) and reopen — a reload may not pick up"
+echo "     a freshly installed extension."
+echo "  2. Open a .cul file: syntax highlighting applies automatically."
+echo "  3. To debug, add a .vscode/launch.json (see docs/debugging.md) and"
+echo "     press F5. If 'culebra' isn't on PATH, set \"program\" to its"
+echo "     absolute path in the launch config."

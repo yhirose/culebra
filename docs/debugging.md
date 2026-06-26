@@ -61,16 +61,19 @@ installer.
    misc/vscode/install.sh
    ```
 
-   This copies the extension (`package.json`, the `language-configuration.json`,
-   and the `syntaxes/culebra.tmLanguage.json` grammar) into
-   `~/.vscode/extensions/culebra-debug/` and, if `culebra` is on your `PATH`,
-   bakes in its absolute path. (To do it by hand instead, copy that folder
-   yourself; edit `program` to an absolute path if `culebra` isn't on `PATH`.)
-   Syntax highlighting then applies to any `.cul` file with no further setup;
-   the steps below are only needed for debugging. The grammar's keyword list is
-   generated from the parser by `just sync-grammar` (the same source as the Vim
-   syntax file), so it never drifts from the language.
-2. Reload VSCode (Command Palette → **Developer: Reload Window**).
+   This packages the extension as a `.vsix` (via `build-vsix.sh`, no npm needed)
+   and installs it with `code --install-extension` — the method VS Code
+   supports. (Copying the folder into `~/.vscode/extensions` directly is *not*
+   supported and is often not detected.) If `culebra` is on your `PATH`, its
+   absolute path is baked into the debug adapter config. The script also works
+   with `code-insiders` / `cursor` / `codium` if that's your CLI; if none is on
+   `PATH`, it tells you how to install the `.vsix` from the Extensions view
+   instead. Syntax highlighting then applies to any `.cul` file with no further
+   setup; the steps below are only needed for debugging. The grammar's keyword
+   list is generated from the parser by `just sync-grammar` (the same source as
+   the Vim syntax file), so it never drifts from the language.
+2. Fully quit VSCode (<kbd>Cmd</kbd>+<kbd>Q</kbd>) and reopen — a freshly
+   installed extension may not be picked up by a window reload alone.
 3. In your project, add `.vscode/launch.json`:
 
    ```jsonc
@@ -89,12 +92,11 @@ installer.
 4. Open a `.cul` file, click in the gutter to set a breakpoint, and press
    <kbd>F5</kbd>.
 
-> **Iterating on the extension itself?** Instead of copying it into
-> `~/.vscode/extensions`, open the extension folder in VSCode and press
-> <kbd>F5</kbd> with an `extensionHost` launch config — that opens a separate
-> *Extension Development Host* window with the extension loaded, where you debug
-> your `.cul` project. This avoids reinstalling on every change; for just
-> *using* the debugger, the `~/.vscode/extensions` install above is simpler.
+> **Iterating on the extension itself?** Instead of reinstalling the `.vsix`
+> on every change, open `misc/vscode/` in VSCode and press <kbd>F5</kbd> with an
+> `extensionHost` launch config — that opens a separate *Extension Development
+> Host* window with the extension loaded live, where you debug your `.cul`
+> project. For just *using* the extension, `install.sh` above is simpler.
 
 ## Neovim (nvim-dap)
 

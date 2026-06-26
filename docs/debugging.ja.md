@@ -56,14 +56,16 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
    misc/vscode/install.sh
    ```
 
-   拡張一式（`package.json`・`language-configuration.json`・文法 `syntaxes/
-   culebra.tmLanguage.json`）を `~/.vscode/extensions/culebra-debug/` にコピーし、
-   `culebra` が `PATH` 上にあればその絶対パスを埋め込みます。（手作業でやるなら、その
-   フォルダを自分でコピー。`culebra` が `PATH` に無ければ `program` を絶対パスに編集。）
-   シンタックスハイライトは `.cul` を開くだけで有効（以降の手順はデバッグ用のみ）。文法の
-   キーワード一覧は `just sync-grammar` がパーサから生成（Vim 構文ファイルと同一ソース）する
-   ため言語からドリフトしません。
-2. VSCode を再読み込み（コマンドパレット → **Developer: Reload Window**）。
+   拡張を `.vsix` にパッケージし（`build-vsix.sh`、npm 不要）、`code --install-extension`
+   でインストールします＝VS Code が公式にサポートする方法。（`~/.vscode/extensions` に
+   フォルダを直接コピーする方法は**非サポート**で、認識されないことが多い。）`culebra` が
+   `PATH` 上にあればデバッグアダプタ設定に絶対パスを埋め込みます。`code-insiders`/`cursor`/
+   `codium` でも動作し、いずれの CLI も無ければ Extensions ビューから `.vsix` を入れる手順を
+   案内します。シンタックスハイライトは `.cul` を開くだけで有効（以降の手順はデバッグ用のみ）。
+   文法のキーワード一覧は `just sync-grammar` がパーサから生成（Vim 構文ファイルと同一ソース）
+   するため言語からドリフトしません。
+2. VSCode を**完全終了**（<kbd>Cmd</kbd>+<kbd>Q</kbd>）して再起動 — 入れたての拡張は
+   ウィンドウ再読み込みだけでは拾われないことがあります。
 3. プロジェクトに `.vscode/launch.json`:
 
    ```jsonc
@@ -81,11 +83,10 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
    ```
 4. `.cul` を開き、ガター（行番号の左）をクリックでブレークポイント → <kbd>F5</kbd>。
 
-> **拡張自体を作り込む場合**は、`~/.vscode/extensions` にコピーする代わりに、拡張フォルダを
-> VSCode で開き `extensionHost` の launch 構成で <kbd>F5</kbd> を押すと、拡張がロードされた
-> 別ウィンドウ（*Extension Development Host*）が開き、そこで `.cul` をデバッグできます。
-> 変更のたびに入れ直す必要が無くなります。単に*使いたいだけ*なら上の
-> `~/.vscode/extensions` への配置の方が簡単です。
+> **拡張自体を作り込む場合**は、変更のたびに `.vsix` を入れ直す代わりに、`misc/vscode/` を
+> VSCode で開き `extensionHost` の launch 構成で <kbd>F5</kbd> を押すと、拡張がライブロード
+> された別ウィンドウ（*Extension Development Host*）が開き、そこで `.cul` をデバッグできます。
+> 単に*使いたいだけ*なら上の `install.sh` の方が簡単です。
 
 ## Neovim (nvim-dap)
 
