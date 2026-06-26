@@ -138,8 +138,10 @@ misc/zed/install.sh
 `.zed/debug.json` を書き出します。Zed への導入（初回のみ）:
 
 1. コマンドパレット → **`zed: install dev extension`** → スクリプトが表示した
-   ディレクトリ（既定 `~/.local/share/culebra-zed-extension`）を選択。Zed が Rust シムを
-   WASM にビルドするため、新しめの Zed が必要です。
+   ディレクトリ（既定 `~/.local/share/culebra-zed-extension`）を選択。Zed は Rust シムを
+   `wasm32-wasip2` にビルドするので、新しめの Zed に加え Rust とそのターゲットが必要です:
+   `rustup target add wasm32-wasip2`（無いと "can't find crate for core" でビルドが落ち、
+   アダプタが登録されません。ハイライトは無くても動きます）。`install.sh` が未導入なら警告します。
 2. 文法/アダプタを更新したら `misc/zed/install.sh` を再実行して同ディレクトリを選び直す
    （ピン留めコミットが更新されます）。
 

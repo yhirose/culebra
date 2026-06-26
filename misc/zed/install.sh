@@ -23,6 +23,19 @@ if ! git -C "$REPO" cat-file -e "$REV:misc/zed/tree-sitter-culebra/src/parser.c"
   exit 1
 fi
 
+# Zed compiles the debug-adapter shim to wasm32-wasip2 when installing the dev
+# extension; without that Rust target the build fails ("can't find crate for
+# core") and the adapter never registers. Warn early — we can't add it for you.
+if command -v rustup >/dev/null 2>&1; then
+  if ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-wasip2$'; then
+    echo "warning: Rust target wasm32-wasip2 is not installed — Zed needs it to" >&2
+    echo "         build the debug adapter. Run:  rustup target add wasm32-wasip2" >&2
+  fi
+else
+  echo "warning: rustup not found — Zed needs Rust + the wasm32-wasip2 target to" >&2
+  echo "         build the debug adapter (highlighting still works without it)." >&2
+fi
+
 # 1. Generate the dev extension (grammar via git, language config + Rust adapter
 #    shim copied in; Zed compiles the Rust to WASM on install).
 rm -rf "$EXT"

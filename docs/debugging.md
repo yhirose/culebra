@@ -151,7 +151,10 @@ current project. Install it once in Zed:
 
 1. Command palette → **`zed: install dev extension`** → select the directory
    the script printed (default `~/.local/share/culebra-zed-extension`). Zed
-   compiles the Rust shim to WASM, so a recent Zed is required.
+   compiles the Rust shim to `wasm32-wasip2`, so you need a recent Zed plus
+   Rust with that target: `rustup target add wasm32-wasip2` (without it the
+   build fails with "can't find crate for core" and the adapter never
+   registers; highlighting still works). `install.sh` warns if it's missing.
 2. Re-run `misc/zed/install.sh` and re-select the directory after pulling
    grammar/adapter changes (it re-pins the commit).
 
