@@ -22,6 +22,9 @@
         "path": "./syntaxes/culebra.tmLanguage.json"
       }
     ],
+    "breakpoints": [
+      { "language": "culebra" }
+    ],
     "debuggers": [
       {
         "type": "culebra",
