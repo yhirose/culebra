@@ -192,17 +192,21 @@ group; only the groups that are statically referenced from the user
 program are linked. A "hello world" using `puts` pulls in IO plus the
 Long printer, and nothing else.
 
-### Two runtime archives
+### Runtime archives (base + per-feature)
 
-- `libculebra_rt.a` — full runtime, includes `Tensor` and its BLAS
-  bind.
-- `libculebra_rt_no_tensor.a` — `Tensor` entry points replaced with
-  abort-on-call stubs. Because the static call graph from
-  `culebra_runtime_num_add` to `cblas_*` is broken, the linker drops
-  the Accelerate / BLAS framework from the binary.
+- `libculebra_rt.a` — base runtime. The `Tensor` / `Http` / `Compress`
+  chokes are **weak-symbol stubs**, so on its own it references no BLAS,
+  OpenSSL, or zlib.
+- `libculebra_rt_tensor.a` / `libculebra_rt_http.a` /
+  `libculebra_rt_compress.a` — the strong chokes for each feature
+  (pulling BLAS / OpenSSL+zlib / zlib respectively).
 
-`culebra build` scans the AST for any bare `Tensor` identifier and
-picks the archive accordingly.
+`culebra build` always links the base, then **force-loads** a feature
+archive only when the AST references its namespace (`Tensor` / `Http` /
+`Compress`) — the strong choke overrides the weak stub. So an unused
+feature links neither its archive nor its external libraries. This is
+N+1 archives, not a 2^N matrix; the `culebra wrap` archive
+(`libculebra_rt_wrap.a`) rides the same usage gate.
 
 ### Linux -no-pie
 
@@ -467,10 +471,12 @@ All non-trivial dependencies are header-only or statically linked, so
 ### CMake structure
 
 - `CMakeLists.txt` (top-level) — defines the `culebra` driver,
-  optional LLVM linkage, the two runtime archives, and embed tests.
+  optional LLVM linkage, the base + per-feature runtime archives, and
+  embed tests.
 - `vendor/cpp-embedlib/cmake/cpp-embedlib.cmake` — provides
-  `cpp_embedlib_add()` used to bake `libculebra_rt.a` and
-  `libculebra_rt_no_tensor.a` into the driver.
+  `cpp_embedlib_add()` used to bake `libculebra_rt.a` and its
+  per-feature archives (`libculebra_rt_tensor.a`, `_http`, `_compress`)
+  into the driver.
 
 `option(CULEBRA_ENABLE_JIT)` controls LLVM linkage. With JIT off, the
 driver is ~1 MB and has no LLVM dependency.

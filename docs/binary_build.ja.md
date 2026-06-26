@@ -36,41 +36,45 @@ culebra build path/to/program.cul -o ./program
 
 ### ランタイムアーカイブの配布
 
-4 つのランタイムアーカイブ（`libculebra_rt.a` と
-`_no_tensor` / `_no_http` / `_no_tensor_no_http` variant）は
-cpp-embedlib によって **`culebra`
-ドライバに直接埋め込まれています**。ドライバは単体で完結する 1
-バイナリで、サイドカーの `.a` ファイルを別途インストールする必要
-はありません。`culebra build` の初回呼び出し時に必要なアーカイ
-ブを `$HOME/.cache/culebra/<fingerprint>/lib*.a` に展開します。
-2 回目以降はキャッシュを再利用します。fingerprint は埋め込みアーカイブのコンテンツハッシュなの
-で、`culebra` を再ビルドすると自動的に旧版のキャッシュと分離さ
-れます。
+ランタイムアーカイブ群——base `libculebra_rt.a` ＋ 重い機能ごとの
+小さなアーカイブ（`libculebra_rt_tensor.a` / `libculebra_rt_http.a` /
+`libculebra_rt_compress.a`、`culebra wrap` 用 `libculebra_rt_wrap.a`）
+——は cpp-embedlib によって **`culebra` ドライバに直接埋め込まれて
+います**。ドライバは単体で完結する 1 バイナリで、サイドカーの `.a`
+ファイルを別途インストールする必要はありません。`culebra build` の
+初回呼び出し時に必要なアーカイブを
+`$HOME/.cache/culebra/<fingerprint>/lib*.a` に展開し、2 回目以降は
+キャッシュを再利用します。fingerprint は埋め込みアーカイブのコンテ
+ンツハッシュなので、`culebra` を再ビルドすると自動的に旧版のキャッ
+シュと分離されます。
+
+base アーカイブは tensor / http / compress の choke を**弱シンボルの
+スタブ**として持つので、単体では BLAS・OpenSSL・zlib を一切参照しま
+せん。`culebra build` は常に base を link し、ソースがその機能を使う
+時だけ機能アーカイブを **force-load**（強い choke が base の弱スタブ
+を上書き）します。2^N の組合せでなく N+1 アーカイブです。
 
 ## Tensor-free バイナリ
 
-`culebra build` は AST を走査して `Tensor` 識別子を一切参照して
-いないことを確認すると、`libculebra_rt_no_tensor.a` をリンクに
-選択します。これは tensor 入口点（`culebra_runtime_tensor_*`、
-値解放／文字列化の `TAG_TENSOR` 分岐など）が abort-on-call スタ
-ブに置き換えられた第二のランタイムアーカイブです。
-`culebra_runtime_num_add` から `cblas_*` への静的到達経路が断ち
-切られるため、`Accelerate` / BLAS 依存自体もバイナリから外せます。
+`culebra build` は AST を走査し、`Tensor` 識別子を参照する時だけ
+`libculebra_rt_tensor.a`（強い tensor choke＝`culebra_runtime_tensor_*`、
+`TAG_TENSOR` 分岐）を force-load し、`Accelerate` / BLAS を付けます。
+`Tensor` が無ければ base の弱 tensor スタブが
+`culebra_runtime_num_add` から `cblas_*` への静的到達経路を断つので、
+BLAS シンボルを一切参照せず依存が外れます。
 
 ## Http-free バイナリ
 
-同じことが `Http` namespace にも独立に当てはまります。AST に
-`Http` 識別子が無ければ `_no_http` archive を選択します。これは
-http namespace（と `httplib.h` の include）を丸ごとコンパイル除外
-したアーカイブです。runtime の http ヘルパは in-process JIT のため
-`__attribute__((used))` が付いており、`-dead_strip` /
-`--gc-sections` を貫通するのでフル archive からは tree-shake でき
-ません。`_no_http` archive はそれらをそもそも含まないので、http
-コードが消えれば OpenSSL も zlib も参照されずリンクから外れます。
-こちらが効果は大きく、`puts(1)` バイナリが ~10 MB → ~5 MB に半減
-します（OpenSSL は静的リンク）。2 軸は合成可能で、Tensor も Http
-も使わないプログラムは `libculebra_rt_no_tensor_no_http.a` をリンク
-し BLAS も OpenSSL も避けます。
+同じことが `Http` にも独立に当てはまります。AST に `Http` 識別子が
+ある時だけ `libculebra_rt_http.a`（強い http choke、`httplib.h` を
+include）を force-load し、OpenSSL + zlib を付けます。runtime の http
+ヘルパは in-process JIT のため `__attribute__((used))` が付き
+`-dead_strip` / `--gc-sections` を貫通しますが、この別アーカイブに
+入っているので、非 Http プログラムはそれを force-load せず OpenSSL/
+zlib シンボルを参照しません。こちらが効果は大きく、非 Http バイナリ
+は ~5 MB、Http 版は ~9.5 MB です（OpenSSL は静的リンク）。2 軸は独立
+なので、Tensor も Http も使わないプログラムは base のみを link し
+BLAS も OpenSSL も避けます。
 
 `otool -L`（macOS）や `ldd`（Linux）で確認できます:
 
@@ -141,15 +145,16 @@ cmake -B build-linux-x86_64 \
       -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_C_FLAGS="--target=x86_64-unknown-linux-gnu --sysroot=$LINUX_SYSROOT" \
       -DCMAKE_CXX_FLAGS="--target=x86_64-unknown-linux-gnu --sysroot=$LINUX_SYSROOT" \
-      -DCULEBRA_ENABLE_JIT=ON \
-      -DCULEBRA_ENABLE_TENSOR=OFF
-cmake --build build-linux-x86_64 --target culebra_rt_no_tensor
+      -DCULEBRA_ENABLE_JIT=ON
+# base アーカイブは元々 Tensor-free（弱スタブ）で、cross は Tensor 非対応
+# （上の制限参照）なので base をビルドする。
+cmake --build build-linux-x86_64 --target culebra_rt
 
 # 2. プログラムをクロスコンパイル
 culebra build my-program.cul \
   --target=x86_64-unknown-linux-gnu \
   --sysroot=$LINUX_SYSROOT \
-  --rt-lib=$PWD/build-linux-x86_64/libculebra_rt_no_tensor.a \
+  --rt-lib=$PWD/build-linux-x86_64/libculebra_rt.a \
   -o ./my-program-linux
 
 # 3. 確認（Linux ホスト上、またはエミュレータ経由）

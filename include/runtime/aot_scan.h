@@ -1,14 +1,15 @@
 #pragma once
 
 // Static analysis: does the program reference the `Tensor` stdlib
-// namespace? `culebra build` uses this to pick between
-// `libculebra_rt.a` (full) and `libculebra_rt_no_tensor.a`
-// (stripped of tensor entry points + cblas refs); the latter binary
-// also drops the Accelerate / BLAS link. False positives only
-// inflate the binary; false negatives leave runtime calls
-// unresolved, so a textual identifier match is the conservative
-// choice — `Tensor.zeros(...)` style references plus any bare
-// `Tensor` identifier all flip the flag.
+// namespace? `culebra build` uses this to force-load
+// `libculebra_rt_tensor.a` (the strong tensor_eval_node choke that
+// overrides the base archive's weak stub) and append the Accelerate /
+// BLAS link — only when true. The base archive's weak tensor stub
+// breaks cblas reachability, so a non-Tensor program references no BLAS
+// symbol and drops that link. False positives only inflate the binary;
+// false negatives leave runtime calls unresolved, so a textual
+// identifier match is the conservative choice — `Tensor.zeros(...)`
+// style references plus any bare `Tensor` identifier all flip the flag.
 
 #include <parser.h>
 
@@ -26,14 +27,13 @@ inline bool aot_uses_tensor(const peg::Ast& node) {
   return false;
 }
 
-// Does the program reference the `Http` namespace? Reserved for a future
-// no-http runtime archive (mirroring no-tensor): OpenSSL currently can't be
-// gated by reachability because the single runtime archive references it
-// unconditionally (its http helpers are __attribute__((used)), pinned past
-// dead-strip), so `culebra build` links OpenSSL whenever Http is compiled in
-// regardless of this. Once a stubbed no-http archive exists, the build can
-// pick it for programs where this returns false and drop the OpenSSL link.
-// Same conservative bare-identifier match as aot_uses_tensor.
+// Does the program reference the `Http` namespace? Drives the force-load of
+// libculebra_rt_http.a (the strong http_request choke that overrides the base
+// archive's weak stub) and appends the OpenSSL + zlib link — only when true,
+// the same usage-gating as tensor/compress/wrap. The base archive's weak http
+// stub breaks reachability, so a non-Http program references no httplib/TLS/zlib
+// symbol and links no OpenSSL at all (it pays nothing for it; ~4 MB lighter than
+// an Http binary). Same conservative bare-identifier match as aot_uses_tensor.
 inline bool aot_uses_http(const peg::Ast& node) {
   using namespace peg::udl;
   if (node.tag == "IDENTIFIER"_ && node.token == "Http") return true;

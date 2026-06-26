@@ -209,22 +209,23 @@ Random.uniform 等に多数あります。
 で生成した AOT バイナリも配布したい場合** (詳細は
 [`binary_build.ja.md`](binary_build.ja.md))、LLVM 依存なしの同じヘル
 パ群を **static archive** として持つ必要がある。CMake は
-`-DCULEBRA_ENABLE_JIT=ON` で、Tensor 軸 (BLAS / Accelerate を落とす)
-と Http 軸 (OpenSSL / zlib を落とす) の 2 軸 = 2×2 の 4 archive を
-出力する:
+`-DCULEBRA_ENABLE_JIT=ON` で、**base archive ＋ 重い機能ごとに1つ**
+(2^N の組合せでなく N+1) を出力する:
 
-| Archive | Tensor | Http |
-|---|---|---|
-| `libculebra_rt.a` | ✓ | ✓ |
-| `libculebra_rt_no_tensor.a` | スタブ (BLAS なし) | ✓ |
-| `libculebra_rt_no_http.a` | ✓ | 除外 (OpenSSL/zlib なし) |
-| `libculebra_rt_no_tensor_no_http.a` | スタブ | 除外 |
+| Archive | 内容 |
+|---|---|
+| `libculebra_rt.a` | base — 全部入りだが tensor / http / compress の choke は**弱シンボルのスタブ**（BLAS・OpenSSL・zlib を一切参照しない） |
+| `libculebra_rt_tensor.a` | 強い tensor choke（BLAS / Accelerate を引く） |
+| `libculebra_rt_http.a` | 強い http choke（OpenSSL + zlib を引く） |
+| `libculebra_rt_compress.a` | 強い compress choke（zlib を引く） |
 
-`culebra build` は AST スキャンで自動選択する: `Tensor` / `Http`
-namespace 参照がそれぞれの軸で重い variant を選ぶので、どちらも触ら
-ないプログラムは最小 archive を link し BLAS も OpenSSL も避ける。
-OpenSSL を落とすだけで約 5 MB 効く (`puts(1)` バイナリが ~10 MB →
-~5 MB に半減)。
+`culebra build` は常に base を link し、ソース AST がその namespace
+(`Tensor` / `Http` / `Compress`) を参照する時だけ機能 archive を
+**force-load** し、同じ条件でその外部ライブラリ (BLAS / OpenSSL / zlib)
+を付ける。強い choke が base の弱スタブを上書きする。どれも使わない
+プログラムはどれも link しない。OpenSSL を落とすだけで約 4 MB 効く
+(非 Http バイナリ ~5 MB に対し Http 版 ~9.5 MB)。同じ usage-gating は
+`culebra wrap` の archive (`libculebra_rt_wrap.a`) にも適用される。
 
 ### AOT 経路を組み込む embedder
 

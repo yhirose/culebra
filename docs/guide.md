@@ -1519,7 +1519,7 @@ otool -L ./out                            # no Accelerate, no LLVM
 ./build/culebra build my-program.cul \
   --target=x86_64-unknown-linux-gnu \
   --sysroot=$LINUX_SYSROOT \
-  --rt-lib=$PWD/build-linux-x86_64/libculebra_rt_no_tensor.a \
+  --rt-lib=$PWD/build-linux-x86_64/libculebra_rt.a \
   -o ./out-linux
 ```
 

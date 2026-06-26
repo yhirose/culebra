@@ -204,23 +204,25 @@ The header-only path above includes every `culebra_runtime_*` helper
 as `inline` into the embedder's TUs — fine for one binary, but if you
 also want to **ship binaries produced by `culebra build`** (the AOT
 mode, see [`binary_build.md`](binary_build.md)), those need a static
-archive of the same helpers without the LLVM dependency. CMake emits
-these across two independent axes — Tensor (drops BLAS / Accelerate)
-and Http (drops OpenSSL / zlib) — i.e. 2×2 = four archives, when
-configured with `-DCULEBRA_ENABLE_JIT=ON`:
+archive of the same helpers without the LLVM dependency. CMake emits a
+base archive plus one small archive per heavy feature (N+1, not a 2^N
+matrix), when configured with `-DCULEBRA_ENABLE_JIT=ON`:
 
-| Archive | Tensor | Http |
-|---|---|---|
-| `libculebra_rt.a` | ✓ | ✓ |
-| `libculebra_rt_no_tensor.a` | stubbed (no BLAS) | ✓ |
-| `libculebra_rt_no_http.a` | ✓ | dropped (no OpenSSL/zlib) |
-| `libculebra_rt_no_tensor_no_http.a` | stubbed | dropped |
+| Archive | Contents |
+|---|---|
+| `libculebra_rt.a` | base — everything, but with **weak stubs** for the tensor / http / compress chokes (so it references no BLAS, OpenSSL, or zlib) |
+| `libculebra_rt_tensor.a` | strong tensor choke (pulls BLAS / Accelerate) |
+| `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
+| `libculebra_rt_compress.a` | strong compress choke (pulls zlib) |
 
-`culebra build` picks one automatically from the source AST: the
-`Tensor` and `Http` namespaces each select the heavier variant on
-their axis, so a program that touches neither links the smallest
-archive and avoids both BLAS and OpenSSL. Dropping OpenSSL alone is
-worth ~5 MB (a `puts(1)` binary halves from ~10 MB to ~5 MB).
+`culebra build` always links the base archive, then **force-loads** a
+feature archive only when the source AST references its namespace
+(`Tensor` / `Http` / `Compress`), and appends that feature's external
+libraries (BLAS / OpenSSL / zlib) on the same condition. The strong
+choke overrides the base's weak stub; a program that uses none links
+none of them. Dropping OpenSSL alone is worth ~4 MB (a non-Http binary
+is ~5 MB vs ~9.5 MB for an Http one). The same usage-gating applies to
+the `culebra wrap` archive (`libculebra_rt_wrap.a`).
 
 ### Embedders that bundle the AOT pathway
 
