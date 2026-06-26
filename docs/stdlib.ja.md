@@ -1300,7 +1300,7 @@ Culebra の値と JSON テキストの相互変換。両バックエンドで同
 `Function`, `Tensor`、および非 String キーを持つ Object は
 シリアライズ不可で `TypeError` を投げます。
 
-### `JSON.parse(s, lines=false, number_mode='auto') -> Any`
+### `JSON.parse(s, lines=false, number_mode='auto', jsonc=false) -> Any`
 
 JSON 文字列を Culebra の値に変換します。
 
@@ -1310,6 +1310,11 @@ JSON 文字列を Culebra の値に変換します。
   数値型を統一している場合の round-trip 安全性向上に。
 * `lines=true`: 入力を `\n` で分割し、空でない各行を独立した JSON
   値として解析、`Array` を返します。
+* `jsonc=true`: **JSONC** として解析します。`//` 行コメント・`/* */`
+  ブロックコメント・オブジェクト/配列の末尾カンマを許容するため、
+  既存の設定ファイル（`tsconfig.json`、VSCode の `settings.json` 等）を
+  事前に除去せず読めます。既定は厳格な JSON で、コメントや末尾カンマは
+  `ValueError` で拒否します。
 
 不正な入力には `ValueError` が投げられ、構造化 Error の
 `e.line` / `e.col`（共に 1-based、エラー位置の文字）に JSON 内部の
@@ -1333,6 +1338,11 @@ let back = JSON.parse(JSON.stringify(v))
 puts(back.name)                                      # alice
 let arr = JSON.parse("1\n2\n3\n", lines: true)
 puts(arr)                                            # [1, 2, 3]
+let cfg = JSON.parse('{
+  // コメントと末尾カンマを許容
+  "port": 8080,
+}', jsonc: true)
+puts(cfg.port)                                       # 8080
 ```
 
 JIT メモ: ビルトインの `JSON.{stringify, parse}` は他の名前空間

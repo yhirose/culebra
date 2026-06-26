@@ -151,4 +151,38 @@ let nme = try { JSON.parse("[1]", number_mode: "bogus"); nil } catch e { e }
 assert_eq(nme.kind, 'ValueError')
 assert_true(nme.message.contains("number_mode must be 'auto' or 'float'"))
 
+// --- JSONC: comments + trailing commas via `jsonc: true` --------------------
+// Existing JSONC config files (tsconfig.json, VSCode settings) carry `//` and
+// `/* */` comments plus trailing commas; `jsonc: true` tolerates them while
+// strict JSON (the default) keeps rejecting them.
+let jc = `{
+  // line comment
+  "name": "culebra",   // trailing on a line
+  /* block
+     comment */
+  "nums": [1, 2, 3,],  // trailing comma in array
+  "nested": { "ok": true, },
+}`
+let jo = JSON.parse(jc, jsonc: true)
+assert_eq(jo.name, "culebra")
+assert_eq(jo.nums, [1, 2, 3])
+assert_eq(jo.nested.ok, true)
+
+// `//` and `/*` inside a string stay literal (skip_ws only runs between tokens).
+let js = JSON.parse(`{"url": "http://x", /* c */ "n": 42}`, jsonc: true)
+assert_eq(js.url, "http://x")
+assert_eq(js.n, 42)
+
+// Plain JSON parses unchanged with jsonc: true.
+assert_eq(JSON.parse(`{"a":1}`, jsonc: true).a, 1)
+
+// Strict mode (default) rejects comments and trailing commas as ValueError.
+let sc = try { JSON.parse(jc); nil } catch e { e }
+assert_eq(sc.kind, 'ValueError')
+let tc = try { JSON.parse("[1, 2,]"); nil } catch e { e }
+assert_eq(tc.kind, 'ValueError')
+
+// `jsonc` binds positionally too (s, lines, number_mode, jsonc).
+assert_eq(JSON.parse("[1, /* c */ 2,]", false, "auto", true), [1, 2])
+
 IO.puts("test_json OK")

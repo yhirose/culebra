@@ -1217,6 +1217,8 @@ struct _JitJsonParser {
   long col = 1;
   // 'auto' / 'float' — same shape as the interp parser.
   std::string_view number_mode = "auto";
+  // JSONC tolerance (comments + trailing commas); mirrors the interp parser.
+  bool jsonc = false;
 
   void advance() {
     if (*p == '\n') { line++; col = 1; }
@@ -1224,9 +1226,23 @@ struct _JitJsonParser {
     ++p;
   }
   void skip_ws() {
-    while (p < end &&
-           (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-      advance();
+    while (p < end) {
+      char c = *p;
+      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { advance(); continue; }
+      if (jsonc && c == '/' && p + 1 < end) {
+        if (p[1] == '/') {                 // line comment → to end of line
+          advance(); advance();
+          while (p < end && *p != '\n') advance();
+          continue;
+        }
+        if (p[1] == '*') {                 // block comment → to closing */
+          advance(); advance();
+          while (p < end && !(*p == '*' && p + 1 < end && p[1] == '/')) advance();
+          if (p < end) { advance(); advance(); }
+          continue;
+        }
+      }
+      break;
     }
   }
   [[noreturn]] void fail(const char* msg) {
@@ -1255,6 +1271,11 @@ struct _JitJsonParser {
     }
     while (p < end) {
       skip_ws();
+      // JSONC: a `,` may be followed by `}` (trailing comma).
+      if (jsonc && p < end && *p == '}') {
+        advance();
+        return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+      }
       auto key = parse_string_raw();
       skip_ws();
       if (p >= end || *p != ':') fail("expected ':'");
@@ -1280,6 +1301,12 @@ struct _JitJsonParser {
       return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
     }
     while (p < end) {
+      skip_ws();
+      // JSONC: a `,` may be followed by `]` (trailing comma).
+      if (jsonc && p < end && *p == ']') {
+        advance();
+        return {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+      }
       auto v = parse_value();
       culebra_runtime_array_push(arr, v.tag, v.data);
       skip_ws();
@@ -1370,10 +1397,11 @@ struct _JitJsonParser {
 };
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
-    const char* s, const char* number_mode, int8_t lines) {
+    const char* s, const char* number_mode, int8_t lines, int8_t jsonc) {
   if (!lines) {
     _JitJsonParser jp{s, s + std::strlen(s)};
     jp.number_mode = number_mode;
+    jp.jsonc = jsonc != 0;
     auto v = jp.parse_value();
     jp.skip_ws();
     if (jp.p != jp.end) {
@@ -1396,6 +1424,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
       _JitJsonParser jp{s + i, s + j};
       jp.line = lineno;
       jp.number_mode = number_mode;
+      jp.jsonc = jsonc != 0;
       auto v = jp.parse_value();
       jp.skip_ws();
       if (jp.p != jp.end) {
@@ -1709,7 +1738,7 @@ CULEBRA_RT_INLINE JitValue _jit_http_json(JitClosure*, JitValue self, int64_t,
       body = _culebra_str_view(b.tag, b.data);
     }
   }
-  JitValue r = culebra_runtime_json_parse(body.c_str(), "auto", 0);
+  JitValue r = culebra_runtime_json_parse(body.c_str(), "auto", 0, 0);
   culebra_runtime_value_release(self.tag, self.data);
   return r;
 }
@@ -3483,12 +3512,14 @@ inline JitValue _ns_json_stringify(JitValue* a, int64_t n) {
       culebra_runtime_json_stringify(a[0].tag, a[0].data, indent, sort_keys,
                                      lines));
 }
-// JSON.parse(s, lines=false, number_mode="auto"): same variable-prefix slab.
+// JSON.parse(s, lines=false, number_mode="auto", jsonc=false): same
+// variable-prefix slab.
 inline JitValue _ns_json_parse(JitValue* a, int64_t n) {
   _ns_adapt::require_sv(a[0], "s");  // s: String
   int8_t lines = (n > 1) ? (_ns_adapt::require_bool(a[1], "lines") ? 1 : 0) : 0;
   std::string mode =
       (n > 2) ? std::string(_ns_adapt::require_sv(a[2], "number_mode")) : "auto";
+  int8_t jsonc = (n > 3) ? (_ns_adapt::require_bool(a[3], "jsonc") ? 1 : 0) : 0;
   if (mode != "auto" && mode != "float") {
     // interp validates this in the method body (a ValueError, not a typed-param
     // TypeError); 0/0 backfills to the call site like the interp's position.
@@ -3496,7 +3527,7 @@ inline JitValue _ns_json_parse(JitValue* a, int64_t n) {
         "ValueError", "JSON.parse: number_mode must be 'auto' or 'float'", 0, 0);
   }
   return culebra_runtime_json_parse(_ns_adapt::take_str(a[0]), mode.c_str(),
-                                     lines);
+                                     lines, jsonc);
 }
 
 // Encoding.html.{escape,unescape}: the codec logic is shared with interp via
@@ -5468,7 +5499,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
 
   // JSON: stringify takes (tag, data, indent, sort_keys, lines) ->
-  // String; parse takes (String, number_mode_cstr, lines) -> Value.
+  // String; parse takes (String, number_mode_cstr, lines, jsonc) -> Value.
   jit.module_->getOrInsertFunction(rt::json_stringify, ptrTy,
                                 jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt64Ty(),
@@ -5476,7 +5507,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                 jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt8Ty());
   jit.module_->getOrInsertFunction(rt::json_parse, jit.valueType_, ptrTy,
-                                ptrTy, jit.builder_.getInt8Ty());
+                                ptrTy, jit.builder_.getInt8Ty(),
+                                jit.builder_.getInt8Ty());
 }
 
 inline llvm::Value* JitExtension::compile_global(JIT& jit,

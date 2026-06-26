@@ -77,9 +77,10 @@ let a4 = nm_err(fn () {
 assert_eq(a4.kind, 'TypeError')
 assert_true(a4.message.contains('splat key must be String'))
 // Too many positionals report the cap (max), not the required count.
-let a5 = nm_err(fn () { JSON.parse("[1]", true, "auto", 9) })
+// JSON.parse caps at 4 (s, lines, number_mode, jsonc); a 5th overflows.
+let a5 = nm_err(fn () { JSON.parse("[1]", true, "auto", true, 9) })
 assert_eq(a5.kind, 'ArityError')
-assert_true(a5.message.contains('expected 3 positional arguments, got 4'))
+assert_true(a5.message.contains('expected 4 positional arguments, got 5'))
 // Same order through the other slab path (FS / Parallel use the Proc-style
 // marshaller, which must agree too).
 let a6 = nm_err(fn () { FS.remove(**5) })

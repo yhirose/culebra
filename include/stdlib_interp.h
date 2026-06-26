@@ -2770,7 +2770,8 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
 // kwarg and `r.json()` method.
 inline std::string json_stringify(const Value& v, int indent, bool sort_keys,
                                   int depth);
-inline Value json_parse(std::string_view s, std::string_view number_mode);
+inline Value json_parse(std::string_view s, std::string_view number_mode = "auto",
+                        bool jsonc = false);
 
 // Convert the optional `headers` kwarg (nil or an Object of String values)
 // into the header list the http core wants. `ctx` tags type errors.
@@ -3483,6 +3484,9 @@ struct _JsonParser {
   // 'auto' (default): integer-shaped → Long, otherwise Float.
   // 'float'         : every number → Float.
   std::string_view number_mode = "auto";
+  // JSONC tolerance: `//` and `/* */` comments + trailing commas. Off by
+  // default so strict JSON stays strict (an unexpected `//` is an error).
+  bool jsonc = false;
 
   void advance() {
     if (*p == '\n') { line++; col = 1; }
@@ -3490,8 +3494,23 @@ struct _JsonParser {
     ++p;
   }
   void skip_ws() {
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-      advance();
+    while (p < end) {
+      char c = *p;
+      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { advance(); continue; }
+      if (jsonc && c == '/' && p + 1 < end) {
+        if (p[1] == '/') {                 // line comment → to end of line
+          advance(); advance();
+          while (p < end && *p != '\n') advance();
+          continue;
+        }
+        if (p[1] == '*') {                 // block comment → to closing */
+          advance(); advance();
+          while (p < end && !(*p == '*' && p + 1 < end && p[1] == '/')) advance();
+          if (p < end) { advance(); advance(); }
+          continue;
+        }
+      }
+      break;
     }
   }
   [[noreturn]] void fail(const char* msg) {
@@ -3517,6 +3536,8 @@ struct _JsonParser {
     if (p < end && *p == '}') { advance(); return Value(std::move(obj)); }
     while (p < end) {
       skip_ws();
+      // JSONC: a `,` may be followed by `}` (trailing comma).
+      if (jsonc && p < end && *p == '}') { advance(); return Value(std::move(obj)); }
       auto key = parse_string_raw();
       skip_ws();
       if (p >= end || *p != ':') fail("expected ':'");
@@ -3537,6 +3558,9 @@ struct _JsonParser {
     ArrayValue arr;
     if (p < end && *p == ']') { advance(); return Value(std::move(arr)); }
     while (p < end) {
+      skip_ws();
+      // JSONC: a `,` may be followed by `]` (trailing comma).
+      if (jsonc && p < end && *p == ']') { advance(); return Value(std::move(arr)); }
       arr.values->push_back(parse_value());
       skip_ws();
       if (p < end && *p == ',') { advance(); continue; }
@@ -3616,10 +3640,11 @@ struct _JsonParser {
   }
 };
 
-inline Value json_parse(std::string_view s,
-                         std::string_view number_mode = "auto") {
+inline Value json_parse(std::string_view s, std::string_view number_mode,
+                        bool jsonc) {
   _JsonParser jp{s.data(), s.data() + s.size()};
   jp.number_mode = number_mode;
+  jp.jsonc = jsonc;
   auto v = jp.parse_value();
   jp.skip_ws();
   if (jp.p != jp.end) {
@@ -3634,7 +3659,8 @@ inline Value json_parse(std::string_view s,
 // the JSONL line that failed (the inner parser sees 1-based line within
 // the slice; we shift back to the overall line on error).
 inline Value json_parse_lines(std::string_view s,
-                               std::string_view number_mode = "auto") {
+                               std::string_view number_mode = "auto",
+                               bool jsonc = false) {
   ArrayValue arr;
   long lineno = 1;
   size_t i = 0;
@@ -3646,6 +3672,7 @@ inline Value json_parse_lines(std::string_view s,
       _JsonParser jp{slice.data(), slice.data() + slice.size()};
       jp.line = lineno;
       jp.number_mode = number_mode;
+      jp.jsonc = jsonc;
       arr.values->push_back(jp.parse_value());
       jp.skip_ws();
       if (jp.p != jp.end) {
@@ -3697,10 +3724,12 @@ inline Value make_json_namespace() {
             return Value(json_stringify(v, indent, sort_keys));
           }, "String"sv)),
       false);
-  // `JSON.parse(s, lines=false, number_mode='auto')`:
+  // `JSON.parse(s, lines=false, number_mode='auto', jsonc=false)`:
   //   * lines splits on `\n` and returns an Array, one entry per line.
   //   * number_mode='float' forces every number to Float (round-trip
   //     friendly when the producer treats numbers uniformly).
+  //   * jsonc tolerates `//` / `/* */` comments and trailing commas, so
+  //     existing JSONC config files (tsconfig.json, VSCode settings) parse.
   // `number_mode` default is "auto" — no shared canonical for
   // strings since user code could compare by identity in theory.
   static const auto json_number_mode_auto =
@@ -3713,17 +3742,19 @@ inline Value make_json_namespace() {
               {"lines", false, "Bool"sv, nullptr, kw_default_false()},
               {"number_mode", false, "String"sv, nullptr,
                json_number_mode_auto},
+              {"jsonc", false, "Bool"sv, nullptr, kw_default_false()},
           },
           [](std::shared_ptr<Environment> env) {
             const auto& s = env->get("s").to_string();
             bool lines = env->get("lines").to_bool();
             const auto& mode = env->get("number_mode").to_string();
+            bool jsonc = env->get("jsonc").to_bool();
             if (mode != "auto" && mode != "float") {
               throw CulebraError("ValueError",
                   "JSON.parse: number_mode must be 'auto' or 'float'");
             }
-            if (lines) return json_parse_lines(s, mode);
-            return json_parse(s, mode);
+            if (lines) return json_parse_lines(s, mode, jsonc);
+            return json_parse(s, mode, jsonc);
           })),
       false);
   return Value(std::move(ns));

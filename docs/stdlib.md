@@ -1346,7 +1346,7 @@ Supported value types:
 `Function`, `Tensor`, and Objects carrying non-String keys are not
 serializable — `stringify` throws `TypeError` for these.
 
-### `JSON.parse(s, lines=false, number_mode='auto') -> Any`
+### `JSON.parse(s, lines=false, number_mode='auto', jsonc=false) -> Any`
 
 Parse a JSON string into a Culebra value.
 
@@ -1356,6 +1356,11 @@ Parse a JSON string into a Culebra value.
   round-trip safety when the producer treats numbers uniformly.
 * `lines=true` parses **JSON Lines**: split `s` on `\n`, parse each
   non-empty line, return an `Array` of the per-line values.
+* `jsonc=true` parses **JSONC**: tolerate `//` line comments, `/* */`
+  block comments, and trailing commas in objects and arrays — for
+  reading existing config files (`tsconfig.json`, VSCode `settings.json`)
+  without stripping them first. The default is strict JSON, which rejects
+  comments and trailing commas with a `ValueError`.
 
 Malformed input raises `ValueError` and the structured Error Object
 exposes the JSON-internal position via `e.line` / `e.col` (both
@@ -1379,6 +1384,11 @@ let back = JSON.parse(JSON.stringify(v))
 puts(back.name)                                      # alice
 let arr = JSON.parse("1\n2\n3\n", lines: true)
 puts(arr)                                            # [1, 2, 3]
+let cfg = JSON.parse('{
+  // comments and trailing commas are allowed
+  "port": 8080,
+}', jsonc: true)
+puts(cfg.port)                                       # 8080
 ```
 
 JIT note: built-in `JSON.{stringify, parse}` route through the same
