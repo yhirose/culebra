@@ -119,6 +119,9 @@ jobs:
       - name: Check grammar sync (misc/culebra.peg and misc/cul.vim)
         run: just check-grammar-sync
 
+      - name: Check stdlib preambles sync (src/preambles -> gen.h)
+        run: just check-preambles
+
       - name: Build (interpreter + JIT)
         run: just build ${{ matrix.linker_flag }}
 

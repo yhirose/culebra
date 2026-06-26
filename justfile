@@ -84,6 +84,16 @@ sync-grammar:
 check-grammar-sync:
     misc/sync_grammar.sh --check
 
+# Regenerate include/stdlib_preambles.gen.h from src/preambles/*.cul
+[group("build")]
+gen-preambles:
+    misc/gen_preambles.sh
+
+# Verify stdlib_preambles.gen.h is in sync with src/preambles/*.cul (CI gate)
+[group("build")]
+check-preambles:
+    misc/gen_preambles.sh --check
+
 # Run the test suite. BACKEND selects what to run:
 #   all     (default) — interp vs JIT diff + AOT vs JIT diff + C++
 #                       embedding smoke. Run before every commit.
