@@ -25,6 +25,7 @@
 // re-attachment is Phase 1. The comment scanner here is the reusable basis
 // for that.
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <print>
@@ -178,78 +179,121 @@ inline std::string doc_render(const DocP& root, int width) {
 // (raw), `"..."` and `"""..."""` (escapes + `{}` interpolation), and regex
 // literals (treated as their delimiting quote — their bodies hold no comments).
 
-inline bool scan_has_comment(std::string_view s) {
-  // Stack of string contexts we are inside. Code (including interpolation
-  // holes) is represented by the stack being empty or the top being Hole.
-  enum class Ctx { Code, SQ, BT, DQ, Triple };
-  std::vector<Ctx> st;
+struct Comment {
+  size_t start;    // index of the leading `#` / `/` (first comment byte)
+  size_t end;      // one past the last comment byte (line: before the EOL;
+                   // block: just after `*/`). Trailing whitespace excluded.
+  bool own_line;   // only whitespace precedes it on its line (else trailing)
+  bool block;      // `/* ... */` vs a `#` / `//` line comment
+};
+
+struct SourceInfo {
+  std::vector<Comment> comments;
+  // Per-byte flag: 1 iff the byte is top-level code — not inside a string lane,
+  // not inside an interpolation hole, not inside a comment. Used to brace-match
+  // a block's `{ ... }` while ignoring braces inside strings / object literals'
+  // own balance / interpolation holes.
+  std::vector<char> is_code;
+};
+
+// Scan `s` once, producing every comment (with byte range and own-line flag)
+// and the per-byte code mask. A `#` / `//` / `/*` inside a string lane
+// (`'...'`, `` `...` ``, `"..."`, `"""..."""`, regex literals) is not a
+// comment; a comment inside a `"..."` / `"""..."""` interpolation hole
+// `{ ... }` (an expression context) is. Single source for the presence check,
+// the code mask, and Phase 1 comment re-attachment.
+inline SourceInfo scan_source(std::string_view s) {
+  std::vector<Comment> out;
+  std::vector<char> is_code(s.size(), 0);
+  // Lane stack. Hole = an interpolation expression inside a DQ/Triple string;
+  // it behaves like top-level code for comments and string starts, and its
+  // own `{`/`}` nesting depth decides when it closes.
+  enum class Ctx { Code, SQ, BT, DQ, Triple, Hole };
+  struct Frame { Ctx ctx; int depth; };
+  std::vector<Frame> st = {{Ctx::Code, 0}};
   size_t i = 0, n = s.size();
-  auto top = [&] { return st.empty() ? Ctx::Code : st.back(); };
+
+  auto own_line_at = [&](size_t start) {
+    for (size_t j = start; j > 0;) {
+      --j;
+      if (s[j] == '\n') break;
+      if (s[j] != ' ' && s[j] != '\t') return false;
+    }
+    return true;
+  };
+  // Record the comment beginning at `i`, advancing `i` past it.
+  auto take_comment = [&] {
+    is_code[i] = 0;  // the `#` / `/` was provisionally marked code; undo it
+    bool own = own_line_at(i);
+    if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') {
+      size_t e = i + 2;
+      while (e + 1 < n && !(s[e] == '*' && s[e + 1] == '/')) e++;
+      e = (e + 1 < n) ? e + 2 : n;  // past the closing */
+      out.push_back({i, e, own, true});
+      i = e;
+    } else {  // `#` or `//` line comment → to end of line
+      size_t e = i;
+      while (e < n && s[e] != '\n') e++;
+      while (e > i && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r'))
+        e--;
+      out.push_back({i, e, own, false});
+      i = e;  // the EOL itself is consumed by the outer loop
+    }
+  };
+  auto is_comment_start = [&] {
+    return s[i] == '#' || (s[i] == '/' && i + 1 < n &&
+                           (s[i + 1] == '/' || s[i + 1] == '*'));
+  };
+
   while (i < n) {
-    Ctx c = top();
+    Ctx c = st.back().ctx;
     char ch = s[i];
-    if (c == Ctx::Code) {
-      if (ch == '#') return true;
-      if (ch == '/' && i + 1 < n && (s[i + 1] == '/' )) return true;
-      if (ch == '/' && i + 1 < n && s[i + 1] == '*') return true;
-      if (ch == '\'') { st.push_back(Ctx::SQ); i++; continue; }
-      if (ch == '`') { st.push_back(Ctx::BT); i++; continue; }
+    if (c == Ctx::Code) is_code[i] = 1;  // top-level code byte (not in a hole)
+    if (c == Ctx::Code || c == Ctx::Hole) {
+      // Detect comments only in real top-level code, NOT inside a string
+      // interpolation hole: a `#` there is far more likely a format spec
+      // (`"{n:#x}"`) than a comment, and comments-in-interpolation don't occur
+      // in practice. The hole is still scanned for brace balance / nested
+      // strings so it terminates correctly.
+      if (c == Ctx::Code && is_comment_start()) { take_comment(); continue; }
+      if (ch == '\'') { st.push_back({Ctx::SQ, 0}); i++; continue; }
+      if (ch == '`') { st.push_back({Ctx::BT, 0}); i++; continue; }
       if (ch == '"') {
-        if (i + 2 < n && s[i + 1] == '"' && s[i + 2] == '"') { st.push_back(Ctx::Triple); i += 3; continue; }
-        st.push_back(Ctx::DQ); i++; continue;
-      }
-      if (ch == '}' && !st.empty()) {
-        // Closing an interpolation hole: but only when there is a string
-        // context below. A bare `}` in pure code (block close) has no string
-        // below, so the stack is empty here and we simply skip it.
-        // (When we entered a hole we pushed nothing; holes are tracked by the
-        // string context staying on the stack — see DQ/Triple handling below.)
-      }
-      i++;
-      continue;
-    }
-    if (c == Ctx::SQ) {
-      if (ch == '\'') { st.pop_back(); }
-      i++;
-      continue;
-    }
-    if (c == Ctx::BT) {
-      if (ch == '`') { st.pop_back(); }
-      i++;
-      continue;
-    }
-    // DQ / Triple: handle escapes and interpolation holes.
-    if (ch == '\\') { i += 2; continue; }
-    if (ch == '{') {
-      // Enter an interpolation hole: scan its body as code until the matching
-      // '}'. Recurse via the stack by pushing Code and tracking brace depth.
-      int depth = 1;
-      i++;
-      while (i < n && depth > 0) {
-        char d = s[i];
-        if (d == '#') return true;
-        if (d == '/' && i + 1 < n && s[i + 1] == '/') return true;
-        if (d == '/' && i + 1 < n && s[i + 1] == '*') return true;
-        if (d == '{') depth++;
-        else if (d == '}') depth--;
-        else if (d == '\'') { // nested string in hole
-          i++; while (i < n && s[i] != '\'') i++;
-        } else if (d == '`') {
-          i++; while (i < n && s[i] != '`') i++;
-        } else if (d == '"') {
-          i++; while (i < n && s[i] != '"') { if (s[i] == '\\') i++; i++; }
+        if (i + 2 < n && s[i + 1] == '"' && s[i + 2] == '"') {
+          st.push_back({Ctx::Triple, 0}); i += 3; continue;
         }
-        i++;
+        st.push_back({Ctx::DQ, 0}); i++; continue;
       }
+      if (c == Ctx::Hole) {
+        if (ch == '{') st.back().depth++;
+        else if (ch == '}') {
+          if (st.back().depth > 0) st.back().depth--;
+          else st.pop_back();  // close the interpolation hole
+        }
+      }
+      i++;
       continue;
     }
+    if (c == Ctx::SQ) { if (ch == '\'') st.pop_back(); i++; continue; }
+    if (c == Ctx::BT) { if (ch == '`') st.pop_back(); i++; continue; }
+    // DQ / Triple
+    if (ch == '\\') { i += 2; continue; }
+    if (ch == '{') { st.push_back({Ctx::Hole, 0}); i++; continue; }
     if (c == Ctx::DQ && ch == '"') { st.pop_back(); i++; continue; }
-    if (c == Ctx::Triple && ch == '"' && i + 2 < n && s[i + 1] == '"' && s[i + 2] == '"') {
+    if (c == Ctx::Triple && ch == '"' && i + 2 < n && s[i + 1] == '"' &&
+        s[i + 2] == '"') {
       st.pop_back(); i += 3; continue;
     }
     i++;
   }
-  return false;
+  return {std::move(out), std::move(is_code)};
+}
+
+inline std::vector<Comment> scan_comments(std::string_view s) {
+  return scan_source(s).comments;
+}
+inline bool scan_has_comment(std::string_view s) {
+  return !scan_comments(s).empty();
 }
 
 // ----------------------------------------------------------------------------
@@ -272,16 +316,22 @@ inline bool ast_equal(const peg::Ast& a, const peg::Ast& b) {
 
 class Printer {
  public:
-  explicit Printer(std::string_view src) : src_(src) {}
+  explicit Printer(std::string_view src) : src_(src) {
+    auto info = scan_source(src);
+    comments_ = std::move(info.comments);
+    is_code_ = std::move(info.is_code);
+  }
 
   DocP print_program(const peg::Ast& program) {
-    // PROGRAM collapses to STATEMENTS; if there is a single statement it
-    // collapses to that statement. Normalize to a child list.
-    return print_statement_list(stmt_children(program), /*top=*/true);
+    // The whole file is the top-level statement list; its comment range is the
+    // entire source.
+    return print_statement_list(stmt_children(program), 0, src_.size());
   }
 
  private:
   std::string_view src_;
+  std::vector<Comment> comments_;  // sorted by start (scan order)
+  std::vector<char> is_code_;      // per-byte code mask (see scan_source)
   static constexpr int kIndent = 2;
 
   std::string slice(const peg::Ast& a) const {
@@ -405,42 +455,263 @@ class Printer {
     return out;
   }
 
-  // Count blank lines between two adjacent statements in the source so we can
+  // True if the source between byte `end` and `start` holds a blank line, so we
   // preserve a single intentional blank (collapsing runs of >=2 to one).
-  bool blank_between(const peg::Ast& a, const peg::Ast& b) const {
-    size_t end = a.position + a.length;
-    size_t start = b.position;
+  bool blank_gap(size_t end, size_t start) const {
     if (start <= end || start > src_.size()) return false;
     int newlines = 0;
     for (size_t i = end; i < start; i++)
       if (src_[i] == '\n') newlines++;
     return newlines >= 2;
   }
+  static size_t node_end(const peg::Ast& a) { return a.position + a.length; }
 
-  DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, bool /*top*/) {
-    std::vector<DocP> parts;
-    for (size_t i = 0; i < stmts.size(); i++) {
-      if (i > 0) {
-        parts.push_back(doc_hardline());
-        if (blank_between(*stmts[i - 1], *stmts[i])) parts.push_back(doc_hardline());
+  // The tight source extent of a node: the min/max byte offsets of its
+  // descendant tokens (string_views into the source, whose offsets the
+  // optimizer never widens — unlike position/length, which a single-child
+  // collapse inflates to the enclosing rule's span). Falls back to the node's
+  // own span if it has no tokens (e.g. an empty block).
+  std::pair<size_t, size_t> real_span(const peg::Ast& n) const {
+    size_t lo = SIZE_MAX, hi = 0;
+    const char* base = src_.data();
+    auto visit = [&](auto&& self, const peg::Ast& a) -> void {
+      if (a.is_token && !a.token.empty() && a.token.data() >= base &&
+          a.token.data() + a.token.size() <= base + src_.size()) {
+        size_t s = a.token.data() - base;
+        lo = std::min(lo, s);
+        hi = std::max(hi, s + a.token.size());
       }
-      parts.push_back(print(*stmts[i]));
+      for (const auto& c : a.nodes) self(self, *c);
+    };
+    visit(visit, n);
+    if (lo == SIZE_MAX) return {n.position, node_end(n)};
+    return {lo, hi};
+  }
+
+  // The real source extent of a statement for comment attachment: the code
+  // tight range — first to last non-whitespace code byte of its (possibly
+  // optimizer-widened) span — so a leading comment swallowed into the span
+  // isn't treated as part of the statement.
+  std::pair<size_t, size_t> stmt_extent(const peg::Ast& s) const {
+    size_t ts = s.position, te = node_end(s);
+    auto skippable = [&](size_t b) {
+      char ch = src_[b];
+      return !is_code_[b] || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+    };
+    while (ts < te && skippable(ts)) ts++;
+    while (te > ts && skippable(te - 1)) te--;
+    return {ts, te};
+  }
+
+  // The interior byte range of the first brace block at or after `from`:
+  // returns {lo = just after `{`, hi = the matching `}`, after = hi + 1}. The
+  // scan ignores braces inside strings / interpolation holes via is_code_, and
+  // balances object / set / nested-block braces. `found` is false if no block
+  // brace exists (shouldn't happen for a real block).
+  struct BlockSpan { size_t lo, hi, after; bool found; };
+  BlockSpan block_interior(size_t from) const {
+    size_t i = from, n = src_.size();
+    while (i < n && !(is_code_[i] && src_[i] == '{')) i++;
+    if (i >= n) return {from, from, from, false};
+    size_t lo = i + 1;
+    int depth = 0;
+    for (; i < n; i++) {
+      if (!is_code_[i]) continue;
+      if (src_[i] == '{') depth++;
+      else if (src_[i] == '}' && --depth == 0)
+        return {lo, i, i + 1, true};
+    }
+    return {lo, n, n, false};
+  }
+
+  // Comment text as a single Doc line, trailing whitespace already trimmed by
+  // the scanner. (Multi-line block comments keep their embedded newlines.)
+  DocP comment_doc(const Comment& c) const {
+    return doc_text(std::string(src_.substr(c.start, c.end - c.start)));
+  }
+
+  // Render a statement list occupying source range [lo, hi). Comments in the
+  // gaps between this level's statements are attached: an own-line comment
+  // becomes a standalone line before the following statement; a same-line
+  // comment trails the preceding statement. Comments inside a statement's own
+  // span are left to that statement's printer (nested blocks recurse with their
+  // own range); any it doesn't emit is caught by the comment-preservation check.
+  DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, size_t lo,
+                            size_t hi) {
+    // An ordered stream of entries: each is a statement (with optional trailing
+    // comment) or a standalone comment line. `sort` orders entries; `gstart` /
+    // `gend` are the textual span used for blank-line math (kept separate so a
+    // statement starting with a wrappable `[` / `(` sorts by its first token but
+    // still measures blanks from the bracket — wrapping must not invent blanks).
+    struct Entry { size_t sort, gstart, gend; DocP doc; };
+    std::vector<Entry> entries;
+
+    // A statement's AST span can be widened by the optimizer to swallow the
+    // enclosing block's braces and surrounding whitespace/comments (a lone
+    // statement inherits its block/program span), so a leading or trailing
+    // comment folded into it must not be mistaken for a mid-statement one. The
+    // real extent is bounded by: the code-byte tight range (start to last code
+    // token, ignoring whitespace), and clamped to the descendant-token span so
+    // a swallowed `}` doesn't extend the end past the statement's last token.
+    // `extent` (is_code tight span, includes closing delimiters) is used for
+    // ordering and blank-line math; `tail` (end of the last descendant token)
+    // is used to classify comments: a same-line comment past a statement's last
+    // token trails it, even when an optimizer-widened span would otherwise
+    // swallow that comment and its block's `}`.
+    // extent = code tight span (keyword to closing delimiter) for ordering and
+    // blank-line math. head/tail = first/last descendant token offset — the
+    // statement's real token range, used to decide whether a comment is inside
+    // it (between its tokens) versus a leading/trailing comment outside it.
+    // head/tail ignore the optimizer-widened span (which can swallow the
+    // enclosing block's `{ }` and a leading comment).
+    std::vector<std::pair<size_t, size_t>> extent(stmts.size());
+    std::vector<size_t> head(stmts.size()), tail(stmts.size());
+    for (size_t k = 0; k < stmts.size(); k++) {
+      extent[k] = stmt_extent(*stmts[k]);
+      auto [rlo, rhi] = real_span(*stmts[k]);
+      head[k] = rlo;
+      tail[k] = rhi;
+    }
+
+    // A comment is handled at THIS level only if it sits at brace depth 0
+    // relative to the block interior start `lo`: not enclosed by any `{` a
+    // statement opens. A deeper comment is inside a nested block (handled by
+    // that statement's recursion) or inside a verbatim construct (preserved by
+    // its source slice) — either way, skip it here. This cleanly separates
+    // `catch e { f() # here }` (depth 0, this level) from `class C { m() {} # h }`
+    // (depth > 0, kept inside the verbatim class) without per-statement spans.
+    auto brace_depth = [&](size_t from, size_t p) {
+      int d = 0;
+      for (size_t i = from; i < p && i < src_.size(); i++) {
+        if (!is_code_[i]) continue;
+        if (src_[i] == '{') d++;
+        else if (src_[i] == '}') d--;
+      }
+      return d;
+    };
+    // A comment is "inside" a statement (so handled by that statement's own
+    // printer / verbatim slice, not this level) when it is enclosed by a `{`
+    // the statement opened (depth > 0) OR sits strictly between some
+    // statement's first and last token — e.g. a comment on a continuation line
+    // of a wrapped method chain, whose braces have already balanced to depth 0.
+    auto inside_a_stmt = [&](size_t p) {
+      if (brace_depth(lo, p) > 0) return true;
+      for (size_t k = 0; k < stmts.size(); k++)
+        if (head[k] <= p && p < tail[k]) return true;
+      return false;
+    };
+
+    // A statement carries a comment its own printer can't place when a comment
+    // sits strictly between its first and last token at brace depth 0 — a
+    // mid-expression comment (e.g. trailing comments on each line of a wrapped
+    // method chain), not one inside a nested block (those recurse). Such a
+    // statement is emitted verbatim so the comment and its layout survive.
+    auto has_mid_comment = [&](size_t k) {
+      for (const auto& c : comments_)
+        if (head[k] < c.start && c.start < tail[k] &&
+            brace_depth(head[k], c.start) == 0)
+          return true;
+      return false;
+    };
+    // Index of the statement immediately preceding byte `p` (for trailing),
+    // using the last-token end so a widened span doesn't swallow the gap.
+    auto prev_stmt_index = [&](size_t p) -> int {
+      int best = -1;
+      for (int k = 0; k < (int)stmts.size(); k++)
+        if (tail[k] <= p) best = k;
+      return best;
+    };
+
+    // Statement entries first (so trailing comments can find them by index),
+    // ordered by their real start so a lone statement (which may inherit
+    // position 0) doesn't sort before its own leading comments.
+    // The sort key is the statement's first real token — skipping a swallowed
+    // leading block `{`, whitespace, and any leading comment (which becomes its
+    // own standalone entry) — so a statement never sorts before its own leading
+    // comment. (`return`'s keyword is suppressed, so extent.first can be the
+    // block `{`; without this, a leading comment would land after the return.)
+    auto first_token_pos = [&](size_t k) {
+      size_t p = std::max(extent[k].first, lo);
+      while (p < extent[k].second &&
+             (!is_code_[p] || src_[p] == ' ' || src_[p] == '\t' ||
+              src_[p] == '\n' || src_[p] == '\r' || src_[p] == '{' ||
+              src_[p] == '(' || src_[p] == '['))
+        p++;
+      return p;
+    };
+    std::vector<DocP> trailing(stmts.size());
+    for (size_t k = 0; k < stmts.size(); k++) {
+      DocP doc = has_mid_comment(k)
+                     ? doc_text(std::string(src_.substr(
+                           extent[k].first, extent[k].second - extent[k].first)))
+                     : print(*stmts[k]);
+      entries.push_back({first_token_pos(k), extent[k].first, extent[k].second, doc});
+    }
+
+    for (const auto& c : comments_) {
+      if (c.start < lo || c.start >= hi) continue;
+      if (inside_a_stmt(c.start)) continue;  // handled by the statement's printer
+      if (!c.own_line) {
+        int pk = prev_stmt_index(c.start);
+        if (pk >= 0) {
+          trailing[pk] = trailing[pk]
+              ? doc_concat({trailing[pk], doc_text("  "), comment_doc(c)})
+              : doc_concat({doc_text("  "), comment_doc(c)});
+          continue;
+        }
+      }
+      entries.push_back({c.start, c.start, c.end, comment_doc(c)});  // standalone
+    }
+
+    // Attach trailing comments to their statement docs.
+    for (size_t k = 0; k < stmts.size(); k++)
+      if (trailing[k]) entries[k].doc = doc_concat({entries[k].doc, trailing[k]});
+
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry& a, const Entry& b) { return a.sort < b.sort; });
+
+    std::vector<DocP> parts;
+    for (size_t k = 0; k < entries.size(); k++) {
+      if (k > 0) {
+        parts.push_back(doc_hardline());
+        if (blank_gap(entries[k - 1].gend, entries[k].gstart)) parts.push_back(doc_hardline());
+      }
+      parts.push_back(entries[k].doc);
     }
     return doc_concat(std::move(parts));
   }
 
-  // A brace block: always multi-line. The node is the block body (either a
-  // STATEMENTS node, a single collapsed statement, or empty).
-  DocP print_block(const peg::Ast& body, bool empty_ok) {
+  // A brace block: always multi-line. `body` is the block's statement node(s);
+  // `after_pos` is a byte offset at or before the block's `{`, used to locate
+  // the brace interior so comments inside the braces are attached.
+  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
     auto stmts = stmt_children(body);
-    if (stmts.empty() && empty_ok) return doc_text("{}");
-    std::vector<DocP> inner;
-    inner.push_back(doc_text("{"));
-    inner.push_back(doc_indent(kIndent,
-        doc_concat({doc_hardline(), print_statement_list(stmts, false)})));
-    inner.push_back(doc_hardline());
-    inner.push_back(doc_text("}"));
-    return doc_concat(std::move(inner));
+    BlockSpan span = block_interior(after_pos);
+    size_t lo = span.found ? span.lo : (stmts.empty() ? after_pos : stmts.front()->position);
+    size_t hi = span.found ? span.hi : (stmts.empty() ? after_pos : node_end(*stmts.back()));
+
+    // Empty block: emit `{}`, unless it holds dangling comments.
+    if (stmts.empty()) {
+      std::vector<DocP> dangling;
+      for (const auto& c : comments_)
+        if (c.start >= lo && c.start < hi) dangling.push_back(comment_doc(c));
+      if (dangling.empty()) return empty_ok ? doc_text("{}") : doc_text("{\n}");
+      std::vector<DocP> inner = {doc_hardline()};
+      for (size_t k = 0; k < dangling.size(); k++) {
+        if (k) inner.push_back(doc_hardline());
+        inner.push_back(dangling[k]);
+      }
+      return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
+                         doc_hardline(), doc_text("}")});
+    }
+
+    return doc_concat({
+        doc_text("{"),
+        doc_indent(kIndent, doc_concat({doc_hardline(),
+                                        print_statement_list(stmts, lo, hi)})),
+        doc_hardline(),
+        doc_text("}"),
+    });
   }
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
@@ -678,7 +949,8 @@ class Printer {
       i++;
     }
     parts.push_back(doc_text(" "));
-    parts.push_back(print_block(*node.nodes[i], /*empty_ok=*/true));
+    parts.push_back(print_block(*node.nodes[i], node_end(*node.nodes[i - 1]),
+                                /*empty_ok=*/true));
     return doc_concat(std::move(parts));
   }
 
@@ -703,48 +975,55 @@ class Printer {
   }
 
   DocP print_if(const peg::Ast& node) {
-    // [cond, then, (cond, block)*, (block)?]
+    // [cond, then, (cond, block)*, (block)?]. Each block's `{` is located by
+    // scanning from the preceding child's end (cond) or the previous block's
+    // close (the else block, whose `{` follows `else`).
     std::vector<DocP> parts;
     parts.push_back(doc_text("if "));
     parts.push_back(print(*node.nodes[0]));
     parts.push_back(doc_text(" "));
-    parts.push_back(print_block(*node.nodes[1], /*empty_ok=*/false));
+    parts.push_back(print_block(*node.nodes[1], node_end(*node.nodes[0]), false));
+    size_t cursor = block_interior(node_end(*node.nodes[0])).after;
     size_t i = 2, n = node.nodes.size();
     while (n - i >= 2) {
       parts.push_back(doc_text(" else if "));
       parts.push_back(print(*node.nodes[i]));
       parts.push_back(doc_text(" "));
-      parts.push_back(print_block(*node.nodes[i + 1], false));
+      parts.push_back(print_block(*node.nodes[i + 1], node_end(*node.nodes[i]), false));
+      cursor = block_interior(node_end(*node.nodes[i])).after;
       i += 2;
     }
     if (i < n) {
       parts.push_back(doc_text(" else "));
-      parts.push_back(print_block(*node.nodes[i], false));
+      parts.push_back(print_block(*node.nodes[i], cursor, false));
     }
     return doc_concat(std::move(parts));
   }
 
   DocP print_while(const peg::Ast& node) {
     return doc_concat({doc_text("while "), print(*node.nodes[0]), doc_text(" "),
-                       print_block(*node.nodes[1], false)});
+                       print_block(*node.nodes[1], node_end(*node.nodes[0]), false)});
   }
 
   DocP print_for(const peg::Ast& node) {
     // [binding, iter, BLOCK]. Binding slices verbatim (single var or pattern).
     return doc_concat({doc_text("for "), verbatim(*node.nodes[0]), doc_text(" in "),
                        print(*node.nodes[1]), doc_text(" "),
-                       print_block(*node.nodes[2], false)});
+                       print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
   }
 
   DocP print_defer(const peg::Ast& node) {
-    return doc_concat({doc_text("defer "), print_block(*node.nodes[0], true)});
+    return doc_concat({doc_text("defer "),
+                       print_block(*node.nodes[0], node.position, true)});
   }
 
   DocP print_try(const peg::Ast& node) {
-    // [BLOCK, IDENTIFIER, BLOCK]
-    return doc_concat({doc_text("try "), print_block(*node.nodes[0], false),
+    // [BLOCK, IDENTIFIER, BLOCK]. The try block's `{` follows `try`; the catch
+    // block's `{` follows the bound identifier.
+    return doc_concat({doc_text("try "),
+                       print_block(*node.nodes[0], node.position, false),
                        doc_text(" catch " + std::string(node.nodes[1]->token) + " "),
-                       print_block(*node.nodes[2], false)});
+                       print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
   }
 
   DocP print_keyword_expr(const std::string& kw, const peg::Ast& node) {
@@ -758,7 +1037,7 @@ class Printer {
     const std::string& n = node.name;
 
     // Statements / control flow
-    if (n == "STATEMENTS") return print_block(node, false);
+    if (n == "STATEMENTS") return print_block(node, node.position, false);
     if (n == "ASSIGNMENT") return print_assignment(node);
     if (n == "MULTIFN_DECL") return print_function(node, /*named=*/true);
     if (n == "FUNCTION") return print_function(node, /*named=*/false);
@@ -800,7 +1079,7 @@ class Printer {
 // Driver
 // ----------------------------------------------------------------------------
 
-enum class FormatStatus { Ok, Unchanged, SkippedComments, ParseError, Refused };
+enum class FormatStatus { Ok, Unchanged, ParseError, Refused };
 
 struct FormatResult {
   FormatStatus status;
@@ -808,19 +1087,18 @@ struct FormatResult {
   std::string message;  // diagnostic for ParseError / Refused
 };
 
-// `drop_comments` is a test-only escape hatch: it bypasses the Phase 0 comment
-// guard so the printer + safety net can be exercised over comment-bearing
-// source (the comments are LOST — never use this for real formatting). It lets
-// the test harness measure printer robustness across the whole corpus before
-// comment preservation (Phase 1) lands.
-inline FormatResult format_source(const std::string& path, std::string_view src,
-                                  int width = 80, bool drop_comments = false) {
-  // Phase 0 cannot preserve comments (the grammar drops them), so refuse to
-  // touch files that contain any — leaving them byte-for-byte unchanged rather
-  // than silently deleting comments.
-  if (!drop_comments && scan_has_comment(src))
-    return {FormatStatus::SkippedComments, std::string(src), ""};
+// Multiset of comment texts (sorted), so two sources can be compared for
+// comment preservation regardless of where the comments moved.
+inline std::vector<std::string> comment_multiset(std::string_view s) {
+  std::vector<std::string> out;
+  for (const auto& c : scan_comments(s))
+    out.emplace_back(s.substr(c.start, c.end - c.start));
+  std::sort(out.begin(), out.end());
+  return out;
+}
 
+inline FormatResult format_source(const std::string& path, std::string_view src,
+                                  int width = 80) {
   std::vector<std::string> msgs;
   auto ast = parse_for_format(path, src.data(), src.size(), msgs);
   if (!ast) {
@@ -833,14 +1111,22 @@ inline FormatResult format_source(const std::string& path, std::string_view src,
   std::string out = doc_render(printer.print_program(*ast), width);
   if (out.empty() || out.back() != '\n') out += '\n';
 
-  // Safety: re-parse and require structural AST equality.
+  // Safety net 1: re-parse and require structural AST equality, so a printer
+  // bug can never silently change program meaning.
   std::vector<std::string> msgs2;
   auto ast2 = parse_for_format(path, out.data(), out.size(), msgs2);
   if (!ast2 || !ast_equal(*ast, *ast2)) {
-    return {FormatStatus::Refused,
-            "",
+    return {FormatStatus::Refused, "",
             "culebra fmt: internal check failed (formatted output would change "
             "program meaning); left unchanged"};
+  }
+
+  // Safety net 2: comments are absent from the AST, so AST equality can't catch
+  // a dropped or duplicated comment. Require the comment multiset to match.
+  if (comment_multiset(src) != comment_multiset(out)) {
+    return {FormatStatus::Refused, "",
+            "culebra fmt: internal check failed (a comment would be dropped or "
+            "moved incorrectly); left unchanged"};
   }
 
   if (out == src) return {FormatStatus::Unchanged, out, ""};

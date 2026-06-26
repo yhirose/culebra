@@ -1517,16 +1517,16 @@ culebra fmt -l src/*.cul     # list the files that would change
 cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 ```
 
+Comments are preserved: a leading comment stays above the statement it
+introduces, a trailing comment stays on the same line, and a single blank
+line between statements is kept (runs of blank lines collapse to one).
+
 How it works: the source is parsed, re-printed from the syntax tree, and
 then **re-parsed and compared** against the original — if formatting would
-change the program's meaning, `fmt` refuses and leaves the file untouched
-rather than risk corrupting it. Formatting is idempotent: running it twice
-yields the same result as running it once.
-
-Comments are not yet preserved: a file that contains any comment is left
-**byte-for-byte unchanged** (rather than silently dropping the comments).
-Comment-preserving formatting is the next milestone, along with blank-line
-normalization inside blocks and alignment polish.
+change the program's meaning, or would drop or duplicate a comment, `fmt`
+refuses and leaves the file untouched rather than risk corrupting it.
+Formatting is idempotent: running it twice yields the same result as
+running it once.
 
 19. AOT binary build
 --------------------

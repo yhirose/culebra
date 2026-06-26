@@ -1223,12 +1223,8 @@ int run_fmt(int argc, const char** argv) {
     }
   };
 
-  // Test-only: CULEBRA_FMT_FORCE=1 drops comments and formats anyway, so the
-  // harness can exercise the printer + safety net across comment-bearing source
-  // before Phase 1 (comment preservation) exists. Never use for real edits.
-  const bool force = std::getenv("CULEBRA_FMT_FORCE") != nullptr;
   auto fmt = [&](const std::string& p, std::string_view s) {
-    return culebra::fmt::format_source(p, s, /*width=*/80, /*drop_comments=*/force);
+    return culebra::fmt::format_source(p, s);
   };
 
   // stdin -> stdout when no file arguments (or the lone `-`).
