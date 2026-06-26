@@ -119,7 +119,18 @@ per-project):
 }
 ```
 
-Set a breakpoint with `<F9>` and start with `<F5>` (vimspector defaults).
+vimspector ships **no key mappings by default**, so add this to your `vimrc`
+once — otherwise `<F5>`/`<F9>` do nothing and it looks like setup failed:
+
+```vim
+let g:vimspector_enable_mappings = 'HUMAN'
+```
+
+Then set a breakpoint with `<F9>` and start with `<F5>` (the `HUMAN` mappings;
+`<F10>`/`<F11>`/`<F12>` step over/in/out, `<F3>` or `:VimspectorReset` to stop).
+No gadget install (`:VimspectorInstall`) is needed — the adapter is launched
+straight from the `command` above over stdio. Vim must be a `+python3` build.
+
 For syntax highlighting, run `misc/vim/install-vim-syntax.sh`.
 
 ## Zed

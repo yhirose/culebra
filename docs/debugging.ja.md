@@ -108,7 +108,19 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
 }
 ```
 
-ブレークポイントは `<F9>`、開始は `<F5>`（vimspector のデフォルト）。
+vimspector は**デフォルトでキーマッピングを一切設定しない**ため、`vimrc` に
+次の1行を追加してください。これが無いと `<F5>`/`<F9>` を押しても何も起きず、
+設定に失敗したように見えます:
+
+```vim
+let g:vimspector_enable_mappings = 'HUMAN'
+```
+
+これでブレークポイントは `<F9>`、開始は `<F5>`（`HUMAN` マッピング。
+`<F10>`/`<F11>`/`<F12>` で step over/in/out、`<F3>` または `:VimspectorReset` で終了）。
+gadget のインストール（`:VimspectorInstall`）は不要 — 上記 `command` を stdio で
+直接起動します。Vim は `+python3` ビルドが必要です。
+
 シンタックスハイライトは `misc/vim/install-vim-syntax.sh` を実行してください。
 
 ## Zed
