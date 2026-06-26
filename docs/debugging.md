@@ -2,7 +2,7 @@
 
 Culebra ships a [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
 (DAP) server, so you can set breakpoints, step, and inspect variables visually
-in any DAP-capable editor — VSCode, Neovim (nvim-dap), Vim (vimspector), Zed,
+in any DAP-capable editor — VSCode, Vim (vimspector), Zed,
 Emacs (dap-mode), Helix, and others. One adapter serves every editor.
 
 ```
@@ -98,51 +98,11 @@ installer.
 > Host* window with the extension loaded live, where you debug your `.cul`
 > project. For just *using* the extension, `install.sh` above is simpler.
 
-## Neovim (nvim-dap)
-
-No extension needed. The quickest setup:
-
-```sh
-misc/vim/install.sh
-```
-
-This installs syntax highlighting (filetype `cul`) and writes a sourceable
-nvim-dap config to `~/.config/nvim/lua/culebra_dap.lua` (the `culebra` path is
-baked in when on `PATH`). Enable it by adding one line to your `init.lua`:
-
-```lua
-require("culebra_dap")
-```
-
-Toggle a breakpoint with `:lua require('dap').toggle_breakpoint()` and start
-with `:lua require('dap').continue()`. Add
-[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) for a variables/stack
-panel.
-
-To wire it by hand instead, the equivalent config is:
-
-```lua
-local dap = require("dap")
-dap.adapters.culebra = { type = "executable", command = "culebra", args = { "dap" } }
--- Keyed on the `cul` filetype (the syntax install sets that for *.cul):
-dap.configurations.cul = {
-  {
-    type = "culebra",
-    request = "launch",
-    name = "Debug file",
-    program = "${file}",
-    cwd = "${workspaceFolder}",
-    stopOnEntry = false,
-  },
-}
-```
-
 ## Vim (vimspector)
 
 No extension needed — install [vimspector](https://github.com/puremourning/vimspector)
 and add `.vimspector.json` to the project root (vimspector configs are
-per-project). `misc/vim/install.sh` prints this snippet with your `culebra`
-path filled in:
+per-project):
 
 ```json
 {
@@ -160,7 +120,7 @@ path filled in:
 ```
 
 Set a breakpoint with `<F9>` and start with `<F5>` (vimspector defaults).
-For syntax highlighting only, `misc/vim/install-vim-syntax.sh` is enough.
+For syntax highlighting, run `misc/vim/install-vim-syntax.sh`.
 
 ## Zed
 
@@ -191,7 +151,7 @@ config is:
 ]
 ```
 
-> Zed's debugger is newer than VSCode/nvim-dap and its config schema is still
+> Zed's debugger is newer than VSCode's and its config schema is still
 > evolving — the keys above may differ in your version. The essentials are the
 > same everywhere: launch `culebra dap`, `request: launch`, and a `program`
 > pointing at the file. Syntax highlighting in Zed needs a separate tree-sitter

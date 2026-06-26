@@ -1,8 +1,8 @@
 # デバッグ
 
 Culebra は [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
-(DAP) サーバを同梱しています。これにより、DAP 対応エディタ — VSCode・Neovim
-(nvim-dap)・Vim (vimspector)・Zed・Emacs (dap-mode)・Helix など — でブレークポイント・
+(DAP) サーバを同梱しています。これにより、DAP 対応エディタ — VSCode・Vim
+(vimspector)・Zed・Emacs (dap-mode)・Helix など — でブレークポイント・
 ステップ実行・変数の確認をビジュアルに行えます。1 つのアダプタで全エディタに対応します。
 
 ```
@@ -88,49 +88,10 @@ VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録の
 > された別ウィンドウ（*Extension Development Host*）が開き、そこで `.cul` をデバッグできます。
 > 単に*使いたいだけ*なら上の `install.sh` の方が簡単です。
 
-## Neovim (nvim-dap)
-
-拡張は不要。最短の手順:
-
-```sh
-misc/vim/install.sh
-```
-
-これでシンタックスハイライト（filetype `cul`）を入れ、nvim-dap 設定を
-`~/.config/nvim/lua/culebra_dap.lua` に書き出します（`culebra` が `PATH` 上なら
-絶対パスを埋め込み）。`init.lua` に1行追加して有効化:
-
-```lua
-require("culebra_dap")
-```
-
-ブレークポイントは `:lua require('dap').toggle_breakpoint()`、開始は
-`:lua require('dap').continue()`。変数/スタックパネルが欲しければ
-[nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) を追加。
-
-手書きする場合の同等設定:
-
-```lua
-local dap = require("dap")
-dap.adapters.culebra = { type = "executable", command = "culebra", args = { "dap" } }
--- syntax 導入が *.cul に設定する `cul` filetype をキーにする:
-dap.configurations.cul = {
-  {
-    type = "culebra",
-    request = "launch",
-    name = "Debug file",
-    program = "${file}",
-    cwd = "${workspaceFolder}",
-    stopOnEntry = false,
-  },
-}
-```
-
 ## Vim (vimspector)
 
 拡張は不要 — [vimspector](https://github.com/puremourning/vimspector) を導入し、
-プロジェクトルートに `.vimspector.json`（vimspector はプロジェクト単位）。
-`misc/vim/install.sh` が `culebra` のパス入りでこのスニペットを出力します:
+プロジェクトルートに `.vimspector.json`（vimspector はプロジェクト単位）:
 
 ```json
 {
@@ -148,7 +109,7 @@ dap.configurations.cul = {
 ```
 
 ブレークポイントは `<F9>`、開始は `<F5>`（vimspector のデフォルト）。
-シンタックスハイライトのみなら `misc/vim/install-vim-syntax.sh` で十分です。
+シンタックスハイライトは `misc/vim/install-vim-syntax.sh` を実行してください。
 
 ## Zed
 
@@ -177,7 +138,7 @@ misc/zed/install.sh --global   # またはユーザ全体の ~/.config/zed/debug
 ]
 ```
 
-> Zed のデバッガは VSCode/nvim-dap より新しく、設定スキーマは流動的です。上記のキーは
+> Zed のデバッガは VSCode より新しく、設定スキーマは流動的です。上記のキーは
 > バージョンで異なる可能性があります。本質はどこでも同じ: `culebra dap` を起動・
 > `request: launch`・`program` にファイルを指定。Zed のシンタックスハイライトは別途
 > tree-sitter 拡張が必要（ここでは未提供）で、デバッグはそれ無しで動きます。
