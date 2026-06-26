@@ -1,14 +1,26 @@
 {
   "name": "culebra-debug",
-  "displayName": "Culebra Debug",
-  "description": "Debug Culebra (.cul) programs via the culebra dap adapter.",
+  "displayName": "Culebra",
+  "description": "Syntax highlighting and debugging for Culebra (.cul) programs.",
   "publisher": "local",
   "version": "0.0.1",
   "engines": { "vscode": "^1.70.0" },
-  "categories": ["Debuggers"],
+  "categories": ["Programming Languages", "Debuggers"],
   "contributes": {
     "languages": [
-      { "id": "culebra", "extensions": [".cul"], "aliases": ["Culebra"] }
+      {
+        "id": "culebra",
+        "extensions": [".cul"],
+        "aliases": ["Culebra"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "culebra",
+        "scopeName": "source.culebra",
+        "path": "./syntaxes/culebra.tmLanguage.json"
+      }
     ],
     "debuggers": [
       {

@@ -73,12 +73,12 @@ asan:
 clean:
     rm -rf build build-dev build-asan
 
-# Regenerate misc/culebra.peg and misc/cul.vim AUTO-KEYWORDS from include/parser.h
+# Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
 [group("build")]
 sync-grammar:
     misc/sync_grammar.sh
 
-# Verify misc/culebra.peg and misc/cul.vim AUTO-KEYWORDS are in sync (CI gate)
+# Verify misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS are in sync (CI gate)
 [group("build")]
 check-grammar-sync:
     misc/sync_grammar.sh --check

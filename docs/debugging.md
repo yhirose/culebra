@@ -49,10 +49,11 @@ Your program's `stdout`/`stderr` is forwarded to the editor's debug console as
 
 ## VSCode
 
-VSCode needs a tiny extension to register the `culebra` debug type (it's pure
-registration — all the logic lives in `culebra dap`, so the same adapter then
-works in every editor). Publishing isn't required: the repo ships a template
-under `misc/vscode/` with an installer.
+VSCode needs a tiny extension to highlight `.cul` files and register the
+`culebra` debug type (debugging is pure registration — all the logic lives in
+`culebra dap`, so the same adapter then works in every editor). Publishing
+isn't required: the repo ships a template under `misc/vscode/` with an
+installer.
 
 1. Install the extension:
 
@@ -60,10 +61,15 @@ under `misc/vscode/` with an installer.
    misc/vscode/install.sh
    ```
 
-   This copies `misc/vscode/package.json` into
+   This copies the extension (`package.json`, the `language-configuration.json`,
+   and the `syntaxes/culebra.tmLanguage.json` grammar) into
    `~/.vscode/extensions/culebra-debug/` and, if `culebra` is on your `PATH`,
    bakes in its absolute path. (To do it by hand instead, copy that folder
    yourself; edit `program` to an absolute path if `culebra` isn't on `PATH`.)
+   Syntax highlighting then applies to any `.cul` file with no further setup;
+   the steps below are only needed for debugging. The grammar's keyword list is
+   generated from the parser by `just sync-grammar` (the same source as the Vim
+   syntax file), so it never drifts from the language.
 2. Reload VSCode (Command Palette → **Developer: Reload Window**).
 3. In your project, add `.vscode/launch.json`:
 

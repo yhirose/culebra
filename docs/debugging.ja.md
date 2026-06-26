@@ -46,9 +46,9 @@ culebra dap        # stdin/stdout で DAP を話す
 
 ## VSCode
 
-VSCode は `culebra` デバッグタイプを登録する小さな拡張が必要です（登録のみで、ロジックは
-全て `culebra dap` 側＝同じアダプタが全エディタで動く）。公開は不要。リポジトリに雛形と
-インストーラを `misc/vscode/` に同梱しています。
+VSCode は `.cul` のハイライトと `culebra` デバッグタイプ登録のための小さな拡張が必要です
+（デバッグは登録のみで、ロジックは全て `culebra dap` 側＝同じアダプタが全エディタで動く）。
+公開は不要。リポジトリに雛形とインストーラを `misc/vscode/` に同梱しています。
 
 1. 拡張をインストール:
 
@@ -56,9 +56,13 @@ VSCode は `culebra` デバッグタイプを登録する小さな拡張が必�
    misc/vscode/install.sh
    ```
 
-   `misc/vscode/package.json` を `~/.vscode/extensions/culebra-debug/` にコピーし、
+   拡張一式（`package.json`・`language-configuration.json`・文法 `syntaxes/
+   culebra.tmLanguage.json`）を `~/.vscode/extensions/culebra-debug/` にコピーし、
    `culebra` が `PATH` 上にあればその絶対パスを埋め込みます。（手作業でやるなら、その
    フォルダを自分でコピー。`culebra` が `PATH` に無ければ `program` を絶対パスに編集。）
+   シンタックスハイライトは `.cul` を開くだけで有効（以降の手順はデバッグ用のみ）。文法の
+   キーワード一覧は `just sync-grammar` がパーサから生成（Vim 構文ファイルと同一ソース）する
+   ため言語からドリフトしません。
 2. VSCode を再読み込み（コマンドパレット → **Developer: Reload Window**）。
 3. プロジェクトに `.vscode/launch.json`:
 

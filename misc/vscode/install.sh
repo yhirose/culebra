@@ -1,7 +1,8 @@
 #!/bin/sh
-# Install the Culebra VSCode debug extension into ~/.vscode/extensions.
-# Registers the `culebra` debug type so you can debug .cul files with F5
-# (the adapter itself is `culebra dap`, shipped in the culebra binary).
+# Install the Culebra VSCode extension into ~/.vscode/extensions.
+# Provides syntax highlighting for .cul files and registers the `culebra`
+# debug type so you can debug them with F5 (the adapter itself is
+# `culebra dap`, shipped in the culebra binary).
 
 set -eu
 
@@ -14,8 +15,11 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
-mkdir -p "$DEST"
+mkdir -p "$DEST/syntaxes"
 cp "$SRC" "$DEST/package.json"
+cp "$SRC_DIR/language-configuration.json" "$DEST/language-configuration.json"
+cp "$SRC_DIR/syntaxes/culebra.tmLanguage.json" \
+  "$DEST/syntaxes/culebra.tmLanguage.json"
 
 # VSCode launches the adapter by the `program` field, which defaults to plain
 # "culebra" (resolved on PATH). If culebra is on PATH, bake in its absolute
