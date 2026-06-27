@@ -3081,7 +3081,7 @@ row becomes an `Object` keyed by those names (instead of a positional Array):
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
-puts(rows[0]["name"])                                 # => alice
+puts(rows[0]["name"])                                 # => 'alice'
 ```
 
 A header with no data rows (or empty input) yields `[]`. A duplicate header name,
@@ -3096,11 +3096,11 @@ precision loss). `types:` requires `header: true`.
 ```culebra
 let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
                      types: {age: "Long", active: "Bool"})
-puts(rows[0]["age"] + 1)                              # => 31  (a real Long)
-
-# a ZIP code stays exact text — no number inference
+# age is a real Long now (not a String), so arithmetic works:
+puts(rows[0]["age"] + 1)                              # => 31
+# a ZIP code stays exact text — no number inference:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-puts(z[0]["zip"])                                     # => 01234
+puts(z[0]["zip"])                                     # => '01234'
 ```
 
 An unknown type name, a `types` key that names no column, or a cell that can't be
@@ -3469,6 +3469,7 @@ placeholders left to right; an **Object** binds named `:name` (or `@name` /
 `$name`) placeholders by key:
 
 ```culebra
+# doctest: skip
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 db.query("SELECT * FROM users WHERE id = :id", {id: 1})
 ```

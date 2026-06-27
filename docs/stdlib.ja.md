@@ -2967,7 +2967,7 @@ puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
-puts(rows[0]["name"])                                 # => alice
+puts(rows[0]["name"])                                 # => 'alice'
 ```
 
 データ行が無いヘッダ（や空入力）は `[]`。ヘッダ名の重複や、ヘッダとフィールド数が
@@ -2981,11 +2981,11 @@ puts(rows[0]["name"])                                 # => alice
 ```culebra
 let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
                      types: {age: "Long", active: "Bool"})
-puts(rows[0]["age"] + 1)                              # => 31  （本物の Long）
-
-# 郵便番号は元テキストのまま — 数値推論なし
+# age はもう本物の Long（String でない）ので算術が効く:
+puts(rows[0]["age"] + 1)                              # => 31
+# 郵便番号は元テキストのまま — 数値推論なし:
 let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
-puts(z[0]["zip"])                                     # => 01234
+puts(z[0]["zip"])                                     # => '01234'
 ```
 
 未知の型名・どの列も指さない `types` キー・変換不能なセル（`Long` への `"hello"`、
@@ -3337,6 +3337,7 @@ vendor 同梱・コンパイル済みで、システムライブラリ不要）�
 `$name` も可）をキーで束縛する：
 
 ```culebra
+# doctest: skip
 db.execute("INSERT INTO users VALUES (?, ?)", [1, "Alice"])
 db.query("SELECT * FROM users WHERE id = :id", {id: 1})
 ```
