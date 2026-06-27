@@ -22,17 +22,19 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/extension/syntaxes"
 cp "$SRC_DIR/package.json" "$SRC_DIR/language-configuration.json" \
-  "$STAGE/extension/"
+  "$SRC_DIR/extension.js" "$STAGE/extension/"
 cp "$SRC_DIR/syntaxes/culebra.tmLanguage.json" "$STAGE/extension/syntaxes/"
 
-# The debug adapter is launched by the `program` field, which defaults to plain
-# "culebra" (resolved on PATH). Bake in the absolute path when available so the
-# adapter starts even when VSCode is launched without your shell's PATH.
+# The debug adapter (`program` field) and the formatter (extension.js) both
+# default to plain "culebra" resolved on PATH. Bake in the absolute path when
+# available so they work even when VSCode is launched without your shell's PATH.
 CULEBRA=$(command -v culebra 2>/dev/null || true)
 if [ -n "$CULEBRA" ]; then
   sed -i.bak "s|\"program\": \"culebra\"|\"program\": \"$CULEBRA\"|" \
     "$STAGE/extension/package.json"
-  rm -f "$STAGE/extension/package.json.bak"
+  sed -i.bak "s|const CULEBRA = 'culebra';|const CULEBRA = '$CULEBRA';|" \
+    "$STAGE/extension/extension.js"
+  rm -f "$STAGE/extension/package.json.bak" "$STAGE/extension/extension.js.bak"
 fi
 
 cat > "$STAGE/extension.vsixmanifest" <<XML
@@ -61,6 +63,7 @@ cat > "$STAGE/[Content_Types].xml" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="json" ContentType="application/json" />
+  <Default Extension="js" ContentType="application/javascript" />
   <Default Extension="vsixmanifest" ContentType="text/xml" />
 </Types>
 XML

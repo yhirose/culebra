@@ -1501,14 +1501,34 @@ match / cond の腕、class / trait / enum のメンバ、分配パターン、�
 
 ### エディタ統合
 
-stdin 形式 (`culebra fmt -`) が整形フック。Vim/Neovim は同梱 `ftplugin`
-(`misc/vim/cul_ftplugin.vim`) が `:CulebraFmt` コマンドを提供し、バッファ全体を
-整形する (parse/安全網エラー時はバッファ不変、カーソル保持)。保存時整形は
-`let g:culebra_fmt_autosave = 1` で有効化。`gq` / `'formatprg'` には**あえて
-紐付けない**: `culebra fmt` は (gofmt/rustfmt と同様) 全ファイル整形なので、
-部分範囲やパース不能な断片を通すと空出力で置換され消えてしまう。`:CulebraFmt`
-は常に全体を整形し、成功時のみ書き換える。「保存時整形」を持つエディタなら
-同様にバッファを `culebra fmt -` に通せる (exit 0 の時だけ出力を適用)。
+stdin 形式 (`culebra fmt -`) が整形フック。`culebra fmt` は (gofmt/rustfmt と
+同様) 全ファイル整形なので、各統合はバッファ全体を整形し、exit 0 の時だけ結果を
+適用する (parse/安全網エラー時はバッファ不変)。
+
+**VSCode** — 同梱拡張 (`misc/vscode/`) が document formatting provider を登録する
+ので、`.cul` で **Format Document** と `editor.formatOnSave` がそのまま動く。
+`build-vsix.sh` / `install.sh` で再ビルド・再インストール。
+
+**Zed** — `settings.json` に外部フォーマッタを設定:
+
+```json
+{
+  "languages": {
+    "Culebra": {
+      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } },
+      "format_on_save": "on"
+    }
+  }
+}
+```
+
+**Vim/Neovim** — 同梱 `ftplugin` (`misc/vim/cul_ftplugin.vim`) が `:CulebraFmt`
+コマンドを提供 (全体整形・カーソル保持・エラー時不変)。保存時整形は
+`let g:culebra_fmt_autosave = 1`。`gq` / `'formatprg'` には**あえて紐付けない**
+(部分範囲やパース不能断片を空出力で置換して消すため)。
+
+他のエディタも「保存時整形」機構があれば同様にバッファを `culebra fmt -` に
+通せる (exit 0 の時だけ出力を適用)。
 
 19. AOT バイナリビルド
 ----------------------

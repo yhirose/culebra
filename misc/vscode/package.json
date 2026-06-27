@@ -1,11 +1,13 @@
 {
   "name": "culebra-debug",
   "displayName": "Culebra",
-  "description": "Syntax highlighting and debugging for Culebra (.cul) programs.",
+  "description": "Syntax highlighting, formatting, and debugging for Culebra (.cul) programs.",
   "publisher": "local",
   "version": "0.0.1",
   "engines": { "vscode": "^1.70.0" },
-  "categories": ["Programming Languages", "Debuggers"],
+  "categories": ["Programming Languages", "Formatters", "Debuggers"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:culebra"],
   "contributes": {
     "languages": [
       {
