@@ -727,15 +727,26 @@ class Printer {
     }
 
     size_t m = operands.size();
-    std::vector<DocP> parts;
-    for (size_t k = 0; k < m; k++) {
-      bool assoc_safe = right_assoc ? (k == m - 1) : (k == 0);
-      parts.push_back(print_operand(*operands[k], P, assoc_safe));
-      if (k + 1 < m) {
-        parts.push_back(doc_text(" " + ops[k] + " "));
-      }
+    // Flat: `a op b op c`. When too wide, break AFTER each operator so it ends
+    // the line and the continuation is indented:
+    //   a op
+    //     b op
+    //     c
+    // Breaking *before* the operator would change parsing: the `+`-family
+    // operators sit on a no-newline (`_h_`) rung, so a newline preceding one
+    // ends the expression. The post-operator `_` always permits the newline,
+    // so trailing the operator is safe for every binary operator.
+    std::vector<DocP> cont;
+    for (size_t k = 1; k < m; k++) {
+      bool assoc_safe = right_assoc ? (k == m - 1) : false;
+      cont.push_back(doc_text(" " + ops[k - 1]));
+      cont.push_back(doc_line());
+      cont.push_back(print_operand(*operands[k], P, assoc_safe));
     }
-    return doc_concat(std::move(parts));
+    return doc_group(doc_concat({
+        print_operand(*operands[0], P, /*assoc_safe=*/!right_assoc),
+        doc_indent(kIndent, doc_concat(std::move(cont))),
+    }));
   }
 
   DocP print_range(const peg::Ast& node) {
@@ -817,15 +828,36 @@ class Printer {
   }
 
   DocP print_call(const peg::Ast& node) {
-    std::vector<DocP> parts;
     // The receiver must keep parens when it binds looser than a postfix op, so
     // `(-3).double()` / `(a + b).x` don't collapse to `-3.double()` (which
     // parses as `-(3.double())`) or `a + b.x`.
-    parts.push_back(print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
-                                  /*assoc_safe=*/true));
-    for (size_t i = 1; i < node.nodes.size(); i++)
-      parts.push_back(print_postfix(*node.nodes[i]));
-    return doc_concat(std::move(parts));
+    DocP receiver = print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
+                                  /*assoc_safe=*/true);
+    auto is_dot = [](const peg::Ast& s) {
+      return s.original_name == "DOT" || s.original_name == "SAFE_DOT";
+    };
+    // Count method-call segments (`.name(...)`). A chain of two or more is
+    // wrappable: when too wide it breaks before each `.` (DOT sits on a rung
+    // that permits a preceding newline), keeping each call on its own line
+    // instead of wrapping one call's arguments mid-chain.
+    int calls = 0;
+    for (size_t i = 1; i + 1 < node.nodes.size(); i++)
+      if (is_dot(*node.nodes[i]) && node.nodes[i + 1]->original_name == "ARGUMENTS")
+        calls++;
+
+    std::vector<DocP> parts;
+    if (calls < 2) {
+      parts.push_back(receiver);
+      for (size_t i = 1; i < node.nodes.size(); i++)
+        parts.push_back(print_postfix(*node.nodes[i]));
+      return doc_concat(std::move(parts));
+    }
+    std::vector<DocP> cont;
+    for (size_t i = 1; i < node.nodes.size(); i++) {
+      if (is_dot(*node.nodes[i])) cont.push_back(doc_softline());  // break before `.`
+      cont.push_back(print_postfix(*node.nodes[i]));
+    }
+    return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }
 
   DocP print_assignment(const peg::Ast& node) {
@@ -928,6 +960,13 @@ class Printer {
           items.push_back(verbatim(*e));  // shorthand `name`
       }
       return print_delimited("{", std::move(items), "}");
+    }
+    if (n.name == "CTOR_PATTERN") {
+      // [CTOR_PATH, PATTERN*] — `Rect(w, h)`, `Result.Ok(x)`.
+      std::vector<DocP> items;
+      for (size_t i = 1; i < n.nodes.size(); i++) items.push_back(print_pattern(*n.nodes[i]));
+      return doc_concat({doc_text(std::string(n.nodes[0]->token)),
+                         print_delimited("(", std::move(items), ")")});
     }
     return verbatim(n);
   }
@@ -1068,8 +1107,8 @@ class Printer {
   }
 
   DocP print_for(const peg::Ast& node) {
-    // [binding, iter, BLOCK]. Binding slices verbatim (single var or pattern).
-    return doc_concat({doc_text("for "), verbatim(*node.nodes[0]), doc_text(" in "),
+    // [binding, iter, BLOCK]. The binding is a single var or a pattern.
+    return doc_concat({doc_text("for "), print_pattern(*node.nodes[0]), doc_text(" in "),
                        print(*node.nodes[1]), doc_text(" "),
                        print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
   }
@@ -1112,7 +1151,7 @@ class Printer {
       bool guard = arm.nodes.size() >= 2 && arm.nodes[1]->original_name == "GUARD";
       const peg::Ast& body = *arm.nodes.back();
       std::vector<DocP> parts;
-      parts.push_back(verbatim(*arm.nodes[0]));  // pattern (slice; rarely reflowed)
+      parts.push_back(print_pattern(*arm.nodes[0]));  // normalize pattern spacing
       if (guard)
         parts.push_back(doc_concat({doc_text(" if "), print(*arm.nodes[1]->nodes[0])}));
       parts.push_back(doc_text(" => "));
