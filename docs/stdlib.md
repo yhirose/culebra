@@ -2659,6 +2659,7 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — streams Server-Sent Events to `on_event`; see below |
+| `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | a persistent client handle (base URL + default headers + connection reuse); see below |
 
 Keyword arguments (shared by every method):
 
@@ -2830,6 +2831,44 @@ yourself. Comment lines (`: ...`) and the `retry:` field are ignored. The
 callback runs on the calling thread (it may mutate captured state); returning
 ends handling of that event, and throwing aborts the stream and propagates the
 error. A transport failure is an `HttpError`.
+
+### `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object`
+
+A persistent client that **reuses one keep-alive connection** across requests and
+carries a **base URL** and **default headers** — for hitting the same API many
+times without repeating the host, auth header, and re-doing the TLS handshake
+each call. Returns a handle with `get` / `post` / `put` / `delete` / `head` /
+`request` (the same kwargs as the free `Http.*` functions, but the first
+argument is a path joined onto `base_url`) plus `close`.
+
+| argument | meaning |
+|---|---|
+| `base_url` | scheme + host (+ optional path prefix), e.g. `https://api.example.com/v1` |
+| `headers` | default headers layered under every request's (per-request wins per key) |
+| `timeout` / `follow_redirects` | connection-level defaults (not per-request) |
+
+```culebra
+# doctest: skip
+let api = Http.client("https://api.example.com/v1",
+                      headers: {Authorization: "Bearer " + token},
+                      timeout: 30)
+
+let me   = api.get("/me").json()              # → GET https://api.example.com/v1/me
+let user = api.get("/users/42").json()        # reuses the same connection
+api.post("/users", json: {name: "alice"})     # Authorization header rides along
+
+api.get("/items", headers: {"Idempotency-Key": k})   # merged over the defaults
+api.close()                                    # release the connection
+```
+
+A request method's first argument is a path: a leading-slash or bare relative
+path is joined onto `base_url` (`/me` → `…/v1/me`); an absolute URL (with its own
+scheme) bypasses `base_url` but still gets the default headers. Per-request
+`headers` are merged over the client's defaults (a per-key match overrides).
+`close()` releases the connection; the GC also closes a client that goes out of
+scope (so an explicit `close` is optional). A request after `close` is an
+`HttpError`. The handle is non-sendable (one connection, one thread): to fan out,
+make a client per isolate.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
 combinators over `Http.get`, not an HTTP-specific API — the same shape as

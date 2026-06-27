@@ -3338,6 +3338,20 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
   return http_result_to_value(std::move(r));
 }
 
+// As http_run_into, but against a persistent Http.client (id) — reuses its
+// connection and layers its default headers under the request's.
+inline Value http_run_client_into(int64_t id, culebra::http::HttpRequest& req,
+                                  HttpIntoState& st, const char* ctx, long line,
+                                  long col) {
+  auto r = culebra::http::http_client_request(id, req);
+  if (st.eptr) std::rethrow_exception(st.eptr);
+  if (!r.ok) {
+    throw CulebraError("HttpError", std::format("{}: {}", ctx, r.error), line,
+                       col);
+  }
+  return http_result_to_value(std::move(r));
+}
+
 // Parse the `files` kwarg into req.multipart for a multipart/form-data upload.
 // Each Object entry is a part; its value is one of:
 //   - String                                  → text field {name: value}
@@ -3531,6 +3545,138 @@ inline void http_setup_body(const Value& bodyv, const Value& jsonv,
   }
 }
 
+// Build an Http.client handle (id into the persistent-client registry). Methods
+// mirror the free Http.* functions but take a base-url-relative `path` (no
+// per-request timeout/follow_redirects — those are fixed at Http.client), reuse
+// the client's one connection, and layer its default headers under each
+// request. `close`/`drop` close the connection (idempotent).
+inline Value make_http_client_handle(int64_t id) {
+  using namespace std::literals;
+  static const auto empty_str_default =
+      std::make_shared<Value>(Value(std::string("")));
+  static const auto text_plain_default =
+      std::make_shared<Value>(Value(std::string("text/plain")));
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto path_param = FunctionValue::Parameter{"path", false, "String"sv};
+  auto headers_param =
+      FunctionValue::Parameter{"headers", false, ""sv, nullptr, kw_default_nil()};
+  auto params_param =
+      FunctionValue::Parameter{"params", false, ""sv, nullptr, kw_default_nil()};
+  auto into_param =
+      FunctionValue::Parameter{"into", false, ""sv, nullptr, kw_default_nil()};
+  auto body_param =
+      FunctionValue::Parameter{"body", false, ""sv, nullptr, empty_str_default};
+  auto ct_param = FunctionValue::Parameter{"content_type", false, ""sv, nullptr,
+                                           text_plain_default};
+  auto json_param =
+      FunctionValue::Parameter{"json", false, ""sv, nullptr, kw_default_nil()};
+  auto form_param =
+      FunctionValue::Parameter{"form", false, ""sv, nullptr, kw_default_nil()};
+  auto files_param =
+      FunctionValue::Parameter{"files", false, ""sv, nullptr, kw_default_nil()};
+
+  auto cid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+
+  // get / delete / head — no body.
+  auto bodyless = [&](const char* method, const char* ctx) {
+    return Value(FunctionValue(
+        {path_param, headers_param, params_param, into_param},
+        [method, ctx, cid](std::shared_ptr<Environment> env) -> Value {
+          long line = env->get("__LINE__").to_long();
+          long col = env->get("__COLUMN__").to_long();
+          culebra::http::HttpRequest req;
+          req.method = method;
+          req.url = env->get("path").to_string();
+          req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
+          req.params = http_parse_params(env->get("params"), ctx, line, col);
+          HttpIntoState st;
+          http_setup_into(env->get("into"), env, req, st, ctx, line, col);
+          return http_run_client_into(cid(env), req, st, ctx, line, col);
+        },
+        "Object"sv));
+  };
+  h.initialize("get", bodyless("GET", "client.get"), false);
+  h.initialize("delete", bodyless("DELETE", "client.delete"), false);
+  h.initialize("head", bodyless("HEAD", "client.head"), false);
+
+  // post / put — body + content_type.
+  auto withbody = [&](const char* method, const char* ctx) {
+    return Value(FunctionValue(
+        {path_param, body_param, ct_param, headers_param, params_param,
+         into_param, json_param, form_param, files_param},
+        [method, ctx, cid](std::shared_ptr<Environment> env) -> Value {
+          long line = env->get("__LINE__").to_long();
+          long col = env->get("__COLUMN__").to_long();
+          culebra::http::HttpRequest req;
+          req.method = method;
+          req.url = env->get("path").to_string();
+          req.headers = http_parse_headers(env->get("headers"), ctx, line, col);
+          req.params = http_parse_params(env->get("params"), ctx, line, col);
+          HttpIntoState st;
+          http_setup_body(env->get("body"), env->get("json"), env->get("form"),
+                          env->get("files"), env->get("content_type"), env, req,
+                          st, ctx, line, col);
+          http_setup_into(env->get("into"), env, req, st, ctx, line, col);
+          return http_run_client_into(cid(env), req, st, ctx, line, col);
+        },
+        "Object"sv));
+  };
+  h.initialize("post", withbody("POST", "client.post"), false);
+  h.initialize("put", withbody("PUT", "client.put"), false);
+
+  // request(method, path, ...) — generic escape hatch (PATCH, OPTIONS, …).
+  h.initialize(
+      "request",
+      Value(FunctionValue(
+          {{"method", false, "String"sv}, path_param, body_param, ct_param,
+           headers_param, params_param, into_param, json_param, form_param,
+           files_param},
+          [cid](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            culebra::http::HttpRequest req;
+            req.method = env->get("method").to_string();
+            req.url = env->get("path").to_string();
+            req.headers =
+                http_parse_headers(env->get("headers"), "client.request", line, col);
+            req.params =
+                http_parse_params(env->get("params"), "client.request", line, col);
+            HttpIntoState st;
+            http_setup_body(env->get("body"), env->get("json"), env->get("form"),
+                            env->get("files"), env->get("content_type"), env, req,
+                            st, "client.request", line, col);
+            http_setup_into(env->get("into"), env, req, st, "client.request",
+                            line, col);
+            return http_run_client_into(cid(env), req, st, "client.request",
+                                        line, col);
+          },
+          "Object"sv)),
+      false);
+
+  // close — release the connection. drop — GC backstop for the same.
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [cid](std::shared_ptr<Environment> env) {
+        culebra::http::http_client_close(cid(env));
+        return Value();
+      })),
+      false);
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [cid](std::shared_ptr<Environment> env) {
+        culebra::http::http_client_close(cid(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
 // blocks until the response arrives. A 4xx/5xx is a normal result (`ok:false`);
 // a transport failure (DNS/connect/TLS/timeout) throws HttpError.
@@ -3709,6 +3855,37 @@ inline Value make_http_namespace() {
                   "HttpError", std::format("Http.sse: {}", r.error), line, col);
             }
             return http_result_to_value(std::move(r));
+          },
+          "Object"sv)),
+      false);
+
+  // `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` — a
+  // persistent client reusing one keep-alive connection, with a base URL and
+  // default headers. Returns a handle whose get/post/put/delete/head/request
+  // take a base-url-relative path and reuse the connection; close() releases it.
+  ns.initialize(
+      "client",
+      Value(FunctionValue(
+          {{"base_url", false, "String"sv}, headers_param, timeout_param,
+           follow_param},
+          [](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            auto headers =
+                http_parse_headers(env->get("headers"), "Http.client", line, col);
+            const auto& tv = env->get("timeout");
+            long timeout = tv.type == Value::Nil ? 0 : tv.to_long();
+            const auto& fv = env->get("follow_redirects");
+            bool follow = fv.type == Value::Nil ? true : fv.to_bool();
+            std::string err;
+            int64_t id = culebra::http::http_client_open(
+                env->get("base_url").to_string(), std::move(headers),
+                timeout > 0 ? timeout : 0, follow, err);
+            if (id < 0) {
+              throw CulebraError("HttpError",
+                  std::format("Http.client: {}", err), line, col);
+            }
+            return make_http_client_handle(id);
           },
           "Object"sv)),
       false);

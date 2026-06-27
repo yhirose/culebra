@@ -2557,6 +2557,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object |
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — 任意のメソッド（PATCH、OPTIONS …） |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — Server-Sent Events を `on_event` にストリーム（後述） |
+| `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | 永続クライアントハンドル（ベース URL + デフォルトヘッダ + 接続再利用、後述） |
 
 キーワード引数（全メソッド共通）:
 
@@ -2723,6 +2724,42 @@ Http.sse("https://api.example/v1/stream", fn (e) {
 スレッド上で実行され（捕捉状態を mutable に扱える）、return でそのイベントの処理を
 終え、throw するとストリームを中断してエラーを伝播します。トランスポート失敗は
 `HttpError` です。
+
+### `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object`
+
+**1 本の keep-alive 接続を再利用**し、**ベース URL** と**デフォルトヘッダ**を保持する
+永続クライアント。同じ API を何度も叩く時に、ホスト・認証ヘッダの繰り返しと毎回の
+TLS ハンドシェイクを避けられます。返り値は `get` / `post` / `put` / `delete` /
+`head` / `request`（フリーの `Http.*` と同じ kwarg。ただし第1引数は `base_url` に
+連結されるパス）と `close` を持つハンドルです。
+
+| 引数 | 意味 |
+|---|---|
+| `base_url` | スキーム + ホスト（+ 任意のパス接頭辞）。例: `https://api.example.com/v1` |
+| `headers` | 各リクエストの下に敷くデフォルトヘッダ（キー単位でリクエスト側が優先） |
+| `timeout` / `follow_redirects` | 接続レベルの既定（リクエストごとではない） |
+
+```culebra
+# doctest: skip
+let api = Http.client("https://api.example.com/v1",
+                      headers: {Authorization: "Bearer " + token},
+                      timeout: 30)
+
+let me   = api.get("/me").json()              # → GET https://api.example.com/v1/me
+let user = api.get("/users/42").json()        # 同じ接続を再利用
+api.post("/users", json: {name: "alice"})     # Authorization ヘッダが付く
+
+api.get("/items", headers: {"Idempotency-Key": k})   # 既定の上にマージ
+api.close()                                    # 接続を解放
+```
+
+リクエストメソッドの第1引数はパスです。先頭スラッシュ or 素の相対パスは `base_url` に
+連結され（`/me` → `…/v1/me`）、スキーム付きの絶対 URL は `base_url` を無視しますが
+デフォルトヘッダは付きます。リクエストごとの `headers` はクライアント既定の上に
+マージされます（同名キーは上書き）。`close()` で接続を解放します（スコープを抜けた
+クライアントは GC も閉じるので明示 `close` は任意）。`close` 後のリクエストは
+`HttpError`。ハンドルは non-sendable（1 接続・1 スレッド）なので、ファンアウトする
+なら isolate ごとにクライアントを作ります。
 
 **並列・レースリクエスト**は HTTP 専用 API を使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを `Http.get` に適用します — JS の `Promise.all`/`race` や Elixir の

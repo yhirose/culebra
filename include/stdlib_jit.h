@@ -1832,6 +1832,20 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
           reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
 
+// As _http_run_into, but against a persistent Http.client (id). Mirrors interp
+// http_run_client_into.
+inline JitValue _http_run_client_into(int64_t id, culebra::http::HttpRequest& req,
+                                      JitHttpInto& st, const char* ctx) {
+  auto r = culebra::http::http_client_request(id, req);
+  if (st.eptr) std::rethrow_exception(st.eptr);
+  if (!r.ok) {
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, r.error),
+                                0, 0);
+  }
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
+}
+
 // Parse the `files` slab value into req.multipart for a multipart/form-data
 // upload. Mirrors interp http_setup_multipart: each Object entry is a part whose
 // value is a String (text field), an Object ({content|path|stream, filename?,
@@ -3730,6 +3744,209 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   return {TAG_OBJECT,
           reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
+
+// --- Http.client persistent-client handle (JIT) ---
+// Mirrors interp make_http_client_handle: methods take a base-url-relative path
+// (no per-request timeout/follow), reuse the client's connection, and layer its
+// default headers under each request. The handle owns a +1 on `self`; the
+// required-arg checks release it on error (file-thunk convention), then a
+// _JitValueGuard releases it on every later exit (normal or throw).
+CULEBRA_RT_INLINE int64_t _jit_http_client_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+
+// Parse an Object-of-String slab value (headers/params) into `out`, matching
+// interp http_parse_headers/params messages. No self release — the caller's
+// _JitValueGuard covers the throw.
+inline void _jit_http_client_strobj(JitValue v, culebra::http::HeaderList& out,
+                                    const char* ctx, const char* container,
+                                    const char* valueword) {
+  if (v.tag == TAG_NIL) return;
+  if (v.tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: {} must be an Object of String", ctx, container), 0, 0);
+  }
+  if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(v.data), out)) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: {} values must be String", ctx, valueword), 0, 0);
+  }
+}
+
+inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
+                                          JitValue* args, const char* method,
+                                          const char* ctx) {
+  int64_t id = _jit_http_client_id(self);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  // typed `String` param: reject StringView too (matches interp type_matches,
+  // which only accepts "String" for a plain String annotation).
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "path", "String", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto at = [&](size_t i) {
+    return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
+  };
+  culebra::http::HttpRequest req;
+  req.method = method;
+  req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+  _jit_http_client_strobj(at(1), req.headers, ctx, "headers", "header");
+  _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
+  JitHttpInto st;
+  _http_setup_into(at(3), req, st, ctx);
+  return _http_run_client_into(id, req, st, ctx);
+}
+
+inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
+                                          JitValue* args, const char* method,
+                                          const char* ctx) {
+  int64_t id = _jit_http_client_id(self);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  // typed `String` param: reject StringView too (matches interp type_matches,
+  // which only accepts "String" for a plain String annotation).
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "path", "String", 0);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto at = [&](size_t i) {
+    return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
+  };
+  culebra::http::HttpRequest req;
+  req.method = method;
+  req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+  _jit_http_client_strobj(at(3), req.headers, ctx, "headers", "header");
+  _jit_http_client_strobj(at(4), req.params, ctx, "params", "param");
+  JitHttpInto st;
+  _http_setup_body(at(1), at(6), at(7), at(8), at(2), req, st, ctx);
+  _http_setup_into(at(5), req, st, ctx);
+  return _http_run_client_into(id, req, st, ctx);
+}
+
+CULEBRA_RT_INLINE JitValue _jit_http_client_get(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  return _jit_http_client_bodyless(self, n, args, "GET", "client.get");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_delete(JitClosure*, JitValue self,
+                                                   int64_t n, JitValue* args) {
+  return _jit_http_client_bodyless(self, n, args, "DELETE", "client.delete");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_head(JitClosure*, JitValue self,
+                                                 int64_t n, JitValue* args) {
+  return _jit_http_client_bodyless(self, n, args, "HEAD", "client.head");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_post(JitClosure*, JitValue self,
+                                                 int64_t n, JitValue* args) {
+  return _jit_http_client_withbody(self, n, args, "POST", "client.post");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_put(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  return _jit_http_client_withbody(self, n, args, "PUT", "client.put");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_request(JitClosure*, JitValue self,
+                                                    int64_t n, JitValue* args) {
+  int64_t id = _jit_http_client_id(self);
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "method");
+  // typed `String` params: reject StringView too (matches interp type_matches).
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "method", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "path");
+  if (args[1].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "path", "String", 1);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto at = [&](size_t i) {
+    return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
+  };
+  culebra::http::HttpRequest req;
+  req.method = std::string(_culebra_str_view(args[0].tag, args[0].data));
+  req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
+  _jit_http_client_strobj(at(4), req.headers, "client.request", "headers",
+                          "header");
+  _jit_http_client_strobj(at(5), req.params, "client.request", "params",
+                          "param");
+  JitHttpInto st;
+  _http_setup_body(at(2), at(7), at(8), at(9), at(3), req, st, "client.request");
+  _http_setup_into(at(6), req, st, "client.request");
+  return _http_run_client_into(id, req, st, "client.request");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_close(JitClosure*, JitValue self,
+                                                  int64_t, JitValue*) {
+  culebra::http::http_client_close(_jit_http_client_id(self));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_http_client_drop(JitClosure*, JitValue self,
+                                                 int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::http::http_client_close(_jit_http_client_id(self));
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_http_build_client_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* bodyless_meta = _jit_make_handle_meta(
+      {"path", "headers", "params", "into"}, {false, true, true, true});
+  static const JitParamMeta* withbody_meta = _jit_make_handle_meta(
+      {"path", "body", "content_type", "headers", "params", "into", "json",
+       "form", "files"},
+      {false, true, true, true, true, true, true, true, true});
+  static const JitParamMeta* request_meta = _jit_make_handle_meta(
+      {"method", "path", "body", "content_type", "headers", "params", "into",
+       "json", "form", "files"},
+      {false, false, true, true, true, true, true, true, true, true});
+  _jit_handle_bind_method(h, "get", _jit_http_client_get, 1, bodyless_meta);
+  _jit_handle_bind_method(h, "delete", _jit_http_client_delete, 1,
+                          bodyless_meta);
+  _jit_handle_bind_method(h, "head", _jit_http_client_head, 1, bodyless_meta);
+  _jit_handle_bind_method(h, "post", _jit_http_client_post, 1, withbody_meta);
+  _jit_handle_bind_method(h, "put", _jit_http_client_put, 1, withbody_meta);
+  _jit_handle_bind_method(h, "request", _jit_http_client_request, 2,
+                          request_meta);
+  _jit_handle_bind_method(h, "close", _jit_http_client_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_http_client_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) → handle.
+inline JitValue _ns_http_client(JitValue* a, int64_t n) {
+  const char* ctx = "Http.client";
+  std::string base_url(_ns_adapt::require_sv(a[0], "base_url"));
+  culebra::http::HeaderList headers;
+  JitValue h = _proc_adapt::at(a, n, 1);
+  if (h.tag == TAG_OBJECT) {
+    if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(h.data), headers)) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: header values must be String", ctx), 0, 0);
+    }
+  } else if (h.tag != TAG_NIL) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: headers must be an Object of String", ctx), 0, 0);
+  }
+  JitValue to = _proc_adapt::at(a, n, 2);
+  if (to.tag != TAG_LONG && to.tag != TAG_NIL) {
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(to.tag), 0, 0);
+  }
+  long timeout = (to.tag == TAG_LONG && to.data > 0) ? to.data : 0;
+  JitValue fr = _proc_adapt::at(a, n, 3);
+  bool follow;
+  if (fr.tag == TAG_NIL) {
+    follow = true;
+  } else if (fr.tag == TAG_BOOL || fr.tag == TAG_LONG) {
+    follow = fr.data != 0;
+  } else if (fr.tag == TAG_FLOAT) {
+    follow = _culebra_float_to_double(fr.data) != 0.0;
+  } else {
+    culebra::throw_type_mismatch("Bool, Long, or Float",
+                                 _culebra_tag_name(fr.tag), 0, 0);
+  }
+  std::string err;
+  int64_t id = culebra::http::http_client_open(base_url, std::move(headers),
+                                               timeout, follow, err);
+  if (id < 0) {
+    throw culebra::CulebraError("HttpError",
+        std::format("{}: {}", ctx, err), 0, 0);
+  }
+  return _culebra_http_build_client_handle(id);
+}
 #endif  // CULEBRA_HTTP_ENABLED
 
 // Isolate.spawn(fn, *args): a[0] = closure, a[1..] = positional args.
@@ -4863,6 +5080,7 @@ inline const NsMethod kNsMethods[] = {
   {"Http",   "put",     1, &_ns_http_put},
   {"Http",   "request", 2, &_ns_http_request},
   {"Http",   "sse",     2, &_ns_http_sse},
+  {"Http",   "client",  1, &_ns_http_client},
 #endif
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},

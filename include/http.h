@@ -225,16 +225,16 @@ inline std::string encode_query(const HeaderList& pairs) {
   return q;
 }
 
-// http_request is the single OpenSSL/zlib choke: httplib::Client (the only
-// code that pulls in TLS + gzip) is instantiated only inside this body.
-// Its linkage is partitioned across the AOT runtime archives exactly like
-// tensor_eval_node:
-//   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stub, never
-//     touches httplib::Client, so the archive references no ssl/zlib symbol
+// http_request and the Http.client functions are the single OpenSSL/zlib choke:
+// httplib::Client (the only code that pulls in TLS + gzip) is instantiated only
+// inside the bodies below. Their linkage is partitioned across the AOT runtime
+// archives exactly like tensor_eval_node:
+//   - core archive   (CULEBRA_RT_HTTP_REQUEST_WEAK):   weak stubs, never
+//     touch httplib::Client, so the archive references no ssl/zlib symbol
 //     (merely including httplib.h pulls none — verified).
-//   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real body,
-//     force-loaded only when the program uses Http (overrides the stub).
-//   - header-only / in-process JIT (neither): the normal inline body.
+//   - http archive   (CULEBRA_RT_HTTP_REQUEST_STRONG): strong real bodies,
+//     force-loaded only when the program uses Http (overrides the stubs).
+//   - header-only / in-process JIT (neither): the normal inline bodies.
 #if defined(CULEBRA_RT_HTTP_REQUEST_STRONG)
 #define CULEBRA_RT_HTTP_LINKAGE
 #elif defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
@@ -243,48 +243,82 @@ inline std::string encode_query(const HeaderList& pairs) {
 #define CULEBRA_RT_HTTP_LINKAGE inline
 #endif
 
-CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  // Core archive stub: the real httplib::Client path is force-loaded from
-  // culebra_rt_http only when the program uses Http, so a binary built
-  // without Http never reaches httplib. Unreachable in practice (the Http
-  // namespace is never called there); report gracefully rather than abort.
-  (void)req;
-  HttpResult stub;
-  stub.error = "Http runtime not linked (no Http use detected at build)";
-  return stub;
-#else
-  HttpResult out;
-  std::string origin, path, err;
-  if (!split_url(req.url, origin, path, err)) {
-    out.error = std::move(err);
-    return out;
-  }
-  // Append query params (percent-encoded), preserving any query already in url.
-  if (!req.params.empty()) {
-    path += (path.find('?') == std::string::npos ? "?" : "&") +
-            encode_query(req.params);
-  }
+// A persistent client holding one reused keep-alive connection plus a base URL
+// and default headers (the Http.client handle's native backing). Opaque outside
+// the gated real path below — the WEAK core archive never sees httplib::Client.
+struct HttpClient;
 
-  httplib::Client cli(origin);
-  if (!cli.is_valid()) {
-    out.error = "Http: invalid URL or unsupported scheme: " + req.url;
-    return out;
+// id → HttpClient* registry. Scripts hold a small integer id, never a raw
+// pointer (matching the SQLite handle model — an invalid/forged id resolves to
+// nullptr and fails safely instead of dereferencing arbitrary memory).
+// thread_local because a client is non-sendable (one connection, one thread).
+// Stores opaque pointers only, so it pulls in no httplib/TLS symbol and stays
+// ungated; only open/close/request (which touch httplib) are gated.
+inline thread_local std::vector<HttpClient*> g_http_clients;
+inline thread_local std::vector<int64_t> g_http_client_free;
+inline int64_t _http_client_register(HttpClient* c) {
+  if (!g_http_client_free.empty()) {
+    int64_t id = g_http_client_free.back();
+    g_http_client_free.pop_back();
+    g_http_clients[id] = c;
+    return id;
   }
-  cli.set_follow_location(req.follow_redirects);
-  // Tolerate servers that don't speak keep-alive cleanly on a one-shot call.
-  cli.set_keep_alive(false);
-  if (req.timeout_sec > 0) {
-    cli.set_connection_timeout(req.timeout_sec, 0);
-    cli.set_read_timeout(req.timeout_sec, 0);
-    cli.set_write_timeout(req.timeout_sec, 0);
+  g_http_clients.push_back(c);
+  return static_cast<int64_t>(g_http_clients.size()) - 1;
+}
+inline HttpClient* _http_client_get(int64_t id) {
+  if (id < 0 || id >= static_cast<int64_t>(g_http_clients.size())) return nullptr;
+  return g_http_clients[id];
+}
+inline void _http_client_unregister(int64_t id) {
+  if (id >= 0 && id < static_cast<int64_t>(g_http_clients.size()) &&
+      g_http_clients[id]) {
+    g_http_clients[id] = nullptr;
+    g_http_client_free.push_back(id);
   }
+}
 
-  httplib::Request hreq;
+// The httplib-touching helpers and HttpClient definition live behind the gate
+// (referenced only by the real, non-stub function bodies), so the WEAK core
+// archive pulls in no TLS/zlib symbol.
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+
+// Merge `over` onto `base` with per-key (case-insensitive) override: a header
+// present in both takes `over`'s value; others are appended. Used to layer a
+// request's headers over an Http.client's defaults.
+inline HeaderList merge_headers(const HeaderList& base, const HeaderList& over) {
+  HeaderList out = base;
+  for (const auto& [k, v] : over) {
+    bool replaced = false;
+    for (auto& [bk, bv] : out) {
+      if (_iequals(bk, k)) { bv = v; replaced = true; break; }
+    }
+    if (!replaced) out.emplace_back(k, v);
+  }
+  return out;
+}
+
+// Join a client base path ("" or "/v1", no trailing slash) with a request path.
+inline std::string _http_join_path(const std::string& base_path,
+                                   const std::string& rel) {
+  if (rel.empty()) return base_path.empty() ? "/" : base_path;
+  if (rel[0] == '/') return base_path + rel;
+  return base_path + "/" + rel;
+}
+
+// Build the httplib::Request (method, path, headers, body/multipart/streaming
+// source, response sink) from `req` and the already-resolved `headers`/`path`.
+// Shared by the one-off http_request and the persistent http_client_request so
+// all body logic (params already folded into `path`) lives in one place. The
+// body_sink lambda captures `req` by reference — the caller keeps `req` alive
+// across the send.
+inline void _http_build_request(const HttpRequest& req, const std::string& path,
+                                const HeaderList& headers,
+                                httplib::Request& hreq) {
   hreq.method = req.method;
   hreq.path = path;
   bool has_ct = false;
-  for (const auto& [k, v] : req.headers) {
+  for (const auto& [k, v] : headers) {
     hreq.headers.emplace(k, v);
     if (_iequals(k, "Content-Type")) has_ct = true;
   }
@@ -405,21 +439,25 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     hreq.content_receiver = [&req](const char* data, size_t len, uint64_t,
                                    uint64_t) { return req.body_sink(data, len); };
   }
+}
 
-  // Cooperative Ctrl+C / isolate-cancel. send() blocks deep in the socket layer
-  // (connect, response-header wait, body) — not a runtime safepoint, and the
-  // internal poll/select swallow EINTR, so a single SIGINT couldn't break a hung
-  // request (only the second, force-killing press). A watcher thread polls the
-  // interrupt flag and, when it fires, calls cli.stop() — cpp-httplib's
-  // documented thread-safe way to shut down an in-flight socket so the blocked
-  // send() errors out. send() itself stays on THIS thread so the streaming
-  // callbacks (body_sink/body_source, which call back into culebra) keep running
-  // on the thread that owns the interpreter/JIT state. The flag is read, never
-  // consumed, here; after send() returns, throw_if_interrupted() honors a pending
-  // interrupt with the same cooperative Interrupted the loop safepoint raises.
-  // The watcher checks the process SIGINT flag and this thread's isolate-cancel
-  // flag (captured now — the watcher runs on a different thread, so its own
-  // current_runtime() would be the wrong one).
+// Send `hreq` over `cli` and map the result into an HttpResult, with cooperative
+// Ctrl+C / isolate-cancel. send() blocks deep in the socket layer (connect,
+// response-header wait, body) — not a runtime safepoint, and the internal
+// poll/select swallow EINTR, so a single SIGINT couldn't break a hung request
+// (only the second, force-killing press). A watcher thread polls the interrupt
+// flag and, when it fires, calls cli.stop() — cpp-httplib's documented
+// thread-safe way to shut down an in-flight socket so the blocked send() errors
+// out. send() itself stays on THIS thread so the streaming callbacks
+// (body_sink/body_source, which call back into culebra) keep running on the
+// thread that owns the interpreter/JIT state. The flag is read, never consumed;
+// after send() returns, throw_if_interrupted() honors a pending interrupt with
+// the same cooperative Interrupted the loop safepoint raises. The watcher checks
+// the process SIGINT flag and this thread's isolate-cancel flag (captured now —
+// the watcher runs on a different thread, so its own current_runtime() would be
+// the wrong one).
+inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
+  HttpResult out;
   auto* isolate_flag = current_runtime().interrupt_flag;
   std::mutex watch_m;
   std::condition_variable watch_cv;
@@ -463,7 +501,161 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     out.headers.emplace_back(k, v);
   }
   return out;
+}
+
+struct HttpClient {
+  httplib::Client cli;          // reused keep-alive connection.
+  std::string base_path;        // leading path prefix ("" or "/v1"), no trailing
+                                // slash; the origin lives in `cli`.
+  HeaderList default_headers;   // layered under each request's headers.
+  long timeout_sec = 0;         // carried so an absolute-URL one-off can reuse it.
+  bool follow_redirects = true;
+  std::mutex m;                 // one connection → serialize requests.
+  explicit HttpClient(const std::string& origin) : cli(origin) {}
+};
+
+#endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
+
+CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  // Core archive stub: the real httplib::Client path is force-loaded from
+  // culebra_rt_http only when the program uses Http, so a binary built
+  // without Http never reaches httplib. Unreachable in practice (the Http
+  // namespace is never called there); report gracefully rather than abort.
+  (void)req;
+  HttpResult stub;
+  stub.error = "Http runtime not linked (no Http use detected at build)";
+  return stub;
+#else
+  HttpResult out;
+  std::string origin, path, err;
+  if (!split_url(req.url, origin, path, err)) {
+    out.error = std::move(err);
+    return out;
+  }
+  // Append query params (percent-encoded), preserving any query already in url.
+  if (!req.params.empty()) {
+    path += (path.find('?') == std::string::npos ? "?" : "&") +
+            encode_query(req.params);
+  }
+
+  httplib::Client cli(origin);
+  if (!cli.is_valid()) {
+    out.error = "Http: invalid URL or unsupported scheme: " + req.url;
+    return out;
+  }
+  cli.set_follow_location(req.follow_redirects);
+  // Tolerate servers that don't speak keep-alive cleanly on a one-shot call.
+  cli.set_keep_alive(false);
+  if (req.timeout_sec > 0) {
+    cli.set_connection_timeout(req.timeout_sec, 0);
+    cli.set_read_timeout(req.timeout_sec, 0);
+    cli.set_write_timeout(req.timeout_sec, 0);
+  }
+
+  httplib::Request hreq;
+  _http_build_request(req, path, req.headers, hreq);
+  return _http_send(cli, hreq);
 #endif  // CULEBRA_RT_HTTP_REQUEST_WEAK
+}
+
+// Open a persistent client bound to `base_url`'s origin, reusing one keep-alive
+// connection. `default_headers` layer under each request; `timeout_sec` /
+// `follow_redirects` are connection-level defaults. Returns a handle id (>= 0),
+// or -1 (with `err` set) on a bad base_url. Caller closes it (http_client_close).
+CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
+                                                 HeaderList default_headers,
+                                                 long timeout_sec,
+                                                 bool follow_redirects,
+                                                 std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)base_url;
+  (void)default_headers;
+  (void)timeout_sec;
+  (void)follow_redirects;
+  err = "Http runtime not linked (no Http use detected at build)";
+  return -1;
+#else
+  std::string origin, base_path, serr;
+  if (!split_url(base_url, origin, base_path, serr)) {
+    err = std::move(serr);
+    return -1;
+  }
+  // "/" means no prefix; otherwise drop a trailing slash so join_path is clean.
+  if (base_path == "/") base_path.clear();
+  else if (!base_path.empty() && base_path.back() == '/') base_path.pop_back();
+  auto* c = new HttpClient(origin);
+  if (!c->cli.is_valid()) {
+    delete c;
+    err = "Http: invalid base_url or unsupported scheme: " + base_url;
+    return -1;
+  }
+  c->base_path = std::move(base_path);
+  c->default_headers = std::move(default_headers);
+  c->timeout_sec = timeout_sec;
+  c->follow_redirects = follow_redirects;
+  c->cli.set_follow_location(follow_redirects);
+  c->cli.set_keep_alive(true);  // reuse the connection across requests.
+  if (timeout_sec > 0) {
+    c->cli.set_connection_timeout(timeout_sec, 0);
+    c->cli.set_read_timeout(timeout_sec, 0);
+    c->cli.set_write_timeout(timeout_sec, 0);
+  }
+  return _http_client_register(c);
+#endif
+}
+
+// Run `req` against the persistent client `id`. A relative `req.url` is joined to
+// the client's base path and sent over the reused connection (serialized by the
+// client mutex); an absolute `req.url` (with a scheme) can't reuse a connection
+// bound to a different origin, so it goes through a one-off http_request. Either
+// way the client's default headers layer under the request's. A closed/invalid
+// id is an error result (never a crash).
+CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
+                                                       const HttpRequest& req) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+  (void)req;
+  HttpResult stub;
+  stub.error = "Http runtime not linked (no Http use detected at build)";
+  return stub;
+#else
+  HttpClient* c = _http_client_get(id);
+  if (!c) {
+    HttpResult out;
+    out.error = "Http: client is closed";
+    return out;
+  }
+  if (req.url.find("://") != std::string::npos) {
+    HttpRequest fresh = req;  // std::function members are copyable.
+    fresh.headers = merge_headers(c->default_headers, req.headers);
+    fresh.timeout_sec = c->timeout_sec;
+    fresh.follow_redirects = c->follow_redirects;
+    return http_request(fresh);
+  }
+  std::string path = _http_join_path(c->base_path, req.url);
+  if (!req.params.empty()) {
+    path += (path.find('?') == std::string::npos ? "?" : "&") +
+            encode_query(req.params);
+  }
+  HeaderList headers = merge_headers(c->default_headers, req.headers);
+  httplib::Request hreq;
+  _http_build_request(req, path, headers, hreq);
+  std::lock_guard<std::mutex> lk(c->m);
+  return _http_send(c->cli, hreq);
+#endif
+}
+
+// Close and free a persistent client (idempotent; a closed/invalid id no-ops).
+CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+#else
+  HttpClient* c = _http_client_get(id);
+  if (!c) return;
+  _http_client_unregister(id);
+  delete c;
+#endif
 }
 
 }  // namespace culebra::http

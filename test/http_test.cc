@@ -117,6 +117,13 @@ int main() {
     }
     res.set_content(out, "text/plain");
   });
+  svr.Get("/api/echo", [](const httplib::Request& req, httplib::Response& res) {
+    // Echo the (joined) request path + two headers, so an Http.client's
+    // base_url join and default-header merge are observable end-to-end.
+    res.set_content(req.path + "|" + req.get_header_value("X-Auth") + "|" +
+                        req.get_header_value("X-Extra"),
+                    "text/plain");
+  });
   // 404 for anything unmatched is the cpp-httplib default.
 
   int port = svr.bind_to_any_port("127.0.0.1");
@@ -293,6 +300,47 @@ int main() {
     auto r = http_request(req);
     CHECK(r.ok);          // transport succeeded
     CHECK(r.status == 404);
+  }
+
+  // Persistent client (Http.client) — base_url join, default-header merge,
+  // connection reuse, and safe close. This is what the Http.client handle rides.
+  {
+    std::string err;
+    int64_t cid = culebra::http::http_client_open(base + "/api",
+                                                  {{"X-Auth", "k"}}, 0, true, err);
+    CHECK(cid >= 0);
+    CHECK(err.empty());
+    // relative path joins under /api; the default X-Auth header rides along.
+    HttpRequest r1;
+    r1.method = "GET";
+    r1.url = "/echo";
+    auto a = culebra::http::http_client_request(cid, r1);
+    CHECK(a.ok);
+    CHECK(a.body == "/api/echo|k|");
+    // a per-request header adds X-Extra and overrides the default X-Auth.
+    HttpRequest r2;
+    r2.method = "GET";
+    r2.url = "/echo";
+    r2.headers = {{"X-Extra", "e"}, {"X-Auth", "z"}};
+    auto b = culebra::http::http_client_request(cid, r2);
+    CHECK(b.ok);
+    CHECK(b.body == "/api/echo|z|e");
+    // reuse: a third request on the same handle still works (one connection).
+    auto c = culebra::http::http_client_request(cid, r1);
+    CHECK(c.ok && c.body == "/api/echo|k|");
+    culebra::http::http_client_close(cid);
+    // a request on a closed handle is an error result, never a crash.
+    auto d = culebra::http::http_client_request(cid, r1);
+    CHECK(!d.ok);
+    CHECK(d.error.find("closed") != std::string::npos);
+  }
+
+  // Http.client with a bad base_url (no scheme) fails to open (-1 + err).
+  {
+    std::string err;
+    int64_t cid = culebra::http::http_client_open("example.com", {}, 0, true, err);
+    CHECK(cid < 0);
+    CHECK(err.find("scheme") != std::string::npos);
   }
 
   svr.stop();

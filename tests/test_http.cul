@@ -166,4 +166,51 @@ assert_eq(sse_noarg.kind, "ArityError")
 let sse_refused = try { Http.sse("http://127.0.0.1:1/x", fn (e) { nil }); nil } catch e { e }
 assert_eq(sse_refused.kind, "HttpError")
 
+// --- `Http.client` (persistent connection-reusing client): offline error
+//     paths. The base_url join / header merge / reuse round-trips need a server
+//     (covered by the in-process loopback test http_test.cc); here, the error
+//     model and the per-method kwarg type errors (tagged with a client.* ctx). ---
+
+// a bad base_url (no scheme) fails to open with an HttpError.
+let cl_badbase = try { Http.client("example.com"); nil } catch e { e }
+assert_eq(cl_badbase.kind, "HttpError")
+assert_eq(cl_badbase.message,
+    "Http.client: Http: URL must include a scheme (http:// or https://): example.com")
+
+// a transport failure on a client request surfaces as HttpError (dead port).
+let cl = Http.client("http://127.0.0.1:1")
+let cl_refused = try { cl.get("/x"); nil } catch e { e }
+assert_eq(cl_refused.kind, "HttpError")
+
+// a client method's headers kwarg must be an Object of String (client.* ctx).
+let cl_badheaders = try { cl.get("/x", headers: "nope"); nil } catch e { e }
+assert_eq(cl_badheaders.kind, "TypeError")
+assert_eq(cl_badheaders.message, "client.get: headers must be an Object of String")
+let cl_badheaderval = try { cl.get("/x", headers: {X: 1}); nil } catch e { e }
+assert_eq(cl_badheaderval.kind, "TypeError")
+assert_eq(cl_badheaderval.message, "client.get: header values must be String")
+
+// params likewise.
+let cl_badparams = try { cl.get("/x", params: 1); nil } catch e { e }
+assert_eq(cl_badparams.kind, "TypeError")
+assert_eq(cl_badparams.message, "client.get: params must be an Object of String")
+
+// at most one of body / json / form / files on a client post (client.post ctx).
+let cl_excl = try { cl.post("/x", body: "y", json: {a: 1}); nil } catch e { e }
+assert_eq(cl_excl.kind, "TypeError")
+assert_eq(cl_excl.message, "client.post: pass at most one of body, json, form, files")
+
+// `path` is a typed String param: a StringView (e.g. a slice) is rejected, the
+// same as the free Http.* functions' typed url (interp/JIT must agree).
+let cl_pathstr = "/abc"
+let cl_svpath = try { cl.get(cl_pathstr[0..2]); nil } catch e { e }
+assert_eq(cl_svpath.kind, "TypeError")
+assert_eq(cl_svpath.message, "type error: parameter 'path' expects String")
+
+// a closed client errors cleanly (no crash) on further use.
+cl.close()
+let cl_closed = try { cl.get("/x"); nil } catch e { e }
+assert_eq(cl_closed.kind, "HttpError")
+assert_eq(cl_closed.message, "client.get: Http: client is closed")
+
 puts("test_http: ok")
