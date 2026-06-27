@@ -1509,14 +1509,14 @@ stdin 形式 (`culebra fmt -`) が整形フック。`culebra fmt` は (gofmt/rus
 ので、`.cul` で **Format Document** と `editor.formatOnSave` がそのまま動く。
 `build-vsix.sh` / `install.sh` で再ビルド・再インストール。
 
-**Zed** — `settings.json` に外部フォーマッタを設定:
+**Zed** — `settings.json` に外部フォーマッタを設定 (Zed は `format_on_save` が
+既定で on なので formatter だけでよい。`.cul` で切るなら `"off"` を明示):
 
 ```json
 {
   "languages": {
     "Culebra": {
-      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } },
-      "format_on_save": "on"
+      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }
     }
   }
 }

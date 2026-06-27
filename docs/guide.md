@@ -1548,14 +1548,15 @@ formatting provider, so **Format Document** and `editor.formatOnSave` work for
 `.cul` files out of the box. Rebuild/reinstall it with `build-vsix.sh` /
 `install.sh`.
 
-**Zed** — add an external formatter for the language in your `settings.json`:
+**Zed** — add an external formatter for the language in your `settings.json`
+(Zed's `format_on_save` already defaults to on, so a formatter is all you need;
+set it to `"off"` here to opt out for `.cul`):
 
 ```json
 {
   "languages": {
     "Culebra": {
-      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } },
-      "format_on_save": "on"
+      "formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }
     }
   }
 }
