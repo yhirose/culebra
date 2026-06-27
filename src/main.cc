@@ -1188,10 +1188,32 @@ int run_lint(int argc, const char** argv) {
   return warnings > 0 ? 1 : 0;
 }
 
-// `culebra fmt [files...]` — reformat Culebra source to the canonical style.
+// Expand any directory argument into the `.cul` files it contains (recursively,
+// sorted for stable output); plain file arguments pass through unchanged. A
+// directory that can't be read is reported via `ok=false`.
+static vector<string> fmt_expand_paths(const vector<string>& args, bool& ok) {
+  namespace fs = std::filesystem;
+  vector<string> out;
+  for (const auto& a : args) {
+    std::error_code ec;
+    if (!fs::is_directory(a, ec)) { out.push_back(a); continue; }
+    vector<string> found;
+    for (fs::recursive_directory_iterator it(a, ec), end; it != end; it.increment(ec)) {
+      if (ec) { std::println(stderr, "culebra fmt: can't read '{}'", a); ok = false; break; }
+      if (it->is_regular_file(ec) && it->path().extension() == ".cul")
+        found.push_back(it->path().string());
+    }
+    std::sort(found.begin(), found.end());
+    out.insert(out.end(), found.begin(), found.end());
+  }
+  return out;
+}
+
+// `culebra fmt [paths...]` — reformat Culebra source to the canonical style.
 // Default: write the formatted result to stdout. `-w`/`--write` rewrites files
 // in place. `-l`/`--list` prints the names of files that would change (and
-// exits 1). `--check` is like `-l` but prints nothing. With no files (or `-`)
+// exits 1). `--check` is like `-l` but prints nothing. A directory argument is
+// expanded to the `.cul` files under it (recursively). With no paths (or `-`)
 // it formats stdin to stdout (for editor format-on-save). Exit code: 0 clean,
 // 1 when `-l`/`--check` found changes, 2 on parse / read / safety failure.
 int run_fmt(int argc, const char** argv) {
@@ -1201,11 +1223,12 @@ int run_fmt(int argc, const char** argv) {
     string arg = argv[i];
     if (arg == "-h" || arg == "--help") {
       std::println("Usage: culebra fmt [-w|--write] [-l|--list] [--check] "
-                   "[files...]\n"
+                   "[paths...]\n"
                    "  (no flags)  write formatted source to stdout\n"
                    "  -w, --write  rewrite each file in place\n"
                    "  -l, --list   list files that would change (exit 1)\n"
                    "  --check      exit 1 if any file would change (no output)\n"
+                   "  paths        files, or directories scanned for *.cul\n"
                    "  -            read from stdin, write to stdout");
       return 0;
     }
@@ -1214,6 +1237,12 @@ int run_fmt(int argc, const char** argv) {
     if (arg == "--check") { check = true; continue; }
     files.push_back(arg);
   }
+
+  bool expand_ok = true;
+  // `-` (stdin) is not a path to expand; only expand when there are real paths.
+  bool has_stdin = false;
+  for (auto& f : files) if (f == "-") has_stdin = true;
+  if (!has_stdin) files = fmt_expand_paths(files, expand_ok);
 
   auto report = [](const string& path, const culebra::fmt::FormatResult& r) {
     if (r.status == culebra::fmt::FormatStatus::ParseError) {
@@ -1245,7 +1274,7 @@ int run_fmt(int argc, const char** argv) {
     return 0;
   }
 
-  int rc = 0;
+  int rc = expand_ok ? 0 : 2;
   bool any_changed = false;
   for (const auto& path : files) {
     vector<char> buff;

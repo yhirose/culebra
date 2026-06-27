@@ -1512,14 +1512,22 @@ in the spirit of `gofmt`.
 ```bash
 culebra fmt app.cul          # write the formatted source to stdout
 culebra fmt -w app.cul       # rewrite the file in place
+culebra fmt -w .             # format every .cul under the current directory
 culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI gate)
 culebra fmt -l src/*.cul     # list the files that would change
 cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 ```
 
+A directory argument is scanned recursively for `.cul` files, so
+`culebra fmt -w .` formats a whole project and `culebra fmt --check .`
+gates it in CI.
+
 Comments are preserved: a leading comment stays above the statement it
 introduces, a trailing comment stays on the same line, and a single blank
 line between statements is kept (runs of blank lines collapse to one).
+match / cond arms, class / trait / enum members, destructuring patterns,
+and parameter lists are all normalized; long binary expressions and method
+chains wrap at the line width.
 
 How it works: the source is parsed, re-printed from the syntax tree, and
 then **re-parsed and compared** against the original — if formatting would
@@ -1527,6 +1535,15 @@ change the program's meaning, or would drop or duplicate a comment, `fmt`
 refuses and leaves the file untouched rather than risk corrupting it.
 Formatting is idempotent: running it twice yields the same result as
 running it once.
+
+### Editor integration
+
+The stdin form (`culebra fmt -`) is the format-on-save hook. Vim/Neovim:
+the bundled `ftplugin` sets `formatprg=culebra\ fmt\ -`, so `gq` reformats
+(see the commented-out `BufWritePre` autocmd in `misc/vim/cul_ftplugin.vim`
+for format-on-save). Any editor with a "format with external command" /
+"run on save" mechanism can pipe the buffer through `culebra fmt -` the
+same way.
 
 19. AOT binary build
 --------------------

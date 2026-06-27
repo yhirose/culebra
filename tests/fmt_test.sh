@@ -68,5 +68,19 @@ done < <(find "$ROOT/tests" "$ROOT/examples" -name '*.cul')
 echo "corpus: $n files, refused=$refused notidem=$notidem"
 [[ $refused -ne 0 || $notidem -ne 0 ]] && fail=1
 
+# --- 4. Directory recursion ------------------------------------------------
+mkdir -p "$TMP/dir/sub"
+printf 'let  x=1\n' > "$TMP/dir/a.cul"
+printf 'let  y=2\n' > "$TMP/dir/sub/b.cul"
+printf 'plain text\n' > "$TMP/dir/note.txt"
+# --check on a dirty tree exits 1
+"$CULEBRA" fmt --check "$TMP/dir" >/dev/null 2>&1
+[[ $? -eq 1 ]] || { echo "FAIL dir --check: expected exit 1 on dirty tree"; fail=1; }
+# -w formats every .cul (and leaves the .txt alone), then the tree is clean
+"$CULEBRA" fmt -w "$TMP/dir" >/dev/null 2>&1
+"$CULEBRA" fmt --check "$TMP/dir" >/dev/null 2>&1
+[[ $? -eq 0 ]] || { echo "FAIL dir -w: tree not clean after write"; fail=1; }
+grep -q 'plain text' "$TMP/dir/note.txt" || { echo "FAIL dir: .txt was touched"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "fmt_test OK"; exit 0; fi
 echo "fmt_test FAILED"; exit 1

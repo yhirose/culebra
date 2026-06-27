@@ -1480,18 +1480,32 @@ culebra lint app.cul
 ```bash
 culebra fmt app.cul          # 整形結果を stdout に出力
 culebra fmt -w app.cul       # ファイルをその場で書き換え
+culebra fmt -w .             # カレント以下の .cul を全整形
 culebra fmt --check app.cul  # 未整形なら exit 1 (CI ゲート)
 culebra fmt -l src/*.cul     # 変更が必要なファイル名を列挙
 cat app.cul | culebra fmt -  # stdin -> stdout (エディタの保存時整形)
 ```
 
+ディレクトリ引数は再帰的に `.cul` を走査するので、`culebra fmt -w .` で
+プロジェクト全体を整形、`culebra fmt --check .` で CI ゲートにできる。
+
 コメントは保持される: 行頭コメントは導く文の上に、行末コメントは同じ行に
 残り、文と文の間の空行は1つ保持する (空行が連続する場合は1つに圧縮)。
+match / cond の腕、class / trait / enum のメンバ、分配パターン、パラメータ
+リストも正規化され、長い二項式やメソッドチェーンは行幅で折り返す。
 
 仕組み: ソースを構文木にパースして再出力し、その結果を**再パースして元と
 照合**する。整形がプログラムの意味を変えてしまう、またはコメントを脱落・重複
 させてしまう場合は整形を拒否し、ファイルを書き換えずに残す (コード破壊を絶対に
 避ける)。整形は冪等で、2回かけても1回と同じ結果になる。
+
+### エディタ統合
+
+stdin 形式 (`culebra fmt -`) が保存時整形のフック。Vim/Neovim は同梱
+`ftplugin` が `formatprg=culebra\ fmt\ -` を設定するので `gq` で整形できる
+(保存時整形は `misc/vim/cul_ftplugin.vim` のコメントアウトした `BufWritePre`
+autocmd 参照)。「外部コマンドで整形」「保存時に実行」の仕組みを持つエディタ
+なら同様にバッファを `culebra fmt -` に通せる。
 
 19. AOT バイナリビルド
 ----------------------

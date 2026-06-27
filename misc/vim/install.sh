@@ -6,6 +6,7 @@ set -eu
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 SRC="$SRC_DIR/cul.vim"
+FTPLUGIN="$SRC_DIR/cul_ftplugin.vim"
 
 if [ ! -f "$SRC" ]; then
   echo "error: $SRC not found" >&2
@@ -17,8 +18,9 @@ FTDETECT='autocmd BufRead,BufNewFile *.cul set filetype=cul'
 install_into() {
   root=$1
   name=$2
-  mkdir -p "$root/syntax" "$root/ftdetect"
+  mkdir -p "$root/syntax" "$root/ftdetect" "$root/ftplugin"
   cp "$SRC" "$root/syntax/cul.vim"
+  cp "$FTPLUGIN" "$root/ftplugin/cul.vim"
   printf '%s\n' "$FTDETECT" > "$root/ftdetect/cul.vim"
   echo "installed into $name ($root)"
 }
