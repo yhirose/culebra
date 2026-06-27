@@ -20,8 +20,10 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <fstream>
 #include <functional>
 #include <httplib.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -54,6 +56,48 @@ struct SseEvent {
 };
 // Return false from the handler to stop the stream.
 using SseHandler = std::function<bool(const SseEvent&)>;
+
+// One part of a multipart/form-data upload. `name` is the field name. A part is
+// a text field when `filename` is empty and a file part when it is set. The body
+// comes from `content` (held in memory) unless `source` is set, in which case
+// the part is streamed chunk-by-chunk and `content` is ignored — so a large file
+// or a slow-to-produce part never has to live in memory all at once. When any
+// part streams, the whole body is sent chunked; otherwise it is sent with a
+// known Content-Length.
+struct MultipartPart {
+  std::string name;
+  std::string filename;      // empty → text field; non-empty → file part.
+  std::string content_type;  // empty → no per-part Content-Type header.
+  std::string content;       // in-memory body (used when source is null).
+  BodySource source;         // set → stream this part's body.
+};
+
+// Build a BodySource that streams `path` in fixed-size chunks. Returns nullptr
+// when the file cannot be opened (the caller reports the error). Value-neutral
+// (pure std::ifstream), so both backends share one file-streaming path.
+inline BodySource make_file_source(const std::string& path) {
+  auto f = std::make_shared<std::ifstream>(path, std::ios::binary);
+  if (!*f) return nullptr;
+  return [f](std::string& out) -> bool {
+    if (!f->good()) return false;
+    char buf[64 * 1024];
+    f->read(buf, sizeof(buf));
+    auto n = f->gcount();
+    if (n <= 0) return false;  // EOF with nothing read.
+    out.assign(buf, static_cast<size_t>(n));
+    return true;
+  };
+}
+
+// Pull the next non-empty chunk from `src` into `out`, skipping empty chunks so
+// a chunked writer always makes progress. Returns false at end-of-stream.
+// Shared by the streaming body_source and the streaming multipart parts.
+inline bool next_chunk(const BodySource& src, std::string& out) {
+  while (src(out)) {
+    if (!out.empty()) return true;
+  }
+  return false;
+}
 
 // Incremental SSE parser (WHATWG event-stream): feed response-body chunks via
 // feed(); on each complete event (terminated by a blank line) it calls
@@ -120,6 +164,7 @@ struct HttpRequest {
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
   BodySource body_source = nullptr;// set → stream the request body (chunked).
+  std::vector<MultipartPart> multipart;  // non-empty → multipart/form-data body.
 };
 
 struct HttpResult {
@@ -243,7 +288,90 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     hreq.headers.emplace(k, v);
     if (_iequals(k, "Content-Type")) has_ct = true;
   }
-  if (req.body_source) {
+  if (!req.multipart.empty()) {
+    // multipart/form-data. httplib's detail serializers give us correct
+    // boundary generation and RFC-7578 part framing; we drive them ourselves
+    // (rather than Client::Post(items)) so the body still flows through the
+    // single send(Request) choke and composes with params/headers/into.
+    std::string boundary = httplib::detail::make_multipart_data_boundary();
+    if (!has_ct) {
+      hreq.headers.emplace(
+          "Content-Type",
+          httplib::detail::serialize_multipart_formdata_get_content_type(boundary));
+    }
+    bool any_stream = false;
+    for (const auto& p : req.multipart) {
+      if (p.source) { any_stream = true; break; }
+    }
+    if (!any_stream) {
+      // All parts in memory → one known-length body (best server compat).
+      httplib::UploadFormDataItems items;
+      items.reserve(req.multipart.size());
+      for (const auto& p : req.multipart) {
+        items.push_back({p.name, p.content, p.filename, p.content_type});
+      }
+      hreq.body = httplib::detail::serialize_multipart_formdata(items, boundary);
+    } else {
+      // Some part streams → emit the whole body chunked, interleaving each
+      // part's header, body (in-memory content or pulled from its source), and
+      // trailing CRLF, then the closing boundary. State lives in shared_ptrs so
+      // the provider (a copyable std::function) keeps its cursor across calls.
+      struct SPart {
+        std::string header;   // serialized item-begin (owns its bytes).
+        std::string content;  // in-memory body (empty when source set).
+        BodySource source;
+      };
+      auto parts = std::make_shared<std::vector<SPart>>();
+      parts->reserve(req.multipart.size());
+      for (const auto& p : req.multipart) {
+        httplib::UploadFormData meta{p.name, std::string(), p.filename,
+                                     p.content_type};
+        parts->push_back(
+            {httplib::detail::serialize_multipart_formdata_item_begin(meta,
+                                                                      boundary),
+             p.content, p.source});
+      }
+      hreq.headers.emplace("Transfer-Encoding", "chunked");
+      hreq.is_chunked_content_provider_ = true;
+      auto idx = std::make_shared<size_t>(0);
+      auto in_body = std::make_shared<bool>(false);  // false → emit header next.
+      hreq.content_provider_ =
+          [parts, boundary, idx, in_body](size_t, size_t,
+                                          httplib::DataSink& sink) -> bool {
+        static const char crlf[] = "\r\n";
+        if (*idx >= parts->size()) {
+          std::string fin =
+              httplib::detail::serialize_multipart_formdata_finish(boundary);
+          sink.write(fin.data(), fin.size());
+          sink.done();
+          return true;
+        }
+        SPart& sp = (*parts)[*idx];
+        if (!*in_body) {
+          sink.write(sp.header.data(), sp.header.size());
+          *in_body = true;
+          return true;
+        }
+        if (sp.source) {
+          std::string chunk;
+          if (next_chunk(sp.source, chunk)) {
+            sink.write(chunk.data(), chunk.size());
+            return true;
+          }
+          // EOF for this part (a producer error is rethrown after send).
+          sink.write(crlf, 2);
+          ++*idx;
+          *in_body = false;
+          return true;
+        }
+        if (!sp.content.empty()) sink.write(sp.content.data(), sp.content.size());
+        sink.write(crlf, 2);
+        ++*idx;
+        *in_body = false;
+        return true;
+      };
+    }
+  } else if (req.body_source) {
     // Streaming upload: send the body chunked, pulling from the source. The
     // provider writes one non-empty chunk per call (skipping empties so the
     // chunked writer always makes progress) and calls sink.done() at EOF.
@@ -258,16 +386,12 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
     hreq.content_provider_ = [src = req.body_source](
                                  size_t, size_t, httplib::DataSink& sink) -> bool {
       std::string chunk;
-      while (true) {
-        if (!src(chunk)) {
-          sink.done();
-          return true;
-        }
-        if (!chunk.empty()) {
-          sink.write(chunk.data(), chunk.size());
-          return true;
-        }
+      if (next_chunk(src, chunk)) {
+        sink.write(chunk.data(), chunk.size());
+      } else {
+        sink.done();
       }
+      return true;
     };
   } else if (!req.body.empty()) {
     hreq.body = req.body;

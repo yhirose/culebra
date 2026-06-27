@@ -14,6 +14,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
@@ -100,6 +102,20 @@ int main() {
     // echo the `q` query param back (so the client's params encoding +
     // the server's decoding round-trip is observable)
     res.set_content(req.get_param_value("q"), "text/plain");
+  });
+  svr.Post("/mp", [](const httplib::Request& req, httplib::Response& res) {
+    // Echo a canonical summary of the parsed multipart parts. The server
+    // de-chunks (for streamed uploads) and parses multipart/form-data itself,
+    // so this observes the client's part framing + boundary end-to-end.
+    std::string out;
+    for (const auto& [k, f] : req.form.fields) {
+      out += "field:" + f.name + "=" + f.content + ";";
+    }
+    for (const auto& [k, f] : req.form.files) {
+      out += "file:" + f.name + "[" + f.filename + "," + f.content_type + "," +
+             std::to_string(f.content.size()) + "];";
+    }
+    res.set_content(out, "text/plain");
   });
   // 404 for anything unmatched is the cpp-httplib default.
 
@@ -200,6 +216,63 @@ int main() {
     CHECK(r.ok);
     CHECK(r.status == 200);
     CHECK(r.body == "a b&c");  // the `&` and space survived encoding intact
+  }
+
+  // Multipart, all parts in memory — a text field + a file part. Sent with a
+  // known Content-Length (no streaming); the server parses it into fields/files.
+  {
+    HttpRequest req;
+    req.method = "POST";
+    req.url = base + "/mp";
+    req.multipart.push_back({"title", "", "", "My report", nullptr});
+    req.multipart.push_back(
+        {"doc", "data.csv", "text/csv", "a,b,c\n1,2,3\n", nullptr});
+    auto r = http_request(req);
+    CHECK(r.ok);
+    CHECK(r.status == 200);
+    CHECK(r.body ==
+          "field:title=My report;file:doc[data.csv,text/csv,12];");
+  }
+
+  // Multipart with a streamed part — a producer source yields the body in
+  // chunks, so the whole request is sent chunked; the server de-chunks and
+  // reassembles the part. This is what files: {stream: fn(){...}} rides on.
+  {
+    HttpRequest req;
+    req.method = "POST";
+    req.url = base + "/mp";
+    const char* chunks[] = {"row0\n", "row1\n", "row2\n"};
+    size_t i = 0;
+    culebra::http::BodySource src = [&](std::string& out) {
+      if (i >= 3) return false;
+      out = chunks[i++];
+      return true;
+    };
+    req.multipart.push_back({"f1", "", "", "field-value", nullptr});  // in-mem
+    req.multipart.push_back({"report", "export.csv", "text/csv", "", src});
+    auto r = http_request(req);
+    CHECK(r.ok);
+    CHECK(r.status == 200);
+    // 15 bytes streamed (3 × "rowN\n"); the field rides alongside.
+    CHECK(r.body ==
+          "field:f1=field-value;file:report[export.csv,text/csv,15];");
+  }
+
+  // make_file_source — streams a file from disk in chunks, and reports a
+  // missing file as nullptr (so the caller raises IOError, never crashes).
+  {
+    auto tmp = std::filesystem::temp_directory_path() /
+               "culebra_http_mp_test.bin";
+    std::string content(200000, 'X');  // larger than one 64 KiB chunk
+    { std::ofstream(tmp, std::ios::binary) << content; }
+    auto src = culebra::http::make_file_source(tmp.string());
+    CHECK(static_cast<bool>(src));
+    std::string got, chunk;
+    while (src(chunk)) got += chunk;
+    CHECK(got == content);
+    std::filesystem::remove(tmp);
+    CHECK(!culebra::http::make_file_source(
+        "/no/such/dir/definitely_missing.bin"));
   }
 
   // DELETE 204 — completed round-trip, but not 2xx-with-body; ok is true

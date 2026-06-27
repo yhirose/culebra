@@ -99,6 +99,61 @@ assert_eq(form_badval.kind, "TypeError")
 let form_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", form: {a: "1"}); nil } catch e { e }
 assert_eq(form_and_body.kind, "TypeError")
 
+// --- `files:` (multipart/form-data): offline-deterministic error paths. The
+//     part framing + streaming round-trip is verified e2e against a local echo
+//     server; here, the kwarg type/shape errors and the failure model. ---
+
+// files: must be an Object of parts.
+let files_badtype = try { Http.post("http://127.0.0.1:1/x", files: "nope"); nil } catch e { e }
+assert_eq(files_badtype.kind, "TypeError")
+assert_eq(files_badtype.message, "Http.post: files must be an Object")
+
+// a part value must be a String, Object, or Array.
+let files_badpart = try { Http.post("http://127.0.0.1:1/x", files: {a: 1}); nil } catch e { e }
+assert_eq(files_badpart.kind, "TypeError")
+assert_eq(files_badpart.message,
+    "Http.post: files['a'] must be a String, Object, or Array")
+
+// a part Object needs exactly one of content / path / stream. The count check
+// runs before any field type-check (so a wrong-typed second source still
+// reports "needs exactly one", not a per-field error) — verified symmetric.
+let files_nosource = try { Http.post("http://127.0.0.1:1/x", files: {a: {filename: "x"}}); nil } catch e { e }
+assert_eq(files_nosource.kind, "TypeError")
+assert_eq(files_nosource.message,
+    "Http.post: files['a'] needs exactly one of content, path, stream")
+let files_twosource = try { Http.post("http://127.0.0.1:1/x", files: {a: {content: 1, path: "y"}}); nil } catch e { e }
+assert_eq(files_twosource.kind, "TypeError")
+assert_eq(files_twosource.message,
+    "Http.post: files['a'] needs exactly one of content, path, stream")
+
+// content / path must be a String — the message names the part and the field
+// (interp/JIT must agree exactly, so assert the full text, not just the kind).
+let files_badcontent = try { Http.post("http://127.0.0.1:1/x", files: {a: {content: 1}}); nil } catch e { e }
+assert_eq(files_badcontent.kind, "TypeError")
+assert_eq(files_badcontent.message, "Http.post: files['a'].content must be a String")
+
+let files_badpathtype = try { Http.post("http://127.0.0.1:1/x", files: {a: {path: 9}}); nil } catch e { e }
+assert_eq(files_badpathtype.kind, "TypeError")
+assert_eq(files_badpathtype.message, "Http.post: files['a'].path must be a String")
+
+// stream must be a Function (producer).
+let files_badstream = try { Http.post("http://127.0.0.1:1/x", files: {a: {stream: 1}}); nil } catch e { e }
+assert_eq(files_badstream.kind, "TypeError")
+assert_eq(files_badstream.message,
+    "Http.post: files['a'].stream must be a Function (producer)")
+
+// path that can't be opened is an IOError (before any I/O).
+let files_badpath = try { Http.post("http://127.0.0.1:1/x", files: {a: {path: "_no_such_dir_/f"}}); nil } catch e { e }
+assert_eq(files_badpath.kind, "IOError")
+
+// files: and body: together is a TypeError (at most one of body/json/form/files).
+let files_and_body = try { Http.post("http://127.0.0.1:1/x", body: "x", files: {a: "b"}); nil } catch e { e }
+assert_eq(files_and_body.kind, "TypeError")
+
+// a valid in-memory part + transport failure still surfaces as HttpError.
+let files_refused = try { Http.post("http://127.0.0.1:1/x", files: {a: "b"}); nil } catch e { e }
+assert_eq(files_refused.kind, "HttpError")
+
 // --- `Http.sse` (Server-Sent Events): offline-deterministic paths. The event
 //     stream itself needs a server (SseDecoder is unit-tested in http_test.cc);
 //     here, the error model. ---

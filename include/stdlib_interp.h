@@ -3338,28 +3338,148 @@ inline Value http_run_into(culebra::http::HttpRequest& req, HttpIntoState& st,
   return http_result_to_value(std::move(r));
 }
 
-// Configure the request body from the `body` / `json` kwargs (post/put/request).
-// `json` (non-nil) serializes the value to JSON and sends it as
-// application/json. Otherwise `body`: a String is sent whole; a Function is a
-// producer — called per chunk, returning the next chunk String or nil at end —
-// streamed chunked so a big upload never lives in memory at once. `body` and
-// `json` together is a TypeError; a non-String/Function body is a TypeError.
+// Parse the `files` kwarg into req.multipart for a multipart/form-data upload.
+// Each Object entry is a part; its value is one of:
+//   - String                                  → text field {name: value}
+//   - {content: String, filename?, content_type?}  → in-memory file part
+//   - {path: String, filename?, content_type?}      → streamed from disk
+//   - {stream: Function, filename?, content_type?}  → streamed from a producer
+//   - Array of any of the above               → repeated parts under one name
+// A path/stream part is streamed chunked so a big file or slow output never has
+// to live in memory at once. `ctx` tags type errors.
+inline void http_setup_multipart(const Value& filesv,
+                                  const std::shared_ptr<Environment>& env,
+                                  culebra::http::HttpRequest& req,
+                                  HttpIntoState& st, const char* ctx, long line,
+                                  long col) {
+  if (filesv.type != Value::Object) {
+    throw CulebraError("TypeError",
+        std::format("{}: files must be an Object", ctx), line, col);
+  }
+  auto opt_str = [&](const ObjectValue& o, const char* key) -> std::string {
+    if (!o.has_own(key)) return std::string();
+    const Value& v = o.get(key);
+    if (!v.is_stringlike()) {
+      throw CulebraError("TypeError",
+          std::format("{}: files {} must be a String", ctx, key), line, col);
+    }
+    return std::string(v.to_string_view());
+  };
+  auto add_part = [&](const std::string& name, const Value& v) {
+    culebra::http::MultipartPart part;
+    part.name = name;
+    if (v.is_stringlike()) {  // bare String → plain text field.
+      part.content = std::string(v.to_string_view());
+      req.multipart.push_back(std::move(part));
+      return;
+    }
+    if (v.type != Value::Object) {
+      throw CulebraError("TypeError",
+          std::format("{}: files['{}'] must be a String, Object, or Array",
+                      ctx, name), line, col);
+    }
+    const ObjectValue& o = v.to_object();
+    part.filename = opt_str(o, "filename");
+    part.content_type = opt_str(o, "content_type");
+    int sources = o.has_own("content") + o.has_own("path") + o.has_own("stream");
+    if (sources != 1) {
+      throw CulebraError("TypeError",
+          std::format(
+              "{}: files['{}'] needs exactly one of content, path, stream",
+              ctx, name), line, col);
+    }
+    if (o.has_own("content")) {
+      const Value& cv = o.get("content");
+      if (!cv.is_stringlike()) {
+        throw CulebraError("TypeError",
+            std::format("{}: files['{}'].content must be a String", ctx, name),
+            line, col);
+      }
+      part.content = std::string(cv.to_string_view());
+    } else if (o.has_own("path")) {
+      const Value& pv = o.get("path");
+      if (!pv.is_stringlike()) {
+        throw CulebraError("TypeError",
+            std::format("{}: files['{}'].path must be a String", ctx, name),
+            line, col);
+      }
+      std::string path(pv.to_string_view());
+      part.source = culebra::http::make_file_source(path);
+      if (!part.source) {
+        throw CulebraError("IOError",
+            std::format("{}: cannot open '{}' for reading", ctx, path), line,
+            col);
+      }
+      if (part.filename.empty()) {
+        part.filename = std::filesystem::path(path).filename().string();
+      }
+    } else {  // stream: producer Function
+      const Value& sv = o.get("stream");
+      if (sv.type != Value::Function) {
+        throw CulebraError("TypeError",
+            std::format("{}: files['{}'].stream must be a Function (producer)",
+                        ctx, name), line, col);
+      }
+      if (!st.cb_interp) st.cb_interp = std::make_shared<Interpreter>();
+      Value producer = sv;
+      part.source = [&st, producer, env, ctx, line, col](
+                        std::string& out) -> bool {
+        if (st.eptr) return false;  // a previous part already failed.
+        try {
+          Value r = st.cb_interp->call_closure(producer, env, {});
+          if (r.type == Value::Nil) return false;  // end of stream.
+          if (!r.is_stringlike()) {
+            throw CulebraError("TypeError",
+                std::format(
+                    "{}: file stream producer must return a String or nil", ctx),
+                line, col);
+          }
+          out = std::string(r.to_string_view());
+          return true;
+        } catch (...) {
+          st.eptr = std::current_exception();  // abort; rethrown after send.
+          return false;
+        }
+      };
+    }
+    req.multipart.push_back(std::move(part));
+  };
+  for (const auto& [k, sym] : *filesv.to_object().properties) {
+    const Value& v = sym.val;
+    if (v.type == Value::Array) {
+      for (const auto& el : *v.to_array().values) add_part(std::string(k), el);
+    } else {
+      add_part(std::string(k), v);
+    }
+  }
+}
+
+// Configure the request body from the `body` / `json` / `form` / `files` kwargs
+// (post/put/request). `json` (non-nil) serializes the value to JSON and sends it
+// as application/json. `form` sends an x-www-form-urlencoded body. `files` sends
+// a multipart/form-data body (see http_setup_multipart). Otherwise `body`: a
+// String is sent whole; a Function is a producer — called per chunk, returning
+// the next chunk String or nil at end — streamed chunked so a big upload never
+// lives in memory at once. At most one of body/json/form/files; otherwise a
+// TypeError. A non-String/Function body is a TypeError.
 inline void http_setup_body(const Value& bodyv, const Value& jsonv,
-                            const Value& formv, const Value& ct,
+                            const Value& formv, const Value& filesv,
+                            const Value& ct,
                             const std::shared_ptr<Environment>& env,
                             culebra::http::HttpRequest& req, HttpIntoState& st,
                             const char* ctx, long line, long col) {
   bool has_json = jsonv.type != Value::Nil;
   bool has_form = formv.type != Value::Nil;
+  bool has_files = filesv.type != Value::Nil;
   bool has_body = bodyv.type == Value::Function ||
                   ((bodyv.type == Value::String ||
                     bodyv.type == Value::StringView) &&
                    !bodyv.to_string_view().empty());
-  if (has_json + has_form + has_body > 1) {
+  if (has_json + has_form + has_files + has_body > 1) {
     throw CulebraError(
         "TypeError",
-        std::format("{}: pass at most one of body, json, form", ctx), line,
-        col);
+        std::format("{}: pass at most one of body, json, form, files", ctx),
+        line, col);
   }
   if (has_json) {
     req.body = json_stringify(jsonv, 0, false, 0);
@@ -3370,6 +3490,11 @@ inline void http_setup_body(const Value& bodyv, const Value& jsonv,
     req.body = culebra::http::encode_query(
         http_parse_form(formv, ctx, line, col));
     req.content_type = "application/x-www-form-urlencoded";
+    return;
+  }
+  if (has_files) {
+    // Content-Type (multipart/form-data; boundary=...) is set by the http core.
+    http_setup_multipart(filesv, env, req, st, ctx, line, col);
     return;
   }
   // nil content_type means "unset" → the default (mirrors the JIT + the other
@@ -3444,6 +3569,11 @@ inline Value make_http_namespace() {
   // application/x-www-form-urlencoded body. Mutually exclusive with body/json.
   auto form_param =
       FunctionValue::Parameter{"form", false, ""sv, nullptr, kw_default_nil()};
+  // `files` (post/put/request): an Object of parts sent as multipart/form-data
+  // (text fields, in-memory/disk/producer file parts). Mutually exclusive with
+  // body/json/form.
+  auto files_param =
+      FunctionValue::Parameter{"files", false, ""sv, nullptr, kw_default_nil()};
 
   // GET / DELETE / HEAD — no body.
   auto bodyless = [&](const char* method, const char* ctx) {
@@ -3471,7 +3601,8 @@ inline Value make_http_namespace() {
   auto withbody = [&](const char* method, const char* ctx) {
     return Value(FunctionValue(
         {url_param, body_param, ct_param, headers_param, timeout_param,
-         follow_param, into_param, params_param, json_param, form_param},
+         follow_param, into_param, params_param, json_param, form_param,
+         files_param},
         [method, ctx](std::shared_ptr<Environment> env) -> Value {
           long line = env->get("__LINE__").to_long();
           long col = env->get("__COLUMN__").to_long();
@@ -3481,8 +3612,9 @@ inline Value make_http_namespace() {
           http_fill_common(env, req, ctx, line, col);
           HttpIntoState st;
           http_setup_body(env->get("body"), env->get("json"),
-                          env->get("form"), env->get("content_type"), env, req,
-                          st, ctx, line, col);
+                          env->get("form"), env->get("files"),
+                          env->get("content_type"), env, req, st, ctx, line,
+                          col);
           http_setup_into(env->get("into"), env, req, st, ctx, line, col);
           return http_run_into(req, st, ctx, line, col);
         },
@@ -3499,7 +3631,7 @@ inline Value make_http_namespace() {
       Value(FunctionValue(
           {{"method", false, "String"sv}, url_param, body_param, ct_param,
            headers_param, timeout_param, follow_param, into_param,
-           params_param, json_param, form_param},
+           params_param, json_param, form_param, files_param},
           [](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -3509,8 +3641,9 @@ inline Value make_http_namespace() {
             http_fill_common(env, req, "Http.request", line, col);
             HttpIntoState st;
             http_setup_body(env->get("body"), env->get("json"),
-                            env->get("form"), env->get("content_type"), env, req,
-                            st, "Http.request", line, col);
+                            env->get("form"), env->get("files"),
+                            env->get("content_type"), env, req, st,
+                            "Http.request", line, col);
             http_setup_into(env->get("into"), env, req, st, "Http.request",
                             line, col);
             return http_run_into(req, st, "Http.request", line, col);

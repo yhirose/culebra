@@ -2676,7 +2676,9 @@ Keyword arguments (shared by every method):
   and send it as the body with `Content-Type: application/json`.
 - `form: Object` (`post` / `put` / `request` only) — an `Object` of `String`
   values sent as an `application/x-www-form-urlencoded` body (percent-encoded).
-  At most one of `body` / `json` / `form` may be given (else `TypeError`).
+- `files: Object` (`post` / `put` / `request` only) — a `multipart/form-data`
+  body (text fields and file parts, with streaming); see Multipart below. At most
+  one of `body` / `json` / `form` / `files` may be given (else `TypeError`).
 - `body: String | Function` / `content_type: String` (`post` / `put` /
   `request` only) — request body and its `Content-Type` (the header is set only
   when the body is non-empty and no explicit `Content-Type` was passed in
@@ -2747,6 +2749,56 @@ Http.post(url, body: fn () {
 The producer runs on the calling thread (it may mutate captured state); if it
 throws, the upload is aborted and the error propagates. A non-`String`/non-`nil`
 return is a `TypeError`.
+
+**Multipart uploads — the `files:` argument.** Pass `files:` (on `post` / `put` /
+`request`) to send a `multipart/form-data` body; the `Content-Type` (with a
+generated boundary) is set for you. `files:` is an `Object` whose each entry is
+one part, keyed by field name. A part value is:
+
+* a **`String`** — a plain text field.
+* an **`Object`** with exactly one body source — `content:` (a `String` held in
+  memory), `path:` (a `String` file path, streamed from disk), or `stream:` (a
+  producer `Function`, streamed) — plus optional `filename:` and
+  `content_type:`. A `path:` part defaults `filename` to the file's base name.
+* an **`Array`** of any of the above — repeated parts under the same field name
+  (e.g. multiple files in one `photos` field).
+
+A part that uses `path:` or `stream:` is streamed chunked, so a large file or a
+slow-to-produce part never has to live in memory all at once. A `stream:`
+producer follows the same contract as a streaming `body:` — return the next
+chunk `String`, or `nil` to end the part.
+
+```culebra
+# doctest: skip
+# text field + an in-memory file part
+Http.post(url, files: {
+  title: "My report",
+  doc:   { content: "a,b,c\n1,2,3\n", filename: "data.csv", content_type: "text/csv" },
+})
+
+# a large file streamed straight from disk (never buffered whole)
+Http.post(url, files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } })
+
+# a slow-to-produce part streamed from a producer
+mut row = 0
+Http.post(url, files: {
+  export: { filename: "rows.csv", content_type: "text/csv", stream: fn () {
+    row = row + 1
+    row <= 1000 ? "{row},{compute(row)}\n" : nil
+  } },
+})
+
+# repeated parts under one field name via an Array
+Http.post(url, files: {
+  caption: "trip",
+  photos:  [ { path: "./1.jpg" }, { path: "./2.jpg" } ],
+})
+```
+
+A part value that isn't a `String` / `Object` / `Array`, an `Object` without
+exactly one of `content` / `path` / `stream`, a non-`String` `content` / `path`,
+or a non-`Function` `stream` is a `TypeError`; a `path` that can't be opened is
+an `IOError`.
 
 ### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
 

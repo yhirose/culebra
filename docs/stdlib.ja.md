@@ -2573,8 +2573,10 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 - `json: Any`（`post` / `put` / `request` のみ）— 値を JSON にシリアライズし、
   `Content-Type: application/json` でボディとして送信。
 - `form: Object`（`post` / `put` / `request` のみ）— `String` 値の `Object` を
-  `application/x-www-form-urlencoded` ボディとして送信（percent-encode）。`body` /
-  `json` / `form` は最大1つ（複数指定は `TypeError`）。
+  `application/x-www-form-urlencoded` ボディとして送信（percent-encode）。
+- `files: Object`（`post` / `put` / `request` のみ）— `multipart/form-data` ボディ
+  （テキストフィールド＋ファイル part、ストリーミング対応）を送信。下記 Multipart 参照。
+  `body` / `json` / `form` / `files` は最大1つ（複数指定は `TypeError`）。
 - `body: String | Function` / `content_type: String`（`post` / `put` /
   `request` のみ）— リクエストボディとその `Content-Type`（body が非空で、かつ
   `headers` で明示的な `Content-Type` が指定されていない場合のみ付与）。`String`
@@ -2642,6 +2644,54 @@ Http.post(url, body: fn () {
 
 producer は呼び出しスレッド上で実行され（捕捉状態を mutable に扱える）、throw すれば
 アップロードは中断されエラーが伝播します。`String`/`nil` 以外を返すと `TypeError`。
+
+**Multipart アップロード — `files:` 引数。** `files:`（`post` / `put` /
+`request`）を渡すと `multipart/form-data` ボディを送信します（boundary 付きの
+`Content-Type` は自動設定）。`files:` は各エントリが1つの part となる `Object` で、
+キーがフィールド名です。part の値は:
+
+* **`String`** — 素のテキストフィールド。
+* **`Object`** — ボディソースを正確に1つ持つ: `content:`（メモリ上の `String`）/
+  `path:`（`String` のファイルパス、ディスクからストリーム）/ `stream:`（producer
+  `Function`、ストリーム）。加えて任意の `filename:` / `content_type:`。`path:` の
+  part は `filename` をファイルのベース名で既定化します。
+* **`Array`** — 上記いずれかの配列。同一フィールド名で複数 part を送る（例: 1つの
+  `photos` フィールドに複数ファイル）。
+
+`path:` / `stream:` の part は chunked でストリームされるので、大きなファイルや
+生成に時間がかかる part もメモリに全部載せません。`stream:` producer はストリーミング
+`body:` と同じ規約（次の chunk `String` を返し、`nil` で part 終端）です。
+
+```culebra
+# doctest: skip
+# テキストフィールド + メモリ上のファイル part
+Http.post(url, files: {
+  title: "My report",
+  doc:   { content: "a,b,c\n1,2,3\n", filename: "data.csv", content_type: "text/csv" },
+})
+
+# 大きなファイルをディスクから直接ストリーム（全体をバッファしない）
+Http.post(url, files: { clip: { path: "/movies/big.mp4", content_type: "video/mp4" } })
+
+# 生成に時間がかかる part を producer からストリーム
+mut row = 0
+Http.post(url, files: {
+  export: { filename: "rows.csv", content_type: "text/csv", stream: fn () {
+    row = row + 1
+    row <= 1000 ? "{row},{compute(row)}\n" : nil
+  } },
+})
+
+# Array で同一フィールド名に複数 part
+Http.post(url, files: {
+  caption: "trip",
+  photos:  [ { path: "./1.jpg" }, { path: "./2.jpg" } ],
+})
+```
+
+part の値が `String` / `Object` / `Array` 以外、`Object` が `content` / `path` /
+`stream` を正確に1つ持たない、`content` / `path` が非 `String`、`stream` が非
+`Function`、はいずれも `TypeError`。開けない `path` は `IOError` です。
 
 ### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
 

@@ -1832,24 +1832,154 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
           reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
 
+// Parse the `files` slab value into req.multipart for a multipart/form-data
+// upload. Mirrors interp http_setup_multipart: each Object entry is a part whose
+// value is a String (text field), an Object ({content|path|stream, filename?,
+// content_type?}), or an Array of those (repeated parts under one name). A
+// path/stream part is streamed chunked so a big file or slow output never has to
+// live in memory all at once.
+inline void _http_setup_multipart(JitValue filesv,
+                                  culebra::http::HttpRequest& req,
+                                  JitHttpInto& st, const char* ctx) {
+  if (filesv.tag != TAG_OBJECT) {
+    throw culebra::CulebraError("TypeError",
+        std::format("{}: files must be an Object", ctx), 0, 0);
+  }
+  auto str_at = [&](JitObject* o, const char* key, bool& present) -> std::string {
+    size_t i = o->find_slot(key);
+    present = i != static_cast<size_t>(-1);
+    if (!present) return std::string();
+    JitValue v = o->slots[i].value;
+    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: files {} must be a String", ctx, key), 0, 0);
+    }
+    return std::string(_culebra_str_view(v.tag, v.data));
+  };
+  auto add_part = [&](const std::string& name, JitValue v) {
+    culebra::http::MultipartPart part;
+    part.name = name;
+    if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {  // bare String → field
+      part.content = std::string(_culebra_str_view(v.tag, v.data));
+      req.multipart.push_back(std::move(part));
+      return;
+    }
+    if (v.tag != TAG_OBJECT) {
+      throw culebra::CulebraError("TypeError",
+          std::format("{}: files['{}'] must be a String, Object, or Array",
+                      ctx, name), 0, 0);
+    }
+    auto* o = reinterpret_cast<JitObject*>(v.data);
+    bool dummy;
+    part.filename = str_at(o, "filename", dummy);
+    part.content_type = str_at(o, "content_type", dummy);
+    // Detect the body source by presence only, count first, then type-check the
+    // selected field inline — so the message + check order match interp exactly
+    // (str_at would relocate the check earlier and drop the per-part name).
+    size_t content_slot = o->find_slot("content");
+    size_t path_slot = o->find_slot("path");
+    size_t stream_slot = o->find_slot("stream");
+    bool has_content = content_slot != static_cast<size_t>(-1);
+    bool has_path = path_slot != static_cast<size_t>(-1);
+    bool has_stream = stream_slot != static_cast<size_t>(-1);
+    if (has_content + has_path + has_stream != 1) {
+      throw culebra::CulebraError("TypeError",
+          std::format(
+              "{}: files['{}'] needs exactly one of content, path, stream",
+              ctx, name), 0, 0);
+    }
+    if (has_content) {
+      JitValue cv = o->slots[content_slot].value;
+      if (cv.tag != TAG_STRING && cv.tag != TAG_STRINGVIEW) {
+        throw culebra::CulebraError("TypeError",
+            std::format("{}: files['{}'].content must be a String", ctx, name),
+            0, 0);
+      }
+      part.content = std::string(_culebra_str_view(cv.tag, cv.data));
+    } else if (has_path) {
+      JitValue pv = o->slots[path_slot].value;
+      if (pv.tag != TAG_STRING && pv.tag != TAG_STRINGVIEW) {
+        throw culebra::CulebraError("TypeError",
+            std::format("{}: files['{}'].path must be a String", ctx, name), 0,
+            0);
+      }
+      std::string path(_culebra_str_view(pv.tag, pv.data));
+      part.source = culebra::http::make_file_source(path);
+      if (!part.source) {
+        throw culebra::CulebraError("IOError",
+            std::format("{}: cannot open '{}' for reading", ctx, path), 0, 0);
+      }
+      if (part.filename.empty()) {
+        part.filename = std::filesystem::path(path).filename().string();
+      }
+    } else {  // stream: producer Function
+      JitValue sv = o->slots[stream_slot].value;
+      if (sv.tag != TAG_FUNC) {
+        throw culebra::CulebraError("TypeError",
+            std::format("{}: files['{}'].stream must be a Function (producer)",
+                        ctx, name), 0, 0);
+      }
+      auto* producer = reinterpret_cast<JitClosure*>(sv.data);
+      part.source = [producer, &st, ctx](std::string& out) -> bool {
+        if (st.eptr) return false;  // a previous part already failed.
+        try {
+          JitValue r = _culebra_invoke0(producer);
+          if (r.tag == TAG_NIL) return false;  // end of stream.
+          if (r.tag != TAG_STRING && r.tag != TAG_STRINGVIEW) {
+            _culebra_value_release_impl(r.tag, r.data);
+            throw culebra::CulebraError("TypeError",
+                std::format(
+                    "{}: file stream producer must return a String or nil", ctx),
+                0, 0);
+          }
+          out = _culebra_str_view(r.tag, r.data);
+          _culebra_value_release_impl(r.tag, r.data);
+          return true;
+        } catch (...) {
+          st.eptr = std::current_exception();  // abort; rethrown after send.
+          return false;
+        }
+      };
+    }
+    req.multipart.push_back(std::move(part));
+  };
+  auto* files = reinterpret_cast<JitObject*>(filesv.data);
+  if (files->shape) {
+    for (size_t k = 0; k < files->shape->names.size(); k++) {
+      std::string name(files->shape->names[k]);
+      JitValue v = files->slots[k].value;
+      if (v.tag == TAG_ARRAY) {
+        auto* arr = reinterpret_cast<JitArray*>(v.data);
+        for (size_t j = 0; j < arr->size; j++) add_part(name, arr->items[j]);
+      } else {
+        add_part(name, v);
+      }
+    }
+  }
+}
+
 // Configure the request body from the `body` slab value: TAG_STRING → whole;
 // TAG_FUNC → producer (called per chunk, returns next chunk String or nil),
-// streamed chunked. Else → TypeError. Mirrors interp http_setup_body.
+// streamed chunked. `json` → application/json; `form` → urlencoded; `files` →
+// multipart/form-data. Else → TypeError. Mirrors interp http_setup_body.
 inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
-                             JitValue ct, culebra::http::HttpRequest& req,
-                             JitHttpInto& st, const char* ctx) {
-  // At most one of body / json / form. `json` → application/json; `form` →
-  // application/x-www-form-urlencoded.
+                             JitValue filesv, JitValue ct,
+                             culebra::http::HttpRequest& req, JitHttpInto& st,
+                             const char* ctx) {
+  // At most one of body / json / form / files. `json` → application/json;
+  // `form` → application/x-www-form-urlencoded; `files` → multipart/form-data.
   bool has_json = jsonv.tag != TAG_NIL;
   bool has_form = formv.tag != TAG_NIL;
+  bool has_files = filesv.tag != TAG_NIL;
   bool has_body =
       bodyv.tag == TAG_FUNC ||
       ((bodyv.tag == TAG_STRING || bodyv.tag == TAG_STRINGVIEW) &&
        !std::string_view(_culebra_str_view(bodyv.tag, bodyv.data)).empty());
-  if (has_json + has_form + has_body > 1) {
+  if (has_json + has_form + has_files + has_body > 1) {
     throw culebra::CulebraError(
         "TypeError",
-        std::format("{}: pass at most one of body, json, form", ctx), 0, 0);
+        std::format("{}: pass at most one of body, json, form, files", ctx), 0,
+        0);
   }
   if (has_json) {
     req.body = culebra_runtime_json_stringify(jsonv.tag, jsonv.data, 0, 0, 0);
@@ -1868,6 +1998,11 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
     }
     req.body = culebra::http::encode_query(pairs);
     req.content_type = "application/x-www-form-urlencoded";
+    return;
+  }
+  if (has_files) {
+    // Content-Type (multipart/form-data; boundary=...) is set by the http core.
+    _http_setup_multipart(filesv, req, st, ctx);
     return;
   }
   // ct / body may be nil when this method is reached positional-only (the slow
@@ -3518,8 +3653,8 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 1), _proc_adapt::at(a, n, 8),
-                   _proc_adapt::at(a, n, 9), _proc_adapt::at(a, n, 2), req, st,
-                   ctx);
+                   _proc_adapt::at(a, n, 9), _proc_adapt::at(a, n, 10),
+                   _proc_adapt::at(a, n, 2), req, st, ctx);
   _http_setup_into(_proc_adapt::at(a, n, 6), req, st, ctx);
   return _http_run_into(req, st, ctx);
 }
@@ -3539,8 +3674,8 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
   _http_setup_body(_proc_adapt::at(a, n, 2), _proc_adapt::at(a, n, 9),
-                   _proc_adapt::at(a, n, 10), _proc_adapt::at(a, n, 3), req, st,
-                   "Http.request");
+                   _proc_adapt::at(a, n, 10), _proc_adapt::at(a, n, 11),
+                   _proc_adapt::at(a, n, 3), req, st, "Http.request");
   _http_setup_into(_proc_adapt::at(a, n, 7), req, st, "Http.request");
   return _http_run_into(req, st, "Http.request");
 }
