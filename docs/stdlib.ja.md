@@ -2944,14 +2944,14 @@ puts(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 
 | 関数 | 結果 |
 | --- | --- |
-| `CSV.parse(text: String, delimiter: String = ",") -> Array<Array<String>>` | String フィールドの行 |
+| `CSV.parse(text, delimiter=",", header=false, types=nil) -> Array` | String フィールドの行、または（`header` 指定で）Object の Array |
 | `CSV.stringify(rows: Array, delimiter: String = ",") -> String` | CSV テキスト。各行は Array、各フィールドは `to_string` 同様にレンダリング |
 
 `delimiter:` オプション（1 バイト。先頭バイトを使用）でフィールド区切りを選べる
 — TSV なら `"\t"`。位置引数でもキーワードでも渡せる。
 
-`parse` は寛容（エラーなし）: 全フィールドは `String` で返り（数値推論はしない）、
-空入力は 0 行、末尾改行は空行を足さない。LF と CRLF の両方がレコード区切り。
+既定では `parse` は寛容（エラーなし）: 全フィールドは `String` で返り（数値推論は
+しない）、空入力は 0 行、末尾改行は空行を足さない。LF と CRLF の両方がレコード区切り。
 `stringify` は各フィールドを `to_string` と同じ変換でレンダリングするので数値や
 `Bool` も自然に出力され、`stringify(parse(text))` は整形式入力を round-trip する。
 
@@ -2962,8 +2962,38 @@ puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
 puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
-数値列は parse 後に `to_long` / `to_float` で map して変換する。ヘッダ行があれば
-単に `rows[0]` で、専用のヘッダモードは無い。
+**ヘッダモード — `header: true`.** 1 行目を列名とし、以降の各行を（位置 Array でなく）
+その名前をキーにした `Object` にする：
+
+```culebra
+let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
+puts(rows[0]["name"])                                 # => alice
+```
+
+データ行が無いヘッダ（や空入力）は `[]`。ヘッダ名の重複や、ヘッダとフィールド数が
+食い違うデータ行は `ValueError`。
+
+**型付き列 — `types:`.** `types:`（ヘッダ名 → `"String"` / `"Long"` / `"Float"` /
+`"Bool"` の `Object`）を渡すとその列を変換する。未指定の列は `String` のまま。変換は
+**明示・推論しない** — 郵便番号や ID を `String` と宣言すれば元のテキストが正確に保たれる
+（先頭ゼロや精度の喪失なし）。`types:` は `header: true` を要する。
+
+```culebra
+let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
+                     types: {age: "Long", active: "Bool"})
+puts(rows[0]["age"] + 1)                              # => 31  （本物の Long）
+
+# 郵便番号は元テキストのまま — 数値推論なし
+let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
+puts(z[0]["zip"])                                     # => 01234
+```
+
+未知の型名・どの列も指さない `types` キー・変換不能なセル（`Long` への `"hello"`、
+空セル等）は、レコード番号と列名付きの `ValueError`。Bool は厳密に `"true"` /
+`"false"` のみ。変換は前後の空白をトリムしない。
+
+制約検証（範囲・正規表現・許可集合・一意性）は**あえて組み込まない** — それは別の
+汎用的な関心事。`types:` を使わない場合は `to_long` / `to_float` で都度変換する。
 
 ---
 

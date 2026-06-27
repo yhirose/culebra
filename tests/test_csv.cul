@@ -70,4 +70,68 @@ let parsed = docs.map(fn (d) { CSV.parse(d) })
 assert_eq(parsed[0][0], ["a", "b"])
 assert_eq(parsed[1][0], ["c", "d"])
 
+// --- header: true → Array of Objects keyed by the first row ---
+let hdata = "name,age\nalice,30\nbob,25"
+let hrows = CSV.parse(hdata, header: true)
+assert_eq(hrows.size(), 2)
+assert_eq(hrows[0]["name"], "alice")
+assert_eq(hrows[0]["age"], "30")          // String without types:
+assert_eq(hrows[1]["name"], "bob")
+// a header with no data rows yields an empty Array; empty input too
+assert_eq(CSV.parse("name,age", header: true), [])
+assert_eq(CSV.parse("", header: true), [])
+
+// --- types: coerce named columns; others stay String ---
+let tdata = "name,age,score,active\nalice,30,95.5,true\nbob,25,88,false"
+let trows = CSV.parse(tdata, header: true,
+                      types: {age: "Long", score: "Float", active: "Bool"})
+assert_eq(trows[0]["age"], 30)
+assert_eq(trows[0]["score"], 95.5)
+assert_eq(trows[0]["active"], true)
+assert_eq(trows[0]["name"], "alice")      // unlisted → String
+assert_eq(trows[1]["active"], false)
+assert_eq(trows[0]["age"] + 1, 31)        // genuinely a Long
+
+// declared String preserves leading zeros (no number inference)
+let z = CSV.parse("id,zip\n7,01234", header: true, types: {id: "Long", zip: "String"})
+assert_eq(z[0]["zip"], "01234")
+assert_eq(z[0]["id"], 7)
+
+// --- error paths (identical kind + message across interp/JIT/AOT) ---
+let e1 = try { CSV.parse(tdata, types: {age: "Long"}); nil } catch e { e }
+assert_eq(e1.kind, "TypeError")
+assert_eq(e1.message, "CSV.parse: types requires header: true")
+
+let e2 = try { CSV.parse(tdata, header: true, types: {age: "Lnog"}); nil } catch e { e }
+assert_eq(e2.kind, "ValueError")
+assert_eq(e2.message,
+    "CSV.parse: unknown type 'Lnog' for column 'age' (valid: String, Long, Float, Bool)")
+
+let e3 = try { CSV.parse(tdata, header: true, types: {nope: "Long"}); nil } catch e { e }
+assert_eq(e3.kind, "ValueError")
+assert_eq(e3.message, "CSV.parse: types references unknown column 'nope'")
+
+let e4 = try { CSV.parse("x\nhello", header: true, types: {x: "Long"}); nil } catch e { e }
+assert_eq(e4.kind, "ValueError")
+assert_eq(e4.message, "CSV.parse: row 2, column 'x': expected Long, got 'hello'")
+
+let e5 = try { CSV.parse("a,a\n1,2", header: true); nil } catch e { e }
+assert_eq(e5.kind, "ValueError")
+assert_eq(e5.message, "CSV.parse: duplicate header column 'a'")
+
+let e6 = try { CSV.parse("a,b\n1", header: true); nil } catch e { e }
+assert_eq(e6.kind, "ValueError")
+assert_eq(e6.message, "CSV.parse: row 2 has 1 fields, but the header has 2")
+
+// types: must be an Object of String
+let e7 = try { CSV.parse(tdata, header: true, types: "nope"); nil } catch e { e }
+assert_eq(e7.kind, "TypeError")
+assert_eq(e7.message, "CSV.parse: types must be an Object of String")
+
+// header: is a typed Bool param — a non-Bool is the binder's typed-param error
+// (interp/JIT must agree on the exact wording, kwarg form included)
+let e8 = try { CSV.parse(tdata, header: 5); nil } catch e { e }
+assert_eq(e8.kind, "TypeError")
+assert_eq(e8.message, "type error: parameter 'header' expects Bool")
+
 puts("csv tests passed")

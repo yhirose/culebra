@@ -3056,17 +3056,17 @@ quotes, and an embedded quote is doubled (`""`).
 
 | Function | Result |
 | --- | --- |
-| `CSV.parse(text: String, delimiter: String = ",") -> Array<Array<String>>` | rows of String fields |
+| `CSV.parse(text, delimiter=",", header=false, types=nil) -> Array` | rows of String fields, or (with `header`) an Array of Objects |
 | `CSV.stringify(rows: Array, delimiter: String = ",") -> String` | CSV text; each row must be an Array, each field rendered like `to_string` |
 
 The `delimiter:` option (a single byte; first byte used) selects the field
 separator — pass `"\t"` for TSV. It may be given positionally or by keyword.
 
-`parse` is lenient (no errors): every field comes back as a `String` (numbers
-are not inferred), an empty input yields no rows, and a trailing newline does
-not add an empty final row. Both LF and CRLF end a record. `stringify` renders
-each field with the same conversion as `to_string`, so scalars like numbers
-and `Bool` serialize naturally; `stringify(parse(text))` round-trips
+By default `parse` is lenient (no errors): every field comes back as a `String`
+(numbers are not inferred), an empty input yields no rows, and a trailing newline
+does not add an empty final row. Both LF and CRLF end a record. `stringify`
+renders each field with the same conversion as `to_string`, so scalars like
+numbers and `Bool` serialize naturally; `stringify(parse(text))` round-trips
 well-formed input.
 
 ```culebra
@@ -3076,9 +3076,41 @@ puts(CSV.stringify([["a,b", "c"], [1, 2]]) == "\"a,b\",c\n1,2")   # => true
 puts(CSV.parse("a\tb", delimiter: "\t")[0])           # => ['a', 'b']
 ```
 
-To convert numeric columns, map over the parsed fields with `to_long` /
-`to_float`. A header row, if present, is just `rows[0]` — there is no separate
-header mode.
+**Header mode — `header: true`.** The first row names the columns, and each later
+row becomes an `Object` keyed by those names (instead of a positional Array):
+
+```culebra
+let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
+puts(rows[0]["name"])                                 # => alice
+```
+
+A header with no data rows (or empty input) yields `[]`. A duplicate header name,
+or a data row whose field count differs from the header, is a `ValueError`.
+
+**Typed columns — `types:`.** Pass `types:` (an `Object` mapping a header name to
+`"String"` / `"Long"` / `"Float"` / `"Bool"`) to coerce those columns; columns
+not listed stay `String`. Coercion is **explicit, never inferred** — so a value
+like a ZIP code or ID declared `String` keeps its exact text (no leading-zero or
+precision loss). `types:` requires `header: true`.
+
+```culebra
+let rows = CSV.parse("name,age,active\nalice,30,true", header: true,
+                     types: {age: "Long", active: "Bool"})
+puts(rows[0]["age"] + 1)                              # => 31  (a real Long)
+
+# a ZIP code stays exact text — no number inference
+let z = CSV.parse("zip\n01234", header: true, types: {zip: "String"})
+puts(z[0]["zip"])                                     # => 01234
+```
+
+An unknown type name, a `types` key that names no column, or a cell that can't be
+coerced (e.g. `"hello"` as a `Long`, or an empty cell) is a `ValueError` tagged
+with the record number and column. Bool accepts exactly `"true"` / `"false"`;
+coercion does not trim surrounding whitespace.
+
+Constraint validation (ranges, regex, allowed sets, uniqueness) is intentionally
+*not* built in — that is a separate, general concern. Convert ad-hoc columns with
+`to_long` / `to_float` if you don't want a `types:` map.
 
 ---
 

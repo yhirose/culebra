@@ -4356,17 +4356,94 @@ inline char _csv_delim(JitValue* a, int64_t n) {
   auto sv = _ns_adapt::require_sv(a[1], "delimiter");
   return sv.empty() ? ',' : sv[0];
 }
+// Map a coerced CSV cell to a JitValue (JIT side of the neutral result).
+inline JitValue _csv_coerced_to_jit(const culebra::csv::CoercedCell& cc) {
+  using CT = culebra::csv::ColType;
+  switch (cc.kind) {
+    case CT::Long:  return {TAG_LONG, cc.long_val};
+    case CT::Float: return jit_float(cc.float_val);
+    case CT::Bool:  return {TAG_BOOL, cc.bool_val ? 1 : 0};
+    case CT::String:
+      break;
+  }
+  return {TAG_STRING,
+          reinterpret_cast<int64_t>(_culebra_heap_str(std::string(cc.str_val)))};
+}
 inline JitValue _ns_csv_parse(JitValue* a, int64_t n) {
+  namespace ccsv = culebra::csv;
   auto rows =
-      culebra::csv::parse(_ns_adapt::require_sv(a[0], "text"), _csv_delim(a, n));
+      ccsv::parse(_ns_adapt::require_sv(a[0], "text"), _csv_delim(a, n));
+  // header (slot 2): Bool, default false (nil/absent → false). types (slot 3):
+  // an Object of String type names, or nil. Layout derives from interp params.
+  JitValue hv = _proc_adapt::at(a, n, 2);
+  bool header;
+  if (hv.tag == TAG_NIL) header = false;  // absent (positional slow path) → default
+  else if (hv.tag == TAG_BOOL) header = hv.data != 0;
+  else {
+    // Match interp's typed-param binder wording (the kwarg resolver does no
+    // per-param type check, so this adapter is where `header:` is validated).
+    culebra::throw_runtime_error_at(
+        "TypeError", "type error: parameter 'header' expects Bool", 0, 0);
+  }
+  JitValue tv = _proc_adapt::at(a, n, 3);
+  bool has_types = tv.tag != TAG_NIL;
+  if (has_types && !header) {
+    throw culebra::CulebraError("TypeError",
+        "CSV.parse: types requires header: true", 0, 0);
+  }
+  if (!header) {
+    auto* outer = culebra_runtime_array_new();
+    for (auto& row : rows) {
+      auto* inner = culebra_runtime_array_new();
+      for (auto& f : row)
+        culebra_runtime_array_push(
+            inner, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(f)));
+      culebra_runtime_array_push(outer, TAG_ARRAY,
+                                 reinterpret_cast<int64_t>(inner));
+    }
+    return _ns_adapt::v_array(outer);
+  }
   auto* outer = culebra_runtime_array_new();
-  for (auto& row : rows) {
-    auto* inner = culebra_runtime_array_new();
-    for (auto& f : row)
-      culebra_runtime_array_push(inner, TAG_STRING,
-                                 reinterpret_cast<int64_t>(_culebra_heap_str(f)));
-    culebra_runtime_array_push(outer, TAG_ARRAY,
-                               reinterpret_cast<int64_t>(inner));
+  if (rows.empty()) return _ns_adapt::v_array(outer);  // no header row → empty
+  const auto& head = rows[0];
+  std::vector<std::pair<std::string, std::string>> tpairs;
+  if (has_types) {
+    if (tv.tag != TAG_OBJECT) {
+      throw culebra::CulebraError("TypeError",
+          "CSV.parse: types must be an Object of String", 0, 0);
+    }
+    if (!_ns_env_object_pairs(reinterpret_cast<JitObject*>(tv.data), tpairs)) {
+      throw culebra::CulebraError("TypeError",
+          "CSV.parse: type values must be String", 0, 0);
+    }
+  }
+  std::vector<ccsv::ColType> cts;
+  std::string err;
+  if (!ccsv::resolve_col_types(head, tpairs, cts, err)) {
+    throw culebra::CulebraError("ValueError", "CSV.parse: " + err, 0, 0);
+  }
+  for (size_t r = 1; r < rows.size(); r++) {
+    const auto& row = rows[r];
+    if (row.size() != head.size()) {
+      throw culebra::CulebraError("ValueError",
+          std::format("CSV.parse: row {} has {} fields, but the header has {}",
+                      r + 1, row.size(), head.size()), 0, 0);
+    }
+    auto* obj = culebra_runtime_object_new();
+    for (size_t c = 0; c < head.size(); c++) {
+      ccsv::CoercedCell cc;
+      if (!ccsv::coerce_cell(row[c], cts[c], cc)) {
+        throw culebra::CulebraError("ValueError",
+            std::format("CSV.parse: row {}, column '{}': expected {}, got '{}'",
+                        r + 1, head[c], ccsv::col_type_name(cts[c]), row[c]),
+            0, 0);
+      }
+      JitValue v = _csv_coerced_to_jit(cc);
+      culebra_runtime_object_set(obj, head[c].c_str(), false, v.tag, v.data, 0,
+                                 0);
+    }
+    culebra_runtime_array_push(outer, TAG_OBJECT,
+                               reinterpret_cast<int64_t>(obj));
   }
   return _ns_adapt::v_array(outer);
 }

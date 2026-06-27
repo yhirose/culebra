@@ -4628,6 +4628,87 @@ inline char csv_delim_char(const Value& v) {
   return s.empty() ? ',' : s[0];
 }
 
+// Map a coerced CSV cell to a Value (interp side of the neutral result).
+inline Value csv_coerced_to_value(const culebra::csv::CoercedCell& cc) {
+  using CT = culebra::csv::ColType;
+  switch (cc.kind) {
+    case CT::String: return Value(std::string(cc.str_val));
+    case CT::Long:   return Value(static_cast<long>(cc.long_val));
+    case CT::Float:  return Value(cc.float_val);
+    case CT::Bool:   return Value(cc.bool_val);
+  }
+  return Value(std::string(cc.str_val));
+}
+
+// Build the CSV.parse result. Without `header`: rows of String fields (Array of
+// Array). With `header`: the first row names the columns and each later row
+// becomes an Object; `types` (a column-name → type-name Object) coerces the
+// named columns, others stay String. Errors carry the 1-based record number +
+// column name. Shared shape with the JIT adapter (csv.h single-sources the
+// header/types validation and coercion).
+inline Value csv_rows_to_value(std::vector<std::vector<std::string>>&& rows,
+                               bool header, const Value& typesv, long line,
+                               long col) {
+  namespace ccsv = culebra::csv;
+  bool has_types = typesv.type != Value::Nil;
+  if (has_types && !header) {
+    throw CulebraError("TypeError", "CSV.parse: types requires header: true",
+                       line, col);
+  }
+  if (!header) {
+    ArrayValue out;
+    for (auto& row : rows) {
+      ArrayValue r;
+      for (auto& f : row) r.values->push_back(Value(std::move(f)));
+      out.values->push_back(Value(std::move(r)));
+    }
+    return Value(std::move(out));
+  }
+  ArrayValue out;
+  if (rows.empty()) return Value(std::move(out));  // no header row → empty
+  const auto& head = rows[0];
+  std::vector<std::pair<std::string, std::string>> tpairs;
+  if (has_types) {
+    if (typesv.type != Value::Object) {
+      throw CulebraError("TypeError",
+          "CSV.parse: types must be an Object of String", line, col);
+    }
+    for (const auto& [k, sym] : *typesv.to_object().properties) {
+      if (sym.val.type != Value::String && sym.val.type != Value::StringView) {
+        throw CulebraError("TypeError", "CSV.parse: type values must be String",
+                           line, col);
+      }
+      tpairs.emplace_back(std::string(k), std::string(sym.val.to_string_view()));
+    }
+  }
+  std::vector<ccsv::ColType> cts;
+  std::string err;
+  if (!ccsv::resolve_col_types(head, tpairs, cts, err)) {
+    throw CulebraError("ValueError", "CSV.parse: " + err, line, col);
+  }
+  for (size_t r = 1; r < rows.size(); r++) {
+    const auto& row = rows[r];
+    if (row.size() != head.size()) {
+      throw CulebraError("ValueError",
+          std::format("CSV.parse: row {} has {} fields, but the header has {}",
+                      r + 1, row.size(), head.size()), line, col);
+    }
+    ObjectValue obj;
+    for (size_t c = 0; c < head.size(); c++) {
+      ccsv::CoercedCell cc;
+      if (!ccsv::coerce_cell(row[c], cts[c], cc)) {
+        throw CulebraError("ValueError",
+            std::format("CSV.parse: row {}, column '{}': expected {}, got '{}'",
+                        r + 1, head[c], ccsv::col_type_name(cts[c]), row[c]),
+            line, col);
+      }
+      obj.initialize(head[c], csv_coerced_to_value(cc), false);
+    }
+    out.values->push_back(Value(std::move(obj)));
+  }
+  return Value(std::move(out));
+}
+
 // `CSV`: parse / stringify RFC 4180-ish CSV. The parse/serialize logic is
 // shared with the JIT slow-path adapters via csv.h. `parse` returns rows of
 // String fields; `stringify` takes an Array of rows (each an Array) and
@@ -4641,19 +4722,20 @@ inline Value make_csv_namespace() {
       "parse",
       Value(FunctionValue({{"text", false, "String"sv},
                            {"delimiter", false, "String"sv, nullptr,
-                            kw_default_comma()}},
+                            kw_default_comma()},
+                           {"header", false, "Bool"sv, nullptr,
+                            kw_default_false()},
+                           {"types", false, ""sv, nullptr, kw_default_nil()}},
                           [](std::shared_ptr<Environment> env) -> Value {
+                            long line = env->get("__LINE__").to_long();
+                            long col = env->get("__COLUMN__").to_long();
                             auto rows = culebra::csv::parse(
                                 env->get("text").to_string_view(),
                                 csv_delim_char(env->get("delimiter")));
-                            ArrayValue out;
-                            for (auto& row : rows) {
-                              ArrayValue r;
-                              for (auto& f : row)
-                                r.values->push_back(Value(std::move(f)));
-                              out.values->push_back(Value(std::move(r)));
-                            }
-                            return Value(std::move(out));
+                            bool header = env->get("header").to_bool();
+                            const Value& typesv = env->get("types");
+                            return csv_rows_to_value(std::move(rows), header,
+                                                     typesv, line, col);
                           },
                           "Array"sv)),
       false);
