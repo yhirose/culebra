@@ -538,48 +538,40 @@ class Printer {
   // own range); any it doesn't emit is caught by the comment-preservation check.
   DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, size_t lo,
                             size_t hi) {
-    // An ordered stream of entries: each is a statement (with optional trailing
-    // comment) or a standalone comment line. `sort` orders entries; `gstart` /
-    // `gend` are the textual span used for blank-line math (kept separate so a
-    // statement starting with a wrappable `[` / `(` sorts by its first token but
-    // still measures blanks from the bracket — wrapping must not invent blanks).
+    return print_items(stmts, lo, hi, "",
+                       [&](size_t k) { return print(*stmts[k]); });
+  }
+
+  // Render a comma/blank-separated list of member nodes occupying source range
+  // [lo, hi), with comments attached. Shared by statement blocks, match/cond
+  // arms, class members, and enum variants. `render(k)` produces the body of
+  // item k (without the trailing `sep`); `sep` is "" (statements/members) or
+  // "," (arms/variants), appended after each item before any trailing comment.
+  //
+  // Comment attachment hinges on three positions per item, all of which the AST
+  // optimizer's single-child span widening can corrupt (a lone item inherits
+  // its block's span, swallowing the `{ }` and a leading comment):
+  //   * extent — code-tight span (keyword..closing delimiter), for ordering and
+  //     blank-line math;
+  //   * head/tail — first/last descendant-token offset (never widened), to test
+  //     whether a comment lies between an item's tokens;
+  //   * first-token position — extent start past a swallowed `{` / comment, the
+  //     sort key, so an item never sorts before its own leading comment.
+  template <typename Render>
+  DocP print_items(const std::vector<const peg::Ast*>& items, size_t lo,
+                   size_t hi, const std::string& sep, Render render) {
     struct Entry { size_t sort, gstart, gend; DocP doc; };
     std::vector<Entry> entries;
 
-    // A statement's AST span can be widened by the optimizer to swallow the
-    // enclosing block's braces and surrounding whitespace/comments (a lone
-    // statement inherits its block/program span), so a leading or trailing
-    // comment folded into it must not be mistaken for a mid-statement one. The
-    // real extent is bounded by: the code-byte tight range (start to last code
-    // token, ignoring whitespace), and clamped to the descendant-token span so
-    // a swallowed `}` doesn't extend the end past the statement's last token.
-    // `extent` (is_code tight span, includes closing delimiters) is used for
-    // ordering and blank-line math; `tail` (end of the last descendant token)
-    // is used to classify comments: a same-line comment past a statement's last
-    // token trails it, even when an optimizer-widened span would otherwise
-    // swallow that comment and its block's `}`.
-    // extent = code tight span (keyword to closing delimiter) for ordering and
-    // blank-line math. head/tail = first/last descendant token offset — the
-    // statement's real token range, used to decide whether a comment is inside
-    // it (between its tokens) versus a leading/trailing comment outside it.
-    // head/tail ignore the optimizer-widened span (which can swallow the
-    // enclosing block's `{ }` and a leading comment).
-    std::vector<std::pair<size_t, size_t>> extent(stmts.size());
-    std::vector<size_t> head(stmts.size()), tail(stmts.size());
-    for (size_t k = 0; k < stmts.size(); k++) {
-      extent[k] = stmt_extent(*stmts[k]);
-      auto [rlo, rhi] = real_span(*stmts[k]);
+    std::vector<std::pair<size_t, size_t>> extent(items.size());
+    std::vector<size_t> head(items.size()), tail(items.size());
+    for (size_t k = 0; k < items.size(); k++) {
+      extent[k] = stmt_extent(*items[k]);
+      auto [rlo, rhi] = real_span(*items[k]);
       head[k] = rlo;
       tail[k] = rhi;
     }
 
-    // A comment is handled at THIS level only if it sits at brace depth 0
-    // relative to the block interior start `lo`: not enclosed by any `{` a
-    // statement opens. A deeper comment is inside a nested block (handled by
-    // that statement's recursion) or inside a verbatim construct (preserved by
-    // its source slice) — either way, skip it here. This cleanly separates
-    // `catch e { f() # here }` (depth 0, this level) from `class C { m() {} # h }`
-    // (depth > 0, kept inside the verbatim class) without per-statement spans.
     auto brace_depth = [&](size_t from, size_t p) {
       int d = 0;
       for (size_t i = from; i < p && i < src_.size(); i++) {
@@ -589,23 +581,17 @@ class Printer {
       }
       return d;
     };
-    // A comment is "inside" a statement (so handled by that statement's own
-    // printer / verbatim slice, not this level) when it is enclosed by a `{`
-    // the statement opened (depth > 0) OR sits strictly between some
-    // statement's first and last token — e.g. a comment on a continuation line
-    // of a wrapped method chain, whose braces have already balanced to depth 0.
-    auto inside_a_stmt = [&](size_t p) {
+    // "Inside an item" = enclosed by a `{` the item opened (handled by its
+    // recursion / verbatim slice) OR strictly between some item's first and
+    // last token (e.g. a comment on a wrapped chain's continuation line).
+    auto inside_item = [&](size_t p) {
       if (brace_depth(lo, p) > 0) return true;
-      for (size_t k = 0; k < stmts.size(); k++)
+      for (size_t k = 0; k < items.size(); k++)
         if (head[k] <= p && p < tail[k]) return true;
       return false;
     };
-
-    // A statement carries a comment its own printer can't place when a comment
-    // sits strictly between its first and last token at brace depth 0 — a
-    // mid-expression comment (e.g. trailing comments on each line of a wrapped
-    // method chain), not one inside a nested block (those recurse). Such a
-    // statement is emitted verbatim so the comment and its layout survive.
+    // A mid-item comment (between first and last token, brace depth 0) is one
+    // the item's printer can't place; the item is emitted verbatim to keep it.
     auto has_mid_comment = [&](size_t k) {
       for (const auto& c : comments_)
         if (head[k] < c.start && c.start < tail[k] &&
@@ -613,23 +599,12 @@ class Printer {
           return true;
       return false;
     };
-    // Index of the statement immediately preceding byte `p` (for trailing),
-    // using the last-token end so a widened span doesn't swallow the gap.
-    auto prev_stmt_index = [&](size_t p) -> int {
+    auto prev_item_index = [&](size_t p) -> int {
       int best = -1;
-      for (int k = 0; k < (int)stmts.size(); k++)
+      for (int k = 0; k < (int)items.size(); k++)
         if (tail[k] <= p) best = k;
       return best;
     };
-
-    // Statement entries first (so trailing comments can find them by index),
-    // ordered by their real start so a lone statement (which may inherit
-    // position 0) doesn't sort before its own leading comments.
-    // The sort key is the statement's first real token — skipping a swallowed
-    // leading block `{`, whitespace, and any leading comment (which becomes its
-    // own standalone entry) — so a statement never sorts before its own leading
-    // comment. (`return`'s keyword is suppressed, so extent.first can be the
-    // block `{`; without this, a leading comment would land after the return.)
     auto first_token_pos = [&](size_t k) {
       size_t p = std::max(extent[k].first, lo);
       while (p < extent[k].second &&
@@ -639,20 +614,22 @@ class Printer {
         p++;
       return p;
     };
-    std::vector<DocP> trailing(stmts.size());
-    for (size_t k = 0; k < stmts.size(); k++) {
+
+    std::vector<DocP> trailing(items.size());
+    for (size_t k = 0; k < items.size(); k++) {
       DocP doc = has_mid_comment(k)
                      ? doc_text(std::string(src_.substr(
                            extent[k].first, extent[k].second - extent[k].first)))
-                     : print(*stmts[k]);
+                     : render(k);
+      if (!sep.empty()) doc = doc_concat({doc, doc_text(sep)});
       entries.push_back({first_token_pos(k), extent[k].first, extent[k].second, doc});
     }
 
     for (const auto& c : comments_) {
       if (c.start < lo || c.start >= hi) continue;
-      if (inside_a_stmt(c.start)) continue;  // handled by the statement's printer
+      if (inside_item(c.start)) continue;  // handled by the item's printer
       if (!c.own_line) {
-        int pk = prev_stmt_index(c.start);
+        int pk = prev_item_index(c.start);
         if (pk >= 0) {
           trailing[pk] = trailing[pk]
               ? doc_concat({trailing[pk], doc_text("  "), comment_doc(c)})
@@ -663,8 +640,7 @@ class Printer {
       entries.push_back({c.start, c.start, c.end, comment_doc(c)});  // standalone
     }
 
-    // Attach trailing comments to their statement docs.
-    for (size_t k = 0; k < stmts.size(); k++)
+    for (size_t k = 0; k < items.size(); k++)
       if (trailing[k]) entries[k].doc = doc_concat({entries[k].doc, trailing[k]});
 
     std::sort(entries.begin(), entries.end(),
@@ -681,17 +657,17 @@ class Printer {
     return doc_concat(std::move(parts));
   }
 
-  // A brace block: always multi-line. `body` is the block's statement node(s);
-  // `after_pos` is a byte offset at or before the block's `{`, used to locate
-  // the brace interior so comments inside the braces are attached.
-  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
-    auto stmts = stmt_children(body);
+  // A `{ ... }` brace group, always multi-line, holding `items` rendered by
+  // `render` (with comments attached) and separated by `sep` ("" or ","). The
+  // brace interior is located by scanning from `after_pos` (at or before `{`).
+  template <typename Render>
+  DocP print_braced(const std::vector<const peg::Ast*>& items, size_t after_pos,
+                    const std::string& sep, bool empty_ok, Render render) {
     BlockSpan span = block_interior(after_pos);
-    size_t lo = span.found ? span.lo : (stmts.empty() ? after_pos : stmts.front()->position);
-    size_t hi = span.found ? span.hi : (stmts.empty() ? after_pos : node_end(*stmts.back()));
+    size_t lo = span.found ? span.lo : (items.empty() ? after_pos : items.front()->position);
+    size_t hi = span.found ? span.hi : (items.empty() ? after_pos : node_end(*items.back()));
 
-    // Empty block: emit `{}`, unless it holds dangling comments.
-    if (stmts.empty()) {
+    if (items.empty()) {  // `{}` unless it holds dangling comments
       std::vector<DocP> dangling;
       for (const auto& c : comments_)
         if (c.start >= lo && c.start < hi) dangling.push_back(comment_doc(c));
@@ -704,14 +680,21 @@ class Printer {
       return doc_concat({doc_text("{"), doc_indent(kIndent, doc_concat(std::move(inner))),
                          doc_hardline(), doc_text("}")});
     }
-
     return doc_concat({
         doc_text("{"),
         doc_indent(kIndent, doc_concat({doc_hardline(),
-                                        print_statement_list(stmts, lo, hi)})),
+                                        print_items(items, lo, hi, sep, render)})),
         doc_hardline(),
         doc_text("}"),
     });
+  }
+
+  // A brace block of statements: `body` is the block's statement node(s),
+  // `after_pos` at or before its `{`.
+  DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
+    auto stmts = stmt_children(body);
+    return print_braced(stmts, after_pos, "", empty_ok,
+                        [&](size_t k) { return print(*stmts[k]); });
   }
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
@@ -1032,6 +1015,141 @@ class Printer {
     return doc_concat({doc_text(kw + " "), print(*node.nodes[0])});
   }
 
+  // A match / cond arm body is `(EXPRESSION | BLOCK)`. A brace block lays out
+  // multi-line; an expression body stays on the `=>` line.
+  static bool is_block_body(const peg::Ast& b) { return b.original_name == "BLOCK"; }
+  DocP print_arm_body(const peg::Ast& body, size_t after_pos) {
+    if (is_block_body(body)) return print_block(body, after_pos, /*empty_ok=*/true);
+    return print(body);
+  }
+
+  DocP print_match(const peg::Ast& node) {
+    // [subject, MATCH_ARMS]. MATCH_ARM = [PATTERN, GUARD?, body].
+    const peg::Ast& arms = *node.nodes[1];
+    std::vector<const peg::Ast*> items;
+    for (auto& a : arms.nodes) items.push_back(a.get());
+    auto render = [&](size_t k) {
+      const peg::Ast& arm = *items[k];
+      bool guard = arm.nodes.size() >= 2 && arm.nodes[1]->original_name == "GUARD";
+      const peg::Ast& body = *arm.nodes.back();
+      std::vector<DocP> parts;
+      parts.push_back(verbatim(*arm.nodes[0]));  // pattern (slice; rarely reflowed)
+      if (guard)
+        parts.push_back(doc_concat({doc_text(" if "), print(*arm.nodes[1]->nodes[0])}));
+      parts.push_back(doc_text(" => "));
+      parts.push_back(print_arm_body(body, node_end(*arm.nodes[arm.nodes.size() - 2])));
+      return doc_concat(std::move(parts));
+    };
+    return doc_concat({doc_text("match "), print(*node.nodes[0]), doc_text(" "),
+                       print_braced(items, node_end(*node.nodes[0]), ",",
+                                    /*empty_ok=*/true, render)});
+  }
+
+  DocP print_cond(const peg::Ast& node) {
+    // [COND_ARM*]. COND_ARM = [(WILDCARD | EXPRESSION), body].
+    std::vector<const peg::Ast*> items;
+    for (auto& a : node.nodes) items.push_back(a.get());
+    auto render = [&](size_t k) {
+      const peg::Ast& arm = *items[k];
+      const peg::Ast& test = *arm.nodes[0];
+      DocP testd = test.name == "WILDCARD" ? doc_text("_") : print(test);
+      return doc_concat({testd, doc_text(" => "),
+                         print_arm_body(*arm.nodes[1], node_end(test))});
+    };
+    return doc_concat({doc_text("cond "),
+                       print_braced(items, node.position, ",", /*empty_ok=*/true, render)});
+  }
+
+  // Leading `@deco` children shared by class / trait / enum / fn declarations:
+  // emit each on its own line and return the index of the first real child.
+  size_t emit_decorators(const peg::Ast& node, std::vector<DocP>& parts) {
+    size_t i = 0;
+    while (i < node.nodes.size() && node.nodes[i]->original_name == "DECORATOR") {
+      parts.push_back(doc_concat({doc_text("@"), print(*node.nodes[i]->nodes[0])}));
+      parts.push_back(doc_hardline());
+      i++;
+    }
+    return i;
+  }
+
+  DocP print_method(const peg::Ast& m) {
+    auto v = view_method(m);
+    if (v.is_field)  // `static x = expr`
+      return doc_concat({doc_text("static " + std::string(v.name) + " = "),
+                         print(*v.value)});
+    DocP prefix = v.is_static ? doc_text("static ") : doc_text("");
+    if (v.is_typed_field) {
+      DocP d = doc_concat({prefix, doc_text(std::string(v.name) + ": " +
+                                            std::string(v.type_annotation))});
+      if (v.value) d = doc_concat({d, doc_text(" = "), print(*v.value)});
+      return d;
+    }
+    return doc_concat({prefix, doc_text(std::string(v.name)), print_params(*v.params),
+                       doc_text(" "),
+                       print_block(**v.body, node_end(*v.params), /*empty_ok=*/true)});
+  }
+
+  DocP print_class(const peg::Ast& node) {
+    // [DECORATOR*, CLASS_HEAD, METHOD*]
+    std::vector<DocP> parts;
+    size_t i = emit_decorators(node, parts);
+    const peg::Ast& head = *node.nodes[i++];
+    std::vector<const peg::Ast*> members;
+    for (size_t j = i; j < node.nodes.size(); j++) members.push_back(node.nodes[j].get());
+    parts.push_back(doc_text("class " + std::string(head.token) + " "));
+    parts.push_back(print_braced(members, node_end(head), "", /*empty_ok=*/true,
+                                 [&](size_t k) { return print_method(*members[k]); }));
+    return doc_concat(std::move(parts));
+  }
+
+  DocP print_trait(const peg::Ast& node) {
+    // [DECORATOR*, TRAIT_HEAD, TRAIT_METHOD*]. A method is signature-only or has
+    // a default-impl block.
+    std::vector<DocP> parts;
+    size_t i = emit_decorators(node, parts);
+    const peg::Ast& head = *node.nodes[i++];
+    std::vector<const peg::Ast*> methods;
+    for (size_t j = i; j < node.nodes.size(); j++) methods.push_back(node.nodes[j].get());
+    auto render = [&](size_t k) {
+      auto v = view_trait_method(*methods[k]);
+      DocP d = doc_concat({doc_text(std::string(v.name)), print_params(*v.params)});
+      if (!v.return_type.empty())
+        d = doc_concat({d, doc_text(" -> " + std::string(v.return_type))});
+      if (v.body)
+        d = doc_concat({d, doc_text(" "),
+                        print_block(*v.body, node_end(*v.params), /*empty_ok=*/true)});
+      return d;
+    };
+    parts.push_back(doc_text("trait " + std::string(head.token) + " "));
+    parts.push_back(print_braced(methods, node_end(head), "", /*empty_ok=*/true, render));
+    return doc_concat(std::move(parts));
+  }
+
+  DocP print_enum(const peg::Ast& node) {
+    // [DECORATOR*, CLASS_HEAD, VARIANT*]. VARIANT = [IDENTIFIER, VARIANT_FIELD*].
+    std::vector<DocP> parts;
+    size_t i = emit_decorators(node, parts);
+    const peg::Ast& head = *node.nodes[i++];
+    std::vector<const peg::Ast*> variants;
+    for (size_t j = i; j < node.nodes.size(); j++) variants.push_back(node.nodes[j].get());
+    auto render = [&](size_t k) {
+      const peg::Ast& v = *variants[k];
+      std::string out(v.nodes[0]->token);
+      if (v.nodes.size() > 1) {
+        out += "(";
+        for (size_t j = 1; j < v.nodes.size(); j++) {
+          if (j > 1) out += ", ";
+          out += std::string(v.nodes[j]->token);
+        }
+        out += ")";
+      }
+      return doc_text(out);
+    };
+    parts.push_back(doc_text("enum " + std::string(head.token) + " "));
+    parts.push_back(print_braced(variants, node_end(head), ",", /*empty_ok=*/true, render));
+    return doc_concat(std::move(parts));
+  }
+
  public:
   DocP print(const peg::Ast& node) {
     const std::string& n = node.name;
@@ -1047,6 +1165,11 @@ class Printer {
     if (n == "FOR") return print_for(node);
     if (n == "DEFER") return print_defer(node);
     if (n == "TRY") return print_try(node);
+    if (n == "MATCH") return print_match(node);
+    if (n == "COND") return print_cond(node);
+    if (n == "CLASS_DECL") return print_class(node);
+    if (n == "TRAIT_DECL") return print_trait(node);
+    if (n == "ENUM_DECL") return print_enum(node);
     if (n == "RETURN") return print_keyword_expr("return", node);
     if (n == "THROW") return print_keyword_expr("throw", node);
     if (n == "YIELD") return print_keyword_expr("yield", node);
