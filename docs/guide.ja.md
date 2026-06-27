@@ -1501,11 +1501,14 @@ match / cond の腕、class / trait / enum のメンバ、分配パターン、�
 
 ### エディタ統合
 
-stdin 形式 (`culebra fmt -`) が保存時整形のフック。Vim/Neovim は同梱
-`ftplugin` が `formatprg=culebra\ fmt\ -` を設定するので `gq` で整形できる
-(保存時整形は `misc/vim/cul_ftplugin.vim` のコメントアウトした `BufWritePre`
-autocmd 参照)。「外部コマンドで整形」「保存時に実行」の仕組みを持つエディタ
-なら同様にバッファを `culebra fmt -` に通せる。
+stdin 形式 (`culebra fmt -`) が整形フック。Vim/Neovim は同梱 `ftplugin`
+(`misc/vim/cul_ftplugin.vim`) が `:CulebraFmt` コマンドを提供し、バッファ全体を
+整形する (parse/安全網エラー時はバッファ不変、カーソル保持)。保存時整形は
+`let g:culebra_fmt_autosave = 1` で有効化。`gq` / `'formatprg'` には**あえて
+紐付けない**: `culebra fmt` は (gofmt/rustfmt と同様) 全ファイル整形なので、
+部分範囲やパース不能な断片を通すと空出力で置換され消えてしまう。`:CulebraFmt`
+は常に全体を整形し、成功時のみ書き換える。「保存時整形」を持つエディタなら
+同様にバッファを `culebra fmt -` に通せる (exit 0 の時だけ出力を適用)。
 
 19. AOT バイナリビルド
 ----------------------

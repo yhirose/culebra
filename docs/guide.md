@@ -1538,12 +1538,16 @@ running it once.
 
 ### Editor integration
 
-The stdin form (`culebra fmt -`) is the format-on-save hook. Vim/Neovim:
-the bundled `ftplugin` sets `formatprg=culebra\ fmt\ -`, so `gq` reformats
-(see the commented-out `BufWritePre` autocmd in `misc/vim/cul_ftplugin.vim`
-for format-on-save). Any editor with a "format with external command" /
-"run on save" mechanism can pipe the buffer through `culebra fmt -` the
-same way.
+The stdin form (`culebra fmt -`) is the format hook. Vim/Neovim: the bundled
+`ftplugin` (`misc/vim/cul_ftplugin.vim`) provides a `:CulebraFmt` command that
+reformats the whole buffer, leaving it untouched on a parse/safety error and
+preserving the cursor. Set `let g:culebra_fmt_autosave = 1` for format-on-save.
+It deliberately does *not* wire into `gq` / `'formatprg'`: `culebra fmt` is a
+whole-file formatter (like gofmt / rustfmt), so filtering a partial or
+unparseable range through it would replace those lines with empty output —
+`:CulebraFmt` always formats the whole buffer and only rewrites on success.
+Any editor with a "format on save" mechanism can pipe the buffer through
+`culebra fmt -` the same way (apply the output only when it exits zero).
 
 19. AOT binary build
 --------------------
