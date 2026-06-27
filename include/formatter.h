@@ -902,10 +902,89 @@ class Printer {
     return print_delimited("{", std::move(items), "}");
   }
 
+  // A destructuring pattern: containers (`(...)` / `[...]` / `{...}`) get
+  // normalized comma spacing; leaf patterns (identifier, `_`, `name: Type`,
+  // `Ctor(a)`, literals, `a | b` alternation) are sliced verbatim.
+  DocP print_pattern(const peg::Ast& n) {
+    if (n.name == "TUPLE_PATTERN") {
+      std::vector<DocP> items;
+      for (auto& c : n.nodes) items.push_back(print_pattern(*c));
+      if (items.size() == 1)
+        return doc_concat({doc_text("("), items[0], doc_text(",)")});
+      return print_delimited("(", std::move(items), ")");
+    }
+    if (n.name == "ARRAY_PATTERN") {
+      std::vector<DocP> items;
+      for (auto& c : n.nodes) items.push_back(print_pattern(*c));  // REST falls to verbatim
+      return print_delimited("[", std::move(items), "]");
+    }
+    if (n.name == "OBJECT_PATTERN") {
+      std::vector<DocP> items;
+      for (auto& e : n.nodes) {
+        if (e->name == "OBJECT_PAT_ENTRY" && e->nodes.size() == 2)  // `key: pattern`
+          items.push_back(doc_concat({doc_text(std::string(e->nodes[0]->token) + ": "),
+                                      print_pattern(*e->nodes[1])}));
+        else
+          items.push_back(verbatim(*e));  // shorthand `name`
+      }
+      return print_delimited("{", std::move(items), "}");
+    }
+    return verbatim(n);
+  }
+
+  DocP print_param(const peg::Ast& p) {
+    auto v = view_parameter(p);
+    if (v.is_kw_only_sep) return doc_text("*");
+    if (v.is_args_rest) return doc_text("*" + std::string(v.name));
+    if (v.is_kwargs_rest) return doc_text("**" + std::string(v.name));
+    if (v.pattern) return print_pattern(*v.pattern);
+    DocP d = doc_text((v.is_mut ? "mut " : "") + std::string(v.name));
+    if (!v.type_annotation.empty())
+      d = doc_concat({d, doc_text(": " + std::string(v.type_annotation))});
+    if (v.default_value) {
+      // A top-level bit-or in a default must keep its parens — a bare `|` would
+      // close the `|...|` lambda (and param defaults parse on the no-bit-or
+      // grammar ladder, so this is the one operator precedence can't recover).
+      DocP dv = print(*v.default_value);
+      if (v.default_value->name == "BIT_OR")
+        dv = doc_concat({doc_text("("), dv, doc_text(")")});
+      d = doc_concat({d, doc_text(" = "), dv});
+    }
+    return d;
+  }
+
   DocP print_params(const peg::Ast& params) {
     std::vector<DocP> items;
-    for (auto& p : params.nodes) items.push_back(verbatim(*p));  // params: verbatim
+    for (auto& p : params.nodes) items.push_back(print_param(*p));
     return print_delimited("(", std::move(items), ")");
+  }
+
+  DocP print_destructure(const peg::Ast& node) {
+    // [LET, MUTABLE, PATTERN, EXPRESSION]
+    std::vector<DocP> parts;
+    if (node.nodes[0]->token == "let") parts.push_back(doc_text("let "));
+    if (node.nodes[1]->token == "mut") parts.push_back(doc_text("mut "));
+    parts.push_back(print_pattern(*node.nodes[2]));
+    parts.push_back(doc_text(" = "));
+    parts.push_back(print(*node.nodes[3]));
+    return doc_concat(std::move(parts));
+  }
+
+  DocP print_import(const peg::Ast& node) {
+    // [IDENTIFIER, STRING]
+    return doc_text("import " + std::string(node.nodes[0]->token) + " from " +
+                    slice(*node.nodes[1]));
+  }
+
+  DocP print_export(const peg::Ast& node) {
+    // `export { name, ... }`
+    std::string out = "export {";
+    for (size_t i = 0; i < node.nodes.size(); i++) {
+      if (i) out += ", ";
+      out += std::string(node.nodes[i]->token);
+    }
+    out += "}";
+    return doc_text(out);
   }
 
   DocP print_function(const peg::Ast& node, bool named) {
@@ -945,7 +1024,7 @@ class Printer {
   DocP print_lambda(const peg::Ast& node) {
     // [LAMBDA_PARAMS, EXPRESSION]
     std::vector<DocP> items;
-    for (auto& p : node.nodes[0]->nodes) items.push_back(verbatim(*p));
+    for (auto& p : node.nodes[0]->nodes) items.push_back(print_param(*p));
     std::vector<DocP> parts;
     parts.push_back(doc_text("|"));
     for (size_t k = 0; k < items.size(); k++) {
@@ -1170,6 +1249,9 @@ class Printer {
     if (n == "CLASS_DECL") return print_class(node);
     if (n == "TRAIT_DECL") return print_trait(node);
     if (n == "ENUM_DECL") return print_enum(node);
+    if (n == "DESTRUCTURE_ASSIGN") return print_destructure(node);
+    if (n == "IMPORT_STMT") return print_import(node);
+    if (n == "EXPORT_STMT") return print_export(node);
     if (n == "RETURN") return print_keyword_expr("return", node);
     if (n == "THROW") return print_keyword_expr("throw", node);
     if (n == "YIELD") return print_keyword_expr("yield", node);
