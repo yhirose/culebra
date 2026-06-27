@@ -76,10 +76,10 @@ printf 'plain text\n' > "$TMP/dir/note.txt"
 # --check on a dirty tree exits 1
 "$CULEBRA" fmt --check "$TMP/dir" >/dev/null 2>&1
 [[ $? -eq 1 ]] || { echo "FAIL dir --check: expected exit 1 on dirty tree"; fail=1; }
-# -w formats every .cul (and leaves the .txt alone), then the tree is clean
-"$CULEBRA" fmt -w "$TMP/dir" >/dev/null 2>&1
+# -i formats every .cul (and leaves the .txt alone), then the tree is clean
+"$CULEBRA" fmt -i "$TMP/dir" >/dev/null 2>&1
 "$CULEBRA" fmt --check "$TMP/dir" >/dev/null 2>&1
-[[ $? -eq 0 ]] || { echo "FAIL dir -w: tree not clean after write"; fail=1; }
+[[ $? -eq 0 ]] || { echo "FAIL dir -i: tree not clean after write"; fail=1; }
 grep -q 'plain text' "$TMP/dir/note.txt" || { echo "FAIL dir: .txt was touched"; fail=1; }
 
 if [[ $fail -eq 0 ]]; then echo "fmt_test OK"; exit 0; fi

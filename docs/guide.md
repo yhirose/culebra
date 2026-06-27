@@ -1511,15 +1511,15 @@ in the spirit of `gofmt`.
 
 ```bash
 culebra fmt app.cul          # write the formatted source to stdout
-culebra fmt -w app.cul       # rewrite the file in place
-culebra fmt -w .             # format every .cul under the current directory
+culebra fmt -i app.cul       # rewrite the file in place
+culebra fmt -i .             # format every .cul under the current directory
 culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI gate)
 culebra fmt -l src/*.cul     # list the files that would change
 cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 ```
 
 A directory argument is scanned recursively for `.cul` files, so
-`culebra fmt -w .` formats a whole project and `culebra fmt --check .`
+`culebra fmt -i .` formats a whole project and `culebra fmt --check .`
 gates it in CI.
 
 Comments are preserved: a leading comment stays above the statement it

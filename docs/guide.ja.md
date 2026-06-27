@@ -1479,14 +1479,14 @@ culebra lint app.cul
 
 ```bash
 culebra fmt app.cul          # 整形結果を stdout に出力
-culebra fmt -w app.cul       # ファイルをその場で書き換え
-culebra fmt -w .             # カレント以下の .cul を全整形
+culebra fmt -i app.cul       # ファイルをその場で書き換え
+culebra fmt -i .             # カレント以下の .cul を全整形
 culebra fmt --check app.cul  # 未整形なら exit 1 (CI ゲート)
 culebra fmt -l src/*.cul     # 変更が必要なファイル名を列挙
 cat app.cul | culebra fmt -  # stdin -> stdout (エディタの保存時整形)
 ```
 
-ディレクトリ引数は再帰的に `.cul` を走査するので、`culebra fmt -w .` で
+ディレクトリ引数は再帰的に `.cul` を走査するので、`culebra fmt -i .` で
 プロジェクト全体を整形、`culebra fmt --check .` で CI ゲートにできる。
 
 コメントは保持される: 行頭コメントは導く文の上に、行末コメントは同じ行に

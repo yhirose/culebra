@@ -299,8 +299,8 @@ void print_usage(ostream& os) {
         "                            --reporter, --bail, --list)\n"
         "  lint <file.cul>...        Report static problems (errors + warnings\n"
         "                            like unused variables) without running\n"
-        "  fmt [files...]            Reformat source to canonical style\n"
-        "                            (-w write, -l list, --check; `culebra fmt --help`)\n"
+        "  fmt [paths...]            Reformat source to canonical style\n"
+        "                            (-i in-place, -l list, --check; `culebra fmt --help`)\n"
         "\n"
         "Examples:\n"
         "  culebra hello.cul              Run a script (interpreter)\n"
@@ -1210,29 +1210,30 @@ static vector<string> fmt_expand_paths(const vector<string>& args, bool& ok) {
 }
 
 // `culebra fmt [paths...]` — reformat Culebra source to the canonical style.
-// Default: write the formatted result to stdout. `-w`/`--write` rewrites files
-// in place. `-l`/`--list` prints the names of files that would change (and
-// exits 1). `--check` is like `-l` but prints nothing. A directory argument is
-// expanded to the `.cul` files under it (recursively). With no paths (or `-`)
-// it formats stdin to stdout (for editor format-on-save). Exit code: 0 clean,
-// 1 when `-l`/`--check` found changes, 2 on parse / read / safety failure.
+// Default: write the formatted result to stdout. `-i`/`--in-place` rewrites
+// files in place. `-l`/`--list` prints the names of files that would change
+// (and exits 1). `--check` is like `-l` but prints nothing. A directory
+// argument is expanded to the `.cul` files under it (recursively). With no
+// paths (or `-`) it formats stdin to stdout (for editor format-on-save). Exit
+// code: 0 clean, 1 when `-l`/`--check` found changes, 2 on parse / read /
+// safety failure.
 int run_fmt(int argc, const char** argv) {
-  bool write = false, list = false, check = false;
+  bool in_place = false, list = false, check = false;
   vector<string> files;
   for (int i = 2; i < argc; i++) {
     string arg = argv[i];
     if (arg == "-h" || arg == "--help") {
-      std::println("Usage: culebra fmt [-w|--write] [-l|--list] [--check] "
+      std::println("Usage: culebra fmt [-i|--in-place] [-l|--list] [--check] "
                    "[paths...]\n"
-                   "  (no flags)  write formatted source to stdout\n"
-                   "  -w, --write  rewrite each file in place\n"
-                   "  -l, --list   list files that would change (exit 1)\n"
-                   "  --check      exit 1 if any file would change (no output)\n"
-                   "  paths        files, or directories scanned for *.cul\n"
-                   "  -            read from stdin, write to stdout");
+                   "  (no flags)     write formatted source to stdout\n"
+                   "  -i, --in-place  rewrite each file in place\n"
+                   "  -l, --list      list files that would change (exit 1)\n"
+                   "  --check         exit 1 if any file would change (no output)\n"
+                   "  paths           files, or directories scanned for *.cul\n"
+                   "  -               read from stdin, write to stdout");
       return 0;
     }
-    if (arg == "-w" || arg == "--write") { write = true; continue; }
+    if (arg == "-i" || arg == "--in-place") { in_place = true; continue; }
     if (arg == "-l" || arg == "--list") { list = true; continue; }
     if (arg == "--check") { check = true; continue; }
     files.push_back(arg);
@@ -1295,7 +1296,7 @@ int run_fmt(int argc, const char** argv) {
     if (changed) any_changed = true;
     if (check) continue;
     if (list) { if (changed) std::println("{}", path); continue; }
-    if (write) {
+    if (in_place) {
       if (changed) {
         ofstream ofs(path, ios::out | ios::binary | ios::trunc);
         ofs << r.output;
