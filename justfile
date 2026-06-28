@@ -29,12 +29,16 @@ dev *extra:
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
     cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
-# Build without JIT (interpreter only, no LLVM)
+# Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
+# driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the
+# compile gate that catches interp-only build breakage (the rest of the tree is
+# backend-agnostic). Uses its own build-no-jit/ dir so it doesn't clobber the
+# JIT `build/`'s cmake cache (the JIT define flips every ccache key anyway).
 [group("build")]
 build-no-jit:
-    mkdir -p build
-    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
-    cd build && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+    mkdir -p build-no-jit
+    cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF .. > /dev/null
+    cd build-no-jit && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
 # Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
 # The conservative stack scanner (scan_range, jit_gc.h) is exempted from
@@ -71,7 +75,7 @@ asan:
 # Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
-    rm -rf build build-dev build-asan
+    rm -rf build build-dev build-asan build-no-jit
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h

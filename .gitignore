@@ -40,6 +40,7 @@ CMakeCache.txt
 build/
 build-dev/
 build-asan/
+build-no-jit/
 
 # macOS metadata
 .DS_Store

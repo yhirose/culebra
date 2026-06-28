@@ -125,6 +125,17 @@ jobs:
       - name: Build (interpreter + JIT)
         run: just build ${{ matrix.linker_flag }}
 
+      # Interpreter-only build gate (CULEBRA_ENABLE_JIT=OFF). The `culebra`
+      # driver is the one TU with #ifdef CULEBRA_JIT_ENABLED gating, so a
+      # mismatched guard there breaks the no-JIT build while the default
+      # JIT build stays green. Ubuntu-only — the breakage is compiler/define
+      # driven, not platform-specific, and the slow macOS runner needn't pay
+      # for a second from-scratch compile (the JIT define flips every ccache
+      # key, so this shares nothing with the build above).
+      - name: Build (interpreter only, no JIT)
+        if: matrix.os == 'ubuntu-latest'
+        run: just build-no-jit
+
       - name: Report ccache stats
         run: ccache -s
 

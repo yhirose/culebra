@@ -262,6 +262,7 @@ struct BuildOptions {
   bool keep_symbols = false;  // skip link-time symbol strip (for debugging)
   int opt_level = 2;
 };
+#endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
 
 void print_usage(ostream& os) {
   os << "Usage: culebra [options] [script.cul] [script-args...]\n"
@@ -293,8 +294,10 @@ void print_usage(ostream& os) {
         "  -h, --help         Show this help and exit\n"
         "\n"
         "Commands:\n"
+#ifdef CULEBRA_JIT_ENABLED
         "  build <in.cul> -o <out>   Compile ahead-of-time into a standalone\n"
         "                            executable (`culebra build --help`)\n"
+#endif
         "  test [paths...]           Run tests / doctests (--filter, --doc,\n"
         "                            --reporter, --bail, --list)\n"
         "  lint <file.cul>...        Report static problems (errors + warnings\n"
@@ -309,9 +312,13 @@ void print_usage(ostream& os) {
 #endif
         "  culebra                        Start the REPL\n"
         "  culebra app.cul a b c          Run with Sys.argv == [\"a\",\"b\",\"c\"]\n"
-        "  culebra build app.cul -o app   Build a standalone binary\n";
+#ifdef CULEBRA_JIT_ENABLED
+        "  culebra build app.cul -o app   Build a standalone binary\n"
+#endif
+        ;
 }
 
+#ifdef CULEBRA_JIT_ENABLED
 void print_build_usage(ostream& os) {
   os << "Usage: culebra build <input.cul> -o <output> [options]\n"
         "\n"
