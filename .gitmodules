@@ -16,3 +16,10 @@
 [submodule "vendor/cpp-regexlib"]
 	path = vendor/cpp-regexlib
 	url = https://github.com/yhirose/cpp-regexlib
+[submodule "vendor/raylib"]
+	path = vendor/raylib
+	url = https://github.com/raysan5/raylib.git
+[submodule "vendor/SDL"]
+	path = vendor/SDL
+	url = https://github.com/libsdl-org/SDL.git
+	branch = SDL2

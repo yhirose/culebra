@@ -70,6 +70,21 @@ inline bool aot_uses_sqlite(const peg::Ast& node) {
   return false;
 }
 
+// Does the program reference the `Graphics` namespace? Drives the force-load of
+// libculebra_rt_graphics.a (the wrap registration whose static registrar pulls
+// in raylib) and appends the raylib/SDL link deps — only when true, the same
+// usage-gating as tensor/http/compress/sqlite. Graphics has no weak choke: it
+// simply isn't in the base archive, so a non-Graphics binary references no
+// raylib symbol. Same conservative bare-identifier match.
+inline bool aot_uses_graphics(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_ && node.token == "Graphics") return true;
+  for (const auto& child : node.nodes) {
+    if (aot_uses_graphics(*child)) return true;
+  }
+  return false;
+}
+
 // Does the program reference any of `names`? Gates the `culebra wrap`
 // archive + its wrapped-library link flags, mirroring the tensor/http/
 // compress axes — but the namespace set is dynamic (whatever the embedded

@@ -1,0 +1,620 @@
+# Real Suzuka 1987 circuit, rendered through the Graphics contract.
+#
+# The track surface is a road ribbon built with add_mesh from the hand-traced
+# centerline in suzuka_track.json (968 points, ~5.8 km). The car auto-drives
+# the centerline; camera + HUD are the same renderer-agnostic culebra code.
+#
+# Headless:  RACER_FRAMES=200 culebra suzuka.cul
+
+let WIN_W = 1100
+let WIN_H = 680
+let DEG = Math.pi / 180.0
+
+let FRAMES = if Sys.env("RACER_FRAMES") != "" { to_long(Sys.env("RACER_FRAMES")) } else { -1 }
+let DEMO = FRAMES > 0
+
+# Suzuka is a figure-8: the back straight (crossoverUnderS) passes UNDER the
+# crossover bridge (crossoverOverS). A flat ribbon would self-overlap and
+# z-fight there, so the OVER section is lifted onto a bridge. These come from
+# suzuka_track.json; set once after the file is read.
+mut OVER_S = 4636.0
+mut TRACK_LEN = 5804.0
+let SPACING = 6.0
+let BRIDGE_H = 7.0
+let BRIDGE_HALF = 70.0      # ramp half-length, meters
+
+fn shortest_angle(a) {
+  mut x = a
+  while x > Math.pi { x = x - 2.0 * Math.pi }
+  while x < -Math.pi { x = x + 2.0 * Math.pi }
+  x
+}
+
+# Node yaw that points the car's nose (local -Z) along a movement heading h
+# (measured as atan2(dz, dx)). RotateY turns the model the opposite sense to the
+# movement angle and is offset 90deg, so map through atan2(-cos, -sin).
+fn face_yaw(h) {
+  Math.atan2(0.0 - Math.cos(h), 0.0 - Math.sin(h))
+}
+
+# Left normal (nx, nz) and tangent heading (ang) at centerline index i.
+fn frame_at(pts, i) {
+  let n = pts.size()
+  let p = pts[i]
+  let q = pts[(i + 1) % n]
+  let dx = q[0] - p[0]
+  let dz = q[1] - p[1]
+  let len = Math.sqrt(dx * dx + dz * dz) + 0.0001
+  (0.0 - dz / len, dx / len, Math.atan2(dx, dz))
+}
+
+# Road height at arc-length s: a smooth hump centred on the crossover bridge,
+# flat (0.1) everywhere else. Distance is measured around the loop.
+fn road_h(s) {
+  let raw = Math.abs(s - OVER_S)
+  let around = TRACK_LEN - raw
+  let dist = if raw < around { raw } else { around }
+  if dist > BRIDGE_HALF { 0.1 } else {
+    0.1 + BRIDGE_H * (0.5 + 0.5 * Math.cos(dist / BRIDGE_HALF * Math.pi))
+  }
+}
+
+# Half-track width at arc-length s, interpolated from the widthAnchors table
+# ([s, halfWidth] pairs) — so the road narrows and widens like the real circuit.
+mut WA = []
+fn half_width(s) {
+  mut i = 0
+  while i < WA.size() - 1 && WA[i + 1][0] < s { i = i + 1 }
+  let a = WA[i]
+  let b = WA[if i + 1 < WA.size() { i + 1 } else { i }]
+  let span = b[0] - a[0]
+  let t = if span > 0.1 { (s - a[0]) / span } else { 0.0 }
+  a[1] + (b[1] - a[1]) * t
+}
+
+# General ribbon: a triangle strip between two per-point perpendicular offsets
+# `oa`/`ob` (left positive) at heights `yf`, textured by `mat`. `oa`/`ob`/`yf`
+# are functions of the point index, so callers vary width / elevation freely.
+fn add_ribbon(view, pts, oa, ob, yf, vscale, mat, closed) {
+  let n = pts.size()
+  let r = view.add_mesh()
+  r.material(mat)
+  for i in 0..n {
+    let p = pts[i]
+    let fr = frame_at(pts, i)
+    let nx = fr[0]
+    let nz = fr[1]
+    let y = yf(i)
+    let v = to_float(i) / vscale
+    r.vertex_uv(p[0] + nx * oa(i), y, p[1] + nz * oa(i), 0.0, 1.0, 0.0, 0.0, v)
+    r.vertex_uv(p[0] + nx * ob(i), y, p[1] + nz * ob(i), 0.0, 1.0, 0.0, 1.0, v)
+  }
+  let segs = if closed { n } else { n - 1 }
+  for i in 0..segs {
+    let a = 2 * i
+    let b = 2 * i + 1
+    let c = (2 * i + 2) % (2 * n)
+    let e = (2 * i + 3) % (2 * n)
+    r.tri(a, c, b)
+    r.tri(b, c, e)
+  }
+  r.build()
+}
+
+# Road surface + white edge lines, all with the real per-corner width.
+fn build_track(view, cl, road_mat, line_mat) {
+  let hw = |i| half_width(to_float(i) * SPACING)
+  let surf = |i| road_h(to_float(i) * SPACING) + 0.1
+  add_ribbon(view, cl, |i| hw(i), |i| 0.0 - hw(i), surf, 4.0, road_mat, true)
+  add_ribbon(view, cl, |i| hw(i), |i| hw(i) - 0.35, |i| surf(i) + 0.03, 2.0, line_mat, true)
+  add_ribbon(view, cl, |i| 0.0 - hw(i) + 0.35, |i| 0.0 - hw(i), |i| surf(i) + 0.03, 2.0, line_mat, true)
+}
+
+# A tiered grandstand: stepped seating rows under a cantilever roof. A scene
+# subtree placed + yawed beside the track — a big caster for the shadow pass.
+fn add_grandstand(view, cx, cz, ang, seat_mat, roof_mat) {
+  let g = view.add_node().move(cx, 0.0, cz).yaw(ang)
+  for r in 0..6 {
+    let rr = to_float(r)
+    g.add_box(46.0, 1.4, 3.2).material(seat_mat)
+        .move(0.0, 1.2 + rr * 1.5, 0.0 - 4.0 - rr * 3.2)
+  }
+  g.add_box(50.0, 0.7, 9.0).material(roof_mat).move(0.0, 11.0, 0.0 - 16.0)   # roof
+  for sx in [-1.0, 1.0] {
+    g.add_box(1.0, 10.0, 1.0).material(roof_mat).move(sx * 23.0, 5.0, 0.0 - 19.0)
+  }
+}
+
+# Sign of the turn at centerline index i (>0 left, <0 right) — picks the
+# OUTSIDE of a corner, where the gravel run-off goes.
+fn turn_sign(cl, i) {
+  let n = cl.size()
+  let a = cl[(i - 1 + n) % n]
+  let b = cl[i]
+  let c = cl[(i + 1) % n]
+  let d1x = b[0] - a[0]
+  let d1z = b[1] - a[1]
+  let d2x = c[0] - b[0]
+  let d2z = c[1] - b[1]
+  d1x * d2z - d1z * d2x
+}
+
+# A gravel run-off patch on the outside of a corner: a double-sided tan strip
+# just beyond the kerb, spanning the corner.
+fn add_gravel(view, cl, ki, sgn, mat) {
+  let n = cl.size()
+  let g = view.add_mesh()
+  g.material(mat)
+  let span = 18
+  for j in 0..span {
+    let idx = (ki - 9 + j + n) % n
+    let p = cl[idx]
+    let fr = frame_at(cl, idx)
+    let nx = fr[0]
+    let nz = fr[1]
+    let hw = half_width(to_float(idx) * SPACING)
+    let y = road_h(to_float(idx) * SPACING) + 0.05
+    let inner = sgn * (hw + 0.8)
+    let outer = sgn * (hw + 14.0)
+    g.vertex(p[0] + nx * inner, y, p[1] + nz * inner, 0.0, 1.0, 0.0)
+    g.vertex(p[0] + nx * outer, y, p[1] + nz * outer, 0.0, 1.0, 0.0)
+  }
+  for j in 0..span - 1 {
+    let a = 2 * j
+    let b = 2 * j + 1
+    let c = 2 * j + 2
+    let e = 2 * j + 3
+    g.tri(a, c, b)              # both windings → double-sided flat patch
+    g.tri(b, c, e)
+    g.tri(a, b, c)
+    g.tri(b, e, c)
+  }
+  g.build()
+}
+
+# Place a grandstand beside the track at centerline index `idx`, `side` (+/-1).
+# The stand's open front is local +Z, so it must yaw to FACE the track: +Z has
+# to point from the stand back toward the centerline (the -side normal), not
+# along the track tangent.
+fn place_stand(view, cl, idx, side, seat_mat, roof_mat) {
+  let p = cl[idx]
+  let fr = frame_at(cl, idx)
+  let nx = fr[0]
+  let nz = fr[1]
+  let hw = half_width(to_float(idx) * SPACING)
+  let cx = p[0] + nx * side * (hw + 32.0)
+  let cz = p[1] + nz * side * (hw + 32.0)
+  let ang = Math.atan2(0.0 - side * nx, 0.0 - side * nz)   # face the centerline
+  add_grandstand(view, cx, cz, ang, seat_mat, roof_mat)
+}
+
+# A row of pit garages on the pit side of the main straight: stepped boxes
+# with a flat roof, aligned with the track tangent. `side` is the pit side.
+fn add_pits(view, cl, start, count, side, garage_mat, roof_mat) {
+  let n = cl.size()
+  for j in 0..count {
+    let idx = (start + j * 2) % n
+    let p = cl[idx]
+    let fr = frame_at(cl, idx)
+    let nx = fr[0]
+    let nz = fr[1]
+    let hw = half_width(to_float(idx) * SPACING)
+    let ang = fr[2]
+    let gx = p[0] + nx * side * (hw + 20.0)
+    let gz = p[1] + nz * side * (hw + 20.0)
+    let g = view.add_node().move(gx, 0.0, gz).yaw(ang)
+    g.add_box(11.5, 5.0, 11.0).material(garage_mat).move(0.0, 2.5, 0.0)        # garage box
+    g.add_box(12.5, 0.6, 12.0).material(roof_mat).move(0.0, 5.3, 0.0)          # roof slab
+  }
+}
+
+# A smooth car body, lofted from elliptical cross-sections along Z (nose->tail),
+# textured with `mat_id`. UVs wrap around each ring (u) and run the length (v).
+fn loft_body(node, mat_id) {
+  # station = (z, halfWidth, halfHeight, centerY); ends taper to a near-point.
+  let stations = [
+    (-2.3, 0.18, 0.16, 0.55),
+    (-1.4, 0.55, 0.34, 0.6),
+    (-0.4, 0.86, 0.46, 0.62),
+    ( 0.6, 0.9, 0.42, 0.62),
+    ( 1.6, 0.72, 0.34, 0.58),
+    ( 2.4, 0.3, 0.24, 0.52),
+  ]
+  let segs = 14
+  let rings = stations.size()
+  let m = node.add_mesh()
+  m.material(mat_id)
+  for s in 0..rings {
+    let st = stations[s]
+    let v = to_float(s) / to_float(rings - 1)
+    for k in 0..segs {
+      let a = to_float(k) / to_float(segs) * 2.0 * Math.pi
+      let nx = Math.cos(a)
+      let ny = Math.sin(a)
+      m.vertex_uv(nx * st[1], st[3] + ny * st[2], st[0], nx, ny, 0.0,
+                  to_float(k) / to_float(segs), v)
+    }
+  }
+  for s in 0..rings - 1 {
+    for k in 0..segs {
+      let a = s * segs + k
+      let b = s * segs + (k + 1) % segs
+      let c = (s + 1) * segs + k
+      let e = (s + 1) * segs + (k + 1) % segs
+      m.tri(a, c, b)
+      m.tri(b, c, e)
+    }
+  }
+  m.build()
+}
+
+# A team livery drawn into a texture with the 2D primitives (canvas), returned
+# as a reusable material — the "generate a texture procedurally" path.
+fn make_livery(view) {
+  let tex = view.canvas(256, 128)
+  view.rect(0.0, 0.0, 256.0, 128.0, 28, 64, 184)        # base blue
+  view.rect(0.0, 4.0, 256.0, 16.0, 235, 235, 245)       # white bands
+  view.rect(0.0, 104.0, 256.0, 18.0, 235, 235, 245)
+  view.text("7", 118.0, 46.0, 52, 245, 245, 250)        # car number
+  view.canvas_end()
+  view.material_tex_pbr(tex, 255, 255, 255, 0.0, 0.32)  # glossy car paint
+}
+
+# --- A car: scene subtree + centerline-following auto-driver. ----------------
+class Car {
+  new(view, cl, body_mat) {
+    this.node = view.add_node().name("car")
+    let body = this.node.add_node()                      # body subtree (built once)
+    loft_body(body, body_mat)                            # smooth lofted body + livery
+    body.add_box(1.0, 0.42, 1.5).tint(40, 44, 52).move(0.0, 1.05, -0.45)  # cockpit/airbox
+    for sx in [-1.0, 1.0] {
+      for sz in [-1.0, 1.0] {
+        body.add_cylinder(0.5, 0.4).tint(20, 20, 20)
+            .move(sx * 1.0, 0.5, sz * 1.5).spin(0.0, 0.0, 1.0, 90.0 * DEG)
+      }
+    }
+    this.cl = cl
+    this.wp = 1
+    let s = cl[0]
+    this.x = s[0]
+    this.z = s[1]
+    # face down the track at the start line (tangent cl[0]->cl[1])
+    this.heading = Math.atan2(cl[1][1] - cl[0][1], cl[1][0] - cl[0][0])
+    this.speed = 0.0
+    this.y = 0.0
+    this.steer_smooth = 0.0
+    this.ti = 0                                          # tracked centerline index (branch-aware)
+  }
+
+  drive(dt) {
+    let target = this.cl[this.wp]
+    let dx = target[0] - this.x
+    let dz = target[1] - this.z
+    if Math.sqrt(dx * dx + dz * dz) < 12.0 { this.wp = (this.wp + 3) % this.cl.size() }
+    let want = Math.atan2(dz, dx)
+    this.heading = this.heading + shortest_angle(want - this.heading) * (1.0 - Math.exp(-6.0 * dt))
+    this.speed = this.speed + (55.0 - this.speed) * (1.0 - Math.exp(-1.5 * dt))
+    this.x = this.x + Math.cos(this.heading) * this.speed * dt
+    this.z = this.z + Math.sin(this.heading) * this.speed * dt
+    # Smooth the height toward the target waypoint's road elevation. The
+    # waypoint advances in 18 m jumps, so sampling road_h(wp) directly would
+    # pop the car ~2.5 m per jump on the bridge ramp; easing removes the pop.
+    let s = to_float(this.wp) * SPACING
+    let target_y = road_h(s)
+    this.y = this.y + (target_y - this.y) * (1.0 - Math.exp(-2.5 * dt))
+    let slope = (road_h(s + 6.0) - road_h(s - 6.0)) / 12.0
+    this.node.move(this.x, this.y, this.z).yaw(face_yaw(this.heading)).pitch(Math.atan(slope))
+  }
+
+  # Player driving: throttle/brake change speed, steer turns (scaled by speed so
+  # the car can't pivot in place); height follows the road under the car.
+  drive_manual(throttle, brake, steer, dt) {
+    this.speed = this.speed + 40.0 * throttle * dt
+    this.speed = this.speed - 60.0 * brake * dt
+    this.speed = this.speed * (1.0 - 0.5 * dt)             # rolling drag
+    if this.speed > 78.0 { this.speed = 78.0 }             # ~280 km/h top
+    if this.speed < 0.0 { this.speed = 0.0 }
+    # Steering feel: a square response curve (gentle near centre, full lock at
+    # full deflection) so a slammed stick or on/off key doesn't snap; then ease
+    # the applied angle toward it (ramps keyboard on/off into a natural sweep);
+    # and reduce authority with speed so it isn't twitchy / oversteery fast.
+    let target = steer * Math.abs(steer)
+    this.steer_smooth = this.steer_smooth + (target - this.steer_smooth) * (1.0 - Math.exp(-7.0 * dt))
+    let grip = if this.speed > 6.0 { 1.0 } else { this.speed / 6.0 }
+    let authority = 1.0 / (1.0 + this.speed * 0.025)
+    this.heading = this.heading + this.steer_smooth * 1.5 * dt * grip * authority
+    this.x = this.x + Math.cos(this.heading) * this.speed * dt
+    this.z = this.z + Math.sin(this.heading) * this.speed * dt
+    # branch-aware height: track the centerline index locally (so the bridge and
+    # the road beneath it aren't confused at the crossover), then read the road
+    # height at the car's CONTINUOUS arc position — projecting onto the local
+    # segment avoids both the easing lag (which sank the car under the deck) and
+    # the index-quantization bob of sampling road_h at a jittering integer index.
+    this.ti = nearest_idx_near(this.cl, this.x, this.z, this.ti, 40)
+    let n = this.cl.size()
+    let a = this.cl[this.ti]
+    let b = this.cl[(this.ti + 1) % n]
+    let ex = b[0] - a[0]
+    let ez = b[1] - a[1]
+    mut t = ((this.x - a[0]) * ex + (this.z - a[1]) * ez) / (ex * ex + ez * ez + 0.0001)
+    if t < 0.0 - 1.0 { t = 0.0 - 1.0 }
+    if t > 1.0 { t = 1.0 }
+    let s = (to_float(this.ti) + t) * SPACING
+    this.y = road_h(s)
+    # pitch the body to the road gradient so its tail doesn't sink through the
+    # descending ramp. Measure the slope along the car's TRAVEL direction (not
+    # the centerline's +s sense) so it stays correct when driving the wrong way.
+    let dir = if Math.cos(this.heading) * ex + Math.sin(this.heading) * ez >= 0.0 { 1.0 } else { 0.0 - 1.0 }
+    let slope = (road_h(s + 6.0) - road_h(s - 6.0)) / 12.0 * dir
+    this.node.move(this.x, this.y, this.z).yaw(face_yaw(this.heading)).pitch(Math.atan(slope))
+  }
+
+  height() { this.y }
+
+  kmh() { to_long(this.speed * 3.6) }
+}
+
+class CameraRig {
+  new() { this.yaw = 0.0; this.px = 0.0; this.py = 0.0; this.pz = 0.0 }
+  update(view, cx, cy, cz, heading, dt) {
+    this.yaw = this.yaw + shortest_angle(heading - this.yaw) * (1.0 - Math.exp(-7.0 * dt))
+    this.px = this.px + (cx - this.px) * (1.0 - Math.exp(-9.0 * dt))
+    this.py = this.py + (cy - this.py) * (1.0 - Math.exp(-9.0 * dt))
+    this.pz = this.pz + (cz - this.pz) * (1.0 - Math.exp(-9.0 * dt))
+    let t = 26.0 * DEG
+    let behind = 34.0 * Math.cos(t)
+    let height = 34.0 * Math.sin(t)
+    let fx = Math.cos(this.yaw)
+    let fz = Math.sin(this.yaw)
+    view.camera(this.px - fx * behind, this.py + height, this.pz - fz * behind,
+                this.px + fx * 12.0, this.py + 1.5, this.pz + fz * 12.0,
+                0.0, 1.0, 0.0, 58.0)
+  }
+}
+
+# Index of the centerline point nearest to (x,z).
+fn nearest_idx(cl, x, z) {
+  mut bi = 0
+  mut bd = 1000000000.0
+  for i in 0..cl.size() {
+    let dx = cl[i][0] - x
+    let dz = cl[i][1] - z
+    let d = dx * dx + dz * dz
+    if d < bd { bd = d; bi = i }
+  }
+  bi
+}
+
+# Nearest centerline index searched only within `win` of `around` (wrapping).
+# At the figure-8 crossover two branches share the same (x,z) but are far apart
+# in arc length, so a windowed search keeps us on the branch we're driving (the
+# bridge vs the road under it) instead of snapping to the wrong elevation.
+fn nearest_idx_near(cl, x, z, around, win) {
+  let n = cl.size()
+  mut bi = around
+  mut bd = 1000000000.0
+  for d in 0..(2 * win + 1) {
+    let i = (around - win + d + n) % n
+    let dx = cl[i][0] - x
+    let dz = cl[i][1] - z
+    let dd = dx * dx + dz * dz
+    if dd < bd { bd = dd; bi = i }
+  }
+  bi
+}
+
+# True when the car (at nearest centerline index `bi`) has drifted onto/over the
+# kerb: project the car's offset onto the left normal, compare to half-width.
+fn kerb_contact(cl, bi, x, z) {
+  let fr = frame_at(cl, bi)
+  let off = (x - cl[bi][0]) * fr[0] + (z - cl[bi][1]) * fr[1]
+  let hw = half_width(to_float(bi) * SPACING)
+  Math.abs(off) > hw - 1.2
+}
+
+# Read driving controls -> (throttle, brake, steer), each in a sane range.
+# Gamepad: left-stick X steers, triggers drive/brake (A/B as digital backup);
+# arrow keys work too. Steer has a small deadzone.
+fn read_controls(view) {
+  mut throttle = 0.0
+  mut brake = 0.0
+  mut steer = 0.0
+  if view.pad_available() {
+    let lx = view.pad_axis(0)                       # left stick X
+    if Math.abs(lx) > 0.18 { steer = lx }
+    # raylib normalizes triggers to 0..1 (rest 0, full 1; -1 until first touched)
+    throttle = view.pad_axis(5)                     # right trigger
+    brake = view.pad_axis(4)                        # left trigger
+    if throttle < 0.0 { throttle = 0.0 }
+    if brake < 0.0 { brake = 0.0 }
+    if view.pad_button(7) { throttle = 1.0 }        # A
+    if view.pad_button(6) { brake = 1.0 }           # B
+  }
+  if view.held(265) { throttle = 1.0 }             # UP
+  if view.held(264) { brake = 1.0 }                # DOWN
+  if view.held(263) { steer = 0.0 - 1.0 }          # LEFT
+  if view.held(262) { steer = 1.0 }                # RIGHT
+  (throttle, brake, steer)
+}
+
+# --- Load + world -----------------------------------------------------------
+let track = JSON.parse(FS.read("suzuka_track.json"))
+let cl = track["centerline"]
+WA = track["widthAnchors"]                      # per-corner half-width table
+OVER_S = to_float(track["crossoverOverS"])      # lift the bridge here
+TRACK_LEN = to_float(track["approxLength"])
+let corners = track["corners"]
+let pit = track["pitLane"]
+puts("loaded Suzuka: " + to_string(cl.size()) + " pts, " + to_string(corners.size()) + " corners, " + to_string(pit.size()) + " pit")
+
+let view = Graphics.View.new(WIN_W, WIN_H, "culebra — Suzuka 1987")
+view.target_fps(60)
+view.background(120, 166, 210)
+view.sky(96, 140, 200, 175, 205, 230)                   # deep blue zenith → pale horizon
+view.fog(700.0, 2600.0, 175, 198, 222)                  # distant haze for depth
+view.sun(0.55, -0.7, -0.34, 1.25, 255, 246, 228)        # balanced afternoon sun (CSM, 2 cascades)
+view.ambient(0.45, 178, 198, 220)
+
+view.add_plane(5000.0, 5000.0).tint(44, 120, 58)         # grass
+
+# reusable materials
+let asphalt = view.checker(64, 8, 64, 66, 70, 54, 56, 60)
+let road_mat = view.material_tex(asphalt, 255, 255, 255)
+let line_mat = view.material(235, 235, 235)
+let red_mat = view.material(205, 40, 40)
+let pit_mat = view.material(96, 98, 104)
+
+build_track(view, cl, road_mat, line_mat)
+
+# pit lane: a separate grey ribbon along the pit spline
+add_ribbon(view, pit, |i| 4.0, |i| 0.0 - 4.0, |i| 0.12, 6.0, pit_mat, false)
+
+# red/white kerbs at every corner — alternating boxes hugging both edges.
+# Skip "S/F": it is the start line, not a corner, so kerbing it would lay kerbs
+# down both sides of the main straight.
+let n = cl.size()
+for ci in 0..corners.size() {
+  if corners[ci][0] != "S/F" {
+    let ki = to_long(to_float(corners[ci][1]) / SPACING)
+    for j in 0..18 {
+      let idx = (ki - 9 + j + n) % n
+      let p = cl[idx]
+      let fr = frame_at(cl, idx)
+      let nx = fr[0]
+      let nz = fr[1]
+      let hw = half_width(to_float(idx) * SPACING)
+      let y = road_h(to_float(idx) * SPACING)
+      let kerb = if j % 2 == 0 { red_mat } else { line_mat }
+      let ang = fr[2]
+      for side in [1.0, -1.0] {
+        view.add_box(1.4, 0.12, 6.0).material(kerb)
+            .move(p[0] + nx * side * (hw + 0.7), y + 0.08, p[1] + nz * side * (hw + 0.7))
+            .yaw(ang)
+      }
+    }
+  }
+}
+
+# gravel run-off on the outside of each corner (S/F is the start line, not a
+# corner — skip it so no run-off lands on the main straight)
+let gravel_mat = view.material(196, 172, 122)
+for ci in 0..corners.size() {
+  if corners[ci][0] != "S/F" {
+    let ki = to_long(to_float(corners[ci][1]) / SPACING)
+    let sgn = if turn_sign(cl, ki) > 0.0 { 0.0 - 1.0 } else { 1.0 }
+    add_gravel(view, cl, ki, sgn, gravel_mat)
+  }
+}
+
+# Main straight: pit garages on the pit side (+1), a single grandstand facing
+# the track from the outside (-1), both near the start/finish line.
+let seat_mat = view.material(120, 124, 132)
+let roof_mat = view.material(200, 205, 212)
+let garage_mat = view.material(208, 210, 214)
+add_pits(view, cl, 0, 12, 1.0, garage_mat, roof_mat)
+place_stand(view, cl, 8, 0.0 - 1.0, seat_mat, roof_mat)
+
+# minimap: precompute a normalised, sampled outline once (drawn each frame)
+mut MM = []
+mut MM_cx = 0.0
+mut MM_cz = 0.0
+mut MM_scale = 1.0
+mut mmnx = 1000000.0
+mut mmxx = 0.0 - 1000000.0
+mut mmnz = 1000000.0
+mut mmxz = 0.0 - 1000000.0
+for i in 0..n {
+  let p = cl[i]
+  if p[0] < mmnx { mmnx = p[0] }
+  if p[0] > mmxx { mmxx = p[0] }
+  if p[1] < mmnz { mmnz = p[1] }
+  if p[1] > mmxz { mmxz = p[1] }
+}
+MM_cx = (mmnx + mmxx) / 2.0
+MM_cz = (mmnz + mmxz) / 2.0
+let ext = if mmxx - mmnx > mmxz - mmnz { mmxx - mmnx } else { mmxz - mmnz }
+MM_scale = 190.0 / ext
+mut mi = 0
+while mi < n {
+  let p = cl[mi]
+  MM.push(((p[0] - MM_cx) * MM_scale, (p[1] - MM_cz) * MM_scale))
+  mi = mi + 6
+}
+
+fn current_corner(corners, s) {
+  mut name = corners[0][0]
+  for ci in 0..corners.size() {
+    if to_float(corners[ci][1]) <= s { name = corners[ci][0] }
+  }
+  name
+}
+
+fn draw_minimap(view, mm, car_x, car_z) {
+  let ox = view.width() - 130.0
+  let oy = 130.0
+  let k = mm.size()
+  for i in 0..k - 1 {
+    let a = mm[i]
+    let b = mm[i + 1]
+    view.line(ox + a[0], oy + a[1], ox + b[0], oy + b[1], 2.0, 235, 235, 240)
+  }
+  view.circle(ox + (car_x - MM_cx) * MM_scale, oy + (car_z - MM_cz) * MM_scale, 4.0, 230, 50, 50)
+}
+
+let livery = make_livery(view)
+let car = Car.new(view, cl, livery)
+let cam = CameraRig.new()
+
+# Looping engine note: a streamed track whose pitch tracks the car's speed, so
+# it reads as rising/falling RPM. (Procedurally generated tone in engine.wav.)
+let engine = Graphics.Music.new("engine.wav")
+engine.volume(0.55)
+engine.play()
+
+puts("drive: gamepad stick + triggers, or arrow keys (RACER_FRAMES=N to auto-drive)")
+
+mut frame = 0
+mut pad_seen = false
+while !view.closing() {
+  let dt = if view.dt() > 0.0 { view.dt() } else { 0.016 }
+  # Headless capture auto-drives; interactively the player drives.
+  if DEMO {
+    car.drive(dt)
+  } else {
+    let ctl = read_controls(view)
+    car.drive_manual(ctl[0], ctl[1], ctl[2], dt)
+  }
+  cam.update(view, car.x, car.height(), car.z, car.heading, dt)
+
+  # feed the stream + map speed (0..78) to engine pitch (idle 0.7 -> ~2.0 redline)
+  engine.update()
+  engine.pitch(0.7 + car.speed / 78.0 * 1.3)
+
+  # Gamepads are only enumerated once the event loop polls (in present()), so
+  # report detection from inside the loop, not before it.
+  if !pad_seen && view.pad_available() { pad_seen = true; puts("gamepad: connected") }
+
+  # nearest centerline point: shared by the kerb check and the corner-name HUD
+  # (one whole-centerline scan per frame instead of two).
+  let bi = nearest_idx(cl, car.x, car.z)
+
+  # Force feedback: a sharp "gatsun" when a wheel rides up onto the kerb.
+  # (SPACE also fires a test jolt.)
+  if view.pressed(32) { view.rumble(1.0, 1.0, 0.2) }
+  if kerb_contact(cl, bi, car.x, car.z) { view.rumble(0.85, 0.85, 0.08) }
+
+  view.render_3d()
+  view.text("SUZUKA 1987", 24.0, 18.0, 32, 245, 245, 245)
+  view.text(current_corner(corners, to_float(bi) * SPACING),
+            24.0, 56.0, 22, 210, 220, 235)
+  view.text("DRIVE  stick + triggers  /  arrow keys", 24.0, view.height() - 98.0, 18, 200, 210, 220)
+  view.text(to_string(car.kmh()) + " KM/H", 24.0, view.height() - 64.0, 40, 245, 245, 245)
+  draw_minimap(view, MM, car.x, car.z)
+  view.present()
+
+  frame = frame + 1
+  if DEMO && frame == FRAMES * 3 / 4 { view.screenshot("suzuka_shot.png") }
+  if DEMO && frame >= FRAMES { break }
+}
+view.drop()
+puts("suzuka: clean exit after " + to_string(frame) + " frames")

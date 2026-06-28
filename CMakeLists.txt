@@ -235,6 +235,39 @@ if(CULEBRA_ENABLE_JIT)
   add_compile_definitions(CULEBRA_JIT_ENABLED)
 endif()
 
+# --- Builtin Graphics namespace (raylib + SDL): config ---------------------
+# Heavy, GUI/platform-bound, so OFF by default (normal/headless builds + CI stay
+# lean). Computed before the runtime/embed block so the feature archive + the
+# AOT link string can be registered there. Both SDL2 and raylib (SDL backend)
+# are built statically from vendored submodules further below; here we only
+# resolve paths + flags. Static SDL2 = fully self-contained binaries (no external
+# dylib path baked in) and keeps gamepad rumble across platforms — vs GLFW, whose
+# macOS gamepad subsystem is broken and which has no haptics API at all.
+option(CULEBRA_ENABLE_GRAPHICS "Enable builtin Graphics namespace (raylib + SDL)" OFF)
+set(_graphics_link "")
+if(CULEBRA_ENABLE_GRAPHICS)
+  set(_sdl_install "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext")
+  set(_sdl_a "${_sdl_install}/lib/libSDL2.a")
+  set(_raylib_install "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext")
+  set(_raylib_a "${_raylib_install}/lib/libraylib.a")
+  # AOT link fragment (CULEBRA_GRAPHICS_LINK): the built raylib + SDL2 statics +
+  # GUI/audio system frameworks. `culebra build` appends it only when the program
+  # uses Graphics. Every path is in-tree or a system framework — no external dylib.
+  set(_graphics_link "'${_raylib_a}' '${_sdl_a}'")
+  if(APPLE)
+    # Frameworks SDL2 needs (window/input/audio/haptics) + raylib's GL path.
+    # Single-sourced so the AOT link fragment here and the in-process link of the
+    # driver (further below) can't drift apart.
+    set(_graphics_frameworks
+      OpenGL Cocoa IOKit CoreVideo CoreAudio AudioToolbox CoreFoundation
+      GameController ForceFeedback CoreHaptics Carbon Metal)
+    foreach(_fw IN LISTS _graphics_frameworks)
+      string(APPEND _graphics_link " -framework ${_fw}")
+    endforeach()
+  endif()
+  message(STATUS "Graphics: enabled (vendored static SDL2 + raylib)")
+endif()
+
 add_executable(culebra ./src/main.cc)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -416,6 +449,22 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   else()
     target_compile_definitions(culebra PRIVATE CULEBRA_WRAP_LINK_FLAGS="")
   endif()
+  # Graphics feature archive: the wrap registration (its static registrar pulls
+  # in raylib). Force-loaded into an AOT binary only when the AST scan reports
+  # Graphics use (raylib/SDL come from CULEBRA_GRAPHICS_LINK below) — the same
+  # usage-gating as sqlite, but with no weak choke since Graphics simply isn't in
+  # the base archive. Compiling needs only raylib's headers (vendored in-tree).
+  if(CULEBRA_ENABLE_GRAPHICS)
+    add_library(culebra_rt_graphics STATIC ./src/runtime/culebra_rt_graphics.cc)
+    target_compile_features(culebra_rt_graphics PRIVATE cxx_std_23)
+    target_include_directories(culebra_rt_graphics PRIVATE ./vendor/raylib/src)
+    target_compile_definitions(culebra_rt_graphics PRIVATE CULEBRA_ENABLE_GRAPHICS=1)
+    target_compile_options(culebra_rt_graphics PRIVATE -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_graphics${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_graphics)
+  endif()
+  target_compile_definitions(culebra PRIVATE CULEBRA_GRAPHICS_LINK="${_graphics_link}")
   cpp_embedlib_add(culebra_rt_assets
     FILES ${_rt_embed_files}
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
@@ -493,6 +542,54 @@ else()
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
+endif()
+
+# --- Graphics: build SDL2 + raylib + link into the driver -----------------
+# Config (option / static lib paths / link flags) was resolved before the driver
+# target above. Here we build SDL2 (static) and raylib (SDL backend, static) from
+# vendored submodules, then compile the Graphics binding straight into the driver
+# so interp + JIT run Graphics in-process. AOT outputs instead force-load the
+# feature archive + CULEBRA_GRAPHICS_LINK (gated on usage). raylib finds the
+# vendored SDL via CMAKE_PREFIX_PATH; both statics + frameworks are supplied at
+# the final link (a static archive records no link deps of its own).
+if(CULEBRA_ENABLE_GRAPHICS)
+  include(ExternalProject)
+  ExternalProject_Add(sdl_ext
+    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL"
+    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/sdl_ext_build"
+    CMAKE_ARGS
+      -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST=OFF
+      -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_INSTALL_PREFIX=${_sdl_install}
+      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+      -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+    BUILD_BYPRODUCTS "${_sdl_a}")
+
+  ExternalProject_Add(raylib_ext
+    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib"
+    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/raylib_ext_build"
+    DEPENDS sdl_ext
+    CMAKE_ARGS
+      -DPLATFORM=SDL -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
+      -DCMAKE_BUILD_TYPE=Release
+      -DCMAKE_PREFIX_PATH=${_sdl_install}
+      -DCMAKE_INSTALL_PREFIX=${_raylib_install}
+      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+      -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
+    BUILD_BYPRODUCTS "${_raylib_a}")
+
+  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_graphics.cc)
+  target_include_directories(culebra PRIVATE ./vendor/raylib/src)
+  target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_GRAPHICS=1)
+  add_dependencies(culebra raylib_ext)
+  target_link_libraries(culebra "${_raylib_a}" "${_sdl_a}")
+  if(APPLE)
+    foreach(_fw IN LISTS _graphics_frameworks)   # same single source as _graphics_link
+      target_link_libraries(culebra "-framework ${_fw}")
+    endforeach()
+  endif()
 endif()
 
 # Embedding smoke tests. mt_smoke exercises thread_local isolation

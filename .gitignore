@@ -41,6 +41,8 @@ build/
 build-dev/
 build-asan/
 build-no-jit/
+build-gfx/
+raylib_ext_build/
 
 # macOS metadata
 .DS_Store

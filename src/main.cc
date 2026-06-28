@@ -561,6 +561,19 @@ int run_build(const BuildOptions& opts) {
     }
     return false;
   };
+#ifdef CULEBRA_ENABLE_GRAPHICS
+  // Graphics reachability force-loads libculebra_rt_graphics.a (the wrap
+  // registration whose registrar pulls in raylib) and appends the raylib/SDL
+  // link deps, mirroring the tensor/http/compress/sqlite axes. Compiled only
+  // into a graphics-enabled driver: a stock build never embeds that archive, so
+  // it must not try to force-load it (doing so aborts on a missing archive).
+  auto any_uses_graphics = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_graphics(*m.ast)) return true;
+    }
+    return false;
+  };
+#endif
 
   // Reject early: cross-compile + Tensor would need a target-specific
   // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
@@ -586,6 +599,11 @@ int run_build(const BuildOptions& opts) {
   bool uses_http = cross ? false : any_uses_http();
   bool uses_compress = cross ? false : any_uses_compress();
   bool uses_sqlite = cross ? false : any_uses_sqlite();
+#ifdef CULEBRA_ENABLE_GRAPHICS
+  bool uses_graphics = cross ? false : any_uses_graphics();
+#else
+  bool uses_graphics = false;  // graphics archive isn't embedded in a stock build
+#endif
   bool uses_wrap = cross ? false : any_uses_wrap();
 
   // The core archive is feature-axis-free: both heavy deps (cblas via
@@ -674,6 +692,10 @@ int run_build(const BuildOptions& opts) {
       (uses_sqlite && host_build)
           ? force_load_feature("libculebra_rt_sqlite.a")
           : "";
+  std::string graphics_lib =
+      (uses_graphics && host_build)
+          ? force_load_feature("libculebra_rt_graphics.a")
+          : "";
   // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
   // registrars nothing references by name, so the archive member must be
   // force-loaded for the binding to register — but only when the program
@@ -712,6 +734,11 @@ int run_build(const BuildOptions& opts) {
   // sqlite3 wrappers + amalgamation are force-loaded via sqlite_lib above; this
   // resolves the amalgamation's platform deps. "" when SQLite is unused.
   std::string sqlite_link = uses_sqlite ? CULEBRA_SQLITE_LINK : "";
+  // raylib + SDL2 statics' platform deps (GUI/audio frameworks). Appended only
+  // when the program references Graphics; the wrap registrar force-loaded via
+  // graphics_lib is what references the symbols these flags resolve. "" when
+  // Graphics is unused or built out.
+  std::string graphics_link = uses_graphics ? CULEBRA_GRAPHICS_LINK : "";
   // The wrapped library's own link flags (`culebra wrap --link`, baked at
   // wrap time) ride the same usage axis as wrap_lib above: appended only when
   // the program names a wrapped namespace, so an unused wrapped library adds
@@ -737,10 +764,10 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
-      sqlite_link, wrap_link_flags, shq(opts.output));
+      graphics_lib, wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
+      sqlite_link, graphics_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
