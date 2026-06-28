@@ -18609,6 +18609,16 @@ struct JIT {
 
     // Merge with the function-introspection branch when active.
     if (fn_mode) {
+      // The fn-introspection path (fnBB) yields a fresh +1 value, so the
+      // caller releases the receiver without retaining the result (see the
+      // `.name`/`.params`/`.return_type` branch in the postfix loop). The
+      // object path here returns a BORROWED slot value (+0), so retain it to
+      // give the merged result uniform +1 ownership. Without this, an object
+      // whose `params`/`name`/`return_type` field holds a heap value (e.g. a
+      // server req's `params` sub-object) is returned borrowed but treated as
+      // owned → premature free → heap corruption. Scalars no-op (tag-aware),
+      // which is why this only surfaced for object-valued fields.
+      emit_value_retain(result);
       auto objEnd = builder_.GetInsertBlock();
       builder_.CreateBr(finalMergeBB);
       builder_.SetInsertPoint(finalMergeBB);

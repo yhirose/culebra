@@ -3947,6 +3947,276 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
   }
   return _culebra_http_build_client_handle(id);
 }
+
+// --- Http.server handle (JIT) ---
+// Mirrors interp make_http_server_handle. v0 single-threaded: handlers run on
+// the listen thread (where this runtime lives), so the trampoline calls the
+// handler closure directly via _culebra_invoke1. The handle owns a +1 on the
+// route handler closure for the server's lifetime (released when the server is
+// closed, via the shared_ptr holder captured in the RouteHandler).
+
+// Build the `req` Object from an httplib request (mirrors interp
+// http_request_to_object): method/path/body Strings + headers/query/params
+// Objects of String.
+inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "method", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(q.method)), 0, 0);
+  culebra_runtime_object_set(o, "path", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(q.path)), 0, 0);
+  culebra_runtime_object_set(o, "body", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(q.body)), 0, 0);
+  auto* headers = culebra_runtime_object_new();
+  for (const auto& [k, v] : q.headers)
+    culebra_runtime_object_set(headers, k.c_str(), false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+  culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
+      reinterpret_cast<int64_t>(headers), 0, 0);
+  auto* query = culebra_runtime_object_new();
+  for (const auto& [k, v] : q.params)
+    culebra_runtime_object_set(query, k.c_str(), false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+  culebra_runtime_object_set(o, "query", false, TAG_OBJECT,
+      reinterpret_cast<int64_t>(query), 0, 0);
+  auto* params = culebra_runtime_object_new();
+  for (const auto& [k, v] : q.path_params)
+    culebra_runtime_object_set(params, k.c_str(), false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+  culebra_runtime_object_set(o, "params", false, TAG_OBJECT,
+      reinterpret_cast<int64_t>(params), 0, 0);
+  return o;
+}
+
+// Apply a handler's return value to the httplib response (mirrors interp
+// http_apply_response): String → 200 text/plain; Object → status/body/
+// headers/content_type with defaults; nil → 200 empty; else TypeError.
+inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
+  if (ret.tag == TAG_NIL) {
+    res.status = 200;
+    return;
+  }
+  if (ret.tag == TAG_STRING || ret.tag == TAG_STRINGVIEW) {
+    res.status = 200;
+    res.set_content(std::string(_culebra_str_view(ret.tag, ret.data)),
+                    "text/plain");
+    return;
+  }
+  if (ret.tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(ret.data);
+    // Mirror interp http_apply_response exactly (same field order, same nil
+    // handling, same TypeError messages): a present, non-nil field of the
+    // wrong type is a TypeError — caught by the trampoline as a 500 — not a
+    // silently-defaulted value. (interp reads these via Value::to_long /
+    // to_string_view, which reject anything but Long / String|StringView.)
+    long status = 200;
+    size_t si = o->find_slot("status");
+    if (si != static_cast<size_t>(-1) && o->slots[si].value.tag != TAG_NIL) {
+      JitValue v = o->slots[si].value;
+      if (v.tag != TAG_LONG)
+        culebra::throw_type_mismatch("Long", _culebra_tag_name(v.tag), 0, 0);
+      status = v.data;
+    }
+    res.status = static_cast<int>(status);
+    std::string content_type = "text/plain";
+    size_t ci = o->find_slot("content_type");
+    if (ci != static_cast<size_t>(-1) && o->slots[ci].value.tag != TAG_NIL) {
+      JitValue v = o->slots[ci].value;
+      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+        culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
+      content_type = std::string(_culebra_str_view(v.tag, v.data));
+    }
+    size_t hi = o->find_slot("headers");
+    if (hi != static_cast<size_t>(-1) &&
+        o->slots[hi].value.tag == TAG_OBJECT) {
+      auto* h = reinterpret_cast<JitObject*>(o->slots[hi].value.data);
+      if (h->shape) {
+        // Set incrementally and throw on the first non-String value, matching
+        // interp's `res.set_header(k, val.to_string_view())` loop.
+        for (size_t k = 0; k < h->shape->names.size(); k++) {
+          JitValue v = h->slots[k].value;
+          if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+            culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0,
+                                         0);
+          res.set_header(std::string(h->shape->names[k]),
+                         std::string(_culebra_str_view(v.tag, v.data)));
+        }
+      }
+    }
+    std::string body;
+    size_t bi = o->find_slot("body");
+    if (bi != static_cast<size_t>(-1) && o->slots[bi].value.tag != TAG_NIL) {
+      JitValue v = o->slots[bi].value;
+      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+        culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
+      body = std::string(_culebra_str_view(v.tag, v.data));
+    }
+    res.set_content(body, content_type);
+    return;
+  }
+  throw culebra::CulebraError(
+      "TypeError",
+      "Http.server: handler must return a String, an Object, or nil", 0, 0);
+}
+
+inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
+                                       const char* method, const char* ctx) {
+  int64_t id =
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "pattern");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "pattern", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "handler");
+  if (args[1].tag != TAG_FUNC)
+    _jit_file_param_type_error(self, "handler", "Function", 1);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string pattern(_culebra_str_view(args[0].tag, args[0].data));
+  // Retain the handler for the server's lifetime; the shared_ptr holder
+  // releases it when the route table (and so the RouteHandler) is destroyed.
+  // The handler lives only in httplib's (C++) route table — unreachable from
+  // any GC root — so a retain (which only stops RC-free) is not enough: the
+  // mark-sweep backstop sweeps unmarked objects regardless of refcount. Pin it
+  // as a permanent GC root too (same mechanism the cached namespace objects
+  // use); the release on close removes it from the registry.
+  culebra_runtime_value_retain(args[1].tag, args[1].data);
+  auto* cb = reinterpret_cast<JitClosure*>(args[1].data);
+  _gc_heap().pin(cb);
+  std::shared_ptr<void> hold(static_cast<void*>(cb), [](void* p) {
+    _culebra_value_release_impl(
+        TAG_FUNC, reinterpret_cast<int64_t>(p));
+  });
+  culebra::http::RouteHandler rh =
+      [hold, cb](const httplib::Request& q, httplib::Response& res) {
+        try {
+          JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                       _jit_http_request_to_object(q))};
+          JitValue ret = _culebra_invoke1(cb, req);  // consumes req's +1
+          _jit_http_apply_response(ret, res);
+          _culebra_value_release_impl(ret.tag, ret.data);
+        } catch (const std::exception& e) {
+          res.status = 500;
+          res.set_content(e.what(), "text/plain");
+        }
+      };
+  std::string err;
+  culebra::http::http_server_route(id, method, pattern, std::move(rh), err);
+  if (!err.empty())
+    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err),
+                                0, 0);
+  culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
+  return self;
+}
+
+CULEBRA_RT_INLINE JitValue _jit_http_server_get(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "GET", "server.get");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_post(JitClosure*, JitValue self,
+                                                 int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "POST", "server.post");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_put(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "PUT", "server.put");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_delete(JitClosure*, JitValue self,
+                                                   int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "DELETE", "server.delete");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_patch(JitClosure*, JitValue self,
+                                                  int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "PATCH", "server.patch");
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_options(JitClosure*, JitValue self,
+                                                    int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "OPTIONS", "server.options");
+}
+
+CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
+                                                   int64_t n, JitValue* args) {
+  int64_t id =
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "mount");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "mount", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "dir");
+  if (args[1].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "dir", "String", 1);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string err;
+  culebra::http::http_server_static(
+      id, std::string(_culebra_str_view(args[0].tag, args[0].data)),
+      std::string(_culebra_str_view(args[1].tag, args[1].data)), err);
+  if (!err.empty())
+    throw culebra::CulebraError("HttpError",
+                                std::format("server.static: {}", err), 0, 0);
+  culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
+  return self;
+}
+
+CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
+                                                   int64_t n, JitValue* args) {
+  int64_t id =
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  if (args[0].tag != TAG_LONG)
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(args[0].tag), 0, 0);
+  int port = static_cast<int>(args[0].data);
+  std::string host = "0.0.0.0";
+  if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
+    host = std::string(_culebra_str_view(args[1].tag, args[1].data));
+  std::string err;
+  bool ok = culebra::http::http_server_listen(id, host, port, err);
+  if (!ok)
+    throw culebra::CulebraError("HttpError",
+                                std::format("server.listen: {}", err), 0, 0);
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _jit_http_server_close(JitClosure*, JitValue self,
+                                                  int64_t, JitValue*) {
+  culebra::http::http_server_close(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_drop(JitClosure*, JitValue self,
+                                                 int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::http::http_server_close(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  return {TAG_NIL, 0};
+}
+
+CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* route_meta =
+      _jit_make_handle_meta({"pattern", "handler"}, {false, false});
+  static const JitParamMeta* static_meta =
+      _jit_make_handle_meta({"mount", "dir"}, {false, false});
+  static const JitParamMeta* listen_meta =
+      _jit_make_handle_meta({"port", "host"}, {false, true});
+  _jit_handle_bind_method(h, "get", _jit_http_server_get, 2, route_meta);
+  _jit_handle_bind_method(h, "post", _jit_http_server_post, 2, route_meta);
+  _jit_handle_bind_method(h, "put", _jit_http_server_put, 2, route_meta);
+  _jit_handle_bind_method(h, "delete", _jit_http_server_delete, 2, route_meta);
+  _jit_handle_bind_method(h, "patch", _jit_http_server_patch, 2, route_meta);
+  _jit_handle_bind_method(h, "options", _jit_http_server_options, 2,
+                          route_meta);
+  _jit_handle_bind_method(h, "static", _jit_http_server_static, 2, static_meta);
+  _jit_handle_bind_method(h, "listen", _jit_http_server_listen, 1, listen_meta);
+  _jit_handle_bind_method(h, "close", _jit_http_server_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_http_server_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Http.server() → server handle.
+inline JitValue _ns_http_server(JitValue*, int64_t) {
+  return _culebra_http_build_server_handle(culebra::http::http_server_open());
+}
 #endif  // CULEBRA_HTTP_ENABLED
 
 // Isolate.spawn(fn, *args): a[0] = closure, a[1..] = positional args.
@@ -5158,6 +5428,7 @@ inline const NsMethod kNsMethods[] = {
   {"Http",   "request", 2, &_ns_http_request},
   {"Http",   "sse",     2, &_ns_http_sse},
   {"Http",   "client",  1, &_ns_http_client},
+  {"Http",   "server",  0, &_ns_http_server},
 #endif
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},

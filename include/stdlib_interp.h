@@ -3677,6 +3677,202 @@ inline Value make_http_client_handle(int64_t id) {
   return Value(std::move(h));
 }
 
+// Build the `req` Object handed to a server handler from an httplib request:
+// method/path/body as Strings, and headers/query/params as Objects of String.
+// `query` is the parsed query string; `params` the matched route path
+// parameters (e.g. ":id" → req.params["id"]). Express-style naming.
+inline Value http_request_to_object(const httplib::Request& q) {
+  ObjectValue req;
+  req.initialize("method", Value(std::string(q.method)), false);
+  req.initialize("path", Value(std::string(q.path)), false);
+  req.initialize("body", Value(std::string(q.body)), false);
+  ObjectValue headers;
+  for (const auto& [k, v] : q.headers)
+    headers.initialize(k, Value(std::string(v)), false);
+  req.initialize("headers", Value(std::move(headers)), false);
+  ObjectValue query;
+  for (const auto& [k, v] : q.params)
+    query.initialize(k, Value(std::string(v)), false);
+  req.initialize("query", Value(std::move(query)), false);
+  ObjectValue params;
+  for (const auto& [k, v] : q.path_params)
+    params.initialize(k, Value(std::string(v)), false);
+  req.initialize("params", Value(std::move(params)), false);
+  return Value(std::move(req));
+}
+
+// Apply a handler's return value to the httplib response:
+//   String   → 200, text/plain, body = string
+//   Object   → {status?, body?, headers?, content_type?}; absent → defaults
+//              (200 / "" / text/plain). headers is an Object of String.
+//   nil      → 200, empty body
+// Anything else is a TypeError (turned into a 500 by the trampoline's catch).
+inline void http_apply_response(const Value& ret, httplib::Response& res) {
+  if (ret.type == Value::Nil) {
+    res.status = 200;
+    return;
+  }
+  if (ret.type == Value::String || ret.type == Value::StringView) {
+    res.status = 200;
+    res.set_content(std::string(ret.to_string_view()), "text/plain");
+    return;
+  }
+  if (ret.type == Value::Object) {
+    const auto& obj = ret.to_object();
+    long status = 200;
+    if (obj.has_own("status") && obj.get("status").type != Value::Nil) {
+      status = obj.get("status").to_long();
+    }
+    res.status = static_cast<int>(status);
+    std::string content_type = "text/plain";
+    if (obj.has_own("content_type") &&
+        obj.get("content_type").type != Value::Nil) {
+      content_type = std::string(obj.get("content_type").to_string_view());
+    }
+    if (obj.has_own("headers") && obj.get("headers").type == Value::Object) {
+      for (const auto& [k, sym] : *obj.get("headers").to_object().properties) {
+        res.set_header(std::string(k),
+                       std::string(sym.val.to_string_view()));
+      }
+    }
+    std::string body;
+    if (obj.has_own("body") && obj.get("body").type != Value::Nil) {
+      body = std::string(obj.get("body").to_string_view());
+    }
+    res.set_content(body, content_type);
+    return;
+  }
+  throw CulebraError(
+      "TypeError",
+      "Http.server: handler must return a String, an Object, or nil", 0, 0);
+}
+
+// The Http.server handle: register routes (get/post/…) and serve files
+// (static), then listen() to block and accept connections. v0 is single
+// threaded — every handler runs on the listen thread (where this runtime
+// lives), so the handler closure is called directly (no cross-thread send).
+inline Value make_http_server_handle(int64_t id) {
+  using namespace std::literals;
+  static const auto host_default =
+      std::make_shared<Value>(Value(std::string("0.0.0.0")));
+  ObjectValue h;
+  h.initialize("_id", Value(static_cast<long>(id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+
+  auto sid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_id").to_long();
+  };
+
+  // get/post/put/delete/patch/options(pattern, handler) — record a route.
+  // Returns the handle so calls chain. The handler is `fn(req) -> response`.
+  auto route = [&](const char* method, const char* ctx) {
+    return Value(FunctionValue(
+        {{"pattern", false, "String"sv}, {"handler", false, "Function"sv}},
+        [method, ctx, sid](std::shared_ptr<Environment> env) -> Value {
+          long line = env->get("__LINE__").to_long();
+          long col = env->get("__COLUMN__").to_long();
+          int64_t server_id = sid(env);
+          std::string pattern = env->get("pattern").to_string();
+          Value handler = env->get("handler");
+          auto cb_interp = std::make_shared<Interpreter>();
+          culebra::http::RouteHandler rh =
+              [cb_interp, handler, env](const httplib::Request& q,
+                                        httplib::Response& res) {
+                try {
+                  Value req = http_request_to_object(q);
+                  Value ret = cb_interp->call_closure(handler, env, {req});
+                  http_apply_response(ret, res);
+                } catch (const std::exception& e) {
+                  res.status = 500;
+                  res.set_content(e.what(), "text/plain");
+                }
+              };
+          std::string err;
+          culebra::http::http_server_route(server_id, method, pattern,
+                                           std::move(rh), err);
+          if (!err.empty()) {
+            throw CulebraError("HttpError", std::format("{}: {}", ctx, err),
+                               line, col);
+          }
+          return env->get("this");
+        },
+        "Object"sv));
+  };
+  h.initialize("get", route("GET", "server.get"), false);
+  h.initialize("post", route("POST", "server.post"), false);
+  h.initialize("put", route("PUT", "server.put"), false);
+  h.initialize("delete", route("DELETE", "server.delete"), false);
+  h.initialize("patch", route("PATCH", "server.patch"), false);
+  h.initialize("options", route("OPTIONS", "server.options"), false);
+
+  // static(mount, dir) — serve files under `dir` at the URL prefix `mount`.
+  h.initialize(
+      "static",
+      Value(FunctionValue(
+          {{"mount", false, "String"sv}, {"dir", false, "String"sv}},
+          [sid](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            std::string err;
+            culebra::http::http_server_static(
+                sid(env), env->get("mount").to_string(),
+                env->get("dir").to_string(), err);
+            if (!err.empty()) {
+              throw CulebraError("HttpError",
+                                 std::format("server.static: {}", err), line,
+                                 col);
+            }
+            return env->get("this");
+          },
+          "Object"sv)),
+      false);
+
+  // listen(port, host="0.0.0.0") — bind and serve until Ctrl+C. Blocks.
+  h.initialize(
+      "listen",
+      Value(FunctionValue(
+          {{"port", false, ""sv},
+           {"host", false, ""sv, nullptr, host_default}},
+          [sid](std::shared_ptr<Environment> env) -> Value {
+            long line = env->get("__LINE__").to_long();
+            long col = env->get("__COLUMN__").to_long();
+            int port = static_cast<int>(env->get("port").to_long());
+            const auto& hv = env->get("host");
+            std::string host = hv.type == Value::Nil
+                                   ? std::string("0.0.0.0")
+                                   : std::string(hv.to_string_view());
+            std::string err;
+            bool ok =
+                culebra::http::http_server_listen(sid(env), host, port, err);
+            if (!ok) {
+              throw CulebraError("HttpError",
+                                 std::format("server.listen: {}", err), line,
+                                 col);
+            }
+            return Value();
+          },
+          "Nil"sv)),
+      false);
+
+  // close — stop and free. drop — GC backstop for the same.
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
+        culebra::http::http_server_close(sid(env));
+        return Value();
+      })),
+      false);
+  h.initialize(
+      "drop",
+      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
+        culebra::http::http_server_close(sid(env));
+        return Value();
+      })),
+      false);
+
+  return Value(std::move(h));
+}
+
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
 // blocks until the response arrives. A 4xx/5xx is a normal result (`ok:false`);
 // a transport failure (DNS/connect/TLS/timeout) throws HttpError.
@@ -3886,6 +4082,20 @@ inline Value make_http_namespace() {
                   std::format("Http.client: {}", err), line, col);
             }
             return make_http_client_handle(id);
+          },
+          "Object"sv)),
+      false);
+
+  // `Http.server()` — an HTTP server. Register routes with get/post/put/delete/
+  // patch/options(pattern, fn(req)->response) and serve files with
+  // static(mount, dir), then listen(port, host="0.0.0.0") to block and accept
+  // connections (Ctrl+C to stop). v0 is single threaded.
+  ns.initialize(
+      "server",
+      Value(FunctionValue(
+          {},
+          [](std::shared_ptr<Environment>) -> Value {
+            return make_http_server_handle(culebra::http::http_server_open());
           },
           "Object"sv)),
       false);

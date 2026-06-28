@@ -366,6 +366,52 @@ int main() {
     CHECK(r.error.find("scheme") != std::string::npos);
   }
 
+  // --- Http server core (registry + route/static/close contract) ---
+  // The listen()/serve path is exercised end-to-end across all three backends
+  // by tests/test_http_server.cul (isolate + loopback); here we cover the
+  // value-neutral, non-blocking core deterministically: the id registry, route
+  // method validation, static mount errors, and idempotent close.
+  {
+    using culebra::http::RouteHandler;
+    RouteHandler noop = [](const httplib::Request&, httplib::Response&) {};
+
+    int64_t sid = culebra::http::http_server_open();
+    CHECK(sid >= 0);
+
+    std::string err;
+    culebra::http::http_server_route(sid, "GET", "/x", noop, err);
+    CHECK(err.empty());                 // a supported method registers cleanly
+    err.clear();
+    culebra::http::http_server_route(sid, "POST", "/y", noop, err);
+    CHECK(err.empty());
+    err.clear();
+    culebra::http::http_server_route(sid, "BREW", "/z", noop, err);
+    CHECK(err.find("unsupported method") != std::string::npos);
+
+    // static: a real dir mounts; a missing dir reports an error (no crash).
+    err.clear();
+    culebra::http::http_server_static(sid, "/s",
+                                      std::filesystem::temp_directory_path()
+                                          .string(),
+                                      err);
+    CHECK(err.empty());
+    err.clear();
+    culebra::http::http_server_static(sid, "/s2",
+                                      "/no/such/dir/xyzzy12345", err);
+    CHECK(!err.empty());
+
+    // A forged/closed id resolves to nullptr and fails safely.
+    err.clear();
+    culebra::http::http_server_route(99999, "GET", "/x", noop, err);
+    CHECK(err.find("closed") != std::string::npos);
+
+    culebra::http::http_server_close(sid);
+    err.clear();
+    culebra::http::http_server_route(sid, "GET", "/x", noop, err);
+    CHECK(err.find("closed") != std::string::npos);  // closed id no longer routes
+    culebra::http::http_server_close(sid);            // idempotent: no crash
+  }
+
   std::printf("\nhttp: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

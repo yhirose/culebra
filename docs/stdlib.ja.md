@@ -2558,6 +2558,7 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — 任意のメソッド（PATCH、OPTIONS …） |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — Server-Sent Events を `on_event` にストリーム（後述） |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | 永続クライアントハンドル（ベース URL + デフォルトヘッダ + 接続再利用、後述） |
+| `Http.server()` | HTTP サーバハンドル（ルート + `static` を登録して `listen`、後述） |
 
 キーワード引数（全メソッド共通）:
 
@@ -2776,6 +2777,68 @@ Parallel.race(urls, |u| Http.get(u))            # 最速成功が勝ち、残り
 TLS は現在 OpenSSL を静的リンクしていますが、将来 BoringSSL へ切り替えてもビルド設定
 のみの変更で、この API には影響しません（BoringSSL はホスト名検証がより厳格なので、
 現在通る CN のみの証明書のサーバは拒否される可能性があります）。
+
+### `Http.server() -> Object`
+
+HTTP サーバです。`get`/`post`/`put`/`delete`/`patch`/`options` でルートを登録し、
+`static` でファイルを配信し、`listen` で接続を受け付けます。各ハンドラは
+`fn(req) -> response` クロージャです。
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+srv.get("/", fn(req) { "Hello, world!" })
+srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
+srv.post("/echo", fn(req) { req.body })
+srv.get("/json", fn(req) {
+  { status: 201, body: '{"ok":true}', content_type: "application/json",
+    headers: {"X-Trace": req.headers["X-Request-Id"]} }
+})
+srv.static("/assets", "./public")
+srv.listen(8080)                 # ブロックする。Ctrl+C で停止
+```
+
+| メソッド | 効果 |
+| --- | --- |
+| `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート `pattern` に `handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
+| `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
+| `listen(port, host="0.0.0.0")` | バインドして中断まで配信（呼び出しスレッドをブロック） |
+| `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
+
+**リクエスト `req`** は `method`・`path`・`body`（String）と、`headers`・`query`
+（解析済みクエリ文字列）・`params`（マッチしたルートのパスパラメータ。例: `:id` →
+`req.params["id"]`）を String の Object として持つオブジェクトです（Express 流の
+名前）。存在しないキーは `nil` を返します。
+
+**ハンドラの戻り値**がレスポンスになります:
+
+- `String` → `200`・`text/plain`・その文字列を body に;
+- `Object` `{status?, body?, headers?, content_type?}` → 全制御（省略時は `200` /
+  `""` / `text/plain`）。`headers` は String の Object;
+- `nil` → `200`・空 body。
+
+ハンドラが例外を投げると、その文面を body とする `500` になります。未マッチの
+ルートは `404` です。
+
+**並行性（v0）。** サーバはシングルスレッドで、各ハンドラは `listen` を呼んだ
+スレッド上で 1 リクエストずつ実行されます（Flask の dev server モデル）。GUI の
+背後などでバックグラウンド実行するには isolate 内で起動し、その isolate を drop
+（または `Ctrl+C`）すると accept ループが停止します:
+
+```culebra
+# doctest: skip
+let srv_iso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/health", fn(req) { "ok" })
+  srv.listen(8080)
+})
+# … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
+srv_iso.drop()                   # サーバに停止を通知して join
+```
+
+並行ハンドラ（スレッドごとに 1 ランタイムの worker pool）と長寿命の
+ストリーミング/WebSocket 応答は今後対応予定で、v0 はリクエスト/レスポンス・
+ルートパラメータ・静的ファイルをカバーします。
 
 ---
 

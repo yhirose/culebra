@@ -658,4 +658,185 @@ CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
 #endif
 }
 
+// ============================== HTTP server ================================
+//
+// The inverse of the client: httplib::Server accepts connections and, for each
+// matched route, calls back into a culebra handler closure. Invoking the
+// closure is backend-specific (interp call_closure / JIT _culebra_invoke1), so
+// this core stays value-neutral — the backend hands us a RouteHandler that
+// reads the httplib request and fills the response. v0 is single threaded: an
+// InlineTaskQueue runs every connection on the listen thread, so the handler
+// executes on the thread that owns the interpreter/JIT runtime (a culebra
+// value/GC is thread_local and non-sendable). A later phase adds a worker pool
+// with one runtime per thread for true concurrency.
+
+// Backend-supplied per-route handler: read the request, fill the response. This
+// is exactly httplib's Handler type; declaring it pulls no TLS symbol (only
+// instantiating httplib::Server / httplib::Client does), so it stays ungated.
+using RouteHandler =
+    std::function<void(const httplib::Request&, httplib::Response&)>;
+
+// id → HttpServer* registry, same opaque-pointer model as the client: scripts
+// hold a small integer id, a forged/closed id resolves to nullptr and fails
+// safely. thread_local because a server (v0) runs on the thread that created it.
+struct HttpServer;
+inline thread_local std::vector<HttpServer*> g_http_servers;
+inline thread_local std::vector<int64_t> g_http_server_free;
+inline int64_t _http_server_register(HttpServer* s) {
+  if (!g_http_server_free.empty()) {
+    int64_t id = g_http_server_free.back();
+    g_http_server_free.pop_back();
+    g_http_servers[id] = s;
+    return id;
+  }
+  g_http_servers.push_back(s);
+  return static_cast<int64_t>(g_http_servers.size()) - 1;
+}
+inline HttpServer* _http_server_get(int64_t id) {
+  if (id < 0 || id >= static_cast<int64_t>(g_http_servers.size())) return nullptr;
+  return g_http_servers[id];
+}
+inline void _http_server_unregister(int64_t id) {
+  if (id >= 0 && id < static_cast<int64_t>(g_http_servers.size()) &&
+      g_http_servers[id]) {
+    g_http_servers[id] = nullptr;
+    g_http_server_free.push_back(id);
+  }
+}
+
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+
+struct HttpServer {
+  httplib::Server svr;
+};
+
+// Single-threaded task queue: run each connection synchronously on the listen
+// thread (so handlers run where the runtime lives), and poll the cooperative
+// interrupt flag on idle so Ctrl+C / an isolate cancel can stop the accept
+// loop. on_idle() fires from listen_internal every idle interval when the
+// accept select times out — calling svr.stop() from there (the accept thread)
+// is httplib's safe shutdown path, unlike calling it from a signal handler.
+class InlineTaskQueue : public httplib::TaskQueue {
+ public:
+  InlineTaskQueue(httplib::Server* svr, std::atomic<bool>* isolate_flag)
+      : svr_(svr), isolate_flag_(isolate_flag) {}
+  bool enqueue(std::function<void()> fn) override {
+    fn();
+    return true;
+  }
+  void on_idle() override {
+    bool fired = culebra_g_sigint.load(std::memory_order_relaxed) ||
+                 (isolate_flag_ && isolate_flag_ != &culebra_g_sigint &&
+                  isolate_flag_->load(std::memory_order_relaxed));
+    if (fired) svr_->stop();
+  }
+  void shutdown() override {}
+
+ private:
+  httplib::Server* svr_;
+  std::atomic<bool>* isolate_flag_;
+};
+
+#endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
+
+// Create a server handle. Returns an id (>= 0); never fails in v0.
+CULEBRA_RT_HTTP_LINKAGE int64_t http_server_open() {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  return -1;
+#else
+  return _http_server_register(new HttpServer());
+#endif
+}
+
+// Register `handler` for `method` requests matching `pattern` (httplib route
+// syntax, e.g. "/users/:id"). Unknown methods set `err`. A closed id no-ops.
+CULEBRA_RT_HTTP_LINKAGE void http_server_route(int64_t id,
+                                               const std::string& method,
+                                               const std::string& pattern,
+                                               RouteHandler handler,
+                                               std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)method; (void)pattern; (void)handler;
+  err = "Http runtime not linked (no Http use detected at build)";
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return;
+  }
+  if (method == "GET") s->svr.Get(pattern, std::move(handler));
+  else if (method == "POST") s->svr.Post(pattern, std::move(handler));
+  else if (method == "PUT") s->svr.Put(pattern, std::move(handler));
+  else if (method == "DELETE") s->svr.Delete(pattern, std::move(handler));
+  else if (method == "PATCH") s->svr.Patch(pattern, std::move(handler));
+  else if (method == "OPTIONS") s->svr.Options(pattern, std::move(handler));
+  else err = "Http: unsupported method: " + method;
+#endif
+}
+
+// Serve files under `dir` at the URL prefix `mount`. `err` is set when the dir
+// cannot be mounted. A closed id no-ops.
+CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
+                                                const std::string& mount,
+                                                const std::string& dir,
+                                                std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)mount; (void)dir;
+  err = "Http runtime not linked (no Http use detected at build)";
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return;
+  }
+  if (!s->svr.set_mount_point(mount, dir)) {
+    err = "Http: cannot serve directory: " + dir;
+  }
+#endif
+}
+
+// Bind to host:port and serve until stopped (Ctrl+C / isolate cancel). Blocks
+// the calling thread; handlers run on it (v0 single-threaded). Returns false
+// with `err` set when the bind fails. Honors a pending interrupt cooperatively
+// on return (the same Interrupted the loop safepoint raises).
+CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(int64_t id,
+                                                const std::string& host,
+                                                int port, std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)host; (void)port;
+  err = "Http runtime not linked (no Http use detected at build)";
+  return false;
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return false;
+  }
+  auto* isolate_flag = current_runtime().interrupt_flag;
+  s->svr.new_task_queue = [svr = &s->svr, isolate_flag] {
+    return new InlineTaskQueue(svr, isolate_flag);
+  };
+  // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
+  // when no connection arrives (idle_interval turns accept into a timed select).
+  s->svr.set_idle_interval(0, 100 * 1000);
+  bool ok = s->svr.listen(host, port);
+  throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
+  if (!ok) err = "Http: failed to bind " + host + ":" + std::to_string(port);
+  return ok;
+#endif
+}
+
+// Stop (if running) and free a server (idempotent; a closed/invalid id no-ops).
+CULEBRA_RT_HTTP_LINKAGE void http_server_close(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) return;
+  _http_server_unregister(id);
+  if (s->svr.is_running()) s->svr.stop();
+  delete s;
+#endif
+}
+
 }  // namespace culebra::http

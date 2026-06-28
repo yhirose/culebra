@@ -1,0 +1,85 @@
+# Http.server — v0 single-threaded HTTP server. The server blocks in listen(),
+# so it runs in an Isolate (its own thread + runtime) while the main thread
+# drives requests through the existing Http client over loopback. Dropping the
+# isolate handle sets its interrupt flag, which the server's accept loop polls
+# and stops on — giving a clean, deterministic shutdown. Output is identical
+# across interp/JIT (no random or timing-dependent values are printed).
+
+PORT = 18799
+BASE = "http://127.0.0.1:" + PORT.to_string()
+
+iso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/", fn(req) { "Hello, world!" })
+  srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
+  srv.post("/echo", fn(req) { req.body })
+  srv.get("/q", fn(req) { "name=" + req.query["name"] })
+  srv.get("/method", fn(req) { req.method })
+  srv.get("/json", fn(req) {
+    { status: 201, body: '{"ok":true}', content_type: "application/json",
+      headers: { "X-Test": "yes" } }
+  })
+  srv.get("/empty", fn(req) { nil })
+  # Malformed response objects: a wrong-typed field is a TypeError → 500, with
+  # an identical message across interp/JIT (the trampoline puts e.what() in the
+  # body). These lock the apply-response type checks symmetric.
+  srv.get("/bad_status", fn(req) { { status: "x" } })
+  srv.get("/bad_ct", fn(req) { { body: "ok", content_type: 9 } })
+  srv.get("/bad_body", fn(req) { { body: 9 } })
+  srv.get("/bad_hdr", fn(req) { { body: "ok", headers: { "A": 1 } } })
+  srv.listen(PORT)
+})
+
+# Retry until the server thread has bound the port.
+fn wait_get(p) {
+  mut a = 0
+  while a < 200 {
+    mut r = nil
+    try { r = Http.get(BASE + p) } catch e { r = nil }
+    if r != nil { return r }
+    a = a + 1
+  }
+  return nil
+}
+
+r = wait_get("/")
+puts("GET / -> " + r.status.to_string() + " | " + r.body)
+
+r2 = Http.get(BASE + "/users/42")
+puts("route param -> " + r2.status.to_string() + " | " + r2.body)
+
+r3 = Http.post(BASE + "/echo", body: "payload-123")
+puts("POST echo -> " + r3.status.to_string() + " | " + r3.body)
+
+r4 = Http.get(BASE + "/q", params: { name: "alice" })
+puts("query -> " + r4.status.to_string() + " | " + r4.body)
+
+r5 = Http.get(BASE + "/method")
+puts("method -> " + r5.body)
+
+r6 = Http.get(BASE + "/json")
+puts("object return -> " + r6.status.to_string() + " | " + r6.body +
+     " | ct=" + r6.headers["Content-Type"] + " | x=" + r6.headers["X-Test"])
+
+r7 = Http.get(BASE + "/empty")
+puts("nil return -> " + r7.status.to_string() + " | len=" + r7.body.size().to_string())
+
+r8 = Http.get(BASE + "/missing")
+puts("unmatched -> " + r8.status.to_string())
+
+for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
+  let rb = Http.get(BASE + bad)
+  puts(bad + " -> " + rb.status.to_string() + " | " + rb.body)
+}
+
+iso.drop()
+puts("server stopped")
+
+# Port-free checks: handle methods chain (return the handle), and close is
+# idempotent. These never bind a socket.
+srv2 = Http.server()
+chained = srv2.get("/a", fn(req) { "a" }).post("/b", fn(req) { "b" })
+puts("chaining returns handle -> " + (chained == srv2).to_string())
+srv2.close()
+srv2.close()
+puts("double close ok")

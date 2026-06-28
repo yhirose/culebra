@@ -2660,6 +2660,7 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — streams Server-Sent Events to `on_event`; see below |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | a persistent client handle (base URL + default headers + connection reuse); see below |
+| `Http.server()` | an HTTP server handle (register routes + `static`, then `listen`); see below |
 
 Keyword arguments (shared by every method):
 
@@ -2885,6 +2886,68 @@ Parallel.race(urls, |u| Http.get(u))            # first success wins, cancels th
 TLS currently links OpenSSL statically; a future swap to BoringSSL is a build-only
 change and does not affect this API (BoringSSL verifies hostnames more strictly, so
 a server with a CN-only certificate that works today may then be rejected).
+
+### `Http.server() -> Object`
+
+An HTTP server. Register routes with `get`/`post`/`put`/`delete`/`patch`/`options`,
+serve files with `static`, then `listen` to accept connections. Each handler is a
+`fn(req) -> response` closure.
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+srv.get("/", fn(req) { "Hello, world!" })
+srv.get("/users/:id", fn(req) { "user " + req.params["id"] })
+srv.post("/echo", fn(req) { req.body })
+srv.get("/json", fn(req) {
+  { status: 201, body: '{"ok":true}', content_type: "application/json",
+    headers: {"X-Trace": req.headers["X-Request-Id"]} }
+})
+srv.static("/assets", "./public")
+srv.listen(8080)                 # blocks; Ctrl+C to stop
+```
+
+| Method | Effect |
+| --- | --- |
+| `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
+| `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
+| `listen(port, host="0.0.0.0")` | bind and serve until interrupted (blocks the calling thread) |
+| `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
+
+**The request `req`** is an object with `method`, `path`, and `body` (Strings), and
+`headers`, `query` (the parsed query string), and `params` (matched route path
+parameters, e.g. `:id` → `req.params["id"]`) as objects of String — Express-style
+names. A missing key reads as `nil`.
+
+**The handler's return value** becomes the response:
+
+- a `String` → `200`, `text/plain`, that string as the body;
+- an `Object` `{status?, body?, headers?, content_type?}` → full control (absent
+  fields default to `200` / `""` / `text/plain`); `headers` is an object of String;
+- `nil` → `200` with an empty body.
+
+A handler that raises becomes a `500` whose body is the error message. An unmatched
+route is a `404`.
+
+**Concurrency (v0).** The server is single-threaded: every handler runs on the
+thread that called `listen`, one request at a time (the Flask dev-server model). To
+run it in the background — e.g. behind a GUI — start it in an isolate; dropping that
+isolate (or `Ctrl+C`) stops the accept loop:
+
+```culebra
+# doctest: skip
+let srv_iso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/health", fn(req) { "ok" })
+  srv.listen(8080)
+})
+# … use Http.get("http://127.0.0.1:8080/health") from the main thread …
+srv_iso.drop()                   # signals the server to stop, then joins
+```
+
+Concurrent handlers (a worker pool with one runtime per thread) and long-lived
+streaming/WebSocket responses are planned; v0 covers request/response, route
+parameters, and static files.
 
 ---
 
