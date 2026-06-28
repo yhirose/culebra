@@ -48,6 +48,7 @@ build-webview/
 # Extended `culebra wrap` binaries (default + spike outputs)
 culebra-wrapped
 webview-culebra
+webview-app
 
 # macOS metadata
 .DS_Store

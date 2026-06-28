@@ -1,9 +1,10 @@
 # WebView — web-tech desktop GUI from culebra (Spikes 0–1)
 
 A proof that culebra can drive a **native WebView window** through the
-`culebra wrap` mechanism, and (Spike 1) wire it to a **local HTTP server**
-for a Tauri-shaped, single-binary desktop app. Embedded assets and the
-`culebra build` single-binary AOT path land in later spikes.
+`culebra wrap` mechanism, wire it to a **local HTTP server** (Spike 1), and
+AOT-compile the whole thing into a **single-file desktop app** (Spike 2) —
+the Tauri-shaped shape. Loading assets from separate frontend-build files
+is a later enhancement.
 
 This wraps [webview/webview](https://github.com/webview/webview) (MIT),
 which renders HTML/CSS/JS in each OS's native engine (WKWebView on macOS,
@@ -81,6 +82,25 @@ loopback HTTP — no shared culebra heap crosses it:
 used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /
 serialization is needed.
 
+## Single binary (Spike 2)
+
+`culebra build` AOT-compiles a program into a self-contained executable, and
+the wrap mechanism composes with it: when the script names a wrapped namespace
+(`Webview`), the build force-loads the wrap archive and appends its link flags.
+So the **wrapped** binary's `build` produces a single-file desktop app:
+
+```sh
+./webview-culebra build examples/webview/spike1.cul -o webview-app
+./webview-app
+```
+
+The result links only OS-provided frameworks — on macOS `otool -L webview-app`
+shows just `WebKit`, `CoreFoundation`, `Security`, `libz`, `libc++`, `libobjc`,
+`libSystem`; there is no external culebra runtime. The UI is already embedded
+(the HTML lives in the `.cul` as a raw string), so the one file is the whole
+app. Loading assets from separate frontend-build files (a compile-time embed,
+Go/Tauri style) is a later enhancement.
+
 ## Vendoring note
 
 `webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
@@ -92,7 +112,8 @@ commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
 ## Not in these spikes
 
-Embedded assets (HTML/JS/CSS baked into the binary) and the `culebra build`
-single-binary AOT path land in Spike 2; a `Desktop`-style facade that bundles
-server + window + assets is Spike 3. The native `bind`/`eval`/`init`/`dispatch`
-JS↔culebra bridge stays out by design (see above) — see the project roadmap.
+Loading assets from separate frontend-build files (`dist/index.html`, …) via a
+compile-time embed (Go `embed` / Tauri style) — today the UI lives inline in
+the `.cul`. A `Desktop`-style facade that bundles server + window + assets in
+one call is Spike 3. The native `bind`/`eval`/`init`/`dispatch` JS↔culebra
+bridge stays out by design (see above) — see the project roadmap.
