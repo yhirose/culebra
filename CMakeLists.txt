@@ -464,7 +464,6 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_graphics${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_graphics)
   endif()
-  target_compile_definitions(culebra PRIVATE CULEBRA_GRAPHICS_LINK="${_graphics_link}")
   cpp_embedlib_add(culebra_rt_assets
     FILES ${_rt_embed_files}
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
@@ -542,6 +541,15 @@ else()
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
+endif()
+
+# `culebra build` appends the raylib + SDL2 statics + frameworks only when the
+# program references Graphics (see aot_scan). Defined unconditionally (gated on
+# JIT) like the peer link fragments above so the fast inner-loop build
+# (CULEBRA_DEV_NO_RT) — which skips the AOT runtime archives — still compiles the
+# driver that references this macro. `_graphics_link` is "" when Graphics is off.
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_GRAPHICS_LINK="${_graphics_link}")
 endif()
 
 # --- Graphics: build SDL2 + raylib + link into the driver -----------------
