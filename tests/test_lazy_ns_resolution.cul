@@ -1,0 +1,44 @@
+# Conformance: lazy stdlib namespaces (Time/Regex/Term/Args/Log) resolve
+# identically across interp / JIT / AOT.
+#
+# The interp binds these culebra-source modules lazily and re-resolves them per
+# environment. The JIT used to splice them as top-level `let X = _x_module()`
+# slots; a closure that referenced one captured the built module Object, whose
+# native members are not Sendable (see tests/isolate/test_lazy_ns_isolate_jit).
+# The JIT now drops the slot and resolves every reference — top level and inside
+# closures — through namespace_get + a captureless builder thunk, one instance
+# per Runtime. This file pins the in-Runtime resolution (the isolate file pins
+# the cross-Runtime path).
+#
+# Run: ./build/culebra tests/test_lazy_ns_resolution.cul
+#      ./build/culebra --jit tests/test_lazy_ns_resolution.cul
+
+# --- Top-level use of a lazy namespace ---
+assert_eq(Time.seconds(2).seconds(), 2.0)
+assert_eq(Regex.test("a.c", "abc"), true)
+assert_eq(Regex.compile("\\d+").find_all("a1 b22").size(), 2)
+
+# --- A nested closure resolves the namespace per Runtime (no captured slot) ---
+let inner = fn () { fn () { Time.seconds(3).seconds() }() }
+assert_eq(inner(), 3.0)
+
+let re_in_closure = fn () { Regex.find_all("x+", "xx ax xxx").size() }
+assert_eq(re_in_closure(), 3)
+
+# --- Lexical scope wins over a builtin name (was JIT-asymmetric: the closure
+#     ignored the user's binding and resolved the Math namespace) ---
+let Math = 5
+let read_shadow = fn () { Math }
+assert_eq(read_shadow(), 5)
+
+# A stdlib module reusing a builtin-looking name internally is the same case:
+# Regex's own methods reference its internal `Regex` class, which must bind to
+# that class (captured lexically), not the Regex namespace. `compile` and
+# `replace_all` exercise it.
+assert_eq(Regex.compile("a").replace_all("aaa", "b"), "bbb")
+
+# --- The regex literal desugars through the module's `interp` member ---
+let w = "ab"
+assert_eq((re"^${w}c$").test("abc"), true)
+
+puts("lazy-ns resolution OK")

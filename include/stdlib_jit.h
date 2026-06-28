@@ -5916,11 +5916,60 @@ inline const NsMethod* _lookup_ns_method(std::string_view ns,
   return nullptr;
 }
 
+// --- Lazy source-module (Time/Regex/Term/Args/Log) builder registry ---------
+//
+// The interp binds these culebra-source modules lazily (initialize_lazy) and
+// re-resolves them per environment, so a closure shipped to another isolate is
+// rebuilt there from the same source — it never carries the native members
+// that make the module Object non-Sendable. The JIT mirrors this without a
+// per-runtime source eval: each module's builder is the captureless
+// `fn(){ <module body>; <Module Object> }` already present in the preamble
+// (e.g. `_time_module`). The JIT splice runs `_lazy_ns_register(name, builder)`
+// once at entry-module top level, which records the builder's machine-code
+// fn_ptr here. fn_ptrs are process-global (the same JIT-compiled body runs on
+// any Runtime, like a deserialized closure's shared fn_ptr), so a child isolate
+// resolves the module by rebuilding a captureless closure on its own heap and
+// invoking it — exactly how run_isolate_child_jit rebuilds user closures.
+inline std::mutex& _lazy_ns_builder_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline std::unordered_map<std::string, void*>& _lazy_ns_builders() {
+  static std::unordered_map<std::string, void*> r;
+  return r;
+}
+inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr) {
+  std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
+  _lazy_ns_builders().insert_or_assign(name, fn_ptr);  // idempotent
+}
+inline void* _lazy_ns_builder(const std::string& name) {
+  std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
+  auto it = _lazy_ns_builders().find(name);
+  return it == _lazy_ns_builders().end() ? nullptr : it->second;
+}
+
 inline JitObject* _jit_namespace_get_or_build(const std::string& name) {
   auto& table = culebra::runtime_substate<_JitNamespaceTable>(
                     culebra::kSlotJitNamespaceTable).entries;
   auto it = table.find(name);
   if (it != table.end()) return it->second;
+  // A lazy source module: build it on the current Runtime by invoking the
+  // registered captureless builder closure (arity 0, no captures). The result
+  // is the module Object (refcount 1); the table + pin hold that single ref for
+  // the Runtime's lifetime, same discipline as the native path below.
+  if (void* fp = _lazy_ns_builder(name)) {
+    auto* cls = culebra_runtime_closure_new(fp, /*n_captures=*/0, /*arity=*/0);
+    JitValue r = _culebra_invoke0(cls);
+    culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
+    if (r.tag != TAG_OBJECT) {
+      culebra_runtime_value_release(r.tag, r.data);
+      return nullptr;  // a builder must return its namespace Object
+    }
+    auto* obj = reinterpret_cast<JitObject*>(r.data);
+    table.emplace(name, obj);
+    _gc_heap().pin(obj);
+    return obj;
+  }
   if (!_is_known_ns(name)) return nullptr;
   auto* obj = _jit_build_namespace_object(name);
   table.emplace(name, obj);
@@ -5988,6 +6037,23 @@ culebra_runtime_namespace_get(const char* name,
                                 reinterpret_cast<int64_t>(obj));
   *out_tag = TAG_OBJECT;
   *out_data = reinterpret_cast<int64_t>(obj);
+}
+
+// Record a lazy source module's builder fn_ptr under `name`. Emitted by the JIT
+// splice as `_lazy_ns_register("Time", _time_module)` at entry-module top level;
+// `builder` is the captureless `fn(){ <module body>; <Object> }` closure. Only
+// its machine-code fn_ptr is kept (process-global, valid on any Runtime); the
+// closure object itself is not retained. namespace_get rebuilds + invokes it
+// per Runtime. See _jit_namespace_get_or_build.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
+                                  int64_t builder_data) {
+  if (builder_tag != TAG_FUNC) return;  // splice only ever passes a closure
+  auto* c = reinterpret_cast<JitClosure*>(builder_data);
+  // A module builder closes over nothing (it references only builtins +
+  // its own locals), so the per-Runtime rebuild uses 0 captures.
+  assert(c->n_captures == 0 && "lazy-ns builder must be captureless");
+  _lazy_ns_register_builder(name ? name : "", c->fn_ptr);
 }
 
 // Direct ns-method call entry used by compile_ns_call's typed-positional fast
@@ -6389,6 +6455,30 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
     jit.emit_value_release(arg);
     return jit.make_long(h);
+  }
+
+  // _lazy_ns_register("Name", builder) — JIT/AOT-only intrinsic the stdlib
+  // splice emits to record a lazy source module's builder fn_ptr (see
+  // _jit_namespace_get_or_build). arg0 is a string literal (the public module
+  // name); arg1 the captureless builder closure. Returns nil.
+  if (name == "_lazy_ns_register" && argsAst.nodes.size() == 2) {
+    auto ptrTy = llvm::PointerType::get(jit.ctx_, 0);
+    // arg0 is an ARG_ITEM wrapping the STRING literal; descend single-child
+    // nodes to its token (compile() unwraps the same way — jit.h "Single
+    // child: recurse").
+    const peg::Ast* nameNode = argsAst.nodes[0].get();
+    while (nameNode->nodes.size() == 1) nameNode = nameNode->nodes[0].get();
+    auto namePtr = jit.get_or_create_global_str(
+        std::string(nameNode->token), ".lazyns.name");
+    auto builder = jit.compile(*argsAst.nodes[1]);
+    jit.emit_call(
+        jit.module_->getOrInsertFunction(rt::lazy_ns_register,
+                                         jit.builder_.getVoidTy(), ptrTy,
+                                         jit.builder_.getInt8Ty(),
+                                         jit.builder_.getInt64Ty()),
+        {namePtr, jit.extract_tag(builder), jit.extract_data(builder)});
+    jit.emit_value_release(builder);
+    return jit.make_nil();
   }
 
   return nullptr;
@@ -7610,6 +7700,11 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",
       "_Term",   "SQLite",
+      // Lazy source modules (preamble builders, resolved via namespace_get +
+      // the lazy-ns builder registry). Listed here so closures capture-skip
+      // them and bare references compile to namespace_get — mirroring the
+      // interp's builtin_names skip. See _jit_namespace_get_or_build.
+      "Time",    "Args",      "Regex",     "Term",      "Log",
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif

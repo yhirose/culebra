@@ -5681,13 +5681,16 @@ struct JitMultiMethodEntry {
   size_t min_params = 0;
 };
 
-// thread_local: holds +1 closure refs from this thread's JIT run.
-// Per-thread by construction (see _jit_variant_ctor_info note).
+// Per-Runtime substate (not thread_local): holds +1 closure refs from this
+// Runtime's JIT run. A substate so it follows ~Runtime's slot-ordered teardown
+// — it must outlive the module/namespace tables, whose destructors release
+// dispatcher closures that consult this registry (see the kSlotJitMultimethods
+// note + _jit_multifn_forget). One Runtime per thread, so this stays per-thread.
 inline std::map<std::string, std::vector<JitMultiMethodEntry>>&
 _jit_multimethods() {
-  static thread_local std::map<std::string, std::vector<JitMultiMethodEntry>>
-      tbl;
-  return tbl;
+  return culebra::runtime_substate<
+      std::map<std::string, std::vector<JitMultiMethodEntry>>>(
+      culebra::kSlotJitMultimethods);
 }
 
 // Recover the user-facing name from a multimethod registry key. Keys are
@@ -5781,12 +5784,15 @@ culebra_runtime_register_trait_super(const char* trait_name,
 // for. A dispatcher is kept alive only by its env/module binding (a
 // normal GC root) and owns its bodies via _jit_gc_enumerate_children, so
 // it is reclaimed when its scope dies (entry dropped in _jit_multifn_forget).
-// thread_local: keyed by per-thread dispatcher closure pointers (see
-// _jit_variant_ctor_info note). No cross-thread sharing needed.
+// Per-Runtime substate (not thread_local): keyed by this Runtime's dispatcher
+// closure pointers. A substate (paired with _jit_multimethods) so it outlives
+// the module/namespace tables under ~Runtime's slot-ordered teardown — those
+// tables release dispatcher closures that consult this map. One Runtime per
+// thread, so no cross-thread sharing. See the kSlotJitMultifnNames note.
 inline std::map<JitClosure*, std::string>&
 _jit_multifn_dispatcher_names() {
-  static thread_local std::map<JitClosure*, std::string> tbl;
-  return tbl;
+  return culebra::runtime_substate<std::map<JitClosure*, std::string>>(
+      culebra::kSlotJitMultifnNames);
 }
 
 // Function-value introspection. `cls` is a JitClosure*; `prop` is
@@ -9740,6 +9746,8 @@ inline constexpr auto module_get
     = "culebra_runtime_module_get";
 inline constexpr auto namespace_get
     = "culebra_runtime_namespace_get";
+inline constexpr auto lazy_ns_register
+    = "culebra_runtime_lazy_ns_register";
 inline constexpr auto unknown_kwarg
     = "culebra_runtime_unknown_kwarg";
 inline constexpr auto missing_required_arg
@@ -12291,14 +12299,23 @@ struct JIT {
     }
   }
 
-  // Record `name` as a free variable of the function under analysis when
-  // it resolves to an outer scope (not a local, not a builtin). Shared by
-  // the IDENTIFIER read path and the UFCS method-name path.
+  // Record `name` as a free variable of the function under analysis when it
+  // resolves to an enclosing lexical scope. Shared by the IDENTIFIER read path
+  // and the UFCS method-name path.
+  //
+  // A real binding in an enclosing scope is captured even when `name` also
+  // matches a builtin: lexical scope wins, matching the interp (`let Math = 5;
+  // fn(){ Math }` sees 5, not the Math namespace; likewise a stdlib module's
+  // own helper/class — e.g. Regex's internal `Regex` class — captured by its
+  // methods). Only a name with no enclosing binding falls through to builtin /
+  // namespace resolution at its use site (compile_identifier → namespace_get).
+  // lookup_var resolves captures/slots before builtins, so capture and
+  // resolution stay consistent.
   void note_free_var(const std::string& name,
                      const std::set<std::string>& my_locals,
                      std::vector<const std::set<std::string>*>& outer,
                      FuncInfo& info) {
-    if (my_locals.contains(name) || is_builtin_var(name)) return;
+    if (my_locals.contains(name)) return;
     for (auto* scope : outer) {
       if (scope->contains(name)) {
         if (std::find(info.free_vars.begin(), info.free_vars.end(), name) ==
@@ -12308,7 +12325,8 @@ struct JIT {
         return;
       }
     }
-    // else: unresolved (will error at runtime) — don't add as free.
+    // else: builtin/global (resolved at the use site) or unresolved (runtime
+    // NameError) — not a free variable either way.
   }
 
   void visit_for_frees(const peg::Ast& node,

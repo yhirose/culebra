@@ -5578,6 +5578,37 @@ inline const char* STDLIB_PREAMBLE_SOURCE = _stdlib_preamble_concat();
 // never calls this. A substring hit is a safe over-approximation: false
 // positives (e.g. `let myTime = 1`) just include an unneeded module; only
 // true negatives skip a module, preserving correctness.
+// JIT/AOT only: rewrite a lazy source module so the entry module registers a
+// captureless builder thunk instead of materializing a top-level slot.
+//
+// interp binds these culebra-source modules lazily (initialize_lazy) and
+// re-resolves them per environment, so a closure shipped to another isolate is
+// rebuilt there from the same source and never carries the module Object's
+// native members (which aren't Sendable). The JIT can't carry the built Object
+// either, so it drops the public slot and routes every reference — main and
+// child — through namespace_get + the builder registry (one instance per
+// Runtime). The builder is the whole module wrapped in a thunk
+// `fn(){ <module body>; _x_module() }`, which is captureless: it references
+// only builtins (resolved per-Runtime via namespace_get) plus its own nested
+// helpers/classes, so namespace_get can rebuild + invoke it on any Runtime —
+// exactly how run_isolate_child_jit rebuilds a user closure from a shared
+// fn_ptr. The trailing public binding `let X = _x_module()` becomes the thunk's
+// result expression `_x_module()`.
+inline std::string _wrap_lazy_ns_module(std::string_view src, const char* pub,
+                                        const char* builder) {
+  std::string s(src);
+  std::string bind = std::string("let ") + pub + " = " + builder + "()";
+  auto pos = s.find(bind);
+  // Every namespace module ends with its public binding; a miss means the
+  // source shape changed (the JIT would silently lose the module). Assert so a
+  // source edit that drops/renames the binding is caught in a dev build.
+  assert(pos != std::string::npos &&
+         "lazy-ns module is missing its `let X = _x_module()` public binding");
+  if (pos != std::string::npos)
+    s.replace(pos, bind.size(), std::string(builder) + "()");
+  return "_lazy_ns_register(\"" + std::string(pub) + "\", fn(){ " + s + " });";
+}
+
 inline std::string stdlib_preamble_for(std::string_view user_src) {
   auto has = [&](std::string_view m) {
     return user_src.find(m) != std::string_view::npos;
@@ -5589,15 +5620,28 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   // `Regex` substring in the source, so its prefixes are extra markers for
   // the Regex module. Over-approximation is safe — a false positive (e.g.
   // "there's" matching `re'`) just inlines an unused module.
+  //
+  // The five namespace modules (Time/Term/Args/Regex/Log) are wrapped as lazy
+  // builder registrations (see _wrap_lazy_ns_module); the matcher family and
+  // `replace` (a bare fn, not a namespace) stay plain spliced bindings.
   std::string preamble;
-  if (has("Time")) preamble.append(TIME_MODULE_SOURCE);
-  if (has("Term")) preamble.append(TERM_MODULE_SOURCE);
-  if (has("Args")) preamble.append(ARGS_MODULE_SOURCE);
+  if (has("Time"))
+    preamble.append(_wrap_lazy_ns_module(TIME_MODULE_SOURCE, "Time",
+                                         "_time_module"));
+  if (has("Term"))
+    preamble.append(_wrap_lazy_ns_module(TERM_MODULE_SOURCE, "Term",
+                                         "_term_module"));
+  if (has("Args"))
+    preamble.append(_wrap_lazy_ns_module(ARGS_MODULE_SOURCE, "Args",
+                                         "_args_module"));
   if (has("assert_")) preamble.append(MATCHERS_MODULE_SOURCE);
   if (has("Regex") || has("re'") || has("re\"") || has("re`"))
-    preamble.append(REGEX_MODULE_SOURCE);
+    preamble.append(_wrap_lazy_ns_module(REGEX_MODULE_SOURCE, "Regex",
+                                         "_regex_module"));
   if (has("replace")) preamble.append(STRING_REPLACE_MODULE_SOURCE);
-  if (has("Log")) preamble.append(LOG_MODULE_SOURCE);
+  if (has("Log"))
+    preamble.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
+                                         "_log_module"));
   return preamble;
 }
 

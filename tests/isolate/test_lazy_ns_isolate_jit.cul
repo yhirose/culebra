@@ -1,0 +1,37 @@
+# Conformance: a closure that references a lazy stdlib namespace
+# (Time/Regex/Term/Args/Log) is Sendable across isolates on both backends.
+#
+# Was JIT-only SendError ("a native/builtin function is not Sendable"): the
+# spliced top-level slot held the module Object, whose native members the
+# closure captured and the serializer rejected. interp succeeded (it skips
+# builtin names and the child re-resolves). The JIT now skips the capture too
+# and the child rebuilds the module from a process-global builder thunk fn_ptr,
+# mirroring how a deserialized closure shares its fn_ptr.
+#
+# Run: ./build/culebra tests/isolate/test_lazy_ns_isolate_jit.cul
+#      ./build/culebra --jit tests/isolate/test_lazy_ns_isolate_jit.cul
+
+# Minimal repro from the bug report.
+let t = Isolate.spawn(fn () { Time.sleep(0.001); 42 })
+assert_eq(t.join(), 42)
+
+# Regex inside a spawned closure: the module has an internal `Regex` class whose
+# methods are referenced by `find_all`/`test` — exercises both the cross-Runtime
+# rebuild and the lexical-capture-of-internal-class path on the child heap.
+let r = Isolate.spawn(fn () { Regex.find_all("x+", "xx ax xxx").size() })
+assert_eq(r.join(), 3)
+
+# Several lazy namespaces in one child.
+let m = Isolate.spawn(fn () {
+  let d = Time.seconds(5)
+  to_long(d.seconds()) + Regex.compile("a").find_all("aXaXa").size()
+})
+assert_eq(m.join(), 8)
+
+# Parallel.map fans the same closure across worker isolates.
+let outs = Parallel.map([0, 1, 2, 3], fn (i) {
+  Regex.find_all("x", "xxx").size() + to_long(Time.seconds(i).seconds())
+})
+assert_eq(outs.sum(), 18)
+
+puts("lazy-ns isolate OK")

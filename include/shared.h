@@ -1323,6 +1323,16 @@ enum RuntimeSlot : size_t {
   // slab must outlive them. See the static_assert below the enum.
   kSlotJitSlab,
   kSlotJitGc,
+  // JIT multimethod registries (dispatcher→name + name→overload bodies). Per
+  // Runtime, holding +1 refs on the overload body closures. Placed just above
+  // the GC heap so they outlive every JitValue-holding table (module / namespace
+  // / test): those tables' destructors release closures, and releasing a
+  // multifn dispatcher consults these registries (`_jit_multifn_forget`). As
+  // runtime substates they follow ~Runtime's reverse-slot teardown + revival,
+  // so a table dtor at process exit reads a live (or harmlessly re-revived)
+  // registry instead of a destroyed thread_local. See _jit_multifn_forget.
+  kSlotJitMultifnNames,
+  kSlotJitMultimethods,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap
