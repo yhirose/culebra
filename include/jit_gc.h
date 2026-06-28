@@ -197,6 +197,14 @@ class Heap {
     if (GcHeader* h = objects_.find(p)) h->flags |= kFlagPinned;
   }
 
+  // Clear a pin set by pin(). Unlike the program-lifetime namespace objects,
+  // some C++-held roots are ephemeral (e.g. a streaming response closure held
+  // only by httplib's content provider): pin while held, unpin when dropped so
+  // the object can be reclaimed once its refcount also reaches zero.
+  void unpin(void* p) {
+    if (GcHeader* h = objects_.find(p)) h->flags &= ~kFlagPinned;
+  }
+
   // Pause collection across a multi-object construction whose intermediates
   // are not yet reachable from any root (e.g. building a namespace object: its
   // method closures exist registered-but-unrooted until they are slotted). A

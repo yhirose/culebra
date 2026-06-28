@@ -27,6 +27,24 @@ iso = Isolate.spawn(fn() {
   srv.get("/bad_ct", fn(req) { { body: "ok", content_type: 9 } })
   srv.get("/bad_body", fn(req) { { body: 9 } })
   srv.get("/bad_hdr", fn(req) { { body: "ok", headers: { "A": 1 } } })
+  # Streaming (chunked / SSE): the handler returns an Object with a `stream`
+  # Function. The provider runs on this worker thread and hands the closure a
+  # `sink` whose .write(chunk) pushes one chunk. status/content_type/headers
+  # apply as usual; body + stream is a TypeError → 500.
+  srv.get("/count", fn(req) {
+    { stream: fn(sink) { for i in 0..5 { sink.write(i.to_string() + ",") } } }
+  })
+  srv.get("/sse", fn(req) {
+    { status: 202, content_type: "text/event-stream",
+      headers: { "Cache-Control": "no-cache" },
+      stream: fn(sink) {
+        for i in 0..3 { sink.write("data: " + i.to_string() + "\n\n") }
+      } }
+  })
+  srv.get("/stream_both", fn(req) {
+    { body: "x", stream: fn(sink) { sink.write("y") } }
+  })
+  srv.get("/stream_bad", fn(req) { { stream: 42 } })
   srv.listen(PORT)
 })
 
@@ -70,6 +88,20 @@ puts("unmatched -> " + r8.status.to_string())
 for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
   let rb = Http.get(BASE + bad)
   puts(bad + " -> " + rb.status.to_string() + " | " + rb.body)
+}
+
+# Streaming: the client buffers the reassembled chunked body.
+rc = Http.get(BASE + "/count")
+puts("stream count -> " + rc.status.to_string() + " | " + rc.body)
+
+rs = Http.get(BASE + "/sse")
+puts("stream sse -> " + rs.status.to_string() + " | ct=" +
+     rs.headers["Content-Type"] + " | cc=" + rs.headers["Cache-Control"] +
+     " | bytes=" + rs.body.size().to_string())
+
+for sb in ["/stream_both", "/stream_bad"] {
+  let rsb = Http.get(BASE + sb)
+  puts(sb + " -> " + rsb.status.to_string() + " | " + rsb.body)
 }
 
 iso.drop()

@@ -2911,6 +2911,7 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
 | `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
+| `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `listen(port, host="0.0.0.0", workers=1)` | bind and serve until interrupted (blocks the calling thread); `workers>1` runs a concurrent pool |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
@@ -2924,10 +2925,36 @@ names. A missing key reads as `nil`.
 - a `String` → `200`, `text/plain`, that string as the body;
 - an `Object` `{status?, body?, headers?, content_type?}` → full control (absent
   fields default to `200` / `""` / `text/plain`); `headers` is an object of String;
+- an `Object` with a `stream:` Function → a chunked (streaming) response — see below;
 - `nil` → `200` with an empty body.
 
 A handler that raises becomes a `500` whose body is the error message. An unmatched
 route is a `404`.
+
+**Streaming responses (SSE / chunked).** To send a response incrementally —
+without buffering the whole body — return an Object whose `stream` field is a
+`fn(sink)` closure. The body is sent chunked; `status`, `content_type`, and
+`headers` apply as usual (`body` and `stream` together is a `TypeError`). The
+closure is called with a `sink` handle; `sink.write(chunk)` pushes one chunk and
+returns `false` if the client has gone away (so a long loop can stop early):
+
+```culebra
+# doctest: skip
+srv.get("/events", fn(req) {
+  { content_type: "text/event-stream",
+    headers: {"Cache-Control": "no-cache"},
+    stream: fn(sink) {
+      for i in 0..10 { sink.write("data: " + i.to_string() + "\n\n") }
+    } }
+})
+```
+
+The stream closure runs on the worker thread, so under `workers: 1` a long-lived
+stream occupies the single thread (use `workers: N` for concurrent streams).
+An exception raised mid-stream aborts the connection (the status line is already
+sent, so it cannot become a `500`); wrap the body in a `try` if you need to handle
+it. WebSocket responses are planned; the server currently covers request/response,
+route parameters, static files, and streaming.
 
 **Concurrency.** `workers` chooses the threading model:
 
@@ -2963,9 +2990,6 @@ let srv_iso = Isolate.spawn(fn() {
 # … use Http.get("http://127.0.0.1:8080/health") from the main thread …
 srv_iso.drop()                   # signals the server to stop, then joins
 ```
-
-Long-lived streaming (SSE/chunked) and WebSocket responses are planned; the server
-currently covers request/response, route parameters, and static files.
 
 ---
 

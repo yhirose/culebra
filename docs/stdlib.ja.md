@@ -2802,6 +2802,7 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート `pattern` に `handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
 | `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
+| `sink.write(chunk)` | （`stream:` クロージャ内）1 チャンクを送出。クライアント切断時は `false` を返す |
 | `listen(port, host="0.0.0.0", workers=1)` | バインドして中断まで配信（呼び出しスレッドをブロック）。`workers>1` で並行プール |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
 
@@ -2815,10 +2816,36 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 - `String` → `200`・`text/plain`・その文字列を body に;
 - `Object` `{status?, body?, headers?, content_type?}` → 全制御（省略時は `200` /
   `""` / `text/plain`）。`headers` は String の Object;
+- `stream:` フィールドに Function を持つ `Object` → chunked（ストリーミング）応答（後述）;
 - `nil` → `200`・空 body。
 
 ハンドラが例外を投げると、その文面を body とする `500` になります。未マッチの
 ルートは `404` です。
+
+**ストリーミング応答（SSE / chunked）。** body 全体をバッファせず逐次送出するには、
+`stream` フィールドが `fn(sink)` クロージャの Object を返します。body は chunked で
+送られ、`status`・`content_type`・`headers` は通常どおり適用されます（`body` と
+`stream` の併用は `TypeError`）。クロージャは `sink` ハンドルで呼ばれ、
+`sink.write(chunk)` が 1 チャンクを送出し、クライアントが切断していれば `false` を
+返します（長いループはそこで止められる）:
+
+```culebra
+# doctest: skip
+srv.get("/events", fn(req) {
+  { content_type: "text/event-stream",
+    headers: {"Cache-Control": "no-cache"},
+    stream: fn(sink) {
+      for i in 0..10 { sink.write("data: " + i.to_string() + "\n\n") }
+    } }
+})
+```
+
+stream クロージャは worker スレッド上で実行されるため、`workers: 1` では長寿命の
+ストリームが単一スレッドを占有します（並行ストリームには `workers: N`）。ストリーム
+途中の例外は接続を中断します（status 行は送出済みなので `500` にはできません）。
+途中で処理したい場合は body を `try` で囲みます。WebSocket 応答は今後対応予定で、
+現在はリクエスト/レスポンス・ルートパラメータ・静的ファイル・ストリーミングを
+カバーします。
 
 **並行性。** `workers` でスレッドモデルを選びます:
 
@@ -2853,9 +2880,6 @@ let srv_iso = Isolate.spawn(fn() {
 # … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
 srv_iso.drop()                   # サーバに停止を通知して join
 ```
-
-長寿命のストリーミング（SSE/chunked）と WebSocket 応答は今後対応予定で、現在は
-リクエスト/レスポンス・ルートパラメータ・静的ファイルをカバーします。
 
 ---
 

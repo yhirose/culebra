@@ -412,6 +412,38 @@ int main() {
     culebra::http::http_server_close(sid);            // idempotent: no crash
   }
 
+  // --- Streaming sink registry (slot + generation defense) ---
+  {
+    std::string buf;
+    httplib::DataSink sink;
+    sink.write = [&buf](const char* d, size_t n) {
+      buf.append(d, n);
+      return true;
+    };
+    int64_t id = culebra::http::_http_sink_register(&sink);
+    CHECK(culebra::http::http_sink_write(id, "ab", 2));   // live sink writes
+    CHECK(culebra::http::http_sink_write(id, "c", 1));
+    CHECK(buf == "abc");
+    culebra::http::_http_sink_invalidate(id);
+    CHECK(!culebra::http::http_sink_write(id, "z", 1));    // stale id fails safely
+    CHECK(buf == "abc");                                   // nothing more written
+
+    // Reusing the slot bumps the generation, so the old id stays invalid (no
+    // ABA: a captured sink can never write to a later connection's stream).
+    std::string buf2;
+    httplib::DataSink sink2;
+    sink2.write = [&buf2](const char* d, size_t n) {
+      buf2.append(d, n);
+      return true;
+    };
+    int64_t id2 = culebra::http::_http_sink_register(&sink2);
+    CHECK(id2 != id);                                      // distinct id
+    CHECK(!culebra::http::http_sink_write(id, "z", 1));    // old id still dead
+    CHECK(culebra::http::http_sink_write(id2, "Q", 1));    // new id is live
+    CHECK(buf2 == "Q");
+    culebra::http::_http_sink_invalidate(id2);
+  }
+
   std::printf("\nhttp: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

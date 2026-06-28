@@ -705,6 +705,84 @@ inline void _http_server_unregister(int64_t id) {
   }
 }
 
+// ---- Chunked response streaming (SSE / chunked) --------------------------
+//
+// A streaming handler returns a response Object carrying a `stream` Function.
+// The backend wires set_chunked_content_provider; httplib then calls the
+// provider (on this worker thread, where the runtime lives) to produce the
+// body. The provider hands the script a `sink` handle whose .write(chunk)
+// pushes one chunk. The sink is valid only during that one provider call, so
+// scripts hold an id that encodes (slot, generation): a captured/escaped sink
+// resolves stale and write() returns false instead of touching a dead DataSink.
+// These helpers only touch DataSink (no httplib::Server/Client), so they pull
+// no TLS symbol and stay outside the WEAK/STRONG gate.
+inline thread_local std::vector<httplib::DataSink*> g_http_sinks;
+inline thread_local std::vector<uint32_t> g_http_sink_gen;
+inline thread_local std::vector<uint32_t> g_http_sink_free;
+
+inline int64_t _http_sink_register(httplib::DataSink* s) {
+  uint32_t slot;
+  if (!g_http_sink_free.empty()) {
+    slot = g_http_sink_free.back();
+    g_http_sink_free.pop_back();
+    g_http_sinks[slot] = s;
+  } else {
+    slot = static_cast<uint32_t>(g_http_sinks.size());
+    g_http_sinks.push_back(s);
+    g_http_sink_gen.push_back(0);
+  }
+  // Encode (gen, slot) in unsigned space — matches the unsigned decode in
+  // http_sink_write and avoids a signed shift into the sign bit.
+  return static_cast<int64_t>(
+      (static_cast<uint64_t>(g_http_sink_gen[slot]) << 32) |
+      static_cast<uint64_t>(slot));
+}
+inline void _http_sink_invalidate(int64_t id) {
+  uint32_t slot = static_cast<uint32_t>(id & 0xFFFFFFFF);
+  if (slot >= g_http_sinks.size()) return;
+  g_http_sinks[slot] = nullptr;
+  g_http_sink_gen[slot]++;  // bump so a stale handle (old generation) now fails
+  g_http_sink_free.push_back(slot);
+}
+
+// Write a chunk through sink `id`. Returns false if the id is stale/invalid (an
+// escaped sink) or the client has gone away — so the handler can stop early.
+inline bool http_sink_write(int64_t id, const char* data, size_t len) {
+  uint32_t slot = static_cast<uint32_t>(id & 0xFFFFFFFF);
+  uint32_t gen = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
+  if (slot >= g_http_sinks.size() || g_http_sink_gen[slot] != gen) return false;
+  httplib::DataSink* s = g_http_sinks[slot];
+  if (!s) return false;
+  return s->write(data, len);
+}
+
+// Backend-supplied stream runner: given a sink id, invoke the script's stream
+// closure (which writes chunks via http_sink_write). Returns false if the
+// closure threw — the connection is then aborted without a terminating chunk.
+using StreamRunner = std::function<bool(int64_t sink_id)>;
+
+// Wire `res` as a chunked stream of `content_type`, driven by `run`. httplib's
+// chunked loop calls the provider repeatedly until done() is signaled; our
+// provider drives the whole stream in one call, then sends the terminating
+// chunk on success or aborts the connection on failure.
+inline void http_server_set_stream(httplib::Response& res,
+                                   const std::string& content_type,
+                                   StreamRunner run) {
+  res.set_chunked_content_provider(
+      content_type,
+      [run = std::move(run)](size_t /*offset*/,
+                             httplib::DataSink& sink) -> bool {
+        int64_t id = _http_sink_register(&sink);
+        bool ok = run(id);
+        _http_sink_invalidate(id);
+        if (ok) {
+          sink.done();  // terminating "0\r\n" chunk → ends the loop cleanly
+          return true;
+        }
+        return false;  // closure threw → abort (no terminating chunk)
+      });
+}
+
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 
 struct HttpServer {

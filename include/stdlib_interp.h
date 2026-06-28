@@ -3701,6 +3701,31 @@ inline Value http_request_to_object(const httplib::Request& q) {
   return Value(std::move(req));
 }
 
+// Apply a response Object's status/content_type/headers to `res` and return the
+// resolved content_type. Shared by the buffered path (http_apply_response) and
+// the streaming path (http_try_stream_response); the body/stream differs, this
+// metadata does not. status/content_type read via to_long/to_string_view, which
+// reject a present, non-nil field of the wrong type with a TypeError.
+inline std::string http_apply_response_meta(const ObjectValue& obj,
+                                            httplib::Response& res) {
+  long status = 200;
+  if (obj.has_own("status") && obj.get("status").type != Value::Nil) {
+    status = obj.get("status").to_long();
+  }
+  res.status = static_cast<int>(status);
+  std::string content_type = "text/plain";
+  if (obj.has_own("content_type") &&
+      obj.get("content_type").type != Value::Nil) {
+    content_type = std::string(obj.get("content_type").to_string_view());
+  }
+  if (obj.has_own("headers") && obj.get("headers").type == Value::Object) {
+    for (const auto& [k, sym] : *obj.get("headers").to_object().properties) {
+      res.set_header(std::string(k), std::string(sym.val.to_string_view()));
+    }
+  }
+  return content_type;
+}
+
 // Apply a handler's return value to the httplib response:
 //   String   → 200, text/plain, body = string
 //   Object   → {status?, body?, headers?, content_type?}; absent → defaults
@@ -3719,22 +3744,7 @@ inline void http_apply_response(const Value& ret, httplib::Response& res) {
   }
   if (ret.type == Value::Object) {
     const auto& obj = ret.to_object();
-    long status = 200;
-    if (obj.has_own("status") && obj.get("status").type != Value::Nil) {
-      status = obj.get("status").to_long();
-    }
-    res.status = static_cast<int>(status);
-    std::string content_type = "text/plain";
-    if (obj.has_own("content_type") &&
-        obj.get("content_type").type != Value::Nil) {
-      content_type = std::string(obj.get("content_type").to_string_view());
-    }
-    if (obj.has_own("headers") && obj.get("headers").type == Value::Object) {
-      for (const auto& [k, sym] : *obj.get("headers").to_object().properties) {
-        res.set_header(std::string(k),
-                       std::string(sym.val.to_string_view()));
-      }
-    }
+    std::string content_type = http_apply_response_meta(obj, res);
     std::string body;
     if (obj.has_own("body") && obj.get("body").type != Value::Nil) {
       body = std::string(obj.get("body").to_string_view());
@@ -3745,6 +3755,67 @@ inline void http_apply_response(const Value& ret, httplib::Response& res) {
   throw CulebraError(
       "TypeError",
       "Http.server: handler must return a String, an Object, or nil", 0, 0);
+}
+
+// The `sink` handle handed to a streaming handler's closure: sink.write(chunk)
+// pushes one chunk to the client and returns false if the client has gone away
+// (so the handler can stop early). Backed by an id (slot + generation) into the
+// value-neutral sink registry; valid only during the stream callback — a
+// captured/escaped sink resolves stale and write() returns false.
+inline Value make_http_sink_handle(int64_t sink_id) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_sink", Value(static_cast<long>(sink_id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+  h.initialize(
+      "write",
+      Value(FunctionValue(
+          {{"data", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            int64_t sid = env->get("this").to_object().get("_sink").to_long();
+            auto sv = env->get("data").to_string_view();
+            return Value(http::http_sink_write(sid, sv.data(), sv.size()));
+          },
+          "Bool"sv)),
+      false);
+  return Value(std::move(h));
+}
+
+// If `ret` is an Object carrying a `stream` Function, wire a chunked response
+// (status/content_type/headers from the same Object apply, mirroring
+// http_apply_response) and return true; the caller then skips
+// http_apply_response. The provider invokes `stream` with a sink handle on this
+// worker thread. body + stream together is a TypeError. Returns false for any
+// non-streaming response. A mid-stream exception aborts the connection (the
+// status line is already sent, so it cannot become a 500).
+inline bool http_try_stream_response(const Value& ret, httplib::Response& res,
+                                     std::shared_ptr<Interpreter> interp,
+                                     std::shared_ptr<Environment> env) {
+  if (ret.type != Value::Object) return false;
+  const auto& obj = ret.to_object();
+  if (!(obj.has_own("stream") && obj.get("stream").type != Value::Nil))
+    return false;
+  Value stream_fn = obj.get("stream");
+  if (stream_fn.type != Value::Function)
+    throw CulebraError("TypeError",
+                       "Http.server: response stream must be a Function", 0, 0);
+  if (obj.has_own("body") && obj.get("body").type != Value::Nil)
+    throw CulebraError("TypeError",
+                       "Http.server: response cannot set both body and stream",
+                       0, 0);
+  std::string content_type = http_apply_response_meta(obj, res);
+  // Capturing stream_fn (a Value copy = +1) keeps the closure alive until the
+  // provider runs after this returns (same worker thread, same response write).
+  http::http_server_set_stream(
+      res, content_type, [interp, env, stream_fn](int64_t sink_id) -> bool {
+        try {
+          interp->call_closure(stream_fn, env, {make_http_sink_handle(sink_id)});
+          return true;
+        } catch (...) {
+          return false;
+        }
+      });
+  return true;
 }
 
 // A route recorded by get/post/… and registered at listen() time — deferred so
@@ -6055,7 +6126,9 @@ inline Value _http_server_do_listen(
               Value req = http_request_to_object(q);
               Value ret = g_srv_w_interp->call_closure(g_srv_w_handlers[ri],
                                                        g_srv_w_base, {req});
-              http_apply_response(ret, res);
+              if (!http_try_stream_response(ret, res, g_srv_w_interp,
+                                            g_srv_w_base))
+                http_apply_response(ret, res);
             } catch (const std::exception& e) {
               res.status = 500;
               res.set_content(e.what(), "text/plain");
@@ -6103,7 +6176,8 @@ inline Value _http_server_do_listen(
           try {
             Value req = http_request_to_object(q);
             Value ret = cb_interp->call_closure(handler, listen_env, {req});
-            http_apply_response(ret, res);
+            if (!http_try_stream_response(ret, res, cb_interp, listen_env))
+              http_apply_response(ret, res);
           } catch (const std::exception& e) {
             res.status = 500;
             res.set_content(e.what(), "text/plain");

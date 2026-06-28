@@ -3987,6 +3987,49 @@ inline JitObject* _jit_http_request_to_object(const httplib::Request& q) {
   return o;
 }
 
+// Apply a response Object's status/content_type/headers to `res` and return the
+// resolved content_type (mirrors interp http_apply_response_meta). Shared by the
+// buffered path (_jit_http_apply_response) and the streaming path
+// (_jit_http_try_stream_response). A present, non-nil field of the wrong type is
+// a TypeError — caught by the trampoline as a 500 — not a silently-defaulted
+// value (interp reads these via to_long / to_string_view, same rejection).
+inline std::string _jit_http_apply_response_meta(JitObject* o,
+                                                 httplib::Response& res) {
+  long status = 200;
+  size_t si = o->find_slot("status");
+  if (si != static_cast<size_t>(-1) && o->slots[si].value.tag != TAG_NIL) {
+    JitValue v = o->slots[si].value;
+    if (v.tag != TAG_LONG)
+      culebra::throw_type_mismatch("Long", _culebra_tag_name(v.tag), 0, 0);
+    status = v.data;
+  }
+  res.status = static_cast<int>(status);
+  std::string content_type = "text/plain";
+  size_t ci = o->find_slot("content_type");
+  if (ci != static_cast<size_t>(-1) && o->slots[ci].value.tag != TAG_NIL) {
+    JitValue v = o->slots[ci].value;
+    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+      culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
+    content_type = std::string(_culebra_str_view(v.tag, v.data));
+  }
+  size_t hi = o->find_slot("headers");
+  if (hi != static_cast<size_t>(-1) && o->slots[hi].value.tag == TAG_OBJECT) {
+    auto* h = reinterpret_cast<JitObject*>(o->slots[hi].value.data);
+    if (h->shape) {
+      // Set incrementally and throw on the first non-String value, matching
+      // interp's `res.set_header(k, val.to_string_view())` loop.
+      for (size_t k = 0; k < h->shape->names.size(); k++) {
+        JitValue v = h->slots[k].value;
+        if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+          culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
+        res.set_header(std::string(h->shape->names[k]),
+                       std::string(_culebra_str_view(v.tag, v.data)));
+      }
+    }
+  }
+  return content_type;
+}
+
 // Apply a handler's return value to the httplib response (mirrors interp
 // http_apply_response): String → 200 text/plain; Object → status/body/
 // headers/content_type with defaults; nil → 200 empty; else TypeError.
@@ -4003,45 +4046,7 @@ inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
   }
   if (ret.tag == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(ret.data);
-    // Mirror interp http_apply_response exactly (same field order, same nil
-    // handling, same TypeError messages): a present, non-nil field of the
-    // wrong type is a TypeError — caught by the trampoline as a 500 — not a
-    // silently-defaulted value. (interp reads these via Value::to_long /
-    // to_string_view, which reject anything but Long / String|StringView.)
-    long status = 200;
-    size_t si = o->find_slot("status");
-    if (si != static_cast<size_t>(-1) && o->slots[si].value.tag != TAG_NIL) {
-      JitValue v = o->slots[si].value;
-      if (v.tag != TAG_LONG)
-        culebra::throw_type_mismatch("Long", _culebra_tag_name(v.tag), 0, 0);
-      status = v.data;
-    }
-    res.status = static_cast<int>(status);
-    std::string content_type = "text/plain";
-    size_t ci = o->find_slot("content_type");
-    if (ci != static_cast<size_t>(-1) && o->slots[ci].value.tag != TAG_NIL) {
-      JitValue v = o->slots[ci].value;
-      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-        culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0, 0);
-      content_type = std::string(_culebra_str_view(v.tag, v.data));
-    }
-    size_t hi = o->find_slot("headers");
-    if (hi != static_cast<size_t>(-1) &&
-        o->slots[hi].value.tag == TAG_OBJECT) {
-      auto* h = reinterpret_cast<JitObject*>(o->slots[hi].value.data);
-      if (h->shape) {
-        // Set incrementally and throw on the first non-String value, matching
-        // interp's `res.set_header(k, val.to_string_view())` loop.
-        for (size_t k = 0; k < h->shape->names.size(); k++) {
-          JitValue v = h->slots[k].value;
-          if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-            culebra::throw_type_mismatch("String", _culebra_tag_name(v.tag), 0,
-                                         0);
-          res.set_header(std::string(h->shape->names[k]),
-                         std::string(_culebra_str_view(v.tag, v.data)));
-        }
-      }
-    }
+    std::string content_type = _jit_http_apply_response_meta(o, res);
     std::string body;
     size_t bi = o->find_slot("body");
     if (bi != static_cast<size_t>(-1) && o->slots[bi].value.tag != TAG_NIL) {
@@ -4056,6 +4061,83 @@ inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
   throw culebra::CulebraError(
       "TypeError",
       "Http.server: handler must return a String, an Object, or nil", 0, 0);
+}
+
+// sink.write(chunk) for a streaming response — mirrors interp
+// make_http_sink_handle's write. Returns Bool (false if the client has gone
+// away or the sink has been invalidated). A `String` param rejects a StringView
+// slice on every path, matching the interp/File handle-method convention.
+CULEBRA_RT_INLINE JitValue _jit_http_sink_write(JitClosure*, JitValue self,
+                                                int64_t n, JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t sid = _jit_handle_long(h, "_sink");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "data", "String", 0);
+  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  bool ok = culebra::http::http_sink_write(sid, sv.data(), sv.size());
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_BOOL, ok ? 1 : 0};
+}
+// Build the `sink` handle (mirrors interp make_http_sink_handle): a thin
+// non-sendable object over a sink id with a `write` method.
+inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_sink", JitValue{TAG_LONG, sink_id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* write_meta =
+      _jit_make_handle_meta({"data"}, {false});
+  _jit_handle_bind_method(h, "write", _jit_http_sink_write, 1, write_meta);
+  return h;
+}
+
+// Mirror interp http_try_stream_response: if `ret` is an Object carrying a
+// `stream` Function, wire a chunked response (same status/content_type/headers
+// fields, same order, same TypeError messages as _jit_http_apply_response) and
+// return true; the caller then skips _jit_http_apply_response. body + stream is
+// a TypeError. A mid-stream exception aborts the connection.
+inline bool _jit_http_try_stream_response(JitValue ret, httplib::Response& res) {
+  if (ret.tag != TAG_OBJECT) return false;
+  auto* o = reinterpret_cast<JitObject*>(ret.data);
+  size_t sti = o->find_slot("stream");
+  if (sti == static_cast<size_t>(-1) || o->slots[sti].value.tag == TAG_NIL)
+    return false;
+  JitValue stream_v = o->slots[sti].value;
+  if (stream_v.tag != TAG_FUNC)
+    throw culebra::CulebraError(
+        "TypeError", "Http.server: response stream must be a Function", 0, 0);
+  size_t bi = o->find_slot("body");
+  if (bi != static_cast<size_t>(-1) && o->slots[bi].value.tag != TAG_NIL)
+    throw culebra::CulebraError(
+        "TypeError", "Http.server: response cannot set both body and stream", 0,
+        0);
+  std::string content_type = _jit_http_apply_response_meta(o, res);
+  // The provider runs after this returns (same worker thread, same response
+  // write), and the closure lives only in C++ until then — so retain + pin it
+  // (the mark-sweep backstop ignores refcount). A shared_ptr deleter unpins and
+  // releases when httplib drops the provider, whether or not it ever ran.
+  culebra_runtime_value_retain(TAG_FUNC, stream_v.data);
+  _gc_heap().pin(reinterpret_cast<void*>(stream_v.data));
+  std::shared_ptr<void> keep(reinterpret_cast<void*>(stream_v.data),
+                             [](void* p) {
+                               _gc_heap().unpin(p);
+                               culebra_runtime_value_release(
+                                   TAG_FUNC, reinterpret_cast<int64_t>(p));
+                             });
+  culebra::http::http_server_set_stream(
+      res, content_type, [keep](int64_t sink_id) -> bool {
+        auto* cls = reinterpret_cast<JitClosure*>(keep.get());
+        try {
+          JitValue sink{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                        _jit_make_http_sink_handle(sink_id))};
+          JitValue r = _culebra_invoke1(cls, sink);  // consumes sink's +1
+          _culebra_value_release_impl(r.tag, r.data);
+          return true;
+        } catch (...) {
+          return false;
+        }
+      });
+  return true;
 }
 
 // Deferred route records per server id (registered at listen, when the worker
@@ -4175,7 +4257,8 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
               auto* cb = reinterpret_cast<JitClosure*>(
                   g_jit_srv_w_handlers[ri].data);
               JitValue ret = _culebra_invoke1(cb, req);
-              _jit_http_apply_response(ret, res);
+              if (!_jit_http_try_stream_response(ret, res))
+                _jit_http_apply_response(ret, res);
               _culebra_value_release_impl(ret.tag, ret.data);
             } catch (const std::exception& e) {
               res.status = 500;
@@ -4223,7 +4306,8 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
             JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
                                          _jit_http_request_to_object(q))};
             JitValue ret = _culebra_invoke1(cb, req);
-            _jit_http_apply_response(ret, res);
+            if (!_jit_http_try_stream_response(ret, res))
+              _jit_http_apply_response(ret, res);
             _culebra_value_release_impl(ret.tag, ret.data);
           } catch (const std::exception& e) {
             res.status = 500;
