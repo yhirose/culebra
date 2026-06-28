@@ -1,8 +1,9 @@
-# WebView — web-tech desktop GUI from culebra (Spike 0)
+# WebView — web-tech desktop GUI from culebra (Spikes 0–1)
 
 A proof that culebra can drive a **native WebView window** through the
-`culebra wrap` mechanism — the first layer of a Tauri-shaped, single-binary
-desktop app (local HTTP server + embedded assets land in later spikes).
+`culebra wrap` mechanism, and (Spike 1) wire it to a **local HTTP server**
+for a Tauri-shaped, single-binary desktop app. Embedded assets and the
+`culebra build` single-binary AOT path land in later spikes.
 
 This wraps [webview/webview](https://github.com/webview/webview) (MIT),
 which renders HTML/CSS/JS in each OS's native engine (WKWebView on macOS,
@@ -14,8 +15,9 @@ WebKitGTK on Linux, WebView2 on Windows) — no bundled Chromium.
 |---|---|
 | `webview.h` | Vendored amalgamated single header (pinned, see below) |
 | `webview_binding.cpp` | `culebra wrap` declaration: a thin facade over webview's C API, exposed as `Webview.Window` |
-| `hello.cul` | Opens a 640×480 window with inline HTML (blocks in the event loop) |
+| `hello.cul` | Spike 0: opens a 640×480 window with inline HTML (blocks in the event loop) |
 | `smoke.cul` | Non-blocking binding check (ctor → setters → drop); safe for CI/headless |
+| `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
 
 ## Build
 
@@ -37,9 +39,10 @@ culebra wrap examples/webview/webview_binding.cpp \
 ## Run
 
 ```sh
-./webview-culebra examples/webview/hello.cul          # interpreter
-./webview-culebra --jit examples/webview/hello.cul    # JIT
+./webview-culebra examples/webview/hello.cul          # Spike 0: interpreter
+./webview-culebra --jit examples/webview/hello.cul    # Spike 0: JIT
 ./webview-culebra examples/webview/smoke.cul          # no window, just the binding
+./webview-culebra examples/webview/spike1.cul         # Spike 1: server + WebView
 ```
 
 ## API surface
@@ -57,6 +60,27 @@ The window is a resource with culebra's full lifetime model: scope-exit
 deterministic drop, idempotent `drop()`, `ClosedError` on use-after-drop.
 It is `__nonsendable__` (a GUI handle never crosses an isolate boundary).
 
+## Spike 1 — local server + fetch bridge
+
+`spike1.cul` is the Tauri-shaped shape: a local HTTP server serves the UI
+and a small JSON API, and the page reaches it over `fetch()`. The concurrency
+model stays intact because the only bridge across the thread boundary is
+loopback HTTP — no shared culebra heap crosses it:
+
+- The **server** runs in its own `Isolate` (a separate thread with its own
+  heap). It blocks in `listen()`.
+- The **WebView** runs on the main thread and parks it in the native event
+  loop (`run()`), navigating to `http://127.0.0.1:PORT`.
+- Closing the window returns from `run()`; `server.drop()` then sets the
+  isolate's interrupt flag, which the server's accept loop polls and stops
+  on — a clean cross-thread shutdown.
+- A short retry loop (`Http.get` until it answers) waits for the server to
+  bind before the window opens.
+
+`bind`/`eval` (a native, in-process JS↔culebra bridge) is deliberately not
+used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /
+serialization is needed.
+
 ## Vendoring note
 
 `webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
@@ -66,9 +90,9 @@ type and the new standard library eagerly instantiates the deleter in a
 throwing constructor. master fixed it. The header carries its source
 commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
-## Not in this spike
+## Not in these spikes
 
-`bind`/`eval`/`init`/`dispatch` (the native JS↔culebra bridge), the local
-HTTP server (developed separately), embedded assets, and the `culebra build`
-single-binary AOT path. The HTTP-only bridge (`fetch` to a localhost server)
-is the planned integration shape — see the project roadmap.
+Embedded assets (HTML/JS/CSS baked into the binary) and the `culebra build`
+single-binary AOT path land in Spike 2; a `Desktop`-style facade that bundles
+server + window + assets is Spike 3. The native `bind`/`eval`/`init`/`dispatch`
+JS↔culebra bridge stays out by design (see above) — see the project roadmap.
