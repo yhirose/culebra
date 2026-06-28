@@ -75,6 +75,50 @@ for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
 iso.drop()
 puts("server stopped")
 
+# --- Concurrent worker pool (workers > 1): each worker thread gets its own
+# runtime with the handlers rebuilt onto it (so they must be Sendable), giving
+# true parallel request handling. Parallel.map preserves input order, so the
+# output is deterministic across backends.
+PORT2 = 18856
+BASE2 = "http://127.0.0.1:" + PORT2.to_string()
+iso2 = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.get("/sq/:n", fn(req) {
+    let n = to_long(req.params["n"])
+    (n * n).to_string()
+  })
+  srv.listen(PORT2, workers: 4)
+})
+fn wait2(p) {
+  mut a = 0
+  while a < 200 {
+    mut r = nil
+    try { r = Http.get(BASE2 + p) } catch e { r = nil }
+    if r != nil { return r }
+    a = a + 1
+  }
+  return nil
+}
+wait2("/sq/0")
+squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn(i) {
+  Http.get(BASE2 + "/sq/" + i.to_string()).body
+})
+puts("concurrent squares: " + squares.to_string())
+iso2.drop()
+puts("pool stopped")
+
+# --- A non-Sendable handler is rejected at listen(workers>1) with SendError,
+# before binding — surfaced identically across backends.
+bad = Http.server()
+mut hits = 0
+bad.get("/", fn(req) { hits = hits + 1; "x" })
+try {
+  bad.listen(18857, workers: 2)
+} catch e {
+  puts("non-sendable handler -> " + e.kind)
+}
+bad.close()
+
 # Port-free checks: handle methods chain (return the handle), and close is
 # idempotent. These never bind a socket.
 srv2 = Http.server()

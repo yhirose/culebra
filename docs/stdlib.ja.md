@@ -2802,7 +2802,7 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート `pattern` に `handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
 | `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
-| `listen(port, host="0.0.0.0")` | バインドして中断まで配信（呼び出しスレッドをブロック） |
+| `listen(port, host="0.0.0.0", workers=1)` | バインドして中断まで配信（呼び出しスレッドをブロック）。`workers>1` で並行プール |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
 
 **リクエスト `req`** は `method`・`path`・`body`（String）と、`headers`・`query`
@@ -2820,25 +2820,42 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 ハンドラが例外を投げると、その文面を body とする `500` になります。未マッチの
 ルートは `404` です。
 
-**並行性（v0）。** サーバはシングルスレッドで、各ハンドラは `listen` を呼んだ
-スレッド上で 1 リクエストずつ実行されます（Flask の dev server モデル）。GUI の
-背後などでバックグラウンド実行するには isolate 内で起動し、その isolate を drop
-（または `Ctrl+C`）すると accept ループが停止します:
+**並行性。** `workers` でスレッドモデルを選びます:
+
+- `workers: 1`（既定）— シングルスレッド。各ハンドラは `listen` を呼んだスレッド上で
+  1 リクエストずつ実行（Flask dev server モデル）。ハンドラは何でもキャプチャ可。
+- `workers: N`（N > 1）— N 個の worker スレッドのプール。各々が専用ランタイムを持ち、
+  リクエストは**真の並列**で処理（プロセス全体ロック無し＝単一プロセスの Python
+  サーバと違う）。各 worker がハンドラを自分のヒープに作り直すため、ハンドラは
+  **Sendable** でなければならない（可変変数や非 Sendable 値をキャプチャ不可）。巨大な
+  read-only データは [`Shared.new`](#12-isolate) で共有（全 worker で 1 コピー）、
+  worker ごとの資源（DB 接続）はハンドラ内で開く。非 Sendable なハンドラは `listen`
+  時に `SendError`（該当ルートを明示）。
+
+```culebra
+# doctest: skip
+let model = Shared.new(load_weights())          # read-only 1 コピーを全 worker で共有
+let srv = Http.server()
+srv.post("/predict", fn(req) { infer(model, req.body) })
+srv.listen(8080, workers: 8)                     # 8 ハンドラが並列実行
+```
+
+GUI の背後などでバックグラウンド実行するには isolate 内で起動し、その isolate を
+drop（または `Ctrl+C`）すると accept ループが停止します:
 
 ```culebra
 # doctest: skip
 let srv_iso = Isolate.spawn(fn() {
   let srv = Http.server()
   srv.get("/health", fn(req) { "ok" })
-  srv.listen(8080)
+  srv.listen(8080, workers: 4)
 })
 # … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
 srv_iso.drop()                   # サーバに停止を通知して join
 ```
 
-並行ハンドラ（スレッドごとに 1 ランタイムの worker pool）と長寿命の
-ストリーミング/WebSocket 応答は今後対応予定で、v0 はリクエスト/レスポンス・
-ルートパラメータ・静的ファイルをカバーします。
+長寿命のストリーミング（SSE/chunked）と WebSocket 応答は今後対応予定で、現在は
+リクエスト/レスポンス・ルートパラメータ・静的ファイルをカバーします。
 
 ---
 

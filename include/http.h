@@ -20,6 +20,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <httplib.h>
@@ -737,6 +738,83 @@ class InlineTaskQueue : public httplib::TaskQueue {
   std::atomic<bool>* isolate_flag_;
 };
 
+// Backend hooks for a concurrent worker (run on each worker thread): `setup`
+// builds the per-thread runtime + deserializes the route handlers into
+// thread_local storage; `teardown` releases them before the runtime tears down.
+// Value-neutral: the serialize/deserialize logic lives in the backend closures.
+struct ServerWorkerHooks {
+  std::function<void()> setup;
+  std::function<void()> teardown;
+};
+
+// Concurrent task queue: a fixed pool of N worker threads, each owning its own
+// culebra runtime (a heap/GC is thread_local and non-sendable). Each thread
+// runs `hooks.setup()` once — under a RuntimeScope, so it deserializes the route
+// handlers onto its own heap — then drains the job queue (httplib's
+// process_and_close_socket, which routes to the C++ trampolines that read this
+// thread's handler table). The accept loop polls on_idle for a cooperative
+// Ctrl+C / cancel and stops the server, which joins the workers.
+class CulebraWorkerPool : public httplib::TaskQueue {
+ public:
+  CulebraWorkerPool(size_t n, httplib::Server* svr,
+                    std::atomic<bool>* isolate_flag, ServerWorkerHooks hooks)
+      : svr_(svr), isolate_flag_(isolate_flag), hooks_(std::move(hooks)) {
+    for (size_t i = 0; i < n; i++) threads_.emplace_back([this] { worker(); });
+  }
+  bool enqueue(std::function<void()> fn) override {
+    {
+      std::lock_guard<std::mutex> lk(m_);
+      jobs_.push_back(std::move(fn));
+    }
+    cv_.notify_one();
+    return true;
+  }
+  void on_idle() override {
+    bool fired = culebra_g_sigint.load(std::memory_order_relaxed) ||
+                 (isolate_flag_ && isolate_flag_ != &culebra_g_sigint &&
+                  isolate_flag_->load(std::memory_order_relaxed));
+    if (fired) svr_->stop();
+  }
+  void shutdown() override {
+    {
+      std::lock_guard<std::mutex> lk(m_);
+      shutdown_ = true;
+    }
+    cv_.notify_all();
+    for (auto& t : threads_)
+      if (t.joinable()) t.join();
+    threads_.clear();
+  }
+
+ private:
+  void worker() {
+    culebra::Runtime rt;
+    culebra::RuntimeScope scope(rt);
+    rt.interrupt_flag = isolate_flag_;  // honor cancel in nested blocking ops
+    if (hooks_.setup) hooks_.setup();
+    for (;;) {
+      std::function<void()> job;
+      {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [this] { return shutdown_ || !jobs_.empty(); });
+        if (shutdown_ && jobs_.empty()) break;
+        job = std::move(jobs_.front());
+        jobs_.pop_front();
+      }
+      job();
+    }
+    if (hooks_.teardown) hooks_.teardown();
+  }
+  httplib::Server* svr_;
+  std::atomic<bool>* isolate_flag_;
+  ServerWorkerHooks hooks_;
+  std::vector<std::thread> threads_;
+  std::deque<std::function<void()>> jobs_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  bool shutdown_ = false;
+};
+
 #endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 // Create a server handle. Returns an id (>= 0); never fails in v0.
@@ -796,14 +874,19 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
 }
 
 // Bind to host:port and serve until stopped (Ctrl+C / isolate cancel). Blocks
-// the calling thread; handlers run on it (v0 single-threaded). Returns false
-// with `err` set when the bind fails. Honors a pending interrupt cooperatively
-// on return (the same Interrupted the loop safepoint raises).
-CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(int64_t id,
-                                                const std::string& host,
-                                                int port, std::string& err) {
+// the calling thread. `n_workers <= 1` runs every handler inline on this thread
+// (no serialization; the original closures); `n_workers > 1` runs a pool of that
+// many worker threads, each with its own runtime built by `worker_setup`
+// (deserialized route handlers) and torn down by `worker_teardown`. Returns
+// false with `err` set when the bind fails. Honors a pending interrupt
+// cooperatively on return (the same Interrupted the loop safepoint raises).
+CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(
+    int64_t id, const std::string& host, int port, int n_workers,
+    std::function<void()> worker_setup, std::function<void()> worker_teardown,
+    std::string& err) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id; (void)host; (void)port;
+  (void)id; (void)host; (void)port; (void)n_workers;
+  (void)worker_setup; (void)worker_teardown;
   err = "Http runtime not linked (no Http use detected at build)";
   return false;
 #else
@@ -813,9 +896,18 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(int64_t id,
     return false;
   }
   auto* isolate_flag = current_runtime().interrupt_flag;
-  s->svr.new_task_queue = [svr = &s->svr, isolate_flag] {
-    return new InlineTaskQueue(svr, isolate_flag);
-  };
+  if (n_workers > 1) {
+    ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
+    s->svr.new_task_queue = [n_workers, svr = &s->svr, isolate_flag,
+                             hooks = std::move(hooks)] {
+      return new CulebraWorkerPool(static_cast<size_t>(n_workers), svr,
+                                   isolate_flag, hooks);
+    };
+  } else {
+    s->svr.new_task_queue = [svr = &s->svr, isolate_flag] {
+      return new InlineTaskQueue(svr, isolate_flag);
+    };
+  }
   // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
   // when no connection arrives (idle_interval turns accept into a timed select).
   s->svr.set_idle_interval(0, 100 * 1000);

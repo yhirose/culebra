@@ -2911,7 +2911,7 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
 | `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
-| `listen(port, host="0.0.0.0")` | bind and serve until interrupted (blocks the calling thread) |
+| `listen(port, host="0.0.0.0", workers=1)` | bind and serve until interrupted (blocks the calling thread); `workers>1` runs a concurrent pool |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
 **The request `req`** is an object with `method`, `path`, and `body` (Strings), and
@@ -2929,25 +2929,43 @@ names. A missing key reads as `nil`.
 A handler that raises becomes a `500` whose body is the error message. An unmatched
 route is a `404`.
 
-**Concurrency (v0).** The server is single-threaded: every handler runs on the
-thread that called `listen`, one request at a time (the Flask dev-server model). To
-run it in the background — e.g. behind a GUI — start it in an isolate; dropping that
-isolate (or `Ctrl+C`) stops the accept loop:
+**Concurrency.** `workers` chooses the threading model:
+
+- `workers: 1` (default) — single-threaded: every handler runs on the thread that
+  called `listen`, one request at a time (the Flask dev-server model). Handlers may
+  capture anything.
+- `workers: N` (N > 1) — a pool of N worker threads, each with its own runtime;
+  requests are handled in **true parallel** (no global lock — unlike a single-process
+  Python server). Because each worker rebuilds the handlers onto its own heap, the
+  handlers must be **Sendable**: they can't capture mutable variables or non-Sendable
+  values. Share large read-only data with [`Shared.new`](#12-isolate) (one copy across
+  all workers) and open per-worker resources (a DB connection) inside the handler. A
+  non-Sendable handler is a `SendError` at `listen`, naming the offending route.
+
+```culebra
+# doctest: skip
+let model = Shared.new(load_weights())          # one read-only copy, shared by all workers
+let srv = Http.server()
+srv.post("/predict", fn(req) { infer(model, req.body) })
+srv.listen(8080, workers: 8)                     # 8 handlers run in parallel
+```
+
+To run a server in the background — e.g. behind a GUI — start it in an isolate;
+dropping that isolate (or `Ctrl+C`) stops the accept loop:
 
 ```culebra
 # doctest: skip
 let srv_iso = Isolate.spawn(fn() {
   let srv = Http.server()
   srv.get("/health", fn(req) { "ok" })
-  srv.listen(8080)
+  srv.listen(8080, workers: 4)
 })
 # … use Http.get("http://127.0.0.1:8080/health") from the main thread …
 srv_iso.drop()                   # signals the server to stop, then joins
 ```
 
-Concurrent handlers (a worker pool with one runtime per thread) and long-lived
-streaming/WebSocket responses are planned; v0 covers request/response, route
-parameters, and static files.
+Long-lived streaming (SSE/chunked) and WebSocket responses are planned; the server
+currently covers request/response, route parameters, and static files.
 
 ---
 

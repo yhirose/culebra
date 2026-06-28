@@ -4058,8 +4058,26 @@ inline void _jit_http_apply_response(JitValue ret, httplib::Response& res) {
       "Http.server: handler must return a String, an Object, or nil", 0, 0);
 }
 
+// Deferred route records per server id (registered at listen, when the worker
+// count — and so whether handlers must be Sendable — is known). The handler is
+// retained AND pinned for the record's lifetime: it lives only in this C++ map
+// (and later httplib's route table), unreachable from any GC root, so a retain
+// (RC) alone is not enough — the mark-sweep backstop sweeps unmarked objects
+// regardless of refcount. Both are undone by the release at close. thread_local:
+// the handle is non-sendable.
+struct JitRouteRecord {
+  std::string method;
+  std::string pattern;
+  JitValue handler;
+};
+inline thread_local std::unordered_map<int64_t, std::vector<JitRouteRecord>>
+    g_jit_srv_routes;
+// Per-worker deserialized handlers for a concurrent server (workers > 1): each
+// worker thread rebuilds the handlers onto its own heap here.
+inline thread_local std::vector<JitValue> g_jit_srv_w_handlers;
+
 inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
-                                       const char* method, const char* ctx) {
+                                       const char* method) {
   int64_t id =
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "pattern");
@@ -4069,66 +4087,38 @@ inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
   if (args[1].tag != TAG_FUNC)
     _jit_file_param_type_error(self, "handler", "Function", 1);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  std::string pattern(_culebra_str_view(args[0].tag, args[0].data));
-  // Retain the handler for the server's lifetime; the shared_ptr holder
-  // releases it when the route table (and so the RouteHandler) is destroyed.
-  // The handler lives only in httplib's (C++) route table — unreachable from
-  // any GC root — so a retain (which only stops RC-free) is not enough: the
-  // mark-sweep backstop sweeps unmarked objects regardless of refcount. Pin it
-  // as a permanent GC root too (same mechanism the cached namespace objects
-  // use); the release on close removes it from the registry.
   culebra_runtime_value_retain(args[1].tag, args[1].data);
-  auto* cb = reinterpret_cast<JitClosure*>(args[1].data);
-  _gc_heap().pin(cb);
-  std::shared_ptr<void> hold(static_cast<void*>(cb), [](void* p) {
-    _culebra_value_release_impl(
-        TAG_FUNC, reinterpret_cast<int64_t>(p));
-  });
-  culebra::http::RouteHandler rh =
-      [hold, cb](const httplib::Request& q, httplib::Response& res) {
-        try {
-          JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                       _jit_http_request_to_object(q))};
-          JitValue ret = _culebra_invoke1(cb, req);  // consumes req's +1
-          _jit_http_apply_response(ret, res);
-          _culebra_value_release_impl(ret.tag, ret.data);
-        } catch (const std::exception& e) {
-          res.status = 500;
-          res.set_content(e.what(), "text/plain");
-        }
-      };
-  std::string err;
-  culebra::http::http_server_route(id, method, pattern, std::move(rh), err);
-  if (!err.empty())
-    throw culebra::CulebraError("HttpError", std::format("{}: {}", ctx, err),
-                                0, 0);
+  _gc_heap().pin(reinterpret_cast<void*>(args[1].data));
+  g_jit_srv_routes[id].push_back(
+      {method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
+       args[1]});
   culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
   return self;
 }
 
 CULEBRA_RT_INLINE JitValue _jit_http_server_get(JitClosure*, JitValue self,
                                                 int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "GET", "server.get");
+  return _jit_http_server_route(self, n, args, "GET");
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_post(JitClosure*, JitValue self,
                                                  int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "POST", "server.post");
+  return _jit_http_server_route(self, n, args, "POST");
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_put(JitClosure*, JitValue self,
                                                 int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "PUT", "server.put");
+  return _jit_http_server_route(self, n, args, "PUT");
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_delete(JitClosure*, JitValue self,
                                                    int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "DELETE", "server.delete");
+  return _jit_http_server_route(self, n, args, "DELETE");
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_patch(JitClosure*, JitValue self,
                                                   int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "PATCH", "server.patch");
+  return _jit_http_server_route(self, n, args, "PATCH");
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_options(JitClosure*, JitValue self,
                                                     int64_t n, JitValue* args) {
-  return _jit_http_server_route(self, n, args, "OPTIONS", "server.options");
+  return _jit_http_server_route(self, n, args, "OPTIONS");
 }
 
 CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
@@ -4153,6 +4143,108 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
   return self;
 }
 
+// Register the recorded routes and serve. workers<=1 dispatches the original
+// closures inline on the listen thread; workers>1 serializes them and each
+// worker thread rebuilds them onto its own heap (so they must be Sendable).
+inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
+                                           int port, long workers) {
+  auto& recs = g_jit_srv_routes[id];
+  std::string err;
+  if (workers > 1) {
+    auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
+    for (const auto& rec : recs) {
+      try {
+        JitSerCtx sc;
+        snodes->push_back(jit_serialize(rec.handler, sc));
+      } catch (culebra::CulebraError& e) {
+        throw culebra::CulebraError(
+            "SendError",
+            std::format(
+                "server.listen: handler for {} {} is not Sendable: {}",
+                rec.method, rec.pattern, e.what()),
+            0, 0);
+      }
+    }
+    for (size_t i = 0; i < recs.size(); i++) {
+      size_t ri = i;
+      culebra::http::RouteHandler rh =
+          [ri](const httplib::Request& q, httplib::Response& res) {
+            try {
+              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                           _jit_http_request_to_object(q))};
+              auto* cb = reinterpret_cast<JitClosure*>(
+                  g_jit_srv_w_handlers[ri].data);
+              JitValue ret = _culebra_invoke1(cb, req);
+              _jit_http_apply_response(ret, res);
+              _culebra_value_release_impl(ret.tag, ret.data);
+            } catch (const std::exception& e) {
+              res.status = 500;
+              res.set_content(e.what(), "text/plain");
+            }
+          };
+      std::string rerr;
+      culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
+                                       std::move(rh), rerr);
+      if (!rerr.empty())
+        throw culebra::CulebraError("HttpError",
+                                    std::format("server.listen: {}", rerr), 0,
+                                    0);
+    }
+    auto setup = [snodes]() {
+      g_jit_srv_w_handlers.clear();
+      g_jit_srv_w_handlers.reserve(snodes->size());
+      for (const auto& sn : *snodes) {
+        JitDeCtx dc;
+        JitValue h = jit_deserialize(sn, dc);  // +1
+        // Held only in this C++ vector → pin so the GC backstop won't sweep it.
+        _gc_heap().pin(reinterpret_cast<void*>(h.data));
+        g_jit_srv_w_handlers.push_back(h);
+      }
+    };
+    auto teardown = []() {
+      for (auto& h : g_jit_srv_w_handlers)
+        culebra_runtime_value_release(h.tag, h.data);
+      g_jit_srv_w_handlers.clear();
+    };
+    bool ok = culebra::http::http_server_listen(
+        id, host, port, static_cast<int>(workers), setup, teardown, err);
+    if (!ok)
+      throw culebra::CulebraError("HttpError",
+                                  std::format("server.listen: {}", err), 0, 0);
+    return {TAG_NIL, 0};
+  }
+
+  // workers <= 1: inline on the listen thread with the original closures.
+  for (const auto& rec : recs) {
+    auto* cb = reinterpret_cast<JitClosure*>(rec.handler.data);
+    culebra::http::RouteHandler rh =
+        [cb](const httplib::Request& q, httplib::Response& res) {
+          try {
+            JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                         _jit_http_request_to_object(q))};
+            JitValue ret = _culebra_invoke1(cb, req);
+            _jit_http_apply_response(ret, res);
+            _culebra_value_release_impl(ret.tag, ret.data);
+          } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(e.what(), "text/plain");
+          }
+        };
+    std::string rerr;
+    culebra::http::http_server_route(id, rec.method, rec.pattern, std::move(rh),
+                                     rerr);
+    if (!rerr.empty())
+      throw culebra::CulebraError("HttpError",
+                                  std::format("server.listen: {}", rerr), 0, 0);
+  }
+  bool ok = culebra::http::http_server_listen(id, host, port, 1, nullptr,
+                                              nullptr, err);
+  if (!ok)
+    throw culebra::CulebraError("HttpError",
+                                std::format("server.listen: {}", err), 0, 0);
+  return {TAG_NIL, 0};
+}
+
 CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
                                                    int64_t n, JitValue* args) {
   int64_t id =
@@ -4165,26 +4257,39 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
   std::string host = "0.0.0.0";
   if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
     host = std::string(_culebra_str_view(args[1].tag, args[1].data));
-  std::string err;
-  bool ok = culebra::http::http_server_listen(id, host, port, err);
-  if (!ok)
-    throw culebra::CulebraError("HttpError",
-                                std::format("server.listen: {}", err), 0, 0);
-  return {TAG_NIL, 0};
+  long workers = 1;
+  if (_jit_file_arg_present(n, args, 2) && args[2].tag != TAG_NIL) {
+    if (args[2].tag != TAG_LONG)
+      culebra::throw_type_mismatch("Long", _culebra_tag_name(args[2].tag), 0,
+                                   0);
+    workers = args[2].data;
+  }
+  return _jit_http_server_do_listen(id, host, port, workers);
 }
 
+// Release the recorded handlers (their retain + the registry entry; the pin is
+// dropped when RC frees them), drop the records, and free the server.
+inline void _jit_http_server_clear_routes(int64_t id) {
+  auto it = g_jit_srv_routes.find(id);
+  if (it == g_jit_srv_routes.end()) return;
+  for (auto& rec : it->second)
+    culebra_runtime_value_release(rec.handler.tag, rec.handler.data);
+  g_jit_srv_routes.erase(it);
+}
 CULEBRA_RT_INLINE JitValue _jit_http_server_close(JitClosure*, JitValue self,
                                                   int64_t, JitValue*) {
-  culebra::http::http_server_close(
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  _jit_http_server_clear_routes(id);
+  culebra::http::http_server_close(id);
   culebra_runtime_value_release(self.tag, self.data);
   return {TAG_NIL, 0};
 }
 CULEBRA_RT_INLINE JitValue _jit_http_server_drop(JitClosure*, JitValue self,
                                                  int64_t, JitValue*) {
   // drop runs from the destructor's drop protocol — must NOT release self.
-  culebra::http::http_server_close(
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  _jit_http_server_clear_routes(id);
+  culebra::http::http_server_close(id);
   return {TAG_NIL, 0};
 }
 
@@ -4197,7 +4302,7 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
   static const JitParamMeta* static_meta =
       _jit_make_handle_meta({"mount", "dir"}, {false, false});
   static const JitParamMeta* listen_meta =
-      _jit_make_handle_meta({"port", "host"}, {false, true});
+      _jit_make_handle_meta({"port", "host", "workers"}, {false, true, true});
   _jit_handle_bind_method(h, "get", _jit_http_server_get, 2, route_meta);
   _jit_handle_bind_method(h, "post", _jit_http_server_post, 2, route_meta);
   _jit_handle_bind_method(h, "put", _jit_http_server_put, 2, route_meta);

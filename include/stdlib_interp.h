@@ -3747,14 +3747,39 @@ inline void http_apply_response(const Value& ret, httplib::Response& res) {
       "Http.server: handler must return a String, an Object, or nil", 0, 0);
 }
 
-// The Http.server handle: register routes (get/post/…) and serve files
-// (static), then listen() to block and accept connections. v0 is single
-// threaded — every handler runs on the listen thread (where this runtime
-// lives), so the handler closure is called directly (no cross-thread send).
+// A route recorded by get/post/… and registered at listen() time — deferred so
+// the worker count (and thus whether handlers must be Sendable) is known before
+// we choose the inline vs. worker-pool path. Keyed by the handle's id;
+// thread_local because the handle is non-sendable.
+struct InterpRouteRecord {
+  std::string method;
+  std::string pattern;
+  Value handler;
+};
+inline thread_local std::unordered_map<int64_t, std::vector<InterpRouteRecord>>
+    g_srv_routes;
+
+// Defined after isolate.h is included (it needs sendable::serialize for the
+// concurrent path); forward-declared here so the listen handle method can call
+// it. Binds and serves; returns nil, or throws on a bind / Sendable error.
+// `listen_env` is the call site's scope, used as the call-site env when
+// dispatching the original (inline, workers<=1) handler closures.
+inline Value _http_server_do_listen(int64_t id, const std::string& host,
+                                    int port, long workers,
+                                    const std::shared_ptr<Environment>& listen_env,
+                                    long line, long col);
+
+// The Http.server handle: record routes (get/post/…) and serve files (static),
+// then listen() to register the routes and block accepting connections. With
+// `workers <= 1` handlers run on the listen thread (the original closures); with
+// `workers > 1` each worker thread gets its own runtime with the handlers
+// rebuilt onto it (so they must be Sendable). See _http_server_do_listen.
 inline Value make_http_server_handle(int64_t id) {
   using namespace std::literals;
   static const auto host_default =
       std::make_shared<Value>(Value(std::string("0.0.0.0")));
+  static const auto workers_default =
+      std::make_shared<Value>(Value(static_cast<long>(1)));
   ObjectValue h;
   h.initialize("_id", Value(static_cast<long>(id)), false);
   h.initialize("__nonsendable__", Value(true), false);
@@ -3763,47 +3788,24 @@ inline Value make_http_server_handle(int64_t id) {
     return env->get("this").to_object().get("_id").to_long();
   };
 
-  // get/post/put/delete/patch/options(pattern, handler) — record a route.
-  // Returns the handle so calls chain. The handler is `fn(req) -> response`.
-  auto route = [&](const char* method, const char* ctx) {
+  // get/post/put/delete/patch/options(pattern, handler) — record a route (the
+  // handler is `fn(req) -> response`); registered at listen(). Chainable.
+  auto route = [&](const char* method) {
     return Value(FunctionValue(
         {{"pattern", false, "String"sv}, {"handler", false, "Function"sv}},
-        [method, ctx, sid](std::shared_ptr<Environment> env) -> Value {
-          long line = env->get("__LINE__").to_long();
-          long col = env->get("__COLUMN__").to_long();
-          int64_t server_id = sid(env);
-          std::string pattern = env->get("pattern").to_string();
-          Value handler = env->get("handler");
-          auto cb_interp = std::make_shared<Interpreter>();
-          culebra::http::RouteHandler rh =
-              [cb_interp, handler, env](const httplib::Request& q,
-                                        httplib::Response& res) {
-                try {
-                  Value req = http_request_to_object(q);
-                  Value ret = cb_interp->call_closure(handler, env, {req});
-                  http_apply_response(ret, res);
-                } catch (const std::exception& e) {
-                  res.status = 500;
-                  res.set_content(e.what(), "text/plain");
-                }
-              };
-          std::string err;
-          culebra::http::http_server_route(server_id, method, pattern,
-                                           std::move(rh), err);
-          if (!err.empty()) {
-            throw CulebraError("HttpError", std::format("{}: {}", ctx, err),
-                               line, col);
-          }
+        [method, sid](std::shared_ptr<Environment> env) -> Value {
+          g_srv_routes[sid(env)].push_back(
+              {method, env->get("pattern").to_string(), env->get("handler")});
           return env->get("this");
         },
         "Object"sv));
   };
-  h.initialize("get", route("GET", "server.get"), false);
-  h.initialize("post", route("POST", "server.post"), false);
-  h.initialize("put", route("PUT", "server.put"), false);
-  h.initialize("delete", route("DELETE", "server.delete"), false);
-  h.initialize("patch", route("PATCH", "server.patch"), false);
-  h.initialize("options", route("OPTIONS", "server.options"), false);
+  h.initialize("get", route("GET"), false);
+  h.initialize("post", route("POST"), false);
+  h.initialize("put", route("PUT"), false);
+  h.initialize("delete", route("DELETE"), false);
+  h.initialize("patch", route("PATCH"), false);
+  h.initialize("options", route("OPTIONS"), false);
 
   // static(mount, dir) — serve files under `dir` at the URL prefix `mount`.
   h.initialize(
@@ -3827,12 +3829,14 @@ inline Value make_http_server_handle(int64_t id) {
           "Object"sv)),
       false);
 
-  // listen(port, host="0.0.0.0") — bind and serve until Ctrl+C. Blocks.
+  // listen(port, host="0.0.0.0", workers=1) — register routes, bind, and serve
+  // until Ctrl+C. Blocks. workers>1 runs a concurrent worker pool.
   h.initialize(
       "listen",
       Value(FunctionValue(
           {{"port", false, ""sv},
-           {"host", false, ""sv, nullptr, host_default}},
+           {"host", false, ""sv, nullptr, host_default},
+           {"workers", false, ""sv, nullptr, workers_default}},
           [sid](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
@@ -3841,34 +3845,23 @@ inline Value make_http_server_handle(int64_t id) {
             std::string host = hv.type == Value::Nil
                                    ? std::string("0.0.0.0")
                                    : std::string(hv.to_string_view());
-            std::string err;
-            bool ok =
-                culebra::http::http_server_listen(sid(env), host, port, err);
-            if (!ok) {
-              throw CulebraError("HttpError",
-                                 std::format("server.listen: {}", err), line,
-                                 col);
-            }
-            return Value();
+            const auto& wv = env->get("workers");
+            long workers = wv.type == Value::Nil ? 1 : wv.to_long();
+            return _http_server_do_listen(sid(env), host, port, workers, env,
+                                          line, col);
           },
           "Nil"sv)),
       false);
 
-  // close — stop and free. drop — GC backstop for the same.
-  h.initialize(
-      "close",
-      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
-        culebra::http::http_server_close(sid(env));
-        return Value();
-      })),
-      false);
-  h.initialize(
-      "drop",
-      Value(FunctionValue({}, [sid](std::shared_ptr<Environment> env) {
-        culebra::http::http_server_close(sid(env));
-        return Value();
-      })),
-      false);
+  // close — stop, drop recorded routes, free. drop — GC backstop for the same.
+  auto shutdown = [](std::shared_ptr<Environment> env) {
+    int64_t id = env->get("this").to_object().get("_id").to_long();
+    g_srv_routes.erase(id);
+    culebra::http::http_server_close(id);
+    return Value();
+  };
+  h.initialize("close", Value(FunctionValue({}, shutdown)), false);
+  h.initialize("drop", Value(FunctionValue({}, shutdown)), false);
 
   return Value(std::move(h));
 }
@@ -6013,3 +6006,123 @@ inline void install_undefined_var_lint() {
 // Interpreter). Provides the definition of make_isolate_namespace() declared
 // near setup_built_in_functions.
 #include "isolate.h"
+
+namespace culebra {
+
+#if defined(CULEBRA_HTTP_ENABLED)
+// Per-worker dispatch state for a concurrent Http server (workers > 1): each
+// worker thread rebuilds the route handlers onto its own heap here, then the
+// trampolines call into it. thread_local — one set per worker thread.
+inline thread_local std::shared_ptr<Interpreter> g_srv_w_interp;
+inline thread_local std::shared_ptr<Environment> g_srv_w_base;
+inline thread_local std::vector<Value> g_srv_w_handlers;
+
+inline Value _http_server_do_listen(
+    int64_t id, const std::string& host, int port, long workers,
+    const std::shared_ptr<Environment>& listen_env, long line, long col) {
+  // Move the records out of the thread_local map and drop the entry now: the
+  // RouteHandlers below capture their own handler copies (workers<=1) or the
+  // serialized SendNodes (workers>1), so the records are only needed during
+  // registration. Leaving Values in a thread_local map past this point risks a
+  // double-free — the map's destructor runs at thread exit, AFTER the GC heap
+  // has already torn down (and freed those Values).
+  std::vector<InterpRouteRecord> recs = std::move(g_srv_routes[id]);
+  g_srv_routes.erase(id);
+  std::string err;
+  if (workers > 1) {
+    // Serialize each handler once (the Sendable check happens here, at listen);
+    // the worker threads each rebuild them onto their own heap.
+    auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
+    for (const auto& rec : recs) {
+      try {
+        sendable::SerCtx sc;
+        snodes->push_back(sendable::serialize(rec.handler, sc));
+      } catch (CulebraError& e) {
+        throw CulebraError(
+            "SendError",
+            std::format(
+                "server.listen: handler for {} {} is not Sendable: {}",
+                rec.method, rec.pattern, e.what()),
+            line, col);
+      }
+    }
+    // One trampoline per route; each reads the calling worker thread's table.
+    for (size_t i = 0; i < recs.size(); i++) {
+      size_t ri = i;
+      culebra::http::RouteHandler rh =
+          [ri](const httplib::Request& q, httplib::Response& res) {
+            try {
+              Value req = http_request_to_object(q);
+              Value ret = g_srv_w_interp->call_closure(g_srv_w_handlers[ri],
+                                                       g_srv_w_base, {req});
+              http_apply_response(ret, res);
+            } catch (const std::exception& e) {
+              res.status = 500;
+              res.set_content(e.what(), "text/plain");
+            }
+          };
+      std::string rerr;
+      culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
+                                       std::move(rh), rerr);
+      if (!rerr.empty())
+        throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
+                           line, col);
+    }
+    auto setup = [snodes]() {
+      g_srv_w_interp = std::make_shared<Interpreter>();
+      g_srv_w_base = sendable::isolate_base_env();
+      g_srv_w_handlers.clear();
+      g_srv_w_handlers.reserve(snodes->size());
+      for (const auto& sn : *snodes) {
+        sendable::DeCtx dc;
+        g_srv_w_handlers.push_back(
+            sendable::deserialize(sn, *g_srv_w_interp, g_srv_w_base, dc));
+      }
+    };
+    auto teardown = []() {
+      g_srv_w_handlers.clear();
+      g_srv_w_base.reset();
+      g_srv_w_interp.reset();
+    };
+    bool ok = culebra::http::http_server_listen(
+        id, host, port, static_cast<int>(workers), setup, teardown, err);
+    if (!ok)
+      throw CulebraError("HttpError", std::format("server.listen: {}", err),
+                         line, col);
+    return Value();
+  }
+
+  // workers <= 1: inline on the listen thread with the original closures (no
+  // serialization, so the handlers may capture anything).
+  auto cb_interp = std::make_shared<Interpreter>();
+  for (const auto& rec : recs) {
+    Value handler = rec.handler;
+    culebra::http::RouteHandler rh =
+        [cb_interp, handler, listen_env](const httplib::Request& q,
+                                         httplib::Response& res) {
+          try {
+            Value req = http_request_to_object(q);
+            Value ret = cb_interp->call_closure(handler, listen_env, {req});
+            http_apply_response(ret, res);
+          } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(e.what(), "text/plain");
+          }
+        };
+    std::string rerr;
+    culebra::http::http_server_route(id, rec.method, rec.pattern, std::move(rh),
+                                     rerr);
+    if (!rerr.empty())
+      throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
+                         line, col);
+  }
+  bool ok = culebra::http::http_server_listen(id, host, port, 1, nullptr,
+                                              nullptr, err);
+  if (!ok)
+    throw CulebraError("HttpError", std::format("server.listen: {}", err), line,
+                       col);
+  return Value();
+}
+#endif  // CULEBRA_HTTP_ENABLED
+
+}  // namespace culebra
