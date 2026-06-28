@@ -12482,7 +12482,25 @@ struct JIT {
           // builtin wins over is both useless and breaks closure setup).
           // Only genuine non-builtin method names are UFCS candidates.
           auto mname = std::string(child.token);
-          if (!known_builtin_methods().contains(mname)) {
+          // A call whose receiver is a builtin namespace identifier
+          // (`Http.server()`, `Time.sleep()`) is member dispatch, never
+          // UFCS — don't capture the member name. Capturing it would pull
+          // an outer var of the same name into the closure; if that var is
+          // the one being assigned this very closure (e.g.
+          // `server = Isolate.spawn(fn{ Http.server() })`) its cell isn't
+          // in scope yet and closure-build fails. A local shadowing the
+          // namespace name is a real receiver, so require it out of scope.
+          // is_method means this DOT is a postfix, so the grammar
+          // (CALL <- PRIMARY postfix*) guarantees a receiver at i - 1.
+          const auto& recv = *node.nodes[i - 1];
+          auto recv_name = std::string(recv.token);
+          bool ns_receiver =
+              recv.tag == "IDENTIFIER"_ && recv.original_tag != "DOT"_ &&
+              is_builtin_var(recv_name) && !my_locals.contains(recv_name) &&
+              std::none_of(outer.begin(), outer.end(), [&](auto* s) {
+                return s->contains(recv_name);
+              });
+          if (!ns_receiver && !known_builtin_methods().contains(mname)) {
             note_free_var(mname, my_locals, outer, info);
           }
           continue;  // skip the DOT recursion (it would early-return)

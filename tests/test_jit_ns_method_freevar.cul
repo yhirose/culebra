@@ -1,0 +1,39 @@
+# Regression: a top-level variable whose name matches a namespace member
+# (`Http.server`, `Time.monotonic`) that is *called inside a closure* must not be
+# captured as a UFCS free variable. The JIT's free-var pass treated the
+# member name of `Namespace.method()` as a UFCS candidate; when that name
+# also named the variable the closure was being assigned to, the variable's
+# cell wasn't in scope yet at closure-build time and the JIT aborted with
+# "cannot find free var '...' in scope". The interpreter never had the issue.
+# This pins the two backends symmetric (no network: the namespaces are only
+# referenced, never made to listen / sleep).
+
+# `server` is the assignment target and also the member in `Http.server()`.
+server = fn() {
+  let s = Http.server()
+  return "server-ok"
+}
+puts(server())
+
+# Same shape via Time.monotonic — the member `monotonic` would collide too
+# if a like-named var existed; here `mono` exercises the namespace receiver
+# skip on a different namespace.
+mono = fn() {
+  let t = Time.monotonic()
+  return "mono-ok"
+}
+puts(mono())
+
+# The collision also surfaces when the variable is used from a nested scope
+# (an `if` block), which is how the WebView spike triggered it.
+srv2 = Http.server()
+if true {
+  let again = Http.server()
+  puts("nested-ok")
+}
+
+# Genuine UFCS on a non-namespace receiver must still capture the method:
+# `dbl` is a top-level free function reached via `(n).dbl()` inside a closure.
+fn dbl(n) { return n * 2 }
+let ufcs = fn() { return (21).dbl() }
+puts(ufcs().to_string())
