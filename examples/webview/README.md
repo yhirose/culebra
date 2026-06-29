@@ -75,9 +75,13 @@ and a small JSON API, and the page reaches it over `fetch()`. The concurrency
 model stays intact because the only bridge across the thread boundary is
 loopback HTTP — no shared culebra heap crosses it:
 
-- The **server** is started with `srv.listen_async(port)`, which binds
-  synchronously and then serves on a background thread (its own heap). Because
-  the bind is synchronous, the call returns ready — no readiness polling.
+- The **server** is started with `srv.listen_async(port, workers: 4)`, which
+  binds synchronously and then serves on a background pool. Because the bind is
+  synchronous, the call returns ready — no readiness polling. Use a small pool
+  (not the default single worker): a browser loads the page over several
+  parallel connections, and cpp-httplib holds each keep-alive connection on a
+  worker for up to 5s — one worker would serialize the load and leave the window
+  blank for seconds.
 - The **WebView** runs on the main thread and parks it in the native event
   loop (`run()`), navigating to `http://127.0.0.1:PORT`.
 - Closing the window returns from `run()`; `srv.stop()` then stops the server
