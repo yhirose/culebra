@@ -805,6 +805,13 @@ inline void http_server_set_stream(httplib::Response& res,
 
 struct HttpServer {
   httplib::Server svr;
+  // For listen_async: the background thread running the accept loop. Empty for
+  // a blocking listen (which runs the accept loop on the caller's thread).
+  std::thread accept_thread;
+  // A server is single-use: once it has served (listen / listen_async), it
+  // cannot be started again (httplib::Server is not designed to restart after
+  // stop). Set on a successful start; a fresh start is rejected, not hung.
+  bool started = false;
 };
 
 // Single-threaded task queue: run each connection synchronously on the listen
@@ -1021,6 +1028,10 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(
     err = "Http: server is closed";
     return false;
   }
+  if (s->started) {  // single-use: already served (this one or via listen_async)
+    err = "Http: server already started (create a new server to serve again)";
+    return false;
+  }
   auto* isolate_flag = current_runtime().interrupt_flag;
   if (n_workers > 1) {
     ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
@@ -1037,10 +1048,82 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(
   // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
   // when no connection arrives (idle_interval turns accept into a timed select).
   s->svr.set_idle_interval(0, 100 * 1000);
-  bool ok = s->svr.listen(host, port);
+  // Bind first (so a bind failure leaves the handle reusable, like async), then
+  // mark single-use and run the blocking accept loop on this thread.
+  if (!s->svr.bind_to_port(host, port)) {
+    err = "Http: failed to bind " + host + ":" + std::to_string(port);
+    return false;
+  }
+  s->started = true;
+  bool ok = s->svr.listen_after_bind();
   throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
-  if (!ok) err = "Http: failed to bind " + host + ":" + std::to_string(port);
+  if (!ok) err = "Http: serve loop failed";
   return ok;
+#endif
+}
+
+// Bind and start serving on a background thread, returning immediately. Unlike
+// the blocking listen, the accept loop (and handlers) run off the caller's
+// thread, so handlers always run on a worker pool (>= 1 worker) and must be
+// Sendable. The bind happens synchronously, so a bind failure is reported now
+// (false + `err`); accept then runs on s->accept_thread until http_server_stop
+// or close. on_idle still polls the interrupt flag so Ctrl+C / cancel stop it.
+CULEBRA_RT_HTTP_LINKAGE bool http_server_listen_async(
+    int64_t id, const std::string& host, int port, int n_workers,
+    std::function<void()> worker_setup, std::function<void()> worker_teardown,
+    std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)host; (void)port; (void)n_workers;
+  (void)worker_setup; (void)worker_teardown;
+  err = "Http runtime not linked (no Http use detected at build)";
+  return false;
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return false;
+  }
+  // Single-use guard: a second start would move-assign onto a joinable
+  // accept_thread (std::terminate) or restart a stopped httplib::Server (hangs).
+  // Reject it as a catchable error — serve again with a fresh Http.server().
+  if (s->started) {
+    err = "Http: server already started (create a new server to serve again)";
+    return false;
+  }
+  // The accept thread (and its workers) can outlive the caller's stack, so poll
+  // the process-global sigint flag rather than a borrowed per-isolate flag whose
+  // lifetime could be shorter. On the main thread these are the same pointer; an
+  // isolate that uses listen_async stops it via the handle's drop/stop instead.
+  auto* isolate_flag = &culebra_g_sigint;
+  size_t nw = n_workers < 1 ? 1 : static_cast<size_t>(n_workers);
+  ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
+  s->svr.new_task_queue = [nw, svr = &s->svr, isolate_flag,
+                           hooks = std::move(hooks)] {
+    return new CulebraWorkerPool(nw, svr, isolate_flag, hooks);
+  };
+  s->svr.set_idle_interval(0, 100 * 1000);
+  if (!s->svr.bind_to_port(host, port)) {
+    err = "Http: failed to bind " + host + ":" + std::to_string(port);
+    return false;  // bind failed before serving — handle stays reusable
+  }
+  s->started = true;
+  s->accept_thread = std::thread([svr = &s->svr] { svr->listen_after_bind(); });
+  return true;
+#endif
+}
+
+// Stop a background (listen_async) server and join its accept thread. Idempotent;
+// a closed/invalid id, or a blocking-listen server (no accept thread), no-ops.
+// svr.stop() is cpp-httplib's cross-thread-safe shutdown, so this can be called
+// from a different thread than the one serving.
+CULEBRA_RT_HTTP_LINKAGE void http_server_stop(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) return;
+  if (s->svr.is_running()) s->svr.stop();
+  if (s->accept_thread.joinable()) s->accept_thread.join();
 #endif
 }
 
@@ -1053,6 +1136,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_close(int64_t id) {
   if (!s) return;
   _http_server_unregister(id);
   if (s->svr.is_running()) s->svr.stop();
+  if (s->accept_thread.joinable()) s->accept_thread.join();
   delete s;
 #endif
 }

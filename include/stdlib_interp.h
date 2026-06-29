@@ -3908,7 +3908,7 @@ inline thread_local std::unordered_map<int64_t, std::vector<InterpRouteRecord>>
 // `listen_env` is the call site's scope, used as the call-site env when
 // dispatching the original (inline, workers<=1) handler closures.
 inline Value _http_server_do_listen(int64_t id, const std::string& host,
-                                    int port, long workers,
+                                    int port, long workers, bool async,
                                     const std::shared_ptr<Environment>& listen_env,
                                     long line, long col);
 
@@ -3976,28 +3976,44 @@ inline Value make_http_server_handle(int64_t id) {
           "Object"sv)),
       false);
 
-  // listen(port, host="0.0.0.0", workers=1) — register routes, bind, and serve
-  // until Ctrl+C. Blocks. workers>1 runs a concurrent worker pool.
+  // listen(port, host, workers) — register routes, bind, and serve. `async`
+  // false blocks until Ctrl+C; true returns immediately and serves on a
+  // background thread (stop with stop()). Shared body for both methods.
+  auto do_listen = [sid](bool async) {
+    return [sid, async](std::shared_ptr<Environment> env) -> Value {
+      long line = env->get("__LINE__").to_long();
+      long col = env->get("__COLUMN__").to_long();
+      int port = static_cast<int>(env->get("port").to_long());
+      const auto& hv = env->get("host");
+      std::string host = hv.type == Value::Nil ? std::string("0.0.0.0")
+                                               : std::string(hv.to_string_view());
+      const auto& wv = env->get("workers");
+      long workers = wv.type == Value::Nil ? 1 : wv.to_long();
+      return _http_server_do_listen(sid(env), host, port, workers, async, env,
+                                    line, col);
+    };
+  };
+  std::vector<FunctionValue::Parameter> listen_params = {
+      {"port", false, ""sv},
+      {"host", false, ""sv, nullptr, host_default},
+      {"workers", false, ""sv, nullptr, workers_default}};
+  // listen(port, host="0.0.0.0", workers=1) — blocks until Ctrl+C.
+  h.initialize("listen", Value(FunctionValue(listen_params, do_listen(false),
+                                             "Nil"sv)),
+               false);
+  // listen_async(port, host="0.0.0.0", workers=1) — returns immediately, serves
+  // on a background thread; handlers must be Sendable (they run off this thread).
+  h.initialize("listen_async",
+               Value(FunctionValue(listen_params, do_listen(true), "Nil"sv)),
+               false);
+  // stop() — stop a background (listen_async) server and join its thread.
   h.initialize(
-      "listen",
-      Value(FunctionValue(
-          {{"port", false, ""sv},
-           {"host", false, ""sv, nullptr, host_default},
-           {"workers", false, ""sv, nullptr, workers_default}},
-          [sid](std::shared_ptr<Environment> env) -> Value {
-            long line = env->get("__LINE__").to_long();
-            long col = env->get("__COLUMN__").to_long();
-            int port = static_cast<int>(env->get("port").to_long());
-            const auto& hv = env->get("host");
-            std::string host = hv.type == Value::Nil
-                                   ? std::string("0.0.0.0")
-                                   : std::string(hv.to_string_view());
-            const auto& wv = env->get("workers");
-            long workers = wv.type == Value::Nil ? 1 : wv.to_long();
-            return _http_server_do_listen(sid(env), host, port, workers, env,
-                                          line, col);
-          },
-          "Nil"sv)),
+      "stop",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment> env) -> Value {
+        culebra::http::http_server_stop(
+            env->get("this").to_object().get("_id").to_long());
+        return Value();
+      })),
       false);
 
   // close — stop, drop recorded routes, free. drop — GC backstop for the same.
@@ -6182,7 +6198,7 @@ inline thread_local std::shared_ptr<Environment> g_srv_w_base;
 inline thread_local std::vector<Value> g_srv_w_handlers;
 
 inline Value _http_server_do_listen(
-    int64_t id, const std::string& host, int port, long workers,
+    int64_t id, const std::string& host, int port, long workers, bool async,
     const std::shared_ptr<Environment>& listen_env, long line, long col) {
   // Move the records out of the thread_local map and drop the entry now: the
   // RouteHandlers below capture their own handler copies (workers<=1) or the
@@ -6193,7 +6209,9 @@ inline Value _http_server_do_listen(
   std::vector<InterpRouteRecord> recs = std::move(g_srv_routes[id]);
   g_srv_routes.erase(id);
   std::string err;
-  if (workers > 1) {
+  // async always runs off the caller's thread, so it takes the serialized
+  // worker path (handlers must be Sendable) even at workers <= 1.
+  if (workers > 1 || async) {
     // Serialize each handler once (the Sendable check happens here, at listen);
     // the worker threads each rebuild them onto their own heap.
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
@@ -6270,16 +6288,20 @@ inline Value _http_server_do_listen(
       g_srv_w_base.reset();
       g_srv_w_interp.reset();
     };
-    bool ok = culebra::http::http_server_listen(
-        id, host, port, static_cast<int>(workers), setup, teardown, err);
+    bool ok = async ? culebra::http::http_server_listen_async(
+                          id, host, port, static_cast<int>(workers), setup,
+                          teardown, err)
+                    : culebra::http::http_server_listen(
+                          id, host, port, static_cast<int>(workers), setup,
+                          teardown, err);
     if (!ok)
       throw CulebraError("HttpError", std::format("server.listen: {}", err),
                          line, col);
     return Value();
   }
 
-  // workers <= 1: inline on the listen thread with the original closures (no
-  // serialization, so the handlers may capture anything).
+  // workers <= 1 (blocking): inline on the listen thread with the original
+  // closures (no serialization, so the handlers may capture anything).
   auto cb_interp = std::make_shared<Interpreter>();
   for (const auto& rec : recs) {
     Value handler = rec.handler;

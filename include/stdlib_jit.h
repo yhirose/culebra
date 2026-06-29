@@ -4318,10 +4318,12 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
 // closures inline on the listen thread; workers>1 serializes them and each
 // worker thread rebuilds them onto its own heap (so they must be Sendable).
 inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
-                                           int port, long workers) {
+                                           int port, long workers, bool async) {
   auto& recs = g_jit_srv_routes[id];
   std::string err;
-  if (workers > 1) {
+  // async always runs off the caller's thread, so it takes the serialized
+  // worker path (handlers must be Sendable) even at workers <= 1.
+  if (workers > 1 || async) {
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
     for (const auto& rec : recs) {
       try {
@@ -4399,15 +4401,19 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
         culebra_runtime_value_release(h.tag, h.data);
       g_jit_srv_w_handlers.clear();
     };
-    bool ok = culebra::http::http_server_listen(
-        id, host, port, static_cast<int>(workers), setup, teardown, err);
+    bool ok = async ? culebra::http::http_server_listen_async(
+                          id, host, port, static_cast<int>(workers), setup,
+                          teardown, err)
+                    : culebra::http::http_server_listen(
+                          id, host, port, static_cast<int>(workers), setup,
+                          teardown, err);
     if (!ok)
       throw culebra::CulebraError("HttpError",
                                   std::format("server.listen: {}", err), 0, 0);
     return {TAG_NIL, 0};
   }
 
-  // workers <= 1: inline on the listen thread with the original closures.
+  // workers <= 1 (blocking): inline on the listen thread with the originals.
   for (const auto& rec : recs) {
     auto* cb = reinterpret_cast<JitClosure*>(rec.handler.data);
     std::string rerr;
@@ -4457,8 +4463,9 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
   return {TAG_NIL, 0};
 }
 
-CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
-                                                   int64_t n, JitValue* args) {
+// Shared body for listen (async=false, blocks) and listen_async (returns).
+inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
+                                             JitValue* args, bool async) {
   int64_t id =
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
@@ -4476,7 +4483,24 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
                                    0);
     workers = args[2].data;
   }
-  return _jit_http_server_do_listen(id, host, port, workers);
+  return _jit_http_server_do_listen(id, host, port, workers, async);
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_listen(JitClosure*, JitValue self,
+                                                   int64_t n, JitValue* args) {
+  return _jit_http_server_listen_impl(self, n, args, /*async=*/false);
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_listen_async(JitClosure*,
+                                                         JitValue self,
+                                                         int64_t n,
+                                                         JitValue* args) {
+  return _jit_http_server_listen_impl(self, n, args, /*async=*/true);
+}
+CULEBRA_RT_INLINE JitValue _jit_http_server_stop(JitClosure*, JitValue self,
+                                                 int64_t, JitValue*) {
+  culebra::http::http_server_stop(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
 }
 
 // Release the recorded handlers (their retain + the registry entry; the pin is
@@ -4525,6 +4549,9 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
   _jit_handle_bind_method(h, "ws", _jit_http_server_ws, 2, route_meta);
   _jit_handle_bind_method(h, "static", _jit_http_server_static, 2, static_meta);
   _jit_handle_bind_method(h, "listen", _jit_http_server_listen, 1, listen_meta);
+  _jit_handle_bind_method(h, "listen_async", _jit_http_server_listen_async, 1,
+                          listen_meta);
+  _jit_handle_bind_method(h, "stop", _jit_http_server_stop, 0);
   _jit_handle_bind_method(h, "close", _jit_http_server_close, 0);
   _jit_handle_bind_method(h, "drop", _jit_http_server_drop, 0);
   _jit_owned_bind_drop(h);

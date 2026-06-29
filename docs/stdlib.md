@@ -2914,6 +2914,8 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `listen(port, host="0.0.0.0", workers=1)` | bind and serve until interrupted (blocks the calling thread); `workers>1` runs a concurrent pool |
+| `listen_async(port, host="0.0.0.0", workers=1)` | bind and serve on a background thread, returning immediately; stop with `stop()`. Handlers run off the caller's thread so they must be Sendable |
+| `stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
 **The request `req`** is an object with `method`, `path`, and `body` (Strings), and
@@ -3007,8 +3009,27 @@ srv.post("/predict", fn(req) { infer(model, req.body) })
 srv.listen(8080, workers: 8)                     # 8 handlers run in parallel
 ```
 
-To run a server in the background — e.g. behind a GUI — start it in an isolate;
-dropping that isolate (or `Ctrl+C`) stops the accept loop:
+**Background servers — `listen_async` + `stop`.** To serve while the main thread
+does other work — e.g. behind a GUI — use `listen_async`, which serves on a
+background thread and returns immediately; `stop()` halts it (and can be called
+from another thread). The server keeps running only while you hold the handle, so
+keep `srv` referenced for as long as it should serve. Because the handlers run off
+the calling thread, they must be **Sendable** (as with `workers > 1`). A bind
+failure is reported synchronously as an `HttpError`. A server is single-use:
+once it has served, starting it again is an `HttpError` — create a new
+`Http.server()` to serve again.
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+srv.get("/health", fn(req) { "ok" })
+srv.listen_async(8080, workers: 4)   # returns immediately
+# … do other work; call Http.get("http://127.0.0.1:8080/health") …
+srv.stop()                           # stop and join the background thread
+```
+
+Alternatively, a blocking `listen` inside an isolate also works — dropping the
+isolate (or `Ctrl+C`) stops the accept loop:
 
 ```culebra
 # doctest: skip

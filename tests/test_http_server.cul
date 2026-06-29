@@ -232,3 +232,64 @@ puts("ws bad connect -> " + werr)
 
 wiso.drop()
 puts("ws stopped")
+
+# --- listen_async + stop: a background server with no isolate wrapper. The
+# server serves on its own thread while the main thread drives requests, then
+# stop() halts it cross-thread and joins. listen_async always runs handlers on a
+# worker pool (off this thread), so they must be Sendable.
+APORT = 18920
+ABASE = "http://127.0.0.1:" + APORT.to_string()
+asrv = Http.server()
+asrv.get("/", fn(req) { "async-hi" })
+asrv.get("/sq/:n", fn(req) { let n = to_long(req.params["n"]); (n * n).to_string() })
+asrv.listen_async(APORT, workers: 2)      # returns immediately
+
+fn await_get(p) {
+  mut a = 0
+  while a < 200 {
+    mut r = nil
+    try { r = Http.get(ABASE + p) } catch e { r = nil }
+    if r != nil { return r }
+    a = a + 1
+  }
+  return nil
+}
+ar = await_get("/")
+puts("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
+puts("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
+# A server is single-use: starting it again (even on a free port) is a catchable
+# error, not a crash/hang — serve again with a fresh Http.server().
+mut reerr = "none"
+try { asrv.listen_async(18923) } catch e { reerr = e.kind }
+puts("listen_async twice -> " + reerr)
+asrv.stop()                                # cross-thread stop + join
+puts("async stopped")
+mut reerr2 = "none"
+try { asrv.listen_async(18924) } catch e { reerr2 = e.kind }
+puts("relisten after stop -> " + reerr2)
+
+# After stop the port is free: a fresh server binds and serves it.
+asrv2 = Http.server()
+asrv2.get("/", fn(req) { "rebound" })
+asrv2.listen_async(APORT)
+puts("rebind -> " + await_get("/").body)
+asrv2.stop()
+
+# A non-Sendable handler is rejected at listen_async (it runs off this thread).
+abad = Http.server()
+mut acount = 0
+abad.get("/", fn(req) { acount = acount + 1; "x" })
+try {
+  abad.listen_async(18921)
+} catch e {
+  puts("async non-sendable -> " + e.kind)
+}
+abad.close()
+
+# A bad bind (a host not on this machine) is an HttpError, reported synchronously.
+abind = Http.server()
+abind.get("/", fn(req) { "x" })
+mut abinderr = "none"
+try { abind.listen_async(18922, "192.0.2.1") } catch e { abinderr = e.kind }
+puts("async bind fail -> " + abinderr)
+abind.close()

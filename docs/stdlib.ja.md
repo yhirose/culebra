@@ -2805,6 +2805,8 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
 | `sink.write(chunk)` | （`stream:` クロージャ内）1 チャンクを送出。クライアント切断時は `false` を返す |
 | `listen(port, host="0.0.0.0", workers=1)` | バインドして中断まで配信（呼び出しスレッドをブロック）。`workers>1` で並行プール |
+| `listen_async(port, host="0.0.0.0", workers=1)` | 背後スレッドで配信し即 return。停止は `stop()`。ハンドラは呼び出しスレッド外で動くため Sendable 必須 |
+| `stop()` | 背後（`listen_async`）サーバを停止しスレッドを join（別スレッドからも呼べる） |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
 
 **リクエスト `req`** は `method`・`path`・`body`（String）と、`headers`・`query`
@@ -2895,8 +2897,25 @@ srv.post("/predict", fn(req) { infer(model, req.body) })
 srv.listen(8080, workers: 8)                     # 8 ハンドラが並列実行
 ```
 
-GUI の背後などでバックグラウンド実行するには isolate 内で起動し、その isolate を
-drop（または `Ctrl+C`）すると accept ループが停止します:
+**バックグラウンドサーバ — `listen_async` + `stop`。** メインスレッドが別作業を
+する間（GUI の背後など）配信するには `listen_async` を使います。背後スレッドで配信し
+即 return、`stop()` で停止（別スレッドからも呼べる）。サーバはハンドルを保持している
+間だけ動くので、配信し続けたい間は `srv` を参照し続けてください。ハンドラは呼び出し
+スレッド外で動くため **Sendable** 必須（`workers > 1` と同じ）。bind 失敗は同期的に
+`HttpError` で報告されます。サーバは single-use で、一度配信したら再起動は `HttpError`
+です — もう一度配信するには新しい `Http.server()` を作ってください。
+
+```culebra
+# doctest: skip
+let srv = Http.server()
+srv.get("/health", fn(req) { "ok" })
+srv.listen_async(8080, workers: 4)   # 即 return
+# … 別作業をしつつ Http.get("http://127.0.0.1:8080/health") …
+srv.stop()                           # 停止して背後スレッドを join
+```
+
+あるいは、ブロッキング `listen` を isolate 内で動かし、その isolate を drop
+（または `Ctrl+C`）して accept ループを止める方法もあります:
 
 ```culebra
 # doctest: skip
