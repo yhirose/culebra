@@ -62,6 +62,10 @@ w.set_size(640, 480)
 w.set_html("<h1>It works</h1>")    # or: w.navigate("https://…" / "data:…" / "file://…")
 w.run()                            # blocks the GUI thread until terminate()
 w.terminate()                      # safe from another thread
+
+Webview.Window.quit()              # static: terminate the window currently in
+                                   # run(), callable from any thread (e.g. an
+                                   # HTTP handler) — see Spike 3
 ```
 
 The window is a resource with culebra's full lifetime model: scope-exit
