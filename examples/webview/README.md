@@ -70,15 +70,15 @@ and a small JSON API, and the page reaches it over `fetch()`. The concurrency
 model stays intact because the only bridge across the thread boundary is
 loopback HTTP — no shared culebra heap crosses it:
 
-- The **server** runs in its own `Isolate` (a separate thread with its own
-  heap). It blocks in `listen()`.
+- The **server** is started with `srv.listen_async(port)`, which binds
+  synchronously and then serves on a background thread (its own heap). Because
+  the bind is synchronous, the call returns ready — no readiness polling.
 - The **WebView** runs on the main thread and parks it in the native event
   loop (`run()`), navigating to `http://127.0.0.1:PORT`.
-- Closing the window returns from `run()`; `server.drop()` then sets the
-  isolate's interrupt flag, which the server's accept loop polls and stops
-  on — a clean cross-thread shutdown.
-- A short retry loop (`Http.get` until it answers) waits for the server to
-  bind before the window opens.
+- Closing the window returns from `run()`; `srv.stop()` then stops the server
+  and joins its thread (cross-thread-safe — no isolate-cancel polling).
+- Handlers run on the background worker thread, so they must be Sendable (the
+  examples capture nothing, or a `String`).
 
 `bind`/`eval` (a native, in-process JS↔culebra bridge) is deliberately not
 used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /

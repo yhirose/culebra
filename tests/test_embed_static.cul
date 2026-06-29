@@ -1,46 +1,29 @@
 # Static asset serving via `srv.static(mount, Embed.dir(...))`. Run from source
 # (this suite), Embed.dir reads the live on-disk directory relative to the entry
 # script; under an AOT build the same call serves a baked-in table. Output is
-# identical across interp/JIT (no random / timing values printed). The server
-# runs in an Isolate (it blocks in listen); dropping it stops the accept loop.
+# identical across interp/JIT (no random / timing values printed). The server is
+# started with listen_async (serves on a background thread); stop() halts it.
 
 PORT = 18877
 BASE = "http://127.0.0.1:" + PORT.to_string()
 
-iso = Isolate.spawn(fn() {
-  let srv = Http.server()
-  srv.static("/", Embed.dir("embed_assets"))
-  srv.get("/api/ok", fn(req) { { content_type: "application/json", body: '{"ok":true}' } })
-  srv.listen(PORT)
-})
+srv = Http.server()
+srv.static("/", Embed.dir("embed_assets"))
+srv.get("/api/ok", fn(req) { { content_type: "application/json", body: '{"ok":true}' } })
+srv.listen_async(PORT)   # returns immediately (bind is synchronous)
 
-fn wait_ready() {
-  mut n = 0
-  while n < 200 {
-    try { Http.get(BASE + "/api/ok"); return true } catch e { }
-    Time.sleep(0.02)
-    n = n + 1
-  }
-  return false
-}
-
-if wait_ready() {
-  # index.html at the mount root, with inferred content type
-  r = Http.get(BASE + "/")
-  puts("GET / -> " + r.status.to_string() + " | ct=" + r.headers["Content-Type"] +
-       " | h1=" + r.body.contains("<h1>It works</h1>").to_string())
-  # a named asset
-  js = Http.get(BASE + "/app.js")
-  puts("GET /app.js -> " + js.status.to_string() + " | ct=" + js.headers["Content-Type"])
-  # a registered route still wins over static (static is tried first but misses)
-  api = Http.get(BASE + "/api/ok")
-  puts("GET /api/ok -> " + api.status.to_string() + " | " + api.body)
-  # a missing file falls through to 404
-  miss = Http.get(BASE + "/nope.css")
-  puts("GET /nope.css -> " + miss.status.to_string())
-  iso.drop()
-  puts("server stopped")
-} else {
-  iso.drop()
-  puts("server did not start")
-}
+# index.html at the mount root, with inferred content type
+r = Http.get(BASE + "/")
+puts("GET / -> " + r.status.to_string() + " | ct=" + r.headers["Content-Type"] +
+     " | h1=" + r.body.contains("<h1>It works</h1>").to_string())
+# a named asset
+js = Http.get(BASE + "/app.js")
+puts("GET /app.js -> " + js.status.to_string() + " | ct=" + js.headers["Content-Type"])
+# a registered route still wins over a missing static file (static tried first, misses)
+api = Http.get(BASE + "/api/ok")
+puts("GET /api/ok -> " + api.status.to_string() + " | " + api.body)
+# a missing file falls through to 404
+miss = Http.get(BASE + "/nope.css")
+puts("GET /nope.css -> " + miss.status.to_string())
+srv.stop()
+puts("server stopped")

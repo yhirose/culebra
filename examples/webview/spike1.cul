@@ -1,11 +1,12 @@
 # Spike 1 — a Tauri-shaped desktop app, driven entirely from culebra.
 #
-# A local HTTP server (on its own thread) serves the UI and a small JSON API;
-# a native WebView (the main thread) navigates to it, and the page talks back
-# over fetch(). The only bridge across the thread boundary is loopback HTTP —
-# no shared culebra heap crosses it, so the concurrency model stays intact:
-# the server isolate has its own heap, the WebView parks the main thread, and
-# the two never touch the same values.
+# A local HTTP server (started with listen_async, so it runs on a background
+# thread) serves the UI and a small JSON API; a native WebView (the main thread)
+# navigates to it, and the page talks back over fetch(). The only bridge across
+# the thread boundary is loopback HTTP — no shared culebra heap crosses it, so
+# the concurrency model stays intact: the server's worker thread has its own
+# heap, the WebView parks the main thread, and the two never touch the same
+# values.
 #
 # Build the extended binary (Http.server is built in; Webview.Window is wrapped):
 #   CULEBRA_HOME=. culebra wrap examples/webview/webview_binding.cpp \
@@ -71,51 +72,30 @@ PAGE = '<!doctype html>
 </body>
 </html>'
 
-# The server runs in its own isolate (separate thread + heap). It blocks in
-# listen(); dropping the isolate handle later sets its interrupt flag, which
-# the accept loop polls and stops on — a clean cross-thread shutdown.
-server = Isolate.spawn(fn() {
-  let srv = Http.server()
-  srv.get("/", fn(req) {
-    { body: PAGE, content_type: "text/html; charset=utf-8" }
-  })
-  srv.get("/api/hello", fn(req) {
-    { content_type: "application/json",
-      body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
-  })
-  srv.post("/api/echo", fn(req) {
-    let input = JSON.parse(req.body)
-    { content_type: "application/json",
-      body: JSON.stringify({ reply: "You said: " + input["text"] }) }
-  })
-  srv.listen(PORT)
+# `listen_async` binds synchronously, then serves on a background thread, so the
+# main thread is free to drive the WebView. Handlers run on that worker thread
+# (its own heap), so the only bridge to the UI is loopback HTTP. Handlers must be
+# Sendable; the `/` handler captures PAGE (a String — Sendable).
+srv = Http.server()
+srv.get("/", fn(req) {
+  { body: PAGE, content_type: "text/html; charset=utf-8" }
+})
+srv.get("/api/hello", fn(req) {
+  { content_type: "application/json",
+    body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
+})
+srv.post("/api/echo", fn(req) {
+  let input = JSON.parse(req.body)
+  { content_type: "application/json",
+    body: JSON.stringify({ reply: "You said: " + input["text"] }) }
 })
 
-# Wait until the server thread has bound the port before opening the window
-# (the spawn returns immediately; the bind happens a beat later on its thread).
-# Poll every 20ms up to ~5s. The sleep isn't about CPU — each Http.get blocks
-# in a connect() syscall that yields — it's about a predictable bound: without
-# it the loop's wall time is just "250 connection-refused latencies", which on
-# a fast idle machine can burn through before the server thread is scheduled.
-fn wait_ready() {
-  mut n = 0
-  while n < 250 {
-    try { Http.get(BASE + "/api/hello"); return true } catch e { }
-    Time.sleep(0.02)
-    n = n + 1
-  }
-  return false
-}
+srv.listen_async(PORT)   # returns immediately (bind is synchronous; throws on failure)
 
-if wait_ready() {
-  let w = Webview.Window.new()
-  w.set_title("culebra desktop — Spike 1")
-  w.set_size(720, 560)
-  w.navigate(BASE + "/")
-  w.run()              # blocks the main thread until the window is closed
-  server.drop()        # interrupt flag -> server's poll -> clean stop
-  puts("window closed; server stopped")
-} else {
-  server.drop()
-  puts("server did not start in time")
-}
+let w = Webview.Window.new()
+w.set_title("culebra desktop — Spike 1")
+w.set_size(720, 560)
+w.navigate(BASE + "/")
+w.run()                  # blocks the main thread until the window is closed
+srv.stop()               # cross-thread-safe: stops the server and joins its thread
+puts("window closed; server stopped")
