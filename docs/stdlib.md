@@ -2913,8 +2913,8 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
 | `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
-| `listen(port, host="0.0.0.0", workers=1)` | bind and serve until interrupted (blocks the calling thread); `workers>1` runs a concurrent pool |
-| `listen_async(port, host="0.0.0.0", workers=1)` | bind and serve on a background thread, returning immediately; stop with `stop()`. Handlers run off the caller's thread so they must be Sendable |
+| `listen(port, host="0.0.0.0", workers=0)` | bind and serve until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
+| `listen_async(port, host="0.0.0.0", workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
 | `stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
 | `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
@@ -2988,18 +2988,24 @@ connection blocks the server). Connect to a server from culebra with
 [`Http.ws`](#httpwsurl---object). The server now covers request/response, route
 parameters, static files, streaming, and WebSocket.
 
-**Concurrency.** `workers` chooses the threading model:
+**Concurrency.** Handlers always run on a pool of worker threads — never on the
+accept loop — so a slow handler can't block accepting new connections, and a
+browser (which opens several connections in parallel) isn't serialized. `workers`
+sets the pool size:
 
-- `workers: 1` (default) — single-threaded: every handler runs on the thread that
-  called `listen`, one request at a time (the Flask dev-server model). Handlers may
-  capture anything.
-- `workers: N` (N > 1) — a pool of N worker threads, each with its own runtime;
-  requests are handled in **true parallel** (no global lock — unlike a single-process
-  Python server). Because each worker rebuilds the handlers onto its own heap, the
-  handlers must be **Sendable**: they can't capture mutable variables or non-Sendable
-  values. Share large read-only data with [`Shared.new`](#12-isolate) (one copy across
-  all workers) and open per-worker resources (a DB connection) inside the handler. A
-  non-Sendable handler is a `SendError` at `listen`, naming the offending route.
+- `workers: 0` (default) — a CPU-scaled pool (at least 4, at most 8). At least 4
+  because a browser opens several connections to load a page and each keep-alive
+  connection holds a worker briefly; capped because each worker carries its own
+  runtime.
+- `workers: N` — a fixed pool of N. Requests are handled in **true parallel** (no
+  global lock — unlike a single-process Python server).
+
+Each worker has its own runtime, so handlers must be **Sendable**: they can't
+capture mutable variables or non-Sendable values. Share large read-only data with
+[`Shared.new`](#12-isolate) (one copy across all workers) and open per-worker
+resources (a DB connection) inside the handler. A non-Sendable handler is a
+`SendError` at `listen`, naming the offending route. (To keep mutable state, route
+it through `Shared` / a channel / a hub — the same rules as `Isolate`.)
 
 ```culebra
 # doctest: skip

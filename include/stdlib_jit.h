@@ -4314,16 +4314,14 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
   return self;
 }
 
-// Register the recorded routes and serve. workers<=1 dispatches the original
-// closures inline on the listen thread; workers>1 serializes them and each
-// worker thread rebuilds them onto its own heap (so they must be Sendable).
+// Register the recorded routes and serve. Handlers always run on a worker pool
+// (serialized once here, rebuilt per worker — so they must be Sendable); the
+// accept loop never runs a handler. `async` selects background vs blocking serve.
 inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
                                            int port, long workers, bool async) {
   auto& recs = g_jit_srv_routes[id];
   std::string err;
-  // async always runs off the caller's thread, so it takes the serialized
-  // worker path (handlers must be Sendable) even at workers <= 1.
-  if (workers > 1 || async) {
+  {
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
     for (const auto& rec : recs) {
       try {
@@ -4412,55 +4410,6 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
                                   std::format("server.listen: {}", err), 0, 0);
     return {TAG_NIL, 0};
   }
-
-  // workers <= 1 (blocking): inline on the listen thread with the originals.
-  for (const auto& rec : recs) {
-    auto* cb = reinterpret_cast<JitClosure*>(rec.handler.data);
-    std::string rerr;
-    if (rec.method == "WS") {
-      culebra::http::WsHandler wh =
-          [cb](const httplib::Request& q, httplib::ws::WebSocket& ws) {
-            int64_t wsid = culebra::http::ws_register_server(&ws);
-            try {
-              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                           _jit_http_request_to_object(q))};
-              JitValue wsh{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                           _jit_make_http_ws_handle(wsid, false))};
-              JitValue r = _culebra_invoke2(cb, req, wsh);  // consumes both +1
-              _culebra_value_release_impl(r.tag, r.data);
-            } catch (...) {
-            }
-            culebra::http::ws_unregister(wsid);
-          };
-      culebra::http::http_server_ws(id, rec.pattern, std::move(wh), rerr);
-    } else {
-      culebra::http::RouteHandler rh =
-          [cb](const httplib::Request& q, httplib::Response& res) {
-            try {
-              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                           _jit_http_request_to_object(q))};
-              JitValue ret = _culebra_invoke1(cb, req);
-              if (!_jit_http_try_stream_response(ret, res))
-                _jit_http_apply_response(ret, res);
-              _culebra_value_release_impl(ret.tag, ret.data);
-            } catch (const std::exception& e) {
-              res.status = 500;
-              res.set_content(e.what(), "text/plain");
-            }
-          };
-      culebra::http::http_server_route(id, rec.method, rec.pattern,
-                                       std::move(rh), rerr);
-    }
-    if (!rerr.empty())
-      throw culebra::CulebraError("HttpError",
-                                  std::format("server.listen: {}", rerr), 0, 0);
-  }
-  bool ok = culebra::http::http_server_listen(id, host, port, 1, nullptr,
-                                              nullptr, err);
-  if (!ok)
-    throw culebra::CulebraError("HttpError",
-                                std::format("server.listen: {}", err), 0, 0);
-  return {TAG_NIL, 0};
 }
 
 // Shared body for listen (async=false, blocks) and listen_async (returns).
@@ -4476,7 +4425,7 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
   std::string host = "0.0.0.0";
   if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
     host = std::string(_culebra_str_view(args[1].tag, args[1].data));
-  long workers = 1;
+  long workers = 0;  // 0 = CPU-scaled pool (default_http_workers)
   if (_jit_file_arg_present(n, args, 2) && args[2].tag != TAG_NIL) {
     if (args[2].tag != TAG_LONG)
       culebra::throw_type_mismatch("Long", _culebra_tag_name(args[2].tag), 0,

@@ -3902,27 +3902,26 @@ struct InterpRouteRecord {
 inline thread_local std::unordered_map<int64_t, std::vector<InterpRouteRecord>>
     g_srv_routes;
 
-// Defined after isolate.h is included (it needs sendable::serialize for the
-// concurrent path); forward-declared here so the listen handle method can call
-// it. Binds and serves; returns nil, or throws on a bind / Sendable error.
-// `listen_env` is the call site's scope, used as the call-site env when
-// dispatching the original (inline, workers<=1) handler closures.
+// Defined after isolate.h is included (it needs sendable::serialize, since
+// handlers always run on a worker pool); forward-declared here so the listen
+// handle method can call it. Binds and serves; returns nil, or throws on a bind
+// / Sendable error.
 inline Value _http_server_do_listen(int64_t id, const std::string& host,
                                     int port, long workers, bool async,
-                                    const std::shared_ptr<Environment>& listen_env,
                                     long line, long col);
 
 // The Http.server handle: record routes (get/post/…) and serve files (static),
-// then listen() to register the routes and block accepting connections. With
-// `workers <= 1` handlers run on the listen thread (the original closures); with
-// `workers > 1` each worker thread gets its own runtime with the handlers
-// rebuilt onto it (so they must be Sendable). See _http_server_do_listen.
+// then listen() to register the routes and block accepting connections. Handlers
+// always run on a worker pool (each worker thread gets its own runtime with the
+// handlers rebuilt onto it), so they must be Sendable; the accept loop never
+// runs a handler. `workers` defaults to 0 = a CPU-scaled pool size (see
+// default_http_workers); pass a positive count to fix it. See _http_server_do_listen.
 inline Value make_http_server_handle(int64_t id) {
   using namespace std::literals;
   static const auto host_default =
       std::make_shared<Value>(Value(std::string("0.0.0.0")));
   static const auto workers_default =
-      std::make_shared<Value>(Value(static_cast<long>(1)));
+      std::make_shared<Value>(Value(static_cast<long>(0)));  // 0 = CPU-scaled
   ObjectValue h;
   h.initialize("_id", Value(static_cast<long>(id)), false);
   h.initialize("__nonsendable__", Value(true), false);
@@ -3988,8 +3987,8 @@ inline Value make_http_server_handle(int64_t id) {
       std::string host = hv.type == Value::Nil ? std::string("0.0.0.0")
                                                : std::string(hv.to_string_view());
       const auto& wv = env->get("workers");
-      long workers = wv.type == Value::Nil ? 1 : wv.to_long();
-      return _http_server_do_listen(sid(env), host, port, workers, async, env,
+      long workers = wv.type == Value::Nil ? 0 : wv.to_long();  // 0 = CPU-scaled
+      return _http_server_do_listen(sid(env), host, port, workers, async,
                                     line, col);
     };
   };
@@ -3997,12 +3996,13 @@ inline Value make_http_server_handle(int64_t id) {
       {"port", false, ""sv},
       {"host", false, ""sv, nullptr, host_default},
       {"workers", false, ""sv, nullptr, workers_default}};
-  // listen(port, host="0.0.0.0", workers=1) — blocks until Ctrl+C.
+  // listen(port, host="0.0.0.0", workers=0) — blocks until Ctrl+C. workers=0
+  // picks a CPU-scaled pool; handlers run on the pool (must be Sendable).
   h.initialize("listen", Value(FunctionValue(listen_params, do_listen(false),
                                              "Nil"sv)),
                false);
-  // listen_async(port, host="0.0.0.0", workers=1) — returns immediately, serves
-  // on a background thread; handlers must be Sendable (they run off this thread).
+  // listen_async(port, host="0.0.0.0", workers=0) — returns immediately, serves
+  // on a background pool; handlers must be Sendable (they run off this thread).
   h.initialize("listen_async",
                Value(FunctionValue(listen_params, do_listen(true), "Nil"sv)),
                false);
@@ -6199,7 +6199,7 @@ inline thread_local std::vector<Value> g_srv_w_handlers;
 
 inline Value _http_server_do_listen(
     int64_t id, const std::string& host, int port, long workers, bool async,
-    const std::shared_ptr<Environment>& listen_env, long line, long col) {
+    long line, long col) {
   // Move the records out of the thread_local map and drop the entry now: the
   // RouteHandlers below capture their own handler copies (workers<=1) or the
   // serialized SendNodes (workers>1), so the records are only needed during
@@ -6209,9 +6209,11 @@ inline Value _http_server_do_listen(
   std::vector<InterpRouteRecord> recs = std::move(g_srv_routes[id]);
   g_srv_routes.erase(id);
   std::string err;
-  // async always runs off the caller's thread, so it takes the serialized
-  // worker path (handlers must be Sendable) even at workers <= 1.
-  if (workers > 1 || async) {
+  // Handlers always run on a worker pool (off the accept loop) and so must be
+  // Sendable: serialize each once here (the Sendable check happens at listen),
+  // and each worker thread rebuilds them onto its own heap. `async` only selects
+  // blocking vs background serving below — not the handler model.
+  {
     // Serialize each handler once (the Sendable check happens here, at listen);
     // the worker threads each rebuild them onto their own heap.
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
@@ -6299,55 +6301,6 @@ inline Value _http_server_do_listen(
                          line, col);
     return Value();
   }
-
-  // workers <= 1 (blocking): inline on the listen thread with the original
-  // closures (no serialization, so the handlers may capture anything).
-  auto cb_interp = std::make_shared<Interpreter>();
-  for (const auto& rec : recs) {
-    Value handler = rec.handler;
-    std::string rerr;
-    if (rec.method == "WS") {
-      culebra::http::WsHandler wh =
-          [cb_interp, handler, listen_env](const httplib::Request& q,
-                                           httplib::ws::WebSocket& ws) {
-            int64_t wsid = culebra::http::ws_register_server(&ws);
-            try {
-              Value req = http_request_to_object(q);
-              Value wsh = make_http_ws_handle(wsid, /*is_client=*/false);
-              cb_interp->call_closure(handler, listen_env, {req, wsh});
-            } catch (...) {
-              // Already upgraded — no HTTP response; just close the socket.
-            }
-            culebra::http::ws_unregister(wsid);
-          };
-      culebra::http::http_server_ws(id, rec.pattern, std::move(wh), rerr);
-    } else {
-      culebra::http::RouteHandler rh =
-          [cb_interp, handler, listen_env](const httplib::Request& q,
-                                           httplib::Response& res) {
-            try {
-              Value req = http_request_to_object(q);
-              Value ret = cb_interp->call_closure(handler, listen_env, {req});
-              if (!http_try_stream_response(ret, res, cb_interp, listen_env))
-                http_apply_response(ret, res);
-            } catch (const std::exception& e) {
-              res.status = 500;
-              res.set_content(e.what(), "text/plain");
-            }
-          };
-      culebra::http::http_server_route(id, rec.method, rec.pattern,
-                                       std::move(rh), rerr);
-    }
-    if (!rerr.empty())
-      throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
-                         line, col);
-  }
-  bool ok = culebra::http::http_server_listen(id, host, port, 1, nullptr,
-                                              nullptr, err);
-  if (!ok)
-    throw CulebraError("HttpError", std::format("server.listen: {}", err), line,
-                       col);
-  return Value();
 }
 #endif  // CULEBRA_HTTP_ENABLED
 

@@ -2804,8 +2804,8 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート `pattern` に `handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
 | `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
 | `sink.write(chunk)` | （`stream:` クロージャ内）1 チャンクを送出。クライアント切断時は `false` を返す |
-| `listen(port, host="0.0.0.0", workers=1)` | バインドして中断まで配信（呼び出しスレッドをブロック）。`workers>1` で並行プール |
-| `listen_async(port, host="0.0.0.0", workers=1)` | 背後スレッドで配信し即 return。停止は `stop()`。ハンドラは呼び出しスレッド外で動くため Sendable 必須 |
+| `listen(port, host="0.0.0.0", workers=0)` | バインドして中断まで配信（呼び出しスレッドをブロック）。ハンドラは accept ループでなく worker プールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）は CPU 連動のプールサイズ、正の数で固定 |
+| `listen_async(port, host="0.0.0.0", workers=0)` | 同上を背後プールで行い即 return。停止は `stop()` |
 | `stop()` | 背後（`listen_async`）サーバを停止しスレッドを join（別スレッドからも呼べる） |
 | `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバは GC も閉じる） |
 
@@ -2877,17 +2877,21 @@ WebSocket 接続はその寿命の間 worker を占有するので、`workers: N
 [`Http.ws`](#httpwsurl---object) を使います。サーバはリクエスト/レスポンス・
 ルートパラメータ・静的ファイル・ストリーミング・WebSocket をカバーします。
 
-**並行性。** `workers` でスレッドモデルを選びます:
+**並行性。** ハンドラは常に worker スレッドのプールで動き（accept ループでは動かない）、
+遅いハンドラが新規接続の受付を止めず、複数接続を並列に開くブラウザも直列化されません。
+`workers` はプールサイズ:
 
-- `workers: 1`（既定）— シングルスレッド。各ハンドラは `listen` を呼んだスレッド上で
-  1 リクエストずつ実行（Flask dev server モデル）。ハンドラは何でもキャプチャ可。
-- `workers: N`（N > 1）— N 個の worker スレッドのプール。各々が専用ランタイムを持ち、
-  リクエストは**真の並列**で処理（プロセス全体ロック無し＝単一プロセスの Python
-  サーバと違う）。各 worker がハンドラを自分のヒープに作り直すため、ハンドラは
-  **Sendable** でなければならない（可変変数や非 Sendable 値をキャプチャ不可）。巨大な
-  read-only データは [`Shared.new`](#12-isolate) で共有（全 worker で 1 コピー）、
-  worker ごとの資源（DB 接続）はハンドラ内で開く。非 Sendable なハンドラは `listen`
-  時に `SendError`（該当ルートを明示）。
+- `workers: 0`（既定）— CPU 連動のプール（最小 4・最大 8）。ブラウザはページ読み込みで
+  複数接続を開き各 keep-alive 接続が worker を短時間占有するため最小 4、各 worker は専用
+  ランタイムを持つため上限あり。
+- `workers: N` — N 固定のプール。リクエストは**真の並列**で処理（プロセス全体ロック無し
+  ＝単一プロセスの Python サーバと違う）。
+
+各 worker は専用ランタイムを持つため、ハンドラは **Sendable** 必須（可変変数や非 Sendable
+値をキャプチャ不可）。巨大な read-only データは [`Shared.new`](#12-isolate) で共有（全
+worker で 1 コピー）、worker ごとの資源（DB 接続）はハンドラ内で開く。非 Sendable なハンドラ
+は `listen` 時に `SendError`（該当ルートを明示）。可変状態を持ちたいなら `Shared`/channel/
+hub に寄せる（`Isolate` と同じ規則）。
 
 ```culebra
 # doctest: skip

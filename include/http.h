@@ -665,11 +665,10 @@ CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
 // matched route, calls back into a culebra handler closure. Invoking the
 // closure is backend-specific (interp call_closure / JIT _culebra_invoke1), so
 // this core stays value-neutral — the backend hands us a RouteHandler that
-// reads the httplib request and fills the response. v0 is single threaded: an
-// InlineTaskQueue runs every connection on the listen thread, so the handler
-// executes on the thread that owns the interpreter/JIT runtime (a culebra
-// value/GC is thread_local and non-sendable). A later phase adds a worker pool
-// with one runtime per thread for true concurrency.
+// reads the httplib request and fills the response. Handlers always run on a
+// CulebraWorkerPool (one culebra runtime per worker thread; a value/GC is
+// thread_local and non-sendable), never on the accept loop — so a slow handler
+// can't block accepting new connections, and handlers must be Sendable.
 
 // Backend-supplied per-route handler: read the request, fill the response. This
 // is exactly httplib's Handler type; declaring it pulls no TLS symbol (only
@@ -814,32 +813,18 @@ struct HttpServer {
   bool started = false;
 };
 
-// Single-threaded task queue: run each connection synchronously on the listen
-// thread (so handlers run where the runtime lives), and poll the cooperative
-// interrupt flag on idle so Ctrl+C / an isolate cancel can stop the accept
-// loop. on_idle() fires from listen_internal every idle interval when the
-// accept select times out — calling svr.stop() from there (the accept thread)
-// is httplib's safe shutdown path, unlike calling it from a signal handler.
-class InlineTaskQueue : public httplib::TaskQueue {
- public:
-  InlineTaskQueue(httplib::Server* svr, std::atomic<bool>* isolate_flag)
-      : svr_(svr), isolate_flag_(isolate_flag) {}
-  bool enqueue(std::function<void()> fn) override {
-    fn();
-    return true;
-  }
-  void on_idle() override {
-    bool fired = culebra_g_sigint.load(std::memory_order_relaxed) ||
-                 (isolate_flag_ && isolate_flag_ != &culebra_g_sigint &&
-                  isolate_flag_->load(std::memory_order_relaxed));
-    if (fired) svr_->stop();
-  }
-  void shutdown() override {}
-
- private:
-  httplib::Server* svr_;
-  std::atomic<bool>* isolate_flag_;
-};
+// Default worker-pool size when the script doesn't pass `workers:`. Scaled with
+// the machine but bounded: at least 4 (a browser opens several connections in
+// parallel to load a page, and cpp-httplib holds each keep-alive connection on a
+// worker for up to 5s — fewer workers serialize the page load) and at most 8
+// (each worker carries its own culebra Runtime, so don't spawn one per core on a
+// big box). hardware_concurrency() == 0 (unknown) → 4.
+inline size_t default_http_workers() {
+  unsigned hw = std::thread::hardware_concurrency();
+  if (hw < 4) return 4;
+  if (hw > 8) return 8;
+  return hw;
+}
 
 // Backend hooks for a concurrent worker (run on each worker thread): `setup`
 // builds the per-thread runtime + deserializes the route handlers into
@@ -1033,18 +1018,18 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen(
     return false;
   }
   auto* isolate_flag = current_runtime().interrupt_flag;
-  if (n_workers > 1) {
-    ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
-    s->svr.new_task_queue = [n_workers, svr = &s->svr, isolate_flag,
-                             hooks = std::move(hooks)] {
-      return new CulebraWorkerPool(static_cast<size_t>(n_workers), svr,
-                                   isolate_flag, hooks);
-    };
-  } else {
-    s->svr.new_task_queue = [svr = &s->svr, isolate_flag] {
-      return new InlineTaskQueue(svr, isolate_flag);
-    };
-  }
+  // Handlers always run on a worker pool (off the accept loop), so a slow
+  // handler never blocks accepting new connections. n_workers < 1 picks the
+  // CPU-scaled default. (No inline-on-accept-thread mode: that would stall all
+  // accepts while one handler runs, and would let handlers share the caller's
+  // mutable heap — both at odds with the isolate model.)
+  size_t nw = n_workers >= 1 ? static_cast<size_t>(n_workers)
+                             : default_http_workers();
+  ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
+  s->svr.new_task_queue = [nw, svr = &s->svr, isolate_flag,
+                           hooks = std::move(hooks)] {
+    return new CulebraWorkerPool(nw, svr, isolate_flag, hooks);
+  };
   // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
   // when no connection arrives (idle_interval turns accept into a timed select).
   s->svr.set_idle_interval(0, 100 * 1000);
@@ -1095,7 +1080,8 @@ CULEBRA_RT_HTTP_LINKAGE bool http_server_listen_async(
   // lifetime could be shorter. On the main thread these are the same pointer; an
   // isolate that uses listen_async stops it via the handle's drop/stop instead.
   auto* isolate_flag = &culebra_g_sigint;
-  size_t nw = n_workers < 1 ? 1 : static_cast<size_t>(n_workers);
+  size_t nw = n_workers >= 1 ? static_cast<size_t>(n_workers)
+                             : default_http_workers();
   ServerWorkerHooks hooks{std::move(worker_setup), std::move(worker_teardown)};
   s->svr.new_task_queue = [nw, svr = &s->svr, isolate_flag,
                            hooks = std::move(hooks)] {
