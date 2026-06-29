@@ -90,7 +90,11 @@ srv.post("/api/echo", fn(req) {
     body: JSON.stringify({ reply: "You said: " + input["text"] }) }
 })
 
-srv.listen_async(PORT)   # returns immediately (bind is synchronous; throws on failure)
+# workers > 1 matters here: a browser opens several connections in parallel to
+# load the page, and cpp-httplib holds each keep-alive connection on a worker
+# for up to 5s — a single worker would serialize the load (blank window for
+# seconds). A small pool serves the page's requests at once.
+srv.listen_async(PORT, workers: 4)   # returns immediately (bind is synchronous; throws on failure)
 
 let w = Webview.Window.new()
 w.set_title("culebra desktop — Spike 1")

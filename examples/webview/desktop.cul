@@ -27,7 +27,11 @@ fn run(config) {
   if config.has("routes") { config["routes"](srv) }
   # Built-in quit endpoint: a UI button does `fetch("/__quit", {method:"POST"})`.
   srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
-  srv.listen_async(port)             # returns immediately (bind is synchronous)
+  # A browser loads the page over several parallel connections; cpp-httplib holds
+  # each keep-alive connection on a worker for up to 5s, so a single worker would
+  # serialize the load and leave the window blank for seconds. Default to a small
+  # pool (override with `workers:` in the config).
+  srv.listen_async(port, workers: config.get("workers", 4))   # returns immediately
 
   let w = Webview.Window.new()
   w.set_title(config.get("title", "culebra"))

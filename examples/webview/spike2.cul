@@ -36,7 +36,11 @@ srv.post("/api/echo", fn(req) {
 # (thread-safe from this worker thread), so run() returns and the server stops.
 srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
 
-srv.listen_async(PORT)   # returns immediately (bind is synchronous; throws on failure)
+# workers > 1 matters here: a browser opens several connections in parallel to
+# load the page (HTML + CSS + JS), and cpp-httplib holds each keep-alive
+# connection on a worker for up to 5s — so a single worker serializes the load
+# and the window shows blank for seconds. A small pool serves them at once.
+srv.listen_async(PORT, workers: 4)   # returns immediately (bind is synchronous; throws on failure)
 
 let w = Webview.Window.new()
 w.set_title("culebra desktop — Spike 2")
