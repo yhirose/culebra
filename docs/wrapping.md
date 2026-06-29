@@ -51,6 +51,11 @@ The member function is a *template* argument (`method<&T::m>`), so each
 method gets its own compiled thunk. Parameter names are optional; they
 drive error messages and keyword binding on the interpreter.
 
+You declare construction (`ctor`) but never destruction: there is no
+`.dtor` builder. The wrapped type's `~T()` is invoked automatically by
+the deterministic-drop machinery the handle inherits (see §3), so the
+C++ destructor is the only thing you write.
+
 ## 2. Build
 
 ```sh
