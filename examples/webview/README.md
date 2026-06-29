@@ -1,10 +1,10 @@
-# WebView — web-tech desktop GUI from culebra (Spikes 0–1)
+# WebView — web-tech desktop GUI from culebra (Spikes 0–2)
 
 A proof that culebra can drive a **native WebView window** through the
 `culebra wrap` mechanism, wire it to a **local HTTP server** (Spike 1), and
-AOT-compile the whole thing into a **single-file desktop app** (Spike 2) —
-the Tauri-shaped shape. Loading assets from separate frontend-build files
-is a later enhancement.
+serve a real frontend (`dist/`) that's **baked into a single-file binary**
+under AOT while staying **live from disk in dev** (Spike 2) — the Tauri-shaped
+shape, end to end.
 
 This wraps [webview/webview](https://github.com/webview/webview) (MIT),
 which renders HTML/CSS/JS in each OS's native engine (WKWebView on macOS,
@@ -19,6 +19,8 @@ WebKitGTK on Linux, WebView2 on Windows) — no bundled Chromium.
 | `hello.cul` | Spike 0: opens a 640×480 window with inline HTML (blocks in the event loop) |
 | `smoke.cul` | Non-blocking binding check (ctor → setters → drop); safe for CI/headless |
 | `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
+| `dist/` | Spike 2: the frontend as real files (`index.html`, `style.css`, `app.js`) |
+| `spike2.cul` | Spike 2: serves `dist/` via `Embed.dir` — live disk in dev, baked into the binary under AOT |
 
 ## Build
 
@@ -82,24 +84,44 @@ loopback HTTP — no shared culebra heap crosses it:
 used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /
 serialization is needed.
 
-## Single binary (Spike 2)
+## Single binary + a real dev loop (Spike 2)
 
-`culebra build` AOT-compiles a program into a self-contained executable, and
-the wrap mechanism composes with it: when the script names a wrapped namespace
-(`Webview`), the build force-loads the wrap archive and appends its link flags.
-So the **wrapped** binary's `build` produces a single-file desktop app:
+`spike2.cul` keeps the UI in real files (`dist/`) and serves them with one line:
 
-```sh
-./webview-culebra build examples/webview/spike1.cul -o webview-app
-./webview-app
+```culebra
+srv.static("/", Embed.dir("dist"))
 ```
 
-The result links only OS-provided frameworks — on macOS `otool -L webview-app`
+`Embed.dir(name)` is the whole trick, and it resolves *per backend* with no code
+change:
+
+- **Dev** (run from source): it serves the live on-disk directory, resolved
+  relative to the entry script. Edit `dist/index.html`, reload the window, and
+  the change is there — no rebuild.
+- **AOT** (`culebra build`): the directory is walked at build time and its bytes
+  are baked into the executable (a generated asset table linked in). The binary
+  needs no `dist/` next to it — copy it anywhere.
+
+`srv.static` itself is source-agnostic: it serves a directory (`Embed.dir(...)`),
+not "an embed". A plain `srv.static(mount, "dir")` String still serves a live
+disk directory at runtime (handy, but not single-binary).
+
+```sh
+# dev: live disk
+./webview-culebra examples/webview/spike2.cul
+
+# single binary: assets baked in (the build prints what it embedded)
+./webview-culebra build examples/webview/spike2.cul -o desktop-app
+# culebra build: embedded 3 file(s) (...) from 'dist'
+./desktop-app          # runs with no dist/ present
+```
+
+`culebra build` composes with the wrap mechanism: because the script names a
+wrapped namespace (`Webview`), the build force-loads the wrap archive and its
+link flags. The result links only OS-provided frameworks — on macOS `otool -L`
 shows just `WebKit`, `CoreFoundation`, `Security`, `libz`, `libc++`, `libobjc`,
-`libSystem`; there is no external culebra runtime. The UI is already embedded
-(the HTML lives in the `.cul` as a raw string), so the one file is the whole
-app. Loading assets from separate frontend-build files (a compile-time embed,
-Go/Tauri style) is a later enhancement.
+`libSystem`; there is no external culebra runtime, and (with the assets baked
+in) no external files. One file is the whole app.
 
 ## Vendoring note
 
@@ -112,8 +134,8 @@ commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
 ## Not in these spikes
 
-Loading assets from separate frontend-build files (`dist/index.html`, …) via a
-compile-time embed (Go `embed` / Tauri style) — today the UI lives inline in
-the `.cul`. A `Desktop`-style facade that bundles server + window + assets in
-one call is Spike 3. The native `bind`/`eval`/`init`/`dispatch` JS↔culebra
-bridge stays out by design (see above) — see the project roadmap.
+A `Desktop`-style facade that bundles server + window + assets in one call is
+Spike 3. A `Dir`-trait-shaped source for `srv.static` (so a zip or an overlay FS
+could back it too) is a future generalization. The native
+`bind`/`eval`/`init`/`dispatch` JS↔culebra bridge stays out by design (see
+above) — see the project roadmap.

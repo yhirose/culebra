@@ -1,0 +1,12 @@
+body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh;
+       display: grid; place-items: center;
+       background: #0b1020; color: #e8ecff; }
+main { text-align: center; max-width: 30rem; padding: 2rem; }
+h1 { font-size: 2.5rem; margin: 0 0 .25rem; }
+.msg { opacity: .8; min-height: 1.4em; }
+.row { margin-top: 1.5rem; display: flex; gap: .5rem; }
+input { flex: 1; padding: .6rem .8rem; border-radius: .5rem;
+        border: 1px solid #2a3358; background: #131a33; color: inherit; }
+button { padding: .6rem 1rem; border-radius: .5rem; border: 0;
+         background: #4f6dff; color: white; cursor: pointer; }
+.reply { margin-top: 1rem; opacity: .9; min-height: 1.4em; color: #9ad0ff; }

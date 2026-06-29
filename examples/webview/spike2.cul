@@ -1,0 +1,59 @@
+# Spike 2 — a Tauri-shaped desktop app whose UI lives in real frontend files
+# (examples/webview/dist/) and ships inside a single binary.
+#
+# `Embed.dir("dist")` is the whole trick: running from source it serves the
+# live on-disk directory (edit a file, reload the window, see the change — the
+# dev loop); under `culebra build` the directory is walked at build time and its
+# bytes are baked into the executable, so the one file is the whole app. The
+# server code doesn't change between the two — `srv.static` just serves a dir.
+#
+# Dev:
+#   ./webview-culebra examples/webview/spike2.cul          # interpreter
+#   ./webview-culebra --jit examples/webview/spike2.cul    # JIT
+# Single binary (assets baked in — copy it anywhere, no dist/ needed):
+#   ./webview-culebra build examples/webview/spike2.cul -o desktop-app
+#   ./desktop-app
+
+PORT = 8732
+BASE = "http://127.0.0.1:" + PORT.to_string()
+
+# The server runs in its own isolate (separate thread + heap); the only bridge
+# to the WebView is loopback HTTP, so no culebra heap crosses the boundary.
+server = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.static("/", Embed.dir("dist"))   # dev: live disk / AOT: baked into binary
+  srv.get("/api/hello", fn(req) {
+    { content_type: "application/json",
+      body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
+  })
+  srv.post("/api/echo", fn(req) {
+    let input = JSON.parse(req.body)
+    { content_type: "application/json",
+      body: JSON.stringify({ reply: "You said: " + input["text"] }) }
+  })
+  srv.listen(PORT)
+})
+
+# Wait until the server thread has bound the port before opening the window.
+fn wait_ready() {
+  mut n = 0
+  while n < 250 {
+    try { Http.get(BASE + "/api/hello"); return true } catch e { }
+    Time.sleep(0.02)
+    n = n + 1
+  }
+  return false
+}
+
+if wait_ready() {
+  let w = Webview.Window.new()
+  w.set_title("culebra desktop — Spike 2")
+  w.set_size(720, 560)
+  w.navigate(BASE + "/")
+  w.run()              # blocks the main thread until the window is closed
+  server.drop()        # interrupt flag -> server's poll -> clean stop
+  puts("window closed; server stopped")
+} else {
+  server.drop()
+  puts("server did not start in time")
+}
