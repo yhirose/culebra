@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
+#include <vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
 
 namespace culebra::http {
 
@@ -802,6 +803,13 @@ inline void http_server_set_stream(httplib::Response& res,
 
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 
+// A static asset mount: serve `dir` (a live disk dir in dev, or a baked
+// embedded table under AOT) at the URL prefix `mount`.
+struct StaticMount {
+  std::string mount;
+  std::unique_ptr<culebra::Dir> dir;
+};
+
 struct HttpServer {
   httplib::Server svr;
   // For listen_async: the background thread running the accept loop. Empty for
@@ -811,6 +819,10 @@ struct HttpServer {
   // cannot be started again (httplib::Server is not designed to restart after
   // stop). Set on a successful start; a fresh start is rejected, not hung.
   bool started = false;
+  // Static asset mounts (srv.static with Embed.dir), served by a pre_routing
+  // handler installed on first use.
+  std::vector<StaticMount> static_mounts;
+  bool static_handler_installed = false;
 };
 
 // Default worker-pool size when the script doesn't pass `workers:`. Scaled with
@@ -987,6 +999,65 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
   }
   if (!s->svr.set_mount_point(mount, dir)) {
     err = "Http: cannot serve directory: " + dir;
+  }
+#endif
+}
+
+// Serve a virtual directory at the URL prefix `mount`: the baked asset table
+// registered under `name` when this binary was built with the assets embedded
+// (AOT single binary), otherwise the live on-disk directory `base` (dev — edits
+// show up on the next request). Static assets are tried before registered
+// routes and only when the file exists, so an API route at e.g. /api/* still
+// wins; a closed id no-ops. This is the `srv.static(mount, Embed.dir(...))`
+// path — the plain `srv.static(mount, "dir")` keeps using set_mount_point.
+CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
+                                                     const std::string& mount,
+                                                     const std::string& name,
+                                                     std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)mount; (void)name;
+  err = "Http runtime not linked (no Http use detected at build)";
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return;
+  }
+  std::unique_ptr<culebra::Dir> d;
+  auto& tables = culebra::_asset_tables();
+  if (auto it = tables.find(name); it != tables.end()) {
+    d = std::make_unique<culebra::EmbeddedDir>(it->second.first,
+                                               it->second.second);
+  } else {
+    // Dev: resolve the directory relative to the entry script (set at startup),
+    // so it works regardless of the cwd — the same base the AOT build walks.
+    std::string base = culebra::main_script_dir();
+    if (!base.empty() && base.back() != '/') base += '/';
+    base += name;
+    d = std::make_unique<culebra::DiskDir>(base);
+  }
+  s->static_mounts.push_back({mount, std::move(d)});
+  if (!s->static_handler_installed) {
+    s->static_handler_installed = true;
+    HttpServer* sp = s;  // outlives the handler (it lives on sp->svr)
+    s->svr.set_pre_routing_handler(
+        [sp](const httplib::Request& req,
+             httplib::Response& res) -> httplib::Server::HandlerResponse {
+          if (req.method != "GET" && req.method != "HEAD") {
+            return httplib::Server::HandlerResponse::Unhandled;
+          }
+          for (auto& m : sp->static_mounts) {
+            culebra::StaticResult r;
+            if (culebra::serve_static(*m.dir, m.mount, req.path, r)) {
+              res.status = r.status;
+              // `r` is loop-local and unused after this — move the (possibly
+              // large) body instead of letting set_content copy it.
+              res.set_content(std::move(r.body), r.content_type);
+              return httplib::Server::HandlerResponse::Handled;
+            }
+          }
+          return httplib::Server::HandlerResponse::Unhandled;
+        });
   }
 #endif
 }

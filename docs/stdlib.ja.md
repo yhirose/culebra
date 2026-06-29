@@ -2802,7 +2802,7 @@ srv.listen(8080)                 # ブロックする。Ctrl+C で停止
 | メソッド | 効果 |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート `pattern` に `handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
-| `static(mount, dir)` | URL プレフィックス `mount` で `dir` 配下のファイルを配信 |
+| `static(mount, dir)` | URL プレフィックス `mount` で静的ファイルを配信。`dir` は String パス（ディスク上のディレクトリをライブ配信）または `Embed.dir(...)` 記述子（AOT ではバイナリに焼き込み — [Embed](#embed) 参照） |
 | `sink.write(chunk)` | （`stream:` クロージャ内）1 チャンクを送出。クライアント切断時は `false` を返す |
 | `listen(port, host="0.0.0.0", workers=0)` | バインドして中断まで配信（呼び出しスレッドをブロック）。ハンドラは accept ループでなく worker プールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）は CPU 連動のプールサイズ、正の数で固定 |
 | `listen_async(port, host="0.0.0.0", workers=0)` | 同上を背後プールで行い即 return。停止は `stop()` |
@@ -2947,6 +2947,31 @@ puts(ws.receive())               # => エコーされたメッセージ
 for msg in ws { handle(msg) }    # サーバが close するまでメッセージを drain
 ws.close()
 ```
+
+### Embed
+
+`Embed.dir(name)` は `srv.static(mount, ...)` 用のディレクトリ記述子を返し、
+**バックエンドごとに**（コード変更なしで）解決されます:
+
+- **ソース実行**（インタプリタ / JIT）: `name` のディスク上ディレクトリをライブ
+  配信（エントリスクリプト相対で解決）。ファイルを編集してリロードすれば即反映
+  ＝開発ループ。
+- **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
+  に焼き込み、外部ファイル無しで配信。焼き込んだ内容はビルドが表示する
+  （`embedded N file(s) (… bytes) from '…'`）。
+
+```culebra
+let srv = Http.server()
+srv.static("/", Embed.dir("dist"))     # フロントエンド全体を1行で
+srv.get("/api/ping", fn(req) { '{"ok":true}' })
+srv.listen(8080)
+```
+
+`name` は AOT ビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
+パスはソース実行では動くが焼き込まれない）。Content-Type は拡張子から推論、
+ディレクトリ（や `/`）へのリクエストはその `index.html`、ディレクトリに無いパスは
+登録ルートにフォールスルー（API ルートが常に優先）。`Embed.dir` は `Http` 非依存
+＝任意の利用側が配信できるプレーンな記述子を返す。
 
 ---
 

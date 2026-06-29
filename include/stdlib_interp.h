@@ -3953,18 +3953,41 @@ inline Value make_http_server_handle(int64_t id) {
   // path as the HTTP routes (method "WS"); dispatched specially at listen().
   h.initialize("ws", route("WS"), false);
 
-  // static(mount, dir) — serve files under `dir` at the URL prefix `mount`.
+  // static(mount, dir) — serve static files at the URL prefix `mount`. `dir` is
+  // either a String path (a live on-disk directory, via httplib's mount point)
+  // or an `Embed.dir(...)` descriptor (baked into the binary under AOT, live
+  // disk otherwise). Static files are tried before routes and only when present,
+  // so API routes still win. Chainable.
   h.initialize(
       "static",
       Value(FunctionValue(
-          {{"mount", false, "String"sv}, {"dir", false, "String"sv}},
+          {{"mount", false, "String"sv}, {"dir", false, ""sv}},
           [sid](std::shared_ptr<Environment> env) -> Value {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
             std::string err;
-            culebra::http::http_server_static(
-                sid(env), env->get("mount").to_string(),
-                env->get("dir").to_string(), err);
+            std::string mount = std::string(env->get("mount").to_string_view());
+            const Value& d = env->get("dir");
+            // A real Embed.dir descriptor has both __embed_dir__ and name; a
+            // forged lookalike missing either falls through to the TypeError
+            // below (not an uncaught out_of_range from get("name")).
+            if (d.type == Value::Object &&
+                d.to_object().has("__embed_dir__") &&
+                d.to_object().has("name")) {
+              const auto& o = d.to_object();
+              culebra::http::http_server_serve_embed(
+                  sid(env), mount,
+                  std::string(o.get("name").to_string_view()), err);
+            } else if (d.type == Value::String ||
+                       d.type == Value::StringView) {
+              culebra::http::http_server_static(
+                  sid(env), mount, std::string(d.to_string_view()), err);
+            } else {
+              throw CulebraError(
+                  "TypeError",
+                  "server.static: dir must be a String path or Embed.dir(...)",
+                  line, col);
+            }
             if (!err.empty()) {
               throw CulebraError("HttpError",
                                  std::format("server.static: {}", err), line,
@@ -4027,6 +4050,32 @@ inline Value make_http_server_handle(int64_t id) {
   h.initialize("drop", Value(FunctionValue({}, shutdown)), false);
 
   return Value(std::move(h));
+}
+
+// `Embed` — bake a directory of assets into the program. `Embed.dir(name)`
+// returns an opaque descriptor for `srv.static(mount, ...)`: under an AOT build
+// the named directory is walked at build time and its bytes are linked into the
+// binary; running from source it reads the live on-disk directory (relative to
+// the entry script) so UI edits show up on the next request. The descriptor is
+// plain data (Sendable): {name} — `srv.static` prefers the baked table keyed by
+// `name` when present, else reads the live directory (base computed there).
+inline Value make_embed_namespace() {
+  using namespace std::literals;
+  ObjectValue ns;
+  ns.initialize(
+      "dir",
+      Value(FunctionValue(
+          {{"name", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            std::string name = std::string(env->get("name").to_string_view());
+            ObjectValue h;
+            h.initialize("__embed_dir__", Value(true), false);
+            h.initialize("name", Value(std::move(name)), false);
+            return Value(std::move(h));
+          },
+          "Object"sv)),
+      false);
+  return Value(std::move(ns));
 }
 
 // `Http` — synchronous HTTP/HTTPS client (cpp-httplib + OpenSSL). Each call
@@ -5831,6 +5880,7 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
   env.initialize("File", make_file_namespace(), false);
+  env.initialize("Embed", make_embed_namespace(), false);
   // Wrapped C++ classes (wrap.h declarations, e.g. foreign_binding.h's
   // `__Foreign.Counter`): one namespace object per declared ns, holding
   // one class object (ctor + statics) per class. Registered at

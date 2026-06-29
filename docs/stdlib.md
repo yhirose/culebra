@@ -2911,7 +2911,7 @@ srv.listen(8080)                 # blocks; Ctrl+C to stop
 | Method | Effect |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
-| `static(mount, dir)` | serve files under `dir` at the URL prefix `mount` |
+| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` descriptor (baked into the binary under AOT — see [Embed](#embed)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `listen(port, host="0.0.0.0", workers=0)` | bind and serve until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
 | `listen_async(port, host="0.0.0.0", workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
@@ -3063,6 +3063,32 @@ puts(ws.receive())               # => the echoed message
 for msg in ws { handle(msg) }    # drains messages until the server closes
 ws.close()
 ```
+
+### Embed
+
+`Embed.dir(name)` returns a directory descriptor for `srv.static(mount, ...)`
+that resolves *per backend*, with no code change:
+
+- **Run from source** (interpreter / JIT): it serves the live on-disk directory
+  `name`, resolved relative to the entry script — so editing a file and
+  reloading shows the change immediately (a real dev loop).
+- **`culebra build`** (AOT): the directory is walked at build time and its bytes
+  are baked into the executable; the binary serves them with no external files.
+  The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
+
+```culebra
+let srv = Http.server()
+srv.static("/", Embed.dir("dist"))     # whole frontend, one line
+srv.get("/api/ping", fn(req) { '{"ok":true}' })
+srv.listen(8080)
+```
+
+`name` must be a string literal so the AOT build can find and bake it; a
+computed path still works from source but isn't embedded. The Content-Type is
+inferred from each file's extension, a request for a directory (or `/`) serves
+its `index.html`, and a path not in the directory falls through to the
+registered routes (so an API route always wins). `Embed.dir` is independent of
+`Http` — it produces a plain descriptor any consumer could serve.
 
 ---
 

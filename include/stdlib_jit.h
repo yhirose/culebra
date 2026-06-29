@@ -4300,13 +4300,37 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
   if (args[0].tag != TAG_STRING)
     _jit_file_param_type_error(self, "mount", "String", 0);
   if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "dir");
-  if (args[1].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "dir", "String", 1);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string mount(_culebra_str_view(args[0].tag, args[0].data));
   std::string err;
-  culebra::http::http_server_static(
-      id, std::string(_culebra_str_view(args[0].tag, args[0].data)),
-      std::string(_culebra_str_view(args[1].tag, args[1].data)), err);
+  // dir is either a String path (live disk via mount point) or an
+  // `Embed.dir(...)` descriptor object {__embed_dir__, name} (baked under AOT,
+  // live disk otherwise). Mirrors the interp overload.
+  // Mirror the interp message exactly (interp/JIT symmetry): a wrong type or a
+  // forged Object that isn't a real Embed.dir descriptor both land here.
+  auto bad_dir = [] {
+    throw culebra::CulebraError(
+        "TypeError",
+        "server.static: dir must be a String path or Embed.dir(...)", 0, 0);
+  };
+  if (args[1].tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(args[1].data);
+    // A real Embed.dir descriptor has both __embed_dir__ and name; a forged
+    // lookalike missing either is rejected like any non-String (no OOB read).
+    size_t ni = o->find_slot("name");
+    if (o->find_slot("__embed_dir__") == static_cast<size_t>(-1) ||
+        ni == static_cast<size_t>(-1))
+      bad_dir();
+    JitValue nv = o->slots[ni].value;
+    culebra::http::http_server_serve_embed(
+        id, mount, std::string(_culebra_str_view(nv.tag, nv.data)), err);
+  } else if (args[1].tag == TAG_STRING) {
+    culebra::http::http_server_static(
+        id, mount, std::string(_culebra_str_view(args[1].tag, args[1].data)),
+        err);
+  } else {
+    bad_dir();
+  }
   if (!err.empty())
     throw culebra::CulebraError("HttpError",
                                 std::format("server.static: {}", err), 0, 0);
@@ -5627,7 +5651,25 @@ inline const std::vector<NsMethod>& _wrapped_ns_methods() {
   return rows;
 }
 
+// `Embed.dir(name)` — opaque descriptor {__embed_dir__: true, name} consumed by
+// `srv.static`. Mirrors interp make_embed_namespace; the bake-vs-disk decision
+// happens later in http_server_serve_embed (table present → embedded, else live
+// disk), so this just packages the name.
+inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
+  (void)n;
+  auto* o = culebra_runtime_object_new();
+  culebra_runtime_object_set(o, "__embed_dir__", false, TAG_BOOL, 1, 0, 0);
+  culebra_runtime_object_set(
+      o, "name", false, TAG_STRING,
+      reinterpret_cast<int64_t>(_culebra_heap_str(
+          std::string(_culebra_str_view(args[0].tag, args[0].data)))),
+      0, 0);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+}
+
 inline const NsMethod kNsMethods[] = {
+  {"Embed",  "dir",       1, &_ns_embed_dir, nullptr, "String", "name"},
+
   {"IO",     "puts",      1, &_ns_io_puts},
   {"IO",     "print",     1, &_ns_io_print},
   {"IO",     "input",     0, &_ns_io_input},
@@ -8270,7 +8312,7 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
   static const std::unordered_set<std::string_view> names = {
       "puts",    "print",
       "to_long", "to_float",  "to_string", "type_of", "hash",
-      "Math",    "IO",        "FS",        "File",     "_Time",
+      "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "Proc",      "Isolate",   "Channel",  "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",

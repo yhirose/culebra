@@ -595,6 +595,105 @@ int run_build(const BuildOptions& opts) {
                                        opts.emit_llvm, opts.target);
   if (rc != 0) return rc;
 
+  // Single-quote a path so $TMPDIR / paths with spaces survive verbatim through
+  // std::system (validate_build_path rejects the quote char, so it can't escape).
+  // Used by both the embedded-assets compile and the final link below.
+  auto shq = [](std::string_view s) { return std::format("'{}'", s); };
+
+  // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
+  // file linked alongside the program. The object reproduces the directory as a
+  // static AssetEntry table and registers it (under the dir name) at static-init
+  // time; at runtime `http_server_serve_embed` finds the baked table and serves
+  // from it instead of disk — so the binary needs no external asset files. Dirs
+  // are resolved relative to the entry script (the same base the dev disk path
+  // uses). A non-literal `Embed.dir(expr)` is skipped here and falls back to
+  // live disk at runtime.
+  std::string assets_obj;
+  {
+    std::vector<std::string> embed_dirs;
+    for (const auto& m : modules)
+      culebra::aot_collect_embed_dirs(*m.ast, embed_dirs);
+    if (!embed_dirs.empty()) {
+#ifndef CULEBRA_SOURCE_DIR
+      std::println(stderr,
+          "culebra build: Embed.dir needs a culebra source checkout for "
+          "headers; set CULEBRA_HOME");
+      return 1;
+#else
+      namespace fs = std::filesystem;
+      fs::path base = fs::path(opts.input).parent_path();
+      auto cstr = [](std::string_view s) {
+        std::string o;
+        for (char c : s) {
+          if (c == '\\' || c == '"') o += '\\';
+          o += c;
+        }
+        return o;
+      };
+      std::string src = "#include <vfs.h>\nnamespace {\n";
+      size_t ti = 0;
+      for (const auto& dir : embed_dirs) {
+        fs::path root = base / dir;
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) {
+          std::println(stderr,
+              "culebra build: Embed.dir(\"{}\"): not a directory at '{}'", dir,
+              root.string());
+          return 1;
+        }
+        std::vector<std::pair<std::string, std::string>> files;  // rel, bytes
+        for (auto it = fs::recursive_directory_iterator(root, ec);
+             !ec && it != fs::recursive_directory_iterator();
+             it.increment(ec)) {
+          if (!it->is_regular_file()) continue;
+          auto rel = fs::relative(it->path(), root, ec).generic_string();
+          std::ifstream f(it->path(), std::ios::binary);
+          std::string bytes((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+          files.emplace_back(std::move(rel), std::move(bytes));
+        }
+        std::sort(files.begin(), files.end());
+        std::uintmax_t total = 0;
+        for (size_t fi = 0; fi < files.size(); fi++) {
+          src += std::format("static const unsigned char a{}_{}[]={{", ti, fi);
+          for (unsigned char c : files[fi].second)
+            src += std::format("{},", static_cast<int>(c));
+          src += "0};\n";  // trailing 0 keeps empty-file arrays well-formed
+          total += files[fi].second.size();
+        }
+        src += std::format("static const culebra::AssetEntry t{}[]={{", ti);
+        for (size_t fi = 0; fi < files.size(); fi++)
+          src += std::format("{{\"{}\",a{}_{},{}}},", cstr(files[fi].first), ti,
+                             fi, files[fi].second.size());
+        if (files.empty()) src += "{nullptr,nullptr,0}";  // non-empty array
+        src += "};\n";
+        src += std::format(
+            "struct Reg{0}{{Reg{0}(){{culebra::register_asset_table(\"{1}\",t{0}"
+            ",{2});}}}};static Reg{0} reg{0};\n",
+            ti, cstr(dir), files.size());
+        std::println(stderr,
+            "culebra build: embedded {} file(s) ({} bytes) from '{}'",
+            files.size(), total, dir);
+        ti++;
+      }
+      src += "}\n";
+      auto acpp = std::format("{}/{}.assets.{}.cpp", tmpdir, stem,
+                              static_cast<unsigned>(::getpid()));
+      auto aobj = std::format("{}/{}.assets.{}.o", tmpdir, stem,
+                              static_cast<unsigned>(::getpid()));
+      { std::ofstream(acpp) << src; }
+      auto ccmd = std::format("c++ -std=c++23 -O2 -I {}/include -c {} -o {}",
+                              shq(CULEBRA_SOURCE_DIR), shq(acpp), shq(aobj));
+      if (verbose) std::println(stderr, "culebra build: assets: {}", ccmd);
+      if (std::system(ccmd.c_str()) != 0) {
+        std::println(stderr, "culebra build: failed to compile embedded assets");
+        return 1;
+      }
+      assets_obj = shq(aobj);  // pre-quoted for the link line
+#endif
+    }
+  }
+
   bool uses_tensor = cross ? false : any_uses_tensor();
   bool uses_http = cross ? false : any_uses_http();
   bool uses_compress = cross ? false : any_uses_compress();
@@ -754,18 +853,14 @@ int run_build(const BuildOptions& opts) {
   // needed.)
   const char* no_pie = target_is_macho ? "" : "-no-pie";
 
-  // Single-quote every path so $TMPDIR / paths with spaces survive
-  // verbatim through std::system. validate_build_path() already rejects
-  // the single-quote char itself, so the quoted form can't be escaped.
-  auto shq = [](std::string_view s) { return std::format("'{}'", s); };
   std::string extra;
   if (cross) extra += std::format(" --target={}", shq(opts.target));
   if (!opts.sysroot.empty())
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
-      shq(obj), shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
       graphics_lib, wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
       sqlite_link, graphics_link, wrap_link_flags, shq(opts.output));
 
@@ -986,6 +1081,13 @@ bool run_scripts(shared_ptr<culebra::Environment> env, const Options& options) {
   // loop safepoint observe it and throw a catchable `Interrupted`.
   if (!options.script_path_list.empty()) {
     culebra::install_sigint_handler();
+    // Base for `Embed.dir(...)`'s disk fallback (dev): the entry script's
+    // directory, so embedded-asset paths resolve the same way the AOT build
+    // walks them (relative to the source), regardless of the cwd.
+    std::error_code ec;
+    auto entry = std::filesystem::absolute(options.script_path_list.front(), ec);
+    culebra::main_script_dir() =
+        ec ? std::string() : entry.parent_path().string();
   }
 
   for (auto path : options.script_path_list) {
