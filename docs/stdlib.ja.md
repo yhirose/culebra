@@ -2558,7 +2558,8 @@ Regex.escape("a.b(c)")                           // => `a\.b\(c\)`（リテラ�
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — 任意のメソッド（PATCH、OPTIONS …） |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンス Object — Server-Sent Events を `on_event` にストリーム（後述） |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | 永続クライアントハンドル（ベース URL + デフォルトヘッダ + 接続再利用、後述） |
-| `Http.server()` | HTTP サーバハンドル（ルート + `static` を登録して `listen`、後述） |
+| `Http.server()` | HTTP サーバハンドル（ルート + `static` + `ws` を登録して `listen`、後述） |
+| `Http.ws(url)` | WebSocket クライアント接続。ハンドル（`send`/`receive`/`for`/`close`/`is_open`）を返す（後述） |
 
 キーワード引数（全メソッド共通）:
 
@@ -2843,9 +2844,36 @@ srv.get("/events", fn(req) {
 stream クロージャは worker スレッド上で実行されるため、`workers: 1` では長寿命の
 ストリームが単一スレッドを占有します（並行ストリームには `workers: N`）。ストリーム
 途中の例外は接続を中断します（status 行は送出済みなので `500` にはできません）。
-途中で処理したい場合は body を `try` で囲みます。WebSocket 応答は今後対応予定で、
-現在はリクエスト/レスポンス・ルートパラメータ・静的ファイル・ストリーミングを
-カバーします。
+途中で処理したい場合は body を `try` で囲みます。
+
+**WebSocket — `srv.ws(pattern, fn(req, ws))`。** WebSocket ルートを登録します。
+ハンドラはその接続の間ずっと動く長寿命ループで、戻るまで worker を 1 本占有します。
+`ws` ハンドルでメッセージを読み書きします:
+
+| メソッド | 効果 |
+| --- | --- |
+| `for msg in ws { … }` | 受信メッセージ（各 `String`）を反復。peer の close で終了 |
+| `ws.receive()` | 次の受信メッセージ（`String`）。peer が close すると `nil` |
+| `ws.send(msg)` | テキストメッセージを送信。peer 切断時は `false` |
+| `ws.close()` | 接続を閉じる |
+| `ws.is_open()` | 接続がまだ開いているか |
+
+```culebra
+# doctest: skip
+srv.ws("/echo", fn(req, ws) { for msg in ws { ws.send(msg) } })
+srv.ws("/chat", fn(req, ws) {
+  while true {
+    let m = ws.receive()
+    if m == nil { break }              # peer が close
+    ws.send(req.path + ": " + m)
+  }
+})
+```
+
+WebSocket 接続はその寿命の間 worker を占有するので、`workers: N` が同時 WebSocket
+接続数になります（`workers: 1` では 1 接続がサーバをブロック）。culebra から接続するには
+[`Http.ws`](#httpwsurl---object) を使います。サーバはリクエスト/レスポンス・
+ルートパラメータ・静的ファイル・ストリーミング・WebSocket をカバーします。
 
 **並行性。** `workers` でスレッドモデルを選びます:
 
@@ -2879,6 +2907,22 @@ let srv_iso = Isolate.spawn(fn() {
 })
 # … メインスレッドから Http.get("http://127.0.0.1:8080/health") …
 srv_iso.drop()                   # サーバに停止を通知して join
+```
+
+### `Http.ws(url) -> Object`
+
+WebSocket クライアントを `url`（`ws://host:port/path`）に接続し、サーバ側 `ws` と
+同じ形のハンドル（`send(msg)`・`receive()`（`String`、peer が close すると `nil`）・
+`for msg in ws`・`close()`・`is_open()`）を返します。不正な URL や接続失敗は
+`HttpError` です。
+
+```culebra
+# doctest: skip
+let ws = Http.ws("ws://127.0.0.1:8080/echo")
+ws.send("hello")
+puts(ws.receive())               # => エコーされたメッセージ
+for msg in ws { handle(msg) }    # サーバが close するまでメッセージを drain
+ws.close()
 ```
 
 ---

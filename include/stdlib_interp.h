@@ -3818,6 +3818,78 @@ inline bool http_try_stream_response(const Value& ret, httplib::Response& res,
   return true;
 }
 
+// The `ws` handle, for both a server handler's connection and an Http.ws client.
+// send(msg)->Bool, receive()->String|nil (nil when the peer closes), close(),
+// is_open()->Bool, and `iter` so `for msg in ws { ... }` drains inbound messages
+// until close. Backed by a WsConn id (slot+generation); a server ws is valid
+// only during its handler. A client adds `drop` to close + free the owned
+// connection (a server ws is borrowed — the trampoline frees it).
+inline Value make_http_ws_handle(int64_t ws_id, bool is_client) {
+  using namespace std::literals;
+  ObjectValue h;
+  h.initialize("_ws", Value(static_cast<long>(ws_id)), false);
+  h.initialize("__nonsendable__", Value(true), false);
+  auto wid = [](const std::shared_ptr<Environment>& env) -> int64_t {
+    return env->get("this").to_object().get("_ws").to_long();
+  };
+  h.initialize(
+      "send",
+      Value(FunctionValue(
+          {{"data", false, "String"sv}},
+          [wid](std::shared_ptr<Environment> env) -> Value {
+            auto sv = env->get("data").to_string_view();
+            return Value(http::ws_send(wid(env), sv.data(), sv.size()));
+          },
+          "Bool"sv)),
+      false);
+  h.initialize(
+      "receive",
+      Value(FunctionValue({}, [wid](std::shared_ptr<Environment> env) -> Value {
+        std::string out;
+        if (http::ws_receive(wid(env), out) == 0) return Value();  // nil = closed
+        return Value(std::move(out));
+      })),
+      false);
+  h.initialize(
+      "close",
+      Value(FunctionValue({}, [wid](std::shared_ptr<Environment> env) -> Value {
+        http::ws_close(wid(env));
+        return Value();
+      })),
+      false);
+  h.initialize(
+      "is_open",
+      Value(FunctionValue(
+          {},
+          [wid](std::shared_ptr<Environment> env) -> Value {
+            return Value(http::ws_is_open(wid(env)));
+          },
+          "Bool"sv)),
+      false);
+  h.initialize(
+      "iter",
+      Value(FunctionValue({}, [wid](std::shared_ptr<Environment> env) -> Value {
+        int64_t id = wid(env);
+        return _make_iterator(
+            [id](std::shared_ptr<Environment>) -> std::optional<Value> {
+              std::string out;
+              if (http::ws_receive(id, out) == 0) return _iter_step_done();
+              return _iter_step_value(Value(std::move(out)));
+            });
+      })),
+      false);
+  if (is_client) {
+    h.initialize(
+        "drop",
+        Value(FunctionValue({}, [wid](std::shared_ptr<Environment> env) -> Value {
+          http::ws_unregister(wid(env));
+          return Value();
+        })),
+        false);
+  }
+  return Value(std::move(h));
+}
+
 // A route recorded by get/post/… and registered at listen() time — deferred so
 // the worker count (and thus whether handlers must be Sendable) is known before
 // we choose the inline vs. worker-pool path. Keyed by the handle's id;
@@ -3877,6 +3949,10 @@ inline Value make_http_server_handle(int64_t id) {
   h.initialize("delete", route("DELETE"), false);
   h.initialize("patch", route("PATCH"), false);
   h.initialize("options", route("OPTIONS"), false);
+  // ws(pattern, handler) — register a WebSocket route; the handler is
+  // `fn(req, ws)` and runs a long-lived loop for the connection. Same recording
+  // path as the HTTP routes (method "WS"); dispatched specially at listen().
+  h.initialize("ws", route("WS"), false);
 
   // static(mount, dir) — serve files under `dir` at the URL prefix `mount`.
   h.initialize(
@@ -4160,6 +4236,23 @@ inline Value make_http_namespace() {
           {},
           [](std::shared_ptr<Environment>) -> Value {
             return make_http_server_handle(culebra::http::http_server_open());
+          },
+          "Object"sv)),
+      false);
+
+  // `Http.ws(url)` — connect a WebSocket client to `url` (ws://host:port/path)
+  // and return a handle (send/receive/close/is_open, and `for msg in ws`). A
+  // bad URL or failed connect is an HttpError.
+  ns.initialize(
+      "ws",
+      Value(FunctionValue(
+          {{"url", false, "String"sv}},
+          [](std::shared_ptr<Environment> env) -> Value {
+            std::string err;
+            int64_t id = culebra::http::ws_client_open(
+                env->get("url").to_string(), err);
+            if (id < 0) throw CulebraError("HttpError", err, 0, 0);
+            return make_http_ws_handle(id, /*is_client=*/true);
           },
           "Object"sv)),
       false);
@@ -6120,23 +6213,43 @@ inline Value _http_server_do_listen(
     // One trampoline per route; each reads the calling worker thread's table.
     for (size_t i = 0; i < recs.size(); i++) {
       size_t ri = i;
-      culebra::http::RouteHandler rh =
-          [ri](const httplib::Request& q, httplib::Response& res) {
-            try {
-              Value req = http_request_to_object(q);
-              Value ret = g_srv_w_interp->call_closure(g_srv_w_handlers[ri],
-                                                       g_srv_w_base, {req});
-              if (!http_try_stream_response(ret, res, g_srv_w_interp,
-                                            g_srv_w_base))
-                http_apply_response(ret, res);
-            } catch (const std::exception& e) {
-              res.status = 500;
-              res.set_content(e.what(), "text/plain");
-            }
-          };
       std::string rerr;
-      culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
-                                       std::move(rh), rerr);
+      if (recs[i].method == "WS") {
+        // WebSocket: call the handler with (req, ws); it runs the connection's
+        // loop. The ws handle is registered for the call and invalidated after
+        // (its borrowed WebSocket dies when the handler returns).
+        culebra::http::WsHandler wh =
+            [ri](const httplib::Request& q, httplib::ws::WebSocket& ws) {
+              int64_t wsid = culebra::http::ws_register_server(&ws);
+              try {
+                Value req = http_request_to_object(q);
+                Value wsh = make_http_ws_handle(wsid, /*is_client=*/false);
+                g_srv_w_interp->call_closure(g_srv_w_handlers[ri], g_srv_w_base,
+                                             {req, wsh});
+              } catch (...) {
+                // Already upgraded — no HTTP response; just close the socket.
+              }
+              culebra::http::ws_unregister(wsid);
+            };
+        culebra::http::http_server_ws(id, recs[i].pattern, std::move(wh), rerr);
+      } else {
+        culebra::http::RouteHandler rh =
+            [ri](const httplib::Request& q, httplib::Response& res) {
+              try {
+                Value req = http_request_to_object(q);
+                Value ret = g_srv_w_interp->call_closure(g_srv_w_handlers[ri],
+                                                         g_srv_w_base, {req});
+                if (!http_try_stream_response(ret, res, g_srv_w_interp,
+                                              g_srv_w_base))
+                  http_apply_response(ret, res);
+              } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
+              }
+            };
+        culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
+                                         std::move(rh), rerr);
+      }
       if (!rerr.empty())
         throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
                            line, col);
@@ -6170,22 +6283,39 @@ inline Value _http_server_do_listen(
   auto cb_interp = std::make_shared<Interpreter>();
   for (const auto& rec : recs) {
     Value handler = rec.handler;
-    culebra::http::RouteHandler rh =
-        [cb_interp, handler, listen_env](const httplib::Request& q,
-                                         httplib::Response& res) {
-          try {
-            Value req = http_request_to_object(q);
-            Value ret = cb_interp->call_closure(handler, listen_env, {req});
-            if (!http_try_stream_response(ret, res, cb_interp, listen_env))
-              http_apply_response(ret, res);
-          } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(e.what(), "text/plain");
-          }
-        };
     std::string rerr;
-    culebra::http::http_server_route(id, rec.method, rec.pattern, std::move(rh),
-                                     rerr);
+    if (rec.method == "WS") {
+      culebra::http::WsHandler wh =
+          [cb_interp, handler, listen_env](const httplib::Request& q,
+                                           httplib::ws::WebSocket& ws) {
+            int64_t wsid = culebra::http::ws_register_server(&ws);
+            try {
+              Value req = http_request_to_object(q);
+              Value wsh = make_http_ws_handle(wsid, /*is_client=*/false);
+              cb_interp->call_closure(handler, listen_env, {req, wsh});
+            } catch (...) {
+              // Already upgraded — no HTTP response; just close the socket.
+            }
+            culebra::http::ws_unregister(wsid);
+          };
+      culebra::http::http_server_ws(id, rec.pattern, std::move(wh), rerr);
+    } else {
+      culebra::http::RouteHandler rh =
+          [cb_interp, handler, listen_env](const httplib::Request& q,
+                                           httplib::Response& res) {
+            try {
+              Value req = http_request_to_object(q);
+              Value ret = cb_interp->call_closure(handler, listen_env, {req});
+              if (!http_try_stream_response(ret, res, cb_interp, listen_env))
+                http_apply_response(ret, res);
+            } catch (const std::exception& e) {
+              res.status = 500;
+              res.set_content(e.what(), "text/plain");
+            }
+          };
+      culebra::http::http_server_route(id, rec.method, rec.pattern,
+                                       std::move(rh), rerr);
+    }
     if (!rerr.empty())
       throw CulebraError("HttpError", std::format("server.listen: {}", rerr),
                          line, col);

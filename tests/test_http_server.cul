@@ -159,3 +159,76 @@ puts("chaining returns handle -> " + (chained == srv2).to_string())
 srv2.close()
 srv2.close()
 puts("double close ok")
+
+# --- WebSocket: a ws handler runs a long-lived loop over the connection. The
+# server echoes (for-in form) and greets (explicit receive + req access); the
+# client connects with Http.ws and the same handle shape drives both. A separate
+# route pushes messages then returns, which the client drains with for-in. Under
+# a worker pool so each connection occupies its own worker.
+WPORT = 18902
+WBASE = "ws://127.0.0.1:" + WPORT.to_string()
+wiso = Isolate.spawn(fn() {
+  let srv = Http.server()
+  srv.ws("/echo", fn(req, ws) {
+    for msg in ws { ws.send("echo:" + msg) }
+  })
+  srv.ws("/greet", fn(req, ws) {
+    while true {
+      let m = ws.receive()
+      if m == nil { break }
+      ws.send(req.path + ":" + m)
+    }
+  })
+  srv.ws("/push", fn(req, ws) {
+    mut i = 0
+    while i < 3 { ws.send("p" + i.to_string()); i = i + 1 }
+  })
+  srv.listen(WPORT, workers: 2)
+})
+
+fn ws_connect(p) {
+  mut a = 0
+  while a < 200 {
+    mut c = nil
+    try { c = Http.ws(WBASE + p) } catch e { c = nil }
+    if c != nil { return c }
+    a = a + 1
+  }
+  return nil
+}
+
+we = ws_connect("/echo")
+we.send("one")
+puts("ws echo -> " + we.receive())
+we.send("two")
+puts("ws echo -> " + we.receive() + " | open=" + we.is_open().to_string())
+we.close()
+
+wg = Http.ws(WBASE + "/greet")
+wg.send("hi")
+puts("ws greet -> " + wg.receive())
+wg.close()
+
+# Concurrent ws echoes, one client (isolate) each — Parallel.map keeps order.
+wmany = Parallel.map([1, 2, 3, 4], fn(i) {
+  let c = Http.ws(WBASE + "/echo")
+  c.send(i.to_string())
+  let r = c.receive()
+  c.close()
+  r
+})
+puts("ws pool -> " + wmany.to_string())
+
+# Client drains server-pushed messages with for-in (ends when the server closes).
+wp = Http.ws(WBASE + "/push")
+mut pushed = []
+for m in wp { pushed.push(m) }
+puts("ws pushed -> " + pushed.to_string())
+
+# A bad URL is an HttpError.
+mut werr = "none"
+try { Http.ws("ws://127.0.0.1:1/nope") } catch e { werr = e.kind }
+puts("ws bad connect -> " + werr)
+
+wiso.drop()
+puts("ws stopped")

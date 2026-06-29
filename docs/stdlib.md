@@ -2660,7 +2660,8 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — streams Server-Sent Events to `on_event`; see below |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | a persistent client handle (base URL + default headers + connection reuse); see below |
-| `Http.server()` | an HTTP server handle (register routes + `static`, then `listen`); see below |
+| `Http.server()` | an HTTP server handle (register routes + `static` + `ws`, then `listen`); see below |
+| `Http.ws(url)` | connect a WebSocket client; returns a handle (`send`/`receive`/`for`/`close`/`is_open`); see below |
 
 Keyword arguments (shared by every method):
 
@@ -2953,8 +2954,37 @@ The stream closure runs on the worker thread, so under `workers: 1` a long-lived
 stream occupies the single thread (use `workers: N` for concurrent streams).
 An exception raised mid-stream aborts the connection (the status line is already
 sent, so it cannot become a `500`); wrap the body in a `try` if you need to handle
-it. WebSocket responses are planned; the server currently covers request/response,
-route parameters, static files, and streaming.
+it.
+
+**WebSocket — `srv.ws(pattern, fn(req, ws))`.** Register a WebSocket route; the
+handler runs a long-lived loop for the connection, holding one worker until it
+returns. The `ws` handle reads and writes messages:
+
+| Method | Effect |
+| --- | --- |
+| `for msg in ws { … }` | iterate inbound messages (each a `String`); ends when the peer closes |
+| `ws.receive()` | the next inbound message as a `String`, or `nil` when the peer closes |
+| `ws.send(msg)` | send a text message; returns `false` if the peer has gone away |
+| `ws.close()` | close the connection |
+| `ws.is_open()` | whether the connection is still open |
+
+```culebra
+# doctest: skip
+srv.ws("/echo", fn(req, ws) { for msg in ws { ws.send(msg) } })
+srv.ws("/chat", fn(req, ws) {
+  while true {
+    let m = ws.receive()
+    if m == nil { break }              # peer closed
+    ws.send(req.path + ": " + m)
+  }
+})
+```
+
+A WebSocket connection occupies its worker for its whole lifetime, so `workers: N`
+sets the number of simultaneous WebSocket connections (with `workers: 1` a single
+connection blocks the server). Connect to a server from culebra with
+[`Http.ws`](#httpwsurl---object). The server now covers request/response, route
+parameters, static files, streaming, and WebSocket.
 
 **Concurrency.** `workers` chooses the threading model:
 
@@ -2989,6 +3019,22 @@ let srv_iso = Isolate.spawn(fn() {
 })
 # … use Http.get("http://127.0.0.1:8080/health") from the main thread …
 srv_iso.drop()                   # signals the server to stop, then joins
+```
+
+### `Http.ws(url) -> Object`
+
+Connect a WebSocket client to `url` (`ws://host:port/path`) and return a handle
+with the same shape as the server-side `ws`: `send(msg)`, `receive()` (a `String`,
+or `nil` once the peer closes), `for msg in ws`, `close()`, and `is_open()`. A bad
+URL or a failed connect is an `HttpError`.
+
+```culebra
+# doctest: skip
+let ws = Http.ws("ws://127.0.0.1:8080/echo")
+ws.send("hello")
+puts(ws.receive())               # => the echoed message
+for msg in ws { handle(msg) }    # drains messages until the server closes
+ws.close()
 ```
 
 ---

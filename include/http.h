@@ -677,6 +677,13 @@ CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
 using RouteHandler =
     std::function<void(const httplib::Request&, httplib::Response&)>;
 
+// Backend-supplied WebSocket handler: run a long-lived loop over `ws` (read /
+// send) for one connection. httplib calls it on the worker thread, so it
+// occupies that worker until it returns. Like RouteHandler, declaring it (ws is
+// an incomplete type here) pulls no TLS symbol.
+using WsHandler =
+    std::function<void(const httplib::Request&, httplib::ws::WebSocket&)>;
+
 // id → HttpServer* registry, same opaque-pointer model as the client: scripts
 // hold a small integer id, a forged/closed id resolves to nullptr and fails
 // safely. thread_local because a server (v0) runs on the thread that created it.
@@ -716,42 +723,53 @@ inline void _http_server_unregister(int64_t id) {
 // resolves stale and write() returns false instead of touching a dead DataSink.
 // These helpers only touch DataSink (no httplib::Server/Client), so they pull
 // no TLS symbol and stay outside the WEAK/STRONG gate.
-inline thread_local std::vector<httplib::DataSink*> g_http_sinks;
-inline thread_local std::vector<uint32_t> g_http_sink_gen;
-inline thread_local std::vector<uint32_t> g_http_sink_free;
 
-inline int64_t _http_sink_register(httplib::DataSink* s) {
-  uint32_t slot;
-  if (!g_http_sink_free.empty()) {
-    slot = g_http_sink_free.back();
-    g_http_sink_free.pop_back();
-    g_http_sinks[slot] = s;
-  } else {
-    slot = static_cast<uint32_t>(g_http_sinks.size());
-    g_http_sinks.push_back(s);
-    g_http_sink_gen.push_back(0);
+// A slot+generation id registry over borrowed/owned `T*` handles: a captured or
+// escaped id (used after the handle is invalidated, or after a slot is reused)
+// resolves stale and fails safely with no ABA. The id encodes (gen<<32 | slot)
+// in unsigned space (a signed shift into the sign bit would be UB). thread_local
+// per registry instance — each handle is non-sendable. Shared by the streaming
+// sink registry and the WebSocket connection registry.
+template <class T>
+struct IdRegistry {
+  std::vector<T*> slots;
+  std::vector<uint32_t> gen;
+  std::vector<uint32_t> free;
+  int64_t add(T* p) {
+    uint32_t s;
+    if (!free.empty()) {
+      s = free.back();
+      free.pop_back();
+      slots[s] = p;
+    } else {
+      s = static_cast<uint32_t>(slots.size());
+      slots.push_back(p);
+      gen.push_back(0);
+    }
+    return static_cast<int64_t>((static_cast<uint64_t>(gen[s]) << 32) |
+                                static_cast<uint64_t>(s));
   }
-  // Encode (gen, slot) in unsigned space — matches the unsigned decode in
-  // http_sink_write and avoids a signed shift into the sign bit.
-  return static_cast<int64_t>(
-      (static_cast<uint64_t>(g_http_sink_gen[slot]) << 32) |
-      static_cast<uint64_t>(slot));
-}
-inline void _http_sink_invalidate(int64_t id) {
-  uint32_t slot = static_cast<uint32_t>(id & 0xFFFFFFFF);
-  if (slot >= g_http_sinks.size()) return;
-  g_http_sinks[slot] = nullptr;
-  g_http_sink_gen[slot]++;  // bump so a stale handle (old generation) now fails
-  g_http_sink_free.push_back(slot);
-}
+  T* get(int64_t id) {
+    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
+    uint32_t g = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
+    if (s >= slots.size() || gen[s] != g) return nullptr;
+    return slots[s];
+  }
+  void invalidate(int64_t id) {
+    uint32_t s = static_cast<uint32_t>(id & 0xFFFFFFFF);
+    if (s >= slots.size()) return;
+    slots[s] = nullptr;
+    gen[s]++;  // bump so a stale id (old generation) now fails
+    free.push_back(s);
+  }
+};
+
+inline thread_local IdRegistry<httplib::DataSink> g_http_sinks;
 
 // Write a chunk through sink `id`. Returns false if the id is stale/invalid (an
 // escaped sink) or the client has gone away — so the handler can stop early.
 inline bool http_sink_write(int64_t id, const char* data, size_t len) {
-  uint32_t slot = static_cast<uint32_t>(id & 0xFFFFFFFF);
-  uint32_t gen = static_cast<uint32_t>(static_cast<uint64_t>(id) >> 32);
-  if (slot >= g_http_sinks.size() || g_http_sink_gen[slot] != gen) return false;
-  httplib::DataSink* s = g_http_sinks[slot];
+  httplib::DataSink* s = g_http_sinks.get(id);
   if (!s) return false;
   return s->write(data, len);
 }
@@ -772,9 +790,9 @@ inline void http_server_set_stream(httplib::Response& res,
       content_type,
       [run = std::move(run)](size_t /*offset*/,
                              httplib::DataSink& sink) -> bool {
-        int64_t id = _http_sink_register(&sink);
+        int64_t id = g_http_sinks.add(&sink);
         bool ok = run(id);
-        _http_sink_invalidate(id);
+        g_http_sinks.invalidate(id);
         if (ok) {
           sink.done();  // terminating "0\r\n" chunk → ends the loop cleanly
           return true;
@@ -893,6 +911,36 @@ class CulebraWorkerPool : public httplib::TaskQueue {
   bool shutdown_ = false;
 };
 
+// One WebSocket endpoint, unifying the two cpp-httplib types behind one shape so
+// the backends call the same ws_* functions. A server endpoint borrows the
+// httplib::ws::WebSocket the handler was handed (valid only during the handler); a client
+// endpoint owns its httplib::ws::WebSocketClient (freed on drop). receive() collapses
+// Text/Binary to a message string (binary-safe) and reports close as 0.
+struct WsConn {
+  httplib::ws::WebSocket* server = nullptr;                  // borrowed (server handler)
+  std::unique_ptr<httplib::ws::WebSocketClient> client;      // owned (client handle)
+  int receive(std::string& out) {
+    httplib::ws::ReadResult r = server ? server->read(out) : client->read(out);
+    return r == httplib::ws::Fail ? 0 : 1;  // Text/Binary → 1; Fail (closed) → 0
+  }
+  bool send(const char* d, size_t n) {
+    std::string s(d, n);  // send as a Text frame (the std::string overload)
+    return server ? server->send(s) : (client && client->send(s));
+  }
+  void close() {
+    if (server) server->close();
+    else if (client) client->close();
+  }
+  bool is_open() {
+    return server ? server->is_open() : (client && client->is_open());
+  }
+};
+
+// id → WsConn registry (same slot+generation scheme as the sink registry): a
+// captured/escaped ws handle (used after its handler returned, or after close)
+// resolves stale and its ops fail safely.
+inline thread_local IdRegistry<WsConn> g_ws_conns;
+
 #endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 // Create a server handle. Returns an id (>= 0); never fails in v0.
@@ -1006,6 +1054,114 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_close(int64_t id) {
   _http_server_unregister(id);
   if (s->svr.is_running()) s->svr.stop();
   delete s;
+#endif
+}
+
+// Register a WebSocket `handler` for connections matching `pattern`. The handler
+// runs a long-lived loop for the connection (occupying its worker). A closed id
+// no-ops.
+CULEBRA_RT_HTTP_LINKAGE void http_server_ws(int64_t id,
+                                            const std::string& pattern,
+                                            WsHandler handler, std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)pattern; (void)handler;
+  err = "Http runtime not linked (no Http use detected at build)";
+#else
+  HttpServer* s = _http_server_get(id);
+  if (!s) {
+    err = "Http: server is closed";
+    return;
+  }
+  s->svr.WebSocket(pattern, std::move(handler));
+#endif
+}
+
+// Register a borrowed server-side WebSocket and return its id. The caller
+// invalidates it (ws_unregister) when the handler returns.
+CULEBRA_RT_HTTP_LINKAGE int64_t ws_register_server(void* ws) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)ws;
+  return -1;
+#else
+  auto* conn = new WsConn();
+  conn->server = static_cast<httplib::ws::WebSocket*>(ws);
+  return g_ws_conns.add(conn);
+#endif
+}
+CULEBRA_RT_HTTP_LINKAGE void ws_unregister(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+#else
+  if (WsConn* c = g_ws_conns.get(id)) {
+    g_ws_conns.invalidate(id);
+    delete c;  // frees the WsConn (and, for a client, its WebSocketClient)
+  }
+#endif
+}
+
+// Connect a WebSocket client to `url` (ws://host:port/path). Returns an id, or
+// -1 with `err` set on an invalid URL / failed connect.
+CULEBRA_RT_HTTP_LINKAGE int64_t ws_client_open(const std::string& url,
+                                               std::string& err) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)url;
+  err = "Http runtime not linked (no Http use detected at build)";
+  return -1;
+#else
+  auto client = std::make_unique<httplib::ws::WebSocketClient>(url);
+  if (!client->is_valid()) {
+    err = "Http.ws: invalid WebSocket URL: " + url;
+    return -1;
+  }
+  if (!client->connect()) {
+    err = "Http.ws: could not connect: " + url;
+    return -1;
+  }
+  auto* conn = new WsConn();
+  conn->client = std::move(client);
+  return g_ws_conns.add(conn);
+#endif
+}
+
+// Read the next message into `out`. Returns 1 on a message, 0 on close / a stale
+// id (so a loop or for-in ends).
+CULEBRA_RT_HTTP_LINKAGE int ws_receive(int64_t id, std::string& out) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)out;
+  return 0;
+#else
+  WsConn* c = g_ws_conns.get(id);
+  return c ? c->receive(out) : 0;
+#endif
+}
+
+// Send a text message. Returns false on a stale id or a failed/closed socket.
+CULEBRA_RT_HTTP_LINKAGE bool ws_send(int64_t id, const char* data, size_t len) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id; (void)data; (void)len;
+  return false;
+#else
+  WsConn* c = g_ws_conns.get(id);
+  return c ? c->send(data, len) : false;
+#endif
+}
+
+// Close the connection (idempotent; a stale id no-ops).
+CULEBRA_RT_HTTP_LINKAGE void ws_close(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+#else
+  if (WsConn* c = g_ws_conns.get(id)) c->close();
+#endif
+}
+
+CULEBRA_RT_HTTP_LINKAGE bool ws_is_open(int64_t id) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+  return false;
+#else
+  WsConn* c = g_ws_conns.get(id);
+  return c ? c->is_open() : false;
 #endif
 }
 

@@ -366,6 +366,70 @@ int main() {
     CHECK(r.error.find("scheme") != std::string::npos);
   }
 
+  // --- WebSocket round-trip (client path through the WsConn registry) ---
+  // Its own server (a WS handler occupies a connection for its lifetime), so it
+  // stays independent of the shared server's thread pool.
+  {
+    httplib::Server wsvr;
+    wsvr.WebSocket("/ws", [](const httplib::Request&,
+                             httplib::ws::WebSocket& ws) {
+      // Drive the WsConn registry exactly as the backend trampolines do.
+      int64_t cid = culebra::http::ws_register_server(&ws);
+      std::string m;
+      while (culebra::http::ws_receive(cid, m) == 1) {
+        culebra::http::ws_send(cid, m.data(), m.size());
+      }
+      culebra::http::ws_unregister(cid);
+    });
+    int wport = wsvr.bind_to_any_port("127.0.0.1");
+    CHECK(wport > 0);
+    std::thread wth([&] { wsvr.listen_after_bind(); });
+    wsvr.wait_until_ready();
+
+    std::string err;
+    int64_t id = culebra::http::ws_client_open(
+        "ws://127.0.0.1:" + std::to_string(wport) + "/ws", err);
+    CHECK(id >= 0);
+    CHECK(err.empty());
+    CHECK(culebra::http::ws_is_open(id));
+    CHECK(culebra::http::ws_send(id, "ping", 4));
+    std::string got;
+    CHECK(culebra::http::ws_receive(id, got) == 1);
+    CHECK(got == "ping");  // server echoed it back
+    CHECK(culebra::http::ws_send(id, "again", 5));
+    CHECK(culebra::http::ws_receive(id, got) == 1);
+    CHECK(got == "again");
+    culebra::http::ws_close(id);
+    culebra::http::ws_unregister(id);             // frees the client WsConn
+    CHECK(!culebra::http::ws_send(id, "x", 1));   // stale id fails safely
+
+    wsvr.stop();
+    wth.join();
+  }
+
+  // A bad/unreachable URL fails to open (no crash).
+  {
+    std::string err;
+    int64_t id = culebra::http::ws_client_open("ws://127.0.0.1:1/x", err);
+    CHECK(id < 0);
+    CHECK(!err.empty());
+  }
+
+  // WsConn registry slot+generation (no ABA): a reused slot bumps the
+  // generation so a stale id stays dead.
+  {
+    culebra::http::WsConn a, b;
+    int64_t ida = culebra::http::g_ws_conns.add(&a);
+    CHECK(culebra::http::g_ws_conns.get(ida) == &a);
+    culebra::http::g_ws_conns.invalidate(ida);
+    CHECK(culebra::http::g_ws_conns.get(ida) == nullptr);  // stale after invalidate
+    int64_t idb = culebra::http::g_ws_conns.add(&b);        // reuses the slot
+    CHECK(idb != ida);                                      // generation bumped
+    CHECK(culebra::http::g_ws_conns.get(ida) == nullptr);  // old id still dead
+    CHECK(culebra::http::g_ws_conns.get(idb) == &b);
+    culebra::http::g_ws_conns.invalidate(idb);
+  }
+
   // --- Http server core (registry + route/static/close contract) ---
   // The listen()/serve path is exercised end-to-end across all three backends
   // by tests/test_http_server.cul (isolate + loopback); here we cover the
@@ -420,11 +484,11 @@ int main() {
       buf.append(d, n);
       return true;
     };
-    int64_t id = culebra::http::_http_sink_register(&sink);
+    int64_t id = culebra::http::g_http_sinks.add(&sink);
     CHECK(culebra::http::http_sink_write(id, "ab", 2));   // live sink writes
     CHECK(culebra::http::http_sink_write(id, "c", 1));
     CHECK(buf == "abc");
-    culebra::http::_http_sink_invalidate(id);
+    culebra::http::g_http_sinks.invalidate(id);
     CHECK(!culebra::http::http_sink_write(id, "z", 1));    // stale id fails safely
     CHECK(buf == "abc");                                   // nothing more written
 
@@ -436,12 +500,12 @@ int main() {
       buf2.append(d, n);
       return true;
     };
-    int64_t id2 = culebra::http::_http_sink_register(&sink2);
+    int64_t id2 = culebra::http::g_http_sinks.add(&sink2);
     CHECK(id2 != id);                                      // distinct id
     CHECK(!culebra::http::http_sink_write(id, "z", 1));    // old id still dead
     CHECK(culebra::http::http_sink_write(id2, "Q", 1));    // new id is live
     CHECK(buf2 == "Q");
-    culebra::http::_http_sink_invalidate(id2);
+    culebra::http::g_http_sinks.invalidate(id2);
   }
 
   std::printf("\nhttp: %d passed, %d failed\n", g_pass, g_fail);

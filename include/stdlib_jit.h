@@ -4140,6 +4140,91 @@ inline bool _jit_http_try_stream_response(JitValue ret, httplib::Response& res) 
   return true;
 }
 
+// --- WebSocket handle (server-side connection or Http.ws client) ----------
+// Mirrors interp make_http_ws_handle: send/receive/close/is_open + `iter` for
+// for-in, and (client only) drop to free the owned connection.
+
+// for-in pull: read the next message; close (or a stale id) ends iteration.
+inline void _ws_messages_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[0]->value.data;
+  std::string out;
+  if (culebra::http::ws_receive(id, out) == 0) { *done = true; return; }
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
+}
+
+CULEBRA_RT_INLINE JitValue _jit_ws_send(JitClosure*, JitValue self, int64_t n,
+                                        JitValue* args) {
+  auto* h = reinterpret_cast<JitObject*>(self.data);
+  int64_t id = _jit_handle_long(h, "_ws");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (args[0].tag != TAG_STRING)
+    _jit_file_param_type_error(self, "data", "String", 0);
+  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  bool ok = culebra::http::ws_send(id, sv.data(), sv.size());
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_BOOL, ok ? 1 : 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_ws_receive(JitClosure*, JitValue self, int64_t,
+                                           JitValue*) {
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
+  std::string out;
+  int got = culebra::http::ws_receive(id, out);
+  culebra_runtime_value_release(self.tag, self.data);
+  if (got == 0) return {TAG_NIL, 0};  // nil = closed
+  return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+}
+CULEBRA_RT_INLINE JitValue _jit_ws_close(JitClosure*, JitValue self, int64_t,
+                                         JitValue*) {
+  culebra::http::ws_close(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_NIL, 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_ws_is_open(JitClosure*, JitValue self, int64_t,
+                                           JitValue*) {
+  bool open = culebra::http::ws_is_open(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_BOOL, open ? 1 : 0};
+}
+CULEBRA_RT_INLINE JitValue _jit_ws_iter(JitClosure*, JitValue self, int64_t,
+                                        JitValue*) {
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  auto* it = _iter_wrap_fast<&_ws_messages_fast_fn>({id_cell});
+  culebra_runtime_value_release(self.tag, self.data);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(it)};
+}
+CULEBRA_RT_INLINE JitValue _jit_ws_drop(JitClosure*, JitValue self, int64_t,
+                                        JitValue*) {
+  // client drop (from the drop protocol — must NOT release self): close + free
+  // the owned connection. A server ws has no drop (the trampoline frees it).
+  culebra::http::ws_unregister(
+      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
+  return {TAG_NIL, 0};
+}
+
+inline JitObject* _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_ws", JitValue{TAG_LONG, ws_id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* send_meta =
+      _jit_make_handle_meta({"data"}, {false});
+  _jit_handle_bind_method(h, "send", _jit_ws_send, 1, send_meta);
+  _jit_handle_bind_method(h, "receive", _jit_ws_receive, 0);
+  _jit_handle_bind_method(h, "close", _jit_ws_close, 0);
+  _jit_handle_bind_method(h, "is_open", _jit_ws_is_open, 0);
+  _jit_handle_bind_method(h, "iter", _jit_ws_iter, 0);
+  if (is_client) {
+    _jit_handle_bind_method(h, "drop", _jit_ws_drop, 0);
+    _jit_owned_bind_drop(h);
+  }
+  return h;
+}
+
 // Deferred route records per server id (registered at listen, when the worker
 // count — and so whether handlers must be Sendable — is known). The handler is
 // retained AND pinned for the record's lifetime: it lives only in this C++ map
@@ -4202,6 +4287,10 @@ CULEBRA_RT_INLINE JitValue _jit_http_server_options(JitClosure*, JitValue self,
                                                     int64_t n, JitValue* args) {
   return _jit_http_server_route(self, n, args, "OPTIONS");
 }
+CULEBRA_RT_INLINE JitValue _jit_http_server_ws(JitClosure*, JitValue self,
+                                               int64_t n, JitValue* args) {
+  return _jit_http_server_route(self, n, args, "WS");
+}
 
 CULEBRA_RT_INLINE JitValue _jit_http_server_static(JitClosure*, JitValue self,
                                                    int64_t n, JitValue* args) {
@@ -4249,25 +4338,46 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
     }
     for (size_t i = 0; i < recs.size(); i++) {
       size_t ri = i;
-      culebra::http::RouteHandler rh =
-          [ri](const httplib::Request& q, httplib::Response& res) {
-            try {
-              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                           _jit_http_request_to_object(q))};
-              auto* cb = reinterpret_cast<JitClosure*>(
-                  g_jit_srv_w_handlers[ri].data);
-              JitValue ret = _culebra_invoke1(cb, req);
-              if (!_jit_http_try_stream_response(ret, res))
-                _jit_http_apply_response(ret, res);
-              _culebra_value_release_impl(ret.tag, ret.data);
-            } catch (const std::exception& e) {
-              res.status = 500;
-              res.set_content(e.what(), "text/plain");
-            }
-          };
       std::string rerr;
-      culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
-                                       std::move(rh), rerr);
+      if (recs[i].method == "WS") {
+        culebra::http::WsHandler wh =
+            [ri](const httplib::Request& q, httplib::ws::WebSocket& ws) {
+              int64_t wsid = culebra::http::ws_register_server(&ws);
+              try {
+                JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                             _jit_http_request_to_object(q))};
+                JitValue wsh{TAG_OBJECT,
+                             reinterpret_cast<int64_t>(
+                                 _jit_make_http_ws_handle(wsid, false))};
+                auto* cb = reinterpret_cast<JitClosure*>(
+                    g_jit_srv_w_handlers[ri].data);
+                JitValue r = _culebra_invoke2(cb, req, wsh);  // consumes both +1
+                _culebra_value_release_impl(r.tag, r.data);
+              } catch (...) {
+              }
+              culebra::http::ws_unregister(wsid);
+            };
+        culebra::http::http_server_ws(id, recs[i].pattern, std::move(wh), rerr);
+      } else {
+        culebra::http::RouteHandler rh =
+            [ri](const httplib::Request& q, httplib::Response& res) {
+              try {
+                JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                             _jit_http_request_to_object(q))};
+                auto* cb = reinterpret_cast<JitClosure*>(
+                    g_jit_srv_w_handlers[ri].data);
+                JitValue ret = _culebra_invoke1(cb, req);
+                if (!_jit_http_try_stream_response(ret, res))
+                  _jit_http_apply_response(ret, res);
+                _culebra_value_release_impl(ret.tag, ret.data);
+              } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
+              }
+            };
+        culebra::http::http_server_route(id, recs[i].method, recs[i].pattern,
+                                         std::move(rh), rerr);
+      }
       if (!rerr.empty())
         throw culebra::CulebraError("HttpError",
                                     std::format("server.listen: {}", rerr), 0,
@@ -4300,23 +4410,41 @@ inline JitValue _jit_http_server_do_listen(int64_t id, std::string host,
   // workers <= 1: inline on the listen thread with the original closures.
   for (const auto& rec : recs) {
     auto* cb = reinterpret_cast<JitClosure*>(rec.handler.data);
-    culebra::http::RouteHandler rh =
-        [cb](const httplib::Request& q, httplib::Response& res) {
-          try {
-            JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                         _jit_http_request_to_object(q))};
-            JitValue ret = _culebra_invoke1(cb, req);
-            if (!_jit_http_try_stream_response(ret, res))
-              _jit_http_apply_response(ret, res);
-            _culebra_value_release_impl(ret.tag, ret.data);
-          } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(e.what(), "text/plain");
-          }
-        };
     std::string rerr;
-    culebra::http::http_server_route(id, rec.method, rec.pattern, std::move(rh),
-                                     rerr);
+    if (rec.method == "WS") {
+      culebra::http::WsHandler wh =
+          [cb](const httplib::Request& q, httplib::ws::WebSocket& ws) {
+            int64_t wsid = culebra::http::ws_register_server(&ws);
+            try {
+              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                           _jit_http_request_to_object(q))};
+              JitValue wsh{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                           _jit_make_http_ws_handle(wsid, false))};
+              JitValue r = _culebra_invoke2(cb, req, wsh);  // consumes both +1
+              _culebra_value_release_impl(r.tag, r.data);
+            } catch (...) {
+            }
+            culebra::http::ws_unregister(wsid);
+          };
+      culebra::http::http_server_ws(id, rec.pattern, std::move(wh), rerr);
+    } else {
+      culebra::http::RouteHandler rh =
+          [cb](const httplib::Request& q, httplib::Response& res) {
+            try {
+              JitValue req{TAG_OBJECT, reinterpret_cast<int64_t>(
+                                           _jit_http_request_to_object(q))};
+              JitValue ret = _culebra_invoke1(cb, req);
+              if (!_jit_http_try_stream_response(ret, res))
+                _jit_http_apply_response(ret, res);
+              _culebra_value_release_impl(ret.tag, ret.data);
+            } catch (const std::exception& e) {
+              res.status = 500;
+              res.set_content(e.what(), "text/plain");
+            }
+          };
+      culebra::http::http_server_route(id, rec.method, rec.pattern,
+                                       std::move(rh), rerr);
+    }
     if (!rerr.empty())
       throw culebra::CulebraError("HttpError",
                                   std::format("server.listen: {}", rerr), 0, 0);
@@ -4394,6 +4522,7 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
   _jit_handle_bind_method(h, "patch", _jit_http_server_patch, 2, route_meta);
   _jit_handle_bind_method(h, "options", _jit_http_server_options, 2,
                           route_meta);
+  _jit_handle_bind_method(h, "ws", _jit_http_server_ws, 2, route_meta);
   _jit_handle_bind_method(h, "static", _jit_http_server_static, 2, static_meta);
   _jit_handle_bind_method(h, "listen", _jit_http_server_listen, 1, listen_meta);
   _jit_handle_bind_method(h, "close", _jit_http_server_close, 0);
@@ -4405,6 +4534,16 @@ CULEBRA_RT_INLINE JitValue _culebra_http_build_server_handle(int64_t id) {
 // Http.server() → server handle.
 inline JitValue _ns_http_server(JitValue*, int64_t) {
   return _culebra_http_build_server_handle(culebra::http::http_server_open());
+}
+
+// Http.ws(url) → connected WebSocket client handle (HttpError on failure).
+inline JitValue _ns_http_ws(JitValue* a, int64_t) {
+  std::string url(_ns_adapt::require_sv(a[0], "url"));
+  std::string err;
+  int64_t id = culebra::http::ws_client_open(url, err);
+  if (id < 0) throw culebra::CulebraError("HttpError", err, 0, 0);
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_jit_make_http_ws_handle(id, true))};
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
@@ -5618,6 +5757,7 @@ inline const NsMethod kNsMethods[] = {
   {"Http",   "sse",     2, &_ns_http_sse},
   {"Http",   "client",  1, &_ns_http_client},
   {"Http",   "server",  0, &_ns_http_server},
+  {"Http",   "ws",      1, &_ns_http_ws},
 #endif
 
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
