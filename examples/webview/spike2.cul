@@ -32,6 +32,9 @@ srv.post("/api/echo", fn(req) {
   { content_type: "application/json",
     body: JSON.stringify({ reply: "You said: " + input["text"] }) }
 })
+# The page's Quit button posts here; Webview.Window.quit() closes the window
+# (thread-safe from this worker thread), so run() returns and the server stops.
+srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
 
 srv.listen_async(PORT)   # returns immediately (bind is synchronous; throws on failure)
 

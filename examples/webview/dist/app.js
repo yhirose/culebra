@@ -14,4 +14,9 @@ async function send() {
   document.getElementById("reply").textContent = d.reply;
 }
 document.getElementById("send").addEventListener("click", send);
+// Close the app over the HTTP bridge. Harmless (404, ignored) if the server
+// didn't register /__quit.
+document.getElementById("quit").addEventListener("click", () => {
+  fetch("/__quit", { method: "POST" }).catch(() => {});
+});
 load();

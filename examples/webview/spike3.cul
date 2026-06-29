@@ -1,0 +1,27 @@
+# Spike 3 — the same desktop app as Spike 2, but the whole "server + window +
+# assets + shutdown" dance collapses into one `Desktop.run({...})` call (the
+# facade lives in desktop.cul). The page can close the app via the built-in
+# `/__quit` route — see the "Quit" button in dist/index.html.
+#
+# Dev (assets live from disk):     ./webview-culebra examples/webview/spike3.cul
+# Single binary (assets baked in): ./webview-culebra build examples/webview/spike3.cul -o app
+#                                  ./app
+
+import Desktop from './desktop.cul'
+
+Desktop.run({
+  title: "culebra desktop — Spike 3",
+  size: [720, 560],
+  assets: Embed.dir("dist"),          # dev: live disk / AOT: baked into the binary
+  routes: fn(srv) {                   # just the app's API — the rest is the facade
+    srv.get("/api/hello", fn(req) {
+      { content_type: "application/json",
+        body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
+    })
+    srv.post("/api/echo", fn(req) {
+      let input = JSON.parse(req.body)
+      { content_type: "application/json",
+        body: JSON.stringify({ reply: "You said: " + input["text"] }) }
+    })
+  }
+})

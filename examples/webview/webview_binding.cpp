@@ -19,12 +19,20 @@
 
 #include <wrap.h>
 
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
 #include "webview.h"
 
 namespace culebra_webview {
+
+// The window currently parked in run() (one per desktop app). Set on run()
+// entry, cleared on return. webview_terminate is thread-safe, so a request
+// handler on the server's worker thread can close the app via the static
+// `Webview.Window.quit()` without holding the (non-sendable) window handle —
+// the HTTP-bridge way to quit from a UI button/menu.
+inline std::atomic<webview_t> g_active_window{nullptr};
 
 // A thin owning facade over webview's opaque C handle: clean,
 // void-returning methods over simple types that wrap.h's `method<&T::m>`
@@ -55,9 +63,20 @@ class Window {
   void navigate(const std::string& url) { webview_navigate(w_, url.c_str()); }
 
   // Runs the native event loop; blocks until terminate() (safe to call
-  // from another thread per the webview C API contract).
-  void run() { webview_run(w_); }
+  // from another thread per the webview C API contract). Marks this window as
+  // the active one for the duration so `quit()` can find it.
+  void run() {
+    g_active_window.store(w_);
+    webview_run(w_);
+    g_active_window.store(nullptr);
+  }
   void terminate() { webview_terminate(w_); }
+
+  // Terminate whichever window is currently in run() — callable from any
+  // thread (e.g. an HTTP handler). No-op if no window is running.
+  static void quit() {
+    if (auto* w = g_active_window.load()) webview_terminate(w);
+  }
 
  private:
   webview_t w_;
@@ -76,7 +95,8 @@ const bool registered = [] {
       .method<&culebra_webview::Window::set_html>("set_html", {"html"})
       .method<&culebra_webview::Window::navigate>("navigate", {"url"})
       .method<&culebra_webview::Window::run>("run")
-      .method<&culebra_webview::Window::terminate>("terminate");
+      .method<&culebra_webview::Window::terminate>("terminate")
+      .static_method<&culebra_webview::Window::quit>("quit");
   return true;
 }();
 

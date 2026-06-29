@@ -1,10 +1,11 @@
-# WebView — web-tech desktop GUI from culebra (Spikes 0–2)
+# WebView — web-tech desktop GUI from culebra (Spikes 0–3)
 
 A proof that culebra can drive a **native WebView window** through the
-`culebra wrap` mechanism, wire it to a **local HTTP server** (Spike 1), and
-serve a real frontend (`dist/`) that's **baked into a single-file binary**
-under AOT while staying **live from disk in dev** (Spike 2) — the Tauri-shaped
-shape, end to end.
+`culebra wrap` mechanism, wire it to a **local HTTP server** (Spike 1), serve a
+real frontend (`dist/`) that's **baked into a single-file binary** under AOT
+while staying **live from disk in dev** (Spike 2), and wrap the whole thing in a
+one-call **`Desktop.run`** facade with a UI-driven quit (Spike 3) — the
+Tauri-shaped shape, end to end.
 
 This wraps [webview/webview](https://github.com/webview/webview) (MIT),
 which renders HTML/CSS/JS in each OS's native engine (WKWebView on macOS,
@@ -21,6 +22,8 @@ WebKitGTK on Linux, WebView2 on Windows) — no bundled Chromium.
 | `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
 | `dist/` | Spike 2: the frontend as real files (`index.html`, `style.css`, `app.js`) |
 | `spike2.cul` | Spike 2: serves `dist/` via `Embed.dir` — live disk in dev, baked into the binary under AOT |
+| `desktop.cul` | Spike 3: the `Desktop.run` / `Desktop.quit` facade (server + window + assets + shutdown in one call) |
+| `spike3.cul` | Spike 3: the same app as Spike 2, written against the facade |
 
 ## Build
 
@@ -46,6 +49,8 @@ culebra wrap examples/webview/webview_binding.cpp \
 ./webview-culebra --jit examples/webview/hello.cul    # Spike 0: JIT
 ./webview-culebra examples/webview/smoke.cul          # no window, just the binding
 ./webview-culebra examples/webview/spike1.cul         # Spike 1: server + WebView
+./webview-culebra examples/webview/spike2.cul         # Spike 2: server serves dist/
+./webview-culebra examples/webview/spike3.cul         # Spike 3: Desktop.run facade
 ```
 
 ## API surface
@@ -123,6 +128,38 @@ shows just `WebKit`, `CoreFoundation`, `Security`, `libz`, `libc++`, `libobjc`,
 `libSystem`; there is no external culebra runtime, and (with the assets baked
 in) no external files. One file is the whole app.
 
+## One call (Spike 3)
+
+`desktop.cul` collapses the whole "server + window + assets + shutdown" dance
+into `Desktop.run({...})`:
+
+```culebra
+import Desktop from './desktop.cul'
+
+Desktop.run({
+  title:  "My App",
+  size:   [720, 560],
+  assets: Embed.dir("dist"),       # dev: live disk / AOT: baked into the binary
+  routes: fn(srv) {                # just the API — the facade does the rest
+    srv.get("/api/hello", fn(req) { ... })
+  }
+})
+```
+
+`run` starts the server with `listen_async`, opens the window, and stops the
+server when it closes. It also registers a built-in `POST /__quit`, so a UI
+button can close the app over the HTTP bridge:
+
+```js
+fetch("/__quit", { method: "POST" })   // the "Quit" button in dist/index.html
+```
+
+The quit route calls **`Webview.Window.quit()`** — a static that terminates the
+running window. It's safe to call from the server's worker thread (`webview`'s
+terminate is thread-safe) and never touches the non-sendable window handle, so
+the UI can close the app without a native JS↔culebra bridge. `Desktop.quit()`
+exposes the same for a custom handler.
+
 ## Vendoring note
 
 `webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
@@ -134,8 +171,8 @@ commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
 ## Not in these spikes
 
-A `Desktop`-style facade that bundles server + window + assets in one call is
-Spike 3. A `Dir`-trait-shaped source for `srv.static` (so a zip or an overlay FS
-could back it too) is a future generalization. The native
+A `Dir`-trait-shaped source for `srv.static` (so a zip or an overlay FS could
+back it too) is a future generalization. Auto-picking a free port, multiple
+windows, and a native app menu are facade niceties left for later. The native
 `bind`/`eval`/`init`/`dispatch` JS↔culebra bridge stays out by design (see
 above) — see the project roadmap.
