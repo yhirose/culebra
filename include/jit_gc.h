@@ -26,8 +26,10 @@
 #include <algorithm>
 #include <csetjmp>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_set>
 #include <vector>
 
 namespace culebra::gc {
@@ -304,6 +306,16 @@ class Heap {
   // to it (completeness is best-effort). So callers/tests may only assume
   // "reachable survives"; the exact reclaimed set is non-deterministic.
   size_t collect() {
+    // Experimental precise-only mode (Phase 3 dry-run): seed solely from the
+    // precise roots — the JIT shadow stack plus the non-stack tables — with NO
+    // conservative stack scan. A missing root frees a live object, so this is
+    // the brutal coverage test for the shadow stack; off by default.
+    if (precise_only()) {
+      return collect_impl([this](auto&& push) { seed_nonstack_roots(push); });
+    }
+    // Dev oracle: measure how much of the conservative live set the precise
+    // roots already cover, then collect normally (conservative stays primary).
+    if (oracle()) return collect_with_oracle();
     return collect_impl([this](auto&& push) { scan_roots(push); });
   }
 
@@ -322,6 +334,83 @@ class Heap {
   static bool stress() {
     static const bool s = std::getenv("CULEBRA_GC_STRESS") != nullptr;
     return s;
+  }
+  // CULEBRA_GC_ORACLE=1 reports precise-vs-conservative coverage per collect.
+  static bool oracle() {
+    static const bool s = std::getenv("CULEBRA_GC_ORACLE") != nullptr;
+    return s;
+  }
+  // CULEBRA_GC_PRECISE_ONLY=1 drops the conservative stack scan (see collect()).
+  static bool precise_only() {
+    static const bool s = std::getenv("CULEBRA_GC_PRECISE_ONLY") != nullptr;
+    return s;
+  }
+
+  // The non-stack root sources: registered global slots plus the runtime's
+  // extra-roots enumerator (module/namespace tables, defer stack, exception
+  // carrier, and the precise JIT shadow stack). This is the conservative
+  // scan minus the machine-stack walk — the seed for precise collection.
+  template <class Cb>
+  void seed_nonstack_roots(Cb&& cb) {
+    for (void** slot : global_roots_) {
+      if (slot && is_object(*slot)) cb(*slot);
+    }
+    if (extra_roots_fn_) {
+      extra_roots_.clear();
+      extra_roots_fn_(extra_roots_);
+      for (void* o : extra_roots_) {
+        if (is_object(o)) cb(o);
+      }
+    }
+  }
+
+  // Mark the reachable set from a seed into `live` (no sweep). Shared by the
+  // oracle's two passes.
+  template <class Seed>
+  void mark_reachable(std::unordered_set<void*>& live, Seed&& seed) {
+    std::vector<void*> work, kids;
+    auto push = [&](void* o) {
+      if (objects_.find(o) && live.insert(o).second) work.push_back(o);
+    };
+    objects_.for_each([&](void* k, GcHeader& h) {
+      if (h.flags & kFlagPinned) push(k);
+    });
+    seed(push);
+    while (!work.empty()) {
+      void* o = work.back();
+      work.pop_back();
+      if (children_fn_) {
+        kids.clear();
+        children_fn_(o, objects_.find(o)->type_tag, kids);
+        for (void* c : kids) push(c);
+      }
+    }
+  }
+
+  // Dev oracle: compute the conservative and precise reachable sets on the
+  // same pre-sweep population, report the gap, then collect conservatively.
+  // The "missed" count (reachable conservatively but not precisely) is an
+  // upper bound on the real coverage gap: it also includes conservative
+  // false positives (dead objects a stale stack word retains), so it
+  // overstates rather than understates. Trending toward a small, stable
+  // floor across development means the shadow stack covers the live set.
+  size_t collect_with_oracle() {
+    std::unordered_set<void*> precise, conserv;
+    mark_reachable(precise, [this](auto&& push) { seed_nonstack_roots(push); });
+    mark_reachable(conserv, [this](auto&& push) { scan_roots(push); });
+    size_t missed = 0;
+    for (void* o : conserv) {
+      if (!precise.count(o)) missed++;
+    }
+    double covered = conserv.empty()
+        ? 100.0
+        : 100.0 * static_cast<double>(conserv.size() - missed) /
+              static_cast<double>(conserv.size());
+    std::fprintf(stderr,
+        "[gc-oracle] heap=%zu conservative=%zu precise=%zu missed=%zu "
+        "(%.1f%% precise-covered)\n",
+        objects_.size(), conserv.size(), precise.size(), missed, covered);
+    return collect_impl([this](auto&& push) { scan_roots(push); });
   }
 
   // Threshold-triggered collect, run from adopt(). Only fires once the runtime
@@ -422,16 +511,10 @@ class Heap {
     void* sp = current_sp();
     void* base = stack_base();
     scan_range(sp, base, cb);
-    for (void** slot : global_roots_) {
-      if (slot && is_object(*slot)) cb(*slot);
-    }
-    if (extra_roots_fn_) {
-      extra_roots_.clear();
-      extra_roots_fn_(extra_roots_);
-      for (void* o : extra_roots_) {
-        if (is_object(o)) cb(o);
-      }
-    }
+    // Conservative = the machine-stack walk above PLUS the non-stack roots.
+    // Sharing seed_nonstack_roots keeps the conservative and precise seeds
+    // from drifting apart as root sources are added.
+    seed_nonstack_roots(cb);
   }
 
  private:
