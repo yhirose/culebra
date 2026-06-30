@@ -6002,10 +6002,55 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
   }
 }
 
+// --- Precise GC roots: shadow stack (Phase 1, [[project_jit_gc_rewrite]]) ---
+//
+// JIT-compiled code registers the address of each local slot that can hold a GC
+// pointer, so the collector finds roots precisely instead of conservatively
+// scanning the C stack (which over-retains ~8-10x — see the precise-GC plan).
+// An entry is a slot address + a kind: a Value slot holds a JitValue (read it
+// and tag-check); a Cell slot holds a JitCell* directly. Slots are borrowed
+// stack addresses (no ownership), so teardown is trivial — a plain thread_local.
+//
+// The conservative scan stays primary until coverage is proven complete (the
+// dev-time oracle, GC_STRESS), so an incomplete shadow stack can only root too
+// FEW objects here, never free a live one. Codegen that fills it lands next.
+enum class GcShadowKind : uint8_t { Value = 0, Cell = 1 };
+struct GcShadowEntry {
+  void* slot;
+  GcShadowKind kind;
+};
+inline thread_local std::vector<GcShadowEntry> g_jit_gc_shadow;
+
+// Runtime hooks the JIT emits to register/unregister slots around a frame.
+extern "C" {
+CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_push_value(void* slot) {
+  g_jit_gc_shadow.push_back({slot, GcShadowKind::Value});
+}
+CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_push_cell(void* slot) {
+  g_jit_gc_shadow.push_back({slot, GcShadowKind::Cell});
+}
+CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_pop(int64_t n) {
+  if (n > 0 && static_cast<size_t>(n) <= g_jit_gc_shadow.size())
+    g_jit_gc_shadow.resize(g_jit_gc_shadow.size() - static_cast<size_t>(n));
+}
+}  // extern "C"
+
+// Tag-checked extraction of the precise shadow-stack roots.
+inline void _jit_gc_enumerate_shadow_roots(std::vector<void*>& out) {
+  for (const GcShadowEntry& e : g_jit_gc_shadow) {
+    if (e.kind == GcShadowKind::Value) {
+      _gc_push_value(out, *reinterpret_cast<JitValue*>(e.slot));
+    } else {  // Cell slot: the slot holds a JitCell* directly.
+      if (void* cell = *reinterpret_cast<void**>(e.slot)) out.push_back(cell);
+    }
+  }
+}
+
 // Roots held in containers outside any scanned stack. Exhaustive over the
 // jit.h-local global tables; the cached namespace objects (built in
 // stdlib_jit.h) are instead pinned at creation, so they need no entry here.
 inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
+  _jit_gc_enumerate_shadow_roots(out);  // precise local roots (empty until codegen)
   for (auto& [_, v] : _jit_module_table()) _gc_push_value(out, v);
   for (auto& [_, methods] : _jit_trait_default_impls())
     for (auto& [__, cls] : methods)
@@ -9774,6 +9819,10 @@ inline constexpr auto value_geq           = "culebra_runtime_value_geq";
 inline constexpr auto value_release       = "culebra_runtime_value_release";
 inline constexpr auto value_retain        = "culebra_runtime_value_retain";
 inline constexpr auto value_swap_owned    = "culebra_runtime_value_swap_owned";
+// Precise GC shadow stack (Phase 1) — codegen registers/unregisters slots.
+inline constexpr auto gc_shadow_push_value = "culebra_runtime_gc_shadow_push_value";
+inline constexpr auto gc_shadow_push_cell  = "culebra_runtime_gc_shadow_push_cell";
+inline constexpr auto gc_shadow_pop        = "culebra_runtime_gc_shadow_pop";
 inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
 inline constexpr auto format_value        = "culebra_runtime_format_value";
 inline constexpr auto write_file          = "culebra_runtime_write_file";
