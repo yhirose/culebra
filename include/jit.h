@@ -6011,9 +6011,17 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
 // and tag-check); a Cell slot holds a JitCell* directly. Slots are borrowed
 // stack addresses (no ownership), so teardown is trivial — a plain thread_local.
 //
+// Lifetime is managed with a mark/restore discipline mirroring the owned stack
+// (design §14.3): every JIT scope captures the shadow depth at entry and
+// restores it at exit (push_scope / pop_scope), so loops stay bounded and
+// conditional declarations balance automatically. To stay crash-safe under
+// exceptions, each cleanup landingpad and the host teardown boundary restore
+// the depth FIRST, before any code that could allocate — so a collect during
+// unwind never reads an entry whose stack frame has already been abandoned.
+//
 // The conservative scan stays primary until coverage is proven complete (the
 // dev-time oracle, GC_STRESS), so an incomplete shadow stack can only root too
-// FEW objects here, never free a live one. Codegen that fills it lands next.
+// FEW objects here, never free a live one.
 enum class GcShadowKind : uint8_t { Value = 0, Cell = 1 };
 struct GcShadowEntry {
   void* slot;
@@ -6021,7 +6029,7 @@ struct GcShadowEntry {
 };
 inline thread_local std::vector<GcShadowEntry> g_jit_gc_shadow;
 
-// Runtime hooks the JIT emits to register/unregister slots around a frame.
+// Runtime hooks the JIT emits to register slots and to mark/restore frames.
 extern "C" {
 CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_push_value(void* slot) {
   g_jit_gc_shadow.push_back({slot, GcShadowKind::Value});
@@ -6029,11 +6037,23 @@ CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_push_value(void* slot) {
 CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_push_cell(void* slot) {
   g_jit_gc_shadow.push_back({slot, GcShadowKind::Cell});
 }
-CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_pop(int64_t n) {
-  if (n > 0 && static_cast<size_t>(n) <= g_jit_gc_shadow.size())
-    g_jit_gc_shadow.resize(g_jit_gc_shadow.size() - static_cast<size_t>(n));
+// Current depth — captured at scope/try entry as the restore mark.
+CULEBRA_RT_KEEP int64_t culebra_runtime_gc_shadow_depth() {
+  return static_cast<int64_t>(g_jit_gc_shadow.size());
+}
+// Truncate back to a previously captured mark. Monotonic: a larger mark (a
+// frame already torn down by a nested restore) is a no-op.
+CULEBRA_RT_KEEP void culebra_runtime_gc_shadow_restore(int64_t mark) {
+  if (mark >= 0 && static_cast<size_t>(mark) <= g_jit_gc_shadow.size())
+    g_jit_gc_shadow.resize(static_cast<size_t>(mark));
 }
 }  // extern "C"
+
+// Host-side reset at the program boundary (after __culebra_main returns or an
+// uncaught throw reaches the host): no JIT frame is live, so any residual
+// entries are stale. Clearing before the teardown collect keeps it from reading
+// abandoned stack slots.
+inline void _jit_gc_shadow_clear() { g_jit_gc_shadow.clear(); }
 
 // Tag-checked extraction of the precise shadow-stack roots.
 inline void _jit_gc_enumerate_shadow_roots(std::vector<void*>& out) {
@@ -9822,7 +9842,8 @@ inline constexpr auto value_swap_owned    = "culebra_runtime_value_swap_owned";
 // Precise GC shadow stack (Phase 1) — codegen registers/unregisters slots.
 inline constexpr auto gc_shadow_push_value = "culebra_runtime_gc_shadow_push_value";
 inline constexpr auto gc_shadow_push_cell  = "culebra_runtime_gc_shadow_push_cell";
-inline constexpr auto gc_shadow_pop        = "culebra_runtime_gc_shadow_pop";
+inline constexpr auto gc_shadow_depth      = "culebra_runtime_gc_shadow_depth";
+inline constexpr auto gc_shadow_restore    = "culebra_runtime_gc_shadow_restore";
 inline constexpr auto value_to_display    = "culebra_runtime_value_to_display";
 inline constexpr auto format_value        = "culebra_runtime_format_value";
 inline constexpr auto write_file          = "culebra_runtime_write_file";
@@ -9914,6 +9935,12 @@ struct JIT {
     // interp, where the table lives on the dispatcher value bound per
     // scope frame (see register_named_function's has_own decision).
     std::map<std::string, std::string> multifn_keys;
+    // Precise-GC shadow-stack depth captured at scope entry (an SSA i64 from
+    // gc_shadow_depth — scope entry dominates every in-scope exit, like
+    // owned_mark). Scope exit truncates the shadow stack back to it, so loop
+    // bodies stay bounded and conditional declarations balance. nullptr until
+    // codegen captures it in push_scope.
+    llvm::Value* shadow_mark = nullptr;
   };
 
   // RAII snapshot of compiler per-function state. Entering a nested
@@ -10082,7 +10109,8 @@ struct JIT {
   void emit_cleanup_landingpad(llvm::BasicBlock* cleanupBB,
                                llvm::Value* mark,
                                llvm::BasicBlock* outerLpad,
-                               const char* excName) {
+                               const char* excName,
+                               llvm::Value* shadow_mark = nullptr) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     builder_.SetInsertPoint(cleanupBB);
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
@@ -10092,6 +10120,10 @@ struct JIT {
     builder_.CreateCall(
         module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
         {excPtr});
+    // Drop the precise-GC roots pushed since scope entry (this scope's slots
+    // plus any unwound callee frames) before defers run — a defer may
+    // allocate, and a collect must not read an abandoned frame's slots.
+    emit_shadow_restore(shadow_mark);
     builder_.CreateCall(
         module_->getFunction(rt::defer_run_to), {mark});
     emit_rethrow(outerLpad);
@@ -11310,6 +11342,36 @@ struct JIT {
     auto hot = builder_.CreateIntToPtr(owned_hot_ptr(), ptrTy, "owned.hot.p");
     scopes_.back().owned_mark =
         builder_.CreateLoad(i64Ty, hot, "owned.mark");  // next_id @ offset 0
+    // Capture the precise-GC shadow-stack depth so scope exit can truncate
+    // back to it (see Scope::shadow_mark).
+    scopes_.back().shadow_mark = emit_shadow_depth();
+  }
+
+  // --- Precise GC shadow stack (Phase 1) ---
+  // Register a freshly-declared slot's address so the collector roots its
+  // current value precisely. Called from make_*_slot after the slot's alloca
+  // has been written, so the read at collect time sees nil or a valid value,
+  // never uninitialized garbage.
+  void emit_shadow_register(const VarSlot& slot) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    const char* hook = slot.kind == VarSlot::Cell ? rt::gc_shadow_push_cell
+                                                  : rt::gc_shadow_push_value;
+    emit_call(module_->getOrInsertFunction(hook, builder_.getVoidTy(), ptrTy),
+              {slot.alloca});
+  }
+
+  llvm::Value* emit_shadow_depth() {
+    return emit_call(
+        module_->getOrInsertFunction(rt::gc_shadow_depth, builder_.getInt64Ty()),
+        {}, "shadow.mark");
+  }
+
+  void emit_shadow_restore(llvm::Value* mark) {
+    if (!mark) return;
+    emit_call(module_->getOrInsertFunction(rt::gc_shadow_restore,
+                                           builder_.getVoidTy(),
+                                           builder_.getInt64Ty()),
+              {mark});
   }
 
   // Inline empty-region fast path: only when an entry with id >= mark
@@ -11391,6 +11453,10 @@ struct JIT {
     if (!suppress_drop && !scopes_.empty()) {
       emit_owned_scope_exit(scopes_.front().owned_mark);
     }
+    // Drop every precise-GC root this frame registered (back to the
+    // outermost scope's entry depth). Covers normal return and the
+    // cleanup-landingpad exit alike.
+    if (!scopes_.empty()) emit_shadow_restore(scopes_.front().shadow_mark);
   }
 
   void emit_set_drop_suppressed(int8_t v) {
@@ -11405,6 +11471,9 @@ struct JIT {
       // the ordinary refcount-0 path first (tombstoning their entries);
       // the inline check resolves only the escaped/cyclic remainder.
       emit_owned_scope_exit(scopes_.back().owned_mark);
+      // Truncate the precise-GC shadow stack back to this scope's entry
+      // depth, unregistering every slot it declared.
+      emit_shadow_restore(scopes_.back().shadow_mark);
     }
     scopes_.pop_back();
   }
@@ -13881,6 +13950,7 @@ struct JIT {
     // of the never-executed binding must be the interp's NameError,
     // not a null-cell deref — load_slot's lazy guard handles it.
     slot.lazy = true;
+    emit_shadow_register(slot);  // precise GC root (null cell reads as no root)
     return slot;
   }
 
@@ -13895,6 +13965,7 @@ struct JIT {
     // previous iteration's value).
     VarSlot slot{VarSlot::Stack, alloca, /*owned=*/true, is_mut};
     store_slot(slot, initValue);
+    emit_shadow_register(slot);  // precise GC root (after the value is stored)
     return slot;
   }
 
@@ -15827,11 +15898,13 @@ struct JIT {
       // case, so non-block / defer-free arms pay nothing.
       bool body_has_defer = scope_has_defer_.contains(&body_node);
       llvm::Value* arm_mark = nullptr;
+      llvm::Value* arm_shadow_mark = nullptr;
       llvm::BasicBlock* arm_cleanupBB = nullptr;
       llvm::BasicBlock* arm_savedLpad = current_lpad_;
       if (body_has_defer) {
         arm_mark = builder_.CreateCall(
             module_->getFunction(rt::defer_mark), {}, "arm.mark");
+        arm_shadow_mark = emit_shadow_depth();
         arm_cleanupBB = llvm::BasicBlock::Create(ctx_, "arm.cleanup", fn);
         current_lpad_ = arm_cleanupBB;
       }
@@ -15853,7 +15926,7 @@ struct JIT {
       }
       if (body_has_defer) {
         emit_cleanup_landingpad(arm_cleanupBB, arm_mark, arm_savedLpad,
-                                "arm.exc");
+                                "arm.exc", arm_shadow_mark);
       }
 
       pop_scope();
@@ -16500,12 +16573,15 @@ struct JIT {
     bool has_defer = scope_has_defer_.contains(&ast);
 
     llvm::Value* mark = nullptr;
+    llvm::Value* shadow_mark = nullptr;
     llvm::BasicBlock* cleanupBB = nullptr;
     llvm::BasicBlock* savedLpad = current_lpad_;
     if (has_defer) {
       // defer_mark is nothrow, so a plain call (not invoke) is safe.
       mark = builder_.CreateCall(
           module_->getFunction(rt::defer_mark), {}, "scope.mark");
+      // Shadow depth at scope entry — the cleanup landingpad restores to it.
+      shadow_mark = emit_shadow_depth();
       auto fn = builder_.GetInsertBlock()->getParent();
       cleanupBB = llvm::BasicBlock::Create(ctx_, "scope.cleanup", fn);
       current_lpad_ = cleanupBB;
@@ -16540,7 +16616,8 @@ struct JIT {
     auto afterBB = builder_.GetInsertBlock();
 
     if (has_defer) {
-      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "scope.exc");
+      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "scope.exc",
+                              shadow_mark);
     }
 
     builder_.SetInsertPoint(afterBB);
@@ -18036,6 +18113,9 @@ struct JIT {
           module_->getOrInsertFunction(
               "__cxa_begin_catch", ptrTy, ptrTy),
           {excPtr});
+      // Drop this frame's precise-GC roots before running defers, which may
+      // allocate (and so collect) while callee frames are already unwound.
+      if (!scopes_.empty()) emit_shadow_restore(scopes_.front().shadow_mark);
       if (fnMark) {
         builder_.CreateCall(
             module_->getFunction(rt::defer_run_to), {fnMark});
@@ -20794,6 +20874,12 @@ struct JIT {
 
     // --- Try body: compile with current_lpad_ set to lpadBB ---
     builder_.SetInsertPoint(tryBB);
+    // Precise-GC shadow depth at try entry. On the throw path the body's
+    // scopes (and any unwound callee frames) never run their restores, so the
+    // landingpad truncates the shadow stack back to here before anything that
+    // could allocate — keeping a collect during unwind from reading abandoned
+    // stack slots.
+    auto tryShadowMark = emit_shadow_depth();
     auto savedLpad = current_lpad_;
     current_lpad_ = lpadBB;
     push_scope();
@@ -20816,6 +20902,10 @@ struct JIT {
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
     auto lpad = builder_.CreateLandingPad(lpadTy, 1, "exc");
     lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
+    // First thing on the throw path: drop the shadow roots of the unwound
+    // body/callees (the landingpad must stay the block's first instruction,
+    // so this follows it but precedes every allocating call below).
+    emit_shadow_restore(tryShadowMark);
 
     // Enter the C++ catch context. begin_catch must run before
     // translate so its `try { throw; }` re-raises the active exception.
@@ -20916,6 +21006,10 @@ struct JIT {
     // cannot occur because no drop fires.
     struct CollectGuard {
       ~CollectGuard() {
+        // No JIT frame is live here (main returned or its throw was caught
+        // above), so any residual precise-GC shadow entries point at
+        // abandoned stack and must be dropped before the collect reads them.
+        _jit_gc_shadow_clear();
         bool saved = _jit_drop_suppressed();
         _jit_drop_suppressed() = true;
         _gc_heap().collect();  // reclaim leaked residue before module teardown
