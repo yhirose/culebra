@@ -14757,8 +14757,12 @@ struct JIT {
   }
 
   llvm::Value* compile_unary_minus(const peg::Ast& ast) {
-    auto val = compile(*ast.nodes[1]);
-    auto tag = extract_tag(val);
+    // The operand is a +1-owned temp; the Owned handle releases it once neg
+    // has read it (no-op for an immediate Long, frees a heap operand of an
+    // overloaded `__neg__`). Both paths join at mergeBB, where the handle's
+    // dtor emits the release.
+    Owned val = own(compile(*ast.nodes[1]));
+    auto tag = extract_tag(val.borrow());
     auto longTag = builder_.getInt8(TAG_LONG);
     auto isLong = builder_.CreateICmpEQ(tag, longTag);
 
@@ -14769,7 +14773,8 @@ struct JIT {
     builder_.CreateCondBr(isLong, intBB, slowBB);
 
     builder_.SetInsertPoint(intBB);
-    auto intResult = make_long(builder_.CreateNeg(extract_data(val), "neg"));
+    auto intResult =
+        make_long(builder_.CreateNeg(extract_data(val.borrow()), "neg"));
     auto intEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -14780,7 +14785,7 @@ struct JIT {
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt64Ty()),
-        {extract_tag(val), extract_data(val),
+        {extract_tag(val.borrow()), extract_data(val.borrow()),
          current_line_val(), current_column_val()}, "neg.num");
     auto slowEndBB = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
@@ -14793,8 +14798,10 @@ struct JIT {
   }
 
   llvm::Value* compile_unary_not(const peg::Ast& ast) {
-    auto val = compile(*ast.nodes[1]);
-    auto b = value_to_bool(val);
+    // Operand owned; released by the handle after value_to_bool borrows it
+    // (frees a heap operand whose truthiness is taken).
+    Owned val = own(compile(*ast.nodes[1]));
+    auto b = value_to_bool(val.borrow());
     auto notb = builder_.CreateNot(b, "not");
     return make_bool(notb);
   }
