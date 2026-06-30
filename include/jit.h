@@ -11557,6 +11557,65 @@ struct JIT {
     emit_value_release(old);
   }
 
+  // RAII handle for a `+1`-owned Value during codegen: must be consumed
+  // exactly once (consume() hands the +1 on); if dropped unconsumed the dtor
+  // emits the release, and consuming twice asserts — making an accidental
+  // leak and a double-free both structurally impossible. Manages straight-line
+  // expression temporaries only; values escaping into branches/loops go
+  // through the scope/slot machinery. The dtor releases at the builder's
+  // *current* insertion point, so a handle must be consumed-or-dropped while
+  // the builder still sits on the block where the value is live.
+  struct Owned {
+    JIT* jit_ = nullptr;
+    llvm::Value* val_ = nullptr;
+    bool consumed_ = false;
+
+    Owned() = default;
+    Owned(JIT* jit, llvm::Value* val) : jit_(jit), val_(val) {}
+
+    Owned(const Owned&) = delete;
+    Owned& operator=(const Owned&) = delete;
+
+    Owned(Owned&& o) noexcept
+        : jit_(o.jit_), val_(o.val_), consumed_(o.consumed_) {
+      o.consumed_ = true;
+      o.val_ = nullptr;
+    }
+    Owned& operator=(Owned&& o) noexcept {
+      if (this != &o) {
+        release_if_owned();
+        jit_ = o.jit_;
+        val_ = o.val_;
+        consumed_ = o.consumed_;
+        o.consumed_ = true;
+        o.val_ = nullptr;
+      }
+      return *this;
+    }
+
+    // Emit the release iff this handle still owns a value.
+    void release_if_owned() {
+      if (!consumed_ && val_) jit_->emit_value_release(val_);
+    }
+
+    // Read the Value's tag/data for a non-consuming use (operator dispatch,
+    // coercion); ownership stays with the handle.
+    llvm::Value* borrow() const { return val_; }
+
+    // Hand the `+1` on: returns the raw Value and marks the handle spent so
+    // its destructor stays silent. Consuming twice is a codegen-time bug.
+    llvm::Value* consume() {
+      assert(!consumed_ && "Owned value consumed twice");
+      consumed_ = true;
+      return val_;
+    }
+
+    ~Owned() { release_if_owned(); }
+  };
+
+  // Wrap a freshly produced `+1`-owned Value in an ownership handle.
+  Owned own(llvm::Value* val) { return Owned(this, val); }
+
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
     auto tag = extract_tag(val);
@@ -14598,16 +14657,20 @@ struct JIT {
   }
 
   llvm::Value* compile_additive(const peg::Ast& ast) {
-    auto lhs = compile(*ast.nodes[0]);
+    // The accumulator and each rhs are `+1`-owned operand temps; the Owned
+    // handles release them (no-op for immediates) once the binop has read
+    // them — freeing a heap operand of an overloaded `+`/`-`. The result of
+    // the final binop is handed back to the caller via `consume()`.
+    Owned acc = own(compile(*ast.nodes[0]));
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]);
+      Owned rhs = own(compile(*ast.nodes[i + 1]));
       auto ope = ast.nodes[i]->token[0];
       const char* rt_name = (ope == '+') ? rt::num_add
                            : (ope == '-') ? rt::num_sub
                                           : nullptr;
       if (!rt_name) throw std::runtime_error("invalid additive operator");
       auto result = emit_binop_dispatch(
-          lhs, rhs, rt_name,
+          acc.borrow(), rhs.borrow(), rt_name,
           [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
             auto r = (ope == '+') ? builder_.CreateAdd(ld, rd, "add")
                                   : builder_.CreateSub(ld, rd, "sub");
@@ -14618,19 +14681,20 @@ struct JIT {
                                   : builder_.CreateFSub(lD, rD, "fsub");
             return make_float(r);
           });
-      // Consume the operand temps (+1 owned; no-op for immediates). Frees a
-      // heap operand of an overloaded `+`/`-`.
-      emit_value_release(lhs);
-      emit_value_release(rhs);
-      lhs = result;
+      // Move-assign releases the previous accumulator here; `rhs` releases at
+      // the end of the iteration — both after the binop has consumed them.
+      acc = own(result);
     }
-    return lhs;
+    return acc.consume();
   }
 
   llvm::Value* compile_multiplicative(const peg::Ast& ast) {
-    auto lhs = compile(*ast.nodes[0]);
+    // Same ownership story as compile_additive: accumulator and each rhs are
+    // `+1`-owned temps released by their Owned handles once the binop (or `@`)
+    // has read them; the final result's `+1` transfers to the caller.
+    Owned acc = own(compile(*ast.nodes[0]));
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]);
+      Owned rhs = own(compile(*ast.nodes[i + 1]));
       auto ope = ast.nodes[i]->token[0];
 
       // `@` always goes through the runtime helper — no Long fast path
@@ -14645,12 +14709,10 @@ struct JIT {
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty()),
-            {extract_tag(lhs), extract_data(lhs),
-             extract_tag(rhs), extract_data(rhs),
+            {extract_tag(acc.borrow()), extract_data(acc.borrow()),
+             extract_tag(rhs.borrow()), extract_data(rhs.borrow()),
              current_line_val(), current_column_val()}, "matmul");
-        emit_value_release(lhs);  // operands consumed by `@`
-        emit_value_release(rhs);
-        lhs = result;
+        acc = own(result);  // operands consumed by `@` (released here / at loop end)
         continue;
       }
 
@@ -14664,7 +14726,7 @@ struct JIT {
       }
 
       auto result = emit_binop_dispatch(
-          lhs, rhs, rt_name,
+          acc.borrow(), rhs.borrow(), rt_name,
           [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
             if (ope == '*') {
               return make_long(builder_.CreateMul(ld, rd, "mul"));
@@ -14683,13 +14745,9 @@ struct JIT {
                                   : builder_.CreateFRem(lD, rD, "fmod");
             return make_float(r);
           });
-      // Consume the operand temps (+1; no-op for immediates). Frees a heap
-      // operand of an overloaded `*`/`/`/`%`.
-      emit_value_release(lhs);
-      emit_value_release(rhs);
-      lhs = result;
+      acc = own(result);
     }
-    return lhs;
+    return acc.consume();
   }
 
   // --- Unary ---
@@ -14846,7 +14904,7 @@ struct JIT {
   llvm::Value* compile_power(const peg::Ast& ast) {
     // POWER = [base, POWER_OPERATOR, exponent]; optimizer strips the
     // node entirely when there's no `**`.
-    auto base = compile(*ast.nodes[0]);
+    Owned base = own(compile(*ast.nodes[0]));
 
     // Peephole specialization for compile-time-constant exponents.
     // Correctness note: sqrt(x) and std::pow(x, 0.5) agree on NaN
@@ -14854,42 +14912,38 @@ struct JIT {
     if (auto lit = try_numeric_literal(*ast.nodes[2])) {
       if (!lit->is_float && lit->l == 2) {
         auto r = emit_binop_dispatch(
-            base, base, rt::num_mul,
+            base.borrow(), base.borrow(), rt::num_mul,
             [&](llvm::Value* ld, llvm::Value* rd) {
               return make_long(builder_.CreateMul(ld, rd, "mul"));
             },
             [&](llvm::Value* lD, llvm::Value* rD) {
               return make_float(builder_.CreateFMul(lD, rD, "fmul"));
             });
-        emit_value_release(base);  // one value used as both operands
-        return r;
+        return r;  // base (used as both operands) released by its handle
       }
       if (lit->is_float && lit->d == 0.5) {
-        auto d = coerce_to_double(base);
+        auto d = coerce_to_double(base.borrow());
         auto sqrtFn = llvm::Intrinsic::getOrInsertDeclaration(
             module_, llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
         auto result = make_float(builder_.CreateCall(sqrtFn, {d}, "sqrt"));
-        emit_value_release(base);  // base consumed by the coercion
-        return result;
+        return result;  // base released by its handle
       }
       if ((!lit->is_float && lit->l == 1) ||
           (lit->is_float && lit->d == 1.0)) {
-        return base;  // base IS the result — its +1 transfers to the caller
+        return base.consume();  // base IS the result — its +1 transfers out
       }
     }
 
-    auto exp = compile(*ast.nodes[2]);
+    Owned exp = own(compile(*ast.nodes[2]));
     auto result = emit_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty()),
-        {extract_tag(base), extract_data(base),
-         extract_tag(exp), extract_data(exp)}, "pow.r");
-    emit_value_release(base);  // operands consumed by `**`
-    emit_value_release(exp);
-    return result;
+        {extract_tag(base.borrow()), extract_data(base.borrow()),
+         extract_tag(exp.borrow()), extract_data(exp.borrow())}, "pow.r");
+    return result;  // base and exp consumed by `**`, released by their handles
   }
 
   // --- Comparison ---
