@@ -52,6 +52,14 @@ fn run(which, N) {
     for i in 0..N { let _ = range(4).map(|x| x * 2).collect() }
   } else if which == "reduce" {
     for i in 0..N { let _ = [V.new(1, [], []), V.new(2, [], [])].reduce(V.new(0, [], []), |a, b| a + b) }
+  } else if which == "match_bind" {
+    # type-pattern binding that captures the bound name into the result —
+    # exactly microgpt's operator shape `match o { x:Object => V.new(.., [.., x]) }`
+    for i in 0..N { let _ = mtest(V.new(i, [], [])) }
+  } else if which == "match_stmt" {
+    # match as a statement with a call subject and a scalar result — the
+    # double-free guard for the subject-release fix.
+    for i in 0..N { let _ = mtest2(mk(i)) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -62,10 +70,16 @@ fn run(which, N) {
 
 fn mk(x) { V.new(x, [], []) }
 
+# Type-pattern bind that captures the bound name into the result graph.
+fn mtest(o) { match o { x:Object => V.new(x.data, [x], [1.0]), _ => V.new(0, [], []) } }
+
+# Call subject + scalar result: exercises the double-free guard.
+fn mtest2(o) { match o { x:Object => x.data, _ => 0 } }
+
 if which == "list" {
   let names = ["object_literal", "array_literal", "instance_plain", "default_param",
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
-               "closure", "map_collect", "reduce"]
+               "closure", "map_collect", "reduce", "match_bind", "match_stmt"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)

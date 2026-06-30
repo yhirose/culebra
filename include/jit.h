@@ -11387,9 +11387,23 @@ struct JIT {
   // = true for `let mut x = ...`; reassigning a non-mut binding raises
   // ImmutableError downstream.
   void declare_local(const std::string& name, llvm::Value* val,
-                     bool is_mut = false) {
+                     bool is_mut = false, bool borrow = false) {
     bool captured = current_info_ &&
                     current_info_->captured_locals.contains(name);
+    if (borrow && !captured) {
+      // Borrow binding (a match arm's direct-leaf subject capture): alias
+      // `val` without taking its +1. The owning reference lives in
+      // compile_match's scope; reads through this slot retain a fresh +1,
+      // and scope exit skips it (owned=false).
+      define_var(name, make_borrow_stack_slot(name, val, is_mut));
+      return;
+    }
+    if (borrow && captured) {
+      // A captured borrow needs its own cell-owned +1: a cell releases its
+      // value when it dies, so retain to keep it independent of the
+      // subject's owning reference (else both would release the same +1).
+      emit_value_retain(val);
+    }
     define_var(name, make_var_slot(captured, name, val, is_mut));
   }
 
@@ -13849,6 +13863,22 @@ struct JIT {
     return slot;
   }
 
+  // A non-owning stack slot: stores `initValue` as a borrowed alias (no
+  // retain, no release of any prior content) and is skipped by scope-exit
+  // release (owned=false). Used for a match arm's direct-leaf subject
+  // binding, whose owning +1 is held by compile_match's scope.
+  VarSlot make_borrow_stack_slot(const std::string& name,
+                                 llvm::Value* initValue, bool is_mut = false) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto alloca = entryB.CreateAlloca(valueType_, nullptr, name);
+    entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_), alloca);
+    VarSlot slot{VarSlot::Stack, alloca, /*owned=*/false, is_mut};
+    store_slot_raw(slot, initValue);
+    return slot;
+  }
+
   VarSlot make_var_slot(bool captured, const std::string& name,
                         llvm::Value* initValue, bool is_mut = false) {
     return captured ? make_cell_slot(name, initValue, is_mut)
@@ -14353,6 +14383,13 @@ struct JIT {
   // existing slots instead of declaring. Set for one pattern tree by
   // compile_destructure_assign; defaults to declare for match arms.
   bool pattern_declare_ = true;
+
+  // A match arm whose top-level pattern binds the subject directly
+  // (`x => …` / `x:Object => …`) borrows it rather than taking its +1:
+  // the subject's single owning reference lives in compile_match's scope
+  // and is released there on every exit path. Set only by compile_match,
+  // around the top-level emit_pattern call for a direct-leaf pattern.
+  bool match_bind_borrow_ = false;
 
   // DESTRUCTURE_ASSIGN children: [LET, MUTABLE, PATTERN, EXPRESSION].
   // `let`/`let mut` declares; a bare `(a, b) = …` reassigns existing
@@ -15333,7 +15370,7 @@ struct JIT {
                                                         pattern.column);
             store_slot(*slot, subject);
           } else {
-            declare_local(name, subject, is_mut);
+            declare_local(name, subject, is_mut, match_bind_borrow_);
           }
         }
         return builder_.getTrue();
@@ -15396,7 +15433,8 @@ struct JIT {
         // the sink — the type tag still gates the match, but no slot
         // is allocated.
         auto name = std::string(pattern.nodes[0]->token);
-        if (!is_sink_name(name)) declare_local(name, subject, is_mut);
+        if (!is_sink_name(name))
+          declare_local(name, subject, is_mut, match_bind_borrow_);
         return tag_match;
       }
       case "CTOR_PATTERN"_:
@@ -15741,13 +15779,21 @@ struct JIT {
   llvm::Value* compile_match(const peg::Ast& ast) {
     using namespace peg::udl;
     auto fn = builder_.GetInsertBlock()->getParent();
-
-    auto subject = compile(*ast.nodes[0]);
-    // Stash subject in a local so every arm reads the same SSA value.
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                              fn->getEntryBlock().begin());
-    auto subjAlloca = entryB.CreateAlloca(valueType_, nullptr, "match.subj");
-    builder_.CreateStore(subject, subjAlloca);
+
+    // Own the subject for the whole match in a dedicated scope. Its single
+    // +1 is released on every normal exit by the matching pop_scope below
+    // (and on return/break by release_all_scopes_for_exit); arm bindings
+    // BORROW it rather than absorb it (a direct-leaf pattern aliases the
+    // slot, a captured one takes its own +1), so it is never
+    // double-released. This is the structural fix for the historical match
+    // RC leak: the subject used to sit in a bare alloca that nothing freed,
+    // leaking one reference per match.
+    push_scope();
+    auto subject = compile(*ast.nodes[0]);
+    auto subjSlot = make_stack_slot("match.subj", subject);
+    define_var("match.subject", subjSlot);  // '.' name: unreachable by source
 
     auto endBB = llvm::BasicBlock::Create(ctx_, "match.end", fn);
     auto resultAlloca =
@@ -15762,12 +15808,21 @@ struct JIT {
 
       push_scope();
 
-      auto subj_val = builder_.CreateLoad(valueType_, subjAlloca);
+      auto subj_val = load_slot_raw(subjSlot, "match.subj");
+      // A top-level pattern that binds the subject directly (`x => …` /
+      // `x:Object => …`) borrows it; destructuring patterns already borrow
+      // the subject and retain their own extracted leaves.
+      const auto& top_pat = *arms[ai]->nodes[0];
+      bool direct_leaf = top_pat.tag == "IDENTIFIER"_ ||
+                         top_pat.tag == "TYPED_IDENT"_;
+      bool saved_borrow = match_bind_borrow_;
+      if (direct_leaf) match_bind_borrow_ = true;
       // Match interp's eval_match → try_pattern (interpreter.h:3728)
       // which uses the default mut=true. Arm-bound names are mutable
       // inside the arm body.
-      auto match_cond = emit_pattern(*arms[ai]->nodes[0], subj_val,
+      auto match_cond = emit_pattern(top_pat, subj_val,
                                      /*is_mut=*/true);
+      match_bind_borrow_ = saved_borrow;
       // Either head for guard check or straight to body
       size_t next_idx = 1;
       bool has_guard = arms[ai]->nodes.size() > 1 &&
@@ -15834,7 +15889,14 @@ struct JIT {
     builder_.CreateBr(endBB);
 
     builder_.SetInsertPoint(endBB);
-    return builder_.CreateLoad(valueType_, resultAlloca, "match.res");
+    // Load the result (owned +1, independent of the subject) before tearing
+    // down the subject's scope: every normal path — a matched arm or the
+    // no-match fall-through — reaches here, so pop_scope releases the
+    // subject exactly once. Early exits (return/break/throw) bypass this and
+    // free it via the enclosing scope teardown instead.
+    auto result = builder_.CreateLoad(valueType_, resultAlloca, "match.res");
+    pop_scope();
+    return result;
   }
 
   llvm::Value* compile_while(const peg::Ast& ast) {
