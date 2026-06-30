@@ -1,17 +1,16 @@
-# Tensor port of microgpt with autograd.
+# Tensor port of microgpt with native autograd.
 #
-# Replaces the scalar Value autograd of microgpt.cul with a TNode
-# autograd over Phase 1 Tensor: each op records a backward closure,
-# `loss.backward()` propagates gradients through the graph, parameters
-# get updated via Adam.
+# Same transformer as microgpt.cul (scalar Value autograd), but built on
+# the Phase 1 Tensor primitive with the autograd living in C++ (tensor.h)
+# rather than a script-level wrapper. Every forward op records the
+# reverse-mode graph natively; `loss.backward()` walks it in C++. This
+# eliminates the per-op wrapper allocation, the backward-closure churn,
+# and the to_array() round trips a script-level autograd would pay — so a
+# layer-level op routes straight into BLAS with no Value-per-scalar churn.
 #
-# Architectural diff from microgpt.cul:
-# - Single-head attention (n_head=1, head_dim=n_embd) instead of 4
-#   heads. Eliminates per-head slicing / concat plumbing — keeps the
-#   transformer math but streamlines the autograd graph at this stage
-#   of the port.
-# - Otherwise identical: rmsnorm, causal attention with KV cache,
-#   ReLU MLP, residuals, lm_head + softmax + cross-entropy.
+# Parameters are bare leaf Tensors with requires_grad, held in tiny
+# mutable boxes ({ t: <tensor> }) so Adam can swap a box's tensor each
+# step while the forward keeps reading the same box by name.
 #
 # Usage: ./build/culebra --jit benchmarks/microgpt/microgpt_tensor.cul [num_steps]
 
@@ -50,323 +49,71 @@ let head_dim = n_embd / n_head
 let attn_scale = 1.0 / (to_float(head_dim) ** 0.5)
 let std_init = 0.08
 
-# === TNode autograd ===
+# === Native Tensor ops ===
+#
+# No TNode: the forward expressions below build the autograd graph in
+# C++ directly. Helpers are thin — they only encode shape conventions
+# (activations are column vectors [D, 1]).
 
-class TNode {
-  new(data, children = []) {
-    this.data = data
-    this.grad = Tensor.zeros(data.shape())
-    this._children = children
-    this._backward_fn = nil
-    this._visited = false
-  }
-  set_backward(f) { this._backward_fn = f }
-  zero_grad() { this.grad = Tensor.zeros(this.data.shape()) }
-  backward() {
-    mut topo = []
-    let build_topo = |node| if !node._visited {
-      node._visited = true
-      for ch in node._children { self(ch) }
-      topo.push(node)
-    }
-    build_topo(this)
-    this.grad = Tensor.ones(this.data.shape())
-    Tensor.eval(this.grad)
-    topo.reverse()
-    for tv in topo {
-      if tv._backward_fn != nil { tv._backward_fn() }
-    }
-    for tv in topo { tv._visited = false }
-  }
+# Embedding lookup: read row `idx` from a [N, D] param, return it as a
+# column vector [D, 1]. slice + transpose are differentiable, so the
+# gradient scatters back into the right row of the table automatically.
+let embed = fn (table, idx) {
+  table.t.slice(idx, idx + 1).transpose()
 }
 
-# Op factories. Each returns a TNode and wires its backward closure.
-# Closures capture parent TNodes and propagate gradient through the
-# op's local derivative.
-
-let ts_add = fn (a, b) {
-  let out = TNode.new(a.data + b.data, [a, b])
-  out.set_backward(fn() {
-    a.grad += out.grad
-    b.grad += out.grad
-  })
-  out
-}
-
-let ts_sub = fn (a, b) {
-  let out = TNode.new(a.data - b.data, [a, b])
-  out.set_backward(fn() {
-    a.grad += out.grad
-    b.grad -= out.grad
-  })
-  out
-}
-
-let ts_mul = fn (a, b) {
-  let out = TNode.new(a.data * b.data, [a, b])
-  out.set_backward(fn() {
-    a.grad += out.grad * b.data
-    b.grad += out.grad * a.data
-  })
-  out
-}
-
-let ts_mul_scalar = fn (a, s) {
-  # s is a Float (not a TNode). Used for fixed scalars: lr, attn_scale, etc.
-  let out = TNode.new(a.data * s, [a])
-  out.set_backward(fn() { a.grad += out.grad * s })
-  out
-}
-
-let ts_dot = fn (a, b) {
-  let out = TNode.new(a.data.dot(b.data), [a, b])
-  out.set_backward(fn() {
-    a.grad += out.grad.dot(b.data.transpose())
-    b.grad += a.data.transpose().dot(out.grad)
-  })
-  out
-}
-
-# Sum to scalar, wrapped as [1, 1].
-let ts_sum_to_scalar = fn (a) {
-  let s = a.data.sum()
-  let s_t = Tensor.from([[s]])
-  let out = TNode.new(s_t, [a])
-  out.set_backward(fn() {
-    let g = to_float(out.grad.to_array()[0][0])
-    a.grad += Tensor.ones(a.data.shape()) * g
-  })
-  out
-}
-
-# Embedding lookup: read row `idx` from `table` (a [N, D] TNode),
-# return as column vector [D, 1]. On backward, scatter the gradient
-# back into the corresponding row of table.grad.
-let ts_embed = fn (table, idx) {
-  let row = table.data.slice(idx, idx + 1).transpose()  # [D, 1]
-  Tensor.eval(row)
-  let out = TNode.new(row, [table])
-  out.set_backward(fn() {
-    # out.grad is [D, 1]; need to add it back as a row at table[idx].
-    # No scatter op in Phase 1, so go through Array.
-    let g_arr = out.grad.transpose().to_array()  # [[g0, g1, ...]]
-    let n_rows = table.data.shape()[0]
-    let n_cols = table.data.shape()[1]
-    mut grad_full = []
-    for r in 0..n_rows {
-      mut row_arr = []
-      for c in 0..n_cols { row_arr.push(0.0) }
-      grad_full.push(row_arr)
-    }
-    let row0 = g_arr[0]
-    for c in 0..n_cols { grad_full[idx][c] = to_float(row0[c]) }
-    table.grad += Tensor.from(grad_full)
-  })
-  out
-}
-
-# rmsnorm of a column vector x [D, 1]: y = x * scale where
-# scale = (mean(x*x) + eps)^-0.5.
-let ts_rmsnorm = fn (x) {
-  let D = to_float(x.data.shape()[0])
+# rmsnorm of a column vector x [D, 1]: y = x * (mean(x*x) + eps)^-0.5.
+# Fully native — the autograd derivative falls out of the elementwise
+# graph (no hand-written backward).
+let rmsnorm = fn (x) {
+  let d = to_float(x.shape()[0])
   let eps = 1.0e-5
-  let xx = x.data * x.data           # [D, 1]
-  let ms = xx.sum() / D              # scalar Float
-  let scale = (ms + eps) ** (-0.5)   # scalar Float
-  let y_data = x.data * scale        # [D, 1]
-  Tensor.eval(y_data)
-  let out = TNode.new(y_data, [x])
-  # Backward: dy_i = scale * (g_i - x_i * (sum_j g_j * x_j) * scale^2 / D)
-  # where g_i = out.grad[i].
-  out.set_backward(fn() {
-    let g = out.grad
-    let dot_gx = (g * x.data).sum()       # scalar
-    let coeff = dot_gx * (scale * scale) / D   # scalar
-    # dx_i = scale * (g_i - x_i * coeff)
-    x.grad += (g - x.data * coeff) * scale
-  })
-  out
+  let ms = (x * x).sum(0) * (1.0 / d)   # [1]
+  let scale = (ms + eps).pow(-0.5)      # [1]
+  x * scale                              # [D, 1] broadcast
 }
 
-# ReLU. Forward: max(0, x). Backward: pass-through where x > 0.
-let ts_relu = fn (x) {
-  let y_data = x.data.relu()
-  Tensor.eval(y_data)
-  let out = TNode.new(y_data, [x])
-  out.set_backward(fn() {
-    # Mask: 1 where x.data > 0, else 0. Construct via to_array round-trip.
-    let xa = x.data.to_array()
-    let n_rows = x.data.shape()[0]
-    let n_cols = x.data.shape()[1]
-    mut mask_rows = []
-    for r in 0..n_rows {
-      mut row = []
-      for c in 0..n_cols {
-        row.push(if to_float(xa[r][c]) > 0.0 { 1.0 } else { 0.0 })
-      }
-      mask_rows.push(row)
-    }
-    let mask = Tensor.from(mask_rows)
-    x.grad += out.grad * mask
-  })
-  out
+# Single-head attention over the cached keys/values for one head.
+# q_h is [hd, 1]; k_rows / v_rows are lists of [1, hd] row vectors.
+# K, V are [n_t, hd]; weights = softmax(K@q_h * scale); out = V^T @ w.
+let head_attention = fn (q_h, k_rows, v_rows, scale) {
+  let n_t = k_rows.size()
+  let kmat = Tensor.concat(k_rows)            # [n_t, hd]
+  let vmat = Tensor.concat(v_rows)            # [n_t, hd]
+  let logits = kmat.dot(q_h) * scale          # [n_t, 1]
+  let weights = logits.reshape([n_t]).softmax().reshape([n_t, 1])
+  vmat.transpose().dot(weights)               # [hd, 1]
 }
 
-# Linear: y = W @ x (no bias). Just ts_dot.
-let ts_linear = fn (w, x) { ts_dot(w, x) }
-
-# Softmax + cross-entropy combined: returns scalar loss = -log(p[target])
-# with the well-known dL/dlogits = p - one_hot(target).
-# logits is a TNode of shape [V, 1]. target is an int.
-let ts_softmax_ce_loss = fn (logits, target, n_for_avg) {
-  let V = logits.data.shape()[0]
-  # Forward: stable softmax then -log(p[target]).
-  let probs_t = logits.data.reshape([V]).softmax()
-  Tensor.eval(probs_t)
-  let p_arr = probs_t.to_array()
-  let p_target = to_float(p_arr[target])
-  let loss_val = -Math.log(p_target) / to_float(n_for_avg)
-  let loss_t = Tensor.from([[loss_val]])
-  let out = TNode.new(loss_t, [logits])
-  out.set_backward(fn() {
-    # dL/dlogits[i] = (p[i] - one_hot(target)[i]) / n
-    # out.grad is [[1.0]] when called from .backward() root — but it's
-    # accumulated through the loss TNode chain so use it to scale.
-    let g = to_float(out.grad.to_array()[0][0])
-    mut grad_rows = []
-    for i in 0..V {
-      let p_i = to_float(p_arr[i])
-      let dl = if i == target { p_i - 1.0 } else { p_i }
-      grad_rows.push([dl * g / to_float(n_for_avg)])
-    }
-    logits.grad += Tensor.from(grad_rows)
-  })
-  out
-}
-
-# Slice rows [start, end) of a column vector [D, 1]. Backward
-# scatters out.grad into a.grad's [start:end] rows, leaving the
-# rest unchanged. Phase 1 has no scatter op so we build a padded
-# Tensor with zeros outside the range.
-let ts_slice = fn (a, start, end) {
-  let out_data = a.data.slice(start, end)
-  Tensor.eval(out_data)
-  let out = TNode.new(out_data, [a])
-  out.set_backward(fn() {
-    let n_rows = a.data.shape()[0]
-    let n_cols = a.data.shape()[1]
-    let g_arr = out.grad.to_array()
-    mut padded = []
-    for r in 0..n_rows {
-      mut row = []
-      for c in 0..n_cols {
-        if r >= start && r < end {
-          row.push(to_float(g_arr[r - start][c]))
-        } else {
-          row.push(0.0)
-        }
-      }
-      padded.push(row)
-    }
-    a.grad += Tensor.from(padded)
-  })
-  out
-}
-
-# Concatenate column vectors along axis 0. Backward splits the
-# upstream grad and adds each piece to the corresponding part.
-let ts_concat = fn (parts) {
-  mut data_rows = []
-  for p in parts {
-    let p_arr = p.data.to_array()
-    for row in p_arr { data_rows.push(row) }
-  }
-  let out_data = Tensor.from(data_rows)
-  let out = TNode.new(out_data, parts)
-  out.set_backward(fn() {
-    mut s = 0
-    for p in parts {
-      let n_rows = p.data.shape()[0]
-      p.grad += out.grad.slice(s, s + n_rows)
-      s = s + n_rows
-    }
-  })
-  out
-}
-
-# Single-head attention for the current position. With n_head=1,
-# head_dim=n_embd: q, k, v are full vectors [n_embd, 1]. KV lists
-# accumulate over positions. Custom-backward to keep the autograd
-# graph compact (avoids one TNode per per-position dot product).
-let ts_single_head_attention = fn (q, k_list, v_list, scale) {
-  let n_t = k_list.size()
-  # Forward: logits[t] = q.T @ k_list[t] * scale (scalar); weights = softmax;
-  # head_out = sum_t weights[t] * v_list[t]
-  mut logits_arr = []
-  for t in 0..n_t {
-    let dp = (q.data * k_list[t].data).sum() * scale
-    logits_arr.push([dp])
-  }
-  let logits_t = Tensor.from(logits_arr)
-  let weights_t = logits_t.reshape([n_t]).softmax()
-  Tensor.eval(weights_t)
-  let w_arr = weights_t.to_array()
-
-  let n_embd_local = q.data.shape()[0]
-  mut acc = Tensor.zeros(n_embd_local, 1)
-  for t in 0..n_t {
-    acc += v_list[t].data * to_float(w_arr[t])
-  }
-  Tensor.eval(acc)
-
-  mut children = [q]
-  for kt in k_list { children.push(kt) }
-  for vt in v_list { children.push(vt) }
-  let out = TNode.new(acc, children)
-
-  out.set_backward(fn() {
-    # dL/dhead_out is in out.grad ([n_embd, 1]).
-    # Backward through head_out = sum_t w[t] * v[t]:
-    #   dL/dv[t] = out.grad * w[t]
-    #   dL/dw[t] = (out.grad * v[t].data).sum()  (scalar)
-    mut dL_w_arr = []
-    for t in 0..n_t {
-      let w_t = to_float(w_arr[t])
-      v_list[t].grad += out.grad * w_t
-      let dw = (out.grad * v_list[t].data).sum()
-      dL_w_arr.push(dw)
-    }
-    # Softmax backward: dL/dlogits[i] = w[i] * (dL/dw[i] - sum_j dL/dw[j]*w[j])
-    mut dot_dw_w = 0.0
-    for t in 0..n_t {
-      dot_dw_w = dot_dw_w + dL_w_arr[t] * to_float(w_arr[t])
-    }
-    mut dL_logits_arr = []
-    for t in 0..n_t {
-      let w_t = to_float(w_arr[t])
-      dL_logits_arr.push(w_t * (dL_w_arr[t] - dot_dw_w))
-    }
-    # dL/dq += sum_t dL_logits[t] * scale * k_list[t]
-    # dL/dk[t] = dL_logits[t] * scale * q
-    for t in 0..n_t {
-      let dl = dL_logits_arr[t]
-      q.grad += k_list[t].data * (dl * scale)
-      k_list[t].grad += q.data * (dl * scale)
-    }
-  })
-  out
+# Softmax + cross-entropy for one position: -log(softmax(logits)[target]),
+# averaged by n. logits is [V, 1]; native autograd recovers the usual
+# dL/dlogits = (p - onehot)/n through softmax + log.
+let ce_loss = fn (logits, target, n) {
+  let v = logits.shape()[0]
+  let probs = logits.reshape([v]).softmax()   # [V]
+  mut oh = []
+  for i in 0..v { oh.push(if i == target { 1.0 } else { 0.0 }) }
+  let onehot = Tensor.from(oh)                 # [V], constant (no grad)
+  let ce = (onehot * probs.log()).sum(0)       # rank-0
+  ce * (-1.0 / to_float(n))                    # rank-0 scalar loss
 }
 
 # === Parameter init ===
 #
-# Wrap each weight matrix as a TNode so .grad accumulates and Adam
-# can apply updates in place. Tensor.randn(out, in) is N(0,1); we
-# scale by std_init for the same distribution as the scalar version.
+# Each weight is a leaf Tensor with requires_grad, wrapped in a mutable
+# box (a one-field class — object-literal fields are immutable) so Adam
+# can replace box.t each step while the forward keeps reading box.t by
+# name. Tensor.randn(out, in) is N(0,1); scale by std_init to match the
+# scalar version's distribution.
+
+class Param {
+  new(t) { this.t = t }
+}
 
 let make_param = fn (out_dim, in_dim) {
   let t = Tensor.randn(out_dim, in_dim) * std_init
   Tensor.eval(t)
-  TNode.new(t)
+  Param.new(t.detach().requires_grad())
 }
 
 let wte = make_param(vocab_size, n_embd)
@@ -394,53 +141,51 @@ for layer in layers {
 puts("num params: {params.size()} weight matrices")
 
 # === Forward ===
+#
+# keys[li] / values[li] accumulate the per-position k / v projections
+# ([n_embd, 1] tensors) so attention is causal over the cache.
 
 let gpt_forward = fn (token_id, pos_id, keys, values) {
-  let tok_emb = ts_embed(wte, token_id)
-  let pos_emb = ts_embed(wpe, pos_id)
-  mut x = ts_rmsnorm(ts_add(tok_emb, pos_emb))
+  let tok_emb = embed(wte, token_id)
+  let pos_emb = embed(wpe, pos_id)
+  mut x = rmsnorm(tok_emb + pos_emb)
 
   for li in 0..n_layer {
     let x_residual1 = x
-    x = ts_rmsnorm(x)
+    x = rmsnorm(x)
     let layer = layers[li]
 
-    let q = ts_linear(layer.attn_wq, x)
-    let k = ts_linear(layer.attn_wk, x)
-    let v = ts_linear(layer.attn_wv, x)
+    let q = layer.attn_wq.t.dot(x)
+    let k = layer.attn_wk.t.dot(x)
+    let v = layer.attn_wv.t.dot(x)
     keys[li].push(k)
     values[li].push(v)
 
-    # Multi-head attention: slice q / keys / values per head, run
-    # single-head attention for each, concat back into [n_embd, 1].
     mut head_outs = []
     for h in 0..n_head {
       let hs = h * head_dim
-      let q_h = ts_slice(q, hs, hs + head_dim)
-      mut k_h_list = []
-      mut v_h_list = []
+      let q_h = q.slice(hs, hs + head_dim)
+      mut k_rows = []
+      mut v_rows = []
       for t in 0..keys[li].size() {
-        k_h_list.push(ts_slice(keys[li][t], hs, hs + head_dim))
-        v_h_list.push(ts_slice(values[li][t], hs, hs + head_dim))
+        k_rows.push(keys[li][t].slice(hs, hs + head_dim).transpose())
+        v_rows.push(values[li][t].slice(hs, hs + head_dim).transpose())
       }
-      head_outs.push(ts_single_head_attention(q_h, k_h_list, v_h_list, attn_scale))
+      head_outs.push(head_attention(q_h, k_rows, v_rows, attn_scale))
     }
-    let x_attn = ts_concat(head_outs)
-    x = ts_add(ts_linear(layer.attn_wo, x_attn), x_residual1)
+    let x_attn = Tensor.concat(head_outs)
+    x = layer.attn_wo.t.dot(x_attn) + x_residual1
 
     let x_residual2 = x
-    x = ts_rmsnorm(x)
-    let h1 = ts_relu(ts_linear(layer.mlp_fc1, x))
-    x = ts_add(ts_linear(layer.mlp_fc2, h1), x_residual2)
+    x = rmsnorm(x)
+    let h1 = layer.mlp_fc1.t.dot(x).relu()
+    x = layer.mlp_fc2.t.dot(h1) + x_residual2
   }
 
-  ts_linear(lm_head, x)
+  lm_head.t.dot(x)
 }
 
 # === Adam optimizer ===
-#
-# Per-parameter first/second-moment buffers, same hyperparameters as
-# the scalar version.
 
 let lr_base = 0.01
 let beta1 = 0.85
@@ -450,8 +195,8 @@ let eps_adam = 1.0e-8
 mut m_buf = []
 mut v_buf = []
 for p in params {
-  m_buf.push(Tensor.zeros(p.data.shape()))
-  v_buf.push(Tensor.zeros(p.data.shape()))
+  m_buf.push(Tensor.zeros(p.t.shape()))
+  v_buf.push(Tensor.zeros(p.t.shape()))
 }
 
 let adam_step = fn (step, num_steps) {
@@ -460,17 +205,16 @@ let adam_step = fn (step, num_steps) {
   let bc2 = 1.0 - beta2 ** to_float(step + 1)
   for i in 0..params.size() {
     let p = params[i]
-    let g = p.grad
-    m_buf[i] = m_buf[i] * beta1 + g * (1.0 - beta1)
-    v_buf[i] = v_buf[i] * beta2 + g * g * (1.0 - beta2)
+    let g = p.t.grad()
+    m_buf[i] = (m_buf[i] * beta1 + g * (1.0 - beta1)).detach()
+    v_buf[i] = (v_buf[i] * beta2 + g * g * (1.0 - beta2)).detach()
     Tensor.eval(m_buf[i], v_buf[i])
-    # Adam update (manually elementwise: numerator / sqrt(v_hat) is
-    # tricky without elementwise sqrt — approximate via pow(0.5).)
     let m_hat = m_buf[i] * (1.0 / bc1)
     let v_hat_pow = (v_buf[i] * (1.0 / bc2)).pow(0.5)
     let denom = v_hat_pow + eps_adam
-    p.data -= (m_hat / denom) * lr_t
-    Tensor.eval(p.data)
+    let new_t = (p.t - (m_hat / denom) * lr_t).detach()
+    Tensor.eval(new_t)
+    p.t = new_t.requires_grad()
   }
 }
 
@@ -488,24 +232,23 @@ while step < num_steps {
   tokens.push(BOS)
   let n = if block_size < tokens.size() - 1 { block_size } else { tokens.size() - 1 }
 
-  for p in params { p.zero_grad() }
+  for p in params { p.t.zero_grad() }
 
   mut keys = []
   mut values = []
   for _ in 0..n_layer { keys.push([]); values.push([]) }
 
-  # Forward all positions, accumulate loss.
   mut loss = nil
   for pos_id in 0..n {
     let logits = gpt_forward(tokens[pos_id], pos_id, keys, values)
-    let l = ts_softmax_ce_loss(logits, tokens[pos_id + 1], n)
-    loss = if loss == nil { l } else { ts_add(loss, l) }
+    let l = ce_loss(logits, tokens[pos_id + 1], n)
+    loss = if loss == nil { l } else { loss + l }
   }
 
   loss.backward()
   adam_step(step, num_steps)
 
-  let l_val = to_float(loss.data.to_array()[0][0])
+  let l_val = loss.item()
   if (step + 1) % 5 == 0 || step == 0 {
     puts("step {step+1} / {num_steps} | loss {l_val}")
   }
@@ -517,12 +260,6 @@ let train_time = Sys.time() - train_t0
 puts("final loss: {final_loss} (train {train_time}s, {1000.0 * train_time / to_float(num_steps)} ms/step)")
 
 # === Inference: sample new names ===
-#
-# Same scheme as microgpt.cul: feed BOS, autoregressively sample
-# tokens until BOS comes back or block_size is hit. Forward goes
-# through TNodes (the autograd graph is built but never used for
-# backward); we just read .data on the result and run a temperature-
-# scaled softmax + Random.weighted_choice.
 
 let n_samples = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 5 }
 let temperature = 0.5
@@ -539,11 +276,12 @@ if n_samples > 0 {
     mut token_id = BOS
     mut sample = []
     for pos_id in 0..block_size {
-      let logits_node = gpt_forward(token_id, pos_id, keys2, values2)
-      # Apply temperature, softmax, and convert to a Float Array for
-      # Random.weighted_choice. logits_node.data is [V, 1].
-      let scaled = logits_node.data * (1.0 / temperature)
-      let probs = scaled.reshape([vocab_size]).softmax()
+      # Sampling never backprops, so suppress graph building entirely.
+      let probs = Tensor.no_grad(fn () {
+        let logits_node = gpt_forward(token_id, pos_id, keys2, values2)
+        let scaled = logits_node * (1.0 / temperature)
+        scaled.reshape([vocab_size]).softmax()
+      })
       Tensor.eval(probs)
       let weights = probs.to_array()
       token_id = Random.weighted_choice(pop, weights)

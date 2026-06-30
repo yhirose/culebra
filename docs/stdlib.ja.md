@@ -1187,7 +1187,7 @@ let gw = w.grad().to_array()  # dL/dw
 典型的な学習ステップは、勾配をゼロ化 → forward → `.backward()` →
 optimizer 更新のため `.grad()` を読む → 新しい重みを `.detach()` して
 次ステップをクリーンな葉から始める、という流れです。
-`benchmarks/microgpt/microgpt_native.cul` の transformer が完全な実例
+`benchmarks/microgpt/microgpt_tensor.cul` の transformer が完全な実例
 （embedding、KV キャッシュ付き attention、RMSNorm、MLP、交差エントロピー、
 Adam）で、すべてこれらのメソッドだけで構築されています。
 

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-Generate sidebyside.html with two tabbed views over the microgpt files:
-  - Python ↔ Culebra scalar
-  - Culebra scalar ↔ Culebra Tensor
-
-Edit the SECTIONS_* tables below when section boundaries shift, then run:
+Generate sidebyside.html: Python ↔ Culebra scalar, section by section
+(algorithm correspondence). Edit the SECTIONS table below when section
+boundaries shift, then run:
     python3 benchmarks/microgpt/build_sidebyside.py
 """
 
@@ -14,7 +12,6 @@ from pathlib import Path
 DIR = Path(__file__).resolve().parent
 PY_PATH = DIR / 'microgpt.py'
 CUL_PATH = DIR / 'microgpt.cul'
-TENSOR_PATH = DIR / 'microgpt_tensor.cul'
 OUT_PATH = DIR / 'sidebyside.html'
 
 
@@ -22,7 +19,7 @@ OUT_PATH = DIR / 'sidebyside.html'
 # "no equivalent" and renders the empty-cell placeholder. Ranges are
 # inclusive 1-based line numbers in the source files.
 
-# Tab 1: Python vs Culebra scalar — algorithm correspondence.
+# Python vs Culebra scalar — algorithm correspondence.
 SECTIONS_PY_SCALAR = [
     ('Module header &amp; imports',           (1, 13),    (1, 5)),
     ('Seed + data file check',                (14, 21),   (7, 14)),
@@ -43,42 +40,6 @@ SECTIONS_PY_SCALAR = [
     ('Adam state init',                       (149, 152), (209, 216)),
     ('Training loop',                         (154, 188), (218, 262)),
     ('Final loss + inference',                (190, 207), (264, 289)),
-]
-
-# Tab 2: Culebra scalar vs Culebra Tensor — port from per-scalar Value
-# autograd to per-Tensor TNode autograd. Section ordering follows the
-# tensor file's top-to-bottom layout (which differs from scalar — e.g.,
-# tensor places Hyperparameters before the autograd class). Scalar
-# helpers that have no Tensor counterpart (sum_v, max_data, add_v) get
-# their own row pinned in scalar order so each appears once in the table.
-SECTIONS_SCALAR_TENSOR = [
-    ('Module header (Tensor adds an arch-diff note)',           (1, 5),     (1, 16)),
-    ('Seed + data file check',                                  (7, 14),    (18, 26)),
-    ('Load training documents',                                 (16, 22),   (28, 34)),
-    ('Vocabulary (sorted unique chars)',                        (24, 30),   (36, 41)),
-    ('Hyperparameters (tensor places them before the autograd class)',
-                                                                (97, 103),  (43, 51)),
-    ('Autograd class — Value (per-scalar special methods + backward) vs TNode (Tensor wrapper, no special methods)',
-                                                                (33, 88),   (53, 81)),
-    ('sum_v / max_data (scalar helpers; Tensor uses Tensor.sum / .argmax)',
-                                                                (90, 94),   None),
-    ('Op factories: arithmetic + dot + sum_to_scalar + embed (Tensor only — scalar uses Value special methods)',
-                                                                None,       (83, 166)),
-    ('rmsnorm — scalar helper / Tensor op factory',             (159, 163), (168, 189)),
-    ('ReLU — scalar inline (Value.relu) / Tensor op factory',   None,       (191, 213)),
-    ('linear — scalar dot+linear helpers / Tensor ts_linear (just ts_dot)',
-                                                                (145, 150), (215, 216)),
-    ('softmax — scalar standalone / Tensor fuses softmax + cross-entropy',
-                                                                (152, 157), (218, 245)),
-    ('add_v (scalar helper; Tensor uses + on Tensor)',          (165, 165), None),
-    ('Op factories: slice + concat + single-head attention (Tensor only)',
-                                                                None,       (247, 358)),
-    ('Parameter init — scalar matrix factory + class GPT / Tensor make_param + TNode',
-                                                                (105, 142), (360, 394)),
-    ('Forward pass (gpt)',                                      (167, 206), (396, 438)),
-    ('Adam optimizer',                                          (209, 216), (440, 475)),
-    ('Training loop',                                           (218, 262), (477, 517)),
-    ('Final loss + inference / sampling',                       (264, 289), (519, 556)),
 ]
 
 
@@ -274,25 +235,17 @@ def render_view(left_lines, left_mask, left_lang,
 def main() -> None:
     py_lines = PY_PATH.read_text().splitlines()
     cul_lines = CUL_PATH.read_text().splitlines()
-    tensor_lines = TENSOR_PATH.read_text().splitlines()
 
     py_mask = docstring_mask(py_lines)
     cul_mask = [False] * len(cul_lines)
-    tensor_mask = [False] * len(tensor_lines)
 
     py_total = len(py_lines)
     cul_total = len(cul_lines)
-    tensor_total = len(tensor_lines)
 
     body_pyscalar = render_view(
         py_lines, py_mask, 'py',
         cul_lines, cul_mask, 'cul',
         SECTIONS_PY_SCALAR,
-    )
-    body_scalartensor = render_view(
-        cul_lines, cul_mask, 'cul',
-        tensor_lines, tensor_mask, 'cul',
-        SECTIONS_SCALAR_TENSOR,
     )
 
     html = f'''<!doctype html>
@@ -470,13 +423,9 @@ def main() -> None:
 <body>
 <header>
   <h1>microgpt
-    <span class="sub">Karpathy autograd — Python ({py_total}) · Culebra scalar ({cul_total}) · Culebra Tensor ({tensor_total})</span>
+    <span class="sub">Karpathy autograd — Python ({py_total}) · Culebra scalar ({cul_total})</span>
   </h1>
 </header>
-<div class="tabs">
-  <button class="tab active" data-target="view-py-scalar">Python ↔ Culebra (scalar)</button>
-  <button class="tab" data-target="view-scalar-tensor">Culebra scalar ↔ Tensor</button>
-</div>
 <main>
   <div id="view-py-scalar" class="view">
     <table class="layout">
@@ -491,36 +440,14 @@ def main() -> None:
       </tbody>
     </table>
   </div>
-  <div id="view-scalar-tensor" class="view hidden">
-    <table class="layout">
-      <thead>
-        <tr>
-          <th class="col-head col-left">microgpt.cul <span class="lang">Culebra scalar (--jit)</span></th>
-          <th class="col-head col-right">microgpt_tensor.cul <span class="lang">Culebra Tensor (--jit)</span></th>
-        </tr>
-      </thead>
-      <tbody>
-{body_scalartensor}
-      </tbody>
-    </table>
-  </div>
 </main>
-<script>
-  document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {{
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    b.classList.add('active');
-    document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-    document.getElementById(b.dataset.target).classList.remove('hidden');
-  }}));
-</script>
 </body>
 </html>
 '''
     OUT_PATH.write_text(html)
     print(f'wrote {OUT_PATH} ({len(html.splitlines())} lines)')
-    print(f'  microgpt.py:         {py_total} lines')
-    print(f'  microgpt.cul:        {cul_total} lines')
-    print(f'  microgpt_tensor.cul: {tensor_total} lines')
+    print(f'  microgpt.py:  {py_total} lines')
+    print(f'  microgpt.cul: {cul_total} lines')
 
 
 if __name__ == '__main__':

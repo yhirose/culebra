@@ -8,16 +8,16 @@ overloading via special methods, auto-reflection, `Math.*`, `Random.*`).
 
 - `microgpt.py`         — Karpathy's reference (Python).
 - `microgpt.cul`        — Culebra port, scalar autograd, HOF-idiomatic style.
-- `microgpt_tensor.cul` — Tensor port: same architecture but single-head
-                          attention, autograd built on Phase 1 Tensor + TNode.
-                          ~15× faster per step than the scalar version.
+- `microgpt_tensor.cul` — Tensor port: same architecture, autograd built into the
+                          C++ Tensor primitive (native reverse-mode), so the
+                          forward records the graph and `loss.backward()` walks it
+                          in C++. ~50–100× faster per step than the scalar version.
 - `names.txt`           — Training data (gitignored). Run `just fetch-names`.
-- `sidebyside.html`     — Static side-by-side viewer with two tabs:
-                          Python ↔ Culebra scalar (algorithm correspondence)
-                          and Culebra scalar ↔ Tensor (port progression).
-- `build_sidebyside.py` — Regenerator for `sidebyside.html`. Re-run after
-                          any edit to the three source files; section
-                          line ranges live in `SECTIONS_*` near the top.
+- `sidebyside.html`     — Static side-by-side viewer: Python ↔ Culebra scalar
+                          (algorithm correspondence).
+- `build_sidebyside.py` — Regenerator for `sidebyside.html`. Re-run after any
+                          edit to `microgpt.py` / `microgpt.cul`; section line
+                          ranges live in `SECTIONS_PY_SCALAR` near the top.
 
 ## Running
 
@@ -35,91 +35,77 @@ python3 benchmarks/microgpt/microgpt.py [num_steps]
 
 Apple Silicon, single core, training only (`n_samples=0`).
 
-### Scalar microgpt (mean of 5 runs)
+Compare the **per-step rate** (steady state), not total wall: the scalar
+port's wall includes ~1–2 s of JIT warmup, and the Tensor port's wall is
+warmup-dominated (compute is in BLAS, not JIT'd code).
 
-| step  | Python  | Culebra `--jit` | Culebra interp | ratio (Cul/Py) |
-|-------|--------:|----------------:|---------------:|---------------:|
-|    20 |  1.39 s |          1.99 s |         ~55  s |          1.43× |
-|   100 |  6.81 s |          5.77 s |              — |    **0.85×**   |
-|   200 | 13.06 s |         10.85 s |              — |    **0.83×**   |
+### Tensor microgpt (`microgpt_tensor.cul`) — the showcase
 
-**Below ~50 steps Python wins** because Culebra pays ~1 s of JIT
-warmup. Past that the per-step rate dominates: Culebra **~51 ms**
-vs Python **~63 ms** (100 → 200 incremental). 1000-step extrapolation:
-Culebra ~52 s vs Python ~63 s — Culebra ~17% faster.
+Same architecture as the scalar version (n_head=4, head_dim=4), with the
+autograd built into the C++ Tensor primitive (native reverse-mode).
+Per-step (steady-state train loop, n_samples=0):
 
-Both Culebra backends produce identical loss values bit-for-bit;
-Python diverges due to a different Mersenne-Twister shuffle sequence
-(expected, not a correctness issue).
+| implementation              | ms/step |
+|-----------------------------|--------:|
+| Culebra Tensor `--jit`      | **~1.1 ms** |
+| Culebra Tensor interp       | ~5 ms |
+| Python (scalar reference)   | ~82 ms |
 
-### Tensor microgpt (`microgpt_tensor.cul`)
+The Tensor port is **~50–100× faster per step than the scalar port** (one
+layer-level op per Tensor node + BLAS, instead of thousands of per-scalar
+`Value` objects). interp and JIT produce **bit-identical loss**. The total
+wall (~2.5 s for 100 steps) is mostly the up-front JIT compile, not the
+loop (~0.1 s) — `--jit-faststart` or the on-disk object cache
+(`CULEBRA_JIT_CACHE=auto`) cut that warmup without per-step cost.
 
-Same architecture as the scalar version (n_head=4, head_dim=4) —
-no remaining differences. Single-run wall time, 100 training steps,
-JIT, n_samples=0:
+### Scalar microgpt — alloc-bound, ~parity with Python
 
-| implementation         |  total wall |  ms/step |
-|------------------------|------------:|---------:|
-| Culebra Tensor (`--jit`) |    ~4.5 s |   ~2.8 ms |
-| Culebra scalar (`--jit`) |     6.21 s |    ~52 ms |
+The scalar port builds thousands of `Value` objects per step (one per
+scalar arithmetic op), so it is **alloc-bound**: GC + refcount + malloc are
+~55% of steady-state time. Current per-step is **~Python-parity-to-slower**
+(JIT ~110 ms/step vs Python ~82 ms/step on this machine; absolute figures
+drift with load — compare ratios).
 
-The Tensor wall is now JIT-compile-warmup-dominated: ~4.2 s compiling
-the module up front, then only ~0.28 s in the 100-step train loop
-(2.8 ms/step). Compare per-step rate, not total wall — at this size
-warmup swamps the loop, so total-wall is mostly a compile-time figure.
-
-Most of that warmup is the LLVM backend (instruction selection +
-register allocation), not the IR passes. `--jit-faststart` runs the
-backend with FastISel, roughly halving warmup; because the Tensor port's
-hot compute is in BLAS rather than JIT-emitted code, per-step is
-unchanged. It is the opposite trade for the scalar port — there all
-arithmetic is JIT'd, so `--jit-faststart` slows per-step.
-
-`--jit-faststart` is opt-in and interp-symmetric (the interp↔JIT
-differential corpus passes under it). Use it for BLAS-bound runs where
-warmup dominates and the JIT'd code is not the hot path. The other
-byte-identical way to cut warmup is the on-disk object cache
-(`CULEBRA_JIT_CACHE=auto`), which reloads the optimized O2 code with no
-per-step penalty.
-
-The Tensor port is **~18× faster per step** than the scalar version.
-The scalar microgpt builds thousands of `Value` objects per training
-step (one per scalar arithmetic op); the Tensor port builds a few
-hundred `TNode`s per step (one per layer-level op + per-head slice
-+ concat) and routes each linear into BLAS.
+An earlier version of this README reported the scalar JIT *beating* Python
+(~0.85×). That advantage relied on the old minor-only cycle collector,
+which was **fast but leaked** (microgpt grew to ~5 GB). The current
+conservative mark-sweep backstop is sound (no leak) but pays a real cost on
+this GC-bound workload — roughly the ~1.5× difference. Recovering it
+precisely (Julia-style shadow-stack rooting → cycle-only collection) is
+tracked separately; the decisive-speed answer for ML on Culebra is the
+**Tensor** path above. Both backends still produce bit-identical loss
+(Python diverges only via a different Mersenne-Twister shuffle, expected).
 
 ## Where time goes (`--jit`, 500-step, 8 s sample post-warmup)
 
 | Category                                 | Inclusive |
 |------------------------------------------|----------:|
-| `Value.__add__` / `.__mul__` (dispatch + body) | ~53% |
-| `build_class_instance` (Value allocation)| ~30% |
-| Cycle GC (`_do_collect`)                 | ~17% |
-| Refcount drop (`_culebra_value_release_impl`) |  ~5% |
+Leaf self-time (a fresh sample), grouped — memory management dominates:
 
-(Inclusive = subtree time, so rows overlap. The genuine bottleneck is
-the per-step `Value` object lifecycle.)
+| Category                                   | Self-time |
+|--------------------------------------------|----------:|
+| GC (mark-sweep + registry: `collect_impl` / `adopt` / `enumerate_children` / sweep / madvise) | ~28% |
+| Refcount (`_culebra_value_release_impl` / `retain` / swap) | ~19% |
+| malloc / free (nanov2)                     | ~8% |
+| thread-local access (`_tlv_get_addr`)      | ~6% |
+| shape / key compare (`memcmp`)             | ~5% |
 
-Further wins now need structural changes:
-- **Slab allocator** (struct fast path, done) — the hot runtime structs
-  (`JitObject` / `JitArray` / `JitCell` / `JitClosure` / ...) now come
-  from a per-Runtime non-moving size-class slab (`jit_slab.h`) via member
-  `operator new`/`delete`, ~7% faster per step on this bench. Routing the
-  variable-length buffers through the same slab is a *dead end*, confirmed
-  by measurement: the growth-prone `JitArray` items / closure captures
-  thrash a single-cursor bump slab, and even the fixed-size `JitObject`
-  slot buffer (`reserve(8)`, ~192 B, no growth — the "ideal" case) routed
-  via a stateless STL allocator ran ~9% *slower*. The slab cuts malloc
-  *calls* yet loses, so the bottleneck is locality, not call count: a
-  coarse size-class bump slab spreads the constantly-read slot data across
-  a large working set, where system malloc (macOS nanov2 magazines) keeps
-  hot blocks dense. The only remaining angle on slot churn is **inline
-  storage** (first N slots inside the struct — attacks locality, the
-  opposite axis), but that is a codegen-sensitive layout change; NaN-boxing
-  may shrink the churn enough to make it moot.
-- **NaN-boxing** — collapse `Value` to an unboxed double.
-- **Matrix formulation** — drop per-step Object count by orders of
-  magnitude (Phase 5.4).
+The genuine bottleneck is the per-step `Value` object lifecycle: each scalar
+op creates one heap `Value` (a class instance) + two `JitArray`s = 3
+GC-registered objects.
+
+Most of the GC cost is **over-retention by the conservative stack scan**:
+each collect marks ~200–400k objects (wildly varying) while the true working
+set is ~36k. The high-leverage fix is **precise rooting** (a Julia-style
+tagged-value shadow stack) so RC reclaims the bulk and the collector only
+handles real cycles — tracked in `.claude/plans/jit-precise-gc-shadow-stack.md`.
+The structural answer that sidesteps per-scalar Values entirely is the
+**Tensor** port above (one node per layer-level op + BLAS).
+
+Levers already measured and *rejected* (do not retry): NaN-boxing /
+inline-buffer / generational GC (single-digit % ceiling, see the
+value-model measurement notes), and the slab allocator's variable-length
+path (locality regression).
 
 ## Optimization history
 

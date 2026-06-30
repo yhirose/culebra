@@ -1226,7 +1226,7 @@ let gw = w.grad().to_array()  # dL/dw
 A typical training step zeroes grads, runs the forward, calls
 `.backward()`, reads `.grad()` for the optimizer update, then `.detach()`
 on the new weights to start the next step from a clean leaf. The
-`benchmarks/microgpt/microgpt_native.cul` transformer is a full worked
+`benchmarks/microgpt/microgpt_tensor.cul` transformer is a full worked
 example (embeddings, attention with a KV cache, RMSNorm, MLP,
 cross-entropy, Adam) built entirely on these methods.
 
