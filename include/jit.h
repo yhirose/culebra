@@ -17959,8 +17959,11 @@ struct JIT {
         builder_.CreateBr(mergeBB);
 
         builder_.SetInsertPoint(defBB);
+        // compile() already yields a +1-owned value — the same ownership the
+        // caller transfers into the arg slab for a passed argument — so the
+        // slot below absorbs it directly. An extra retain here would leak the
+        // default's +1 (the slot only releases one ref at scope exit).
         auto defVal = compile(*paramDefaults[i]);
-        emit_value_retain(defVal);  // match caller's +1 transfer discipline
         auto defEndBB = builder_.GetInsertBlock();
         builder_.CreateBr(mergeBB);
 
