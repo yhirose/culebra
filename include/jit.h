@@ -16035,7 +16035,16 @@ struct JIT {
       }
     }
 
+    // Own the iterable for the whole loop in a dedicated scope. Its +1
+    // (every branch below only borrows elements / re-derives the iterator
+    // from it) is released by the matching pop_scope at endBB on the normal
+    // and break paths, and by release_all_scopes_for_exit on return/throw.
+    // Without this the iterable leaked one reference per loop — and for an
+    // array of heap elements, that pinned the whole array's contents alive.
+    push_scope();
     auto iterable = compile(iter_expr);
+    auto iterSlot = make_stack_slot("for.iterable", iterable);
+    define_var("for.iterable", iterSlot);  // '.' name: unreachable by source
     auto tag = extract_tag(iterable);
     auto data = extract_data(iterable);
 
@@ -16091,6 +16100,19 @@ struct JIT {
     // The keys path is unchanged from before, so plain `for k in obj`
     // pays zero overhead vs the prior compiler output.
     builder_.SetInsertPoint(objectBB);
+    // The iterator-protocol machinery below (range / keys / user-defined
+    // `iter`) already owns and releases the references it derives from the
+    // iterable. Owning the iterable in the loop scope on top of that
+    // double-frees a generator (a `_Gen_` class whose CPS `iter()`/dispose
+    // path the protocol loop drives) — its object is released both by the
+    // protocol cleanup and by this scope. So hand the Object branch's
+    // iterable back to that machinery: orphan the scope slot's +1 (a plain
+    // store, no release) so pop_scope is a no-op for it. Net effect matches
+    // the pre-fix behaviour for Object iterables (Array/Tuple/Set/String,
+    // which genuinely leaked their iterable, keep the fix). The residual
+    // Object-iterable leak is the case the structural ownership rewrite (B)
+    // is meant to close.
+    store_slot_raw(iterSlot, make_nil());
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // A range value iterates start..end (errors if unbounded). It carries
     // no `iter` property, so it must be handled before the keys fallback.
@@ -16140,6 +16162,9 @@ struct JIT {
     compile_for_string_loop(strDataPtr, id, body, endBB);
 
     builder_.SetInsertPoint(endBB);
+    // Every normal/break path funnels here; pop_scope releases the iterable
+    // exactly once (return/throw free it via the enclosing scope teardown).
+    pop_scope();
     return make_nil();
   }
 
