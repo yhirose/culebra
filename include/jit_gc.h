@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -306,6 +307,15 @@ class Heap {
   // to it (completeness is best-effort). So callers/tests may only assume
   // "reachable survives"; the exact reclaimed set is non-deterministic.
   size_t collect() {
+    // Experimental refcount-based cycle collection (CPython gc_refs): seed
+    // roots purely from the reference counts the compiler already maintains —
+    // no stack scan, no shadow stack. Because a live value's refcount counts
+    // it, this dissolves the safepoint-liveness problem (a freshly allocated
+    // object held only in a register has refcount 1 and zero internal refs, so
+    // it is a root and survives). Off by default; the brutal correctness test
+    // for whether the JIT refcounts are accurate enough to retire the
+    // conservative scan. See collect_refs.
+    if (gc_refs_mode()) return collect_refs();
     // Experimental precise-only mode (Phase 3 dry-run): seed solely from the
     // precise roots — the JIT shadow stack plus the non-stack tables — with NO
     // conservative stack scan. A missing root frees a live object, so this is
@@ -344,6 +354,106 @@ class Heap {
   static bool precise_only() {
     static const bool s = std::getenv("CULEBRA_GC_PRECISE_ONLY") != nullptr;
     return s;
+  }
+  // CULEBRA_GC_REFS=1 selects refcount-based cycle collection (see collect()).
+  static bool gc_refs_mode() {
+    static const bool s = std::getenv("CULEBRA_GC_REFS") != nullptr;
+    return s;
+  }
+
+  // Refcount-based cycle collection (CPython's gc_refs algorithm). Roots are
+  // found from the reference counts the compiler maintains, not by scanning
+  // the stack:
+  //   1. gc_refs[o] = o's refcount (the i64 at offset 0 of every GC struct).
+  //   2. For each object, walk its children and subtract one from each — this
+  //      removes the references that live INSIDE the heap.
+  //   3. Whatever refcount remains came from OUTSIDE the heap (a stack/register
+  //      value, a global table, a borrow) — i.e. o is reachable from a root.
+  //      Seed those (plus pinned) and let the shared core mark transitively.
+  // Unmarked survivors are reachable only from each other = an unreferenced
+  // cycle; the shared sweep reclaims them. RC already freed everything else.
+  //
+  // Safety rests on the same accuracy the deterministic-drop RC already needs:
+  // enumerate_children must report each internal reference exactly as many
+  // times as it is counted in the child's refcount (no over-report). An
+  // UNDER-report or a too-high refcount only over-retains (safe); the danger
+  // is over-subtraction, which the GC_STRESS + difftest gates catch. This is
+  // the same algorithm the interpreter's InterpGC uses, so the two backends
+  // share one cycle-collection model.
+  size_t collect_refs() {
+    if (gc_refs_diag()) collect_refs_diag();
+    return collect_impl([this](auto&& push) {
+      std::unordered_map<void*, int64_t> gc_refs;
+      gc_refs.reserve(objects_.size());
+      objects_.for_each([&](void* o, GcHeader&) {
+        gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));  // refcount @ off 0
+      });
+      std::vector<void*> kids;
+      objects_.for_each([&](void* o, GcHeader& h) {
+        if (!children_fn_) return;
+        kids.clear();
+        children_fn_(o, h.type_tag, kids);
+        for (void* c : kids) {
+          auto it = gc_refs.find(c);
+          if (it != gc_refs.end()) it->second--;
+        }
+      });
+      for (auto& [o, refs] : gc_refs) {
+        if (refs > 0) push(o);
+      }
+    });
+  }
+
+  static bool gc_refs_diag() {
+    static const bool s = std::getenv("CULEBRA_GC_REFS_DIAG") != nullptr;
+    return s;
+  }
+
+  // Pinpoint why gc_refs over-retains: mark the gc_refs-reachable set and the
+  // conservative-reachable set, then report objects gc_refs keeps that the
+  // conservative scan would free (the leak), broken down by type tag. If the
+  // refcount of such an object exceeds its counted internal references, the
+  // refcount is inflated = an RC leak; otherwise gc_refs's child enumeration is
+  // missing an internal edge.
+  void collect_refs_diag() {
+    std::unordered_map<void*, int64_t> gc_refs;
+    objects_.for_each([&](void* o, GcHeader&) {
+      gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));
+    });
+    std::vector<void*> kids;
+    objects_.for_each([&](void* o, GcHeader& h) {
+      if (!children_fn_) return;
+      kids.clear();
+      children_fn_(o, h.type_tag, kids);
+      for (void* c : kids) {
+        auto it = gc_refs.find(c);
+        if (it != gc_refs.end()) it->second--;
+      }
+    });
+    std::unordered_set<void*> refs_live, cons_live;
+    mark_reachable(refs_live, [&](auto&& push) {
+      for (auto& [o, r] : gc_refs) if (r > 0) push(o);
+    });
+    mark_reachable(cons_live, [this](auto&& push) { scan_roots(push); });
+    size_t by_tag[256] = {0};
+    int64_t inflated = 0, zero_internal = 0, leak = 0;
+    for (void* o : refs_live) {
+      if (cons_live.count(o)) continue;  // genuinely live — keep
+      leak++;
+      GcHeader* h = objects_.find(o);
+      if (h) by_tag[h->type_tag]++;
+      // gc_refs[o] here is refcount - internal; > 0 means external refs remain.
+      if (gc_refs[o] > 0) inflated++;  // refcount exceeds internal count
+      else zero_internal++;            // kept only via a retained-live ancestor
+    }
+    std::fprintf(stderr,
+        "[gc-refs-diag] heap=%zu refs_live=%zu cons_live=%zu leak=%lld "
+        "(inflated_rc=%lld transitively_held=%lld) tags:",
+        objects_.size(), refs_live.size(), cons_live.size(),
+        (long long)leak, (long long)inflated, (long long)zero_internal);
+    for (int t = 0; t < 256; t++)
+      if (by_tag[t]) std::fprintf(stderr, " %d=%zu", t, by_tag[t]);
+    std::fprintf(stderr, "\n");
   }
 
   // The non-stack root sources: registered global slots plus the runtime's
@@ -423,8 +533,21 @@ class Heap {
     if (++alloc_since_collect_ < collect_threshold_) return;
     alloc_since_collect_ = 0;
     collect();
+    // gc_refs only reclaims reference cycles — RC already frees everything
+    // acyclic immediately and deterministically — so it can run far less often
+    // than the conservative backstop (which is the sole reclaimer of all
+    // unreachable residue). Cycles accumulate slowly, so amortise the
+    // whole-heap subtraction pass over many more allocations. The multiplier is
+    // tunable via CULEBRA_GC_MULT for the frequency/memory tradeoff study.
+    static const size_t mult = []() -> size_t {
+      if (const char* m = std::getenv("CULEBRA_GC_MULT")) {
+        long v = std::atol(m);
+        if (v > 0) return static_cast<size_t>(v);
+      }
+      return gc_refs_mode() ? 16 : 2;
+    }();
     collect_threshold_ =
-        stress() ? 1 : std::max(kMinThreshold, objects_.size() * 2);
+        stress() ? 1 : std::max(kMinThreshold, objects_.size() * mult);
   }
 
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.

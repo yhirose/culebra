@@ -1,0 +1,72 @@
+# GC leak pattern battery — one isolated allocation pattern per name.
+#
+# Each pattern allocates a large amount of heap garbage that is all dead by the
+# time the loop ends. A correct reference count frees it immediately, so very
+# few objects remain live. The companion runner (gc_leak_check.sh) executes
+# each pattern twice: once under the conservative backstop (real reachability)
+# and once under CULEBRA_GC_REFS=1 (collection seeded purely from reference
+# counts). If a codegen path leaks a release, its objects keep a non-zero
+# refcount and survive the refcount-seeded collection — so `gc_refs` live count
+# stays ~N while the conservative count stays flat. That gap localises the leak
+# to a single operation.
+#
+# Usage: culebra --jit gc_leak_patterns.cul <pattern> [N]
+
+let which = if Sys.argv.size() > 0 { Sys.argv[0] } else { "list" }
+let N = if Sys.argv.size() > 1 { to_long(Sys.argv[1]) } else { 50000 }
+
+# A small class exercising constructors, defaults, operators, and methods.
+class V {
+  new(data, children = [], grads = []) {
+    this.data = data
+    this.children = children
+    this.grads = grads
+  }
+  __add__(o) { V.new(this.data + o.data, [this, o], [1.0, 1.0]) }
+  __mul__(o) { V.new(this.data * o.data, [this, o], [o.data, this.data]) }
+  twice()    { V.new(this.data * 2, [this], [2.0]) }
+}
+
+fn run(which, N) {
+  if which == "object_literal" {
+    for i in 0..N { let _ = { v: i, w: i + 1 } }
+  } else if which == "array_literal" {
+    for i in 0..N { let _ = [i, i + 1, i + 2] }
+  } else if which == "instance_plain" {
+    # every argument explicit — no default value is evaluated
+    for i in 0..N { let _ = V.new(i, [], []) }
+  } else if which == "default_param" {
+    # the `children = []` / `grads = []` defaults fire and allocate
+    for i in 0..N { let _ = V.new(i) }
+  } else if which == "operator_overload" {
+    for i in 0..N { let _ = V.new(i, [], []) + V.new(i + 1, [], []) }
+  } else if which == "user_method" {
+    for i in 0..N { let _ = V.new(i, [], []).twice() }
+  } else if which == "free_fn" {
+    for i in 0..N { let _ = mk(i) }
+  } else if which == "ufcs_chain" {
+    for i in 0..N { let _ = V.new(i, [], []).twice().twice() }
+  } else if which == "closure" {
+    for i in 0..N { let n = i; let f = || n + 1; let _ = f() }
+  } else if which == "map_collect" {
+    for i in 0..N { let _ = range(4).map(|x| x * 2).collect() }
+  } else if which == "reduce" {
+    for i in 0..N { let _ = [V.new(1, [], []), V.new(2, [], [])].reduce(V.new(0, [], []), |a, b| a + b) }
+  } else {
+    print("unknown pattern: " + which + "\n")
+    return
+  }
+  let st = GC.stat()
+  print(which + " live=" + st.live_objects.to_string() + "\n")
+}
+
+fn mk(x) { V.new(x, [], []) }
+
+if which == "list" {
+  let names = ["object_literal", "array_literal", "instance_plain", "default_param",
+               "operator_overload", "user_method", "free_fn", "ufcs_chain",
+               "closure", "map_collect", "reduce"]
+  for n in names { print(n + "\n") }
+} else {
+  run(which, N)
+}
