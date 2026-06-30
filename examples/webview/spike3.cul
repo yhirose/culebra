@@ -9,11 +9,13 @@
 
 import Desktop from './desktop.cul'
 
+# assets: dev = live disk / AOT = baked into the binary. routes: just the app's
+# API — the facade does the server, window, and shutdown.
 Desktop.run({
   title: "culebra desktop — Spike 3",
   size: [720, 560],
-  assets: Embed.dir("dist"),          # dev: live disk / AOT: baked into the binary
-  routes: fn(srv) {                   # just the app's API — the rest is the facade
+  assets: Embed.dir("dist"),
+  routes: fn(srv) {
     srv.get("/api/hello", fn(req) {
       { content_type: "application/json",
         body: JSON.stringify({ message: "Hello from culebra's local server 🛸" }) }
