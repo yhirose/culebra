@@ -14689,7 +14689,7 @@ struct JIT {
                            : (ope == '-') ? rt::num_sub
                                           : nullptr;
       if (!rt_name) throw std::runtime_error("invalid additive operator");
-      lhs = emit_binop_dispatch(
+      auto result = emit_binop_dispatch(
           lhs, rhs, rt_name,
           [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
             auto r = (ope == '+') ? builder_.CreateAdd(ld, rd, "add")
@@ -14701,6 +14701,11 @@ struct JIT {
                                   : builder_.CreateFSub(lD, rD, "fsub");
             return make_float(r);
           });
+      // Consume the operand temps (+1 owned; no-op for immediates). Frees a
+      // heap operand of an overloaded `+`/`-`.
+      emit_value_release(lhs);
+      emit_value_release(rhs);
+      lhs = result;
     }
     return lhs;
   }
@@ -14717,7 +14722,7 @@ struct JIT {
       if (ope == '@') {
         auto ptrTy = llvm::PointerType::get(ctx_, 0);
         (void)ptrTy;
-        lhs = emit_call(
+        auto result = emit_call(
             module_->getOrInsertFunction(
                 rt::num_matmul, valueType_,
                 builder_.getInt8Ty(), builder_.getInt64Ty(),
@@ -14726,6 +14731,9 @@ struct JIT {
             {extract_tag(lhs), extract_data(lhs),
              extract_tag(rhs), extract_data(rhs),
              current_line_val(), current_column_val()}, "matmul");
+        emit_value_release(lhs);  // operands consumed by `@`
+        emit_value_release(rhs);
+        lhs = result;
         continue;
       }
 
@@ -14738,7 +14746,7 @@ struct JIT {
           throw std::runtime_error("invalid multiplicative operator");
       }
 
-      lhs = emit_binop_dispatch(
+      auto result = emit_binop_dispatch(
           lhs, rhs, rt_name,
           [&](llvm::Value* ld, llvm::Value* rd) -> llvm::Value* {
             if (ope == '*') {
@@ -14758,6 +14766,11 @@ struct JIT {
                                   : builder_.CreateFRem(lD, rD, "fmod");
             return make_float(r);
           });
+      // Consume the operand temps (+1; no-op for immediates). Frees a heap
+      // operand of an overloaded `*`/`/`/`%`.
+      emit_value_release(lhs);
+      emit_value_release(rhs);
+      lhs = result;
     }
     return lhs;
   }
@@ -14923,7 +14936,7 @@ struct JIT {
     // behavior for negative x, so the 0.5 case is safe to inline.
     if (auto lit = try_numeric_literal(*ast.nodes[2])) {
       if (!lit->is_float && lit->l == 2) {
-        return emit_binop_dispatch(
+        auto r = emit_binop_dispatch(
             base, base, rt::num_mul,
             [&](llvm::Value* ld, llvm::Value* rd) {
               return make_long(builder_.CreateMul(ld, rd, "mul"));
@@ -14931,22 +14944,25 @@ struct JIT {
             [&](llvm::Value* lD, llvm::Value* rD) {
               return make_float(builder_.CreateFMul(lD, rD, "fmul"));
             });
+        emit_value_release(base);  // one value used as both operands
+        return r;
       }
       if (lit->is_float && lit->d == 0.5) {
         auto d = coerce_to_double(base);
         auto sqrtFn = llvm::Intrinsic::getOrInsertDeclaration(
             module_, llvm::Intrinsic::sqrt, {builder_.getDoubleTy()});
-        auto result = builder_.CreateCall(sqrtFn, {d}, "sqrt");
-        return make_float(result);
+        auto result = make_float(builder_.CreateCall(sqrtFn, {d}, "sqrt"));
+        emit_value_release(base);  // base consumed by the coercion
+        return result;
       }
       if ((!lit->is_float && lit->l == 1) ||
           (lit->is_float && lit->d == 1.0)) {
-        return base;
+        return base;  // base IS the result — its +1 transfers to the caller
       }
     }
 
     auto exp = compile(*ast.nodes[2]);
-    return emit_call(
+    auto result = emit_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
                                      builder_.getInt64Ty(),
@@ -14954,6 +14970,9 @@ struct JIT {
                                      builder_.getInt64Ty()),
         {extract_tag(base), extract_data(base),
          extract_tag(exp), extract_data(exp)}, "pow.r");
+    emit_value_release(base);  // operands consumed by `**`
+    emit_value_release(exp);
+    return result;
   }
 
   // --- Comparison ---
@@ -21562,11 +21581,11 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   emit_binary_lambda_body(
       lambda_ast, acc_val, i_val,
       [&](llvm::Value* result) {
-        // Release the prior acc before overwriting (mirrors
-        // `emit_inlined_iter_reduce`).
-        auto old_acc =
-            builder_.CreateLoad(valueType_, accAlloca, "rrd.acc.prev");
-        emit_value_release(old_acc);
+        // The inlined body consumes the accumulator (its param slot releases
+        // it at scope exit, like a callee consuming a transferred arg) —
+        // matching emit_inlined_array_reduce, which also does not release the
+        // prior acc here. (An earlier explicit release double-freed once the
+        // body itself consumes the operand.)
         builder_.CreateStore(result, accAlloca);
       });
 
