@@ -3077,6 +3077,7 @@ that resolves *per backend*, with no code change:
   The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
 
 ```culebra
+# doctest: skip
 let srv = Http.server()
 srv.static("/", Embed.dir("dist"))     # whole frontend, one line
 srv.get("/api/ping", fn(req) { '{"ok":true}' })

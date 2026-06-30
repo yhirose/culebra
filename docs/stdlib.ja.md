@@ -2961,6 +2961,7 @@ ws.close()
   （`embedded N file(s) (… bytes) from '…'`）。
 
 ```culebra
+# doctest: skip
 let srv = Http.server()
 srv.static("/", Embed.dir("dist"))     # フロントエンド全体を1行で
 srv.get("/api/ping", fn(req) { '{"ok":true}' })
