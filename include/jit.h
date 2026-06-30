@@ -15076,12 +15076,25 @@ struct JIT {
   // middle operand is evaluated once (the rhs becomes the next lhs).
   // Short-circuits to false at the first failing link (Python semantics).
   llvm::Value* compile_condition(const peg::Ast& ast) {
-    auto lhs = compile(*ast.nodes[0]);
+    Owned lhs = own(compile(*ast.nodes[0]));
     if (ast.nodes.size() == 3) {  // common single comparison — direct
-      auto rhs = compile(*ast.nodes[2]);
+      Owned rhs = own(compile(*ast.nodes[2]));
+      // The comparison borrows both operands (it reads tag/data and may invoke
+      // a user __eq__/__lt__, which borrows too); the Owned handles release a
+      // heap operand of an overloaded `<`/`==`/… once the i1 result is built.
+      // Scalar operands release as a no-op.
       return make_bool(
-          compile_comparison_i1(lhs, rhs, std::string(ast.nodes[1]->token)));
+          compile_comparison_i1(lhs.borrow(), rhs.borrow(),
+                                std::string(ast.nodes[1]->token)));
     }
+    // Chain form `a < b < c` lowers to `(a<b) && (b<c)` with the later operands
+    // evaluated conditionally in the short-circuit blocks — they cross basic
+    // blocks and are created on only some paths, so a straight-line Owned can't
+    // release them correctly. A heap operand of a *chained* overloaded
+    // comparison still leaks here (a niche pre-existing gap); releasing it needs
+    // per-path scope machinery, deferred to the broader compile()→Owned work.
+    // consume() preserves the existing behavior exactly (no release).
+    llvm::Value* lhs_raw = lhs.consume();
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto resultAlloca = eb.CreateAlloca(builder_.getInt1Ty(), nullptr,
@@ -15095,7 +15108,7 @@ struct JIT {
       builder_.CreateBr(endBB);
       builder_.restoreIP(saveIP);
     }
-    llvm::Value* prev = lhs;
+    llvm::Value* prev = lhs_raw;
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto rhs = compile(*ast.nodes[i + 1]);
       auto cmp = compile_comparison_i1(prev, rhs,

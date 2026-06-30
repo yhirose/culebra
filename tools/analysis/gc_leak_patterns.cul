@@ -24,6 +24,8 @@ class V {
   }
   __add__(o) { V.new(this.data + o.data, [this, o], [1.0, 1.0]) }
   __mul__(o) { V.new(this.data * o.data, [this, o], [o.data, this.data]) }
+  __lt__(o)  { this.data < o.data }
+  __eq__(o)  { this.data == o.data }
   twice()    { V.new(this.data * 2, [this], [2.0]) }
 }
 
@@ -60,6 +62,14 @@ fn run(which, N) {
     # match as a statement with a call subject and a scalar result — the
     # double-free guard for the subject-release fix.
     for i in 0..N { let _ = mtest2(mk(i)) }
+  } else if which == "cmp_lt" {
+    # overloaded ordering `<` (value_compare slow path → user __lt__): both
+    # heap operands are dead after the comparison; compile_condition must
+    # release them.
+    for i in 0..N { let _ = V.new(i, [], []) < V.new(i + 1, [], []) }
+  } else if which == "cmp_eq" {
+    # overloaded equality `==` (value_equal slow path → user __eq__).
+    for i in 0..N { let _ = V.new(i, [], []) == V.new(i + 1, [], []) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -79,7 +89,8 @@ fn mtest2(o) { match o { x:Object => x.data, _ => 0 } }
 if which == "list" {
   let names = ["object_literal", "array_literal", "instance_plain", "default_param",
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
-               "closure", "map_collect", "reduce", "match_bind", "match_stmt"]
+               "closure", "map_collect", "reduce", "match_bind", "match_stmt",
+               "cmp_lt", "cmp_eq"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
