@@ -6075,6 +6075,12 @@ inline std::string stdlib_preamble_for(std::string_view user_src) {
   if (has("Log"))
     preamble.append(_wrap_lazy_ns_module(LOG_MODULE_SOURCE, "Log",
                                          "_log_module"));
+#ifdef CULEBRA_ENABLE_WEBVIEW
+  // `Desktop.run` facade — only when the Webview namespace it drives is built in.
+  if (has("Desktop"))
+    preamble.append(_wrap_lazy_ns_module(DESKTOP_MODULE_SOURCE, "Desktop",
+                                         "_desktop_module"));
+#endif
   return preamble;
 }
 
@@ -6143,6 +6149,9 @@ inline void register_stdlib_lazy_modules(Environment& env) {
   env.initialize_lazy("Regex", REGEX_MODULE_SOURCE);
   env.initialize_lazy("replace", STRING_REPLACE_MODULE_SOURCE);
   env.initialize_lazy("Log", LOG_MODULE_SOURCE);
+#ifdef CULEBRA_ENABLE_WEBVIEW
+  env.initialize_lazy("Desktop", DESKTOP_MODULE_SOURCE);
+#endif
   // Matcher family — 10 symbols share one source via initialize_lazy_group.
   // First `get` of any matcher parses + evals the source once; the others
   // are picked up by the non-Nil guard in resolve_from_lazy.

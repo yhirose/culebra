@@ -25,8 +25,7 @@ The binding lives in `src/runtime/culebra_rt_webview.cc` + `vendor/webview/`.
 | `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
 | `dist/` | Spike 2: the frontend as real files (`index.html`, `style.css`, `app.js`) |
 | `spike2.cul` | Spike 2: serves `dist/` via `Embed.dir` — live disk in dev, baked into the binary under AOT |
-| `desktop.cul` | Spike 3: the `Desktop.run` / `Desktop.quit` facade (server + window + assets + shutdown in one call) |
-| `spike3.cul` | Spike 3: the same app as Spike 2, written against the facade |
+| `spike3.cul` | Spike 3: the same app as Spike 2, written against the builtin `Desktop.run` facade |
 
 ## Build
 
@@ -136,12 +135,11 @@ links only OS-provided frameworks — on macOS `otool -L` shows just `WebKit`,
 
 ## One call (Spike 3)
 
-`desktop.cul` collapses the whole "server + window + assets + shutdown" dance
-into `Desktop.run({...})`:
+The builtin `Desktop` module (a stdlib preamble, `src/preambles/desktop.cul`)
+collapses the whole "server + window + assets + shutdown" dance into
+`Desktop.run({...})` — no import needed:
 
 ```culebra
-import Desktop from './desktop.cul'
-
 Desktop.run({
   title:  "My App",
   size:   [720, 560],

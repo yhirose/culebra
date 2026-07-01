@@ -321,3 +321,34 @@ inline constexpr const char* STRING_REPLACE_MODULE_SOURCE = R"=culpre=(let repla
 inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn () { let _levels = {debug: 0, info: 1, warn: 2, error: 3}; let mut _threshold = _levels.get(Sys.env("LOG_LEVEL"), 1); let mut _format = if Sys.env("LOG_FORMAT") == "json" { "json" } else { "text" }; let _colors = {debug: "\x1b[2m", info: "\x1b[32m", warn: "\x1b[33m", error: "\x1b[31m"}; let _emit = fn (name, num, msg, bound, fields) { if num >= _threshold { let _all = {...bound, ...fields}; let ts = _Time.iso_nanos(_Time.now_nanos(), true); if _format == "json" { IO.eprint(JSON.stringify({..._all, time: ts, level: name, msg: msg}) + "\n"); } else { let mut lvl = name; if IO.stderr_is_terminal() { lvl = _colors.get(name, "") + name + "\x1b[0m"; }; let mut line = ts + " " + lvl + " " + msg; for k, v in _all { line = line + " " + k + "=" + to_string(v); }; IO.eprint(line + "\n"); }; } }; let _methods = fn (bound) { {debug: fn (msg, fields = {}) { _emit("debug", 0, msg, bound, fields) }, info: fn (msg, fields = {}) { _emit("info", 1, msg, bound, fields) }, warn: fn (msg, fields = {}) { _emit("warn", 2, msg, bound, fields) }, error: fn (msg, fields = {}) { _emit("error", 3, msg, bound, fields) }, with: fn (more) { _methods({...bound, ...more}) }} }; let _set_level = fn (l) { let n = _levels.get(l, -1); if n < 0 { throw "Log.set_level: unknown level '" + l + "'" }; _threshold = n; }; let _set_format = fn (f) { if f != "text" { if f != "json" { throw "Log.set_format: unknown format '" + f + "'" } }; _format = f; }; {..._methods({}), set_level: _set_level, set_format: _set_format} }; let Log = _log_module()
 )=culpre=";
 
+inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_module = fn () {
+  # A Tauri-shaped desktop facade: local HTTP server + native WebView + assets,
+  # in one call.
+  let run = fn(config) {
+    let port = config.get("port", 8731)
+    let base = "http://127.0.0.1:" + port.to_string()
+
+    let srv = Http.server()
+    if config.has("assets") { srv.static("/", config["assets"]) }
+    if config.has("routes") { config["routes"](srv) }
+    srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
+    srv.listen_async(port, workers: config.get("workers", 4))
+
+    let w = Webview.Window.new()
+    w.set_title(config.get("title", "culebra"))
+    if config.has("size") {
+      let size = config["size"]
+      w.set_size(size[0], size[1])
+    }
+    w.navigate(base + "/")
+    w.run()
+    srv.stop()
+  }
+
+  let quit = fn() { Webview.Window.quit() }
+
+  { run: run, quit: quit }
+};
+let Desktop = _desktop_module()
+)=culpre=";
+

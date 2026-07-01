@@ -1,0 +1,29 @@
+let _desktop_module = fn () {
+  # A Tauri-shaped desktop facade: local HTTP server + native WebView + assets,
+  # in one call.
+  let run = fn(config) {
+    let port = config.get("port", 8731)
+    let base = "http://127.0.0.1:" + port.to_string()
+
+    let srv = Http.server()
+    if config.has("assets") { srv.static("/", config["assets"]) }
+    if config.has("routes") { config["routes"](srv) }
+    srv.post("/__quit", fn(req) { Webview.Window.quit(); "" })
+    srv.listen_async(port, workers: config.get("workers", 4))
+
+    let w = Webview.Window.new()
+    w.set_title(config.get("title", "culebra"))
+    if config.has("size") {
+      let size = config["size"]
+      w.set_size(size[0], size[1])
+    }
+    w.navigate(base + "/")
+    w.run()
+    srv.stop()
+  }
+
+  let quit = fn() { Webview.Window.quit() }
+
+  { run: run, quit: quit }
+};
+let Desktop = _desktop_module()

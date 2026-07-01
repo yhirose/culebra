@@ -8326,6 +8326,9 @@ inline bool JitExtension::is_builtin_var(const std::string& name) {
 #if defined(CULEBRA_HTTP_ENABLED)
       "Http",
 #endif
+#if defined(CULEBRA_ENABLE_WEBVIEW)
+      "Desktop",
+#endif
   };
   if (names.contains(name)) return true;
   // wrap.h-declared namespaces (e.g. __Foreign) — registry-driven.
