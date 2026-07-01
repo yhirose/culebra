@@ -76,6 +76,10 @@ fn run(which, N) {
     # operand is dead after the call. microgpt's dominant leak — `__sub__` is
     # `this + (-other)` and the loss term is `-(...).log()`.
     for i in 0..N { let _ = -V.new(i, [], []) }
+  } else if which == "defer_obj" {
+    # a deferred block whose body produces a heap value (the defer thunk's
+    # result is discarded, not returned — it must be released).
+    for i in 0..N { { let dv = V.new(i, [], []); defer { let _ = dv.twice() } } }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -96,7 +100,7 @@ if which == "list" {
   let names = ["object_literal", "array_literal", "instance_plain", "default_param",
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
-               "cmp_lt", "cmp_eq", "neg_op"]
+               "cmp_lt", "cmp_eq", "neg_op", "defer_obj"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)

@@ -20871,8 +20871,15 @@ struct JIT {
       define_var(fv, VarSlot{VarSlot::Cell, holder, /*owned=*/false, fv_mut});
     }
 
-    compile(*ast.nodes[0]);
+    // A defer thunk's value is discarded (the runtime ignores its return),
+    // unlike a normal function body whose result transfers to the caller. So
+    // release the body's `+1`-owned result before returning nil — otherwise a
+    // deferred block ending in a heap expression (`defer { … ; obj.method() }`)
+    // leaks that result once per run. No-op for nil/immediate; only the
+    // fall-through path has a live result to drop (a terminator ran its own).
+    auto deferResult = compile(*ast.nodes[0]);
     if (!builder_.GetInsertBlock()->getTerminator()) {
+      emit_value_release(deferResult);
       builder_.CreateRet(make_nil());
     }
 
