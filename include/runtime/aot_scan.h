@@ -154,6 +154,24 @@ inline bool aot_uses_graphics(const peg::Ast& node) {
   return false;
 }
 
+// Does the program reference the `Webview` namespace (or the `Desktop` facade
+// that drives it)? Force-loads libculebra_rt_webview.a and appends the OS
+// WebView framework link deps — only when true, the same usage-gating as
+// Graphics (no weak choke; the symbols simply aren't in the base archive).
+// Matches `Desktop` too so the facade triggers the force-load even when the
+// program never names `Webview` directly. Same conservative bare-identifier
+// match.
+inline bool aot_uses_webview(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "IDENTIFIER"_ &&
+      (node.token == "Webview" || node.token == "Desktop"))
+    return true;
+  for (const auto& child : node.nodes) {
+    if (aot_uses_webview(*child)) return true;
+  }
+  return false;
+}
+
 // Does the program reference any of `names`? Gates the `culebra wrap`
 // archive + its wrapped-library link flags, mirroring the tensor/http/
 // compress axes — but the namespace set is dynamic (whatever the embedded

@@ -268,6 +268,35 @@ if(CULEBRA_ENABLE_GRAPHICS)
   message(STATUS "Graphics: enabled (vendored static SDL2 + raylib)")
 endif()
 
+# --- Builtin Webview namespace (native WebView desktop): config ------------
+# GUI-bound, so OFF by default. Mirrors the Graphics gating: the binding is
+# compiled into the driver (interp/JIT) and force-loaded into `culebra build`
+# outputs on Webview use. Unlike SDL/raylib there is no static library to build —
+# webview is a single vendored header (vendor/webview/webview.h) plus the OS's
+# native WebView framework, so the AOT fragment is just link flags.
+option(CULEBRA_ENABLE_WEBVIEW "Enable builtin Webview namespace (native WebView)" OFF)
+set(_webview_link "")
+if(CULEBRA_ENABLE_WEBVIEW)
+  # AOT link fragment (CULEBRA_WEBVIEW_LINK): the OS WebView framework(s).
+  # `culebra build` appends it only when the program uses Webview. Single-sourced
+  # with the driver's in-process link (further below) so they can't drift.
+  if(APPLE)
+    set(_webview_link "-framework WebKit -ldl")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(WEBKITGTK gtk4 webkitgtk-6.0)
+    endif()
+    if(WEBKITGTK_FOUND)
+      string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
+      string(APPEND _webview_link " -ldl")
+    else()
+      message(WARNING "Webview: gtk4 + webkitgtk-6.0 not found (pkg-config); Linux Webview won't link")
+    endif()
+  endif()
+  message(STATUS "Webview: enabled (native WebView, vendored webview.h)")
+endif()
+
 add_executable(culebra ./src/main.cc)
 if(_culebra_enable_lto)
   set_target_properties(culebra PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -464,6 +493,20 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_graphics${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_graphics)
   endif()
+  # Webview feature archive: same usage-gating as Graphics (force-loaded into an
+  # AOT binary only when the AST scan reports Webview use; the OS WebView
+  # framework comes from CULEBRA_WEBVIEW_LINK). Compiling needs only the vendored
+  # single header.
+  if(CULEBRA_ENABLE_WEBVIEW)
+    add_library(culebra_rt_webview STATIC ./src/runtime/culebra_rt_webview.cc)
+    target_compile_features(culebra_rt_webview PRIVATE cxx_std_23)
+    target_include_directories(culebra_rt_webview PRIVATE ./vendor/webview)
+    target_compile_definitions(culebra_rt_webview PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
+    target_compile_options(culebra_rt_webview PRIVATE -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_webview${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_webview)
+  endif()
   cpp_embedlib_add(culebra_rt_assets
     FILES ${_rt_embed_files}
     BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}"
@@ -552,6 +595,13 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_GRAPHICS_LINK="${_graphics_link}")
 endif()
 
+# `culebra build` appends the OS WebView framework only when the program
+# references Webview (see aot_scan). Gated on JIT like the peers so the
+# CULEBRA_DEV_NO_RT inner-loop build still compiles the driver. "" when off.
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_WEBVIEW_LINK="${_webview_link}")
+endif()
+
 # --- Graphics: build SDL2 + raylib + link into the driver -----------------
 # Config (option / static lib paths / link flags) was resolved before the driver
 # target above. Here we build SDL2 (static) and raylib (SDL backend, static) from
@@ -597,6 +647,26 @@ if(CULEBRA_ENABLE_GRAPHICS)
     foreach(_fw IN LISTS _graphics_frameworks)   # same single source as _graphics_link
       target_link_libraries(culebra "-framework ${_fw}")
     endforeach()
+  endif()
+endif()
+
+# --- Webview: compile the binding into the driver -------------------------
+# No static library to build (webview is a vendored header + the OS's native
+# WebView framework). Compile the binding straight into the driver so interp +
+# JIT run Webview in-process; AOT outputs force-load the feature archive +
+# CULEBRA_WEBVIEW_LINK (gated on usage). The header stays plain-C++ compilable
+# (it drives the ObjC runtime via objc_msgSend on macOS, so no .mm needed).
+if(CULEBRA_ENABLE_WEBVIEW)
+  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_webview.cc)
+  target_include_directories(culebra PRIVATE ./vendor/webview)
+  target_compile_definitions(culebra PRIVATE CULEBRA_ENABLE_WEBVIEW=1)
+  if(APPLE)
+    target_link_libraries(culebra "-framework WebKit" ${CMAKE_DL_LIBS})
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(WEBKITGTK_FOUND)
+      target_include_directories(culebra PRIVATE ${WEBKITGTK_INCLUDE_DIRS})
+      target_link_libraries(culebra ${WEBKITGTK_LDFLAGS} ${CMAKE_DL_LIBS})
+    endif()
   endif()
 endif()
 

@@ -574,6 +574,17 @@ int run_build(const BuildOptions& opts) {
     return false;
   };
 #endif
+#ifdef CULEBRA_ENABLE_WEBVIEW
+  // Webview reachability force-loads libculebra_rt_webview.a and appends the OS
+  // WebView framework link deps, mirroring the Graphics axis. Compiled only into
+  // a webview-enabled driver (a stock build never embeds that archive).
+  auto any_uses_webview = [&]() {
+    for (const auto& m : modules) {
+      if (culebra::aot_uses_webview(*m.ast)) return true;
+    }
+    return false;
+  };
+#endif
 
   // Reject early: cross-compile + Tensor would need a target-specific
   // BLAS link flag, which Phase E doesn't bundle. Skipping the walk
@@ -703,6 +714,11 @@ int run_build(const BuildOptions& opts) {
 #else
   bool uses_graphics = false;  // graphics archive isn't embedded in a stock build
 #endif
+#ifdef CULEBRA_ENABLE_WEBVIEW
+  bool uses_webview = cross ? false : any_uses_webview();
+#else
+  bool uses_webview = false;  // webview archive isn't embedded in a stock build
+#endif
   bool uses_wrap = cross ? false : any_uses_wrap();
 
   // The core archive is feature-axis-free: both heavy deps (cblas via
@@ -795,6 +811,10 @@ int run_build(const BuildOptions& opts) {
       (uses_graphics && host_build)
           ? force_load_feature("libculebra_rt_graphics.a")
           : "";
+  std::string webview_lib =
+      (uses_webview && host_build)
+          ? force_load_feature("libculebra_rt_webview.a")
+          : "";
   // Wrap declarations (out-of-tree bindings, `culebra wrap`): static
   // registrars nothing references by name, so the archive member must be
   // force-loaded for the binding to register — but only when the program
@@ -838,6 +858,7 @@ int run_build(const BuildOptions& opts) {
   // graphics_lib is what references the symbols these flags resolve. "" when
   // Graphics is unused or built out.
   std::string graphics_link = uses_graphics ? CULEBRA_GRAPHICS_LINK : "";
+  std::string webview_link = uses_webview ? CULEBRA_WEBVIEW_LINK : "";
   // The wrapped library's own link flags (`culebra wrap --link`, baked at
   // wrap time) ride the same usage axis as wrap_lib above: appended only when
   // the program names a wrapped namespace, so an unused wrapped library adds
@@ -859,10 +880,10 @@ int run_build(const BuildOptions& opts) {
     extra += std::format(" --sysroot={}", shq(opts.sysroot));
 
   std::string cmd = std::format(
-      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
+      "{}{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} -o {}", cc, extra,
       shq(obj), assets_obj, shq(lib), tensor_lib, http_lib, compress_lib, sqlite_lib,
-      graphics_lib, wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
-      sqlite_link, graphics_link, wrap_link_flags, shq(opts.output));
+      graphics_lib, webview_lib, wrap_lib, dead_strip, strip_syms, no_pie, libcxx, blas, ssl, zlib,
+      sqlite_link, graphics_link, webview_link, wrap_link_flags, shq(opts.output));
 
   if (verbose) std::println(stderr, "culebra build: link: {}", cmd);
   int link_rc = std::system(cmd.c_str());
