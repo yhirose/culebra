@@ -89,6 +89,13 @@ fn run(which, N) {
     # for-in over a range *value* (a bound variable, not a literal, so the
     # counted fast path is skipped) drives range_iter's fresh iterator.
     for i in 0..N { let r = 0..3; let mut s = 0; for j in r { s = s + j } }
+  } else if which == "class_in_fn" {
+    # a class declared inside a function re-builds its class meta (with a fresh
+    # closure per method) on every call. build_class_meta must take over those
+    # method closures' refs, not retain on top of them — else each method
+    # leaks one closure per instantiation. Generators hit this via their
+    # synthesized _Gen_ class (iter/has_next/next/dispose).
+    for i in 0..N { let _ = mk_local(i) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -98,6 +105,18 @@ fn run(which, N) {
 }
 
 fn mk(x) { V.new(x, [], []) }
+
+# A class declared inside a function: each call rebuilds the class meta with a
+# fresh closure per method. Exercises build_class_meta's ref transfer.
+fn mk_local(x) {
+  class Local {
+    new(v) { this.v = v }
+    a() { this.v }
+    b() { this.v + 1 }
+    c() { this.v + 2 }
+  }
+  Local.new(x)
+}
 
 # Type-pattern bind that captures the bound name into the result graph.
 fn mtest(o) { match o { x:Object => V.new(x.data, [x], [1.0]), _ => V.new(0, [], []) } }
@@ -110,7 +129,7 @@ if which == "list" {
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
-               "forin_keys", "forin_range_value"]
+               "forin_keys", "forin_range_value", "class_in_fn"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)

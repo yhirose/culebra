@@ -5027,12 +5027,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // proto delegation. Called once per class declaration (compile-time
 // emission, runtime allocation), captured in the constructor closure
 // so each instance can point its `proto` at the same meta.
+//
+// The caller hands each method value +1-owned and does not use it again, so
+// their references are *transferred* into the meta: object_set stores without
+// retaining, and the meta's own destructor releases them. (A stray retain
+// here left the caller's original +1 unreleased — a class declared inside a
+// function leaked one closure per method on every call.)
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* const* method_names, const JitValue* method_vals,
     int64_t n_methods) {
   auto* meta = culebra_runtime_object_new();
   for (int64_t i = 0; i < n_methods; i++) {
-    culebra_runtime_value_retain(method_vals[i].tag, method_vals[i].data);
     culebra_runtime_object_set(meta, method_names[i], /*mut*/ false,
                                method_vals[i].tag, method_vals[i].data, 0,
                                0);
