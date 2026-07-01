@@ -8,10 +8,10 @@
 # server code doesn't change between the two — `srv.static` just serves a dir.
 #
 # Dev:
-#   ./webview-culebra examples/webview/spike2.cul          # interpreter
-#   ./webview-culebra --jit examples/webview/spike2.cul    # JIT
+#   culebra examples/webview/spike2.cul          # interpreter
+#   culebra --jit examples/webview/spike2.cul    # JIT
 # Single binary (assets baked in — copy it anywhere, no dist/ needed):
-#   ./webview-culebra build examples/webview/spike2.cul -o desktop-app
+#   culebra build examples/webview/spike2.cul -o desktop-app
 #   ./desktop-app
 
 PORT = 8732

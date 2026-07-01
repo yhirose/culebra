@@ -1,22 +1,25 @@
 # WebView — web-tech desktop GUI from culebra (Spikes 0–3)
 
-A proof that culebra can drive a **native WebView window** through the
-`culebra wrap` mechanism, wire it to a **local HTTP server** (Spike 1), serve a
-real frontend (`dist/`) that's **baked into a single-file binary** under AOT
-while staying **live from disk in dev** (Spike 2), and wrap the whole thing in a
-one-call **`Desktop.run`** facade with a UI-driven quit (Spike 3) — the
-Tauri-shaped shape, end to end.
+culebra drives a **native WebView window** through the builtin `Webview`
+namespace, wires it to a **local HTTP server** (Spike 1), serves a real frontend
+(`dist/`) that's **baked into a single-file binary** under AOT while staying
+**live from disk in dev** (Spike 2), and wraps the whole thing in a one-call
+**`Desktop.run`** facade with a UI-driven quit (Spike 3) — the Tauri-shaped
+shape, end to end.
 
-This wraps [webview/webview](https://github.com/webview/webview) (MIT),
-which renders HTML/CSS/JS in each OS's native engine (WKWebView on macOS,
-WebKitGTK on Linux, WebView2 on Windows) — no bundled Chromium.
+`Webview` is a core opt-in namespace (like `Graphics`): build culebra with
+`-DCULEBRA_ENABLE_WEBVIEW=ON` and these run on the stock `culebra` — no
+`culebra wrap` step. The binding wraps
+[webview/webview](https://github.com/webview/webview) (MIT), which renders
+HTML/CSS/JS in each OS's native engine (WKWebView on macOS, WebKitGTK on Linux,
+WebView2 on Windows) — no bundled Chromium. `culebra build` force-loads it only
+when the program references `Webview`/`Desktop`, so other programs pay nothing.
+The binding lives in `src/runtime/culebra_rt_webview.cc` + `vendor/webview/`.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `webview.h` | Vendored amalgamated single header (pinned, see below) |
-| `webview_binding.cpp` | `culebra wrap` declaration: a thin facade over webview's C API, exposed as `Webview.Window` |
 | `hello.cul` | Spike 0: opens a 640×480 window with inline HTML (blocks in the event loop) |
 | `smoke.cul` | Non-blocking binding check (ctor → setters → drop); safe for CI/headless |
 | `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
@@ -27,30 +30,25 @@ WebKitGTK on Linux, WebView2 on Windows) — no bundled Chromium.
 
 ## Build
 
-```sh
-culebra wrap examples/webview/webview_binding.cpp \
-    --link "-framework WebKit -ldl" -o webview-culebra        # macOS
-```
-
-The binding only needs link flags — `webview.h` sits next to the binding
-TU, so its quoted `#include` resolves without an `-I`.
-
-Linux (untested in this spike):
+`Webview` is OFF by default; enable it in the culebra build (macOS links
+`-framework WebKit`; Linux needs `gtk4` + `webkitgtk-6.0` dev packages,
+untested in this spike):
 
 ```sh
-culebra wrap examples/webview/webview_binding.cpp \
-    --link "$(pkg-config --libs gtk4 webkitgtk-6.0) -ldl" -o webview-culebra
+just build -DCULEBRA_ENABLE_WEBVIEW=ON
 ```
 
 ## Run
 
+Use the webview-enabled `culebra` from that build:
+
 ```sh
-./webview-culebra examples/webview/hello.cul          # Spike 0: interpreter
-./webview-culebra --jit examples/webview/hello.cul    # Spike 0: JIT
-./webview-culebra examples/webview/smoke.cul          # no window, just the binding
-./webview-culebra examples/webview/spike1.cul         # Spike 1: server + WebView
-./webview-culebra examples/webview/spike2.cul         # Spike 2: server serves dist/
-./webview-culebra examples/webview/spike3.cul         # Spike 3: Desktop.run facade
+culebra examples/webview/hello.cul          # Spike 0: interpreter
+culebra --jit examples/webview/hello.cul    # Spike 0: JIT
+culebra examples/webview/smoke.cul          # no window, just the binding
+culebra examples/webview/spike1.cul         # Spike 1: server + WebView
+culebra examples/webview/spike2.cul         # Spike 2: server serves dist/
+culebra examples/webview/spike3.cul         # Spike 3: Desktop.run facade
 ```
 
 ## API surface
@@ -121,20 +119,20 @@ disk directory at runtime (handy, but not single-binary).
 
 ```sh
 # dev: live disk
-./webview-culebra examples/webview/spike2.cul
+culebra examples/webview/spike2.cul
 
 # single binary: assets baked in (the build prints what it embedded)
-./webview-culebra build examples/webview/spike2.cul -o desktop-app
+culebra build examples/webview/spike2.cul -o desktop-app
 # culebra build: embedded 3 file(s) (...) from 'dist'
 ./desktop-app          # runs with no dist/ present
 ```
 
-`culebra build` composes with the wrap mechanism: because the script names a
-wrapped namespace (`Webview`), the build force-loads the wrap archive and its
-link flags. The result links only OS-provided frameworks — on macOS `otool -L`
-shows just `WebKit`, `CoreFoundation`, `Security`, `libz`, `libc++`, `libobjc`,
-`libSystem`; there is no external culebra runtime, and (with the assets baked
-in) no external files. One file is the whole app.
+`culebra build` gates the feature on usage: because the script names `Webview`
+(or `Desktop`), the build force-loads the webview feature archive and appends
+the OS WebView framework — a program that doesn't links zero WebKit. The result
+links only OS-provided frameworks — on macOS `otool -L` shows just `WebKit`,
+`libc++`, `libobjc`, `libSystem`; there is no external culebra runtime, and
+(with the assets baked in) no external files. One file is the whole app.
 
 ## One call (Spike 3)
 
@@ -170,7 +168,7 @@ exposes the same for a custom handler.
 
 ## Vendoring note
 
-`webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
+`vendor/webview/webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
 0.12.0 release fails to compile under the current libc++ (Xcode 26 /
 LLVM 22): `user_script` holds a `std::unique_ptr<impl>` to an incomplete
 type and the new standard library eagerly instantiates the deleter in a

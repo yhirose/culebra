@@ -8,12 +8,9 @@
 # heap, the WebView parks the main thread, and the two never touch the same
 # values.
 #
-# Build the extended binary (Http.server is built in; Webview.Window is wrapped):
-#   CULEBRA_HOME=. culebra wrap examples/webview/webview_binding.cpp \
-#       --link "-framework WebKit -ldl" -o webview-culebra
-# then:
-#   ./webview-culebra examples/webview/spike1.cul          # interpreter
-#   ./webview-culebra --jit examples/webview/spike1.cul    # JIT
+# Needs a webview-enabled culebra (`just build -DCULEBRA_ENABLE_WEBVIEW=ON`):
+#   culebra examples/webview/spike1.cul          # interpreter
+#   culebra --jit examples/webview/spike1.cul    # JIT
 
 PORT = 8731
 BASE = "http://127.0.0.1:" + PORT.to_string()

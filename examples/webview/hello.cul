@@ -1,8 +1,8 @@
 # Spike 0 — a web-tech GUI window driven entirely from culebra.
 #
-# Build the extended binary first (see webview_binding.cpp), then:
-#   ./webview-culebra examples/webview/hello.cul
-#   ./webview-culebra --jit examples/webview/hello.cul
+# Needs a webview-enabled culebra (`just build -DCULEBRA_ENABLE_WEBVIEW=ON`):
+#   culebra examples/webview/hello.cul
+#   culebra --jit examples/webview/hello.cul
 #
 # No HTTP server yet: the UI is an inline HTML string handed straight to
 # the native WebView via set_html. The local-server + embedded-assets

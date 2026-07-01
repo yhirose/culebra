@@ -3,8 +3,8 @@
 # facade lives in desktop.cul). The page can close the app via the built-in
 # `/__quit` route — see the "Quit" button in dist/index.html.
 #
-# Dev (assets live from disk):     ./webview-culebra examples/webview/spike3.cul
-# Single binary (assets baked in): ./webview-culebra build examples/webview/spike3.cul -o app
+# Dev (assets live from disk):     culebra examples/webview/spike3.cul
+# Single binary (assets baked in): culebra build examples/webview/spike3.cul -o app
 #                                  ./app
 
 import Desktop from './desktop.cul'
