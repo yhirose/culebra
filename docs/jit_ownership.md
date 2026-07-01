@@ -179,6 +179,30 @@ gap here is the current for-in raw-alloca iterator ([[project_jit_gc_rewrite]]
 Task #2), which is a *missing* scope registration, exactly the kind of hole
 this layer closes structurally.
 
+**Mechanism note — the two exit families are cleaned up by different code, and
+a fix must cover both** (learned by a reverted first attempt at container-literal
+exception-safety):
+
+- **Compile-time-emitted exits** (normal fall-through, `break`/`continue`,
+  early `return`) run `release_scope_slots` / `release_all_scopes_for_exit`,
+  which *statically emit* the releases for the scopes known at that point. A
+  fresh `make_stack_slot` + `define_var` is covered here for free.
+- **Runtime exception unwind** does **not** walk scope slots. It lands in a
+  cleanup landingpad that calls `defer_run_to(mark)` — i.e. cleanup on the
+  throw path is driven by the **defer stack** (plus the owned-region stack for
+  drop-having objects), not by `release_scope_slots`. A scope slot created
+  *after* an enclosing `try`'s landingpad was emitted is therefore **not**
+  released when a sub-expression throws.
+
+Consequence for this layer: to make a construction region (e.g. a container
+literal whose later element throws, or the for-in iterator) exception-safe, the
+in-flight value's release must be put on the **defer stack** for the
+construction window (register on entry, cancel/consume on success) — a scope
+slot alone only covers the normal/return exits. This defer-stack integration
+(and its per-region cost) is the real work of the escape layer; a
+`make_stack_slot`-only "fix" silently leaks on the throw path (verified:
+`[mkheap(), boom(), mkheap()]` still leaked ~2/loop with the slot in place).
+
 ### 4.4 Borrows can't be released
 
 A borrowed value is only ever handled through `.borrow()` (or a distinct
