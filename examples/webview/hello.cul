@@ -1,12 +1,12 @@
-# Spike 0 — a web-tech GUI window driven entirely from culebra.
+# Minimal raw `Webview.Window`: one window, inline HTML, no server.
 #
 # Needs a webview-enabled culebra (`just build -DCULEBRA_ENABLE_WEBVIEW=ON`):
 #   culebra examples/webview/hello.cul
 #   culebra --jit examples/webview/hello.cul
 #
-# No HTTP server yet: the UI is an inline HTML string handed straight to
-# the native WebView via set_html. The local-server + embedded-assets
-# layers (the Tauri-shaped single binary) land in later spikes.
+# The UI is an inline HTML string handed straight to the native WebView via
+# set_html. For a real app (local server + embedded assets + one-call facade)
+# see desktop_app.cul.
 
 let html = """
 <!doctype html>

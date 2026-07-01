@@ -1,17 +1,17 @@
-# Spike 3 — the same desktop app as Spike 2, but the whole "server + window +
-# assets + shutdown" dance collapses into one `Desktop.run({...})` call.
-# `Desktop` is a builtin stdlib module (src/preambles/desktop.cul) — no import.
-# The page can close the app via the built-in `/__quit` route — see the "Quit"
-# button in dist/index.html.
+# A web-tech desktop app in one call: `Desktop.run({...})` starts a local HTTP
+# server (background thread), opens a native WebView window on it, and stops
+# the server when the window closes. `Desktop` is a builtin stdlib module
+# (src/preambles/desktop.cul) — no import. The page can close the app via the
+# built-in `/__quit` route — see the "Quit" button in dist/index.html.
 #
-# Dev (assets live from disk):     culebra examples/webview/spike3.cul
-# Single binary (assets baked in): culebra build examples/webview/spike3.cul -o app
+# Dev (assets live from disk):     culebra examples/webview/desktop_app.cul
+# Single binary (assets baked in): culebra build examples/webview/desktop_app.cul -o app
 #                                  ./app
 
 # assets: dev = live disk / AOT = baked into the binary. routes: just the app's
 # API — the facade does the server, window, and shutdown.
 Desktop.run({
-  title: "culebra desktop — Spike 3",
+  title: "culebra desktop",
   size: [720, 560],
   assets: Embed.dir("dist"),
   routes: fn(srv) {

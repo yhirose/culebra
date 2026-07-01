@@ -1,11 +1,10 @@
-# WebView — web-tech desktop GUI from culebra (Spikes 0–3)
+# WebView — web-tech desktop GUI from culebra
 
 culebra drives a **native WebView window** through the builtin `Webview`
-namespace, wires it to a **local HTTP server** (Spike 1), serves a real frontend
-(`dist/`) that's **baked into a single-file binary** under AOT while staying
-**live from disk in dev** (Spike 2), and wraps the whole thing in a one-call
-**`Desktop.run`** facade with a UI-driven quit (Spike 3) — the Tauri-shaped
-shape, end to end.
+namespace, serves the UI from a **local HTTP server**, bakes the frontend
+(`dist/`) into a **single-file binary** under AOT while staying **live from
+disk in dev**, and collapses the whole thing into one **`Desktop.run`** call
+with a UI-driven quit — the Tauri-shaped shape, end to end.
 
 `Webview` is a core opt-in namespace (like `Graphics`): build culebra with
 `-DCULEBRA_ENABLE_WEBVIEW=ON` and these run on the stock `culebra` — no
@@ -20,18 +19,19 @@ The binding lives in `src/runtime/culebra_rt_webview.cc` + `vendor/webview/`.
 
 | File | Role |
 |---|---|
-| `hello.cul` | Spike 0: opens a 640×480 window with inline HTML (blocks in the event loop) |
+| `desktop_app.cul` | The recommended shape: `Desktop.run` + `Embed.dir` — a complete desktop app |
+| `hello.cul` | Minimal raw `Webview.Window`: one window with inline HTML, no server |
 | `smoke.cul` | Non-blocking binding check (ctor → setters → drop); safe for CI/headless |
-| `spike1.cul` | Spike 1: a local `Http.server` serves the UI + a JSON API; the WebView navigates to it and the page talks back over `fetch()` |
-| `dist/` | Spike 2: the frontend as real files (`index.html`, `style.css`, `app.js`) |
-| `spike2.cul` | Spike 2: serves `dist/` via `Embed.dir` — live disk in dev, baked into the binary under AOT |
-| `spike3.cul` | Spike 3: the same app as Spike 2, written against the builtin `Desktop.run` facade |
+| `dist/` | The frontend as real files (`index.html`, `style.css`, `app.js`) |
+
+To see the plumbing `Desktop.run` hides (server, window, loopback URL, quit,
+shutdown order), read the facade itself: `src/preambles/desktop.cul`.
 
 ## Build
 
 `Webview` is OFF by default; enable it in the culebra build (macOS links
 `-framework WebKit`; Linux needs `gtk4` + `webkitgtk-6.0` dev packages,
-untested in this spike):
+untested yet):
 
 ```sh
 just build -DCULEBRA_ENABLE_WEBVIEW=ON
@@ -42,98 +42,13 @@ just build -DCULEBRA_ENABLE_WEBVIEW=ON
 Use the webview-enabled `culebra` from that build:
 
 ```sh
-culebra examples/webview/hello.cul          # Spike 0: interpreter
-culebra --jit examples/webview/hello.cul    # Spike 0: JIT
-culebra examples/webview/smoke.cul          # no window, just the binding
-culebra examples/webview/spike1.cul         # Spike 1: server + WebView
-culebra examples/webview/spike2.cul         # Spike 2: server serves dist/
-culebra examples/webview/spike3.cul         # Spike 3: Desktop.run facade
+culebra examples/webview/desktop_app.cul          # the full app (interpreter)
+culebra --jit examples/webview/desktop_app.cul    # same, JIT
+culebra examples/webview/hello.cul                # minimal window
+culebra examples/webview/smoke.cul                # no window, just the binding
 ```
 
-## API surface
-
-```culebra
-let w = Webview.Window.new()
-w.set_title("Hello")
-w.set_size(640, 480)
-w.set_html("<h1>It works</h1>")    # or: w.navigate("https://…" / "data:…" / "file://…")
-w.run()                            # blocks the GUI thread until terminate()
-w.terminate()                      # safe from another thread
-
-Webview.Window.quit()              # static: terminate the window currently in
-                                   # run(), callable from any thread (e.g. an
-                                   # HTTP handler) — see Spike 3
-```
-
-The window is a resource with culebra's full lifetime model: scope-exit
-deterministic drop, idempotent `drop()`, `ClosedError` on use-after-drop.
-It is `__nonsendable__` (a GUI handle never crosses an isolate boundary).
-
-## Spike 1 — local server + fetch bridge
-
-`spike1.cul` is the Tauri-shaped shape: a local HTTP server serves the UI
-and a small JSON API, and the page reaches it over `fetch()`. The concurrency
-model stays intact because the only bridge across the thread boundary is
-loopback HTTP — no shared culebra heap crosses it:
-
-- The **server** is started with `srv.listen_async(port, workers: 4)`, which
-  binds synchronously and then serves on a background pool. Because the bind is
-  synchronous, the call returns ready — no readiness polling. Use a small pool
-  (not the default single worker): a browser loads the page over several
-  parallel connections, and cpp-httplib holds each keep-alive connection on a
-  worker for up to 5s — one worker would serialize the load and leave the window
-  blank for seconds.
-- The **WebView** runs on the main thread and parks it in the native event
-  loop (`run()`), navigating to `http://127.0.0.1:PORT`.
-- Closing the window returns from `run()`; `srv.stop()` then stops the server
-  and joins its thread (cross-thread-safe — no isolate-cancel polling).
-- Handlers run on the background worker thread, so they must be Sendable (the
-  examples capture nothing, or a `String`).
-
-`bind`/`eval` (a native, in-process JS↔culebra bridge) is deliberately not
-used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /
-serialization is needed.
-
-## Single binary + a real dev loop (Spike 2)
-
-`spike2.cul` keeps the UI in real files (`dist/`) and serves them with one line:
-
-```culebra
-srv.static("/", Embed.dir("dist"))
-```
-
-`Embed.dir(name)` is the whole trick, and it resolves *per backend* with no code
-change:
-
-- **Dev** (run from source): it serves the live on-disk directory, resolved
-  relative to the entry script. Edit `dist/index.html`, reload the window, and
-  the change is there — no rebuild.
-- **AOT** (`culebra build`): the directory is walked at build time and its bytes
-  are baked into the executable (a generated asset table linked in). The binary
-  needs no `dist/` next to it — copy it anywhere.
-
-`srv.static` itself is source-agnostic: it serves a directory (`Embed.dir(...)`),
-not "an embed". A plain `srv.static(mount, "dir")` String still serves a live
-disk directory at runtime (handy, but not single-binary).
-
-```sh
-# dev: live disk
-culebra examples/webview/spike2.cul
-
-# single binary: assets baked in (the build prints what it embedded)
-culebra build examples/webview/spike2.cul -o desktop-app
-# culebra build: embedded 3 file(s) (...) from 'dist'
-./desktop-app          # runs with no dist/ present
-```
-
-`culebra build` gates the feature on usage: because the script names `Webview`
-(or `Desktop`), the build force-loads the webview feature archive and appends
-the OS WebView framework — a program that doesn't links zero WebKit. The result
-links only OS-provided frameworks — on macOS `otool -L` shows just `WebKit`,
-`libc++`, `libobjc`, `libSystem`; there is no external culebra runtime, and
-(with the assets baked in) no external files. One file is the whole app.
-
-## One call (Spike 3)
+## The app in one call
 
 The builtin `Desktop` module (a stdlib preamble, `src/preambles/desktop.cul`)
 collapses the whole "server + window + assets + shutdown" dance into
@@ -164,6 +79,79 @@ terminate is thread-safe) and never touches the non-sendable window handle, so
 the UI can close the app without a native JS↔culebra bridge. `Desktop.quit()`
 exposes the same for a custom handler.
 
+## Single binary + a real dev loop
+
+`Embed.dir(name)` is the whole trick behind `assets:`, and it resolves *per
+backend* with no code change:
+
+- **Dev** (run from source): it serves the live on-disk directory, resolved
+  relative to the entry script. Edit `dist/index.html`, reload the window, and
+  the change is there — no rebuild.
+- **AOT** (`culebra build`): the directory is walked at build time and its bytes
+  are baked into the executable (a generated asset table linked in). The binary
+  needs no `dist/` next to it — copy it anywhere.
+
+```sh
+# dev: live disk
+culebra examples/webview/desktop_app.cul
+
+# single binary: assets baked in (the build prints what it embedded)
+culebra build examples/webview/desktop_app.cul -o desktop-app
+# culebra build: embedded 3 file(s) (...) from 'dist'
+./desktop-app          # runs with no dist/ present
+```
+
+`culebra build` gates the feature on usage: because the script names `Desktop`
+(or `Webview`), the build force-loads the webview feature archive and appends
+the OS WebView framework — a program that doesn't links zero WebKit. The result
+links only OS-provided frameworks — on macOS `otool -L` shows just `WebKit`,
+`libc++`, `libobjc`, `libSystem`; there is no external culebra runtime, and
+(with the assets baked in) no external files. One file is the whole app.
+
+## How the bridge works
+
+The concurrency model stays intact because the only bridge across the thread
+boundary is loopback HTTP — no shared culebra heap crosses it:
+
+- The **server** is started with `srv.listen_async(port, workers: 4)`, which
+  binds synchronously and then serves on a background pool. Because the bind is
+  synchronous, the call returns ready — no readiness polling. Use a small pool
+  (not the default single worker): a browser loads the page over several
+  parallel connections, and cpp-httplib holds each keep-alive connection on a
+  worker for up to 5s — one worker would serialize the load and leave the window
+  blank for seconds.
+- The **WebView** runs on the main thread and parks it in the native event
+  loop (`run()`), navigating to `http://127.0.0.1:PORT`.
+- Closing the window returns from `run()`; `srv.stop()` then stops the server
+  and joins its thread (cross-thread-safe — no isolate-cancel polling).
+- Handlers run on the background worker thread, so they must be Sendable (the
+  examples capture nothing, or a `String`).
+
+`bind`/`eval` (a native, in-process JS↔culebra bridge) is deliberately not
+used: the HTTP bridge keeps culebra off the UI thread, so no dispatch /
+serialization is needed.
+
+## Raw window API
+
+For a window without the facade (see `hello.cul`):
+
+```culebra
+let w = Webview.Window.new()
+w.set_title("Hello")
+w.set_size(640, 480)
+w.set_html("<h1>It works</h1>")    # or: w.navigate("https://…" / "data:…" / "file://…")
+w.run()                            # blocks the GUI thread until terminate()
+w.terminate()                      # safe from another thread
+
+Webview.Window.quit()              # static: terminate the window currently in
+                                   # run(), callable from any thread (e.g. an
+                                   # HTTP handler)
+```
+
+The window is a resource with culebra's full lifetime model: scope-exit
+deterministic drop, idempotent `drop()`, `ClosedError` on use-after-drop.
+It is `__nonsendable__` (a GUI handle never crosses an isolate boundary).
+
 ## Vendoring note
 
 `vendor/webview/webview.h` is pinned to a **post-0.12.0 master commit** of webview. The
@@ -173,7 +161,7 @@ type and the new standard library eagerly instantiates the deleter in a
 throwing constructor. master fixed it. The header carries its source
 commit at the top; regenerate with webview's `scripts/amalgamate/amalgamate.py`.
 
-## Not in these spikes
+## Not here yet
 
 A `Dir`-trait-shaped source for `srv.static` (so a zip or an overlay FS could
 back it too) is a future generalization. Auto-picking a free port, multiple
