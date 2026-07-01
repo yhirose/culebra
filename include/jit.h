@@ -6758,7 +6758,14 @@ culebra_runtime_object_keys(JitObject* obj);
 // Generic "iter returns self" — used by every wrapper we build.
 inline JitValue _iter_self_iter_fn(JitClosure*, JitValue this_val,
                                    int64_t, JitValue*) {
-  culebra_runtime_value_retain(this_val.tag, this_val.data);
+  // iter() on a wrapped iterator returns self. The Iterator-protocol calling
+  // convention (see compile_for_protocol_loop / _iter_coerce_iterable /
+  // object_iter_dispatch) has every caller retain `this` before the call so a
+  // script method body can consume it via its frame and return a fresh +1.
+  // A native fn has no frame, so it must consume that retain itself: return
+  // `this` directly, transferring the caller's +1 to the result. (A stray
+  // `retain` here instead of the transfer leaked one ref per `.iter()` on
+  // every native wrapped iterator — the for-in protocol loop's ref B.)
   return this_val;
 }
 
@@ -16174,19 +16181,6 @@ struct JIT {
     // The keys path is unchanged from before, so plain `for k in obj`
     // pays zero overhead vs the prior compiler output.
     builder_.SetInsertPoint(objectBB);
-    // The iterator-protocol machinery below (range / keys / user-defined
-    // `iter`) already owns and releases the references it derives from the
-    // iterable. Owning the iterable in the loop scope on top of that
-    // double-frees a generator (a `_Gen_` class whose CPS `iter()`/dispose
-    // path the protocol loop drives) — its object is released both by the
-    // protocol cleanup and by this scope. So hand the Object branch's
-    // iterable back to that machinery: orphan the scope slot's +1 (a plain
-    // store, no release) so pop_scope is a no-op for it. Net effect matches
-    // the pre-fix behaviour for Object iterables (Array/Tuple/Set/String,
-    // which genuinely leaked their iterable, keep the fix). The residual
-    // Object-iterable leak is the case the structural ownership rewrite (B)
-    // is meant to close.
-    store_slot_raw(iterSlot, make_nil());
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // A range value iterates start..end (errors if unbounded). It carries
     // no `iter` property, so it must be handled before the keys fallback.
@@ -16205,7 +16199,7 @@ struct JIT {
     // the keys/proto values below.
     llvm::Value* rangeIterVal = make_value(
         TAG_OBJECT, builder_.CreatePtrToInt(rangeIt, builder_.getInt64Ty()));
-    compile_for_protocol_loop(rangeIterVal, id, body, endBB);
+    compile_for_protocol_loop(rangeIterVal, id, body, endBB, /*owns_obj=*/true);
 
     builder_.SetInsertPoint(notRangeBB);
     auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
@@ -16222,9 +16216,21 @@ struct JIT {
                              {objPtr});
     llvm::Value* keysIterVal = make_value(
         TAG_OBJECT, builder_.CreatePtrToInt(objIter, builder_.getInt64Ty()));
-    compile_for_protocol_loop(keysIterVal, id, body, endBB);
+    compile_for_protocol_loop(keysIterVal, id, body, endBB, /*owns_obj=*/true);
 
     builder_.SetInsertPoint(protoBB);
+    // User-defined `iter` (including generators): the iterator-protocol
+    // machinery drives the iterable's own iter()/dispose and releases the
+    // iterator it derives. A generator's iter() returns `this`, so owning the
+    // iterable in the loop scope on top of that double-frees it (the protocol
+    // cleanup and pop_scope would both release the same object → slab
+    // corruption). Orphan the scope slot's +1 (a plain store, no release) and
+    // pass the iterable borrowed, leaving that machinery in sole charge. The
+    // range / keys branches above instead keep the scope slot (their derived
+    // iterator is a distinct object owned via owns_obj), so their source
+    // iterable is released once by pop_scope. This residual proto-iterable
+    // leak is the case the structural ownership rewrite (B) is meant to close.
+    store_slot_raw(iterSlot, make_nil());
     llvm::Value* objVal = make_value(TAG_OBJECT, data);
     compile_for_protocol_loop(objVal, id, body, endBB);
 
@@ -16450,17 +16456,32 @@ struct JIT {
   void compile_for_protocol_loop(llvm::Value* objVal,
                                  const peg::Ast& var,
                                  const peg::Ast& body,
-                                 llvm::BasicBlock* endBB) {
+                                 llvm::BasicBlock* endBB,
+                                 bool owns_obj = false) {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+
+    // When the caller hands us a +1-owned iterable (range_iter / object_iter
+    // build a fresh iterator per loop), we own that reference and must release
+    // it on every exit path. Park it in an alloca so the cleanup / exception
+    // landingpad below can free it. Borrowed iterables (the user-`iter` proto
+    // branch) pass owns_obj=false and leave this null.
+    llvm::Value* objAlloca = nullptr;
+    if (owns_obj) {
+      objAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iterable.own");
+      entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_),
+                         objAlloca);
+      builder_.CreateStore(objVal, objAlloca);
+    }
 
     // iter_val = obj.iter()
     auto iter_fn_val = compile_property_get(objVal, "iter");
     emit_value_retain(objVal);  // handed off to `this` slot
     auto iter_val = compile_function_call_raw(iter_fn_val, objVal, {});
 
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
     auto iterAlloca = entryB.CreateAlloca(valueType_, nullptr, "for.iter");
     entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_),
                        iterAlloca);
@@ -16515,6 +16536,15 @@ struct JIT {
 
       builder_.SetInsertPoint(skipBB);
       emit_value_release(iterFinal);
+      // Free the owned iterable too (range_iter / object_iter's fresh +1).
+      // For a self-returning iterator this is a second, distinct reference on
+      // the same object; both releases are required to reach refcount 0.
+      if (objAlloca) {
+        auto objFinal = builder_.CreateLoad(
+            valueType_, objAlloca,
+            (std::string(label_prefix) + ".iterable").c_str());
+        emit_value_release(objFinal);
+      }
     };
 
     builder_.CreateBr(condBB);

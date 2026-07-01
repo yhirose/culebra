@@ -80,6 +80,15 @@ fn run(which, N) {
     # a deferred block whose body produces a heap value (the defer thunk's
     # result is discarded, not returned — it must be released).
     for i in 0..N { { let dv = V.new(i, [], []); defer { let _ = dv.twice() } } }
+  } else if which == "forin_keys" {
+    # for-in over an Object's keys drives object_iter, which builds a fresh
+    # iterator each loop. The protocol loop must release both that iterator
+    # and its source object (fresh literal here so a source leak shows up).
+    for i in 0..N { let mut s = 0; for k in { a: i, b: i + 1 } { s = s + 1 } }
+  } else if which == "forin_range_value" {
+    # for-in over a range *value* (a bound variable, not a literal, so the
+    # counted fast path is skipped) drives range_iter's fresh iterator.
+    for i in 0..N { let r = 0..3; let mut s = 0; for j in r { s = s + j } }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -100,7 +109,8 @@ if which == "list" {
   let names = ["object_literal", "array_literal", "instance_plain", "default_param",
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
-               "cmp_lt", "cmp_eq", "neg_op", "defer_obj"]
+               "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
+               "forin_keys", "forin_range_value"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
