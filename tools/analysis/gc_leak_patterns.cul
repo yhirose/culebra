@@ -103,6 +103,11 @@ fn run(which, N) {
     for i in 0..N {
       try { let _ = [mk(i), boom(), mk(i + 1)] } catch e { }
     }
+  } else if which == "forin_early_return" {
+    # an early `return` out of a for-in over an Object (range value) must
+    # dispose+release the iterator (compile_return, mirroring interp), else the
+    # per-loop iterator + its closures/cells leak.
+    for i in 0..N { let _ = forin_ret(i) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -115,6 +120,10 @@ fn mk(x) { V.new(x, [], []) }
 
 # Throws unconditionally; used to interrupt a container literal mid-build.
 fn boom() { throw "boom" }
+
+# Early return out of a for-in over a range value: exercises the iterator
+# dispose+release on the compile-time `return` exit.
+fn forin_ret(n) { let r = 0..8; for j in r { if j == 3 { return j } }; -1 }
 
 # A class declared inside a function: each call rebuilds the class meta with a
 # fresh closure per method. Exercises build_class_meta's ref transfer.
@@ -140,7 +149,7 @@ if which == "list" {
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
                "forin_keys", "forin_range_value", "class_in_fn",
-               "throw_in_literal"]
+               "throw_in_literal", "forin_early_return"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)

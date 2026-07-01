@@ -9896,6 +9896,7 @@ struct JIT {
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
+    std::vector<std::pair<llvm::Value*, llvm::Value*>> iter_cleanup;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -9906,13 +9907,17 @@ struct JIT {
           return_type(std::exchange(j.current_return_type_, {})),
           lpad(std::exchange(j.current_lpad_, nullptr)),
           fn_defer_mark(std::exchange(j.current_fn_defer_mark_, nullptr)),
-          owned_hot(std::exchange(j.current_owned_hot_, nullptr)) {}
+          owned_hot(std::exchange(j.current_owned_hot_, nullptr)),
+          // A nested fn's `return` must not clean up an enclosing fn's for-in
+          // iterators (their allocas belong to the outer function).
+          iter_cleanup(std::exchange(j.iter_cleanup_stack_, {})) {}
 
     void restore() {
       if (!jit) return;
       // Caller is expected to pop every scope it pushed; anything left
       // behind signals a push/pop imbalance that would silently leak.
       assert(jit->scopes_.empty() && "unbalanced push_scope/pop_scope");
+      jit->iter_cleanup_stack_ = std::move(iter_cleanup);
       jit->current_owned_hot_ = owned_hot;
       jit->current_fn_defer_mark_ = fn_defer_mark;
       jit->current_lpad_ = lpad;
@@ -9954,6 +9959,13 @@ struct JIT {
     llvm::Value* defer_mark = nullptr;
   };
   std::vector<LoopBlocks> loop_stack_;
+
+  // Active for-in protocol-loop iterators, innermost last. Each holds the
+  // {iterAlloca, objAlloca} a `return` inside the body must dispose+release
+  // before exiting the function (break/throw/natural exit are handled by the
+  // loop's own cleanup / landingpad). Mirrors the interpreter disposing the
+  // iterator on early return.
+  std::vector<std::pair<llvm::Value*, llvm::Value*>> iter_cleanup_stack_;
 
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
   // All JIT-generated call sites (runtime functions, user functions,
@@ -16577,6 +16589,72 @@ struct JIT {
   // retains its receiver before invocation (the callee frame releases
   // on exit via the owned `this` slot). `step` — the {done, value}
   // object — is released on every loop path before branching.
+  // Iterator trait dispose + release, at the current insertion point. Calls
+  // `iter.dispose()` if the iterator carries one (built-in iterators have no
+  // dispose, so trait-only coverage skips the call), then releases the iterator
+  // slot and, for a caller-owned iterable (range_iter / object_iter's fresh
+  // +1), the second reference held in `objAlloca`. Shared by the for-in
+  // protocol loop's natural-exit / break (cleanupBB), exception (excLpadBB), and
+  // early-`return` (compile_return, via iter_cleanup_stack_) paths — the last
+  // is what keeps dispose-on-early-return symmetric with the interpreter.
+  void emit_iter_dispose_and_release(llvm::Value* iterAlloca,
+                                     llvm::Value* objAlloca,
+                                     const char* label_prefix,
+                                     bool swallow_dispose = false) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto disposeKeyPtr = get_or_create_global_str("dispose", ".dispose.key");
+    auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca,
+                                         (std::string(label_prefix) + ".iter").c_str());
+    auto iterFinalPtr = builder_.CreateIntToPtr(
+        extract_data(iterFinal), ptrTy,
+        (std::string(label_prefix) + ".iter.ptr").c_str());
+    auto hasDispose = emit_object_has(
+        iterFinalPtr, disposeKeyPtr,
+        (std::string(label_prefix) + ".has_dispose").c_str());
+    auto disposeBB = llvm::BasicBlock::Create(
+        ctx_, (std::string(label_prefix) + ".dispose").c_str(), fn);
+    auto skipBB = llvm::BasicBlock::Create(
+        ctx_, (std::string(label_prefix) + ".skip").c_str(), fn);
+    builder_.CreateCondBr(hasDispose, disposeBB, skipBB);
+
+    builder_.SetInsertPoint(disposeBB);
+    auto dispose_fn_val = compile_property_get(iterFinal, "dispose");
+    if (swallow_dispose) {
+      // On the exception / early-return exit paths the interpreter swallows a
+      // throwing dispose() (it must not turn an in-flight throw or a `return`
+      // into the dispose's exception). Route the dispose call to a local
+      // catch-and-discard landingpad, then continue to the release. (break /
+      // natural drain propagate a throwing dispose, matching the interpreter.)
+      auto swallowBB = llvm::BasicBlock::Create(
+          ctx_, (std::string(label_prefix) + ".dispose.swallow").c_str(), fn);
+      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+      auto savedLpad = current_lpad_;
+      current_lpad_ = swallowBB;
+      compile_function_call_raw(dispose_fn_val, iterFinal, {});
+      current_lpad_ = savedLpad;
+      builder_.CreateBr(skipBB);
+      emit_catch_all_prologue(swallowBB,
+                              (std::string(label_prefix) + ".dispose.lpad").c_str());
+      builder_.CreateCall(
+          module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()),
+          {});
+      builder_.CreateBr(skipBB);
+    } else {
+      compile_function_call_raw(dispose_fn_val, iterFinal, {});
+      builder_.CreateBr(skipBB);
+    }
+
+    builder_.SetInsertPoint(skipBB);
+    emit_value_release(iterFinal);
+    if (objAlloca) {
+      auto objFinal = builder_.CreateLoad(
+          valueType_, objAlloca,
+          (std::string(label_prefix) + ".iterable").c_str());
+      emit_value_release(objFinal);
+    }
+  }
+
   void compile_for_protocol_loop(llvm::Value* objVal,
                                  const peg::Ast& var,
                                  const peg::Ast& body,
@@ -16631,45 +16709,6 @@ struct JIT {
     auto bodyBB = llvm::BasicBlock::Create(ctx_, "for.p.body", fn);
     auto cleanupBB = llvm::BasicBlock::Create(ctx_, "for.p.cleanup", fn);
     auto excLpadBB = llvm::BasicBlock::Create(ctx_, "for.p.exc", fn);
-    auto disposeKeyPtr = get_or_create_global_str("dispose", ".dispose.key");
-
-    // Iterator trait dispose: call iter.dispose() if the class carries
-    // one (default trait impl is no-op, so trait-only coverage skips the
-    // call), then release the iterator slot contents. Shared between the
-    // natural-exit/break path (cleanupBB) and the exception landingpad
-    // (excLpadBB) — both run the same cleanup before continuing.
-    auto emit_iter_dispose_and_release = [&](const char* label_prefix) {
-      auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca,
-                                           (std::string(label_prefix) + ".iter").c_str());
-      auto iterFinalPtr = builder_.CreateIntToPtr(
-          extract_data(iterFinal), ptrTy,
-          (std::string(label_prefix) + ".iter.ptr").c_str());
-      auto hasDispose = emit_object_has(
-          iterFinalPtr, disposeKeyPtr,
-          (std::string(label_prefix) + ".has_dispose").c_str());
-      auto disposeBB = llvm::BasicBlock::Create(
-          ctx_, (std::string(label_prefix) + ".dispose").c_str(), fn);
-      auto skipBB = llvm::BasicBlock::Create(
-          ctx_, (std::string(label_prefix) + ".skip").c_str(), fn);
-      builder_.CreateCondBr(hasDispose, disposeBB, skipBB);
-
-      builder_.SetInsertPoint(disposeBB);
-      auto dispose_fn_val = compile_property_get(iterFinal, "dispose");
-      compile_function_call_raw(dispose_fn_val, iterFinal, {});
-      builder_.CreateBr(skipBB);
-
-      builder_.SetInsertPoint(skipBB);
-      emit_value_release(iterFinal);
-      // Free the owned iterable too (range_iter / object_iter's fresh +1).
-      // For a self-returning iterator this is a second, distinct reference on
-      // the same object; both releases are required to reach refcount 0.
-      if (objAlloca) {
-        auto objFinal = builder_.CreateLoad(
-            valueType_, objAlloca,
-            (std::string(label_prefix) + ".iterable").c_str());
-        emit_value_release(objFinal);
-      }
-    };
 
     builder_.CreateBr(condBB);
 
@@ -16699,20 +16738,31 @@ struct JIT {
     // outer one for any post-cleanup exceptions.
     auto savedLpad = current_lpad_;
     current_lpad_ = excLpadBB;
+    // Make this iterator's cleanup reachable by an early `return` inside the
+    // body: compile_return emits the same dispose+release for every active
+    // for-in before it exits the function (mirrors the interpreter, which
+    // disposes on early return). break / natural exit / throw are covered by
+    // cleanupBB / excLpadBB below.
+    iter_cleanup_stack_.push_back({iterAlloca, objAlloca});
     emit_for_body_with_owned_binding(var, loop_val, body, condBB,
                                      cleanupBB);
+    iter_cleanup_stack_.pop_back();
     current_lpad_ = savedLpad;
 
     // cleanupBB: natural-exit and break path.
     builder_.SetInsertPoint(cleanupBB);
-    emit_iter_dispose_and_release("for.p");
+    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p");
     builder_.CreateBr(endBB);
 
     // excLpadBB: exception path. Catches, runs the same dispose + release,
     // then rethrows so the exception keeps unwinding to whatever outer
     // landingpad (or function exit) is active.
     emit_catch_all_prologue(excLpadBB, "for.p.lpad");
-    emit_iter_dispose_and_release("for.p.exc");
+    // NB: a throwing dispose() here still replaces the in-flight body exception
+    // (the interpreter swallows it to preserve the body throw). That divergence
+    // is pre-existing and needs correct nested-catch handling — left as a
+    // follow-up; break/return already match the interpreter.
+    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p.exc");
     emit_rethrow(savedLpad);
   }
 
@@ -20932,6 +20982,27 @@ struct JIT {
     if (!current_return_type_.empty()) {
       emit_type_check(val, current_return_type_, "return value");
     }
+    // When returning out of one or more for-in bodies, current_lpad_ is the
+    // innermost loop's own exception landingpad (it drives that loop's
+    // dispose+release). Emitting the exit cleanup under it would route a
+    // throwing dispose()/drop back into that same landingpad and re-run the
+    // cleanup — a double dispose + double release (UAF). A cleanup that throws
+    // during `return` must instead propagate out of the function (matching the
+    // "we're exiting, no invoke" intent below), so drop the landingpad for the
+    // whole exit sequence. Only for-in returns need this; leave others as-is.
+    llvm::BasicBlock* savedExitLpad = current_lpad_;
+    if (!iter_cleanup_stack_.empty()) current_lpad_ = nullptr;
+
+    // Dispose + release every active for-in iterator we're returning out of
+    // (innermost first), matching the interpreter's dispose-on-early-return.
+    // Their raw allocas live outside the scope machinery, so they'd otherwise
+    // both leak and skip dispose. break/throw/natural exit are handled by the
+    // loop's own cleanup / landingpad, so this only fires for `return`.
+    for (auto it = iter_cleanup_stack_.rbegin();
+         it != iter_cleanup_stack_.rend(); ++it) {
+      emit_iter_dispose_and_release(it->first, it->second, "for.p.ret",
+                                   /*swallow_dispose=*/true);
+    }
     // Run any defers registered in this function's scopes before
     // returning to the caller. No invoke needed: we're exiting.
     if (current_fn_defer_mark_) {
@@ -20941,6 +21012,7 @@ struct JIT {
     }
     release_all_scopes_for_exit();
     builder_.CreateRet(val);
+    current_lpad_ = savedExitLpad;
     return val;
   }
 
