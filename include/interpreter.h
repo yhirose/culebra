@@ -3528,8 +3528,16 @@ inline std::unordered_map<std::string_view, Value>& ObjectValue::builtins() {
       // raises — Python dict semantics. Value updates are allowed.
       {"iter"sv,
        Value(FunctionValue({}, [](std::shared_ptr<Environment> callEnv) {
-         const auto& obj = callEnv->get("this").to_object();
-         return _object_iterator(obj, ObjectIterMode::Pairs);
+         const auto& self = callEnv->get("this");
+         // A range value's `.iter()` must yield its `start..end` sequence,
+         // not the (key, value) pairs of its backing object — same as the
+         // for-in path (_get_iterator). Without this, `(0..n).iter()` (which
+         // the generator for-in desugar emits) walked the Range object's
+         // fields instead of its elements.
+         if (auto ct = class_tag(self); ct && *ct == "Range") {
+           return _get_iterator(self, 0, 0);
+         }
+         return _object_iterator(self.to_object(), ObjectIterMode::Pairs);
        }))}};
   return props_;
 }

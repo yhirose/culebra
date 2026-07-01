@@ -23,6 +23,12 @@ for i in 0..3 { puts(i) }
 let r = 0..3
 for i in r { puts(i) }
 
+# Range value via explicit .iter(): must yield the start..end sequence, not
+# the Range object's (key, value) pairs. (0..n).iter() is what the generator
+# for-in desugar emits; a broken dispatch walked the object fields / crashed.
+for i in (0..3).iter() { puts(i) }
+for i in (1..=3).iter() { puts(i) }
+
 # String grapheme loop (StringView path).
 for c in "hi" { puts(c) }
 
@@ -32,6 +38,14 @@ fn count_to(n) {
   while i < n { yield i; i = i + 1 }
 }
 for x in count_to(3) { puts(x) }
+
+# Generator whose yield lives inside a for-in over a range literal. The
+# transform desugars this to `(0..n).iter()`, and the range bound `n` (a
+# param) must be rewritten to `this.n` across the `..` operator.
+fn range_gen(n) {
+  for i in 0..n { yield i * 10 }
+}
+for x in range_gen(3) { puts(x) }
 
 # Nested for-in over an object inside an array loop.
 for row in [{ k: 1 }, { k: 2 }] {

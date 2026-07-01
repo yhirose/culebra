@@ -23049,10 +23049,31 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
+    // A range value's `.iter()` yields its start..end sequence — split it out
+    // before the generic Object path (which would walk the Range object's
+    // key/value pairs). Mirrors interp's object-builtin `iter` and the for-in
+    // objectBB. Unbounded ranges throw at 0:0 here to stay symmetric with
+    // interp's `.iter()` method (the for-in path keeps its own position).
+    auto objRangeBB = llvm::BasicBlock::Create(ctx_, "iter.obj.range", fn);
+    auto objPlainBB = llvm::BasicBlock::Create(ctx_, "iter.obj.plain", fn);
+    builder_.CreateCondBr(emit_is_range(receiver), objRangeBB, objPlainBB);
+
+    builder_.SetInsertPoint(objRangeBB);
+    auto rangeIt = emit_call(
+        module_->getOrInsertFunction(rt::range_iter, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {d, builder_.getInt64(0), builder_.getInt64(0)});
+    auto rangeVal = make_object(rangeIt);
+    auto rangeEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(mergeBB);
+
     // Object.iter() — defer to a user-defined `iter` slot when present
     // (mirrors interp's `_get_iterator`); a bare `{...}` literal with
     // no user iter falls back to the key iterator from
     // `ObjectValue::builtins()`.
+    builder_.SetInsertPoint(objPlainBB);
     auto objPtr = builder_.CreateIntToPtr(d, ptrTy);
     auto objIter = emit_call(
         module_->getOrInsertFunction(
@@ -23076,9 +23097,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(mergeBB);
-    auto phi = builder_.CreatePHI(valueType_, 4, "iter.res");
+    auto phi = builder_.CreatePHI(valueType_, 5, "iter.res");
     phi->addIncoming(arrVal, arrEnd);
     phi->addIncoming(setVal, setEnd);
+    phi->addIncoming(rangeVal, rangeEnd);
     phi->addIncoming(objVal, objEnd);
     phi->addIncoming(strVal, strEnd);
     return phi;

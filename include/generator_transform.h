@@ -182,8 +182,11 @@ inline std::string_view strip_block_braces(std::string_view s) {
 // name to `arr.this.size()`, producing malformed source (a parser crash
 // for any generator whose binding collides with a builtin method like
 // size / push / keys). The same `.`-exclusion also prevents re-rewriting
-// the `this.` prefixes this pass just inserted. String-literal and
-// comment false positives remain out of scope (regex, not a real lexer).
+// the `this.` prefixes this pass just inserted. The `..` range operator is
+// exempted from that exclusion: `0..n`'s `n` is an operand, not a member,
+// so a range bound naming a local/param (`for i in 0..n`, desugared to
+// `(0..n).iter()`) must still be rewritten to `0..this.n`. String-literal
+// and comment false positives remain out of scope (regex, not a real lexer).
 inline std::string rewrite_locals_to_this(std::string_view src,
                                           const std::set<std::string>& names) {
   // The two declaration-strip patterns are name-independent — hoist
@@ -196,10 +199,12 @@ inline std::string rewrite_locals_to_this(std::string_view src,
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.size() > b.size(); });
   for (const auto& name : sorted) {
-    // Group 1 captures the boundary char (start-of-string or any byte
-    // that is neither `.` nor an identifier char) so it can be restored
-    // ahead of the inserted `this.`.
-    std::regex pat("(^|[^.A-Za-z0-9_])" + name + "\\b");
+    // Group 1 captures the boundary (start-of-string, the `..` range
+    // operator, or any byte that is neither `.` nor an identifier char) so
+    // it can be restored ahead of the inserted `this.`. `..` is listed
+    // before the single-char class so a range bound is matched as an operand
+    // rather than mistaken for a member access on its second dot.
+    std::regex pat("(^|\\.\\.|[^.A-Za-z0-9_])" + name + "\\b");
     out = std::regex_replace(out, pat, "$1this." + name);
   }
   out = std::regex_replace(out, strip_let_this, "this.");
