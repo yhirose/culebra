@@ -6,9 +6,9 @@ namespace, serves the UI from a **local HTTP server**, bakes the frontend
 disk in dev**, and collapses the whole thing into one **`Desktop.run`** call
 with a UI-driven quit — the Tauri-shaped shape, end to end.
 
-`Webview` is a core opt-in namespace (like `Graphics`): build culebra with
-`-DCULEBRA_ENABLE_WEBVIEW=ON` and these run on the stock `culebra` — no
-`culebra wrap` step. The binding wraps
+`Webview` is a builtin namespace, ON by default (`CULEBRA_ENABLE_WEBVIEW`):
+these run on the stock `culebra` — no build flag, no `culebra wrap` step.
+The binding wraps
 [webview/webview](https://github.com/webview/webview) (MIT), which renders
 HTML/CSS/JS in each OS's native engine (WKWebView on macOS, WebKitGTK on Linux,
 WebView2 on Windows) — no bundled Chromium. `culebra build` force-loads it only
@@ -29,17 +29,12 @@ shutdown order), read the facade itself: `src/preambles/desktop.cul`.
 
 ## Build
 
-`Webview` is OFF by default; enable it in the culebra build (macOS links
-`-framework WebKit`; Linux needs `gtk4` + `webkitgtk-6.0` dev packages,
-untested yet):
-
-```sh
-just build -DCULEBRA_ENABLE_WEBVIEW=ON
-```
+`Webview` is ON by default in the culebra build (macOS links `-framework
+WebKit`; on Linux it auto-disables unless the `gtk4` + `webkitgtk-6.0` dev
+packages are present — untested yet). Opt out with
+`-DCULEBRA_ENABLE_WEBVIEW=OFF`.
 
 ## Run
-
-Use the webview-enabled `culebra` from that build:
 
 ```sh
 culebra examples/webview/desktop_app.cul          # the full app (interpreter)

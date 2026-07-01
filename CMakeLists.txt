@@ -269,12 +269,14 @@ if(CULEBRA_ENABLE_GRAPHICS)
 endif()
 
 # --- Builtin Webview namespace (native WebView desktop): config ------------
-# GUI-bound, so OFF by default. Mirrors the Graphics gating: the binding is
-# compiled into the driver (interp/JIT) and force-loaded into `culebra build`
-# outputs on Webview use. Unlike SDL/raylib there is no static library to build —
-# webview is a single vendored header (vendor/webview/webview.h) plus the OS's
-# native WebView framework, so the AOT fragment is just link flags.
-option(CULEBRA_ENABLE_WEBVIEW "Enable builtin Webview namespace (native WebView)" OFF)
+# ON by default: unlike Graphics there is no static library to build — webview
+# is a single vendored header (vendor/webview/webview.h) plus the OS's native
+# WebView framework, so it adds ~300 KB to the driver and nothing to non-Webview
+# AOT binaries (usage-gated force-load, mirroring the Graphics axis). On
+# platforms where the toolkit headers are missing (Linux without gtk4 +
+# webkitgtk-6.0, untested Windows) it auto-disables — the binding TU wouldn't
+# compile there.
+option(CULEBRA_ENABLE_WEBVIEW "Enable builtin Webview namespace (native WebView)" ON)
 set(_webview_link "")
 if(CULEBRA_ENABLE_WEBVIEW)
   # AOT link fragment (CULEBRA_WEBVIEW_LINK): the OS WebView framework(s).
@@ -291,9 +293,15 @@ if(CULEBRA_ENABLE_WEBVIEW)
       string(REPLACE ";" " " _webview_link "${WEBKITGTK_LDFLAGS}")
       string(APPEND _webview_link " -ldl")
     else()
-      message(WARNING "Webview: gtk4 + webkitgtk-6.0 not found (pkg-config); Linux Webview won't link")
+      message(STATUS "Webview: disabled (gtk4 + webkitgtk-6.0 not found via pkg-config)")
+      set(CULEBRA_ENABLE_WEBVIEW OFF)
     endif()
+  else()
+    message(STATUS "Webview: disabled (unsupported platform for the native WebView backend)")
+    set(CULEBRA_ENABLE_WEBVIEW OFF)
   endif()
+endif()
+if(CULEBRA_ENABLE_WEBVIEW)
   message(STATUS "Webview: enabled (native WebView, vendored webview.h)")
 endif()
 
