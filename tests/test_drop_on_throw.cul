@@ -1,0 +1,113 @@
+# Deterministic drop() + RC release must fire when an exception unwinds a
+# scope, exactly as they do on normal fall-through / return. This was a JIT
+# interp/JIT asymmetry (the JIT skipped scope cleanup on the throw path); the
+# difftest corpus does not exercise drop-on-throw, so this is the regression
+# guard. The test runner compares interp vs every JIT backend byte-for-byte.
+
+class Res {
+  new(id) { this.id = id }
+  drop() { print("drop " + this.id.to_string() + "\n") }
+}
+
+# 1. simple: local dropped when the function throws
+fn simple() {
+  let r = Res.new(1)
+  throw "x"
+}
+print("== simple ==\n")
+try { simple() } catch e { print("caught\n") }
+
+# 2. nested lexical scopes: inner drops before outer, LIFO
+fn nested() {
+  let outer = Res.new(2)
+  {
+    let inner = Res.new(3)
+    throw "x"
+  }
+}
+print("== nested ==\n")
+try { nested() } catch e { print("caught\n") }
+
+# 3. defer + drop ordering: defer runs before the scope's drops (in a nested
+# lexical block, so it exercises the per-scope cleanup, not the fn-level one)
+fn deferdrop() {
+  let keep = Res.new(6)
+  {
+    let a = Res.new(4)
+    defer { print("defer\n") }
+    let b = Res.new(5)
+    throw "x"
+  }
+}
+print("== defer+drop ==\n")
+try { deferdrop() } catch e { print("caught\n") }
+
+# 4. while body: the current iteration's local is dropped on throw
+fn wloop() {
+  let mut i = 0
+  while i < 3 {
+    let r = Res.new(10 + i)
+    if i == 1 { throw "x" }
+    i = i + 1
+  }
+}
+print("== while ==\n")
+try { wloop() } catch e { print("caught\n") }
+
+# 5. for body
+fn floop() {
+  for i in 0..3 {
+    let r = Res.new(20 + i)
+    if i == 1 { throw "x" }
+  }
+}
+print("== for ==\n")
+try { floop() } catch e { print("caught\n") }
+
+# 6. match: arm body local + drop-having subject both released
+fn matchthrow() {
+  match Res.new(30) {
+    x => {
+      let r = Res.new(31)
+      throw "x"
+    }
+  }
+}
+print("== match ==\n")
+try { matchthrow() } catch e { print("caught\n") }
+
+# 7. try body: local dropped before the catch handler runs
+fn trythrow() {
+  let outer = Res.new(40)
+  try {
+    let inner = Res.new(41)
+    throw "x"
+  } catch e {
+    print("inner caught\n")
+  }
+  throw "x"
+}
+print("== nested try ==\n")
+try { trythrow() } catch e { print("outer caught\n") }
+
+# 8. escaped container: dropping the array frees its held elements
+fn escape() {
+  let a = Res.new(50)
+  let b = [a, Res.new(51)]
+  throw "x"
+}
+print("== escape ==\n")
+try { escape() } catch e { print("caught\n") }
+
+# 9. for-in over a generator: body local dropped on throw, iterator disposed
+fn gen(n) {
+  for i in 0..n { yield i }
+}
+fn geniter() {
+  for i in gen(5) {
+    let r = Res.new(60 + i)
+    if i == 2 { throw "x" }
+  }
+}
+print("== for-in generator ==\n")
+try { geniter() } catch e { print("caught\n") }
