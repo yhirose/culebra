@@ -187,12 +187,12 @@ exception-safety):
   early `return`) run `release_scope_slots` / `release_all_scopes_for_exit`,
   which *statically emit* the releases for the scopes known at that point. A
   fresh `make_stack_slot` + `define_var` is covered here for free.
-- **Runtime exception unwind** does **not** walk scope slots. It lands in a
-  cleanup landingpad that calls `defer_run_to(mark)` — i.e. cleanup on the
-  throw path is driven by the **defer stack** (plus the owned-region stack for
-  drop-having objects), not by `release_scope_slots`. A scope slot created
-  *after* an enclosing `try`'s landingpad was emitted is therefore **not**
-  released when a sub-expression throws.
+- **Runtime exception unwind** does not fall through those compile-time
+  emitters — it lands in a cleanup landingpad. Historically that landingpad ran
+  only `defer_run_to(mark)`, so a throw skipped `release_scope_slots` and the
+  owned-region drop entirely: a scope's owned locals leaked and their `drop()`
+  never fired on `throw` (only on fall-through / `return`). **This is now
+  closed** — see "Generalized scope cleanup" below.
 
 Consequence for this layer: to make a construction region exception-safe, the
 in-flight value's release must ride the exception edge, not a scope slot (which
@@ -230,6 +230,30 @@ same landingpad shape already serves the for-in protocol loop; the remaining
 hole is the for-in raw-alloca iterator on early `return` ([[project_jit_gc_rewrite]]
 Task #2), whose exception path is already covered by that loop's landingpad —
 only the compile-time `return` exit needs the iterator added to scope cleanup.
+
+**Generalized scope cleanup — `finish_scope_cleanup` (shipped).** The same
+per-region, pred_empty-gated landingpad now backs *every* scope-like region, so
+a `throw` releases owned slots and fires `drop()` exactly as fall-through does.
+On the exception edge it mirrors the region's normal exit — run the region's
+defers (`defer_run_to`), then `release_scope_slots` (which fires `drop` via
+refcount-0 for every non-escaped resource) — then re-raises to the enclosing
+landingpad. It must run while the scope is still the live top-of-stack (its
+slot allocas are entry-zero-initialised, so a throw before a binding is
+assigned releases nil). Wired into: lexical scopes, `while` / `for` bodies,
+`match` arms **and the match subject scope**, `try` bodies (released before the
+catch handler runs), and the function frame — the fn-level pad is now emitted
+whenever the body can throw (not only with a fn-level `defer`), which covers a
+function whose owned locals live in the *frame* scope, since the body `BLOCK`
+compiles into that frame, not a nested `LEXICAL_SCOPE`. The escaped/cyclic drop
+remainder is resolved once at the frame level
+(`release_all_scopes_for_exit`'s `owned_scope_exit` over the whole frame mark),
+not per scope, so each cold cleanup block stays minimal. Normal-exit scope
+teardown keeps `current_lpad_` null so its `owned_scope_exit` is a plain call
+and never becomes a predecessor of a cleanup pad (which would defeat the DCE).
+The order matches the interpreter's unwind (defers before resource release), so
+`defer`/`drop` interleave identically on the throw path. Cost: functions with
+may-throw calls now emit `invoke` (unwind edge) instead of plain `call`, a
+small one-time compile-time increase; per-step execution is unchanged.
 
 ### 4.4 Borrows can't be released
 
