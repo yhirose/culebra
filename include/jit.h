@@ -1816,9 +1816,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
                                                         int64_t data) {
-  // Retain so the payload stays alive through stack unwinding. The
-  // matching catch handler is responsible for the balancing release.
-  culebra_runtime_value_retain(tag, data);
+  // The caller hands the payload +1-owned (compile() result / a fresh
+  // deserialize) and the carrier takes that reference over; it keeps the
+  // payload alive through unwinding and is consumed exactly once by the
+  // matching catch (the `catch e` binding absorbs it) or the uncaught path
+  // (exec / aot_bootstrap release it). A retain here on top of the caller's
+  // +1 double-counted the payload: it could never reach refcount 0, so a
+  // caught heap payload leaked and its drop() never fired.
   auto& rt = culebra::current_runtime();
   rt.thrown_tag = tag;
   rt.thrown_data = data;
@@ -21379,8 +21383,14 @@ struct JIT {
     builder_.CreateStore(caught, caughtSlot);
     builder_.CreateBr(catchBB);
 
-    // --- Catch body: bind thrown value as `name` ---
+    // --- Catch body: bind thrown value as `name`. A throw from the handler
+    // (e.g. `catch e { throw e }`) must release the handler scope's owned
+    // slots — including the `e` binding, which absorbed the carrier's +1 — so
+    // route it through the same per-scope unwind cleanup as any block. ---
     builder_.SetInsertPoint(catchBB);
+    auto catchCleanupBB =
+        llvm::BasicBlock::Create(ctx_, "try.catch.cleanup", fn);
+    current_lpad_ = catchCleanupBB;
     push_scope();
     auto caughtName = std::string(ast.nodes[1]->token);
     // Match interp's bind_pattern_name (interpreter.h:5264 → mut=true
@@ -21389,7 +21399,8 @@ struct JIT {
     auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
     declare_local(caughtName, caughtValue, /*is_mut=*/true);
     auto catchVal = compile(*ast.nodes[2]);
-    pop_scope();
+    finish_and_pop_scope(catchCleanupBB, /*defer_mark=*/nullptr, savedLpad,
+                         "try.catch.exc", savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
       builder_.CreateStore(catchVal, resultSlot);
       builder_.CreateBr(endBB);
@@ -21442,9 +21453,10 @@ struct JIT {
     try {
       mainFn();
     } catch (const CulebraException& e) {
-      // Balance the retain performed in culebra_runtime_throw.
-      _culebra_value_release_impl(e.tag, e.data);
+      // Format first, then consume the carrier's reference (the payload's
+      // final +1 — releasing first would free it under the formatter).
       auto s = _culebra_uncaught_display(e.tag, e.data);
+      _culebra_value_release_impl(e.tag, e.data);
       // Run (best-effort) any top-level defers the uncaught throw
       // skipped, so the global defer stack is drained between runs.
       try {
