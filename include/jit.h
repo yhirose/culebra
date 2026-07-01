@@ -10128,18 +10128,70 @@ struct JIT {
     builder_.SetInsertPoint(savedInsert);
   }
 
-  // Build a catch-all cleanup landingpad at the current insertion
-  // point: catches any in-flight exception, runs the scope's defers
-  // back to `mark`, and re-raises so the exception keeps propagating
-  // (to `outerLpad` if given, otherwise out of the current function).
-  void emit_cleanup_landingpad(llvm::BasicBlock* cleanupBB,
-                               llvm::Value* mark,
-                               llvm::BasicBlock* outerLpad,
-                               const char* excName) {
+  // Throw-path cleanup for one lexical region. On the exception edge it runs the
+  // region's defers, then release_scope_slots — mirroring the region's normal
+  // exit, which is also defers-first (see the ordering rationale on the emitted
+  // calls below; the escaped/cyclic drop remainder is resolved once at the
+  // frame level, not here) — before re-raising to `outerLpad`. This is what
+  // makes deterministic `drop` and RC release fire on `throw` exactly as they
+  // do on fall-through / early `return`, closing the JIT's last exception-path
+  // leak (docs/jit_ownership.md §4.3).
+  //
+  // Gated on can-throw via pred_empty: a region whose body has no throwing
+  // sub-call leaves `cleanupBB` predecessor-less, so it is erased — zero
+  // happy-path overhead (the same DCE the container-literal cleanup uses). Must
+  // run while `scope` is still the live top-of-stack (before pop_scope): the
+  // slot allocas it loads are the region's own, and every slot alloca is
+  // zero-initialised in the entry block, so a throw before a binding is
+  // assigned releases nil (a no-op). `defer_mark` is null when the region has
+  // no defer. Restores the caller's insertion point.
+  void finish_scope_cleanup(llvm::BasicBlock* cleanupBB, const Scope& scope,
+                            llvm::Value* defer_mark,
+                            llvm::BasicBlock* outerLpad, const char* excName) {
+    if (llvm::pred_empty(cleanupBB)) {
+      cleanupBB->eraseFromParent();
+      return;
+    }
+    auto savedInsert = builder_.GetInsertBlock();
+    // A landingpad requires the function to carry a personality; a function
+    // with no try/defer otherwise has none. Idempotent.
+    auto fn = cleanupBB->getParent();
+    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
     emit_catch_all_prologue(cleanupBB, excName);
-    builder_.CreateCall(
-        module_->getFunction(rt::defer_run_to), {mark});
+    // Order mirrors the interpreter's scope unwind (run_deferred fires the
+    // scope's defers, then the scope's resources are released — so a defer body
+    // may still touch them): defers first, then the slot release, which fires
+    // drop via refcount-0 for every non-escaped resource. The escaped/cyclic
+    // drop remainder is resolved once at the function-level cleanup's
+    // release_all_scopes_for_exit (owned_scope_exit over the whole frame's
+    // mark), not per scope — that keeps this cold block small (no owned-region
+    // diamond, no extra unwind edge), so routing throwing calls through it
+    // stays cheap.
+    if (defer_mark)
+      builder_.CreateCall(module_->getFunction(rt::defer_run_to), {defer_mark});
+    release_scope_slots(scope);
     emit_rethrow(outerLpad);
+    builder_.SetInsertPoint(savedInsert);
+  }
+
+  // Close a scope that both fills a throw-path cleanup and releases on the
+  // normal path: fill/erase `cleanupBB` (its owned-region resolution unwinds to
+  // `outerLpad`, also the re-raise target), then run a normal-path pop_scope
+  // with current_lpad_ nulled first — so the normal exit adds no predecessor to
+  // the cleanup pad and its pred_empty DCE stays intact — and finally restore
+  // current_lpad_ to `restoreLpad` for the code that follows. The one common
+  // shape behind lexical scopes, loop bodies, the match subject, and try
+  // bodies (only try differs: it re-raises to the catch pad but restores the
+  // outer one).
+  void finish_and_pop_scope(llvm::BasicBlock* cleanupBB, llvm::Value* defer_mark,
+                            llvm::BasicBlock* outerLpad, const char* excName,
+                            llvm::BasicBlock* restoreLpad) {
+    current_lpad_ = outerLpad;
+    finish_scope_cleanup(cleanupBB, scopes_.back(), defer_mark, outerLpad,
+                         excName);
+    current_lpad_ = nullptr;
+    pop_scope();
+    current_lpad_ = restoreLpad;
   }
 
   // Itanium C++ personality. Same attribute used by -fexceptions output.
@@ -16007,10 +16059,18 @@ struct JIT {
     // double-released. This is the structural fix for the historical match
     // RC leak: the subject used to sit in a bare alloca that nothing freed,
     // leaking one reference per match.
+    llvm::BasicBlock* savedOuterLpad = current_lpad_;
     push_scope();
     auto subject = compile(*ast.nodes[0]);
     auto subjSlot = make_stack_slot("match.subj", subject);
     define_var("match.subject", subjSlot);  // '.' name: unreachable by source
+
+    // Subject-scope throw-path cleanup: a throw from any arm's pattern / guard /
+    // body unwinds through here after the arm's own cleanup, releasing the
+    // subject (firing its drop) before propagating out — the arm cleanups and
+    // the fall-through both re-raise to this pad. DCE'd if no arm can throw.
+    auto subjCleanupBB = llvm::BasicBlock::Create(ctx_, "match.subj.cleanup", fn);
+    current_lpad_ = subjCleanupBB;
 
     auto endBB = llvm::BasicBlock::Create(ctx_, "match.end", fn);
     auto resultAlloca =
@@ -16069,15 +16129,20 @@ struct JIT {
       // case, so non-block / defer-free arms pay nothing.
       bool body_has_defer = scope_has_defer_.contains(&body_node);
       llvm::Value* arm_mark = nullptr;
-      llvm::BasicBlock* arm_cleanupBB = nullptr;
       llvm::BasicBlock* arm_savedLpad = current_lpad_;
+      // Per-arm throw-path cleanup: on a throw from the arm body, release the
+      // arm's owned bindings/locals and fire drop, run its defers, then
+      // re-raise. DCE'd when the arm body can't throw.
+      auto arm_cleanupBB = llvm::BasicBlock::Create(ctx_, "arm.cleanup", fn);
       if (body_has_defer) {
         arm_mark = builder_.CreateCall(
             module_->getFunction(rt::defer_mark), {}, "arm.mark");
-        arm_cleanupBB = llvm::BasicBlock::Create(ctx_, "arm.cleanup", fn);
-        current_lpad_ = arm_cleanupBB;
       }
+      current_lpad_ = arm_cleanupBB;
       auto body_val = compile(body_node);
+      // Restore the enclosing lpad for the normal-exit epilogue (its store /
+      // defer-run must not unwind back into arm_cleanupBB).
+      current_lpad_ = arm_savedLpad;
       // A block arm can terminate its block early (`return`/`break`/`continue`
       // /`throw` — only reachable now that arm bodies may be multi-statement).
       // When it does, the store/branch/defer-run below must not append past
@@ -16085,18 +16150,13 @@ struct JIT {
       // fn/loop defers (which include this arm's), so skip them here.
       if (!builder_.GetInsertBlock()->getTerminator()) {
         if (body_has_defer) {
-          current_lpad_ = arm_savedLpad;
           emit_call(module_->getFunction(rt::defer_run_to), {arm_mark});
         }
         builder_.CreateStore(body_val, resultAlloca);
         builder_.CreateBr(endBB);
-      } else if (body_has_defer) {
-        current_lpad_ = arm_savedLpad;
       }
-      if (body_has_defer) {
-        emit_cleanup_landingpad(arm_cleanupBB, arm_mark, arm_savedLpad,
-                                "arm.exc");
-      }
+      finish_scope_cleanup(arm_cleanupBB, scopes_.back(), arm_mark,
+                           arm_savedLpad, "arm.exc");
 
       pop_scope();
       builder_.SetInsertPoint(next_arm_bb);
@@ -16112,7 +16172,10 @@ struct JIT {
     // subject exactly once. Early exits (return/break/throw) bypass this and
     // free it via the enclosing scope teardown instead.
     auto result = builder_.CreateLoad(valueType_, resultAlloca, "match.res");
-    pop_scope();
+    // Normal exit: fill/erase the subject cleanup while the subject scope is
+    // still live, then release it (subject drop fires here on the throw path).
+    finish_and_pop_scope(subjCleanupBB, /*defer_mark=*/nullptr, savedOuterLpad,
+                         "match.subj.exc", savedOuterLpad);
     return result;
   }
 
@@ -16147,14 +16210,17 @@ struct JIT {
     // exception (the cleanup landingpad). Mirrors compile_for's body.
     bool has_defer = scope_has_defer_.contains(&body);
     llvm::Value* mark = nullptr;
-    llvm::BasicBlock* cleanupBB = nullptr;
     llvm::BasicBlock* savedLpad = current_lpad_;
+    // Per-iteration throw-path cleanup: release this iteration's owned slots and
+    // fire drop (mirroring pop_scope), run its defers, then re-raise. DCE'd when
+    // the body can't throw. (break/continue keep leaking their iteration slots
+    // to the backstop, as before — this only covers the exception edge.)
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "while.body.cleanup", fn);
     if (has_defer) {
       mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
                                  "while.body.mark");
-      cleanupBB = llvm::BasicBlock::Create(ctx_, "while.body.cleanup", fn);
-      current_lpad_ = cleanupBB;
     }
+    current_lpad_ = cleanupBB;
 
     loop_stack_.push_back({condBB, endBB, mark});
     // compile_statements returns the body block's final-statement value as an
@@ -16165,17 +16231,14 @@ struct JIT {
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(bodyVal);
     }
-    pop_scope();
-    current_lpad_ = savedLpad;
+
+    finish_and_pop_scope(cleanupBB, mark, savedLpad, "while.body.exc",
+                         savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
       if (has_defer) {
         emit_call(module_->getFunction(rt::defer_run_to), {mark});
       }
       builder_.CreateBr(condBB);
-    }
-
-    if (has_defer) {
-      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "while.body.exc");
     }
 
     builder_.SetInsertPoint(endBB);
@@ -16431,15 +16494,17 @@ struct JIT {
     // scope, plus the loop-control paths that interp's eval_for covers.
     bool has_defer = scope_has_defer_.contains(&body);
     llvm::Value* mark = nullptr;
-    llvm::BasicBlock* cleanupBB = nullptr;
     llvm::BasicBlock* savedLpad = current_lpad_;
+    // Per-iteration throw-path cleanup: release this iteration's owned slots
+    // (the loop variable + body locals) and fire drop, run its defers, then
+    // re-raise. DCE'd when the body can't throw.
+    auto cleanupBB = llvm::BasicBlock::Create(
+        ctx_, "for.body.cleanup", builder_.GetInsertBlock()->getParent());
     if (has_defer) {
       mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
                                  "for.body.mark");
-      auto fn = builder_.GetInsertBlock()->getParent();
-      cleanupBB = llvm::BasicBlock::Create(ctx_, "for.body.cleanup", fn);
-      current_lpad_ = cleanupBB;
     }
+    current_lpad_ = cleanupBB;
 
     loop_stack_.push_back({continue_bb, break_bb, mark});
     // compile_statements hands back the body block's final-statement value as
@@ -16452,18 +16517,12 @@ struct JIT {
       emit_value_release(bodyVal);
     }
 
-    pop_scope();
-    current_lpad_ = savedLpad;
-
+    finish_and_pop_scope(cleanupBB, mark, savedLpad, "for.body.exc", savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
       if (has_defer) {
         emit_call(module_->getFunction(rt::defer_run_to), {mark});
       }
       builder_.CreateBr(continue_bb);
-    }
-
-    if (has_defer) {
-      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "for.body.exc");
     }
   }
 
@@ -16824,20 +16883,24 @@ struct JIT {
   // --- Lexical scope ---
 
   llvm::Value* compile_lexical_scope(const peg::Ast& ast) {
-    // No defers in this scope → only variable-binding scoping needed.
     bool has_defer = scope_has_defer_.contains(&ast);
 
-    llvm::Value* mark = nullptr;
-    llvm::BasicBlock* cleanupBB = nullptr;
     llvm::BasicBlock* savedLpad = current_lpad_;
+    auto fn = builder_.GetInsertBlock()->getParent();
+    // Route every throwing sub-call in the body through a per-scope cleanup
+    // landingpad. On the throw path it releases this scope's owned slots
+    // (firing drop via refcount-0) and resolves the escaped/cyclic drop
+    // remainder — exactly as pop_scope does on the normal path — then
+    // re-raises. finish_scope_cleanup erases the block when nothing in the body
+    // can throw, so the common case pays nothing.
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "scope.cleanup", fn);
+    llvm::Value* mark = nullptr;
     if (has_defer) {
       // defer_mark is nothrow, so a plain call (not invoke) is safe.
       mark = builder_.CreateCall(
           module_->getFunction(rt::defer_mark), {}, "scope.mark");
-      auto fn = builder_.GetInsertBlock()->getParent();
-      cleanupBB = llvm::BasicBlock::Create(ctx_, "scope.cleanup", fn);
-      current_lpad_ = cleanupBB;
     }
+    current_lpad_ = cleanupBB;
 
     push_scope();
     // Forward-ref / self-recursion support inside the block: captured
@@ -16858,20 +16921,14 @@ struct JIT {
       emit_value_release(val);
     }
     val = make_nil();
-    pop_scope();
-    current_lpad_ = savedLpad;
 
+    // Fill (or erase) the throw-path cleanup while the scope is still the live
+    // top-of-stack, then release it on the normal path (see finish_and_pop_scope
+    // for the current_lpad_ discipline that keeps the DCE intact).
+    finish_and_pop_scope(cleanupBB, mark, savedLpad, "scope.exc", savedLpad);
     if (has_defer && !builder_.GetInsertBlock()->getTerminator()) {
-      emit_call(module_->getFunction(rt::defer_run_to),
-                {mark});
+      emit_call(module_->getFunction(rt::defer_run_to), {mark});
     }
-    auto afterBB = builder_.GetInsertBlock();
-
-    if (has_defer) {
-      emit_cleanup_landingpad(cleanupBB, mark, savedLpad, "scope.exc");
-    }
-
-    builder_.SetInsertPoint(afterBB);
     return val;
   }
 
@@ -18039,18 +18096,18 @@ struct JIT {
           module_->getFunction(rt::defer_mark), {}, "fn.mark");
       current_fn_defer_mark_ = fnMark;
     }
-    // Function-level cleanup landingpad. Emitted only when the body contains a
-    // fn-level `defer` — that's the throw case the JIT used to skip. Functions
-    // whose only defers are nested rely on those scopes'/arms' own cleanup
-    // landingpads for the throw path; functions without any defer rely on the
-    // cycle GC for throw-unwound locals and per-`try`/scope landingpads for
-    // localized cleanup. Making this frame-wide pad unconditional is appealing
-    // but currently destabilizes class-ctor and dispatcher emit paths that
-    // synthesize closures without going through compile_fn_common.
-    if (info.has_fn_defer) {
-      fnCleanupBB = BasicBlock::Create(ctx_, "fn.cleanup", fn);
-      current_lpad_ = fnCleanupBB;
-    }
+    // Function-level cleanup landingpad. Every throwing call in the frame that
+    // is not already caught by a nested try/scope/loop cleanup unwinds through
+    // here; on the throw path it runs the fn-level defers, releases the frame's
+    // owned slots (the params region + the body's top-level locals — the body
+    // BLOCK compiles into this frame scope, not a nested LEXICAL_SCOPE), and
+    // resolves the escaped/cyclic drop remainder, matching the interpreter's
+    // scope-unwind teardown. Erased at the end when nothing in the body can
+    // throw (pred_empty), so a leaf function pays nothing. Synthesized ctor /
+    // multifn-dispatcher closures build their own frames outside
+    // compile_fn_common and are unaffected.
+    fnCleanupBB = BasicBlock::Create(ctx_, "fn.cleanup", fn);
+    current_lpad_ = fnCleanupBB;
 
     argIt = fn->arg_begin();
     auto clsArg = &*argIt++;
@@ -18335,6 +18392,15 @@ struct JIT {
 
     auto bodyVal = compile(*body_ast);
 
+    // The body is done: the normal-exit epilogue below is not an unwind, so its
+    // scope-exit owned-region resolution runs as a plain call, not an invoke
+    // back into fnCleanupBB. Keeping current_lpad_ here would make the normal
+    // return's owned_scope_exit a predecessor of fnCleanupBB, defeating its
+    // pred_empty erase for a body that never throws. (A drop that itself throws
+    // during a *normal* return propagates out of the frame — matching the prior
+    // behaviour of a function with no fn-level defer.)
+    current_lpad_ = nullptr;
+
     if (!builder_.GetInsertBlock()->getTerminator()) {
       if (!returnType.empty()) {
         emit_type_check(bodyVal, returnType, "return value");
@@ -18348,31 +18414,28 @@ struct JIT {
       builder_.CreateRet(bodyVal);
     }
 
-    // Throw-path cleanup landingpad for the function frame. Releases
-    // the owned slots (params / locals are zero-init'd in entry so
-    // pre-init throws release nil, a no-op), runs any fn-level defers
-    // back to `fn.mark`, then rethrows. This pairs with the
-    // `current_lpad_ = fnCleanupBB` wired at function entry so every
-    // throw-capable invoke in the body unwinds through here.
-    if (fnCleanupBB) {
-      auto ptrTy = PointerType::get(ctx_, 0);
-      builder_.SetInsertPoint(fnCleanupBB);
-      auto lpadTy =
-          llvm::StructType::get(ptrTy, builder_.getInt32Ty());
-      auto lpad =
-          builder_.CreateLandingPad(lpadTy, 1, "fn.exc");
-      lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
-      auto excPtr = builder_.CreateExtractValue(lpad, {0});
-      builder_.CreateCall(
-          module_->getOrInsertFunction(
-              "__cxa_begin_catch", ptrTy, ptrTy),
-          {excPtr});
+    // Throw-path cleanup landingpad for the function frame. Runs any fn-level
+    // defers back to `fn.mark`, releases the owned slots (params / locals are
+    // zero-init'd in entry so pre-init throws release nil, a no-op) and fires
+    // the escaped/cyclic drop remainder via release_all_scopes_for_exit, then
+    // rethrows out of the frame. This pairs with the `current_lpad_ =
+    // fnCleanupBB` wired at function entry so every throw-capable invoke in the
+    // body unwinds through here. Erased when nothing in the body reaches it
+    // (pred_empty) — a leaf function pays nothing and needs no personality.
+    if (fnCleanupBB && !llvm::pred_empty(fnCleanupBB)) {
+      // A landingpad needs the function to carry a personality; a throw-capable
+      // body with no try/defer had none set at creation (has_eh gates that).
+      // Idempotent.
+      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+      emit_catch_all_prologue(fnCleanupBB, "fn.exc");
       if (fnMark) {
         builder_.CreateCall(
             module_->getFunction(rt::defer_run_to), {fnMark});
       }
       release_all_scopes_for_exit();
       emit_rethrow(/*outerLpad=*/nullptr);
+    } else if (fnCleanupBB) {
+      fnCleanupBB->eraseFromParent();
     }
 
     pop_scope();
@@ -21152,14 +21215,22 @@ struct JIT {
 
     builder_.CreateBr(tryBB);
 
-    // --- Try body: compile with current_lpad_ set to lpadBB ---
+    // --- Try body: compile through a body-scope cleanup that unwinds to the
+    // catch landingpad. A throw releases the try body's owned locals (firing
+    // their drop) before the handler runs — matching the interpreter, which
+    // tears the try scope down on the throw. The cleanup re-raises to lpadBB
+    // (the catch translate), which then runs the handler; when the body cannot
+    // throw the cleanup DCE-erases. ---
     builder_.SetInsertPoint(tryBB);
     auto savedLpad = current_lpad_;
-    current_lpad_ = lpadBB;
+    auto tryCleanupBB = llvm::BasicBlock::Create(ctx_, "try.body.cleanup", fn);
+    current_lpad_ = tryCleanupBB;
     push_scope();
     auto tryVal = compile(*ast.nodes[0]);
-    pop_scope();
-    current_lpad_ = savedLpad;
+    // Fill/erase the body cleanup while the scope is live; it re-raises to the
+    // catch pad (lpadBB), but the code after the try restores the outer lpad.
+    finish_and_pop_scope(tryCleanupBB, /*defer_mark=*/nullptr, lpadBB,
+                         "try.body.exc", savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
       builder_.CreateStore(tryVal, resultSlot);
       builder_.CreateBr(endBB);
