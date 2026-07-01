@@ -43,6 +43,14 @@ history / memory):
 - Ruby/Boehm: **conservative stack scanning** → C-extension locals are
   auto-rooted; no manual rooting at all.
 
+> **Ownership discipline is specified separately** in
+> [`jit_ownership.md`](jit_ownership.md): the standing rule that leaks must be
+> made *structurally impossible* (RAII / Rust-style), not patched site by site,
+> and the layered design (uniform convention → `Owned` RAII handle → scope-slot
+> escape → GC-owned rooting → cycle backstop) that gets there. This document
+> (the GC spec) owns the tracing/backstop and heap model; that one owns *who
+> releases, when*. Read them together.
+
 ## 2. Decision
 
 > **DECISION REVISED 2026-05-30 — CPython-style hybrid, NOT pure tracing.**
