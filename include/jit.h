@@ -1777,6 +1777,43 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_data() {
   return culebra::current_runtime().thrown_data;
 }
 
+// Save / restore the thrown-value carrier across a cleanup call whose own
+// exception is swallowed (a for-in iterator's dispose() on the unwind /
+// early-return paths). The carrier is a plain global, so a culebra throw from
+// the cleanup overwrites it — swallowing the cleanup's C++ exception alone
+// still leaves the wrong payload for the outer catch to read. `save` snapshots
+// (retaining the payload so it survives the cleanup); `restore` runs on both
+// the normal and the swallowed paths: if the cleanup replaced the payload,
+// release the replacement and put the snapshot back (the save's retain
+// transfers into the carrier); otherwise just drop the snapshot's retain.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
+    int8_t* out_flag, int8_t* out_tag, int64_t* out_data) {
+  auto& rt = culebra::current_runtime();
+  *out_flag = rt.is_throw;
+  *out_tag = rt.thrown_tag;
+  *out_data = rt.thrown_data;
+  if (rt.is_throw) culebra_runtime_value_retain(rt.thrown_tag, rt.thrown_data);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
+    int8_t flag, int8_t tag, int64_t data) {
+  auto& rt = culebra::current_runtime();
+  bool unchanged =
+      flag && rt.is_throw && rt.thrown_tag == tag && rt.thrown_data == data;
+  if (rt.is_throw && !unchanged) {
+    // The cleanup threw its own culebra payload (now swallowed): we are its
+    // catch handler, so release the retain culebra_runtime_throw took.
+    _culebra_value_release_impl(rt.thrown_tag, rt.thrown_data);
+  }
+  // Drop the snapshot's retain in every case: the original throw's retain
+  // (consumed by the eventual catch handler) was never touched by the
+  // overwrite, so the snapshot only needed to bridge the cleanup call.
+  if (flag) _culebra_value_release_impl(tag, data);
+  rt.thrown_tag = tag;
+  rt.thrown_data = data;
+  rt.is_throw = flag;
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
                                                         int64_t data) {
   // Retain so the payload stays alive through stack unwinding. The
@@ -9879,6 +9916,14 @@ struct JIT {
     std::map<std::string, std::string> multifn_keys;
   };
 
+  // Active for-in protocol-loop iterator record (see iter_cleanup_stack_).
+  struct IterCleanup {
+    llvm::Value* iterAlloca;
+    llvm::Value* objAlloca;
+    llvm::Value* body_defer_mark = nullptr;
+    bool fill_pending = false;
+  };
+
   // RAII snapshot of compiler per-function state. Entering a nested
   // LLVM function body (compile_function / compile_defer) constructs
   // one; the dtor (or an explicit `restore()` before the caller's
@@ -9896,7 +9941,7 @@ struct JIT {
     llvm::BasicBlock* lpad;
     llvm::Value* fn_defer_mark;
     llvm::Value* owned_hot;
-    std::vector<std::pair<llvm::Value*, llvm::Value*>> iter_cleanup;
+    std::vector<IterCleanup> iter_cleanup;
 
     explicit CompilerStateSaver(JIT& j)
         : jit(&j),
@@ -9963,9 +10008,12 @@ struct JIT {
   // Active for-in protocol-loop iterators, innermost last. Each holds the
   // {iterAlloca, objAlloca} a `return` inside the body must dispose+release
   // before exiting the function (break/throw/natural exit are handled by the
-  // loop's own cleanup / landingpad). Mirrors the interpreter disposing the
-  // iterator on early return.
-  std::vector<std::pair<llvm::Value*, llvm::Value*>> iter_cleanup_stack_;
+  // loop's own cleanup / landingpad), plus that loop body's per-iteration
+  // defer mark so the `return` runs the body's defers *before* the dispose —
+  // interp order (eval_for runs run_deferred, then dispose_iter). The mark is
+  // filled by emit_for_body_with_owned_binding (which creates it) via
+  // fill_pending, since the push happens before the body is compiled.
+  std::vector<IterCleanup> iter_cleanup_stack_;
 
   // Unified call-site emitter: `invoke` if inside a try, else `call`.
   // All JIT-generated call sites (runtime functions, user functions,
@@ -16504,6 +16552,14 @@ struct JIT {
       mark = builder_.CreateCall(module_->getFunction(rt::defer_mark), {},
                                  "for.body.mark");
     }
+    // Hand the iteration mark back to the protocol loop's IterCleanup entry so
+    // an early `return` runs this body's defers before disposing the iterator
+    // (interp order). Only the protocol loop sets fill_pending; array/string
+    // for-in bodies leave the stack untouched here.
+    if (!iter_cleanup_stack_.empty() && iter_cleanup_stack_.back().fill_pending) {
+      iter_cleanup_stack_.back().body_defer_mark = mark;
+      iter_cleanup_stack_.back().fill_pending = false;
+    }
     current_lpad_ = cleanupBB;
 
     loop_stack_.push_back({continue_bb, break_bb, mark});
@@ -16685,19 +16741,44 @@ struct JIT {
       // into the dispose's exception). Route the dispose call to a local
       // catch-and-discard landingpad, then continue to the release. (break /
       // natural drain propagate a throwing dispose, matching the interpreter.)
+      // The thrown-value carrier is a global that a culebra throw from
+      // dispose() OVERWRITES — swallowing the C++ exception alone still lets
+      // the outer catch read dispose's payload instead of the original one.
+      // Save the carrier before the call and restore it on both paths.
       auto swallowBB = llvm::BasicBlock::Create(
           ctx_, (std::string(label_prefix) + ".dispose.swallow").c_str(), fn);
+      auto restoreBB = llvm::BasicBlock::Create(
+          ctx_, (std::string(label_prefix) + ".dispose.rest").c_str(), fn);
       if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      auto i8Ty = builder_.getInt8Ty();
+      auto i64Ty = builder_.getInt64Ty();
+      auto flagA = entryB.CreateAlloca(i8Ty, nullptr, "thr.save.flag");
+      auto tagA = entryB.CreateAlloca(i8Ty, nullptr, "thr.save.tag");
+      auto dataA = entryB.CreateAlloca(i64Ty, nullptr, "thr.save.data");
+      emit_call(module_->getOrInsertFunction(
+                    "culebra_runtime_save_thrown", builder_.getVoidTy(),
+                    ptrTy, ptrTy, ptrTy),
+                {flagA, tagA, dataA});
       auto savedLpad = current_lpad_;
       current_lpad_ = swallowBB;
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
       current_lpad_ = savedLpad;
-      builder_.CreateBr(skipBB);
+      builder_.CreateBr(restoreBB);
       emit_catch_all_prologue(swallowBB,
                               (std::string(label_prefix) + ".dispose.lpad").c_str());
       builder_.CreateCall(
           module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()),
           {});
+      builder_.CreateBr(restoreBB);
+      builder_.SetInsertPoint(restoreBB);
+      emit_call(module_->getOrInsertFunction(
+                    "culebra_runtime_restore_thrown", builder_.getVoidTy(),
+                    i8Ty, i8Ty, i64Ty),
+                {builder_.CreateLoad(i8Ty, flagA),
+                 builder_.CreateLoad(i8Ty, tagA),
+                 builder_.CreateLoad(i64Ty, dataA)});
       builder_.CreateBr(skipBB);
     } else {
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
@@ -16802,7 +16883,8 @@ struct JIT {
     // for-in before it exits the function (mirrors the interpreter, which
     // disposes on early return). break / natural exit / throw are covered by
     // cleanupBB / excLpadBB below.
-    iter_cleanup_stack_.push_back({iterAlloca, objAlloca});
+    iter_cleanup_stack_.push_back(
+        {iterAlloca, objAlloca, nullptr, /*fill_pending=*/true});
     emit_for_body_with_owned_binding(var, loop_val, body, condBB,
                                      cleanupBB);
     iter_cleanup_stack_.pop_back();
@@ -16813,15 +16895,13 @@ struct JIT {
     emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p");
     builder_.CreateBr(endBB);
 
-    // excLpadBB: exception path. Catches, runs the same dispose + release,
-    // then rethrows so the exception keeps unwinding to whatever outer
-    // landingpad (or function exit) is active.
+    // excLpadBB: exception path. Catches, runs the same dispose + release
+    // (swallowing a throwing dispose so the in-flight body exception survives,
+    // as the interpreter does), then rethrows so that original exception keeps
+    // unwinding to whatever outer landingpad (or function exit) is active.
     emit_catch_all_prologue(excLpadBB, "for.p.lpad");
-    // NB: a throwing dispose() here still replaces the in-flight body exception
-    // (the interpreter swallows it to preserve the body throw). That divergence
-    // is pre-existing and needs correct nested-catch handling — left as a
-    // follow-up; break/return already match the interpreter.
-    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p.exc");
+    emit_iter_dispose_and_release(iterAlloca, objAlloca, "for.p.exc",
+                                 /*swallow_dispose=*/true);
     emit_rethrow(savedLpad);
   }
 
@@ -21061,9 +21141,15 @@ struct JIT {
     // Their raw allocas live outside the scope machinery, so they'd otherwise
     // both leak and skip dispose. break/throw/natural exit are handled by the
     // loop's own cleanup / landingpad, so this only fires for `return`.
+    // Each loop's body defers run *before* its dispose (interp's eval_for does
+    // run_deferred, then dispose_iter), interleaved per loop for nesting.
     for (auto it = iter_cleanup_stack_.rbegin();
          it != iter_cleanup_stack_.rend(); ++it) {
-      emit_iter_dispose_and_release(it->first, it->second, "for.p.ret",
+      if (it->body_defer_mark) {
+        builder_.CreateCall(module_->getFunction(rt::defer_run_to),
+                            {it->body_defer_mark});
+      }
+      emit_iter_dispose_and_release(it->iterAlloca, it->objAlloca, "for.p.ret",
                                    /*swallow_dispose=*/true);
     }
     // Run any defers registered in this function's scopes before
