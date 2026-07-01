@@ -10038,6 +10038,84 @@ struct JIT {
     builder_.CreateUnreachable();
   }
 
+  // Exception-safe incremental construction of a heap value (a container
+  // literal appends elements; each element expression can throw). Returns an
+  // entry-block alloca holding the in-construction value: store the container
+  // into it, create an empty `cleanupBB`, set it as `current_lpad_` around the
+  // element compilation, restore `current_lpad_`, then call
+  // finish_construction_cleanup. The value is passed to the cleanup through
+  // this alloca (loaded there) rather than as an SSA value live across the
+  // invoke unwind edges — a call-result SSA live into a landingpad crashes
+  // SDAG-O0's register coalescer. See docs/jit_ownership.md §4.3.
+  llvm::Value* make_build_guard(llvm::Value* containerVal) {
+    auto a = make_pending_guard();
+    builder_.CreateStore(containerVal, a);
+    return a;
+  }
+
+  // A nil-initialised guard slot for an in-flight `+1` temporary that is
+  // computed but not yet consumed while a later sub-call can throw (a heap
+  // object key before its value, a spread source before its consuming call).
+  // Store the temp before the risky call and clear it (store nil) after the
+  // call consumes/releases it; `finish_construction_cleanup` releases whatever
+  // it holds on the throw path. Releasing nil is a no-op, so an unused guard
+  // is harmless (and dead-code eliminates when no cleanup is emitted).
+  llvm::Value* make_pending_guard() {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                             fn->getEntryBlock().begin());
+    auto a = entryB.CreateAlloca(valueType_, nullptr, "build.guard");
+    entryB.CreateStore(llvm::ConstantAggregateZero::get(valueType_), a);
+    return a;
+  }
+
+  void clear_pending_guard(llvm::Value* guard) {
+    builder_.CreateStore(llvm::ConstantAggregateZero::get(valueType_), guard);
+  }
+
+  // Catch-all cleanup-landingpad prologue at `cleanupBB`: landingpad + null
+  // clause + `__cxa_begin_catch`, leaving the insertion point in `cleanupBB`.
+  // Shared by every hand-rolled cleanup landingpad.
+  llvm::LandingPadInst* emit_catch_all_prologue(llvm::BasicBlock* cleanupBB,
+                                                const char* name) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    builder_.SetInsertPoint(cleanupBB);
+    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
+    auto lpad = builder_.CreateLandingPad(lpadTy, 1, name);
+    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
+    auto excPtr = builder_.CreateExtractValue(lpad, {0});
+    builder_.CreateCall(
+        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
+        {excPtr});
+    return lpad;
+  }
+
+  // If any construction sub-call could throw, its invoke made `cleanupBB` a
+  // predecessor: fill it with "release the partial values (loaded from each
+  // `guard`), re-raise". Otherwise the block is unused and erased, leaving
+  // zero happy-path overhead (e.g. `[this, o]`, whose elements are
+  // non-throwing identifiers, emits no cleanup — and the guard stores dead-code
+  // eliminate). Restores the caller's insertion point.
+  void finish_construction_cleanup(llvm::BasicBlock* cleanupBB,
+                                   std::initializer_list<llvm::Value*> guards,
+                                   llvm::BasicBlock* outerLpad) {
+    if (llvm::pred_empty(cleanupBB)) {
+      cleanupBB->eraseFromParent();
+      return;
+    }
+    auto savedInsert = builder_.GetInsertBlock();
+    // A landingpad requires the function to carry a personality; a function
+    // with no try/catch otherwise has none. Idempotent.
+    auto fn = cleanupBB->getParent();
+    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
+    emit_catch_all_prologue(cleanupBB, "build.lpad");
+    for (auto* guard : guards)
+      emit_value_release(
+          builder_.CreateLoad(valueType_, guard, "build.partial"));
+    emit_rethrow(outerLpad);
+    builder_.SetInsertPoint(savedInsert);
+  }
+
   // Build a catch-all cleanup landingpad at the current insertion
   // point: catches any in-flight exception, runs the scope's defers
   // back to `mark`, and re-raises so the exception keeps propagating
@@ -10046,15 +10124,7 @@ struct JIT {
                                llvm::Value* mark,
                                llvm::BasicBlock* outerLpad,
                                const char* excName) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    builder_.SetInsertPoint(cleanupBB);
-    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
-    auto lpad = builder_.CreateLandingPad(lpadTy, 1, excName);
-    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));  // catch-all
-    auto excPtr = builder_.CreateExtractValue(lpad, {0});
-    builder_.CreateCall(
-        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
-        {excPtr});
+    emit_catch_all_prologue(cleanupBB, excName);
     builder_.CreateCall(
         module_->getFunction(rt::defer_run_to), {mark});
     emit_rethrow(outerLpad);
@@ -13440,11 +13510,22 @@ struct JIT {
 
   llvm::Value* compile_array(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
 
     // Create empty array
     auto arrPtr = emit_call(
         module_->getOrInsertFunction(rt::array_new, ptrTy),
         {}, "arr");
+
+    // Route any throw from a size/element expression to a cleanup that releases
+    // the partial array (and the elements already pushed into it), so a
+    // container literal cannot leak when a later element throws. The block is
+    // erased if nothing inside can throw. See docs/jit_ownership.md §4.3.
+    auto buildGuard = make_build_guard(make_array(arrPtr));
+    auto pendingGuard = make_pending_guard();  // a spread source mid-consume
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "arr.build.cleanup", fn);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = cleanupBB;
 
     // Resize first if size/default specified (matches interpreter order)
     if (ast.nodes.size() >= 2) {
@@ -13478,6 +13559,7 @@ struct JIT {
     for (auto i = 0u; i < seqNodes.size(); i++) {
       if (has_spread && seqNodes[i]->tag == "SPREAD_ELEM"_) {
         auto v = compile(*seqNodes[i]->nodes[0]);
+        builder_.CreateStore(v, pendingGuard);  // released if extend throws
         emit_call(
             module_->getOrInsertFunction(
                 rt::array_extend, builder_.getVoidTy(), ptrTy,
@@ -13487,6 +13569,7 @@ struct JIT {
              builder_.getInt64(seqNodes[i]->line),
              builder_.getInt64(seqNodes[i]->column)});
         emit_value_release(v);  // extend retained each element
+        clear_pending_guard(pendingGuard);
         continue;
       }
       auto val = compile(*seqNodes[i]);
@@ -13508,6 +13591,8 @@ struct JIT {
       }
     }
 
+    current_lpad_ = savedLpad;
+    finish_construction_cleanup(cleanupBB, {buildGuard, pendingGuard}, savedLpad);
     return make_array(arrPtr);
   }
 
@@ -13517,8 +13602,14 @@ struct JIT {
   // into nested children — peglib flattens them).
   llvm::Value* compile_tuple(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
     auto tupPtr = emit_call(
         module_->getOrInsertFunction(rt::tuple_new, ptrTy), {}, "tup");
+    // Release the partial tuple if a later element throws (see compile_array).
+    auto buildGuard = make_build_guard(make_tuple(tupPtr));
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "tup.build.cleanup", fn);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
       auto val = compile(*node);
       auto tag = extract_tag(val);
@@ -13529,6 +13620,8 @@ struct JIT {
               builder_.getInt8Ty(), builder_.getInt64Ty()),
           {tupPtr, tag, data});
     }
+    current_lpad_ = savedLpad;
+    finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
     return make_tuple(tupPtr);
   }
 
@@ -13536,8 +13629,14 @@ struct JIT {
   // reference to `set_add` which dedupes against the sidecar index.
   llvm::Value* compile_set(const peg::Ast& ast) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
     auto setPtr = emit_call(
         module_->getOrInsertFunction(rt::set_new, ptrTy), {}, "set");
+    // Release the partial set if a later element throws (see compile_array).
+    auto buildGuard = make_build_guard(make_set(setPtr));
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "set.build.cleanup", fn);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
       auto val = compile(*node);
       auto tag = extract_tag(val);
@@ -13548,6 +13647,8 @@ struct JIT {
               builder_.getInt8Ty(), builder_.getInt64Ty()),
           {setPtr, tag, data});
     }
+    current_lpad_ = savedLpad;
+    finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
     return make_set(setPtr);
   }
 
@@ -13680,9 +13781,19 @@ struct JIT {
     using namespace peg::udl;
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
 
+    auto fn = builder_.GetInsertBlock()->getParent();
     auto objPtr = emit_call(
         module_->getOrInsertFunction(rt::object_new, ptrTy),
         {}, "obj");
+
+    // Release the partial object if a later key/value expression throws
+    // (see compile_array).
+    auto buildGuard = make_build_guard(make_object(objPtr));
+    // Holds a spread source, or a heap key awaiting its (throwing) value.
+    auto pendingGuard = make_pending_guard();
+    auto cleanupBB = llvm::BasicBlock::Create(ctx_, "obj.build.cleanup", fn);
+    auto savedLpad = current_lpad_;
+    current_lpad_ = cleanupBB;
 
     // Each child is OBJECT_PROPERTY — `view_object_property` normalizes
     // the long `{k: v}` and shorthand `{x}` forms. Non-IDENTIFIER keys
@@ -13692,6 +13803,7 @@ struct JIT {
       if (prop->tag == "SPREAD_ELEM"_) {
         // `{...obj}` — merge another Object's entries (later keys win).
         auto v = compile(*prop->nodes[0]);
+        builder_.CreateStore(v, pendingGuard);  // released if merge throws
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_merge, builder_.getVoidTy(), ptrTy,
@@ -13700,6 +13812,7 @@ struct JIT {
             {objPtr, extract_tag(v), extract_data(v),
              builder_.getInt64(prop->line), builder_.getInt64(prop->column)});
         emit_value_release(v);  // merge retained each copied entry
+        clear_pending_guard(pendingGuard);
         continue;
       }
       auto pv = culebra::view_object_property(*prop);
@@ -13709,6 +13822,9 @@ struct JIT {
         // duplicate key overwrites last-wins (like the interp), rather than
         // tripping the immutable-entry guard meant for `o[k] = v`.
         auto key = compile(*pv.key);
+        // The key's +1 is live until object_set_any consumes it; guard it so a
+        // throwing value expression doesn't orphan a heap key (`{(1,2): boom()}`).
+        builder_.CreateStore(key, pendingGuard);
         auto val = compile(*pv.value);
         emit_call(
             module_->getOrInsertFunction(
@@ -13721,6 +13837,7 @@ struct JIT {
              builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val),
              current_line_val(), current_column_val(),
              builder_.getInt1(true)});
+        clear_pending_guard(pendingGuard);
         continue;
       }
 
@@ -13746,6 +13863,8 @@ struct JIT {
                       extract_tag(val), extract_data(val), /*is_init=*/true);
     }
 
+    current_lpad_ = savedLpad;
+    finish_construction_cleanup(cleanupBB, {buildGuard, pendingGuard}, savedLpad);
     return make_object(objPtr);
   }
 
@@ -16592,14 +16711,7 @@ struct JIT {
     // excLpadBB: exception path. Catches, runs the same dispose + release,
     // then rethrows so the exception keeps unwinding to whatever outer
     // landingpad (or function exit) is active.
-    builder_.SetInsertPoint(excLpadBB);
-    auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
-    auto lpad = builder_.CreateLandingPad(lpadTy, 1, "for.p.lpad");
-    lpad->addClause(llvm::ConstantPointerNull::get(ptrTy));
-    auto excPtr = builder_.CreateExtractValue(lpad, {0});
-    builder_.CreateCall(
-        module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
-        {excPtr});
+    emit_catch_all_prologue(excLpadBB, "for.p.lpad");
     emit_iter_dispose_and_release("for.p.exc");
     emit_rethrow(savedLpad);
   }

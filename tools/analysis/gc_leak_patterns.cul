@@ -96,6 +96,13 @@ fn run(which, N) {
     # leaks one closure per instantiation. Generators hit this via their
     # synthesized _Gen_ class (iter/has_next/next/dispose).
     for i in 0..N { let _ = mk_local(i) }
+  } else if which == "throw_in_literal" {
+    # a container literal whose later element throws must release the partial
+    # container (and the elements already pushed) via the construction cleanup
+    # landingpad — else the partial array + its built element leak each turn.
+    for i in 0..N {
+      try { let _ = [mk(i), boom(), mk(i + 1)] } catch e { }
+    }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -105,6 +112,9 @@ fn run(which, N) {
 }
 
 fn mk(x) { V.new(x, [], []) }
+
+# Throws unconditionally; used to interrupt a container literal mid-build.
+fn boom() { throw "boom" }
 
 # A class declared inside a function: each call rebuilds the class meta with a
 # fresh closure per method. Exercises build_class_meta's ref transfer.
@@ -129,7 +139,8 @@ if which == "list" {
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
-               "forin_keys", "forin_range_value", "class_in_fn"]
+               "forin_keys", "forin_range_value", "class_in_fn",
+               "throw_in_literal"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
