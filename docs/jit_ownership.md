@@ -194,14 +194,42 @@ exception-safety):
   *after* an enclosing `try`'s landingpad was emitted is therefore **not**
   released when a sub-expression throws.
 
-Consequence for this layer: to make a construction region (e.g. a container
-literal whose later element throws, or the for-in iterator) exception-safe, the
-in-flight value's release must be put on the **defer stack** for the
-construction window (register on entry, cancel/consume on success) — a scope
-slot alone only covers the normal/return exits. This defer-stack integration
-(and its per-region cost) is the real work of the escape layer; a
-`make_stack_slot`-only "fix" silently leaks on the throw path (verified:
-`[mkheap(), boom(), mkheap()]` still leaked ~2/loop with the slot in place).
+Consequence for this layer: to make a construction region exception-safe, the
+in-flight value's release must ride the exception edge, not a scope slot (which
+only covers the normal/return exits — a `make_stack_slot`-only "fix" silently
+leaks on the throw path; verified: `[mkheap(), boom(), mkheap()]` still leaked
+~2/loop with the slot in place).
+
+**Implemented mechanism — per-region cleanup landingpad, gated on can-throw**
+(shipped for container literals; `compile_array` / `_object` / `_tuple` / `_set`):
+
+- Create an empty `cleanupBB` and set it as `current_lpad_` only around the
+  element/key/value compilation. A sub-expression that can throw compiles to an
+  `invoke` whose unwind edge targets `cleanupBB`; a non-throwing one (a plain
+  identifier / literal) compiles to a plain call and adds no edge.
+- After construction, `finish_construction_cleanup`: if `cleanupBB` has no
+  predecessors (nothing could throw), **erase it** — zero happy-path overhead,
+  which is why `[this, o]` / `[1.0, 1.0]` pay nothing. Otherwise fill it with
+  "release the partial value(s), re-raise to the outer landingpad."
+- The partial value is passed to the cleanup through an **entry alloca**
+  (`make_build_guard`), loaded in the landingpad — never as a call-result SSA
+  live across the invoke edges (that form crashes SDAG-O0's register
+  coalescer). `make_pending_guard` / `clear_pending_guard` cover the in-flight
+  temporaries not yet consumed across a risky call (a heap object key before
+  its value; a spread source before extend/merge); each guard is nil outside
+  its window, and releasing nil is a no-op.
+- A landingpad requires the function to carry a personality (a leaf function
+  otherwise has none — a null-personality codegen crash); set it idempotently
+  when cleanup is actually emitted.
+
+This is preferred over registering releases on the **defer stack**: the defer
+stack stores *closures* to invoke (heavyweight per literal) and would run on
+normal exits too (needing a cancel), whereas the cleanup landingpad is
+exception-path-only and dead-code-eliminates to nothing when unneeded. The
+same landingpad shape already serves the for-in protocol loop; the remaining
+hole is the for-in raw-alloca iterator on early `return` ([[project_jit_gc_rewrite]]
+Task #2), whose exception path is already covered by that loop's landingpad —
+only the compile-time `return` exit needs the iterator added to scope cleanup.
 
 ### 4.4 Borrows can't be released
 
