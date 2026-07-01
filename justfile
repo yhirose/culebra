@@ -29,6 +29,19 @@ dev *extra:
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
     cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
+# Regenerate include/grammar_blob.h — the serialized grammar that lets
+# get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
+# grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
+# peglib-version-specific). Skipping it is safe: get_parser() guards the blob
+# with a grammar hash and falls back to load_grammar() on mismatch.
+[group("build")]
+gen-blob:
+    mkdir -p build-dev
+    {{ if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") } }} \
+        -std=c++23 -O2 -I include -I vendor/cpp-peglib \
+        tools/gen_grammar_blob.cc -o build-dev/gen_grammar_blob
+    ./build-dev/gen_grammar_blob include/grammar_blob.h
+
 # Build without JIT (interpreter only, no LLVM). Builds just the `culebra`
 # driver — the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this is the
 # compile gate that catches interp-only build breakage (the rest of the tree is

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sync misc/culebra.peg and the AUTO-KEYWORDS blocks in the editor syntax files
 # (misc/vim/cul.vim, misc/vscode/syntaxes/culebra.tmLanguage.json) from
-# include/parser.h. Run `misc/sync_grammar.sh` to overwrite the files;
+# include/grammar_def.h (the single-source grammar; parser.h #includes it).
+# Run `misc/sync_grammar.sh` to overwrite the files;
 # `misc/sync_grammar.sh --check` exits non-zero if any is stale.
 
 set -euo pipefail
@@ -13,7 +14,7 @@ if [[ "${1:-}" == "--check" ]]; then
   CHECK=1
 fi
 
-PARSER=include/parser.h
+PARSER=include/grammar_def.h
 PEG=misc/culebra.peg
 VIM=misc/vim/cul.vim
 TM=misc/vscode/syntaxes/culebra.tmLanguage.json
