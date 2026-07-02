@@ -7010,7 +7010,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     return emit_output_call(jit, rt::print, argsAst);
 
   if (name == "to_long" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]).consume();
     // Polymorphic: Long/Float/String. The runtime helper dispatches
     // on tag (Long identity, Float truncate, String parse) and
     // raises `type error` for anything else.
@@ -7022,7 +7022,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   }
 
   if (name == "to_float" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]).consume();
     auto result = jit.emit_call(
         jit.module_->getFunction(rt::to_float_any),
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
@@ -7031,7 +7031,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   }
 
   if (name == "to_string" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]).consume();
     auto s = jit.emit_call(
         jit.module_->getFunction(rt::value_to_display),
         {jit.extract_tag(arg), jit.extract_data(arg)});
@@ -7040,7 +7040,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   }
 
   if (name == "type_of" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]).consume();
     auto s = jit.emit_call(jit.module_->getFunction(rt::type_of),
                                  {jit.extract_tag(arg)});
     jit.emit_value_release(arg);
@@ -7048,7 +7048,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
   }
 
   if (name == "hash" && argsAst.nodes.size() == 1) {
-    auto arg = jit.compile(*argsAst.nodes[0]);
+    auto arg = jit.compile(*argsAst.nodes[0]).consume();
     auto h = jit.emit_call(
         jit.module_->getFunction(rt::hash_any),
         {jit.extract_tag(arg), jit.extract_data(arg), line, col});
@@ -7069,7 +7069,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
     while (nameNode->nodes.size() == 1) nameNode = nameNode->nodes[0].get();
     auto namePtr = jit.get_or_create_global_str(
         std::string(nameNode->token), ".lazyns.name");
-    auto builder = jit.compile(*argsAst.nodes[1]);
+    auto builder = jit.compile(*argsAst.nodes[1]).consume();
     jit.emit_call(
         jit.module_->getOrInsertFunction(rt::lazy_ns_register,
                                          jit.builder_.getVoidTy(), ptrTy,
@@ -7112,7 +7112,7 @@ inline llvm::Value* JitExtension::compile_global(JIT& jit,
                              const peg::Ast* a = nullptr) {                   \
     return jit.emit_type_check(v, t, w, a);                                   \
   };                                                                          \
-  auto compile = [&](const peg::Ast& a) { return jit.compile(a); };           \
+  auto compile = [&](const peg::Ast& a) { return jit.compile(a).consume(); };           \
   auto emit_output_call = [&](const char* rt, const peg::Ast& a) {            \
     return JitExtension::emit_output_call(jit, rt, a);                        \
   };                                                                          \
@@ -8282,7 +8282,7 @@ inline llvm::Value* JitExtension::compile_ns_prop(JIT& jit,
 inline llvm::Value* JitExtension::emit_output_call(JIT& jit,
                                                      const char* rt_name,
                                                      const peg::Ast& argsAst) {
-  auto arg = jit.compile(*argsAst.nodes[0]);
+  auto arg = jit.compile(*argsAst.nodes[0]).consume();
   jit.emit_call(jit.module_->getFunction(rt_name),
                       {jit.extract_tag(arg), jit.extract_data(arg)});
   jit.emit_value_release(arg);
@@ -8399,13 +8399,13 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
         e = to_long_consuming(receiver);
       } else {  // (S).range(E) → range(S, E)
         s = to_long_consuming(receiver);
-        e = to_long_consuming(jit.compile(*positional[0]));
+        e = to_long_consuming(jit.compile(*positional[0]).consume());
       }
       if (method == "iota") {
         auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
         return jit.make_array(arr);
       }
-      auto step = step_ast ? to_long_consuming(jit.compile(*step_ast))
+      auto step = step_ast ? to_long_consuming(jit.compile(*step_ast).consume())
                            : jit.builder_.getInt64(1);
       auto obj = emit_call(module_->getFunction(rt::math_range),
                            {s, e, step, line, col});

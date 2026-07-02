@@ -364,17 +364,31 @@ Corollary: no correct codegen path contains a bare, hand-placed
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
   and pinned by leak-battery patterns. Deterministic-drop RC and the
   mark-sweep backstop are shipped (`jit_gc_design.md`).
-- **The through-line work:** progressively route every `compile()` producer and
-  consumer through `Owned` + scope slots, deleting the hand-placed
-  retain/release as each site is converted — until §5's invariants hold
-  codebase-wide and the bare calls are gone. This is the "flip `compile()` to
-  `Owned` returns" refactor: large but *type-driven* (the double-consume assert
-  and the move-only handle guide each conversion; a missed release becomes a
-  dropped `Owned`, not a leak). Remaining slices, roughly in order:
-  the method-dispatch children's internals
+- **The flip itself is done: `compile()` returns `Owned`.** Every producer
+  now hands its `+1` through the move-only handle, so any *new* call site
+  must make an explicit ownership choice — consume, borrow, or drop — and a
+  double hand-off asserts at codegen time. The conversion was
+  behaviour-preserving by construction: previously-converted sites
+  (`own(compile(…))`) now take the handle directly, and every remaining
+  legacy site consumes it at the call (`compile(…).consume()` — exactly the
+  old raw `+1` contract), verified byte-identical IR at -O2/-O0 plus the
+  full gates. The `.consume()` calls are the grep-able inventory of what's
+  left to convert.
+- **The through-line work:** convert those `.consume()` clusters to real
+  `Owned` flow (dtor releases, borrows) cluster by cluster, deleting the
+  hand-placed retain/release as each converts — until §5's invariants hold
+  codebase-wide. Notes for those slices: a probe sweep found **no
+  normal-path leaks** in the remaining clusters (statement discard /
+  `cond` / guards / interpolation / `??` are flat; `if`/`while`/logical
+  conditions only accept Bool/Long/Float, so a heap `+1` can't reach them
+  on the normal path — only their *throw* edges carry heap refs, and those
+  are the per-region cleanup pads' job, not `Owned`'s, §4.3). Beware
+  release-position changes: e.g. `compile_statements` frees the previous
+  statement's result *before* compiling the next one — a naive move-assign
+  rewrite would emit the release after it, shifting drop timing observed by
+  the interpreter. Also remaining: the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
-  still share consumed raws across their runtime-exclusive arms), and
-  finally `compile()` itself.
+  still share consumed raws across their runtime-exclusive arms).
 - **Unblocks in order:** (1) close the rooting/ownership split (§2/§4.5) so
   removing redundant refs is safe → (2) finish the ownership flip → (3) the RC
   is leak-free → (4) `gc_refs` / precise GC can retire the conservative

@@ -10544,7 +10544,7 @@ struct JIT {
     }
 
     jit.pre_allocate_forward_refs(*ast);
-    jit.compile(*ast);
+    jit.compile(*ast).consume();
 
     if (!builder.GetInsertBlock()->getTerminator()) {
       if (mainMark) {
@@ -10667,7 +10667,7 @@ struct JIT {
         jit.current_fn_defer_mark_ = depMark;
       }
       jit.pre_allocate_forward_refs(*m.ast);
-      jit.compile(*m.ast);
+      jit.compile(*m.ast).consume();
       jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
       if (depMark) {
         builder.CreateCall(
@@ -10693,7 +10693,7 @@ struct JIT {
       jit.current_fn_defer_mark_ = mainMark;
     }
     jit.pre_allocate_forward_refs(*entry.ast);
-    jit.compile(*entry.ast);
+    jit.compile(*entry.ast).consume();
     if (!builder.GetInsertBlock()->getTerminator()) {
       if (mainMark) {
         builder.CreateCall(
@@ -10783,7 +10783,7 @@ struct JIT {
       jit.current_fn_defer_mark_ = mainMark;
     }
     jit.pre_allocate_forward_refs(*ast);
-    jit.compile(*ast);
+    jit.compile(*ast).consume();
     if (!builder.GetInsertBlock()->getTerminator()) {
       if (mainMark) {
         builder.CreateCall(
@@ -10943,7 +10943,7 @@ struct JIT {
         jit.current_fn_defer_mark_ = depMark;
       }
       jit.pre_allocate_forward_refs(*m.ast);
-      jit.compile(*m.ast);
+      jit.compile(*m.ast).consume();
       jit.emit_build_and_register_export(*m.ast, m.abs_path.string());
       if (depMark) {
         builder.CreateCall(
@@ -10967,7 +10967,7 @@ struct JIT {
       jit.current_fn_defer_mark_ = mainMark;
     }
     jit.pre_allocate_forward_refs(*entry.ast);
-    jit.compile(*entry.ast);
+    jit.compile(*entry.ast).consume();
     if (!builder.GetInsertBlock()->getTerminator()) {
       if (mainMark) {
         builder.CreateCall(
@@ -11115,7 +11115,7 @@ struct JIT {
     bool captured = info.captured_locals.contains(param_name);
     define_var(param_name,
                make_var_slot(captured, param_name, elem, pv.is_mut));
-    auto result = compile(*lambda_ast.nodes[1]);
+    auto result = compile(*lambda_ast.nodes[1]).consume();
     per_iter(elem, result);
     pop_scope();
   }
@@ -11139,7 +11139,7 @@ struct JIT {
     bool val_captured = info.captured_locals.contains(val_name);
     define_var(val_name,
                make_var_slot(val_captured, val_name, val_val, val_pv.is_mut));
-    auto result = compile(*lambda_ast.nodes[1]);
+    auto result = compile(*lambda_ast.nodes[1]).consume();
     store_result(result);
     pop_scope();
   }
@@ -13387,7 +13387,13 @@ struct JIT {
 
   // --- Main dispatch ---
 
-  llvm::Value* compile(const peg::Ast& ast) {
+  // The one expression compiler. Returns the node's value as an `Owned`
+  // `+1` handle: consumers either hand the ref on (`.consume()` — a slot
+  // store, a raw call emitter), read it non-destructively (`.borrow()`),
+  // or let the handle's dtor release it; a double hand-off asserts at
+  // codegen time (§5, docs/jit_ownership.md). `nullptr` stays the "token
+  // handled by parent" sentinel (the handle is inert).
+  Owned compile(const peg::Ast& ast) {
     using namespace peg::udl;
 
     // Track position for runtime error messages. Save/restore so the
@@ -13529,7 +13535,7 @@ struct JIT {
 
     // Single child: recurse
     if (ast.nodes.size() == 1) {
-      return compile(*ast.nodes[0]);
+      return compile(*ast.nodes[0]).consume();
     }
 
     return make_nil();
@@ -13560,14 +13566,14 @@ struct JIT {
             !llvm::isa<llvm::UndefValue>(compiled)) &&
            "compile() returned an undef %Value; declarations/statements must "
            "return make_nil()");
-    return compiled;
+    return own(compiled);
   }
 
   // --- Statements ---
 
   llvm::Value* compile_statements(const peg::Ast& ast) {
     if (ast.is_token) {
-      return compile(ast);
+      return compile(ast).consume();
     }
     if (ast.nodes.empty()) {
       return make_nil();
@@ -13584,7 +13590,7 @@ struct JIT {
       if (builder_.GetInsertBlock()->getTerminator()) break;
       // Release previous statement's result (not used)
       if (val) emit_value_release(val);
-      val = compile(*node);
+      val = compile(*node).consume();
     }
     return val ? val : make_nil();
   }
@@ -13660,7 +13666,7 @@ struct JIT {
     // Resize first if size/default specified (matches interpreter order)
     if (ast.nodes.size() >= 2) {
       // The count is scalar-or-throw (value_to_long); its +1 is a no-op.
-      auto countVal = compile(*ast.nodes[1]);
+      auto countVal = compile(*ast.nodes[1]).consume();
       auto count = value_to_long(countVal);
       llvm::Value* defTag = builder_.getInt8(TAG_NIL);
       llvm::Value* defData = builder_.getInt64(0);
@@ -13668,7 +13674,7 @@ struct JIT {
       // alias ref); this frame's +1 is released by the handle after the call.
       Owned defVal;
       if (ast.nodes.size() >= 3) {
-        defVal = own(compile(*ast.nodes[2]));
+        defVal = compile(*ast.nodes[2]);
         defTag = extract_tag(defVal.borrow());
         defData = extract_data(defVal.borrow());
       }
@@ -13695,7 +13701,7 @@ struct JIT {
         {
           // extend borrows the source (retaining each copied element); the
           // handle's dtor at this block's end releases the source +1.
-          Owned v = own(compile(*seqNodes[i]->nodes[0]));
+          Owned v = compile(*seqNodes[i]->nodes[0]);
           builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
           emit_call(
               module_->getOrInsertFunction(
@@ -13709,7 +13715,7 @@ struct JIT {
         clear_pending_guard(pendingGuard);
         continue;
       }
-      Owned val = own(compile(*seqNodes[i]));
+      Owned val = compile(*seqNodes[i]);
       auto tag = extract_tag(val.borrow());
       auto data = extract_data(val.borrow());
       if (has_spread) {
@@ -13749,7 +13755,7 @@ struct JIT {
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
-      Owned val = own(compile(*node));
+      Owned val = compile(*node);
       emit_call(
           module_->getOrInsertFunction(
               rt::tuple_push, builder_.getVoidTy(), ptrTy,
@@ -13775,7 +13781,7 @@ struct JIT {
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
-      Owned val = own(compile(*node));
+      Owned val = compile(*node);
       emit_call(
           module_->getOrInsertFunction(
               rt::set_add, builder_.getVoidTy(), ptrTy,
@@ -13906,7 +13912,7 @@ struct JIT {
     auto objPtr = emit_call(
         module_->getOrInsertFunction(rt::object_new, ptrTy), {}, "rest");
     for (const auto& [name, val_ast] : kwargs) {
-      auto val = compile(*val_ast);
+      auto val = compile(*val_ast).consume();
       emit_object_set(objPtr, std::string(name), /*mut=*/false,
                       extract_tag(val), extract_data(val));
     }
@@ -13941,7 +13947,7 @@ struct JIT {
         {
           // merge borrows the source (retaining each copied entry); the
           // handle's dtor at this block's end releases the source +1.
-          Owned v = own(compile(*prop->nodes[0]));
+          Owned v = compile(*prop->nodes[0]);
           builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
           emit_call(
               module_->getOrInsertFunction(
@@ -13961,11 +13967,11 @@ struct JIT {
         // Non-IDENTIFIER literal key — emit Value-keyed set. is_init=true so a
         // duplicate key overwrites last-wins (like the interp), rather than
         // tripping the immutable-entry guard meant for `o[k] = v`.
-        Owned key = own(compile(*pv.key));
+        Owned key = compile(*pv.key);
         // The key's +1 is live until object_set_any consumes it; guard it so a
         // throwing value expression doesn't orphan a heap key (`{(1,2): boom()}`).
         builder_.CreateStore(key.borrow(), pendingGuard);
-        Owned val = own(compile(*pv.value));
+        Owned val = compile(*pv.value);
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
@@ -13999,7 +14005,7 @@ struct JIT {
           val = own(load_slot(*slot, name));
         }
       } else {
-        val = own(compile(*pv.value));
+        val = compile(*pv.value);
       }
       emit_object_set(objPtr, name, pv.is_mut, extract_tag(val.borrow()),
                       extract_data(val.borrow()), /*is_init=*/true);
@@ -14019,7 +14025,7 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     if (node.tag == "INTERP_EXPR"_ && node.nodes.size() > 1) {
       // `{expr:spec}` — children [EXPRESSION, FORMAT_SPEC].
-      auto val = compile(*node.nodes[0]);
+      auto val = compile(*node.nodes[0]).consume();
       auto specPtr = get_or_create_global_str(
           std::string(node.nodes[1]->token), ".fmtspec");
       return emit_call(
@@ -14035,7 +14041,7 @@ struct JIT {
     // Bare `{expr}` — INTERP_EXPR with just [EXPRESSION], or (defensive) a
     // bare expr node.
     auto exprNode = (node.tag == "INTERP_EXPR"_) ? node.nodes[0].get() : &node;
-    auto val = compile(*exprNode);
+    auto val = compile(*exprNode).consume();
     return emit_call(
         module_->getOrInsertFunction(rt::value_to_display, ptrTy,
                                      builder_.getInt8Ty(),
@@ -14250,7 +14256,7 @@ struct JIT {
           "`??=` is only supported on a simple variable target.");
     }
     auto compile_rhs = [&]() {
-      auto v = compile(*av.rhs);
+      auto v = compile(*av.rhs).consume();
       if (!av.type_annotation.empty()) {
         emit_type_check(v, av.type_annotation, "assignment");
       }
@@ -14417,7 +14423,7 @@ struct JIT {
     using namespace peg::udl;
 
     // Complex lvalue (obj.prop, arr[idx])
-    llvm::Value* lval = compile(*ast.nodes[lvaloff]);
+    llvm::Value* lval = compile(*ast.nodes[lvaloff]).consume();
 
     // Process intermediate postfixes (all but the last)
     auto end = lvaloff + lvalcnt - 1;
@@ -14488,7 +14494,7 @@ struct JIT {
         // Array path
         builder_.SetInsertPoint(arrBB);
         auto arrPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
-        auto idxVal = compile(finalPostfix);
+        auto idxVal = compile(finalPostfix).consume();
         auto idx = value_to_long(idxVal);
         llvm::Value* to_store_arr = rval;
         if (compound) {
@@ -14535,7 +14541,7 @@ struct JIT {
         // place before writing back.
         builder_.SetInsertPoint(objBB);
         auto objPtr = builder_.CreateIntToPtr(extract_data(lval), ptrTy);
-        auto keyVal = compile(finalPostfix);
+        auto keyVal = compile(finalPostfix).consume();
         llvm::Value* to_store_obj = rval;
         if (compound) {
           // object_get_any and object_set_any both consume the caller's
@@ -14690,8 +14696,8 @@ struct JIT {
   // the RANGE_OPERATOR case in compile()).
   llvm::Value* compile_range(const peg::Ast& ast) {
     auto lay = decode_range_layout(ast);
-    llvm::Value* startV = lay.start ? value_to_long(compile(*lay.start)) : nullptr;
-    llvm::Value* endV = lay.end ? value_to_long(compile(*lay.end)) : nullptr;
+    llvm::Value* startV = lay.start ? value_to_long(compile(*lay.start).consume()) : nullptr;
+    llvm::Value* endV = lay.end ? value_to_long(compile(*lay.end).consume()) : nullptr;
     return emit_make_range(startV, endV, lay.inclusive);
   }
 
@@ -14739,7 +14745,7 @@ struct JIT {
     // path's `ast.line / ast.column`.
     auto stmt_line = builder_.getInt64(ast.line);
     auto stmt_col = builder_.getInt64(ast.column);
-    auto rval = compile(*ast.nodes[3]);
+    auto rval = compile(*ast.nodes[3]).consume();
 
     auto saved_declare = pattern_declare_;
     pattern_declare_ = declares;
@@ -14935,9 +14941,9 @@ struct JIT {
     // handles release them (no-op for immediates) once the binop has read
     // them — freeing a heap operand of an overloaded `+`/`-`. The result of
     // the final binop is handed back to the caller via `consume()`.
-    Owned acc = own(compile(*ast.nodes[0]));
+    Owned acc = compile(*ast.nodes[0]);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      Owned rhs = own(compile(*ast.nodes[i + 1]));
+      Owned rhs = compile(*ast.nodes[i + 1]);
       auto ope = ast.nodes[i]->token[0];
       const char* rt_name = (ope == '+') ? rt::num_add
                            : (ope == '-') ? rt::num_sub
@@ -14966,9 +14972,9 @@ struct JIT {
     // Same ownership story as compile_additive: accumulator and each rhs are
     // `+1`-owned temps released by their Owned handles once the binop (or `@`)
     // has read them; the final result's `+1` transfers to the caller.
-    Owned acc = own(compile(*ast.nodes[0]));
+    Owned acc = compile(*ast.nodes[0]);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      Owned rhs = own(compile(*ast.nodes[i + 1]));
+      Owned rhs = compile(*ast.nodes[i + 1]);
       auto ope = ast.nodes[i]->token[0];
 
       // `@` always goes through the runtime helper — no Long fast path
@@ -15027,7 +15033,7 @@ struct JIT {
   // --- Unary ---
 
   llvm::Value* compile_unary_plus(const peg::Ast& ast) {
-    return compile(*ast.nodes[1]);
+    return compile(*ast.nodes[1]).consume();
   }
 
   llvm::Value* compile_unary_minus(const peg::Ast& ast) {
@@ -15035,7 +15041,7 @@ struct JIT {
     // has read it (no-op for an immediate Long, frees a heap operand of an
     // overloaded `__neg__`). Both paths join at mergeBB, where the handle's
     // dtor emits the release.
-    Owned val = own(compile(*ast.nodes[1]));
+    Owned val = compile(*ast.nodes[1]);
     auto tag = extract_tag(val.borrow());
     auto longTag = builder_.getInt8(TAG_LONG);
     auto isLong = builder_.CreateICmpEQ(tag, longTag);
@@ -15074,7 +15080,7 @@ struct JIT {
   llvm::Value* compile_unary_not(const peg::Ast& ast) {
     // Operand owned; released by the handle after value_to_bool borrows it
     // (frees a heap operand whose truthiness is taken).
-    Owned val = own(compile(*ast.nodes[1]));
+    Owned val = compile(*ast.nodes[1]);
     auto b = value_to_bool(val.borrow());
     auto notb = builder_.CreateNot(b, "not");
     return make_bool(notb);
@@ -15083,7 +15089,7 @@ struct JIT {
   // `~x` — bitwise complement, Long-only (else TypeError). Mirrors the
   // interp's eval_unary_bnot.
   llvm::Value* compile_unary_bnot(const peg::Ast& ast) {
-    auto val = compile(*ast.nodes[1]);
+    auto val = compile(*ast.nodes[1]).consume();
     auto tag = extract_tag(val);
     auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -15110,10 +15116,10 @@ struct JIT {
   // Bitwise / shift chains (`^` `&` `<<` `>>`), Long-only. A non-Long
   // operand raises TypeError. Mirrors interp's eval_bitwise.
   llvm::Value* compile_bitwise(const peg::Ast& ast) {
-    auto lhs = compile(*ast.nodes[0]);
+    auto lhs = compile(*ast.nodes[0]).consume();
     auto longTag = builder_.getInt8(TAG_LONG);
     for (auto i = 1u; i < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]);
+      auto rhs = compile(*ast.nodes[i + 1]).consume();
       auto op = ast.nodes[i]->token;
       auto ltag = extract_tag(lhs);
       auto rtag = extract_tag(rhs);
@@ -15185,7 +15191,7 @@ struct JIT {
   llvm::Value* compile_power(const peg::Ast& ast) {
     // POWER = [base, POWER_OPERATOR, exponent]; optimizer strips the
     // node entirely when there's no `**`.
-    Owned base = own(compile(*ast.nodes[0]));
+    Owned base = compile(*ast.nodes[0]);
 
     // Peephole specialization for compile-time-constant exponents.
     // Correctness note: sqrt(x) and std::pow(x, 0.5) agree on NaN
@@ -15215,7 +15221,7 @@ struct JIT {
       }
     }
 
-    Owned exp = own(compile(*ast.nodes[2]));
+    Owned exp = compile(*ast.nodes[2]);
     auto result = emit_call(
         module_->getOrInsertFunction(rt::num_pow, valueType_,
                                      builder_.getInt8Ty(),
@@ -15357,9 +15363,9 @@ struct JIT {
   // middle operand is evaluated once (the rhs becomes the next lhs).
   // Short-circuits to false at the first failing link (Python semantics).
   llvm::Value* compile_condition(const peg::Ast& ast) {
-    Owned lhs = own(compile(*ast.nodes[0]));
+    Owned lhs = compile(*ast.nodes[0]);
     if (ast.nodes.size() == 3) {  // common single comparison — direct
-      Owned rhs = own(compile(*ast.nodes[2]));
+      Owned rhs = compile(*ast.nodes[2]);
       // The comparison borrows both operands (it reads tag/data and may invoke
       // a user __eq__/__lt__, which borrows too); the Owned handles release a
       // heap operand of an overloaded `<`/`==`/… once the i1 result is built.
@@ -15391,7 +15397,7 @@ struct JIT {
     }
     llvm::Value* prev = lhs_raw;
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
-      auto rhs = compile(*ast.nodes[i + 1]);
+      auto rhs = compile(*ast.nodes[i + 1]).consume();
       auto cmp = compile_comparison_i1(prev, rhs,
                                        std::string(ast.nodes[i]->token));
       auto nextBB = llvm::BasicBlock::Create(ctx_, "cmpchain.next", fn);
@@ -15426,7 +15432,7 @@ struct JIT {
         valueType_, nullptr, std::string(label) + ".tmp");
 
     for (auto i = 0u; i < ast.nodes.size(); i++) {
-      auto val = compile(*ast.nodes[i]);
+      auto val = compile(*ast.nodes[i]).consume();
       builder_.CreateStore(val, resultAlloca);
 
       if (i < ast.nodes.size() - 1) {
@@ -15468,7 +15474,7 @@ struct JIT {
         entryBuilder.CreateAlloca(valueType_, nullptr, "and.tmp");
 
     for (auto i = 0u; i < ast.nodes.size(); i++) {
-      auto val = compile(*ast.nodes[i]);
+      auto val = compile(*ast.nodes[i]).consume();
       builder_.CreateStore(val, resultAlloca);
       auto b = value_to_bool(val);
 
@@ -15504,13 +15510,13 @@ struct JIT {
     for (auto i = 0u; i < nodes.size(); i += 2) {
       if (i + 1 == nodes.size()) {
         // else block
-        auto val = compile(*nodes[i]);
+        auto val = compile(*nodes[i]).consume();
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(val, resultAlloca);
           builder_.CreateBr(mergeBB);
         }
       } else {
-        auto cond = compile(*nodes[i]);
+        auto cond = compile(*nodes[i]).consume();
         auto b = value_to_bool(cond);
 
         auto thenBB = llvm::BasicBlock::Create(ctx_, "if.then", fn);
@@ -15518,7 +15524,7 @@ struct JIT {
         builder_.CreateCondBr(b, thenBB, elseBB);
 
         builder_.SetInsertPoint(thenBB);
-        auto thenVal = compile(*nodes[i + 1]);
+        auto thenVal = compile(*nodes[i + 1]).consume();
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(thenVal, resultAlloca);
           builder_.CreateBr(mergeBB);
@@ -15558,19 +15564,19 @@ struct JIT {
       if (builder_.GetInsertBlock()->getTerminator()) break;
       const auto& test = *arm->nodes[0];
       if (test.tag == "WILDCARD"_) {
-        auto val = compile(*arm->nodes[1]);
+        auto val = compile(*arm->nodes[1]).consume();
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(val, resultAlloca);
           builder_.CreateBr(mergeBB);
         }
       } else {
-        auto b = value_to_bool(compile(test));
+        auto b = value_to_bool(compile(test).consume());
         auto thenBB = llvm::BasicBlock::Create(ctx_, "cond.then", fn);
         auto elseBB = llvm::BasicBlock::Create(ctx_, "cond.else", fn);
         builder_.CreateCondBr(b, thenBB, elseBB);
 
         builder_.SetInsertPoint(thenBB);
-        auto thenVal = compile(*arm->nodes[1]);
+        auto thenVal = compile(*arm->nodes[1]).consume();
         if (!builder_.GetInsertBlock()->getTerminator()) {
           builder_.CreateStore(thenVal, resultAlloca);
           builder_.CreateBr(mergeBB);
@@ -16140,7 +16146,7 @@ struct JIT {
     // leaking one reference per match.
     llvm::BasicBlock* savedOuterLpad = current_lpad_;
     push_scope();
-    auto subject = compile(*ast.nodes[0]);
+    auto subject = compile(*ast.nodes[0]).consume();
     auto subjSlot = make_stack_slot("match.subj", subject);
     define_var("match.subject", subjSlot);  // '.' name: unreachable by source
 
@@ -16188,7 +16194,7 @@ struct JIT {
             llvm::BasicBlock::Create(ctx_, "match.guard", fn);
         builder_.CreateCondBr(match_cond, guard_bb, next_arm_bb);
         builder_.SetInsertPoint(guard_bb);
-        auto guard_val = compile(*arms[ai]->nodes[1]->nodes[0]);
+        auto guard_val = compile(*arms[ai]->nodes[1]->nodes[0]).consume();
         auto guard_bool = value_to_bool(guard_val);
         builder_.CreateCondBr(guard_bool, body_bb, next_arm_bb);
         next_idx = 2;
@@ -16218,7 +16224,7 @@ struct JIT {
             module_->getFunction(rt::defer_mark), {}, "arm.mark");
       }
       current_lpad_ = arm_cleanupBB;
-      auto body_val = compile(body_node);
+      auto body_val = compile(body_node).consume();
       // Restore the enclosing lpad for the normal-exit epilogue (its store /
       // defer-run must not unwind back into arm_cleanupBB).
       current_lpad_ = arm_savedLpad;
@@ -16268,7 +16274,7 @@ struct JIT {
     builder_.CreateBr(condBB);
 
     builder_.SetInsertPoint(condBB);
-    auto cond = compile(*ast.nodes[0]);
+    auto cond = compile(*ast.nodes[0]).consume();
     auto b = value_to_bool(cond);
     builder_.CreateCondBr(b, bodyBB, endBB);
 
@@ -16305,7 +16311,7 @@ struct JIT {
     // compile_statements returns the body block's final-statement value as an
     // owned (+1) temporary; a loop discards it every iteration, so release it
     // (else a body ending in a heap expression leaks one object per pass).
-    auto bodyVal = compile(body);
+    auto bodyVal = compile(body).consume();
     loop_stack_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(bodyVal);
@@ -16385,8 +16391,8 @@ struct JIT {
     if (id.tag == "IDENTIFIER"_ && iter_expr.tag == "RANGE"_) {
       auto lay = decode_range_layout(iter_expr);
       if (lay.start && lay.end) {
-        auto startV = value_to_long(compile(*lay.start));
-        auto endV = value_to_long(compile(*lay.end));
+        auto startV = value_to_long(compile(*lay.start).consume());
+        auto endV = value_to_long(compile(*lay.end).consume());
         auto endBB = llvm::BasicBlock::Create(ctx_, "for.r.end", fn);
         compile_for_counted_range(startV, endV, lay.inclusive, id, body, endBB);
         builder_.SetInsertPoint(endBB);
@@ -16401,7 +16407,7 @@ struct JIT {
     // Without this the iterable leaked one reference per loop — and for an
     // array of heap elements, that pinned the whole array's contents alive.
     push_scope();
-    auto iterable = compile(iter_expr);
+    auto iterable = compile(iter_expr).consume();
     auto iterSlot = make_stack_slot("for.iterable", iterable);
     define_var("for.iterable", iterSlot);  // '.' name: unreachable by source
     auto tag = extract_tag(iterable);
@@ -16602,7 +16608,7 @@ struct JIT {
     // an owned (+1) temporary; the loop discards it each iteration, so release
     // it (else a body ending in a heap expression — `for x in xs { f(x) }`,
     // an accumulator reassign, etc. — leaks one object per pass).
-    auto bodyVal = compile(body);
+    auto bodyVal = compile(body).consume();
     loop_stack_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(bodyVal);
@@ -17045,7 +17051,7 @@ struct JIT {
     llvm::Value* val = make_nil();
     for (auto& node : ast.nodes) {
       if (builder_.GetInsertBlock()->getTerminator()) break;
-      val = compile(*node);
+      val = compile(*node).consume();
     }
     // Statement-like: drop the block's final expression before
     // pop_scope so `drop` callbacks fire in true LIFO order (a retained
@@ -17364,7 +17370,7 @@ struct JIT {
       // Borrowed-callee dispatch: the handle releases the decorator's +1
       // after the call (a let-bound closure decorator leaked one ref per
       // application without it; fn-decl callees load unretained and no-op).
-      Owned decoCallee = own(compile(dec_expr));
+      Owned decoCallee = compile(dec_expr);
       enumVal =
           compile_function_call_raw(decoCallee.borrow(), nullptr, {enumVal});
     }
@@ -17589,7 +17595,7 @@ struct JIT {
     std::vector<llvm::Value*> static_field_vals;
     static_field_vals.reserve(static_field_asts.size());
     for (auto* m : static_field_asts) {
-      static_field_vals.push_back(compile(*m->nodes[2]));
+      static_field_vals.push_back(compile(*m->nodes[2]).consume());
     }
 
     // Build the shared class meta object once per class declaration:
@@ -17751,7 +17757,7 @@ struct JIT {
       if (culebra::is_packable_decorator(*ast.nodes[i - 1])) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
       // Borrowed-callee dispatch; see the enum decorator loop.
-      Owned decoCallee = own(compile(dec_expr));
+      Owned decoCallee = compile(dec_expr);
       classVal =
           compile_function_call_raw(decoCallee.borrow(), nullptr, {classVal});
     }
@@ -17977,7 +17983,7 @@ struct JIT {
       for (size_t i = dec_end; i > 0; --i) {
         const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
         // Borrowed-callee dispatch; see the enum decorator loop.
-        Owned decoCallee = own(compile(dec_expr));
+        Owned decoCallee = compile(dec_expr);
         fnVal =
             compile_function_call_raw(decoCallee.borrow(), nullptr, {fnVal});
       }
@@ -18413,7 +18419,7 @@ struct JIT {
         // caller transfers into the arg slab for a passed argument — so the
         // slot below absorbs it directly. An extra retain here would leak the
         // default's +1 (the slot only releases one ref at scope exit).
-        auto defVal = compile(*paramDefaults[i]);
+        auto defVal = compile(*paramDefaults[i]).consume();
         auto defEndBB = builder_.GetInsertBlock();
         builder_.CreateBr(mergeBB);
 
@@ -18532,7 +18538,7 @@ struct JIT {
     // pre-allocated cells. See `pre_allocate_forward_refs` doc.
     pre_allocate_forward_refs(*body_ast);
 
-    auto bodyVal = compile(*body_ast);
+    auto bodyVal = compile(*body_ast).consume();
 
     // The body is done: the normal-exit epilogue below is not an unwind, so its
     // scope-exit owned-region resolution runs as a plain call, not an invoke
@@ -18943,7 +18949,7 @@ struct JIT {
     // consumes the current +1 into its step or borrows it, and move-assigning
     // the step's fresh +1 releases the previous link at the same insertion
     // point the hand-placed releases used to occupy.
-    Owned callee = own(compile(*calleeNode));
+    Owned callee = compile(*calleeNode);
     auto sn = begin_safe_nav(ast);
 
     for (auto i = 1u; i < ast.nodes.size(); i++) {
@@ -19249,7 +19255,7 @@ struct JIT {
 
   llvm::Value* compile_index_access(const peg::Ast& idxAst,
                                     llvm::Value* arr) {
-    return emit_point_index(arr, compile(idxAst));
+    return emit_point_index(arr, compile(idxAst).consume());
   }
 
   // Point index `arr[key]` — Array/Tuple by Long, Object by Value key.
@@ -19362,7 +19368,7 @@ struct JIT {
     // Literal range index (`xs[1..3]`, `xs[2..]`, `xs[..]`): statically
     // known — `key` is a fresh owned Range temp, released after slicing.
     if (postfix.tag == "RANGE"_ || postfix.tag == "RANGE_OPERATOR"_) {
-      auto key = compile(postfix);
+      auto key = compile(postfix).consume();
       auto result = emit_slice_value(receiver, key);
       emit_value_release(receiver);
       emit_value_release(key);
@@ -19373,7 +19379,7 @@ struct JIT {
     // point key. The slice path only reads `key` (so it releases it); the
     // point path's emit_point_index consumes `key` (object_get_any), so it
     // must not.
-    auto key = compile(postfix);
+    auto key = compile(postfix).consume();
     auto cond = emit_is_range(key);
     auto fn = builder_.GetInsertBlock()->getParent();
     auto sliceBB = llvm::BasicBlock::Create(ctx_, "idx.slice", fn);
@@ -19717,7 +19723,7 @@ struct JIT {
                                            llvm::Value* receiver) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto fn = builder_.GetInsertBlock()->getParent();
-    auto arg = compile(*argsAst.nodes[0]);
+    auto arg = compile(*argsAst.nodes[0]).consume();
 
     auto tag = extract_tag(receiver);
     auto setBB = llvm::BasicBlock::Create(ctx_, "ma.set", fn);
@@ -20299,7 +20305,7 @@ struct JIT {
     vals.reserve(argsAst.nodes.size());
     asts.reserve(argsAst.nodes.size());
     for (auto& argNode : argsAst.nodes) {
-      vals.push_back(own(compile(*argNode)));
+      vals.push_back(compile(*argNode));
       asts.push_back(argNode.get());
     }
     return vals;
@@ -20683,7 +20689,7 @@ struct JIT {
         userArgs.push_back(own(emit_kwargs_rest_object(kwargs, argsAst)));
         argAsts.push_back(nullptr);
       } else {
-        userArgs.push_back(own(compile(*resolved[i])));
+        userArgs.push_back(compile(*resolved[i]));
         // Only a POSITIONAL argument reports a typed-param error at its
         // own expression; a kwarg-filled slot reports at the call site
         // (null → set_arg_pos records the call site), interp-binder style.
@@ -20693,7 +20699,7 @@ struct JIT {
     }
     // Extras (past the formal arity) flow through to __ARGS__.
     for (size_t i = params.size(); i < positional.size(); i++) {
-      userArgs.push_back(own(compile(*positional[i])));
+      userArgs.push_back(compile(*positional[i]));
       argAsts.push_back(positional[i]);
     }
     return compile_function_call_raw(
@@ -20796,11 +20802,11 @@ struct JIT {
     size_t splat_i = 0;
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
-        splatVals[splat_i++] = own(compile(*child->nodes[0]));
+        splatVals[splat_i++] = compile(*child->nodes[0]);
       } else if (child->tag == "KWARG"_) {
-        kwVals[kw_i++] = own(compile(*child->nodes[1]));
+        kwVals[kw_i++] = compile(*child->nodes[1]);
       } else {
-        posVals[pos_i++] = own(compile(*child));
+        posVals[pos_i++] = compile(*child);
       }
     }
 
@@ -20965,12 +20971,12 @@ struct JIT {
     auto two_args = [&](llvm::Value*& s, llvm::Value*& e) {
       if (positional.size() == 1) {
         s = builder_.getInt64(0);
-        e = value_to_long(compile(*positional[0]));
+        e = value_to_long(compile(*positional[0]).consume());
         return true;
       }
       if (positional.size() == 2) {
-        s = value_to_long(compile(*positional[0]));
-        e = value_to_long(compile(*positional[1]));
+        s = value_to_long(compile(*positional[0]).consume());
+        e = value_to_long(compile(*positional[1]).consume());
         return true;
       }
       return false;
@@ -20981,7 +20987,7 @@ struct JIT {
       return make_array(arr);
     }
     if (name == "range" && two_args(s, e)) {
-      auto step = step_ast ? value_to_long(compile(*step_ast))
+      auto step = step_ast ? value_to_long(compile(*step_ast).consume())
                            : builder_.getInt64(1);
       auto obj = emit_call(
           module_->getFunction(rt::math_range),
@@ -21223,7 +21229,7 @@ struct JIT {
     if (ast.nodes.empty()) {
       val = make_nil();
     } else {
-      val = compile(*ast.nodes[0]);
+      val = compile(*ast.nodes[0]).consume();
     }
     if (!current_return_type_.empty()) {
       emit_type_check(val, current_return_type_, "return value");
@@ -21348,7 +21354,7 @@ struct JIT {
     // deferred block ending in a heap expression (`defer { … ; obj.method() }`)
     // leaks that result once per run. No-op for nil/immediate; only the
     // fall-through path has a live result to drop (a terminator ran its own).
-    auto deferResult = compile(*ast.nodes[0]);
+    auto deferResult = compile(*ast.nodes[0]).consume();
     if (!builder_.GetInsertBlock()->getTerminator()) {
       emit_value_release(deferResult);
       builder_.CreateRet(make_nil());
@@ -21372,7 +21378,7 @@ struct JIT {
   // `throw expr` — evaluates expr, hands its tag/data to the runtime
   // which raises a CulebraException. Control never falls through.
   llvm::Value* compile_throw(const peg::Ast& ast) {
-    auto val = compile(*ast.nodes[0]);
+    auto val = compile(*ast.nodes[0]).consume();
     emit_call(module_->getFunction(rt::throw_),
               {extract_tag(val), extract_data(val)});
     builder_.CreateUnreachable();
@@ -21415,7 +21421,7 @@ struct JIT {
     auto tryCleanupBB = llvm::BasicBlock::Create(ctx_, "try.body.cleanup", fn);
     current_lpad_ = tryCleanupBB;
     push_scope();
-    auto tryVal = compile(*ast.nodes[0]);
+    auto tryVal = compile(*ast.nodes[0]).consume();
     // Fill/erase the body cleanup while the scope is live; it re-raises to the
     // catch pad (lpadBB), but the code after the try restores the outer lpad.
     finish_and_pop_scope(tryCleanupBB, /*defer_mark=*/nullptr, lpadBB,
@@ -21497,7 +21503,7 @@ struct JIT {
     // can do `catch e { e = transformed(e); ... }`.
     auto caughtValue = builder_.CreateLoad(valueType_, caughtSlot);
     declare_local(caughtName, caughtValue, /*is_mut=*/true);
-    auto catchVal = compile(*ast.nodes[2]);
+    auto catchVal = compile(*ast.nodes[2]).consume();
     finish_and_pop_scope(catchCleanupBB, /*defer_mark=*/nullptr, savedLpad,
                          "try.catch.exc", savedLpad);
     if (!builder_.GetInsertBlock()->getTerminator()) {
@@ -22008,7 +22014,7 @@ inline void JIT::emit_range_unary_inline_loop(const peg::Ast& n_ast,
   auto fn = builder_.GetInsertBlock()->getParent();
   auto i64Ty = builder_.getInt64Ty();
 
-  auto n_val = value_to_long(compile(n_ast));
+  auto n_val = value_to_long(compile(n_ast).consume());
 
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto iAlloca = entryB.CreateAlloca(i64Ty, nullptr, "rng.i");
@@ -22077,9 +22083,9 @@ inline llvm::Value* JIT::emit_inlined_range_reduce(
   // acc alloca seeded with init's +1.
   IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   auto accAlloca = entryB.CreateAlloca(valueType_, nullptr, "rrd.acc");
-  builder_.CreateStore(compile(init_ast), accAlloca);
+  builder_.CreateStore(compile(init_ast).consume(), accAlloca);
 
-  auto n_val = value_to_long(compile(n_ast));
+  auto n_val = value_to_long(compile(n_ast).consume());
   auto iAlloca = entryB.CreateAlloca(i64Ty, nullptr, "rrd.i");
   builder_.CreateStore(builder_.getInt64(0), iAlloca);
 
@@ -22247,7 +22253,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "pow" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_TENSOR, "pow");
-    auto exp = compile(*argsAst.nodes[0]);
+    auto exp = compile(*argsAst.nodes[0]).consume();
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_binop),
         {extract_tag(receiver), extract_data(receiver),
@@ -22301,7 +22307,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "reshape");
-    auto dims = compile(*argsAst.nodes[0]);
+    auto dims = compile(*argsAst.nodes[0]).consume();
     emit_type_check(dims, "Array", "parameter 'dims'", argsAst.nodes[0].get());
     auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
     emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
@@ -22337,7 +22343,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(tensorBB);
     auto tPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto axis = value_to_long(compile(*argsAst.nodes[0]));
+    auto axis = value_to_long(compile(*argsAst.nodes[0]).consume());
     int op_id =
         method == "sum"    ? static_cast<int>(culebra::Op::Sum)
       : method == "mean"   ? static_cast<int>(culebra::Op::Mean)
@@ -22421,7 +22427,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "dot" && argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_TENSOR, "dot");
-    auto other = compile(*argsAst.nodes[0]);
+    auto other = compile(*argsAst.nodes[0]).consume();
     emit_type_check(other, "Tensor", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     auto resultPtr = emit_call(
@@ -22431,9 +22437,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
     auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
-    auto xv = compile(*argsAst.nodes[0]);
+    auto xv = compile(*argsAst.nodes[0]).consume();
     emit_type_check(xv, "Tensor", "parameter 'x'", argsAst.nodes[0].get());
-    auto bv = compile(*argsAst.nodes[1]);
+    auto bv = compile(*argsAst.nodes[1]).consume();
     emit_type_check(bv, "Tensor", "parameter 'b'", argsAst.nodes[1].get());
     auto xp = builder_.CreateIntToPtr(extract_data(xv), ptrTy);
     auto bp = builder_.CreateIntToPtr(extract_data(bv), ptrTy);
@@ -22521,7 +22527,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
        method == "diff"  || method == "sym_diff") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
-    auto other = compile(*argsAst.nodes[0]);
+    auto other = compile(*argsAst.nodes[0]).consume();
     emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
@@ -22538,7 +22544,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   if ((method == "subset" || method == "superset") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
-    auto other = compile(*argsAst.nodes[0]);
+    auto other = compile(*argsAst.nodes[0]).consume();
     emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
     auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
     const char* rt_name = method == "subset" ? rt::set_subset
@@ -22559,7 +22565,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "push" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "push");
-    auto val = compile(*argsAst.nodes[0]);
+    auto val = compile(*argsAst.nodes[0]).consume();
     emit_call(module_->getFunction(rt::array_push),
                         {arrPtr, extract_tag(val), extract_data(val)});
     return make_nil();
@@ -22614,8 +22620,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     // Receiver OK: check the bounds with the canonical parameter-type
     // message (`start`/`end` are declared `: Long` on the interp methods).
     builder_.SetInsertPoint(argBB);
-    auto startVal = compile(*argsAst.nodes[0]);
-    auto endVal = compile(*argsAst.nodes[1]);
+    auto startVal = compile(*argsAst.nodes[0]).consume();
+    auto endVal = compile(*argsAst.nodes[1]).consume();
     emit_type_check(startVal, "Long", "parameter 'start'",
                     argsAst.nodes[0].get());
     emit_type_check(endVal, "Long", "parameter 'end'",
@@ -22668,7 +22674,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "join" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
-    auto sep = compile(*argsAst.nodes[0]);
+    auto sep = compile(*argsAst.nodes[0]).consume();
     emit_type_check(sep, "String", "parameter 'sep'",
                     argsAst.nodes[0].get());
     auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
@@ -22680,7 +22686,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "index_of" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
-    auto v = compile(*argsAst.nodes[0]);
+    auto v = compile(*argsAst.nodes[0]).consume();
     auto idx = emit_call(
         module_->getFunction(rt::array_index_of),
         {arrPtr, extract_tag(v), extract_data(v)});
@@ -22706,7 +22712,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto v = compile(*argsAst.nodes[0]);
+    auto v = compile(*argsAst.nodes[0]).consume();
     auto arrFound = emit_call(
         module_->getFunction(rt::array_contains),
         {arrPtr, extract_tag(v), extract_data(v)});
@@ -22718,7 +22724,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(strBB);
     auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
                             {tag, extract_data(receiver)});
-    auto sub = compile(*argsAst.nodes[0]);
+    auto sub = compile(*argsAst.nodes[0]).consume();
     auto subPtr = coerce_strlike_cstr(sub, "ct.sub", false, "sub",
                                     argsAst.nodes[0].get());
     auto strFound = emit_call(
@@ -22731,7 +22737,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(setBB);
     auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto vs = compile(*argsAst.nodes[0]);
+    auto vs = compile(*argsAst.nodes[0]).consume();
     auto setFound = emit_call(
         module_->getOrInsertFunction(
             rt::set_contains, builder_.getInt1Ty(), ptrTy,
@@ -22746,7 +22752,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(tupBB);
     auto tupPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto vt = compile(*argsAst.nodes[0]);
+    auto vt = compile(*argsAst.nodes[0]).consume();
     auto tupFound = emit_call(
         module_->getOrInsertFunction(
             rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
@@ -22812,10 +22818,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "tr" && argsAst.nodes.size() == 2) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
-    auto from = compile(*argsAst.nodes[0]);
+    auto from = compile(*argsAst.nodes[0]).consume();
     auto fromPtr = coerce_strlike_cstr(from, "tr.from", false, "from",
                                         argsAst.nodes[0].get());
-    auto to = compile(*argsAst.nodes[1]);
+    auto to = compile(*argsAst.nodes[1]).consume();
     auto toPtr = coerce_strlike_cstr(to, "tr.to", false, "to",
                                       argsAst.nodes[1].get());
     auto s = emit_call(
@@ -22834,7 +22840,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     if (argsAst.nodes.empty()) {
       charsPtr = emit_str_literal("");
     } else {
-      chars = compile(*argsAst.nodes[0]);
+      chars = compile(*argsAst.nodes[0]).consume();
       charsPtr = coerce_strlike_cstr(chars, "tr.chars", false, "chars",
                                        argsAst.nodes[0].get());
     }
@@ -22847,7 +22853,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "split" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
-    auto sep = compile(*argsAst.nodes[0]);
+    auto sep = compile(*argsAst.nodes[0]).consume();
     auto sepPtr = coerce_strlike_cstr(sep, "sp.sep", false, "sep",
                                     argsAst.nodes[0].get());
     auto arr = emit_call(
@@ -22861,7 +22867,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // composes. True lazy is a later refinement.
   if (method == "split_iter" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "spli", true);
-    auto sep = compile(*argsAst.nodes[0]);
+    auto sep = compile(*argsAst.nodes[0]).consume();
     auto sepPtr = coerce_strlike_cstr(sep, "spli.sep", false, "sep",
                                     argsAst.nodes[0].get());
     auto arr = emit_call(
@@ -22873,7 +22879,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sw", true);
-    auto p = compile(*argsAst.nodes[0]);
+    auto p = compile(*argsAst.nodes[0]).consume();
     auto pPtr = coerce_strlike_cstr(p, "sw.pre", false, "prefix",
                                   argsAst.nodes[0].get());
     auto r = emit_call(
@@ -22885,7 +22891,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "ew", true);
-    auto p = compile(*argsAst.nodes[0]);
+    auto p = compile(*argsAst.nodes[0]).consume();
     auto pPtr = coerce_strlike_cstr(p, "ew.suf", false, "suffix",
                                   argsAst.nodes[0].get());
     auto r = emit_call(
@@ -22914,7 +22920,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "has" && argsAst.nodes.size() == 1) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "has");
-    auto key = compile(*argsAst.nodes[0]);
+    auto key = compile(*argsAst.nodes[0]).consume();
     // Any hashable key. String tries the shape path first (so user
     // `obj.has("foo")` matches `obj.foo`); non-String / runtime
     // String land in the sidecar. The helper consumes the key's +1.
@@ -22928,8 +22934,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "get" && argsAst.nodes.size() == 2) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get");
-    auto key = compile(*argsAst.nodes[0]);
-    auto fb = compile(*argsAst.nodes[1]);
+    auto key = compile(*argsAst.nodes[0]).consume();
+    auto fb = compile(*argsAst.nodes[1]).consume();
     // The runtime fn consumes the key's +1 and (on a hit) the fallback's +1,
     // returning the stored value (+1) or the fallback. No IR-level release.
     return emit_call(
@@ -22944,10 +22950,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "get_or_put" && argsAst.nodes.size() == 2) {
     auto objPtr = expect_receiver_tag(receiver, TAG_OBJECT, "get_or_put");
-    auto key = compile(*argsAst.nodes[0]);
+    auto key = compile(*argsAst.nodes[0]).consume();
     // `init` compiles to a value (a `|| []` thunk stays an unevaluated
     // closure); the runtime fn invokes it only on a miss.
-    auto init = compile(*argsAst.nodes[1]);
+    auto init = compile(*argsAst.nodes[1]).consume();
     return emit_call(
         module_->getOrInsertFunction(
             rt::object_get_or_put, valueType_, ptrTy, builder_.getInt8Ty(),
@@ -23046,7 +23052,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_map(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            auto f = compile(cb_ast);
+            auto f = compile(cb_ast).consume();
             auto out = emit_call(module_->getFunction(rt::iter_map),
                                  {it, id, extract_tag(f), extract_data(f),
                                   ho_line, ho_col});
@@ -23054,7 +23060,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return make_object(out);
           });
     }
-    auto f = compile(cb_ast);
+    auto f = compile(cb_ast).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -23084,7 +23090,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_filter(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            auto f = compile(cb_ast);
+            auto f = compile(cb_ast).consume();
             auto out = emit_call(module_->getFunction(rt::iter_filter),
                                  {it, id, extract_tag(f), extract_data(f),
                                   ho_line, ho_col});
@@ -23092,7 +23098,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return make_object(out);
           });
     }
-    auto f = compile(cb_ast);
+    auto f = compile(cb_ast).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -23131,7 +23137,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return r;
           });
     }
-    auto f = compile(cb_ast);
+    auto f = compile(cb_ast).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -23154,7 +23160,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     const auto& cb_ast = *argsAst.nodes[1];
     hof_cb = &cb_ast;
     if (is_inlinable_lambda(cb_ast, /*expected_arity=*/2)) {
-      auto init = compile(*argsAst.nodes[0]);
+      auto init = compile(*argsAst.nodes[0]).consume();
       return dispatch_arr_iter(
           "reduce",
           [&](llvm::Value* arrPtr) {
@@ -23169,8 +23175,8 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return r;
           });
     }
-    auto init = compile(*argsAst.nodes[0]);
-    auto f = compile(cb_ast);
+    auto init = compile(*argsAst.nodes[0]).consume();
+    auto f = compile(cb_ast).consume();
     auto it_tag = extract_tag(init);
     auto it_data = extract_data(init);
     auto ft = extract_tag(f);
@@ -23204,7 +23210,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "find" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]);
+    auto f = compile(*argsAst.nodes[0]).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
@@ -23234,7 +23240,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]);
+    auto f = compile(*argsAst.nodes[0]).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto arr_rt = method == "any" ? rt::array_any : rt::array_all;
@@ -23259,7 +23265,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]);
+    auto f = compile(*argsAst.nodes[0]).consume();
     auto ft = extract_tag(f);
     auto fd = extract_data(f);
     auto result = dispatch_arr_iter(
@@ -23398,7 +23404,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "take" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take");
-    auto n = value_to_long(compile(*argsAst.nodes[0]));
+    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out =
@@ -23408,7 +23414,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "skip" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "skip");
-    auto n = value_to_long(compile(*argsAst.nodes[0]));
+    auto n = value_to_long(compile(*argsAst.nodes[0]).consume());
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out =
@@ -23418,7 +23424,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
-    auto f = compile(*argsAst.nodes[0]);
+    auto f = compile(*argsAst.nodes[0]).consume();
     emit_set_callback_arg_site(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
@@ -23444,7 +23450,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "chain" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "chain");
-    auto other = compile(*argsAst.nodes[0]);
+    auto other = compile(*argsAst.nodes[0]).consume();
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_chain),
@@ -23456,7 +23462,7 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "zip" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "zip");
-    auto other = compile(*argsAst.nodes[0]);
+    auto other = compile(*argsAst.nodes[0]).consume();
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_zip),
@@ -23604,9 +23610,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     }
     if (npos == 1 && only_known_kw) {
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
-      auto f = compile(*cb);
+      auto f = compile(*cb).consume();
       emit_set_callback_arg_site(*cb);
-      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr))
+      llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
                                   : builder_.getInt1(false);
       if (method == "sort_by") {
         emit_call(module_->getFunction(rt::array_sort_by),
