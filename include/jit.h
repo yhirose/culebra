@@ -2790,8 +2790,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
     culebra_runtime_value_retain(def_tag, def_data);
     culebra_runtime_array_push(arr, def_tag, def_data);
   }
-  if (static_cast<size_t>(count) < arr->size) {
-    arr->size = static_cast<size_t>(count);
+  while (static_cast<size_t>(count) < arr->size) {
+    arr->size--;
+    _culebra_value_release_impl(arr->items[arr->size].tag,
+                                arr->items[arr->size].data);
   }
 }
 
@@ -13694,23 +13696,26 @@ struct JIT {
 
     for (auto i = 0u; i < seqNodes.size(); i++) {
       if (has_spread && seqNodes[i]->tag == "SPREAD_ELEM"_) {
-        auto v = compile(*seqNodes[i]->nodes[0]);
-        builder_.CreateStore(v, pendingGuard);  // released if extend throws
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::array_extend, builder_.getVoidTy(), ptrTy,
-                builder_.getInt8Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty(), builder_.getInt64Ty()),
-            {arrPtr, extract_tag(v), extract_data(v),
-             builder_.getInt64(seqNodes[i]->line),
-             builder_.getInt64(seqNodes[i]->column)});
-        emit_value_release(v);  // extend retained each element
+        {
+          // extend borrows the source (retaining each copied element); the
+          // handle's dtor at this block's end releases the source +1.
+          Owned v = own(compile(*seqNodes[i]->nodes[0]));
+          builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
+          emit_call(
+              module_->getOrInsertFunction(
+                  rt::array_extend, builder_.getVoidTy(), ptrTy,
+                  builder_.getInt8Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty()),
+              {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
+               builder_.getInt64(seqNodes[i]->line),
+               builder_.getInt64(seqNodes[i]->column)});
+        }
         clear_pending_guard(pendingGuard);
         continue;
       }
-      auto val = compile(*seqNodes[i]);
-      auto tag = extract_tag(val);
-      auto data = extract_data(val);
+      Owned val = own(compile(*seqNodes[i]));
+      auto tag = extract_tag(val.borrow());
+      auto data = extract_data(val.borrow());
       if (has_spread) {
         emit_call(
             module_->getOrInsertFunction(rt::array_push, builder_.getVoidTy(),
@@ -13725,6 +13730,7 @@ struct JIT {
                 builder_.getInt64Ty()),
             {arrPtr, builder_.getInt64(i), tag, data});
       }
+      val.consume();  // the array slot absorbed the +1
     }
 
     current_lpad_ = savedLpad;
@@ -13747,14 +13753,13 @@ struct JIT {
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
-      auto val = compile(*node);
-      auto tag = extract_tag(val);
-      auto data = extract_data(val);
+      Owned val = own(compile(*node));
       emit_call(
           module_->getOrInsertFunction(
               rt::tuple_push, builder_.getVoidTy(), ptrTy,
               builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {tupPtr, tag, data});
+          {tupPtr, extract_tag(val.borrow()), extract_data(val.borrow())});
+      val.consume();  // the tuple slot absorbed the +1
     }
     current_lpad_ = savedLpad;
     finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
@@ -13774,14 +13779,13 @@ struct JIT {
     auto savedLpad = current_lpad_;
     current_lpad_ = cleanupBB;
     for (const auto& node : ast.nodes) {
-      auto val = compile(*node);
-      auto tag = extract_tag(val);
-      auto data = extract_data(val);
+      Owned val = own(compile(*node));
       emit_call(
           module_->getOrInsertFunction(
               rt::set_add, builder_.getVoidTy(), ptrTy,
               builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {setPtr, tag, data});
+          {setPtr, extract_tag(val.borrow()), extract_data(val.borrow())});
+      val.consume();  // set_add absorbed the +1 (releases it on a dupe)
     }
     current_lpad_ = savedLpad;
     finish_construction_cleanup(cleanupBB, {buildGuard}, savedLpad);
@@ -13938,16 +13942,20 @@ struct JIT {
     for (auto& prop : ast.nodes) {
       if (prop->tag == "SPREAD_ELEM"_) {
         // `{...obj}` — merge another Object's entries (later keys win).
-        auto v = compile(*prop->nodes[0]);
-        builder_.CreateStore(v, pendingGuard);  // released if merge throws
-        emit_call(
-            module_->getOrInsertFunction(
-                rt::object_merge, builder_.getVoidTy(), ptrTy,
-                builder_.getInt8Ty(), builder_.getInt64Ty(),
-                builder_.getInt64Ty(), builder_.getInt64Ty()),
-            {objPtr, extract_tag(v), extract_data(v),
-             builder_.getInt64(prop->line), builder_.getInt64(prop->column)});
-        emit_value_release(v);  // merge retained each copied entry
+        {
+          // merge borrows the source (retaining each copied entry); the
+          // handle's dtor at this block's end releases the source +1.
+          Owned v = own(compile(*prop->nodes[0]));
+          builder_.CreateStore(v.borrow(), pendingGuard);  // freed on throw
+          emit_call(
+              module_->getOrInsertFunction(
+                  rt::object_merge, builder_.getVoidTy(), ptrTy,
+                  builder_.getInt8Ty(), builder_.getInt64Ty(),
+                  builder_.getInt64Ty(), builder_.getInt64Ty()),
+              {objPtr, extract_tag(v.borrow()), extract_data(v.borrow()),
+               builder_.getInt64(prop->line),
+               builder_.getInt64(prop->column)});
+        }
         clear_pending_guard(pendingGuard);
         continue;
       }
@@ -13957,11 +13965,11 @@ struct JIT {
         // Non-IDENTIFIER literal key — emit Value-keyed set. is_init=true so a
         // duplicate key overwrites last-wins (like the interp), rather than
         // tripping the immutable-entry guard meant for `o[k] = v`.
-        auto key = compile(*pv.key);
+        Owned key = own(compile(*pv.key));
         // The key's +1 is live until object_set_any consumes it; guard it so a
         // throwing value expression doesn't orphan a heap key (`{(1,2): boom()}`).
-        builder_.CreateStore(key, pendingGuard);
-        auto val = compile(*pv.value);
+        builder_.CreateStore(key.borrow(), pendingGuard);
+        Owned val = own(compile(*pv.value));
         emit_call(
             module_->getOrInsertFunction(
                 rt::object_set_any, builder_.getVoidTy(), ptrTy,
@@ -13969,16 +13977,18 @@ struct JIT {
                 builder_.getInt1Ty(), builder_.getInt8Ty(),
                 builder_.getInt64Ty(), builder_.getInt64Ty(),
                 builder_.getInt64Ty(), builder_.getInt1Ty()),
-            {objPtr, extract_tag(key), extract_data(key),
-             builder_.getInt1(pv.is_mut), extract_tag(val), extract_data(val),
-             current_line_val(), current_column_val(),
-             builder_.getInt1(true)});
+            {objPtr, extract_tag(key.borrow()), extract_data(key.borrow()),
+             builder_.getInt1(pv.is_mut), extract_tag(val.borrow()),
+             extract_data(val.borrow()), current_line_val(),
+             current_column_val(), builder_.getInt1(true)});
+        key.consume();  // object_set_any absorbed the key's +1
+        val.consume();  // ... and the value's
         clear_pending_guard(pendingGuard);
         continue;
       }
 
       auto name = std::string(pv.key->token);
-      llvm::Value* val;
+      Owned val;
       if (pv.is_shorthand) {
         auto slot = lookup_var(name);
         if (!slot) {
@@ -13988,15 +13998,16 @@ struct JIT {
           emit_throw_error("NameError",
               std::format("undefined variable '{}'", name),
               pv.key->line, pv.key->column);
-          val = make_nil();
+          val = own(make_nil());
         } else {
-          val = load_slot(*slot, name);
+          val = own(load_slot(*slot, name));
         }
       } else {
-        val = compile(*pv.value);
+        val = own(compile(*pv.value));
       }
-      emit_object_set(objPtr, name, pv.is_mut,
-                      extract_tag(val), extract_data(val), /*is_init=*/true);
+      emit_object_set(objPtr, name, pv.is_mut, extract_tag(val.borrow()),
+                      extract_data(val.borrow()), /*is_init=*/true);
+      val.consume();  // the property slot absorbed the +1
     }
 
     current_lpad_ = savedLpad;
