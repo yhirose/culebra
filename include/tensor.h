@@ -44,19 +44,17 @@
 
 namespace culebra {
 
-enum class Dtype { F32, F64 };
+// F32 only. F64 was removed 2026-07: it does not exist on Metal and is
+// 1/32-1/64 speed on consumer NVIDIA GPUs, so it would be a CPU-only
+// dtype. The enum stays as the seam for a future BF16 storage type.
+enum class Dtype { F32 };
 
-inline const char* dtype_name(Dtype d) {
-  return d == Dtype::F32 ? "f32" : "f64";
-}
+inline const char* dtype_name(Dtype) { return "f32"; }
 
-inline size_t dtype_size(Dtype d) {
-  return d == Dtype::F32 ? 4 : 8;
-}
+inline size_t dtype_size(Dtype) { return 4; }
 
 inline std::optional<Dtype> parse_dtype(std::string_view s) {
   if (s == "f32") return Dtype::F32;
-  if (s == "f64") return Dtype::F64;
   return std::nullopt;
 }
 
@@ -260,11 +258,9 @@ inline TensorPtr tensor_zeros(TensorShape s, Dtype d) {
 }
 
 // Shared between the interp `tensor_ones` and the JIT runtime entry —
-// keeps the F32/F64 fill in one place.
+// keeps the fill in one place.
 inline void tensor_fill_ones_inplace(TensorImpl& t) {
-  auto n = t.shape.num_elements();
-  if (t.dtype == Dtype::F32) std::fill_n(t.data_as<float>(), n, 1.0f);
-  else                       std::fill_n(t.data_as<double>(), n, 1.0);
+  std::fill_n(t.data_as<float>(), t.shape.num_elements(), 1.0f);
 }
 
 inline TensorPtr tensor_ones(TensorShape s, Dtype d) {
@@ -319,8 +315,7 @@ inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
   auto t = std::make_shared<TensorImpl>(TensorShape(std::move(dims)), d);
   // Pass 2: parse and fill directly into the buffer.
   auto store = [&](size_t idx, double v) {
-    if (d == Dtype::F32) t->data_as<float>()[idx] = static_cast<float>(v);
-    else                 t->data_as<double>()[idx] = v;
+    t->data_as<float>()[idx] = static_cast<float>(v);
   };
   size_t idx = 0;
   for (size_t i = 0; i < contents.size(); ) {
@@ -353,13 +348,8 @@ inline TensorPtr tensor_randn(TensorShape s, Dtype d) {
   std::normal_distribution<double> dist{0.0, 1.0};
   auto& engine = random_engine();
   auto n = t->shape.num_elements();
-  if (d == Dtype::F32) {
-    auto* p = t->data_as<float>();
-    for (size_t i = 0; i < n; i++) p[i] = static_cast<float>(dist(engine));
-  } else {
-    auto* p = t->data_as<double>();
-    for (size_t i = 0; i < n; i++) p[i] = dist(engine);
-  }
+  auto* p = t->data_as<float>();
+  for (size_t i = 0; i < n; i++) p[i] = static_cast<float>(dist(engine));
   return t;
 }
 
@@ -404,8 +394,7 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
 // operands into the binop graph so broadcast does the rest.
 inline TensorPtr tensor_scalar(double v, Dtype d) {
   auto t = std::make_shared<TensorImpl>(TensorShape{}, d);
-  if (d == Dtype::F32) t->data_as<float>()[0] = static_cast<float>(v);
-  else                 t->data_as<double>()[0] = v;
+  t->data_as<float>()[0] = static_cast<float>(v);
   return t;
 }
 
@@ -518,8 +507,7 @@ inline void _tensor_run_binop_for_dtype(TensorImpl& t) {
 }
 
 inline void _tensor_run_binop(TensorImpl& t) {
-  if (t.dtype == Dtype::F32) _tensor_run_binop_for_dtype<float>(t);
-  else                       _tensor_run_binop_for_dtype<double>(t);
+  _tensor_run_binop_for_dtype<float>(t);
 }
 
 // tensor_eval_node is the single cblas choke: every _tensor_run_* kernel
@@ -598,11 +586,7 @@ inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
   auto out = tensor_broadcast_shape(dst.shape, rhs->shape);
   if (!(out == dst.shape)) return false;
   tensor_eval_node(*rhs);
-  if (dst.dtype == Dtype::F32) {
-    _tensor_inplace_for_dtype<float>(op, dst, *rhs);
-  } else {
-    _tensor_inplace_for_dtype<double>(op, dst, *rhs);
-  }
+  _tensor_inplace_for_dtype<float>(op, dst, *rhs);
   return true;
 }
 
@@ -692,8 +676,7 @@ inline void _tensor_run_reduce_for_dtype(TensorImpl& out) {
 }
 
 inline void _tensor_run_reduce(TensorImpl& t) {
-  if (t.dtype == Dtype::F32) _tensor_run_reduce_for_dtype<float>(t);
-  else                       _tensor_run_reduce_for_dtype<double>(t);
+  _tensor_run_reduce_for_dtype<float>(t);
 }
 
 // Eager axis-less reduction → scalar double. Forces eval of the input
@@ -742,10 +725,7 @@ inline T _tensor_reduce_all_typed(TensorImpl& in) {
 template <Op op>
 inline double tensor_reduce_all(TensorPtr a) {
   tensor_eval_node(*a);
-  if (a->dtype == Dtype::F32) {
-    return static_cast<double>(_tensor_reduce_all_typed<float, op>(*a));
-  }
-  return _tensor_reduce_all_typed<double, op>(*a);
+  return static_cast<double>(_tensor_reduce_all_typed<float, op>(*a));
 }
 
 // Deep copy. Materializes the source if it's still lazy, then either
@@ -781,8 +761,7 @@ inline void _tensor_clone_typed(const TensorImpl& src, TensorImpl& dst) {
 inline TensorPtr tensor_clone(TensorPtr t) {
   tensor_eval_node(*t);
   auto out = std::make_shared<TensorImpl>(t->shape, t->dtype);
-  if (t->dtype == Dtype::F32) _tensor_clone_typed<float>(*t, *out);
-  else                        _tensor_clone_typed<double>(*t, *out);
+  _tensor_clone_typed<float>(*t, *out);
   return out;
 }
 
@@ -982,8 +961,7 @@ inline void _tensor_run_unary_for_dtype(TensorImpl& t) {
 }
 
 inline void _tensor_run_unary(TensorImpl& t) {
-  if (t.dtype == Dtype::F32) _tensor_run_unary_for_dtype<float>(t);
-  else                       _tensor_run_unary_for_dtype<double>(t);
+  _tensor_run_unary_for_dtype<float>(t);
 }
 
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
@@ -1010,8 +988,7 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
       std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)}));
 }
 
-template <typename T>
-inline void _tensor_run_linear_sigmoid_typed(TensorImpl& out) {
+inline void _tensor_run_linear_sigmoid(TensorImpl& out) {
   const auto& W = *out.inputs[0];
   const auto& x = *out.inputs[1];
   const auto& b = *out.inputs[2];
@@ -1019,32 +996,22 @@ inline void _tensor_run_linear_sigmoid_typed(TensorImpl& out) {
   int N = static_cast<int>(out.shape.dims[1]);
   int K = static_cast<int>(W.shape.dims[1]);
   // 1) GEMM: out = W @ x
-  auto wA = _tensor_blas_input<T>(W);
-  auto xB = _tensor_blas_input<T>(x);
-  T* o = out.data_as<T>();
-  if constexpr (std::is_same_v<T, float>) {
-    cblas_sgemm(CblasRowMajor, wA.trans, xB.trans, M, N, K, 1.0f,
-                wA.data, wA.lda, xB.data, xB.lda, 0.0f, o, N);
-  } else {
-    cblas_dgemm(CblasRowMajor, wA.trans, xB.trans, M, N, K, 1.0,
-                wA.data, wA.lda, xB.data, xB.lda, 0.0, o, N);
-  }
+  auto wA = _tensor_blas_input<float>(W);
+  auto xB = _tensor_blas_input<float>(x);
+  float* o = out.data_as<float>();
+  cblas_sgemm(CblasRowMajor, wA.trans, xB.trans, M, N, K, 1.0f,
+              wA.data, wA.lda, xB.data, xB.lda, 0.0f, o, N);
   // 2) Add broadcast bias + sigmoid in a single pass.
   int64_t bstr[kMaxTensorRank];
   _broadcast_strides(bstr, b.shape, b.strides, out.shape);
-  const T* bd = b.data_as<T>();
+  const float* bd = b.data_as<float>();
   for (int i = 0; i < M; i++) {
     for (int j = 0; j < N; j++) {
       int64_t bi = i * bstr[0] + j * bstr[1];
-      T v = o[i * N + j] + bd[bi];
-      o[i * N + j] = T{1} / (T{1} + std::exp(-v));
+      float v = o[i * N + j] + bd[bi];
+      o[i * N + j] = 1.0f / (1.0f + std::exp(-v));
     }
   }
-}
-
-inline void _tensor_run_linear_sigmoid(TensorImpl& t) {
-  if (t.dtype == Dtype::F32) _tensor_run_linear_sigmoid_typed<float>(t);
-  else                       _tensor_run_linear_sigmoid_typed<double>(t);
 }
 
 inline void _tensor_run_dot(TensorImpl& out) {
@@ -1053,17 +1020,10 @@ inline void _tensor_run_dot(TensorImpl& out) {
   int M = static_cast<int>(out.shape.dims[0]);
   int N = static_cast<int>(out.shape.dims[1]);
   int K = static_cast<int>(A.shape.dims[1]);
-  if (out.dtype == Dtype::F32) {
-    auto a = _tensor_blas_input<float>(A);
-    auto b = _tensor_blas_input<float>(B);
-    cblas_sgemm(CblasRowMajor, a.trans, b.trans, M, N, K, 1.0f,
-                a.data, a.lda, b.data, b.lda, 0.0f, out.data_as<float>(), N);
-  } else {
-    auto a = _tensor_blas_input<double>(A);
-    auto b = _tensor_blas_input<double>(B);
-    cblas_dgemm(CblasRowMajor, a.trans, b.trans, M, N, K, 1.0,
-                a.data, a.lda, b.data, b.lda, 0.0, out.data_as<double>(), N);
-  }
+  auto a = _tensor_blas_input<float>(A);
+  auto b = _tensor_blas_input<float>(B);
+  cblas_sgemm(CblasRowMajor, a.trans, b.trans, M, N, K, 1.0f,
+              a.data, a.lda, b.data, b.lda, 0.0f, out.data_as<float>(), N);
 }
 
 // View with a different shape. M3.1 only allows contiguous inputs;
@@ -1117,8 +1077,7 @@ inline void _tensor_run_concat_typed(TensorImpl& out) {
 }
 
 inline void _tensor_run_concat(TensorImpl& t) {
-  if (t.dtype == Dtype::F32) _tensor_run_concat_typed<float>(t);
-  else                       _tensor_run_concat_typed<double>(t);
+  _tensor_run_concat_typed<float>(t);
 }
 
 // Stack tensors along axis 0 (rows). All parts must share dtype and all
@@ -1256,8 +1215,7 @@ inline TensorPtr _tensor_unbroadcast(TensorPtr g, const TensorShape& target) {
   tensor_eval_node(*g);
   if (g->shape == target) return g;
   auto out = std::make_shared<TensorImpl>(target, g->dtype);  // zero-filled
-  if (g->dtype == Dtype::F32) _tensor_unbroadcast_typed<float>(*g, *out);
-  else                        _tensor_unbroadcast_typed<double>(*g, *out);
+  _tensor_unbroadcast_typed<float>(*g, *out);
   return out;
 }
 
@@ -1290,8 +1248,7 @@ inline TensorPtr _tensor_relu_backward(const TensorPtr& g, const TensorPtr& x) {
   tensor_eval_node(*g);
   tensor_eval_node(*x);
   auto out = std::make_shared<TensorImpl>(x->shape, x->dtype);
-  if (x->dtype == Dtype::F32) _tensor_relu_backward_typed<float>(*g, *x, *out);
-  else                        _tensor_relu_backward_typed<double>(*g, *x, *out);
+  _tensor_relu_backward_typed<float>(*g, *x, *out);
   return out;
 }
 
@@ -1315,8 +1272,7 @@ inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
                                         Dtype dt, int64_t start) {
   tensor_eval_node(*g);
   auto out = std::make_shared<TensorImpl>(src_shape, dt);  // zero-filled
-  if (dt == Dtype::F32) _tensor_scatter_rows_typed<float>(*out, *g, start);
-  else                  _tensor_scatter_rows_typed<double>(*out, *g, start);
+  _tensor_scatter_rows_typed<float>(*out, *g, start);
   return out;
 }
 

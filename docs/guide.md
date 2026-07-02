@@ -1203,8 +1203,8 @@ a concrete user pushes a feature into the critical path.
 ### 15.1 Construction and arithmetic
 
 `Tensor` is a built-in n-dimensional array routed through BLAS
-(Apple Accelerate on macOS, OpenBLAS on Linux). The element type is
-`Float` (F64) today.
+(Apple Accelerate on macOS, OpenBLAS on Linux). Storage is F32;
+scalar results surface as `Float`.
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
@@ -1249,7 +1249,7 @@ codebase actually trains. The full benchmark is in
 [`benchmarks/mnist/README.md`](../benchmarks/mnist/README.md) and
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md).
 
-For the F32/F64 trade-off, allocator choice, and lazy-shape
+For the dtype rationale, allocator choice, and lazy-shape
 discussion, see [`internals.md` §8](internals.md).
 
 ---

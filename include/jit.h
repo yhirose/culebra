@@ -2901,7 +2901,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
 
 // --- Tensor runtime ---
 
-// args layout: [optional "f32"/"f64" string, shape varargs OR single
+// args layout: [optional "f32" string, shape varargs OR single
 // Array of Long]. Mirrors the interpreter's parse_tensor_dtype_prefix
 // + parse_tensor_shape pair.
 inline std::pair<culebra::Dtype, culebra::TensorShape>
@@ -3103,9 +3103,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
   culebra::tensor_eval_node(*t->impl);
   const auto& impl = *t->impl;
   auto read_at = [&](int64_t flat_idx) -> int64_t {
-    double v = (impl.dtype == culebra::Dtype::F32)
-        ? static_cast<double>(impl.data_as<float>()[flat_idx])
-        : impl.data_as<double>()[flat_idx];
+    double v = static_cast<double>(impl.data_as<float>()[flat_idx]);
     return _culebra_double_to_bits(v);
   };
   const auto& dims = impl.shape.dims;
@@ -3145,9 +3143,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_item(
     throw culebra::CulebraError("ValueError",
         "Tensor.item: tensor does not hold exactly one element.");
   }
-  double v = (impl.dtype == culebra::Dtype::F32)
-      ? static_cast<double>(impl.data_as<float>()[0])
-      : impl.data_as<double>()[0];
+  double v = static_cast<double>(impl.data_as<float>()[0]);
   return {TAG_FLOAT, _culebra_double_to_bits(v)};
 }
 

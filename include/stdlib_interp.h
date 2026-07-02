@@ -1802,7 +1802,7 @@ inline TensorShape parse_tensor_shape(const std::vector<Value>& args,
   return TensorShape(std::move(dims));
 }
 
-// If args[0] is a "f32"/"f64" tag, consume it; otherwise default F32.
+// If args[0] is a "f32" tag, consume it; otherwise default F32.
 // Returns {dtype, offset of first shape arg}.
 inline std::pair<Dtype, size_t> parse_tensor_dtype_prefix(
     const std::vector<Value>& args, size_t line, size_t col) {
@@ -1845,8 +1845,7 @@ inline TensorPtr tensor_from_array(const ArrayValue& a, Dtype dt, size_t line,
   if (vs[0].is_numeric()) {
     auto t = std::make_shared<TensorImpl>(
         TensorShape({static_cast<int64_t>(vs.size())}), dt);
-    if (dt == Dtype::F32) _tensor_fill_1d(t->data_as<float>(), vs, line, col);
-    else                  _tensor_fill_1d(t->data_as<double>(), vs, line, col);
+    _tensor_fill_1d(t->data_as<float>(), vs, line, col);
     return t;
   }
 
@@ -1856,10 +1855,7 @@ inline TensorPtr tensor_from_array(const ArrayValue& a, Dtype dt, size_t line,
   auto t = std::make_shared<TensorImpl>(
       TensorShape({static_cast<int64_t>(rows), static_cast<int64_t>(cols)}),
       dt);
-  if (dt == Dtype::F32)
-    _tensor_fill_2d(t->data_as<float>(), vs, cols, line, col);
-  else
-    _tensor_fill_2d(t->data_as<double>(), vs, cols, line, col);
+  _tensor_fill_2d(t->data_as<float>(), vs, cols, line, col);
   return t;
 }
 

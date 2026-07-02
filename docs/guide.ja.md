@@ -1176,8 +1176,8 @@ CLI ツールや小さなサーバを書くのにパッケージマネージャ�
 ### 15.1 構築と算術
 
 `Tensor` は組み込みの n 次元配列で、BLAS にルーティングされる
-(macOS は Apple Accelerate、Linux は OpenBLAS)。 要素型は現状
-`Float` (F64)。
+(macOS は Apple Accelerate、Linux は OpenBLAS)。 格納は F32 で、
+スカラー結果は `Float` として返る。
 
 ```culebra
 a = Tensor.from([1.0, 2.0, 3.0])
@@ -1222,7 +1222,7 @@ puts((row + col).to_array())  # => [[11.0, 12.0, 13.0], [21.0, 22.0, 23.0]]
 [`benchmarks/mnist/README.md`](../benchmarks/mnist/README.md) と
 [`benchmarks/microgpt/README.md`](../benchmarks/microgpt/README.md)。
 
-F32 / F64 のトレード、アロケータ選定、lazy shape の議論は
+dtype の根拠、アロケータ選定、lazy shape の議論は
 [`internals.md` §8](internals.md) (英語)。
 
 ---

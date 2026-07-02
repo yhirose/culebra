@@ -325,7 +325,7 @@ results carry byte offsets, scalar offsets, and captured groups.
 
 - `shape: vector<int64_t>`
 - `strides: vector<int64_t>`
-- `data: shared_ptr<Float[]>` (F64 today)
+- `data: shared_ptr<float[]>` (F32)
 - `offset: int64_t`
 
 Views (transpose, slice, broadcast) reuse the same `data` with
@@ -334,7 +334,7 @@ adjusted shape/stride/offset, so most operations are zero-copy.
 ### BLAS routing
 
 Element-wise ops use small inline loops with autovectorization hints.
-Matmul (`@`) routes through `cblas_dgemm` after laying out contiguous
+Matmul (`@`) routes through `cblas_sgemm` after laying out contiguous
 buffers if needed. The BLAS provider is platform-dependent:
 
 - macOS: Apple Accelerate (linked at runtime by default).
@@ -357,11 +357,13 @@ intermediate buffer when reshape-then-reduce is requested. A lazy
 shape-graph pass that fuses these is on the table for Tensor steady-
 state tuning ([[project_roadmap]] §② performance).
 
-### F32/F64 trade-off
+### dtype
 
-F64 today; F32 deferred. The MNIST benchmark uses F64 against numpy
-F64 to keep numerical results comparable. F32 will become a `dtype`
-parameter when there is concrete demand.
+F32 only. F64 was removed (2026-07): it does not exist on Metal and
+runs at 1/32-1/64 speed on consumer NVIDIA GPUs, so it would have
+been a CPU-only dtype. The `Dtype` enum remains as the seam for a
+future BF16 storage type; scalar entry/exit points (`.item()`,
+`.sum()`, `.to_array()`) surface `Float`.
 
 ### GPU (planned)
 

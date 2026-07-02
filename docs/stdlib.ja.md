@@ -1048,12 +1048,13 @@ puts(C.to_array())                    # [[..., ...], [..., ...]]
 #### `Tensor.zeros(...) -> Tensor` / `Tensor.ones(...)` / `Tensor.randn(...)`
 
 形状を variadic（`Tensor.zeros(3, 4)`）または Array
-（`Tensor.zeros([3, 4])`）で受け取ります。dtype は `"f32"` か
-`"f64"` の文字列を**第一引数**に置く Julia 流：
+（`Tensor.zeros([3, 4])`）で受け取ります。dtype は文字列タグを
+**第一引数**に置く Julia 流。dtype は `"f32"` のみです（float64 は
+GPU バックエンドに高速パスがないため）：
 
 ```culebra
 let a   = Tensor.zeros(3, 4)              # F32 default
-let a64 = Tensor.zeros("f64", 3, 4)       # 明示
+let a32 = Tensor.zeros("f32", 3, 4)       # 明示
 let dims = [3, 4]
 let b   = Tensor.zeros(dims)              # 計算済み形状
 let r   = Tensor.randn(2, 3)              # 標準正規
@@ -1244,7 +1245,8 @@ Tensor で意味づけしておらず、`@` は出力形状が変わるため in
 
 ### dtype / 形状の制約
 
-- dtype は F32 / F64 のみ。binop / dot は同 dtype 必須（暗黙昇格なし）
+- dtype は F32 のみ（float64 は GPU バックエンドに高速パスがない。
+  `.item()` / `.to_array()` などスカラー出口は `Float` を返す）
 - `.dot()` は rank-2 のみ。3D+ batched matmul は将来検討
 - `.reshape()` は連続入力のみ（transpose 後 reshape は materialize が必要 —
   今は明示的に `Tensor.from((...).to_array())` を経由）

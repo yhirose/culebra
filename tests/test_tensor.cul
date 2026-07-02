@@ -19,19 +19,24 @@ let b = Tensor.zeros(dims)
 assert_eq(to_string(b.shape()), "[2, 5]")
 
 # --- zeros: explicit dtype, Julia-style first arg ---
-let c = Tensor.zeros("f64", 2, 3)
+let c = Tensor.zeros("f32", 2, 3)
 assert_eq(to_string(c.shape()), "[2, 3]")
-assert_eq(to_string(c), "Tensor 2x3 f64")
+assert_eq(to_string(c), "Tensor 2x3 f32")
 
-let d = Tensor.zeros("f64", [4, 4])
+let d = Tensor.zeros("f32", [4, 4])
 assert_eq(to_string(d.shape()), "[4, 4]")
-assert_eq(to_string(d), "Tensor 4x4 f64")
+assert_eq(to_string(d), "Tensor 4x4 f32")
+
+# "f64" was removed (GPU backends have no fast float64); unknown dtype
+# tags reject like any other bad first argument.
+let bad_dtype = try { Tensor.zeros("f64", 2, 3); nil } catch e { e }
+assert_eq(bad_dtype.kind, "TypeError")
 
 # --- ones: same shape rules ---
 let o1 = Tensor.ones(2, 2)
 assert_eq(to_string(o1.shape()), "[2, 2]")
-let o2 = Tensor.ones("f64", 3, 1)
-assert_eq(to_string(o2), "Tensor 3x1 f64")
+let o2 = Tensor.ones("f32", 3, 1)
+assert_eq(to_string(o2), "Tensor 3x1 f32")
 
 # --- from: 1D nested-Array ---
 let v = Tensor.from([1.0, 2.0, 3.0, 4.0])
@@ -120,8 +125,8 @@ assert_eq(to_string(sc1.shape()), "[3, 4]")
 
 let rn = Tensor.randn(2, 3)
 assert_eq(to_string(rn.shape()), "[2, 3]")
-let rn64 = Tensor.randn("f64", 4, 4)
-assert_eq(to_string(rn64), "Tensor 4x4 f64")
+let rn32 = Tensor.randn("f32", 4, 4)
+assert_eq(to_string(rn32), "Tensor 4x4 f32")
 
 # --- M2.2: .pow() ---
 

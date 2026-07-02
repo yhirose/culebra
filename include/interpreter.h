@@ -4546,10 +4546,8 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                                 callEnv->get("this").to_tensor().impl;
                             tensor_eval_node(*self);
                             auto read_at = [&](int64_t flat_idx) {
-                              return self->dtype == Dtype::F32
-                                  ? static_cast<double>(
-                                        self->data_as<float>()[flat_idx])
-                                  : self->data_as<double>()[flat_idx];
+                              return static_cast<double>(
+                                  self->data_as<float>()[flat_idx]);
                             };
                             const auto& dims = self->shape.dims;
                             if (dims.size() == 1) {
@@ -4594,9 +4592,8 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                              "Tensor.item: tensor does not hold exactly "
                              "one element.");
                        }
-                       double v = self->dtype == Dtype::F32
-                           ? static_cast<double>(self->data_as<float>()[0])
-                           : self->data_as<double>()[0];
+                       double v =
+                           static_cast<double>(self->data_as<float>()[0]);
                        return Value(v);
                      },
                      "Float"sv))},

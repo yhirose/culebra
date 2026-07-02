@@ -1086,12 +1086,13 @@ puts(C.to_array())                    # [[..., ...], [..., ...]]
 #### `Tensor.zeros(...) -> Tensor` / `Tensor.ones(...)` / `Tensor.randn(...)`
 
 The shape is variadic (`Tensor.zeros(3, 4)`) or an Array
-(`Tensor.zeros([3, 4])`). The dtype is a string `"f32"` or `"f64"`
-placed as the **first argument**, Julia-style:
+(`Tensor.zeros([3, 4])`). The dtype is a string tag placed as the
+**first argument**, Julia-style. `"f32"` is the only dtype (float64
+has no fast path on GPU backends):
 
 ```culebra
 let a   = Tensor.zeros(3, 4)              # F32 default
-let a64 = Tensor.zeros("f64", 3, 4)       # explicit
+let a32 = Tensor.zeros("f32", 3, 4)       # explicit
 let dims = [3, 4]
 let b   = Tensor.zeros(dims)              # computed shape
 let r   = Tensor.randn(2, 3)              # standard normal
@@ -1285,8 +1286,8 @@ in-place is unsafe).
 
 ### dtype / shape constraints
 
-- dtype is F32 or F64 only. Binops and `dot` require matching dtypes
-  (no implicit promotion).
+- dtype is F32 only (float64 has no fast path on GPU backends; scalar
+  entry/exit points like `.item()` / `.to_array()` surface `Float`).
 - `.dot()` is rank-2 only. Batched 3D+ matmul is future work.
 - `.reshape()` requires contiguous input (a post-`transpose` reshape
   must materialize first — currently go through
