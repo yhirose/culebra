@@ -18980,8 +18980,8 @@ struct JIT {
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1], callee,
-                                         &postfix);
+            callee = compile_method_call(method, *ast.nodes[i + 1],
+                                         own(callee), &postfix);
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
@@ -19460,9 +19460,13 @@ struct JIT {
   // threaded down so a typed first param rejecting the receiver reports
   // symmetrically. Internal callers (iter fusion fallback) pass nothing
   // and keep the current position.
+  // The receiver arrives as an Owned +1 (the postfix chain transfers it).
+  // Every return path below either hands the +1 to a consuming child
+  // (`receiver.consume()`) or reads it borrowed and lets the handle's dtor
+  // release it — a new early return can no longer leak the receiver.
   llvm::Value* compile_method_call(const std::string& method,
                                    const peg::Ast& argsAst,
-                                   llvm::Value* receiver,
+                                   Owned receiver,
                                    const peg::Ast* dot_ast = nullptr) {
     // Explicit `obj.drop()` (no args) routes through the at-most-once guard
     // (culebra_runtime_explicit_drop → _culebra_call_drop_if_present) so an
@@ -19470,14 +19474,14 @@ struct JIT {
     // eval_call path does. `drop` is a reserved well-known name (never a real
     // builtin method), so this never shadows one. No-op yielding nil on a
     // non-Object / drop-less receiver; the receiver is released per the
-    // method-call ownership convention. Both call sites (compile_call and
-    // compile_call_with_builtins) funnel through here, so one guard suffices.
+    // method-call ownership convention (the handle's dtor). Both call sites
+    // (compile_call and compile_call_with_builtins) funnel through here, so
+    // one guard suffices.
     if (method == "drop" && argsAst.nodes.empty()) {
       emit_call(module_->getOrInsertFunction(
                     rt::explicit_drop, builder_.getVoidTy(),
                     builder_.getInt8Ty(), builder_.getInt64Ty()),
-                {extract_tag(receiver), extract_data(receiver)});
-      emit_value_release(receiver);
+                {extract_tag(receiver.borrow()), extract_data(receiver.borrow())});
       return make_nil();
     }
     // Method dispatch: true built-ins (Array/String/...) parse argsAst
@@ -19499,7 +19503,8 @@ struct JIT {
     // and would silently misbind a keyword.
     if (has_kwargs && (known_builtin_methods().contains(method) ||
                        method == "add")) {
-      return compile_user_method_over_builtin(method, argsAst, receiver);
+      return compile_user_method_over_builtin(method, argsAst,
+                                              receiver.consume());
     }
     // Set's mutating `.add(x)` / `.remove(x)` can shadow user-defined
     // Object methods of the same name (e.g. `Calculator.add(1)`). Emit
@@ -19508,9 +19513,9 @@ struct JIT {
     // Positional-only: a kwargs call was already routed above.
     if ((method == "add" || method == "remove") &&
         argsAst.nodes.size() == 1 && !has_kwargs) {
-      if (auto* r = compile_set_mutate_dispatch(method, argsAst, receiver)) {
-        return r;
-      }
+      // Never declines: every receiver tag lands in one of its arms
+      // (Set / Object / error), so the +1 transfers unconditionally.
+      return compile_set_mutate_dispatch(method, argsAst, receiver.consume());
     }
     // A user class may define a method whose name collides with a builtin
     // (`find`, `split`, `map`, …). The interpreter gives the user's own method
@@ -19520,20 +19525,18 @@ struct JIT {
     // compile_method_or_ufcs, which does the same against a free-function
     // fallback, and the Set add/remove dispatch above.)
     if (known_builtin_methods().contains(method)) {
-      return compile_user_method_over_builtin(method, argsAst, receiver);
+      return compile_user_method_over_builtin(method, argsAst,
+                                              receiver.consume());
     }
     if (auto* r =
-            compile_builtin_method(method, argsAst, receiver)) {
-      // Uniform receiver-ownership convention for builtin methods: the
-      // receiver arrives +1-owned (the postfix chain transfers it, like the
-      // property-get `swap_owned` release below), and a builtin treats it as
-      // BORROWED — read-only/mutating methods never store it, and methods
-      // that DO retain it for longer (the lazy iterator paths in
-      // `dispatch_arr_iter`) take their own +1. So this frame always drops the
-      // incoming ref; without it every `arr.size()` / `acc.push(x)` leaves the
-      // receiver's refcount dangling, which the generational GC then promotes
-      // and never reclaims.
-      emit_value_release(receiver);
+            compile_builtin_method(method, argsAst, receiver.borrow())) {
+      // Uniform receiver-ownership convention for builtin methods: a builtin
+      // treats the receiver as BORROWED — read-only/mutating methods never
+      // store it, and methods that DO retain it for longer (the lazy iterator
+      // paths in `dispatch_arr_iter`) take their own +1. So this frame always
+      // drops the incoming ref (the handle's dtor at this return); without it
+      // every `arr.size()` / `acc.push(x)` leaves the receiver's refcount
+      // dangling.
       return r;
     }
 
@@ -19545,8 +19548,8 @@ struct JIT {
     bool is_builtin = known_builtin_methods().contains(method);
     const VarSlot* freeFnSlot = is_builtin ? nullptr : lookup_var(method);
     if (freeFnSlot) {
-      return compile_method_or_ufcs(method, *freeFnSlot, argsAst, receiver,
-                                    dot_ast);
+      return compile_method_or_ufcs(method, *freeFnSlot, argsAst,
+                                    receiver.consume(), dot_ast);
     }
 
     // UFCS into an extension builtin: `x.puts()` → `puts(x)` and so on
@@ -19555,7 +19558,11 @@ struct JIT {
     // Matches interp's UFCS resolution, which consults the full env.
     auto& h = current_hooks();
     if (h.compile_ufcs_builtin) {
-      if (auto* r = h.compile_ufcs_builtin(*this, method, argsAst, receiver)) {
+      if (auto* r = h.compile_ufcs_builtin(*this, method, argsAst,
+                                           receiver.borrow())) {
+        // Hook contract: a non-null result means the hook consumed the
+        // receiver's +1 itself; a null result leaves it untouched.
+        receiver.consume();
         return r;
       }
     }
@@ -19566,12 +19573,12 @@ struct JIT {
     // `parameters` method, walk its fields and return a flat Array of
     // class-instance Values. User-defined parameters takes precedence.
     if (method == "parameters" && argsAst.nodes.empty()) {
-      return compile_class_parameters_call(argsAst, receiver);
+      return compile_class_parameters_call(argsAst, receiver.consume());
     }
 
     // User-defined method on Object: fetch property, call with this=receiver
-    auto methodVal = compile_property_get(receiver, method);
-    return compile_function_call(argsAst, methodVal, receiver);
+    auto methodVal = compile_property_get(receiver.borrow(), method);
+    return compile_function_call(argsAst, methodVal, receiver.consume());
   }
 
   // Auto-synthesized `parameters()` on class instances, JIT side. The
@@ -21084,8 +21091,8 @@ struct JIT {
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1], callee,
-                                         &postfix);
+            callee = compile_method_call(method, *ast.nodes[i + 1],
+                                         own(callee), &postfix);
             i++;
           } else {
             auto name = std::string(postfix.token);
@@ -21884,8 +21891,13 @@ inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
   builder_.CreateBr(mergeBB);
 
   builder_.SetInsertPoint(unfusedBB);
-  auto mapped = compile_method_call("map", *ast.nodes[i + 1], receiver);
-  auto unfusedRes = compile_method_call("collect", *ast.nodes[i + 3], mapped);
+  // The fused arm above references (and releases) the same receiver +1;
+  // the arms are mutually exclusive at runtime, so own(receiver) here and
+  // the fused arm's release each hand that single +1 to exactly one
+  // runtime consumer. (`mapped` is a fresh +1 produced in this arm.)
+  auto mapped = compile_method_call("map", *ast.nodes[i + 1], own(receiver));
+  auto unfusedRes =
+      compile_method_call("collect", *ast.nodes[i + 3], own(mapped));
   auto unfusedEnd = builder_.GetInsertBlock();
   builder_.CreateBr(mergeBB);
 
