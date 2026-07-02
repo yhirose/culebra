@@ -302,7 +302,7 @@ Corollary: no correct codegen path contains a bare, hand-placed
 ## 6. State and migration path
 
 - **Done:** the `Owned` handle exists and is proven zero-behavior-change
-  (byte-identical IR) on four slices, with the GC/leak/difftest gates green
+  (byte-identical IR) on five slices, with the GC/leak/difftest gates green
   ([[project_jit_gc_rewrite]]):
   - **operators** (binary/comparison/unary) — the pilot;
   - **call arguments** — every ARG_LIST producer (positional, static-kwargs
@@ -322,7 +322,16 @@ Corollary: no correct codegen path contains a bare, hand-placed
     `emit_index_step`; the property-get `swap_owned` arm marks the handle
     consumed (the runtime primitive trades the receiver's `+1` for the
     view's); `try_fuse_iter_map_collect` follows the hook contract
-    (declines on AST shape alone, a hit consumed the `+1`).
+    (declines on AST shape alone, a hit consumed the `+1`);
+  - **container-literal elements** — array/tuple/set/object literals hold
+    every element, spread source, key, and value as `Owned`;
+    slot-absorbing runtime calls are explicit `.consume()` points, spread
+    sources scope their handle so the dtor lands where the hand-placed
+    release was, and the exception-path pending/build-guard machinery is
+    untouched (the Owned layer covers only the normal path). This slice's
+    receiver-map pass caught a real SIGSEGV: `[](n, heapDefault)` filled n
+    slots with unretained aliases of one `+1` (fixed: `array_resize`
+    retains per slot; the default is borrowed).
   Mapping the receiver flows also surfaced five real receiver `+1` leaks
   (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
@@ -335,7 +344,7 @@ Corollary: no correct codegen path contains a bare, hand-placed
   `Owned` returns" refactor: large but *type-driven* (the double-consume assert
   and the move-only handle guide each conversion; a missed release becomes a
   dropped `Owned`, not a leak). Remaining slices, roughly in order:
-  container-literal elements, the method-dispatch children's internals
+  the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
   still share consumed raws across their runtime-exclusive arms), the
   iter-protocol/decorator internal `compile_function_call_raw` callers, and
