@@ -68,30 +68,45 @@ conflating them is what makes naive "remove the redundant retain" fixes crash:
    (release-to-zero, which also fires deterministic `drop`).
 2. **Rooting / liveness** — decides *what stays alive across a GC collect*.
 
-The trap (learned the hard way — two reverted attempts on the lazy-combinator
-leak, see [[project_jit_gc_rewrite]] Task #4): while a runtime helper is
-*constructing* a value (e.g. `iter_map` building an iterator: `cell_new`,
-`closure_new`, each of which allocates and can trigger a collect), the
-freshly-built cells and the upstream are kept alive **only by their refcount**.
-The collect does **not** scan the C++ helper's native stack frame — it scans
-the JIT shadow-stack / registered roots. So a refcount that *looks* redundant
-for ownership can be **load-bearing for rooting**: drop it and a
-construction-time collect frees an un-rooted object → SIGSEGV, reproducible
-only under heap pressure (passes isolated probes and ASan, fails the full
-corpus).
+Both jobs matter, but they are guaranteed by **different layers**, and a
+"remove the redundant retain" fix must be judged against the right one.
 
-**Design consequence:** the two concerns must be *separated*, not both carried
-by "an extra retain":
+**Rooting is already provided independently of any single retain — by both
+shipping collectors** (verified 2026-07-02, see below):
 
-- **Rooting** is owned by the GC layer: the precise-GC shadow-stack roots
-  (`jit_gc_design.md` §12, [[project_jit_gc_rewrite]] Phase 1), plus rooting of
-  in-flight temporaries created inside runtime helpers. Once liveness across a
-  safepoint is guaranteed independently, an ownership handle is *purely* about
-  "who calls release."
-- **Ownership** is then free to be minimized/normalized (a redundant release
-  can be removed) without any risk of premature free.
+- The **conservative** collector scans the *whole machine stack* — every JIT
+  frame *and* every C++ runtime-helper frame — plus setjmp-flushed
+  callee-saved registers (`jit_gc.h scan_roots`). A helper's in-flight locals
+  (cells, upstream, half-built closures) are on that stack, so a
+  construction-time collect roots them regardless of their refcount.
+- The **gc_refs** collector (the endgame) seeds roots from refcounts: any
+  object whose refcount exceeds its in-heap references is a root, and marking
+  is transitive from there. A native frame's `+1` *is* an external ref, so an
+  in-flight temporary is a root by construction — provided the RC accounting
+  is correct, which is exactly what this document's ownership discipline
+  establishes. Rooting soundness under gc_refs ≡ RC accuracy.
 
-Any ownership scheme that ignores this will keep hitting the Task #4 wall.
+The rooting gap is real only for the *parked* precise-shadow-stack route
+(`jit_gc_design.md` §12 Phase 2 wall): a shadow stack does not see native
+helper frames or values still in registers. If that route is ever revived, the
+in-flight pinning problem revives with it; nothing shipping depends on it.
+
+**The Task #4 trap, re-diagnosed:** the two reverted attempts on the
+lazy-combinator leak ([[project_jit_gc_rewrite]] Task #4) were originally
+blamed on a rooting gap. Re-running both reverted patches with
+`CULEBRA_GC_NEVER=1` (a diagnostic that disables *every* collect) still
+crashes `test_iter.cul` 8/8 — with no collector running at all. Both crashes
+are therefore **pure RC over-release** (a release-to-zero while a reference
+is still held), not GC sweeps. The discriminator is now permanent tooling:
+a crash that survives `CULEBRA_GC_NEVER=1` is an ownership bug; one that
+disappears is a rooting bug.
+
+**Design consequence:** a retain that *looks* redundant may still be
+load-bearing — but for *ownership at another call site* (a caller that hands
+no `+1`, a consumer that releases unconditionally), never for rooting under
+the shipping collectors. So the precondition for removing one is an
+accounting proof — a refcount trace of the object's whole economy plus the
+full gate — not new rooting machinery.
 
 ---
 
@@ -267,12 +282,15 @@ A borrowed value is only ever handled through `.borrow()` (or a distinct
 
 ### 4.5 Rooting is the GC layer's job, not the refcount's
 
-Per §2: liveness across a collect is guaranteed by the precise-GC shadow-stack
-(named/temporary slots) plus rooting of in-flight temporaries inside runtime
-helpers (e.g. pin the cells/upstream while `iter_map` builds them, or register
-them on the shadow-stack before the first allocation that can collect). With
-rooting decoupled, `Owned`/slot ownership is purely about release timing, so
-minimizing refcounts never risks a premature free.
+Per §2: liveness across a collect is already guaranteed by the collector
+itself — the conservative scan covers every native frame, and gc_refs roots
+anything with an external refcount. No scoped-pin / shadow-stack machinery
+for in-flight helper temporaries is needed (and none may be added for this
+purpose; the shadow-stack codegen was removed once already as dead overhead).
+With rooting independently guaranteed, `Owned`/slot ownership is purely about
+release timing — and the safety condition for minimizing refcounts is RC
+accounting accuracy, provable per change with a refcount trace,
+`CULEBRA_GC_NEVER` discrimination, and the full gate.
 
 ### 4.6 Cycles are swept, not counted
 
@@ -389,10 +407,12 @@ Corollary: no correct codegen path contains a bare, hand-placed
   the interpreter. Also remaining: the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
   still share consumed raws across their runtime-exclusive arms).
-- **Unblocks in order:** (1) close the rooting/ownership split (§2/§4.5) so
-  removing redundant refs is safe → (2) finish the ownership flip → (3) the RC
-  is leak-free → (4) `gc_refs` / precise GC can retire the conservative
-  backstop's over-retention → scalar speedup.
+- **Unblocks in order:** (1) the rooting/ownership split (§2/§4.5) is closed
+  by evidence — both shipping collectors root in-flight temporaries
+  independently, so removing a redundant ref needs an accounting proof, not
+  rooting machinery → (2) finish the ownership flip → (3) the RC is leak-free
+  → (4) `gc_refs` can retire the conservative backstop's over-retention →
+  scalar speedup.
 
 Every phase keeps the hard gates: interp/JIT symmetry, difftest corpus,
 `CULEBRA_GC_STRESS`, ASan/UBSan, **and the full `just test` gate** (leak fixes

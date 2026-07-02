@@ -307,6 +307,7 @@ class Heap {
   // to it (completeness is best-effort). So callers/tests may only assume
   // "reachable survives"; the exact reclaimed set is non-deterministic.
   size_t collect() {
+    if (never()) return 0;
     // Experimental refcount-based cycle collection (CPython gc_refs): seed
     // roots purely from the reference counts the compiler already maintains —
     // no stack scan, no shadow stack. Because a live value's refcount counts
@@ -358,6 +359,15 @@ class Heap {
   // CULEBRA_GC_REFS=1 selects refcount-based cycle collection (see collect()).
   static bool gc_refs_mode() {
     static const bool s = std::getenv("CULEBRA_GC_REFS") != nullptr;
+    return s;
+  }
+  // CULEBRA_GC_NEVER=1 disables every collect (threshold and explicit). A
+  // diagnostic discriminator for crashes: one that persists with collects off
+  // cannot be a GC rooting/sweep problem — it is an RC over-release. This is
+  // how the two reverted lazy-combinator "fixes" were shown to be refcount
+  // bugs, not rooting gaps (docs/jit_ownership.md §4.5).
+  static bool never() {
+    static const bool s = std::getenv("CULEBRA_GC_NEVER") != nullptr;
     return s;
   }
 
@@ -529,7 +539,7 @@ class Heap {
   // amortised cost ~constant while bounding peak RSS.
   static constexpr size_t kMinThreshold = 100000;
   void maybe_collect() {
-    if (!callbacks_wired_ || collect_paused_) return;
+    if (never() || !callbacks_wired_ || collect_paused_) return;
     if (++alloc_since_collect_ < collect_threshold_) return;
     alloc_since_collect_ = 0;
     collect();
