@@ -5580,9 +5580,10 @@ inline Value make_regex_primitives_namespace() {
   ns.initialize("match", search_fn(true), false);
 
   // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. Drives the
-  // lazy `Regex.find_iter` generator: the leftmost match at/after byte `pos`
-  // (absolute offsets) plus the grapheme-correct resume position — one
-  // grapheme past an empty match, so the generator always advances.
+  // lazy `Regex.find_iter` generator: one stateless engine scan step —
+  // find_at gives the leftmost match at/after byte `pos` (absolute offsets)
+  // and the resume position (one grapheme past an empty match), and lets
+  // anchors see the full subject rather than a suffix.
   ns.initialize(
       "find_from",
       Value(FunctionValue(
@@ -5594,39 +5595,16 @@ inline Value make_regex_primitives_namespace() {
             std::string s{env->get("s").to_string()};
             long pos = env->get("pos").to_long();
             ObjectValue out;
-            auto miss = [&](long nxt) {
-              out.initialize("m", Value(), false);
-              out.initialize("nxt", Value(nxt), false);
-              return Value(std::move(out));
-            };
-            if (pos < 0 || static_cast<size_t>(pos) > s.size())
-              return miss(static_cast<long>(s.size()) + 1);
-            std::string_view suffix = std::string_view(s).substr(pos);
             try {
-              auto m = re->search(suffix);
-              if (!m.matched()) return miss(static_cast<long>(s.size()) + 1);
-              long next;
-              if (m.end() > m.begin()) {
-                next = pos + static_cast<long>(m.end());
-              } else {
-                // Empty match: resume one grapheme past it so the generator
-                // always advances. byte_begin lists the grapheme boundaries
-                // (sorted, sentinel == suffix.size()); the first one strictly
-                // after m.end() is the next grapheme start.
-                auto seg = reg::detail::segment(suffix);
-                auto it = std::upper_bound(seg.byte_begin.begin(),
-                                           seg.byte_begin.end(), m.end());
-                size_t nb =
-                    it != seg.byte_begin.end() ? *it : suffix.size() + 1;
-                next = pos + static_cast<long>(nb);
-              }
-              // The match offsets are relative to `suffix`; shift to absolute by
-              // pos (the engine's result is immutable, so shift at build time).
+              auto r = re->find_at(s, pos < 0 ? s.size() + 1
+                                              : static_cast<size_t>(pos));
               out.initialize("m",
-                             regex_match_value(m, re->named_groups(),
-                                               static_cast<size_t>(pos)),
+                             r.m.matched()
+                                 ? regex_match_value(r.m, re->named_groups())
+                                 : Value(),
                              false);
-              out.initialize("nxt", Value(next), false);
+              out.initialize("nxt", Value(static_cast<long>(r.next_pos)),
+                             false);
               return Value(std::move(out));
             } catch (const reg::RegexError& e) {
               regex_rethrow(e, env);

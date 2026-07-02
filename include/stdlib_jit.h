@@ -5408,41 +5408,22 @@ inline JitValue _ns_regex_replace_all(JitValue* a, int64_t) {
   return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))};
 }
 // find_from(pattern, s, pos) -> { m: Match|nil, next: Int }. See the interp
-// twin in stdlib_interp.h: leftmost match at/after byte `pos` with absolute
-// offsets, plus the grapheme-correct resume position.
+// twin in stdlib_interp.h: one stateless find_at scan step (absolute offsets,
+// engine-owned empty-match resume rule, anchors see the full subject).
 inline JitValue _ns_regex_find_from(JitValue* a, int64_t) {
   auto re = _jit_regex_compile(_ns_adapt::require_sv(a[0], "pattern", "StringLike"));
   std::string s(_ns_adapt::require_sv(a[1], "s", "StringLike"));
   long pos = static_cast<long>(a[2].data);
   auto* out = culebra_runtime_object_new();
-  auto miss = [&](long nxt) {
-    culebra_runtime_object_set(out, "m", false, TAG_NIL, 0, 0, 0);
-    culebra_runtime_object_set(out, "nxt", false, TAG_LONG,
-                               static_cast<int64_t>(nxt), 0, 0);
-    return _ns_adapt::v_object(out);
-  };
-  if (pos < 0 || static_cast<size_t>(pos) > s.size())
-    return miss(static_cast<long>(s.size()) + 1);
-  std::string_view suffix = std::string_view(s).substr(pos);
-  auto m = re->search(suffix);
-  if (!m.matched()) return miss(static_cast<long>(s.size()) + 1);
-  long next;
-  if (m.end() > m.begin()) {
-    next = pos + static_cast<long>(m.end());
+  auto r = re->find_at(s, pos < 0 ? s.size() + 1 : static_cast<size_t>(pos));
+  if (r.m.matched()) {
+    auto mv = _jit_regex_match(r.m, re->named_groups());
+    culebra_runtime_object_set(out, "m", false, mv.tag, mv.data, 0, 0);
   } else {
-    // Empty match: resume one grapheme past it (byte_begin lists the sorted
-    // grapheme boundaries with a sentinel == suffix.size()).
-    auto seg = reg::detail::segment(suffix);
-    auto it = std::upper_bound(seg.byte_begin.begin(), seg.byte_begin.end(),
-                               m.end());
-    size_t nb = it != seg.byte_begin.end() ? *it : suffix.size() + 1;
-    next = pos + static_cast<long>(nb);
+    culebra_runtime_object_set(out, "m", false, TAG_NIL, 0, 0, 0);
   }
-  // Offsets are relative to `suffix`; shift to absolute by pos at build time.
-  auto mv = _jit_regex_match(m, re->named_groups(), static_cast<size_t>(pos));
-  culebra_runtime_object_set(out, "m", false, mv.tag, mv.data, 0, 0);
   culebra_runtime_object_set(out, "nxt", false, TAG_LONG,
-                             static_cast<int64_t>(next), 0, 0);
+                             static_cast<int64_t>(r.next_pos), 0, 0);
   return _ns_adapt::v_object(out);
 }
 inline JitValue _ns_regex_split(JitValue* a, int64_t) {
