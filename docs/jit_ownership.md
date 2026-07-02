@@ -302,7 +302,7 @@ Corollary: no correct codegen path contains a bare, hand-placed
 ## 6. State and migration path
 
 - **Done:** the `Owned` handle exists and is proven zero-behavior-change
-  (byte-identical IR) on five slices, with the GC/leak/difftest gates green
+  (byte-identical IR, or leak-fix-only IR deltas) on six slices, with the GC/leak/difftest gates green
   ([[project_jit_gc_rewrite]]):
   - **operators** (binary/comparison/unary) — the pilot;
   - **call arguments** — every ARG_LIST producer (positional, static-kwargs
@@ -331,7 +331,16 @@ Corollary: no correct codegen path contains a bare, hand-placed
     untouched (the Owned layer covers only the normal path). This slice's
     receiver-map pass caught a real SIGSEGV: `[](n, heapDefault)` filled n
     slots with unretained aliases of one `+1` (fixed: `array_resize`
-    retains per slot; the default is borrowed).
+    retains per slot; the default is borrowed);
+  - **decorator callees** — the three application sites (fn/class/enum
+    declarations) hold the compiled decorator as `Owned`; the raw call
+    borrows it and the dtor releases it (a let-bound closure decorator
+    leaked one callee ref per application before). The ufcs-builtin hook's
+    throw arms were audited in the same pass: every arm now consumes the
+    receiver/arg `+1` before raising (release-before-throw is safe there —
+    `value_to_long`'s error path never derefs `data`). The for-in
+    protocol's dispose/iter this-handoffs measured balanced and stay raw
+    pending their dedicated slice.
   Mapping the receiver flows also surfaced five real receiver `+1` leaks
   (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
@@ -347,8 +356,9 @@ Corollary: no correct codegen path contains a bare, hand-placed
   the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
   still share consumed raws across their runtime-exclusive arms), the
-  iter-protocol/decorator internal `compile_function_call_raw` callers, and
-  finally `compile()` itself.
+  iter-protocol internals (dispose/iter this-handoffs — measured balanced,
+  but the compensating `+1`'s origin still needs a written-down account
+  before converting), and finally `compile()` itself.
 - **Unblocks in order:** (1) close the rooting/ownership split (§2/§4.5) so
   removing redundant refs is safe → (2) finish the ownership flip → (3) the RC
   is leak-free → (4) `gc_refs` / precise GC can retire the conservative
