@@ -100,6 +100,16 @@ fn run(which, N) {
     # the iterator alloca's +1 (the dispose frame consumes its own retain);
     # the local lpad releases it before rethrowing.
     for i in 0..N { try { for x in mk_proto_throwing(i) { break } } catch e { } }
+  } else if which == "forin_throw_unwind" {
+    # a throw unwinding out of the for-in's enclosing function must release
+    # the iterable's scope-slot +1 (the for statement's own cleanup pad).
+    # Cross-function shape on purpose: within one frame the declaration
+    # store overwrites-and-releases the previous strand, hiding the leak.
+    for i in 0..N { try { forin_thrower(i) } catch e { } }
+  } else if which == "forin_set_throw" {
+    # same, Set branch: the set_to_array temp array (a scope slot beside
+    # the iterable) must not strand on unwind or early return.
+    for i in 0..N { try { forin_set_thrower(i) } catch e { } }
   } else if which == "forin_generator" {
     # for-in over a generator (self-returning iter(): iterable == iterator,
     # two refs on one object). Both the protocol cleanup and pop_scope must
@@ -207,6 +217,12 @@ fn mk_proto(v) {
 # A generator: its synthesized _Gen_ class is a self-returning iterator.
 fn gen2(v) { yield v; yield v + 1 }
 
+# Throw out of a for-in across this function's frame (proto branch).
+fn forin_thrower(v) { for x in mk_proto(v) { throw "boom" } }
+
+# Same, Set branch (exercises the set_to_array temp slot).
+fn forin_set_thrower(v) { let s = {v, v + 1}; for x in s { throw "boom" } }
+
 # Like mk_proto, but the iterator's dispose throws.
 fn mk_proto_throwing(v) {
   {
@@ -251,6 +267,7 @@ if which == "list" {
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
                "forin_keys", "forin_range_value",
                "forin_proto_iterable", "forin_dispose_throw",
+               "forin_throw_unwind", "forin_set_throw",
                "forin_generator", "class_in_fn",
                "throw_in_literal", "forin_early_return",
                "auto_parameters", "set_add_remove", "iter_map_collect_fused",

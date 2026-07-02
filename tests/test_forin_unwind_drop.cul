@@ -1,0 +1,73 @@
+# A throw unwinding out of a for-in must release the iterable's scope-slot
+# ref during unwind, firing its drop before the catch — like the
+# interpreter. The for statement's own cleanup pad covers every branch
+# (keys, protocol, set); the JIT used to strand that ref (drop never fired,
+# and the object leaked when the frame wasn't re-entered).
+
+# Keys branch: plain object, body throws.
+fn run_keys() {
+  for k in { a: 1, b: 2, drop: fn () { puts("keys: iterable dropped") } } {
+    throw "boom"
+  }
+}
+try { run_keys() } catch e { puts("keys: caught " + e) }
+
+# Protocol branch, distinct iterator: body throws; the iterator is disposed
+# and dropped by the protocol cleanup, then the iterable by the for scope.
+fn mk_proto() {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () { this.i < 3 },
+        next: fn () { this.i = this.i + 1; this.i },
+        dispose: fn () { puts("proto: disposed") },
+        drop: fn () { puts("proto: iter dropped") },
+      }
+    },
+    drop: fn () { puts("proto: iterable dropped") },
+  }
+}
+fn run_proto() {
+  for x in mk_proto() {
+    throw "boom"
+  }
+}
+try { run_proto() } catch e { puts("proto: caught " + e) }
+
+# Protocol branch, throwing dispose on break: the dispose's own throw
+# propagates, and both the iterator and the iterable still drop.
+fn mk_throwing() {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () { this.i < 3 },
+        next: fn () { this.i = this.i + 1; this.i },
+        dispose: fn () { throw "dboom" },
+        drop: fn () { puts("dthrow: iter dropped") },
+      }
+    },
+    drop: fn () { puts("dthrow: iterable dropped") },
+  }
+}
+fn run_dthrow() {
+  for x in mk_throwing() {
+    break
+  }
+}
+try { run_dthrow() } catch e { puts("dthrow: caught " + e) }
+
+# Set branch: members survive the unwind (the temp array's slot releases,
+# the set itself is dropped at its let scope's exit).
+fn run_set() {
+  let s = {10, 20}
+  for x in s {
+    throw "boom"
+  }
+}
+try { run_set() } catch e { puts("set: caught " + e) }
+
+puts("done")

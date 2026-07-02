@@ -226,10 +226,9 @@ This is preferred over registering releases on the **defer stack**: the defer
 stack stores *closures* to invoke (heavyweight per literal) and would run on
 normal exits too (needing a cancel), whereas the cleanup landingpad is
 exception-path-only and dead-code-eliminates to nothing when unneeded. The
-same landingpad shape already serves the for-in protocol loop; the remaining
-hole is the for-in raw-alloca iterator on early `return` ([[project_jit_gc_rewrite]]
-Task #2), whose exception path is already covered by that loop's landingpad —
-only the compile-time `return` exit needs the iterator added to scope cleanup.
+same landingpad shape also serves the for-in protocol loop; its raw-alloca
+iterator on early `return` is covered too (compile_return walks
+`iter_cleanup_stack_` and emits the same dispose+release, innermost first).
 
 **Generalized scope cleanup — `finish_scope_cleanup` (shipped).** The same
 per-region, pred_empty-gated landingpad now backs *every* scope-like region, so
@@ -241,7 +240,12 @@ landingpad. It must run while the scope is still the live top-of-stack (its
 slot allocas are entry-zero-initialised, so a throw before a binding is
 assigned releases nil). Wired into: lexical scopes, `while` / `for` bodies,
 `match` arms **and the match subject scope**, `try` bodies (released before the
-catch handler runs), and the function frame — the fn-level pad is now emitted
+catch handler runs), **the `for` statement's own iterable scope** (which also
+holds the Set branch's `set_to_array` temp — before this wiring a throw
+unwinding out of a for-in stranded the iterable's slot ref: no `drop`, and a
+real per-call leak whenever the frame wasn't re-entered, since only a
+re-execution's declaration store would release the previous strand), and the
+function frame — the fn-level pad is now emitted
 whenever the body can throw (not only with a fn-level `defer`), which covers a
 function whose owned locals live in the *frame* scope, since the body `BLOCK`
 compiles into that frame, not a nested `LEXICAL_SCOPE`. The escaped/cyclic drop

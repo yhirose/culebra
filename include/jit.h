@@ -16407,6 +16407,14 @@ struct JIT {
     auto tag = extract_tag(iterable);
     auto data = extract_data(iterable);
 
+    // Exception edge for the whole statement: without it, a throw unwinding
+    // out of the loop strands the slot's +1 (the enclosing pads only know
+    // their own scopes) — the iterable leaked and its drop never fired.
+    auto savedLpad = current_lpad_;
+    auto forCleanupBB =
+        llvm::BasicBlock::Create(ctx_, "for.iterable.cleanup", fn);
+    current_lpad_ = forCleanupBB;
+
     auto arrayBB = llvm::BasicBlock::Create(ctx_, "for.array", fn);
     auto setBB    = llvm::BasicBlock::Create(ctx_, "for.set", fn);
     auto objectBB = llvm::BasicBlock::Create(ctx_, "for.object", fn);
@@ -16435,21 +16443,19 @@ struct JIT {
     compile_for_array_loop(builder_.CreateIntToPtr(data, ptrTy),
                            id, body, endBB);
 
-    // Set: materialize members into a fresh Array, then reuse the
-    // array walker. The temporary Array is +1-owned by this scope;
-    // the loop's exits funnel through a cleanup BB that releases it
-    // before jumping to endBB. `break` inside the body also lands in
-    // the cleanup BB so the release fires regardless of exit path.
+    // Set: materialize members into a fresh Array, then reuse the array
+    // walker. The temporary Array's +1 lives in a scope slot beside the
+    // iterable, so every exit path (normal, break, return, throw) releases
+    // it through the same machinery (a bare release BB stranded it on
+    // unwind and early return).
     builder_.SetInsertPoint(setBB);
     auto setSrcPtr = builder_.CreateIntToPtr(data, ptrTy);
     auto setMembersArr = emit_call(
         module_->getOrInsertFunction(rt::set_to_array, ptrTy, ptrTy),
         {setSrcPtr}, "for.set.arr");
-    auto setCleanupBB = llvm::BasicBlock::Create(ctx_, "for.set.cleanup", fn);
-    compile_for_array_loop(setMembersArr, id, body, setCleanupBB);
-    builder_.SetInsertPoint(setCleanupBB);
-    emit_value_release(make_array(setMembersArr));
-    builder_.CreateBr(endBB);
+    define_var("for.set.arr",
+               make_stack_slot("for.set.arr", make_array(setMembersArr)));
+    compile_for_array_loop(setMembersArr, id, body, endBB);
 
     // Object branch splits on whether the receiver carries its own
     // `iter` property:
@@ -16516,9 +16522,11 @@ struct JIT {
     compile_for_string_loop(strDataPtr, id, body, endBB);
 
     builder_.SetInsertPoint(endBB);
-    // Every normal/break path funnels here; pop_scope releases the iterable
-    // exactly once (return/throw free it via the enclosing scope teardown).
-    pop_scope();
+    // Every normal/break path funnels here and releases the iterable exactly
+    // once; the throw path mirrors it via forCleanupBB (return releases it
+    // through release_all_scopes_for_exit).
+    finish_and_pop_scope(forCleanupBB, /*defer_mark=*/nullptr, savedLpad,
+                         "for.iterable.exc", savedLpad);
     return make_nil();
   }
 
