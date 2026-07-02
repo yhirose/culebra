@@ -42,6 +42,7 @@ class SlabAllocator {
   // Hand out at least `n` bytes, 16-aligned. Sizes above the largest class
   // pass straight through to malloc (rare, amortized — e.g. big arrays).
   void* alloc(size_t n) {
+    if (passthrough()) return std::malloc(n);
     int idx = class_index(n);
     if (idx < 0) return std::malloc(n);
     if (void* p = free_lists_[idx]) {
@@ -56,6 +57,10 @@ class SlabAllocator {
   // element size for a buffer), so it maps to the same size class.
   void free(void* p, size_t n) {
     if (!p) return;
+    if (passthrough()) {
+      std::free(p);
+      return;
+    }
     int idx = class_index(n);
     if (idx < 0) {
       std::free(p);
@@ -73,6 +78,15 @@ class SlabAllocator {
   }
 
  private:
+  // CULEBRA_SLAB_PASSTHROUGH=1 routes every block through system malloc/free
+  // so ASan tracks each object individually — a slab free-list absorbs a
+  // double-free/UAF silently and only crashes later as list corruption.
+  // Diagnostic only; default off.
+  static bool passthrough() {
+    static const bool s = std::getenv("CULEBRA_SLAB_PASSTHROUGH") != nullptr;
+    return s;
+  }
+
   // All multiples of alignof(std::max_align_t) (16), so every carved block is
   // 16-aligned (a safe superset of what malloc/new guaranteed). JitObject
   // (~112B) -> 128, JitClosure/JitArray/JitSet -> 48, JitCell/JitTensor -> 32,

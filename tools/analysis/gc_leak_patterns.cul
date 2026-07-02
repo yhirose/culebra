@@ -149,12 +149,31 @@ fn run(which, N) {
     # to compile_method_call instead).
     for i in 0..N { let _ = [i, i + 1].iter().map(|x| x).collect() }
   } else if which == "iter_for_each_inline" {
-    # `it.for_each(inlinable λ)`: dispatch_arr_iter's obj arm hands the lazy
-    # path its own +1; the inline loop borrows, so the callback must release.
+    # `it.for_each(inlinable λ)`: dispatch_arr_iter's obj arm borrows the
+    # iterator receiver (like the Array arm), so the inline loop borrows too —
+    # no retain, no release. Guards against re-introducing an imbalance.
     for i in 0..N { [i, i + 1].iter().for_each(|x| x) }
   } else if which == "iter_reduce_inline" {
     # `it.reduce(init, inlinable λ)`: same shape as for_each.
     for i in 0..N { let _ = [i, i + 1].iter().reduce(0, |a, x| a + x) }
+  } else if which == "iter_filter_lazy" {
+    # `it.filter(λ).collect()`: filter is a lazy wrapper over the iterator
+    # (no fusion). The obj arm must NOT retain — the factory retains upstream
+    # itself; an extra dispatch retain leaked one upstream ref per wrapper.
+    for i in 0..N { let _ = [i, i + 1, i + 2].iter().filter(|x| x > i).collect() }
+  } else if which == "iter_flat_map" {
+    # `it.flat_map(λ).collect()`: flat_map is a lazy wrapper over the iterator
+    # (like filter). The factory retains upstream itself, so the obj arm must
+    # NOT retain — the stray +1 leaked ~one upstream ref/loop.
+    for i in 0..N { let _ = [i, i + 1].iter().flat_map(|x| [x, x]).collect() }
+  } else if which == "iter_find_driver" {
+    # `it.find(λ)`: a runtime-driver terminal (no inline form). The driver
+    # only pulls values — it borrows the receiver, so the obj arm must not
+    # retain (the stray +1 leaked one iterator ref per call).
+    for i in 0..N { let _ = [i, i + 1, i + 2].iter().find(|x| x == i + 1) }
+  } else if which == "iter_any_driver" {
+    # `it.any(λ)`: same runtime-driver borrow contract as find.
+    for i in 0..N { let _ = [i, i + 1, i + 2].iter().any(|x| x == i + 1) }
   } else if which == "array_sized_default" {
     # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
     # the literal releases its own +1 (n=0 exercises the unused-default path).
@@ -272,6 +291,8 @@ if which == "list" {
                "throw_in_literal", "forin_early_return",
                "auto_parameters", "set_add_remove", "iter_map_collect_fused",
                "iter_for_each_inline", "iter_reduce_inline",
+               "iter_filter_lazy", "iter_flat_map",
+               "iter_find_driver", "iter_any_driver",
                "array_sized_default", "deco_let", "ufcs_hook_throw"]
   for n in names { print(n + "\n") }
 } else {

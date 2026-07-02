@@ -6779,10 +6779,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 //   - `_iter_advance_raw(has_next_cls, next_cls, iter, out_tag, out_data)`
 //     pulls one value via the cached lookahead when present, otherwise
 //     `fast_next_fn` (or the user's has_next/next pair).
-//   - Terminal methods consume the iterator (don't release it; caller
-//     holds the +1 and will release after the terminal returns).
-//   - Lazy wrapper factories transfer upstream's +1 into a capture
-//     cell so the wrapper owns it for its lifetime.
+//   - HOF receivers are borrowed: terminal methods only pull values
+//     (the caller's +1 outlives the call and the caller releases it),
+//     and lazy wrapper factories retain what they store — upstream goes
+//     into a capture cell backed by the factory's own retain (or a
+//     fresh +1 from _iter_coerce_iterable), owned for the wrapper's
+//     lifetime and released when the cell dies.
 
 // Forward declared — defined later alongside the array higher-order
 // runtime helpers.
@@ -8034,8 +8036,13 @@ inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
       return;
     }
     culebra_runtime_set_call_site(line, col);
+    // invoke1 consumes the pulled value's +1 (the callee frame takes ownership
+    // on entry, per the calling convention) — do NOT release it again here.
+    // An identity callback `fn(xs){xs}` returns that same heap object, so a
+    // spurious release double-frees it; integer elements hid the bug because
+    // releasing a Long is a no-op, and the dispatch_arr_iter receiver leak
+    // masked it further by keeping the heap alive.
     auto mapped = _culebra_invoke1(fn_cls, {tag, data});
-    _culebra_value_release_impl(tag, data);
     auto iv = _iter_coerce_iterable(mapped.tag, mapped.data, line, col);
     _culebra_value_release_impl(mapped.tag, mapped.data);
     inner_cell->value = iv;
@@ -23020,13 +23027,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(objBB);
-    // The iterator path CONSUMES the source: lazy wrappers (iter_map/filter/
-    // flat_map) store it, terminal drivers (iter_reduce/for_each/...) release
-    // it on exhaustion. Since compile_method_call releases the receiver once
-    // uniformly, hand the iterator path its own +1 so that consume is balanced.
-    // (Non-iterator-shaped Objects are rejected at the top of
+    // The iterator path BORROWS the source, same as the eager Array path:
+    // lazy factories (iter_map/filter/flat_map) retain what they store into
+    // their capture cells, and terminal drivers (iter_reduce/for_each/...)
+    // only pull values — neither consumes a receiver ref, and
+    // compile_method_call's Owned handle releases the receiver once after
+    // dispatch. (A retain here handed a +1 nobody consumed — one leaked
+    // upstream ref per lazy wrapper / per runtime-driver terminal call.
+    // Non-iterator-shaped Objects are rejected at the top of
     // compile_builtin_method, so the Object here is always a real iterator.)
-    emit_value_retain(receiver);
     auto lazyRes = lazy(t, d);
     auto lazyEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
@@ -23128,13 +23137,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_for_each(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            llvm::Value* iter_val = make_value(it, id);
-            auto r = emit_inlined_iter_for_each(iter_val, cb_ast);
-            // The inline loop borrows the iterator; release the +1 the
-            // obj arm handed this path (runtime iter_for_each consumes
-            // it on exhaustion; the inline loop doesn't).
-            emit_value_release(iter_val);
-            return r;
+            // The inline loop borrows the iterator, like the runtime
+            // drivers; the dispatch hands no ref to release.
+            return emit_inlined_iter_for_each(make_value(it, id), cb_ast);
           });
     }
     auto f = compile(cb_ast).consume();
@@ -23167,12 +23172,9 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_reduce(arrPtr, init, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            llvm::Value* iter_val = make_value(it, id);
-            auto r = emit_inlined_iter_reduce(iter_val, init, cb_ast);
-            // Same as for_each: the inline loop borrows; release the +1
-            // the obj arm handed this path.
-            emit_value_release(iter_val);
-            return r;
+            // Same as for_each: the inline loop borrows the iterator.
+            return emit_inlined_iter_reduce(make_value(it, id), init,
+                                            cb_ast);
           });
     }
     auto init = compile(*argsAst.nodes[0]).consume();
