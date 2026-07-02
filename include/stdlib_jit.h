@@ -8362,6 +8362,9 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
       }
     }
     if (unknown_kw) {
+      // Consume the receiver's +1 before the (unconditional) throw so the
+      // error path doesn't leak it — the throw never reads the receiver.
+      jit.emit_value_release(receiver);
       jit.emit_throw_error(
           "TypeError",
           std::format("unknown keyword argument '{}'", unknown_kw_name),
@@ -8374,26 +8377,35 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     if (!bail) {
       long total = 1 + static_cast<long>(positional.size());
       if (total > 2) {
+        jit.emit_value_release(receiver);  // see the unknown-kwarg arm
         jit.emit_throw_error("ArityError",
                              culebra::builtin_arity_error_message(method, 1, 2,
                                                                   total),
                              argsAst.line, argsAst.column);
         return jit.make_nil();  // unreachable after the throw
       }
+      // A non-Long always throws inside value_to_long, whose error path
+      // reads only the tag byte (never derefs `data`) — so the +1 can be
+      // released up front. That keeps the throw path leak-free without a
+      // cleanup landingpad, and a Long's release is a no-op.
+      auto to_long_consuming = [&](llvm::Value* v) {
+        jit.emit_value_release(v);
+        return jit.value_to_long(v);
+      };
       llvm::Value* s;
       llvm::Value* e;
       if (positional.empty()) {  // (N).range() → range(0, N)
         s = jit.builder_.getInt64(0);
-        e = jit.value_to_long(receiver);
+        e = to_long_consuming(receiver);
       } else {  // (S).range(E) → range(S, E)
-        s = jit.value_to_long(receiver);
-        e = jit.value_to_long(jit.compile(*positional[0]));
+        s = to_long_consuming(receiver);
+        e = to_long_consuming(jit.compile(*positional[0]));
       }
       if (method == "iota") {
         auto arr = emit_call(module_->getFunction(rt::iota), {s, e});
         return jit.make_array(arr);
       }
-      auto step = step_ast ? jit.value_to_long(jit.compile(*step_ast))
+      auto step = step_ast ? to_long_consuming(jit.compile(*step_ast))
                            : jit.builder_.getInt64(1);
       auto obj = emit_call(module_->getFunction(rt::math_range),
                            {s, e, step, line, col});
@@ -8427,6 +8439,9 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
           builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRING)),
           builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_STRINGVIEW)),
           "tostr.is.str");
+      // Both arms throw unconditionally; consume the receiver's +1 first
+      // (the tag was already extracted above, nothing reads it after).
+      jit.emit_value_release(receiver);
       builder_.CreateCondBr(isStr, svBB, glBB);
       // String/StringView: value-method (0 expected, `extra` given).
       builder_.SetInsertPoint(svBB);
@@ -8447,6 +8462,7 @@ inline llvm::Value* JitExtension::compile_ufcs_builtin(
     // Other arity-1 globals have no value-method form: the receiver is the
     // implicit arg 0, so the total is 1 + the extras. The nameless message
     // matches interp's global-UFCS arity error.
+    jit.emit_value_release(receiver);  // consumed before the throw (see above)
     jit.emit_throw_error("ArityError",
                          culebra::ns_fn_arity_error_message(1, 1 + extra),
                          argsAst.line, argsAst.column);
