@@ -19614,6 +19614,9 @@ struct JIT {
         module_->getOrInsertFunction(rt::class_parameters_walk, valueType_,
                                      ptrTy),
         {objPtr}, "params.walk");
+    // The walker borrows the receiver; consume this frame's +1 (the
+    // fallback arm hands it to `this` instead).
+    emit_value_release(receiver);
     auto autoEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -19682,6 +19685,9 @@ struct JIT {
     auto setRes = make_bool(builder_.CreateICmpNE(setR, builder_.getInt8(0)));
     // `set_remove` borrows the arg; `set_add_method` absorbs the +1.
     if (method == "remove") emit_value_release(arg);
+    // Both runtime helpers borrow the receiver; consume this frame's +1
+    // (the Object arm hands it to `this` / releases it — match here).
+    emit_value_release(receiver);
     auto setEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
@@ -21871,6 +21877,9 @@ inline std::optional<llvm::Value*> JIT::try_fuse_iter_map_collect(
   builder_.SetInsertPoint(fusedBB);
   auto fusedRes =
       emit_inlined_iter_map_collect(receiver, *ast.nodes[i + 1]->nodes[0]);
+  // The inline loop borrows the iterator; consume the +1 the postfix chain
+  // transferred (the unfused arm hands it to compile_method_call instead).
+  emit_value_release(receiver);
   auto fusedEnd = builder_.GetInsertBlock();
   builder_.CreateBr(mergeBB);
 
@@ -23035,7 +23044,12 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           },
           [&](llvm::Value* it, llvm::Value* id) {
             llvm::Value* iter_val = make_value(it, id);
-            return emit_inlined_iter_for_each(iter_val, cb_ast);
+            auto r = emit_inlined_iter_for_each(iter_val, cb_ast);
+            // The inline loop borrows the iterator; release the +1 the
+            // obj arm handed this path (runtime iter_for_each consumes
+            // it on exhaustion; the inline loop doesn't).
+            emit_value_release(iter_val);
+            return r;
           });
     }
     auto f = compile(cb_ast);
@@ -23069,7 +23083,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           },
           [&](llvm::Value* it, llvm::Value* id) {
             llvm::Value* iter_val = make_value(it, id);
-            return emit_inlined_iter_reduce(iter_val, init, cb_ast);
+            auto r = emit_inlined_iter_reduce(iter_val, init, cb_ast);
+            // Same as for_each: the inline loop borrows; release the +1
+            // the obj arm handed this path.
+            emit_value_release(iter_val);
+            return r;
           });
     }
     auto init = compile(*argsAst.nodes[0]);

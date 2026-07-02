@@ -108,6 +108,27 @@ fn run(which, N) {
     # dispose+release the iterator (compile_return, mirroring interp), else the
     # per-loop iterator + its closures/cells leak.
     for i in 0..N { let _ = forin_ret(i) }
+  } else if which == "auto_parameters" {
+    # auto-synthesized `parameters()` on a class instance: the autoBB arm
+    # (runtime walker) borrows the receiver, so the frame must release the
+    # +1 the postfix chain transferred.
+    for i in 0..N { let _ = V.new(i, [], []).parameters() }
+  } else if which == "set_add_remove" {
+    # Set `.add`/`.remove` fast dispatch: both runtime helpers borrow the
+    # Set receiver — the setBB arm must consume the +1 itself.
+    for i in 0..N { let s = {i, i + 1}; s.add(i + 2); s.remove(i) }
+  } else if which == "iter_map_collect_fused" {
+    # fused `it.map(λ).collect()`: the inline loop borrows the iterator, so
+    # the fused arm must release the receiver +1 (the unfused arm hands it
+    # to compile_method_call instead).
+    for i in 0..N { let _ = [i, i + 1].iter().map(|x| x).collect() }
+  } else if which == "iter_for_each_inline" {
+    # `it.for_each(inlinable λ)`: dispatch_arr_iter's obj arm hands the lazy
+    # path its own +1; the inline loop borrows, so the callback must release.
+    for i in 0..N { [i, i + 1].iter().for_each(|x| x) }
+  } else if which == "iter_reduce_inline" {
+    # `it.reduce(init, inlinable λ)`: same shape as for_each.
+    for i in 0..N { let _ = [i, i + 1].iter().reduce(0, |a, x| a + x) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -149,7 +170,9 @@ if which == "list" {
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
                "forin_keys", "forin_range_value", "class_in_fn",
-               "throw_in_literal", "forin_early_return"]
+               "throw_in_literal", "forin_early_return",
+               "auto_parameters", "set_add_remove", "iter_map_collect_fused",
+               "iter_for_each_inline", "iter_reduce_inline"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
