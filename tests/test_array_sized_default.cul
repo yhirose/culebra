@@ -1,0 +1,21 @@
+// Sized array literal `[](n, default)` with a HEAP default. The runtime
+// fills every slot with an alias of the same object (the interp shares one
+// object too), so each slot must own its own ref — pre-fix the JIT released
+// N unowned aliases (SIGSEGV) and leaked the +1 when n == 0.
+let a = [](3, {mut v: 1})
+assert_eq(a.size(), 3)
+a[0].v = 9
+assert_eq(a[1].v, 9)   // slots alias one object, matching the interp
+assert_eq(a[2].v, 9)
+
+let empty = [](0, {v: 1})   // n == 0: the default's +1 must still be released
+assert_eq(empty.size(), 0)
+
+// Churn: over-release crashes here without the per-slot retain.
+mut i = 0
+while i < 1000 {
+  let t = [](3, {v: i})
+  assert_eq(t.size(), 3)
+  i = i + 1
+}
+puts("array sized default: ok")

@@ -2783,7 +2783,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
     JitArray* arr, int64_t count, int8_t def_tag, int64_t def_data) {
+  // The default is BORROWED: every filled slot aliases it (interp shares the
+  // same object too) and must own its own ref — array free releases each
+  // slot, so an unretained alias over-releases (SIGSEGV with a heap default).
   while (arr->size < static_cast<size_t>(count)) {
+    culebra_runtime_value_retain(def_tag, def_data);
     culebra_runtime_array_push(arr, def_tag, def_data);
   }
   if (static_cast<size_t>(count) < arr->size) {
@@ -13657,14 +13661,18 @@ struct JIT {
 
     // Resize first if size/default specified (matches interpreter order)
     if (ast.nodes.size() >= 2) {
+      // The count is scalar-or-throw (value_to_long); its +1 is a no-op.
       auto countVal = compile(*ast.nodes[1]);
       auto count = value_to_long(countVal);
       llvm::Value* defTag = builder_.getInt8(TAG_NIL);
       llvm::Value* defData = builder_.getInt64(0);
+      // array_resize borrows the default (each filled slot retains its own
+      // alias ref); this frame's +1 is released by the handle after the call.
+      Owned defVal;
       if (ast.nodes.size() >= 3) {
-        auto defVal = compile(*ast.nodes[2]);
-        defTag = extract_tag(defVal);
-        defData = extract_data(defVal);
+        defVal = own(compile(*ast.nodes[2]));
+        defTag = extract_tag(defVal.borrow());
+        defData = extract_data(defVal.borrow());
       }
       emit_call(
           module_->getOrInsertFunction(

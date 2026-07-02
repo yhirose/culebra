@@ -129,6 +129,10 @@ fn run(which, N) {
   } else if which == "iter_reduce_inline" {
     # `it.reduce(init, inlinable λ)`: same shape as for_each.
     for i in 0..N { let _ = [i, i + 1].iter().reduce(0, |a, x| a + x) }
+  } else if which == "array_sized_default" {
+    # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
+    # the literal releases its own +1 (n=0 exercises the unused-default path).
+    for i in 0..N { let _ = [](3, {v: i}); let _e = [](0, {v: i}) }
   } else {
     print("unknown pattern: " + which + "\n")
     return
@@ -172,7 +176,8 @@ if which == "list" {
                "forin_keys", "forin_range_value", "class_in_fn",
                "throw_in_literal", "forin_early_return",
                "auto_parameters", "set_add_remove", "iter_map_collect_fused",
-               "iter_for_each_inline", "iter_reduce_inline"]
+               "iter_for_each_inline", "iter_reduce_inline",
+               "array_sized_default"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
