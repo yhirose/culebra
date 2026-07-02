@@ -325,15 +325,13 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
     if (_iequals(k, "Content-Type")) has_ct = true;
   }
   if (!req.multipart.empty()) {
-    // multipart/form-data. httplib's detail serializers give us correct
-    // boundary generation and RFC-7578 part framing; we drive them ourselves
+    // multipart/form-data. httplib's MultipartFormDataWriter gives us correct
+    // boundary generation and RFC-7578 part framing; we drive it ourselves
     // (rather than Client::Post(items)) so the body still flows through the
     // single send(Request) choke and composes with params/headers/into.
-    std::string boundary = httplib::detail::make_multipart_data_boundary();
+    httplib::MultipartFormDataWriter writer;
     if (!has_ct) {
-      hreq.headers.emplace(
-          "Content-Type",
-          httplib::detail::serialize_multipart_formdata_get_content_type(boundary));
+      hreq.headers.emplace("Content-Type", writer.content_type());
     }
     bool any_stream = false;
     for (const auto& p : req.multipart) {
@@ -346,7 +344,7 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
       for (const auto& p : req.multipart) {
         items.push_back({p.name, p.content, p.filename, p.content_type});
       }
-      hreq.body = httplib::detail::serialize_multipart_formdata(items, boundary);
+      hreq.body = writer.serialize(items);
     } else {
       // Some part streams → emit the whole body chunked, interleaving each
       // part's header, body (in-memory content or pulled from its source), and
@@ -362,22 +360,18 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
       for (const auto& p : req.multipart) {
         httplib::UploadFormData meta{p.name, std::string(), p.filename,
                                      p.content_type};
-        parts->push_back(
-            {httplib::detail::serialize_multipart_formdata_item_begin(meta,
-                                                                      boundary),
-             p.content, p.source});
+        parts->push_back({writer.item_begin(meta), p.content, p.source});
       }
       hreq.headers.emplace("Transfer-Encoding", "chunked");
       hreq.is_chunked_content_provider_ = true;
       auto idx = std::make_shared<size_t>(0);
       auto in_body = std::make_shared<bool>(false);  // false → emit header next.
       hreq.content_provider_ =
-          [parts, boundary, idx, in_body](size_t, size_t,
-                                          httplib::DataSink& sink) -> bool {
-        static const char crlf[] = "\r\n";
+          [parts, writer, idx, in_body](size_t, size_t,
+                                        httplib::DataSink& sink) -> bool {
+        const std::string crlf = httplib::MultipartFormDataWriter::item_end();
         if (*idx >= parts->size()) {
-          std::string fin =
-              httplib::detail::serialize_multipart_formdata_finish(boundary);
+          std::string fin = writer.finish();
           sink.write(fin.data(), fin.size());
           sink.done();
           return true;
@@ -395,13 +389,13 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
             return true;
           }
           // EOF for this part (a producer error is rethrown after send).
-          sink.write(crlf, 2);
+          sink.write(crlf.data(), crlf.size());
           ++*idx;
           *in_body = false;
           return true;
         }
         if (!sp.content.empty()) sink.write(sp.content.data(), sp.content.size());
-        sink.write(crlf, 2);
+        sink.write(crlf.data(), crlf.size());
         ++*idx;
         *in_body = false;
         return true;
