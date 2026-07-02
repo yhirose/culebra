@@ -16497,18 +16497,14 @@ struct JIT {
     compile_for_protocol_loop(keysIterVal, id, body, endBB, /*owns_obj=*/true);
 
     builder_.SetInsertPoint(protoBB);
-    // User-defined `iter` (including generators): the iterator-protocol
-    // machinery drives the iterable's own iter()/dispose and releases the
-    // iterator it derives. A generator's iter() returns `this`, so owning the
-    // iterable in the loop scope on top of that double-frees it (the protocol
-    // cleanup and pop_scope would both release the same object → slab
-    // corruption). Orphan the scope slot's +1 (a plain store, no release) and
-    // pass the iterable borrowed, leaving that machinery in sole charge. The
-    // range / keys branches above instead keep the scope slot (their derived
-    // iterator is a distinct object owned via owns_obj), so their source
-    // iterable is released once by pop_scope. This residual proto-iterable
-    // leak is the case the structural ownership rewrite (B) is meant to close.
-    store_slot_raw(iterSlot, make_nil());
+    // User-defined `iter` (including generators): the protocol machinery
+    // borrows the iterable and owns only the iterator it derives (the
+    // dispose call hands the frame its own +1 — see
+    // emit_iter_dispose_and_release), so the scope slot keeps the
+    // iterable's +1 and pop_scope releases it exactly once, same as the
+    // range / keys branches. For a self-returning iterator (a generator's
+    // iter() = this) that makes two refs on one object, released once by
+    // the protocol cleanup and once by pop_scope.
     llvm::Value* objVal = make_value(TAG_OBJECT, data);
     compile_for_protocol_loop(objVal, id, body, endBB);
 
@@ -16766,6 +16762,11 @@ struct JIT {
 
     builder_.SetInsertPoint(disposeBB);
     auto dispose_fn_val = compile_property_get(iterFinal, "dispose");
+    // Hand the dispose frame its own +1 for `this` (same convention as the
+    // iter() call in compile_for_protocol_loop) — the skipBB release below
+    // frees the alloca's ref, not the frame's.
+    emit_value_retain(iterFinal);
+    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
     if (swallow_dispose) {
       // On the exception / early-return exit paths the interpreter swallows a
       // throwing dispose() (it must not turn an in-flight throw or a `return`
@@ -16780,7 +16781,6 @@ struct JIT {
           ctx_, (std::string(label_prefix) + ".dispose.swallow").c_str(), fn);
       auto restoreBB = llvm::BasicBlock::Create(
           ctx_, (std::string(label_prefix) + ".dispose.rest").c_str(), fn);
-      if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
       llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
                                fn->getEntryBlock().begin());
       auto i8Ty = builder_.getInt8Ty();
@@ -16812,8 +16812,23 @@ struct JIT {
                  builder_.CreateLoad(i64Ty, dataA)});
       builder_.CreateBr(skipBB);
     } else {
+      // A throwing dispose propagates (interp-symmetric), but must not strand
+      // the alloca's +1 (the frame consumes the retain above, not the
+      // alloca's ref): release iter/iterable in a local lpad, then rethrow.
+      auto throwBB = llvm::BasicBlock::Create(
+          ctx_, (std::string(label_prefix) + ".dispose.throw").c_str(), fn);
+      auto savedLpad = current_lpad_;
+      current_lpad_ = throwBB;
       compile_function_call_raw(dispose_fn_val, iterFinal, {});
+      current_lpad_ = savedLpad;
       builder_.CreateBr(skipBB);
+      emit_catch_all_prologue(
+          throwBB, (std::string(label_prefix) + ".dispose.thr.lpad").c_str());
+      emit_value_release(iterFinal);
+      if (objAlloca) {
+        emit_value_release(builder_.CreateLoad(valueType_, objAlloca));
+      }
+      emit_rethrow(savedLpad);
     }
 
     builder_.SetInsertPoint(skipBB);

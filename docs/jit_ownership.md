@@ -338,17 +338,23 @@ Corollary: no correct codegen path contains a bare, hand-placed
     leaked one callee ref per application before). The ufcs-builtin hook's
     throw arms were audited in the same pass: every arm now consumes the
     receiver/arg `+1` before raising (release-before-throw is safe there —
-    `value_to_long`'s error path never derefs `data`). The for-in
-    protocol's dispose/iter this-handoffs stay raw: the follow-up trace
-    resolved their apparent balance as a deliberate compensating pair —
-    the proto branch orphans the iterable's slot ref while the dispose
-    call double-consumes the iterator (frame consume + skipBB release),
-    and the two cancel exactly only for self-returning iterators
-    (`iter()` = `this`, i.e. generators). For a distinct iterator the
-    pair breaks: the iterable's `drop` never fires under the JIT (interp
-    fires it at scope exit) and the skipBB release lands on an
-    already-freed iterator. Untangling both sides at once is the
-    dedicated iter-protocol slice (task-tracked, with reproducers).
+    `value_to_long`'s error path never derefs `data`);
+  - **iter-protocol dispose/iterable** — the protocol's apparent balance
+    was a compensating pair: the proto branch orphaned the iterable's slot
+    ref while the dispose call double-consumed the iterator (frame consume
+    + skipBB release), and the two cancelled exactly only for
+    self-returning iterators (`iter()` = `this`, i.e. generators). For a
+    distinct iterator the pair broke: the iterable's `drop` never fired
+    under the JIT and the skipBB release landed on an already-freed
+    iterator — a real SIGSEGV at scale, not just a leak. Fixed as one
+    change, both sides at once: the dispose call retains the iterator
+    before handing it to the frame (the iter()-call convention), and the
+    proto branch keeps the iterable's `+1` in the loop's scope slot so
+    pop_scope releases it exactly once, like the range/keys branches.
+    Drop/dispose timing is interp-symmetric for both iterator shapes
+    (pinned by `tests/test_iter_dispose_ownership.cul` and battery
+    patterns `forin_proto_iterable` / `forin_generator` — the former
+    crashes the pre-fix binary).
   Mapping the receiver flows also surfaced five real receiver `+1` leaks
   (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
@@ -363,11 +369,8 @@ Corollary: no correct codegen path contains a bare, hand-placed
   dropped `Owned`, not a leak). Remaining slices, roughly in order:
   the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
-  still share consumed raws across their runtime-exclusive arms), the
-  iter-protocol internals (retain before the dispose call so the frame gets
-  its own `+1`, and retire the proto-branch iterable orphan in the same
-  change — the two current defects cancel only for self-returning
-  iterators), and finally `compile()` itself.
+  still share consumed raws across their runtime-exclusive arms), and
+  finally `compile()` itself.
 - **Unblocks in order:** (1) close the rooting/ownership split (§2/§4.5) so
   removing redundant refs is safe → (2) finish the ownership flip → (3) the RC
   is leak-free → (4) `gc_refs` / precise GC can retire the conservative

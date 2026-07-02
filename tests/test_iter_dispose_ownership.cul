@@ -1,0 +1,84 @@
+# Ownership accounting of the for-in iterator protocol: the dispose call gets
+# its own `this` +1 and the iterable's ref is released by the loop scope, so
+# drop/dispose fire at the same points as the interpreter for BOTH a
+# self-returning iterator (a generator: iterable == iterator) and a distinct
+# iterator. The JIT used to pair two defects here (an orphaned iterable ref
+# and a double-consumed dispose `this`) that cancelled only for generators.
+
+# Distinct iterator: the iterator's drop fires at loop exit (after dispose),
+# the iterable's drop at its scope exit.
+fn mk_distinct() {
+  {
+    v: 1,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () { this.i < 3 },
+        next: fn () { this.i = this.i + 1; this.i },
+        dispose: fn () { puts("distinct: disposed") },
+        drop: fn () { puts("distinct: iter dropped") },
+      }
+    },
+    drop: fn () { puts("distinct: iterable dropped") },
+  }
+}
+
+fn run_distinct() {
+  let g = mk_distinct()
+  for x in g {
+    if x > 1 { break }
+  }
+  puts("distinct: after loop")
+}
+run_distinct()
+puts("distinct: after run")
+
+# Fresh iterable (no binding): its drop fires at the loop's own scope exit.
+fn run_fresh() {
+  for x in mk_distinct() {
+    if x > 1 { break }
+  }
+  puts("fresh: after loop")
+}
+run_fresh()
+puts("fresh: after run")
+
+# Self-returning iterator: still usable after the loop, drop at scope exit.
+fn mk_self() {
+  {
+    mut i: 0,
+    iter: fn () { this },
+    has_next: fn () { this.i < 3 },
+    next: fn () { this.i = this.i + 1; this.i },
+    dispose: fn () { puts("self: disposed") },
+    drop: fn () { puts("self: dropped") },
+  }
+}
+
+fn run_self() {
+  let g = mk_self()
+  for x in g {
+    if x > 1 { break }
+  }
+  puts("self: after loop")
+  puts("self: usable " + g.has_next().to_string())
+}
+run_self()
+puts("self: after run")
+
+# Generator with a body defer standing in for dispose observability.
+fn gen() {
+  defer { puts("gen: disposed") }
+  yield 1
+  yield 2
+  yield 3
+}
+
+fn run_gen() {
+  for x in gen() {
+    if x > 1 { break }
+  }
+  puts("gen: after loop")
+}
+run_gen()
+puts("gen: after run")

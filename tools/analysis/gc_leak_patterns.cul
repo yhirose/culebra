@@ -89,6 +89,22 @@ fn run(which, N) {
     # for-in over a range *value* (a bound variable, not a literal, so the
     # counted fast path is skipped) drives range_iter's fresh iterator.
     for i in 0..N { let r = 0..3; let mut s = 0; for j in r { s = s + j } }
+  } else if which == "forin_proto_iterable" {
+    # for-in over a user-`iter` object whose iterator is a distinct object:
+    # the proto branch must release the iterable via its scope slot (it used
+    # to orphan that ref), and the dispose call's frame must get its own +1
+    # (it used to consume the alloca's, then skipBB released it again).
+    for i in 0..N { let mut s = 0; for x in mk_proto(i) { s = s + x } }
+  } else if which == "forin_dispose_throw" {
+    # a throwing dispose() on the break path propagates, but must not strand
+    # the iterator alloca's +1 (the dispose frame consumes its own retain);
+    # the local lpad releases it before rethrowing.
+    for i in 0..N { try { for x in mk_proto_throwing(i) { break } } catch e { } }
+  } else if which == "forin_generator" {
+    # for-in over a generator (self-returning iter(): iterable == iterator,
+    # two refs on one object). Both the protocol cleanup and pop_scope must
+    # release exactly once each — a leak or an over-release shows here.
+    for i in 0..N { let mut s = 0; for x in gen2(i) { s = s + x } }
   } else if which == "class_in_fn" {
     # a class declared inside a function re-builds its class meta (with a fresh
     # closure per method) on every call. build_class_meta must take over those
@@ -173,6 +189,39 @@ fn mk_decorated(x) {
 # Throws unconditionally; used to interrupt a container literal mid-build.
 fn boom() { throw "boom" }
 
+# A user-`iter` iterable whose iterator is a distinct object with a dispose.
+fn mk_proto(v) {
+  {
+    v: v,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () { this.i < 2 },
+        next: fn () { this.i = this.i + 1; this.i },
+        dispose: fn () { 0 },
+      }
+    },
+  }
+}
+
+# A generator: its synthesized _Gen_ class is a self-returning iterator.
+fn gen2(v) { yield v; yield v + 1 }
+
+# Like mk_proto, but the iterator's dispose throws.
+fn mk_proto_throwing(v) {
+  {
+    v: v,
+    iter: fn () {
+      {
+        mut i: 0,
+        has_next: fn () { this.i < 2 },
+        next: fn () { this.i = this.i + 1; this.i },
+        dispose: fn () { throw "boom" },
+      }
+    },
+  }
+}
+
 # Early return out of a for-in over a range value: exercises the iterator
 # dispose+release on the compile-time `return` exit.
 fn forin_ret(n) { let r = 0..8; for j in r { if j == 3 { return j } }; -1 }
@@ -200,7 +249,9 @@ if which == "list" {
                "operator_overload", "user_method", "free_fn", "ufcs_chain",
                "closure", "map_collect", "reduce", "match_bind", "match_stmt",
                "cmp_lt", "cmp_eq", "neg_op", "defer_obj",
-               "forin_keys", "forin_range_value", "class_in_fn",
+               "forin_keys", "forin_range_value",
+               "forin_proto_iterable", "forin_dispose_throw",
+               "forin_generator", "class_in_fn",
                "throw_in_literal", "forin_early_return",
                "auto_parameters", "set_add_remove", "iter_map_collect_fused",
                "iter_for_each_inline", "iter_reduce_inline",
