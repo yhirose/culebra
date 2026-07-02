@@ -301,9 +301,24 @@ Corollary: no correct codegen path contains a bare, hand-placed
 
 ## 6. State and migration path
 
-- **Done:** the `Owned` handle exists and is proven zero-behavior-change on the
-  operator slice (binary/comparison/unary operators), with the GC/leak/difftest
-  gates green ([[project_jit_gc_rewrite]]). Deterministic-drop RC and the
+- **Done:** the `Owned` handle exists and is proven zero-behavior-change
+  (byte-identical IR) on three slices, with the GC/leak/difftest gates green
+  ([[project_jit_gc_rewrite]]):
+  - **operators** (binary/comparison/unary) — the pilot;
+  - **call arguments** — every ARG_LIST producer (positional, static-kwargs
+    resolver, runtime-kwargs buckets) holds its `+1`s as `Owned`;
+    `consume_all(vector<Owned>&&)` is the single handoff into the raw call
+    emitters, whose raws may be referenced from mutually-exclusive dispatch
+    branches (method/UFCS, call/`__call__`) — one consume per runtime path;
+  - **method receiver** — `compile_method_call` takes `Owned receiver`;
+    consuming children get explicit `.consume()` handoffs, borrowing arms
+    (explicit `drop`, builtin methods) rely on the handle dtor, and the
+    ufcs-builtin hook contract is explicit (non-null result = hook consumed
+    the `+1`).
+  Mapping the receiver flows also surfaced five real receiver `+1` leaks
+  (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
+  `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
+  and pinned by leak-battery patterns. Deterministic-drop RC and the
   mark-sweep backstop are shipped (`jit_gc_design.md`).
 - **The through-line work:** progressively route every `compile()` producer and
   consumer through `Owned` + scope slots, deleting the hand-placed
@@ -311,7 +326,13 @@ Corollary: no correct codegen path contains a bare, hand-placed
   codebase-wide and the bare calls are gone. This is the "flip `compile()` to
   `Owned` returns" refactor: large but *type-driven* (the double-consume assert
   and the move-only handle guide each conversion; a missed release becomes a
-  dropped `Owned`, not a leak).
+  dropped `Owned`, not a leak). Remaining slices, roughly in order:
+  property/index temporaries (the postfix chain's `swap_owned` dance),
+  container-literal elements, the method-dispatch children's internals
+  (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
+  still share consumed raws across their runtime-exclusive arms), the
+  iter-protocol/decorator internal `compile_function_call_raw` callers, and
+  finally `compile()` itself.
 - **Unblocks in order:** (1) close the rooting/ownership split (§2/§4.5) so
   removing redundant refs is safe → (2) finish the ownership flip → (3) the RC
   is leak-free → (4) `gc_refs` / precise GC can retire the conservative
