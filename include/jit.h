@@ -11814,6 +11814,18 @@ struct JIT {
   // Wrap a freshly produced `+1`-owned Value in an ownership handle.
   Owned own(llvm::Value* val) { return Owned(this, val); }
 
+  // Consume a batch of Owned values into raw `+1` Values at the single
+  // handoff point into the raw call emitters. The raws may be referenced
+  // from mutually-exclusive dispatch branches (method/UFCS, call/__call__),
+  // so each +1 is still consumed exactly once per runtime path. Takes the
+  // vector by rvalue so the spent handles can't linger at the call site.
+  std::vector<llvm::Value*> consume_all(std::vector<Owned>&& vals) {
+    std::vector<llvm::Value*> raw;
+    raw.reserve(vals.size());
+    for (auto& v : vals) raw.push_back(v.consume());
+    return raw;
+  }
+
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
     auto tag = extract_tag(val);
@@ -20092,9 +20104,12 @@ struct JIT {
       return phi;
     }
 
-    std::vector<llvm::Value*> userArgs;
     std::vector<const peg::Ast*> argAsts;
-    compile_positional_args(argsAst, userArgs, argAsts);
+    auto ownedArgs = compile_positional_args(argsAst, argAsts);
+    // The method / UFCS branches below are mutually exclusive at runtime;
+    // both reference the same raws, so this single consume still hands each
+    // +1 to exactly one runtime consumer.
+    auto userArgs = consume_all(std::move(ownedArgs));
 
     auto tag = extract_tag(receiver);
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
@@ -20203,16 +20218,18 @@ struct JIT {
 
   // Compile a positional ARG_LIST keeping each value's source node in
   // lock-step — the index correspondence is what makes set_arg_pos point
-  // at the right argument.
-  void compile_positional_args(const peg::Ast& argsAst,
-                               std::vector<llvm::Value*>& vals,
-                               std::vector<const peg::Ast*>& asts) {
+  // at the right argument. Each value is a `+1` held as Owned until the
+  // caller hands it to a call emitter (consume_all at the handoff).
+  std::vector<Owned> compile_positional_args(
+      const peg::Ast& argsAst, std::vector<const peg::Ast*>& asts) {
+    std::vector<Owned> vals;
     vals.reserve(argsAst.nodes.size());
     asts.reserve(argsAst.nodes.size());
     for (auto& argNode : argsAst.nodes) {
-      vals.push_back(compile(*argNode));
+      vals.push_back(own(compile(*argNode)));
       asts.push_back(argNode.get());
     }
+    return vals;
   }
 
   // Raw call emission: caller has already compiled the user args.
@@ -20565,7 +20582,7 @@ struct JIT {
       kwargs.clear();
     }
 
-    std::vector<llvm::Value*> userArgs;
+    std::vector<Owned> userArgs;
     std::vector<const peg::Ast*> argAsts;
     userArgs.reserve(params.size() +
                      (positional.size() > params.size()
@@ -20587,13 +20604,13 @@ struct JIT {
             v, builder_.getInt8(TAG_UNFILLED), {0});
         v = builder_.CreateInsertValue(
             v, builder_.getInt64(0), {1});
-        userArgs.push_back(v);
+        userArgs.push_back(own(v));
         argAsts.push_back(nullptr);
       } else if (sources[i] == Source::KwargsRest) {
-        userArgs.push_back(emit_kwargs_rest_object(kwargs, argsAst));
+        userArgs.push_back(own(emit_kwargs_rest_object(kwargs, argsAst)));
         argAsts.push_back(nullptr);
       } else {
-        userArgs.push_back(compile(*resolved[i]));
+        userArgs.push_back(own(compile(*resolved[i])));
         // Only a POSITIONAL argument reports a typed-param error at its
         // own expression; a kwarg-filled slot reports at the call site
         // (null → set_arg_pos records the call site), interp-binder style.
@@ -20603,10 +20620,11 @@ struct JIT {
     }
     // Extras (past the formal arity) flow through to __ARGS__.
     for (size_t i = params.size(); i < positional.size(); i++) {
-      userArgs.push_back(compile(*positional[i]));
+      userArgs.push_back(own(compile(*positional[i])));
       argAsts.push_back(positional[i]);
     }
-    return compile_function_call_raw(callee, thisVal, userArgs, argAsts);
+    return compile_function_call_raw(
+        callee, thisVal, consume_all(std::move(userArgs)), argAsts);
   }
 
   llvm::Value* compile_function_call(const peg::Ast& argsAst,
@@ -20616,11 +20634,10 @@ struct JIT {
       return compile_function_call_runtime_kwargs(
           argsAst, callee, thisVal);
     }
-    std::vector<llvm::Value*> userArgs;
     std::vector<const peg::Ast*> argAsts;
-    compile_positional_args(argsAst, userArgs, argAsts);
+    auto ownedArgs = compile_positional_args(argsAst, argAsts);
     return compile_function_call_raw(
-        callee, thisVal, userArgs,
+        callee, thisVal, consume_all(std::move(ownedArgs)),
         /*check_kw_only=*/any_kw_only_in_program_,
         /*allow_call_overload=*/true, argAsts);
   }
@@ -20684,19 +20701,19 @@ struct JIT {
     // expressions are compiled in a single source-order pass below
     // so the interp's left-to-right evaluation order is preserved
     // even when positional / kwarg / **splat are interleaved.
-    std::vector<llvm::Value*> posVals(
-        positional_prefix.size() + positional.size(), nullptr);
+    std::vector<Owned> posVals(positional_prefix.size() + positional.size());
     for (size_t i = 0; i < positional_prefix.size(); i++) {
-      posVals[i] = positional_prefix[i];
+      // Prefix values arrive as already-compiled +1s; take them over.
+      posVals[i] = own(positional_prefix[i]);
     }
-    std::vector<llvm::Value*> kwVals(explicit_kwargs.size(), nullptr);
+    std::vector<Owned> kwVals(explicit_kwargs.size());
     std::vector<llvm::Constant*> kwKeyConsts;
     kwKeyConsts.reserve(explicit_kwargs.size());
     for (auto& [name, _ast] : explicit_kwargs) {
       kwKeyConsts.push_back(builder_.CreateGlobalString(
           std::string(name), ".kwkey"));
     }
-    std::vector<llvm::Value*> splatVals(splats.size(), nullptr);
+    std::vector<Owned> splatVals(splats.size());
 
     // Source-order evaluation: walk the original ARG_LIST and compile
     // each value where it appears, storing into the right bucket
@@ -20706,11 +20723,11 @@ struct JIT {
     size_t splat_i = 0;
     for (auto& child : argsAst.nodes) {
       if (child->tag == "KWARG_SPLAT"_) {
-        splatVals[splat_i++] = compile(*child->nodes[0]);
+        splatVals[splat_i++] = own(compile(*child->nodes[0]));
       } else if (child->tag == "KWARG"_) {
-        kwVals[kw_i++] = compile(*child->nodes[1]);
+        kwVals[kw_i++] = own(compile(*child->nodes[1]));
       } else {
-        posVals[pos_i++] = compile(*child);
+        posVals[pos_i++] = own(compile(*child));
       }
     }
 
@@ -20735,15 +20752,17 @@ struct JIT {
           ty, base, {builder_.getInt64(static_cast<int64_t>(i))});
       builder_.CreateStore(v, slot);
     };
+    // The slab stores are the consume point: each +1 transfers into the
+    // slab, which `culebra_runtime_call_with_kwargs` takes ownership of.
     for (size_t i = 0; i < posVals.size(); i++) {
-      store_at(posSlab, valueType_, i, posVals[i]);
+      store_at(posSlab, valueType_, i, posVals[i].consume());
     }
     for (size_t i = 0; i < kwKeyConsts.size(); i++) {
       store_at(kwKeysSlab, ptrTy, i, kwKeyConsts[i]);
-      store_at(kwValsSlab, valueType_, i, kwVals[i]);
+      store_at(kwValsSlab, valueType_, i, kwVals[i].consume());
     }
     for (size_t i = 0; i < splatVals.size(); i++) {
-      store_at(splatSlab, valueType_, i, splatVals[i]);
+      store_at(splatSlab, valueType_, i, splatVals[i].consume());
     }
 
     // Callee must be a closure (matches compile_function_call_raw's
