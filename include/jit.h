@@ -17342,8 +17342,12 @@ struct JIT {
     for (size_t i = k; i > 0; --i) {
       if (culebra::is_packable_decorator(*ast.nodes[i - 1])) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
-      auto decoCallee = compile(dec_expr);
-      enumVal = compile_function_call_raw(decoCallee, nullptr, {enumVal});
+      // Borrowed-callee dispatch: the handle releases the decorator's +1
+      // after the call (a let-bound closure decorator leaked one ref per
+      // application without it; fn-decl callees load unretained and no-op).
+      Owned decoCallee = own(compile(dec_expr));
+      enumVal =
+          compile_function_call_raw(decoCallee.borrow(), nullptr, {enumVal});
     }
 
     store_slot(enumSlot, enumVal);
@@ -17727,8 +17731,10 @@ struct JIT {
       if (!culebra::view_derive(*ast.nodes[i - 1]).empty()) continue;
       if (culebra::is_packable_decorator(*ast.nodes[i - 1])) continue;
       const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
-      auto decoCallee = compile(dec_expr);
-      classVal = compile_function_call_raw(decoCallee, nullptr, {classVal});
+      // Borrowed-callee dispatch; see the enum decorator loop.
+      Owned decoCallee = own(compile(dec_expr));
+      classVal =
+          compile_function_call_raw(decoCallee.borrow(), nullptr, {classVal});
     }
 
     // Patch the pre-allocated cell with the real class namespace.
@@ -17951,8 +17957,10 @@ struct JIT {
       llvm::Value* fnVal = bodyVal;
       for (size_t i = dec_end; i > 0; --i) {
         const auto& dec_expr = *ast.nodes[i - 1]->nodes[0];
-        auto decoCallee = compile(dec_expr);
-        fnVal = compile_function_call_raw(decoCallee, nullptr, {fnVal});
+        // Borrowed-callee dispatch; see the enum decorator loop.
+        Owned decoCallee = own(compile(dec_expr));
+        fnVal =
+            compile_function_call_raw(decoCallee.borrow(), nullptr, {fnVal});
       }
       auto* existing = lookup_var(name);
       if (!existing) {

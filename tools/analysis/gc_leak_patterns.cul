@@ -133,6 +133,11 @@ fn run(which, N) {
     # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
     # the literal releases its own +1 (n=0 exercises the unused-default path).
     for i in 0..N { let _ = [](3, {v: i}); let _e = [](0, {v: i}) }
+  } else if which == "deco_let" {
+    # a let-bound closure decorator: the application site borrows the
+    # callee, so it must release the +1 the callee expression produced
+    # (fn-decl decorators load unretained and never showed the leak).
+    for i in 0..N { let _ = mk_decorated(i) }
   } else if which == "ufcs_hook_throw" {
     # ufcs-builtin hook error arms (unknown kwarg / arity / value_to_long
     # type error) must consume the heap receiver / compiled arg +1 before
@@ -144,6 +149,7 @@ fn run(which, N) {
       try { o.range() } catch e { }
       try { (1).range([i]) } catch e { }
       try { o.to_long(1) } catch e { }
+      try { o.to_string(1) } catch e { }
     }
   } else {
     print("unknown pattern: " + which + "\n")
@@ -154,6 +160,15 @@ fn run(which, N) {
 }
 
 fn mk(x) { V.new(x, [], []) }
+
+# A let-bound closure decorator applied to a fn declared in a function:
+# each call compiles nothing new, but the application runs per call.
+fn mk_decorated(x) {
+  let ldeco = |f| f
+  @ldeco
+  fn inner() { x }
+  inner()
+}
 
 # Throws unconditionally; used to interrupt a container literal mid-build.
 fn boom() { throw "boom" }
@@ -189,7 +204,7 @@ if which == "list" {
                "throw_in_literal", "forin_early_return",
                "auto_parameters", "set_add_remove", "iter_map_collect_fused",
                "iter_for_each_inline", "iter_reduce_inline",
-               "array_sized_default", "ufcs_hook_throw"]
+               "array_sized_default", "deco_let", "ufcs_hook_throw"]
   for n in names { print(n + "\n") }
 } else {
   run(which, N)
