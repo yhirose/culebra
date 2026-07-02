@@ -377,6 +377,23 @@ Corollary: no correct codegen path contains a bare, hand-placed
     (pinned by `tests/test_iter_dispose_ownership.cul` and battery
     patterns `forin_proto_iterable` / `forin_generator` — the former
     crashes the pre-fix binary).
+  - **lazy-combinator receiver** — `dispatch_arr_iter`'s obj arm retained
+    the receiver, but no arm consumes it (lazy factories make their own
+    `+1` internally; terminal drivers only pull values; the receiver's
+    `Owned` handle already releases once). It leaked ~9 objects/loop on
+    `.iter().filter/flat_map/find/any`. Removing it (borrow, uniform with
+    the eager Array arm) unmasked a second, pre-existing bug:
+    `_iter_flat_map_fast_fn` released the pulled value *after*
+    `_culebra_invoke1` had already consumed it — an identity callback
+    `fn(xs){xs}` over heap elements double-frees the inner array (integers
+    hid it: releasing a Long is a no-op; the receiver leak hid it further
+    by keeping the heap alive). This is exactly the §2 lesson — a
+    redundant-looking retain that was masking an over-release elsewhere,
+    not a rooting gap (the `CULEBRA_GC_NEVER` diagnostic proved the crash
+    is RC over-release with every collect disabled). Both prior Task #4
+    attempts crashed here for want of the flat_map fix. Pinned by battery
+    patterns `iter_filter_lazy` / `iter_flat_map` / `iter_find_driver` /
+    `iter_any_driver`.
   Mapping the receiver flows also surfaced five real receiver `+1` leaks
   (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
