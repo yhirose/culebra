@@ -55,6 +55,12 @@ else()
 endif()
 
 include_directories(./include)
+# cpp-tensorlib (header-only): the Tensor execution engine (lazy graph,
+# fusion, Accelerate/Metal backends). Sibling checkout by default; point
+# CULEBRA_TENSORLIB_DIR elsewhere (or at a future vendored copy) to override.
+set(CULEBRA_TENSORLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cpp-tensorlib/include"
+    CACHE PATH "cpp-tensorlib include directory")
+include_directories(${CULEBRA_TENSORLIB_DIR})
 include_directories(./vendor/cpp-peglib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
@@ -527,27 +533,25 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   endif()
 endif()
 
-# Tensor primitive: BLAS-backed kernels (sgemm, vDSP, etc.) land in
-# Phase 1 / M2-M4. M1 ships the type without a BLAS dependency, but
-# we link Accelerate (macOS) / BLAS (Linux) up front so subsequent
-# milestones don't re-touch the build system.
+# Tensor primitive: since M4 the execution engine is cpp-tensorlib
+# (lazy graph + fusion + Accelerate/Metal backends; own CPU/CUDA kernels
+# on other platforms land in M5/M6). Header-only — the only link deps
+# are macOS OS frameworks, which the static-link policy allows.
 option(CULEBRA_ENABLE_TENSOR "Enable builtin Tensor type" ON)
 
 if(CULEBRA_ENABLE_TENSOR)
   add_compile_definitions(CULEBRA_TENSOR_ENABLED)
   if(APPLE)
-    set(_blas_link "-framework Accelerate")
-    target_link_libraries(culebra "-framework Accelerate")
-  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(BLAS REQUIRED)
-    string(REPLACE ";" " " _blas_link "${BLAS_LIBRARIES}")
-    target_link_libraries(culebra ${BLAS_LIBRARIES})
+    set(_blas_link
+        "-framework Accelerate -framework Metal -framework Foundation")
+    target_link_libraries(culebra
+        "-framework Accelerate" "-framework Metal" "-framework Foundation")
   else()
     set(_blas_link "")
   endif()
   # The `culebra build` driver appends this to the link command only
   # when the program references Tensor (see `aot_scan_namespaces`).
-  # Programs that never touch Tensor avoid the BLAS dependency.
+  # Programs that never touch Tensor avoid the framework dependency.
   if(CULEBRA_ENABLE_JIT)
     target_compile_definitions(culebra PRIVATE
       CULEBRA_BLAS_LINK="${_blas_link}")
@@ -693,12 +697,10 @@ enable_testing()
 # so signal handlers / thread_locals / GC state stay isolated per test.
 add_executable(smoke_suite tests/embedding/smoke_suite.cc)
 target_compile_features(smoke_suite PRIVATE cxx_std_23)
-if(CULEBRA_ENABLE_TENSOR)
-  if(APPLE)
-    target_link_libraries(smoke_suite "-framework Accelerate")
-  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(smoke_suite ${BLAS_LIBRARIES})
-  endif()
+if(CULEBRA_ENABLE_TENSOR AND APPLE)
+  # cpp-tensorlib backends (in-process embedding uses tensors directly)
+  target_link_libraries(smoke_suite
+      "-framework Accelerate" "-framework Metal" "-framework Foundation")
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_link_libraries(smoke_suite ${llvm_libs})

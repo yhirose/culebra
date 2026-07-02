@@ -1,46 +1,52 @@
 #pragma once
 
-// Tensor primitive — backend-agnostic core (Phase 1, M1).
+// Tensor primitive — culebra-side wrapper over cpp-tensorlib (M4).
 //
-// This header is independent of the interpreter / JIT Value layer. It
-// defines the dtype/shape representation and the raw-buffer kernels
-// (zeros, ones) that the interpreter and JIT both call into.
+// This header is independent of the interpreter / JIT Value layer. Since M4
+// the execution engine is cpp-tensorlib (`tl::array`): lazy graph, fusion,
+// and the CPU/Metal/CUDA backends all live there. What stays here is what
+// is culebra's to own:
+//   - the Op tape (`op` / `inputs` / `op_param`) that autograd's reverse
+//     walk routes VJPs through,
+//   - reverse-mode autograd itself (backward / VJPs / grad accumulation),
+//   - dtype and shape surfaces, validation with culebra error kinds, and
+//     the CSV / randn / fill entry points the stdlib and JIT call.
 //
 // Layering:
-//   tensor.h              <- this file (pure C++, no Culebra types)
-//   tensor_backend.h      <- (M2+) backend dispatch table
-//   tensor_cpu.h          <- (M2+) CPU kernels (Accelerate / OpenBLAS)
-//   interpreter.h         <- TensorValue (Culebra-side), uses tensor.h
+//   tensorlib (tl::)      <- storage, lazy graph + fusion, evaluation,
+//                            backends (Accelerate/Metal now, CUDA in M6)
+//   tensor.h              <- this file (TensorImpl = Op tape + tl::array)
+//   interpreter.h         <- TensorValue (culebra-side), uses tensor.h
 //   stdlib_{interp,jit}.h <- Tensor namespace registration
 //
-// In M1 the only ops are zeros/ones/from(array). Elementwise/BLAS land
-// in M2/M4.
+// AOT feature gating (mirrors the Http/OpenSSL pattern): tensorlib is
+// compiled in TL_RUNTIME_HOOKS mode, so creation and graph building
+// reference no backend symbol; allocation/evaluation dispatch through
+// hooks. `tensor_rt_bootstrap` — a weak no-op in the core archive, strong
+// in the tensor feature object, inline in-process — installs the hooks on
+// first tensor construction. A program that never touches Tensor links a
+// core archive with zero Metal/Accelerate/evaluator references, and
+// -dead_strip drops the helpers themselves.
 
 #include <shared.h>
+
+#define TL_RUNTIME_HOOKS
+#include <tensorlib.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
-
-#ifdef CULEBRA_TENSOR_ENABLED
-#ifdef __APPLE__
-#include <Accelerate/Accelerate.h>
-#else
-#include <cblas.h>
-#endif
-#endif
 
 namespace culebra {
 
@@ -58,9 +64,10 @@ inline std::optional<Dtype> parse_dtype(std::string_view s) {
   return std::nullopt;
 }
 
-// Tensor op tag. `Const` means the tensor's buffer is materialized
-// (no graph dependency); other ops are lazy nodes whose buffer is
-// populated by tensor_eval(). Extended in later milestones.
+// Tensor op tag. `Const` means the tensor's value is (or will be, for
+// gradient intermediates) materialized with no autograd routing; other tags
+// tell backward() which VJP to apply. Forward computation itself is the
+// tl::array graph — these tags exist for the reverse walk only.
 enum class Op {
   Const,
   Add, Sub, Mul, Div, Pow,
@@ -68,21 +75,13 @@ enum class Op {
   // form (`.sum()` / `.mean()` / `.max()`) skips the graph and runs
   // eagerly because it returns a scalar Float, not a Tensor.
   Sum, Mean, Max, Argmax,
-  // Linear algebra and activations. Dot uses cblas; activations are
-  // elementwise (Softmax operates on the last axis). LinearSigmoid
-  // is the fused (W @ x + b) → sigmoid kernel for MLP forward.
   Dot,
   Sigmoid, Relu, Softmax, Log,
   LinearSigmoid,
-  // Row concatenation (axis 0): stacks inputs vertically into one
-  // materialized buffer. inputs = the parts; VJP slices the upstream
-  // grad back into each part's row range.
   Concat,
-  // Zero-copy views. These carry a non-Const op tag *and* a `base`
-  // pointer: forward is short-circuited by is_evaluated() (base !=
-  // nullptr), but the op tag lets autograd's reverse pass route the
-  // gradient through the right view VJP. `inputs` is set to {base} so
-  // the autograd graph is walked uniformly through `inputs`.
+  // Zero-copy views: forward is a tl view; the tag routes the gradient
+  // through the right view VJP. `inputs` is set to {base} so the autograd
+  // graph is walked uniformly through `inputs`.
   Transpose, Reshape, Slice,
 };
 
@@ -120,27 +119,56 @@ inline std::vector<int64_t> tensor_contiguous_strides(const TensorShape& s) {
   return out;
 }
 
-// Tensor — materialized buffer, zero-copy view, or lazy graph node.
-//   Const + buf populated   : owned materialized tensor
-//   Const + base != nullptr : zero-copy view into base (transpose / slice / reshape)
-//   non-Const op            : lazy graph node, buf populated by eval
+// Translate tensorlib exceptions to culebra error kinds. The agreed split:
+// std::invalid_argument = user-reachable (shape/broadcast/axis) →
+// ValueError; anything else escaping tl is a bug in tensor.h or tensorlib →
+// InternalError.
+template <typename F>
+inline auto _tl_guard(F&& f) -> decltype(f()) {
+  try {
+    return f();
+  } catch (const std::invalid_argument& e) {
+    throw CulebraError("ValueError", std::string("Tensor: ") + e.what());
+  } catch (const std::logic_error& e) {
+    throw CulebraError("InternalError", std::string("Tensor: ") + e.what());
+  }
+}
+
+// Feature-gate chokes (see the header comment). Same linkage partition as
+// the original cblas choke:
+//   - core archive   (CULEBRA_RT_TENSOR_EVAL_WEAK):   weak stubs — the
+//     archive references no tensorlib backend symbol at all.
+//   - tensor archive (CULEBRA_RT_TENSOR_EVAL_STRONG): strong real bodies,
+//     force-loaded only when the program uses Tensor.
+//   - header-only / in-process JIT (neither): normal inline bodies.
+#if defined(CULEBRA_RT_TENSOR_EVAL_STRONG)
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE
+#elif defined(CULEBRA_RT_TENSOR_EVAL_WEAK)
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE __attribute__((weak))
+#else
+#define CULEBRA_RT_TENSOR_EVAL_LINKAGE inline
+#endif
+
+// Install tensorlib's allocation/evaluation/barrier hooks (once). Called
+// from every TensorImpl constructor so the very first tensor a program
+// creates gets device-backed storage.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap();
+
+// Tensor — an Op-tagged autograd tape node whose value is a tl::array
+// (lazy graph node, zero-copy view, or materialized buffer).
 //
-// Lifetime: shared via shared_ptr. Cycles are impossible because both
-// `inputs` (graph) and `base` (view) point input-ward.
+// Lifetime: shared via shared_ptr. Cycles are impossible because `inputs`
+// points input-ward and `grad` is always a Const with no inputs.
 struct TensorImpl {
   Op op = Op::Const;
-  TensorShape shape;
-  Dtype dtype;
+  TensorShape shape;              // mirror of value.shape(); set at build
+  Dtype dtype = Dtype::F32;
+  std::vector<int64_t> strides;   // mirror of value.strides()
+  tl::array value;
   std::vector<std::shared_ptr<TensorImpl>> inputs;
 
-  // Storage: either we own `buf`, or we read from `base->data() + offset`.
-  std::vector<std::byte> buf;
-  std::shared_ptr<TensorImpl> base;
-  std::vector<int64_t> strides;  // element units, length == shape.rank()
-  size_t offset = 0;             // element units from base->data() start
-
-  // Op-specific scalar parameter. Currently used by reduction ops to
-  // carry the axis index. Add more if a future op needs more state.
+  // Op-specific scalar parameter. Reduction axis for Sum/Mean/Max/Argmax;
+  // start row for Slice.
   int64_t op_param = 0;
 
   // --- Autograd ---
@@ -148,80 +176,63 @@ struct TensorImpl {
   // materialized Const tensor (own buffer, no graph) so it can never
   // form a cycle with the forward graph. nullptr until the first
   // accumulation. `requires_grad` is true for leaves the user marked
-  // and propagates forward (a node requires grad iff any input does),
-  // so backward() only allocates / accumulates grad where it matters.
+  // and propagates forward (a node requires grad iff any input does).
   std::shared_ptr<TensorImpl> grad;
   bool requires_grad = false;
 
+  // True for zero-copy views (Transpose/Reshape/Slice): in-place writes
+  // through a view would mutate the base, so tensor_inplace_binop refuses.
+  bool is_view = false;
+
   // Materialized ctor: shape + dtype + zero-initialized buffer.
-  TensorImpl(TensorShape s, Dtype d)
-      : shape(std::move(s)),
-        dtype(d),
-        buf(shape.num_elements() * dtype_size(d)),
-        strides(tensor_contiguous_strides(shape)) {}
+  TensorImpl(TensorShape s, Dtype d) : shape(std::move(s)), dtype(d) {
+    tensor_rt_bootstrap();
+    value = _tl_guard([&] { return tl::array::zeros(shape.dims); });
+    strides = value.strides();
+  }
 
-  // Lazy ctor: op + shape + dtype + inputs. Caller does shape/dtype
-  // inference. `buf` and `strides` are populated by tensor_eval().
-  TensorImpl(Op o, TensorShape s, Dtype d,
-             std::vector<std::shared_ptr<TensorImpl>> ins)
+  // Engine-node ctor: op tag + built tl expression + autograd inputs.
+  // Shape is read back from the tl graph (known at build time).
+  TensorImpl(Op o, tl::array v, Dtype d,
+             std::vector<std::shared_ptr<TensorImpl>> ins, bool view = false)
       : op(o),
-        shape(std::move(s)),
         dtype(d),
-        inputs(std::move(ins)) {}
-
-  // Zero-copy view ctor: shares storage with `b` under a different
-  // shape / strides / offset. transpose / slice / reshape produce these.
-  struct View {};
-  TensorImpl(View, std::shared_ptr<TensorImpl> b, TensorShape s,
-             std::vector<int64_t> str, size_t off)
-      : op(Op::Const),
-        shape(std::move(s)),
-        dtype(b->dtype),
-        buf(),
-        base(std::move(b)),
-        strides(std::move(str)),
-        offset(off) {}
-
-  bool is_evaluated() const {
-    return op == Op::Const || !buf.empty() || base != nullptr;
+        value(std::move(v)),
+        inputs(std::move(ins)),
+        is_view(view) {
+    tensor_rt_bootstrap();
+    shape = TensorShape(std::vector<int64_t>(value.shape()));
+    strides = value.strides();
   }
 
-  // strides match a standard row-major contiguous layout? Allocation-
-  // free: walks the strides from the right and checks each against
-  // the running product. Hot path — called from binop / dot / softmax
-  // / blas-input dispatch.
-  bool is_contiguous() const {
-    if (strides.size() != shape.dims.size()) return false;
-    int64_t expected = 1;
-    for (size_t i = strides.size(); i-- > 0;) {
-      if (strides[i] != expected) return false;
-      expected *= shape.dims[i];
-    }
-    return true;
-  }
+  bool is_evaluated() const { return value.materialized(); }
+  bool is_contiguous() const { return value.contiguous(); }
 
-  void* data() {
-    if (base) {
-      return static_cast<std::byte*>(base->data()) +
-             offset * dtype_size(dtype);
-    }
-    return buf.data();
-  }
+  // Strided base pointer (forces evaluation; offset folded in). Writable
+  // for creation-time fills; mutating storage shared with a pending lazy
+  // graph is the caller's hazard, same as it always was.
+  void* data() { return data_as<float>(); }
   const void* data() const {
     return const_cast<TensorImpl*>(this)->data();
   }
 
   template <typename T>
   T* data_as() {
-    return static_cast<T*>(data());
+    return const_cast<float*>(value.raw());
   }
   template <typename T>
   const T* data_as() const {
-    return static_cast<const T*>(data());
+    return value.raw();
   }
 };
 
 using TensorPtr = std::shared_ptr<TensorImpl>;
+
+// Force evaluation of a tensor's graph. Kept as the named entry point the
+// interp/JIT call before reading buffers; data_as() also evaluates, so this
+// is now about intent (and the historical choke name), not reachability —
+// that job moved to tensor_rt_bootstrap.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t);
 
 // No-grad scope: while the depth is > 0, ops do not propagate
 // requires_grad to their outputs, so no autograd graph is tracked. Used
@@ -251,6 +262,12 @@ inline const TensorPtr& tensor_propagate_grad(const TensorPtr& out) {
     }
   }
   return out;
+}
+
+// Wrap a tl value as a Const node (gradient intermediates, clones).
+inline TensorPtr _tensor_wrap_const(tl::array v, Dtype d) {
+  return std::make_shared<TensorImpl>(Op::Const, std::move(v), d,
+                                      std::vector<TensorPtr>{});
 }
 
 inline TensorPtr tensor_zeros(TensorShape s, Dtype d) {
@@ -355,7 +372,8 @@ inline TensorPtr tensor_randn(TensorShape s, Dtype d) {
 
 // numpy / silarray broadcast rules: align trailing dims; each pair
 // must be equal or one side must be 1. Output dim is the max. Empty
-// (rank-0) shapes act as scalars.
+// (rank-0) shapes act as scalars. Kept culebra-side for the error kind
+// and message; tensorlib revalidates internally.
 inline TensorShape tensor_broadcast_shape(const TensorShape& a,
                                           const TensorShape& b) {
   if (a == b) return a;
@@ -377,16 +395,29 @@ inline TensorShape tensor_broadcast_shape(const TensorShape& a,
   return TensorShape(std::move(out));
 }
 
+inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
+  switch (op) {
+    case Op::Add: return a + b;
+    case Op::Sub: return a - b;
+    case Op::Mul: return a * b;
+    case Op::Div: return a / b;
+    case Op::Pow: return tl::pow(a, b);
+    default:
+      throw std::logic_error("tensor: non-binop op in binop dispatch");
+  }
+}
+
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
 // rules; dtype must match (no implicit promotion in Phase 1).
 inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
   if (a->dtype != b->dtype) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
-  auto shape = tensor_broadcast_shape(a->shape, b->shape);
+  tensor_broadcast_shape(a->shape, b->shape);  // culebra-worded error
+  auto v = _tl_guard([&] { return _tl_binop(op, a->value, b->value); });
   auto dtype = a->dtype;
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      op, std::move(shape), dtype,
+      op, std::move(v), dtype,
       std::vector<TensorPtr>{std::move(a), std::move(b)}));
 }
 
@@ -398,195 +429,31 @@ inline TensorPtr tensor_scalar(double v, Dtype d) {
   return t;
 }
 
-// Soft cap so broadcast / kernel helpers can stack-allocate stride
-// arrays. Phase 1 / MNIST stays at rank ≤ 4; raise if a future
-// workload needs deeper tensors.
-inline constexpr size_t kMaxTensorRank = 8;
-
-// Strides into the input aligned to `out_shape` for broadcast.
-// Caller provides an `out_strides` buffer (length kMaxTensorRank);
-// the function fills the leading `out_shape.rank()` slots. Dims the
-// input was broadcast across get stride 0. Avoids the per-call
-// vector heap allocation that per-binop accumulates in MNIST.
-inline void _broadcast_strides(int64_t* out_strides,
-                                const TensorShape& in_shape,
-                                const std::vector<int64_t>& in_strides,
-                                const TensorShape& out_shape) {
-  size_t out_rank = out_shape.dims.size();
-  size_t in_rank = in_shape.dims.size();
-  size_t leading = out_rank - in_rank;
-  for (size_t i = 0; i < out_rank; i++) out_strides[i] = 0;
-  for (size_t i = leading; i < out_rank; i++) {
-    auto in_dim = in_shape.dims[i - leading];
-    if (in_dim != 1) out_strides[i] = in_strides[i - leading];
-  }
-}
-
-// Op-specialized binop applicator. Keeps the switch out of the inner
-// loop so the same-shape path autovectorizes cleanly.
-template <typename T, Op op>
-struct _tensor_binop {
-  static T apply(T a, T b);
-};
-template <typename T> struct _tensor_binop<T, Op::Add> {
-  static T apply(T a, T b) { return a + b; }
-};
-template <typename T> struct _tensor_binop<T, Op::Sub> {
-  static T apply(T a, T b) { return a - b; }
-};
-template <typename T> struct _tensor_binop<T, Op::Mul> {
-  static T apply(T a, T b) { return a * b; }
-};
-template <typename T> struct _tensor_binop<T, Op::Div> {
-  static T apply(T a, T b) { return a / b; }
-};
-template <typename T> struct _tensor_binop<T, Op::Pow> {
-  static T apply(T a, T b) { return static_cast<T>(std::pow(a, b)); }
-};
-
-template <typename T, Op op>
-inline void _tensor_run_binop_same_shape(T* out, const T* a, const T* b,
-                                          size_t n) {
-  for (size_t i = 0; i < n; i++) out[i] = _tensor_binop<T, op>::apply(a[i], b[i]);
-}
-
-template <typename T, Op op>
-inline void _tensor_run_binop_broadcast(T* out, const T* a, const T* b,
-                                         const std::vector<int64_t>& astr_in,
-                                         const std::vector<int64_t>& bstr_in,
-                                         const TensorShape& a_shape,
-                                         const TensorShape& b_shape,
-                                         const TensorShape& out_shape) {
-  int64_t astr[kMaxTensorRank];
-  int64_t bstr[kMaxTensorRank];
-  _broadcast_strides(astr, a_shape, astr_in, out_shape);
-  _broadcast_strides(bstr, b_shape, bstr_in, out_shape);
-  auto rank = out_shape.dims.size();
-  auto total = out_shape.num_elements();
-  for (size_t i = 0; i < total; i++) {
-    size_t rem = i;
-    int64_t ai = 0, bi = 0;
-    for (size_t d = rank; d-- > 0;) {
-      auto m = static_cast<int64_t>(rem % out_shape.dims[d]);
-      rem /= out_shape.dims[d];
-      ai += m * astr[d];
-      bi += m * bstr[d];
-    }
-    out[i] = _tensor_binop<T, op>::apply(a[ai], b[bi]);
-  }
-}
-
-template <typename T, Op op>
-inline void _tensor_run_binop_typed(TensorImpl& t) {
-  auto& a = *t.inputs[0];
-  auto& b = *t.inputs[1];
-  auto* out = t.data_as<T>();
-  // Fast path: same shape AND both inputs contiguous → linear loop,
-  // autovectorizable. Output is freshly allocated and contiguous.
-  if (a.shape == b.shape && a.is_contiguous() && b.is_contiguous()) {
-    _tensor_run_binop_same_shape<T, op>(out, a.data_as<T>(), b.data_as<T>(),
-                                          t.shape.num_elements());
-    return;
-  }
-  _tensor_run_binop_broadcast<T, op>(out, a.data_as<T>(), b.data_as<T>(),
-                                       a.strides, b.strides, a.shape, b.shape,
-                                       t.shape);
-}
-
-template <typename T>
-inline void _tensor_run_binop_for_dtype(TensorImpl& t) {
-  switch (t.op) {
-    case Op::Add: _tensor_run_binop_typed<T, Op::Add>(t); break;
-    case Op::Sub: _tensor_run_binop_typed<T, Op::Sub>(t); break;
-    case Op::Mul: _tensor_run_binop_typed<T, Op::Mul>(t); break;
-    case Op::Div: _tensor_run_binop_typed<T, Op::Div>(t); break;
-    case Op::Pow: _tensor_run_binop_typed<T, Op::Pow>(t); break;
-    default:
-      throw std::logic_error("tensor: non-binop op in binop dispatch");
-  }
-}
-
-inline void _tensor_run_binop(TensorImpl& t) {
-  _tensor_run_binop_for_dtype<float>(t);
-}
-
-// tensor_eval_node is the single cblas choke: every _tensor_run_* kernel
-// (the only cblas callers) is reached only from here. To let `culebra
-// build` drop BLAS for programs that never evaluate a tensor, its linkage
-// is partitioned across the AOT runtime archives:
-//   - core archive   (CULEBRA_RT_TENSOR_EVAL_WEAK):   weak throwing stub,
-//     so the archive references no cblas symbol at all.
-//   - tensor archive (CULEBRA_RT_TENSOR_EVAL_STRONG): strong real body,
-//     force-loaded only when the program uses Tensor (overrides the stub).
-//   - header-only / in-process JIT (neither): the normal inline body.
-#if defined(CULEBRA_RT_TENSOR_EVAL_STRONG)
-#define CULEBRA_RT_TENSOR_EVAL_LINKAGE
-#elif defined(CULEBRA_RT_TENSOR_EVAL_WEAK)
-#define CULEBRA_RT_TENSOR_EVAL_LINKAGE __attribute__((weak))
-#else
-#define CULEBRA_RT_TENSOR_EVAL_LINKAGE inline
-#endif
-
-CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t);
-
 // In-place elementwise binop: `dst = dst OP rhs` writing into dst's
 // own buffer. Skips the per-step allocation that `t = t + x` would
 // do — meaningful for SGD-style weight updates over large tensors.
 // Returns false (caller falls back to the lazy path) if dst is a
 // view, lazy, dtype-mismatched, or the broadcast result would not
 // fit in dst.shape — keeps semantics identical to the lazy form.
-template <typename T>
-inline void _tensor_inplace_for_dtype(Op op, TensorImpl& dst,
-                                      const TensorImpl& rhs) {
-  // dst is both the destination buffer and the lhs operand of the
-  // binop, so the existing _tensor_run_binop_* helpers already do the
-  // right thing: pass dst as out + a, rhs as b.
-  auto* out = dst.data_as<T>();
-  auto* a = out;
-  const auto* b = rhs.data_as<T>();
-  size_t n = dst.shape.num_elements();
-  if (dst.shape == rhs.shape && rhs.is_contiguous()) {
-    switch (op) {
-      case Op::Add: _tensor_run_binop_same_shape<T, Op::Add>(out, a, b, n); break;
-      case Op::Sub: _tensor_run_binop_same_shape<T, Op::Sub>(out, a, b, n); break;
-      case Op::Mul: _tensor_run_binop_same_shape<T, Op::Mul>(out, a, b, n); break;
-      case Op::Div: _tensor_run_binop_same_shape<T, Op::Div>(out, a, b, n); break;
-      case Op::Pow: _tensor_run_binop_same_shape<T, Op::Pow>(out, a, b, n); break;
-      default: throw std::logic_error("tensor: in-place on non-binop");
-    }
-    return;
-  }
-  // dst is contiguous (precondition), so its strides are the contiguous
-  // strides for dst.shape — pass them as the lhs strides.
-  switch (op) {
-    case Op::Add:
-      _tensor_run_binop_broadcast<T, Op::Add>(out, a, b, dst.strides,
-          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
-    case Op::Sub:
-      _tensor_run_binop_broadcast<T, Op::Sub>(out, a, b, dst.strides,
-          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
-    case Op::Mul:
-      _tensor_run_binop_broadcast<T, Op::Mul>(out, a, b, dst.strides,
-          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
-    case Op::Div:
-      _tensor_run_binop_broadcast<T, Op::Div>(out, a, b, dst.strides,
-          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
-    case Op::Pow:
-      _tensor_run_binop_broadcast<T, Op::Pow>(out, a, b, dst.strides,
-          rhs.strides, dst.shape, rhs.shape, dst.shape); break;
-    default: throw std::logic_error("tensor: in-place on non-binop");
-  }
-}
-
 inline bool tensor_inplace_binop(TensorImpl& dst, Op op, TensorPtr rhs) {
-  if (dst.base != nullptr) return false;
+  if (dst.is_view) return false;
+  if (!dst.value.materialized()) return false;
   if (!dst.is_contiguous()) return false;
-  if (!dst.is_evaluated()) return false;
   if (dst.dtype != rhs->dtype) return false;
   auto out = tensor_broadcast_shape(dst.shape, rhs->shape);
   if (!(out == dst.shape)) return false;
-  tensor_eval_node(*rhs);
-  _tensor_inplace_for_dtype<float>(op, dst, *rhs);
+  _tl_guard([&] {
+    if (op == Op::Add) {
+      dst.value.add_(rhs->value);
+    } else {
+      // Materialize OP into its own buffer first, then overwrite dst —
+      // the lazy node reads dst as a constant input, so ordering matters.
+      auto r = _tl_binop(op, dst.value, rhs->value);
+      const float* src = r.raw();  // forces evaluation
+      std::memcpy(dst.value.data(), src, dst.shape.num_elements() * 4);
+    }
+    return 0;
+  });
   return true;
 }
 
@@ -596,210 +463,74 @@ inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
   if (axis < 0 || axis >= static_cast<int64_t>(a->shape.dims.size())) {
     throw CulebraError("IndexError", "Tensor: reduction axis out of range.");
   }
-  std::vector<int64_t> out_dims;
-  out_dims.reserve(a->shape.dims.size() - 1);
-  for (size_t i = 0; i < a->shape.dims.size(); i++) {
-    if (static_cast<int64_t>(i) != axis) out_dims.push_back(a->shape.dims[i]);
-  }
-  // Read dtype before std::move(a) — function-argument evaluation order
-  // is indeterminate in C++17, and gcc happens to sequence the move
-  // before the dtype read, leaving `a` moved-from at access time.
+  auto v = _tl_guard([&]() -> tl::array {
+    int ax = static_cast<int>(axis);
+    switch (op) {
+      case Op::Sum: return a->value.sum(ax);
+      case Op::Mean: return a->value.mean(ax);
+      case Op::Max: return a->value.max(ax);
+      case Op::Argmax: return a->value.argmax(ax);
+      default:
+        throw std::logic_error("tensor: non-reduction op in reduce dispatch");
+    }
+  });
   auto dtype = a->dtype;
-  auto t = std::make_shared<TensorImpl>(
-      op, TensorShape(std::move(out_dims)), dtype,
-      std::vector<TensorPtr>{std::move(a)});
+  auto t = std::make_shared<TensorImpl>(op, std::move(v), dtype,
+                                        std::vector<TensorPtr>{std::move(a)});
   t->op_param = axis;
   return tensor_propagate_grad(t);
 }
 
-// Iterate over output positions and accumulate along the reduction
-// axis of the input. Strides on input are respected (so views work);
-// output is contiguous (allocated by tensor_eval_node).
-template <typename T, Op op>
-inline void _tensor_run_reduce_axis(TensorImpl& out, const TensorImpl& in) {
-  const T* in_data = in.data_as<T>();
-  T* out_data = out.data_as<T>();
-  size_t out_total = out.shape.num_elements();
-  size_t out_rank = out.shape.dims.size();
-  int64_t axis = out.op_param;
-  int64_t axis_size = in.shape.dims[axis];
-  int64_t axis_stride = in.strides[axis];
-
-  for (size_t i = 0; i < out_total; i++) {
-    size_t rem = i;
-    int64_t in_idx = 0;
-    for (size_t out_d = out_rank; out_d-- > 0;) {
-      auto m = static_cast<int64_t>(rem % out.shape.dims[out_d]);
-      rem /= out.shape.dims[out_d];
-      // Map output dim out_d to input dim (skip the reduced axis).
-      size_t in_d =
-          (static_cast<int64_t>(out_d) >= axis) ? out_d + 1 : out_d;
-      in_idx += m * in.strides[in_d];
-    }
-    if constexpr (op == Op::Sum || op == Op::Mean) {
-      T s = T{};
-      for (int64_t j = 0; j < axis_size; j++) {
-        s += in_data[in_idx + j * axis_stride];
-      }
-      if constexpr (op == Op::Mean) s /= static_cast<T>(axis_size);
-      out_data[i] = s;
-    } else if constexpr (op == Op::Max) {
-      T best = in_data[in_idx];
-      for (int64_t j = 1; j < axis_size; j++) {
-        T v = in_data[in_idx + j * axis_stride];
-        if (v > best) best = v;
-      }
-      out_data[i] = best;
-    } else if constexpr (op == Op::Argmax) {
-      T best_v = in_data[in_idx];
-      int64_t best_j = 0;
-      for (int64_t j = 1; j < axis_size; j++) {
-        T v = in_data[in_idx + j * axis_stride];
-        if (v > best_v) { best_v = v; best_j = j; }
-      }
-      out_data[i] = static_cast<T>(best_j);
-    }
-  }
-}
-
-template <typename T>
-inline void _tensor_run_reduce_for_dtype(TensorImpl& out) {
-  const auto& in = *out.inputs[0];
-  switch (out.op) {
-    case Op::Sum:    _tensor_run_reduce_axis<T, Op::Sum>(out, in); break;
-    case Op::Mean:   _tensor_run_reduce_axis<T, Op::Mean>(out, in); break;
-    case Op::Max:    _tensor_run_reduce_axis<T, Op::Max>(out, in); break;
-    case Op::Argmax: _tensor_run_reduce_axis<T, Op::Argmax>(out, in); break;
-    default:
-      throw std::logic_error("tensor: non-reduction op in reduce dispatch");
-  }
-}
-
-inline void _tensor_run_reduce(TensorImpl& t) {
-  _tensor_run_reduce_for_dtype<float>(t);
-}
-
-// Eager axis-less reduction → scalar double. Forces eval of the input
-// then walks every element (respecting strides). Used by the .sum()
-// / .mean() / .max() methods that return Culebra Float.
-template <typename T, Op op>
-inline T _tensor_reduce_all_typed(TensorImpl& in) {
-  const T* d = in.data_as<T>();
-  size_t total = in.shape.num_elements();
-  // Fast path on contiguous storage: linear walk.
-  if (in.is_contiguous()) {
-    if constexpr (op == Op::Sum || op == Op::Mean) {
-      T s = T{};
-      for (size_t i = 0; i < total; i++) s += d[i];
-      if constexpr (op == Op::Mean) s /= static_cast<T>(total);
-      return s;
-    } else {  // Max
-      if (total == 0) return T{};
-      T best = d[0];
-      for (size_t i = 1; i < total; i++) if (d[i] > best) best = d[i];
-      return best;
-    }
-  }
-  // Strided walk: decompose linear index into multi-index.
-  size_t rank = in.shape.dims.size();
-  T s = T{};
-  T best = T{};
-  bool first = true;
-  for (size_t i = 0; i < total; i++) {
-    size_t rem = i;
-    int64_t idx = 0;
-    for (size_t dim = rank; dim-- > 0;) {
-      auto m = static_cast<int64_t>(rem % in.shape.dims[dim]);
-      rem /= in.shape.dims[dim];
-      idx += m * in.strides[dim];
-    }
-    T v = d[idx];
-    if constexpr (op == Op::Sum || op == Op::Mean) s += v;
-    else if (first || v > best) { best = v; first = false; }
-  }
-  if constexpr (op == Op::Sum) return s;
-  if constexpr (op == Op::Mean) return s / static_cast<T>(total);
-  return best;  // Max
-}
-
+// Eager axis-less reduction → scalar double. Used by the .sum() /
+// .mean() / .max() methods that return Culebra Float.
 template <Op op>
 inline double tensor_reduce_all(TensorPtr a) {
   tensor_eval_node(*a);
-  return static_cast<double>(_tensor_reduce_all_typed<float, op>(*a));
-}
-
-// Deep copy. Materializes the source if it's still lazy, then either
-// memcpy's the contiguous buffer or walks strides for views.
-template <typename T>
-inline void _tensor_clone_typed(const TensorImpl& src, TensorImpl& dst) {
-  auto n = src.shape.num_elements();
-  const T* sp = src.data_as<T>();
-  T* dp = dst.data_as<T>();
-  if (src.is_contiguous() && src.base == nullptr) {
-    std::memcpy(dp, sp, n * sizeof(T));
-    return;
-  }
-  const auto& dims = src.shape.dims;
-  const auto& str = src.strides;
-  if (dims.empty()) {
-    dp[0] = sp[0];  // rank-0 scalar (offset already folded into data_as)
-  } else if (dims.size() == 1) {
-    auto s0 = str[0];
-    for (int64_t i = 0; i < dims[0]; i++) dp[i] = sp[i * s0];
-  } else if (dims.size() == 2) {
-    auto s0 = str[0], s1 = str[1];
-    size_t k = 0;
-    for (int64_t i = 0; i < dims[0]; i++) {
-      for (int64_t j = 0; j < dims[1]; j++) dp[k++] = sp[i * s0 + j * s1];
+  return _tl_guard([&]() -> double {
+    if constexpr (op == Op::Sum) {
+      return static_cast<double>(a->value.sum());
+    } else if constexpr (op == Op::Mean) {
+      return static_cast<double>(a->value.mean());
+    } else {  // Max — empty tensors read as 0, matching the pre-M4 kernel.
+      if (a->value.size() == 0) return 0.0;
+      return static_cast<double>(a->value.max());
     }
-  } else {
-    throw CulebraError("ValueError",
-        "Tensor.clone: rank > 2 not supported in Phase 1.");
-  }
+  });
 }
 
+// Deep copy: a materialized Const with no graph and no grad tracking.
 inline TensorPtr tensor_clone(TensorPtr t) {
-  tensor_eval_node(*t);
-  auto out = std::make_shared<TensorImpl>(t->shape, t->dtype);
-  _tensor_clone_typed<float>(*t, *out);
-  return out;
+  auto v = _tl_guard([&] { return t->value.clone(); });
+  return _tensor_wrap_const(std::move(v), t->dtype);
 }
 
 // Reverse all axes (a.T). For 1D it's a no-op view; for 2D it swaps
 // rows and columns; for higher rank it fully reverses dims.
 // Implicitly evaluates `t` so the view points at materialized data.
 inline TensorPtr tensor_transpose(TensorPtr t) {
-  tensor_eval_node(*t);
-  std::vector<int64_t> new_dims(t->shape.dims.rbegin(), t->shape.dims.rend());
-  std::vector<int64_t> new_strides(t->strides.rbegin(), t->strides.rend());
+  auto v = _tl_guard([&] { return t->value.transpose(); });
+  auto dtype = t->dtype;
   auto out = std::make_shared<TensorImpl>(
-      TensorImpl::View{}, t, TensorShape(std::move(new_dims)),
-      std::move(new_strides), 0);
-  out->op = Op::Transpose;
-  out->inputs = {out->base};
+      Op::Transpose, std::move(v), dtype,
+      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
   return tensor_propagate_grad(out);
 }
 
 // Slice along axis 0 (rows): [start, end). Matches Array's .slice()
 // convention so behaviour is consistent across Culebra. Zero-copy.
 inline TensorPtr tensor_slice(TensorPtr t, int64_t start, int64_t end) {
-  tensor_eval_node(*t);
   if (t->shape.dims.empty()) {
     throw CulebraError("ValueError", "Tensor: slice on rank-0.");
   }
   if (start < 0 || end < start || end > t->shape.dims[0]) {
     throw CulebraError("IndexError", "Tensor: slice out of bounds.");
   }
-  auto new_dims = t->shape.dims;
-  new_dims[0] = end - start;
-  auto new_strides = t->strides;
-  size_t new_offset = static_cast<size_t>(start * t->strides[0]);
+  auto v = _tl_guard([&] { return t->value.slice(start, end - start); });
+  auto dtype = t->dtype;
   auto out = std::make_shared<TensorImpl>(
-      TensorImpl::View{}, t, TensorShape(std::move(new_dims)),
-      std::move(new_strides), new_offset);
-  out->op = Op::Slice;
+      Op::Slice, std::move(v), dtype,
+      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
   out->op_param = start;  // backward scatters g into rows [start, start+len)
-  out->inputs = {out->base};
   return tensor_propagate_grad(out);
 }
 
@@ -817,155 +548,38 @@ inline TensorPtr tensor_dot(TensorPtr a, TensorPtr b) {
     throw CulebraError("ValueError",
         "Tensor: dot inner dims do not match (A.cols != B.rows).");
   }
-  std::vector<int64_t> out_dims{a->shape.dims[0], b->shape.dims[1]};
-  // Read dtype before std::move(a) — see tensor_reduce_axis for the
-  // gcc argument-evaluation-order rationale.
+  auto v = _tl_guard([&] { return a->value.dot(b->value); });
   auto dtype = a->dtype;
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      Op::Dot, TensorShape(std::move(out_dims)), dtype,
+      Op::Dot, std::move(v), dtype,
       std::vector<TensorPtr>{std::move(a), std::move(b)}));
-}
-
-// True if `t` is a rank-2 transpose view of a contiguous rank-2
-// matrix. cblas_*gemm can consume such inputs directly via a Trans
-// flag — no materialization required.
-inline bool _tensor_is_transpose_view(const TensorImpl& t) {
-  if (!t.base || t.offset != 0) return false;
-  if (t.shape.dims.size() != 2 || t.base->shape.dims.size() != 2) return false;
-  if (t.strides.size() != 2 || t.base->strides.size() != 2) return false;
-  return t.strides[0] == t.base->strides[1] &&
-         t.strides[1] == t.base->strides[0] &&
-         t.base->is_contiguous();
-}
-
-// Resolve a rank-2 input into a (data, lda, trans) trio for cblas.
-// Throws if the input is neither contiguous nor a contiguous-transpose.
-template <typename T>
-struct _BlasInput {
-  const T* data;
-  int lda;
-  CBLAS_TRANSPOSE trans;
-};
-template <typename T>
-inline _BlasInput<T> _tensor_blas_input(const TensorImpl& t) {
-  // Contiguous strides for the shape — direct NoTrans. Works for owned
-  // buffers, slice views, and double-transposed views (which restore
-  // contiguous layout). data_as<T>() folds in any base offset.
-  if (t.shape.dims.size() == 2 && t.is_contiguous()) {
-    return {t.data_as<T>(), static_cast<int>(t.shape.dims[1]), CblasNoTrans};
-  }
-  if (_tensor_is_transpose_view(t)) {
-    return {t.base->data_as<T>(),
-            static_cast<int>(t.base->shape.dims[1]), CblasTrans};
-  }
-  throw CulebraError("ValueError",
-      "Tensor: dot input layout not supported (M4 handles contiguous and "
-      "simple-transpose views only).");
 }
 
 // Build a lazy unary node (one input, same shape and dtype).
 inline TensorPtr tensor_unary(Op op, TensorPtr a) {
-  auto shape = a->shape;
+  auto v = _tl_guard([&]() -> tl::array {
+    switch (op) {
+      case Op::Sigmoid: return a->value.sigmoid();
+      case Op::Relu: return a->value.relu();
+      case Op::Log: return a->value.log();
+      case Op::Softmax: return a->value.softmax();
+      default:
+        throw std::logic_error("tensor: non-unary op in unary dispatch");
+    }
+  });
   auto dtype = a->dtype;
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      op, std::move(shape), dtype,
-      std::vector<TensorPtr>{std::move(a)}));
+      op, std::move(v), dtype, std::vector<TensorPtr>{std::move(a)}));
 }
 
 inline TensorPtr tensor_log(TensorPtr a) {
   return tensor_unary(Op::Log, std::move(a));
 }
 
-template <typename T, Op op>
-inline void _tensor_run_unary_typed(TensorImpl& out) {
-  const auto& in = *out.inputs[0];
-  size_t total = in.shape.num_elements();
-  T* o = out.data_as<T>();
-  auto apply = [](T x) -> T {
-    if constexpr (op == Op::Sigmoid) {
-      return T{1} / (T{1} + std::exp(-x));
-    } else if constexpr (op == Op::Relu) {
-      return x > T{0} ? x : T{0};
-    } else if constexpr (op == Op::Log) {
-      return std::log(x);
-    } else {
-      return T{};
-    }
-  };
-  if (in.is_contiguous()) {
-    const T* d = in.data_as<T>();
-    for (size_t i = 0; i < total; i++) o[i] = apply(d[i]);
-    return;
-  }
-  size_t rank = in.shape.dims.size();
-  const T* d = in.data_as<T>();
-  for (size_t i = 0; i < total; i++) {
-    size_t rem = i;
-    int64_t in_idx = 0;
-    for (size_t dim = rank; dim-- > 0;) {
-      auto m = static_cast<int64_t>(rem % in.shape.dims[dim]);
-      rem /= in.shape.dims[dim];
-      in_idx += m * in.strides[dim];
-    }
-    o[i] = apply(d[in_idx]);
-  }
-}
-
-// Online stable softmax over the last axis. Equivalent to
-// `exp(x - max(x)) / sum(exp(x - max(x)))` per row, with the max
-// subtraction folded into a single pass.
-template <typename T>
-inline void _tensor_run_softmax_typed(TensorImpl& out) {
-  const auto& in = *out.inputs[0];
-  // Softmax walks rows of the last axis; that requires the row to
-  // be contiguous in memory. is_contiguous() covers slice / reshape /
-  // double-transpose views that happen to land on a contiguous layout.
-  if (!in.is_contiguous()) {
-    throw CulebraError("ValueError",
-        "Tensor: softmax requires contiguous input.");
-  }
-  const T* d = in.data_as<T>();
-  T* o = out.data_as<T>();
-  if (in.shape.dims.empty()) return;
-  size_t axis_size = in.shape.dims.back();
-  size_t total = in.shape.num_elements();
-  size_t num_rows = axis_size > 0 ? total / axis_size : 0;
-  for (size_t r = 0; r < num_rows; r++) {
-    const T* row_in = d + r * axis_size;
-    T* row_out = o + r * axis_size;
-    T row_max = row_in[0];
-    for (size_t i = 1; i < axis_size; i++) {
-      if (row_in[i] > row_max) row_max = row_in[i];
-    }
-    T row_sum = T{0};
-    for (size_t i = 0; i < axis_size; i++) {
-      row_out[i] = std::exp(row_in[i] - row_max);
-      row_sum += row_out[i];
-    }
-    for (size_t i = 0; i < axis_size; i++) {
-      row_out[i] /= row_sum;
-    }
-  }
-}
-
-template <typename T>
-inline void _tensor_run_unary_for_dtype(TensorImpl& t) {
-  switch (t.op) {
-    case Op::Sigmoid: _tensor_run_unary_typed<T, Op::Sigmoid>(t); break;
-    case Op::Relu:    _tensor_run_unary_typed<T, Op::Relu>(t); break;
-    case Op::Log:     _tensor_run_unary_typed<T, Op::Log>(t); break;
-    case Op::Softmax: _tensor_run_softmax_typed<T>(t); break;
-    default:
-      throw std::logic_error("tensor: non-unary op in unary dispatch");
-  }
-}
-
-inline void _tensor_run_unary(TensorImpl& t) {
-  _tensor_run_unary_for_dtype<float>(t);
-}
-
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
-// the output [M, N] (typical: b is [M, 1] or [M]).
+// the output [M, N] (typical: b is [M, 1] or [M]). The tl graph is
+// dot + broadcast-add + sigmoid; backend fusion (bias/activation GEMM
+// epilogues) is tensorlib's concern, not this layer's.
 inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
   if (W->dtype != x->dtype || W->dtype != b->dtype) {
     throw CulebraError("ValueError",
@@ -979,105 +593,34 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
     throw CulebraError("ValueError",
         "Tensor: linear_sigmoid inner dims do not match.");
   }
-  std::vector<int64_t> out_dims{W->shape.dims[0], x->shape.dims[1]};
-  // Read dtype before std::move(W) — see tensor_reduce_axis for the
-  // gcc argument-evaluation-order rationale.
+  auto v = _tl_guard(
+      [&] { return (W->value.dot(x->value) + b->value).sigmoid(); });
   auto dtype = W->dtype;
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      Op::LinearSigmoid, TensorShape(std::move(out_dims)), dtype,
+      Op::LinearSigmoid, std::move(v), dtype,
       std::vector<TensorPtr>{std::move(W), std::move(x), std::move(b)}));
 }
 
-inline void _tensor_run_linear_sigmoid(TensorImpl& out) {
-  const auto& W = *out.inputs[0];
-  const auto& x = *out.inputs[1];
-  const auto& b = *out.inputs[2];
-  int M = static_cast<int>(out.shape.dims[0]);
-  int N = static_cast<int>(out.shape.dims[1]);
-  int K = static_cast<int>(W.shape.dims[1]);
-  // 1) GEMM: out = W @ x
-  auto wA = _tensor_blas_input<float>(W);
-  auto xB = _tensor_blas_input<float>(x);
-  float* o = out.data_as<float>();
-  cblas_sgemm(CblasRowMajor, wA.trans, xB.trans, M, N, K, 1.0f,
-              wA.data, wA.lda, xB.data, xB.lda, 0.0f, o, N);
-  // 2) Add broadcast bias + sigmoid in a single pass.
-  int64_t bstr[kMaxTensorRank];
-  _broadcast_strides(bstr, b.shape, b.strides, out.shape);
-  const float* bd = b.data_as<float>();
-  for (int i = 0; i < M; i++) {
-    for (int j = 0; j < N; j++) {
-      int64_t bi = i * bstr[0] + j * bstr[1];
-      float v = o[i * N + j] + bd[bi];
-      o[i * N + j] = 1.0f / (1.0f + std::exp(-v));
-    }
-  }
-}
-
-inline void _tensor_run_dot(TensorImpl& out) {
-  const auto& A = *out.inputs[0];
-  const auto& B = *out.inputs[1];
-  int M = static_cast<int>(out.shape.dims[0]);
-  int N = static_cast<int>(out.shape.dims[1]);
-  int K = static_cast<int>(A.shape.dims[1]);
-  auto a = _tensor_blas_input<float>(A);
-  auto b = _tensor_blas_input<float>(B);
-  cblas_sgemm(CblasRowMajor, a.trans, b.trans, M, N, K, 1.0f,
-              a.data, a.lda, b.data, b.lda, 0.0f, out.data_as<float>(), N);
-}
-
-// View with a different shape. M3.1 only allows contiguous inputs;
+// View with a different shape. Phase 1 only allows contiguous inputs;
 // reshaping a transposed/sliced view requires materialization, which
-// is on the M3+ todo list.
+// stays on the todo list (tensorlib can already do it — loosen when a
+// workload needs it).
 inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape) {
-  tensor_eval_node(*t);
   if (new_shape.num_elements() != t->shape.num_elements()) {
     throw CulebraError("ValueError",
                        "Tensor: reshape element-count mismatch.");
   }
+  tensor_eval_node(*t);
   if (!t->is_contiguous()) {
     throw CulebraError("ValueError",
                        "Tensor: reshape requires a contiguous input.");
   }
-  auto new_strides = tensor_contiguous_strides(new_shape);
+  auto v = _tl_guard([&] { return t->value.reshape(new_shape.dims); });
+  auto dtype = t->dtype;
   auto out = std::make_shared<TensorImpl>(
-      TensorImpl::View{}, t, std::move(new_shape), std::move(new_strides), 0);
-  out->op = Op::Reshape;
-  out->inputs = {out->base};
+      Op::Reshape, std::move(v), dtype,
+      std::vector<TensorPtr>{std::move(t)}, /*view=*/true);
   return tensor_propagate_grad(out);
-}
-
-// Row concat forward. Axis 0 is outermost, so each part's row-major
-// element sequence maps to one contiguous output chunk; we read each
-// part in logical row-major order (honoring view strides) and append.
-template <typename T>
-inline void _tensor_run_concat_typed(TensorImpl& out) {
-  T* o = out.data_as<T>();
-  size_t w = 0;
-  for (const auto& inp : out.inputs) {
-    const auto& p = *inp;
-    size_t total = p.shape.num_elements();
-    const T* d = p.data_as<T>();
-    if (p.is_contiguous()) {
-      for (size_t i = 0; i < total; i++) o[w++] = d[i];
-      continue;
-    }
-    size_t rank = p.shape.dims.size();
-    for (size_t i = 0; i < total; i++) {
-      size_t rem = i;
-      int64_t off = 0;
-      for (size_t dim = rank; dim-- > 0;) {
-        auto m = static_cast<int64_t>(rem % p.shape.dims[dim]);
-        rem /= p.shape.dims[dim];
-        off += m * p.strides[dim];
-      }
-      o[w++] = d[off];
-    }
-  }
-}
-
-inline void _tensor_run_concat(TensorImpl& t) {
-  _tensor_run_concat_typed<float>(t);
 }
 
 // Stack tensors along axis 0 (rows). All parts must share dtype and all
@@ -1088,14 +631,14 @@ inline TensorPtr tensor_concat(std::vector<TensorPtr> parts) {
   }
   const auto& d0 = parts[0]->shape.dims;
   Dtype dt = parts[0]->dtype;
-  int64_t total_rows = 0;
   for (const auto& p : parts) {
     if (p->dtype != dt) {
       throw CulebraError("ValueError", "Tensor.concat: dtype mismatch.");
     }
     const auto& pd = p->shape.dims;
-    if (pd.size() != d0.size() || pd.empty()) {
-      throw CulebraError("ValueError", "Tensor.concat: rank mismatch.");
+    if (pd.empty() || pd.size() != d0.size()) {
+      throw CulebraError("ValueError",
+                         "Tensor.concat: rank mismatch.");
     }
     for (size_t i = 1; i < pd.size(); i++) {
       if (pd[i] != d0[i]) {
@@ -1103,120 +646,35 @@ inline TensorPtr tensor_concat(std::vector<TensorPtr> parts) {
                            "Tensor.concat: non-axis dims must match.");
       }
     }
-    total_rows += pd[0];
   }
-  std::vector<int64_t> out_dims(d0.begin(), d0.end());
-  out_dims[0] = total_rows;
+  auto v = _tl_guard([&] {
+    std::vector<tl::array> vs;
+    vs.reserve(parts.size());
+    for (const auto& p : parts) vs.push_back(p->value);
+    return tl::concat(vs);
+  });
   return tensor_propagate_grad(std::make_shared<TensorImpl>(
-      Op::Concat, TensorShape(out_dims), dt, std::move(parts)));
-}
-
-// Topological evaluation: depth-first walk of inputs, allocate a
-// contiguous buf for each unevaluated node, run kernel.
-// is_evaluated() short-circuits shared subgraphs so each node runs
-// exactly once across an eval batch (and across re-evals).
-CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
-#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
-  // The core runtime archive links no BLAS. This is the single entry to every
-  // tensor kernel (cblas lives below here), so stubbing it keeps cblas out of
-  // the archive. The Tensor namespace and the culebra_runtime_tensor_* helpers
-  // stay real in core, but they reach cblas only through this function — with a
-  // stub body the _tensor_run_* kernels go unreferenced and are never emitted.
-  // The strong override (CULEBRA_RT_TENSOR_EVAL_STRONG) is force-loaded when the
-  // program uses Tensor; this stub then never runs. Throw defensively in case
-  // that invariant ever breaks.
-  (void)t;
-  throw CulebraError("InternalError",
-                     "tensor runtime entered in a no-tensor binary", 0, 0);
-#else
-  if (t.is_evaluated()) return;
-  for (auto& in : t.inputs) tensor_eval_node(*in);
-  t.buf.assign(t.shape.num_elements() * dtype_size(t.dtype), std::byte{});
-  t.strides = tensor_contiguous_strides(t.shape);
-  switch (t.op) {
-    case Op::Add:
-    case Op::Sub:
-    case Op::Mul:
-    case Op::Div:
-    case Op::Pow:
-      _tensor_run_binop(t);
-      break;
-    case Op::Sum:
-    case Op::Mean:
-    case Op::Max:
-    case Op::Argmax:
-      _tensor_run_reduce(t);
-      break;
-    case Op::Dot:
-      _tensor_run_dot(t);
-      break;
-    case Op::Sigmoid:
-    case Op::Relu:
-    case Op::Log:
-    case Op::Softmax:
-      _tensor_run_unary(t);
-      break;
-    case Op::LinearSigmoid:
-      _tensor_run_linear_sigmoid(t);
-      break;
-    case Op::Concat:
-      _tensor_run_concat(t);
-      break;
-    case Op::Const:
-    case Op::Transpose:
-    case Op::Reshape:
-    case Op::Slice:
-      break;  // unreachable: views / Const are is_evaluated() above
-  }
-#endif  // CULEBRA_RT_TENSOR_EVAL_WEAK
+      Op::Concat, std::move(v), dt, std::move(parts)));
 }
 
 // ===================== Autograd (reverse mode) =====================
 //
-// The forward graph already recorded in `inputs`/`op` (with `base`
-// mirrored into `inputs` for views) doubles as the autograd tape:
-// tensor_eval_node leaves it intact and materializes every node's
-// `buf`, so each VJP reads the forward values it needs straight from
-// the inputs' (and the node's own) buffers. backward() walks the graph
-// in reverse-topological order and routes the upstream gradient through
-// each op's vector-Jacobian product, accumulating into `grad` — always
-// a materialized Const (eager in-place add), so it can never form a
-// cycle with the forward graph. All of this is pure C++ on TensorImpl;
-// the interp / JIT wrappers are thin, so both backends stay symmetric.
+// The Op tape recorded in `inputs`/`op` doubles as the autograd tape:
+// forward values live in each node's tl::array. backward() walks the
+// graph in reverse-topological order and routes the upstream gradient
+// through each op's vector-Jacobian product, accumulating into `grad`
+// — always a materialized Const (eager in-place add via tl add_), so
+// it can never form a cycle with the forward graph. VJPs are built
+// with the culebra-level tensor_* functions above, so they run on
+// whatever backend tensorlib picks (the sum_to / mask / scatter
+// primitives were added to tensorlib for exactly this).
 
-// Sum `g` down to `target`, inverting a numpy broadcast (extra leading
-// dims and dims where target is 1 are summed away). `g` must already be
-// contiguous — the gradient tensors backward builds always are.
-template <typename T>
-inline void _tensor_unbroadcast_typed(const TensorImpl& g, TensorImpl& out) {
-  const T* gp = g.data_as<T>();
-  T* op = out.data_as<T>();
-  size_t g_rank = g.shape.dims.size();
-  size_t out_rank = out.shape.dims.size();
-  size_t leading = g_rank - out_rank;
-  size_t total = g.shape.num_elements();
-  for (size_t i = 0; i < total; i++) {
-    size_t rem = i;
-    size_t out_idx = 0;
-    for (size_t d = g_rank; d-- > 0;) {
-      int64_t coord = static_cast<int64_t>(rem % g.shape.dims[d]);
-      rem /= g.shape.dims[d];
-      if (d >= leading) {
-        size_t od = d - leading;
-        int64_t c = (out.shape.dims[od] == 1) ? 0 : coord;
-        out_idx += static_cast<size_t>(c) * static_cast<size_t>(out.strides[od]);
-      }
-    }
-    op[out_idx] += gp[i];
-  }
-}
-
+// Sum `g` down to `target`, inverting a numpy broadcast. tl::sum_to is
+// the device-ready primitive for this (the VJP of broadcasting).
 inline TensorPtr _tensor_unbroadcast(TensorPtr g, const TensorShape& target) {
-  tensor_eval_node(*g);
   if (g->shape == target) return g;
-  auto out = std::make_shared<TensorImpl>(target, g->dtype);  // zero-filled
-  _tensor_unbroadcast_typed<float>(*g, *out);
-  return out;
+  auto v = _tl_guard([&] { return g->value.sum_to(target.dims); });
+  return _tensor_wrap_const(std::move(v), g->dtype);
 }
 
 // Accumulate `contrib` into node->grad, reducing it back to node's
@@ -1228,52 +686,32 @@ inline void _tensor_grad_add(const TensorPtr& node, TensorPtr contrib) {
   if (!node->grad) {
     node->grad = tensor_clone(contrib);
   } else {
-    tensor_inplace_binop(*node->grad, Op::Add, contrib);
+    _tl_guard([&] {
+      node->grad->value.add_(contrib->value);
+      return 0;
+    });
   }
 }
 
-// da = g * (x > 0), elementwise. Built directly (there is no Tensor
-// comparison op) into a fresh contiguous buffer.
-template <typename T>
-inline void _tensor_relu_backward_typed(const TensorImpl& g,
-                                        const TensorImpl& x, TensorImpl& out) {
-  const T* gp = g.data_as<T>();
-  const T* xp = x.data_as<T>();
-  T* op = out.data_as<T>();
-  size_t n = out.shape.num_elements();
-  for (size_t i = 0; i < n; i++) op[i] = xp[i] > T(0) ? gp[i] : T(0);
-}
-
+// da = g * (x > 0), elementwise — the tl comparison mask makes this a
+// lazy device op.
 inline TensorPtr _tensor_relu_backward(const TensorPtr& g, const TensorPtr& x) {
-  tensor_eval_node(*g);
-  tensor_eval_node(*x);
-  auto out = std::make_shared<TensorImpl>(x->shape, x->dtype);
-  _tensor_relu_backward_typed<float>(*g, *x, *out);
-  return out;
+  auto v = _tl_guard([&] { return g->value * (x->value > 0.0f); });
+  return _tensor_wrap_const(std::move(v), x->dtype);
 }
 
 // Scatter `g` (the gradient of a row-slice) into rows [start, start+len)
-// of a zero tensor shaped like the slice's source. Slices are along
-// axis 0 of a contiguous source, so the destination rows form one
-// contiguous block.
-template <typename T>
-inline void _tensor_scatter_rows_typed(TensorImpl& dst, const TensorImpl& g,
-                                       int64_t start) {
-  size_t row_block = static_cast<size_t>(dst.strides[0]);  // elems per row
-  size_t off = static_cast<size_t>(start) * row_block;
-  const T* gp = g.data_as<T>();
-  T* dp = dst.data_as<T>();
-  size_t n = g.shape.num_elements();
-  for (size_t i = 0; i < n; i++) dp[off + i] = gp[i];
-}
-
+// of a zero tensor shaped like the slice's source: zeros + in-place add
+// through a row view.
 inline TensorPtr _tensor_slice_backward(const TensorPtr& g,
                                         const TensorShape& src_shape,
                                         Dtype dt, int64_t start) {
-  tensor_eval_node(*g);
-  auto out = std::make_shared<TensorImpl>(src_shape, dt);  // zero-filled
-  _tensor_scatter_rows_typed<float>(*out, *g, start);
-  return out;
+  auto v = _tl_guard([&] {
+    auto out = tl::array::zeros(src_shape.dims);
+    out.slice(start, g->shape.dims[0]).add_(g->value);
+    return out;
+  });
+  return _tensor_wrap_const(std::move(v), dt);
 }
 
 // Reverse-topological DFS over the autograd graph (shared subgraphs —
@@ -1474,7 +912,7 @@ inline TensorPtr tensor_detach(const TensorPtr& t) {
   return out;
 }
 
-// "Tensor 3x4 f32" — used by interp and (in M1.1) JIT puts/str paths.
+// "Tensor 3x4 f32" — used by interp and JIT puts/str paths.
 inline std::string tensor_str(const TensorImpl& t) {
   std::string s = "Tensor ";
   if (t.shape.dims.empty()) {
@@ -1488,6 +926,37 @@ inline std::string tensor_str(const TensorImpl& t) {
   s += " ";
   s += dtype_name(t.dtype);
   return s;
+}
+
+// --- Choke definitions (see the declarations above for the linkage map) ---
+
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap() {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  // Core-archive stub: referencing tl::install_runtime_hooks here would pull
+  // the whole execution engine (evaluator, Accelerate/Metal backends, MSL
+  // source) into the core archive. Programs that use Tensor force-load the
+  // strong body from the tensor feature object, which overrides this.
+#else
+  static const bool installed = [] {
+    tl::install_runtime_hooks();
+    return true;
+  }();
+  (void)installed;
+#endif
+}
+
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  (void)t;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
+#else
+  tensor_rt_bootstrap();
+  _tl_guard([&] {
+    t.value.eval();
+    return 0;
+  });
+#endif
 }
 
 }  // namespace culebra
