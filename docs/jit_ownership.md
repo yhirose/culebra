@@ -302,7 +302,7 @@ Corollary: no correct codegen path contains a bare, hand-placed
 ## 6. State and migration path
 
 - **Done:** the `Owned` handle exists and is proven zero-behavior-change
-  (byte-identical IR) on three slices, with the GC/leak/difftest gates green
+  (byte-identical IR) on four slices, with the GC/leak/difftest gates green
   ([[project_jit_gc_rewrite]]):
   - **operators** (binary/comparison/unary) — the pilot;
   - **call arguments** — every ARG_LIST producer (positional, static-kwargs
@@ -314,7 +314,15 @@ Corollary: no correct codegen path contains a bare, hand-placed
     consuming children get explicit `.consume()` handoffs, borrowing arms
     (explicit `drop`, builtin methods) rely on the handle dtor, and the
     ufcs-builtin hook contract is explicit (non-null result = hook consumed
-    the `+1`).
+    the `+1`);
+  - **postfix chain** — `compile_call` / `compile_call_with_builtins` roll
+    the chain value (callee → property view → index result → call result)
+    through one `Owned` handle: call dispatch borrows and the move-assign
+    of the fresh result releases the previous link; INDEX consumes into
+    `emit_index_step`; the property-get `swap_owned` arm marks the handle
+    consumed (the runtime primitive trades the receiver's `+1` for the
+    view's); `try_fuse_iter_map_collect` follows the hook contract
+    (declines on AST shape alone, a hit consumed the `+1`).
   Mapping the receiver flows also surfaced five real receiver `+1` leaks
   (auto-`parameters()`, Set `.add`/`.remove` fast dispatch, fused
   `map+collect`, inlined-lambda `for_each`/`reduce` over iterators) — fixed
@@ -327,7 +335,6 @@ Corollary: no correct codegen path contains a bare, hand-placed
   `Owned` returns" refactor: large but *type-driven* (the double-consume assert
   and the move-only handle guide each conversion; a missed release becomes a
   dropped `Owned`, not a leak). Remaining slices, roughly in order:
-  property/index temporaries (the postfix chain's `swap_owned` dance),
   container-literal elements, the method-dispatch children's internals
   (`compile_user_method_over_builtin` / set-mutate / method-or-ufcs, which
   still share consumed raws across their runtime-exclusive arms), the
