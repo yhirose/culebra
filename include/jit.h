@@ -18893,7 +18893,11 @@ struct JIT {
     using namespace peg::udl;
     auto calleeNode = ast.nodes[0];
     CallRootSaver call_root(*this, ast);
-    llvm::Value* callee = compile(*calleeNode);
+    // The chain value rolls through one Owned handle: each postfix either
+    // consumes the current +1 into its step or borrows it, and move-assigning
+    // the step's fresh +1 releases the previous link at the same insertion
+    // point the hand-placed releases used to occupy.
+    Owned callee = own(compile(*calleeNode));
     auto sn = begin_safe_nav(ast);
 
     for (auto i = 1u; i < ast.nodes.size(); i++) {
@@ -18932,37 +18936,38 @@ struct JIT {
           bool need_kwarg_path =
               !arg_list_is_positional_only(postfix) || fn_has_kw_marker;
           // The dispatch borrows the callee (compile_function_call_raw's
-          // convention); this postfix owns the +1 temp and releases it
-          // after. Without the release every call site leaked one callee
-          // ref, so a local closure that had ever been called could not
-          // die by refcount — its captures (and any drop-having resource
-          // in them) waited for the GC backstop instead of scope exit.
-          auto calleeTemp = callee;
+          // convention); the rolling handle owns the +1 temp and the
+          // move-assign below releases it after the dispatch returns.
+          // Without that release every call site leaked one callee ref,
+          // so a local closure that had ever been called could not die by
+          // refcount — its captures (and any drop-having resource in
+          // them) waited for the GC backstop instead of scope exit.
+          llvm::Value* result;
           if (fnAst && !has_dynamic_splat && need_kwarg_path) {
-            callee = compile_function_call_with_kwargs(
-                postfix, callee, *fnAst);
+            result = compile_function_call_with_kwargs(
+                postfix, callee.borrow(), *fnAst);
           } else {
-            callee = compile_function_call(postfix, callee);
+            result = compile_function_call(postfix, callee.borrow());
           }
-          emit_value_release(calleeTemp);
+          callee = own(result);
           break;
         }
         case "INDEX"_: {
           // INDEX/DOT return borrowed slot values; emit_index_step promotes
           // a point index to +1 (so chained `a.b[i].c` doesn't over-release
           // the intermediate) and slices `a..b` into a fresh owned value.
-          callee = emit_index_step(postfix, callee);
+          callee = own(emit_index_step(postfix, callee.consume()));
           break;
         }
         case "SAFE_INDEX"_: {
           // `a?[k]` — nil receiver short-circuits the chain to nil.
-          emit_safe_nav_guard(callee, sn);
-          callee = emit_index_step(postfix, callee);
+          emit_safe_nav_guard(callee.borrow(), sn);
+          callee = own(emit_index_step(postfix, callee.consume()));
           break;
         }
         case "SAFE_DOT"_:
           // `a?.b` / `a?.m()` — nil receiver short-circuits to nil.
-          emit_safe_nav_guard(callee, sn);
+          emit_safe_nav_guard(callee.borrow(), sn);
           [[fallthrough]];
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
@@ -18974,43 +18979,52 @@ struct JIT {
             // (Not applied to `?.map` — the receiver was just nil-guarded
             // and the fused path doesn't thread that.)
             if (method == "map" && postfix.original_tag == "DOT"_) {
-              if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
-                callee = *fused;
+              // Declines on AST shape alone (no receiver IR emitted), so a
+              // null result leaves the +1 untouched; a hit consumed it.
+              if (auto fused =
+                      try_fuse_iter_map_collect(ast, i, callee.borrow())) {
+                callee.consume();
+                callee = own(*fused);
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1],
-                                         own(callee), &postfix);
+            callee = own(compile_method_call(method, *ast.nodes[i + 1],
+                                             std::move(callee), &postfix));
             i++;  // consume ARGUMENTS
           } else {
             auto name = std::string(postfix.token);
-            auto receiver = callee;
-            callee = compile_property_get(receiver, name);
+            auto receiver = callee.borrow();
+            auto view = compile_property_get(receiver, name);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             // Function introspection (.name / .params / .return_type)
             // returns a fresh +1 owned value rather than a borrowed
             // Object IC slot view, so swap_owned would double-retain it
-            // and leak. Release the receiver directly instead.
+            // and leak. The move-assign releases the receiver instead.
             if (name == "name" || name == "params" || name == "return_type") {
-              emit_value_release(receiver);
+              callee = own(view);
             } else {
-              emit_value_swap_owned(callee, receiver);
+              // swap_owned retains the view and releases the receiver —
+              // it consumes the handle's +1 and produces the view's.
+              emit_value_swap_owned(view, receiver);
+              callee.consume();
+              callee = own(view);
             }
-            emit_reject_bare_builtin_method(callee, hasOwn, name, postfix);
+            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
+                                            postfix);
           }
           break;
         }
         case "NONNULL"_:
-          emit_nonnull_assert(callee, postfix);
+          emit_nonnull_assert(callee.borrow(), postfix);
           break;
         default:
           throw std::runtime_error("invalid call postfix");
       }
     }
 
-    return end_safe_nav(sn, callee);
+    return end_safe_nav(sn, callee.consume());
   }
 
   // Get a property from an object (TAG_OBJECT required).
@@ -21054,62 +21068,68 @@ struct JIT {
 
     if (!start) return compile_call(ast);
 
-    // Continue with remaining postfixes (matching compile_call's loop).
-    llvm::Value* callee = start;
+    // Continue with remaining postfixes (matching compile_call's loop —
+    // same rolling Owned handle, see the ownership note there).
+    Owned callee = own(start);
     auto sn = begin_safe_nav(ast);
     for (auto i = next_idx; i < ast.nodes.size(); i++) {
       const auto& postfix = *ast.nodes[i];
       switch (postfix.original_tag) {
         case "ARGUMENTS"_: {
-          // Borrowed-callee dispatch; release the owned temp after (see
-          // the compile_call ARGUMENTS note).
-          auto calleeTemp = callee;
-          callee = compile_function_call(postfix, callee);
-          emit_value_release(calleeTemp);
+          // Borrowed-callee dispatch; the move-assign releases the owned
+          // temp after (see the compile_call ARGUMENTS note).
+          callee = own(compile_function_call(postfix, callee.borrow()));
           break;
         }
         case "INDEX"_: {
-          callee = emit_index_step(postfix, callee);
+          callee = own(emit_index_step(postfix, callee.consume()));
           break;
         }
         case "SAFE_INDEX"_: {
-          emit_safe_nav_guard(callee, sn);
-          callee = emit_index_step(postfix, callee);
+          emit_safe_nav_guard(callee.borrow(), sn);
+          callee = own(emit_index_step(postfix, callee.consume()));
           break;
         }
         case "SAFE_DOT"_:
-          emit_safe_nav_guard(callee, sn);
+          emit_safe_nav_guard(callee.borrow(), sn);
           [[fallthrough]];
         case "DOT"_: {
           if (i + 1 < ast.nodes.size() &&
               ast.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
             auto method = std::string(postfix.token);
             if (method == "map" && postfix.original_tag == "DOT"_) {
-              if (auto fused = try_fuse_iter_map_collect(ast, i, callee)) {
-                callee = *fused;
+              // Declines on AST shape alone; a hit consumed the +1.
+              if (auto fused =
+                      try_fuse_iter_map_collect(ast, i, callee.borrow())) {
+                callee.consume();
+                callee = own(*fused);
                 i += 3;  // consume ARGUMENTS, DOT(collect), ARGUMENTS
                 break;
               }
             }
-            callee = compile_method_call(method, *ast.nodes[i + 1],
-                                         own(callee), &postfix);
+            callee = own(compile_method_call(method, *ast.nodes[i + 1],
+                                             std::move(callee), &postfix));
             i++;
           } else {
             auto name = std::string(postfix.token);
-            auto receiver = callee;
-            callee = compile_property_get(receiver, name);
+            auto receiver = callee.borrow();
+            auto view = compile_property_get(receiver, name);
             // Capture own-slot presence before the receiver is released below.
             auto hasOwn = emit_has_own_field(receiver, name);
             // Function introspection (.name / .params / .return_type)
             // returns a fresh +1 owned value rather than a borrowed
             // Object IC slot view, so swap_owned would double-retain it
-            // and leak. Release the receiver directly instead.
+            // and leak. The move-assign releases the receiver instead.
             if (name == "name" || name == "params" || name == "return_type") {
-              emit_value_release(receiver);
+              callee = own(view);
             } else {
-              emit_value_swap_owned(callee, receiver);
+              // swap_owned retains the view and releases the receiver.
+              emit_value_swap_owned(view, receiver);
+              callee.consume();
+              callee = own(view);
             }
-            emit_reject_bare_builtin_method(callee, hasOwn, name, postfix);
+            emit_reject_bare_builtin_method(callee.borrow(), hasOwn, name,
+                                            postfix);
           }
           break;
         }
@@ -21118,7 +21138,8 @@ struct JIT {
           auto nilBB = llvm::BasicBlock::Create(ctx_, "nonnull.nil", fn);
           auto okBB = llvm::BasicBlock::Create(ctx_, "nonnull.ok", fn);
           auto isNil = builder_.CreateICmpEQ(
-              extract_tag(callee), builder_.getInt8(TAG_NIL), "nonnull.isnil");
+              extract_tag(callee.borrow()), builder_.getInt8(TAG_NIL),
+              "nonnull.isnil");
           builder_.CreateCondBr(isNil, nilBB, okBB);
           builder_.SetInsertPoint(nilBB);
           emit_throw_error("NilError", "`!!` applied to nil",
@@ -21131,7 +21152,7 @@ struct JIT {
           throw std::runtime_error("invalid call postfix");
       }
     }
-    return end_safe_nav(sn, callee);
+    return end_safe_nav(sn, callee.consume());
   }
 
   // --- Debugger ---
