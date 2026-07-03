@@ -22697,23 +22697,23 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "join" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "join");
-    auto sep = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(sep, "String", "parameter 'sep'",
+    auto sep = compile(*argsAst.nodes[0]);
+    emit_type_check(sep.borrow(), "String", "parameter 'sep'",
                     argsAst.nodes[0].get());
-    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep), ptrTy);
+    auto sepPtr = builder_.CreateIntToPtr(extract_data(sep.borrow()), ptrTy);
     auto s = emit_call(
         module_->getFunction(rt::array_join), {arrPtr, sepPtr});
-    emit_value_release(sep);
+    sep.drop();
     return make_string(s);
   }
 
   if (method == "index_of" && argsAst.nodes.size() == 1) {
     auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, "iof");
-    auto v = compile(*argsAst.nodes[0]).consume();
+    auto v = compile(*argsAst.nodes[0]);
     auto idx = emit_call(
         module_->getFunction(rt::array_index_of),
-        {arrPtr, extract_tag(v), extract_data(v)});
-    emit_value_release(v);
+        {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    v.drop();
     return make_long(idx);
   }
 
@@ -22735,11 +22735,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
     builder_.SetInsertPoint(arrBB);
     auto arrPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto v = compile(*argsAst.nodes[0]).consume();
+    auto v = compile(*argsAst.nodes[0]);
     auto arrFound = emit_call(
         module_->getFunction(rt::array_contains),
-        {arrPtr, extract_tag(v), extract_data(v)});
-    emit_value_release(v);
+        {arrPtr, extract_tag(v.borrow()), extract_data(v.borrow())});
+    v.drop();
     auto arrBoolVal = make_bool(arrFound);
     auto arrEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
@@ -22747,41 +22747,41 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     builder_.SetInsertPoint(strBB);
     auto strPtr = emit_call(module_->getFunction(rt::strlike_to_cstr),
                             {tag, extract_data(receiver)});
-    auto sub = compile(*argsAst.nodes[0]).consume();
-    auto subPtr = coerce_strlike_cstr(sub, "ct.sub", false, "sub",
+    auto sub = compile(*argsAst.nodes[0]);
+    auto subPtr = coerce_strlike_cstr(sub.borrow(), "ct.sub", false, "sub",
                                     argsAst.nodes[0].get());
     auto strFound = emit_call(
         module_->getFunction(rt::str_contains),
         {strPtr, subPtr});
-    emit_value_release(sub);
+    sub.drop();
     auto strBoolVal = make_bool(strFound);
     auto strEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(setBB);
     auto setPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto vs = compile(*argsAst.nodes[0]).consume();
+    auto vs = compile(*argsAst.nodes[0]);
     auto setFound = emit_call(
         module_->getOrInsertFunction(
             rt::set_contains, builder_.getInt1Ty(), ptrTy,
             builder_.getInt8Ty(), builder_.getInt64Ty(),
             builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {setPtr, extract_tag(vs), extract_data(vs),
+        {setPtr, extract_tag(vs.borrow()), extract_data(vs.borrow()),
          current_line_val(), current_column_val()});
-    emit_value_release(vs);
+    vs.drop();
     auto setBoolVal = make_bool(setFound);
     auto setEnd = builder_.GetInsertBlock();
     builder_.CreateBr(mergeBB);
 
     builder_.SetInsertPoint(tupBB);
     auto tupPtr = builder_.CreateIntToPtr(extract_data(receiver), ptrTy);
-    auto vt = compile(*argsAst.nodes[0]).consume();
+    auto vt = compile(*argsAst.nodes[0]);
     auto tupFound = emit_call(
         module_->getOrInsertFunction(
             rt::tuple_contains, builder_.getInt8Ty(), ptrTy,
             builder_.getInt8Ty(), builder_.getInt64Ty()),
-        {tupPtr, extract_tag(vt), extract_data(vt)});
-    emit_value_release(vt);
+        {tupPtr, extract_tag(vt.borrow()), extract_data(vt.borrow())});
+    vt.drop();
     auto tupBoolVal = make_bool(
         builder_.CreateICmpNE(tupFound, builder_.getInt8(0)));
     auto tupEnd = builder_.GetInsertBlock();
@@ -22841,16 +22841,16 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "tr" && argsAst.nodes.size() == 2) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
-    auto from = compile(*argsAst.nodes[0]).consume();
-    auto fromPtr = coerce_strlike_cstr(from, "tr.from", false, "from",
+    auto from = compile(*argsAst.nodes[0]);
+    auto fromPtr = coerce_strlike_cstr(from.borrow(), "tr.from", false, "from",
                                         argsAst.nodes[0].get());
-    auto to = compile(*argsAst.nodes[1]).consume();
-    auto toPtr = coerce_strlike_cstr(to, "tr.to", false, "to",
+    auto to = compile(*argsAst.nodes[1]);
+    auto toPtr = coerce_strlike_cstr(to.borrow(), "tr.to", false, "to",
                                       argsAst.nodes[1].get());
     auto s = emit_call(
         module_->getFunction(rt::str_tr), {strPtr, fromPtr, toPtr});
-    emit_value_release(from);
-    emit_value_release(to);
+    from.drop();
+    to.drop();
     return make_string(s);
   }
 
@@ -22858,30 +22858,30 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
       argsAst.nodes.size() <= 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "tr", true);
     // `chars` is optional — pass "" (whitespace mode) when omitted.
-    llvm::Value* chars = nullptr;
+    Owned chars;  // empty (whitespace mode) when the arg is omitted
     llvm::Value* charsPtr;
     if (argsAst.nodes.empty()) {
       charsPtr = emit_str_literal("");
     } else {
-      chars = compile(*argsAst.nodes[0]).consume();
-      charsPtr = coerce_strlike_cstr(chars, "tr.chars", false, "chars",
+      chars = compile(*argsAst.nodes[0]);
+      charsPtr = coerce_strlike_cstr(chars.borrow(), "tr.chars", false, "chars",
                                        argsAst.nodes[0].get());
     }
     auto* fn = module_->getFunction(
         method == "trim_start" ? rt::str_trim_start : rt::str_trim_end);
     auto s = emit_call(fn, {strPtr, charsPtr});
-    if (chars) emit_value_release(chars);
+    chars.drop();  // no-op when empty; releases the compiled arg otherwise
     return make_string(s);
   }
 
   if (method == "split" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sp", true);
-    auto sep = compile(*argsAst.nodes[0]).consume();
-    auto sepPtr = coerce_strlike_cstr(sep, "sp.sep", false, "sep",
+    auto sep = compile(*argsAst.nodes[0]);
+    auto sepPtr = coerce_strlike_cstr(sep.borrow(), "sp.sep", false, "sep",
                                     argsAst.nodes[0].get());
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
-    emit_value_release(sep);
+    sep.drop();
     return make_array(arr);
   }
 
@@ -22890,37 +22890,37 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   // composes. True lazy is a later refinement.
   if (method == "split_iter" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "spli", true);
-    auto sep = compile(*argsAst.nodes[0]).consume();
-    auto sepPtr = coerce_strlike_cstr(sep, "spli.sep", false, "sep",
+    auto sep = compile(*argsAst.nodes[0]);
+    auto sepPtr = coerce_strlike_cstr(sep.borrow(), "spli.sep", false, "sep",
                                     argsAst.nodes[0].get());
     auto arr = emit_call(
         module_->getFunction(rt::str_split), {strPtr, sepPtr});
-    emit_value_release(sep);
+    sep.drop();
     auto iter = emit_call(module_->getFunction(rt::array_iter), {arr});
     return make_object(iter);
   }
 
   if (method == "starts_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "sw", true);
-    auto p = compile(*argsAst.nodes[0]).consume();
-    auto pPtr = coerce_strlike_cstr(p, "sw.pre", false, "prefix",
+    auto p = compile(*argsAst.nodes[0]);
+    auto pPtr = coerce_strlike_cstr(p.borrow(), "sw.pre", false, "prefix",
                                   argsAst.nodes[0].get());
     auto r = emit_call(
         module_->getFunction(rt::str_starts_with),
         {strPtr, pPtr});
-    emit_value_release(p);
+    p.drop();
     return make_bool(r);
   }
 
   if (method == "ends_with" && argsAst.nodes.size() == 1) {
     auto strPtr = coerce_strlike_cstr(receiver, "ew", true);
-    auto p = compile(*argsAst.nodes[0]).consume();
-    auto pPtr = coerce_strlike_cstr(p, "ew.suf", false, "suffix",
+    auto p = compile(*argsAst.nodes[0]);
+    auto pPtr = coerce_strlike_cstr(p.borrow(), "ew.suf", false, "suffix",
                                   argsAst.nodes[0].get());
     auto r = emit_call(
         module_->getFunction(rt::str_ends_with),
         {strPtr, pPtr});
-    emit_value_release(p);
+    p.drop();
     return make_bool(r);
   }
 
