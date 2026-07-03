@@ -11817,6 +11817,16 @@ struct JIT {
       return val_;
     }
 
+    // Release the `+1` now, at the current insertion point, and mark the
+    // handle spent (the dtor then stays silent). The explicit-release twin of
+    // `consume()` for a value that is simply dead rather than handed on — use
+    // it where the release must land before later IR (e.g. a `make_*` that
+    // emits) so the scope-exit dtor would place it too late.
+    void drop() {
+      release_if_owned();
+      consumed_ = true;
+    }
+
     ~Owned() { release_if_owned(); }
   };
 
@@ -22260,14 +22270,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "pow" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_TENSOR, "pow");
-    auto exp = compile(*argsAst.nodes[0]).consume();
+    auto exp = compile(*argsAst.nodes[0]);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_binop),
         {extract_tag(receiver), extract_data(receiver),
-         extract_tag(exp), extract_data(exp),
+         extract_tag(exp.borrow()), extract_data(exp.borrow()),
          builder_.getInt64(static_cast<int64_t>(culebra::Op::Pow))},
         "tpow");
-    emit_value_release(exp);
+    exp.drop();
     return make_tensor(resultPtr);
   }
   if (method == "transpose" && argsAst.nodes.size() == 0) {
@@ -22314,13 +22324,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "reshape" && argsAst.nodes.size() == 1) {
     auto tPtr = expect_receiver_tag(receiver, TAG_TENSOR, "reshape");
-    auto dims = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(dims, "Array", "parameter 'dims'", argsAst.nodes[0].get());
-    auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims), ptrTy);
+    auto dims = compile(*argsAst.nodes[0]);
+    emit_type_check(dims.borrow(), "Array", "parameter 'dims'",
+                    argsAst.nodes[0].get());
+    auto dimsPtr = builder_.CreateIntToPtr(extract_data(dims.borrow()), ptrTy);
     emit_set_op_pos();  // tensor_reshape raises positionless on bad/neg dims
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_reshape), {tPtr, dimsPtr}, "tr");
-    emit_value_release(dims);
+    dims.drop();
     return make_tensor(resultPtr);
   }
 
@@ -22434,27 +22445,30 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
   }
   if (method == "dot" && argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_TENSOR, "dot");
-    auto other = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(other, "Tensor", "parameter 'other'", argsAst.nodes[0].get());
-    auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
+    auto other = compile(*argsAst.nodes[0]);
+    emit_type_check(other.borrow(), "Tensor", "parameter 'other'",
+                    argsAst.nodes[0].get());
+    auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_dot), {aPtr, bPtr}, "td");
-    emit_value_release(other);
+    other.drop();
     return make_tensor(resultPtr);
   }
   if (method == "linear_sigmoid" && argsAst.nodes.size() == 2) {
     auto wPtr = expect_receiver_tag(receiver, TAG_TENSOR, "linear_sigmoid");
-    auto xv = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(xv, "Tensor", "parameter 'x'", argsAst.nodes[0].get());
-    auto bv = compile(*argsAst.nodes[1]).consume();
-    emit_type_check(bv, "Tensor", "parameter 'b'", argsAst.nodes[1].get());
-    auto xp = builder_.CreateIntToPtr(extract_data(xv), ptrTy);
-    auto bp = builder_.CreateIntToPtr(extract_data(bv), ptrTy);
+    auto xv = compile(*argsAst.nodes[0]);
+    emit_type_check(xv.borrow(), "Tensor", "parameter 'x'",
+                    argsAst.nodes[0].get());
+    auto bv = compile(*argsAst.nodes[1]);
+    emit_type_check(bv.borrow(), "Tensor", "parameter 'b'",
+                    argsAst.nodes[1].get());
+    auto xp = builder_.CreateIntToPtr(extract_data(xv.borrow()), ptrTy);
+    auto bp = builder_.CreateIntToPtr(extract_data(bv.borrow()), ptrTy);
     auto resultPtr = emit_call(
         module_->getFunction(rt::tensor_linear_sigmoid),
         {wPtr, xp, bp}, "tls");
-    emit_value_release(xv);
-    emit_value_release(bv);
+    xv.drop();
+    bv.drop();
     return make_tensor(resultPtr);
   }
 
@@ -22534,9 +22548,10 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
        method == "diff"  || method == "sym_diff") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
-    auto other = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
-    auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
+    auto other = compile(*argsAst.nodes[0]);
+    emit_type_check(other.borrow(), "Set", "parameter 'other'",
+                    argsAst.nodes[0].get());
+    auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
     const char* rt_name = method == "union"     ? rt::set_union
                         : method == "intersect" ? rt::set_intersect
                         : method == "diff"      ? rt::set_diff
@@ -22544,23 +22559,24 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     auto out = emit_call(
         module_->getOrInsertFunction(rt_name, ptrTy, ptrTy, ptrTy),
         {aPtr, bPtr}, "set.op");
-    emit_value_release(other);
+    other.drop();
     return make_set(out);
   }
   // subset/superset: both operands Set, returns Bool.
   if ((method == "subset" || method == "superset") &&
       argsAst.nodes.size() == 1) {
     auto aPtr = expect_receiver_tag(receiver, TAG_SET, method.c_str());
-    auto other = compile(*argsAst.nodes[0]).consume();
-    emit_type_check(other, "Set", "parameter 'other'", argsAst.nodes[0].get());
-    auto bPtr = builder_.CreateIntToPtr(extract_data(other), ptrTy);
+    auto other = compile(*argsAst.nodes[0]);
+    emit_type_check(other.borrow(), "Set", "parameter 'other'",
+                    argsAst.nodes[0].get());
+    auto bPtr = builder_.CreateIntToPtr(extract_data(other.borrow()), ptrTy);
     const char* rt_name = method == "subset" ? rt::set_subset
                                              : rt::set_superset;
     auto r = emit_call(
         module_->getOrInsertFunction(
             rt_name, builder_.getInt8Ty(), ptrTy, ptrTy),
         {aPtr, bPtr}, "set.pred");
-    emit_value_release(other);
+    other.drop();
     return make_bool(builder_.CreateICmpNE(r, builder_.getInt8(0)));
   }
   // Set's mutating `.add(x)` / `.remove(x)` are routed through
