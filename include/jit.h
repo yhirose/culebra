@@ -23463,14 +23463,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "take_while" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "take_while");
-    auto f = compile(*argsAst.nodes[0]).consume();
+    auto f = compile(*argsAst.nodes[0]);
     emit_set_callback_arg_site(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_take_while),
-                         {t, d, extract_tag(f), extract_data(f),
+                         {t, d, extract_tag(f.borrow()), extract_data(f.borrow()),
                           ho_line, ho_col});
-    emit_value_release(f);
+    f.drop();
     return make_object(out);
   }
 
@@ -23489,25 +23489,25 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "chain" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "chain");
-    auto other = compile(*argsAst.nodes[0]).consume();
+    auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_chain),
-                         {t, d, extract_tag(other),
-                          extract_data(other), ho_line, ho_col});
-    emit_value_release(other);
+                         {t, d, extract_tag(other.borrow()),
+                          extract_data(other.borrow()), ho_line, ho_col});
+    other.drop();
     return make_object(out);
   }
 
   if (method == "zip" && argsAst.nodes.size() == 1) {
     expect_receiver_tag(receiver, TAG_OBJECT, "zip");
-    auto other = compile(*argsAst.nodes[0]).consume();
+    auto other = compile(*argsAst.nodes[0]);
     auto t = extract_tag(receiver);
     auto d = extract_data(receiver);
     auto out = emit_call(module_->getFunction(rt::iter_zip),
-                         {t, d, extract_tag(other),
-                          extract_data(other), ho_line, ho_col});
-    emit_value_release(other);
+                         {t, d, extract_tag(other.borrow()),
+                          extract_data(other.borrow()), ho_line, ho_col});
+    other.drop();
     return make_object(out);
   }
 
@@ -23649,21 +23649,21 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
     }
     if (npos == 1 && only_known_kw) {
       auto arrPtr = expect_receiver_tag(receiver, TAG_ARRAY, method.c_str());
-      auto f = compile(*cb).consume();
+      auto f = compile(*cb);
       emit_set_callback_arg_site(*cb);
       llvm::Value* rev = rev_expr ? value_to_bool(compile(*rev_expr).consume())
                                   : builder_.getInt1(false);
       if (method == "sort_by") {
         emit_call(module_->getFunction(rt::array_sort_by),
-                  {arrPtr, extract_tag(f), extract_data(f), rev, ho_line,
-                   ho_col});
-        emit_value_release(f);
+                  {arrPtr, extract_tag(f.borrow()), extract_data(f.borrow()),
+                   rev, ho_line, ho_col});
+        f.drop();
         return make_nil();
       }
       auto out = emit_call(module_->getFunction(rt::array_sorted_by),
-                           {arrPtr, extract_tag(f), extract_data(f), rev,
-                            ho_line, ho_col});
-      emit_value_release(f);
+                           {arrPtr, extract_tag(f.borrow()),
+                            extract_data(f.borrow()), rev, ho_line, ho_col});
+      f.drop();
       return make_array(out);
     }
   }
