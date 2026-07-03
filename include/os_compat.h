@@ -112,4 +112,17 @@ inline const char* os_strptime(const char* s, const char* fmt, std::tm* tm) {
 #endif
 }
 
+// Seconds east of UTC for a local broken-down time. POSIX carries this on
+// `tm_gmtoff`; the Windows `struct tm` has no such field, so reconstruct it —
+// interpreting the local wall-clock fields as if they were UTC yields
+// `utc + offset`, and subtracting the original time_t leaves the offset.
+inline long os_gmtoff(const std::tm& local, std::time_t utc) {
+#if defined(_WIN32)
+  std::tm copy = local;
+  return static_cast<long>(os_timegm(&copy) - utc);
+#else
+  return static_cast<long>(local.tm_gmtoff);
+#endif
+}
+
 }  // namespace culebra

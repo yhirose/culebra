@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <numbers>  // std::numbers::pi / ::e (Math.pi / Math.e; portable vs M_PI)
 #include <fstream>
 #include <unordered_map>
 #include <iostream>
@@ -237,8 +238,8 @@ inline Value make_math_namespace() {
   // round-half-to-even (banker's rounding, matching Python's built-in round()).
   ns.initialize("round", float_to_long ([](double x) { return std::rint(x); }), false);
 
-  ns.initialize("pi",  Value(M_PI), false);
-  ns.initialize("e",   Value(M_E), false);
+  ns.initialize("pi",  Value(std::numbers::pi), false);
+  ns.initialize("e",   Value(std::numbers::e), false);
   ns.initialize("inf", Value(std::numeric_limits<double>::infinity()), false);
   ns.initialize("nan", Value(std::numeric_limits<double>::quiet_NaN()), false);
 
@@ -1330,7 +1331,7 @@ inline std::string format_iso_nanos(int64_t nanos, bool utc) {
   if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
   std::string tz_str = "Z";
   if (!utc) {
-    auto offset = tm.tm_gmtoff;
+    auto offset = os_gmtoff(tm, t);
     int sign = offset < 0 ? -1 : 1;
     long abs_off = std::abs(static_cast<long>(offset));
     tz_str = std::format("{}{:02d}:{:02d}",
@@ -3210,14 +3211,16 @@ inline Value make_proc_handle(long pid, int out_fd, int err_fd) {
   return Value(std::move(h));
 }
 
-#if defined(CULEBRA_HTTP_ENABLED)
-// Defined later in this header; forward-declared for the Http helpers' `json:`
-// kwarg and `r.json()` method.
+// Defined later in this header; forward-declared here (before the HTTP block and
+// with defaults) so both the Http helpers' `json:` kwarg / `r.json()` method AND
+// the debug adapter (dap.h, an HTTP-independent consumer) see the defaulted
+// signature regardless of whether the Http namespace is compiled in.
 inline std::string json_stringify(const Value& v, int indent, bool sort_keys,
                                   int depth);
 inline Value json_parse(std::string_view s, std::string_view number_mode = "auto",
                         bool jsonc = false);
 
+#if defined(CULEBRA_HTTP_ENABLED)
 // Convert the optional `headers` kwarg (nil or an Object of String values)
 // into the header list the http core wants. `ctx` tags type errors.
 inline culebra::http::HeaderList http_parse_headers(const Value& hv,
@@ -5915,7 +5918,11 @@ inline void setup_built_in_functions(
   env.initialize("IO", make_io_namespace(), false);
   env.initialize("FS", make_fs_namespace(), false);
   env.initialize("File", make_file_namespace(), false);
+#if defined(CULEBRA_HTTP_ENABLED)
+  // make_embed_namespace lives in the HTTP block (Embed pairs with
+  // srv.static); register it only when that block is compiled.
   env.initialize("Embed", make_embed_namespace(), false);
+#endif
   // Wrapped C++ classes (wrap.h declarations, e.g. foreign_binding.h's
   // `__Foreign.Counter`): one namespace object per declared ns, holding
   // one class object (ctor + statics) per class. Registered at

@@ -1,0 +1,36 @@
+# CMake generated Testfile for 
+# Source directory: /Users/yuji/Projects/culebra-win
+# Build directory: /Users/yuji/Projects/culebra-win/build-phase1
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test([=[mt_smoke]=] "/Users/yuji/Projects/culebra-win/build-phase1/smoke_suite" "mt")
+set_tests_properties([=[mt_smoke]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;743;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[mi_smoke]=] "/Users/yuji/Projects/culebra-win/build-phase1/smoke_suite" "mi")
+set_tests_properties([=[mi_smoke]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;743;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[define_smoke]=] "/Users/yuji/Projects/culebra-win/build-phase1/smoke_suite" "define")
+set_tests_properties([=[define_smoke]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;743;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[signal_smoke]=] "/Users/yuji/Projects/culebra-win/build-phase1/smoke_suite" "signal")
+set_tests_properties([=[signal_smoke]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;743;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[utf8_invalid_smoke]=] "/Users/yuji/Projects/culebra-win/build-phase1/smoke_suite" "utf8_invalid")
+set_tests_properties([=[utf8_invalid_smoke]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;743;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[dap_test]=] "/Users/yuji/Projects/culebra-win/build-phase1/dap_test" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[dap_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;750;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[sqlite_test]=] "/Users/yuji/Projects/culebra-win/build-phase1/sqlite_test")
+set_tests_properties([=[sqlite_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;773;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[jit_gc_phase0]=] "/Users/yuji/Projects/culebra-win/build-phase1/jit_gc_phase0")
+set_tests_properties([=[jit_gc_phase0]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;782;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[jit_gc_collect]=] "/Users/yuji/Projects/culebra-win/build-phase1/jit_gc_collect")
+set_tests_properties([=[jit_gc_collect]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;782;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[lint_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/lint_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[lint_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;789;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[fmt_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/fmt_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[fmt_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;796;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[jit_error_pos_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/jit_error_pos_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[jit_error_pos_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;803;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[signal_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/signal_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[signal_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;810;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[io_stdin_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/io_stdin_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[io_stdin_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;817;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
+add_test([=[log_test]=] "bash" "/Users/yuji/Projects/culebra-win/tests/log_test.sh" "/Users/yuji/Projects/culebra-win/build-phase1/culebra")
+set_tests_properties([=[log_test]=] PROPERTIES  _BACKTRACE_TRIPLES "/Users/yuji/Projects/culebra-win/CMakeLists.txt;824;add_test;/Users/yuji/Projects/culebra-win/CMakeLists.txt;0;")
