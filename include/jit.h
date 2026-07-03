@@ -23061,11 +23061,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_map(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            auto f = compile(cb_ast).consume();
-            auto out = emit_call(module_->getFunction(rt::iter_map),
-                                 {it, id, extract_tag(f), extract_data(f),
-                                  ho_line, ho_col});
-            emit_value_release(f);
+            // Scope the callback so its Owned dtor releases before
+            // make_object emits IR — same point as the hand-placed release.
+            llvm::Value* out;
+            {
+              auto f = compile(cb_ast);
+              out = emit_call(module_->getFunction(rt::iter_map),
+                              {it, id, extract_tag(f.borrow()),
+                               extract_data(f.borrow()), ho_line, ho_col});
+            }
             return make_object(out);
           });
     }
@@ -23101,11 +23105,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_array_filter(arrPtr, cb_ast);
           },
           [&](llvm::Value* it, llvm::Value* id) {
-            auto f = compile(cb_ast).consume();
-            auto out = emit_call(module_->getFunction(rt::iter_filter),
-                                 {it, id, extract_tag(f), extract_data(f),
-                                  ho_line, ho_col});
-            emit_value_release(f);
+            // Scope the callback so its Owned dtor releases before
+            // make_object emits IR — same point as the hand-placed release.
+            llvm::Value* out;
+            {
+              auto f = compile(cb_ast);
+              out = emit_call(module_->getFunction(rt::iter_filter),
+                              {it, id, extract_tag(f.borrow()),
+                               extract_data(f.borrow()), ho_line, ho_col});
+            }
             return make_object(out);
           });
     }
@@ -23178,32 +23186,36 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           });
     }
     auto init = compile(*argsAst.nodes[0]).consume();
-    auto f = compile(cb_ast).consume();
-    auto it_tag = extract_tag(init);
-    auto it_data = extract_data(init);
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto outTag =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
-    auto outData =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
-    dispatch_arr_iter(
-        "reduce",
-        [&](llvm::Value* arrPtr) {
-          emit_call(module_->getFunction(rt::array_reduce),
-                    {arrPtr, it_tag, it_data, ft, fd, ho_line, ho_col,
-                     outTag, outData});
-          return make_nil();  // ignored; real result via out-params
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          emit_call(module_->getFunction(rt::iter_reduce),
-                    {it, id, it_tag, it_data, ft, fd, ho_line, ho_col,
-                     outTag, outData});
-          return make_nil();
-        });
-    emit_value_release(f);
+    // `init`'s +1 is consumed by the runtime reduce (the accumulator seed).
+    // Scope the callback so its Owned dtor releases after dispatch but before
+    // the out-param loads — exactly where the hand-placed release stood.
+    llvm::Value* outTag;
+    llvm::Value* outData;
+    {
+      auto f = compile(cb_ast);
+      auto it_tag = extract_tag(init);
+      auto it_data = extract_data(init);
+      auto ft = extract_tag(f.borrow());
+      auto fd = extract_data(f.borrow());
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "red.tag");
+      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "red.data");
+      dispatch_arr_iter(
+          "reduce",
+          [&](llvm::Value* arrPtr) {
+            emit_call(module_->getFunction(rt::array_reduce),
+                      {arrPtr, it_tag, it_data, ft, fd, ho_line, ho_col,
+                       outTag, outData});
+            return make_nil();  // ignored; real result via out-params
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            emit_call(module_->getFunction(rt::iter_reduce),
+                      {it, id, it_tag, it_data, ft, fd, ho_line, ho_col,
+                       outTag, outData});
+            return make_nil();
+          });
+    }
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
@@ -23212,28 +23224,31 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if (method == "find" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto outTag =
-        entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
-    auto outData =
-        entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
-    dispatch_arr_iter(
-        "find",
-        [&](llvm::Value* arrPtr) {
-          emit_call(module_->getFunction(rt::array_find),
-                    {arrPtr, ft, fd, ho_line, ho_col, outTag, outData});
-          return make_nil();
-        },
-        [&](llvm::Value* it, llvm::Value* id) {
-          emit_call(module_->getFunction(rt::iter_find),
-                    {it, id, ft, fd, ho_line, ho_col, outTag, outData});
-          return make_nil();
-        });
-    emit_value_release(f);
+    // Scope the callback so its Owned dtor releases after dispatch but before
+    // the out-param loads — exactly where the hand-placed release stood.
+    llvm::Value* outTag;
+    llvm::Value* outData;
+    {
+      auto f = compile(*argsAst.nodes[0]);
+      auto ft = extract_tag(f.borrow());
+      auto fd = extract_data(f.borrow());
+      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+      outTag = entryB.CreateAlloca(builder_.getInt8Ty(), nullptr, "find.tag");
+      outData = entryB.CreateAlloca(builder_.getInt64Ty(), nullptr, "find.data");
+      dispatch_arr_iter(
+          "find",
+          [&](llvm::Value* arrPtr) {
+            emit_call(module_->getFunction(rt::array_find),
+                      {arrPtr, ft, fd, ho_line, ho_col, outTag, outData});
+            return make_nil();
+          },
+          [&](llvm::Value* it, llvm::Value* id) {
+            emit_call(module_->getFunction(rt::iter_find),
+                      {it, id, ft, fd, ho_line, ho_col, outTag, outData});
+            return make_nil();
+          });
+    }
     auto tagLoaded = builder_.CreateLoad(builder_.getInt8Ty(), outTag);
     auto dataLoaded = builder_.CreateLoad(builder_.getInt64Ty(), outData);
     llvm::Value* result = make_value(tagLoaded, dataLoaded);
