@@ -23069,10 +23069,14 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return make_object(out);
           });
     }
-    auto f = compile(cb_ast).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    auto result = dispatch_arr_iter(
+    // The callback is borrowed by both dispatch arms (its tag/data are read,
+    // never stored); the Owned handle's dtor releases it once at the merge
+    // point, exactly where the hand-placed release stood (a bare `return
+    // <value>` emits no IR between).
+    auto f = compile(cb_ast);
+    auto ft = extract_tag(f.borrow());
+    auto fd = extract_data(f.borrow());
+    return dispatch_arr_iter(
         "map",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -23085,8 +23089,6 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
         });
-    emit_value_release(f);
-    return result;
   }
 
   if (method == "filter" && argsAst.nodes.size() == 1) {
@@ -23107,10 +23109,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return make_object(out);
           });
     }
-    auto f = compile(cb_ast).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    auto result = dispatch_arr_iter(
+    // Callback borrowed by both arms; Owned dtor releases once at the merge.
+    auto f = compile(cb_ast);
+    auto ft = extract_tag(f.borrow());
+    auto fd = extract_data(f.borrow());
+    return dispatch_arr_iter(
         "filter",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -23123,8 +23126,6 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
         });
-    emit_value_release(f);
-    return result;
   }
 
   if (method == "for_each" && argsAst.nodes.size() == 1) {
@@ -23142,10 +23143,11 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
             return emit_inlined_iter_for_each(make_value(it, id), cb_ast);
           });
     }
-    auto f = compile(cb_ast).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    auto result = dispatch_arr_iter(
+    // Callback borrowed by both arms; Owned dtor releases once at the merge.
+    auto f = compile(cb_ast);
+    auto ft = extract_tag(f.borrow());
+    auto fd = extract_data(f.borrow());
+    return dispatch_arr_iter(
         "foreach",
         [&](llvm::Value* arrPtr) {
           emit_call(module_->getFunction(rt::array_for_each),
@@ -23157,8 +23159,6 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                     {it, id, ft, fd, ho_line, ho_col});
           return make_nil();
         });
-    emit_value_release(f);
-    return result;
   }
 
   if (method == "reduce" && argsAst.nodes.size() == 2) {
@@ -23242,12 +23242,13 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
 
   if ((method == "any" || method == "all") && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
+    // Callback borrowed by both arms; Owned dtor releases once at the merge.
+    auto f = compile(*argsAst.nodes[0]);
+    auto ft = extract_tag(f.borrow());
+    auto fd = extract_data(f.borrow());
     auto arr_rt = method == "any" ? rt::array_any : rt::array_all;
     auto iter_rt = method == "any" ? rt::iter_any : rt::iter_all;
-    auto result = dispatch_arr_iter(
+    return dispatch_arr_iter(
         method.c_str(),
         [&](llvm::Value* arrPtr) {
           auto r = emit_call(module_->getFunction(arr_rt),
@@ -23261,16 +23262,15 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
           return make_bool(
               builder_.CreateICmpNE(r, builder_.getInt64(0)));
         });
-    emit_value_release(f);
-    return result;
   }
 
   if (method == "flat_map" && argsAst.nodes.size() == 1) {
     hof_cb = argsAst.nodes[0].get();
-    auto f = compile(*argsAst.nodes[0]).consume();
-    auto ft = extract_tag(f);
-    auto fd = extract_data(f);
-    auto result = dispatch_arr_iter(
+    // Callback borrowed by both arms; Owned dtor releases once at the merge.
+    auto f = compile(*argsAst.nodes[0]);
+    auto ft = extract_tag(f.borrow());
+    auto fd = extract_data(f.borrow());
+    return dispatch_arr_iter(
         "flat_map",
         [&](llvm::Value* arrPtr) {
           auto out = emit_call(
@@ -23283,8 +23283,6 @@ inline llvm::Value* JIT::compile_builtin_method(const std::string& method,
                                {it, id, ft, fd, ho_line, ho_col});
           return make_object(out);
         });
-    emit_value_release(f);
-    return result;
   }
 
   // sum / product / min / max — integer aggregates, same shape for
