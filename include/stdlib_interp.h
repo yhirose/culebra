@@ -1978,6 +1978,41 @@ inline Value make_tensor_namespace() {
           "Any"sv)),
       false);
 
+  // Device selection: which backend evaluates tensor ops. Process-global
+  // (a single tl device enum shared by interp and JIT). use_auto picks per
+  // op; gpu_available() reports whether a GPU backend is present at runtime
+  // (Metal on macOS; false where none is compiled in / reachable).
+  ns.initialize(
+      "use_cpu",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+        tensor_use_cpu();
+        return Value();
+      })),
+      false);
+  ns.initialize(
+      "use_gpu",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+        tensor_use_gpu();
+        return Value();
+      })),
+      false);
+  ns.initialize(
+      "use_auto",
+      Value(FunctionValue({}, [](std::shared_ptr<Environment>) {
+        tensor_use_auto();
+        return Value();
+      })),
+      false);
+  ns.initialize(
+      "gpu_available",
+      Value(FunctionValue(
+          {},
+          [](std::shared_ptr<Environment>) {
+            return Value(tensor_gpu_available());
+          },
+          "Bool"sv)),
+      false);
+
   return Value(std::move(ns));
 }
 

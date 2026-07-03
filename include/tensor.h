@@ -154,6 +154,16 @@ inline auto _tl_guard(F&& f) -> decltype(f()) {
 // creates gets device-backed storage.
 CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap();
 
+// Device selection (Tensor.use_cpu/use_gpu/use_auto/gpu_available). The
+// setters only write tl's global device enum — backend-free, so they stay
+// plain inline. gpu_available() reaches tl::gpu_available() ->
+// metal::available(), which references the Metal device; it is choked like
+// the eval entry so a no-tensor binary (weak stub -> false) links no Metal.
+inline void tensor_use_cpu() { tl::use_cpu(); }
+inline void tensor_use_gpu() { tl::use_gpu(); }
+inline void tensor_use_auto() { tl::use_auto(); }
+CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available();
+
 // Tensor — an Op-tagged autograd tape node whose value is a tl::array
 // (lazy graph node, zero-copy view, or materialized buffer).
 //
@@ -956,6 +966,14 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
     t.value.eval();
     return 0;
   });
+#endif
+}
+
+CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available() {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  return false;  // no backend linked in a no-tensor binary
+#else
+  return tl::gpu_available();
 #endif
 }
 

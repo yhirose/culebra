@@ -5266,6 +5266,25 @@ inline JitValue _ns_tensor_eval(JitValue* a, int64_t n) {
   return _ns_adapt::v_nil();
 }
 
+// Device selection. The setters call tl through backend-free wrappers; the
+// query is choked (weak stub -> false) so a no-tensor binary links no Metal
+// even though the dispatch table retains all these adapters.
+inline JitValue _ns_tensor_use_cpu(JitValue*, int64_t) {
+  culebra::tensor_use_cpu();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_tensor_use_gpu(JitValue*, int64_t) {
+  culebra::tensor_use_gpu();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_tensor_use_auto(JitValue*, int64_t) {
+  culebra::tensor_use_auto();
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_tensor_gpu_available(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra::tensor_gpu_available());
+}
+
 // --- The dispatch table ---
 
 //===-- Regex: the `Regex` namespace functions. Like GC.stat, no fast-path
@@ -5820,6 +5839,10 @@ inline const NsMethod kNsMethods[] = {
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
   {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
+  {"Tensor", "use_cpu",       0, &_ns_tensor_use_cpu},
+  {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},
+  {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
+  {"Tensor", "gpu_available", 0, &_ns_tensor_gpu_available},
 };
 
 // Namespace-level constants (Math.pi, etc). Slot values are immutable
