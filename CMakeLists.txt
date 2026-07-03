@@ -56,9 +56,13 @@ endif()
 
 include_directories(./include)
 # cpp-tensorlib (header-only): the Tensor execution engine (lazy graph,
-# fusion, Accelerate/Metal backends). Sibling checkout by default; point
-# CULEBRA_TENSORLIB_DIR elsewhere (or at a future vendored copy) to override.
-set(CULEBRA_TENSORLIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cpp-tensorlib/include"
+# fusion, Accelerate/Metal backends). Vendored as a git submodule under
+# vendor/ so a fresh clone builds with `--recursive`. Override
+# CULEBRA_TENSORLIB_DIR to point at a sibling checkout for co-development.
+# Presence is checked in the CULEBRA_ENABLE_TENSOR block below (the option
+# is defined further down).
+set(CULEBRA_TENSORLIB_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-tensorlib/include"
     CACHE PATH "cpp-tensorlib include directory")
 include_directories(${CULEBRA_TENSORLIB_DIR})
 include_directories(./vendor/cpp-peglib)
@@ -540,6 +544,12 @@ endif()
 option(CULEBRA_ENABLE_TENSOR "Enable builtin Tensor type" ON)
 
 if(CULEBRA_ENABLE_TENSOR)
+  if(NOT EXISTS "${CULEBRA_TENSORLIB_DIR}/tensorlib.h")
+    message(FATAL_ERROR
+      "cpp-tensorlib headers not found at ${CULEBRA_TENSORLIB_DIR}. "
+      "Run `git submodule update --init vendor/cpp-tensorlib`, or pass "
+      "-DCULEBRA_TENSORLIB_DIR=<path> to a checkout.")
+  endif()
   add_compile_definitions(CULEBRA_TENSOR_ENABLED)
   if(APPLE)
     set(_blas_link
