@@ -24,8 +24,8 @@
 #include <climits>   // PATH_MAX (Sys.executable)
 #include <cstring>   // strlen (Sys.executable)
 #include <cstdio>    // Windows stdin fallback (read_stdin_*_interruptible)
-#include <unistd.h>  // readlink (Sys.executable), read (interruptible stdin)
 #if !defined(_WIN32)
+#include <unistd.h>  // readlink (Sys.executable), read (interruptible stdin)
 #include <poll.h>    // interruptible stdin (poll fd 0 between interrupt checks)
 #endif
 #if defined(__APPLE__)

@@ -28,18 +28,24 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
-#include <fcntl.h>
-#include <poll.h>
 #include <string>
-#include <sys/wait.h>
 #include <system_error>
-#include <unistd.h>
 #include <utility>
 #include <vector>
+// The subprocess machinery below is POSIX-only; on Windows every entry point is
+// a stub that raises before touching any of these (see the _WIN32 branches).
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <shared.h>  // culebra_g_sigint / interrupt_requested / throw_if_interrupted
 
+#if !defined(_WIN32)
 extern char** environ;
+#endif
 
 namespace culebra::proc {
 
