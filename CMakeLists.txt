@@ -613,6 +613,13 @@ endif()
 if(WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(culebra Threads::Threads ws2_32)
+  # std::print/println (C++23) resolves the Windows console at runtime via
+  # __open_terminal / __write_to_terminal, which libstdc++ ships in the separate
+  # experimental library — not pulled in by -static-libstdc++. Link it explicitly
+  # (before libstdc++, which the g++ driver appends last) so std::print links.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(culebra stdc++exp)
+  endif()
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
