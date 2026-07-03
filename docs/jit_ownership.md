@@ -423,42 +423,59 @@ Corollary: no correct codegen path contains a bare, hand-placed
 - **The through-line work (in progress):** convert those `.consume()`
   clusters to real `Owned` flow (dtor releases, borrows) cluster by cluster,
   deleting the hand-placed retain/release as each converts — until §5's
-  invariants hold codebase-wide. **Done so far** (slices A1–A4, all verified
-  `--emit-llvm` 0-diff — hand-placed `emit_value_release` in `jit.h` 81→52):
+  invariants hold codebase-wide. **Done so far** (slices A1–A6, all verified
+  `--emit-llvm` 0-diff — hand-placed `emit_value_release` in `jit.h` 81→45):
   every `compile_builtin_method` HOF callback (map/filter/for_each/reduce/
-  find/any-all/flat_map) and every builtin-method operand arg (tensor
-  pow/reshape/dot/linear_sigmoid; set union/intersect/diff/sym_diff/subset/
-  superset; string join/index_of/contains/tr/trim/split/split_iter/
-  starts_with/ends_with) now holds its value as `Owned`. Two shapes recur:
-  where the release sat immediately before `return <value>` the handle just
-  falls off scope (a bare `return <value>` emits no IR, so the dtor lands at
-  the same point); where IR follows the release (a `make_*`, a branch arm, an
-  out-param load) use `Owned::drop()` — release now, mark spent — or a C++
-  block scope. **`Owned::drop()` (§4.2) was added for exactly this.**
-- **The straight-line clusters are the tractable part; the rest is
-  loop-body.** The remaining ~52 bare releases live in inline-loop emitters
-  (`emit_inlined_*`, `*_inline_loop`) and destructuring (`emit_array_pattern`)
-  — values whose lifetime is one loop *iteration*, not a straight line. A
-  scope-exit `Owned` dtor fires at the builder's current point, which inside
-  an emitted loop is the wrong place, so these are **out of scope for the
-  plain handle (§4.2)**: they need either an `Owned` scoped to the loop-body
-  region (works for a per-iteration temporary created-and-released within one
-  turn) or, for a value released at the loop's natural exhaustion point, a
-  documented invariant carve-out — a bare release inside a loop-body emitter
-  whose lifetime is provably one iteration is *not* migration debt. Decide
-  per-site; do not force the last releases onto `Owned` where it distorts the
-  code. Beware release-position changes: e.g. `compile_statements` frees the
-  previous statement's result *before* compiling the next one — a naive
-  move-assign rewrite would emit the release after it, shifting drop timing
-  observed by the interpreter. A probe sweep found **no normal-path leaks**
-  in the remaining straight-line clusters (statement discard / `cond` /
-  guards / interpolation / `??` are flat; `if`/`while`/logical conditions
-  only accept Bool/Long/Float, so a heap `+1` can't reach them on the normal
-  path — only their *throw* edges carry heap refs, and those are the
-  per-region cleanup pads' job, §4.3). Also remaining: the method-dispatch
-  children's internals (`compile_user_method_over_builtin` / set-mutate /
-  method-or-ufcs, which still share consumed raws across their
-  runtime-exclusive arms).
+  find/any-all/flat_map, and the lazy-iterator factories take_while/chain/zip
+  plus the array sorters sort_by/sorted_by — A5) and every builtin-method
+  operand arg (tensor pow/reshape/dot/linear_sigmoid; set union/intersect/
+  diff/sym_diff/subset/superset; string join/index_of/contains/tr/trim/split/
+  split_iter/starts_with/ends_with) now holds its value as `Owned`. Two
+  further straight-line sites went the same way (A6): a defer thunk's closure
+  (`own(emit_closure_build(...))`) and the array rest-destructure's sliced
+  tail (a two-arm consume-or-drop — the sink `..._` arm drops, the named arm
+  hands its `+1` to `declare_local`). Two shapes recur: where the release sat
+  immediately before `return <value>` the handle just falls off scope (a bare
+  `return <value>` emits no IR, so the dtor lands at the same point); where IR
+  follows the release (a `make_*`, a branch arm, an out-param load) use
+  `Owned::drop()` — release now, mark spent — or a C++ block scope.
+  **`Owned::drop()` (§4.2) was added for exactly this.**
+- **The straight-line flip is complete; every remaining bare release is a
+  documented carve-out.** After A1–A6 the ~45 `emit_value_release` left in
+  `jit.h` were audited site-by-site and each falls into a class the `Owned`
+  handle is *not* meant to cover (§4.2). None is a clean straight-line
+  `compile()`-temp discard — those are all converted. The carve-out classes:
+  - **loop-body / inline-loop emitters** (`emit_inlined_*`, `*_inline_loop`,
+    the for-in/iter body and dispose/iterable cleanup, the build-guard cleanup
+    loop): a per-*iteration* `+1` whose scope-exit dtor would fire at the
+    builder's current point — the wrong place inside an emitted loop.
+  - **slot / scope primitives** (`store_slot_raw` releasing the old value,
+    the scope-slot release helper): infrastructure below the `Owned` layer.
+  - **threaded chain values** (`emit_index_step`'s receiver, the postfix
+    lvalue temporaries): the value is a function *parameter* handed down a
+    chain, not a straight-line temporary; ownership is threaded, not scoped.
+  - **branch-spanning consume-or-release** (the non-literal index `key`
+    consumed by the point arm but released by the slice arm; compound-assign
+    `cur`/`rval`/`lval` across the in-place-Tensor rebind branches): one arm
+    consumes, another releases — a single dtor can't model both.
+  - **conditional release** (the defer body result, freed only when the block
+    has no terminator; a scope-exit dtor would emit a release into the
+    terminated/unreachable path).
+  - **statement-sequencing** (`compile_statements` / standalone block): the
+    result is loop-accumulated and freed *before* the next statement compiles
+    — a naive move-assign rewrite shifts the drop past it, changing timing the
+    interpreter observes.
+  - **shared-receiver dispatch children** (`compile_user_method_over_builtin`
+    / set-mutate / method-or-ufcs): the receiver/callee raw is shared across
+    runtime-exclusive arms; consumed once per path, not scoped.
+  A probe sweep found **no normal-path leaks** across these (statement
+  discard / `cond` / guards / interpolation / `??` are flat; `if`/`while`/
+  logical conditions only accept Bool/Long/Float, so a heap `+1` can't reach
+  them on the normal path — only their *throw* edges carry heap refs, the
+  per-region cleanup pads' job, §4.3). The 28 `emit_value_retain` are the
+  dual set (slot stores, pattern bindings, `this` hand-offs) — legitimate
+  ownership *generation*, not debt. These bare calls stay bare, guarded by the
+  Level-2 CI leak battery ([[project_gc_safety_phase_plan]]).
 - **Unblocks in order:** (1) the rooting/ownership split (§2/§4.5) is closed
   by evidence — both shipping collectors root in-flight temporaries
   independently, so removing a redundant ref needs an accounting proof, not
