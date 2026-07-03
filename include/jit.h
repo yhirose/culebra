@@ -3111,7 +3111,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
     auto* out = culebra_runtime_array_new();
     for (int64_t i = 0; i < dims[0]; i++) {
       culebra_runtime_array_push(out, TAG_FLOAT,
-                                  read_at(i * impl.strides[0]));
+                                  read_at(i * impl.strides()[0]));
     }
     return out;
   }
@@ -3122,7 +3122,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_to_array(
       for (int64_t j = 0; j < dims[1]; j++) {
         culebra_runtime_array_push(
             row, TAG_FLOAT,
-            read_at(i * impl.strides[0] + j * impl.strides[1]));
+            read_at(i * impl.strides()[0] + j * impl.strides()[1]));
       }
       culebra_runtime_array_push(out, TAG_ARRAY,
                                   reinterpret_cast<int64_t>(row));

@@ -4555,7 +4555,7 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                               out.values->reserve(dims[0]);
                               for (int64_t i = 0; i < dims[0]; i++) {
                                 out.values->push_back(
-                                    Value(read_at(i * self->strides[0])));
+                                    Value(read_at(i * self->strides()[0])));
                               }
                               return Value(std::move(out));
                             }
@@ -4567,8 +4567,8 @@ inline std::unordered_map<std::string_view, Value>& TensorValue::builtins() {
                                 row.values->reserve(dims[1]);
                                 for (int64_t j = 0; j < dims[1]; j++) {
                                   row.values->push_back(Value(read_at(
-                                      i * self->strides[0] +
-                                      j * self->strides[1])));
+                                      i * self->strides()[0] +
+                                      j * self->strides()[1])));
                                 }
                                 out.values->push_back(Value(std::move(row)));
                               }

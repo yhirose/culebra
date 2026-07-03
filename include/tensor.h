@@ -173,7 +173,6 @@ struct TensorImpl {
   Op op = Op::Const;
   TensorShape shape;              // mirror of value.shape(); set at build
   Dtype dtype = Dtype::F32;
-  std::vector<int64_t> strides;   // mirror of value.strides()
   tl::array value;
   std::vector<std::shared_ptr<TensorImpl>> inputs;
 
@@ -198,7 +197,6 @@ struct TensorImpl {
   TensorImpl(TensorShape s, Dtype d) : shape(std::move(s)), dtype(d) {
     tensor_rt_bootstrap();
     value = _tl_guard([&] { return tl::array::zeros(shape.dims); });
-    strides = value.strides();
   }
 
   // Engine-node ctor: op tag + built tl expression + autograd inputs.
@@ -212,8 +210,11 @@ struct TensorImpl {
         is_view(view) {
     tensor_rt_bootstrap();
     shape = TensorShape(std::vector<int64_t>(value.shape()));
-    strides = value.strides();
   }
+
+  // Element strides (tl's, no mirror — a per-op vector copy was measurable
+  // in tiny-tensor workloads).
+  const std::vector<int64_t>& strides() const { return value.strides(); }
 
   bool is_evaluated() const { return value.materialized(); }
   bool is_contiguous() const { return value.contiguous(); }
@@ -380,6 +381,24 @@ inline TensorPtr tensor_randn(TensorShape s, Dtype d) {
   return t;
 }
 
+// Allocation-free validation twin of tensor_broadcast_shape: hot op
+// builders only need the throw, not the shape (tensorlib recomputes it).
+inline void tensor_broadcast_check(const TensorShape& a,
+                                   const TensorShape& b) {
+  if (a == b || a.dims.empty() || b.dims.empty()) return;
+  size_t ar = a.dims.size();
+  size_t br = b.dims.size();
+  size_t out_rank = std::max(ar, br);
+  for (size_t i = 0; i < out_rank; i++) {
+    int64_t ad = (i + ar >= out_rank) ? a.dims[i - (out_rank - ar)] : 1;
+    int64_t bd = (i + br >= out_rank) ? b.dims[i - (out_rank - br)] : 1;
+    if (ad != bd && ad != 1 && bd != 1) {
+      throw CulebraError("ValueError",
+                         "Tensor: shapes not broadcast-compatible.");
+    }
+  }
+}
+
 // numpy / silarray broadcast rules: align trailing dims; each pair
 // must be equal or one side must be 1. Output dim is the max. Empty
 // (rank-0) shapes act as scalars. Kept culebra-side for the error kind
@@ -453,7 +472,7 @@ inline TensorPtr tensor_binop(Op op, TensorPtr a, TensorPtr b) {
   if (a->dtype != b->dtype) {
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
-  tensor_broadcast_shape(a->shape, b->shape);  // culebra-worded error
+  tensor_broadcast_check(a->shape, b->shape);  // culebra-worded error
   bool b_scalar = op != Op::Pow && b->shape.rank() == 0 &&
                   b->value.materialized();
   bool a_scalar = op != Op::Pow && a->shape.rank() == 0 &&
