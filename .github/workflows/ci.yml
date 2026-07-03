@@ -240,11 +240,32 @@ jobs:
           check("UPPER".lower() == "upper" && "abc".upper() == "ABC", "case")
           let o = {"a": 1, "b": 2}
           check(o.keys().sorted_by(fn(k) { k }).join(",") == "a,b", "keys")
-          # The subprocess subsystem is stubbed on Windows — it must raise, not
-          # crash, confirming the _WIN32 stub path is wired correctly.
-          let mut raised = false
-          try { Proc.run(["cmd", "/c", "echo hi"]) } catch e { raised = true }
-          check(raised, "Proc stub raises on Windows")
+
+          # Phase 2: Proc runs real subprocesses via CreateProcess/CreatePipe.
+          let r = Proc.run(["cmd", "/c", "echo hi"])
+          check(r.ok && r.code == 0, "Proc.run exit code")
+          check(r.stdout.contains("hi"), "Proc.run stdout capture")
+          # Non-zero exit is reported, not raised.
+          let bad = Proc.run(["cmd", "/c", "exit 3"])
+          check(!bad.ok && bad.code == 3, "Proc.run non-zero exit")
+          # stdin is fed to the child (findstr echoes lines matching the pattern).
+          let f = Proc.run(["findstr", "x"], stdin: "x marks\nno match\n")
+          check(f.stdout.contains("x marks") && !f.stdout.contains("no match"),
+                "Proc.run stdin feed")
+          # allSettled batch across two commands, results in input order.
+          let batch = Proc.all([["cmd", "/c", "echo one"], ["cmd", "/c", "echo two"]])
+          check(batch[0].stdout.contains("one") && batch[1].stdout.contains("two"),
+                "Proc.all batch order")
+          # Live handle: spawn, then wait for the reaped result.
+          let h = Proc.spawn(["cmd", "/c", "echo spawned"])
+          let hr = h.wait()
+          check(hr.stdout.contains("spawned"), "Proc.spawn + wait")
+
+          # Phase 2: Term primitives are callable off-tty (raw mode no-ops, size
+          # falls back / queries the console, width is pure).
+          check(Term.cols() > 0 && Term.rows() > 0, "Term size")
+          check(Term.width("abc") == 3, "Term display width")
+
           print("smoke ok")
           EOF
           ./build-win/culebra.exe smoke.cul

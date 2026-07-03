@@ -32,13 +32,21 @@
 #include <system_error>
 #include <utility>
 #include <vector>
-// The subprocess machinery below is POSIX-only; on Windows every entry point is
-// a stub that raises before touching any of these (see the _WIN32 branches).
+// The POSIX path uses fork/exec/pipe/poll; the Windows path (below the _WIN32
+// branches) uses CreateProcess/CreatePipe with per-child reader threads.
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <algorithm>  // std::min
+#include <cctype>     // std::tolower (case-insensitive env-key match)
+#include <map>        // live-handle registry keyed by an opaque id
+#include <memory>     // unique_ptr — stable buffer address across WinChild moves
+#include <mutex>      // guards the live-handle registry across parallel isolates
+#include <thread>     // per-child stdout/stderr reader threads
+#include <os_compat.h>  // guarded <windows.h> (NOMINMAX + WIN32_LEAN_AND_MEAN)
 #endif
 
 #include <shared.h>  // culebra_g_sigint / interrupt_requested / throw_if_interrupted
@@ -757,37 +765,463 @@ inline std::pair<size_t, RunOutcome> run_race(
   return {winner, std::move(win_oc)};
 }
 
-#else  // _WIN32 — subprocess execution is not yet ported (Phase 2 will use
-       // CreateProcess / CreatePipe / Job Objects). The entry points raise a
-       // clear error so the interpreter compiles and Proc.* fails at call time.
+#else  // _WIN32 — CreateProcess/CreatePipe port. Each child gets a reader thread
+       // per output pipe so a large stdout and a stdin feed cannot deadlock (the
+       // POSIX path multiplexes the three fds with poll() on one thread instead).
+       // inherit_fds (cross-process SharedBuffer) is Phase 3, so it is ignored.
 
-[[noreturn]] inline void _win_no_proc() {
-  throw CulebraError(
-      "RuntimeError",
-      "Proc (subprocess execution) is not yet supported on Windows");
+namespace _detail {
+
+// long long, not long: on LLP64 Windows `long` is 32-bit and would truncate the
+// 64-bit millisecond count (wrapping ~every 24.8 days of uptime).
+inline long long now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
 }
+inline constexpr int kInterruptPollMs = 100;
+
+inline bool interrupt_pending() {
+  return culebra_g_sigint.load(std::memory_order_relaxed) || interrupt_requested();
+}
+inline int clamp_interrupt_timeout(long long pto) {
+  return (pto < 0 || pto > kInterruptPollMs) ? kInterruptPollMs
+                                             : static_cast<int>(pto);
+}
+
+// Close-and-null and join-the-two-readers are the invariants WinChild and
+// WinLive both compose, so they live as free helpers here.
+inline void close_handle(HANDLE& h) {
+  if (h) { CloseHandle(h); h = nullptr; }
+}
+inline void join_readers(std::thread& a, std::thread& b) {
+  if (a.joinable()) a.join();
+  if (b.joinable()) b.join();
+}
+
+// argv -> one command line, quoted per the CommandLineToArgvW rules the child's
+// CRT startup uses to split it back into argv. (Backslashes only matter before a
+// quote or at the string's end, hence the run counting.)
+inline std::string quote_arg(const std::string& a) {
+  if (!a.empty() && a.find_first_of(" \t\"") == std::string::npos) return a;
+  std::string out = "\"";
+  size_t bs = 0;
+  for (char c : a) {
+    if (c == '\\') { bs++; continue; }
+    if (c == '"') { out.append(bs * 2 + 1, '\\'); out.push_back('"'); bs = 0; continue; }
+    out.append(bs, '\\'); bs = 0; out.push_back(c);
+  }
+  out.append(bs * 2, '\\');
+  out.push_back('"');
+  return out;
+}
+inline std::string build_command_line(const std::vector<std::string>& argv) {
+  std::string cl;
+  for (size_t i = 0; i < argv.size(); i++) {
+    if (i) cl.push_back(' ');
+    cl += quote_arg(argv[i]);
+  }
+  return cl;
+}
+
+// Merged environment block ("K=V\0K=V\0\0") = parent env with overrides applied
+// (Windows env keys are case-insensitive). Empty return => caller passes NULL so
+// the child inherits the parent environment unchanged.
+inline std::string build_env_block(
+    const std::vector<std::pair<std::string, std::string>>* overrides) {
+  if (!overrides) return {};
+  auto ieq = [](const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++)
+      if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]))
+        return false;
+    return true;
+  };
+  std::string block;
+  char* env = GetEnvironmentStringsA();
+  for (char* p = env; env && *p;) {
+    std::string entry(p);
+    p += entry.size() + 1;
+    // "=X:=..." drive-letter cwd vars start with '=' — keep them verbatim.
+    if (!entry.empty() && entry[0] != '=') {
+      auto eq = entry.find('=');
+      std::string key = eq == std::string::npos ? entry : entry.substr(0, eq);
+      bool overridden = false;
+      for (auto& kv : *overrides)
+        if (ieq(kv.first, key)) { overridden = true; break; }
+      if (overridden) continue;
+    }
+    block += entry;
+    block.push_back('\0');
+  }
+  if (env) FreeEnvironmentStringsA(env);
+  for (auto& kv : *overrides) {
+    block += kv.first; block.push_back('='); block += kv.second;
+    block.push_back('\0');
+  }
+  block.push_back('\0');  // block terminator
+  return block;
+}
+
+// Low-level spawn: create the three redirected pipes, CreateProcess, close the
+// child's ends in the parent, and hand back the process handle + parent-side
+// read ends + stdin write end. Does NOT start reader threads or feed stdin — the
+// caller does that against a stable buffer address (blocking child vs live
+// registry entry). ok=false with err_no/err_what on any failure.
+struct SpawnHandles {
+  HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr, in_wr = nullptr;
+  bool ok = false;
+  int err_no = 0;
+  const char* err_what = "";
+};
+inline SpawnHandles spawn_process(
+    const std::vector<std::string>& argv, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides) {
+  SpawnHandles h;
+  if (argv.empty()) { h.err_no = ERROR_INVALID_PARAMETER; h.err_what = "argv"; return h; }
+
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+  HANDLE out_rd = nullptr, out_wr = nullptr, err_rd = nullptr, err_wr = nullptr,
+         in_rd = nullptr, in_wr = nullptr;
+  auto fail = [&](const char* what) -> SpawnHandles {
+    h.err_no = (int)GetLastError(); h.err_what = what;
+    close_handle(out_rd); close_handle(out_wr); close_handle(err_rd);
+    close_handle(err_wr); close_handle(in_rd); close_handle(in_wr);
+    return h;
+  };
+  if (!CreatePipe(&out_rd, &out_wr, &sa, 0)) return fail("pipe");
+  if (!CreatePipe(&err_rd, &err_wr, &sa, 0)) return fail("pipe");
+  if (!CreatePipe(&in_rd, &in_wr, &sa, 0)) return fail("pipe");
+  // The parent ends must not be inherited by the child — else the child keeps a
+  // copy open and the pipe never reports EOF to the reader.
+  SetHandleInformation(out_rd, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(err_rd, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(in_wr, HANDLE_FLAG_INHERIT, 0);
+
+  std::string cmdline_s = build_command_line(argv);
+  std::vector<char> cmdline(cmdline_s.begin(), cmdline_s.end());
+  cmdline.push_back('\0');  // CreateProcessA may write into this buffer.
+  std::string envblock = build_env_block(env_overrides);
+  std::string cwds = cwd ? *cwd : std::string();
+
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = in_rd; si.hStdOutput = out_wr; si.hStdError = err_wr;
+  PROCESS_INFORMATION pi{};
+  BOOL ok = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
+                           CREATE_NO_WINDOW,
+                           envblock.empty() ? nullptr : envblock.data(),
+                           cwds.empty() ? nullptr : cwds.c_str(), &si, &pi);
+  if (!ok) return fail("CreateProcess");
+  CloseHandle(pi.hThread);
+  close_handle(out_wr); close_handle(err_wr);
+  close_handle(in_rd);  // child's ends, in the parent.
+
+  h.hProcess = pi.hProcess; h.out_rd = out_rd; h.err_rd = err_rd; h.in_wr = in_wr;
+  h.ok = true;
+  return h;
+}
+
+// Drain a pipe to EOF into `dst`. Its own thread, so stdout, stderr and the
+// parent's stdin write all make progress — the reader-thread analogue of the
+// POSIX poll() multiplexing. `dst` must outlive the thread (heap-stable).
+inline void drain_pipe(HANDLE h, std::string* dst) {
+  char buf[65536];
+  DWORD n = 0;
+  while (ReadFile(h, buf, sizeof(buf), &n, nullptr) && n > 0) dst->append(buf, n);
+}
+
+// Feed the whole stdin payload then close so the child sees EOF (MVP one-shot
+// feed, matching the POSIX path). Safe once the reader threads are running.
+inline void feed_and_close_stdin(HANDLE in_wr, const std::string* sd) {
+  if (sd && !sd->empty()) {
+    size_t off = 0;
+    while (off < sd->size()) {
+      DWORD w = 0;
+      DWORD chunk = (DWORD)std::min<size_t>(sd->size() - off, (size_t)1 << 20);
+      if (!WriteFile(in_wr, sd->data() + off, chunk, &w, nullptr) || w == 0)
+        break;  // child closed its stdin early.
+      off += w;
+    }
+  }
+  CloseHandle(in_wr);
+}
+
+// One running (or spawn-failed) child. out/err live on the heap so the reader
+// threads keep a valid pointer across WinChild moves (vector growth, erase).
+// Move-only; the dtor joins the readers and closes the handles.
+struct WinChild {
+  HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr;
+  std::unique_ptr<std::string> out = std::make_unique<std::string>();
+  std::unique_ptr<std::string> err = std::make_unique<std::string>();
+  std::thread out_th, err_th;
+  size_t index = 0;
+  long long deadline_ms = 0;  // absolute now_ms() deadline; 0 == none.
+  bool timed_out = false;
+  bool done = false;  // spawn-failed: outcome holds the reason, no process.
+  RunOutcome outcome;
+
+  WinChild() = default;
+  WinChild(WinChild&&) = default;
+  WinChild& operator=(WinChild&&) = default;
+  WinChild(const WinChild&) = delete;
+  WinChild& operator=(const WinChild&) = delete;
+  ~WinChild() { join_readers(); close_handles(); }
+
+  void join_readers() { _detail::join_readers(out_th, err_th); }
+  void close_handles() {
+    close_handle(out_rd); close_handle(err_rd); close_handle(hProcess);
+  }
+};
+
+inline WinChild spawn_child(
+    const std::vector<std::string>& argv, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const std::string* stdin_data, size_t index) {
+  WinChild c;
+  c.index = index;
+  SpawnHandles h = spawn_process(argv, cwd, env_overrides);
+  if (!h.ok) {
+    c.outcome.err_no = h.err_no; c.outcome.err_what = h.err_what; c.done = true;
+    return c;
+  }
+  c.hProcess = h.hProcess; c.out_rd = h.out_rd; c.err_rd = h.err_rd;
+  c.out_th = std::thread(drain_pipe, h.out_rd, c.out.get());
+  c.err_th = std::thread(drain_pipe, h.err_rd, c.err.get());
+  feed_and_close_stdin(h.in_wr, stdin_data);
+  return c;
+}
+
+inline ProcResult decode_child(WinChild& c) {
+  ProcResult r;
+  r.out = std::move(*c.out);
+  r.err = std::move(*c.err);
+  if (c.timed_out) { r.code = -1; r.ok = false; r.timed_out = true; return r; }
+  DWORD code = 0;
+  GetExitCodeProcess(c.hProcess, &code);
+  r.code = (long)code;
+  r.ok = (code == 0);
+  return r;
+}
+
+// Join readers + decode the exit code into a RunOutcome. Consumes the child.
+inline RunOutcome reap_child(WinChild& c) {
+  c.join_readers();
+  RunOutcome oc;
+  oc.spawned = true;
+  oc.result = decode_child(c);
+  return oc;
+}
+
+inline void kill_and_reap(std::vector<WinChild>& cs) {
+  for (auto& c : cs)
+    if (c.hProcess) TerminateProcess(c.hProcess, 1);
+  for (auto& c : cs) c.join_readers();  // dtor closes handles.
+}
+
+// TerminateProcess any child past its deadline (flagging it timed_out); return
+// the ms until the nearest remaining deadline, or -1 when none is pending.
+inline long long enforce_deadlines(std::vector<WinChild>& running, long long now) {
+  long long nearest = -1;
+  for (auto& c : running) {
+    if (c.deadline_ms == 0 || c.timed_out) continue;
+    if (now >= c.deadline_ms) {
+      if (c.hProcess) TerminateProcess(c.hProcess, 1);
+      c.timed_out = true;
+    } else {
+      long long rem = c.deadline_ms - now;
+      if (nearest < 0 || rem < nearest) nearest = rem;
+    }
+  }
+  return nearest;
+}
+
+// Block up to timeout_ms until any running child exits. Caps the wait set at
+// MAXIMUM_WAIT_OBJECTS; the caller rescans all children for exit afterwards, so
+// a child beyond the cap is still reaped on a later pass.
+inline void wait_any(std::vector<WinChild>& running, DWORD timeout_ms) {
+  std::vector<HANDLE> handles;
+  for (auto& c : running) {
+    if (c.hProcess) handles.push_back(c.hProcess);
+    if (handles.size() >= MAXIMUM_WAIT_OBJECTS) break;
+  }
+  if (handles.empty()) { Sleep(timeout_ms); return; }
+  WaitForMultipleObjects((DWORD)handles.size(), handles.data(), FALSE, timeout_ms);
+}
+
+inline bool child_exited(WinChild& c) {
+  return c.timed_out ||
+         (c.hProcess && WaitForSingleObject(c.hProcess, 0) == WAIT_OBJECT_0);
+}
+
+inline size_t default_limit() {
+  unsigned hc = std::thread::hardware_concurrency();
+  return hc ? hc : 4;
+}
+
+// SIGKILL + reap survivors if the scope is left by exception.
+struct ScopeKiller {
+  std::vector<WinChild>& running;
+  bool armed = true;
+  explicit ScopeKiller(std::vector<WinChild>& r) : running(r) {}
+  void disarm() { armed = false; }
+  ~ScopeKiller() { if (armed) kill_and_reap(running); }
+  ScopeKiller(const ScopeKiller&) = delete;
+  ScopeKiller& operator=(const ScopeKiller&) = delete;
+};
+
+}  // namespace _detail
 
 inline RunOutcome run_command(
-    const std::vector<std::string>&, const std::string*,
-    const std::vector<std::pair<std::string, std::string>>*, const std::string&,
-    long = 0, const std::vector<int>* = nullptr) {
-  _win_no_proc();
-}
-inline std::vector<RunOutcome> run_all(
-    const std::vector<std::vector<std::string>>&, size_t = 0,
-    const std::string* = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* = nullptr,
-    const std::vector<std::string>* = nullptr, long = 0, bool = false,
-    size_t* = nullptr, long = 0, const std::vector<int>* = nullptr) {
-  _win_no_proc();
-}
-inline std::pair<size_t, RunOutcome> run_race(
-    const std::vector<std::vector<std::string>>&, size_t = 0,
-    const std::string* = nullptr,
-    const std::vector<std::pair<std::string, std::string>>* = nullptr,
-    const std::vector<std::string>* = nullptr,
+    const std::vector<std::string>& argv, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const std::string& stdin_data, long timeout_ms = 0,
     const std::vector<int>* = nullptr) {
-  _win_no_proc();
+  const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
+  _detail::WinChild c = _detail::spawn_child(argv, cwd, env_overrides, sp, 0);
+  if (c.done) return std::move(c.outcome);
+  if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
+
+  std::vector<_detail::WinChild> running;
+  running.push_back(std::move(c));
+  _detail::ScopeKiller killer(running);
+  while (!_detail::child_exited(running[0])) {
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    long long nearest = _detail::enforce_deadlines(running, _detail::now_ms());
+    if (running[0].timed_out) break;
+    _detail::wait_any(running, (DWORD)_detail::clamp_interrupt_timeout(nearest));
+  }
+  RunOutcome oc = _detail::reap_child(running[0]);
+  killer.disarm();
+  throw_if_interrupted();
+  return oc;
+}
+
+inline std::vector<RunOutcome> run_all(
+    const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
+    const std::string* cwd = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<std::string>* stdins = nullptr, long timeout_ms = 0,
+    bool fail_fast = false, size_t* out_failed = nullptr, long retries = 0,
+    const std::vector<int>* = nullptr) {
+  size_t n = commands.size();
+  std::vector<RunOutcome> results(n);
+  if (n == 0) return results;
+  if (limit == 0) limit = _detail::default_limit();
+  if (limit > n) limit = n;
+  if (retries < 0) retries = 0;
+
+  std::vector<_detail::WinChild> running;
+  running.reserve(limit);
+  _detail::ScopeKiller killer(running);
+  std::vector<long> attempts_left(n, retries);
+  std::vector<size_t> retry_queue;
+  size_t next = 0, finished = 0;
+  long failed_index = -1;
+  auto is_failure = [](const RunOutcome& oc) { return !oc.spawned || !oc.result.ok; };
+  auto handle_outcome = [&](size_t idx, RunOutcome&& oc) {
+    bool failed = is_failure(oc);
+    results[idx] = std::move(oc);
+    if (failed && attempts_left[idx] > 0) {
+      --attempts_left[idx];
+      retry_queue.push_back(idx);
+      return;
+    }
+    ++finished;
+    if (fail_fast && failed && failed_index < 0) failed_index = (long)idx;
+  };
+  auto launch = [&](size_t i) {
+    const std::string* sp =
+        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+    _detail::WinChild c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    if (c.done) {
+      handle_outcome(i, std::move(c.outcome));
+    } else {
+      if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
+      running.push_back(std::move(c));
+    }
+  };
+  auto fill = [&]() {
+    while (failed_index < 0 && running.size() < limit &&
+           (!retry_queue.empty() || next < n)) {
+      if (!retry_queue.empty()) {
+        size_t i = retry_queue.back();
+        retry_queue.pop_back();
+        launch(i);
+      } else {
+        launch(next++);
+      }
+    }
+  };
+  fill();
+
+  while (finished < n && failed_index < 0) {
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    long long nearest = _detail::enforce_deadlines(running, _detail::now_ms());
+    _detail::wait_any(running, (DWORD)_detail::clamp_interrupt_timeout(nearest));
+    for (size_t k = 0; k < running.size();) {
+      if (_detail::child_exited(running[k])) {
+        size_t idx = running[k].index;
+        RunOutcome oc = _detail::reap_child(running[k]);
+        running.erase(running.begin() + k);
+        handle_outcome(idx, std::move(oc));
+        if (failed_index >= 0) break;
+        fill();
+      } else {
+        ++k;
+      }
+    }
+  }
+  _detail::kill_and_reap(running);
+  killer.disarm();
+  throw_if_interrupted();
+  if (out_failed && failed_index >= 0) *out_failed = (size_t)failed_index;
+  return results;
+}
+
+inline std::pair<size_t, RunOutcome> run_race(
+    const std::vector<std::vector<std::string>>& commands, size_t limit = 0,
+    const std::string* cwd = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* env = nullptr,
+    const std::vector<std::string>* stdins = nullptr,
+    const std::vector<int>* = nullptr) {
+  size_t n = commands.size();
+  if (n == 0) return {SIZE_MAX, RunOutcome{}};
+  if (limit == 0 || limit > n) limit = n;
+
+  std::vector<_detail::WinChild> running;
+  running.reserve(limit);
+  _detail::ScopeKiller killer(running);
+  size_t winner = SIZE_MAX;
+  RunOutcome win_oc;
+  for (size_t i = 0; i < limit && winner == SIZE_MAX; i++) {
+    const std::string* sp =
+        (stdins && !(*stdins)[i].empty()) ? &(*stdins)[i] : nullptr;
+    _detail::WinChild c = _detail::spawn_child(commands[i], cwd, env, sp, i);
+    if (c.done) {
+      winner = i;
+      win_oc = std::move(c.outcome);
+    } else {
+      running.push_back(std::move(c));
+    }
+  }
+  while (winner == SIZE_MAX && !running.empty()) {
+    if (_detail::interrupt_pending()) throw_if_interrupted();  // killer reaps
+    _detail::wait_any(running, (DWORD)_detail::kInterruptPollMs);
+    for (size_t k = 0; k < running.size(); k++) {
+      if (_detail::child_exited(running[k])) {
+        winner = running[k].index;
+        win_oc = _detail::reap_child(running[k]);
+        running.erase(running.begin() + k);
+        break;
+      }
+    }
+  }
+  _detail::kill_and_reap(running);
+  killer.disarm();
+  throw_if_interrupted();
+  return {winner, std::move(win_oc)};
 }
 
 #endif  // !_WIN32
@@ -904,18 +1338,145 @@ inline ProcResult drain_reaped(int status, int& out_fd, int& err_fd) {
                        std::move(running[0].err));
 }
 
-#else  // _WIN32 — live-handle (Proc.spawn) primitives share the Phase 2 port.
+#else  // _WIN32 — live-handle (Proc.spawn) primitives. The child outlives the
+       // call; its reader threads keep draining into a registry entry that the
+       // interpreter reattaches to via an opaque id (stored as _pid and _out).
 
-inline SpawnResult spawn_detached(
-    const std::vector<std::string>&, const std::string*,
-    const std::vector<std::pair<std::string, std::string>>*, const std::string&,
-    const std::vector<int>* = nullptr) {
-  _win_no_proc();
+namespace _detail {
+// A spawned child living past the call. Its buffers are stable (std::map is
+// node-allocated), so the reader threads keep a valid pointer to them.
+struct WinLive {
+  HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr;
+  std::string out, err;
+  std::thread out_th, err_th;
+};
+inline std::map<long, WinLive>& live_registry() {
+  static std::map<long, WinLive> m;
+  return m;
 }
-inline void kill_pid(long, int) {}  // no live child to signal
-inline bool try_reap(long, int&) { _win_no_proc(); }
-inline ProcResult wait_handle(long, int&, int&) { _win_no_proc(); }
-inline ProcResult drain_reaped(int, int&, int&) { _win_no_proc(); }
+inline long& live_next_id() {
+  static long id = 1;
+  return id;
+}
+// Serialises the id counter + map structure across parallel isolates (two
+// Isolate/Parallel threads may each Proc.spawn concurrently). Held only for the
+// counter/find/insert/erase, never across a blocking wait or a reader join — the
+// node the map hands back is address-stable, so the value can be touched outside
+// the lock. The POSIX path needs none of this: its pid/fds are stateless OS
+// resources carried in the handle object.
+inline std::mutex& live_mutex() {
+  static std::mutex m;
+  return m;
+}
+inline void live_join_close(WinLive& lv) {
+  join_readers(lv.out_th, lv.err_th);
+  close_handle(lv.out_rd); close_handle(lv.err_rd); close_handle(lv.hProcess);
+}
+}  // namespace _detail
+
+// Spawn without waiting: feed+close stdin, keep the process + reader threads
+// alive in the registry, and return an opaque id. It rides in pid, and out_fd
+// mirrors it so drain_reaped (which is handed only the fds) finds the entry too.
+inline SpawnResult spawn_detached(
+    const std::vector<std::string>& argv, const std::string* cwd,
+    const std::vector<std::pair<std::string, std::string>>* env_overrides,
+    const std::string& stdin_data, const std::vector<int>* = nullptr) {
+  SpawnResult sr;
+  _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env_overrides);
+  if (!h.ok) { sr.err_no = h.err_no; sr.err_what = h.err_what; return sr; }
+  long id;
+  _detail::WinLive* lv;
+  {
+    std::lock_guard<std::mutex> g(_detail::live_mutex());
+    id = _detail::live_next_id()++;
+    lv = &_detail::live_registry()[id];  // address-stable map node
+  }
+  lv->hProcess = h.hProcess; lv->out_rd = h.out_rd; lv->err_rd = h.err_rd;
+  lv->out_th = std::thread(_detail::drain_pipe, h.out_rd, &lv->out);
+  lv->err_th = std::thread(_detail::drain_pipe, h.err_rd, &lv->err);
+  const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
+  _detail::feed_and_close_stdin(h.in_wr, sp);
+  sr.spawned = true;
+  sr.pid = id;
+  sr.out_fd = (int)id;  // drain_reaped keys off the fd; err_fd is unused.
+  sr.err_fd = -1;
+  return sr;
+}
+
+inline void kill_pid(long id, int /*sig*/) {
+  std::lock_guard<std::mutex> g(_detail::live_mutex());
+  auto& reg = _detail::live_registry();
+  auto it = reg.find(id);
+  if (it != reg.end() && it->second.hProcess)
+    TerminateProcess(it->second.hProcess, 1);
+}
+
+// Non-blocking: true (and fills `status` with the exit code) once the child has
+// exited; false while it runs. Leaves the entry in place — drain_reaped drops it.
+inline bool try_reap(long id, int& status) {
+  std::lock_guard<std::mutex> g(_detail::live_mutex());
+  auto& reg = _detail::live_registry();
+  auto it = reg.find(id);
+  if (it == reg.end() || !it->second.hProcess) { status = 0; return true; }
+  if (WaitForSingleObject(it->second.hProcess, 0) != WAIT_OBJECT_0) return false;
+  DWORD code = 0;
+  GetExitCodeProcess(it->second.hProcess, &code);
+  status = (int)code;
+  return true;
+}
+
+// Blocking: wait for exit, drain out/err to EOF, decode, and drop the entry.
+// `id` arrives as pid. The lock is dropped across the INFINITE wait so other
+// handle ops make progress; the map node stays valid (single-owner id).
+inline ProcResult wait_handle(long id, int&, int&) {
+  ProcResult r;
+  _detail::WinLive* lv = nullptr;
+  {
+    std::lock_guard<std::mutex> g(_detail::live_mutex());
+    auto& reg = _detail::live_registry();
+    auto it = reg.find(id);
+    if (it == reg.end()) return r;
+    lv = &it->second;
+  }
+  DWORD code = 0;
+  if (lv->hProcess) {
+    WaitForSingleObject(lv->hProcess, INFINITE);
+    GetExitCodeProcess(lv->hProcess, &code);
+  }
+  _detail::live_join_close(*lv);
+  r.out = std::move(lv->out);
+  r.err = std::move(lv->err);
+  r.code = (long)code;
+  r.ok = (code == 0);
+  {
+    std::lock_guard<std::mutex> g(_detail::live_mutex());
+    _detail::live_registry().erase(id);
+  }
+  return r;
+}
+
+// After try_reap() reported exit: drain the remaining buffered out/err and
+// decode `status` into a ProcResult. `id` arrives as out_fd.
+inline ProcResult drain_reaped(int status, int& out_fd, int&) {
+  ProcResult r;
+  _detail::WinLive* lv = nullptr;
+  {
+    std::lock_guard<std::mutex> g(_detail::live_mutex());
+    auto& reg = _detail::live_registry();
+    auto it = reg.find((long)out_fd);
+    if (it != reg.end()) lv = &it->second;
+  }
+  if (lv) {
+    _detail::live_join_close(*lv);
+    r.out = std::move(lv->out);
+    r.err = std::move(lv->err);
+    std::lock_guard<std::mutex> g(_detail::live_mutex());
+    _detail::live_registry().erase((long)out_fd);
+  }
+  r.code = status;
+  r.ok = (status == 0);
+  return r;
+}
 
 #endif  // !_WIN32
 
