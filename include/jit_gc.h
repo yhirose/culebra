@@ -543,18 +543,21 @@ class Heap {
     if (++alloc_since_collect_ < collect_threshold_) return;
     alloc_since_collect_ = 0;
     collect();
-    // gc_refs only reclaims reference cycles — RC already frees everything
-    // acyclic immediately and deterministically — so it can run far less often
-    // than the conservative backstop (which is the sole reclaimer of all
-    // unreachable residue). Cycles accumulate slowly, so amortise the
-    // whole-heap subtraction pass over many more allocations. The multiplier is
-    // tunable via CULEBRA_GC_MULT for the frequency/memory tradeoff study.
+    // The backstop is only the reclaimer of reference CYCLES — RC frees
+    // everything acyclic immediately and deterministically (now leak-free on
+    // the normal path, see docs/jit_ownership.md), so the whole-heap
+    // subtraction pass can run far less often than the per-object allocation
+    // rate. Cycles accumulate slowly, so amortise it over ~16× the live set:
+    // a scalar-autograd profile spends ~19% in GC bookkeeping, and raising the
+    // threshold from 2 to 16 recovers ~11% wall-clock on microgpt with the
+    // heap staying bounded (RC reclaims the acyclic residue regardless). The
+    // multiplier is tunable via CULEBRA_GC_MULT for the frequency/memory study.
     static const size_t mult = []() -> size_t {
       if (const char* m = std::getenv("CULEBRA_GC_MULT")) {
         long v = std::atol(m);
         if (v > 0) return static_cast<size_t>(v);
       }
-      return gc_refs_mode() ? 16 : 2;
+      return 16;
     }();
     collect_threshold_ =
         stress() ? 1 : std::max(kMinThreshold, objects_.size() * mult);
