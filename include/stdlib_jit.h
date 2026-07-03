@@ -7306,9 +7306,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto math_unary = [&](const char* rt_name,
                           auto long_fast) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
-      auto arg = compile(*argsAst.nodes[0]);
-      auto tag = extract_tag(arg);
-      auto data = extract_data(arg);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      auto tag = extract_tag(arg.borrow());
+      auto data = extract_data(arg.borrow());
       auto intBB = build_block("math.int");
       auto slowBB = build_block("math.slow");
       auto mergeBB = build_block("math.merge");
@@ -7331,7 +7331,7 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       auto phi = builder_.CreatePHI(valueType_, 2, "math.r");
       phi->addIncoming(intResult, intEndBB);
       phi->addIncoming(slowResult, slowEndBB);
-      emit_value_release(arg);
+      arg.drop();
       return static_cast<llvm::Value*>(phi);
     };
 
@@ -7340,11 +7340,11 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // branching (the runtime's SIToFP happens regardless).
     auto math_unary_runtime = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
-      auto arg = compile(*argsAst.nodes[0]);
+      auto arg = jit.compile(*argsAst.nodes[0]);
       auto result = emit_call(
           module_->getFunction(rt_name),
-          {extract_tag(arg), extract_data(arg), line, col});
-      emit_value_release(arg);
+          {extract_tag(arg.borrow()), extract_data(arg.borrow()), line, col});
+      arg.drop();
       return result;
     };
 
@@ -7370,13 +7370,14 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "acos")  { if (auto v = math_unary_runtime(rt::math_acos))  return v; }
     if (method == "atan")  { if (auto v = math_unary_runtime(rt::math_atan))  return v; }
     if (method == "atan2" && argsAst.nodes.size() == 2) {
-      auto y = compile(*argsAst.nodes[0]);
-      auto x = compile(*argsAst.nodes[1]);
+      auto y = jit.compile(*argsAst.nodes[0]);
+      auto x = jit.compile(*argsAst.nodes[1]);
       auto r = emit_call(module_->getFunction(rt::math_atan2),
-                         {extract_tag(y), extract_data(y), extract_tag(x),
-                          extract_data(x), line, col});
-      emit_value_release(y);
-      emit_value_release(x);
+                         {extract_tag(y.borrow()), extract_data(y.borrow()),
+                          extract_tag(x.borrow()), extract_data(x.borrow()),
+                          line, col});
+      y.drop();
+      x.drop();
       return r;
     }
 
@@ -7440,11 +7441,11 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       // below (the n==2 branch is just a no-alloca fast path).
       if (n < 1) return nullptr;
       if (n == 2) {
-        auto a = compile(*argsAst.nodes[0]);
-        auto b = compile(*argsAst.nodes[1]);
-        auto r = reduce_pair(a, b, rt_name, pred);
-        emit_value_release(a);
-        emit_value_release(b);
+        auto a = jit.compile(*argsAst.nodes[0]);
+        auto b = jit.compile(*argsAst.nodes[1]);
+        auto r = reduce_pair(a.borrow(), b.borrow(), rt_name, pred);
+        a.drop();
+        b.drop();
         return r;
       }
       llvm::IRBuilder<> entryB(
@@ -7654,9 +7655,9 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     auto& a = argsAst.nodes;
     auto i64 = builder_.getInt64Ty();
     auto eat_bool_i64 = [&](const peg::Ast& ast) -> llvm::Value* {
-      auto v = compile(ast);
-      auto b = builder_.CreateZExt(extract_data(v), i64);
-      emit_value_release(v);
+      auto v = jit.compile(ast);
+      auto b = builder_.CreateZExt(extract_data(v.borrow()), i64);
+      v.drop();
       return b;
     };
 
@@ -7669,33 +7670,33 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_float(d);
     }
     if (method == "sleep" && a.size() == 1) {
-      auto secs = compile(*a[0]);
-      emit_type_check(secs, "Float", "parameter 'secs'", a[0].get());
-      auto d = jit.coerce_to_double(secs);
+      auto secs = jit.compile(*a[0]);
+      emit_type_check(secs.borrow(), "Float", "parameter 'secs'", a[0].get());
+      auto d = jit.coerce_to_double(secs.borrow());
       emit_call(module_->getFunction(rt::time_sleep), {d});
-      emit_value_release(secs);
+      secs.drop();
       return make_nil();
     }
     if (method == "from_iso_nanos" && a.size() == 1) {
-      auto arg = compile(*a[0]);
-      emit_type_check(arg, "String", "parameter 's'", a[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*a[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 's'", a[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto n = emit_call(module_->getFunction(rt::time_from_iso_nanos),
                          {p, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_long(n);
     }
     if (method == "parse_nanos" && a.size() == 2) {
-      auto s = compile(*a[0]);
-      emit_type_check(s, "String", "parameter 's'", a[0].get());
-      auto f = compile(*a[1]);
-      emit_type_check(f, "String", "parameter 'fmt'", a[1].get());
-      auto sp = builder_.CreateIntToPtr(extract_data(s), ptrTy);
-      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
+      auto s = jit.compile(*a[0]);
+      emit_type_check(s.borrow(), "String", "parameter 's'", a[0].get());
+      auto f = jit.compile(*a[1]);
+      emit_type_check(f.borrow(), "String", "parameter 'fmt'", a[1].get());
+      auto sp = builder_.CreateIntToPtr(extract_data(s.borrow()), ptrTy);
+      auto fp = builder_.CreateIntToPtr(extract_data(f.borrow()), ptrTy);
       auto n = emit_call(module_->getFunction(rt::time_parse_nanos),
                          {sp, fp, line, col});
-      emit_value_release(s);
-      emit_value_release(f);
+      s.drop();
+      f.drop();
       return make_long(n);
     }
     if (method == "iso_nanos" && a.size() == 2) {
@@ -7718,23 +7719,23 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "format_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
-      auto f = compile(*a[1]);
-      emit_type_check(f, "String", "parameter 'fmt'", a[1].get());
-      auto fp = builder_.CreateIntToPtr(extract_data(f), ptrTy);
+      auto f = jit.compile(*a[1]);
+      emit_type_check(f.borrow(), "String", "parameter 'fmt'", a[1].get());
+      auto fp = builder_.CreateIntToPtr(extract_data(f.borrow()), ptrTy);
       auto u = eat_bool_i64(*a[2]);
       auto s = emit_call(module_->getFunction(rt::time_format_nanos),
                          {n, fp, u});
-      emit_value_release(f);
+      f.drop();
       return make_string(s);
     }
     if (method == "from_parts_nanos" && a.size() == 2) {
-      auto obj = compile(*a[0]);
-      emit_type_check(obj, "Object", "parameter 'p'", a[0].get());
-      auto op = builder_.CreateIntToPtr(extract_data(obj), ptrTy);
+      auto obj = jit.compile(*a[0]);
+      emit_type_check(obj.borrow(), "Object", "parameter 'p'", a[0].get());
+      auto op = builder_.CreateIntToPtr(extract_data(obj.borrow()), ptrTy);
       auto u = eat_bool_i64(*a[1]);
       auto n = emit_call(module_->getFunction(rt::time_from_parts_nanos),
                          {op, u});
-      emit_value_release(obj);
+      obj.drop();
       return make_long(n);
     }
     if (method == "add_nanos" && a.size() == 8) {
@@ -7752,13 +7753,13 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     if (method == "start_of_nanos" && a.size() == 3) {
       auto n = value_to_long(compile(*a[0]));
-      auto unit = compile(*a[1]);
-      emit_type_check(unit, "String", "parameter 'unit'", a[1].get());
-      auto up = builder_.CreateIntToPtr(extract_data(unit), ptrTy);
+      auto unit = jit.compile(*a[1]);
+      emit_type_check(unit.borrow(), "String", "parameter 'unit'", a[1].get());
+      auto up = builder_.CreateIntToPtr(extract_data(unit.borrow()), ptrTy);
       auto u = eat_bool_i64(*a[2]);
       auto r = emit_call(module_->getFunction(rt::time_start_of_nanos),
                          {n, up, u, line, col});
-      emit_value_release(unit);
+      unit.drop();
       return make_long(r);
     }
   }
@@ -7784,21 +7785,21 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     if (method == "resized" && a.empty())
       return make_bool(emit_call(module_->getFunction(rt::term_resized), {}));
     if (method == "width" && a.size() == 1) {
-      auto str = compile(*a[0]);
-      emit_type_check(str, "String", "parameter 's'", a[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(str), ptrTy);
+      auto str = jit.compile(*a[0]);
+      emit_type_check(str.borrow(), "String", "parameter 's'", a[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(str.borrow()), ptrTy);
       auto w = emit_call(module_->getFunction(rt::term_width), {p});
-      emit_value_release(str);
+      str.drop();
       return make_long(w);
     }
     if (method == "color_level" && a.empty())
       return make_long(emit_call(module_->getFunction(rt::term_color_level), {}));
     if (method == "read_key" && a.size() == 1) {
-      auto t = compile(*a[0]);
-      emit_type_check(t, "Float", "parameter 'timeout'", a[0].get());
-      auto d = jit.coerce_to_double(t);
+      auto t = jit.compile(*a[0]);
+      emit_type_check(t.borrow(), "Float", "parameter 'timeout'", a[0].get());
+      auto d = jit.coerce_to_double(t.borrow());
       auto s = emit_call(module_->getFunction(rt::term_read_key), {d});
-      emit_value_release(t);
+      t.drop();
       return make_string(s);
     }
   }
@@ -7820,14 +7821,14 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     }
     auto num_pair_call = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 2) return nullptr;
-      auto a = compile(*argsAst.nodes[0]);
-      auto b = compile(*argsAst.nodes[1]);
+      auto a = jit.compile(*argsAst.nodes[0]);
+      auto b = jit.compile(*argsAst.nodes[1]);
       auto r = emit_call(
           module_->getFunction(rt_name),
-          {extract_tag(a), extract_data(a),
-           extract_tag(b), extract_data(b), line, col});
-      emit_value_release(a);
-      emit_value_release(b);
+          {extract_tag(a.borrow()), extract_data(a.borrow()),
+           extract_tag(b.borrow()), extract_data(b.borrow()), line, col});
+      a.drop();
+      b.drop();
       return r;
     };
     if (method == "uniform") {
@@ -7837,26 +7838,28 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       if (auto v = num_pair_call(rt::random_gauss)) return v;
     }
     if (method == "shuffle" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "Array", "parameter 'a'", argsAst.nodes[0].get());
-      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "Array", "parameter 'a'",
+                      argsAst.nodes[0].get());
+      auto ap = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::random_shuffle), {ap});
-      emit_value_release(arg);
+      arg.drop();
       return make_nil();
     }
     if (method == "weighted_choice" && argsAst.nodes.size() == 2) {
-      auto pop = compile(*argsAst.nodes[0]);
-      emit_type_check(pop, "Array", "parameter 'pop'", argsAst.nodes[0].get());
-      auto wts = compile(*argsAst.nodes[1]);
-      emit_type_check(wts, "Array", "parameter 'weights'",
+      auto pop = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(pop.borrow(), "Array", "parameter 'pop'",
+                      argsAst.nodes[0].get());
+      auto wts = jit.compile(*argsAst.nodes[1]);
+      emit_type_check(wts.borrow(), "Array", "parameter 'weights'",
                       argsAst.nodes[1].get());
-      auto pp = builder_.CreateIntToPtr(extract_data(pop), ptrTy);
-      auto wp = builder_.CreateIntToPtr(extract_data(wts), ptrTy);
+      auto pp = builder_.CreateIntToPtr(extract_data(pop.borrow()), ptrTy);
+      auto wp = builder_.CreateIntToPtr(extract_data(wts.borrow()), ptrTy);
       auto r = emit_call(
           module_->getFunction(rt::random_weighted_choice),
           {pp, wp, line, col});
-      emit_value_release(pop);
-      emit_value_release(wts);
+      pop.drop();
+      wts.drop();
       return r;
     }
   }
@@ -7883,11 +7886,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_nil();  // unreachable; sys_exit terminates the process
     }
     if (method == "env" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'name'", argsAst.nodes[0].get());
-      auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'name'",
+                      argsAst.nodes[0].get());
+      auto ptr = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto s = emit_call(module_->getFunction(rt::sys_env), {ptr});
-      emit_value_release(arg);
+      arg.drop();
       return make_string(s);
     }
     if (method == "time" && argsAst.nodes.size() == 0) {
@@ -7908,17 +7912,17 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_nil();
     }
     if (method == "set_env" && argsAst.nodes.size() == 2) {
-      auto nameV = compile(*argsAst.nodes[0]);
-      emit_type_check(nameV, "String", "parameter 'name'",
+      auto nameV = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(nameV.borrow(), "String", "parameter 'name'",
                       argsAst.nodes[0].get());
-      auto valV = compile(*argsAst.nodes[1]);
-      emit_type_check(valV, "String", "parameter 'value'",
+      auto valV = jit.compile(*argsAst.nodes[1]);
+      emit_type_check(valV.borrow(), "String", "parameter 'value'",
                       argsAst.nodes[1].get());
-      auto np = builder_.CreateIntToPtr(extract_data(nameV), ptrTy);
-      auto vp = builder_.CreateIntToPtr(extract_data(valV), ptrTy);
+      auto np = builder_.CreateIntToPtr(extract_data(nameV.borrow()), ptrTy);
+      auto vp = builder_.CreateIntToPtr(extract_data(valV.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::sys_set_env), {np, vp, line, col});
-      emit_value_release(nameV);
-      emit_value_release(valV);
+      nameV.drop();
+      valV.drop();
       return make_nil();
     }
   }
@@ -7958,32 +7962,35 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_tensor(t);
     }
     if (method == "from" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
+      auto arg = jit.compile(*argsAst.nodes[0]);
       // Match interp's generic param-type message ("parameter 'a' expects
       // Array"); Tensor.from's stdlib param is named `a`.
-      emit_type_check(arg, "Array", "parameter 'a'", argsAst.nodes[0].get());
-      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      emit_type_check(arg.borrow(), "Array", "parameter 'a'",
+                      argsAst.nodes[0].get());
+      auto ap = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from), {ap, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_tensor(t);
     }
     if (method == "concat" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "Array", "parameter 'parts'", argsAst.nodes[0].get());
-      auto ap = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "Array", "parameter 'parts'",
+                      argsAst.nodes[0].get());
+      auto ap = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_concat), {ap, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_tensor(t);
     }
     if (method == "from_csv" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto pp = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto pp = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto t = emit_call(
           module_->getFunction(rt::tensor_from_csv), {pp});
-      emit_value_release(arg);
+      arg.drop();
       return make_tensor(t);
     }
     // Activations relu/sigmoid/softmax are Tensor instance methods
