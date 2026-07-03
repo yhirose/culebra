@@ -210,19 +210,25 @@ jobs:
       - name: Build (culebra driver)
         run: cmake --build build-win --target culebra -j -- -k 0
 
-      # Prove the "runs on a plain Windows box" claim: the .exe must not import
-      # any mingw runtime DLL (libstdc++-6 / libgcc_s / libwinpthread) — only
-      # always-present system DLLs (kernel32, msvcrt, ...).
-      - name: Verify standalone binary (no mingw runtime DLLs)
+      # Prove the "runs on a plain Windows box" claim: the .exe may import ONLY
+      # DLLs that ship with every Windows install. Anything else (mingw runtime
+      # libstdc++-6 / libgcc_s / libwinpthread, or a bundled zlib1.dll) would
+      # make it fail to start on a clean machine. Whitelist the system DLLs and
+      # fail on any other import.
+      - name: Verify standalone binary (only system DLLs)
         run: |
           echo "Imported DLLs:"
-          objdump -p build-win/culebra.exe | grep -i 'DLL Name' | sort -u
-          if objdump -p build-win/culebra.exe \
-              | grep -iE 'libstdc\+\+|libgcc_s|libwinpthread|libgomp'; then
-            echo "ERROR: binary depends on a mingw runtime DLL — not standalone"
+          imports=$(objdump -p build-win/culebra.exe \
+            | grep -i 'DLL Name' | sed -E 's/.*DLL Name:\s*//' | tr 'A-Z' 'a-z' | sort -u)
+          echo "$imports"
+          allow='^(kernel32|kernelbase|msvcrt|ntdll|user32|advapi32|ws2_32|shell32|ole32|oleaut32|bcrypt|crypt32|secur32|iphlpapi|dbghelp|version|winmm|gdi32)\.dll$'
+          bad=$(echo "$imports" | grep -viE "$allow" || true)
+          if [ -n "$bad" ]; then
+            echo "ERROR: binary imports non-system DLL(s) — not standalone:"
+            echo "$bad"
             exit 1
           fi
-          echo "OK: no mingw runtime DLL dependencies"
+          echo "OK: only system DLLs imported — runs on a plain Windows box"
 
       - name: Smoke test (interp runs a script + core stdlib)
         run: |

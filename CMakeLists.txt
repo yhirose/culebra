@@ -100,6 +100,12 @@ target_compile_definitions(culebra_sqlite3 PRIVATE
 # macOS/Linux and linked dynamically (macOS ships no static libz.a); a non-
 # Compress, non-Http AOT binary still omits it via the weak gzip/gunzip choke in
 # the core archive (see compress.h / aot_uses_compress).
+# On Windows there is no system zlib, so prefer the static libz.a — a dynamic
+# zlib1.dll would make the otherwise self-contained .exe fail to start on a
+# plain Windows box that lacks it.
+if(WIN32)
+  set(ZLIB_USE_STATIC_LIBS ON)
+endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
 include_directories(${ZLIB_INCLUDE_DIRS})
