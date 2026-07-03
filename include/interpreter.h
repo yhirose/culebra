@@ -532,7 +532,10 @@ struct StrGuard {
 struct FunctionValue {
   struct Parameter {
     std::string_view name;
-    bool mut;
+    // Default-init: synthesized params (enum/class ctors build a bare
+    // `Parameter p; p.name = ...`) would otherwise leave this uninitialized,
+    // an UB read at the bind site — see the sibling bool defaults below.
+    bool mut = false;
     std::string_view type_name;  // empty = no annotation; this is the
                                   // effective annotation runtime checks
                                   // use — may be rewritten (e.g. class
@@ -661,6 +664,24 @@ struct FunctionValue {
   // eval_multifn_decl where MultiMethod is visible; empty for non-dispatchers.
   std::function<void(const std::function<void(Environment*, long)>&)>
       multimethod_for_each_body_env;
+  // Cycle-collector hook: a closure can capture Values the value-walk can't
+  // otherwise reach. A class constructor's instance methods live inside
+  // `build_instance`'s captured `method_template` (an opaque std::function),
+  // not in any binding or the class Object — so InterpGC never sees their
+  // hidden def_env edges and the class_val↔def_env cycle (a fresh env + class
+  // per call) leaks. This enumerates those captured Values so both GC walks
+  // recurse into them with the normal edge model, subtracting each hidden edge
+  // at its exact multiplicity (dispatchers and field defaults handled
+  // uniformly). Baked in eval_class_decl; empty otherwise.
+  std::function<void(const std::function<void(const Value&)>&)>
+      for_each_captured_value;
+  // Stable per-class identity of the captured group above (the shared method
+  // template). A constructor Value can be reached from several tracked nodes
+  // (aliased class value, `let mk = Cls.new`), but its hidden method→def_env
+  // edges exist only ONCE — so the subtract pass must count them once, exactly
+  // like the sibling multimethod_table dedup. Two classes in one function
+  // share a def_env but NOT this vector, so it keys the dedup precisely.
+  std::shared_ptr<void> captured_group_key;
   // Isolate-boundary hook: enumerates each overload's body Value plus its
   // dispatch signature so sendable.h can ship every method across a Parallel
   // / Isolate boundary (the interp serializer has no Interpreter handle, and
@@ -2030,6 +2051,11 @@ inline void _owned_resolve_ambiguous(
   // Multimethod tables already accounted (explained once per table —
   // the table, not each dispatcher copy, holds the bodies' env refs).
   std::unordered_set<const void*> mm_seen;
+  // Constructor capture groups already explained (once per class — the
+  // shared method template, not each aliased constructor copy, holds the
+  // hidden method→env refs). Reachability out-edges to env are preserved by
+  // the constructor's OWN def_env edge, so this only avoids over-explaining.
+  std::unordered_set<const void*> cap_seen;
   // Prop maps held directly by a binding (the exiting scope's or a dead
   // interior env's): their death corresponds to a JIT slot release, not
   // a container cascade — see the verdict split below.
@@ -2220,6 +2246,17 @@ inline void _owned_resolve_ambiguous(
                      self);
           }
         }
+        // A constructor's instance methods hide inside build_instance —
+        // walk them so a drop-having class declared in a fn resolves its
+        // env↔class cycle here too (mirrors InterpGC::collect). Explain each
+        // group once (cap_seen): an aliased constructor would otherwise
+        // over-explain env; its reachability edge is kept by the def_env edge
+        // above.
+        if (fv.for_each_captured_value &&
+            (!fv.captured_group_key ||
+             cap_seen.insert(fv.captured_group_key.get()).second))
+          fv.for_each_captured_value(
+              [&](const Value& hidden) { self(hidden, from, self); });
         break;
       }
       default:
@@ -7590,16 +7627,25 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
         method_template.begin(), method_template.end(),
         [](const auto& m) { return m.first == "drop"; });
 
-    auto build_instance = [class_name, method_template, field_template,
+    // Hold the templates in shared vectors so build_instance and the
+    // cycle-collector hook (for_each_captured_value, below) reference the
+    // SAME method/field Values — not private copies. Each extra copy of a
+    // method closure would hold its own def_env ref, inflating the env's
+    // gc_refs beyond what the walk subtracts (an under-count that leaks).
+    using Template = std::vector<std::pair<std::string_view, Value>>;
+    auto shared_methods = std::make_shared<Template>(std::move(method_template));
+    auto shared_fields = std::make_shared<Template>(std::move(field_template));
+
+    auto build_instance = [class_name, shared_methods, shared_fields,
                            has_drop_method]() {
       ObjectValue instance;
       instance.properties->emplace(
           "class", Symbol{Value(std::string(class_name)), false});
-      for (const auto& [name, val] : method_template) {
+      for (const auto& [name, val] : *shared_methods) {
         instance.properties->emplace(name, Symbol{val, false});
       }
       // Typed fields are mutable instance state (like `this.x = ...`).
-      for (const auto& [name, val] : field_template) {
+      for (const auto& [name, val] : *shared_fields) {
         instance.properties->emplace(name, Symbol{val, true});
       }
       if (has_drop_method) _owned_register(instance);
@@ -7664,6 +7710,13 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           },
           {},
           env));
+      // The eval lambda above also closes over `env` (the capture list), so
+      // this constructor holds TWO shared_ptr refs to `def_env` — flag it so
+      // the cycle collector subtracts both (see def_env_multiplicity). The
+      // default constructor below captures `env` only via its `def_env` field
+      // (its `[=]` body uses build_instance/promote_all_mut, not env), so it
+      // stays at multiplicity 1.
+      constructor.get<FunctionValue>().eval_captures_def_env = true;
     } else {
       constructor = Value(FunctionValue(
           {},
@@ -7675,6 +7728,20 @@ struct Interpreter : std::enable_shared_from_this<Interpreter> {
           {},
           env));
     }
+
+    // Both constructors hide the instance methods (and any field defaults)
+    // inside `build_instance`. Enumerate them for the cycle collector so it
+    // can subtract their def_env edges — otherwise a class declared inside a
+    // function leaks its call env + class value on every invocation. Capture
+    // the templates by value exactly like build_instance does.
+    constructor.get<FunctionValue>().for_each_captured_value =
+        [shared_methods, shared_fields](
+            const std::function<void(const Value&)>& emit) {
+          for (const auto& [_, val] : *shared_methods) emit(val);
+          for (const auto& [_, val] : *shared_fields) emit(val);
+        };
+    // Dedup key so an aliased constructor's hidden edges are counted once.
+    constructor.get<FunctionValue>().captured_group_key = shared_methods;
 
     // @packable: compute the fixed C-ABI layout (throws on a non-fixed
     // field type) and register it under the class name. A hidden marker
@@ -10029,6 +10096,11 @@ inline void InterpGC::collect(Environment* current) {
   // so a live dispatcher keeps its bodies' env reachable.
   std::unordered_set<void*> mm_seen;
   std::unordered_set<void*>* mm_dedup = nullptr;
+  // Same once-per-group dedup for a constructor's captured method edges,
+  // keyed on captured_group_key (see FunctionValue). Toggled alongside
+  // mm_dedup: active in the subtract pass, null in the mark pass.
+  std::unordered_set<void*> cap_seen;
+  std::unordered_set<void*>* cap_dedup = nullptr;
   auto walk_node = [&](void* ptr, bool is_env, auto&& emit) {
     auto walk_value = [&](const Value& val, bool descend, auto&& wv) -> void {
       switch (val.type) {
@@ -10049,6 +10121,16 @@ inline void InterpGC::collect(Environment* current) {
               emit(fv.introspection_target->def_env.get(),
                    fv.introspection_target->def_env_multiplicity());
           }
+          // Values a constructor captured out of value-walk sight (a class's
+          // instance methods live in build_instance's method_template). Walk
+          // each so its own def_env / dispatcher edges get subtracted — once
+          // per group in the subtract pass (cap_dedup), else an aliased
+          // constructor over-subtracts and could free a live env.
+          if (fv.for_each_captured_value &&
+              (!cap_dedup || !fv.captured_group_key ||
+               cap_dedup->insert(fv.captured_group_key.get()).second))
+            fv.for_each_captured_value(
+                [&](const Value& hidden) { wv(hidden, false, wv); });
           break;
         }
         case Value::Object:
@@ -10080,9 +10162,11 @@ inline void InterpGC::collect(Environment* current) {
     }
   };
 
-  // Subtract internal references. Dedup shared multimethod tables so each
-  // dispatcher's body→env edges are subtracted exactly once.
+  // Subtract internal references. Dedup shared multimethod tables and
+  // constructor capture groups so each shared body→env edge is subtracted
+  // exactly once.
   mm_dedup = &mm_seen;
+  cap_dedup = &cap_seen;
   for (auto& l : live) {
     walk_node(l.ptr, l.is_env, [&](void* p, long mult) {
       auto it = gc_refs.find(p);
@@ -10090,6 +10174,7 @@ inline void InterpGC::collect(Environment* current) {
     });
   }
   mm_dedup = nullptr;  // mark pass always traverses (idempotent)
+  cap_dedup = nullptr;
 
   // Mark external roots and BFS-propagate reachability.
   std::unordered_set<void*> reachable;

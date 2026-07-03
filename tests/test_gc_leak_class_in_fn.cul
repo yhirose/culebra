@@ -1,0 +1,36 @@
+// Leak repro — a `class` declared inside a function forms a cycle through the
+// call environment: the constructor's closure keeps the env alive (directly
+// and via the instance methods hidden inside build_instance), while the env's
+// binding keeps the class value alive. Reference counting can never break it.
+// Do not delete. Both backends now reclaim it per call: the interpreter via
+// its precise gc_refs cycle collector (InterpGC walks the constructor's hidden
+// captured method closures via FunctionValue::for_each_captured_value), the
+// JIT via its class-in-fn handling. Before the fix the interpreter leaked
+// ~2 objects/call (env + class value) with no backstop = an unbounded leak.
+//
+// Each work() re-declares the class 100 times so the ~2-object/call leak is
+// amplified well past the noise (~6000 over 30 iters pre-fix, unbounded at
+// scale). Threshold `< 1000`: the interpreter is precise (returns ~0); the
+// JIT's conservative backstop may retain the most-recent batch, matching the
+// sibling gc-leak tests. `< 1000` clears both post-fix with margin.
+fn measure(work) {
+  work()
+  let base = GC.stat().live_objects
+  mut i = 0
+  while i < 30 { work(); i = i + 1 }
+  GC.stat().live_objects - base
+}
+fn make_a_class() {
+  class Local {
+    new(v) { this.v = v }
+    a() { this.v }
+    b() { this.v + 1 }
+  }
+  Local.new(1)
+}
+assert_lt(measure(fn () {
+  mut j = 0
+  while j < 100 { make_a_class().b(); j = j + 1 }
+  j
+}), 1000)
+puts("gc leak [class-in-fn]: no leak")
