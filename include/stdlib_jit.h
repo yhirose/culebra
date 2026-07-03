@@ -7527,36 +7527,39 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
   if (ns == "FS") {
     // Whole-file read/write convenience (open+read/write+close).
     if (method == "read" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto ptr = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto ptr = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto s = emit_call(module_->getFunction(rt::read_file),
                          {ptr, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_string(s);
     }
     if (method == "write" && argsAst.nodes.size() == 2) {
-      auto p = compile(*argsAst.nodes[0]);
-      emit_type_check(p, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto c = compile(*argsAst.nodes[1]);
-      emit_type_check(c, "String", "parameter 'content'",
+      auto p = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(p.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto c = jit.compile(*argsAst.nodes[1]);
+      emit_type_check(c.borrow(), "String", "parameter 'content'",
                       argsAst.nodes[1].get());
-      auto pp = builder_.CreateIntToPtr(extract_data(p), ptrTy);
-      auto cp = builder_.CreateIntToPtr(extract_data(c), ptrTy);
+      auto pp = builder_.CreateIntToPtr(extract_data(p.borrow()), ptrTy);
+      auto cp = builder_.CreateIntToPtr(extract_data(c.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::write_file), {pp, cp, line, col});
-      emit_value_release(p);
-      emit_value_release(c);
+      p.drop();
+      c.drop();
       return make_nil();
     }
 
     // (path) -> String for the four path-manipulation helpers.
     auto path_to_string = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto s = emit_call(module_->getFunction(rt_name), {p});
-      emit_value_release(arg);
+      arg.drop();
       return make_string(s);
     };
     if (method == "basename")  if (auto v = path_to_string(rt::fs_basename)) return v;
@@ -7567,11 +7570,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
     // (path) -> Bool query helpers.
     auto path_to_bool = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto i = emit_call(module_->getFunction(rt_name), {p});
-      emit_value_release(arg);
+      arg.drop();
       auto b = builder_.CreateICmpNE(i, builder_.getInt64(0));
       return make_bool(b);
     };
@@ -7581,34 +7585,37 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
 
     // (path, line, col) -> Long. IOError on missing.
     if (method == "size" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto n = emit_call(module_->getFunction(rt::fs_size),
                          {p, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_long(n);
     }
 
     // (path, line, col) -> Array*.
     if (method == "list_dir" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       auto a = emit_call(module_->getFunction(rt::fs_list_dir),
                          {p, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_array(a);
     }
 
     // (path, line, col) -> void mutators.
     auto path_to_void = [&](const char* rt_name) -> llvm::Value* {
       if (argsAst.nodes.size() != 1) return nullptr;
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       emit_call(module_->getFunction(rt_name), {p, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_nil();
     };
     if (method == "mkdir")  if (auto v = path_to_void(rt::fs_mkdir)) return v;
@@ -7892,11 +7899,12 @@ inline llvm::Value* JitExtension::compile_ns_call(JIT& jit,
       return make_string(s);
     }
     if (method == "chdir" && argsAst.nodes.size() == 1) {
-      auto arg = compile(*argsAst.nodes[0]);
-      emit_type_check(arg, "String", "parameter 'path'", argsAst.nodes[0].get());
-      auto p = builder_.CreateIntToPtr(extract_data(arg), ptrTy);
+      auto arg = jit.compile(*argsAst.nodes[0]);
+      emit_type_check(arg.borrow(), "String", "parameter 'path'",
+                      argsAst.nodes[0].get());
+      auto p = builder_.CreateIntToPtr(extract_data(arg.borrow()), ptrTy);
       emit_call(module_->getFunction(rt::sys_chdir), {p, line, col});
-      emit_value_release(arg);
+      arg.drop();
       return make_nil();
     }
     if (method == "set_env" && argsAst.nodes.size() == 2) {
