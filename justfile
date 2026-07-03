@@ -420,6 +420,24 @@ _run-tests BACKEND:
         echo "test (jit gc-stress) OK"
     }
 
+    # RC-leak gate: run the differential leak battery (tools/analysis). Each
+    # pattern is collected two ways — conservative (real reachability) vs
+    # CULEBRA_GC_REFS (refcount-seeded) — and a gap means a codegen path
+    # leaked a release. The conservative backstop hides such leaks at runtime,
+    # so without this gate an RC leak ships silently; here it fails the build.
+    # This is the Level-2 safety net for the ownership flip: releases that
+    # can't be structurally guaranteed by the Owned handle (loop bodies) are
+    # still caught if they regress. N is kept modest — the leak signal is a
+    # ratio, so a few thousand iterations separate flat from leaking cleanly.
+    run_leak_battery() {
+        if CULEBRA="$BIN" N=5000 THRESHOLD=4 bash tools/analysis/gc_leak_check.sh; then
+            echo "test (rc-leak battery) OK"
+        else
+            echo "test (rc-leak battery) FAIL: an RC leak regressed" >&2
+            exit 1
+        fi
+    }
+
     # Announce each phase with the running elapsed time, so a slow/stalled CI
     # run shows where it is (otherwise the silent phases — difftest, the
     # interp/jit sweep — emit nothing until they finish).
@@ -436,6 +454,7 @@ _run-tests BACKEND:
         phase "codegen backends (-O0, fast vs interp)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (5114 generated cases)"; run_difftest; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
         phase "culebra-test self"; run_culebra_test_self
         phase "isolate (interp + jit)"; run_isolate
