@@ -168,33 +168,36 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        shell: bash
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      - name: Install build tools (Ninja)
-        shell: pwsh
-        run: choco install ninja -y
+      # mingw-w64 (GCC 14+ / libstdc++) rather than MSVC: the codebase's central
+      # recursive Value type is used through std::vector<Value> while still
+      # incomplete, which libstdc++ (as on Linux/macOS) accepts but the MSVC STL
+      # rejects. mingw keeps the Linux STL behaviour, so the core compiles with
+      # no changes. The binary is linked fully static (-static: libstdc++ /
+      # libgcc / libwinpthread), so it runs on a plain Windows box with no mingw
+      # runtime DLLs — verified below.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib
 
-      - name: Install zlib (vcpkg, for the Compress namespace)
-        shell: pwsh
-        run: vcpkg install zlib:x64-windows
-
-      # clang++ with the GNU-style driver (targeting the MSVC ABI + STL) is used
-      # rather than cl.exe: the codebase uses GNU attributes (__attribute__) and
-      # GNU-style compile flags (-w / -ffunction-sections on the SQLite object),
-      # which clang accepts and MSVC does not. LLVM ships preinstalled on the
-      # windows-latest image.
-      - name: Configure (interpreter only, Phase 1 feature set)
+      - name: Configure (interpreter only, static, Phase 1 feature set)
         run: |
           cmake -S . -B build-win -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
             -DCULEBRA_ENABLE_JIT=OFF \
             -DCULEBRA_ENABLE_HTTP=OFF \
             -DCULEBRA_ENABLE_GRAPHICS=OFF \
@@ -206,6 +209,20 @@ jobs:
       # set of Windows-portability breakages at once instead of one per push.
       - name: Build (culebra driver)
         run: cmake --build build-win --target culebra -j -- -k 0
+
+      # Prove the "runs on a plain Windows box" claim: the .exe must not import
+      # any mingw runtime DLL (libstdc++-6 / libgcc_s / libwinpthread) — only
+      # always-present system DLLs (kernel32, msvcrt, ...).
+      - name: Verify standalone binary (no mingw runtime DLLs)
+        run: |
+          echo "Imported DLLs:"
+          objdump -p build-win/culebra.exe | grep -i 'DLL Name' | sort -u
+          if objdump -p build-win/culebra.exe \
+              | grep -iE 'libstdc\+\+|libgcc_s|libwinpthread|libgomp'; then
+            echo "ERROR: binary depends on a mingw runtime DLL — not standalone"
+            exit 1
+          fi
+          echo "OK: no mingw runtime DLL dependencies"
 
       - name: Smoke test (interp runs a script + core stdlib)
         run: |
