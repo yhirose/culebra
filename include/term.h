@@ -14,17 +14,22 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
-#include <poll.h>
 #include <string>
+#if !defined(_WIN32)
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
+#include <os_compat.h>  // os_isatty + guarded <windows.h> (console size on Windows)
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
 namespace culebra {
 namespace _term_detail {
+
+#if !defined(_WIN32)
 
 // Original terminal attributes, captured on the first `raw_on` so `raw_off`
 // can restore them. `_raw_active` guards against double enable/disable.
@@ -136,6 +141,37 @@ inline std::string read_key(double timeout_secs) {
   return out;
 }
 
+#else  // _WIN32
+
+// Windows: raw-mode / resize / key input are not yet ported (Phase 2 will use
+// the Console API — SetConsoleMode / ReadConsoleInput / WINDOW_BUFFER_SIZE_EVENT).
+// The primitives degrade to no-ops so a TUI script runs without crashing: raw
+// mode is simply never entered, mirroring the existing "no-op when stdin is not
+// a tty" behaviour on POSIX. Terminal size is still queried (it is cheap and
+// keeps layout math correct).
+inline bool take_resize() { return false; }
+inline void raw_off() {}
+inline void raw_on() {}
+inline int cols() {
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) {
+    int w = info.srWindow.Right - info.srWindow.Left + 1;
+    if (w > 0) return w;
+  }
+  return 80;
+}
+inline int rows() {
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) {
+    int h = info.srWindow.Bottom - info.srWindow.Top + 1;
+    if (h > 0) return h;
+  }
+  return 24;
+}
+inline std::string read_key(double) { return ""; }
+
+#endif  // _WIN32
+
 // Detected colour capability: 0 = none, 1 = 16 colours, 2 = 256, 3 = 24-bit
 // truecolour. Honours the `NO_COLOR` convention (present => off), `FORCE_COLOR`
 // (overrides the tty check), and `COLORTERM` / `TERM`. The culebra layer
@@ -144,7 +180,7 @@ inline int color_level() {
   if (std::getenv("NO_COLOR")) return 0;
   const char* fc = std::getenv("FORCE_COLOR");
   bool forced = fc && std::string(fc) != "0";
-  if (!forced && !isatty(STDOUT_FILENO)) return 0;
+  if (!forced && !os_isatty(1)) return 0;
   auto env = [](const char* k) {
     const char* v = std::getenv(k);
     return std::string(v ? v : "");

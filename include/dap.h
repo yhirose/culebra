@@ -18,11 +18,16 @@
 
 #include <climits>
 #include <cstdlib>
+#if defined(_WIN32)
+#include <io.h>  // _read / _write (DAP stdio transport)
+#else
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -37,6 +42,26 @@
 #include <stdlib_interp.h>
 
 namespace culebra {
+
+// Byte-stream read/write on a raw fd for the DAP stdio transport. On Windows the
+// POSIX ::read/::write live in <io.h> under an underscore; the fd values (0/1)
+// are the same CRT descriptors.
+namespace _dap_io {
+inline long read_fd(int fd, char* buf, size_t n) {
+#if defined(_WIN32)
+  return _read(fd, buf, static_cast<unsigned>(n));
+#else
+  return ::read(fd, buf, n);
+#endif
+}
+inline long write_fd(int fd, const char* buf, size_t n) {
+#if defined(_WIN32)
+  return _write(fd, buf, static_cast<unsigned>(n));
+#else
+  return ::write(fd, buf, n);
+#endif
+}
+}  // namespace _dap_io
 
 class DapServer {
  public:
@@ -91,7 +116,7 @@ class DapServer {
   // ---- transport --------------------------------------------------------
   bool fill() {
     char buf[4096];
-    ssize_t n = ::read(in_, buf, sizeof(buf));
+    long n = _dap_io::read_fd(in_, buf, sizeof(buf));
     if (n <= 0) return false;
     inbuf_.append(buf, static_cast<size_t>(n));
     return true;
@@ -119,9 +144,9 @@ class DapServer {
     std::string frame =
         "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
     std::lock_guard<std::mutex> lk(write_mu_);
-    ssize_t off = 0, total = static_cast<ssize_t>(frame.size());
+    long off = 0, total = static_cast<long>(frame.size());
     while (off < total) {
-      ssize_t n = ::write(out_, frame.data() + off, total - off);
+      long n = _dap_io::write_fd(out_, frame.data() + off, total - off);
       if (n <= 0) break;
       off += n;
     }
@@ -241,8 +266,14 @@ class DapServer {
   const std::string& canon(const std::string& p) {
     auto it = canon_cache_.find(p);
     if (it != canon_cache_.end()) return it->second;
+#if defined(_WIN32)
+    std::error_code ec;
+    auto c = std::filesystem::weakly_canonical(p, ec);
+    std::string r = ec ? p : c.string();
+#else
     char buf[PATH_MAX];
     std::string r = ::realpath(p.c_str(), buf) ? std::string(buf) : p;
+#endif
     return canon_cache_.emplace(p, std::move(r)).first->second;
   }
 
@@ -737,11 +768,13 @@ class DapServer {
   // Close the debuggee's write ends (so the reader EOFs) and join it.
   // Idempotent — finish() and teardown_output_capture() both call it.
   void stop_capture() {
+#if !defined(_WIN32)
     if (capturing_.exchange(false)) {
       ::close(1);
       ::close(2);
       if (out_reader_.joinable()) out_reader_.join();
     }
+#endif
   }
   void emit_stderr(const std::string& s) {
     event("output", Obj().set("category", S("stderr")).set("output", S(s)).v());
@@ -754,7 +787,12 @@ class DapServer {
   }
 
   // ---- output capture (debuggee stdout/stderr -> `output` events) -------
+  // Redirects the debuggee's fd 1/2 through a pipe so its output is forwarded as
+  // DAP `output` events instead of corrupting the protocol stream. Not yet ported
+  // to Windows (Phase 2 — _pipe/_dup2); there the debuggee writes to the real
+  // stdout and DAP simply omits output events.
   void setup_output_capture() {
+#if !defined(_WIN32)
     int pipefd[2];
     if (::pipe(pipefd) != 0) return;
     out_pipe_r_ = pipefd[0];
@@ -777,15 +815,18 @@ class DapServer {
                             .v());
       }
     });
+#endif  // !_WIN32
   }
   void teardown_output_capture() {
     // Normally finish() already stopped capture; this covers the path where no
     // debuggee ran (capturing_ still true).
     stop_capture();
+#if !defined(_WIN32)
     if (out_pipe_r_ >= 0) {
       ::close(out_pipe_r_);
       out_pipe_r_ = -1;
     }
+#endif
   }
 
   int in_, out_;

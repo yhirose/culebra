@@ -16,6 +16,11 @@
 
 #include <cstdio>      // snprintf / sscanf (anonymous shm name; share env)
 #include <cstdlib>     // getenv (share env)
+// The cross-process shared-memory backends (File / Shared / receive) are POSIX
+// only; a Heap SharedBuffer is process-local and needs none of these. On Windows
+// only the Heap lane is available (the mmap/shm/pthread lanes raise — see the
+// _WIN32 stubs below), so these headers are gated out entirely.
+#if !defined(_WIN32)
 #include <fcntl.h>     // open
 #include <pthread.h>   // PROCESS_SHARED mutex (with_lock, cross-process)
 #include <sched.h>     // sched_yield (lock-init wait spin)
@@ -25,6 +30,7 @@
 #if defined(__linux__)
 #include <sys/syscall.h>  // SYS_memfd_create (anonymous shm fd)
 #endif
+#endif  // !_WIN32
 
 #include <shared.h>  // CulebraError
 
@@ -593,7 +599,15 @@ inline constexpr size_t kLockHeader = 128;
 struct SharedLockHeader {
   uint32_t ready;        // 0 = mutex uninitialized, 1 = ready (read via atomic_ref)
   uint32_t _pad;
+#if !defined(_WIN32)
   pthread_mutex_t mutex;
+#else
+  // Windows has no cross-process pthread mutex; the cross-process backends that
+  // would use this header raise before it is reached (see the _WIN32 stubs). The
+  // placeholder keeps the fixed 128-byte header layout identical for any tooling
+  // that inspects it.
+  unsigned char mutex[64];
+#endif
 };
 static_assert(sizeof(SharedLockHeader) <= kLockHeader,
               "the pthread lock header must fit in the reserved prefix");
@@ -638,8 +652,10 @@ struct SharedBufferCore {
   SharedBufferCore(const SharedBufferCore&) = delete;  // only held by shared_ptr
   SharedBufferCore& operator=(const SharedBufferCore&) = delete;
   ~SharedBufferCore() {
+#if !defined(_WIN32)
     if (storage != Storage::Heap && map_base) munmap(map_base, byte_size);
     if (fd >= 0) close(fd);
+#endif  // Windows only ever holds Heap cores (map_base null, fd -1).
   }
 };
 
@@ -651,6 +667,7 @@ inline SharedLockHeader* shared_lock_header(const SharedBufferCore& core) {
 // Creator side: initialize the PROCESS_SHARED mutex, then publish ready=1 so
 // receivers (fork children / file reopeners) may use it. The backing pages are
 // zero-filled (ftruncate), so ready starts at 0.
+#if !defined(_WIN32)
 inline void shared_lock_init(SharedBufferCore& core) {
   auto* h = shared_lock_header(core);
   pthread_mutexattr_t attr;
@@ -673,13 +690,18 @@ inline void shared_lock_wait_ready(SharedBufferCore& core) {
     sched_yield();
   }
 }
+#endif  // !_WIN32
 inline void shared_buffer_lock(SharedBufferCore& core) {
   if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.lock();
+#if !defined(_WIN32)
   else pthread_mutex_lock(&shared_lock_header(core)->mutex);
+#endif  // Windows only holds Heap cores, so the cross-process branch is dead.
 }
 inline void shared_buffer_unlock(SharedBufferCore& core) {
   if (core.storage == SharedBufferCore::Storage::Heap) core.heap_mutex.unlock();
+#if !defined(_WIN32)
   else pthread_mutex_unlock(&shared_lock_header(core)->mutex);
+#endif
 }
 // RAII lock guard that also pins the core alive across the user callback (so a
 // callback that drops the buffer can't free the mutex out from under us).
@@ -736,6 +758,8 @@ inline long make_shared_buffer(const PackableLayout& layout,
   core->refcount = 1;
   return register_shared_buffer(std::move(core));
 }
+
+#if !defined(_WIN32)
 
 // File-backed SharedBuffer: mmap `count` records over `path` (created/sized if
 // needed). The region is `kLockHeader` (a PROCESS_SHARED lock) followed by the
@@ -964,12 +988,53 @@ inline long make_shared_buffer_from_share_env(const PackableLayout& layout,
                                     static_cast<int>(fd));
 }
 
-// Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap.
+#else  // _WIN32 — cross-process shared memory (mmap / shm / PROCESS_SHARED
+       // mutex) is not yet ported (Phase 3 will use CreateFileMapping +
+       // MapViewOfFile + named CreateMutex). The Heap lane above stays fully
+       // functional; the cross-process constructors raise at call time.
+
+[[noreturn]] inline void _win_no_shared_mem() {
+  throw CulebraError(
+      "RuntimeError",
+      "cross-process SharedBuffer (file / shared / receive) is not yet "
+      "supported on Windows; SharedBuffer.new (in-process) works");
+}
+inline long make_shared_buffer_file(const PackableLayout&, std::string, size_t,
+                                    const std::string&) {
+  _win_no_shared_mem();
+}
+inline long make_shared_buffer_shared(const PackableLayout&, std::string,
+                                      size_t) {
+  _win_no_shared_mem();
+}
+inline long make_shared_buffer_receive(const PackableLayout&, std::string,
+                                       size_t, int) {
+  _win_no_shared_mem();
+}
+inline long make_shared_buffer_from_share_env(const PackableLayout&, std::string,
+                                              std::string_view) {
+  _win_no_shared_mem();
+}
+// Parent side of Proc.run `share:` — reached only via the (stubbed) Proc path,
+// but referenced by stdlib so it must compile.
+inline std::string share_env_key(std::string_view name) {
+  return "CULEBRA_SHARE_" + std::string(name);
+}
+inline std::pair<int, std::string> prepare_share_buffer(long, std::string_view) {
+  _win_no_shared_mem();
+}
+
+#endif  // !_WIN32
+
+// Flush a file-backed buffer's dirty pages to disk (msync). No-op for Heap
+// (and thus a no-op on Windows, which only ever holds Heap cores).
 inline void shared_buffer_flush(long id) {
   auto core = lookup_shared_buffer(id);
   if (core && core->storage != SharedBufferCore::Storage::Heap &&
       core->map_base && core->byte_size) {
+#if !defined(_WIN32)
     ::msync(core->map_base, core->byte_size, MS_SYNC);
+#endif
   }
 }
 

@@ -31,6 +31,9 @@
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath (Sys.executable)
 #endif
+#if defined(_WIN32)
+#include <os_compat.h>  // <windows.h> (guarded) — GetModuleFileNameW (Sys.executable)
+#endif
 
 namespace culebra {
 
@@ -123,6 +126,25 @@ inline std::string current_executable_path() {
   ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (n <= 0) return "";
   return std::string(buf, static_cast<size_t>(n));
+#elif defined(_WIN32)
+  std::wstring wbuf(MAX_PATH, L'\0');
+  for (;;) {
+    DWORD n = GetModuleFileNameW(nullptr, wbuf.data(),
+                                 static_cast<DWORD>(wbuf.size()));
+    if (n == 0) return "";
+    if (n < wbuf.size()) {  // fit — n excludes the NUL
+      wbuf.resize(n);
+      break;
+    }
+    wbuf.resize(wbuf.size() * 2);  // truncated — grow and retry
+  }
+  int len = WideCharToMultiByte(CP_UTF8, 0, wbuf.data(),
+                                static_cast<int>(wbuf.size()), nullptr, 0,
+                                nullptr, nullptr);
+  std::string out(len, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, wbuf.data(), static_cast<int>(wbuf.size()),
+                      out.data(), len, nullptr, nullptr);
+  return out;
 #else
   return "";
 #endif

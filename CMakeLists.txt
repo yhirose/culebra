@@ -604,6 +604,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
   set(_sqlite_link "")
 endif()
+
+# Windows: cpp-httplib (the Http namespace) needs Winsock. Linked unconditionally
+# on Windows since http.h is always compiled into the driver; harmless when the
+# Http namespace is disabled. (TLS via OpenSSL is a separate opt-in — see the
+# CULEBRA_ENABLE_HTTP block; Phase 1 Windows builds run without it.)
+if(WIN32)
+  target_link_libraries(culebra ws2_32)
+endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
 endif()

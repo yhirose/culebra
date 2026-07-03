@@ -59,6 +59,7 @@ struct RunOutcome {
   std::string err_what;      // failing step ("fork"/"pipe"/"execvp"/"chdir").
 };
 
+#if !defined(_WIN32)
 inline std::string signal_name(int sig) {
   switch (sig) {
     case SIGHUP:  return "SIGHUP";
@@ -78,6 +79,7 @@ inline std::string signal_name(int sig) {
     default:      return "SIG" + std::to_string(sig);
   }
 }
+#endif  // !_WIN32
 
 // One-line human reason a (spawned) command counts as a failure, for `check:`
 // and `fail_fast:` error messages.
@@ -94,6 +96,8 @@ inline std::string outcome_detail(const RunOutcome& oc) {
            std::system_category().message(oc.err_no);
   return failure_detail(oc.result);
 }
+
+#if !defined(_WIN32)
 
 // Decode a waitpid() status plus captured output into a ProcResult.
 inline ProcResult decode_result(int status, std::string out, std::string err) {
@@ -747,6 +751,41 @@ inline std::pair<size_t, RunOutcome> run_race(
   return {winner, std::move(win_oc)};
 }
 
+#else  // _WIN32 — subprocess execution is not yet ported (Phase 2 will use
+       // CreateProcess / CreatePipe / Job Objects). The entry points raise a
+       // clear error so the interpreter compiles and Proc.* fails at call time.
+
+[[noreturn]] inline void _win_no_proc() {
+  throw CulebraError(
+      "RuntimeError",
+      "Proc (subprocess execution) is not yet supported on Windows");
+}
+
+inline RunOutcome run_command(
+    const std::vector<std::string>&, const std::string*,
+    const std::vector<std::pair<std::string, std::string>>*, const std::string&,
+    long = 0, const std::vector<int>* = nullptr) {
+  _win_no_proc();
+}
+inline std::vector<RunOutcome> run_all(
+    const std::vector<std::vector<std::string>>&, size_t = 0,
+    const std::string* = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* = nullptr,
+    const std::vector<std::string>* = nullptr, long = 0, bool = false,
+    size_t* = nullptr, long = 0, const std::vector<int>* = nullptr) {
+  _win_no_proc();
+}
+inline std::pair<size_t, RunOutcome> run_race(
+    const std::vector<std::vector<std::string>>&, size_t = 0,
+    const std::string* = nullptr,
+    const std::vector<std::pair<std::string, std::string>>* = nullptr,
+    const std::vector<std::string>* = nullptr,
+    const std::vector<int>* = nullptr) {
+  _win_no_proc();
+}
+
+#endif  // !_WIN32
+
 // --- Live handle primitives (Proc.spawn). The child outlives the call; the
 // caller (a culebra handle object) keeps pid + out/err fds and later drains
 // + reaps them via wait_handle / poll_handle / kill_pid. ---
@@ -758,6 +797,8 @@ struct SpawnResult {
   int err_no = 0;            // errno when !spawned.
   std::string err_what;     // failing step when !spawned.
 };
+
+#if !defined(_WIN32)
 
 // Spawns a child without waiting: writes stdin_data then closes the child's
 // stdin, and returns the live pid + out/err fds (parent keeps them open). On a
@@ -856,5 +897,20 @@ inline ProcResult drain_reaped(int status, int& out_fd, int& err_fd) {
   return decode_result(status, std::move(running[0].out),
                        std::move(running[0].err));
 }
+
+#else  // _WIN32 — live-handle (Proc.spawn) primitives share the Phase 2 port.
+
+inline SpawnResult spawn_detached(
+    const std::vector<std::string>&, const std::string*,
+    const std::vector<std::pair<std::string, std::string>>*, const std::string&,
+    const std::vector<int>* = nullptr) {
+  _win_no_proc();
+}
+inline void kill_pid(long, int) {}  // no live child to signal
+inline bool try_reap(long, int&) { _win_no_proc(); }
+inline ProcResult wait_handle(long, int&, int&) { _win_no_proc(); }
+inline ProcResult drain_reaped(int, int&, int&) { _win_no_proc(); }
+
+#endif  // !_WIN32
 
 }  // namespace culebra::proc

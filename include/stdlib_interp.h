@@ -47,10 +47,16 @@
 #include <string>
 #include <system_error>
 #include <thread>
-#include <unistd.h>  // isatty (IO.*_is_terminal), chown (FS.chown)
+#include <os_compat.h>  // os_isatty / os_setenv (isatty / setenv shims)
+// POSIX ownership (chown / getpwnam / st_uid) has no Windows equivalent; FS.chown
+// and the FS.stat owner fields are stubbed on Windows (see the _WIN32 branches
+// below), so these headers are POSIX-only.
+#if !defined(_WIN32)
 #include <grp.h>     // getgrnam_r (FS.chown group-name resolution)
 #include <pwd.h>     // getpwnam_r (FS.chown user-name resolution)
 #include <sys/stat.h>  // ::stat for st_uid/st_gid (FS.stat owner fields)
+#include <unistd.h>  // chown (FS.chown)
+#endif
 #include <vector>
 
 namespace culebra {
@@ -366,12 +372,12 @@ inline Value make_io_namespace() {
   // Node `process.stdin.isTTY`.
   auto is_terminal = [](int fd) {
     return Value(FunctionValue(
-        {}, [fd](std::shared_ptr<Environment>) { return Value(isatty(fd) != 0); },
+        {}, [fd](std::shared_ptr<Environment>) { return Value(os_isatty(fd)); },
         "Bool"sv));
   };
-  ns.initialize("stdin_is_terminal", is_terminal(STDIN_FILENO), false);
-  ns.initialize("stdout_is_terminal", is_terminal(STDOUT_FILENO), false);
-  ns.initialize("stderr_is_terminal", is_terminal(STDERR_FILENO), false);
+  ns.initialize("stdin_is_terminal", is_terminal(0), false);
+  ns.initialize("stdout_is_terminal", is_terminal(1), false);
+  ns.initialize("stderr_is_terminal", is_terminal(2), false);
 
   // File I/O lives on FS (FS.read / FS.write / FS.exists). IO is the
   // standard-stream + console namespace: puts / print / input.
@@ -504,6 +510,8 @@ inline long _fs_mtime_secs(const std::filesystem::path& p) {
 // --- FS ownership helpers (shared by interp + JIT/AOT so the three backends
 // resolve names and report errors identically) ----------------------------
 
+#if !defined(_WIN32)
+
 // Read st_uid / st_gid of `p` (following symlinks, like the other stat fields).
 // Returns false if the path can't be stat'd.
 inline bool _fs_owner(const std::filesystem::path& p, long& uid, long& gid) {
@@ -547,6 +555,24 @@ inline void _fs_do_chown(const std::filesystem::path& p, long uid, long gid,
               std::error_code(errno, std::generic_category()));
   }
 }
+
+#else  // _WIN32 — POSIX numeric uid/gid ownership has no Windows equivalent.
+       // FS.stat omits the owner fields (no uid/gid) and FS.chown raises.
+
+inline bool _fs_owner(const std::filesystem::path&, long&, long&) {
+  return false;  // no POSIX owner ids on Windows → stat omits uid/gid
+}
+inline long _fs_uid_from_name(const std::string&) { return -1; }
+inline long _fs_gid_from_name(const std::string&) { return -1; }
+inline void _fs_do_chown(const std::filesystem::path&, long, long, long line,
+                         long col) {
+  throw CulebraError("RuntimeError",
+                     "FS.chown is not supported on Windows (no POSIX uid/gid "
+                     "ownership model)",
+                     line, col);
+}
+
+#endif  // !_WIN32
 
 inline Value make_fs_namespace() {
   using namespace std::literals;
@@ -1205,13 +1231,13 @@ inline int64_t combine_nanos(std::time_t secs, int64_t sub_nanos) {
 inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
   auto t = split_nanos(nanos).first;
   std::tm tm{};
-  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
   return tm;
 }
 
 inline int64_t from_tm_nanos(std::tm& tm, int64_t sub_nanos, bool utc) {
   tm.tm_isdst = -1;
-  auto t = utc ? timegm(&tm) : std::mktime(&tm);
+  auto t = utc ? os_timegm(&tm) : std::mktime(&tm);
   return combine_nanos(t, sub_nanos);
 }
 
@@ -1293,7 +1319,7 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
   tm.tm_sec = se;
   tm.tm_isdst = 0;
   // Date-only / tz-less → treat as UTC (deterministic across hosts).
-  std::time_t t = timegm(&tm);
+  std::time_t t = os_timegm(&tm);
   if (has_tz) t -= offset_seconds;
   return combine_nanos(t, sub_ns);
 }
@@ -1301,7 +1327,7 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
 inline std::string format_iso_nanos(int64_t nanos, bool utc) {
   auto [t, sub] = split_nanos(nanos);
   std::tm tm{};
-  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
   std::string tz_str = "Z";
   if (!utc) {
     auto offset = tm.tm_gmtoff;
@@ -1327,7 +1353,7 @@ inline std::string format_strftime_nanos(int64_t nanos,
                                          const std::string& fmt, bool utc) {
   auto t = split_nanos(nanos).first;
   std::tm tm{};
-  if (utc) gmtime_r(&t, &tm); else localtime_r(&t, &tm);
+  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
   char buf[256];
   auto n = std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
   return std::string(buf, n);
@@ -1408,7 +1434,7 @@ inline Value make_time_primitives_namespace() {
             long line = env->get("__LINE__").to_long();
             long col = env->get("__COLUMN__").to_long();
             std::tm tm{};
-            if (!strptime(s.c_str(), fmt.c_str(), &tm)) {
+            if (!os_strptime(s.c_str(), fmt.c_str(), &tm)) {
               _time_detail::throw_value(
                   std::format("_Time.parse_nanos: '{}' does not match '{}'", s, fmt),
                   line, col);
@@ -2099,7 +2125,7 @@ inline Value make_sys_namespace(const std::vector<std::string>& argv) {
             long col = env->get("__COLUMN__").to_long();
             const auto& name = env->get("name").to_string();
             const auto& value = env->get("value").to_string();
-            if (::setenv(name.c_str(), value.c_str(), 1) != 0) {
+            if (os_setenv(name.c_str(), value.c_str(), 1) != 0) {
               _io_throw(std::format("Sys.set_env('{}')", name), line, col,
                         std::error_code(errno, std::generic_category()));
             }
@@ -5388,7 +5414,7 @@ inline Value make_env_namespace() {
                                 std::istreambuf_iterator<char>());
             auto pairs = culebra::env::parse(content);
             for (const auto& [k, v] : pairs)
-              ::setenv(k.c_str(), v.c_str(), overwrite ? 1 : 0);
+              os_setenv(k.c_str(), v.c_str(), overwrite ? 1 : 0);
             return _env_pairs_to_object(pairs);
           },
           "Object"sv)),

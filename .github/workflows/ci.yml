@@ -155,3 +155,73 @@ jobs:
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
+
+  # Windows port — Phase 1. Builds the interpreter-only driver (no JIT/AOT) with
+  # the OS-heavy optional features off, to prove the core language + stdlib +
+  # SQLite compile and run on Windows. The subprocess (Proc), terminal raw-mode
+  # (Term) and cross-process SharedBuffer subsystems are stubbed on Windows (they
+  # raise a clear "not supported" error) and land in later phases; everything
+  # else — interp, FS, string/collection/number stdlib, in-process SharedBuffer —
+  # runs. Kept a separate job from the JIT/AOT matrix above, whose `just build`
+  # / `just test` steps assume the full LLVM toolchain.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install build tools (Ninja)
+        shell: pwsh
+        run: choco install ninja -y
+
+      - name: Install zlib (vcpkg, for the Compress namespace)
+        shell: pwsh
+        run: vcpkg install zlib:x64-windows
+
+      # clang++ with the GNU-style driver (targeting the MSVC ABI + STL) is used
+      # rather than cl.exe: the codebase uses GNU attributes (__attribute__) and
+      # GNU-style compile flags (-w / -ffunction-sections on the SQLite object),
+      # which clang accepts and MSVC does not. LLVM ships preinstalled on the
+      # windows-latest image.
+      - name: Configure (interpreter only, Phase 1 feature set)
+        run: |
+          cmake -S . -B build-win -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-windows \
+            -DCULEBRA_ENABLE_JIT=OFF \
+            -DCULEBRA_ENABLE_HTTP=OFF \
+            -DCULEBRA_ENABLE_GRAPHICS=OFF \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_LTO=OFF
+
+      # `-k 0` keeps building after the first error so a CI run surfaces the full
+      # set of Windows-portability breakages at once instead of one per push.
+      - name: Build (culebra driver)
+        run: cmake --build build-win --target culebra -j -- -k 0
+
+      - name: Smoke test (interp runs a script + core stdlib)
+        run: |
+          cat > smoke.cul <<'EOF'
+          fn check(cond, msg) { if !cond { throw "check failed: " + msg } }
+          print("hello from culebra on windows")
+          let xs = [3, 1, 2].sorted_by(fn(x) { x })
+          check(xs.join(",") == "1,2,3", "sort")
+          check("UPPER".lower() == "upper" && "abc".upper() == "ABC", "case")
+          let o = {"a": 1, "b": 2}
+          check(o.keys().sorted_by(fn(k) { k }).join(",") == "a,b", "keys")
+          # The subprocess subsystem is stubbed on Windows — it must raise, not
+          # crash, confirming the _WIN32 stub path is wired correctly.
+          let mut raised = false
+          try { Proc.run(["cmd", "/c", "echo hi"]) } catch e { raised = true }
+          check(raised, "Proc stub raises on Windows")
+          print("smoke ok")
+          EOF
+          ./build-win/culebra.exe smoke.cul
