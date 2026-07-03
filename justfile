@@ -29,6 +29,21 @@ dev *extra:
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON {{extra}} .. > /dev/null
     cd build-dev && make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
 
+# Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
+# LTO is a pure link-time optimization — every test phase's output is identical
+# with or without it — so the gate skips it to drop the ThinLTO relink (>120 s
+# on a driver-touching change) off the pre-commit critical path. Unlike `just
+# dev` this keeps the AOT runtime archives (no DEV_NO_RT) and builds the whole
+# tree (the embedding-test executables included), so the AOT and ctest phases
+# still run. Its own build-gate/ dir keeps a warm no-LTO ccache separate from
+# `build/`'s LTO cache — the LTO define flips every ccache key. `just build`
+# stays LTO for release / the CI ThinLTO-link check.
+[group("build")]
+build-gate *extra:
+    mkdir -p build-gate
+    cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
+    cd build-gate && make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+
 # Regenerate include/grammar_blob.h — the serialized grammar that lets
 # get_parser() skip peglib's ~10 ms meta-parse on startup. Run after editing the
 # grammar (grammar_def.h) or bumping vendor/cpp-peglib (the blob layout is
@@ -88,7 +103,7 @@ asan:
 # Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
-    rm -rf build build-dev build-asan build-no-jit
+    rm -rf build build-dev build-gate build-asan build-no-jit
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/parser.h
@@ -120,10 +135,10 @@ check-preambles:
 #                       assert stdout matches `--jit`.
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (LTO build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner).")]
+[doc("Full gate (no-LTO gate build). BACKEND=all|fast|interp|jit|aot|embed|isolate (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner).")]
 [group("test")]
-test BACKEND='all': build
-    @just _run-tests {{BACKEND}}
+test BACKEND='all': build-gate
+    @BIN=./build-gate/culebra just _run-tests {{BACKEND}}
 
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
 # Runs only the phases that don't need LTO/AOT/embed exes: the interp==JIT

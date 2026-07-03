@@ -39,6 +39,7 @@ CMakeCache.txt
 # Build directory
 build/
 build-dev/
+build-gate/
 build-asan/
 build-no-jit/
 build-gfx/

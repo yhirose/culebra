@@ -140,7 +140,12 @@ jobs:
         run: ccache -s
 
       - name: Test (interp/JIT diff + embedding smoke + AOT + culebra-test self)
-        run: just test
+        # Reuse the LTO build/ from the Build step rather than letting `just
+        # test` spin up a second no-LTO build-gate/. CI already pays for the
+        # ThinLTO link in the Build step above, so run the full gate against it
+        # — this also keeps the gate exercising the LTO binary on both OSes.
+        # (Local dev gets the fast no-LTO gate via plain `just test`.)
+        run: BIN=./build/culebra just _run-tests all
 
       # Run the ```culebra examples in docs/ (interp only). Invoke the
       # binary directly rather than `just doctest` so it reuses the build
